@@ -1,34 +1,15 @@
 //! `phux status` — one glance at the server behind the socket.
+//! [`collect`] gathers a [`StatusReport`]; [`render_human`] and
+//! [`status_document`] are pure renderers, pinned by unit tests.
 //!
-//! Collect-then-render: [`collect`] gathers every fact into a
-//! [`StatusReport`], and the two pure renderers ([`render_human`],
-//! [`status_document`]) turn it into the human report or the stable JSON
-//! shape — so both formats are pinned by unit tests on a fabricated report,
-//! without a server.
+//! Sources, with no wire change: pid from the UDS peer credentials; since from
+//! the socket file's mtime (survives graceful upgrade); protocol from a real
+//! HELLO; clients, sessions, and degradation from `GET_STATE`; log paths from
+//! `phux_server::telemetry`.
 //!
-//! Every fact is sourced without a wire change:
-//!
-//! - **pid** — the UDS peer credentials, read at connect time
-//!   ([`Connection::peer_pid`]). An OS fact about the socket; the server
-//!   does not participate.
-//! - **since** — the socket file's mtime, i.e. the moment the listener
-//!   bound it. Honest across a graceful upgrade, where the listener (and
-//!   the socket inode) is inherited rather than re-bound.
-//! - **protocol** — a real `HELLO`/`HELLO_OK` exchange
-//!   ([`phux_client::state::probe_hello`]); the one-shot verbs otherwise
-//!   skip the handshake, so the negotiated version is invisible to them.
-//! - **clients / sessions / satellite split / degradation** — `GET_STATE`,
-//!   the same snapshot `phux ls` renders.
-//! - **log paths** — the canonical `phux_server::telemetry` helpers, so
-//!   status and `phux logs` can never disagree about where the logs live.
-//!
-//! With no server running: the human path prints the same multi-line
-//! no-server diagnostic every other verb prints (exit 1); `--json` answers
-//! with `{"running": false, ...}` **on stdout** (exit 1) — a status question
-//! about a stopped server has an answer, not an error — embedding the same
-//! `code` / `message` / `remedy` vocabulary as the shared JSON error
-//! contract. Failures after the connect (the server hangs up mid-probe) are
-//! errors and go through the shared contract emitter.
+//! With no server: the human path prints the shared no-server diagnostic;
+//! `--json` answers `{"running": false, ...}` on stdout (exit 1) using the
+//! error-contract vocabulary. Failures after connect use the shared emitter.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -36,14 +17,13 @@ use std::process::ExitCode;
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
 use phux_client::state::Degradation;
-use phux_protocol::caps::ServerFeatureSet;
+use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
 use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, ls};
 // Feature bits by their `snake_case` name (the `docs/spec/proto.md` constant
 // lower-cased), from the table `--capabilities --json` shares.
-use crate::feature_names::feature_names;
 
 /// Version of the `phux status --json` document. Additive fields do not
 /// bump it.
@@ -143,14 +123,14 @@ fn build_report(
         .resources
         .iter()
         .filter(|pane| pane.id.host().is_some())
-        .map(|pane| crate::selector::format_terminal_id(&pane.id))
+        .map(|pane| phux_client::selector::format_terminal_id(&pane.id))
         .collect();
     StatusReport {
         socket: socket_path.to_path_buf(),
         pid,
         since_unix_secs,
         protocol,
-        features: feature_names(features),
+        features: features.iter().map(ServerFeature::snake_name).collect(),
         sessions,
         satellite_terminals,
         unreachable: degradation.notices().to_vec(),
@@ -186,11 +166,9 @@ fn total_clients(sessions: &[SessionInfo]) -> u32 {
         .sum()
 }
 
-/// The human report: six labeled lines (server, since, protocol, clients,
-/// sessions, logs), with one indented line per session and per satellite
-/// Terminal under `sessions:`, and — when the fleet view is partial — one
-/// indented `partial view:` line per unreachable satellite. Pure, so tests
-/// pin the exact render on a fabricated report.
+/// The human report: six labeled lines, indented per-session and
+/// per-satellite lines under `sessions:`, and one `partial view:` line per
+/// unreachable satellite.
 fn render_human(report: &StatusReport, now_unix_secs: i64) -> Vec<String> {
     let mut lines = Vec::new();
     let pid = report
@@ -297,28 +275,11 @@ fn status_document(report: &StatusReport) -> serde_json::Value {
 
 /// Print the success document on stdout.
 fn print_json(report: &StatusReport) -> ExitCode {
-    match serde_json::to_string_pretty(&status_document(report)) {
-        Ok(s) => {
-            outln!("{s}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => json_err::emit(
-            true,
-            &json_err::CliError::new(
-                json_err::codes::JSON_SERIALIZE,
-                format!("failed to serialize status as JSON: {err}"),
-                "re-run without --json",
-            ),
-            1,
-        ),
-    }
+    crate::output::json(&status_document(report))
 }
 
-/// The `--json` answer for a socket nobody is listening on: `running: false`
-/// **on stdout**, exit 1. A status question about a stopped server has an
-/// answer, not an error — but the embedded `error` / `remedy` fields use the
-/// shared contract vocabulary so a consumer branches on the same
-/// `code` strings everywhere. Pure for tests.
+/// The `--json` answer when nothing listens: `running: false` on stdout,
+/// exit 1, with contract-vocabulary `error` / `remedy` fields.
 fn not_running_document(err: &AttachError, socket_path: &Path) -> serde_json::Value {
     let cli_err = json_err::no_server_error(err, socket_path, "status");
     serde_json::json!({
@@ -342,14 +303,9 @@ fn is_no_server(err: &AttachError) -> bool {
     )
 }
 
-/// Route a collection failure to its report:
-///
-/// - no server + `--json`: the `running: false` answer document on stdout,
-///   exit 1;
-/// - no server, human: the same multi-line no-server diagnostic every other
-///   verb prints (start commands, server log, doctor pointer), exit 1;
-/// - anything else (the server hung up mid-probe, a refusal): the shared
-///   JSON error contract / prose remedy, exit 1.
+/// Route a collection failure: no server under `--json` is the
+/// `running: false` document, no server otherwise is the shared diagnostic, and
+/// anything else goes through the error contract. Exit 1 in all cases.
 fn report_failure(json: bool, err: &AttachError, socket_path: &Path) -> ExitCode {
     if json && is_no_server(err) {
         let doc = not_running_document(err, socket_path);
@@ -377,8 +333,8 @@ mod tests {
     use phux_protocol::{ResourceId, SessionId, WindowId};
 
     use super::{
-        StatusReport, build_report, feature_names, format_uptime, not_running_document,
-        render_human, status_document,
+        StatusReport, build_report, format_uptime, not_running_document, render_human,
+        status_document,
     };
 
     fn session(name: &str, windows: u16, clients: u16) -> SessionInfo {
@@ -559,62 +515,6 @@ mod tests {
         assert_eq!(
             report.unreachable,
             ["satellite build-box is unreachable".to_owned()]
-        );
-    }
-
-    /// Every known bit has a `snake_case` name, an empty set names nothing,
-    /// and the names are the spec constants lower-cased — the contract the
-    /// Claude shim's `resource_kinds` probe relies on.
-    #[test]
-    fn feature_names_are_the_wire_constants_in_snake_case() {
-        assert!(feature_names(ServerFeatureSet::new()).is_empty());
-        let all = ServerFeatureSet::from_wire(u32::MAX);
-        let names = feature_names(all);
-        assert_eq!(
-            names.len(),
-            ServerFeature::ALL.len(),
-            "one name per known bit: {names:?}"
-        );
-        let mut unique = names.clone();
-        unique.sort_unstable();
-        unique.dedup();
-        assert_eq!(
-            unique.len(),
-            names.len(),
-            "each ServerFeature must have exactly one name: {names:?}"
-        );
-        assert!(names.contains(&"approvals"));
-        assert!(names.contains(&"attach_roles"));
-        assert!(names.contains(&"keyed_signal"));
-        assert!(names.contains(&"event_journal"));
-        assert!(names.contains(&"retain_on_exit"));
-        assert!(names.contains(&"spawn_idempotency"));
-        assert!(names.contains(&"close_tab_resources"));
-        assert!(names.contains(&"move_resource"));
-        assert!(names.contains(&"quic_streams"));
-        assert!(names.contains(&"conditional_kill"));
-        assert!(names.contains(&"host_sessions"));
-        assert!(names.contains(&"keep_empty_sessions"));
-        assert!(names.contains(&"whoami"));
-        assert!(names.contains(&"ssh_origin"));
-        assert!(names.contains(&"open_listener"));
-        assert!(
-            names.contains(&"resource_kinds"),
-            "the agent session verbs' probe bit must be nameable: {names:?}"
-        );
-        assert!(
-            names.contains(&"list_directory_host"),
-            "the host-aware listing bit must be nameable: {names:?}"
-        );
-        for name in &names {
-            assert!(
-                name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
-                "{name} is not snake_case"
-            );
-        }
-        assert_eq!(
-            feature_names(ServerFeatureSet::with(&[ServerFeature::ReportAgentState])),
-            ["report_agent_state"]
         );
     }
 

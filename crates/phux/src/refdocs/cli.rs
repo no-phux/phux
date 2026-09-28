@@ -2,12 +2,7 @@
 //! each carrying the long help the binary renders for it. The live crate
 //! version is stripped from the root banner so a release bump does not
 //! fail the freshness test on open PRs.
-//!
-//! The walk mirrors `help_inventory`'s `collect_paths` with one deliberate
-//! difference: hidden subcommands are skipped. `--help` does not show them,
-//! so the published reference must not either — that keeps deprecated
-//! aliases and internal tooling (including the generator itself) out of the
-//! user-facing pages while the inventory snapshot still pins them.
+//! Hidden subcommands are skipped, as `--help` skips them.
 
 use super::Page;
 use crate::Cli;

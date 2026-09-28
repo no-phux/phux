@@ -1,20 +1,7 @@
-//! Context-menu contents (phux-wrnm, ADR-0058).
-//!
-//! The right-click menus are three fixed row sets — one per thing you can
-//! right-click: a pane, a window (its status-bar tab or sidebar row), and
-//! the session chrome around them. This module owns *what is on* each
-//! menu; [`crate::render::overlay::menu`] owns how one looks and behaves.
-//!
-//! Every row commits a [`ResolvedAction`], so choosing one runs exactly
-//! what the equivalent keybinding, palette row, or sidebar click runs —
-//! the single `run_action` dispatch path, no bespoke click semantics
-//! (the invariant [`super::action_registry`] documents). Rows are
-//! annotated with their currently-bound chord when there is one, so the
-//! menu doubles as a discovery surface for the keyboard equivalents.
-//!
-//! Every action named here must be dispatched by `run_action`; the unit
-//! test `menu_actions_are_dispatched_names` holds that in lockstep the
-//! same way the sidebar and palette tests do.
+//! Context-menu contents (ADR-0058): the pane, window, and session menus.
+//! [`crate::render::overlay::menu`] owns how a menu looks. Every row commits
+//! a [`ResolvedAction`] through `run_action` (a test holds the names in
+//! lockstep) and shows its bound chord when there is one.
 
 use std::collections::BTreeMap;
 
@@ -32,10 +19,8 @@ pub(super) struct MenuSpec {
     pub rows: Vec<MenuRow>,
 }
 
-/// The menu for a pane: the splits, the view toggles, and the close.
-///
-/// `zoomed` flips the zoom row's label so it names what the click will do
-/// rather than what is currently true.
+/// The pane menu. `zoomed` flips the zoom row's label to name what the click
+/// will do.
 pub(super) fn pane_menu(keybindings: Option<&KeybindingsCfg>, zoomed: bool) -> MenuSpec {
     let rows = vec![
         row(
@@ -160,7 +145,7 @@ fn row(
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
-    use crate::attach::input_dispatch::ACTION_NAMES;
+    use phux_config::vocab::ACTION_NAMES;
 
     fn actions(spec: &MenuSpec) -> Vec<String> {
         spec.rows

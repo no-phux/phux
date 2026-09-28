@@ -10,27 +10,18 @@ use phux_server::runtime::default_socket_path;
 use crate::commands::server_target::{ServerSpec, ServerTarget};
 use crate::commands::{cli_runtime, report_no_server, warn_interleaved_degradation};
 use crate::commands::{confirm, partial};
-use crate::selector;
+use phux_client::selector;
 
-/// Why `kill --server` refuses `--remote`, and what to do instead.
-///
-/// Not a client-side preference: the server accepts `SHUTDOWN` on its local
-/// socket alone and answers a remote connection with `PermissionDenied`
-/// (`handle_shutdown`). Refusing here, before any dial, names the rule
-/// instead of surfacing it as a server refusal after a pairing round-trip.
+/// Why `kill --server` refuses `--remote`: the server accepts `SHUTDOWN` on
+/// its local socket only, so refuse before dialing.
 const REMOTE_SHUTDOWN_REFUSAL: &str = "phux: `kill --server` is local-socket only: the server \
      accepts SHUTDOWN on its own socket and refuses it from a remote connection.\n  \
      stop it on that host (`ssh HOST phux kill --server`), or end its sessions with \
      `phux kill --remote HOST NAME`";
 
-/// `phux kill` as the CLI parsed it: a selector, or `--server`.
-///
-/// `key` is `--idempotency-key` (`docs/spec/L1.md` §5.1.1); clap refuses it
-/// beside `--server`.
-///
-/// A selector is a dangerous kill (ADR-0128) and needs `yes` or a typed
-/// "y". `--server` never asks: it is the owner socket's own service stop,
-/// which no scoped grant can reach and supervisors run unattended.
+/// `phux kill` as parsed: a selector or `--server`. `key` is
+/// `--idempotency-key` (L1 §5.1.1). A selector kill is dangerous (ADR-0128) and
+/// needs `yes` or a typed "y"; `--server` never asks.
 pub(crate) fn run(
     target: Option<String>,
     stop_server: bool,
@@ -61,18 +52,10 @@ fn run_kill_server_spec(server: ServerSpec) -> ExitCode {
 }
 
 /// `phux kill --server` — stop the running server, ending every session.
-///
-/// The stop is a wire command, not a signal, and that is the whole point.
-/// A signal-killed server exits non-zero-equivalent, and launchd's
-/// `KeepAlive{SuccessfulExit: false}` restarts it after `ThrottleInterval` --
-/// so a signal-based stop would contradict the very promise ADR-0080 makes
-/// ("a deliberately stopped server stays stopped") on the platform phux
-/// mostly runs on. `SHUTDOWN` cancels the server's root token and it exits 0,
-/// which is what makes the promise true (phux-pimp).
-///
-/// Exit codes: 0 when the server stopped (or was already gone -- this is
-/// idempotent, because "make it not be running" is the caller's actual
-/// intent), 1 when it could not be reached, 2 when it refused.
+/// A `SHUTDOWN` wire command rather than a signal, so the server exits 0 and
+/// launchd's `KeepAlive{SuccessfulExit: false}` leaves it stopped (ADR-0080).
+/// Exit 0 when stopped or already gone (idempotent), 1 when unreachable, 2 when
+/// refused.
 pub(crate) fn run_kill_server(socket: Option<PathBuf>) -> ExitCode {
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let rt = match cli_runtime() {
@@ -149,39 +132,21 @@ pub(crate) fn run_kill_server(socket: Option<PathBuf>) -> ExitCode {
     })
 }
 
-/// How long `--server` waits for the socket to stop answering after the ack.
-///
-/// Generous: teardown SIGHUPs every pane's process group and reaps each
-/// child, so a server holding many panes legitimately takes longer than one
-/// holding none. A caller that wants to start a replacement needs the socket
-/// actually free, so exiting early would just move the failure.
+/// How long `--server` waits for the socket to stop answering after the ack;
+/// teardown reaps every pane, and a replacement needs the socket free.
 const SHUTDOWN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Poll cadence while waiting for the socket to go quiet.
 const SHUTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
-/// `phux kill TARGET` — resolve the selector client-side, then ask the
-/// server to tear it down. A whole-session target (`.` or a bare
-/// `name`) resolves to its full Terminal-id list and rides a single
-/// `KILL_RESOURCES { ids }` round-trip — the atomic multi-terminal op the
-/// v0.3.0 "Option B" re-tier (ADR-0019 / ADR-0027) put in place of the
-/// dissolved `KILL_COLLECTION` verb. A window / pane / `@id` target falls
-/// back to one `KILL_RESOURCE` per resolved Terminal. Exit codes: 0 on
-/// success, 1 on a selector miss / no server, 2 on a server-side refusal, 3
-/// when a miss cannot be trusted because the hub could not see the whole
-/// fleet (see [`partial`]).
+/// `phux kill TARGET` — resolve the selector client-side, then kill. A
+/// whole-session target rides one `KILL_RESOURCES { ids }`; others send one
+/// `KILL_RESOURCE` per Terminal. Exit 0 success, 1 miss / no server, 2 refusal,
+/// 3 an untrustworthy miss on a partial fleet (see [`partial`]).
 ///
-/// `server` is the local socket or a `--remote` host (see `server_target`);
-/// the selector resolves against that server's snapshot either way.
-///
-/// With `key`, the kill is one keyed command (`KILL_RESOURCE` for one
-/// Terminal, `KILL_RESOURCES` for several), so a retry under the same key
-/// answers the first result instead of killing again (L1 §5.1.1). An `@N` or
-/// `host/@N` target is then sent as written, without a snapshot lookup, so a
-/// retry after the first attempt removed the pane still reaches the server.
-///
-/// `confirm` runs after the target is validated and before anything is
-/// dialed, so an unconfirmed kill sends nothing.
+/// With `key` the kill is one keyed command, so a retry answers the first
+/// result (L1 §5.1.1); an `@N` target is then sent as written, without a
+/// lookup. `confirm` runs after validation and before any dial.
 pub(crate) fn run_kill(
     target: &str,
     key: Option<IdempotencyKey>,

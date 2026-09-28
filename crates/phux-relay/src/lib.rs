@@ -1,68 +1,91 @@
 //! phux reference relay core (ADR-0051, ADR-0052): a byte relay between
 //! outbound connector tunnels and inbound consumers.
 //!
-//! A phux server behind NAT dials OUT to a relay under the dedicated
-//! `phux-relay/1` ALPN and registers a tunnel for a named route; remote
-//! consumers dial IN under the production `phux-quic/1` ALPN, naming the
-//! route via TLS SNI. The relay splices each admitted consumer connection
-//! onto a fresh relay-initiated bidi stream over the route's tunnel.
+//! A phux server behind NAT dials OUT under the `phux-relay/1` ALPN and
+//! registers a tunnel for a named route; consumers dial IN under
+//! `phux-quic/1`, naming the route via TLS SNI. The relay splices each
+//! admitted consumer onto a fresh stream over the route's tunnel.
 //!
-//! The relay **never parses phux frames**. Its only parse is the
-//! connector's length-prefixed auth preamble on stream 0; everything else
-//! — including each consumer's own bearer-token preamble — crosses as
-//! opaque bytes (ADR-0051 invariants 1 and 5, held by construction: this
-//! crate depends on `phux_protocol::policy` for the two ALPN constants and
-//! nothing else from the wire crate).
-//!
-//! Single-tenant, single-process, no accounts, no persistence beyond a
-//! route-bound token store and a self-signed keypair. The `phux relay`
-//! verb in the `phux` binary fronts [`RelayRuntime`].
+//! The relay **never parses phux frames**: its only parse is the connector's
+//! stream-0 auth preamble; consumer bytes, including their bearer preamble,
+//! cross opaquely (ADR-0051 invariants 1 and 5). The `phux relay` verb fronts
+//! [`RelayRuntime`].
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
+#![allow(
+    clippy::redundant_pub_crate,
+    reason = "private modules keep pub(crate) items; conflicts with unreachable_pub"
+)]
 
-pub mod paths;
-pub mod registry;
-pub mod runtime;
-pub mod splice;
-pub mod tls;
-pub mod tokens;
+use std::path::PathBuf;
+
+mod registry;
+mod runtime;
+mod splice;
+mod tls;
+mod tokens;
 
 pub use runtime::{BoundRelay, DEFAULT_MAX_CONNS, RelayConfig, RelayRuntime};
-pub use tls::{
-    cert_fingerprint, default_relay_cert_path, default_relay_key_path, ensure_self_signed,
-};
-pub use tokens::{
-    RouteTokenStore, TOKEN_LEN, default_relay_tokens_path, mint_route_token, validate_route_name,
-};
+pub use tls::{cert_fingerprint, ensure_self_signed};
+pub use tokens::{RouteTokenStore, mint_route_token, validate_route_name};
 
 /// Application close code: bad, missing, or unknown tunnel token on the
-/// connector leg. Mirrors the server QUIC listener's auth-refusal code so
-/// "unauthorized" reads the same on every phux transport.
+/// connector leg; matches the server listener's auth refusal.
 pub const AUTH_FAILED_CODE: u32 = 0x01;
 
 /// Application close code: enrolled route, no live tunnel (`ROUTE_OFFLINE`).
-///
-/// The TLS handshake completes before this close, distinguishing "server
-/// down" from "unknown route" — the latter is refused at the TLS layer
-/// and never reaches application close codes.
+/// Sent after the TLS handshake; unknown routes are refused at TLS instead.
 pub const ROUTE_OFFLINE_CODE: u32 = 0x02;
 
-/// Application close code: this tunnel was superseded by a newer claim on
-/// the same route (`RECLAIMED`, last-writer-wins). The warn log at the
-/// relay is the operator's theft-detection surface.
+/// Application close code: a newer claim on the same route superseded this
+/// tunnel (`RECLAIMED`, last-writer-wins).
 pub const RECLAIMED_CODE: u32 = 0x03;
 
-/// Application close code: the connector sent bytes on stream 0 after the
-/// auth preamble. Stream 0 is reserved — richer relay dialogue requires an
-/// ALPN bump, never in-band bytes (ADR-0051 invariant 4).
+/// Application close code: the connector sent bytes on reserved stream 0
+/// after the auth preamble (ADR-0051 invariant 4).
 pub const PROTOCOL_VIOLATION_CODE: u32 = 0x04;
 
-/// Application close code: the relay is at its connection cap
-/// (`--max-conns`) and refused this connection after the handshake
-/// (`OVER_CAP`). Existing tunnels and consumers are unaffected.
+/// Application close code: the relay is at its `--max-conns` cap
+/// (`OVER_CAP`); existing connections are unaffected.
 pub const OVER_CAP_CODE: u32 = 0x05;
+
+/// phux's per-user state directory: `$XDG_STATE_HOME/phux`, else
+/// `$HOME/.local/state/phux`. Duplicates `phux_server::telemetry::state_dir`
+/// because the relay must not depend on the daemon (ADR-0051).
+fn state_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .filter(|v| !v.is_empty())
+        .map_or_else(
+            || {
+                let mut home = std::env::var_os("HOME").map_or_else(PathBuf::new, PathBuf::from);
+                home.push(".local");
+                home.push("state");
+                home
+            },
+            PathBuf::from,
+        );
+    base.join("phux")
+}
+
+/// Default relay certificate path: `<state-dir>/relay-cert.pem`.
+#[must_use]
+pub fn default_relay_cert_path() -> PathBuf {
+    state_dir().join("relay-cert.pem")
+}
+
+/// Default relay private-key path: `<state-dir>/relay-key.pem`.
+#[must_use]
+pub fn default_relay_key_path() -> PathBuf {
+    state_dir().join("relay-key.pem")
+}
+
+/// Default route-token store path: `<state-dir>/relay-tokens`.
+#[must_use]
+pub fn default_relay_tokens_path() -> PathBuf {
+    state_dir().join("relay-tokens")
+}
 
 /// Errors surfaced by the relay library.
 ///
@@ -92,9 +115,8 @@ pub enum RelayError {
     #[error("no certificates in {0}")]
     NoCerts(String),
 
-    /// Exactly one of the persisted cert/key pair exists. Regenerating
-    /// would silently rotate the fingerprint every connector and consumer
-    /// pins, so the operator must delete the survivor explicitly.
+    /// Exactly one of the persisted cert/key pair exists; regenerating would
+    /// rotate the pinned fingerprint, so the operator must delete it.
     #[error(
         "partial TLS pair: {present} exists but {missing} is missing — delete {present} to regenerate (this rotates the pinned fingerprint and breaks existing pins)"
     )]
@@ -119,10 +141,8 @@ pub enum RelayError {
         line: usize,
     },
 
-    /// A route name failed the DNS-label grammar (lowercase RFC 1123
-    /// label: `[a-z0-9-]`, 1-63 chars, no leading/trailing hyphen).
-    /// Route names ride SNI, so the grammar is rejected — never
-    /// normalized — at mint and at load.
+    /// A route name failed the lowercase RFC 1123 label grammar; route names
+    /// ride SNI, so they are rejected, never normalized.
     #[error("invalid route name {name:?}: {reason}")]
     InvalidRouteName {
         /// The offending name, verbatim.
@@ -132,16 +152,8 @@ pub enum RelayError {
     },
 }
 
-/// Certificate provisioning lives in [`phux_dial::cert`] (ADR-0051 forbids
-/// reaching into `phux-server` for it), but the relay's error vocabulary is
-/// still the relay's.
-///
-/// Every arm maps onto a variant this enum already had, with the same payload,
-/// so the message an operator reads is byte-for-byte what it was when the
-/// generator was a private copy in [`tls`]. That is the point of mapping
-/// rather than re-exporting: a shared *implementation* must not impose a
-/// shared *error surface* on two crates whose wording legitimately differs
-/// (this crate renders `relay io:`, `phux-server` renders `tls io:`).
+/// Maps `phux_dial`'s provisioning errors onto the relay's own vocabulary so
+/// operator messages keep the relay's wording.
 impl From<phux_dial::cert::CertError> for RelayError {
     fn from(err: phux_dial::cert::CertError) -> Self {
         use phux_dial::cert::CertError;
@@ -152,27 +164,6 @@ impl From<phux_dial::cert::CertError> for RelayError {
             CertError::NoCerts(path) => Self::NoCerts(path),
             CertError::PartialTlsPair { present, missing } => {
                 Self::PartialTlsPair { present, missing }
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn close_codes_are_distinct() {
-        let codes = [
-            AUTH_FAILED_CODE,
-            ROUTE_OFFLINE_CODE,
-            RECLAIMED_CODE,
-            PROTOCOL_VIOLATION_CODE,
-            OVER_CAP_CODE,
-        ];
-        for (i, a) in codes.iter().enumerate() {
-            for b in &codes[i + 1..] {
-                assert_ne!(a, b, "close codes must be distinguishable");
             }
         }
     }

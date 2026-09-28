@@ -215,13 +215,9 @@ fn paintTerminalContents(model: *const Model, builder: *canvas.Builder, tree: *c
     const count = panes.len;
     const focus_node = tree.focus;
     const grid_tokens = projection.terminalTokensFrom(tokens, model);
-    // Hybrid C (Cockpit pkg3b / Metal): when measured pane cells fit in
-    // the store, every visible pane paints full. Otherwise the focused
-    // pane of the active window takes a full product grid and everything
-    // else shares leftover as a last-N crop at `max_rows / 4`. Glyphs are
-    // not `widget_glyph_budget / N`. Commands/text/paths keep forward-slack
-    // inside a tier so a later full pane cannot be stolen.
-    // `widget_cell_reserve` is not a floor.
+    // When measured pane cells fit the store every visible pane paints full;
+    // otherwise the active window's focused pane gets a full grid and the rest
+    // share the leftover as a last-N crop (`max_rows / 4`).
     var focused_flags: [layout.max_panes]bool = @splat(false);
     var pane_cells: [layout.max_panes]usize = @splat(paint_budget.full_cells);
     for (panes, 0..) |pane, index| {
@@ -239,12 +235,9 @@ fn paintTerminalContents(model: *const Model, builder: *canvas.Builder, tree: *c
         if (pane.rect.width <= 0 or pane.rect.height <= 0) continue;
         const alloc = budget_plan.forPane(index, prologue);
         const grid_rect = projection.paneGridRect(pane.rect, count);
-        // Each pane owns its OWN background frame. Nothing paints outside
-        // the pane it belongs to. The grid sits inside a constant chrome
-        // inset so a focus change cannot move a cell.
-        // A window that is not the one the user is in shows no focused pane:
-        // two windows both drawing a solid cursor would both claim the
-        // keyboard, and only one of them has it.
+        // Each pane owns its background frame, and the grid sits inside a
+        // constant inset so focus never moves a cell. Only the active window
+        // shows a focused pane (one solid cursor).
         const options_focused = window_active and pane.node == focus_node;
         try paintCard(builder, pane, index, count, grid_tokens, tokens);
         const painted = try paintPane(model, tree, builder, pane, index, tokens, .{
@@ -364,29 +357,9 @@ fn paintPaneChrome(
     }
 }
 
-/// The unfocused-pane scrim: BLACK at low alpha, which reads as "further
-/// away" rather than as a tint.
-///
-/// It used to be the window's own ground colour at 0.36, and that was a no-op
-/// in the default configuration and in most others. The scrim is painted over
-/// panes whose background is that same ground, and compositing a colour over
-/// itself yields that colour at every alpha — so the dim drew literally
-/// nothing, and the only thing distinguishing the focused split in a four-way
-/// was a solid-versus-hollow cursor.
-///
-/// Dimming toward black instead makes it independent of what the pane beneath
-/// happens to be: a configured `background`, a theme, or an application's
-/// OSC 11 all darken. The one case it still cannot serve is a terminal that is
-/// already black, which is why `paintWindow` also draws a floating accent ring.
-///
-/// The DEPTH is 0.15, and it is deliberately shallow. Ghostty's
-/// `unfocused-split-opacity` defaults to 0.85 — the same 15% — and that is not
-/// a coincidence of taste: an unfocused split is still a split you are READING,
-/// and a shell prompt is already full of deliberately dim colours that a heavy
-/// wash takes below legibility. The first fix for the no-op overshot to 0.42
-/// and made unfocused panes genuinely hard to read, which traded one real
-/// problem for another. The accent ring carries the signal; the scrim only has
-/// to whisper.
+/// The unfocused-pane scrim: black at 15% (Ghostty's unfocused-split-opacity
+/// depth), independent of the pane's own background; the accent ring carries
+/// the focus signal.
 const dim_scrim: canvas.Color = canvas.Color.rgba(0, 0, 0, 0.15);
 
 fn recordRemoteCell(model: *const Model, owner: provider_contract.ReplicaOwner, tokens: canvas.DesignTokens) void {

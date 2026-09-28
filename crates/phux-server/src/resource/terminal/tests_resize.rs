@@ -5,9 +5,7 @@
 use super::test_support::*;
 use super::*;
 
-/// Resize updates both the libghostty `Terminal` and (when present)
-/// the PTY winsize. We only assert the Terminal side here — the
-/// PTY ioctl path is exercised in the integration test.
+/// Resize updates the `Terminal` (the PTY ioctl is covered elsewhere).
 #[tokio::test(flavor = "current_thread")]
 async fn resize_updates_terminal_dims() {
     let local = tokio::task::LocalSet::new();
@@ -32,9 +30,7 @@ async fn resize_updates_terminal_dims() {
                 })
                 .await
                 .expect("send resize");
-            // Give the actor a moment to process the resize before
-            // we shut it down. A bounded `yield_now` loop is the
-            // current-thread-friendly version of `sleep(0)`.
+            // Let the actor process the resize before shutdown.
             for _ in 0..16 {
                 tokio::task::yield_now().await;
             }
@@ -48,12 +44,8 @@ async fn resize_updates_terminal_dims() {
         .await;
 }
 
-/// A resize carrying cell pixel metrics must land in the kernel
-/// winsize: `ws_xpixel`/`ws_ypixel` = cells x cell size. TIOCGWINSZ
-/// is the first thing pixel-aware programs (`kitten icat`, sixel
-/// sizers) consult; without the `cell_px` plumbing it reads 0x0.
-/// A later pixel-less resize (agent `RESIZE_TERMINAL`) must keep the
-/// established cell size rather than zeroing the pixel fields.
+/// A resize with cell pixel metrics sets the kernel winsize pixels
+/// (`cells x cell size`); a later pixel-less resize keeps them.
 #[tokio::test(flavor = "current_thread")]
 async fn resize_with_cell_px_updates_pty_winsize_pixels() {
     let local = tokio::task::LocalSet::new();
@@ -132,11 +124,8 @@ async fn resize_with_cell_px_updates_pty_winsize_pixels() {
         .await;
 }
 
-/// With no client ever reporting pixel metrics, the PTY winsize must
-/// still carry nonzero pixel dimensions derived from [`DEFAULT_CELL_PX`]:
-/// at spawn (before any resize) and after a pixel-less resize. This is
-/// the proximate `kitten icat` unblock — its preflight refuses a `0x0`
-/// pixel report, and most clients announce cells but not pixels.
+/// Without client pixel metrics the winsize still carries nonzero pixels
+/// from [`DEFAULT_CELL_PX`], at spawn and after a pixel-less resize.
 #[tokio::test(flavor = "current_thread")]
 async fn winsize_pixels_default_when_no_client_reports_metrics() {
     let local = tokio::task::LocalSet::new();
@@ -212,13 +201,9 @@ async fn winsize_pixels_default_when_no_client_reports_metrics() {
         .await;
 }
 
-/// End-to-end XTWINOPS: a PTY child queries `CSI 14 t` (text area in
-/// pixels) and `CSI 18 t` (text area in cells) and must receive the
-/// geometry the most recent resize established. Exercises the whole
-/// reply path — libghostty parses the query from PTY output, the
-/// `on_size` callback supplies the shared geometry, and `on_pty_write`
-/// routes the encoded reply back into the PTY writer bridge. The
-/// asserted bytes come back via tty echo of the child's input.
+/// XTWINOPS end to end: a PTY child's `CSI 14 t` / `CSI 18 t` get the
+/// latest geometry back through `on_size` and `on_pty_write` (seen via tty
+/// echo).
 #[tokio::test(flavor = "current_thread")]
 async fn xtwinops_size_queries_answered_from_resized_geometry() {
     let local = tokio::task::LocalSet::new();
@@ -254,11 +239,8 @@ async fn xtwinops_size_queries_answered_from_resized_geometry() {
                 tokio::task::yield_now().await;
             }
 
-            // CSI 14 t reply: ESC [ 4 ; height_px ; width_px t.
-            // CSI 18 t reply: ESC [ 8 ; rows ; cols t.
-            // The replies surface as tty ECHO of the child's input, and
-            // ECHOCTL (in the default lflags) renders the ESC byte in
-            // caret notation — `^[` — so accept either spelling.
+            // Replies: `ESC [ 4 ; h ; w t` and `ESC [ 8 ; rows ; cols t`,
+            // echoed with ESC possibly rendered as `^[`.
             let seen = |acc: &[u8], tail: &[u8]| {
                 contains_subslice(acc, &[b"\x1b[", tail].concat())
                     || contains_subslice(acc, &[b"^[[", tail].concat())
@@ -268,9 +250,7 @@ async fn xtwinops_size_queries_answered_from_resized_geometry() {
             let deadline = tokio::time::Instant::now() + ACTOR_EXIT_DEADLINE;
             let mut round = 0_usize;
             while tokio::time::Instant::now() < deadline {
-                // Re-poke the shell periodically: the first `go` can land
-                // before the child has finished starting, and then nothing
-                // ever queries the terminal.
+                // Re-poke in case the first `go` beat the child's startup.
                 if round.is_multiple_of(16) {
                     pty_in
                         .try_send(EncodedInputRequest::legacy(b"go\n".to_vec()))
@@ -308,14 +288,8 @@ async fn xtwinops_size_queries_answered_from_resized_geometry() {
         .await;
 }
 
-/// phux-8v1 regression: a resize must re-broadcast a full snapshot of
-/// the post-reflow grid so attached clients (whose mirror reflowed
-/// independently and may have dropped rows) reconverge on the
-/// canonical content. We assert the broadcast that follows a resize
-/// carries the snapshot reset preamble (`ESC [ ! p`, DECSTR) AND the
-/// content that was on the grid before the resize — without this fix
-/// the only post-resize bytes are new PTY output, so prior content is
-/// never re-sent and the client shows lost/duplicated rows.
+/// A resize re-broadcasts a full snapshot (reset preamble plus prior
+/// content) as a `Resync` carrying the new dims.
 #[tokio::test]
 async fn resize_rebroadcasts_grid_snapshot_for_phux_8v1() {
     let local = tokio::task::LocalSet::new();
@@ -344,12 +318,7 @@ async fn resize_rebroadcasts_grid_snapshot_for_phux_8v1() {
                 .await
                 .expect("send resize");
 
-            // Collect broadcast bytes for a bounded window and look
-            // for the snapshot. `recv` resolves as soon as the resize
-            // broadcast lands. phux-3ns5: the resync rides a
-            // `PaneOutput::Resync` carrying the post-reflow dims, so
-            // also capture them to assert the client mirror is told to
-            // resize to 40x10.
+            // Collect broadcast bytes and the resync's dims.
             let mut acc: Vec<u8> = Vec::new();
             let mut resync_dims: Option<(u16, u16)> = None;
             let deadline = tokio::time::Instant::now() + ACTOR_EXIT_DEADLINE;
@@ -398,14 +367,8 @@ async fn resize_rebroadcasts_grid_snapshot_for_phux_8v1() {
         .await;
 }
 
-/// Advance virtual time comfortably past the resize-resync debounce and
-/// give the actor task enough polls to have acted on it.
-///
-/// Deterministic: the runtime is `start_paused`, so this is a timer the
-/// test drives rather than a wall-clock wait racing the actor. The yield
-/// loop before the advance is what guarantees the actor has already
-/// consumed the resize and (if it means to) armed the debounce, so the
-/// advance cannot step over an un-armed timer.
+/// Advance paused time past the resync debounce, yielding first so the
+/// actor has armed it.
 async fn settle_past_resync_debounce() {
     for _ in 0..8 {
         tokio::task::yield_now().await;
@@ -431,17 +394,8 @@ fn drain_resync_dims(out: &mut tokio::sync::broadcast::Receiver<PaneOutput>) -> 
     dims
 }
 
-/// phux-a5xj: a resize that repeats the settled geometry must publish NO
-/// resync — while a real one still must (phux-8v1 is not weakened).
-///
-/// `handle_resize` already skipped the grid work and the native-cursor
-/// invalidation for a no-op, but the resync broadcast was scheduled
-/// unconditionally, and a resync is what rotates the bootstrap
-/// generation. That is the second half of the wasted-capture bug: once a
-/// spawn honors `SPAWN_RESOURCE.initial_size`, the client's reflow
-/// `RESIZE_TERMINAL` names the size the pane already has — and would
-/// still have tombstoned the checkpoint the server had just built. There
-/// is nothing to reconverge from when nothing reflowed.
+/// A resize repeating the settled geometry publishes no resync (it would
+/// rotate the bootstrap generation for nothing); a real one still does.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn a_no_op_resize_publishes_no_resync_for_phux_a5xj() {
     let local = tokio::task::LocalSet::new();
@@ -477,9 +431,7 @@ async fn a_no_op_resize_publishes_no_resync_for_phux_a5xj() {
                 "a resize to the settled geometry must not rotate the generation",
             );
 
-            // The suppression is specific to the no-op: a real reflow
-            // still resyncs, carrying the post-reflow dims (phux-8v1 /
-            // phux-3ns5).
+            // A real reflow still resyncs with the new dims.
             handle
                 .terminal()
                 .expect("terminal facet")
@@ -510,13 +462,8 @@ async fn a_no_op_resize_publishes_no_resync_for_phux_a5xj() {
         .await;
 }
 
-/// phux-auqy, through the real run loop: two pumps that fall behind inside
-/// one debounce window converge on ONE snapshot addressed to both of them
-/// and to nobody else, and the grid does not move.
-///
-/// This is the actor half of "one slow consumer must not re-bootstrap the
-/// pane": the pumps' own half (`takes_resync`) only works if the actor
-/// carries the requester's identity through the debounce to the broadcast.
+/// Two pumps falling behind in one window get one snapshot addressed to
+/// both and nobody else, and the grid does not move.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn targeted_gap_resyncs_coalesce_into_one_snapshot_for_exactly_their_pumps() {
     let local = tokio::task::LocalSet::new();
@@ -586,12 +533,7 @@ async fn targeted_gap_resyncs_coalesce_into_one_snapshot_for_exactly_their_pumps
         .await;
 }
 
-/// phux-y8v6: a `resync_only` request (sent by a lagged output pump)
-/// must re-broadcast a full grid snapshot WITHOUT resizing the grid —
-/// the recovery path for a consumer that dropped bytes past the broadcast
-/// buffer. We assert the broadcast carries the snapshot preamble + the
-/// seeded content, and that the resync dims are the UNCHANGED grid size
-/// (proving no resize happened).
+/// A `resync_only` request re-broadcasts the grid without resizing it.
 #[tokio::test]
 async fn resync_only_request_rebroadcasts_snapshot_without_resizing() {
     let local = tokio::task::LocalSet::new();
@@ -668,14 +610,7 @@ async fn resync_only_request_rebroadcasts_snapshot_without_resizing() {
         .await;
 }
 
-/// phux-8v1 drag fix: a STORM of rapid live resizes (a window drag)
-/// must COALESCE into a single resync snapshot, not one per resize.
-/// Without the debounce the client gets flooded with snapshots
-/// synthesized at successive widths, and a stale-width one corrupts
-/// the mirror (the duplicated-characters-while-dragging symptom).
-/// We count broadcasts carrying the snapshot preamble (`ESC [ ! p`);
-/// each resync is exactly one such message, so the count is the
-/// snapshot count regardless of any interleaved PTY output.
+/// A storm of live resizes coalesces into one resync.
 #[tokio::test]
 async fn rapid_resizes_coalesce_into_one_resync_snapshot() {
     let local = tokio::task::LocalSet::new();
@@ -710,9 +645,7 @@ async fn rapid_resizes_coalesce_into_one_resync_snapshot() {
             // coalesced snapshot has fired.
             tokio::time::sleep(RESIZE_RESYNC_DEBOUNCE * 4).await;
 
-            // Count resync broadcasts. Debounced => exactly 1.
-            // phux-3ns5: each resync is a `PaneOutput::Resync`, so the
-            // variant itself is the count (no preamble sniffing needed).
+            // Each resync is one `PaneOutput::Resync`.
             let mut snapshots = 0usize;
             loop {
                 match out.try_recv() {
@@ -741,14 +674,9 @@ async fn rapid_resizes_coalesce_into_one_resync_snapshot() {
         .await;
 }
 
-/// Crash-hunt: a storm of *degenerate* resizes — `0x0`, `1x1`,
-/// `1x200`, `200x1`, a 1000x1000 monster, and repeated both-axes
-/// shrinks crossing the 1-cell clamp — must NOT panic the actor task.
-/// `handle_resize` clamps to a 1-cell minimum so a zero dimension never
-/// reaches libghostty; the both-axes-shrink overflow in the Zig
-/// `PageList.resizeCols` is covered by libghostty-vt 0.2.0. We assert
-/// the actor is still alive (the `join` unwrap surfaces a panicked task)
-/// and a final sane resize still applies.
+/// A storm of degenerate resizes (zeros, 1x1, extreme ratios, a big spike
+/// into a both-axes shrink) does not panic the actor, and a sane resize
+/// still applies.
 #[tokio::test]
 async fn degenerate_resize_storm_does_not_panic_actor() {
     let local = tokio::task::LocalSet::new();
@@ -759,15 +687,8 @@ async fn degenerate_resize_storm_does_not_panic_actor() {
             let token = bundle.token;
             let join = tokio::task::spawn_local(bundle.actor.run());
 
-            // The same degenerate shapes as the deterministic unit repro
-            // (`resize_desync_then_both_shrink_does_not_overflow`): zeros,
-            // 1x1 collapses, extreme aspect ratios, a big grow spiked
-            // straight into a both-shrink. The spike is 300x300 rather
-            // than the unit test's 1000x1000: what this test pins is that
-            // the ACTOR survives the storm and keeps processing, and a
-            // 90k-cell grid exercises that identically to a 1M-cell one
-            // at a tenth of the allocation/walk cost. The magnitude
-            // extreme stays covered by the unit repro.
+            // A 300x300 spike exercises the actor like the unit repro's
+            // 1000x1000 at a fraction of the cost.
             let storm: &[(u16, u16)] = &[
                 (0, 0),
                 (1, 1),
@@ -833,19 +754,9 @@ async fn degenerate_resize_storm_does_not_panic_actor() {
         .await;
 }
 
-/// phux-y06 regression (crash-hunt): a degenerate resize storm that
-/// includes both-axes shrinks (e.g. real `80x24 -> 1x1`) issued as
-/// BARE single `resize()` calls must NOT abort libghostty's
-/// `PageList.resizeCols` with an integer overflow.
-///
-/// libghostty's `PageList.resizeCols` once overflowed (panic in Zig →
-/// SIGABRT) when cols AND rows shrank in one `resize()` call. This test
-/// proves the engine fix — not any phux-side axis decomposition — carries
-/// the load. It feeds reflowable content, then drives the storm with a
-/// 1-cell clamp only (the same input hygiene `handle_resize` keeps),
-/// issuing each step as one direct `resize()`. It must survive every step
-/// and settle at the final size. (Run as a plain `GhosttyTerminal` test so
-/// a regression aborts THIS test, not a flaky e2e teardown.)
+/// Both-axes shrinks issued as single `resize()` calls do not overflow
+/// libghostty's `PageList.resizeCols` (a plain terminal test, so a
+/// regression aborts here).
 #[test]
 fn resize_desync_then_both_shrink_does_not_overflow() {
     let mut term = {
@@ -853,13 +764,7 @@ fn resize_desync_then_both_shrink_does_not_overflow() {
         terminal.set_scrollback_max_lines(Some(100)).expect("term");
         terminal
     };
-    // Enough scrollback content that a cols-reflow actually walks rows
-    // (the overflow needs real content to reflow). 50 lines of ~38 cols
-    // is ample: at the storm's 1-col degenerate width every line reflows
-    // to ~38 rows, far past the 24-row viewport and into scrollback, so
-    // the both-shrink steps still drive `PageList.resizeCols` through
-    // real reflow work. The original 300 bought no extra coverage, only
-    // seconds of wall clock re-reflowing the same shape.
+    // Enough content that a 1-col reflow pushes rows into scrollback.
     for i in 0..50u32 {
         let line = format!("row-{i}-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n");
         term.vt_write(line.as_bytes());
@@ -881,18 +786,12 @@ fn resize_desync_then_both_shrink_does_not_overflow() {
         (100, 30),
     ];
     for &(req_cols, req_rows) in storm {
-        // 8 fresh lines per step keeps every resize reflowing content
-        // written at the PREVIOUS geometry — the desync ingredient —
-        // without the volume of the original 40, which only re-walked
-        // the same reflow path more times per step.
+        // Fresh lines each step reflow content from the previous geometry.
         for i in 0..8u32 {
             let line = format!("interleave-{i}-bbbbbbbbbbbbbbbbbbbbbbbbbbbb\r\n");
             term.vt_write(line.as_bytes());
         }
-        // Mirror `handle_resize`: 1-cell clamp (input hygiene) only,
-        // then a BARE single resize() per step — no axis decomposition.
-        // libghostty-vt 0.2.0 keeps the both-shrink steps from
-        // overflowing.
+        // Mirror `handle_resize`: 1-cell clamp, one bare resize per step.
         let cols = req_cols.max(1);
         let rows = req_rows.max(1);
         let _ = term.resize(cols, rows, 0, 0);

@@ -1,29 +1,13 @@
-//! The single deprecation table: one row per absorbed spelling the binary
-//! still accepts behind a hidden alias.
+//! The single deprecation table: one row per old spelling the binary still
+//! accepts behind a hidden alias. `tests/configuration/deprecated_aliases.rs`
+//! runs every row against the real binary, `refdocs::deprecations` renders
+//! `docs/reference/deprecations.md` from it, and a clap-tree test in `lib.rs`
+//! pins the table to the parser's hidden surface.
 //!
-//! Three consumers render or verify these rows, and none may drift from the
-//! others (phux-i0e8.13.4):
-//!
-//! - `tests/deprecated_aliases.rs` runs every row against the real binary:
-//!   the old argv must parse and print `note` exactly once on stderr, and
-//!   the old spelling must be absent from `--help` and shell completions;
-//! - `refdocs::deprecations` renders `docs/reference/deprecations.md` from
-//!   the same rows, pinned by the refdocs freshness test;
-//! - the clap-tree consistency test in `lib.rs` walks the parser and
-//!   asserts these rows are exactly the hidden deprecation surface — an
-//!   unregistered hidden alias or a stale row fails there.
-//!
-//! This file is deliberately self-contained — no `crate::` paths, no
-//! imports, no inline tests — because this module and its items are
-//! `pub(crate)`, not part of the crate's public API, so an integration
-//! test (a separate crate) cannot reach them through the ordinary `phux::`
-//! path. `tests/deprecated_aliases.rs` instead compiles this source file
-//! directly (via `#[path]`) to read the same table the binary was compiled
-//! with.
+//! Self-contained (no `crate::` paths or imports) because the audit test
+//! compiles this file directly via `#[path]`.
 
 /// Which kind of hidden surface carries an old spelling.
-// `Flag` has no row while every deprecated spelling is a verb; it stays
-// live for the next hidden flag that needs one.
 #[allow(
     dead_code,
     reason = "constructed by the next flag row added to DEPRECATED"
@@ -40,9 +24,6 @@ pub(crate) enum DeprecatedSurface {
 
 /// One deprecated spelling: what it was, what replaced it, the exact
 /// stderr warning, an argv that exercises it, and its lifecycle releases.
-// Some fields exist solely for the binary-level audit in
-// `tests/deprecated_aliases.rs` (a separate crate that compiles this
-// file via `#[path]`), so no build of the binary itself reads them.
 #[allow(
     dead_code,
     reason = "consumed by the audit test that shares this table"
@@ -102,16 +83,9 @@ impl Deprecation {
     }
 }
 
-/// Every deprecated spelling the binary currently accepts.
-///
-/// The ADR-0066 machine-registry verbs (`remote`, `satellite`, top-level
-/// `enroll`) and the split booleans (`--horizontal`/`--vertical`,
-/// phux-i0e8.8.4) that once lived here were removed in v0.12.1, once their
-/// `removed_in` release shipped. `phux host enroll` joined when `phux host
-/// add HOST` absorbed the ssh form (ADR-0122). Every consumer that reads
-/// the table (the audit in `tests/deprecated_aliases.rs`, the generated
-/// `docs/reference/deprecations.md`, and the clap-tree pin test in
-/// `lib.rs`) checks each row.
+/// Every deprecated spelling the binary currently accepts. `phux host
+/// enroll` stays past its planned removal because Cockpit's add-machine flow
+/// still invokes it (capability `host-enroll-v1`).
 pub(crate) const DEPRECATED: &[Deprecation] = &[Deprecation {
     surface: DeprecatedSurface::Verb,
     old: "phux host enroll",
@@ -124,108 +98,3 @@ pub(crate) const DEPRECATED: &[Deprecation] = &[Deprecation {
     deprecated_in: "v0.37.0",
     removed_in: "v0.39.0",
 }];
-
-/// One spelling that is gone: what it was, what replaced it, and when it
-/// went.
-///
-/// A removed spelling no longer parses, so clap answers it with a generic
-/// nearest-match — which is actively misleading here, because the nearest
-/// string is rarely the right migration (`phux remote add` resolved to
-/// "a similar subcommand exists: `rename`"). These rows let the parse
-/// error name the actual replacement for a release or two after removal,
-/// after which the row ages out and clap's ordinary message is the honest
-/// answer.
-pub(crate) struct Removal {
-    /// The kind of surface the old spelling was.
-    pub(crate) surface: DeprecatedSurface,
-    /// The old spelling as the user typed it, in the same shape as
-    /// [`Deprecation::old`]: `phux remote add`, or a verb followed by the
-    /// removed long flag.
-    pub(crate) old: &'static str,
-    /// The visible replacement spelling.
-    pub(crate) new: &'static str,
-    /// The release the spelling stopped parsing in.
-    pub(crate) removed_in: &'static str,
-}
-
-impl Removal {
-    /// The first subcommand word of a [`DeprecatedSurface::Verb`] row
-    /// (`"phux remote add"` yields `Some("remote")`); `None` on flag rows.
-    /// This is what clap reports back as the invalid subcommand.
-    pub(crate) fn old_root_verb(&self) -> Option<&'static str> {
-        match self.surface {
-            DeprecatedSurface::Verb => self.old.split_whitespace().nth(1),
-            DeprecatedSurface::Flag => None,
-        }
-    }
-
-    /// The removed long flag of a [`DeprecatedSurface::Flag`] row
-    /// (`Some("--horizontal")`); `None` on verb rows.
-    pub(crate) fn old_flag(&self) -> Option<&'static str> {
-        self.old
-            .split_whitespace()
-            .next_back()
-            .filter(|word| word.starts_with("--"))
-    }
-
-    /// The verb a [`DeprecatedSurface::Flag`] row's flag hung off
-    /// (`"phux insert-pane --horizontal"` yields `Some("insert-pane")`).
-    pub(crate) fn flag_verb(&self) -> Option<&'static str> {
-        match self.surface {
-            DeprecatedSurface::Flag => self.old.split_whitespace().nth(1),
-            DeprecatedSurface::Verb => None,
-        }
-    }
-}
-
-/// Every spelling removed recently enough that naming its replacement in a
-/// parse error still helps someone upgrading.
-///
-/// Rows are dropped once the release that removed them is far enough back
-/// that anyone still typing the old spelling is not mid-upgrade — at which
-/// point clap's generic message is the honest answer and this table should
-/// shrink rather than accumulate.
-pub(crate) const REMOVED: &[Removal] = &[
-    Removal {
-        surface: DeprecatedSurface::Verb,
-        old: "phux remote",
-        new: "phux host",
-        removed_in: "v0.12.1",
-    },
-    Removal {
-        surface: DeprecatedSurface::Verb,
-        old: "phux satellite",
-        new: "phux host --role satellite",
-        removed_in: "v0.12.1",
-    },
-    Removal {
-        surface: DeprecatedSurface::Verb,
-        old: "phux enroll",
-        new: "phux host enroll",
-        removed_in: "v0.12.1",
-    },
-    Removal {
-        surface: DeprecatedSurface::Flag,
-        old: "phux insert-pane --horizontal",
-        new: "phux insert-pane --split horizontal",
-        removed_in: "v0.12.1",
-    },
-    Removal {
-        surface: DeprecatedSurface::Flag,
-        old: "phux insert-pane --vertical",
-        new: "phux insert-pane --split vertical",
-        removed_in: "v0.12.1",
-    },
-    Removal {
-        surface: DeprecatedSurface::Flag,
-        old: "phux move-pane --horizontal",
-        new: "phux move-pane --split horizontal",
-        removed_in: "v0.12.1",
-    },
-    Removal {
-        surface: DeprecatedSurface::Flag,
-        old: "phux move-pane --vertical",
-        new: "phux move-pane --split vertical",
-        removed_in: "v0.12.1",
-    },
-];

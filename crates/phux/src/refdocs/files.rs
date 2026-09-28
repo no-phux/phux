@@ -1,20 +1,7 @@
-//! The generated file-locations reference: the symbolic path rule for
-//! every file phux reads or writes.
-//!
-//! Every rule is stated symbolically (`$XDG_STATE_HOME/phux/server.log`),
-//! never as an expanded host path — the generator must be byte-idempotent
-//! across machines, and a page carrying `/Users/<someone>/...` would
-//! churn on every contributor's checkout (and leak their home layout).
-//! Two test layers keep the page honest:
-//!
-//! - `page_carries_no_expanded_host_paths` scans the render for `/Users/`
-//!   and `/home/` substrings;
-//! - `path_rules_pin_the_resolving_functions` asserts each documented
-//!   trailing shape against the actual resolver — `server_log_path()`,
-//!   `default_client_log_path()`, `config_path()`, `default_cert_path()`,
-//!   `default_key_path()`, `default_token_store_path()`,
-//!   `default_socket_path()` — so a resolver that moves a file forces
-//!   this page to move with it (via the freshness test in `super`).
+//! The generated file-locations reference. Every rule is symbolic
+//! (`$XDG_STATE_HOME/phux/server.log`) so the page is byte-idempotent across
+//! machines; tests reject expanded home paths and pin each rule to its
+//! resolver function.
 
 use super::Page;
 
@@ -183,14 +170,9 @@ mod tests {
         }
     }
 
-    /// Each documented rule is pinned to the function that resolves it:
-    /// the resolver's output must end with the documented shape (the
-    /// prefix varies with the environment; the shape must not).
-    ///
-    /// The state directory's own name is resolved rather than hardcoded: it
-    /// carries the active profile (`phux`, `phux-dev`, …) per ADR-0080, and
-    /// this suite runs from a debug build, which resolves `dev`. Hardcoding
-    /// `phux` here would pin a layout the test binary never produces.
+    /// Each documented rule ends the output of the function that resolves it.
+    /// The state directory's name is resolved, since it carries the active profile
+    /// (ADR-0080; a debug build resolves `dev`).
     #[test]
     fn path_rules_pin_the_resolving_functions() {
         let ends_with = |path: &std::path::Path, suffix: &str| {

@@ -1,29 +1,15 @@
-//! `LIST_DIRECTORY` host query (`docs/spec/L3.md` §4).
+//! `LIST_DIRECTORY` host query (`docs/spec/L3.md` §4): the child directories
+//! of a path on this host, as the server's user.
 //!
-//! Lists the child directories of a path on the host this server runs on,
-//! as the server's own OS user. The listing is a blocking filesystem walk,
-//! so it runs on tokio's blocking pool under a deadline and replies from a
-//! spawned task: a slow or hung filesystem delays only this one reply, never
-//! the connection's frame loop or the single-threaded runtime.
+//! The blocking walk runs on tokio's blocking pool under a deadline and a
+//! server-wide in-flight cap, and is bounded by [`MAX_SCANNED_ENTRIES`] and
+//! [`MAX_DIRECTORY_ENTRIES`] (either sets `truncated`). A request naming a
+//! satellite `host` is relayed by a federation hub under server-wide and
+//! per-satellite caps, and refused elsewhere. A client that disconnects
+//! abandons its request and releases its permits.
 //!
-//! The walk is bounded twice: at most [`MAX_SCANNED_ENTRIES`] raw directory
-//! entries are read, and at most [`MAX_DIRECTORY_ENTRIES`] child
-//! directories are returned. Hitting either bound sets `truncated`.
-//!
-//! A request naming a satellite `host` (`docs/spec/L3.md` §4.1) is not
-//! walked here at all: a federation hub relays it over that satellite's
-//! link ([`crate::hub::relay::RelayHandle::list_directory`]) and replies with
-//! the satellite's listing; an unknown host, and any host sent to a server
-//! that is not a hub, is refused with a `DIRECTORY_LISTING` naming it. The
-//! relayed path is bounded the same way as the local one: the path-length
-//! cap, server-wide and per-satellite in-flight caps, and a deadline. A
-//! request whose client disconnects is abandoned and its permits released.
-//!
-//! Security: this exposes nothing a connected client could not already learn
-//! by spawning a shell as the same user (`docs/operations.md`, "Security
-//! model and trust boundaries"). A relayed listing reads the satellite as
-//! the satellite's user, which the hub can already reach by spawning a
-//! relayed shell there.
+//! Security: nothing here exceeds what a client could learn by spawning a
+//! shell as the same user.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -42,9 +28,7 @@ use tracing::{debug, trace};
 use crate::hub::relay::{RelayHandle, listing_refusal};
 use crate::state::{ClientId, Outbound, SharedState};
 
-/// Most raw directory entries one listing reads before it stops and reports
-/// truncation. Bounds the walk of a directory holding a huge number of files
-/// even when few of them are directories.
+/// Most raw directory entries one listing reads before reporting truncation.
 const MAX_SCANNED_ENTRIES: usize = 16 * 1024;
 
 /// How long the handler waits for the blocking walk before refusing with
@@ -53,8 +37,6 @@ const LIST_DEADLINE: Duration = Duration::from_secs(5);
 
 /// One decoded `LIST_DIRECTORY`.
 pub(super) struct ListRequest {
-    /// The consumer's correlation id; the reply carries it back unchanged,
-    /// relayed or not.
     pub(super) request_id: u32,
     /// The requested path, verbatim.
     pub(super) path: String,
@@ -70,13 +52,8 @@ enum ListingRoute {
     Refused(String),
 }
 
-/// Dispatch one `LIST_DIRECTORY`.
-///
-/// Replies only to an L3 consumer, matching the `GET_METADATA` gating
-/// (`docs/spec/L3.md` §1.2). The reply is produced on a spawned task so the
-/// caller's frame loop keeps running while the filesystem is walked or the
-/// satellite answers. Either way it lands in the same per-client outbound
-/// mailbox as every other reply.
+/// Dispatch one `LIST_DIRECTORY` for an L3 consumer (`docs/spec/L3.md`
+/// §1.2), answering from a spawned task so the frame loop keeps running.
 pub(super) fn handle_list_directory(
     state: &SharedState,
     client_id: ClientId,
@@ -104,9 +81,7 @@ pub(super) fn handle_list_directory(
     let route = listing_route(state, host);
     let out_tx = out_tx.clone();
     tokio::spawn(async move {
-        // A client that goes away stops waiting: dropping the answer releases
-        // its relay permits at once (a local walk's permit returns when its
-        // blocking worker does).
+        // Dropping the answer when the client leaves releases its permits.
         let result = tokio::select! {
             result = answer(route, path) => result,
             () = out_tx.closed() => {
@@ -124,41 +99,27 @@ pub(super) fn handle_list_directory(
     });
 }
 
-/// Longest request `path` accepted, in bytes (a `PATH_MAX`-sized bound).
-/// A longer one is refused before it is cloned, logged in full, or handed
-/// to the filesystem.
+/// Longest request `path` accepted, in bytes; refused before any use.
 const MAX_REQUEST_PATH_BYTES: usize = 4096;
 
 /// How much of a request path the debug log records.
 const LOG_PATH_BYTES: usize = 256;
 
-/// Most listings allowed to hold a blocking-pool thread at once.
-///
-/// The deadline stops the *reply* from waiting on a hung filesystem, but it
-/// cannot stop the blocked thread: a walk stuck in the kernel keeps its
-/// worker until the call returns. The pool is shared with uploads, log
-/// rotation, and overlay-IP detection, so without a cap a client could leak
-/// one thread per request against a hung mount. With it, at most this many
-/// workers are ever stuck, and further requests are refused as busy.
+/// Most listings holding a blocking-pool thread at once. The deadline cannot
+/// free a thread stuck on a hung mount, so this caps how many can leak.
 const MAX_LISTINGS_IN_FLIGHT: usize = 8;
 
 /// Permits for [`MAX_LISTINGS_IN_FLIGHT`], server-wide across connections.
 static LISTINGS: Semaphore = Semaphore::const_new(MAX_LISTINGS_IN_FLIGHT);
 
-/// Most relayed listings allowed to wait on a satellite at once, server-wide.
-/// Each holds a spawned task for up to the relay deadline
-/// ([`crate::hub::relay::RELAY_LIST_DEADLINE`]); the cap keeps a client that
-/// hammers a silent satellite from growing that set without bound, the same
-/// shape as [`MAX_LISTINGS_IN_FLIGHT`] for the local walk.
+/// Most relayed listings waiting on satellites at once, server-wide.
 const MAX_RELAYED_LISTINGS_IN_FLIGHT: usize = 8;
 
 /// Permits for [`MAX_RELAYED_LISTINGS_IN_FLIGHT`].
 static RELAYED_LISTINGS: Semaphore = Semaphore::const_new(MAX_RELAYED_LISTINGS_IN_FLIGHT);
 
-/// Most relayed listings one satellite may hold at once. A satellite that
-/// never answers pins its permits for the whole relay deadline; this cap
-/// keeps it from taking the server-wide pool and starving listings on
-/// healthy satellites.
+/// Most relayed listings one satellite may hold, so a silent satellite cannot
+/// starve healthy ones of the server-wide pool.
 const MAX_RELAYED_LISTINGS_PER_HOST: usize = 2;
 
 /// Per-satellite counts for [`MAX_RELAYED_LISTINGS_PER_HOST`].
@@ -221,9 +182,7 @@ impl Drop for HostPermit {
     }
 }
 
-/// Resolve where a request is answered. A named host routes through this
-/// hub's relay for it; an unknown host, or any host on a server that is not
-/// a hub, is refused (`docs/spec/L3.md` §4.1).
+/// Resolve where a request is answered (`docs/spec/L3.md` §4.1).
 fn listing_route(state: &SharedState, host: Option<SatelliteHost>) -> ListingRoute {
     let Some(host) = host else {
         return ListingRoute::Local;
@@ -246,27 +205,31 @@ async fn answer(route: ListingRoute, path: String) -> DirectoryListingResult {
         ListingRoute::Relay(relay) => {
             relay_request(&RELAYED_LISTINGS, &RELAYED_PER_HOST, &relay, path).await
         }
-        // The full requested path, as L3 §4.1 requires: the consumer's `..`
-        // row is computed from it. Only logging truncates.
+        // L3 §4.1: a refusal carries the full requested path.
         ListingRoute::Refused(message) => Err(listing_refusal(&path, message)),
     }
 }
 
+/// Refuse a path over [`MAX_REQUEST_PATH_BYTES`].
+fn check_path_len(path: &str) -> Result<(), DirectoryListingError> {
+    if path.len() > MAX_REQUEST_PATH_BYTES {
+        return Err(other(
+            log_prefix(path),
+            format!("path exceeds {MAX_REQUEST_PATH_BYTES} bytes"),
+        ));
+    }
+    Ok(())
+}
+
 /// Refuse an oversized path, then relay under the per-satellite and
-/// server-wide caps. The permits are held until the satellite answers, the
-/// relay deadline passes, or the client goes away.
+/// server-wide caps, holding the permits until the relay settles.
 async fn relay_request(
     slots: &'static Semaphore,
     hosts: &'static HostSlots,
     relay: &RelayHandle,
     path: String,
 ) -> DirectoryListingResult {
-    if path.len() > MAX_REQUEST_PATH_BYTES {
-        return Err(other(
-            log_prefix(&path),
-            format!("path exceeds {MAX_REQUEST_PATH_BYTES} bytes"),
-        ));
-    }
+    check_path_len(&path)?;
     let Some(_host_permit) = hosts.try_acquire(relay.host()) else {
         return Err(listing_refusal(
             &path,
@@ -291,19 +254,12 @@ async fn relay_request(
 
 /// Refuse an oversized path, then list under the server-wide cap.
 async fn list_request(path: String) -> DirectoryListingResult {
-    if path.len() > MAX_REQUEST_PATH_BYTES {
-        return Err(other(
-            log_prefix(&path),
-            format!("path exceeds {MAX_REQUEST_PATH_BYTES} bytes"),
-        ));
-    }
+    check_path_len(&path)?;
     list_bounded(&LISTINGS, path).await
 }
 
-/// Run [`list_directory`] on the blocking pool, bounded by [`LIST_DEADLINE`]
-/// and by the `slots` permits. The permit moves into the blocking closure,
-/// so it is released only when the walk actually finishes, not when the
-/// deadline gives up on it.
+/// Run [`list_directory`] on the blocking pool under [`LIST_DEADLINE`]. The
+/// `slots` permit is released when the walk finishes, not at the deadline.
 async fn list_bounded(slots: &'static Semaphore, path: String) -> DirectoryListingResult {
     let Ok(permit) = slots.try_acquire() else {
         return Err(other(&path, "too many directory listings in flight"));
@@ -341,13 +297,9 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Resolve `request` and list its child directories. Blocking.
-///
-/// `request` is empty or `~` (the home directory), `~/rest`, or an absolute
-/// path; anything else is refused. The resolved path is normalized
-/// lexically (`.` dropped, `..` popped) without following symlinks, so the
-/// reported path and parent are the ones the user navigated, not a
-/// canonicalized spelling.
+/// Resolve `request` (empty, `~`, `~/rest`, or absolute) and list its child
+/// directories. Blocking. The path is normalized lexically, not
+/// canonicalized, so it reports what the user navigated.
 fn list_directory(
     request: &str,
     home: Option<&Path>,
@@ -548,68 +500,55 @@ mod tests {
         assert_eq!(flags, [("link", true), ("real", false)]);
     }
 
+    /// Both the entry bound (keeping the first names) and the scan bound set
+    /// `truncated`.
     #[test]
-    fn truncates_to_the_entry_bound_keeping_the_first_names() {
+    fn truncates_at_the_entry_and_scan_bounds() {
         let tmp = tempfile::tempdir().unwrap();
         for dir in ["e", "d", "c", "b", "a"] {
             fs::create_dir(tmp.path().join(dir)).unwrap();
         }
+        let path = tmp.path().to_str().unwrap();
 
-        let listing = list_directory(tmp.path().to_str().unwrap(), None, 3, 1024).unwrap();
+        let by_entries = list_directory(path, None, 3, 1024).unwrap();
+        assert_eq!(names(&by_entries), ["a", "b", "c"]);
+        assert!(by_entries.truncated);
 
-        assert_eq!(names(&listing), ["a", "b", "c"]);
-        assert!(listing.truncated);
+        let by_scan = list_directory(path, None, 1024, 2).unwrap();
+        assert_eq!(by_scan.entries.len(), 2);
+        assert!(by_scan.truncated);
     }
 
     #[test]
-    fn truncates_when_the_scan_bound_is_hit() {
+    fn io_errors_map_to_their_codes() {
         let tmp = tempfile::tempdir().unwrap();
-        for dir in ["a", "b", "c", "d"] {
-            fs::create_dir(tmp.path().join(dir)).unwrap();
-        }
+        assert_eq!(
+            error_code(list(&tmp.path().join("nope"))),
+            DirectoryErrorCode::NotFound
+        );
 
-        let listing = list_directory(tmp.path().to_str().unwrap(), None, 1024, 2).unwrap();
-
-        assert_eq!(listing.entries.len(), 2);
-        assert!(listing.truncated);
-    }
-
-    #[test]
-    fn missing_path_is_not_found() {
-        let tmp = tempfile::tempdir().unwrap();
-        let result = list(&tmp.path().join("nope"));
-        assert_eq!(error_code(result), DirectoryErrorCode::NotFound);
-    }
-
-    #[test]
-    fn a_file_is_not_a_directory() {
-        let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("file.txt");
         fs::write(&file, b"x").unwrap();
         let refusal = list(&file).unwrap_err();
         assert_eq!(refusal.code, DirectoryErrorCode::NotADirectory);
         assert_eq!(refusal.path, file.to_str().unwrap());
-    }
 
-    #[test]
-    fn unreadable_directory_is_permission_denied() {
-        let tmp = tempfile::tempdir().unwrap();
         let locked = tmp.path().join("locked");
         fs::create_dir(&locked).unwrap();
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
-        // A privileged runner (root) can read a mode-000 directory anyway;
-        // there is no denial to observe, so the case does not apply.
+        // Root can read a mode-000 directory, so there is no denial to see.
         let privileged = fs::read_dir(&locked).is_ok();
         let result = list(&locked);
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
-        if privileged {
-            return;
+        if !privileged {
+            assert_eq!(error_code(result), DirectoryErrorCode::PermissionDenied);
         }
-        assert_eq!(error_code(result), DirectoryErrorCode::PermissionDenied);
     }
 
+    /// Home forms expand against the given home; without one, and for a
+    /// relative path, the request is refused.
     #[test]
-    fn home_forms_expand_against_the_given_home() {
+    fn request_path_forms() {
         let tmp = tempfile::tempdir().unwrap();
         fs::create_dir(tmp.path().join("proj")).unwrap();
         let home = Some(tmp.path());
@@ -621,25 +560,18 @@ mod tests {
         }
         let nested = list_directory("~/proj", home, 1024, 1024).unwrap();
         assert_eq!(nested.path, tmp.path().join("proj").to_str().unwrap());
-    }
 
-    #[test]
-    fn home_forms_without_a_home_are_refused() {
         assert_eq!(
             error_code(list_directory("~", None, 1024, 1024)),
             DirectoryErrorCode::Other
         );
-    }
-
-    #[test]
-    fn relative_paths_are_refused() {
         let refusal = list_directory("src/lib", None, 1024, 1024).unwrap_err();
         assert_eq!(refusal.code, DirectoryErrorCode::Other);
         assert_eq!(refusal.path, "src/lib");
     }
 
     #[test]
-    fn dot_segments_normalize_lexically() {
+    fn dot_segments_normalize_lexically_and_the_root_has_no_parent() {
         assert_eq!(
             normalize_lexically(Path::new("/a/./b/../c/")),
             PathBuf::from("/a/c")
@@ -651,62 +583,71 @@ mod tests {
         let via_dotdot = format!("{}/sub/..", tmp.path().to_str().unwrap());
         let listing = list_directory(&via_dotdot, None, 1024, 1024).unwrap();
         assert_eq!(listing.path, tmp.path().to_str().unwrap());
+
+        let root = list_directory("/", None, 1024, 1024).unwrap();
+        assert_eq!((root.path.as_str(), root.parent), ("/", None));
     }
 
-    #[test]
-    fn the_root_has_no_parent() {
-        let listing = list_directory("/", None, 1024, 1024).unwrap();
-        assert_eq!(listing.path, "/");
-        assert_eq!(listing.parent, None);
-    }
-
+    /// The off-runtime walk returns its result and hands its permit back; a
+    /// full pool is refused as busy.
     #[tokio::test]
-    async fn off_runtime_listing_returns_the_blocking_result() {
+    async fn bounded_listing_returns_permits_and_refuses_when_full() {
+        static ONE: Semaphore = Semaphore::const_new(1);
+        static EXHAUSTED: Semaphore = Semaphore::const_new(0);
         let tmp = tempfile::tempdir().unwrap();
         fs::create_dir(tmp.path().join("child")).unwrap();
-        let listing = list_request(tmp.path().to_str().unwrap().to_owned())
-            .await
-            .unwrap();
-        assert_eq!(names(&listing), ["child"]);
-    }
+        let path = tmp.path().to_str().unwrap().to_owned();
 
-    #[tokio::test]
-    async fn a_full_listing_pool_is_refused_as_busy() {
-        static EXHAUSTED: Semaphore = Semaphore::const_new(0);
+        for _ in 0..2 {
+            let listing = list_bounded(&ONE, path.clone()).await.unwrap();
+            assert_eq!(names(&listing), ["child"]);
+        }
+        assert_eq!(ONE.available_permits(), 1);
+
         let refusal = list_bounded(&EXHAUSTED, "/".to_owned()).await.unwrap_err();
         assert_eq!(refusal.code, DirectoryErrorCode::Other);
         assert_eq!(refusal.message, "too many directory listings in flight");
     }
 
+    /// An overlong path is refused before the filesystem or the link, and
+    /// only its log prefix (cut on a character boundary) is echoed.
     #[tokio::test]
-    async fn a_permit_returns_to_the_pool_when_the_walk_finishes() {
+    async fn an_overlong_path_is_refused_before_the_filesystem_or_link() {
         static ONE: Semaphore = Semaphore::const_new(1);
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().to_str().unwrap().to_owned();
-        list_bounded(&ONE, path.clone()).await.unwrap();
-        list_bounded(&ONE, path).await.unwrap();
-        assert_eq!(ONE.available_permits(), 1);
-    }
-
-    #[tokio::test]
-    async fn an_overlong_path_is_refused_before_the_filesystem() {
+        static HOSTS: HostSlots = HostSlots::new(2);
         let path = format!("/{}", "a".repeat(MAX_REQUEST_PATH_BYTES));
-        let refusal = list_request(path).await.unwrap_err();
+
+        let refusal = list_request(path.clone()).await.unwrap_err();
         assert_eq!(refusal.code, DirectoryErrorCode::Other);
         assert!(refusal.message.contains("exceeds 4096 bytes"));
         assert_eq!(refusal.path.len(), LOG_PATH_BYTES);
+
+        let (relay, mut mailbox) = RelayHandle::new(SatelliteHost::new("devbox"));
+        let refusal = relay_request(&ONE, &HOSTS, &relay, path).await.unwrap_err();
+        assert!(refusal.message.contains("exceeds 4096 bytes"));
+        assert!(
+            mailbox.requests.try_recv().is_err(),
+            "nothing reached the link"
+        );
+
+        let wide = "é".repeat(LOG_PATH_BYTES);
+        assert!(log_prefix(&wide).len() <= LOG_PATH_BYTES);
+        assert!(log_prefix(&wide).chars().all(|c| c == 'é'));
+        assert_eq!(log_prefix("/short"), "/short");
     }
 
+    /// A refused route names the host and keeps the full requested path.
     #[tokio::test]
-    async fn a_refused_route_names_the_host_without_touching_the_filesystem() {
+    async fn a_refused_route_keeps_the_full_path_and_names_the_host() {
+        let path = format!("/{}", "d".repeat(LOG_PATH_BYTES * 2));
         let refusal = answer(
             ListingRoute::Refused("no satellite named ghost in this hub's registry".to_owned()),
-            "/".to_owned(),
+            path.clone(),
         )
         .await
         .unwrap_err();
         assert_eq!(refusal.code, DirectoryErrorCode::Other);
-        assert_eq!(refusal.path, "/");
+        assert_eq!(refusal.path, path, "only logging truncates");
         assert!(refusal.message.contains("ghost"));
     }
 
@@ -724,29 +665,6 @@ mod tests {
             "{}",
             refusal.message
         );
-    }
-
-    #[tokio::test]
-    async fn an_overlong_relayed_path_is_refused_before_the_link() {
-        static ONE: Semaphore = Semaphore::const_new(1);
-        static HOSTS: HostSlots = HostSlots::new(2);
-        let (relay, mut mailbox) = RelayHandle::new(SatelliteHost::new("devbox"));
-        let path = format!("/{}", "a".repeat(MAX_REQUEST_PATH_BYTES));
-        let refusal = relay_request(&ONE, &HOSTS, &relay, path).await.unwrap_err();
-        assert!(refusal.message.contains("exceeds 4096 bytes"));
-        assert!(
-            mailbox.requests.try_recv().is_err(),
-            "nothing reached the link"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_refused_route_keeps_the_full_requested_path() {
-        let path = format!("/{}", "d".repeat(LOG_PATH_BYTES * 2));
-        let refusal = answer(ListingRoute::Refused("no route".to_owned()), path.clone())
-            .await
-            .unwrap_err();
-        assert_eq!(refusal.path, path, "only logging truncates");
     }
 
     #[tokio::test]
@@ -796,14 +714,5 @@ mod tests {
 
         drop((first, second));
         assert!(HOSTS.lock().is_empty(), "returned slots forget the host");
-    }
-
-    #[test]
-    fn the_log_prefix_cuts_on_a_character_boundary() {
-        let path = "é".repeat(LOG_PATH_BYTES);
-        let prefix = log_prefix(&path);
-        assert!(prefix.len() <= LOG_PATH_BYTES);
-        assert!(prefix.chars().all(|c| c == 'é'));
-        assert_eq!(log_prefix("/short"), "/short");
     }
 }

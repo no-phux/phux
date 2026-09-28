@@ -258,15 +258,10 @@ fn parent(engine: anytype, remote: anytype, request: Request) Error!void {
     _ = remote.requestDirectoryOn(path, engine.directory_origin.listedHost()) catch return error.Refused;
 }
 
-/// A satellite listing's tab opens on that satellite: the pane the picker
-/// was opened over owns the spawn, so the provider routes it through the
-/// hub's satellite relay (SPAWN_RESOURCE.satellite). A coordinator listing's
-/// tab has no owner, so no focused satellite route can carry its directory
-/// to another host. Either way it opens on the coordinator the listing came
-/// through: the active one, or the peer whose pane was focused
-/// (Engine.openPeerTabAt). A coordinator that cannot take a tab now is
-/// refused (`OtherCoordinator`), never replaced by another: the directory
-/// names a path on its machine.
+/// Open a tab in the listed directory on the coordinator the listing came
+/// through (active or the focused peer). A satellite listing's tab is owned by
+/// the pane it was opened over and spawns via the hub's satellite relay. A
+/// coordinator that cannot take a tab now is refused, never substituted.
 fn openHere(engine: anytype, remote: anytype, request: Request) Error!void {
     const origin = &engine.directory_origin;
     if (!engine.opensTabsOn(origin.coordinator)) return error.OtherCoordinator;

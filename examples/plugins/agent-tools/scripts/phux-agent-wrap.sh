@@ -1,13 +1,6 @@
 #!/bin/sh
-#
-# phux-agent-wrap.sh (phux-r82.11) — make a terminal agent self-identify.
-#
-# Wrap a real agent command so that, the moment it launches inside a
-# phux pane, the pane gets a first-class `phux.agent/v1` L3 record
-# (ADR-0040) instead of relying on the OSC-title substring heuristic.
-# The record carries the agent's name and kind, so the TUI sidebar and
-# any fleet view show a declared identity that a plain `claude`/`codex`
-# session never announces.
+# phux-agent-wrap.sh -- run an agent so its pane carries a `phux.agent/v1`
+# identity record (ADR-0040) for its lifetime.
 #
 # Usage:
 #   phux-agent-wrap.sh [--name NAME] [--kind KIND] [--state STATE]
@@ -15,59 +8,22 @@
 #                      [--prompt-length CHARS]
 #                      -- command [arg...]
 #
-# Everything after `--` is the real agent argv. The child retains the wrapper's
-# stdin/stdout/stderr while the wrapper waits and forwards signals. On start it
-# writes the record; on exit (normal, signal, or agent failure) it clears
-# it via a trap, so an un-launched pane never shows a stale agent.
+# The agent runs as a child (not `exec`) so the EXIT trap can clear the
+# record. Every value reaches `phux` as its own argv element (no eval), and
+# record writes are best-effort: a missing phux or server never blocks launch.
 #
-# Design constraints (see phux CLAUDE.md / AGENTS.md):
-#   - POSIX sh, no bashisms, no new dependencies.
-#   - No shell injection: every value is passed as its own quoted argv
-#     element to `phux`; nothing is ever routed through `eval` or `sh -c`.
-#   - Best-effort identity: if `phux` is missing or no server is up, the
-#     record write fails silently and the agent still launches. Losing the
-#     sidebar label must never stop the agent from running.
+# The pane target is resolved once, from --target / PHUX_AGENT_TARGET, else
+# @$PHUX_TERMINAL_ID, and reused for both set and clear. It never falls back to
+# the focused pane: the exit-time clear would race focus and could delete a
+# sibling agent's record. With no target the wrapper writes nothing.
 #
-# We deliberately do NOT `exec` the agent: a trap on EXIT cannot fire
-# after `exec` replaces this process, and clearing the record on exit is
-# the whole point of the trap. Supervising the agent as a child, preserving its
-# TTY streams, and forwarding its outcome is the only way to guarantee cleanup.
+# Env overrides: PHUX_AGENT_PHUX_BIN / PHUX_BIN (phux binary), PHUX_AGENT_NAME,
+# PHUX_AGENT_KIND, PHUX_AGENT_STATE, PHUX_AGENT_TARGET,
+# PHUX_AGENT_STREAM_SINGLE_TURN (1 to enable), PHUX_AGENT_PROMPT_LENGTH.
 #
-# Pane targeting is REQUIRED and resolved exactly once, up front, then
-# reused verbatim for both the launch-time `set` and the exit-time `clear`.
-# We never let `phux agent set/clear` fall back to whatever pane happens to
-# be FOCUSED at CLI-run time: focus moves freely, and the exit-time clear
-# fires at an arbitrary later moment, so a focused-pane guess would race —
-# in a multi-pane / fleet run the clear would delete a *different*, still-
-# running agent's record and leave this pane's record stale. If we cannot
-# resolve which pane we are running in, we write nothing at all (best-
-# effort no-op) and still launch the agent; a missing sidebar label is
-# always safer than corrupting a sibling pane's identity.
-#
-# The pane target comes from, in order: `--target` / PHUX_AGENT_TARGET, or
-# else PHUX_TERMINAL_ID (the pane's wire id, used as the `@N` selector).
-# PHUX_TERMINAL_ID is the automatic path: phux exposes it to hook children
-# today, and once the server also injects it into spawned pane processes
-# (see the README follow-up) a wrapped agent self-targets with no config.
-# Until then, a launcher that knows the pane must pass PHUX_AGENT_TARGET /
-# --target for the record to be written.
-#
-# Overrides (env):
-#   PHUX_AGENT_PHUX_BIN / PHUX_BIN  path to the `phux` binary (default `phux`)
-#   PHUX_AGENT_NAME                 default --name
-#   PHUX_AGENT_KIND                 default --kind
-#   PHUX_AGENT_STATE                default --state (see note below)
-#   PHUX_AGENT_TARGET               default --target (pane selector)
-#   PHUX_AGENT_STREAM_SINGLE_TURN   `1` to emit a one-turn lifecycle
-#   PHUX_AGENT_PROMPT_LENGTH        prompt character count for that lifecycle
-#   PHUX_TERMINAL_ID                pane wire id; used as target `@N` when
-#                                   no explicit --target/PHUX_AGENT_TARGET
-#
-# State note: normal interactive agents still use screen/title detection.
-# `--stream-single-turn` is only for a command whose process lifetime is one
-# complete turn: it opens an AgentSession and emits `prompt` before execution.
-# Exit 0 emits `stop`; every outcome emits terminal `session_end` and closes the
-# exact child returned by `session open`. It must not wrap an interactive TUI.
+# --stream-single-turn is only for a process whose lifetime is exactly one
+# turn (never an interactive TUI): it opens an AgentSession, emits prompt, and
+# on exit emits stop (status 0) plus session_end, then closes that exact child.
 
 set -eu
 
@@ -128,17 +84,10 @@ case "$prompt_length" in
     ;;
 esac
 
-# Fall back to the launched command's basename as the agent name, so the
-# wrapper is still useful when invoked with a bare `-- command`.
 if [ -z "$agent_name" ]; then
   agent_name=$(basename -- "$1")
 fi
 
-# Resolve the pane target exactly once, here, so `set` (launch) and `clear`
-# (exit) always act on the SAME pane. Never guess the focused pane: if no
-# explicit target is given, fall back to the pane's own wire id
-# (PHUX_TERMINAL_ID) as the `@N` selector, and if that is also absent leave
-# the target empty — in which case we deliberately skip the record writes.
 if [ -z "$agent_target" ] && [ -n "${PHUX_TERMINAL_ID:-}" ]; then
   agent_target="@${PHUX_TERMINAL_ID}"
 fi
@@ -148,10 +97,6 @@ if [ -z "$agent_target" ]; then
     "$0" "$agent_name" >&2
 fi
 
-# Run `phux` with the given argv, best-effort: never let a missing binary
-# or absent server abort the agent launch or the cleanup. Positional
-# params here are local to the function, so the caller's agent argv ($@)
-# is preserved across these calls.
 try_phux() {
   "$phux_bin" "$@" >/dev/null 2>&1
 }
@@ -182,8 +127,6 @@ json_escape() {
 }
 
 set_record() {
-  # No resolved pane target => do not write. Writing here would target the
-  # focused pane, which may be a different agent's pane.
   [ -n "$agent_target" ] || return 0
   set -- agent set "$agent_target" --name "$agent_name"
   if [ -n "$agent_kind" ]; then
@@ -198,9 +141,6 @@ set_record() {
 # Invoked indirectly through the EXIT trap below.
 # shellcheck disable=SC2329
 clear_record() {
-  # Only clear the exact pane we set at launch. With no target we would
-  # otherwise clear whichever pane is focused at exit time — very likely a
-  # different, still-running agent's record. Skipping is the safe default.
   [ -n "$agent_target" ] || return 0
   run_phux agent clear "$agent_target"
 }
@@ -214,9 +154,7 @@ start_stream() {
     stream_target=
     return 0
   }
-  # `open` prints the exact local AgentSession selector. Reject any diagnostic
-  # or malformed output rather than falling back to the parent pane, whose
-  # child lookup can be ambiguous as sessions appear concurrently.
+  # Accept only an exact `@N` selector; never fall back to the parent pane.
   case "$stream_target" in
     @*[!0-9]*|'@'|'') stream_target=; return 0 ;;
     @*) ;;
@@ -248,8 +186,7 @@ finish_stream() {
   status=$1
   [ -n "$stream_target" ] || return 0
   if [ "$status" -eq 0 ] && [ -z "$received_signal" ]; then
-    # Keep `done` observable briefly, then terminate the record grammar before
-    # closing. Closing without `session_end` leaves an incomplete event log.
+    # Keep `done` visible briefly; session_end must precede close.
     run_phux agent emit "$stream_target" --type stop
     sleep 1
     reason=completed
@@ -276,23 +213,17 @@ forward_signal() {
 }
 
 run_child() {
-  # macOS's POSIX-mode sh reports a missing asynchronous command as 1 rather
-  # than the standard command-not-found status. Detect lookup failure before
-  # forking so the wrapper preserves the portable 127 outcome.
+  # macOS sh reports a missing background command as 1; preserve 127.
   case "$1" in
     */*) [ -e "$1" ] || return 127 ;;
     *) command -v "$1" >/dev/null 2>&1 || return 127 ;;
   esac
-  # An asynchronous command would otherwise inherit /dev/null in a
-  # non-interactive POSIX shell. Preserve stdin explicitly so interactive
-  # agents retain their TTY while the wrapper remains able to handle signals.
+  # Background jobs get /dev/null stdin in non-interactive sh; keep the TTY.
   launching_child=yes
   "$@" <&0 &
   child_pid=$!
   launching_child=no
-  # A trap can run in the tiny interval after fork but before `$!` is stored.
-  # It records the signal without exiting; forward it now that the child is
-  # addressable, then follow the ordinary wait/reap path.
+  # A signal caught between fork and `$!` was only recorded; forward it now.
   if [ -n "$received_signal" ]; then
     kill -s "$received_signal" "$child_pid" 2>/dev/null || true
   fi
@@ -316,15 +247,13 @@ cleanup() {
   exit_status=$1
   [ "$cleanup_started" = no ] || return 0
   cleanup_started=yes
-  # A second signal during the done grace must not interrupt session close or
-  # identity cleanup. The first signal already selected this exit path.
+  # A second signal must not interrupt session close or identity cleanup.
   trap '' INT TERM HUP QUIT
   finish_stream "$exit_status"
   clear_record
 }
 
-# Clear on every exit path. Signal handlers forward to the recorded child and
-# let `run_child` reap it before the EXIT trap performs cleanup exactly once.
+# Signals forward to the child; run_child reaps it, then EXIT cleans up once.
 trap 'cleanup "$?"' EXIT
 trap 'forward_signal INT 2' INT
 trap 'forward_signal TERM 15' TERM

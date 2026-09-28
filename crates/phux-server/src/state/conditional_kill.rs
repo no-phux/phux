@@ -1,12 +1,9 @@
 //! `KILL_RESOURCE_IF` (`docs/spec/L1.md` §5.2.1, ADR-0109): kill one
 //! resource only when the caller's preconditions still hold.
 //!
-//! The check and the kill run in one `&mut ServerState` borrow, which the
-//! runtime takes as one acquisition of the state lock, so no attach can land
-//! between them. The precondition reads two things this server tracks: the
-//! instance token of its id space ([`super::IdSpace::instance`]) and each
-//! spawned resource's provenance (the resource table's spawn records, fed by
-//! every subscription).
+//! The check and the kill share one state-lock acquisition, so no attach
+//! lands between them. The precondition reads the id space's instance token
+//! and the spawn provenance records.
 
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{CloseReason, KillConditions, KillPrecondition};
@@ -53,9 +50,8 @@ impl ServerState {
 
     /// The resource a conditional kill may close, or why it may not.
     ///
-    /// The instance is checked before the id is resolved: under another
-    /// token the id may name some other resource, so whether it exists says
-    /// nothing about the one the caller meant.
+    /// The instance is checked first: under another token the id may name a
+    /// different resource.
     fn admit_conditional_kill(
         &self,
         terminal: &WireResourceId,
@@ -92,9 +88,8 @@ impl ServerState {
             .is_none_or(|instance| instance == self.idspace.instance())
     }
 
-    /// Why `UNATTACHED_SINCE_SPAWN` does not hold for `core`, when it is
-    /// asked for. A child resource refuses too: the kill would close it
-    /// (`CloseReason::ParentClosed`), and nothing checked who uses it.
+    /// Why `UNATTACHED_SINCE_SPAWN` fails for `core`; a child resource
+    /// refuses too.
     fn attachment_refusal(
         &self,
         core: ResourceId,
@@ -114,11 +109,8 @@ impl ServerState {
         None
     }
 
-    /// Note that `client` named `terminal` in a verb that uses it: input,
-    /// the input lease, an upload, a transcription, a signal, or a screen
-    /// read (ADR-0109, L1 §5.2.1). For a resource another connection
-    /// spawned, that counts as an attach. A satellite-tagged or unknown id
-    /// is not this server's and is ignored.
+    /// Note that `client` used `terminal` in a verb (ADR-0109, L1 §5.2.1);
+    /// satellite or unknown ids are ignored.
     pub fn note_resource_use(&mut self, terminal: &WireResourceId, client: super::ClientId) {
         if let Some(core) = self.terminal_from_wire(terminal) {
             self.resources.note_use(client, core);
@@ -126,9 +118,8 @@ impl ServerState {
     }
 }
 
-/// `UNATTACHED_SINCE_SPAWN` without an instance token: the id could name a
-/// resource from an id space the caller never saw, so the condition cannot
-/// be established.
+/// `UNATTACHED_SINCE_SPAWN` without an instance token cannot be
+/// established.
 fn lacks_required_instance(precondition: &KillPrecondition) -> bool {
     precondition
         .conditions

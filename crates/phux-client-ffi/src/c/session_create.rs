@@ -390,25 +390,14 @@ pub unsafe extern "C" fn phux_client_session_create_release(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::c::client::Limits;
+    use crate::c::test_support::negotiated_client;
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
     use phux_protocol::{ResourceId, SessionId, WindowId};
 
     fn client() -> Box<PhuxClient> {
-        let mut inner = Client::new(Limits {
-            bootstrap_chunk: 1024,
-            history_page: 1024,
-            history_page_rows: 128,
-            history_cache_bytes: 4096,
-            history_materialized_rows: 1024,
-            history_prefetch_rows: 64,
-        });
-        inner.protocol_ready = true;
-        inner.keep_empty_sessions = true;
-        Box::new(PhuxClient {
-            inner,
-            _not_send_sync: std::marker::PhantomData,
-        })
+        let client = negotiated_client(&[phux_protocol::ServerFeature::KeepEmptySessions]);
+        // SAFETY: the fixture returns a uniquely owned heap client.
+        unsafe { Box::from_raw(client) }
     }
 
     fn create(client: &mut PhuxClient, id: u32, name: &str) -> PhuxClientResult {
@@ -417,11 +406,8 @@ mod tests {
     }
 
     fn feed(client: &mut PhuxClient, frame: &FrameKind) {
-        let mut encoded = bytes::BytesMut::new();
-        frame.encode(&mut encoded);
-        // SAFETY: encoded and client are live for the entire call.
         assert_eq!(
-            unsafe { crate::c::phux_client_feed_frame(client, encoded.as_ptr(), encoded.len()) },
+            crate::c::test_support::feed(client, frame),
             PhuxClientResult::Ok
         );
     }
@@ -554,13 +540,11 @@ mod tests {
 
     #[test]
     fn old_servers_invalid_names_and_false_keep_empty_refuse_before_any_write() {
+        // SAFETY: the fixture returns a uniquely owned heap client.
+        let mut old = unsafe { Box::from_raw(negotiated_client(&[])) };
+        assert_eq!(create(&mut old, 1, "work"), PhuxClientResult::InvalidState);
+        assert!(old.inner.outgoing.is_empty());
         let mut client = client();
-        client.inner.keep_empty_sessions = false;
-        assert_eq!(
-            create(&mut client, 1, "work"),
-            PhuxClientResult::InvalidState
-        );
-        client.inner.keep_empty_sessions = true;
         assert_eq!(
             create(&mut client, 1, "bad\nname"),
             PhuxClientResult::InvalidArgument

@@ -1,10 +1,9 @@
 use super::*;
+use crate::c::test_support;
 use crate::c::*;
+use phux_protocol::ServerFeature;
 use phux_protocol::wire::frame::ErrorCode;
-use phux_protocol::{
-    BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, PROTOCOL_VERSION,
-    StreamId,
-};
+use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, StreamId};
 
 struct Harness(Box<PhuxClient>);
 
@@ -42,7 +41,7 @@ fn a_bound_spawn_needs_conditional_kill_and_its_reply_carries_the_instance() {
         h.0.inner.outgoing.is_empty(),
         "nothing queued without the bit"
     );
-    h.0.inner.conditional_kill = true;
+    let mut h = Harness::attached_with(&[ServerFeature::ConditionalKill]);
     // SAFETY: as above.
     unsafe {
         assert_eq!(
@@ -115,8 +114,7 @@ fn a_bound_spawn_needs_conditional_kill_and_its_reply_carries_the_instance() {
 
 #[test]
 fn a_conditional_kill_needs_the_feature_and_is_correlated_on_a_connection_that_never_attached() {
-    let mut h = Harness::new();
-    h.negotiate();
+    let mut h = Harness::negotiated(&[]);
     let id = ResourceId::local(9);
     let raw = terminal_id_out(&id);
     let token = [7u8; 16];
@@ -131,7 +129,7 @@ fn a_conditional_kill_needs_the_feature_and_is_correlated_on_a_connection_that_n
         h.0.inner.outgoing.is_empty(),
         "nothing queued without the bit"
     );
-    h.0.inner.conditional_kill = true;
+    let mut h = Harness::negotiated(&[ServerFeature::ConditionalKill]);
     // SAFETY: as above.
     unsafe {
         assert_eq!(
@@ -473,18 +471,8 @@ fn deferred_detach_sends_are_coalesced_and_dropped_on_dynamic_close_or_disconnec
 
 impl Harness {
     fn new() -> Self {
-        let limits = crate::c::client::Limits {
-            bootstrap_chunk: 1024,
-            history_page: 1024,
-            history_page_rows: 128,
-            history_cache_bytes: 4096,
-            history_materialized_rows: 1024,
-            history_prefetch_rows: 64,
-        };
-        Self(Box::new(PhuxClient {
-            inner: Client::new(limits),
-            _not_send_sync: std::marker::PhantomData,
-        }))
+        // SAFETY: the fixture returns a uniquely owned heap client.
+        Self(unsafe { Box::from_raw(test_support::new_client()) })
     }
 
     fn ptr(&mut self) -> *mut PhuxClient {
@@ -496,80 +484,41 @@ impl Harness {
         reason = "test harness consumes temporary frame fixtures"
     )]
     fn feed(&mut self, frame: FrameKind) -> PhuxClientResult {
-        let mut encoded = bytes::BytesMut::new();
-        frame.encode(&mut encoded);
-        // SAFETY: harness owns the live client and encoded span.
-        unsafe { phux_client_feed_frame(self.ptr(), encoded.as_ptr(), encoded.len()) }
+        test_support::feed(self.ptr(), &frame)
     }
 
-    fn negotiate(&mut self) {
-        // SAFETY: harness owns client; literal name is readable.
-        assert_eq!(
-            unsafe { phux_client_queue_hello(self.ptr(), bytes_out(b"test")) },
-            PhuxClientResult::Ok
+    fn negotiated(features: &[ServerFeature]) -> Self {
+        let mut h = Self::new();
+        let mut hello = test_support::hello_ok(
+            test_support::caps(features),
+            BootstrapProfile::SynthesizedVtRaw,
         );
-        assert_eq!(
-            self.feed(FrameKind::HelloOk {
-                protocol_major: PROTOCOL_VERSION.major,
-                protocol_minor: PROTOCOL_VERSION.minor,
-                protocol_patch: PROTOCOL_VERSION.patch,
-                server_caps: phux_protocol::caps::ServerCapabilities::new(),
-                server_id: b"incarnation\0opaque".to_vec(),
-                selected_profile: BootstrapProfile::SynthesizedVtRaw,
-                bootstrap_limits: BootstrapLimits::new(1024, 1024).expect("limits"),
-            }),
-            PhuxClientResult::Ok
-        );
-        self.0.inner.outgoing.clear();
+        if let FrameKind::HelloOk { server_id, .. } = &mut hello {
+            *server_id = b"incarnation\0opaque".to_vec();
+        }
+        test_support::negotiate_frame(h.ptr(), &hello);
+        h
     }
 
     fn attached() -> Self {
-        Self::attached_with_cursor(None)
+        Self::attached_with(&[])
+    }
+
+    fn attached_with(features: &[ServerFeature]) -> Self {
+        Self::attached_full(features, None)
     }
 
     fn attached_with_cursor(cursor: Option<bytes::Bytes>) -> Self {
-        let mut h = Self::new();
-        h.negotiate();
-        // Exercise the real attach barrier with one inventory terminal.
-        let options = PhuxAttachOptions {
-            size: mem::size_of::<PhuxAttachOptions>(),
-            version: ABI_VERSION,
-            attach_id: 1,
-            target_kind: 0,
-            session_id: 0,
-            name: PhuxBytes::default(),
-            cols: 40,
-            rows: 12,
-            has_pixel_size: false,
-            pixel_width: 0,
-            pixel_height: 0,
-            request_scrollback: false,
-            scrollback_limit_lines: 0,
-        };
-        // SAFETY: client and options are owned by the harness.
+        Self::attached_full(&[], cursor)
+    }
+
+    /// Exercises the real attach barrier with one inventory terminal.
+    fn attached_full(features: &[ServerFeature], cursor: Option<bytes::Bytes>) -> Self {
+        let mut h = Self::negotiated(features);
+        test_support::queue_attach(h.ptr(), 1);
+        let snapshot = test_support::single_terminal_snapshot(ResourceId::local(1), 40, 12);
         assert_eq!(
-            unsafe { phux_client_queue_attach(h.ptr(), &raw const options) },
-            PhuxClientResult::Ok
-        );
-        let session = phux_protocol::SessionId::new(1);
-        let window = phux_protocol::WindowId::new(1);
-        let snapshot =
-            phux_protocol::wire::info::SessionSnapshot::new(session, window, ResourceId::local(1))
-                .with_windows(vec![phux_protocol::wire::info::WindowInfo::new(
-                    window, session, "main",
-                )])
-                .with_resources(vec![phux_protocol::wire::info::ResourceInfo::new(
-                    ResourceId::local(1),
-                    window,
-                    40,
-                    12,
-                )]);
-        assert_eq!(
-            h.feed(FrameKind::Attached {
-                attach_id: 1,
-                snapshot,
-                initial_client_id: phux_protocol::ClientId::new(1)
-            }),
+            h.feed(test_support::attached_frame(1, snapshot)),
             PhuxClientResult::Ok
         );
         h.bootstrap_with_cursor(ResourceId::local(1), cursor);
@@ -1194,7 +1143,7 @@ fn spawn_options_retain_secs_and_idempotency_key_reach_the_wire() {
         h.0.inner.outgoing.is_empty(),
         "nothing queued without RETAIN_ON_EXIT / SPAWN_IDEMPOTENCY"
     );
-    h.0.inner.retain_on_exit = true;
+    let mut h = Harness::attached_with(&[ServerFeature::RetainOnExit]);
     // SAFETY: as above.
     unsafe {
         assert_eq!(
@@ -1202,7 +1151,8 @@ fn spawn_options_retain_secs_and_idempotency_key_reach_the_wire() {
             PhuxClientResult::InvalidState
         );
     }
-    h.0.inner.spawn_idempotency = true;
+    let mut h =
+        Harness::attached_with(&[ServerFeature::RetainOnExit, ServerFeature::SpawnIdempotency]);
     // SAFETY: as above.
     unsafe {
         assert_eq!(
@@ -1226,9 +1176,8 @@ fn spawn_options_retain_secs_and_idempotency_key_reach_the_wire() {
 
 #[test]
 fn spawn_options_legacy_size_omits_trailing_retain_and_idempotency_fields() {
-    let mut h = Harness::attached();
-    h.0.inner.retain_on_exit = true;
-    h.0.inner.spawn_idempotency = true;
+    let mut h =
+        Harness::attached_with(&[ServerFeature::RetainOnExit, ServerFeature::SpawnIdempotency]);
     let mut options = PhuxSpawnOptions {
         request_id: 21,
         has_retain_secs: true,
@@ -1262,7 +1211,7 @@ fn subscribe_events_refuses_a_cursor_without_event_journal_and_queues_one_with_i
         );
     }
     assert!(h.0.inner.outgoing.is_empty());
-    h.0.inner.event_journal = true;
+    let mut h = Harness::attached_with(&[ServerFeature::EventJournal]);
     // SAFETY: as above.
     unsafe {
         assert_eq!(
@@ -1303,7 +1252,7 @@ fn attach_role_is_validated_needs_attach_roles_and_rides_the_next_attach() {
         );
     }
     assert_eq!(h.0.inner.attach_role, None, "nothing stored on refusal");
-    h.0.inner.attach_roles = true;
+    let mut h = Harness::attached_with(&[ServerFeature::AttachRoles]);
     // SAFETY: as above.
     unsafe {
         assert_eq!(phux_client_attach_role(h.ptr(), 1), PhuxClientResult::Ok);
@@ -1350,7 +1299,7 @@ fn attach_role_is_validated_needs_attach_roles_and_rides_the_next_attach() {
 fn pre_attach_operations_are_rejected_and_result_output_is_sized() {
     let mut h = Harness::new();
     assert_eq!(h.spawn(1), PhuxClientResult::InvalidState);
-    h.negotiate();
+    let mut h = Harness::negotiated(&[]);
     assert_eq!(h.spawn(1), PhuxClientResult::InvalidState);
     assert_eq!(
         h.attach(1, &ResourceId::local(2)),

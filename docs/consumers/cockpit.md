@@ -73,8 +73,7 @@ plain terminal close — into typed `PhuxClientEffect` status kinds:
 `_EXITED` (`include/phux/client.h` in `phux-client-ffi`). The subscription
 is scoped to every Terminal local to the server phux-client-ffi is
 connected to; on a federation hub it does not reach a satellite's panes,
-which need their own explicit per-terminal subscription. Cockpit consumes
-them on the remote provider (PHA-284). The live working directory's basename
+which need their own explicit per-terminal subscription. The live working directory's basename
 (`/` for the root) names an untitled tab ahead of the attach catalog.
 `EXITED` with reason `Exited` or `Killed` closes the pane; any other reason
 keeps today's handling. Natural `exit` of a session's last shell does not
@@ -94,16 +93,9 @@ runtime resolves it through the CLI's `[[remote]]` registry under the CLI's
 trust rules, dials, walks the reconnect ladder, and reads and writes the
 socket on its own thread. Cockpit is woken and calls `phux_client_poll`.
 
-Cockpit had its own socket worker until this moved: DNS, connect, length
-framing, a poll loop, write deadlines, a redial ladder, and a socket pair
-relayed to a tunnel for remote hosts. None of that exists now.
-
-Frames are still decoded on Cockpit's owning thread. The runtime retains
-what it reads and `poll` feeds it, because this ABI's per-frame behavior
-reads state only that thread may touch, so the decode point did not move
-with the socket.
-
-Two consequences worth knowing:
+Frames are still decoded on Cockpit's owning thread: the runtime queues
+what it reads and `poll` feeds it, because the ABI's per-frame behavior
+reads state only that thread may touch.
 
 - The runtime queues `HELLO` on every connection it opens. `ATTACH` stays
   explicit, and Cockpit re-sends it when `phux_client_connection_epoch`
@@ -112,11 +104,9 @@ Two consequences worth knowing:
 - A bare `host:port` endpoint has no lane and is refused: the registry is
   what carries the certificate pin and token a routable dial needs.
 
-`phux_client_feed_frame` and the `phux_client_outgoing_*` calls remain in
-the ABI as the embedded lane, and Cockpit's `transport.Bridge` remains the
-seam its tests stage exact frames through -- malformed ones, retired
-generations, protocol violations -- which no real server would send.
-Nothing in production drives either.
+`phux_client_feed_frame` and `phux_client_outgoing_*` remain as the
+embedded lane that Cockpit's tests stage exact frames through; nothing in
+production drives it.
 
 ## Clipboard (OSC 52)
 

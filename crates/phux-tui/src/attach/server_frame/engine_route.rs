@@ -29,16 +29,13 @@ pub(super) struct KernelRoute {
     /// `AgentSession` resources whose record log grew under this frame. The
     /// chrome projects them, so the handler raises a chrome repaint.
     pub(super) agent_touched: HashSet<ResourceId>,
-    /// An `AgentSession` this frame's `ResourceSpawned` declared to the kernel for
-    /// the first time: a live-spawned child of one of our panes, which the
-    /// handler asks the driver to attach as a record stream.
+    /// A live-spawned `AgentSession` child first declared by this frame, for
+    /// the driver to attach as a record stream.
     pub(super) declared_agent: Option<ResourceId>,
     pub(super) resync_required: bool,
     pub(super) ignored: bool,
     pub(super) failed: Option<String>,
-    /// phux-ijuj: transient status-bar notices raised by the kernel's own
-    /// effects rather than by the frame arm. Folded into the dispatched
-    /// [`FrameOutcome`] by the arms whose frames can produce them.
+    /// Notices raised by the kernel's own effects.
     pub(super) notices: Vec<Notice>,
 }
 impl KernelRoute {
@@ -80,9 +77,8 @@ pub(super) const fn is_terminal(info: &ResourceInfo) -> bool {
     matches!(info.kind, ResourceKind::Terminal)
 }
 
-/// The `AgentSession` resources bound to one of `participants`, in snapshot
-/// order. They are declared to the kernel as record streams and never
-/// become pane slots or barrier participants.
+/// The `AgentSession` resources bound to one of `participants`: declared as
+/// record streams, never slots or barrier participants.
 pub(super) fn attach_agent_sessions<'a>(
     snapshot: &'a SessionSnapshot,
     participants: &[ResourceId],
@@ -99,40 +95,11 @@ pub(super) fn attach_agent_sessions<'a>(
         .collect()
 }
 
-/// The panes an ATTACH will actually bootstrap: those of the focused session.
-///
-/// `SessionSnapshot` is a whole-workspace view — its own field docs say
-/// `panes` is "every pane across every visible window", because the sidebar
-/// and session switcher need the full tree. The **attach** is narrower: the
-/// server bootstraps only `attach_snapshot_panes(sid)`, the focused session's
-/// panes (`runtime::commands::prepare_attach`).
-///
-/// Treating every pane in the snapshot as an attach participant therefore
-/// registered panes that would never receive a `BOOTSTRAP_*` frame, so they
-/// stayed unresolved and `ATTACH_READY` was rejected with
-/// `AttachNotReady { remaining }` — where `remaining` was exactly the pane
-/// count of the *other* sessions. The practical effect: attaching worked on a
-/// server with one session and failed on every server with two or more, which
-/// is to say phux stopped working as a multiplexer the moment it was used as
-/// one (phux-atch).
-///
-/// Scoping here rather than narrowing the snapshot keeps the wire contract
-/// intact: the client still receives the whole workspace, and only the attach
-/// bookkeeping is session-scoped. It spans the session's *windows*: the
-/// aggregate barrier covers every pane the server will bootstrap, which is
-/// the whole session tree, not just the focused window.
-///
-/// A pane whose `window_id` has no matching `WindowInfo` is **excluded**. A
-/// real snapshot always carries one per window, so this is unreachable in
-/// practice; the choice matters only for the direction it fails. Excluding
-/// risks releasing the barrier before a pane has bootstrapped (it renders a
-/// beat late); including risks an attach that can never complete, which is
-/// the failure being fixed here.
-///
-/// Only Terminal-kind resources participate. An `AgentSession` carries no
-/// grid (the snapshot encodes that as `0x0` and no window) and paints
-/// nothing, so it has no first paint for the barrier to gate; see
-/// [`attach_agent_sessions`] for how it enters the kernel instead.
+/// The panes an ATTACH will bootstrap: the focused session's (all its
+/// windows), Terminal-kind only. The snapshot is a whole-workspace view, but
+/// counting other sessions' panes left `ATTACH_READY` unresolvable whenever a
+/// second session existed. A pane whose window is not listed is excluded, so
+/// the failure mode is a late paint rather than an attach that never completes.
 pub(super) fn attach_participants(snapshot: &SessionSnapshot) -> Vec<ResourceId> {
     let focused_windows: Vec<_> = snapshot
         .windows
@@ -159,9 +126,8 @@ pub(super) fn route_engine_frame(
     let terminals = frame_attach_participants(frame);
     let input = match kernel_input_for(frame, &terminals) {
         Ok(Some(input)) => input,
-        // A frame the session kernel does not model at all: the handler's own
-        // arm owns it end to end, except a spawn announcement naming a new
-        // `AgentSession` child, which the kernel must learn about.
+        // A frame the kernel does not model, except a spawn announcement of
+        // a new `AgentSession` child, which it must learn about.
         Ok(None) => {
             let mut route = KernelRoute::default();
             declare_spawned_agent_session(frame, kernel, effects, &mut route);
@@ -190,10 +156,8 @@ pub(super) fn route_engine_frame(
     route
 }
 
-/// Register a live-spawned `AgentSession` announced by `ResourceSpawned` on the
-/// server-wide event stream, when its parent is a Terminal this kernel holds
-/// and the child is not yet known. A child of a pane in another session, or
-/// a spawn the attach snapshot already declared, is left alone.
+/// Declare a live-spawned `AgentSession` whose parent is a Terminal this
+/// kernel holds and that is not yet known.
 fn declare_spawned_agent_session(
     frame: &FrameKind,
     kernel: &mut crate::attach::pane_state::AttachKernel,
@@ -234,9 +198,7 @@ fn declare_spawned_agent_session(
     }
 }
 
-/// Register every `AgentSession` child of an attach participant with the
-/// kernel, one declaration per resource, folding each update's effects into
-/// the same route.
+/// Declare every `AgentSession` child of an attach participant.
 fn declare_agent_sessions(
     snapshot: &SessionSnapshot,
     participants: &[ResourceId],
@@ -262,11 +224,8 @@ fn declare_agent_sessions(
     }
 }
 
-/// The attach participants an `ATTACHED` frame declares; empty for every other
-/// frame.
-///
-/// Materialized before the input translation so `KernelInput::AttachStarted`
-/// has a slice to borrow that outlives the translation itself.
+/// The attach participants an `ATTACHED` frame declares (materialized so
+/// `KernelInput::AttachStarted` can borrow it).
 fn frame_attach_participants(frame: &FrameKind) -> Vec<ResourceId> {
     let FrameKind::Attached { snapshot, .. } = frame else {
         return Vec::new();
@@ -274,11 +233,8 @@ fn frame_attach_participants(frame: &FrameKind) -> Vec<ResourceId> {
     attach_participants(snapshot)
 }
 
-/// Translate one wire frame into the session-kernel input it means.
-///
-/// `Ok(None)` ⇒ the kernel does not model this frame. `Err` ⇒ the frame names
-/// a history reason this build does not understand, which the caller turns
-/// into a rejected route.
+/// Translate a wire frame into its kernel input. `Ok(None)` ⇒ not modeled;
+/// `Err` ⇒ an unknown history reason, reported as a rejected route.
 fn kernel_input_for<'a>(
     frame: &'a FrameKind,
     terminals: &'a [ResourceId],
@@ -396,11 +352,7 @@ fn content_stream_input(frame: &FrameKind) -> Option<KernelInput<'_>> {
     }
 }
 
-/// The scrollback-page frames.
-///
-/// These are the fallible half of the translation: a tombstone or rejection
-/// reason this build does not recognise has no kernel input to map onto, so it
-/// is reported as a rejected route rather than guessed at.
+/// The scrollback-page frames; an unrecognised reason is a rejected route.
 fn history_stream_input(frame: &FrameKind) -> Result<Option<KernelInput<'_>>, &'static str> {
     let input = match frame {
         FrameKind::HistoryPage {
@@ -469,9 +421,7 @@ fn emitted_resync_required(effects: &KernelEffectBuffer) -> bool {
     })
 }
 
-/// Did the kernel emit a per-pane history-unavailable status alongside its
-/// error? phux-ijuj: that degradation is recoverable — the live stream stays
-/// valid, only the pane's scrollback boundary is gone.
+/// Did the kernel emit a (recoverable) per-pane history-unavailable status?
 fn emitted_history_unavailable(effects: &KernelEffectBuffer) -> bool {
     effects.as_slice().iter().any(|effect| {
         matches!(
@@ -483,12 +433,9 @@ fn emitted_history_unavailable(effects: &KernelEffectBuffer) -> bool {
     })
 }
 
-/// Fold the kernel's `update` result, read together with the statuses it
-/// emitted, into the route's three terminal verdicts.
-///
-/// A resync status, a retired generation, and a recovered history failure are
-/// each non-fatal: they clear `failed` and leave the decision to the handler's
-/// arm. Anything else is a genuine rejection of the frame.
+/// Fold the kernel's `update` result and statuses into the route's verdict.
+/// A resync, a retired generation, and a recovered history failure are
+/// non-fatal; anything else rejects the frame.
 fn classify_kernel_result<E>(
     result: &Result<(), phux_client_core::session::KernelError<E>>,
     frame: &FrameKind,
@@ -519,9 +466,8 @@ where
     }
 }
 
-/// Fold the kernel's declarative effects into the route the handler reads:
-/// the sends it must forward, the panes it must repaint, and the notices it
-/// must raise.
+/// Fold the kernel's effects into the sends, repaints, and notices the
+/// handler reads.
 fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) {
     for effect in effects.as_slice() {
         match effect {
@@ -557,10 +503,7 @@ fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) 
             KernelEffect::AgentRecords { terminal_id, .. } => {
                 route.agent_touched.insert(terminal_id.clone());
             }
-            // phux-ijuj: history degradation is per-pane and recoverable —
-            // the live stream stays valid, only that pane's scrollback
-            // boundary is gone. The kernel already told us WHICH pane, so
-            // unlike an uncorrelated ERROR this one can name it.
+            // Per-pane and recoverable; the kernel names the pane.
             KernelEffect::Status(phux_client_core::session::KernelStatus::HistoryUnavailable {
                 key,
                 reason,
@@ -575,10 +518,7 @@ fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) 
                     pane_label(&key.terminal_id),
                 )));
             }
-            // PHA-406/PHA-284: cwd/command-boundary/process-exit status. The
-            // TUI has no chrome for these yet (a separate change), so a
-            // cwd change, a command boundary, or a pane exit producing one
-            // is expected on every attach, not a warning-worthy surprise.
+            // Cwd/command-boundary/exit statuses have no TUI chrome yet.
             KernelEffect::Status(
                 status @ (phux_client_core::session::KernelStatus::Cwd { .. }
                 | phux_client_core::session::KernelStatus::CommandStarted { .. }
@@ -593,11 +533,8 @@ fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) 
             KernelEffect::Job(job) => {
                 tracing::debug!(?job, "session kernel cooperative job");
             }
-            // The kernel emits this once every ATTACH_READY so the FFI's
-            // status effects (PHA-406/PHA-284) actually arrive; the TUI
-            // manages its own connection-wide SUBSCRIBE_EVENTS directly
-            // (`driver/loop_state.rs::subscribe_bootstrap`), so this
-            // duplicate is expected and dropped without a warning.
+            // The TUI manages its own SUBSCRIBE_EVENTS; the kernel's duplicate
+            // is dropped.
             KernelEffect::Send(KernelSend::SubscribeEvents { .. }) => {
                 tracing::trace!(
                     "kernel-emitted SUBSCRIBE_EVENTS superseded by the TUI's own subscription"

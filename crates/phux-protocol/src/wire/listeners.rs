@@ -1,8 +1,5 @@
-//! Remote-listener bind outcomes on `GET_STATE` (phux-kyna).
-//!
-//! Carried as a trailing additive JSON object on [`super::info::SessionSnapshot`]:
-//! when absent the snapshot is byte-identical to one encoded before this field
-//! existed; an older decoder that stops after the session facets ignores it.
+//! Remote-listener bind outcomes, a trailing additive JSON object on
+//! [`super::info::SessionSnapshot`].
 
 use serde::{Deserialize, Serialize};
 
@@ -16,11 +13,7 @@ pub const REMOTE_LISTENERS_SCHEMA_VERSION: u32 = 1;
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ListenerDisabledReason {
-    /// A server that predates lenient store loading disabled every secure
-    /// remote transport when the credential store would not load at boot.
-    /// Current servers bind and refuse every authentication instead — the
-    /// reloading store adopts the file on its next read once it loads — so
-    /// only an older server reports this.
+    /// The credential store would not load at boot (older servers only).
     TokenStoreLoadFailed,
     /// TLS acceptor / QUIC endpoint build failed after the cert was on disk.
     TlsSetupFailed,
@@ -144,7 +137,7 @@ impl RemoteListenerSlot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[non_exhaustive]
 pub struct RemoteListenersReport {
-    /// JSON schema version; unknown newer versions are still readable for known fields.
+    /// JSON schema version; newer versions stay readable for known fields.
     pub schema_version: u32,
     /// One row per configured or auto-bound remote transport.
     pub listeners: Vec<RemoteListenerSlot>,

@@ -6,7 +6,6 @@ const support = @import("phux_support.zig");
 const local_terminal = @import("../providers/local/provider.zig");
 const model_module = @import("model.zig");
 const topology = @import("topology.zig");
-const app_types = @import("app_types.zig");
 const runtime = @import("terminal_runtime.zig");
 const projection = @import("native/workspace_projection.zig");
 const grid = @import("../terminal/grid.zig");
@@ -16,7 +15,6 @@ const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
 const Model = model_module.Model;
 const Pane = local_terminal.Pane;
-const Fx = app_types.Fx;
 const TerminalRef = support.TerminalRef;
 const ReplicaOwner = support.ReplicaOwner;
 const MouseAction = support.MouseAction;
@@ -48,10 +46,6 @@ pub fn terminalRefAtPoint(model: *const Model, x: f32, y: f32) ?TerminalRef {
     return pane.terminal;
 }
 
-fn terminalFrame(model: *const Model, terminal_ref: TerminalRef) ?geometry.RectF {
-    return projection.paneFrameFor(model, model.wsConst().surface_size, terminal_ref);
-}
-
 pub fn pointerButton(button: u32) MouseButton {
     return switch (button) {
         0 => .left,
@@ -61,59 +55,6 @@ pub fn pointerButton(button: u32) MouseButton {
         4 => .button_5,
         else => .none,
     };
-}
-
-fn sendPointerToOwner(
-    model: *Model,
-    owner: ReplicaOwner,
-    action: MouseAction,
-    button: MouseButton,
-    modifiers: ModifierMask,
-    x: f64,
-    y: f64,
-) bool {
-    if (comptime !phux_enabled) return false;
-    if (!model.ownerIsCurrent(owner)) return false;
-    const frame = terminalFrame(model, owner.terminal_ref) orelse return false;
-    const presentation = interaction.presentationForOwner(model, owner) orelse return false;
-    if (!usablePointerGrid(frame, presentation)) return false;
-    const remote = model.phuxForOwner(owner) orelse return false;
-    if (!(remote.mouseTracking(owner) catch return false)) return false;
-
-    const local_x = @max(0, @min(
-        @as(f64, @floatCast(frame.width)) - 1,
-        x - @as(f64, @floatCast(frame.x)),
-    ));
-    const local_y = @max(0, @min(
-        @as(f64, @floatCast(frame.height)) - 1,
-        y - @as(f64, @floatCast(frame.y)),
-    ));
-    const cell_x = @min(
-        @as(u16, @intFromFloat(@floor(
-            local_x * @as(f64, @floatFromInt(presentation.cols)) /
-                @as(f64, @floatCast(frame.width)),
-        ))),
-        presentation.cols - 1,
-    );
-    const cell_y = @min(
-        @as(u16, @intFromFloat(@floor(
-            local_y * @as(f64, @floatFromInt(presentation.rows)) /
-                @as(f64, @floatCast(frame.height)),
-        ))),
-        presentation.rows - 1,
-    );
-    remote.sendMouse(owner, &.{
-        .action = action,
-        .button = button,
-        .modifiers = modifiers,
-        .x = @floatFromInt(cell_x),
-        .y = @floatFromInt(cell_y),
-    }) catch return false;
-    return true;
-}
-
-fn usablePointerGrid(frame: geometry.RectF, presentation: provider_contract.Presentation) bool {
-    return frame.width > 0 and frame.height > 0 and presentation.cols > 0 and presentation.rows > 0;
 }
 
 fn monitorOwner(model: *Model, event: anytype) ?ReplicaOwner {
@@ -128,40 +69,6 @@ fn monitorOwner(model: *Model, event: anytype) ?ReplicaOwner {
     const ref = terminalRefAtPoint(model, @floatCast(event.x), @floatCast(event.y)) orelse return null;
     if (providerKind(ref) != .phux) return null;
     return model.terminalOwner(ref);
-}
-
-fn dispatchPointerEvent(model: *Model, event: anytype) void {
-    if (comptime !phux_enabled) return;
-    const pointer_state = model.pointer_state orelse return;
-    pointer_state.last_x = event.x;
-    pointer_state.last_y = event.y;
-    const action = monitorAction(event) orelse return;
-    const button = pointerButton(event.button);
-
-    const owner = monitorOwner(model, event) orelse return;
-
-    const sent = sendPointerToOwner(
-        model,
-        owner,
-        action,
-        button,
-        @bitCast(event.modifiers),
-        event.x,
-        event.y,
-    );
-    if (action == .press and sent and button != .none) {
-        pointer_state.capture = .{ .owner = owner, .button = button };
-    } else if (action == .release) {
-        pointer_state.capture = null;
-    }
-}
-
-fn monitorAction(event: anytype) ?MouseAction {
-    return switch (event.eventKind() orelse return null) {
-        .button_down => .press,
-        .button_up => .release,
-        .motion => .move,
-    };
 }
 
 test "retired monitor owner stays captured through motion until its release" {
@@ -187,29 +94,6 @@ test "retired monitor owner stays captured through motion until its release" {
     try std.testing.expect(monitorOwner(engine.model, event) == null);
     try std.testing.expect(state.capture == null);
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
-}
-
-fn releasePointerCapture(model: *Model) void {
-    if (comptime !phux_enabled) return;
-    const pointer_state = model.pointer_state orelse return;
-    const capture = pointer_state.capture orelse return;
-    _ = sendPointerToOwner(
-        model,
-        capture.owner,
-        .release,
-        capture.button,
-        .{},
-        pointer_state.last_x,
-        pointer_state.last_y,
-    );
-    pointer_state.capture = null;
-}
-
-pub fn drainPointerEvents(model: *Model) void {
-    if (comptime !phux_enabled) return;
-    const pointer_state = model.pointer_state orelse return;
-    while (pointer_state.queue.take()) |event| dispatchPointerEvent(model, event);
-    if (pointer_state.queue.takeOverflow()) releasePointerCapture(model);
 }
 
 fn pointerCaptureIndex(model: *const Model, window_id: native_sdk.platform.WindowId, pointer_id: u64) ?usize {

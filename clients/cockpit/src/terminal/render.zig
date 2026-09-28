@@ -24,21 +24,9 @@ pub fn cursorCommandId(id_base: u64) u64 {
     return canvas.terminal_grid.paintIdBase(id_base) +% 0x61_0002;
 }
 
-/// The command-id NAMESPACE a pane's paint occupies.
-///
-/// The SDK painter derives every id it emits from `paintIdBase(id_base)`
-/// — a wrapping multiply by 2^24 — and keeps every offset under that
-/// stride, so a pane's commands are exactly the ids in
-/// `[idNamespace(id_base), + id_namespace_stride)` and two panes with
-/// different bases can never overlap.
-///
-/// This is the seam for picking ONE pane's commands out of a frame that
-/// holds several. It replaced a single `cellGridCommandId`: a terminal
-/// screen used to be one `cell_grid` command at one fixed offset, and is
-/// now one command PER ROW (the retained diff's unit of change is a
-/// command, so a screen-wide lattice re-encoded every cell on every
-/// keystroke). There is no single id to ask for any more — there is a
-/// namespace, and the rows are whichever grids fall inside it.
+/// The command-id namespace a pane's paint occupies: every id the SDK painter
+/// emits for `id_base` lies in `[idNamespace(id_base), + id_namespace_stride)`,
+/// one `cell_grid` command per row.
 pub fn idNamespace(id_base: u64) u64 {
     return canvas.terminal_grid.paintIdBase(id_base);
 }
@@ -77,11 +65,8 @@ pub const PaintOptions = struct {
     background_frame: ?geometry.RectF = null,
     glyph_budget: usize = 0,
     path_reserve: usize = 0,
-    /// Packed-grid CELLS held back for the terminals painted after this
-    /// one. A screen's cost is CELLS now, not commands, so this is the
-    /// budget that actually bounds how much of a dense screen reaches
-    /// the glass — the command envelope only prices box geometry and
-    /// selection washes. Zero leaves it unbounded.
+    /// Packed-grid cells held back for terminals painted after this one (the
+    /// budget that bounds a dense screen). Zero leaves it unbounded.
     cell_reserve: usize = 0,
     /// Default `from_top` preserves existing `grid.paint` callers. The
     /// Hybrid C window painter sets `last_n` so a truncated pane keeps
@@ -91,14 +76,8 @@ pub const PaintOptions = struct {
     /// only the cell store / `cell_reserve` bound the crop. Degraded
     /// panes pass `max_rows / 4`.
     row_cap: usize = 0,
-    /// The user's client-side `minimum-contrast`, for every provider. Resolve
-    /// terminal defaults, application colors, inverse and faint first; apply
-    /// the floor to those final colors without changing the source grid.
-    ///
-    /// Defaults to 1 (no floor) rather than to the config default, so the
-    /// value can only ever come from a caller that actually holds the user's
-    /// config. A default that turned the floor ON here would make every
-    /// synthetic PaintOptions in the codebase quietly apply it.
+    /// The client-side `minimum-contrast`, applied to final colours. Defaults to
+    /// 1 (off) so only a caller holding the config turns it on.
     minimum_contrast: f32 = 1,
     /// Use `paneIdBase` for multiple grids in one retained view.
     id_base: u64 = grid_id_base,
@@ -108,18 +87,11 @@ pub const PaintOptions = struct {
 pub fn paint(session: *Session, builder: *canvas.Builder, options: PaintOptions) !void {
     const metrics = canvas.terminalCellMetrics(options.tokens);
     session.font_size = metrics.font_size;
-    // The ONLY writer of the measured cell box in the app, and deliberately
-    // so: `options.tokens` are the runtime's, with its text-measure provider
-    // stamped on, so `metrics.width` is the mono face's real advance. Anywhere
-    // else in the app those tokens are unavailable and the same call silently
-    // degrades to an estimate — see `workspace_projection.terminalCellMetricsFor`.
+    // The only writer of the measured cell box: only these runtime tokens
+    // carry the text-measure provider.
     session.setMeasuredCell(metrics.width, metrics.height);
-    // Written every frame from the live config, alongside the font size, for
-    // the reason `theme.zig` spells out: a colour policy that is stamped onto
-    // the session once at spawn needs an explicit re-apply on every config
-    // change, and a re-apply is a thing to forget. Rewriting it here means
-    // `minimum-contrast` moves the moment `Model.config` does, with nothing to
-    // invalidate and no stale copy for an old value to hide in.
+    // Written every frame so a config change applies with nothing to
+    // invalidate.
     session.minimum_contrast = options.minimum_contrast;
 
     const snap = try session.snapshot(options.tokens, options.running, options.selecting);

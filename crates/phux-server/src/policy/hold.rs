@@ -1,12 +1,7 @@
-//! The guard's third outcome, Hold (ADR-0128, `docs/spec/workload-auth.md`
-//! §6.1), and the subject a decision is judged on.
-//!
-//! Kept apart from [`super::enforce`], which answers "does the grant reach
-//! this at all?" and admits a held verb like any other. This module asks the
-//! next question for a request `enforce` already admitted: can it run now,
-//! or does a `SIGNAL` it needs reach its subject only through a clause that
-//! holds it? A held command waits for a decision; a held `SIGNAL` on any
-//! other frame is refused, because there is no result to defer.
+//! The guard's third outcome, Hold (ADR-0128, `workload-auth.md` §6.1): for
+//! a request [`super::enforce`] admitted, whether a `SIGNAL` it needs is
+//! reachable only through a holding clause. A held command waits for a
+//! decision; a held `SIGNAL` on any other frame is refused.
 
 use phux_protocol::ids::{ApprovalId, ResourceId as WireResourceId};
 use phux_protocol::kinds::{Classification, Verb, Verbs};
@@ -39,10 +34,7 @@ pub enum Admission {
     Hold,
 }
 
-/// Run or hold `request`, which [`super::enforce`] already admitted.
-///
-/// Only a scoped grant holding some verb can hold anything: the owner's
-/// grant, and so every `local` and transitional connection, always runs.
+/// Run or hold an admitted `request`; only a scoped grant can hold.
 ///
 /// # Errors
 ///
@@ -78,9 +70,8 @@ pub(super) fn admission(
     }
 }
 
-/// The needs of a decision: `SIGNAL` on every subject the held command
-/// needs, resolved under the current topology. `None` when the key names no
-/// pending approval, which the guard refuses like an absent target.
+/// `SIGNAL` on every subject of the held command; `None` if no approval
+/// matches.
 pub(super) fn held_action_needs(s: &ServerState, request: Request<'_>) -> Option<Vec<Need>> {
     let pending = decided_approval(s, request)?;
     let command = Request::Command(&pending.command);
@@ -90,9 +81,7 @@ pub(super) fn held_action_needs(s: &ServerState, request: Request<'_>) -> Option
     needs_for(s, pending.requester, subject, SIGNAL, command)
 }
 
-/// A connection subscribed to a held subject as a `VIEWER` declared itself
-/// observe-only there (ADR-0127), so it cannot decide the action, whatever
-/// its grant.
+/// A `VIEWER` on a held subject cannot decide the action (ADR-0127).
 ///
 /// # Errors
 ///
@@ -113,9 +102,7 @@ pub(super) fn refuse_viewer_decision(
     Ok(())
 }
 
-/// Whether `client` is a `VIEWER` on `terminal`: the one question a
-/// decision asks about attach roles. It means whatever
-/// [`ServerState::is_viewer`] means.
+/// Whether `client` is a `VIEWER` on `terminal`.
 fn decider_is_viewer_of(s: &ServerState, client: ClientId, terminal: &WireResourceId) -> bool {
     s.is_viewer(client, terminal)
 }

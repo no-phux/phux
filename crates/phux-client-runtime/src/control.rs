@@ -1,27 +1,17 @@
 //! The sans-IO control plane (ADR-0133 decision 1).
 //!
 //! A [`ControlPlane`] is a synchronous state machine over the session
-//! kernel: decoded inbound frames go in through [`ControlPlane::feed`] (or
-//! raw bytes through [`ControlPlane::feed_bytes`], the model Cockpit drives
-//! `phux-client-ffi` with), encoded outbound frames come out of
-//! [`ControlPlane::take_outbound`], and owned [`Event`]s out of
+//! kernel: decoded frames go in through [`ControlPlane::feed`] (or bytes
+//! through [`ControlPlane::feed_bytes`]), encoded frames come out of
+//! [`ControlPlane::take_outbound`] and owned [`Event`]s out of
 //! [`ControlPlane::take_events`]. It never touches a socket or a clock it
-//! is not handed, so the same object serves a consumer that owns its socket
-//! and the [`connection`](crate::connection) driver.
+//! is not handed.
 //!
-//! It owns the connection lifecycle (`HELLO` to `HELLO_OK` acceptance
-//! through `phux_client_core::handshake`, `ATTACH`, `ATTACH_READY`,
-//! `DETACH`), the topology, per-terminal attach/detach/spawn/kill/close,
-//! input on the raw path and the acknowledged `APPLY_INPUT` path through
-//! `phux_client_core::input_replay`, `SUBSCRIBE_EVENTS` and the folding of
-//! agent events, and error and refusal reporting. Terminal state itself is
-//! the kernel's, hosted on the [`engine`](crate::engine) owner thread.
-//!
-//! Extension points for later rungs, so a binding adds a lane without a
-//! second state machine: [`ControlPlane::send_command`] correlates any
-//! `COMMAND` and answers it as [`Event::CommandResult`],
-//! [`ControlPlane::queue_frame`] sends any frame, and every inbound frame
-//! the plane does not consume surfaces as [`Event::Frame`].
+//! It owns the connection lifecycle, topology, per-terminal operations,
+//! raw and acknowledged input, and event subscriptions; terminal state is
+//! the kernel's, on the [`engine`](crate::engine) owner thread.
+//! [`ControlPlane::send_command`], [`ControlPlane::queue_frame`] and
+//! [`Event::Frame`] let a binding add a lane without a second state machine.
 
 use std::collections::{HashMap, HashSet};
 #[cfg(feature = "engine")]

@@ -1,24 +1,17 @@
 //! `phux attach --ssh [USER@]HOST` — attach mosh-style over ssh (ADR-0120).
+//! ssh authenticates and gets out of the way; the session rides QUIC:
 //!
-//! ssh does the one thing it is best at, authenticating the operator to a
-//! host they already trust, and then gets out of the way. The session rides
-//! QUIC, so it roams, renders locally, and gets predictive echo:
+//! 1. `ssh -T HOST phux bootstrap` starts the server if needed and opens a
+//!    per-attach listener (`OPEN_LISTENER`);
+//! 2. its one JSON line names the port, the fingerprint to pin, and the token,
+//!    delivered over authenticated ssh (not trust on first use);
+//! 3. `ssh -G HOST` names the address ssh itself would connect to;
+//! 4. a short probe tells filtered UDP from a slow host, then the pinned QUIC
+//!    attach takes over.
 //!
-//! 1. `ssh -T HOST phux bootstrap` starts the server there if needed and has
-//!    it open a listener for this attach alone (`OPEN_LISTENER`);
-//! 2. the one JSON line that prints names a port, the certificate
-//!    fingerprint to pin, and the token to present. They arrive over the
-//!    authenticated ssh channel, so pinning them is not trust on first use;
-//! 3. `ssh -G HOST` names the address ssh itself connects to, so an alias in
-//!    `~/.ssh/config` dials the machine it names;
-//! 4. a short probe dial tells an unreachable UDP port from a slow host, and
-//!    the ordinary pinned QUIC attach takes over.
-//!
-//! Where that cannot work, because UDP is filtered between here and the host
-//! or the phux there predates `bootstrap`, the attach falls back to
-//! `ssh -t HOST phux attach` and says why. ssh failing outright, or no phux
-//! on the host at all, is reported instead: the fallback would fail the same
-//! way.
+//! If UDP is filtered or the far phux predates `bootstrap`, it falls back to
+//! `ssh -t HOST phux attach` and says why; ssh failing or no phux at all is
+//! reported instead.
 
 use std::process::{Command, ExitCode, Stdio};
 
@@ -134,11 +127,8 @@ fn fall_back(args: &SshAttach<'_>, why: &str) -> ExitCode {
     )
 }
 
-/// Run `phux bootstrap` on the host and read back its report.
-///
-/// ssh's stderr stays on the terminal, so host-key confirmations, password
-/// and 2FA prompts, and the far end's own diagnostics reach the operator as
-/// they would in a plain `ssh`. Only stdout is captured.
+/// Run `phux bootstrap` on the host and read its report. Only stdout is
+/// captured, so host-key, password, and 2FA prompts reach the operator.
 fn bootstrap(args: &SshAttach<'_>) -> Result<Report, Failure> {
     let program = ssh_program();
     let output = Command::new(&program)
@@ -215,11 +205,8 @@ fn shell_quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
 }
 
-/// Find the listener document in `phux bootstrap`'s stdout.
-///
-/// Reads the last line that parses as a document with a port, so a shell
-/// startup file that prints to stdout on a non-interactive login cannot
-/// hide it.
+/// Find the listener document: the last stdout line that parses as one, so
+/// shell startup noise cannot hide it.
 fn parse_report(stdout: &str) -> Result<Report, String> {
     let document = stdout
         .lines()

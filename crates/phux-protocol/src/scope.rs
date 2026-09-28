@@ -1,33 +1,21 @@
 //! Closed scope grants for the terminal endpoint (`docs/spec/workload-auth.md`
 //! §5).
 //!
-//! A grant pairs one nonempty [`Verbs`] set with one [`Selector`]. A
-//! [`TerminalScopeSet`] is a canonical set of grants, and an
+//! A grant pairs a nonempty [`Verbs`] set with one [`Selector`]. A
+//! [`TerminalScopeSet`] is a canonical set of grants; an
 //! [`EffectiveScopeSet`] is the conjunctive intersection of a requested set
-//! with a registry ceiling: every clause keeps both selectors, so a Group or
-//! Host ceiling is never flattened into a bare Terminal grant.
+//! with a registry ceiling, keeping both selectors per clause so a Group or
+//! Host ceiling is never flattened into a Terminal grant.
 //!
-//! Two spellings exist and both are strict:
+//! Both spellings are strict: the §5 canonical bytes (unsorted, duplicate,
+//! unknown-bit, zero-verb, non-minimal, truncated, or trailing images are
+//! refused, never normalized) and the registry grammar
+//! `"<verb>[,<verb>...]@<selector>"`. The grammar may hold `?signal` for
+//! approval (ADR-0128); a hold is server-local and never in the canonical
+//! image.
 //!
-//! - the canonical bytes of §5, whose decoder refuses an unsorted or
-//!   duplicate selector, an unknown verb bit, a zero verb set, a non-minimal
-//!   selector length, a count or length mismatch, truncation, and trailing
-//!   bytes, and never normalizes an invalid image before using it; and
-//! - the human registry grammar `"<verb>[,<verb>...]@<selector>"` the
-//!   `workload-keys` file and `phux workload add-key --scope` carry.
-//!
-//! The grammar can also mark `signal` as *held* (`?signal`, ADR-0128): the
-//! grant carries `SIGNAL`, but each `SIGNAL` command it admits waits for a
-//! decision by a connection holding un-held `SIGNAL` on the same subject. A
-//! hold is server-local policy bound to the grant. It is not part of the
-//! canonical image, so a decoded set carries no hold and the grant is never
-//! serialized (§5: the effective grant is not a reusable credential).
-//!
-//! Nothing here consults server state. Whether a selector contains a subject
-//! depends on the live topology (a Terminal's current Group), so the server
-//! passes a containment predicate to [`EffectiveScopeSet::admits`]. The verbs
-//! are [`crate::kinds::Verb`], byte-equal to the §5 bits, so the classifier
-//! and the grant speak one vocabulary.
+//! Nothing here consults server state: the server passes a containment
+//! predicate to [`EffectiveScopeSet::admits`].
 
 use std::fmt;
 
@@ -801,22 +789,11 @@ impl EffectiveScopeSet {
     /// Whether some clause carries `verb` and both of its selectors contain
     /// the subject, as `contains` decides against the live topology.
     ///
-    /// A held verb is admitted here: the question is whether the grant
-    /// reaches the subject at all. [`Self::admits_unheld`] asks whether it
-    /// reaches it without a decision (ADR-0128).
+    /// A held verb is admitted here; `without_holds().admits(..)` asks
+    /// whether it reaches the subject without a decision (ADR-0128).
     pub fn admits(&self, verb: Verb, contains: impl Fn(&Selector) -> bool) -> bool {
         self.clauses.iter().any(|clause| {
             clause.verbs.contains(verb) && contains(&clause.requested) && contains(&clause.ceiling)
-        })
-    }
-
-    /// Whether some clause carries `verb` un-held and both of its selectors
-    /// contain the subject: the verb needs no approval there.
-    pub fn admits_unheld(&self, verb: Verb, contains: impl Fn(&Selector) -> bool) -> bool {
-        self.clauses.iter().any(|clause| {
-            unheld(clause.verbs, clause.held).contains(verb)
-                && contains(&clause.requested)
-                && contains(&clause.ceiling)
         })
     }
 

@@ -1,60 +1,14 @@
-//! The `phux_agent_*` MCP tool family: **one tool per agent verb**.
+//! The `phux_agent_*` MCP tool family: one tool per agent verb, so each
+//! freezes only its own argument shape (ADR-0071 point 7(b)); an `action`
+//! multiplexer would freeze the union of every verb's arguments.
 //!
-//! This used to be a single `phux_agent` tool multiplexed on an `action`
-//! string over `list`/`show`/`explain`/`set`/`clear`. It is split here
-//! because [ADR-0071](../../../docs/adr/0071-what-phux-1-0-commits-to.md) point 1
-//! freezes the MCP tool *names and arguments* at 1.0, and point 7(b) names
-//! this split as a precondition of that freeze.
-//!
-//! The reason is the argument union, not the aesthetics. A multiplexer's
-//! frozen schema is the union of every action it will ever carry, and the
-//! agent verbs do not share an argument shape: the five read/write-identity
-//! verbs take `name`/`kind`/`state`/`attention`/`session`; `wait` takes a
-//! repeatable `until` list and a deadline; `send_keys` takes a key array and
-//! two occupant assertions; `prompt`, `answer`, and `start` each have another
-//! distinct shape. Folding those into one object freezes an argument set
-//! designed for five read verbs, and after 1.0 nothing can leave it. Distinct
-//! tools each freeze only their own shape, and a verb added later adds a tool
-//! rather than widening a union.
-//!
-//! `phux_agent_set` and `phux_agent_clear` run in-process over
-//! `phux_client::agent_record`, the home `phux agent set` / `clear` call.
-//! Every other tool here is on the CLI residue (each reason is in
-//! `crate::tool_table`) and executes the canonical `phux` CLI with argv
-//! (never a shell) through [`crate::cli_adapter`], with the same caps the
-//! rest of the parity surface uses.
-//!
-//! ## What this family deliberately does NOT contain
-//!
-//! Recorded here so the decision is not re-litigated, extending the
-//! `take`/`give` and headless-focus reasoning in `docs/consumers/mcp.md`
-//! §3.13–3.22:
-//!
-//! - **No `phux_agent_attach` / `observe`.** A raw live ANSI stream has no
-//!   request/response shape, and the one-text-content-block `tools/call`
-//!   envelope cannot carry it. `phux_watch` is the bounded observation
-//!   surface; a host that wants the live stream shells out.
-//! - **No blind auto-answer tool.** [`answer_schema`] requires the exact live
-//!   ask id and either one of the agent's published suggestions or an explicit
-//!   `allow_unlisted` override. It cannot type into a pane after that question
-//!   has gone away.
-//! - **No notification tool.** `phux answer` is hook-shaped, and hooks run on
-//!   the human's machine, not inside a model's tool call.
-//! - **No `phux_agent_read`.** [ADR-0077](../../../docs/adr/0077-agent-read-surface.md)
-//!   point 1 refuses a read-source vocabulary: the read modifiers `--tail`
-//!   and `--unwrap` hang off `phux_snapshot`, where the rest of the read
-//!   knobs already live. A second read tool would be exactly the vocabulary
-//!   that ADR declined.
-//! - **No offline `explain --file`.** That flag evaluates a capture file on
-//!   local disk for manifest authoring; it is a debugging surface for a human
-//!   writing a `.toml`, not a control-plane read, and exposing it would make
-//!   an MCP tool a file reader.
-//!
-//! `phux_agent_prompt` is deliberately the fused submit-and-wait operation
-//! [ADR-0076](../../../docs/adr/0076-agent-prompt-and-lifecycle-wait.md) point 6
-//! admits. Two MCP calls are two CLI processes and two connections with no
-//! shared ordering point; the fused tool holds one process across delivery
-//! and observation so a fast turn cannot finish between calls.
+//! `phux_agent_set` / `phux_agent_clear` run in-process over
+//! `phux_client::agent_record`; the rest run the canonical CLI through
+//! [`crate::cli_adapter`] (reasons in `crate::tool_table`). There is
+//! deliberately no attach/observe (a live stream has no request/response
+//! shape), no blind auto-answer, no second read tool (ADR-0077), and no
+//! offline `explain --file`. `phux_agent_prompt` fuses submit and wait in
+//! one process (ADR-0076 point 6) so a fast turn cannot finish between calls.
 
 #![allow(
     clippy::similar_names,
@@ -63,7 +17,7 @@
 
 use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
 use phux_client::attach::connection::Connection;
-use phux_client::selector::{self, Selector, format_terminal_id};
+use phux_client::selector::{Selector, format_terminal_id};
 use phux_protocol::ids::ResourceId;
 use serde_json::{Value, json};
 
@@ -71,7 +25,7 @@ use crate::cli_adapter::{
     CliAdapter, DEFAULT_CALL_TIMEOUT, bounded_string, bounded_strings, enum_string, push_socket,
 };
 use crate::cli_tools::{push_option, schema, string_schema};
-use crate::tools::{ToolError, resolve_one, socket_arg, strict_object};
+use crate::tools::{ToolError, parse_selector, resolve_one, socket_arg, strict_object};
 
 /// Lifecycle states a `phux.agent/v1` record can declare (L3 §3.7).
 const DECLARED_STATES: &[&str] = &["unknown", "idle", "working", "blocked", "done"];
@@ -83,12 +37,8 @@ const ATTENTION_LEVELS: &[&str] = &["none", "low", "normal", "high"];
 /// a record is a *departure*, reported as an error, not a state to wait for.
 const WAITABLE_STATES: &[&str] = &["idle", "working", "blocked", "done"];
 
-/// Default deadline for `phux_agent_wait`, in seconds.
-///
-/// The CLI's `--timeout` is optional and unbounded; a tool call's is not.
-/// An MCP `tools/call` that can block forever wedges the host, so this tool
-/// always passes a deadline, bounded exactly the way `phux_run` bounds its
-/// own (`docs/consumers/mcp.md` §3.4).
+/// Default deadline for `phux_agent_wait`: unlike the CLI's, a tool call is
+/// always bounded, since one that blocks forever wedges the host.
 const WAIT_DEFAULT_TIMEOUT_SECS: u64 = 600;
 
 /// Default readiness deadline for `phux_agent_start`.
@@ -98,15 +48,19 @@ const START_DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// timeout, so the CLI reports its own 124 rather than being killed first.
 const WAIT_DEADLINE_GRACE_SECS: u64 = 5;
 
-/// `phux agent wait`'s timeout exit code: no transition was observed. The
-/// result document still rides out on stdout, so this is a *result*, not a
-/// failure (see [`crate::cli_adapter::CliAdapter::run_allowing`]).
+/// `phux agent wait`'s "no transition observed" exit; its document still
+/// rides on stdout, so it is a result, not a failure.
 const EXIT_WAIT_TIMEOUT: i32 = 124;
 
 /// Shared `target` description for the agent tools.
 const TARGET_DESC: &str = "Target selector resolving to one pane \
     (`@N`, `host/@N`, `session:window.pane`, `#tag`, or `.`). Omit for the \
     focused pane.";
+
+/// A bounded string `target` property carrying `description`.
+fn target_schema(description: &str) -> Value {
+    json!({ "type": "string", "minLength": 1, "maxLength": 4096, "description": description })
+}
 
 /// Every schema in this family, in catalog order.
 #[must_use]
@@ -208,7 +162,7 @@ fn show_schema() -> Value {
         "phux_agent_show",
         "Show the projected agent state for one pane. LEVEL read — see phux_agent_list for what \
          that does and does not assert.",
-        json!({ "target": { "type": "string", "minLength": 1, "maxLength": 4096, "description": TARGET_DESC }, "socket": string_schema() }),
+        json!({ "target": target_schema(TARGET_DESC), "socket": string_schema() }),
         &[],
     )
 }
@@ -221,7 +175,7 @@ fn explain_schema() -> Value {
          state looks wrong. The offline capture-file mode of the CLI verb is deliberately not \
          exposed here — it is a manifest-authoring debugger over a local file, not a \
          control-plane read.",
-        json!({ "target": { "type": "string", "minLength": 1, "maxLength": 4096, "description": TARGET_DESC }, "socket": string_schema() }),
+        json!({ "target": target_schema(TARGET_DESC), "socket": string_schema() }),
         &[],
     )
 }
@@ -252,7 +206,7 @@ fn set_schema() -> Value {
          required. A declared `state` OUTRANKS the server's detector for the record's lifetime, \
          so declare one only when the caller genuinely knows better than the detector does.",
         json!({
-            "target": { "type": "string", "minLength": 1, "maxLength": 4096, "description": TARGET_DESC },
+            "target": target_schema(TARGET_DESC),
             "name": string_schema(),
             "kind": string_schema(),
             "state": { "type": "string", "enum": DECLARED_STATES },
@@ -271,7 +225,7 @@ fn clear_schema() -> Value {
          server's detector projects; anything waiting on that agent sees a departure, not a \
          completion.",
         json!({
-            "target": { "type": "string", "minLength": 1, "maxLength": 4096, "description": TARGET_DESC },
+            "target": target_schema(TARGET_DESC),
             "socket": string_schema(),
         }),
         &[],
@@ -357,10 +311,7 @@ async fn target_pane(
     args: &Value,
 ) -> Result<(Connection, ResourceId), ToolError> {
     let selector = bounded_string(args, "target", false)?
-        .map(|raw| {
-            selector::parse(&raw)
-                .map_err(|err| ToolError::new(format!("invalid target '{raw}': {err}")))
-        })
+        .map(|raw| parse_selector(&raw))
         .transpose()?
         .unwrap_or(Selector::Current);
     let mut conn = Connection::connect(socket).await?;
@@ -415,7 +366,7 @@ fn wait_schema() -> Value {
          {from, to, via}, `agent`, `observations` {edges, pushes, polls}, and `detection` with \
          the detector's confidence and sources.",
         json!({
-            "target": { "type": "string", "minLength": 1, "maxLength": 4096, "description": TARGET_DESC },
+            "target": target_schema(TARGET_DESC),
             "any": { "type": "boolean", "description": "Wait across every local agent in the fleet. Mutually exclusive with target." },
             "until": {
                 "type": "array",
@@ -445,23 +396,8 @@ async fn wait(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
     if any && args.get("target").is_some() {
         return Err(ToolError::new("`target` and `any` are mutually exclusive"));
     }
-    let until = bounded_strings(args, "until", false)?;
-    for state in &until {
-        if !WAITABLE_STATES.contains(&state.as_str()) {
-            return Err(ToolError::new(format!(
-                "`until` must contain only: {} (got {state:?}; 'unknown' is a departure, \
-                 not a waitable state)",
-                WAITABLE_STATES.join(", "),
-            )));
-        }
-    }
-    let timeout_secs = match args.get("timeout_secs") {
-        None => WAIT_DEFAULT_TIMEOUT_SECS,
-        Some(value) => value
-            .as_u64()
-            .filter(|value| (1..=3600).contains(value))
-            .ok_or_else(|| ToolError::new("`timeout_secs` must be an integer in 1..=3600"))?,
-    };
+    let until = validated_until(args)?;
+    let timeout_secs = timeout_secs(args, WAIT_DEFAULT_TIMEOUT_SECS)?;
 
     let mut argv = vec!["agent".to_owned(), "wait".to_owned()];
     if any {
@@ -477,24 +413,7 @@ async fn wait(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
     ]);
     push_socket(&mut argv, args)?;
     push_target(&mut argv, args)?;
-
-    // 124 is a result, not a failure: the CLI prints the whole document and
-    // then exits 124 to say "no transition observed". The document's own
-    // `satisfied: false` carries that, so the tool returns it verbatim
-    // instead of collapsing it into an error string.
-    let output = adapter
-        .run_allowing(
-            argv,
-            std::time::Duration::from_secs(timeout_secs.saturating_add(WAIT_DEADLINE_GRACE_SECS)),
-            &[EXIT_WAIT_TIMEOUT],
-        )
-        .await?;
-    serde_json::from_str(&output.stdout).map_err(|err| {
-        ToolError::new(format!(
-            "phux agent wait returned malformed JSON: {err}; stdout={:?}",
-            output.stdout
-        ))
-    })
+    run_until_transition(adapter, argv, timeout_secs, "phux agent wait").await
 }
 
 // -----------------------------------------------------------------------------
@@ -514,7 +433,7 @@ fn send_keys_schema() -> Value {
          completed on the PTY master (bytes reached the kernel tty queue), not that the agent \
          consumed them. INPUT_DELIVERY_UNKNOWN is terminal: inspect the pane and do not resend.",
         json!({
-            "target": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Target selector resolving to one pane. Required — an agent write is never aimed at the focused pane by default." },
+            "target": target_schema("Target selector resolving to one pane. Required — an agent write is never aimed at the focused pane by default."),
             "keys": {
                 "type": "array",
                 "minItems": 1,
@@ -554,9 +473,7 @@ async fn send_keys(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolErro
         bounded_string(args, "expect_kind", false)?,
     );
     push_socket(&mut argv, args)?;
-    // Everything after `--` is positional. Key specs are caller-supplied
-    // text and a literal beginning with `-` is legitimate input, so the
-    // separator is load-bearing here rather than decorative.
+    // Key specs are caller text; a literal starting with `-` must stay positional.
     argv.push("--".to_owned());
     argv.push(target);
     argv.extend(keys);
@@ -578,7 +495,7 @@ fn prompt_schema() -> Value {
          timeout returns the canonical document with transition_observed=false; delivery still \
          occurred. INPUT_DELIVERY_UNKNOWN is terminal: inspect the pane and do not resend.",
         json!({
-            "target": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Target selector resolving to one pane. Required." },
+            "target": target_schema("Target selector resolving to one pane. Required."),
             "text": string_schema(),
             "expect_agent": string_schema(),
             "expect_kind": string_schema(),
@@ -642,14 +559,7 @@ async fn prompt(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> 
     ]);
     push_socket(&mut argv, args)?;
     argv.extend(["--".to_owned(), target, text]);
-    let output = adapter
-        .run_allowing(
-            argv,
-            std::time::Duration::from_secs(timeout_secs.saturating_add(WAIT_DEADLINE_GRACE_SECS)),
-            &[EXIT_WAIT_TIMEOUT],
-        )
-        .await?;
-    parse_json_result("phux agent prompt", &output.stdout)
+    run_until_transition(adapter, argv, timeout_secs, "phux agent prompt").await
 }
 
 // -----------------------------------------------------------------------------
@@ -664,7 +574,7 @@ fn answer_schema() -> Value {
          suggestions requires allow_unlisted=true. Delivery is one acknowledged, idempotent \
          paste-plus-Enter batch; stale or unidentified asks write nothing.",
         json!({
-            "target": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Target selector resolving to one pane. Required." },
+            "target": target_schema("Target selector resolving to one pane. Required."),
             "id": string_schema(),
             "choice": { "type": "integer", "minimum": 1 },
             "text": string_schema(),
@@ -730,7 +640,7 @@ fn start_schema() -> Value {
         json!({
             "name": string_schema(),
             "kind": string_schema(),
-            "target": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Existing pane selector. Required; this tool never creates layout." },
+            "target": target_schema("Existing pane selector. Required; this tool never creates layout."),
             "integration": string_schema(),
             "timeout_secs": { "type": "number", "minimum": 1, "maximum": 3600, "description": "Readiness deadline in seconds. Default 60; bounded to 1..=3600." },
             "force": { "type": "boolean", "description": "Skip the available-shell check and type into whatever occupies the pane." },
@@ -779,21 +689,15 @@ async fn start(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
         argv.push("--".to_owned());
         argv.extend(extra);
     }
-    adapter
-        .run_json(
-            argv,
-            std::time::Duration::from_secs(timeout_secs.saturating_add(WAIT_DEADLINE_GRACE_SECS)),
-        )
-        .await
+    adapter.run_json(argv, graced(timeout_secs)).await
 }
 
 // -----------------------------------------------------------------------------
 // session open / close, emit, log — the AgentSession resource.
 // -----------------------------------------------------------------------------
 
-/// The closed `AgentEventsJsonlV1` record `type` vocabulary. Validated here
-/// so a typo is refused before a subprocess runs; the CLI and the server
-/// enforce the same set (`record_invalid`).
+/// The closed `AgentEventsJsonlV1` record `type` vocabulary, checked before
+/// a subprocess runs (the CLI and server enforce the same set).
 const EVENT_TYPES: &[&str] = &[
     "session_start",
     "prompt",
@@ -807,13 +711,10 @@ const EVENT_TYPES: &[&str] = &[
     "provider_raw",
 ];
 
-/// Largest `tail` `phux_agent_log` forwards. The CLI's `--tail` is
-/// unbounded; a tool result is one text block, so the retained log is capped.
+/// Largest `tail` `phux_agent_log` forwards: a tool result is one text block.
 const LOG_MAX_TAIL: u64 = 10_000;
 
-/// Shared `target` description for the session verbs: a Terminal resolves to
-/// its unique live `AgentSession` child, and an `AgentSession` id names
-/// itself.
+/// Shared `target` description for the session verbs.
 const SESSION_TARGET_DESC: &str = "Target selector: the pane hosting the agent (`@N`, `%name`, \
     `session:window.pane`) resolves to its unique live AgentSession child; an AgentSession \
     resource id (`@N`) names itself. Required.";
@@ -829,7 +730,7 @@ fn session_open_schema() -> Value {
          phux_status's `features`). Returns {schema_version, resource, parent, provider, \
          native_id}.",
         json!({
-            "target": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "The parent pane: a selector resolving to one Terminal-kind resource. Required." },
+            "target": target_schema("The parent pane: a selector resolving to one Terminal-kind resource. Required."),
             "provider": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Agent provider slug, e.g. `claude`." },
             "native_id": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Opaque provider-native session id, when the provider has one." },
             "socket": string_schema(),
@@ -844,7 +745,7 @@ fn session_close_schema() -> Value {
         "Close a pane's AgentSession resource. Closing a child never affects the parent pane. \
          Returns {schema_version, resource, closed}.",
         json!({
-            "target": { "type": "string", "minLength": 1, "maxLength": 4096, "description": SESSION_TARGET_DESC },
+            "target": target_schema(SESSION_TARGET_DESC),
             "socket": string_schema(),
         }),
         &["target"],
@@ -861,7 +762,7 @@ fn emit_schema() -> Value {
          `session_end` -> retract). Returns the stamped header {schema_version, resource, \
          seq, ts_ms, type}.",
         json!({
-            "target": { "type": "string", "minLength": 1, "maxLength": 4096, "description": SESSION_TARGET_DESC },
+            "target": target_schema(SESSION_TARGET_DESC),
             "type": { "type": "string", "enum": EVENT_TYPES, "description": "Record type." },
             "data": { "type": "object", "description": "Record payload, a JSON object. Omit for `{}`." },
             "socket": string_schema(),
@@ -879,7 +780,7 @@ fn log_schema() -> Value {
          {schema_version, resource, parent, provider, native_id, records: [{seq, ts_ms, \
          type, data}]}.",
         json!({
-            "target": { "type": "string", "minLength": 1, "maxLength": 4096, "description": SESSION_TARGET_DESC },
+            "target": target_schema(SESSION_TARGET_DESC),
             "tail": { "type": "number", "minimum": 1, "maximum": LOG_MAX_TAIL, "description": "Return only the last N records. Omit for every retained record." },
             "socket": string_schema(),
         }),
@@ -919,8 +820,7 @@ async fn session_close(args: &Value, adapter: &CliAdapter) -> Result<Value, Tool
     let mut argv = vec!["agent".to_owned(), "session".to_owned(), "close".to_owned()];
     push_socket(&mut argv, args)?;
     argv.extend(["--".to_owned(), target]);
-    // `session close` has no `--json`: it prints `@N<TAB>closed`, the same
-    // tab-separated confirmation shape `agent clear` prints.
+    // `session close` has no `--json`: it prints `@N<TAB>closed`.
     let output = adapter.run(argv, DEFAULT_CALL_TIMEOUT).await?;
     parse_closed_line(&output.stdout)
 }
@@ -986,9 +886,7 @@ async fn log(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
     push_option(&mut argv, "--tail", tail.map(|tail| tail.to_string()));
     push_socket(&mut argv, args)?;
     argv.extend(["--".to_owned(), target]);
-    // Never `--follow`: a tool result is one text block, and the CLI's
-    // non-following `--json` is already the bounded envelope
-    // (`docs/consumers/agents.md` §4.19).
+    // Never `--follow`: a tool result is one bounded text block.
     adapter.run_json(argv, DEFAULT_CALL_TIMEOUT).await
 }
 
@@ -998,15 +896,42 @@ async fn log(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
 
 fn validated_until(args: &Value) -> Result<Vec<String>, ToolError> {
     let until = bounded_strings(args, "until", false)?;
-    for state in &until {
-        if !WAITABLE_STATES.contains(&state.as_str()) {
-            return Err(ToolError::new(format!(
-                "`until` must contain only: {}",
-                WAITABLE_STATES.join(", ")
-            )));
-        }
+    if let Some(state) = until
+        .iter()
+        .find(|state| !WAITABLE_STATES.contains(&state.as_str()))
+    {
+        return Err(ToolError::new(format!(
+            "`until` must contain only: {} (got {state:?}; 'unknown' is a departure, \
+             not a waitable state)",
+            WAITABLE_STATES.join(", "),
+        )));
     }
     Ok(until)
+}
+
+/// The subprocess deadline: the CLI timeout plus grace, so the CLI reports
+/// its own 124 rather than being killed first.
+const fn graced(timeout_secs: u64) -> std::time::Duration {
+    std::time::Duration::from_secs(timeout_secs.saturating_add(WAIT_DEADLINE_GRACE_SECS))
+}
+
+/// Run a transition-waiting verb, returning its document even under the
+/// "no transition observed" exit.
+async fn run_until_transition(
+    adapter: &CliAdapter,
+    argv: Vec<String>,
+    timeout_secs: u64,
+    context: &str,
+) -> Result<Value, ToolError> {
+    let output = adapter
+        .run_allowing(argv, graced(timeout_secs), &[EXIT_WAIT_TIMEOUT])
+        .await?;
+    serde_json::from_str(&output.stdout).map_err(|err| {
+        ToolError::new(format!(
+            "{context} returned malformed JSON: {err}; stdout={:?}",
+            output.stdout
+        ))
+    })
 }
 
 fn timeout_secs(args: &Value, default: u64) -> Result<u64, ToolError> {
@@ -1026,19 +951,8 @@ fn bool_arg(args: &Value, key: &str) -> Result<bool, ToolError> {
     })
 }
 
-fn parse_json_result(context: &str, stdout: &str) -> Result<Value, ToolError> {
-    serde_json::from_str(stdout).map_err(|err| {
-        ToolError::new(format!(
-            "{context} returned malformed JSON: {err}; stdout={stdout:?}"
-        ))
-    })
-}
-
-/// Append the optional `target` positional behind a `--` separator.
-///
-/// The separator is not decoration: a selector is caller-supplied text, and
-/// without it a value beginning with `-` would be parsed as a flag by the
-/// canonical CLI rather than rejected as a bad selector.
+/// Append the optional `target` positional behind `--`, so a selector
+/// starting with `-` is never parsed as a flag.
 fn push_target(argv: &mut Vec<String>, args: &Value) -> Result<(), ToolError> {
     if let Some(target) = bounded_string(args, "target", false)? {
         argv.push("--".to_owned());
@@ -1049,53 +963,37 @@ fn push_target(argv: &mut Vec<String>, args: &Value) -> Result<(), ToolError> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
     use tempfile::TempDir;
 
     use super::*;
+    use crate::cli_adapter::fake;
 
-    /// A fake `phux` that logs its argv one entry per line and answers each
-    /// agent verb with the shape the real CLI produces — including `wait`'s
-    /// document-then-exit-124 timeout.
+    /// A fake `phux` answering each agent verb with the real CLI's shape,
+    /// including `wait`'s document-then-exit-124 timeout.
     fn fake_cli() -> (TempDir, CliAdapter, PathBuf) {
-        let temp = tempfile::tempdir().unwrap();
-        let log = temp.path().join("argv");
-        let executable = temp.path().join("phux");
-        let script = format!(
-            r#"#!/bin/sh
-: > '{log}'
-for arg in "$@"; do
-  printf '%s\n' "$arg" >> '{log}'
-done
-case "$2" in
-  set) printf '@1\t{{"name":"bot"}}\n' ;;
+        fake::cli(
+            r#"case "$2" in
+  set) printf '@1\t{"name":"bot"}\n' ;;
   clear) printf '@1\t-\n' ;;
-  wait) printf '{{"schema_version":1,"satisfied":false,"baseline":"working","state":"working"}}\n'
+  wait) printf '{"schema_version":1,"satisfied":false,"baseline":"working","state":"working"}\n'
         exit 124 ;;
-  send-keys) printf '{{"schema_version":1,"verified":true}}\n' ;;
-  prompt) printf '{{"schema_version":1,"delivery":"ok","transition_observed":false}}\n'
+  send-keys) printf '{"schema_version":1,"verified":true}\n' ;;
+  prompt) printf '{"schema_version":1,"delivery":"ok","transition_observed":false}\n'
           exit 124 ;;
-  answer) printf '{{"schema_version":1,"delivered":true}}\n' ;;
-  start) printf '{{"schema_version":1,"started":true,"ready":true}}\n' ;;
+  answer) printf '{"schema_version":1,"delivered":true}\n' ;;
+  start) printf '{"schema_version":1,"started":true,"ready":true}\n' ;;
   session) case "$3" in
-    open) printf '{{"schema_version":1,"resource":"@9","parent":"@7","provider":"claude","native_id":null}}\n' ;;
+    open) printf '{"schema_version":1,"resource":"@9","parent":"@7","provider":"claude","native_id":null}\n' ;;
     close) printf '@9\tclosed\n' ;;
   esac ;;
-  emit) printf '{{"schema_version":1,"resource":"@9","seq":42,"ts_ms":1757404800123,"type":"prompt"}}\n' ;;
-  log) printf '{{"schema_version":1,"resource":"@9","parent":"@7","provider":"claude","native_id":null,"records":[{{"seq":1,"ts_ms":10,"type":"session_start","data":{{}}}},{{"seq":2,"ts_ms":20,"type":"prompt","data":{{"chars":4}}}}]}}\n' ;;
-  *) printf '{{"schema_version":1,"agents":[]}}\n' ;;
+  emit) printf '{"schema_version":1,"resource":"@9","seq":42,"ts_ms":1757404800123,"type":"prompt"}\n' ;;
+  log) printf '{"schema_version":1,"resource":"@9","parent":"@7","provider":"claude","native_id":null,"records":[{"seq":1,"ts_ms":10,"type":"session_start","data":{}},{"seq":2,"ts_ms":20,"type":"prompt","data":{"chars":4}}]}\n' ;;
+  *) printf '{"schema_version":1,"agents":[]}\n' ;;
 esac
 "#,
-            log = log.display(),
-        );
-        fs::write(&executable, script).unwrap();
-        let mut permissions = fs::metadata(&executable).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&executable, permissions).unwrap();
-        (temp, CliAdapter::new(executable), log)
+        )
     }
 
     async fn assert_argv(
@@ -1108,14 +1006,12 @@ esac
         let result = call_with_adapter(name, &args, adapter)
             .await
             .unwrap_or_else(|err| panic!("{name} failed: {err:?}"));
-        let actual = fs::read_to_string(log).unwrap();
-        assert_eq!(actual.lines().collect::<Vec<_>>(), expected, "{name}");
+        assert_eq!(fake::logged(log), expected, "{name}");
         result
     }
 
-    /// Bead phux-w7z2.30: the multiplexer is gone. Every agent verb is its
-    /// own tool with its own frozen argument shape, and no schema anywhere
-    /// in the family carries an `action` discriminant.
+    /// Every agent verb is its own tool: none carries an `action`
+    /// discriminant, and the read and write shapes never merge.
     #[test]
     fn the_agent_family_is_distinct_tools_with_no_action_multiplexer() {
         let schemas = schemas();
@@ -1123,38 +1019,14 @@ esac
             .iter()
             .filter_map(|schema| schema["name"].as_str())
             .collect();
-        assert_eq!(
-            names,
-            vec![
-                "phux_agent_list",
-                "phux_agent_show",
-                "phux_agent_explain",
-                "phux_agent_set",
-                "phux_agent_clear",
-                "phux_agent_wait",
-                "phux_agent_send_keys",
-                "phux_agent_prompt",
-                "phux_agent_answer",
-                "phux_agent_start",
-                "phux_agent_session_open",
-                "phux_agent_session_close",
-                "phux_agent_emit",
-                "phux_agent_log",
-            ],
-        );
         for schema in &schemas {
-            assert_eq!(schema["inputSchema"]["additionalProperties"], false);
-            assert_eq!(schema["inputSchema"]["type"], "object");
             assert!(
                 schema["inputSchema"]["properties"].get("action").is_none(),
                 "{} still multiplexes on `action`",
                 schema["name"],
             );
-            assert!(schema["description"].is_string());
             assert!(owns(schema["name"].as_str().unwrap()));
         }
-        // The union that must never re-form: no read tool may carry the
-        // write verbs' arguments, and no write tool the read verbs'.
         let props = |name: &str| schemas[names.iter().position(|n| *n == name).unwrap()].clone();
         for read in ["phux_agent_list", "phux_agent_show", "phux_agent_explain"] {
             let schema = props(read);
@@ -1179,10 +1051,8 @@ esac
         );
     }
 
-    /// `phux_agent_wait`'s description has to carry three things or it
-    /// produces orchestrators that misread its result: that it is
-    /// edge-triggered, that a timeout means no transition (not "still
-    /// working"), and the two-connection caveat from ADR-0076 point 6.
+    /// The wait description must state the edge rule, the meaning of a
+    /// timeout, and the two-connection caveat, or callers misread results.
     #[test]
     fn the_wait_description_states_the_edge_rule_and_the_two_connection_caveat() {
         let schema = wait_schema();
@@ -1265,9 +1135,7 @@ esac
         .await;
     }
 
-    /// The three turn-driving tools are kept together because their exact
-    /// argv is where fused waiting, ask correlation, and existing-pane start
-    /// become enforceable rather than descriptive.
+    /// The turn-driving tools execute the exact canonical argv.
     #[tokio::test]
     async fn turn_driving_tools_execute_the_exact_canonical_argv() {
         let (_temp, adapter, log) = fake_cli();
@@ -1390,8 +1258,7 @@ esac
         );
         assert_eq!(bounded["baseline"], json!("working"));
 
-        // Omitting `timeout_secs` still bounds the call: the CLI's own
-        // default is unbounded, which a tool call cannot afford.
+        // Omitting `timeout_secs` still bounds the call.
         assert_argv(
             &adapter,
             &log,

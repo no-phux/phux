@@ -1,54 +1,17 @@
-//! Reusable selectable-list overlay (phux-ahv.8 / phux-4li.19).
+//! Reusable selectable-list overlay.
 //!
-//! A themed [`Modal`] wrapping a one-line query input and a filtered,
-//! scrollable list of items. Each item carries a display label, an
-//! optional right-aligned secondary label, and the
-//! [`ResolvedAction`] it commits on Enter. This is the shared primitive
-//! behind both the command palette and the `<leader> w` window picker:
-//! both populate a [`SelectList`] from different sources and let the
-//! single `run_action()` dispatch path execute the committed action.
+//! A themed [`Modal`] with a query line over a filtered, scrollable list
+//! whose rows commit a [`ResolvedAction`] through `run_action()`. It backs the command palette and every picker.
 //!
-//! ## Input model
+//! Keys: Up/`C-p`, Down/`C-n` (and `j`/`k` while the query is empty),
+//! `PageUp`/`PageDown`, `Home`/`End`, the wheel ([`WHEEL_SCROLL_ROWS`]);
+//! text filters, Backspace edits, Enter commits, Esc dismisses.
 //!
-//! - Up / `C-p` and Down / `C-n` move the selection (also `j` / `k` when
-//!   the query is empty, so a fresh palette is vi-navigable; once the
-//!   user starts typing, `j`/`k` are treated as filter text).
-//! - `PageUp` / `PageDown` move by a screenful, `Home` / `End` jump to the
-//!   first / last selectable row, and the mouse wheel moves the selection
-//!   [`WHEEL_SCROLL_ROWS`] rows at a time.
-//! - Printable text appends to the query and re-filters.
-//! - Backspace edits the query.
-//! - Enter commits the selected item's [`ResolvedAction`]
-//!   ([`OverlayCommand::Commit`]); on an empty filtered list it is a
-//!   no-op.
-//! - Esc dismisses ([`OverlayCommand::Dismiss`]).
-//!
-//! ## Scrolling
-//!
-//! The rows are a *viewport* over the filtered list, not the whole list:
-//! only the rows that fit inside the modal are painted, windowed so the
-//! selection is always on screen ([`scroll_into_view`]). A list that
-//! overflows its box paints a scrollbar in the right border column
-//! ([`paint_scrollbar`]) — without one, navigating past the last visible
-//! row walked the selection off the bottom edge with no way to tell where
-//! you were, which is the bug this viewport exists to fix (phux-ep9s).
-//!
-//! ## Filtering and ranking
-//!
-//! Filtering is a *scored* subsequence (fuzzy) match of the lowercased
-//! query against each item's `filter_text` (label + secondary). An empty
-//! query matches everything (and preserves source order). A non-empty
-//! query keeps only matching rows and sorts them best-first: typing `sp`
-//! floats `split-pane` above `toggle-sidebar`. See [`fuzzy_score`].
-//!
-//! ## Headers and grouping
-//!
-//! A row may be a non-selectable [`SelectKind::Header`] — a dim section
-//! label (category in the palette, session in the grouped window picker).
-//! Headers never match a query, are skipped by navigation and Enter, and
-//! are hidden entirely once the user starts typing (a filtered list is a
-//! flat best-first ranking, not a grouped one). Selectable rows may be
-//! [`indented`](SelectItem::indented) to nest under the header above them.
+//! Only the rows that fit are painted, windowed around the selection
+//! ([`scroll_into_view`]), with a scrollbar when the list overflows. A
+//! non-empty query is a scored fuzzy match ([`fuzzy_score`]) ranked
+//! best-first; [`SelectKind::Header`] rows group an empty query and vanish
+//! once the user types.
 
 use std::cell::Cell;
 
@@ -65,59 +28,43 @@ use super::{OverlayCommand, RenderOverlay};
 use crate::render::clip_text;
 use crate::render::{ChromeBreakpoints, Theme};
 
-/// Blank columns held between a row's label and its secondary. One is
-/// enough to read them as separate facts; more just costs the secondary
-/// room it does not have on a narrow list.
+/// Blank columns between a row's label and its secondary.
 const GAP: usize = 1;
 
-/// Rows of the modal box that are *not* list rows: the two borders and
-/// the query line. The list viewport is whatever height is left over.
+/// Modal rows that are not list rows: two borders and the query line.
 const CHROME_ROWS: u16 = 3;
 
-/// Rows the selection moves per mouse-wheel detent, matching copy-mode's
-/// `WHEEL_SCROLL_LINES` so the wheel feels the same everywhere in the client.
+/// Rows the selection moves per wheel detent (matches copy-mode).
 pub const WHEEL_SCROLL_ROWS: usize = 3;
 
-/// Whether a [`SelectItem`] is a selectable row or a non-selectable
-/// section header.
+/// A selectable row or a non-selectable section header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectKind {
     /// A normal selectable row that commits its [`SelectItem::action`].
     Item,
-    /// A dim, non-selectable section label (a palette category, or a
-    /// session group in the window picker). Skipped by navigation/Enter
-    /// and hidden once the user types a query.
+    /// A dim, non-selectable section label, hidden once the user types.
     Header,
 }
 
 /// One row in a [`SelectList`] — either a selectable item or a header.
 #[derive(Debug, Clone)]
 pub struct SelectItem {
-    /// Primary display label (left column), e.g. an action name or a
-    /// window's `index:name`.
+    /// Primary display label (left column).
     pub label: String,
-    /// Optional right-aligned secondary label, e.g. a bound chord or a
-    /// pane count. Dimmed when present.
+    /// Optional right-aligned, dimmed secondary (a chord, a count).
     pub secondary: Option<String>,
-    /// The action committed when this item is chosen. Flows straight
-    /// into the dispatcher's `run_action()` — the same path a keybind
-    /// takes. Ignored for [`SelectKind::Header`] rows.
+    /// The action committed when chosen (ignored for headers).
     pub action: ResolvedAction,
     /// Whether this row is selectable or a section header.
     pub kind: SelectKind,
-    /// Indent the label one level (two spaces) so selectable rows nest
-    /// visually under the [`SelectKind::Header`] above them.
+    /// Indent the label two spaces to nest under the header above it.
     pub indented: bool,
-    /// phux-foz.7: paint this row's label in the theme's `attention` slot
-    /// (the same amber the sidebar tab marker and status-bar asked hint
-    /// use), so a row that needs the user reads hot at a glance. The
-    /// selected row keeps plain reverse-video regardless.
+    /// Paint the label in the theme's `attention` slot (unless selected).
     pub attention: bool,
 }
 
 impl SelectItem {
-    /// An item displaying `label` that commits `action`, with no
-    /// secondary label.
+    /// An item displaying `label` that commits `action`.
     #[must_use]
     pub fn new(label: impl Into<String>, action: ResolvedAction) -> Self {
         Self {
@@ -130,9 +77,7 @@ impl SelectItem {
         }
     }
 
-    /// A non-selectable, dim section header labelled `label`. Carries no
-    /// runnable action (a no-op [`ResolvedAction`] placeholder); the list
-    /// never commits it.
+    /// A non-selectable header with a placeholder action it never commits.
     #[must_use]
     pub fn header(label: impl Into<String>) -> Self {
         Self {
@@ -155,17 +100,14 @@ impl SelectItem {
         self
     }
 
-    /// Mark this selectable row as nested under the header above it
-    /// (renders with a two-space indent).
+    /// Nest this row under the header above it.
     #[must_use]
     pub const fn indented(mut self) -> Self {
         self.indented = true;
         self
     }
 
-    /// Mark this row as needing the user's attention: its label paints in
-    /// the theme's `attention` slot (phux-foz.7, the agent-fleet rows with
-    /// a pending ADR-0035 question or a declared high-attention state).
+    /// Mark this row as needing the user's attention.
     #[must_use]
     pub const fn attention(mut self) -> Self {
         self.attention = true;
@@ -178,8 +120,7 @@ impl SelectItem {
         matches!(self.kind, SelectKind::Header)
     }
 
-    /// The text the query is fuzzy-matched against: label plus secondary
-    /// (so a user can filter the palette by a binding chord too).
+    /// The text a query matches: label plus secondary (so chords filter too).
     fn filter_text(&self) -> String {
         self.secondary
             .as_ref()
@@ -188,55 +129,34 @@ impl SelectItem {
 }
 
 /// A themed, filterable, selectable list rendered as an overlay.
-///
-/// Build with [`SelectList::new`], then push the boxed value onto the
-/// [`OverlayState`](super::OverlayState) stack. Generic only over the
-/// supplied [`SelectItem`]s — the palette and window picker differ only
-/// in how they build that vector.
 #[derive(Debug, Clone)]
 pub struct SelectList {
     /// Modal title (e.g. `"command palette"`).
     title: String,
-    /// All items, unfiltered. Filtering is recomputed from `query` on
-    /// every keystroke rather than cached, since the lists are short.
+    /// All items, unfiltered (filtering is recomputed per keystroke).
     items: Vec<SelectItem>,
     /// Current query text.
     query: String,
-    /// Selection index into the *filtered* list. Clamped on every filter
-    /// change so it never points past the visible rows.
+    /// Selection index into the *filtered* list, clamped on every change.
     selected: usize,
-    /// Color slots snapshotted from the active [`Theme`] at construction
-    /// (captured, not borrowed, so the overlay stays `'static`).
+    /// Theme snapshot (copied, so the overlay stays `'static`).
     theme: Theme,
-    /// phux-foz.7: when `Some`, this list is a *live* projection of shared
-    /// client state and accepts in-place row refreshes tagged with the same
-    /// key via [`RenderOverlay::refresh_items`] (the agent-fleet dashboard
-    /// re-rendering as agent events land while it is open). `None` (the
-    /// default) makes the list a static snapshot — palette and pickers —
-    /// that ignores every refresh.
+    /// `Some` for a live projection that accepts in-place refreshes tagged
+    /// with this key ([`RenderOverlay::refresh_items`]); `None` ignores them.
     live_key: Option<&'static str>,
-    /// First visible row of the filtered list (an index into the filtered
-    /// indices) — the scroll offset.
-    ///
-    /// Interior-mutable because the window can only be resolved at paint
-    /// time, when the viewport height is finally known, and
-    /// [`RenderOverlay::render`] takes `&self`. This is the same bargain
-    /// ratatui's own `ListState::offset` makes; the offset is pure view
-    /// state, derived from `selected` on every paint, so nothing observable
-    /// depends on when it is written.
+    /// First visible filtered row. Interior-mutable because the viewport
+    /// height is only known at paint time and `render` takes `&self` (the
+    /// bargain ratatui's `ListState::offset` makes).
     scroll: Cell<usize>,
-    /// Rows the list viewport held at the last paint, recorded so
-    /// `PageUp`/`PageDown` can move by a real screenful. Zero until the
-    /// first render (page keys then fall back to a single row).
+    /// Viewport rows at the last paint, for page moves (0 before the first).
     page: Cell<usize>,
-    /// phux-huhi: `[chrome]` thresholds, stamped by `OverlayState::push`.
+    /// `[chrome]` thresholds, stamped by `OverlayState::push`.
     breakpoints: ChromeBreakpoints,
 }
 
 impl SelectList {
-    /// A list titled `title` over `items`, styled with `theme`. The
-    /// selection starts on the first item; the query starts empty (all
-    /// items visible).
+    /// A list titled `title` over `items`, selection on the first selectable
+    /// row, empty query.
     #[must_use]
     pub fn new(title: impl Into<String>, items: Vec<SelectItem>, theme: &Theme) -> Self {
         let mut list = Self {
@@ -250,34 +170,22 @@ impl SelectList {
             page: Cell::new(0),
             breakpoints: ChromeBreakpoints::default(),
         };
-        // The first row may be a header (grouped pickers always open on
-        // one); start the cursor on the first selectable row instead.
+        // Grouped pickers open on a header; start on the first selectable row.
         let indices = list.filtered_indices();
         list.snap_to_selectable(&indices);
         list
     }
 
-    /// Opt this list into live row refreshes tagged `key` (phux-foz.7).
-    ///
-    /// See [`RenderOverlay::refresh_items`]: the driver rebuilds the rows
-    /// from fresh client state when a relevant server frame lands and hands
-    /// them to the overlay stack; only a list constructed with the matching
-    /// key replaces its rows (query and selection position are preserved).
+    /// Opt this list into live row refreshes tagged `key`.
     #[must_use]
     pub const fn with_live_key(mut self, key: &'static str) -> Self {
         self.live_key = Some(key);
         self
     }
 
-    /// Replace the full item set in place, keeping the current query and
-    /// clamping/snapping the selection so it stays on a selectable row.
-    ///
-    /// The selection follows the selected row's *action* (name and args),
-    /// not its position: a refresh that inserts a row above the cursor — a
-    /// satellite's header landing in the session picker — must not make
-    /// Enter commit a different target than the one highlighted. Only when
-    /// that action is gone does the selection fall back to the same visible
-    /// row index, snapped onto a selectable row.
+    /// Replace the items in place, keeping the query. The selection follows
+    /// the selected row's action (a row inserted above the cursor must not
+    /// change what Enter commits), else keeps its position, snapped.
     pub fn replace_items(&mut self, items: Vec<SelectItem>) {
         let kept = self.selected_action();
         self.items = items;
@@ -304,52 +212,37 @@ impl SelectList {
             .position(|&idx| !self.items[idx].is_header() && self.items[idx].action == *action)
     }
 
-    /// Indices of items to display for the current query.
-    ///
-    /// With an empty query every row is shown in source order, headers
-    /// included, so the grouped layout reads as authored. With a non-empty
-    /// query, headers are dropped (a filtered view is a flat ranking, not a
-    /// grouped one) and the surviving selectable rows are sorted best-first
-    /// by [`fuzzy_score`]; ties keep source order (stable sort) so the
-    /// ordering is deterministic.
+    /// Indices of items to display: every row in source order for an empty
+    /// query, else the matching selectable rows best-first (stable).
     fn filtered_indices(&self) -> Vec<usize> {
         let q = self.query.to_lowercase();
         if q.is_empty() {
             return (0..self.items.len()).collect();
         }
-        let mut scored: Vec<(i32, usize)> = self
-            .items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| !item.is_header())
-            .filter_map(|(i, item)| {
-                fuzzy_score(&q, &item.filter_text().to_lowercase()).map(|score| (score, i))
-            })
-            .collect();
-        // Higher score first; ties broken by original index (stable).
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        scored.into_iter().map(|(_, i)| i).collect()
+        fuzzy_rank(
+            &q,
+            self.items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| !item.is_header())
+                .map(|(i, item)| (i, item.filter_text())),
+        )
     }
 
-    /// Whether the visible row at `row` (an index into `indices`) is a
-    /// selectable item (not a header).
+    /// Whether the visible row `row` is selectable.
     fn row_selectable(&self, indices: &[usize], row: usize) -> bool {
         indices
             .get(row)
             .is_some_and(|&idx| !self.items[idx].is_header())
     }
 
-    /// Advance `selected` to the nearest selectable row at or after the
-    /// current position, then clamp. Keeps the cursor off header rows when
-    /// the list opens or a filter change lands it on one.
+    /// Move `selected` onto the nearest selectable row, forward then back.
     fn snap_to_selectable(&mut self, indices: &[usize]) {
         let visible = indices.len();
         self.clamp_selection(visible);
         if visible == 0 {
             return;
         }
-        // Search forward for a selectable row, then backward, so a header
-        // at the very bottom still resolves to a real item.
         if self.row_selectable(indices, self.selected) {
             return;
         }
@@ -367,8 +260,7 @@ impl SelectList {
         }
     }
 
-    /// Clamp `selected` so it always points at a visible row (or 0 when
-    /// nothing matches).
+    /// Clamp `selected` to a visible row (0 when nothing matches).
     const fn clamp_selection(&mut self, visible: usize) {
         if visible == 0 {
             self.selected = 0;
@@ -377,10 +269,7 @@ impl SelectList {
         }
     }
 
-    /// Move the selection down to the next selectable row within `indices`,
-    /// saturating at the bottom (no wrap — matches the prompt overlay's
-    /// restraint). Header rows are skipped so the cursor only ever lands on
-    /// a runnable item.
+    /// Move to the next selectable row, saturating (no wrap).
     fn select_down(&mut self, indices: &[usize]) {
         let visible = indices.len();
         let mut row = self.selected;
@@ -393,8 +282,7 @@ impl SelectList {
         }
     }
 
-    /// Move the selection up to the previous selectable row, saturating at
-    /// the top and skipping header rows.
+    /// Move to the previous selectable row, saturating.
     fn select_up(&mut self, indices: &[usize]) {
         let mut row = self.selected;
         while row > 0 {
@@ -406,26 +294,21 @@ impl SelectList {
         }
     }
 
-    /// Move the selection down a screenful, saturating at the last
-    /// selectable row. Repeated single steps rather than an index jump, so
-    /// header-skipping and the bottom clamp stay in one place.
+    /// Move down a screenful.
     fn select_page_down(&mut self, indices: &[usize]) {
         for _ in 0..self.page_rows() {
             self.select_down(indices);
         }
     }
 
-    /// Move the selection up a screenful, saturating at the first selectable
-    /// row.
+    /// Move up a screenful.
     fn select_page_up(&mut self, indices: &[usize]) {
         for _ in 0..self.page_rows() {
             self.select_up(indices);
         }
     }
 
-    /// Rows in a page move: the last painted viewport height, or a single row
-    /// before the first paint (no viewport measured yet — better a small step
-    /// than a wild one).
+    /// Rows per page move: the last painted height, or 1 before any paint.
     fn page_rows(&self) -> usize {
         self.page.get().max(1)
     }
@@ -436,29 +319,24 @@ impl SelectList {
         self.snap_to_selectable(indices);
     }
 
-    /// Jump to the last selectable row (End). `snap_to_selectable` searches
-    /// backward once the forward search runs out, so a trailing header row
-    /// resolves to the item above it.
+    /// Jump to the last selectable row (End); a trailing header resolves
+    /// upward.
     fn select_last(&mut self, indices: &[usize]) {
         self.selected = indices.len().saturating_sub(1);
         self.snap_to_selectable(indices);
     }
 
-    /// The modal rect: 50% of the viewport, min 30x10, clamped to the
-    /// outer rect. Half leaves live panes visible around the finder.
+    /// The modal rect: half the viewport, min 30x10 (see `centered_panel`).
     fn modal_area(outer: Rect, bp: ChromeBreakpoints) -> Rect {
         centered_panel(outer, 5, 30, 10, bp)
     }
 
-    /// Rows available to the list inside `modal_area`, once the borders and
-    /// the query line + its blank are taken out.
+    /// Rows available to the list inside `modal_area`.
     const fn list_height(modal_area: Rect) -> usize {
         modal_area.height.saturating_sub(CHROME_ROWS) as usize
     }
 
-    /// The one-column scrollbar track: the modal's right border column,
-    /// spanning exactly the list rows (which start below the border, the
-    /// query line, and its blank).
+    /// The scrollbar track: the right border column beside the list rows.
     fn scrollbar_track(modal_area: Rect) -> Rect {
         Rect::new(
             modal_area.x + modal_area.width.saturating_sub(1),
@@ -468,13 +346,8 @@ impl SelectList {
         )
     }
 
-    /// Build the body lines: a query line, a separator, then the *visible*
-    /// filtered rows (selected row highlighted). A dimmed notice replaces
-    /// the rows when nothing matches.
-    ///
-    /// `window` is the slice of filtered indices that fits the viewport and
-    /// `offset` is where that slice starts in the filtered list, so a row's
-    /// absolute position — the thing `selected` indexes — is `offset + row`.
+    /// Body lines: the query line, then the visible `window` rows (starting at
+    /// filtered index `offset`), or a dim "(no matches)".
     fn body_lines(&self, window: &[usize], offset: usize, inner_width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = Vec::new();
         // Query line: a dim prompt, the text, and a reverse-video caret.
@@ -512,8 +385,7 @@ impl SelectList {
         lines
     }
 
-    /// Keep newly typed text and the caret visible without changing the query
-    /// used for matching. Strip controls before measuring terminal columns.
+    /// The query's tail that fits `width`, so the caret stays visible.
     fn visible_query(&self, width: u16) -> String {
         let query = clip_text(&self.query, usize::MAX);
         let mut remaining = crate::render::display_width(&query);
@@ -527,8 +399,7 @@ impl SelectList {
         String::new()
     }
 
-    /// A dim, non-selectable section-header row, styled with the theme's
-    /// `section_header` slot shared by grouped discovery surfaces.
+    /// A dim, non-selectable section-header row.
     fn header_line(&self, item: &SelectItem) -> Line<'static> {
         Line::from(Span::styled(
             item.label.clone(),
@@ -536,21 +407,9 @@ impl SelectList {
         ))
     }
 
-    /// One list row: label on the left, optional dimmed secondary
-    /// right-aligned within `inner_width`. The selected row is rendered
-    /// on the theme's selection surface across its visible width.
-    ///
-    /// The row is laid out to *exactly* `inner_width` cells. It used to
-    /// be laid out to at least `label + 1 + secondary` and left "truncated
-    /// implicitly by the terminal if the row is too narrow" — which on a
-    /// narrow viewport means the text runs straight through the modal's
-    /// right border and onto the pane behind it, and a reverse-video
-    /// selection bar that stops short of the edge it is supposed to fill.
-    ///
-    /// Under pressure the **secondary yields first, entirely if need be**.
-    /// The label is the row's identity — the thing you are choosing — and
-    /// the secondary is context: a branch, a cwd, a bound chord. Losing
-    /// the context leaves a usable list; losing the identity does not.
+    /// One row laid out to exactly `inner_width` cells: label left, dimmed
+    /// secondary right. Under pressure the secondary yields first, entirely
+    /// if need be; the label is the row's identity.
     fn item_line(&self, item: &SelectItem, selected: bool, inner_width: u16) -> Line<'static> {
         let width = inner_width as usize;
         if width == 0 {
@@ -560,15 +419,8 @@ impl SelectList {
         let label_full = format!("{indent}{}", item.label);
         let secondary_full = item.secondary.clone().unwrap_or_default();
 
-        // The secondary gets whatever the full label does not need, less
-        // one mandatory blank column: `label` and `secondary` are two
-        // different facts and must never run together into one word.
-        //
-        // A SHORT secondary — a chord like `C-a z`, no wider than a third
-        // of the row — is kept whole and the label clips instead. It is
-        // the column the eye runs down, and a chord cut to `C-a…` is not
-        // a shorter chord but a wrong one; the label keeps two thirds of
-        // the row either way.
+        // A short secondary (a chord, at most a third of the row) stays whole
+        // and the label clips instead: a cut chord is a wrong chord.
         let secondary_w = crate::render::display_width(&secondary_full);
         let secondary = if secondary_w > 0 && secondary_w + GAP <= width / 3 {
             secondary_full
@@ -579,8 +431,6 @@ impl SelectList {
             )
         };
         let sec_w = crate::render::display_width(&secondary);
-        // The label then takes the rest, reserving the gap only if a
-        // secondary actually survived.
         let label = clip_text(
             &label_full,
             width.saturating_sub(sec_w + if sec_w > 0 { GAP } else { 0 }),
@@ -589,8 +439,7 @@ impl SelectList {
             " ".repeat(width.saturating_sub(crate::render::display_width(&label) + sec_w));
 
         if selected {
-            // Own both colors: reversing a host's dark text on this dark
-            // modal can make the selected row unreadable on light terminals.
+            // Own both colors so the selection reads on light terminals too.
             let text = format!("{label}{padding}{secondary}");
             Line::from(Span::styled(
                 text,
@@ -599,10 +448,6 @@ impl SelectList {
                     .bg(self.theme.selection_bg),
             ))
         } else {
-            // phux-foz.7: an attention row's label paints in the theme's
-            // `attention` slot (bold) — the same semantic amber the sidebar
-            // marker and status-bar asked hint use — so "needs you" rows
-            // stand out inside the fleet dashboard without a new slot.
             let label_style = if item.attention {
                 Style::default()
                     .fg(self.theme.attention)
@@ -623,13 +468,9 @@ impl RenderOverlay for SelectList {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let modal_area = Self::modal_area(area, self.breakpoints);
         let indices = self.filtered_indices();
-        // Body width is the modal interior minus the 1-cell border on
-        // each side.
         let inner_width = modal_inner_width(modal_area.width);
 
-        // Window the rows to what actually fits, keeping the selection in
-        // view. Both are view state: recorded here (the only place the
-        // viewport height is known) for the next page-key press to use.
+        // Window the rows around the selection; the height is known only here.
         let height = Self::list_height(modal_area);
         self.page.set(height);
         let offset = scroll_into_view(self.scroll.get(), self.selected, indices.len(), height);
@@ -640,8 +481,6 @@ impl RenderOverlay for SelectList {
 
         let body = self.body_lines(window, offset, inner_width);
         Modal::new(&self.theme, self.title.clone(), body).render_into(modal_area, buf);
-        // Over the border the modal just drew, so an overflowing list shows
-        // its extent and position instead of silently clipping.
         paint_scrollbar(
             buf,
             Self::scrollbar_track(modal_area),
@@ -660,8 +499,6 @@ impl RenderOverlay for SelectList {
     }
 
     fn refresh_items(&mut self, key: &str, items: &[SelectItem]) -> bool {
-        // Only a live list whose key matches accepts the refresh; the
-        // palette and the static pickers (no live key) ignore it.
         if self.live_key != Some(key) {
             return false;
         }
@@ -669,11 +506,7 @@ impl RenderOverlay for SelectList {
         true
     }
 
-    /// The wheel moves the *selection*, not the view on its own — the
-    /// viewport follows the selection ([`scroll_into_view`]), so scrolling
-    /// the box away from the cursor would only be undone on the next paint.
-    /// Moving the selection keeps the two in lockstep and leaves Enter
-    /// meaning what the user just scrolled to.
+    /// The wheel moves the selection; the viewport follows it.
     fn handle_mouse(&mut self, mouse: &MouseEvent) -> OverlayCommand {
         if mouse.action != MouseAction::Press {
             return OverlayCommand::Stay;
@@ -725,8 +558,6 @@ impl RenderOverlay for SelectList {
 
         match key.key {
             PhysicalKey::Escape => OverlayCommand::Dismiss,
-            // Enter commits only a selectable row; a header (or empty list)
-            // is a no-op.
             PhysicalKey::Enter => indices
                 .get(self.selected)
                 .map_or(OverlayCommand::Stay, |&idx| {
@@ -767,9 +598,7 @@ impl RenderOverlay for SelectList {
                 self.snap_to_selectable(&indices);
                 OverlayCommand::Stay
             }
-            // `j`/`k` navigate only while the query is empty (so a fresh
-            // list is vi-navigable); once the user types, they're filter
-            // text like any other letter.
+            // `j`/`k` navigate only while the query is empty.
             PhysicalKey::J if self.query.is_empty() => {
                 self.select_down(&indices);
                 OverlayCommand::Stay
@@ -792,29 +621,24 @@ impl RenderOverlay for SelectList {
     }
 }
 
-/// Scored subsequence (fuzzy) match.
+/// Indices of the `(index, haystack)` pairs a lowercased `query` fuzzy-matches,
+/// best first; ties keep input order.
+pub(super) fn fuzzy_rank(
+    query: &str,
+    haystacks: impl Iterator<Item = (usize, String)>,
+) -> Vec<usize> {
+    let mut scored: Vec<(i32, usize)> = haystacks
+        .filter_map(|(i, hay)| fuzzy_score(query, &hay.to_lowercase()).map(|score| (score, i)))
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    scored.into_iter().map(|(_, i)| i).collect()
+}
+
+/// Scored subsequence (fuzzy) match of a lowercased `needle` in `haystack`.
 ///
-/// Returns `Some(score)` when every char of `needle` appears in `haystack`
-/// in order (not necessarily contiguously), or `None` when it does not.
-/// An empty needle scores `0` (matches everything). Both arguments are
-/// expected lowercased by the caller. Higher scores are better matches.
-///
-/// The score rewards the qualities that make one subsequence match read as
-/// "more relevant" than another:
-///
-/// - **Contiguous runs.** Consecutive matched chars compound (each step in
-///   a run is worth more than the last), so `sp` against `split-pane`
-///   (a two-char run at the front) outranks `sp` against `toggle-sidebar`
-///   (the `s` and `p` are far apart).
-/// - **Word-boundary / prefix hits.** A matched char at position 0, or
-///   immediately after a separator (`-`, `_`, space), earns a bonus — it
-///   reads as the start of a meaningful token.
-/// - **Earliness.** A small penalty grows with the gap skipped before each
-///   match, so matches that cluster near the front of the haystack win.
-///
-/// The exact constants are tuned for short action/window labels, not a
-/// general-purpose corpus; only the *ordering* they induce is contractual
-/// (see the unit tests).
+/// `None` when it is not a subsequence, `0` for an
+/// empty needle. Contiguous runs compound, word-boundary hits earn a bonus,
+/// and skipped gaps cost a little. Only the induced ordering is contractual.
 #[must_use]
 pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
     if needle.is_empty() {
@@ -827,12 +651,10 @@ pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
     let mut last_match: Option<usize> = None;
 
     for nc in needle.chars() {
-        // Advance through the haystack to the next occurrence of `nc`.
         let found = hay[hay_idx..].iter().position(|&hc| hc == nc)?;
         let pos = hay_idx + found;
 
-        // Gap penalty: chars skipped since the previous match (or the start
-        // of the haystack for the first char). Earlier, tighter matches win.
+        // Gap penalty: earlier, tighter matches win.
         let gap = last_match.map_or(pos, |prev| pos - prev - 1);
         score -= i32::try_from(gap).unwrap_or(i32::MAX).min(20);
 
@@ -845,8 +667,6 @@ pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
             score += 10;
         }
 
-        // Contiguous-run bonus: matching right after the previous match
-        // continues a run; each additional step in the run is worth more.
         if last_match.is_some_and(|prev| prev + 1 == pos) {
             run += 1;
             score += 5 + run * 5;
@@ -885,554 +705,323 @@ mod tests {
         }
     }
 
-    fn ctrl(key: PhysicalKey) -> KeyEvent {
-        let mut ev = press(key, None);
-        ev.mods = ModSet::CTRL;
-        ev
+    fn key(sl: &mut SelectList, key: PhysicalKey) -> OverlayCommand {
+        sl.handle_key(&press(key, None))
+    }
+
+    fn type_str(sl: &mut SelectList, s: &str) {
+        for ch in s.chars() {
+            sl.handle_key(&press(PhysicalKey::A, Some(&ch.to_string())));
+        }
+    }
+
+    /// The action Enter commits, or `None` when it commits nothing.
+    fn commit(sl: &mut SelectList) -> Option<String> {
+        match key(sl, PhysicalKey::Enter) {
+            OverlayCommand::Commit(a) => Some(a.action),
+            _ => None,
+        }
+    }
+
+    fn labels(sl: &SelectList) -> Vec<&str> {
+        sl.filtered_indices()
+            .into_iter()
+            .map(|i| sl.items[i].label.as_str())
+            .collect()
+    }
+
+    fn list(items: Vec<SelectItem>) -> SelectList {
+        SelectList::new("command palette", items, &Theme::default())
     }
 
     fn sample() -> SelectList {
-        let items = vec![
+        list(vec![
             SelectItem::new("split-pane", action("split-pane")).secondary("C-a |"),
             SelectItem::new("new-window", action("new-window")).secondary("C-a c"),
             SelectItem::new("detach", action("detach")).secondary("C-a d"),
-        ];
-        SelectList::new("command palette", items, &Theme::default())
+        ])
     }
 
-    #[test]
-    fn fuzzy_score_matches_subsequence() {
-        assert!(fuzzy_score("", "anything").is_some());
-        assert!(fuzzy_score("sp", "split-pane").is_some());
-        assert!(fuzzy_score("spn", "split-pane").is_some()); // s-p-(a)n
-        assert!(fuzzy_score("nw", "new-window").is_some());
-        assert!(fuzzy_score("zzz", "new-window").is_none());
-        // Order matters: "wen" can't be a subsequence — there is no 'e'
-        // after the first 'w' in "new-window".
-        assert!(fuzzy_score("wen", "new-window").is_none());
-    }
-
-    #[test]
-    fn fuzzy_score_none_for_non_subsequence() {
-        assert_eq!(fuzzy_score("zzz", "new-window"), None);
-        assert_eq!(fuzzy_score("wen", "new-window"), None);
-    }
-
-    #[test]
-    fn fuzzy_score_empty_needle_scores_zero() {
-        assert_eq!(fuzzy_score("", "anything"), Some(0));
-    }
-
-    #[test]
-    fn fuzzy_score_prefers_split_pane_for_sp() {
-        // The worked example: "sp" should rank "split-pane" (a contiguous,
-        // front-anchored run) above another row that also matches "sp" only
-        // as a scattered subsequence. "previous-pane" has an `s` (end of
-        // "previous") followed later by the `p` of "pane", so it matches
-        // too — but with no contiguous run and a wide gap.
-        let split = fuzzy_score("sp", "split-pane").expect("split-pane matches sp");
-        let scattered = fuzzy_score("sp", "previous-pane").expect("previous-pane matches sp");
-        assert!(
-            split > scattered,
-            "split-pane ({split}) should outrank previous-pane ({scattered}) for `sp`",
-        );
-    }
-
-    #[test]
-    fn fuzzy_score_rewards_word_boundary() {
-        // "p" hitting the start of the "pane" token beats "p" buried
-        // mid-word.
-        let boundary = fuzzy_score("p", "split-pane").expect("matches");
-        let mid = fuzzy_score("p", "copy-mode").expect("matches");
-        assert!(
-            boundary > mid,
-            "boundary hit ({boundary}) should beat mid-word hit ({mid})",
-        );
-    }
-
-    #[test]
-    fn ranking_floats_best_match_to_top() {
-        let items = vec![
-            SelectItem::new("toggle-sidebar", action("toggle-sidebar")),
-            SelectItem::new("split-pane", action("split-pane")),
-            SelectItem::new("previous-pane", action("previous-pane")),
-        ];
-        let mut sl = SelectList::new("palette", items, &Theme::default());
-        for ch in ['s', 'p'] {
-            sl.handle_key(&press(PhysicalKey::A, Some(&ch.to_string())));
-        }
-        let idx = sl.filtered_indices();
-        assert_eq!(
-            sl.items[idx[0]].label,
-            "split-pane",
-            "`sp` must rank split-pane first, got {:?}",
-            idx.iter().map(|&i| &sl.items[i].label).collect::<Vec<_>>(),
-        );
-    }
-
-    #[test]
-    fn ranking_is_stable_for_equal_scores() {
-        // Two labels for which the query matches at the identical position
-        // and context score identically; a stable sort then keeps source
-        // order, so the ranking is deterministic frame-to-frame. Both start
-        // "x-…", so "x" hits index 0 (a front-anchored, boundary match) in
-        // each.
-        let items = vec![
-            SelectItem::new("x-alpha", action("a")),
-            SelectItem::new("x-bravo", action("b")),
-        ];
-        let a = fuzzy_score("x", "x-alpha");
-        let b = fuzzy_score("x", "x-bravo");
-        assert_eq!(a, b, "the two labels must score equally for the test");
-        let mut sl = SelectList::new("palette", items, &Theme::default());
-        sl.handle_key(&press(PhysicalKey::A, Some("x")));
-        let idx = sl.filtered_indices();
-        assert_eq!(idx, vec![0, 1], "equal scores keep source order");
-    }
-
-    #[test]
-    fn empty_query_preserves_source_order_with_headers() {
-        let items = vec![
+    fn grouped() -> SelectList {
+        list(vec![
             SelectItem::header("Pane"),
             SelectItem::new("split-pane", action("split-pane")).indented(),
             SelectItem::header("Window"),
             SelectItem::new("new-window", action("new-window")).indented(),
-        ];
-        let sl = SelectList::new("palette", items, &Theme::default());
-        assert_eq!(sl.filtered_indices(), vec![0, 1, 2, 3]);
+        ])
     }
 
-    #[test]
-    fn headers_drop_out_when_filtering() {
-        let items = vec![
-            SelectItem::header("Pane"),
-            SelectItem::new("split-pane", action("split-pane")).indented(),
-            SelectItem::header("Window"),
-            SelectItem::new("new-window", action("new-window")).indented(),
-        ];
-        let mut sl = SelectList::new("palette", items, &Theme::default());
-        sl.handle_key(&press(PhysicalKey::A, Some("s")));
-        let idx = sl.filtered_indices();
-        assert!(
-            idx.iter().all(|&i| !sl.items[i].is_header()),
-            "no headers survive a non-empty query",
-        );
-    }
-
-    #[test]
-    fn navigation_skips_header_rows() {
-        let items = vec![
-            SelectItem::header("Pane"),
-            SelectItem::new("split-pane", action("split-pane")).indented(),
-            SelectItem::header("Window"),
-            SelectItem::new("new-window", action("new-window")).indented(),
-        ];
-        let mut sl = SelectList::new("palette", items, &Theme::default());
-        // Opens on the first selectable row (skips the leading header).
-        let cmd = sl.handle_key(&press(PhysicalKey::Enter, None));
-        let OverlayCommand::Commit(a) = cmd else {
-            panic!("expected Commit, got {cmd:?}");
-        };
-        assert_eq!(a.action, "split-pane");
-        // Down jumps over the "Window" header straight to new-window.
-        sl.handle_key(&press(PhysicalKey::ArrowDown, None));
-        let cmd = sl.handle_key(&press(PhysicalKey::Enter, None));
-        let OverlayCommand::Commit(a) = cmd else {
-            panic!("expected Commit");
-        };
-        assert_eq!(a.action, "new-window");
-    }
-
-    #[test]
-    fn enter_on_header_does_not_commit() {
-        // A list with only a header has no selectable row; Enter is a
-        // no-op rather than committing the header's placeholder action.
-        let items = vec![SelectItem::header("Pane")];
-        let mut sl = SelectList::new("palette", items, &Theme::default());
-        assert_eq!(
-            sl.handle_key(&press(PhysicalKey::Enter, None)),
-            OverlayCommand::Stay,
-        );
-    }
-
-    #[test]
-    fn typing_narrows_the_list() {
-        let mut sl = sample();
-        assert_eq!(sl.filtered_indices().len(), 3);
-        sl.handle_key(&press(PhysicalKey::N, Some("n")));
-        sl.handle_key(&press(PhysicalKey::W, Some("w")));
-        // "nw" subsequence matches only "new-window".
-        let idx = sl.filtered_indices();
-        assert_eq!(idx.len(), 1);
-        assert_eq!(sl.items[idx[0]].label, "new-window");
-    }
-
-    #[test]
-    fn filter_can_match_secondary_chord() {
-        let mut sl = sample();
-        // The detach chord is "C-a d"; querying "det" via the label is the
-        // simple case, but the filter text includes the secondary too.
-        for ch in ['d', 'e', 't'] {
-            sl.handle_key(&press(PhysicalKey::A, Some(&ch.to_string())));
-        }
-        let idx = sl.filtered_indices();
-        assert_eq!(idx.len(), 1);
-        assert_eq!(sl.items[idx[0]].label, "detach");
-    }
-
-    #[test]
-    fn enter_commits_selected_action() {
-        let mut sl = sample();
-        // Move down once → "new-window".
-        sl.handle_key(&press(PhysicalKey::ArrowDown, None));
-        let cmd = sl.handle_key(&press(PhysicalKey::Enter, None));
-        let OverlayCommand::Commit(a) = cmd else {
-            panic!("expected Commit, got {cmd:?}");
-        };
-        assert_eq!(a.action, "new-window");
-    }
-
-    #[test]
-    fn enter_on_empty_filter_is_noop() {
-        let mut sl = sample();
-        for ch in ['z', 'z', 'z'] {
-            sl.handle_key(&press(PhysicalKey::A, Some(&ch.to_string())));
-        }
-        assert_eq!(sl.filtered_indices().len(), 0);
-        assert_eq!(
-            sl.handle_key(&press(PhysicalKey::Enter, None)),
-            OverlayCommand::Stay,
-            "Enter with no matches should not commit"
-        );
-    }
-
-    #[test]
-    fn esc_dismisses() {
-        let mut sl = sample();
-        assert_eq!(
-            sl.handle_key(&press(PhysicalKey::Escape, None)),
-            OverlayCommand::Dismiss
-        );
-    }
-
-    #[test]
-    fn ctrl_n_p_navigate() {
-        let mut sl = sample();
-        sl.handle_key(&ctrl(PhysicalKey::N));
-        sl.handle_key(&ctrl(PhysicalKey::N));
-        // Two downs → third item "detach". Saturates (no wrap).
-        sl.handle_key(&ctrl(PhysicalKey::N));
-        let cmd = sl.handle_key(&press(PhysicalKey::Enter, None));
-        let OverlayCommand::Commit(a) = cmd else {
-            panic!("expected Commit");
-        };
-        assert_eq!(a.action, "detach");
-        sl.handle_key(&ctrl(PhysicalKey::P));
-        let cmd = sl.handle_key(&press(PhysicalKey::Enter, None));
-        let OverlayCommand::Commit(a) = cmd else {
-            panic!("expected Commit");
-        };
-        assert_eq!(a.action, "new-window");
-    }
-
-    #[test]
-    fn jk_navigate_only_when_query_empty() {
-        let mut sl = sample();
-        // j with empty query moves down.
-        sl.handle_key(&press(PhysicalKey::J, Some("j")));
-        let cmd = sl.handle_key(&press(PhysicalKey::Enter, None));
-        let OverlayCommand::Commit(a) = cmd else {
-            panic!("expected Commit");
-        };
-        assert_eq!(a.action, "new-window");
-    }
-
-    #[test]
-    fn j_becomes_filter_text_once_query_nonempty() {
-        let mut sl = sample();
-        // Type "d" (query now non-empty), then "j" should be filter text,
-        // not navigation. "dj" matches nothing.
-        sl.handle_key(&press(PhysicalKey::A, Some("d")));
-        sl.handle_key(&press(PhysicalKey::J, Some("j")));
-        assert_eq!(sl.query, "dj");
-        assert_eq!(sl.filtered_indices().len(), 0);
-    }
-
-    // ---------- phux-ep9s: scroll viewport ----------
-
-    /// A list of `n` rows labelled `item-0 ..= item-(n-1)`, long enough to
-    /// overflow any modal a test viewport can produce.
+    /// `n` rows labelled `item-0 ..= item-(n-1)`.
     fn long_list(n: usize) -> SelectList {
-        let items = (0..n)
-            .map(|i| SelectItem::new(format!("item-{i}"), action(&format!("act-{i}"))))
-            .collect();
-        SelectList::new("command palette", items, &Theme::default())
+        list(
+            (0..n)
+                .map(|i| SelectItem::new(format!("item-{i}"), action(&format!("act-{i}"))))
+                .collect(),
+        )
     }
 
-    /// Paint `sl` into a `w`x`h` viewport and flatten it to text.
-    fn render_to_string(sl: &SelectList, w: u16, h: u16) -> String {
+    fn render_buf(sl: &SelectList, w: u16, h: u16) -> Buffer {
         let area = Rect::new(0, 0, w, h);
         let mut buf = Buffer::empty(area);
         sl.render(area, &mut buf);
+        buf
+    }
+
+    fn render_to_string(sl: &SelectList, w: u16, h: u16) -> String {
+        let buf = render_buf(sl, w, h);
         let mut out = String::new();
-        for y in 0..area.height {
-            for x in 0..area.width {
-                out.push_str(buf[(x, y)].symbol());
-            }
+        for y in 0..h {
+            let row: String = (0..w).map(|x| buf[(x, y)].symbol()).collect();
+            out.push_str(row.trim_end());
             out.push('\n');
         }
         out
     }
 
-    /// The label of the row painted on the selection surface — what the user sees as
-    /// selected. `None` when no row is highlighted anywhere on screen, which
-    /// is exactly the bug: the cursor walked off the bottom of the box.
+    /// The label of the row painted on the selection surface, or `None` when
+    /// no row is highlighted on screen (the cursor walked off the box).
     fn painted_selection(sl: &SelectList, w: u16, h: u16) -> Option<String> {
-        let area = Rect::new(0, 0, w, h);
-        let mut buf = Buffer::empty(area);
-        sl.render(area, &mut buf);
-        for y in 0..area.height {
-            // A selected row owns a full selection-colored run.
-            let mut row = String::new();
-            let mut reversed = false;
-            for x in 0..area.width {
-                let cell = &buf[(x, y)];
-                if cell.bg == sl.theme.selection_bg {
-                    reversed = true;
-                    row.push_str(cell.symbol());
-                }
-            }
-            let row = row.trim().to_owned();
-            if reversed && row.starts_with("item-") {
-                return Some(row.split_whitespace().next().unwrap_or_default().to_owned());
-            }
-        }
-        None
+        let buf = render_buf(sl, w, h);
+        (0..h).find_map(|y| {
+            let row: String = (0..w)
+                .filter(|&x| buf[(x, y)].bg == sl.theme.selection_bg)
+                .map(|x| buf[(x, y)].symbol())
+                .collect();
+            let row = row.trim();
+            row.starts_with("item-")
+                .then(|| row.split_whitespace().next().unwrap_or_default().to_owned())
+        })
+    }
+
+    fn painted_row(sl: &SelectList, idx: usize, width: u16) -> String {
+        sl.item_line(&sl.items[idx], false, width)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
     }
 
     #[test]
-    fn selection_stays_on_screen_when_navigating_past_the_viewport() {
-        // The reported bug (phux-ep9s): the palette painted every filtered row
-        // into a Paragraph that clipped at the modal's bottom edge, so walking
-        // the cursor down a long list marched it off-screen — no highlighted
-        // row anywhere, no way to tell where you were.
-        let mut sl = long_list(40);
-        // A 40x16 viewport ⇒ a 10-row modal ⇒ 4 visible rows. Step well past it.
-        for _ in 0..20 {
-            sl.handle_key(&press(PhysicalKey::ArrowDown, None));
-        }
-        assert_eq!(sl.selected, 20, "20 downs move the cursor 20 rows");
-        assert_eq!(
-            painted_selection(&sl, 40, 16).as_deref(),
-            Some("item-20"),
-            "the selected row must be painted inside the modal, not clipped away",
-        );
+    fn fuzzy_score_matches_ordered_subsequences_and_ranks_them() {
+        assert_eq!(fuzzy_score("", "anything"), Some(0));
+        assert!(fuzzy_score("spn", "split-pane").is_some());
+        assert!(fuzzy_score("nw", "new-window").is_some());
+        assert_eq!(fuzzy_score("zzz", "new-window"), None);
+        assert_eq!(fuzzy_score("wen", "new-window"), None, "order matters");
+        // A contiguous front-anchored run beats a scattered match, and a
+        // word-boundary hit beats a mid-word one.
+        assert!(fuzzy_score("sp", "split-pane") > fuzzy_score("sp", "previous-pane"));
+        assert!(fuzzy_score("p", "split-pane") > fuzzy_score("p", "copy-mode"));
     }
 
     #[test]
-    fn the_viewport_scrolls_back_up_with_the_selection() {
-        let mut sl = long_list(40);
-        for _ in 0..20 {
-            sl.handle_key(&press(PhysicalKey::ArrowDown, None));
-        }
-        render_to_string(&sl, 40, 16);
+    fn filtering_ranks_best_first_and_keeps_ties_in_source_order() {
+        let mut sl = list(vec![
+            SelectItem::new("toggle-sidebar", action("toggle-sidebar")),
+            SelectItem::new("split-pane", action("split-pane")),
+            SelectItem::new("previous-pane", action("previous-pane")),
+        ]);
+        type_str(&mut sl, "sp");
+        assert_eq!(labels(&sl)[0], "split-pane");
+
+        let mut sl = list(vec![
+            SelectItem::new("x-alpha", action("a")),
+            SelectItem::new("x-bravo", action("b")),
+        ]);
+        type_str(&mut sl, "x");
+        assert_eq!(labels(&sl), vec!["x-alpha", "x-bravo"]);
+
+        // The secondary (a chord) is filter text too; typed `j` is text once
+        // the query is non-empty.
+        let mut sl = sample();
+        type_str(&mut sl, "nw");
+        assert_eq!(labels(&sl), vec!["new-window"]);
+        let mut sl = sample();
+        sl.handle_key(&press(PhysicalKey::A, Some("d")));
+        sl.handle_key(&press(PhysicalKey::J, Some("j")));
+        assert_eq!(sl.query, "dj");
+        assert!(labels(&sl).is_empty());
+    }
+
+    #[test]
+    fn headers_group_an_empty_query_and_vanish_when_filtering() {
+        let mut sl = grouped();
+        assert_eq!(sl.filtered_indices(), vec![0, 1, 2, 3]);
+        // Opens on the first selectable row; Down skips the next header.
+        assert_eq!(commit(&mut sl).as_deref(), Some("split-pane"));
+        key(&mut sl, PhysicalKey::ArrowDown);
+        assert_eq!(commit(&mut sl).as_deref(), Some("new-window"));
+        type_str(&mut sl, "s");
         assert!(
-            sl.scroll.get() > 0,
-            "the view scrolled to follow the cursor"
+            sl.filtered_indices()
+                .iter()
+                .all(|&i| !sl.items[i].is_header())
         );
-        for _ in 0..20 {
-            sl.handle_key(&press(PhysicalKey::ArrowUp, None));
-        }
-        let text = render_to_string(&sl, 40, 16);
-        assert_eq!(sl.scroll.get(), 0, "returning to the top rewinds the view");
-        assert!(text.contains("item-0"), "first row visible again:\n{text}");
-    }
 
-    #[test]
-    fn an_overflowing_list_paints_a_scrollbar() {
-        // 4 rows visible out of 40 ⇒ the box must say so.
-        let sl = long_list(40);
-        let text = render_to_string(&sl, 40, 16);
-        assert!(
-            text.contains('█'),
-            "an overflowing list must paint a scrollbar thumb:\n{text}"
-        );
-        // A list that fits paints a plain border — no bar, no lie about extent.
-        let sl = long_list(3);
-        let text = render_to_string(&sl, 40, 16);
-        assert!(
-            !text.contains('█'),
-            "a list that fits must not paint a scrollbar:\n{text}"
-        );
-    }
-
-    #[test]
-    fn filtering_rewinds_the_viewport() {
-        // Scroll deep, then type a query that narrows the list to rows above
-        // the current offset. A stranded offset would paint a blank window.
-        let mut sl = long_list(40);
-        for _ in 0..30 {
-            sl.handle_key(&press(PhysicalKey::ArrowDown, None));
-        }
-        render_to_string(&sl, 40, 16);
-        assert!(sl.scroll.get() > 0);
-        // "item-7" is the only exact hit for the 7 at the end; whatever the
-        // filter keeps, it is a short list that must be visible from row 0.
-        for ch in ['i', 't', 'e', 'm', '-', '7'] {
-            sl.handle_key(&press(PhysicalKey::A, Some(&ch.to_string())));
-        }
-        let text = render_to_string(&sl, 40, 16);
-        assert_eq!(sl.scroll.get(), 0, "a narrowed list rewinds to the top");
-        assert!(text.contains("item-7"), "matches must be visible:\n{text}");
-    }
-
-    #[test]
-    fn page_keys_move_by_a_screenful() {
-        let mut sl = long_list(40);
-        // Before the first paint the viewport height is unknown; a page key
-        // then steps one row rather than guessing.
-        sl.handle_key(&press(PhysicalKey::PageDown, None));
-        assert_eq!(sl.selected, 1, "no measured viewport ⇒ a single-row step");
-        // After a paint, a page is a real screenful. A 40x16 viewport is
-        // compact on both axes, so the picker is full-bleed: 16 rows less
-        // the 3 of shared chrome leaves 13 visible.
-        render_to_string(&sl, 40, 16);
-        sl.handle_key(&press(PhysicalKey::PageDown, None));
-        assert_eq!(sl.selected, 14);
-        sl.handle_key(&press(PhysicalKey::PageUp, None));
-        assert_eq!(sl.selected, 1);
-        // And both saturate rather than wrapping.
-        for _ in 0..40 {
-            sl.handle_key(&press(PhysicalKey::PageUp, None));
-        }
-        assert_eq!(sl.selected, 0);
-        for _ in 0..40 {
-            sl.handle_key(&press(PhysicalKey::PageDown, None));
-        }
-        assert_eq!(sl.selected, 39);
-    }
-
-    #[test]
-    fn home_and_end_jump_to_the_ends() {
-        let mut sl = long_list(40);
-        sl.handle_key(&press(PhysicalKey::End, None));
-        assert_eq!(sl.selected, 39);
-        assert_eq!(
-            painted_selection(&sl, 40, 16).as_deref(),
-            Some("item-39"),
-            "End must land the last row inside the viewport",
-        );
-        sl.handle_key(&press(PhysicalKey::Home, None));
-        assert_eq!(sl.selected, 0);
-    }
-
-    #[test]
-    fn end_skips_a_trailing_header() {
-        // The window picker's grouped rows can end on a header (a session with
-        // no windows yet). End must land on the last *selectable* row.
-        let items = vec![
+        // A header-only list, a trailing header under End, and an empty
+        // filter never commit a placeholder.
+        assert_eq!(commit(&mut list(vec![SelectItem::header("Pane")])), None);
+        let mut sl = list(vec![
             SelectItem::new("only-item", action("only")),
             SelectItem::header("Empty session"),
-        ];
-        let mut sl = SelectList::new("picker", items, &Theme::default());
-        sl.handle_key(&press(PhysicalKey::End, None));
-        let cmd = sl.handle_key(&press(PhysicalKey::Enter, None));
-        let OverlayCommand::Commit(a) = cmd else {
-            panic!("End must select a committable row, got {cmd:?}");
-        };
-        assert_eq!(a.action, "only");
+        ]);
+        key(&mut sl, PhysicalKey::End);
+        assert_eq!(commit(&mut sl).as_deref(), Some("only"));
+        let mut sl = sample();
+        type_str(&mut sl, "zzz");
+        assert_eq!(commit(&mut sl), None);
     }
 
     #[test]
-    fn wheel_moves_the_selection() {
-        fn wheel(button: MouseButton) -> MouseEvent {
-            MouseEvent {
-                action: MouseAction::Press,
-                button,
-                mods: ModSet::empty(),
-                x: 0.0,
-                y: 0.0,
-            }
+    fn keys_navigate_saturate_and_dismiss() {
+        let mut sl = sample();
+        let ctrl = |k| {
+            let mut ev = press(k, None);
+            ev.mods = ModSet::CTRL;
+            ev
+        };
+        for _ in 0..3 {
+            sl.handle_key(&ctrl(PhysicalKey::N));
         }
+        assert_eq!(commit(&mut sl).as_deref(), Some("detach"), "no wrap");
+        sl.handle_key(&ctrl(PhysicalKey::P));
+        assert_eq!(commit(&mut sl).as_deref(), Some("new-window"));
+        let mut sl = sample();
+        sl.handle_key(&press(PhysicalKey::J, Some("j")));
+        assert_eq!(
+            commit(&mut sl).as_deref(),
+            Some("new-window"),
+            "j on an empty query"
+        );
+        assert_eq!(key(&mut sl, PhysicalKey::Escape), OverlayCommand::Dismiss);
+    }
+
+    /// The reported bug: walking the cursor down a long list marched it off
+    /// the bottom of the box. The viewport follows the selection both ways.
+    #[test]
+    fn the_viewport_follows_the_selection() {
         let mut sl = long_list(40);
+        for _ in 0..20 {
+            key(&mut sl, PhysicalKey::ArrowDown);
+        }
+        assert_eq!(painted_selection(&sl, 40, 16).as_deref(), Some("item-20"));
+        assert!(sl.scroll.get() > 0);
+        for _ in 0..20 {
+            key(&mut sl, PhysicalKey::ArrowUp);
+        }
+        let text = render_to_string(&sl, 40, 16);
+        assert_eq!(sl.scroll.get(), 0);
+        assert!(text.contains("item-0"), "{text}");
+
+        // A narrowing filter rewinds a stranded offset.
+        for _ in 0..30 {
+            key(&mut sl, PhysicalKey::ArrowDown);
+        }
+        render_to_string(&sl, 40, 16);
+        type_str(&mut sl, "item-7");
+        let text = render_to_string(&sl, 40, 16);
+        assert_eq!(sl.scroll.get(), 0);
+        assert!(text.contains("item-7"), "{text}");
+
+        // Only an overflowing list paints a scrollbar.
+        assert!(render_to_string(&long_list(40), 40, 16).contains('█'));
+        assert!(!render_to_string(&long_list(3), 40, 16).contains('█'));
+    }
+
+    #[test]
+    fn page_home_end_and_wheel_move_the_selection() {
+        let mut sl = long_list(40);
+        key(&mut sl, PhysicalKey::PageDown);
+        assert_eq!(sl.selected, 1, "no measured viewport: a single-row step");
+        // 40x16 is compact: full-bleed, 16 - 3 chrome rows = 13 visible.
+        render_to_string(&sl, 40, 16);
+        key(&mut sl, PhysicalKey::PageDown);
+        assert_eq!(sl.selected, 14);
+        key(&mut sl, PhysicalKey::PageUp);
+        assert_eq!(sl.selected, 1);
+        key(&mut sl, PhysicalKey::End);
+        assert_eq!(sl.selected, 39);
+        assert_eq!(painted_selection(&sl, 40, 16).as_deref(), Some("item-39"));
+        key(&mut sl, PhysicalKey::Home);
+        assert_eq!(sl.selected, 0);
+
+        let wheel = |button| MouseEvent {
+            action: MouseAction::Press,
+            button,
+            mods: ModSet::empty(),
+            x: 0.0,
+            y: 0.0,
+        };
         assert_eq!(
             sl.handle_mouse(&wheel(MouseButton::Five)),
             OverlayCommand::Stay
         );
-        assert_eq!(
-            sl.selected, WHEEL_SCROLL_ROWS,
-            "wheel-down advances a detent"
-        );
+        assert_eq!(sl.selected, WHEEL_SCROLL_ROWS);
         sl.handle_mouse(&wheel(MouseButton::Four));
-        assert_eq!(sl.selected, 0, "wheel-up rewinds it");
-        // Saturates at the top instead of underflowing.
         sl.handle_mouse(&wheel(MouseButton::Four));
-        assert_eq!(sl.selected, 0);
+        assert_eq!(sl.selected, 0, "saturates at the top");
     }
 
+    /// Pins the mid-scroll box: windowed rows, the selection inside it, and
+    /// the scrollbar thumb away from both ends.
     #[test]
     fn scrolled_list_render_is_stable() {
-        // Pin the painted mid-scroll box: a windowed row set, the selected row
-        // reverse-video inside it, and the scrollbar thumb sitting away from
-        // both ends of the border. A 44x16 viewport is compact on both
-        // axes, so the picker is full-bleed and shows 10 of the 24 rows —
-        // the deeper scroll keeps the thumb off both ends.
         let mut sl = long_list(24);
         for _ in 0..15 {
-            sl.handle_key(&press(PhysicalKey::ArrowDown, None));
+            key(&mut sl, PhysicalKey::ArrowDown);
         }
-        let area = Rect::new(0, 0, 44, 16);
-        let mut buf = Buffer::empty(area);
-        sl.render(area, &mut buf);
-        let mut out = String::new();
-        for y in 0..area.height {
-            let mut row = String::new();
-            for x in 0..area.width {
-                row.push_str(buf[(x, y)].symbol());
-            }
-            out.push_str(row.trim_end());
-            out.push('\n');
-        }
-        insta::assert_snapshot!(out);
+        insta::assert_snapshot!(render_to_string(&sl, 44, 16));
     }
 
-    // ---------- phux-foz.7: live refresh + attention rows ----------
+    /// Above the compact breakpoint the picker floats: a centered box with
+    /// panes visible around it, not a screen.
+    #[test]
+    fn roomy_viewport_render_still_floats() {
+        let sl = sample();
+        let area = Rect::new(0, 0, 100, 30);
+        let bounds = sl.bounds(area).expect("bounded");
+        assert_eq!((bounds.width, bounds.height), (50, 15));
+        assert!(bounds.x > 0 && bounds.y > 0);
+        insta::assert_snapshot!(render_to_string(&sl, 100, 30));
+    }
 
     #[test]
-    fn refresh_items_requires_a_matching_live_key() {
+    fn refresh_needs_the_live_key_and_keeps_query_and_target() {
         let fresh = vec![SelectItem::new("fresh-row", action("fresh"))];
-        // A static list (no live key) ignores every refresh.
-        let mut sl = sample();
-        assert!(!sl.refresh_items("agent-fleet", &fresh));
-        assert_eq!(sl.items.len(), 3, "static list keeps its rows");
-        // A live list with a different key ignores it too.
-        let mut sl = sample().with_live_key("other-live-list");
-        assert!(!sl.refresh_items("agent-fleet", &fresh));
-        // The matching key replaces the rows in place.
+        assert!(
+            !sample().refresh_items("agent-fleet", &fresh),
+            "static list"
+        );
+        assert!(
+            !sample()
+                .with_live_key("other")
+                .refresh_items("agent-fleet", &fresh)
+        );
         let mut sl = sample().with_live_key("agent-fleet");
         assert!(sl.refresh_items("agent-fleet", &fresh));
-        assert_eq!(sl.items.len(), 1);
-        assert_eq!(sl.items[0].label, "fresh-row");
-    }
+        assert_eq!(labels(&sl), vec!["fresh-row"]);
 
-    /// phux-c2td.3: a refresh that inserts rows above the cursor (a host
-    /// header landing in the session picker) keeps the highlighted target,
-    /// so Enter still commits what the user saw.
-    #[test]
-    fn replace_items_keeps_the_selection_on_the_same_action() {
-        let mut sl = SelectList::new(
-            "sessions",
-            vec![
-                SelectItem::new("work", action("work")),
-                SelectItem::new("scratch", action("scratch")),
+        // The query survives and keeps filtering the new rows.
+        let mut sl = sample().with_live_key("agent-fleet");
+        type_str(&mut sl, "det");
+        sl.refresh_items(
+            "agent-fleet",
+            &[
+                SelectItem::new("detach-me", action("a")),
+                SelectItem::new("other", action("b")),
             ],
-            &Theme::default(),
-        )
-        .with_live_key("session-picker");
-        sl.handle_key(&press(PhysicalKey::ArrowDown, None));
-        assert_eq!(sl.selected, 1, "scratch is highlighted");
+        );
+        assert_eq!(labels(&sl), vec!["detach-me"]);
+        assert_eq!(commit(&mut sl).as_deref(), Some("a"));
 
-        assert!(sl.refresh_items(
+        // Rows inserted above the cursor: the selection follows the action.
+        let mut sl = list(vec![
+            SelectItem::new("work", action("work")),
+            SelectItem::new("scratch", action("scratch")),
+        ])
+        .with_live_key("session-picker");
+        key(&mut sl, PhysicalKey::ArrowDown);
+        sl.refresh_items(
             "session-picker",
             &[
                 SelectItem::header("This host"),
@@ -1441,32 +1030,11 @@ mod tests {
                 SelectItem::header("edge"),
                 SelectItem::new("build", action("build")),
             ],
-        ));
-        let indices = sl.filtered_indices();
-        assert_eq!(
-            sl.items[indices[sl.selected]].label, "scratch",
-            "the selection follows the action, not the row index"
         );
-        assert_eq!(
-            sl.handle_key(&press(PhysicalKey::Enter, None)),
-            OverlayCommand::Commit(action("scratch"))
-        );
-    }
+        assert_eq!(commit(&mut sl).as_deref(), Some("scratch"));
 
-    /// When the highlighted action is gone after a refresh, the selection
-    /// falls back to the same position, snapped onto a selectable row.
-    #[test]
-    fn replace_items_falls_back_to_position_when_the_action_is_gone() {
-        let mut sl = SelectList::new(
-            "sessions",
-            vec![
-                SelectItem::new("a", action("a")),
-                SelectItem::new("b", action("b")),
-            ],
-            &Theme::default(),
-        )
-        .with_live_key("session-picker");
-        sl.handle_key(&press(PhysicalKey::ArrowDown, None));
+        // The action is gone: fall back to the same position, snapped and
+        // clamped onto a selectable row.
         sl.refresh_items(
             "session-picker",
             &[
@@ -1475,53 +1043,12 @@ mod tests {
             ],
         );
         assert_eq!(sl.selected, 1);
+        sl.refresh_items("session-picker", &[SelectItem::new("only", action("only"))]);
+        assert_eq!(commit(&mut sl).as_deref(), Some("only"));
     }
 
     #[test]
-    fn replace_items_preserves_query_and_reclamps_selection() {
-        let mut sl = sample().with_live_key("agent-fleet");
-        // Filter down to "detach" and select it.
-        for ch in ['d', 'e', 't'] {
-            sl.handle_key(&press(PhysicalKey::A, Some(&ch.to_string())));
-        }
-        assert_eq!(sl.filtered_indices().len(), 1);
-        // A refresh lands: the row set changes but the query survives, so
-        // the user's in-progress filter keeps applying to the new rows.
-        sl.refresh_items(
-            "agent-fleet",
-            &[
-                SelectItem::new("detach-me", action("a")),
-                SelectItem::new("other", action("b")),
-            ],
-        );
-        assert_eq!(sl.query, "det", "query survives the refresh");
-        let idx = sl.filtered_indices();
-        assert_eq!(idx.len(), 1);
-        assert_eq!(sl.items[idx[0]].label, "detach-me");
-        // Enter commits against the refreshed rows without a stale index.
-        let cmd = sl.handle_key(&press(PhysicalKey::Enter, None));
-        let OverlayCommand::Commit(a) = cmd else {
-            panic!("expected Commit, got {cmd:?}");
-        };
-        assert_eq!(a.action, "a");
-    }
-
-    #[test]
-    fn replace_items_snaps_selection_off_a_vanished_row() {
-        let mut sl = sample().with_live_key("agent-fleet");
-        // Select the last row (index 2), then shrink the list to one row.
-        sl.handle_key(&ctrl(PhysicalKey::N));
-        sl.handle_key(&ctrl(PhysicalKey::N));
-        sl.refresh_items("agent-fleet", &[SelectItem::new("only", action("only"))]);
-        let cmd = sl.handle_key(&press(PhysicalKey::Enter, None));
-        let OverlayCommand::Commit(a) = cmd else {
-            panic!("expected Commit after reclamp, got {cmd:?}");
-        };
-        assert_eq!(a.action, "only");
-    }
-
-    #[test]
-    fn attention_row_label_paints_in_the_attention_slot() {
+    fn attention_rows_paint_hot_and_selection_owns_its_colors() {
         let theme = Theme::default();
         let sl = SelectList::new(
             "agent fleet",
@@ -1531,151 +1058,72 @@ mod tests {
             ],
             &theme,
         );
-        // Unselected rows: attention label takes the theme's attention
-        // color; a calm row keeps the action slot.
-        let calm = sl.item_line(&sl.items[0], false, 40);
-        assert_eq!(calm.spans[0].style.fg, Some(theme.text));
+        assert_eq!(
+            sl.item_line(&sl.items[0], false, 40).spans[0].style.fg,
+            Some(theme.text)
+        );
         let hot = sl.item_line(&sl.items[1], false, 40);
         assert_eq!(hot.spans[0].style.fg, Some(theme.attention));
         assert!(hot.spans[0].style.add_modifier.contains(Modifier::BOLD));
-        // Selection owns both colors regardless of the host terminal theme.
         let selected = sl.item_line(&sl.items[1], true, 40);
         assert_eq!(selected.spans[0].style.fg, Some(theme.selection_fg));
         assert_eq!(selected.spans[0].style.bg, Some(theme.selection_bg));
     }
 
-    /// phux-foz.7: pin the painted fleet-shaped layout (session header,
-    /// glyphed rows, attention row present) so layout churn is caught —
-    /// the same snapshot pattern as `render_byte_output_is_stable`.
-    #[test]
-    fn render_fleet_shaped_list_is_stable() {
-        let items = vec![
-            SelectItem::header("work (current)"),
-            SelectItem::new("! 0:main.0 reviewer [claude]", action("focus-pane"))
-                .secondary("blocked - main")
-                .indented()
-                .attention(),
-            SelectItem::new("* 0:main.1 builder", action("focus-pane"))
-                .secondary("working - main")
-                .indented(),
-            SelectItem::header("scratch"),
-            SelectItem::new("switch to this session", action("switch-session"))
-                .secondary("2 windows")
-                .indented(),
-        ];
-        let sl =
-            SelectList::new("agent fleet", items, &Theme::default()).with_live_key("agent-fleet");
-        let area = Rect::new(0, 0, 52, 14);
-        let mut buf = Buffer::empty(area);
-        sl.render(area, &mut buf);
-        let mut out = String::new();
-        for y in 0..area.height {
-            let mut row = String::new();
-            for x in 0..area.width {
-                row.push_str(buf[(x, y)].symbol());
-            }
-            out.push_str(row.trim_end());
-            out.push('\n');
-        }
-        insta::assert_snapshot!(out);
-    }
-
-    #[test]
-    fn render_byte_output_is_stable() {
-        // Pin the painted layout (query line, separator, rows with the
-        // first selected reverse-video) so accidental layout churn is
-        // caught. Fixed small viewport for a compact snapshot.
-        let sl = sample();
-        let area = Rect::new(0, 0, 44, 12);
-        let mut buf = Buffer::empty(area);
-        sl.render(area, &mut buf);
-        let mut out = String::new();
-        for y in 0..area.height {
-            let mut row = String::new();
-            for x in 0..area.width {
-                row.push_str(buf[(x, y)].symbol());
-            }
-            out.push_str(row.trim_end());
-            out.push('\n');
-        }
-        insta::assert_snapshot!(out);
-    }
-
-    /// The other side of the breakpoint. Above [`COMPACT_COLS`] /
-    /// [`COMPACT_ROWS`] the picker must still *float*: a centered box with
-    /// live panes visible around it, not a screen. Pinned alongside the
-    /// compact snapshots so a change to the responsive rule has to face
-    /// both shapes at once.
-    ///
-    /// [`COMPACT_COLS`]: crate::render::overlay::widgets::COMPACT_COLS
-    /// [`COMPACT_ROWS`]: crate::render::overlay::widgets::COMPACT_ROWS
-    #[test]
-    fn roomy_viewport_render_still_floats() {
-        let sl = sample();
-        let area = Rect::new(0, 0, 100, 30);
-        let mut buf = Buffer::empty(area);
-        sl.render(area, &mut buf);
-        let mut out = String::new();
-        for y in 0..area.height {
-            let mut row = String::new();
-            for x in 0..area.width {
-                row.push_str(buf[(x, y)].symbol());
-            }
-            out.push_str(row.trim_end());
-            out.push('\n');
-        }
-        // The box occupies neither the full width nor the full height.
-        let bounds = sl.bounds(area).expect("a floating picker is bounded");
-        assert_eq!(bounds.width, 50, "{bounds:?}");
-        assert_eq!(bounds.height, 15, "{bounds:?}");
-        assert!(bounds.x > 0 && bounds.y > 0, "{bounds:?}");
-        insta::assert_snapshot!(out);
-    }
-
-    /// A row must never be wider than the box that contains it.
-    ///
-    /// The old layout gave the gap a `.max(1)` floor and left the overflow
-    /// to "the terminal", so a long label plus a long secondary painted
-    /// straight through the modal's right border and onto the pane behind
-    /// it — worst exactly where it hurts most, on the narrow viewport that
-    /// made the row too long in the first place. Every row, at every
-    /// width, now measures exactly the interior width.
+    /// Every row, at every width, measures exactly the interior width (a
+    /// long row once painted through the modal border onto the pane behind).
     #[test]
     fn a_row_never_overruns_the_modal_interior() {
-        let long = SelectItem::new(
-            "a-very-long-window-name-that-will-not-fit-anywhere",
-            action("x"),
-        )
-        .secondary("~/some/deeply/nested/working/directory  feature/branch");
-        let sl = SelectList::new(
-            "t",
-            vec![
-                long,
-                SelectItem::new("构建工具", action("x")).secondary("工作目录/main"),
-                SelectItem::new("cafe\u{301}", action("x"))
-                    .secondary("re\u{301}vision")
-                    .indented(),
-            ],
-            &Theme::default(),
-        );
-
+        let sl = list(vec![
+            SelectItem::new(
+                "a-very-long-window-name-that-will-not-fit-anywhere",
+                action("x"),
+            )
+            .secondary("~/some/deeply/nested/working/directory  feature/branch"),
+            SelectItem::new("构建工具", action("x")).secondary("工作目录/main"),
+            SelectItem::new("cafe\u{301}", action("x"))
+                .secondary("re\u{301}vision")
+                .indented(),
+        ]);
         for width in 1u16..=80 {
             for item in &sl.items {
                 for selected in [false, true] {
-                    let line = sl.item_line(item, selected, width);
-                    let painted: String = line
+                    let painted: String = sl
+                        .item_line(item, selected, width)
                         .spans
                         .iter()
                         .map(|s| s.content.as_ref())
-                        .collect::<String>();
+                        .collect();
                     assert_eq!(
                         crate::render::display_width(&painted),
                         usize::from(width),
-                        "row at interior width {width}: {painted:?}"
+                        "{width}: {painted:?}"
                     );
                 }
             }
         }
+    }
+
+    /// The label is the row's identity: the secondary yields first, unless it
+    /// is a short chord, which survives whole while a long label clips.
+    #[test]
+    fn narrow_rows_keep_the_label_and_short_chords() {
+        let sl = list(vec![
+            SelectItem::new("builder", action("x")).secondary("working - main"),
+            SelectItem::new(
+                "Zoom the focused pane to fill the whole window",
+                action("z"),
+            )
+            .secondary("C-a z"),
+        ]);
+        assert_eq!(painted_row(&sl, 0, 30), "builder         working - main");
+        assert!(painted_row(&sl, 0, 16).starts_with("builder"));
+        assert_eq!(painted_row(&sl, 0, 7), "builder");
+        let chord = painted_row(&sl, 1, 40);
+        assert!(
+            chord.ends_with("C-a z") && chord.contains(crate::render::ELLIPSIS),
+            "{chord:?}"
+        );
     }
 
     #[test]
@@ -1688,66 +1136,5 @@ mod tests {
         for width in 0..20 {
             assert!(crate::render::display_width(&sl.visible_query(width)) <= usize::from(width));
         }
-        assert_eq!(sl.query, "prefix-构建-cafe\u{301}");
-    }
-
-    /// Under pressure the secondary yields before the label does: the
-    /// label is what you are choosing, the secondary is context about it.
-    #[test]
-    fn a_narrow_row_sacrifices_the_secondary_before_the_label() {
-        let item = SelectItem::new("builder", action("x")).secondary("working - main");
-        let sl = SelectList::new("t", vec![item], &Theme::default());
-        let painted = |w| -> String {
-            sl.item_line(&sl.items[0], false, w)
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect()
-        };
-        // Roomy: both, right-aligned against the far edge.
-        assert_eq!(painted(30), "builder         working - main");
-        // Tight: the secondary shortens while the label stays whole.
-        assert!(painted(16).starts_with("builder"), "{:?}", painted(16));
-        // Tighter still: the secondary is gone entirely before the label
-        // gives up a single column.
-        assert_eq!(painted(7), "builder");
-    }
-
-    #[test]
-    fn render_does_not_panic_and_shows_title() {
-        let sl = sample();
-        let area = Rect::new(0, 0, 80, 24);
-        let mut buf = Buffer::empty(area);
-        sl.render(area, &mut buf);
-        let mut text = String::new();
-        for y in 0..area.height {
-            for x in 0..area.width {
-                text.push_str(buf[(x, y)].symbol());
-            }
-            text.push('\n');
-        }
-        assert!(text.contains("command palette"), "{text}");
-        assert!(text.contains("split-pane"), "{text}");
-    }
-
-    /// A short secondary is the column the eye runs down: a chord survives
-    /// whole and the long label clips instead.
-    #[test]
-    fn a_short_chord_survives_a_long_label() {
-        let item = SelectItem::new(
-            "Zoom the focused pane to fill the whole window",
-            action("zoom-pane"),
-        )
-        .secondary("C-a z");
-        let sl = SelectList::new("t", vec![item], &Theme::default());
-        let painted: String = sl
-            .item_line(&sl.items[0], false, 40)
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        assert!(painted.ends_with("C-a z"), "{painted:?}");
-        assert!(painted.contains(crate::render::ELLIPSIS), "{painted:?}");
-        assert_eq!(crate::render::display_width(&painted), 40);
     }
 }

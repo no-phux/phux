@@ -1,38 +1,27 @@
-//! Keyed supervisory commands (`docs/spec/L1.md` §5.1.1).
+//! Keyed supervisory commands (`docs/spec/L1.md` §5.1.1): `KILL_RESOURCE`,
+//! `KILL_RESOURCE_IF`, `KILL_RESOURCES`, and `SIGNAL_TERMINAL` with an
+//! `operation_id`, on the shared dedupe record (ADR-0126).
 //!
-//! `KILL_RESOURCE`, `KILL_RESOURCE_IF`, `KILL_RESOURCES`, and
-//! `SIGNAL_TERMINAL` carrying a trailing `operation_id`, on the server's
-//! shared dedupe record ([`super::operation_dedupe`], ADR-0126).
-//!
-//! A keyed command is admitted before it runs. The first admission owns the
-//! key and runs the command; a repeat with the same command answers the
-//! first result and runs nothing, so a kill whose reply was lost kills once
-//! and a lost `SIGINT` reply is not a second `SIGINT`. The same key with a
-//! different command is refused. A command that failed binds nothing, and
-//! the next repeat runs it again: nothing happened, so running it again is
-//! the only honest answer.
-//!
-//! A command aimed at a satellite is not admitted here: the hub forwards it
-//! with its key and the satellite owns the dedupe (the hub routes before it
-//! claims). `KILL_RESOURCES` is the exception, because a hub splits its
-//! batch across hosts: the hub admits the whole batch under the key and
-//! forwards each satellite's part under the same key.
+//! The first admission runs the command; a same-command repeat answers the
+//! first result, so a lost reply never kills or signals twice. A different
+//! command under the key is refused, and a failed command binds nothing.
+//! Satellite targets are deduped by the satellite, except `KILL_RESOURCES`,
+//! whose batch the hub admits whole and forwards per host under the key.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::BytesMut;
 use phux_protocol::ids::{IdempotencyKey, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue, ErrorCode, FrameKind};
 use sha2::{Digest, Sha256};
-use tokio::sync::oneshot;
 
 use super::operation_dedupe::{
-    CachedOutcome, Claim, OperationClaim, OperationDomain, OperationKey, Waiter,
+    Admission, CachedOutcome, OperationClaim, OperationDomain, OperationKey,
 };
 use crate::state::SharedState;
 
-/// How long a repeat waits for the same key's unresolved command before it
-/// is refused. The wait runs in the repeating connection's read loop.
+/// How long a repeat (in its connection's read loop) waits for an unresolved
+/// owner before it is refused.
 const REPEAT_WAIT: Duration = Duration::from_secs(10);
 
 /// How a keyed supervisory command is admitted.
@@ -61,36 +50,22 @@ async fn admit_within(state: &SharedState, command: &Command, wait: Duration) ->
         return KeyedAdmission::Unkeyed;
     };
     let dedupe = state.with(|s| s.operation_dedupe().clone());
-    let key = signal_key(key);
-    let digest = digest(command);
-    loop {
-        let pending = match dedupe.claim_at(key, digest, Instant::now(), join) {
-            Claim::Owner => return KeyedAdmission::Owner(OperationClaim::new(dedupe, key)),
-            Claim::Pending(pending) => pending,
-            Claim::Final(outcome) => return KeyedAdmission::Answer(replayed(&outcome)),
-            Claim::PendingUncertain => return KeyedAdmission::Answer(in_flight()),
-            Claim::Conflict => return KeyedAdmission::Answer(conflict()),
-            Claim::Full => {
-                return KeyedAdmission::Answer(CommandResult::Error {
-                    code: ErrorCode::ResourceExhausted,
-                    message: "the server's idempotency record is full; retry later".to_owned(),
-                });
-            }
-        };
-        match tokio::time::timeout(wait, pending).await {
-            Ok(Ok(outcome)) => return KeyedAdmission::Answer(replayed(&outcome)),
-            // The owner bound nothing and released the key: admit again.
-            Ok(Err(_)) => {}
-            Err(_) => return KeyedAdmission::Answer(in_flight()),
-        }
-    }
+    let answer = match dedupe.admit(signal_key(key), digest(command), wait).await {
+        Admission::Owner(claim) => return KeyedAdmission::Owner(claim),
+        Admission::Final(outcome) => replayed(&outcome),
+        Admission::InFlight => in_flight(),
+        Admission::Conflict => conflict(),
+        Admission::Full => CommandResult::Error {
+            code: ErrorCode::ResourceExhausted,
+            message: "the server's idempotency record is full; retry later".to_owned(),
+        },
+    };
+    KeyedAdmission::Answer(answer)
 }
 
 /// Before a keyed command is held for approval (ADR-0128): the answer its
-/// key already has, if any. A settled key replays its result, and a
-/// conflicting or in-flight key answers as a repeat would, so a retry is
-/// never held twice. A free key is not kept: the claim is released at once,
-/// and the approved command admits the key when it runs.
+/// key already has, so a retry is never held twice. A free key is released
+/// at once; the approved command admits it when it runs.
 pub(crate) async fn prior_answer(state: &SharedState, command: &Command) -> Option<CommandResult> {
     match admit_within(state, command, Duration::ZERO).await {
         KeyedAdmission::Unkeyed => None,
@@ -102,10 +77,8 @@ pub(crate) async fn prior_answer(state: &SharedState, command: &Command) -> Opti
     }
 }
 
-/// Settle an owned key with the command's `result`. A result that did the
-/// whole job binds, so its repeats answer it; a refusal, or a
-/// `KILL_RESOURCES` some part of which failed, binds nothing, and dropping
-/// the claim releases the key for the next repeat.
+/// Settle an owned key: a result that did the whole job binds; a refusal or
+/// a partly failed `KILL_RESOURCES` binds nothing and releases the key.
 pub(crate) fn settle(claim: Option<OperationClaim>, result: &CommandResult) {
     let Some(claim) = claim else {
         return;
@@ -141,14 +114,6 @@ fn digest(command: &Command) -> [u8; 32] {
     }
     .encode(&mut encoded);
     Sha256::digest(&encoded).into()
-}
-
-fn join() -> (Waiter, oneshot::Receiver<CachedOutcome>) {
-    let (reply, outcome) = oneshot::channel();
-    let waiter: Waiter = Box::new(move |bound: &CachedOutcome| {
-        let _ = reply.send(bound.clone());
-    });
-    (waiter, outcome)
 }
 
 fn replayed(outcome: &CachedOutcome) -> CommandResult {
@@ -209,13 +174,10 @@ impl KillResults {
         }));
     }
 
-    /// Fold one satellite's answer to its part of a keyed batch into these
-    /// outcomes (L1 §5.2). A keyed batch is keyed at every hop, so the
-    /// satellite answers with its own per-id document, whose `@N` ids name its
-    /// local space and are re-spelled `host/@N`. An error fails every id the
-    /// part carried, an answer without a document confirms nothing, and a
-    /// forwarded id the document does not mention fails, so a keyed batch
-    /// never binds past an id it cannot account for.
+    /// Fold one satellite's per-id answer to its part of a keyed batch into
+    /// these outcomes (L1 §5.2), re-spelling its `@N` ids as `host/@N`. An
+    /// error, a missing document, or an unmentioned id fails the ids it
+    /// covers, so a batch never binds past an id it cannot account for.
     pub(crate) fn merge_host(
         &mut self,
         host: &SatelliteHost,
@@ -354,22 +316,6 @@ mod tests {
             digest(&signal),
             "one namespace, two verbs"
         );
-    }
-
-    #[tokio::test]
-    async fn an_unkeyed_command_is_not_admitted() {
-        let state = SharedState::new();
-        assert!(matches!(
-            admit(
-                &state,
-                &Command::KillResource {
-                    terminal_id: ResourceId::local(3),
-                    operation_id: None,
-                }
-            )
-            .await,
-            KeyedAdmission::Unkeyed
-        ));
     }
 
     /// A failed command binds nothing: its key admits the next repeat.

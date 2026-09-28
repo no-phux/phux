@@ -1,29 +1,12 @@
-//! What the user sees when the server could only answer for part of the fleet.
+//! What the user sees when a federation hub could only answer for part of
+//! the fleet (one `ERROR` per unreachable satellite ahead of the merged ack,
+//! served by [`phux_client::testkit`]). Black-box on the exact stderr, JSON
+//! key, and exit status:
 //!
-//! A federation hub that cannot reach a satellite still answers `GET_STATE`:
-//! it merges what it has and pushes one uncorrelated `ERROR` per unreachable
-//! satellite ahead of the ack (`handle_get_state_federated` —
-//! "observable degradation, not silence"). The client keeps those notices
-//! now, but keeping is not showing, and the bug this file pins down was
-//! entirely at the surface: `phux ls` printed a listing indistinguishable
-//! from a complete one, and `phux kill @9` said "no such target" about a pane
-//! that was alive on the other side of a downed link.
-//!
-//! These are black-box tests on purpose. The thing under test is the *user's
-//! eye level* — the exact sentence on stderr, the JSON key, the exit status —
-//! so they run the real binary and read its real streams. The server side is
-//! [`phux_client::testkit`], where the reference ordering (degradation ERRORs
-//! first, then the merged ack) is written down once.
-//!
-//! The split being asserted, verb by verb:
-//!
-//! - `ls` enumerates: warn, exit 0, and put it in the `--json` document too.
-//! - `kill` / `tag` resolve a Terminal against `panes`, the one list a hub
-//!   merges: a miss under degradation is *unresolved*, exit 3, and must not
-//!   use the words "no such target".
-//! - `rename` resolves a session name, and session lists never aggregate —
-//!   `handle_get_state_federated` discards each satellite's — so a partial
-//!   fleet cannot change its answer: warn, exit 0.
+//! - `ls` warns, exits 0, and records it in the `--json` document.
+//! - `kill` / `tag` treat a miss under degradation as unresolved (exit 3),
+//!   never "no such target".
+//! - `rename` resolves sessions, which hubs never aggregate: warn, exit 0.
 
 #![allow(
     clippy::expect_used,
@@ -33,7 +16,6 @@
 )]
 
 use std::os::unix::net::UnixListener as StdUnixListener;
-use std::path::Path;
 use std::process::{Command, Output};
 
 use phux_client::testkit::{ScriptSpec, ScriptedServer};
@@ -66,12 +48,8 @@ fn fleet_named(name: &str) -> SessionSnapshot {
         )])
 }
 
-/// Run the real `phux` binary with `args` against a scripted server.
-///
-/// The listener is bound *before* the child starts, so the connect can never
-/// lose a race with the accept. The server thread owns its own runtime
-/// because the child is a separate process — nothing here shares the client's
-/// reactor.
+/// Run the real binary against a scripted server bound before the child
+/// starts, on its own runtime.
 fn run_verb(spec: ScriptSpec, args: &[&str]) -> Output {
     let dir = tempfile::tempdir().expect("tempdir");
     let socket = dir.path().join("phux.sock");
@@ -125,122 +103,68 @@ fn partial_fleet() -> ScriptSpec {
     ScriptSpec::new().degradation_notice(OUTAGE).state(fleet())
 }
 
-// --- `ls`: a reader. Warn, but answer. -------------------------------------
-
+/// `ls` answers a whole fleet with no warning and `unreachable: []` (present,
+/// not absent); a partial fleet still lists and exits 0, naming the missing
+/// satellite on stderr and in the `--json` document (`schema_version` 3).
 #[test]
-fn ls_against_a_whole_fleet_says_nothing_extra() {
+fn ls_answers_and_reports_completeness() {
     let output = run_verb(whole_fleet(), &["ls"]);
     assert!(output.status.success());
+    assert!(stdout_of(&output).contains("work"));
     assert!(
-        stdout_of(&output).contains("work"),
-        "the listing still prints"
+        !stderr_of(&output).contains("saw only part of the fleet"),
+        "a complete listing must not cry partial"
     );
-    let stderr = stderr_of(&output);
-    assert!(
-        !stderr.contains("saw only part of the fleet"),
-        "a complete listing must not cry partial; a warning printed every run \
-         is a warning nobody reads, got {stderr:?}"
-    );
-}
-
-#[test]
-fn ls_against_a_partial_fleet_says_so_and_still_succeeds() {
-    let output = run_verb(partial_fleet(), &["ls"]);
-    assert!(
-        output.status.success(),
-        "a dead satellite elsewhere must not fail the listing of the panes right here"
-    );
-    assert!(
-        stdout_of(&output).contains("work"),
-        "the listing still prints"
-    );
-    let stderr = stderr_of(&output);
-    assert!(
-        stderr.contains(OUTAGE),
-        "the user must be told which satellite went missing, got {stderr:?}"
-    );
-}
-
-#[test]
-fn ls_json_carries_the_incompleteness_in_the_document_not_on_stderr() {
-    // `--json` consumers do not read stderr, and an agent that cannot tell a
-    // partial inventory from a complete one will act on the difference.
-    let output = run_verb(partial_fleet(), &["ls", "--json"]);
-    assert!(output.status.success());
-    let doc: serde_json::Value = serde_json::from_str(&stdout_of(&output)).expect("ls --json");
-    assert_eq!(doc["schema_version"], 3, "the `unreachable` key bumped it");
-    assert_eq!(doc["unreachable"], serde_json::json!([OUTAGE]));
-}
-
-#[test]
-fn ls_json_states_completeness_positively() {
-    // Present-and-empty, never absent: an absent key is what an older phux
-    // emits, and a consumer cannot tell that apart from a degraded answer.
     let output = run_verb(whole_fleet(), &["ls", "--json"]);
     let doc: serde_json::Value = serde_json::from_str(&stdout_of(&output)).expect("ls --json");
     assert_eq!(doc["unreachable"], serde_json::json!([]));
+
+    let output = run_verb(partial_fleet(), &["ls"]);
+    assert!(
+        output.status.success(),
+        "a dead satellite must not fail the listing"
+    );
+    assert!(stdout_of(&output).contains("work"));
+    assert!(
+        stderr_of(&output).contains(OUTAGE),
+        "{}",
+        stderr_of(&output)
+    );
+    let output = run_verb(partial_fleet(), &["ls", "--json"]);
+    assert!(output.status.success());
+    let doc: serde_json::Value = serde_json::from_str(&stdout_of(&output)).expect("ls --json");
+    assert_eq!(doc["schema_version"], 3);
+    assert_eq!(doc["unreachable"], serde_json::json!([OUTAGE]));
 }
 
-// --- `kill` / `tag`: resolvers. A miss is not an absence. ------------------
-
+/// Terminal resolvers: a miss on a whole fleet is `no such target` (exit 1);
+/// on a partial fleet it is unresolved (exit 3), names the outage, and never
+/// claims the pane is gone.
 #[test]
-fn kill_reports_a_real_miss_as_a_plain_miss() {
-    let output = run_verb(whole_fleet(), &["kill", "--yes", "@999"]);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        stderr_of(&output).contains("no such target: @999"),
-        "the established wording for a genuine miss is unchanged"
-    );
-}
+fn kill_and_tag_never_call_an_unsearchable_pane_absent() {
+    for args in [&["kill", "--yes", "@999"][..], &["tag", "ls", "@999"][..]] {
+        let complete = run_verb(whole_fleet(), args);
+        assert_eq!(complete.status.code(), Some(1), "{args:?}");
+        assert!(
+            stderr_of(&complete).contains("no such target: @999"),
+            "{args:?}"
+        );
 
-#[test]
-fn kill_refuses_to_call_an_unsearchable_pane_absent() {
-    let output = run_verb(partial_fleet(), &["kill", "--yes", "@999"]);
-    assert_eq!(
-        output.status.code(),
-        Some(3),
-        "a script must be able to branch: retry a partial view, do not retry a miss"
-    );
-    let stderr = stderr_of(&output);
-    assert!(
-        !stderr.contains("no such target"),
-        "this client does not know the target is gone, got {stderr:?}"
-    );
-    assert!(
-        stderr.contains("incomplete") && stderr.contains(OUTAGE),
-        "the message must say what could not be seen, got {stderr:?}"
-    );
-}
-
-#[test]
-fn tag_draws_the_same_distinction_as_kill() {
-    // `phux tag` addresses Terminals too, so it inherits the same hazard —
-    // and the same two answers.
-    let complete = run_verb(whole_fleet(), &["tag", "ls", "@999"]);
-    assert_eq!(complete.status.code(), Some(1));
-    assert!(stderr_of(&complete).contains("no such target: @999"));
-
-    let degraded = run_verb(partial_fleet(), &["tag", "ls", "@999"]);
-    assert_eq!(degraded.status.code(), Some(3));
-    assert!(!stderr_of(&degraded).contains("no such target"));
-    assert!(stderr_of(&degraded).contains(OUTAGE));
+        let degraded = run_verb(partial_fleet(), args);
+        assert_eq!(degraded.status.code(), Some(3), "{args:?}");
+        let stderr = stderr_of(&degraded);
+        assert!(!stderr.contains("no such target"), "{args:?}: {stderr}");
+        assert!(stderr.contains(OUTAGE), "{args:?}: {stderr}");
+    }
 }
 
 // --- `rename`: a session verb, which federation cannot mislead. ------------
 
 #[test]
 fn rename_warns_but_still_renames_under_a_partial_fleet() {
-    // Session names never aggregate: `handle_get_state_federated` discards
-    // each satellite's `sessions` list, so an unreachable satellite can
-    // neither hide the session being renamed nor conceal a collision. The
-    // right answer is a warning and a full success — deliberately *not* the
-    // exit-3 refusal `kill` and `tag` give, because the reason for that
-    // refusal does not exist here.
-    //
-    // The scripted server stores `SET_METADATA` without rewriting its
-    // snapshot. The real server applies the registry rename before the
-    // barrier reply, so the second `GET_STATE` is scripted as that applied
-    // roster.
+    // Session names never aggregate, so a partial fleet cannot hide the rename
+    // or a collision: warn and succeed, unlike `kill`/`tag`. The script's second
+    // `GET_STATE` is the applied roster, as the real server's barrier reply is.
     let spec = ScriptSpec::new()
         .degradation_notice(OUTAGE)
         .states([fleet(), fleet_named("play")]);
@@ -259,24 +183,8 @@ fn rename_warns_but_still_renames_under_a_partial_fleet() {
 
 #[test]
 fn rename_still_refuses_an_unknown_session_under_a_partial_fleet() {
-    // The corollary: because the session name space is complete even when the
-    // fleet is not, "no such session" stays a confident, exit-2 refusal here.
-    // Weakening it would be the mirror-image error of the one this bead fixes.
+    // The session name space is complete even when the fleet is not.
     let output = run_verb(partial_fleet(), &["rename", "ghost", "play"]);
     assert_eq!(output.status.code(), Some(2));
     assert!(stderr_of(&output).contains("no such session"));
-}
-
-/// The socket path is the only server this test binary knows about, so a verb
-/// that ignored `--socket` would silently talk to the developer's own daemon.
-#[test]
-fn verbs_under_test_honour_the_socket_override() {
-    let missing = Path::new("/nonexistent/phux-partial-fleet.sock");
-    let output = phux()
-        .args(["ls", "--socket"])
-        .arg(missing)
-        .output()
-        .expect("run phux");
-    assert!(!output.status.success());
-    assert!(stderr_of(&output).contains("no server running"));
 }

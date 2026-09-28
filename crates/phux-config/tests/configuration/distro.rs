@@ -1,146 +1,82 @@
-//! `--distro` spec resolution (phux-r82.9).
-//!
-//! Covers: bundled-name lookup across search directories (first hit
-//! wins), path specs (file and directory forms), and the unknown-name
-//! error listing every candidate that was checked. Uses
-//! [`resolve_distro_in`] with injected directories so tests never
-//! mutate process environment.
+//! `--distro` spec resolution, with injected search directories.
 
 #![allow(clippy::expect_used, reason = "tests")]
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use phux_config::distro::{DistroError, resolve_distro_in};
+use phux_config::distro::{DistroError, resolve_distro_in, search_dirs};
 use tempfile::TempDir;
 
-/// Create `dir/<name>/<name>.toml` with placeholder layer contents.
-fn plant_distro(dir: &std::path::Path, name: &str) -> PathBuf {
+/// Create `dir/<name>/<name>.toml`, returning its canonical path.
+fn plant_distro(dir: &Path, name: &str) -> PathBuf {
     let package = dir.join(name);
     fs::create_dir_all(&package).expect("mkdir distro package");
     let layer = package.join(format!("{name}.toml"));
     fs::write(&layer, "[defaults]\nhistory-limit = 123\n").expect("write layer");
-    layer
+    layer.canonicalize().expect("canonicalize")
 }
 
+/// Bare names search the directories in order (first hit wins); file and
+/// directory path specs bypass them; a renamed name falls through to its
+/// alias.
 #[test]
-fn bare_name_resolves_to_name_slash_name_toml() {
-    let tmp = TempDir::new().expect("tempdir");
-    let layer = plant_distro(tmp.path(), "herdr");
-
-    let resolved =
-        resolve_distro_in("herdr", &[tmp.path().to_path_buf()]).expect("bundled name resolves");
-    assert_eq!(resolved, layer.canonicalize().expect("canonicalize"));
-    assert!(resolved.is_absolute());
-}
-
-#[test]
-fn earlier_search_directory_wins() {
+fn specs_resolve_to_absolute_layer_files() {
     let first = TempDir::new().expect("tempdir");
     let second = TempDir::new().expect("tempdir");
     let winner = plant_distro(first.path(), "herdr");
     plant_distro(second.path(), "herdr");
+    let starter = plant_distro(second.path(), "starter");
+    let dirs = [first.path().to_path_buf(), second.path().to_path_buf()];
 
-    let resolved = resolve_distro_in(
-        "herdr",
-        &[first.path().to_path_buf(), second.path().to_path_buf()],
-    )
-    .expect("resolves");
-    assert_eq!(resolved, winner.canonicalize().expect("canonicalize"));
+    assert_eq!(resolve_distro_in("herdr", &dirs).expect("name"), winner);
+    let path_spec = winner.to_str().expect("utf8");
+    assert_eq!(resolve_distro_in(path_spec, &[]).expect("file"), winner);
+    let dir_spec = winner.parent().and_then(Path::to_str).expect("utf8");
+    assert_eq!(resolve_distro_in(dir_spec, &[]).expect("dir"), winner);
+    assert_eq!(
+        resolve_distro_in("herdr", &dirs[1..]).expect("stub wins"),
+        second
+            .path()
+            .join("herdr/herdr.toml")
+            .canonicalize()
+            .unwrap()
+    );
+    fs::remove_dir_all(second.path().join("herdr")).expect("drop stub");
+    assert_eq!(
+        resolve_distro_in("herdr", &dirs[1..]).expect("alias"),
+        starter
+    );
 }
 
 #[test]
-fn unknown_name_error_lists_every_candidate() {
+fn failures_name_the_spec_and_every_checked_path() {
     let a = TempDir::new().expect("tempdir");
     let b = TempDir::new().expect("tempdir");
-
     let err = resolve_distro_in("nope", &[a.path().to_path_buf(), b.path().to_path_buf()])
-        .expect_err("unknown name must fail");
-    match &err {
-        DistroError::UnknownName { name, candidates } => {
-            assert_eq!(name, "nope");
-            assert_eq!(candidates.len(), 2);
-            assert!(candidates[0].starts_with(a.path()));
-            assert!(candidates[1].starts_with(b.path()));
-        }
-        other => panic!("expected UnknownName, got: {other:?}"),
-    }
-    let msg = err.to_string();
-    assert!(msg.contains("nope"), "error names the spec: {msg}");
+        .expect_err("unknown name");
+    let DistroError::UnknownName { name, candidates } = &err else {
+        panic!("expected UnknownName, got {err:?}");
+    };
+    assert_eq!(name, "nope");
+    assert!(candidates[0].starts_with(a.path()) && candidates[1].starts_with(b.path()));
+    assert!(err.to_string().contains("nope.toml"), "{err}");
+
+    let missing = a.path().join("ghost.toml");
+    let err = resolve_distro_in(missing.to_str().expect("utf8"), &[]).expect_err("missing");
+    assert!(matches!(err, DistroError::Unreadable { .. }), "{err:?}");
+}
+
+/// The repo checkout's `distros/` is on the default search list: `starter`
+/// resolves there, and `herdr` hits its compatibility stub.
+#[test]
+fn the_repo_checkout_serves_the_bundled_distros() {
+    let dirs = search_dirs();
+    let starter = resolve_distro_in("starter", &dirs).expect("starter");
     assert!(
-        msg.contains("nope.toml"),
-        "error lists checked paths: {msg}"
+        starter.ends_with("distros/starter/starter.toml"),
+        "{starter:?}"
     );
-}
-
-#[test]
-fn toml_path_spec_bypasses_the_search_directories() {
-    let tmp = TempDir::new().expect("tempdir");
-    let layer = plant_distro(tmp.path(), "herdr");
-
-    // No search dirs at all: a path spec must not need them.
-    let resolved =
-        resolve_distro_in(layer.to_str().expect("utf8 path"), &[]).expect("path spec resolves");
-    assert_eq!(resolved, layer.canonicalize().expect("canonicalize"));
-}
-
-#[test]
-fn directory_path_spec_means_dir_slash_dirname_toml() {
-    let tmp = TempDir::new().expect("tempdir");
-    let layer = plant_distro(tmp.path(), "herdr");
-    let package_dir = layer.parent().expect("package dir");
-
-    let resolved = resolve_distro_in(package_dir.to_str().expect("utf8 path"), &[])
-        .expect("directory spec resolves");
-    assert_eq!(resolved, layer.canonicalize().expect("canonicalize"));
-}
-
-#[test]
-fn missing_path_spec_is_unreadable_not_unknown() {
-    let tmp = TempDir::new().expect("tempdir");
-    let missing = tmp.path().join("ghost.toml");
-
-    let err = resolve_distro_in(missing.to_str().expect("utf8 path"), &[])
-        .expect_err("missing path must fail");
-    assert!(
-        matches!(err, DistroError::Unreadable { .. }),
-        "expected Unreadable, got: {err:?}"
-    );
-    assert!(err.to_string().contains("ghost.toml"), "{err}");
-}
-
-#[test]
-fn repo_checkout_fallback_finds_the_bundled_starter() {
-    // The public `resolve_distro` search list ends with the repo
-    // checkout's distros/ directory; the in-tree starter package must be
-    // reachable through `search_dirs` even with no environment set up.
-    let dirs = phux_config::distro::search_dirs();
-    let resolved = resolve_distro_in("starter", &dirs).expect("bundled starter resolves in-repo");
-    assert!(
-        resolved.ends_with("distros/starter/starter.toml"),
-        "{resolved:?}"
-    );
-}
-
-#[test]
-fn herdr_still_resolves_as_an_alias_of_starter() {
-    let dirs = phux_config::distro::search_dirs();
-    let via_alias = resolve_distro_in("herdr", &dirs).expect("herdr resolves");
-    assert!(
-        via_alias.ends_with("distros/herdr/herdr.toml"),
-        "in-tree herdr name hits the compatibility stub: {via_alias:?}"
-    );
-    let via_name = resolve_distro_in("starter", &dirs).expect("starter resolves");
-    assert!(
-        via_name.ends_with("distros/starter/starter.toml"),
-        "{via_name:?}"
-    );
-}
-
-#[test]
-fn herdr_name_falls_through_to_starter_when_the_stub_is_absent() {
-    let tmp = TempDir::new().expect("tempdir");
-    let starter = plant_distro(tmp.path(), "starter");
-    let resolved = resolve_distro_in("herdr", &[tmp.path().to_path_buf()]).expect("alias fallback");
-    assert_eq!(resolved, starter.canonicalize().expect("canonicalize"));
+    let herdr = resolve_distro_in("herdr", &dirs).expect("herdr");
+    assert!(herdr.ends_with("distros/herdr/herdr.toml"), "{herdr:?}");
 }

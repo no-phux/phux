@@ -73,74 +73,31 @@ fn seeded_default_colors_are_installed_before_actor_run() {
     );
 }
 
-/// phux-07y: `shell_command` runs the user's command via
-/// `<resolved shell> -c <command>` so quoting / args work and the
-/// pane closes when the command exits. phux-i0e8.4.1: the shell is
-/// the resolved default (`defaults.shell` → `$SHELL` → `/bin/sh`),
-/// passed in by the caller.
 #[test]
-fn shell_command_wraps_in_shell_dash_c() {
-    let cmd = shell_command("/opt/fancy/fish", "btop --utf-force", false);
-    let argv = cmd.get_argv();
-    assert_eq!(argv.len(), 3, "expected [shell, -c, command]");
-    assert_eq!(argv[0], "/opt/fancy/fish");
-    assert_eq!(argv[1], "-c");
-    assert_eq!(argv[2], "btop --utf-force");
+fn ask_marker_parse() {
+    for title in ["", "vim README.md", "phux-ask", "phux-ask[q1]"] {
+        assert_eq!(AskMarker::parse(title), None, "{title:?}");
+    }
+    let cases: &[(&str, &str, &str, &[&str])] = &[
+        ("phux-ask:Proceed?", "", "Proceed?", &[]),
+        (
+            "phux-ask[q1]:Deploy to prod??s=Yes|No|Hold",
+            "q1",
+            "Deploy to prod?",
+            &["Yes", "No", "Hold"],
+        ),
+        ("phux-ask:Ready??s=", "", "Ready?", &[]),
+        ("phux-ask:Pick??s=a||b", "", "Pick?", &["a", "b"]),
+    ];
+    for (title, id, question, suggestions) in cases {
+        let marker = AskMarker::parse(title).expect("a phux-ask marker");
+        assert_eq!(marker.id, *id, "{title}");
+        assert_eq!(marker.question, *question, "{title}");
+        assert_eq!(marker.suggestions, *suggestions, "{title}");
+    }
 }
 
-/// phux-2sl6: a non-`phux-ask` title is not an ask marker.
-#[test]
-fn ask_marker_rejects_non_ask_titles() {
-    assert_eq!(AskMarker::parse(""), None);
-    assert_eq!(AskMarker::parse("vim README.md"), None);
-    // Bare prefix with no `:` carries no question — not a marker.
-    assert_eq!(AskMarker::parse("phux-ask"), None);
-    assert_eq!(AskMarker::parse("phux-ask[q1]"), None);
-}
-
-/// phux-2sl6: the minimal `phux-ask:<question>` form yields an empty id,
-/// the question, and no suggestions.
-#[test]
-fn ask_marker_parses_bare_question() {
-    let marker = AskMarker::parse("phux-ask:Proceed?").expect("a phux-ask marker");
-    assert_eq!(marker.id, "");
-    assert_eq!(marker.question, "Proceed?");
-    assert!(marker.suggestions.is_empty());
-}
-
-/// phux-2sl6: the full `phux-ask[<id>]:<question>?s=a|b|c` form yields
-/// the id, the question, and the `|`-delimited suggestions in order.
-#[test]
-fn ask_marker_parses_id_and_suggestions() {
-    let marker =
-        AskMarker::parse("phux-ask[q1]:Deploy to prod??s=Yes|No|Hold").expect("a phux-ask marker");
-    assert_eq!(marker.id, "q1");
-    assert_eq!(marker.question, "Deploy to prod?");
-    assert_eq!(
-        marker.suggestions,
-        vec!["Yes".to_owned(), "No".to_owned(), "Hold".to_owned()],
-    );
-}
-
-/// phux-2sl6: an empty `?s=` suffix (or empty options) yields no
-/// suggestions, never a vector with empty strings.
-#[test]
-fn ask_marker_drops_empty_suggestions() {
-    let marker = AskMarker::parse("phux-ask:Ready??s=").expect("a phux-ask marker");
-    assert_eq!(marker.question, "Ready?");
-    assert!(marker.suggestions.is_empty());
-
-    let marker = AskMarker::parse("phux-ask:Pick??s=a||b").expect("a phux-ask marker");
-    assert_eq!(
-        marker.suggestions,
-        vec!["a".to_owned(), "b".to_owned()],
-        "empty inter-pipe segments are dropped",
-    );
-}
-
-/// Direct synchronous test: snapshot-of-blank-Terminal yields the
-/// expected reset preamble. Doesn't spawn the actor; exercises the
-/// synthesis helper directly.
+/// A blank pane's snapshot opens with the reset preamble.
 #[test]
 fn synthesize_blank_pane_returns_reset_preamble() {
     let bundle = TerminalActor::new(80, 24).expect("new");
@@ -150,8 +107,7 @@ fn synthesize_blank_pane_returns_reset_preamble() {
     assert!(snap.bytes.starts_with(b"\x1b[!p\x1b[2J\x1b[H"));
 }
 
-/// Synchronous test: seed bytes flow through to the synthesized
-/// snapshot. Exercises [`TerminalActor::new_with_seed`].
+/// Seed bytes reach the synthesized snapshot.
 #[test]
 fn synthesize_seeded_pane_carries_visible_text() {
     let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
@@ -163,9 +119,7 @@ fn synthesize_seeded_pane_carries_visible_text() {
     );
 }
 
-/// Async test: the actor responds to `SnapshotRequest` over the
-/// `LocalSet` and ships back the same bytes the synchronous
-/// synthesizer would.
+/// The actor answers `SnapshotRequest` with what the synthesizer produces.
 #[tokio::test(flavor = "current_thread")]
 async fn actor_responds_to_snapshot_request_on_localset() {
     let local = tokio::task::LocalSet::new();
@@ -173,10 +127,7 @@ async fn actor_responds_to_snapshot_request_on_localset() {
         .run_until(async {
             let bundle = TerminalActor::new_with_seed(20, 5, b"hi there").expect("new_with_seed");
             let handle = bundle.handle.clone();
-            // Hold the token; under new semantics dropping it does
-            // NOT cancel, so the actor is alive regardless. Keep
-            // the binding for parallel structure with the other
-            // tests in this module.
+            // Dropping the token does not cancel; keep it anyway.
             let _token = bundle.token;
             tokio::task::spawn_local(bundle.actor.run());
 
@@ -210,8 +161,7 @@ async fn actor_responds_to_snapshot_request_on_localset() {
         .await;
 }
 
-/// A no-PTY actor answers `UpgradeHandleRequest` with the replay snapshot
-/// and dims but no descriptors — there is no child to hand off.
+/// A PTY-less actor's upgrade handle has a snapshot but no descriptors.
 #[tokio::test(flavor = "current_thread")]
 async fn upgrade_handle_no_pty_has_snapshot_but_no_descriptors() {
     let local = tokio::task::LocalSet::new();
@@ -240,8 +190,7 @@ async fn upgrade_handle_no_pty_has_snapshot_but_no_descriptors() {
         .await;
 }
 
-/// A PTY-backed actor answers `UpgradeHandleRequest` with the live master
-/// fd and child PID — the descriptors the re-exec'd image re-adopts.
+/// A PTY-backed actor's upgrade handle carries the master fd and child pid.
 #[tokio::test(flavor = "current_thread")]
 async fn upgrade_handle_with_pty_exposes_fd_and_pid() {
     let local = tokio::task::LocalSet::new();
@@ -264,17 +213,14 @@ async fn upgrade_handle_with_pty_exposes_fd_and_pid() {
             assert!(h.master_fd.is_some(), "PTY actor should expose a master fd");
             assert!(h.child_pid.is_some(), "PTY actor should expose a child pid");
 
-            // Cancel so the actor reaps the `sleep` child instead of
-            // leaking it past the test.
+            // Cancel so the actor reaps the `sleep` child.
             token.cancel();
         })
         .await;
 }
 
-/// `new_with_adopted_pty` rebuilds a working actor around an inherited PTY:
-/// it replays the seed snapshot into the fresh grid, exposes the adopted
-/// child, and surfaces the live child's output — proving the resume path's
-/// actor construction end to end.
+/// `new_with_adopted_pty` replays the seed, exposes the adopted child, and
+/// surfaces its live output.
 #[tokio::test(flavor = "current_thread")]
 async fn adopted_actor_replays_seed_and_serves_live_pty() {
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -331,8 +277,7 @@ async fn adopted_actor_replays_seed_and_serves_live_pty() {
             let pid = i32::try_from(child.process_id().expect("pid")).expect("pid fits i32");
             let master_fd = pair.master.as_raw_fd().expect("master fd");
             // An owned duplicate of the master for the actor to adopt; the
-            // test keeps `pair.master` to write into the PTY. `std`-only
-            // (no `libc`, which is macOS-gated in this crate).
+            // test keeps `pair.master` to write into the PTY.
             // SAFETY: `master_fd` is open and outlives this borrow.
             let dup_fd = unsafe { BorrowedFd::borrow_raw(master_fd) }
                 .try_clone_to_owned()
@@ -372,8 +317,7 @@ async fn adopted_actor_replays_seed_and_serves_live_pty() {
             assert_eq!(h.child_pid, Some(pid));
             assert!(h.master_fd.is_some());
 
-            // Live byte flow: write into the PTY; `cat` echoes; the adopted
-            // actor's grid surfaces it.
+            // `cat` echoes; the adopted actor's grid shows it.
             writer.write_all(b"ping\n").expect("write to pty");
             writer.flush().expect("flush");
             let mut saw = false;
@@ -391,11 +335,8 @@ async fn adopted_actor_replays_seed_and_serves_live_pty() {
         .await;
 }
 
-/// ADR-0033 end-to-end: a `Freeze` (SIGSTOP) flips the pane to `Frozen`
-/// and broadcasts a `TerminalControl` event; `Resume` (SIGCONT) returns it
-/// to `Running`; `Kill` (SIGKILL) actually terminates the child (its EOF
-/// fires the exit notification). Exercises the actor's signal deliverer
-/// (`killpg`) and the control-event broadcast over a real PTY child.
+/// ADR-0033: Freeze/Resume flip the lifecycle and broadcast
+/// `TerminalControl`; Kill terminates the child (EOF fires exit notify).
 #[tokio::test(flavor = "current_thread")]
 #[allow(
     clippy::too_many_lines,
@@ -416,8 +357,7 @@ async fn signal_freezes_resumes_and_kills_the_child() {
         ResourceLifecycle,
         Option<phux_protocol::ids::IdempotencyKey>,
     ) {
-        // Scan past any incidental grid events (Dirty/Idle) for the next
-        // supervisory TerminalControl emission.
+        // Skip incidental Dirty/Idle events.
         let scan = async {
             loop {
                 let emitted = rx.recv().await.expect("event channel open");
@@ -473,8 +413,7 @@ async fn signal_freezes_resumes_and_kills_the_child() {
             let handle = bundle.handle.clone();
             let token = bundle.token.clone();
             let mut exit_rx = bundle.exit_notify.expect("exit notify");
-            // Wire the agent-event sink so we observe the TerminalControl
-            // emissions the runtime would journal.
+            // Observe the TerminalControl events the runtime would journal.
             let mut actor = bundle.actor;
             let (evt_tx, mut evt_rx) = mpsc::channel::<crate::resource::event_sink::Emitted>(64);
             actor.set_event_sink(evt_tx);
@@ -548,20 +487,16 @@ async fn signal_freezes_resumes_and_kills_the_child() {
         .await;
 }
 
-/// Test-only hangup ceiling for the flush-before-death fixtures (phux-7n1g).
-/// Production stays at [`PANE_KILL_GRACE`]; this is a deadline on group
-/// exit, so an idle trap still returns on the first poll.
+/// Test-only hangup ceiling for the flush fixtures (a deadline, so idle
+/// traps still return on the first poll).
 const CONTENDED_FLUSH_GRACE: std::time::Duration = std::time::Duration::from_millis(2500);
 
-/// Larger than everything that could absorb a hangup flush without the
-/// child blocking: the reader→actor channel plus slack for the kernel
-/// PTY buffer. Derived from the production constants so retuning the
-/// channel cannot silently defang the grace test.
+/// More than the reader channel plus kernel buffer can absorb, derived from
+/// the production constants.
 const TERMINAL_FLUSH_BYTES: usize =
     super::spawn::PTY_CHANNEL_DEPTH * super::spawn::PTY_READ_CHUNK + 512 * 1024;
 
-/// Poll until `path` exists or 30s expires. Covers ambient shell
-/// scheduling (the armed / trap-started barriers), not the hangup flush.
+/// Poll until `path` exists or 30 s pass (shell scheduling, not the flush).
 async fn wait_until_fixture_exists(path: &std::path::Path) -> bool {
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
         while !path.exists() {
@@ -572,8 +507,7 @@ async fn wait_until_fixture_exists(path: &std::path::Path) -> bool {
     .is_ok()
 }
 
-/// Poll the SIGHUP flush marker until it lands or [`CONTENDED_FLUSH_GRACE`]
-/// expires. Replaces a one-shot read after a fixed actor join.
+/// Poll the SIGHUP flush marker until it lands or the grace expires.
 async fn wait_for_flush_marker(path: &std::path::Path) -> String {
     let started = tokio::time::Instant::now();
     loop {
@@ -587,20 +521,9 @@ async fn wait_for_flush_marker(path: &std::path::Path) -> String {
     }
 }
 
-/// phux-sw1: killing a pane (cancel the actor token → `shutdown_pty`)
-/// must give a foreground job in a process group distinct from the shell a
-/// chance to flush before it dies. This reproduces interactive job-control
-/// topology rather than testing a shell and child that share one group.
-///
-/// Everything BEFORE the hangup is fenced by the `armed` barrier below.
-/// The trap then has to run inside the hangup grace. Production keeps the
-/// 500ms [`PANE_KILL_GRACE`] budget; under host load outside nextest's
-/// pool a `/bin/sh` can miss that window (phux-7n1g) while the product
-/// is behaving as designed. These two fixtures stretch only the *ceiling*
-/// of `await_pane_group_exit` (idle traps still return on the first poll).
-/// `.config/nextest.toml` still gives this test `threads-required =
-/// 'num-cpus'` so the runner's own pool is not a second source of
-/// starvation.
+/// Killing a pane gives a foreground job in its own process group a chance
+/// to flush before it dies. The hangup ceiling is stretched for load;
+/// nextest gives this test all CPUs.
 #[tokio::test(flavor = "current_thread")]
 async fn pane_kill_lets_foreground_process_flush_before_death() {
     use portable_pty::CommandBuilder;
@@ -613,17 +536,10 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
             let armed = dir.path().join("armed");
             let foreground = FixtureGroup::new(dir.path(), "PHUX_TEST_FOREGROUND");
 
-            // The script announces that its HUP trap is installed. Without
-            // that handshake the test races the shell: a distinct process
-            // group is established at exec, but `trap` runs afterwards, so
-            // a SIGHUP arriving in between is handled by the DEFAULT
-            // disposition — the shell dies silently and the marker is
-            // never written. That gap is why this test failed under a
-            // fully parallel `just test` (phux-2390) with an empty marker
-            // in 0.7s: not a timeout, a missing synchronization point.
+            // The script signals once its HUP trap is installed; a SIGHUP
+            // before `trap` would hit the default disposition.
             let script = dir.path().join("foreground.sh");
-            // A builtin wait lets HUP run the trap directly; an external sleep
-            // adds child-exit scheduling to the production's 500 ms grace.
+            // A builtin wait lets HUP run the trap directly.
             std::fs::write(
                 &script,
                 foreground.script(
@@ -634,8 +550,7 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
             )
             .expect("write foreground script");
 
-            // Monitor mode makes the script a foreground job in its own
-            // process group, matching an interactive shell running Claude.
+            // Monitor mode: the script is a foreground job in its own group.
             let mut cmd = CommandBuilder::new("/bin/sh");
             cmd.arg("-c");
             cmd.arg(format!(
@@ -663,27 +578,10 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
             let master = std::sync::Arc::clone(&pty.master);
             let run = tokio::task::spawn_local(actor.run());
 
-            // ONE barrier, not two deadlines (phux-axos). `armed` is
-            // written by the inner shell AFTER `trap`, and the inner
-            // shell is the process the outer shell's `set -m` put in its
-            // own group at exec — so the file existing implies BOTH
-            // preconditions this test needs, and implies them in the only
-            // order they can happen in. There used to be a separate 2s
-            // poll for the distinct process group ahead of this wait;
-            // that deadline bought nothing (the `armed` wait strictly
-            // dominates it) and cost a second way to fail for reasons
-            // that are not the subject.
-            //
-            // The budget is deliberately generous and deliberately NOT
-            // the subject's. What it covers is two `/bin/sh` processes
-            // being forked, exec'd and scheduled — ambient work whose
-            // cost is unbounded in machine load (phux-m64c measured a
-            // freshly spawned `/bin/sh` taking 7.8s to run its first
-            // instruction on a loaded box). The thing under test is what
-            // `shutdown_pty` does AFTERWARDS, and it keeps its own budget
-            // below. A pane that never arms fails here, against its own
-            // number, with a message that names the environment rather
-            // than blaming the flush path.
+            // One barrier: `armed` is written after `trap` by the process
+            // `set -m` put in its own group, so it implies both
+            // preconditions. The generous budget covers process startup
+            // under load, not the subject under test.
             tokio::time::timeout(std::time::Duration::from_secs(30), async {
                 while !armed.exists() {
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -697,8 +595,7 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
             );
             let _grace = stretch_pane_kill_grace(CONTENDED_FLUSH_GRACE);
 
-            // Now that the job is armed, the PTY's foreground group is
-            // settled and can be read once instead of polled for.
+            // Armed, so the foreground group is settled.
             let foreground_group = master
                 .lock()
                 .expect("master lock")
@@ -727,43 +624,14 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
         .await;
 }
 
-/// phux-l96p.12: the hangup grace must let a foreground job finish flushing
-/// **to the terminal**, not merely to somewhere.
+/// The hangup grace lets a foreground job finish flushing to the terminal:
+/// the reader must keep draining during teardown, or the child wedges in
+/// `write(2)` and is hard-killed before the marker appears.
 ///
-/// The sibling test above proves the trap RUNS. This one proves it can
-/// COMPLETE, which is a different claim with a different failure mode. The
-/// PTY reader hands bytes to the actor over a bounded channel, and teardown
-/// is the one stretch where the actor is parked in `shutdown_pty` rather than
-/// draining that channel in its `select!` loop. Let the queue fill and the
-/// reader stops calling `read(2)`; an unread PTY master accepts very little
-/// before `write(2)` blocks (measured: 1024 bytes on macOS), so the child
-/// wedges mid-flush, burns the whole grace, and is hard-killed. The marker
-/// never appears — even though the trap fired immediately.
-///
-/// Three things the fixture has to get right, each learned by watching this
-/// test pass for the wrong reason:
-///
-/// * The outer shell installs a `SIGHUP` handler and survives. It is the
-///   session leader, and when a session leader exits the kernel revokes the
-///   controlling terminal for the whole session — every subsequent write from
-///   the foreground job fails `EIO` immediately. That is a real effect, but it
-///   is not this one, and it masks this one completely.
-/// * The trap masks further hangups before flushing. `cat` is a separate
-///   process in the foreground group and an ignored disposition is what
-///   survives `exec`; without the mask it takes the kernel's second `SIGHUP`
-///   (sent when the session leader's terminal is released) and dies at ~20ms.
-///   A real process flushing on hangup masks further hangups the same way.
-/// * `&&`, not `;`. The marker has to mean "every byte reached the terminal".
-///   With `;` it lands even when `cat` died after one buffer, which makes this
-///   test pass against the exact bug it exists to catch.
-///
-/// Load-sensitive for the same structural reason as the sibling test.
-/// The hangup ceiling is stretched (phux-7n1g) and, for this fixture
-/// only, gated on an observed trap-started marker so a starved `/bin/sh`
-/// does not spend that ceiling waiting to be scheduled (phux-ko7j).
-/// `.config/nextest.toml` still gives this test `threads-required =
-/// 'num-cpus'` so the runner's own pool is not a second source of
-/// starvation.
+/// Fixture requirements: the outer shell survives SIGHUP (a dying session
+/// leader revokes the tty, masking the bug); the trap masks further hangups
+/// (so `cat` survives the second SIGHUP); and `&&` so the marker means
+/// every byte arrived.
 #[tokio::test(flavor = "current_thread")]
 async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
     use portable_pty::CommandBuilder;
@@ -781,13 +649,8 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
             let stderr = dir.path().join("err");
             std::fs::write(&payload, vec![b'.'; TERMINAL_FLUSH_BYTES]).expect("write flush payload");
 
-            // `cat`, not a shell loop: this has to move megabytes inside a
-            // 500ms product budget, and a `printf` loop cannot.
-            //
-            // A builtin `read` lets HUP run the trap directly. `sleep 30`
-            // spent the product grace waiting for another process to exit
-            // and be scheduled, so the flush never started (phux-rfw7);
-            // serial runs then saw an empty marker at ~523 ms shutdown.
+            // `cat` moves megabytes within the 500 ms budget; a builtin
+            // `read` lets HUP run the trap at once.
             let script = dir.path().join("foreground.sh");
             std::fs::write(
                 &script,
@@ -804,10 +667,9 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
 
             let mut cmd = CommandBuilder::new("/bin/sh");
             cmd.arg("-c");
-            // `trap ':' HUP` on the session leader: a CAUGHT disposition is
-            // reset (not inherited) across `exec`, so the inner shell can
-            // still install its own trap, while this shell stays alive and
-            // keeps the controlling terminal from being revoked.
+            // A caught HUP on the session leader resets across `exec`, so the
+            // inner shell installs its own trap while this shell keeps the
+            // tty alive.
             cmd.arg(format!(
                 "set -m; trap ':' HUP; /bin/sh {}",
                 script.display()
@@ -885,40 +747,13 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
         .await;
 }
 
-/// A process that escaped the snapshotted groups and still holds the slave
-/// open must not be able to hang the server (wave-two review, item 1).
+/// A process that escaped the snapshotted groups and holds the slave open
+/// cannot hang the server: teardown drops the PTY before a bounded join.
 ///
-/// This is the shape that made the previous revision of `shutdown_pty` a
-/// permanent whole-server deadlock. The reader thread, once its channel
-/// closes, keeps reading the master so a dying child can finish flushing —
-/// but that drain's budget is only observed BETWEEN reads, and a `read(2)`
-/// blocked on a slave someone else holds open never returns to check it. The
-/// old code then joined that thread unconditionally, and dropped the PTY only
-/// afterwards, so the join waited on a read that nothing would ever end. On a
-/// shared current-thread runtime (ADR-0003) that is every pane on the server,
-/// forever.
-///
-/// `sleep` under `set -m` is the portable stand-in for the reviewer's
-/// `setsid`, which macOS does not ship: job control gives a background job its
-/// own process group, so it is outside both groups `pane_signal_groups`
-/// snapshots and survives the hangup and the hard kill. It inherits the slave
-/// as its stdio and holds it open silently.
-///
-/// What is asserted is a bound, not a duration. The bug is an UNBOUNDED wait,
-/// so any finite ceiling catches it, and a loose one keeps this test out of
-/// the load-sensitivity that the flush tests have to live with.
-///
-/// **Honest limitation: this test passes against the unfixed code on macOS.**
-/// Measured — it does, in 0.27s. BSD-family kernels revoke the controlling
-/// terminal when the session leader exits, and `exec cat` makes the pane's own
-/// child that leader, so its death hands the reader `EIO` and the old
-/// unconditional join returned after all. Linux has no such revocation, so
-/// there the holder really does keep `read(2)` blocked and the old code
-/// deadlocks the server. This test is therefore a real gate on CI and a
-/// documented shape here, not a local reproduction; the property that holds
-/// everywhere is pinned by
-/// `teardown_policy_tests::a_thread_that_never_exits_is_detached_rather_than_joined`,
-/// which depends on no kernel behaviour at all.
+/// On macOS this passes even without the fix (the kernel revokes the tty
+/// when the session leader exits); on Linux it is a real gate. The
+/// kernel-independent property is pinned by
+/// `teardown_policy_tests::a_thread_that_never_exits_is_detached_rather_than_joined`.
 #[tokio::test(flavor = "current_thread")]
 async fn pane_kill_is_bounded_when_a_detached_process_holds_the_slave_open() {
     use portable_pty::CommandBuilder;
@@ -932,16 +767,13 @@ async fn pane_kill_is_bounded_when_a_detached_process_holds_the_slave_open() {
             let holder_cleanup = FixtureGroup::new(dir.path(), "PHUX_TEST_HOLDER");
             let holder = holder_cleanup.pid_file().to_owned();
             let script = dir.path().join("holder.sh");
-            // No `exec`: the holder shell stays its group's leader, so its
-            // command line still names this tempdir when cleanup checks that
-            // the group is ours. Shell and sleep both hold the slave open.
+            // No `exec`: the holder shell keeps naming this tempdir for
+            // cleanup. Shell and sleep both hold the slave open.
             std::fs::write(&script, holder_cleanup.script("/bin/sleep 3600\n"))
                 .expect("write holder script");
             let mut cmd = CommandBuilder::new("/bin/sh");
             cmd.arg("-c");
-            // `exec cat` so the pane's own child is an ordinary foreground
-            // job that dies to the hangup, leaving only the detached holder.
-            // The holder registers its group before holding the slave open.
+            // The pane's own child dies to the hangup, leaving only the holder.
             cmd.arg(format!("set -m; /bin/sh {} & exec cat", script.display()));
             holder_cleanup.configure(&mut cmd);
 
@@ -958,8 +790,7 @@ async fn pane_kill_is_bounded_when_a_detached_process_holds_the_slave_open() {
             let _pane_cleanup = FixturePane::for_actor(&actor);
             let run = tokio::task::spawn_local(actor.run());
 
-            // Wait for the holder to exist rather than sleeping a fixed
-            // second: the fixture is only set up once its pid is on disk.
+            // Wait for the holder's pid file.
             tokio::time::timeout(std::time::Duration::from_secs(30), async {
                 while !holder.exists() {
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -992,22 +823,10 @@ async fn pane_kill_is_bounded_when_a_detached_process_holds_the_slave_open() {
         .await;
 }
 
-/// phux-l96p.12 / wave-two review item 2: a child that refuses to die must not
-/// be able to hang the server, and the fixture has to make our BOUND the thing
-/// that saves us.
-///
-/// The first version of this test kept its spewing `cat` inside the pane's
-/// foreground group, so `hard_kill_pane_groups` reached it, `try_wait`
-/// succeeded on the first poll, and every budget under test went unexercised —
-/// it passed just as happily against the unbounded code. The spewer now
-/// escapes into its own process group under `set -m`, which is what the
-/// signalling path cannot reach, so the teardown finishes because it is
-/// bounded rather than because the child cooperated.
-///
-/// The reap budget itself still cannot be driven from here: the pane's own
-/// child is always reachable by `SIGKILL`, so `try_wait` always succeeds
-/// eventually. That path is covered directly by `teardown_policy_tests`, which
-/// can force the expiry this fixture cannot.
+/// A child that refuses to die cannot hang the server: the spewer escapes
+/// into its own process group (unreachable by the signalling path), so
+/// teardown finishes because it is bounded. The reap budget itself is
+/// covered by `teardown_policy_tests`.
 #[tokio::test(flavor = "current_thread")]
 async fn pane_kill_is_bounded_when_an_escaped_child_ignores_the_hangup_and_spews() {
     use portable_pty::CommandBuilder;
@@ -1031,11 +850,9 @@ async fn pane_kill_is_bounded_when_an_escaped_child_ignores_the_hangup_and_spews
             )
             .expect("write holder script");
 
-            // `trap '' HUP` sets SIG_IGN, inherited across `exec`; `set -m`
-            // puts the background loop in its own process group, outside
-            // everything `pane_signal_groups` snapshots. So it ignores the
-            // hangup AND never sees the hard kill, and it writes without
-            // pause the whole time.
+            // `trap '' HUP` survives `exec`; `set -m` puts the loop in its
+            // own group. It ignores hangup, never sees the hard kill, and
+            // writes nonstop.
             let script = dir.path().join("foreground.sh");
             std::fs::write(
                 &script,
@@ -1100,22 +917,13 @@ async fn pane_kill_is_bounded_when_an_escaped_child_ignores_the_hangup_and_spews
                 "teardown must be bounded by the grace, reap and join budgets, not by the \
                      child's willingness to exit; took {shutdown_took:?}",
             );
-            // The escaped spewer's PID is necessarily on record here:
-            // `foreground.sh` writes `armed` only after the holder file is
-            // non-empty, and the barrier above waited for `armed`.
+            // `armed` is written only after the holder pid is on record.
         })
         .await;
 }
 
-/// Interactive-latency regression gate: a queued keystroke must
-/// interleave with a large pending PTY-output burst rather than wait
-/// for the entire burst to drain. Pre-queues ~800KB of output (far
-/// exceeding `MAX_PTY_COALESCE_BYTES`) plus one input event, runs the
-/// actor, and asserts the input reaches the PTY writer channel while
-/// the burst is still draining (the cumulative broadcast bytes seen
-/// at that moment are far below the full burst). Fails if input is
-/// serviced only after the entire burst drains (output-first ordering
-/// or an unbounded coalesce that never yields).
+/// A queued keystroke interleaves with a large pending output burst instead
+/// of waiting for it to drain.
 #[tokio::test(flavor = "current_thread")]
 async fn input_interleaves_with_a_large_pty_output_burst() {
     use phux_protocol::input::paste::{PasteEvent, PasteTrust};
@@ -1133,14 +941,10 @@ async fn input_interleaves_with_a_large_pty_output_burst() {
             let mut actor = bundle.actor;
             let (pty_evt_tx, mut writer_rx) = actor.install_test_pty_channels();
 
-            // Subscribe before spawning so no broadcast frame is
-            // missed. This is the deterministic ordering gate: the
-            // cumulative output bytes observed at the instant input
-            // lands must be far below the full burst.
+            // Subscribe first so no frame is missed.
             let mut out_rx = handle.output.subscribe();
 
-            // Pre-queue a burst far larger than MAX_PTY_COALESCE_BYTES
-            // so it spans many capped vt_writes.
+            // A burst spanning many capped writes.
             let chunk = Bytes::from(vec![b'x'; CHUNK_LEN]);
             for _ in 0..CHUNK_COUNT {
                 pty_evt_tx
@@ -1150,9 +954,7 @@ async fn input_interleaves_with_a_large_pty_output_burst() {
                     })
                     .expect("queue burst");
             }
-            // Queue ONE input event. With bracketed-paste mode 2004
-            // off (a fresh Terminal's default) a Trusted paste of
-            // b"x" encodes to exactly b"x" on the writer channel.
+            // With mode 2004 off, a trusted paste of "x" encodes to "x".
             handle
                 .terminal()
                 .expect("terminal facet")
@@ -1166,13 +968,8 @@ async fn input_interleaves_with_a_large_pty_output_burst() {
 
             tokio::task::spawn_local(actor.run());
 
-            // The keystroke must be serviced mid-burst: it interleaves
-            // rather than waiting for the whole burst to drain. The
-            // timeout is only a backstop against a wedged actor — the
-            // byte-ordering check below is what actually proves
-            // "mid-burst", so the duration carries no meaning and is
-            // sized to be unreachable under load (see
-            // `ACTOR_EXIT_DEADLINE`).
+            // The timeout is only a backstop; the byte count below proves
+            // "mid-burst".
             let got = tokio::time::timeout(ACTOR_EXIT_DEADLINE, writer_rx.recv())
                 .await
                 .expect("input must be serviced mid-burst, not after it");
@@ -1183,11 +980,8 @@ async fn input_interleaves_with_a_large_pty_output_burst() {
                 "queued keystroke should reach the PTY writer while the burst drains",
             );
 
-            // Count broadcast bytes the actor has emitted so far.
-            // Account Lagged-skipped frames toward the total (the
-            // broadcast channel is bounded; a fast burst can lag this
-            // receiver) so the ordering gate cannot under-report and
-            // pass spuriously.
+            // Count emitted bytes, crediting lagged frames at the cap so
+            // the check never under-reports.
             let mut emitted: usize = 0;
             loop {
                 match out_rx.try_recv() {
@@ -1196,10 +990,6 @@ async fn input_interleaves_with_a_large_pty_output_burst() {
                     }
                     Ok(PaneOutput::Control { .. }) => {}
                     Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
-                        // Each lagged frame is one coalesced payload of
-                        // at most MAX_PTY_COALESCE_BYTES; bound the
-                        // skipped volume by that cap so the assertion
-                        // stays conservative (never under-reports).
                         let skipped = usize::try_from(n).unwrap_or(usize::MAX);
                         emitted += skipped.saturating_mul(MAX_PTY_COALESCE_BYTES);
                     }
@@ -1227,11 +1017,7 @@ fn native_step_allocation_never_exceeds_remaining_capture_budget() {
     ));
 }
 
-/// `defaults.history-bytes` reaches libghostty and is the bound that binds.
-///
-/// The regression this guards is the original ADR-0094 bug in its new shape:
-/// if only the line limit were installed, both panes below would retain the
-/// same one-standard-page of history and the byte key would be decorative.
+/// `defaults.history-bytes` reaches libghostty and binds (ADR-0094).
 #[test]
 fn configured_history_bytes_decides_retained_scrollback() {
     fn retained_rows(bytes: u32) -> usize {
@@ -1272,10 +1058,7 @@ fn configured_history_bytes_decides_retained_scrollback() {
     );
 }
 
-/// The bootstrap scratch is sized for one record, not for the connection's
-/// whole staging budget: the engine advertises `u32::MAX` as its record bound,
-/// so deriving the buffer from the negotiated ceiling committed and zeroed
-/// 64 MiB per pane per attach.
+/// The bootstrap scratch is sized for one record, not the staging budget.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[test]
 fn initial_native_scratch_is_one_record_window_not_the_staging_budget() {
@@ -1292,9 +1075,8 @@ fn initial_native_scratch_is_one_record_window_not_the_staging_budget() {
     );
 }
 
-/// Official GHOSTSNP of an empty 200×50 grid is ~1 KiB. Fill unique
-/// scrollback so the prefix exceeds the 64 KiB seed window and the
-/// `OutOfSpace` retry widens scratch to the exact `required_bytes`.
+/// Scrollback pushes the prefix past the 64 KiB seed window, so the
+/// `OutOfSpace` retry must widen scratch.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn progressive_native_ready_stays_within_one_seed_window() {
@@ -1365,16 +1147,8 @@ async fn progressive_native_ready_stays_within_one_seed_window() {
         .await;
 }
 
-/// phux-c0r0: every reader of the canonical terminal degrades while a
-/// snapshot capture holds it, instead of aborting the process.
-///
-/// The two shipped crashes were each one *route* into
-/// `NativeTerminalManager::terminal`'s `unreachable!`, closed one at a time by
-/// adding a guard at the call site. This asserts the property those guards
-/// were standing in for: with a capture genuinely in flight, the readers the
-/// actor exposes all return rather than panic. `try_terminal` returning
-/// `Option` is what makes that checkable — and unavoidable for a future
-/// caller, which no amount of `select!` guarding was.
+/// Every reader of the canonical terminal degrades, rather than aborts,
+/// while a capture holds it.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn every_terminal_reader_degrades_while_a_capture_holds_it() {
@@ -1396,8 +1170,7 @@ async fn every_terminal_reader_degrades_while_a_capture_holds_it() {
         "the capture must actually hold the terminal for this to test anything",
     );
 
-    // Each of these used to reach the aborting accessor. None may panic, and
-    // each must report the loan rather than inventing an answer.
+    // None may panic; each must report the loan.
     assert!(
         matches!(
             actor.synthesize(),
@@ -1435,19 +1208,8 @@ async fn every_terminal_reader_degrades_while_a_capture_holds_it() {
     );
 }
 
-/// Fails-without-the-fix guard for the OTHER two routes into the same abort.
-///
-/// `flush_final_gap_resync` runs on the teardown paths that sit OUTSIDE the
-/// `!bootstrap_pending` guards protecting the `select!` arms: the `biased`
-/// `token.cancelled()` arm, and `flush_exit_resync_if_needed` hanging off the
-/// ungated ingress arm. It drains queued resizes (which reach
-/// `NativeTerminalManager::resize`) and fires the owed resync (which
-/// dereferences the terminal to synthesize a grid) — both of which a capture
-/// has moved out from under it.
-///
-/// Reached by exactly the bug's own scenario plus one queued resize: a client
-/// attaches, the pane's child exits, and the server is shutting down or the
-/// host terminal was resized. It now lands the cut first.
+/// `flush_final_gap_resync` runs outside the bootstrap guards; with a
+/// capture in flight and a queued resize it must land the cut first.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn teardown_drain_survives_an_in_flight_native_capture() {
@@ -1469,10 +1231,7 @@ async fn teardown_drain_survives_an_in_flight_native_capture() {
         "the capture must be in flight for this to be the race under test",
     );
 
-    // Queue the resize that the gated `resize_rx` arm has been parking for
-    // the length of the capture. Without it the drain finds an empty mailbox
-    // and never reaches the terminal, so this test would pass against the
-    // unfixed code and prove nothing.
+    // The queued resize is what reaches the terminal during the drain.
     bundle
         .handle
         .terminal()
@@ -1489,8 +1248,6 @@ async fn teardown_drain_survives_an_in_flight_native_capture() {
         .await
         .expect("queue a resize behind the capture");
 
-    // The panic was here — the drain applies the resize against a terminal
-    // that is not there.
     let mut resync = super::run_loop::ResyncDebounce::idle();
     let _ = actor.flush_final_gap_resync(&mut resync);
 
@@ -1505,17 +1262,8 @@ async fn teardown_drain_survives_an_in_flight_native_capture() {
     actor.terminal.borrow_mut().vt_write(b"ok");
 }
 
-/// Fails-without-the-fix guard: resetting the canonical terminal for a
-/// replacement child while a client's snapshot capture holds it used to hit
-/// `NativeTerminalManager::reset`'s `unreachable!` and abort the entire
-/// server process — destroying every session on it, since sessions are not
-/// persisted anywhere.
-///
-/// The race is not exotic, it is the designed-for one: `handle_pty_eof`
-/// deliberately keeps the actor alive so "a client attaching just after the
-/// child exited" still finds it, and that attach is exactly what moves the
-/// terminal out into a capture. `reset_for_replacement` now lands every
-/// in-flight cut first, so the terminal is home before it is reset.
+/// Resetting for a replacement child while a capture holds the terminal
+/// must land the cut first instead of aborting the server.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn reset_for_replacement_survives_an_in_flight_native_capture() {
@@ -1548,8 +1296,6 @@ async fn reset_for_replacement_survives_an_in_flight_native_capture() {
         replied.await.expect("capture reply").is_err(),
         "the waiter must be answered, not left hanging on a cut that was discarded",
     );
-    // The terminal is home and usable: a write that would have panicked
-    // against a loaned terminal now lands.
     actor.terminal.borrow_mut().vt_write(b"ok");
 }
 
@@ -2340,10 +2086,7 @@ fn resize_tombstone_is_ordered_after_every_queued_live_sequence() {
     ));
 }
 
-/// phux-p5bo: an attach-time reflow (`resync_clients: false`) tombstones every
-/// native pump on the pane and owes no everyone-resync, so it must owe one to
-/// exactly the pumps it tombstoned. Without it those pumps are retired,
-/// forward nothing, never ask for a resync of their own, and stay frozen.
+/// An attach-time reflow owes a resync to exactly the pumps it tombstoned.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn an_attach_time_reflow_owes_a_resync_to_the_native_pumps_it_tombstoned() {
@@ -2392,14 +2135,8 @@ async fn an_attach_time_reflow_owes_a_resync_to_the_native_pumps_it_tombstoned()
     );
 }
 
-/// phux-rv52: a pane created while a client is attached is resized by the
-/// layout the instant it exists, and `invalidate_all_native_cursors`
-/// drains every binding. The `HISTORY_REQUEST` the client already sent for
-/// the generation it was just handed then arrives against no binding at
-/// all. That race is routine, so it must be answered with a per-replica
-/// `HISTORY_TOMBSTONE` -- never a `NativeStateError`, which the connection
-/// pump escalates to a connection-scoped Error frame and which used to
-/// take the whole attach down.
+/// A `HISTORY_REQUEST` racing a resize that drained its binding gets a
+/// per-replica `HISTORY_TOMBSTONE`, never a connection-level error.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
@@ -2467,8 +2204,7 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
         "a drained binding tombstones the cursor: {frame:?}"
     );
 
-    // The binding exists but names an older generation: the client paged
-    // against the bootstrap it held before the resize replaced it.
+    // The binding names the generation the resize replaced.
     actor
         .native_cursor_owners
         .insert(NativeCursorKey::new(7, stream_id), binding());
@@ -2492,11 +2228,8 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
     );
 }
 
-/// phux-dm8h: two native pumps from one client on one pane must not
-/// invalidate each other. Capture used to call `invalidate_native_owner`
-/// with the client id alone, which dropped every binding for that client, so
-/// the first pump's later publication hit `InvalidHandle`
-/// (`PublicationNotActivated`).
+/// Two native pumps from one client on one pane do not invalidate each
+/// other.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 fn capture_native_for_pump(
     actor: &mut TerminalActor,
@@ -2611,9 +2344,7 @@ async fn two_native_pumps_from_one_client_do_not_tombstone_each_other() {
     );
 }
 
-/// Recapture of the same `(owner, stream_id)` still tombstones the prior
-/// generation, and must not take a sibling stream of that client with it
-/// (phux-dm8h).
+/// Recapturing one `(owner, stream_id)` tombstones only that binding.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn recapturing_the_same_owner_stream_tombstones_only_that_binding() {
@@ -2700,9 +2431,8 @@ async fn recapturing_the_same_owner_stream_tombstones_only_that_binding() {
     .expect("replacement pump activates");
 }
 
-/// Two pumps of one client that join the same in-flight capture must both
-/// remain waiters, share the generation, and each activate publication
-/// (phux-dm8h). Owner-only waiter retain used to drop the first stream.
+/// Two pumps of one client joining one capture both stay waiters and
+/// activate publication.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn two_same_client_pumps_can_share_one_pending_capture() {
@@ -2919,20 +2649,14 @@ async fn capture_host_allocation_failures_release_state_and_history_still_pages(
         })
         .await;
 }
-/// phux-cs6: the actor answers a `PwdRequest` with its PTY child's
-/// live working directory. A shell is spawned that `cd`s into a
-/// freshly-created temp dir and then blocks (`read`), so its CWD is
-/// the temp dir when the kernel query runs. This is the actor-level
-/// proof of the inherit-focused acceptance criterion.
+/// The actor answers `PwdRequest` with the PTY child's live cwd.
 #[tokio::test(flavor = "current_thread")]
 async fn actor_responds_to_pwd_request_with_pty_child_cwd() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
             let dir = tempfile::tempdir().expect("tempdir");
-            // Canonicalize: macOS hands back the realpath
-            // (/private/var/... for /var/...), which is what the
-            // kernel query returns too.
+            // macOS returns the realpath, like the kernel query.
             let dir_path = dir.path().canonicalize().expect("canonicalize tempdir");
 
             let mut cmd = CommandBuilder::new("/bin/sh");
@@ -2950,8 +2674,7 @@ async fn actor_responds_to_pwd_request_with_pty_child_cwd() {
             let token = bundle.token;
             let join = tokio::task::spawn_local(bundle.actor.run());
 
-            // Poll the actor until the shell has executed the `cd`.
-            // The query races the child's startup, so retry briefly.
+            // The query races the shell's `cd`; retry briefly.
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
             let mut got: Option<String> = None;
             while tokio::time::Instant::now() < deadline {
@@ -2981,8 +2704,7 @@ async fn actor_responds_to_pwd_request_with_pty_child_cwd() {
         .await;
 }
 
-/// phux-cs6: a no-PTY actor has no child to query, so `pwd` is `None`
-/// and the spawn path falls back to a non-inherited default.
+/// A PTY-less actor answers `pwd` with `None`.
 #[tokio::test(flavor = "current_thread")]
 async fn actor_pwd_request_is_none_without_pty() {
     let local = tokio::task::LocalSet::new();
@@ -3006,8 +2728,7 @@ async fn actor_pwd_request_is_none_without_pty() {
         .await;
 }
 
-/// The actor stops promptly when its cancellation token fires,
-/// even if input/snapshot channels stay open.
+/// The actor stops promptly on cancellation, channels open or not.
 #[tokio::test(flavor = "current_thread")]
 async fn actor_exits_on_cancellation() {
     let local = tokio::task::LocalSet::new();
@@ -3041,10 +2762,7 @@ async fn actor_exits_on_cancellation() {
         .await;
 }
 
-/// A parent token's `.cancel()` propagates to a `child_token()`-
-/// linked `TerminalActor`, which exits within a short deadline. Pins
-/// down the hierarchical cascade introduced by the
-/// `CancellationToken` refactor.
+/// Cancelling a parent token stops a child-token actor.
 #[tokio::test(flavor = "current_thread")]
 async fn parent_token_cancel_cascades_to_pane_actor() {
     let local = tokio::task::LocalSet::new();

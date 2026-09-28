@@ -91,10 +91,6 @@ reaping the domain entity, and forgetting the table entry happen in one
 critical section, and only the `RESOURCE_CLOSED` sends are awaited after
 it ([data-model.md](./data-model.md)).
 
-This reconciles the earlier server-design sketch, which described the state
-as actor-owned: the shared-mutex shape is the one that ships, and it coexists
-with the current-thread/LocalSet runtime rather than competing with it.
-
 Because the state is shared with the input lane below, `ServerState` must be
 `Send` (so `Arc<Mutex<ServerState>>` is `Send`). That is a real constraint on
 what may live in it: message types reachable from a `ResourceHandle` (and
@@ -124,25 +120,13 @@ destination-resolution helpers under the same `Mutex`. Satellite-tagged input
 remains structured through the hub relay and is encoded by the destination
 server's local lane.
 
-## Hot paths that could go multi-threaded later
-
-The input lane above is the first realized fan-out off the main thread. Others
-can follow the same rule — cross only `Send` state, leave the `!Send` engine
-put — if a future profile demands it:
-
-- PTY-byte feed and per-client capability rewriting on outbound terminal
-  frames. Each Terminal is independent and could move to `spawn_blocking` or
-  a dedicated worker thread.
-- Compression of large bootstrap bodies before transmission.
-
-None but the input lane is parallelized today; the single-thread shape is
-sufficient for the rest at the current scale.
+Other per-Terminal work (PTY feed, outbound capability rewriting, bootstrap
+compression) could follow the same rule if a profile demands it; none does
+today.
 
 ## Status
 
-No remaining target-versus-shipped gaps in the threading model this
-document owns. Both engines share the LocalSet and cancellation tree;
-`ResourceFacetHandle` has `Terminal` and `AgentSession` variants.
+No remaining target-versus-shipped gaps.
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|

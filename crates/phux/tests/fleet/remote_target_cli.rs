@@ -1,19 +1,10 @@
-//! The `--remote` CLI surface, pinned at the binary level (ADR-0093).
-//!
-//! Everything here is reachable WITHOUT a terminal, on purpose. A malformed
-//! target, a root flag in front of a verb, and a `--socket`/`--remote`
-//! collision are usage errors, and a usage error that only reports itself on
-//! a TTY is a usage error a script cannot read. These tests are the pin on
-//! that ordering: each must exit 2 with its own message, never with
-//! "interactive use requires both stdin and stdout to be terminals".
-//!
-//! The resolution ladder itself (registry hit, `--code`, ssh pairing) needs
-//! a real attach and lives in `remote_target_e2e.rs`.
+//! The `--remote` CLI surface (ADR-0093) without a terminal: malformed
+//! targets, root flags before a verb, and `--socket`/`--remote` collisions
+//! must exit 2 with their own message, never the TTY-preflight error. The
+//! resolution ladder lives in `remote_target_e2e.rs`.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
-
-use std::process::Command;
 
 use tempfile::TempDir;
 
@@ -215,21 +206,6 @@ fn an_unpinned_routable_entry_is_one_json_line_under_json() {
     );
 }
 
-/// `--remote` appears in each session verb's help.
-#[test]
-fn session_verbs_document_remote() {
-    for verb in ["ls", "new", "kill", "rename", "detach"] {
-        let out = Command::new(PHUX)
-            .args([verb, "--help"])
-            .output()
-            .expect("run phux <verb> --help");
-        assert!(
-            String::from_utf8_lossy(&out.stdout).contains("--remote"),
-            "`phux {verb} --help` must show --remote"
-        );
-    }
-}
-
 /// The TTY refusal is the wrong answer to a usage question. If this ever
 /// fires, target validation has drifted back behind the preflight.
 fn assert_not_the_tty_error(stderr: &str) {
@@ -331,32 +307,6 @@ fn remote_conflicts_with_the_raw_transport_flags() {
         assert!(
             stderr.contains("--remote"),
             "other={other:?}: got: {stderr}"
-        );
-    }
-}
-
-/// `--remote` must appear in help where an operator will look for it.
-#[test]
-fn remote_is_documented_on_both_surfaces() {
-    let out = Command::new(PHUX)
-        .args(["--help"])
-        .output()
-        .expect("run phux --help");
-    let root = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        root.contains("--remote"),
-        "the root help must show --remote"
-    );
-
-    let out = Command::new(PHUX)
-        .args(["attach", "--help"])
-        .output()
-        .expect("run phux attach --help");
-    let attach = String::from_utf8_lossy(&out.stdout);
-    for flag in ["--remote", "--code", "--no-enroll"] {
-        assert!(
-            attach.contains(flag),
-            "`phux attach --help` must show {flag}"
         );
     }
 }

@@ -1,15 +1,6 @@
-//! The generated hooks reference: every event the server fires, with its
-//! context keys, the environment projection, and per-event prose.
-//!
-//! Names and context keys come from `phux_config::vocab` (the validators'
-//! single source of truth); the per-event prose and the `PHUX_*`
-//! projection come from `phux_server::hooks` ([`hook_event_specs`],
-//! [`context_env_var`] — the same function the dispatcher injects the
-//! child environment with). The
-//! `spec_table_roundtrips_through_the_constructors` test in phux-server
-//! pins the spec table to the real `HookEvent` constructors, and the
-//! freshness test in `super::tests` then forces this page's regeneration
-//! on any drift.
+//! The generated hooks reference: every event with its context keys, the
+//! `PHUX_*` projection, and prose, sourced from `phux_config::vocab` and
+//! `phux_server::hooks` (the same projection the dispatcher injects).
 
 use phux_server::hooks::{context_env_var, hook_event_specs};
 
@@ -110,13 +101,9 @@ pub(crate) fn page() -> Page {
     }
 }
 
-/// Whether `key` can be absent on a firing of `event` — the `?` marker.
-///
-/// Mirrors the constructors' `Option` parameters (`phux_server::hooks`):
-/// `exit-code` is absent for a signal-killed child, `session` when none
-/// applies, `agent-name` for an anonymous agent, `from` on a first
-/// sighting. Pinned by `optional_markers_match_the_constructors` below,
-/// which drives each constructor's optional parameter to `None`.
+/// Whether `key` can be absent on a firing of `event` (the `?` marker),
+/// mirroring the constructors' `Option` parameters; pinned by
+/// `optional_markers_match_the_constructors`.
 fn key_is_optional(event: &str, key: &str) -> bool {
     matches!(
         (event, key),

@@ -1,21 +1,10 @@
 //! Host directory listing over `LIST_DIRECTORY` / `DIRECTORY_LISTING`
-//! (`docs/spec/L3.md` section 4, feature bit `LIST_DIRECTORY` 0x00008000).
+//! (`docs/spec/L3.md` section 4).
 //!
-//! A go-to-directory picker asks the serving server for one directory's child
-//! directories and waits for the correlated reply. The client keeps exactly
-//! one listing: a new request replaces the previous one, and a reply that
-//! answers anything but the latest request is dropped. That is how a picker
-//! that was cancelled, or moved on to another directory, never sees a late
-//! answer: the embedder simply issues its next request (or none), and the
-//! stale `DIRECTORY_LISTING` falls on the floor here rather than surfacing as
-//! a protocol error, because a reply outliving the request that asked for it
-//! is ordinary.
-//!
-//! Request IDs share the embedder's strictly increasing host request space
-//! (spawn, subscribe, workspace refresh and mutation), so one ledger serves
-//! every correlated request. The frame carries no terminal identity, so it is
-//! answered by whichever server this client is connected to: a local
-//! coordinator or a registered remote host alike.
+//! The client keeps exactly one listing: a new request replaces it, and a
+//! reply to anything but the latest request is dropped as ordinary, so a
+//! cancelled picker never sees a late answer. Request IDs share the
+//! embedder's increasing host request space.
 #![allow(
     clippy::redundant_pub_crate,
     reason = "private module shared by the bridge dispatcher and Client"
@@ -385,36 +374,23 @@ pub unsafe extern "C" fn phux_client_directory_entry_get(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::c::client::Limits;
+    use crate::c::test_support::attached_client;
     use crate::c::types::ABI_VERSION;
+    use phux_protocol::ServerFeature;
     use phux_protocol::wire::frame::{DirectoryEntry, DirectoryListing, DirectoryListingError};
 
-    fn client(supported: bool) -> *mut PhuxClient {
-        let mut inner = Client::new(Limits {
-            bootstrap_chunk: 1024,
-            history_page: 1024,
-            history_page_rows: 128,
-            history_cache_bytes: 4096,
-            history_materialized_rows: 1024,
-            history_prefetch_rows: 64,
-        });
-        inner.protocol_ready = true;
-        inner.attached = true;
-        inner.list_directory = supported;
-        Box::into_raw(Box::new(PhuxClient {
-            inner,
-            _not_send_sync: std::marker::PhantomData,
-        }))
+    const LISTING: &[ServerFeature] = &[ServerFeature::ListDirectory];
+    const HOST_LISTING: &[ServerFeature] = &[
+        ServerFeature::ListDirectory,
+        ServerFeature::ListDirectoryHost,
+    ];
+
+    fn feed(client: *mut PhuxClient, frame: &FrameKind) -> PhuxClientResult {
+        crate::c::test_support::feed(client, frame)
     }
 
     fn list(client: *mut PhuxClient, request_id: u32, path: &str) -> PhuxClientResult {
         list_on(client, request_id, path, b"")
-    }
-
-    fn feed(client: *mut PhuxClient, frame: &FrameKind) -> PhuxClientResult {
-        let mut encoded = bytes::BytesMut::new();
-        frame.encode(&mut encoded);
-        unsafe { crate::c::phux_client_feed_frame(client, encoded.as_ptr(), encoded.len()) }
     }
 
     fn listed(request_id: u32, path: &str, names: &[(&str, bool)], truncated: bool) -> FrameKind {
@@ -477,7 +453,7 @@ mod tests {
 
     #[test]
     fn a_listing_is_requested_by_path_and_read_back_with_its_entries() {
-        let client = client(true);
+        let client = attached_client(LISTING);
         assert_eq!(info(client).status, STATUS_NONE);
         assert!(info(client).supported);
         assert_eq!(list(client, 3, "~/src"), PhuxClientResult::Ok);
@@ -521,7 +497,7 @@ mod tests {
 
     #[test]
     fn a_refusal_is_typed_and_names_the_path_the_server_tried() {
-        let client = client(true);
+        let client = attached_client(LISTING);
         assert_eq!(list(client, 1, "/root"), PhuxClientResult::Ok);
         let refusal = FrameKind::DirectoryListing {
             request_id: 1,
@@ -544,7 +520,7 @@ mod tests {
 
     #[test]
     fn a_reply_to_a_superseded_request_is_dropped_not_a_protocol_error() {
-        let client = client(true);
+        let client = attached_client(LISTING);
         assert_eq!(list(client, 1, "/a"), PhuxClientResult::Ok);
         assert_eq!(list(client, 2, "/b"), PhuxClientResult::Ok);
         assert_eq!(
@@ -569,7 +545,7 @@ mod tests {
 
     #[test]
     fn a_correlated_error_settles_the_listing_and_disconnect_makes_it_unknown() {
-        let client = client(true);
+        let client = attached_client(LISTING);
         assert_eq!(list(client, 4, "/x"), PhuxClientResult::Ok);
         let error = FrameKind::Error {
             request_id: Some(4),
@@ -591,12 +567,12 @@ mod tests {
 
     #[test]
     fn requests_are_refused_before_anything_is_queued() {
-        let unsupported = client(false);
+        let unsupported = attached_client(&[]);
         assert!(!info(unsupported).supported);
         assert_eq!(list(unsupported, 1, "/"), PhuxClientResult::InvalidState);
         unsafe { crate::c::phux_client_free(unsupported) };
 
-        let client = client(true);
+        let client = attached_client(LISTING);
         assert_eq!(list(client, 1, "a\0b"), PhuxClientResult::InvalidArgument);
         assert_eq!(
             list(client, 1, &"a".repeat(MAX_DIRECTORY_PATH_BYTES + 1)),
@@ -624,9 +600,11 @@ mod tests {
             "IDs must increase"
         );
         assert_eq!(unsafe { (*client).inner.outgoing.len() }, 1);
-        unsafe { (*client).inner.attached = false };
-        assert_eq!(list(client, 8, "/"), PhuxClientResult::InvalidState);
         unsafe { crate::c::phux_client_free(client) };
+
+        let unattached = crate::c::test_support::negotiated_client(LISTING);
+        assert_eq!(list(unattached, 8, "/"), PhuxClientResult::InvalidState);
+        unsafe { crate::c::phux_client_free(unattached) };
     }
 
     fn list_on(
@@ -670,8 +648,7 @@ mod tests {
 
     #[test]
     fn a_satellite_host_is_carried_when_the_hub_advertises_it() {
-        let client = client(true);
-        unsafe { (*client).inner.list_directory_host = true };
+        let client = attached_client(HOST_LISTING);
         assert!(host_supported(client));
         assert_eq!(
             list_on(client, 2, "~/src", b"build-host"),
@@ -697,7 +674,7 @@ mod tests {
 
     #[test]
     fn a_satellite_host_without_the_bit_is_refused_and_sends_nothing() {
-        let client = client(true);
+        let client = attached_client(LISTING);
         assert!(!host_supported(client));
         assert_eq!(
             list_on(client, 1, "/", b"build-host"),
@@ -721,8 +698,7 @@ mod tests {
 
     #[test]
     fn a_malformed_host_or_request_is_refused_before_anything_is_queued() {
-        let client = client(true);
-        unsafe { (*client).inner.list_directory_host = true };
+        let client = attached_client(HOST_LISTING);
         for host in [
             b"a\0b".as_slice(),
             &[0xff],
@@ -758,74 +734,18 @@ mod tests {
     }
 
     #[test]
-    fn hello_ok_gates_the_host_on_its_own_bit() {
-        use phux_protocol::ServerFeature::{ListDirectory, ListDirectoryHost};
-        use phux_protocol::caps::ServerCapabilities;
-        for (features, expected) in [
-            (
-                phux_protocol::ServerFeatureSet::with(&[ListDirectory]),
-                false,
-            ),
-            (
-                phux_protocol::ServerFeatureSet::with(&[ListDirectory, ListDirectoryHost]),
-                true,
-            ),
+    fn hello_ok_gates_listing_and_the_host_on_their_own_bits() {
+        use ServerFeature::{ListDirectory, ListDirectoryHost};
+        for (features, listing, host) in [
+            (&[][..], false, false),
+            (&[ListDirectory][..], true, false),
+            (&[ListDirectory, ListDirectoryHost][..], true, true),
             // The host bit alone cannot list anything.
-            (
-                phux_protocol::ServerFeatureSet::with(&[ListDirectoryHost]),
-                false,
-            ),
+            (&[ListDirectoryHost][..], false, false),
         ] {
-            let client = client(false);
-            unsafe {
-                (*client).inner.protocol_ready = false;
-                (*client).inner.hello_queued = true;
-            }
-            let hello = FrameKind::HelloOk {
-                protocol_major: crate::c::PROTOCOL_VERSION.major,
-                protocol_minor: crate::c::PROTOCOL_VERSION.minor,
-                protocol_patch: crate::c::PROTOCOL_VERSION.patch,
-                server_caps: ServerCapabilities::new().with_features(features),
-                server_id: b"server".to_vec(),
-                selected_profile: phux_protocol::BootstrapProfile::SynthesizedVtRaw,
-                bootstrap_limits: phux_protocol::caps::BootstrapLimits::new(1024, 1024)
-                    .expect("limits"),
-            };
-            assert_eq!(feed(client, &hello), PhuxClientResult::Ok);
-            assert_eq!(host_supported(client), expected);
-            unsafe { crate::c::phux_client_free(client) };
-        }
-    }
-
-    #[test]
-    fn hello_ok_gates_the_feature_on_the_advertised_bit() {
-        use phux_protocol::caps::ServerCapabilities;
-        for (features, expected) in [
-            (phux_protocol::ServerFeatureSet::with(&[]), false),
-            (
-                phux_protocol::ServerFeatureSet::with(&[
-                    phux_protocol::ServerFeature::ListDirectory,
-                ]),
-                true,
-            ),
-        ] {
-            let client = client(false);
-            unsafe {
-                (*client).inner.protocol_ready = false;
-                (*client).inner.hello_queued = true;
-            }
-            let hello = FrameKind::HelloOk {
-                protocol_major: crate::c::PROTOCOL_VERSION.major,
-                protocol_minor: crate::c::PROTOCOL_VERSION.minor,
-                protocol_patch: crate::c::PROTOCOL_VERSION.patch,
-                server_caps: ServerCapabilities::new().with_features(features),
-                server_id: b"server".to_vec(),
-                selected_profile: phux_protocol::BootstrapProfile::SynthesizedVtRaw,
-                bootstrap_limits: phux_protocol::caps::BootstrapLimits::new(1024, 1024)
-                    .expect("limits"),
-            };
-            assert_eq!(feed(client, &hello), PhuxClientResult::Ok);
-            assert_eq!(unsafe { (*client).inner.list_directory }, expected);
+            let client = crate::c::test_support::negotiated_client(features);
+            assert_eq!(unsafe { (*client).inner.list_directory }, listing);
+            assert_eq!(host_supported(client), host);
             unsafe { crate::c::phux_client_free(client) };
         }
     }

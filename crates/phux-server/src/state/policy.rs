@@ -50,9 +50,7 @@ impl ServerState {
         self.clients.authenticated_credential(client_id)
     }
 
-    /// Record the ssh origin a same-uid `phux stdio-bridge` announced in
-    /// HELLO. The caller has already checked the peer may make the claim
-    /// (`runtime::whoami`); the value only relabels the whoami route.
+    /// Record the ssh origin a same-uid bridge announced (already checked).
     pub fn set_ssh_origin(
         &mut self,
         client_id: ClientId,
@@ -70,19 +68,8 @@ impl ServerState {
         self.clients.ssh_origin(client_id)
     }
 
-    /// Whether `client_id` may feed a producer-fed resource's stream
-    /// (ADR-0103 §3).
-    ///
-    /// The producer holds the ADR-0098 `Input` verb on the resource, and
-    /// under the current policy that is every owner-socket client and no
-    /// remote one: a client that reached this server over a network
-    /// transport can drive a Terminal it has been granted, but writing an
-    /// agent session's stream is asserting what a *local* harness did, and
-    /// a remote peer cannot be the author of that.
-    ///
-    /// A connection whose peer identity was never stamped is refused: the
-    /// answer is "not established", and for an authorship claim that is a
-    /// no.
+    /// Whether `client_id` may feed a producer-fed stream (ADR-0103 §3):
+    /// local owner-socket clients only; unstamped connections are refused.
     #[must_use]
     pub fn client_may_produce(&self, client_id: ClientId) -> bool {
         matches!(
@@ -94,21 +81,14 @@ impl ServerState {
         )
     }
 
-    /// Remove a peer identity, and the grant minted from it, when a client
-    /// *disconnects* — not when it detaches. Peer identity is stamped by the
-    /// accepting transport and cannot be re-established on a live
-    /// connection, so [`Self::forget_connection`] is its only caller.
+    /// Remove a peer identity and its grant on disconnect (not detach).
     pub fn remove_peer_identity(&mut self, client_id: ClientId) {
         self.clients.remove_peer_identity(client_id);
         self.clients.grants.remove(&client_id);
     }
 
-    /// Retain the grant the policy engine minted for this connection at
-    /// HELLO (`docs/spec/workload-auth.md` §7), and wake the revocation
-    /// watcher when the connection is one it must watch.
-    ///
-    /// A connection revoked while its HELLO was being authorized keeps its
-    /// revoked placeholder: the grant never becomes live.
+    /// Retain the connection's HELLO grant and wake the revocation watcher.
+    /// A connection revoked mid-HELLO keeps its revoked placeholder.
     pub fn set_connection_grant(
         &mut self,
         client_id: ClientId,
@@ -159,10 +139,8 @@ impl ServerState {
         std::sync::Arc::clone(&self.clients.revocation_wake)
     }
 
-    /// `workload-auth.md` §7 step 1: withdraw the connection's authority, so
-    /// no guard admits anything from it again, and tell its writer which
-    /// goodbye it owes. A connection with no grant yet is still in its
-    /// handshake: it gets a revoked placeholder and a silent close.
+    /// Withdraw a connection's authority and set its goodbye (§7 step 1); a
+    /// connection still in its handshake gets a silent close.
     pub(crate) fn mark_connection_revoked(
         &mut self,
         client_id: ClientId,
@@ -221,10 +199,8 @@ impl ServerState {
         self.clients.grants.get(&client_id)
     }
 
-    /// Whether an uncorrelated `PERMISSION_DENIED` may be sent to this
-    /// connection now: at most one per
-    /// [`crate::policy::DENIAL_ERROR_INTERVAL`]. A connection with no grant
-    /// gets none.
+    /// Whether an uncorrelated `PERMISSION_DENIED` may be sent now (rate
+    /// limited).
     pub fn admit_denial_error(&mut self, client_id: ClientId) -> bool {
         let now = std::time::Instant::now();
         self.clients

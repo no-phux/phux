@@ -1,12 +1,8 @@
 //! The confirmation every dangerous verb shares (ADR-0128): `kill`,
-//! `signal interrupt|terminate|kill`, `detach`, and `approve` act only after
-//! `--yes` or a "y" typed at a terminal prompt.
-//!
-//! What is dangerous is the catalog's fact
-//! ([`phux_protocol::kinds::MethodSpec::dangerous`]), the same one MCP's
-//! `destructiveHint` and `confirm` argument and `phux resource methods`
-//! report. With stdin not a terminal and no `--yes` there is no one to ask,
-//! so the verb refuses with exit 2 before it dials anything.
+//! `signal interrupt|terminate|kill`, `detach`, and `approve` need `--yes` or a
+//! terminal "y". Dangerous is the catalog's fact
+//! ([`phux_protocol::kinds::MethodSpec::dangerous`]). Without a terminal and
+//! `--yes` the verb refuses with exit 2 before dialing.
 
 use std::io::{self, BufRead, IsTerminal};
 use std::process::ExitCode;

@@ -5,10 +5,8 @@
 use super::test_support::*;
 use super::*;
 
-/// phux-q0e.2: ATTACH allocates a per-consumer `RenderState` and
-/// `register_consumer` stores it keyed by `ClientId`. Two attaches
-/// land two entries; one detach removes only that entry; a second
-/// detach of the same id is a no-op.
+/// Two attaches make two entries; a detach removes one; a repeat detach is
+/// a no-op.
 #[test]
 fn register_unregister_consumer_drives_lifecycle_map() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -41,15 +39,8 @@ fn register_unregister_consumer_drives_lifecycle_map() {
     assert_eq!(actor.consumer_count(), 0, "both removed");
 }
 
-/// phux-q0e.2: right after `register_consumer` returns, the
-/// per-consumer state has `last_acked_seq == 0` (no `FRAME_ACK`s yet
-/// — wired by phux-q0e.4) and the cursor/mode capture matches the
-/// live terminal. The dirty-bit reset is a best-effort FFI call
-/// (phux-l0t notes the libghostty surface is unreliable on
-/// repeated updates); we assert the observable contract — the
-/// `ConsumerSyncState` is in place and primed against the live
-/// terminal — rather than the post-reset dirty value itself, which
-/// the tick driver (phux-q0e.3) will re-read on its first tick.
+/// A fresh registration has no acks and a cursor/mode capture primed from
+/// the live terminal.
 #[test]
 fn register_consumer_initial_state_matches_terminal() {
     let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
@@ -69,9 +60,7 @@ fn register_consumer_initial_state_matches_terminal() {
         state.wire_terminal_id, 11,
         "wire id stored on the per-consumer entry"
     );
-    // Seeded "hello" advances the cursor to (5, 0). The capture
-    // must reflect that — proves the RenderState was actually
-    // updated against the live terminal, not left blank.
+    // Seeded "hello" puts the cursor at (5, 0).
     assert_eq!(state.last_cursor_mode.cursor_x, Some(5));
     assert_eq!(state.last_cursor_mode.cursor_y, Some(0));
 }
@@ -121,11 +110,8 @@ fn aggregate_live_gate_preserves_first_delta_until_activation() {
     assert!(!bytes.is_empty());
 }
 
-/// A raw broadcast-pump consumer (the human attach path) skips the two
-/// full-grid render passes priming would cost: its reference and
-/// cursor/mode capture are never read (the tick serves only tick-managed
-/// consumers). So it registers with the `unprimed` placeholder, not a
-/// live capture (phux-ahk register-prime gating).
+/// A raw consumer registers with the `unprimed` placeholder, skipping the
+/// priming renders.
 #[test]
 fn register_raw_consumer_skips_priming() {
     let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
@@ -142,11 +128,7 @@ fn register_raw_consumer_skips_priming() {
     assert_eq!(state.last_cursor_mode.cursor_y, None);
 }
 
-/// phux-q0e.2: end-to-end across the actor's `select!` loop —
-/// ATTACH then DETACH over the channels handle the lifecycle on
-/// the same `LocalSet` thread the `Terminal` lives on. Drives the
-/// actor through `spawn_local`, so the `!Send` `RenderState`
-/// stays on its owning thread.
+/// Attach then detach over the actor's channels on its `LocalSet`.
 #[tokio::test(flavor = "current_thread")]
 async fn consumer_attach_detach_round_trip_over_channels() {
     let local = tokio::task::LocalSet::new();
@@ -228,10 +210,7 @@ fn on_frame_ack_advances_last_acked_seq_in_order() {
     }
 }
 
-/// phux-q0e.4: older or duplicate acks (`seq <= last_acked_seq`) MUST
-/// be silently dropped — they carry no new state information under
-/// SPEC §12.2's cumulative-ack semantics. After ack=5 then ack=3, the
-/// field must stay at 5.
+/// Older or duplicate acks are dropped (cumulative, SPEC §12.2).
 #[test]
 fn on_frame_ack_older_or_duplicate_is_dropped() {
     let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
@@ -271,11 +250,7 @@ fn on_frame_ack_older_or_duplicate_is_dropped() {
     assert_eq!(actor.consumer_state(client).unwrap().last_acked_seq, 6);
 }
 
-/// phux-38k6: a `FRAME_ACK` from a raw (broadcast-pump) consumer carries a
-/// pump-local seq unrelated to this per-consumer tick state, so
-/// `on_frame_ack` drops it — `last_acked_seq` must NOT move. Otherwise a
-/// foreign counter would skew the RTT/backpressure accounting if the
-/// consumer later went state-sync.
+/// A raw consumer's ack (a pump-local seq) does not move `last_acked_seq`.
 #[test]
 fn on_frame_ack_for_raw_consumer_is_dropped() {
     let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
@@ -296,9 +271,7 @@ fn on_frame_ack_for_raw_consumer_is_dropped() {
     );
 }
 
-/// phux-q0e.4: `on_frame_ack` for an unregistered client is a silent
-/// no-op — no panic, no entry created. Mirrors the rest of the
-/// consumer lifecycle's idempotency.
+/// An ack for an unregistered client is a no-op.
 #[test]
 fn on_frame_ack_for_unregistered_consumer_is_noop() {
     let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
@@ -447,14 +420,8 @@ fn ack_render_reuse_preserves_independent_consumers_across_resize_and_modes() {
     assert!(!restored.alt_screen_save);
 }
 
-/// phux-0q8 coexistence gate: with a consumer registered but the
-/// emission gate forced OFF (`consumer_tick_emits == false`),
-/// `tick_emit` MUST NOT push any frame onto the consumer's outbound
-/// mailbox — even with dirty seeded content. This is the invariant
-/// that lets the per-consumer lifecycle run live alongside the
-/// broadcast pump without double-painting the client when the gate is
-/// off. Production defaults the gate OFF for human attach (phux-yeca),
-/// but this test still disables it explicitly so the invariant is local.
+/// With the emission gate off, `tick_emit` ships nothing to a raw consumer,
+/// even with dirty content (no double-paint beside the pump).
 #[test]
 fn tick_emit_is_silent_while_gate_is_off() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -563,11 +530,7 @@ fn atomic_state_sync_bootstrap_primes_exact_cut_and_sequence() {
     );
 }
 
-/// The 33 Hz state-sync timer is armed only when a tick would actually do
-/// something. A pane with no consumer at all — the resting state of every
-/// detached session on the server — must not arm it, because every one of
-/// those wakeups used to construct a span and take two early returns for
-/// nothing.
+/// The tick timer is not armed on a pane with no consumer.
 #[test]
 fn the_state_tick_is_disarmed_with_nothing_to_emit() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -598,9 +561,7 @@ fn the_state_tick_is_disarmed_with_nothing_to_emit() {
     );
 }
 
-/// The other re-arming edge: an open output burst owes a settling `idle`,
-/// which only the tick can emit. Disarming while a burst is open would strand
-/// the pane in `dirty` forever.
+/// An open output burst keeps the tick armed (it owes the `idle`).
 #[test]
 fn an_open_output_burst_arms_the_state_tick() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -641,10 +602,7 @@ fn an_open_output_burst_arms_the_state_tick() {
     );
 }
 
-/// phux-bowo: dirty/idle settling is independent of the state-sync
-/// emitter gate. A raw-only pane must produce a fresh pair for each
-/// output burst even though `tick_emit` stays gated and therefore leaves
-/// `terminal_dirty_since_tick` set.
+/// Dirty/idle settling works on a raw-only pane with the emitter gated.
 #[test]
 fn raw_only_consumer_gets_repeatable_dirty_idle_cycles() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -668,9 +626,7 @@ fn raw_only_consumer_gets_repeatable_dirty_idle_cycles() {
             "each output burst must begin with dirty",
         );
 
-        // The first tick observes output and keeps the burst open. The
-        // gated tick emits no synthesized output and does not consume its
-        // state-sync dirty flag.
+        // The first tick sees output and keeps the burst open.
         actor.maybe_emit_idle();
         actor.tick_emit();
         assert!(event_rx.try_recv().is_err(), "first tick is not idle");
@@ -736,11 +692,7 @@ fn tick_emit_gate_defaults_off_for_human_attach() {
     );
 }
 
-/// phux-fseo: a consumer that negotiated `OutputMode::StateSync`
-/// (`wants_state_sync == true`) is served by the tick even with the
-/// global test gate OFF — the per-consumer opt-in is the production
-/// path. Proves the negotiation actually reaches `tick_emit` without
-/// relying on `enable_tick_emit_for_test`.
+/// A `StateSync` consumer is served with the global test gate off.
 #[test]
 fn tick_emit_serves_negotiated_state_sync_consumer_with_gate_off() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -764,10 +716,7 @@ fn tick_emit_serves_negotiated_state_sync_consumer_with_gate_off() {
     assert_eq!(seq, 1, "first tick emission stamps seq=1");
 }
 
-/// phux-fseo: with the global gate OFF and two consumers sharing one
-/// pane — one `StateSync`, one `Raw` — the tick serves ONLY the
-/// state-sync consumer. The raw consumer is served by the runtime's
-/// broadcast pump; emitting to it here too would double-paint it.
+/// With the gate off, only the `StateSync` consumer of two is served.
 #[test]
 fn tick_emit_mixed_mode_serves_only_state_sync_consumer() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -801,10 +750,7 @@ fn tick_emit_mixed_mode_serves_only_state_sync_consumer() {
 
 // ---- phux-v45.8 / ADR-0042: loss-tolerant (advance-on-ack) state sync ----
 
-/// A loss-tolerant consumer's reference advances on `FRAME_ACK`, not on
-/// emit: after emitting a delta the acked reference is unchanged and the
-/// frame is retained in `pending_refs`; the matching ack advances the
-/// reference and prunes the pending snapshot.
+/// A loss-tolerant reference advances on ack, not emit.
 #[test]
 fn loss_tolerant_reference_advances_only_on_ack() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -860,11 +806,8 @@ fn loss_tolerant_reference_advances_only_on_ack() {
     );
 }
 
-/// The core v45.8 property: a dropped/un-acked frame self-heals. Emit
-/// delta 1 (simulated dropped — never applied to the mirror, never acked),
-/// then emit delta 2 for later content. Because delta 2 is re-diffed
-/// against the last-ACKED reference (still empty), it re-includes delta 1's
-/// rows, so applying ONLY delta 2 to the mirror converges it to canonical.
+/// A dropped, un-acked frame self-heals: the next delta is diffed against
+/// the acked reference and alone converges the mirror.
 #[test]
 fn loss_tolerant_dropped_frame_rediffs_against_acked_and_converges() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -919,10 +862,8 @@ fn loss_tolerant_dropped_frame_rediffs_against_acked_and_converges() {
     assert_eq!(mirror_grid[1], "BBBB");
 }
 
-/// After a `FRAME_ACK`, subsequent deltas are diffed against the newly
-/// advanced acked reference (incremental, not cumulative-from-empty), and
-/// the mirror — brought current by the acked frames then the new one —
-/// still converges. Exercises the steady-state ack loop.
+/// After an ack, deltas diff against the advanced reference and the mirror
+/// still converges.
 #[test]
 fn loss_tolerant_incremental_after_ack_converges() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -974,11 +915,7 @@ fn loss_tolerant_incremental_after_ack_converges() {
     assert_eq!(mirror_grid[1], "row-two");
 }
 
-/// A retransmit heals a lost final frame on an otherwise idle terminal.
-/// Emit content (dropped, un-acked), backdate the emit clock past the
-/// retransmit timeout, then run an idle tick: the consumer retransmits a
-/// cumulative delta (re-diffed against the acked reference) that converges
-/// the mirror even though no new content arrived.
+/// A retransmit heals a lost final frame on an idle terminal.
 #[test]
 fn loss_tolerant_retransmits_lost_frame_when_idle() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -1032,10 +969,7 @@ fn loss_tolerant_retransmits_lost_frame_when_idle() {
     assert_eq!(mirror_grid[0], "lonely");
 }
 
-/// The emit-once (non-loss-tolerant) default is untouched: a state-sync
-/// consumer that did NOT opt into loss-tolerance keeps no `pending_refs`
-/// and advances its reference on emit (`on_frame_ack` does not evict a
-/// pending snapshot because there is none).
+/// Without loss tolerance there are no pending refs; emit-once as before.
 #[test]
 fn emit_once_default_keeps_no_pending_refs() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -1058,15 +992,8 @@ fn emit_once_default_keeps_no_pending_refs() {
     );
 }
 
-/// phux-0q8 / phux-q0e.3 / phux-3uv / phux-ia4: with the gate ON for
-/// a SINGLE consumer, `tick_emit` diffs the
-/// dirty seeded grid against the consumer's reference and ships exactly
-/// one `ResourceOutput` carrying the content, stamping `seq = 1`.
-///
-/// Emit-once (phux-ia4): the consumer's reference advances on emit, so
-/// a second tick with no further writes is SILENT — the change is
-/// delivered exactly once, not re-emitted every tick. A subsequent
-/// write produces a fresh single emission (`seq = 2`).
+/// With the gate on, one tick ships one delta with `seq = 1`; an unchanged
+/// grid then ships nothing; a new write ships `seq = 2`.
 #[test]
 fn tick_emit_emits_once_when_gate_is_on() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -1074,9 +1001,7 @@ fn tick_emit_emits_once_when_gate_is_on() {
     actor.enable_tick_emit_for_test();
     let client = ClientId(1);
     let (tx, mut rx) = dummy_outbound();
-    // Register against the (blank) terminal: the reference is primed
-    // so deltas are measured "from now." Writing AFTER register is what
-    // makes the next tick produce a diff.
+    // Primed against the blank terminal; the write after is the delta.
     actor
         .register_consumer(client, tx, 11, false)
         .expect("register");
@@ -1107,9 +1032,7 @@ fn tick_emit_emits_once_when_gate_is_on() {
         String::from_utf8_lossy(&bytes),
     );
 
-    // Emit-once: with no further writes, the reference now matches the
-    // live grid, so the next tick is silent — NO re-emission of the
-    // already-delivered change.
+    // Emit-once: no re-emission.
     actor.tick_emit();
     assert!(
         rx.try_recv().is_err(),
@@ -1152,17 +1075,8 @@ fn tick_emit_emits_once_when_gate_is_on() {
     );
 }
 
-/// phux-ia4 regression: TWO consumers sharing one pane. A single tick
-/// of new output MUST deliver the incremental to BOTH consumers — not
-/// just the first one walked.
-///
-/// This is the exact starvation the ticket is about. Under the old
-/// per-consumer-`RenderState` dirty model, the first consumer's
-/// `RenderState::update` consumed the shared `Terminal` dirty bits, so
-/// the second consumer that tick observed `Dirty::Clean` and emitted
-/// nothing. The per-consumer reference grid removes that coupling: each
-/// consumer diffs against its own last-synced rows, so both receive the
-/// change in the same tick regardless of walk order.
+/// Two consumers on one pane both receive one tick's delta, whatever the
+/// walk order.
 #[test]
 fn tick_emit_serves_every_consumer_on_a_shared_pane() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -1217,9 +1131,7 @@ fn tick_emit_serves_every_consumer_on_a_shared_pane() {
         "consumer B: emit-once — no re-emission on an unchanged tick",
     );
 
-    // Per-consumer independence: a consumer that detaches does not
-    // perturb the other. A fresh write reaches the survivor exactly
-    // once.
+    // Detaching one does not perturb the other.
     actor.unregister_consumer(client_a);
     actor.vt_write_for_test(b" again");
     actor.tick_emit();
@@ -1253,9 +1165,7 @@ fn idle_tick_short_circuits_and_emits_nothing() {
         .register_consumer(client, tx, 11, false)
         .expect("register");
 
-    // First tick: the consumer needs its initial pass, so it is walked
-    // (returns empty here — primed against a blank terminal) and the
-    // dirty flag set at construction is consumed.
+    // First tick walks the fresh consumer (empty diff) and consumes the flag.
     actor.tick_emit();
     // Drain whatever the first tick produced (expected: nothing, since
     // the reference was primed to the same blank state).
@@ -1282,13 +1192,8 @@ fn idle_tick_short_circuits_and_emits_nothing() {
     assert_eq!(actor.consumer_count(), 1, "consumer entry intact");
 }
 
-/// phux-4l0: a consumer registered AFTER the last write sits on a
-/// terminal that is `Clean` since the previous tick, yet has never had
-/// a synthesis pass. The `needs_initial_emit` carve-out must keep the
-/// short-circuit from starving it: the next tick must still walk it
-/// (here the write predates the attach, so it is already primed and
-/// the body is empty — the point is the entry is serviced, not
-/// skipped, preserving the phux-ia4 multi-consumer guarantee).
+/// A consumer registered after the last write is still walked on a clean
+/// terminal (`needs_initial_emit`).
 #[test]
 fn new_consumer_served_even_when_terminal_clean() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -1309,11 +1214,6 @@ fn new_consumer_served_even_when_terminal_clean() {
     actor.tick_emit();
     assert!(rx_a.try_recv().is_err(), "A steady-state: nothing");
 
-    // Consumer B attaches with NO intervening write. The terminal is
-    // Clean, but B has needs_initial_emit set, so the short-circuit
-    // must NOT fire — B must be walked. (Primed to current state, so
-    // the body is empty, but the entry is serviced and the flag
-    // cleared.)
     let client_b = ClientId(2);
     let (tx_b, mut rx_b) = dummy_outbound();
     actor
@@ -1354,11 +1254,7 @@ fn new_consumer_served_even_when_terminal_clean() {
     }
 }
 
-/// phux-ddg: a consumer whose outbound receiver has been dropped (a
-/// detach whose `ConsumerDetachRequest` never reached the actor — full
-/// mailbox) must be reaped by `tick_emit` rather than re-rendered every
-/// tick forever. The tick is self-healing: a `Closed` mailbox removes
-/// the entry.
+/// A consumer whose receiver dropped without a detach is reaped by the tick.
 #[test]
 fn tick_emit_reaps_consumer_with_closed_mailbox() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -1372,9 +1268,6 @@ fn tick_emit_reaps_consumer_with_closed_mailbox() {
         .expect("register");
     assert_eq!(actor.consumer_count(), 1);
 
-    // Simulate the dropped-detach leak: the client's receiver goes
-    // away (disconnect) but the detach request was lost, so the
-    // per-consumer entry is still present.
     drop(rx);
 
     // A write makes the tick try to emit to the dead consumer; the
@@ -1393,10 +1286,7 @@ fn tick_emit_reaps_consumer_with_closed_mailbox() {
     assert_eq!(actor.consumer_count(), 0, "stays reaped");
 }
 
-/// phux-ddg: a consumer with a closed mailbox is reaped even when the
-/// diff body is empty (idle dead consumer). Without this, an idle but
-/// dead consumer would never hit the `try_send` Closed arm and would
-/// linger until pane teardown.
+/// A dead consumer is reaped even with an empty diff.
 #[test]
 fn tick_emit_reaps_idle_consumer_with_closed_mailbox() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -1413,10 +1303,6 @@ fn tick_emit_reaps_idle_consumer_with_closed_mailbox() {
     actor.tick_emit();
     assert_eq!(actor.consumer_count(), 1);
 
-    // Receiver drops (disconnect). A write keeps the per-consumer loop
-    // running this tick; whether the diff body is empty or not, the
-    // `is_closed()` probe on the empty-body path and the `Closed` arm
-    // on the send path both reap the entry.
     drop(rx);
     actor.vt_write_for_test(b"x");
     actor.tick_emit();
@@ -1444,19 +1330,8 @@ fn drain_terminal_output(rx: &mut mpsc::Receiver<Outbound>) -> (Vec<u8>, Vec<u64
     (bytes, seqs)
 }
 
-/// wave-hunt/server-lifecycle: a consumer whose outbound mailbox fills up
-/// under sustained output MUST NOT lose grid content. Once the client
-/// drains, every written marker must still be reconstructable from the
-/// delivered stream.
-///
-/// Pre-fix this failed: `tick_emit` synthesized the delta (which commits
-/// the per-consumer reference to the just-rendered grid, emit-once) and
-/// THEN dropped the frame on a `Full` mailbox. The reference had already
-/// advanced past the dropped delta, so the next tick diffed against a
-/// reference that already included the dropped content and never
-/// re-emitted it — silent permanent content loss / mirror divergence.
-/// The fix reserves the outbound permit BEFORE synthesizing, so a full
-/// mailbox skips the consumer without advancing its reference.
+/// A full mailbox never loses content: the permit is reserved before the
+/// diff advances the reference, so every marker survives once drained.
 #[test]
 fn backpressured_consumer_loses_no_content_after_draining() {
     // More rounds than the mailbox holds so the tick's send hits `Full`.
@@ -1503,13 +1378,7 @@ fn backpressured_consumer_loses_no_content_after_draining() {
     }
 }
 
-/// wave-hunt/server-lifecycle: the per-consumer monotonic `seq` must have
-/// no gaps in the delivered stream. A frame that is NOT shipped must NOT
-/// consume a `seq`. Pre-fix, `tick_emit` incremented `next_seq` and then
-/// dropped the frame on `Full`, burning a seq for a frame the consumer
-/// never saw — the client would observe a hole in the otherwise
-/// contiguous reliable-transport stream (SPEC §12.2) and could not
-/// distinguish loss from reorder.
+/// A frame not shipped does not consume a `seq` (no gaps, SPEC §12.2).
 #[test]
 fn backpressured_consumer_sees_contiguous_seq_stream() {
     const ROUNDS: usize = 10;
@@ -1598,9 +1467,7 @@ fn rtt_estimator_seeds_then_converges() {
     );
 }
 
-/// The adaptive interval is `RTT/2` clamped to [20ms, 200ms]: a near-zero
-/// RTT clamps to the 20ms floor (snappier than the 30ms default), and a
-/// huge RTT clamps to the 200ms ceiling.
+/// The adaptive interval is `RTT/2` clamped to [20 ms, 200 ms].
 #[test]
 fn adaptive_interval_clamps_both_ends() {
     // Near-zero local RTT -> floor (50 Hz), strictly faster than the
@@ -1648,10 +1515,8 @@ fn desired_interval_defaults_then_adapts() {
     );
 }
 
-/// End-to-end through the actor: a `FRAME_ACK` measured against a large
-/// simulated transit time backs the shared cadence off toward the 200ms
-/// ceiling; a near-zero transit time pins it to the 20ms floor. Uses
-/// paused tokio time so the emit->ack gap is exact and deterministic.
+/// Through the actor, a slow ack backs the cadence off and a fast one pins
+/// the floor (paused time).
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn actor_cadence_backs_off_on_high_rtt_and_floors_on_low() {
     let bundle = TerminalActor::new(80, 24).expect("new");
@@ -1685,9 +1550,7 @@ async fn actor_cadence_backs_off_on_high_rtt_and_floors_on_low() {
         "high-RTT consumer backs the cadence off to the ceiling",
     );
 
-    // Fast peer joins; the shared cadence is the MINIMUM desired, so the
-    // near-zero-RTT peer pulls it back down to the floor regardless of
-    // the slow peer.
+    // The shared cadence is the minimum over consumers.
     let fast = ClientId(2);
     let (tx_fast, _rx_fast) = mpsc::channel::<Outbound>(16);
     actor
@@ -1709,9 +1572,7 @@ async fn actor_cadence_backs_off_on_high_rtt_and_floors_on_low() {
         "the fastest consumer pins the shared cadence to the floor",
     );
 
-    // The slow peer leaving must not regress the floor (fast peer still
-    // present), and dropping the fast peer reverts to the cold-start
-    // default (no samples left to consult).
+    // Losing all sampled peers reverts to the default.
     actor.unregister_consumer(slow);
     assert_eq!(
         actor.adaptive_tick_interval_for_test(),
@@ -1726,9 +1587,7 @@ async fn actor_cadence_backs_off_on_high_rtt_and_floors_on_low() {
     );
 }
 
-/// An ack that matches no recorded emit instant (e.g. the consumer never
-/// had a frame shipped) yields no RTT sample and leaves the cadence at
-/// the default — the round-trip machinery is inert without an emission.
+/// An ack with no emit instant yields no sample.
 #[test]
 fn ack_without_emit_instant_produces_no_sample() {
     let bundle = TerminalActor::new(80, 24).expect("new");
@@ -1754,12 +1613,8 @@ fn ack_without_emit_instant_produces_no_sample() {
     );
 }
 
-/// phux-ahk: a state-sync consumer that never sends `FRAME_ACK` must not
-/// grow `emit_instants` without bound. Ack-pruning never runs for it, so
-/// the per-tick insert is bounded only by the defensive
-/// [`MAX_EMIT_INSTANTS`] cap (oldest-evicted). Drive many more emitting
-/// ticks than the cap, never acking, and assert the map stays capped and
-/// retains the newest (highest-`seq`) samples rather than the stale ones.
+/// A never-acking consumer's `emit_instants` stays capped at
+/// [`MAX_EMIT_INSTANTS`], keeping the newest.
 #[test]
 fn emit_instants_is_capped_for_never_acking_consumer() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -1770,11 +1625,8 @@ fn emit_instants_is_capped_for_never_acking_consumer() {
         .register_consumer(client, tx, 11, true)
         .expect("register");
 
-    // Far more emitting ticks than the cap. Distinct content each tick
-    // keeps the grid dirty so the diff is non-empty and the tick actually
-    // emits (and inserts). Drain the mailbox each tick so the send keeps
-    // succeeding — a full mailbox would backpressure and skip the insert,
-    // hiding the growth this test pins.
+    // Distinct content per tick and a drained mailbox keep every tick
+    // emitting.
     let ticks = MAX_EMIT_INSTANTS + 64;
     for i in 0..ticks {
         actor.vt_write_for_test(&[b'a' + u8::try_from(i % 26).expect("0..26 fits u8")]);
@@ -1789,9 +1641,6 @@ fn emit_instants_is_capped_for_never_acking_consumer() {
         MAX_EMIT_INSTANTS,
         state.emit_instants.len(),
     );
-    // Eviction drops the oldest seqs, so emission must actually have run
-    // past the cap (otherwise this test proves nothing) and the lowest
-    // retained key is well above the first seq.
     let lowest = *state.emit_instants.keys().next().expect("non-empty map");
     assert!(
         lowest > 1,
@@ -1801,18 +1650,8 @@ fn emit_instants_is_capped_for_never_acking_consumer() {
 
 // --- agent-detector dirty-flag accounting (ADR-0046) -------------------
 
-/// `agent_dirty_since_detect` is the ONLY record that the grid changed
-/// since the detector last looked. `detect_tick` must consume it only on a
-/// tick that actually scanned.
-///
-/// While no agent is identified, `wants_screen` is unconditionally false —
-/// there is nothing to derive against. So a `detect_tick` in that window
-/// performs no scan, and eating the flag there discards every grid mutation
-/// the agent made before we noticed it existed: the permission dialog it
-/// painted, and then went silent behind, is exactly such a mutation. The
-/// detector then derives `idle` from a screen it never read and latches
-/// there, because `wants_screen` sees `current == Some(Idle)` and never
-/// asks for the scan that would correct it.
+/// `detect_tick` consumes the detector dirty flag only when it scanned; an
+/// unidentified pane never scans, so the flag must survive.
 #[test]
 fn detect_tick_keeps_the_dirty_flag_when_it_performs_no_scan() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -1834,9 +1673,7 @@ fn detect_tick_keeps_the_dirty_flag_when_it_performs_no_scan() {
     );
 }
 
-/// The converse, so the flag is not simply never cleared: once an agent IS
-/// identified, the scan runs and consumes the flag — which is what keeps
-/// the steady state cheap.
+/// Once identified, the scan runs and consumes the flag.
 #[test]
 fn detect_tick_consumes_the_dirty_flag_when_it_scans() {
     let bundle = TerminalActor::new(20, 5).expect("new");
@@ -1888,11 +1725,8 @@ fn input_snapshot_publishes_after_seed_output_and_resize() {
     assert_eq!(resized.cell_px, (11, 19));
 }
 
-/// `REPORT_AGENT_STATE` with a live `AgentSession` child routes to
-/// [`TerminalActor::synthesize_state_record`] (ADR-0103 decision 6). No
-/// `AgentSession` engine exists yet, so that hook's default falls back to the
-/// ADR-0085 detector path — which is the contract this pins: the fallback is
-/// a real report, not a swallowed one and not a panic.
+/// Without a live `AgentSession`, a state record falls back to the
+/// detector path (ADR-0085): a real report, not a swallowed one.
 #[test]
 fn a_synthesized_state_record_falls_back_to_the_detector_path() {
     let bundle = TerminalActor::new(20, 5).expect("new");

@@ -6,22 +6,13 @@ use phux_protocol::ids::ResourceId as WireResourceId;
 use super::{RenameOutcome, ServerState};
 
 impl ServerState {
-    /// Borrow the canonical session/window/pane registry.
-    ///
-    /// The read half of what used to be a bare `pub registry` field; the
-    /// map itself now lives in `state::session_table` next to the ledgers
-    /// keyed on it.
+    /// The session/window/pane registry.
     #[must_use]
     pub const fn registry(&self) -> &Registry {
         &self.sessions.registry
     }
 
-    /// Mutably borrow the canonical session/window/pane registry.
-    ///
-    /// The write half of what used to be a bare `pub registry` field.
-    /// Note that this borrows all of `ServerState`, so a `&mut` registry
-    /// borrow and a `&self` accessor call cannot overlap the way two
-    /// disjoint fields could — keep them in separate statements.
+    /// The registry, mutably (borrows all of `ServerState`).
     pub const fn registry_mut(&mut self) -> &mut Registry {
         &mut self.sessions.registry
     }
@@ -57,41 +48,22 @@ impl ServerState {
         self.sessions.by_name(name)
     }
 
-    /// Look up the [`SessionId`] for a name by scanning the registry.
-    ///
-    /// Uses `Registry::sessions` directly — no side ledger required.
+    /// The [`SessionId`] named `name`.
     pub(crate) fn find_session_by_name(&self, name: &str) -> Option<SessionId> {
         self.sessions.find_by_name(name)
     }
 
-    /// Rename the session named `current` to `new_name`, in place.
-    ///
-    /// Mirrors `CREATE_SESSION`'s uniqueness rule: names are unique within
-    /// the registry, so a `new_name` already in use is rejected. Resolution
-    /// uses the same registry scan as every other name lookup (no side
-    /// ledger, per [`Self::session_by_name`]), so there is nothing else to keep
-    /// in sync. The server is authoritative once this returns
-    /// [`RenameOutcome::Renamed`]; the next `ATTACHED` snapshot each client
-    /// builds carries the new name.
-    ///
-    /// Returns a [`RenameOutcome`] distinguishing the two refusal cases the
-    /// wire surfaces (`SESSION_NOT_FOUND` vs `INVALID_COMMAND`) from success.
+    /// Rename `current` to `new_name` (names are unique); the outcome maps
+    /// to `SESSION_NOT_FOUND`, `INVALID_COMMAND`, or success.
     pub fn rename_session(&mut self, current: &str, new_name: &str) -> RenameOutcome {
         self.sessions.rename(current, new_name)
     }
 
-    /// Seed a session+window+pane. Returns the new
-    /// `(SessionId, WindowId, ResourceId)`.
-    ///
-    /// This is the entry point `ServerConfig::pre_seeded_session` uses to
-    /// pre-populate the registry before clients connect.
+    /// Seed a session, window, and pane (the pre-seed entry point).
     ///
     /// # Panics
     ///
-    /// Panics if the registry rejects the freshly-allocated session or
-    /// window ids — both branches are unreachable because the parent
-    /// entity was created on the line above. A panic here indicates a
-    /// `phux-core::Registry` regression.
+    /// Only on a `Registry` regression.
     pub fn seed_session(
         &mut self,
         name: &str,
@@ -105,41 +77,23 @@ impl ServerState {
         self.sessions.seed_empty(name)
     }
 
-    /// Add a new pane (Terminal) to `session`'s first window — the spawn
-    /// counterpart to [`Self::seed_session`] that does NOT create a new
-    /// session.
-    ///
-    /// A TUI split lands here (phux-i9zl): the new L1 Terminal joins the
-    /// current session's window so `phux ls` keeps showing one session, and
-    /// a reattach to that session resolves every split pane. Targets the
-    /// session's first window — v0.1 sessions are single-window, so that is
-    /// the window the client is viewing; multi-window targeting (the client's
-    /// active window) is future work.
-    ///
-    /// Returns `None` if `session` is unknown or has no window — unreachable
-    /// for a seeded session, which always has at least one window.
+    /// Add a pane to `session`'s first window (a TUI split), without a new
+    /// session. `None` if `session` is unknown.
     #[must_use]
     pub fn add_pane_to_session(&mut self, session: SessionId) -> Option<ResourceId> {
         self.sessions.add_pane(session)
     }
 
-    /// Add a pane to the exact window that owns `owner`.
-    ///
-    /// Used by headless spawn ownership targeting: the caller names a known
-    /// Terminal so the request cannot drift into another session or window.
-    /// Layout geometry remains client-owned L3 metadata.
-    ///
-    /// Stays on this type: resolving the caller's wire id runs through
-    /// `state::id_space` before the session table can name `owner`.
+    /// Add a pane to the window that owns `owner` (headless spawn
+    /// targeting).
     #[must_use]
     pub fn add_pane_to_terminal_owner(&mut self, owner: &WireResourceId) -> Option<ResourceId> {
         let owner = self.terminal_from_wire(owner)?;
         self.sessions.add_pane_beside(owner)
     }
 
-    /// Natural `exit` of this Terminal should spawn a fresh default shell in
-    /// place, rather than close the pane: it is the session's only Terminal
-    /// and nobody asked to kill it.
+    /// Whether this Terminal's natural exit should respawn a shell in place
+    /// (it is the session's only Terminal and nobody killed it).
     #[must_use]
     pub(crate) fn should_replace_last_shell(&self, pane: ResourceId) -> bool {
         if matches!(

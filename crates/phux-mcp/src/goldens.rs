@@ -1,26 +1,8 @@
-//! The two acceptance tests for moving tools off the CLI subprocess.
+//! Golden documents for the in-process tools, and the sweep proving no
+//! in-process tool spawns the CLI.
 //!
-//! - `in_process_tools_produce_the_same_documents_as_the_former_subprocess_path`
-//!   drives every migrated tool against the shared scripted server and
-//!   byte-compares its pretty-printed result with a checked-in golden under
-//!   `tests/golden/`. The goldens are regression pins generated from the
-//!   in-process code, not captures from the old path. Parity with the
-//!   former subprocess path holds by construction: a CLI `--json` document
-//!   is built by the same `phux-client` function the CLI prints
-//!   (`session_list::document`, `snapshot::project`,
-//!   `spawn::spawned_document`, `spatial::run`, `kill::selected`,
-//!   `signal::deliver`, `tags::apply`, `session::rename_checked`), and
-//!   every MCP envelope (`kill`, `signal`, `tag`, `rename`, `detach`,
-//!   `agent set/clear`) keeps the literal shape the adapter built around
-//!   a CLI exit before. It was also checked once, side by side, against
-//!   a real server with the origin/main adapter. The insert-pane and
-//!   move-pane goldens pin the CLI contract: the former argv passed
-//!   `--horizontal`/`--vertical`, which `phux` rejects, so that path
-//!   never produced a document.
-//! - `no_tool_outside_the_residue_spawns_a_subprocess` sweeps every catalog
-//!   tool that `crate::tool_table` marks in-process and
-//!   proves, through the `CliAdapter` spawn record, that none reaches the
-//!   CLI; a residue tool is the positive control.
+//! Each case drives one tool against the shared scripted server and
+//! byte-compares its pretty-printed result with `tests/golden/<name>.json`.
 
 #![allow(
     clippy::expect_used,

@@ -1,30 +1,16 @@
 #!/usr/bin/env bash
-# Capture the app's REAL composited pixels as PNG, with no Screen Recording
-# permission, and measure them beside the reference screenshot of the same
-# running instance.
+# Capture the app's real composited pixels as PNG (no Screen Recording
+# permission) beside the reference screenshot of the same instance.
 #
 #   ./scripts/capture-gpu-ink.sh                       # capture and report
 #   ./scripts/capture-gpu-ink.sh --bundle <app>        # a bundle built elsewhere
 #   ./scripts/capture-gpu-ink.sh --seconds 45          # hold it longer
 #   ./scripts/capture-gpu-ink.sh --out <dir>           # keep the artifacts here
 #
-# WHAT THIS IS
-# ------------
-# `NATIVE_SDK_GPU_SHOT_DIR=<dir>` makes the AppKit host read the composited
-# canvas texture back with `getBytes` and write it as PNG
-# (`dumpCompositeShotWithPixelWidth:` in appkit_host.m). It needs no TCC, no
-# focus and no visible window, which is the whole reason it matters: TCC is
-# unavailable in CI, and every other real-pixel path on macOS is TCC-gated.
-# See docs/RENDER_FIDELITY.md section 2 for the paths that were ruled out.
-#
-# WHY IT MAY REFUSE TO RUN
-# ------------------------
-# The dump only fires from the opt-in GPU composite pass. This script asserts
-# `gpu_present_path=packet` and stops when it sees `pixels`, because a capture
-# taken after packet refusal is a picture of the CPU reference renderer wearing
-# the GPU path's name. The pinned SDK admits Cockpit's `cell_grid` commands and
-# supports `NATIVE_SDK_GPU_SHOT_EVERY=1`; a refusal now indicates a real
-# regression rather than a sandbox patch that still needs applying.
+# `NATIVE_SDK_GPU_SHOT_DIR` makes the AppKit host dump the composited canvas
+# texture; it needs no TCC, focus or visible window. It only fires on the GPU
+# packet path, so the script refuses when `gpu_present_path=pixels`. See
+# docs/RENDER_FIDELITY.md.
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -36,7 +22,7 @@ while [[ $# -gt 0 ]]; do
         --bundle) BUNDLE="$2"; shift 2 ;;
         --seconds) SECONDS_TO_HOLD="$2"; shift 2 ;;
         --out) OUT="$2"; shift 2 ;;
-        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,/^set -euo pipefail/{ /^set -euo pipefail/!p; }' "$0"; exit 0 ;;
         *) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
     esac
 done
@@ -104,15 +90,8 @@ if [[ -z "$APP_PATH" ]]; then
 fi
 NATIVE="$("${ROOT}/scripts/build-automation-cli.sh")"
 
-# The captured pane: a fixed block of bold and regular runs, and ONE ticking
-# line at the bottom.
-#
-# The tick is load-bearing. A composite present happens only when the packet
-# content changes, so a settled pane presents essentially never and the dump
-# has nothing to fire on; the tick keeps presents flowing. It is at the bottom
-# so the measured crop can exclude it and still compare two runs pixel for
-# pixel -- everything above it is byte-identical from one run to the next,
-# which is the property that makes a difference mean something.
+# The pane: a fixed block of bold and regular runs plus one ticking line at
+# the bottom that keeps presents (and so dumps) flowing; the crop excludes it.
 cat >"${OUT}/pane.sh" <<'PANE'
 #!/bin/sh
 printf '\033[?25l\033[2J\033[H'
@@ -190,12 +169,8 @@ if "$NATIVE" automate screenshot phux-cockpit-canvas >/dev/null 2>&1; then
     mv "${ROOT}/.zig-cache/native-sdk-automation/screenshot-phux-cockpit-canvas.png" "${OUT}/reference.png"
 fi
 
-# The crop: the fixed block, with the ticking line and the chrome excluded.
-# Derived by eye from a capture at this font size and window size and then
-# checked by measurement, not guessed: two runs of the same build diff to
-# ZERO pixels over this rect (scripts/diff-png-region.m), which is the only
-# thing that makes it the right rect. Re-derive it if the pane, the font size
-# or the window size changes.
+# The fixed block, excluding the tick and chrome; two runs of one build diff
+# to zero pixels here. Re-derive if pane, font or window size changes.
 CROP=(0 60 470 240)
 
 BIN="$(mktemp -d)"

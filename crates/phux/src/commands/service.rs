@@ -1,21 +1,10 @@
 //! `phux service` — generate and manage the per-user service unit that keeps
-//! a phux server running across logout and reboot (ADR-0055).
+//! a phux server running across logout and reboot (ADR-0055): a `launchd`
+//! `LaunchAgent` on macOS, a systemd user unit on Linux.
 //!
-//! The naked `phux` path auto-spawns a server when the socket is missing,
-//! which covers a cold client but not a cold *host*: a rebooted machine has
-//! no server until someone logs in and runs one. This module closes that gap
-//! by generating the host's native unit — a `launchd` `LaunchAgent` on macOS, a
-//! systemd **user** unit on Linux — with the server's environment
-//! materialized into it.
-//!
-//! The environment wiring is the whole reason this is code rather than a
-//! documented snippet. A hand-written unit that omits `PHUX_WS_TOKENS`
-//! silently starts a server that rejects every paired device, and the
-//! operator discovers it days later from a laptop that will not attach.
-//!
-//! Scope is per-user by construction (ADR-0003: one server per user). A
-//! system-wide `LaunchDaemon` or system systemd unit would imply a multi-user
-//! server, which phux does not have.
+//! The server's environment is materialized into the unit; a hand-written unit
+//! that omits `PHUX_WS_TOKENS` silently rejects every paired device. Per-user
+//! by construction (ADR-0003: one server per user).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -30,18 +19,10 @@ const LAUNCHD_LABEL: &str = "com.phux.server";
 /// under `$XDG_CONFIG_HOME/systemd/user/`.
 const SYSTEMD_UNIT: &str = "phux.service";
 
-/// launchd's job label for the *active* profile.
-///
-/// The default profile keeps the bare `com.phux.server`, for the same reason
-/// [`phux_config::instance::DEFAULT_PROFILE`] is stored unsuffixed on disk: a
-/// user upgrading into a profile-aware build must not end up with their
-/// already-loaded job orphaned under a name nothing addresses.
-///
-/// Every other profile is suffixed. Without this, ADR-0080's isolation was
-/// half-applied: `resolve_plan` already scopes the socket, state and log paths
-/// by profile, so a dev-profile `service install` wrote a unit pointing at
-/// `phux-dev` locations — but filed under the *production* label, silently
-/// replacing the job that supervises the user's real server (phux-gyza).
+/// launchd's job label for the active profile. The default profile keeps the
+/// bare `com.phux.server` so an already-loaded job is not orphaned on upgrade;
+/// other profiles are suffixed so a dev-profile install cannot replace the
+/// production job (ADR-0080).
 fn launchd_label() -> String {
     launchd_label_for(profile_suffix().as_deref())
 }
@@ -52,10 +33,8 @@ fn systemd_unit() -> String {
     systemd_unit_for(profile_suffix().as_deref())
 }
 
-/// [`launchd_label`] with the profile injected, so tests can drive both the
-/// default and a named profile without mutating the process environment
-/// (`env::set_var` is unsafe under edition 2024 and this crate forbids
-/// unsafe). Same `*_from` idiom as [`home_dir_from`].
+/// [`launchd_label`] with the profile injected, so tests need not mutate the
+/// process environment.
 fn launchd_label_for(profile: Option<&str>) -> String {
     profile.map_or_else(
         || LAUNCHD_LABEL.to_owned(),
@@ -72,58 +51,27 @@ fn systemd_unit_for(profile: Option<&str>) -> String {
 }
 
 /// The active profile when it is not the default, else `None`.
-///
-/// One place resolves it so the label, the unit name and the refusal message
-/// cannot disagree about which profile they are talking about.
-fn profile_suffix() -> Option<String> {
+pub(crate) fn profile_suffix() -> Option<String> {
     (!phux_config::instance::is_default_profile()).then(phux_config::instance::profile)
 }
 
-/// Minimum seconds between supervised restarts (phux-zomb.4).
-///
-/// launchd `ThrottleInterval` / systemd `RestartSec`. Chosen to make a
-/// crash-loop *legible* rather than to minimise downtime: at one start per
-/// 30s a human notices, `phux doctor` can count the restarts, and the log
-/// stays readable. The previous 500 ms floor (and launchd's unthrottled
-/// default) produced thousands of generations that buried the first failure —
-/// the one that explains all the others.
+/// Minimum seconds between supervised restarts (launchd `ThrottleInterval` /
+/// systemd `RestartSec`): slow enough that a crash-loop stays legible in the
+/// log and to `phux doctor`.
 const RESTART_THROTTLE_SECS: u32 = 30;
 
-/// How many consecutive failed starts systemd tolerates before it stops
-/// retrying and leaves the unit failed.
-///
-/// Matches the threshold `phux doctor`'s `server-health` check already calls a
-/// crash-loop, so the two agree on what "this is not coming back" means: by
-/// the time systemd gives up, doctor is already reporting it. launchd has no
-/// equivalent knob -- it retries forever regardless -- which is why
-/// `run_install` refuses up front rather than relying on the supervisor to
-/// notice (phux-67wg).
+/// Consecutive failed starts systemd tolerates before giving up; matches the
+/// crash-loop threshold of `phux doctor`'s `server-health` check.
 const START_LIMIT_BURST: u32 = 5;
 
-/// Marker `phux service install` stamps into the unit's OWN
-/// `EnvironmentVariables` (launchd) / `Environment=` (systemd) block, and
-/// [`crate::commands::server::run_server`] reads back at startup to decide
-/// whether server-spawned panes need login-shell treatment (phux-87rr).
-///
-/// This is the reliable half of "reliable, not a heuristic": launchd and
-/// systemd both start their unit with a minimal environment that never ran
-/// a login shell, so profile-provided `PATH` entries (Homebrew, Nix) are
-/// invisible to every pane — but environment markers like `NIX_PROFILES`
-/// can still be inherited from whatever *built* the unit, which is exactly
-/// what makes sniffing "is my PATH short" or "is my parent launchd"
-/// unreliable: both can be true, or false, independent of how this
-/// specific server process was actually started. A value this code itself
-/// wrote into the unit at install time, and only there, has no such
-/// ambiguity — a server without it was not started from a unit this
-/// `phux` ever wrote, full stop.
+/// Marker `phux service install` writes into the unit's own environment and
+/// [`crate::commands::server::run_server`] reads back to decide whether spawned
+/// panes need login-shell treatment. Only a unit this `phux` wrote carries it,
+/// which makes it reliable where sniffing `PATH` or the parent process is not.
 pub(crate) const SERVICE_MANAGED_ENV: &str = "PHUX_SERVICE_MANAGED";
 
-/// Which init system this host's unit targets.
-///
-/// Resolved from the compile target rather than probed at runtime: a macOS
-/// build has launchd and a Linux build has systemd-or-nothing, and guessing
-/// from `/proc` would only add a failure mode. Both renderers are compiled
-/// on every platform so their tests run everywhere.
+/// Which init system this host's unit targets, resolved from the compile
+/// target. Both renderers compile everywhere so their tests run everywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Manager {
     Launchd,
@@ -138,7 +86,7 @@ impl Manager {
         clippy::unnecessary_wraps,
         reason = "None is reachable on targets that are neither macOS nor Linux; clippy only sees the active cfg"
     )]
-    const fn host() -> Option<Self> {
+    pub(crate) const fn host() -> Option<Self> {
         #[cfg(target_os = "macos")]
         {
             Some(Self::Launchd)
@@ -153,17 +101,10 @@ impl Manager {
         }
     }
 
-    /// Where the unit file for this manager belongs.
-    ///
-    /// Fallible: with `HOME` (and, for systemd, `XDG_CONFIG_HOME`) unset,
-    /// the naive join used to produce a *relative* path — `Library/...` or
-    /// `.config/...` — and every caller would then create directories and
-    /// write the unit under whatever the current working directory
-    /// happened to be, silently. Fail here instead, at the one place that
-    /// knows why.
-    /// `profile` is the ADR-0080 profile suffix (`None` for the default), so
-    /// the basename is scoped exactly the way the label inside the unit is.
-    fn unit_path(self, profile: Option<&str>) -> Result<PathBuf, String> {
+    /// Where the unit file for this manager belongs. Fails rather than returning a
+    /// relative path when `HOME`/`XDG_CONFIG_HOME` are unset. `profile` is the
+    /// ADR-0080 profile suffix (`None` for the default).
+    pub(crate) fn unit_path(self, profile: Option<&str>) -> Result<PathBuf, String> {
         match self {
             Self::Launchd => Ok(home_dir()?
                 .join("Library")
@@ -177,17 +118,12 @@ impl Manager {
     }
 }
 
-/// Everything the unit renderers need, resolved once at install time.
-///
-/// Held as plain data — no environment reads, no filesystem access — so
-/// [`render_launchd_plist`], [`render_systemd_unit`], and
-/// [`render_wrapper_script`] are pure functions that tests can drive on any
-/// platform with any combination of options.
+/// Everything the unit renderers need, resolved once at install time so the
+/// renderers are pure functions.
 #[derive(Debug, Clone)]
 pub(crate) struct ServicePlan {
-    /// Absolute path to the `phux` binary the unit runs. Resolved from
-    /// `current_exe` at install time and baked in: a unit that says `phux`
-    /// depends on a `PATH` the init system does not necessarily share.
+    /// Absolute path to the `phux` binary the unit runs (the init system's `PATH`
+    /// may not find `phux`).
     pub(crate) binary: PathBuf,
     /// `HOST:PORT` for the QUIC listener, if the operator asked for one.
     pub(crate) quic: Option<String>,
@@ -200,33 +136,20 @@ pub(crate) struct ServicePlan {
     pub(crate) cert: PathBuf,
     /// TLS private key paired with `cert`.
     pub(crate) key: PathBuf,
-    /// UDS path override, when the operator runs a non-default socket. Only
-    /// this — not [`Self::socket_path`] — becomes `PHUX_SOCKET` in the unit,
-    /// so a default-socket install stays portable across a host whose
-    /// `XDG_RUNTIME_DIR` changes.
+    /// UDS path override. Only this, not [`Self::socket_path`], becomes
+    /// `PHUX_SOCKET` in the unit, so a default-socket install stays portable.
     pub(crate) socket: Option<PathBuf>,
     /// Run the supervised server as a federation hub, loading and maintaining
     /// every enabled `[[satellites]]` route from `config.toml`.
     pub(crate) hub: bool,
-    /// The socket the server will actually bind, resolved at install time.
-    ///
-    /// The wrapper script tests this path to learn when the server is
-    /// listening. Resolving it here rather than in `sh` keeps one
-    /// implementation of the precedence rules
-    /// (`$PHUX_SOCKET` > `$XDG_RUNTIME_DIR` > `/tmp/phux-$USER`).
+    /// The socket the server will actually bind; the wrapper script polls it.
     pub(crate) socket_path: PathBuf,
     /// The active ADR-0080 profile when it is not the default, else `None`.
-    ///
-    /// Resolved once here, with every other path, so the renderers stay pure:
-    /// the label a plist carries and the basename the unit is written under
-    /// both come from this field rather than from the ambient environment,
-    /// which is what lets a test drive either profile (phux-gyza).
     pub(crate) profile: Option<String>,
     /// Where the service's stdout and stderr land.
     pub(crate) log: PathBuf,
-    /// Workspace archive path when `--restore` is on. `Some` switches the
-    /// unit from running the server directly to running the wrapper script
-    /// that brackets it with save/restore.
+    /// Workspace archive path when `--restore` is on; `Some` makes the unit run
+    /// the save/restore wrapper script instead of the server directly.
     pub(crate) restore: Option<PathBuf>,
     /// Path of the generated wrapper script. Only read when `restore` is
     /// `Some`.
@@ -234,18 +157,9 @@ pub(crate) struct ServicePlan {
 }
 
 impl ServicePlan {
-    /// The server's environment, as ordered key/value pairs.
-    ///
-    /// Ordered (not a map) so a regenerated unit is byte-identical to the
-    /// last one for the same inputs — an install that reshuffles keys looks
-    /// like a real change in `diff` and in version control.
+    /// The server's environment, ordered so a regenerated unit is byte-identical.
     fn environment(&self) -> Vec<(&'static str, String)> {
         let mut env = Vec::with_capacity(7);
-        // Unconditional (phux-87rr): the marker the server reads to know it
-        // was started from a unit this `phux` wrote, and therefore needs
-        // login-shell treatment for its spawned panes. See
-        // `SERVICE_MANAGED_ENV`'s doc for why this is the reliable signal
-        // rather than a heuristic sniffed from the process environment.
         env.push((SERVICE_MANAGED_ENV, "1".to_owned()));
         if let Some(quic) = &self.quic {
             env.push(("PHUX_QUIC_ADDR", quic.clone()));
@@ -276,29 +190,12 @@ impl ServicePlan {
     }
 }
 
-/// The launchd keys that carry the ADR-0080 restart policy, exactly as the
-/// generator emits them.
+/// The launchd restart-policy keys, shared with [`reconcile_unit`] so the
+/// reconciler decides "current" against exactly what the generator emits.
 ///
-/// Shared with [`reconcile_unit`] rather than written twice: the reconciler
-/// decides a unit is current by patching it and finding nothing changed, so a
-/// generator and a reconciler that disagree by one byte would make `phux
-/// service reconcile` rewrite the file `phux service install` had just
-/// written, on every run, forever. One definition removes the failure mode
-/// instead of testing for it.
-///
-/// phux-zomb.4: restart on ABNORMAL exit only, and rate-limit it.
-///
-/// `KeepAlive: true` — what this generator used to emit — restarts on
-/// *every* exit at full speed. Two consequences, both observed in the
-/// field: `phux kill --server` (a clean exit) came straight back, so a
-/// server could not be stopped; and a server crashing at startup produced
-/// a silent respawn storm (1487 generations against one log on one
-/// machine) that made a dead server look like a running one.
-///
-/// `SuccessfulExit: false` restarts only when the server exits non-zero or
-/// on a signal, so a deliberate shutdown stays down. `ThrottleInterval`
-/// holds launchd to one start per 30s, which turns a crash-loop into
-/// something a human — and `phux doctor` — can see rather than a firehose.
+/// Restart on abnormal exit only (`SuccessfulExit: false`), so
+/// `phux kill --server` stays down, and throttle restarts so a crash-loop is
+/// visible rather than a silent respawn storm.
 fn launchd_policy_lines() -> Vec<String> {
     vec![
         "  <key>KeepAlive</key>".to_owned(),
@@ -308,23 +205,16 @@ fn launchd_policy_lines() -> Vec<String> {
         "  </dict>".to_owned(),
         "  <key>ThrottleInterval</key>".to_owned(),
         format!("  <integer>{RESTART_THROTTLE_SECS}</integer>"),
-        // Scheduling class (ADR-0096; ADR-0055 amendment). Owned here, not
-        // in the generator, so `phux service reconcile` moves an installed
-        // `Background` unit to `Interactive` instead of leaving it throttled.
+        // Scheduling class (ADR-0096); owned here so `reconcile` migrates old
+        // `Background` units.
         "  <key>ProcessType</key>".to_owned(),
         "  <string>Interactive</string>".to_owned(),
     ]
 }
 
-/// The systemd spelling of [`launchd_policy_lines`], and shared with
-/// [`reconcile_unit`] for the same reason.
-///
-/// `StartLimitIntervalSec`/`StartLimitBurst` make systemd give up eventually.
-/// Its default rate limit is 5 starts in 10s, which at a `RestartSec` of 30s
-/// can never trip — so without these a server that fails every start retries
-/// forever (phux-67wg). The window is sized to admit the throttle:
-/// `START_LIMIT_BURST` starts spaced `RESTART_THROTTLE_SECS` apart fit inside
-/// it, so a genuine crash-loop is caught while an occasional restart is not.
+/// The systemd spelling of [`launchd_policy_lines`]. The explicit start limit
+/// makes systemd give up on a real crash-loop: its default (5 starts in 10s)
+/// can never trip at a 30s `RestartSec`.
 fn systemd_policy_lines() -> Vec<String> {
     vec![
         "Restart=on-failure".to_owned(),
@@ -347,17 +237,8 @@ const SYSTEMD_POLICY_KEYS: [&str; 4] = [
     "StartLimitBurst",
 ];
 
-/// Render the launchd `LaunchAgent` plist.
-///
-/// `RunAtLoad` starts the server when the agent is bootstrapped (login, and
-/// boot when the host auto-logs-in); `KeepAlive` restarts it on any exit.
-/// `ProcessType` is `Interactive`: the server is the keystroke path between
-/// the user and every pane, so it belongs in the same scheduling class as
-/// the terminal emulator in front of it. It shipped as `Background` from
-/// ADR-0055 until 2026-09-02, which asked launchd to throttle exactly the
-/// process whose echo latency the user feels; under CPU contention from
-/// builds and agents that showed up as 15-60 ms keystroke tails with the
-/// server itself near idle (ADR-0096, ADR-0055 amendment).
+/// Render the launchd `LaunchAgent` plist. `ProcessType` is `Interactive`
+/// because the server is on the keystroke path (ADR-0096).
 pub(crate) fn render_launchd_plist(plan: &ServicePlan) -> String {
     use std::fmt::Write as _;
 
@@ -386,8 +267,6 @@ pub(crate) fn render_launchd_plist(plan: &ServicePlan) -> String {
 
     out.push_str("  <key>RunAtLoad</key>\n  <true/>\n");
 
-    // The restart policy (phux-zomb.4) lives in `launchd_policy_lines` so the
-    // reconciler and the generator cannot drift; its doc explains the policy.
     for line in launchd_policy_lines() {
         let _ = writeln!(out, "{line}");
     }
@@ -412,12 +291,7 @@ pub(crate) fn render_launchd_plist(plan: &ServicePlan) -> String {
     out
 }
 
-/// Render the systemd user unit.
-///
-/// `Restart=on-failure` is launchd's `KeepAlive{SuccessfulExit:false}`;
-/// `WantedBy=default.target` is its `RunAtLoad`; `RestartSec` is its
-/// `ThrottleInterval`. See the launchd renderer for why a clean exit must
-/// stay down and why the restart is rate-limited (phux-zomb.4).
+/// Render the systemd user unit; the systemd spellings of the launchd keys.
 pub(crate) fn render_systemd_unit(plan: &ServicePlan) -> String {
     use std::fmt::Write as _;
 
@@ -456,20 +330,9 @@ pub(crate) fn render_systemd_unit(plan: &ServicePlan) -> String {
     out
 }
 
-/// Render the `--restore` wrapper script.
-///
-/// launchd has no `ExecStartPost`/`ExecStopPre` equivalent, so bracketing the
-/// server with save/restore needs a wrapper on macOS. Using the same wrapper
-/// under systemd — which does have those directives — keeps one code path and
-/// one thing to test, and keeps the two units' observable behavior identical.
-///
-/// The restore half polls for the socket rather than sleeping a fixed
-/// interval: the server is ready when its socket exists, and a fixed sleep is
-/// either a slow boot or a lost restore. The save half runs on `TERM`, which
-/// is what both managers send first on stop.
-///
-/// Mirrors the continuum example plugin's write-to-temp-then-`mv` idiom so a
-/// crash mid-save cannot truncate the last good archive.
+/// Render the `--restore` wrapper script. launchd has no
+/// `ExecStartPost`/`ExecStopPre`, so both platforms use one wrapper that
+/// restores once the socket appears and saves (temp-then-`mv`) on `TERM`.
 pub(crate) fn render_wrapper_script(plan: &ServicePlan) -> String {
     let Some(archive) = &plan.restore else {
         return String::new();
@@ -532,50 +395,25 @@ pub(crate) fn render_wrapper_script(plan: &ServicePlan) -> String {
     )
 }
 
-// ---------------------------------------------------------------------------
-// In-place reconcile (phux-l1yx / phux-bd30)
-// ---------------------------------------------------------------------------
-//
-// A unit written before phux-zomb.4 keeps its unthrottled restart-on-any-exit
-// policy until something rewrites it. Until now the only "something" was
-// `phux service install`, and that is a bad trade for two independent reasons:
-//
-//   1. It re-renders the unit from a *fresh* `ServicePlan`. `--quic`,
-//      `--listen`, `--restore`, `--hub` and `--socket` survive only inside the
-//      rendered unit — nothing parses one back — so a blind re-run silently
-//      drops the operator's listeners and hub mode.
-//   2. It reloads. `launchctl bootout` and `systemctl enable --now` stop the
-//      supervised server, and every pane and its in-flight shells, agents and
-//      subagents die with it (phux-nvi2).
-//
-// So the reconcile does neither. It reads the installed file, replaces only
-// the keys that carry the restart policy, and leaves every other byte exactly
-// where it was — which makes obstacle 1 structurally impossible rather than
-// carefully avoided, since the flags are never re-derived at all.
+// In-place reconcile: rewrite only the restart-policy keys of an installed
+// unit. A reinstall would drop flags that live only in the rendered unit
+// (`--quic`, `--listen`, `--restore`, `--hub`, `--socket`) and would stop the
+// supervised server with every pane.
 
 /// What reconciling an installed unit's restart policy would do to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Reconcile {
-    /// The file already carries the current policy, byte for byte. Nothing to
-    /// write. This is not detected by looking for markers — it is what falls
-    /// out when the patch produces the input unchanged, so "current" can never
-    /// mean anything other than "what this binary would write".
+    /// The file already carries the current policy (the patch was a no-op).
     Current,
     /// The patched file. Every byte outside the policy keys is the operator's.
     Patched(String),
-    /// The file is not a shape this can rewrite without guessing.
-    ///
-    /// Refusing is the whole point: a mis-scoped edit produces a unit the init
-    /// system silently declines to load, which is strictly worse than the
-    /// legacy policy this was trying to fix.
+    /// The file is not a shape this can rewrite without guessing; refusing beats
+    /// producing a unit the init system silently declines to load.
     Unrecognized(&'static str),
 }
 
-/// Rewrite `body`'s restart-policy keys to the current policy.
-///
-/// Pure: no environment, no filesystem, no `ServicePlan`. That is what lets it
-/// run over a unit generated by a *different* build, with flags this process
-/// knows nothing about, and still be safe.
+/// Rewrite `body`'s restart-policy keys to the current policy. Pure, so it is
+/// safe over units generated by other builds.
 pub(crate) fn reconcile_unit(manager: Manager, body: &str) -> Reconcile {
     match manager {
         Manager::Launchd => reconcile_launchd(body),
@@ -598,15 +436,11 @@ fn settled(original: &str, patched: &[String]) -> Reconcile {
 fn reconcile_launchd(body: &str) -> Reconcile {
     let lines: Vec<&str> = body.split('\n').collect();
     let mut kept: Vec<String> = Vec::with_capacity(lines.len() + 8);
-    // Where the first policy key stood, so the replacement lands in the same
-    // place and a unit this binary generated reconciles to itself byte for
-    // byte (`the_generated_units_reconcile_to_themselves`).
+    // Where the first policy key stood, so a generated unit reconciles to itself.
     let mut anchor: Option<usize> = None;
 
-    // Nesting depth, so only the *top-level* dict's entries are candidates. A
-    // `<key>KeepAlive</key>` inside `EnvironmentVariables` would be an
-    // environment variable of that name, not the restart policy, and rewriting
-    // it would corrupt the unit while leaving the real policy untouched.
+    // Only the top-level dict's keys are the policy; a nested
+    // `<key>KeepAlive</key>` (e.g. an environment variable) is not.
     let mut depth = 0_usize;
     let mut index = 0;
     while index < lines.len() {
@@ -637,9 +471,7 @@ fn reconcile_launchd(body: &str) -> Reconcile {
         index += 1;
     }
 
-    // No policy keys at all. A plist dict is unordered, so appending at the end
-    // of the top-level dict is as valid as anywhere else and needs no guess
-    // about where the operator would have wanted it.
+    // No policy keys: append at the end of the top-level dict.
     let anchor = if let Some(at) = anchor {
         at
     } else {
@@ -702,14 +534,9 @@ fn plist_container_end(lines: &[&str], start: usize) -> Option<usize> {
     None
 }
 
-/// Index just past the plist value element starting at or after `start`, or
-/// `None` when it is a shape [`reconcile_launchd`] must not touch.
-///
-/// Covers what launchd units actually contain: a self-closing scalar
-/// (`<true/>`), a one-line element (`<integer>30</integer>`), and a nested
-/// `<dict>`/`<array>` block. Everything else — a multi-line `<data>` blob, an
-/// XML comment between key and value, a hand-wrapped string — falls through to
-/// `None` deliberately.
+/// Index just past the plist value element starting at or after `start`:
+/// a self-closing scalar, a one-line element, or a balanced `<dict>`/`<array>`.
+/// Anything else is `None` deliberately.
 fn plist_value_end(lines: &[&str], start: usize) -> Option<usize> {
     let mut index = start;
     while lines.get(index).is_some_and(|line| line.trim().is_empty()) {
@@ -768,13 +595,8 @@ fn reconcile_systemd(body: &str) -> Reconcile {
     settled(body, &kept)
 }
 
-/// The `PHUX_SOCKET` a unit pins, when it pins one.
-///
-/// Read from the unit rather than from `--socket` or the ambient environment,
-/// because the question a reconcile has to answer is "is the server *this
-/// unit* supervises alive", and only the unit knows. A unit with no override
-/// leaves the caller on [`phux_server::runtime::default_socket_path`], which
-/// is exactly what the supervised server would resolve.
+/// The `PHUX_SOCKET` a unit pins, if any. Read from the unit because the
+/// question is whether the server *this unit* supervises is alive.
 fn unit_socket_override(manager: Manager, body: &str) -> Option<PathBuf> {
     match manager {
         Manager::Launchd => {
@@ -796,18 +618,9 @@ fn unit_socket_override(manager: Manager, body: &str) -> Option<PathBuf> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// In-place --hub (phux-lpn7)
-// ---------------------------------------------------------------------------
-//
-// `phux host add --role satellite` has to leave this machine running as a
-// federation hub. A blind `phux service install --hub` cannot do that job:
-// `--quic`, `--listen`, `--restore`, `--socket` (and an already-present
-// `--hub`) survive only inside the rendered unit, and a re-render from a
-// fresh ServicePlan silently drops every flag the operator does not retype
-// (ADR-0083). So this path never re-renders. It patches `--hub` into the
-// installed argv, or writes a new hub unit and arms it (ADR-0088) when none
-// exists. Nothing is stopped.
+// In-place `--hub`: `phux host add --role satellite` patches `--hub` into the
+// installed argv (never re-rendering, which would drop flags), or writes and
+// arms a new hub unit when none exists. Nothing is stopped.
 
 /// What ensuring `--hub` on this machine's per-user service did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -844,13 +657,9 @@ enum HubEnsure {
     Unrecognized(&'static str),
 }
 
-/// Make this machine's per-user service a federation hub, without dropping
-/// listeners already baked into the unit and without stopping a live server.
-///
-/// Called from `phux host add --role satellite` after the satellite is
-/// registered. Failures are skipped rather than fatal: the registry write
-/// already succeeded, and a missing local `--hub` is recoverable with
-/// `phux service install --hub` (at the cost ADR-0083 documents).
+/// Make this machine's per-user service a federation hub without dropping
+/// baked-in listeners or stopping a live server. Failures are skipped: the
+/// satellite registration already succeeded.
 pub(crate) fn ensure_local_hub() -> LocalHub {
     let Some(manager) = Manager::host() else {
         return LocalHub::Skipped("no unit generator for this platform".to_owned());
@@ -873,10 +682,9 @@ pub(crate) fn ensure_local_hub() -> LocalHub {
     }
 }
 
-/// Write a new hub unit and arm it. Never loaded here: loading would either
-/// collide with a live server (ADR-0088) or `launchctl bootstrap` a unit from
-/// a test HOME into the operator's GUI domain. The adoption marker is what
-/// makes the next cold `phux` start this unit instead of forking unsupervised.
+/// Write a new hub unit and arm it, never load it (that would collide with a
+/// live server, ADR-0088). The adoption marker makes the next cold `phux`
+/// start this unit.
 fn install_hub_unit(manager: Manager, unit_path: &Path) -> LocalHub {
     let plan = match resolve_plan(None, None, false, None, true) {
         Ok(plan) => plan,
@@ -899,9 +707,8 @@ fn write_hub_patch(unit_path: &Path, patched: String, manager: Manager) -> Local
     if let Err(err) = std::fs::write(unit_path, patched) {
         return LocalHub::Skipped(format!("could not write {}: {err}", unit_path.display()));
     }
-    // systemd re-reads ExecStart on daemon-reload without touching the
-    // running service. launchd cannot; the loaded job keeps its argv until
-    // bootout, which we will not do (ADR-0083).
+    // systemd re-reads ExecStart on daemon-reload without touching the running
+    // service; launchd keeps the loaded argv until bootout (ADR-0083).
     if manager == Manager::Systemd {
         let _ = run_tool(
             "systemctl",
@@ -1070,21 +877,9 @@ fn insert_after_word(value: &str, word: &str, insert: &str) -> String {
 }
 
 /// `phux service reconcile` — bring an installed unit's restart policy up to
-/// date without stopping the server it supervises.
-///
-/// The honest contract, which differs per platform and says so:
-///
-/// - **systemd** can re-read a unit file without touching the running service.
-///   `daemon-reload` does exactly that, so the corrected policy governs the
-///   running server's very next exit and no pane is disturbed.
-/// - **launchd** cannot. A loaded job keeps the policy it was bootstrapped
-///   with, and the only way to replace it is `bootout` + `bootstrap`, which
-///   SIGTERMs the job. So this writes the file, reports that the *loaded* job
-///   is still on the old policy, and says both when it fixes itself (next
-///   login or reboot, no action needed) and what doing it now would cost.
-///
-/// Printing "reconciled" on macOS and stopping there would be the failure this
-/// verb exists to avoid: a command that claims a fix it did not make.
+/// date without stopping its server. systemd picks it up via `daemon-reload`;
+/// launchd cannot re-read a loaded job, so the output says the fix lands at
+/// next login and what applying it now would cost.
 pub(crate) fn run_reconcile(print: bool) -> ExitCode {
     let Some(manager) = Manager::host() else {
         eprintln!(
@@ -1167,12 +962,8 @@ pub(crate) fn run_reconcile(print: bool) -> ExitCode {
     }
 }
 
-/// Say, per platform, whether the policy just written is *in effect* — and
-/// when it is not, what it would cost to make it so.
-///
-/// Split out because [`run_reconcile`] and the post-update reconcile print the
-/// same thing, and the one paragraph a user acts on must not have two
-/// wordings that can drift apart.
+/// Say, per platform, whether the policy just written is in effect, and what
+/// making it so would cost. Shared by `reconcile` and the post-update path.
 fn report_policy_reach(manager: Manager, unit_path: &Path, live: bool, print: bool) {
     report_policy_reach_with(manager, unit_path, live, print, run_tool);
 }
@@ -1245,25 +1036,10 @@ fn report_policy_reach_with(
     }
 }
 
-/// Reconcile an installed unit after `phux update` replaced the binary
-/// (phux-bd30, phux-69pq.12).
-///
-/// Automatic *only* because the reconcile is non-destructive by construction:
-/// it rewrites a file and, on systemd, asks for a reload that stops nothing.
-/// An automatic reconcile of the older, reinstall-shaped kind would have ended
-/// every pane in the middle of an update with no prompt at all — which is why
-/// phux-bd30's "have `phux update` do it" waited on phux-l1yx rather than
-/// shipping first.
-///
-/// Two independent patches, either of which may be a no-op:
-///
-/// - restart-policy keys (phux-l1yx)
-/// - the supervised binary path, so a leftover Homebrew `ProgramArguments` /
-///   `ExecStart` does not strand launchd after a next-channel install
-///
-/// Silent unless it changed something and `print` is true, and never fatal: an
-/// update that succeeded must not report failure because a unit could not be
-/// tidied.
+/// Reconcile an installed unit after `phux update` replaced the binary:
+/// patch the restart-policy keys and the supervised binary path. Automatic
+/// because it is non-destructive; silent unless it changed something and
+/// `print` is set, and never fatal.
 pub(crate) fn reconcile_after_update(print: bool) {
     let Some(manager) = Manager::host() else {
         return;
@@ -1321,11 +1097,7 @@ pub(crate) fn reconcile_after_update(print: bool) {
 }
 
 /// Rewrite the supervised binary path in an installed unit, leaving every
-/// other byte alone — including `--hub` / `--listen` / `--quic` and socket
-/// overrides that a re-`install` would drop.
-///
-/// Pure: the replacement path is an argument so tests do not depend on
-/// `current_exe`.
+/// other byte (including flags a reinstall would drop) alone.
 pub(crate) fn rewrite_unit_binary(manager: Manager, body: &str, binary: &Path) -> Reconcile {
     match manager {
         Manager::Launchd => rewrite_launchd_binary(body, binary),
@@ -1472,9 +1244,7 @@ fn resolve_plan(
         hub,
         socket_path,
         profile: profile_suffix(),
-        // The ONE canonical server log — resolved through the shared helper
-        // so the unit's writer and `phux service logs`'s reader can never
-        // disagree (phux-i0e8.5.1).
+        // The one canonical server log, shared with `phux service logs`.
         log: phux_server::telemetry::server_log_path(),
         restore: restore.then(|| state.join("workspace.json")),
         wrapper: state.join("service-wrapper.sh"),
@@ -1489,16 +1259,9 @@ fn render_unit(manager: Manager, plan: &ServicePlan) -> String {
     }
 }
 
-/// Write the unit (and the restore wrapper, when `--restore` asked for one) to
-/// stdout without touching the filesystem.
-///
-/// `manager` is `None` on a platform with no generator. That case still gets
-/// text, per ADR-0055, and the text is the **systemd** unit: the ADR groups
-/// third platforms with non-systemd Linux, where the systemd unit is the
-/// directly relevant reference, and it is the more transferable of the two
-/// renderings for anyone hand-translating it. Emitting both instead would put
-/// two documents on one stdout, and a plist cannot legally carry a leading
-/// comment saying which is which.
+/// Render the unit (and restore wrapper) for `--print` without touching the
+/// filesystem. With no generator for this platform, the systemd unit is the
+/// reference rendering (ADR-0055).
 fn dry_run_text(manager: Option<Manager>, plan: &ServicePlan) -> String {
     let mut text = render_unit(manager.unwrap_or(Manager::Systemd), plan);
     if plan.restore.is_some() {
@@ -1508,32 +1271,20 @@ fn dry_run_text(manager: Option<Manager>, plan: &ServicePlan) -> String {
     text
 }
 
-/// What an install is allowed to do about a server that already holds the
-/// socket.
-///
-/// A two-variant enum rather than an `adopt: bool` because the two answers are
-/// not "do the thing / skip the thing" — they are two different installs, and
-/// the difference (load the unit now versus arm it for later) is the whole of
-/// ADR-0088. A named type keeps that legible at the call site and stops the
-/// flag reading as an optional embellishment on one behaviour.
+/// What an install does about a server that already holds the socket
+/// (ADR-0088).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Takeover {
-    /// Refuse the install. A supervised server cannot bind a socket the
-    /// incumbent holds, and the unit would retry a failing start forever
-    /// (phux-67wg). The default, and the only safe default: the alternative
-    /// silently changes what `install` means based on invisible state.
+    /// Refuse: a supervised server could not bind the incumbent's socket and
+    /// would retry a failing start forever. The default.
     Refuse,
-    /// Write and arm the unit without loading it (`--adopt`). Nothing is
-    /// stopped, nothing binds twice, and supervision begins the next time a
-    /// server starts.
+    /// Write and arm the unit without loading it (`--adopt`); supervision begins
+    /// the next time a server starts.
     Adopt,
 }
 
 /// `phux service install` — write the unit and hand it to the init system.
-///
-/// Idempotent: an existing unit is reconciled (unloaded, rewritten, reloaded)
-/// rather than refused, so rerunning after changing a listener address is the
-/// documented way to change it.
+/// Rerunning reloads an existing unit.
 pub(crate) fn run_install(
     quic: Option<std::net::SocketAddr>,
     listen: Option<String>,
@@ -1543,9 +1294,6 @@ pub(crate) fn run_install(
     takeover: Takeover,
     print: bool,
 ) -> ExitCode {
-    // `--quic` arrives pre-validated as a `SocketAddr` (the same type
-    // `server --quic` takes); the plan keeps the rendered string so the
-    // unit output is byte-identical to what it always was.
     let plan = match resolve_plan(
         quic.map(|addr| addr.to_string()),
         listen,
@@ -1560,24 +1308,15 @@ pub(crate) fn run_install(
         }
     };
 
-    // `--print` is a dry run: render everything to stdout, touch nothing.
-    // The unit is the reviewable artifact, so being able to read it before
-    // it lands is worth a flag.
-    //
-    // Deliberately ahead of the platform check. A dry run needs no launchd and
-    // no systemd -- it renders text -- and gating it behind `Manager::host()`
-    // made `service install --print` fail on exactly the platforms ADR-0055
-    // promises a printed unit to (phux-l83y).
+    // `--print` renders to stdout and touches nothing, on every platform.
     if print {
         out!("{}", dry_run_text(Manager::host(), &plan));
         return ExitCode::SUCCESS;
     }
 
     let Some(manager) = Manager::host() else {
-        // Not a bare error: ADR-0055 commits that a platform with no generator
-        // gets the unit and an instruction. It is still a non-zero exit,
-        // because nothing was installed and `phux service install && ...` must
-        // not run its right-hand side.
+        // No generator: print the unit as a starting point (ADR-0055), but exit
+        // non-zero because nothing was installed.
         out!("{}", dry_run_text(None, &plan));
         eprintln!(
             "\nphux service: no unit generator for this platform. Nothing was installed.\n\
@@ -1587,23 +1326,9 @@ pub(crate) fn run_install(
         return ExitCode::FAILURE;
     };
 
-    // Refuse rather than install a unit that provably cannot work.
-    //
-    // The supervised server binds the same socket. If a live server already
-    // holds it, `handle_existing_socket` refuses with `SocketBusy` before
-    // `bind(2)` is ever reached, so the supervised process exits non-zero --
-    // every time, deterministically. Under the ADR-0080 policy that is not a
-    // one-off failure but a permanent loop: launchd's `ThrottleInterval` is a
-    // minimum spacing, not a give-up count, and the systemd unit sets no
-    // `StartLimitBurst`, so neither platform ever stops retrying. The user
-    // gets a failed start every 30s forever, and `phux doctor` eventually
-    // reports it as a crash-loop -- accurate, but the wrong story, since
-    // nothing is killing the server; it is refusing to start (phux-67wg).
-    //
-    // Stopping the incumbent here would be worse: it owns live panes and
-    // their in-flight shells and agents. `--adopt` is the way past this
-    // without either cost — it writes the unit and arms it rather than
-    // loading it, so nothing binds twice and nothing is stopped (ADR-0088).
+    // Refuse rather than install a unit that cannot work: the supervised server
+    // would fail to bind the live incumbent's socket and retry forever. Stopping
+    // the incumbent would kill its panes; `--adopt` arms instead (ADR-0088).
     let incumbent_live = socket::probe(&plan.socket_path) == SocketState::Live;
     if incumbent_live && takeover == Takeover::Refuse {
         eprintln!(
@@ -1625,10 +1350,7 @@ pub(crate) fn run_install(
             plan.socket_path.display(),
             plan.socket_path.display(),
         );
-        // The single most common reason to be standing here: `phux doctor`
-        // said the unit is legacy, and re-running install was the only remedy
-        // it could name (phux-nvi2). It is not the only remedy any more, and
-        // the non-destructive one costs nothing to mention (phux-l1yx).
+        // If the unit is merely legacy, point at the non-destructive `reconcile`.
         if let Ok(unit_path) = manager.unit_path(profile_suffix().as_deref())
             && let Ok(body) = std::fs::read_to_string(&unit_path)
             && matches!(reconcile_unit(manager, &body), Reconcile::Patched(_))
@@ -1657,16 +1379,10 @@ pub(crate) fn run_install(
         return ExitCode::FAILURE;
     }
 
-    // The adoption path diverges here and only here: same plan, same rendered
-    // unit, same bytes on disk — what changes is that the unit is *armed*
-    // rather than *loaded*, because loading it now is precisely what would
-    // crash-loop against the incumbent's socket (ADR-0088).
+    // Adoption: same unit on disk, but armed rather than loaded (ADR-0088).
     if incumbent_live {
-        // A failed arming is a *partial* result, not a failure: the unit is
-        // written and the phux-side hand-over below still works, because that
-        // asks the init system to start the unit directly rather than relying
-        // on it being wanted at login. Only the login/reboot trigger is lost,
-        // and saying that beats discarding an otherwise-correct install.
+        // A failed arming only loses the login trigger; the phux-side hand-over
+        // still works, so report it and keep the success.
         if let Err(err) = arm_unit(manager) {
             eprintln!(
                 "phux service: note: the unit is written, but the init system would not record\n\
@@ -1676,16 +1392,13 @@ pub(crate) fn run_install(
             );
         }
         if let Err(err) = mark_adoption_pending(&unit_path) {
-            // The unit is armed and correct; only the automatic hand-over is
-            // lost. Say so and keep the success, because the state on disk is
-            // exactly what was asked for.
             eprintln!("phux service: note: {err}");
         }
         report_adopt(manager, &plan, &unit_path);
         return ExitCode::SUCCESS;
     }
 
-    match reload(manager, &plan, &unit_path) {
+    match reload(manager, &unit_path) {
         Ok(()) => {}
         Err(err) => {
             eprintln!("phux service: unit written, but the init system rejected it: {err}");
@@ -1693,31 +1406,16 @@ pub(crate) fn run_install(
         }
     }
 
-    // An install that actually loaded the unit supersedes any armed one: the
-    // supervisor owns the server from here, so there is nothing left pending.
+    // A loaded unit supersedes any armed one.
     clear_adoption_pending();
 
     report_install(manager, &plan, &unit_path);
     ExitCode::SUCCESS
 }
 
-/// Put the unit in front of the init system *without* starting it.
-///
-/// The whole of `--adopt` rests on this being a real capability rather than a
-/// simulation of one, and on both platforms it is — for the same reason, from
-/// opposite directions:
-///
-/// - **launchd** bootstraps every plist in `~/Library/LaunchAgents` when the
-///   user's GUI domain comes up. Writing the file *is* arming it; the job is
-///   loaded at the next login with no further action. There is deliberately no
-///   command to run here.
-/// - **systemd** needs the `WantedBy=` symlink, which is what `enable` writes.
-///   `enable` *without* `--now` is the arming: the unit is wanted by
-///   `default.target` and starts at the next login, and nothing starts now.
-///
-/// `reload` is the same two operations with the start included. Splitting them
-/// is what lets an install decline to bind a socket somebody else is holding
-/// while still committing the supervision.
+/// Put the unit in front of the init system without starting it. launchd
+/// bootstraps every plist in `~/Library/LaunchAgents` at login, so writing
+/// the file is the arming; systemd needs `enable` without `--now`.
 fn arm_unit(manager: Manager) -> Result<(), String> {
     match manager {
         Manager::Launchd => Ok(()),
@@ -1734,11 +1432,7 @@ fn arm_unit(manager: Manager) -> Result<(), String> {
     }
 }
 
-/// Ask the init system to start the armed unit now.
-///
-/// The counterpart to [`arm_unit`]: everything `reload` does that arming
-/// deliberately left out. Called when the incumbent has gone and the socket is
-/// free, never while it is held.
+/// Ask the init system to start the armed unit now (once the socket is free).
 fn start_armed_unit(manager: Manager, unit_path: &Path) -> Result<(), String> {
     match manager {
         Manager::Launchd => run_tool(
@@ -1756,15 +1450,9 @@ fn start_armed_unit(manager: Manager, unit_path: &Path) -> Result<(), String> {
     }
 }
 
-/// Where an armed-but-unloaded unit is recorded, profile-scoped with every
-/// other piece of per-instance state (ADR-0080).
-///
-/// A file rather than an inference. "A unit is installed but the init system
-/// was never asked to load it" is not observable after the fact: an armed unit
-/// and a unit whose supervised server was deliberately stopped look identical
-/// on disk and identical to `launchctl print`. Recording the state that was
-/// *entered* removes the guess, and gives `phux service status` something
-/// truthful to report instead of a shrug.
+/// Where an armed-but-unloaded unit is recorded (profile-scoped). A file,
+/// because an armed unit and a deliberately stopped one look identical on
+/// disk and to the init system.
 fn adoption_marker_path() -> PathBuf {
     phux_server::telemetry::state_dir().join("service-adopt-pending")
 }
@@ -1785,39 +1473,20 @@ fn mark_adoption_pending(unit_path: &Path) -> Result<(), String> {
     })
 }
 
-/// Forget a pending adoption. Best-effort: a marker that outlives its unit
-/// costs one wasted `unit_path.exists()` on a cold start, which is cheaper
-/// than failing a command over a file nobody reads directly.
+/// Forget a pending adoption (best-effort).
 fn clear_adoption_pending() {
     let _ = std::fs::remove_file(adoption_marker_path());
 }
 
-/// The one user-facing explanation of what an armed supervision unit means.
-///
-/// Written once because it is said twice — `phux service status` renders it
-/// under the `state armed` line, `phux doctor` carries it as the hint on its
-/// armed-supervision warning — and two copies of one explanation drift the
-/// first time either is edited (they had already drifted by a sentence and a
-/// semicolon before this was lifted out).
-///
-/// It carries the whole explanation, not the invariant half: "keeps its
-/// panes", "is not restart-managed", "here is when supervision starts" and
-/// "here is how to cancel" are one thought, and splitting them is exactly how
-/// one site ended up reassuring the user without naming the risk. Prose, not
-/// terminal layout: no embedded newlines, so each caller wraps it the way its
-/// own surface wraps.
+/// The user-facing explanation of an armed supervision unit, shared by
+/// `phux service status` and `phux doctor`. Prose without newlines, so each
+/// caller wraps it.
 pub(crate) const ARMED_SUPERVISION_EXPLANATION: &str = "the running server keeps its panes and stays unsupervised, so a crash before the \
      hand-over is not caught by anything; supervision begins at the next login, or at the \
      first `phux` command after that server exits, and `phux service uninstall` cancels it";
 
-/// Whose supervision a [`supervision_state`] question is about.
-///
-/// The socket guard is load-bearing wherever the answer decides what happens
-/// to a *server*: a unit armed for another profile, or for an operator's
-/// `--socket` override, must neither divert this instance's cold start
-/// (ADR-0088) nor colour this instance's diagnosis. `phux service status` is
-/// the one caller whose subject is the unit itself rather than a server, and
-/// it asks without a socket.
+/// Whose supervision a [`supervision_state`] question is about. A unit armed
+/// for another profile or `--socket` must not affect this server.
 #[derive(Clone, Copy)]
 enum Subject<'a> {
     /// The instance that would bind `socket_path`.
@@ -1826,45 +1495,20 @@ enum Subject<'a> {
     Unit,
 }
 
-/// What an adoption marker says about supervision right now.
-///
-/// Deliberately says nothing about whether the init system is *running* the
-/// unit: that costs a subprocess, and the one caller that needs it
-/// ([`run_status`]) probes for it directly.
+/// What an adoption marker says about supervision (not whether the unit runs).
 enum SupervisionState {
-    /// No pending adoption for this subject — no marker, no unit generator
-    /// for this platform, or a marker whose unit belongs to some other
-    /// instance.
+    /// No pending adoption for this subject.
     NotArmed,
-    /// A marker names a unit that is no longer readable. The adoption can
-    /// never complete, so callers that own the state sweep the marker; the
-    /// read-only callers leave it alone.
+    /// The marker's unit is gone; owners of the state sweep it.
     MarkerWithoutUnit,
-    /// Armed: the unit is written and deliberately unloaded, waiting for the
-    /// incumbent to exit.
+    /// Armed: written and deliberately unloaded, waiting for the incumbent to exit.
     Armed { manager: Manager, unit: PathBuf },
 }
 
-/// The single predicate behind every "is supervision armed?" question.
-///
-/// One reader per verb had grown into three predicates over the same two
-/// files, and the newest of them had dropped the socket guard — so `phux
-/// doctor` would report supervision armed for a marker belonging to a
-/// different profile or `--socket` override than the instance it was
-/// diagnosing. The conditions are stated once, here:
-///
-/// 1. a marker exists — an `--adopt` install happened and has not completed;
-/// 2. the unit it names is still readable — an `uninstall` between then and
-///    now revokes the adoption ([`SupervisionState::MarkerWithoutUnit`]);
-/// 3. for a [`Subject::Server`], the unit's own socket is that server's
-///    socket. `unit_socket_override` reads it out of the unit exactly as
-///    `reconcile` does, so "the unit that supervises this socket" means one
-///    thing across the codebase.
-///
-/// Sweeping is not done here and is not a parameter: it is
-/// [`SupervisionState::MarkerWithoutUnit`], acted on at the call sites that
-/// own the state, so "only looks, never sweeps" is visible in every caller
-/// rather than hidden in an argument.
+/// The single predicate behind every "is supervision armed?" question: a
+/// marker exists, its unit is readable, and (for a server subject) the unit's
+/// socket is that server's socket. Never sweeps; callers that own the state
+/// act on [`SupervisionState::MarkerWithoutUnit`].
 fn supervision_state(subject: Subject<'_>) -> SupervisionState {
     if !adoption_marker_path().exists() {
         return SupervisionState::NotArmed;
@@ -1888,13 +1532,7 @@ fn supervision_state(subject: Subject<'_>) -> SupervisionState {
 }
 
 /// The unit an armed adoption is recorded against for the server on
-/// `socket_path` — the read-only view `phux doctor` reports from (phux-8514,
-/// in the spirit of ADR-0080: an invisible supervision state is how a broken
-/// server passes for a working one).
-///
-/// Only looks. A marker whose unit has vanished is left for the paths that
-/// own the state ([`complete_pending_adoption`], [`sweep_stale_adoption_marker`],
-/// [`run_uninstall`]); doctor reports, it does not repair.
+/// `socket_path`, for `phux doctor`. Read-only.
 pub(crate) fn armed_adoption_unit(socket_path: &Path) -> Option<PathBuf> {
     match supervision_state(Subject::Server(socket_path)) {
         SupervisionState::Armed { unit, .. } => Some(unit),
@@ -1903,21 +1541,13 @@ pub(crate) fn armed_adoption_unit(socket_path: &Path) -> Option<PathBuf> {
 }
 
 /// Does `body` describe a unit whose server would bind `socket_path`?
-///
-/// Split out and pure so the socket-match guard is testable against real
-/// rendered units. It is the guard that keeps a pending adoption from
-/// diverting an unrelated instance's cold start, and "unrelated" is exactly
-/// what a unit for another profile or another `--socket` override is.
 fn unit_supervises(manager: Manager, body: &str, socket_path: &Path) -> bool {
     unit_socket_override(manager, body).unwrap_or_else(phux_server::runtime::default_socket_path)
         == socket_path
 }
 
-/// Whether a pending-adoption record is spent and should be swept.
-///
-/// `unit_running` is the init system's answer for the unit the marker
-/// names. A vanished unit can never complete, so it is spent even when
-/// that probe was not run (`false`).
+/// Whether a pending-adoption record is spent: its unit vanished, or the init
+/// system is already running it.
 const fn adoption_marker_is_spent(state: &SupervisionState, unit_running: bool) -> bool {
     match state {
         SupervisionState::MarkerWithoutUnit => true,
@@ -1943,12 +1573,9 @@ fn probe_unit(manager: Manager) -> std::io::Result<std::process::Output> {
     }
 }
 
-/// Sweep an adoption marker that can no longer be pending for `socket_path`.
-///
-/// `complete_pending_adoption` clears the marker when *this* process starts
-/// the unit. Login bootstrap starts it without going through that path, so
-/// a later `ensure_server` that finds the socket already live must retire
-/// the record the same way `phux service status` does (phux-dqf3).
+/// Sweep an adoption marker that can no longer be pending for `socket_path`
+/// (login bootstrap starts the unit without going through
+/// [`complete_pending_adoption`]).
 pub(crate) fn sweep_stale_adoption_marker(socket_path: &Path) {
     let state = supervision_state(Subject::Server(socket_path));
     let running = match state {
@@ -1962,37 +1589,20 @@ pub(crate) fn sweep_stale_adoption_marker(socket_path: &Path) {
 
 /// Outcome of trying to complete an armed adoption from the auto-spawn path.
 pub(crate) enum Handover {
-    /// The init system was asked to start the unit and accepted. The caller
-    /// must wait for the socket rather than spawning its own server: two
-    /// processes racing for one socket is how phux-67wg's crash-loop starts.
+    /// The init system accepted the start; the caller must wait for the socket
+    /// rather than spawn a competing server.
     Started,
-    /// Nothing was started — no armed unit, or the init system refused. The
-    /// caller proceeds with an ordinary auto-spawn, and the adoption stays
-    /// pending for the next cold start.
+    /// Nothing was started; the caller auto-spawns as usual.
     NotTaken,
 }
 
-/// Complete an armed adoption if one is pending for `socket_path`.
-///
-/// This is what makes `--adopt` a hand-over rather than a note-to-self. The
-/// incumbent has exited (the caller only reaches here after a probe found
-/// nothing accepting), so the socket is free and the supervisor can finally
-/// take it — which has to happen *here*, in the auto-spawn path, because
-/// otherwise the very next `phux` invocation forks a fresh unsupervised server
-/// and the host is back exactly where it started, armed unit and all.
-///
-/// Deliberately not a general "prefer the supervisor when a unit exists" rule.
-/// That would resurrect a server the user stopped on purpose, contradicting
-/// ADR-0080's "a deliberately stopped server stays stopped". Only a *pending
-/// adoption* diverts, and only once.
-/// `quiet` carries the auto-spawn path's `--json` contract: under it, stderr
-/// holds the error document and nothing else, so the hand-over narrates
-/// itself only when a human is reading.
+/// Complete an armed adoption if one is pending for `socket_path`, called
+/// from the auto-spawn path once the incumbent has exited. Only a pending
+/// adoption diverts, and only once, so a deliberately stopped server stays
+/// stopped (ADR-0080). `quiet` honors the `--json` stderr contract.
 pub(crate) fn complete_pending_adoption(socket_path: &Path, quiet: bool) -> Handover {
     let (manager, unit_path) = match supervision_state(Subject::Server(socket_path)) {
         SupervisionState::Armed { manager, unit } => (manager, unit),
-        // The unit is gone; the adoption cannot complete and must not be
-        // retried on every cold start for the rest of the host's life.
         SupervisionState::MarkerWithoutUnit => {
             clear_adoption_pending();
             return Handover::NotTaken;
@@ -2001,11 +1611,8 @@ pub(crate) fn complete_pending_adoption(socket_path: &Path, quiet: bool) -> Hand
     };
     match start_armed_unit(manager, &unit_path) {
         Ok(()) => {
-            // Cleared on the *request* succeeding, not on the socket coming
-            // up. The unit is loaded now either way, so a second attempt would
-            // be a no-op at best; if the supervised server cannot start, that
-            // is a crash-loop for `phux doctor` to report, not something to
-            // re-trigger on every invocation.
+            // Cleared once the start request succeeds; a supervised server that then
+            // fails is a crash-loop for `phux doctor`, not something to retrigger.
             clear_adoption_pending();
             if !quiet {
                 eprintln!(
@@ -2020,9 +1627,7 @@ pub(crate) fn complete_pending_adoption(socket_path: &Path, quiet: bool) -> Hand
             Handover::Started
         }
         Err(err) => {
-            // Nothing was started, so falling through to an ordinary spawn is
-            // safe and keeps the user in a terminal. The marker stays: the
-            // next cold start tries again.
+            // Fall through to an ordinary spawn; the marker stays for the next try.
             if !quiet {
                 eprintln!(
                     "phux: could not start the armed service unit ({err}); starting a server"
@@ -2033,15 +1638,8 @@ pub(crate) fn complete_pending_adoption(socket_path: &Path, quiet: bool) -> Hand
     }
 }
 
-/// Report an `--adopt` install: what was written, what was deliberately not
-/// done, and when supervision actually begins.
-///
-/// The one thing this must never do is print "installed" and stop. An adopt
-/// install leaves the host in a state no other command produces — a live
-/// unsupervised server and a unit that is committed but not yet in force —
-/// and a user who does not know that will read the ordinary install banner as
-/// "my running server is supervised now", which is the single wrong belief
-/// this whole path exists to prevent.
+/// Report an `--adopt` install: what was written, what was not done, and when
+/// supervision begins. Must not read as "the running server is supervised".
 fn report_adopt(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
     outln!("phux service armed (nothing was stopped).");
     outln!("  unit    {}", unit_path.display());
@@ -2142,12 +1740,8 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
     }
 }
 
-/// The launchd service target for this user's GUI domain.
-///
-/// `gui/$UID` (not `system/`) is the per-user domain ADR-0055 commits to. The
-/// consequence, reported at install time, is that the agent runs when the
-/// user has a session — on a headless host that means enabling automatic
-/// login.
+/// The launchd service target in this user's GUI domain (`gui/$UID`, per
+/// ADR-0055), so the agent runs only while the user has a session.
 fn launchd_target() -> String {
     format!("gui/{}/{}", uid(), launchd_label())
 }
@@ -2158,7 +1752,7 @@ fn uid() -> u32 {
 }
 
 /// Hand the written unit to the init system, replacing any loaded copy.
-fn reload(manager: Manager, plan: &ServicePlan, unit_path: &Path) -> Result<(), String> {
+fn reload(manager: Manager, unit_path: &Path) -> Result<(), String> {
     match manager {
         Manager::Launchd => {
             // Bootout first so a reinstall picks up the new plist; a job
@@ -2171,9 +1765,7 @@ fn reload(manager: Manager, plan: &ServicePlan, unit_path: &Path) -> Result<(), 
                     format!("gui/{}", uid()),
                     path_string(unit_path),
                 ],
-            )?;
-            let _ = plan;
-            Ok(())
+            )
         }
         Manager::Systemd => {
             run_tool(
@@ -2250,11 +1842,8 @@ fn report_install(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
         );
     }
 
-    // A non-default profile is usually a development build (ADR-0080 resolves
-    // one automatically), and "I installed the service and my sessions are
-    // still gone" is the failure it produces if this goes unsaid: the unit is
-    // real, it is loaded, and it supervises a server on a different socket
-    // than the one a released `phux` attaches to.
+    // A non-default profile supervises a different socket than a released `phux`
+    // attaches to; say so, or "my sessions are gone" follows.
     if let Some(profile) = profile_suffix() {
         outln!();
         outln!(
@@ -2280,10 +1869,7 @@ fn report_install(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
 
 /// `phux service uninstall` — unload the unit and remove what install wrote.
 pub(crate) fn run_uninstall() -> ExitCode {
-    // Unlike `install --print`, there is nothing useful to render here: this
-    // build has no generator for this platform, so it never wrote a unit to
-    // remove. Say that, rather than the bare platform line, so the operator
-    // does not go looking for one.
+    // No generator here means no unit was ever written to remove.
     let Some(manager) = Manager::host() else {
         eprintln!(
             "phux service: no unit generator for this platform, so `phux service install`\n\
@@ -2338,13 +1924,8 @@ pub(crate) fn run_uninstall() -> ExitCode {
         outln!("Removed {}", wrapper.display());
     }
 
-    // Revoke any armed adoption. Without this, uninstalling between the
-    // `--adopt` and the hand-over would leave a marker pointing at a unit the
-    // user just deleted, and the next cold start would try to load it.
-    //
-    // The raw record rather than `supervision_state`, deliberately: the unit
-    // this would be asked about was deleted three statements ago. Revoking is
-    // not a diagnosis, and every marker goes, whatever it named.
+    // Revoke any armed adoption so the next cold start does not load the unit
+    // just deleted. Every marker goes, whatever it named.
     if adoption_marker_path().exists() {
         clear_adoption_pending();
         outln!("Cancelled the pending adoption; nothing will take this socket over.");
@@ -2366,8 +1947,6 @@ pub(crate) fn run_uninstall() -> ExitCode {
 /// `phux service status` — is a unit installed, and is the init system
 /// running it?
 pub(crate) fn run_status() -> ExitCode {
-    // Same reasoning as `run_uninstall`: nothing to report on, because nothing
-    // this build could have installed exists here.
     let Some(manager) = Manager::host() else {
         eprintln!(
             "phux service: no unit generator for this platform, so there is no phux unit\n\
@@ -2390,16 +1969,11 @@ pub(crate) fn run_status() -> ExitCode {
     }
     outln!("unit  {}", unit_path.display());
 
-    // Delegate liveness to the init system, but with its output *captured*,
-    // never inherited: its words reach the user only when status forwards
-    // them deliberately. phux-8514 inherited the pipes, and `launchctl print`
-    // on an unloaded job wrote "Bad request. / Could not find service ..."
-    // straight to the terminal — three lines after the armed paragraph
-    // explaining that unloaded is exactly what armed means.
+    // Delegate liveness to the init system with its output captured; its stderr
+    // ("Bad request. / Could not find service") never reaches the terminal.
     let probe = || probe_unit(manager);
 
-    // `Subject::Unit`, not the running instance's socket: this verb's subject
-    // is the unit printed above, whatever socket it was installed against.
+    // `Subject::Unit`: this verb is about the unit, whatever its socket.
     let armed = matches!(
         supervision_state(Subject::Unit),
         SupervisionState::Armed { .. }
@@ -2407,11 +1981,7 @@ pub(crate) fn run_status() -> ExitCode {
     match status_report(armed, probe) {
         Ok(report) => {
             if armed && report.running {
-                // The init system owns the job, so the recorded hand-over is
-                // done, not pending. Sweep the marker so no later verb keeps
-                // describing a state that has already resolved — the same
-                // sweep-on-sight rule `complete_pending_adoption` applies to a
-                // marker whose unit has vanished.
+                // A running job under an armed record means the hand-over completed.
                 clear_adoption_pending();
             }
             out!("{}", report.text);
@@ -2433,40 +2003,22 @@ pub(crate) fn run_status() -> ExitCode {
 struct StatusReport {
     /// Everything the verb writes to stdout past the `unit` line.
     text: String,
-    /// Whether the init system is running the unit.
-    ///
-    /// The only fact the probe adds. Both verdicts the caller needs follow
-    /// from it and the armed record it already holds — exit zero when
-    /// `armed || running` (armed is the state `--adopt` promised, not a
-    /// degraded one), and sweep the marker when `armed && running`, because
-    /// a running job under an armed record means the hand-over completed.
-    /// Carrying those as fields as well gave twelve values to keep consistent
-    /// across four arms, with nothing stopping an arm from disagreeing.
+    /// Whether the init system is running the unit. The exit code (`armed ||
+    /// running`) and the marker sweep (`armed && running`) follow from it.
     running: bool,
 }
 
-/// The report as a pure function of the armed record and the init system's
-/// answer, so both phux-8514 defects stay unit-testable: the probe's stderr
-/// never reaches the report (a failure is rendered in phux's own
-/// vocabulary), and an armed unit's not-found answer is translated into the
-/// armed vocabulary instead of being reported as a fault — an armed unit is
-/// written-but-not-loaded by design (ADR-0088), so the init system not
-/// knowing the job is the expected observation, not an error.
-///
-/// The probe still runs when the unit is armed rather than being skipped,
-/// because the marker can outlive the state it records: launchd bootstraps
-/// every plist at login, and nothing on that path clears the marker. A
-/// running job under an armed marker therefore means the hand-over has
-/// completed, and the report says so instead of repeating a stale record.
+/// The report as a pure function of the armed record and the probe. The
+/// probe's stderr never reaches it, and an armed unit's not-found answer is
+/// the expected state (ADR-0088), not a fault. The probe still runs when armed
+/// because login bootstrap can complete the hand-over without clearing the
+/// marker.
 fn status_report(
     armed: bool,
     probe: impl FnOnce() -> std::io::Result<std::process::Output>,
 ) -> std::io::Result<StatusReport> {
     let output = probe()?;
     let running = output.status.success();
-    // The init system's report proper arrives on stdout; stderr is where
-    // launchctl narrates its own failures ("Bad request.") and is never
-    // forwarded.
     let init_report = String::from_utf8_lossy(&output.stdout);
     let text = match (armed, running) {
         (true, false) => format!(
@@ -2484,8 +2036,6 @@ fn status_report(
              {init_report}"
         ),
         (false, true) => init_report.into_owned(),
-        // The init system's stdout still goes through (systemctl explains an
-        // inactive unit there); only the verdict line is phux's.
         (false, false) => {
             format!("{init_report}installed, but the init system is not running it.\n")
         }
@@ -2493,15 +2043,9 @@ fn status_report(
     Ok(StatusReport { text, running })
 }
 
-/// `phux service logs` — show the server's log.
-///
-/// launchd writes to the file the plist names, so this is `tail`. systemd
-/// also captures to the journal, but the unit appends to the same file, so
-/// one implementation covers both. The auto-spawn path redirects its
-/// daemon's stderr to the same canonical file (phux-i0e8.5.1), so this
-/// verb works even when no service unit was ever installed. Delegates to
-/// the shared tail in `logs` — the same code path as `phux logs --server`,
-/// so the two verbs can never show a log differently.
+/// `phux service logs` — tail the canonical server log (the same file the
+/// unit and the auto-spawn path write), via the same code as
+/// `phux logs --server`.
 pub(crate) fn run_logs(follow: bool, lines: u32) -> ExitCode {
     let log = phux_server::telemetry::server_log_path();
     let missing = format!(
@@ -2512,12 +2056,8 @@ pub(crate) fn run_logs(follow: bool, lines: u32) -> ExitCode {
     super::logs::tail_file(&log, follow, lines, &missing)
 }
 
-/// `phux service prune-logs` — delete the per-pid client logs.
-///
-/// Every client that ever ran leaves a `client-<pid>.log`, so a
-/// long-lived host accumulates hundreds. Deleting them is explicit
-/// (its own verb, never a side effect of install) because a log an
-/// operator is mid-investigation on is not phux's to remove.
+/// `phux service prune-logs` — delete the per-pid client logs. Explicit, never
+/// a side effect of install.
 pub(crate) fn run_prune_logs(dry_run: bool) -> ExitCode {
     let dir = phux_server::telemetry::state_dir();
     let entries = match super::logs::client_log_paths(&dir) {
@@ -2559,16 +2099,13 @@ pub(crate) fn run_prune_logs(dry_run: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// How many client logs are sitting in the state dir, for the install
-/// report. Errors are not worth surfacing here — the count is advisory.
-/// The scan itself lives in `logs`, beside the verb that reports them.
+/// How many client logs are in the state dir (advisory, for the install report).
 fn count_client_logs() -> std::io::Result<usize> {
     super::logs::client_log_paths(&phux_server::telemetry::state_dir()).map(|paths| paths.len())
 }
 
-/// Escape the five XML metacharacters. A plist value is arbitrary operator
-/// input (a path, a bind address), and an unescaped `&` in a path produces a
-/// plist launchd silently refuses to load.
+/// Escape the five XML metacharacters; an unescaped `&` in a path makes a plist
+/// launchd silently refuses.
 fn xml_escape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -2584,11 +2121,7 @@ fn xml_escape(value: &str) -> String {
     out
 }
 
-/// Undo [`xml_escape`], for reading a value back out of an installed plist.
-///
-/// A single pass rather than chained `replace`s: `&amp;amp;` must decode to
-/// the literal `&amp;` the operator wrote, and sequential replacement would
-/// decode it twice.
+/// Undo [`xml_escape`] in one pass (so `&amp;amp;` decodes once).
 fn xml_unescape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
@@ -2608,8 +2141,6 @@ fn xml_unescape(value: &str) -> String {
             out.push(ch);
             rest = remainder;
         } else {
-            // Not an entity this ever writes; pass the `&` through verbatim
-            // rather than dropping a byte of somebody's path.
             out.push('&');
             rest = &tail[1..];
         }
@@ -2618,10 +2149,7 @@ fn xml_unescape(value: &str) -> String {
     out
 }
 
-/// Undo [`systemd_quote`], for reading a value back out of an installed unit.
-///
-/// One pass, for the same reason [`xml_unescape`] takes one: chained
-/// `replace`s would turn the escaped form of a literal `$$` back into `$`.
+/// Undo [`systemd_quote`] in one pass, like [`xml_unescape`].
 fn systemd_unquote(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut chars = value.chars().peekable();
@@ -2649,13 +2177,9 @@ fn systemd_escape(arg: &str) -> String {
     format!("\"{}\"", systemd_quote(arg))
 }
 
-/// Escape the characters systemd treats specially inside a double-quoted
-/// `ExecStart=`/`Environment=` value: the quote itself and the backslash
-/// that would escape it, plus systemd's own two expansion sigils — `%`
-/// triggers unit-file specifier expansion (`%h`, `%t`, ...) and `$` triggers
-/// shell-style variable expansion — both of which run over this value
-/// regardless of the surrounding quoting, so a literal `%` or `$` in an
-/// operator-supplied path must be doubled to survive unexpanded.
+/// Escape what systemd treats specially inside a double-quoted
+/// `ExecStart=`/`Environment=` value: `"` and `\`, plus `%` (specifier) and `$`
+/// (variable) expansion, which apply regardless of quoting.
 fn systemd_quote(value: &str) -> String {
     value
         .replace('\\', "\\\\")
@@ -2670,34 +2194,24 @@ fn sh_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-/// A path as a string, lossily. Every path here is one phux itself derived
-/// from `HOME` or an operator flag; a non-UTF-8 byte in one would already
-/// have broken the config layer.
+/// A path as a string, lossily.
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-/// `$HOME`, or an error when it is unset (or empty).
-///
-/// An empty fallback here used to let every join downstream silently
-/// produce a path relative to the current working directory instead of
-/// failing — see [`Manager::unit_path`].
+/// `$HOME`, or an error when it is unset or empty (never a cwd-relative path).
 fn home_dir() -> Result<PathBuf, String> {
     home_dir_from(std::env::var_os("HOME"))
 }
 
-/// [`home_dir`] with `$HOME` injectable, so a test can drive the unset case
-/// without mutating the process environment (`env::set_var` is unsafe
-/// under edition 2024 and this crate forbids unsafe code).
+/// [`home_dir`] with `$HOME` injectable for tests.
 fn home_dir_from(home: Option<std::ffi::OsString>) -> Result<PathBuf, String> {
     home.filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .ok_or_else(|| "HOME is not set; cannot determine the per-user unit directory".to_owned())
 }
 
-/// `$XDG_CONFIG_HOME`, falling back to `$HOME/.config` per the XDG base
-/// directory spec. Errors when neither is available, for the same reason
-/// [`home_dir`] does.
+/// `$XDG_CONFIG_HOME`, falling back to `$HOME/.config`.
 fn config_home() -> Result<PathBuf, String> {
     config_home_from(
         std::env::var_os("XDG_CONFIG_HOME"),
@@ -2705,9 +2219,7 @@ fn config_home() -> Result<PathBuf, String> {
     )
 }
 
-/// [`config_home`] with both environment variables injectable; see
-/// [`home_dir_from`] for why this crate cannot just mutate the environment
-/// in a test instead.
+/// [`config_home`] with both environment variables injectable.
 fn config_home_from(
     xdg_config_home: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
@@ -2724,11 +2236,10 @@ mod tests {
         HubEnsure, Manager, RESTART_THROTTLE_SECS, Reconcile, SERVICE_MANAGED_ENV,
         START_LIMIT_BURST, ServicePlan, SupervisionState, adoption_marker_is_spent, arm_unit,
         config_home_from, dry_run_text, ensure_hub_in_unit, ensure_hub_in_wrapper, home_dir_from,
-        launchd_label_for, launchd_policy_lines, reconcile_unit, render_launchd_plist,
-        render_systemd_unit, render_unit, render_wrapper_script, report_policy_reach_with,
-        resolve_plan, rewrite_unit_binary, sh_quote, status_report, systemd_escape,
-        systemd_policy_lines, systemd_quote, systemd_unit_for, systemd_unquote,
-        unit_socket_override, unit_supervises, xml_escape, xml_unescape,
+        launchd_policy_lines, reconcile_unit, render_launchd_plist, render_systemd_unit,
+        render_unit, render_wrapper_script, report_policy_reach_with, resolve_plan,
+        rewrite_unit_binary, status_report, systemd_escape, systemd_policy_lines, systemd_quote,
+        systemd_unquote, unit_socket_override, unit_supervises, xml_escape, xml_unescape,
     };
     use std::path::Path;
     use std::path::PathBuf;
@@ -2745,8 +2256,7 @@ mod tests {
         }
     }
 
-    /// What `launchctl print` writes to stderr for a job that is not loaded —
-    /// the exact text phux-8514 leaked to the terminal.
+    /// What `launchctl print` writes to stderr for a job that is not loaded.
     const LAUNCHCTL_NOT_FOUND_STDERR: &str =
         "Bad request.\nCould not find service \"com.phux.server\" in domain for user gui: 501\n";
 
@@ -2771,11 +2281,8 @@ mod tests {
         );
     }
 
-    /// phux-8514, defect 2: an armed unit is written-but-not-loaded by design
-    /// (ADR-0088), so the init system's not-found is the expected
-    /// observation. The report must stay in the armed vocabulary and must not
-    /// follow the armed paragraph with a contradiction dressed as a fault —
-    /// and armed exits zero, because it is the state `--adopt` promised.
+    /// An armed unit's not-found answer is the expected state (ADR-0088): the
+    /// report stays in the armed vocabulary and forwards no tool stderr.
     #[test]
     fn an_armed_units_not_found_answer_is_translated_not_reported_as_a_fault() {
         let report = status_report(true, || {
@@ -2813,10 +2320,8 @@ mod tests {
         }
     }
 
-    /// phux-8514, defect 1: the tool's stderr is never surfaced verbatim,
-    /// armed or not. A not-running unit gets phux's own verdict line, plus
-    /// the probe's stdout — which is where systemctl puts its useful
-    /// explanation of an inactive unit.
+    /// A not-running unit gets phux's verdict plus the probe's stdout, never its
+    /// stderr.
     #[test]
     fn a_failed_probe_is_rendered_in_phux_vocabulary_not_the_tools_stderr() {
         let report = status_report(false, || {
@@ -2851,11 +2356,8 @@ mod tests {
         );
     }
 
-    /// The armed marker can outlive the state it records — launchd
-    /// bootstraps every plist at login, and nothing on that path clears the
-    /// marker — so armed-plus-running means the hand-over completed. The
-    /// report says so and asks for the sweep instead of repeating the stale
-    /// record.
+    /// Armed plus running means the hand-over completed (login bootstrap does not
+    /// clear the marker).
     #[test]
     fn an_armed_marker_over_a_running_job_reports_completion_and_asks_for_a_sweep() {
         let report = status_report(true, || {
@@ -2885,10 +2387,7 @@ mod tests {
         );
     }
 
-    /// phux-dqf3: the live-server fast path sweeps the same spent records
-    /// `status` does — a vanished unit, or an armed record over a job the
-    /// init system is already running — and leaves a still-pending adopt
-    /// alone.
+    /// The live-server path sweeps spent records and leaves a pending adopt alone.
     #[test]
     fn a_spent_adoption_marker_is_the_live_path_sweep() {
         let armed = || SupervisionState::Armed {
@@ -2913,9 +2412,7 @@ mod tests {
         );
     }
 
-    /// A running job with no armed record: the init system's own report is
-    /// the status, forwarded from stdout — its stderr chatter is dropped
-    /// even on success.
+    /// A running job's report is forwarded from stdout without its stderr.
     #[test]
     fn a_running_jobs_report_is_forwarded_without_its_stderr() {
         let report = status_report(false, || {
@@ -2932,10 +2429,8 @@ mod tests {
         assert!(!report.text.contains("noise on stderr"), "{}", report.text);
     }
 
-    /// A launchd plist as `phux service install` wrote them before
-    /// phux-zomb.4: `KeepAlive: true`, no throttle. Carries `--hub`, a QUIC
-    /// listener and a socket override, because those are precisely the things
-    /// a reconcile must not lose (see `reconcile_keeps_what_a_reinstall_would_drop`).
+    /// A legacy launchd plist (`KeepAlive: true`, no throttle, `Background`)
+    /// carrying the flags a reconcile must not lose.
     const LEGACY_PLIST: &str = "\
 <?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <plist version=\"1.0\">
@@ -2967,8 +2462,7 @@ mod tests {
 </plist>
 ";
 
-    /// The systemd equivalent: `Restart=always`, no `RestartSec`, no start
-    /// limit, and the same operator-supplied listeners baked into it.
+    /// The systemd equivalent of [`LEGACY_PLIST`].
     const LEGACY_UNIT: &str = "\
 # Generated by `phux service install` (ADR-0055).
 
@@ -2995,8 +2489,7 @@ WantedBy=default.target
         }
     }
 
-    /// A plan with every optional field populated, so a renderer test sees
-    /// the full shape unless it deliberately clears a field.
+    /// A plan with most optional fields populated.
     fn plan() -> ServicePlan {
         ServicePlan {
             binary: PathBuf::from("/usr/local/bin/phux"),
@@ -3008,8 +2501,6 @@ WantedBy=default.target
             socket: None,
             hub: false,
             socket_path: PathBuf::from("/run/user/1000/phux/phux.sock"),
-            // The default profile, so every renderer test that predates
-            // phux-gyza keeps asserting the names it always did.
             profile: None,
             log: PathBuf::from("/home/u/.local/state/phux/server.log"),
             restore: None,
@@ -3020,25 +2511,16 @@ WantedBy=default.target
     #[test]
     fn launchd_plist_carries_the_auth_environment() {
         let plist = render_launchd_plist(&plan());
-        // The whole reason this is generated: a unit missing the token
-        // store starts a server that rejects every paired device.
         assert!(plist.contains("<key>PHUX_WS_TOKENS</key>"));
         assert!(plist.contains("<string>/home/u/.local/state/phux/remote-tokens</string>"));
         assert!(plist.contains("<key>PHUX_QUIC_ADDR</key>"));
         assert!(plist.contains("<string>0.0.0.0:8788</string>"));
-        // Always-on is the point: start at login, and come back from a
-        // crash. The *restart policy* — failure-only and throttled — is
-        // pinned separately in `both_units_restart_only_on_failure_and_throttle`.
         assert!(plist.contains("<key>RunAtLoad</key>\n  <true/>"));
         assert!(plist.contains("<key>KeepAlive</key>"));
         assert!(plist.contains("<string>com.phux.server</string>"));
     }
 
-    /// phux-87rr: both generated units carry the marker
-    /// [`crate::commands::server::run_server`] reads back to decide
-    /// whether spawned panes need login-shell treatment. Unconditional —
-    /// present with no listeners configured too (`omitted_listeners_emit_
-    /// no_environment_key` below covers that shape).
+    /// Both generated units carry [`SERVICE_MANAGED_ENV`] unconditionally.
     #[test]
     fn both_units_carry_the_service_managed_marker() {
         let plist = render_launchd_plist(&plan());
@@ -3047,14 +2529,6 @@ WantedBy=default.target
 
         let unit = render_systemd_unit(&plan());
         assert!(unit.contains(&format!("Environment=\"{SERVICE_MANAGED_ENV}=1\"")));
-    }
-
-    #[test]
-    fn launchd_runs_the_binary_directly_without_restore() {
-        let plist = render_launchd_plist(&plan());
-        assert!(plist.contains("<string>/usr/local/bin/phux</string>"));
-        assert!(plist.contains("<string>server</string>"));
-        assert!(!plist.contains("/bin/sh"));
     }
 
     #[test]
@@ -3082,13 +2556,8 @@ WantedBy=default.target
         assert!(!plist.contains("<string>server</string>"));
     }
 
-    /// phux-zomb.4: both units must restart on *failure* only, and throttle.
-    ///
-    /// Pinned together because the two managers express one decision and a
-    /// change to either alone is a bug. The failure this guards is not
-    /// hypothetical: `KeepAlive: true` with no throttle produced 1487 server
-    /// generations against a single log on a developer machine, and made a
-    /// deliberately stopped server come straight back.
+    /// Both units restart on failure only and throttle, and systemd's start
+    /// limit window admits the throttle so a crash-loop is eventually given up.
     #[test]
     fn both_units_restart_only_on_failure_and_throttle() {
         let plist = render_launchd_plist(&plan());
@@ -3119,9 +2588,6 @@ WantedBy=default.target
             unit.contains(&format!("RestartSec={RESTART_THROTTLE_SECS}s")),
             "systemd's throttle must match launchd's.\n{unit}"
         );
-        // phux-67wg: throttling alone is not a give-up. systemd's default
-        // rate limit is 5 starts in 10s, which at a 30s RestartSec can never
-        // trip, so a server that fails every start retries forever.
         assert!(
             unit.contains(&format!("StartLimitBurst={START_LIMIT_BURST}")),
             "without a start limit, a permanently-failing start retries forever.\n{unit}"
@@ -3136,18 +2602,6 @@ WantedBy=default.target
             "a window that does not fit {START_LIMIT_BURST} throttled starts makes the \
              limit unreachable, which is the bug it exists to fix"
         );
-    }
-
-    #[test]
-    fn systemd_unit_carries_the_same_environment_and_restart_policy() {
-        let unit = render_systemd_unit(&plan());
-        assert!(unit.contains("ExecStart=/usr/local/bin/phux server"));
-        assert!(unit.contains("Restart=on-failure"));
-        assert!(unit.contains("WantedBy=default.target"));
-        assert!(
-            unit.contains("Environment=\"PHUX_WS_TOKENS=/home/u/.local/state/phux/remote-tokens\"")
-        );
-        assert!(unit.contains("Environment=\"PHUX_QUIC_ADDR=0.0.0.0:8788\""));
     }
 
     #[test]
@@ -3177,27 +2631,12 @@ WantedBy=default.target
             render_systemd_unit(&plan)
                 .contains("Environment=\"PHUX_SOCKET=/tmp/custom/phux.sock\"")
         );
-        // The wrapper's own phux invocations must target the same socket,
-        // or save/restore would talk to a different server than the one it
-        // supervises.
+        // The wrapper's own phux invocations target the same socket.
         let script = render_wrapper_script(&plan);
         assert_eq!(
             script.matches("--socket '/tmp/custom/phux.sock'").count(),
             3
         );
-    }
-
-    #[test]
-    fn environment_order_is_stable_across_renders() {
-        // A reinstall that only reshuffles keys reads as a real change in
-        // `diff`; identical inputs must produce identical bytes.
-        assert_eq!(render_launchd_plist(&plan()), render_launchd_plist(&plan()));
-        assert_eq!(render_systemd_unit(&plan()), render_systemd_unit(&plan()));
-    }
-
-    #[test]
-    fn wrapper_is_empty_without_restore() {
-        assert!(render_wrapper_script(&plan()).is_empty());
     }
 
     #[test]
@@ -3209,16 +2648,13 @@ WantedBy=default.target
         assert!(script.contains("trap 'save;"), "must save on stop");
         assert!(script.contains("TERM INT"));
         assert!(script.contains("workspace restore"));
-        // Atomic save: never truncate the last good archive.
         assert!(script.contains("$archive.tmp"));
         assert!(script.contains("mv -f \"$archive.tmp\" \"$archive\""));
-        // Bounded wait, not an unbounded one that would hang the unit.
         assert!(script.contains("[ \"$waited\" -lt 100 ]"));
     }
 
     #[test]
     fn xml_metacharacters_in_paths_are_escaped() {
-        // An unescaped `&` produces a plist launchd silently refuses.
         assert_eq!(xml_escape("a&b"), "a&amp;b");
         assert_eq!(xml_escape("<x>"), "&lt;x&gt;");
         assert_eq!(xml_escape("say \"hi\""), "say &quot;hi&quot;");
@@ -3228,21 +2664,12 @@ WantedBy=default.target
         assert!(!render_launchd_plist(&plan).contains("a&b"));
     }
 
-    #[test]
-    fn systemd_quotes_only_when_needed() {
-        assert_eq!(systemd_escape("/usr/bin/phux"), "/usr/bin/phux");
-        assert_eq!(systemd_escape("server"), "server");
-        assert_eq!(systemd_escape("/opt/my phux/bin"), "\"/opt/my phux/bin\"");
-        assert_eq!(systemd_escape("a\"b"), "\"a\\\"b\"");
-    }
-
-    /// phux-8wm regression: an operator path containing `%` or `$` must
-    /// come out doubled, or systemd's specifier (`%h`, `%t`, ...) and
-    /// shell-style (`$FOO`, `${FOO}`) expansion silently rewrite the unit's
-    /// `ExecStart=`/`Environment=` values into something the operator never
-    /// wrote.
+    /// Paths with spaces are quoted, and `%`/`$` are doubled so systemd does not
+    /// expand them.
     #[test]
     fn systemd_escape_doubles_percent_and_dollar() {
+        assert_eq!(systemd_escape("/usr/bin/phux"), "/usr/bin/phux");
+        assert_eq!(systemd_escape("/opt/my phux/bin"), "\"/opt/my phux/bin\"");
         assert_eq!(systemd_escape("/opt/100%/bin"), "\"/opt/100%%/bin\"");
         assert_eq!(systemd_escape("/opt/$HOME/bin"), "\"/opt/$$HOME/bin\"");
         assert_eq!(systemd_quote("100%"), "100%%");
@@ -3250,52 +2677,8 @@ WantedBy=default.target
         assert_eq!(systemd_quote("${FOO}"), "$${FOO}");
     }
 
-    /// The same hazard through the real renderer: a token/cert/key path or
-    /// socket path containing `%`/`$` must not leak unescaped into the
-    /// generated `[Service]` block.
-    #[test]
-    fn systemd_unit_escapes_percent_and_dollar_in_paths() {
-        let mut plan = plan();
-        plan.tokens = PathBuf::from("/home/u/100%/$HOME/remote-tokens");
-        let unit = render_systemd_unit(&plan);
-        assert!(
-            unit.contains("100%%") && unit.contains("$$HOME"),
-            "unescaped %/$ leaked into the unit:\n{unit}"
-        );
-        assert!(
-            !unit.contains("/100%/") && !unit.contains("/$HOME/"),
-            "a bare %/$ must not survive rendering:\n{unit}"
-        );
-    }
-
-    #[test]
-    fn sh_quote_survives_an_embedded_single_quote() {
-        assert_eq!(sh_quote("/plain/path"), "'/plain/path'");
-        assert_eq!(sh_quote("it's"), "'it'\\''s'");
-    }
-
-    #[test]
-    fn unit_paths_are_user_scope() {
-        // ADR-0055: never a system-wide unit — that implies a multi-user
-        // server, which ADR-0003 does not have.
-        let launchd = Manager::Launchd
-            .unit_path(None)
-            .expect("HOME is set in this test process");
-        assert!(launchd.ends_with("Library/LaunchAgents/com.phux.server.plist"));
-        assert!(!launchd.starts_with("/Library"));
-        let systemd = Manager::Systemd
-            .unit_path(None)
-            .expect("HOME is set in this test process");
-        assert!(systemd.ends_with("systemd/user/phux.service"));
-        assert!(!systemd.starts_with("/etc"));
-    }
-
-    /// phux-gyza: the unit *path* is profile-scoped too, not just the label
-    /// inside it.
-    ///
-    /// Both halves matter. A shared path means a dev install overwrites the
-    /// production unit file; a shared label means it overwrites the loaded
-    /// job. Scoping only one would still leave a way to clobber the other.
+    /// Unit paths are per-user and profile-scoped, so a dev install cannot
+    /// overwrite the production unit file.
     #[test]
     fn a_non_default_profile_writes_its_unit_beside_the_default_one() {
         let default_launchd = Manager::Launchd
@@ -3304,7 +2687,7 @@ WantedBy=default.target
         let dev_launchd = Manager::Launchd
             .unit_path(Some("dev"))
             .expect("HOME is set in this test process");
-        assert_ne!(default_launchd, dev_launchd);
+        assert!(default_launchd.ends_with("Library/LaunchAgents/com.phux.server.plist"));
         assert!(dev_launchd.ends_with("com.phux.server.dev.plist"));
         assert_eq!(default_launchd.parent(), dev_launchd.parent());
 
@@ -3314,14 +2697,12 @@ WantedBy=default.target
         let dev_systemd = Manager::Systemd
             .unit_path(Some("dev"))
             .expect("HOME is set in this test process");
-        assert_ne!(default_systemd, dev_systemd);
+        assert!(default_systemd.ends_with("systemd/user/phux.service"));
         assert!(dev_systemd.ends_with("phux-dev.service"));
         assert_eq!(default_systemd.parent(), dev_systemd.parent());
     }
 
-    /// The label a launchd plist carries follows the plan's profile, not the
-    /// ambient environment — which is what keeps the renderers pure and
-    /// testable (phux-gyza).
+    /// The plist label follows the plan's profile.
     #[test]
     fn the_plist_label_follows_the_plans_profile() {
         let default_plist = render_launchd_plist(&plan());
@@ -3343,14 +2724,8 @@ WantedBy=default.target
         );
     }
 
-    /// phux-l83y regression: a dry run renders on every platform.
-    ///
-    /// ADR-0055 commits that a platform with no unit generator gets "a printed
-    /// unit and a manual instruction, not an error". `--print` used to be
-    /// gated *behind* `Manager::host()`, so on exactly those platforms the one
-    /// subcommand that needs no init system at all — it renders text — failed
-    /// instead. `dry_run_text` takes `Option<Manager>` so the `None` case has
-    /// to be answered rather than short-circuited.
+    /// A dry run renders on every platform; with no generator it is the systemd
+    /// unit (ADR-0055).
     #[test]
     fn a_dry_run_renders_even_with_no_unit_generator_for_the_platform() {
         let text = dry_run_text(None, &plan());
@@ -3358,70 +2733,12 @@ WantedBy=default.target
             !text.is_empty(),
             "an unsupported platform must still get a unit to adapt"
         );
-        // The systemd rendering is the fallback: ADR-0055 groups third
-        // platforms with non-systemd Linux, where it is the relevant text.
         assert_eq!(text, dry_run_text(Some(Manager::Systemd), &plan()));
         assert!(text.contains("[Service]"), "got {text}");
     }
 
-    /// The dry run still renders the host's own manager when there is one, and
-    /// still appends the wrapper when `--restore` asked for one.
-    #[test]
-    fn a_dry_run_carries_the_restore_wrapper_when_one_was_planned() {
-        let mut with_restore = plan();
-        with_restore.restore = Some(PathBuf::from("/home/u/.local/state/phux/workspace.json"));
-
-        let plain = dry_run_text(Some(Manager::Launchd), &plan());
-        assert!(plain.contains("<?xml"), "got {plain}");
-        assert!(!plain.contains("workspace restore"), "got {plain}");
-
-        let wrapped = dry_run_text(Some(Manager::Launchd), &with_restore);
-        assert!(wrapped.contains("<?xml"), "got {wrapped}");
-        assert!(wrapped.contains("workspace restore"), "got {wrapped}");
-    }
-
-    /// The default profile keeps the historical, unsuffixed names.
-    ///
-    /// Load-bearing for upgrades: a user who already ran `service install` has
-    /// a job loaded under `com.phux.server`. If a profile-aware build renamed
-    /// it, `uninstall` and `status` would address a name the init system has
-    /// never heard of, and the old job would keep running with nothing able to
-    /// stop it. Same reason `DEFAULT_PROFILE` is stored unsuffixed on disk.
-    #[test]
-    fn the_default_profile_keeps_the_historical_unit_names() {
-        assert_eq!(launchd_label_for(None), "com.phux.server");
-        assert_eq!(systemd_unit_for(None), "phux.service");
-    }
-
-    /// phux-gyza regression: a non-default profile gets its own label.
-    ///
-    /// Before this, `resolve_plan` scoped the socket, state and log paths by
-    /// profile but the label was a single constant — so `phux service install`
-    /// from a dev build wrote a unit pointing at `phux-dev` locations *under
-    /// the production label*, silently replacing the job supervising the
-    /// user's real server. The isolation ADR-0080 makes automatic everywhere
-    /// else has to hold here too.
-    #[test]
-    fn a_non_default_profile_gets_its_own_label_and_unit_name() {
-        assert_eq!(launchd_label_for(Some("dev")), "com.phux.server.dev");
-        assert_eq!(systemd_unit_for(Some("dev")), "phux-dev.service");
-
-        // Distinct from the default's, which is the whole point.
-        assert_ne!(launchd_label_for(Some("dev")), launchd_label_for(None));
-        assert_ne!(systemd_unit_for(Some("dev")), systemd_unit_for(None));
-    }
-
-    /// phux-8wm regression: with `HOME` unset, the naive
-    /// `home_dir().join(...)` used to fold into a *relative* path, so
-    /// `phux service install` would silently create
-    /// `./Library/LaunchAgents/...` under whatever directory the operator
-    /// happened to run it from instead of failing loudly. Both managers
-    /// must refuse instead.
-    ///
-    /// Drives [`home_dir_from`]/[`config_home_from`] directly with the
-    /// unset case rather than mutating the real process environment
-    /// (`env::set_var`/`remove_var` are unsafe under edition 2024, and this
-    /// crate forbids unsafe code).
+    /// With `HOME` (and `XDG_CONFIG_HOME`) unset or empty, unit paths are
+    /// refused rather than resolved relative to the cwd.
     #[test]
     fn unit_path_errors_instead_of_writing_into_the_cwd_when_home_is_unset() {
         let home_err = home_dir_from(None)
@@ -3443,17 +2760,8 @@ WantedBy=default.target
         assert!(empty_home_err.contains("HOME"), "got {empty_home_err}");
     }
 
-    /// The anti-drift test for the whole reconcile (phux-l1yx).
-    ///
-    /// `reconcile_unit` decides a unit is already current by patching it and
-    /// finding nothing changed — there is no separate "is it legacy" predicate
-    /// to keep in sync. That is only sound while the generator and the
-    /// reconciler agree byte for byte about the policy block. If they ever
-    /// disagree by one space, `phux service reconcile` rewrites the file
-    /// `phux service install` just wrote, on every run, forever, and reports a
-    /// change each time. Both share `launchd_policy_lines` /
-    /// `systemd_policy_lines` so that cannot happen; this proves it end to end
-    /// through the real renderers.
+    /// Generated units reconcile to themselves: generator and reconciler share
+    /// the policy lines, so `reconcile` never rewrites a fresh install.
     #[test]
     fn the_units_this_binary_generates_reconcile_to_themselves() {
         for manager in [Manager::Launchd, Manager::Systemd] {
@@ -3466,18 +2774,7 @@ WantedBy=default.target
         }
     }
 
-    /// The reason this verb exists rather than "just re-run install"
-    /// (phux-l1yx obstacle 1).
-    ///
-    /// `--quic`, `--listen`, `--restore`, `--hub` and `--socket` survive only
-    /// inside the rendered unit; nothing parses one back into a `ServicePlan`.
-    /// So a `phux service install` re-run renders a unit with every flag the
-    /// operator does not retype silently DROPPED — their QUIC listener and hub
-    /// mode gone, discovered days later from a device that will not attach.
-    ///
-    /// The reconcile never re-derives them, because it never re-renders. If
-    /// this test starts failing, the reconcile has grown a `ServicePlan` and
-    /// has become a reinstall wearing a different name.
+    /// Reconcile never re-renders, so flags that live only in the unit survive.
     #[test]
     fn reconcile_keeps_what_a_reinstall_would_drop() {
         for (manager, legacy, kept) in [
@@ -3554,10 +2851,8 @@ WantedBy=default.target
         );
     }
 
-    /// phux-lpn7: adding `--hub` to an installed unit must not re-render from
-    /// a fresh plan. The patch of a hub=false generated unit is byte-identical
-    /// to generating with hub=true, so listeners, socket, env and log path
-    /// cannot have been re-derived.
+    /// Patching `--hub` into a generated unit equals generating with `--hub`, and
+    /// patching again is a no-op.
     #[test]
     fn ensuring_hub_matches_generating_with_hub() {
         for manager in [Manager::Launchd, Manager::Systemd] {
@@ -3579,9 +2874,8 @@ WantedBy=default.target
         }
     }
 
-    /// The restore wrapper is where `--hub` lives when `--restore` is on;
-    /// the unit itself execs `/bin/sh`. Patching argv would produce
-    /// `sh --hub`, which is nonsense.
+    /// With `--restore` the unit execs `/bin/sh`, so `--hub` goes into the
+    /// wrapper's server line only.
     #[test]
     fn ensuring_hub_on_a_restore_unit_names_the_wrapper() {
         let mut plan = plan();
@@ -3624,13 +2918,8 @@ WantedBy=default.target
         ));
     }
 
-    /// A legacy plist gains the policy and loses nothing else.
-    ///
-    /// The `RunAtLoad` assertion is the sharp one: its value is also a bare
-    /// `<true/>`, one line above `KeepAlive`'s. A reconcile that matched on
-    /// the value instead of scoping to the key it follows would eat the wrong
-    /// element and produce a plist launchd silently declines to load — the
-    /// exact failure this command is supposed to cure.
+    /// A legacy plist gains the policy and loses nothing else; in particular
+    /// `RunAtLoad`'s own `<true/>` is not consumed.
     #[test]
     fn reconciling_a_legacy_launchd_plist_replaces_only_the_policy() {
         let body = patched(reconcile_unit(Manager::Launchd, LEGACY_PLIST));
@@ -3646,17 +2935,13 @@ WantedBy=default.target
             body.contains("<key>RunAtLoad</key>\n  <true/>"),
             "RunAtLoad's own <true/> was consumed:\n{body}"
         );
-        // Four lines out (KeepAlive and ProcessType, key and value each),
-        // the policy block in.
         assert_eq!(
             body.lines().count(),
             LEGACY_PLIST.lines().count() - 4 + launchd_policy_lines().len()
         );
     }
 
-    /// A unit installed before 2026-09-02 declares `ProcessType Background`,
-    /// which throttles the server (ADR-0055 amendment). Reconciling must move
-    /// it to `Interactive` rather than leave the installed value in place.
+    /// Reconcile moves `ProcessType Background` to `Interactive` (ADR-0096).
     #[test]
     fn reconciling_a_background_launchd_plist_moves_it_to_interactive() {
         assert!(
@@ -3684,9 +2969,7 @@ WantedBy=default.target
         );
     }
 
-    /// The systemd half, including the keys a legacy unit never had at all:
-    /// `RestartSec`, `StartLimitIntervalSec` and `StartLimitBurst` are
-    /// inserted, not merely corrected.
+    /// The systemd half: missing policy keys are inserted, other sections kept.
     #[test]
     fn reconciling_a_legacy_systemd_unit_replaces_only_the_policy() {
         let body = patched(reconcile_unit(Manager::Systemd, LEGACY_UNIT));
@@ -3698,41 +2981,12 @@ WantedBy=default.target
             !body.contains("Restart=always"),
             "the restart-on-any-exit policy survived:\n{body}"
         );
-        // The `[Unit]` and `[Install]` sections are none of the reconcile's
-        // business and must come through untouched.
         assert!(body.contains("[Unit]\nDescription=phux terminal control plane server"));
         assert!(body.contains("[Install]\nWantedBy=default.target"));
         assert!(body.starts_with("# Generated by `phux service install`"));
     }
 
-    /// Reconciling twice must be a no-op the second time.
-    ///
-    /// Not a nicety: `phux update` runs this unprompted (phux-bd30) and
-    /// reports what it changed. A reconcile that kept "changing" an already
-    /// correct unit would print a scary paragraph about restart policy after
-    /// every single update, forever, and train people to ignore it.
-    #[test]
-    fn reconcile_is_idempotent() {
-        for (manager, legacy) in [
-            (Manager::Launchd, LEGACY_PLIST),
-            (Manager::Systemd, LEGACY_UNIT),
-        ] {
-            let once = patched(reconcile_unit(manager, legacy));
-            assert_eq!(
-                reconcile_unit(manager, &once),
-                Reconcile::Current,
-                "{manager:?} reconcile is not a fixed point:\n{once}"
-            );
-        }
-    }
-
-    /// A shape the reconciler cannot parse must be refused, not guessed at.
-    ///
-    /// A half-rewritten plist is a unit launchd silently refuses to load,
-    /// which leaves the user with NO supervisor rather than a badly configured
-    /// one — strictly worse than the legacy policy being corrected. The same
-    /// applies to a systemd file with no `[Service]` section: there is nowhere
-    /// the policy could go that would mean anything.
+    /// A shape the reconciler cannot parse is refused, not guessed at.
     #[test]
     fn an_unparseable_unit_is_refused_rather_than_rewritten() {
         let opaque_value = "\
@@ -3770,12 +3024,7 @@ WantedBy=default.target
         );
     }
 
-    /// `KeepAlive` inside `EnvironmentVariables` is an environment variable
-    /// named `KeepAlive`, not the restart policy.
-    ///
-    /// Rewriting it would corrupt the server's environment AND leave the real
-    /// policy legacy — a silent double failure. The reconciler scopes its
-    /// match to the top-level dict by tracking nesting depth; this pins that.
+    /// A nested `KeepAlive` (an environment variable) is not the restart policy.
     #[test]
     fn a_nested_keepalive_key_is_not_the_restart_policy() {
         let nested = "\
@@ -3802,13 +3051,8 @@ WantedBy=default.target
         );
     }
 
-    /// The reconcile probes the socket the UNIT names, not the one this
-    /// process would resolve.
-    ///
-    /// That probe decides which paragraph the user reads on macOS — "nothing
-    /// is running, reloading is free" versus "this costs you every pane".
-    /// Reading the wrong socket makes the command confidently tell an operator
-    /// with live work that there is nothing to lose.
+    /// The reconcile probes the socket the unit pins, through the renderers'
+    /// escaping.
     #[test]
     fn the_socket_probed_is_the_one_the_unit_pins() {
         assert_eq!(
@@ -3820,8 +3064,6 @@ WantedBy=default.target
             Some(PathBuf::from("/tmp/custom/phux.sock"))
         );
 
-        // A unit with no override leaves the caller on the default path
-        // rather than inventing one.
         let mut plain = plan();
         plain.socket = None;
         assert_eq!(
@@ -3833,9 +3075,6 @@ WantedBy=default.target
             None
         );
 
-        // And it survives the escaping the renderers apply on the way in —
-        // otherwise a socket path containing `%`, `$` or `&` would be probed
-        // as the literal escaped text, which no server is ever listening on.
         let mut awkward = plan();
         awkward.socket = Some(PathBuf::from("/tmp/100%/$HOME/a&b/phux.sock"));
         assert_eq!(
@@ -3849,11 +3088,6 @@ WantedBy=default.target
     }
 
     /// The unescapers are exact inverses of the escapers.
-    ///
-    /// Chained `replace` calls would not be: the escaped form of a literal
-    /// `$$` is `$$$$`, and decoding it in two passes yields `$`. The values
-    /// under test are operator-supplied paths, so getting this wrong silently
-    /// probes a path nobody has.
     #[test]
     fn the_unescapers_invert_the_escapers() {
         for value in [
@@ -3878,25 +3112,8 @@ WantedBy=default.target
         }
     }
 
-    /// phux-87rr acceptance criterion 4: whatever `PATH` happens to be
-    /// active when `phux service install` runs must never be frozen into
-    /// the generated unit — the init system supplies its own `PATH` at
-    /// spawn time regardless of what built the unit, so anything captured
-    /// here would only ever be a stale snapshot of some past shell (the
-    /// canonical case: a `nix develop` or direnv session, which is
-    /// exactly what runs this test suite).
-    ///
-    /// Deliberately does not mutate `PATH` to prove this: this crate
-    /// `forbid(unsafe_code)`s, and `env::set_var`/`remove_var` are unsafe
-    /// under edition 2024, so an injected-marker version of this test is
-    /// not an option here (see `commands::overlay`'s
-    /// `run_tailscale_ip`/`run_tailscale_ip_with_deadline` split for the
-    /// established alternative — dependency injection — used where that
-    /// matters more than a simple read does here). Instead this reads the
-    /// test process's own ambient `PATH` — under `nix develop`, already a
-    /// real instance of the "transient installer shell" case — and
-    /// asserts `resolve_plan` never echoes it anywhere. A real regression
-    /// catch, not a simulated one.
+    /// The installer's ambient `PATH` is never frozen into the unit; the init
+    /// system supplies its own.
     #[test]
     fn install_never_captures_the_process_path() {
         let ambient_path = std::env::var("PATH").unwrap_or_default();
@@ -3921,14 +3138,8 @@ WantedBy=default.target
         );
     }
 
-    /// The socket-match guard behind a pending adoption (ADR-0088).
-    ///
-    /// The hand-over diverts a cold start away from an ordinary auto-spawn, so
-    /// a false positive starts a *different* instance's server on a socket it
-    /// was never meant to own. The guard is asserted against units this
-    /// generator actually renders — both managers, both with and without a
-    /// `--socket` override — rather than against hand-written fixtures, so it
-    /// cannot pass while disagreeing with what install writes.
+    /// Only the unit that owns this socket completes a pending adoption
+    /// (ADR-0088), checked against really rendered units.
     #[test]
     fn only_the_unit_that_owns_this_socket_completes_an_adoption() {
         let overridden = PathBuf::from("/tmp/custom/phux.sock");
@@ -3947,9 +3158,6 @@ WantedBy=default.target
             );
         }
 
-        // No override: the unit names no socket, so the match is against the
-        // path the supervised server would resolve. `reconcile` reads it the
-        // same way, which is the point of sharing `unit_socket_override`.
         let default = resolve_plan(None, None, false, None, false).expect("resolve_plan");
         for manager in [Manager::Launchd, Manager::Systemd] {
             let body = render_unit(manager, &default);
@@ -3964,27 +3172,13 @@ WantedBy=default.target
         }
     }
 
-    /// Arming and loading must stay two operations.
-    ///
-    /// `--adopt`'s entire safety property is that the unit reaches disk in the
-    /// exact bytes a plain install would write, and that the init system is
-    /// *not* asked to start it. A refactor that folded `arm_unit` back into
-    /// `reload` would restore phux-67wg's crash-loop while every rendering
-    /// test kept passing, because the bytes are identical either way. This
-    /// pins the one difference that matters: arming never starts anything.
-    ///
-    /// launchd needs no command at all (a plist in `~/Library/LaunchAgents` is
-    /// armed by existing), which is why arming it is infallible and asserted
-    /// here rather than shelled out to a `launchctl` this test must not run.
+    /// Arming never starts anything; on launchd it runs no command, and the
+    /// written plist still carries `RunAtLoad`.
     #[test]
     fn arming_a_launchd_unit_runs_no_command() {
         arm_unit(Manager::Launchd)
             .expect("arming a launchd unit is writing the file, which the caller already did");
 
-        // And the armed file has to be one that actually starts a server when
-        // launchd finally bootstraps it. `RunAtLoad` is what makes "the unit
-        // is on disk" equivalent to "the unit is armed" on macOS; without it,
-        // an adopt install would commit supervision that never begins.
         let plan = resolve_plan(None, None, false, None, false).expect("resolve_plan");
         assert!(
             render_launchd_plist(&plan).contains("<key>RunAtLoad</key>\n  <true/>"),

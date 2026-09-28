@@ -1,96 +1,33 @@
-//! Pooled libghostty render scaffolding, shared by both ends of the wire.
+//! Pooled libghostty render scaffolding, shared by both ends of the wire
+//! (ADR-0013, ADR-0086).
 //!
-//! Under [ADR-0013] a libghostty `Terminal` runs on the server *and* on the
-//! client, and each end walks its grid through the same three libghostty
-//! objects: a [`RenderState`], a [`RowIterator`], and a [`CellIterator`].
-//! Allocating that trio is not free, so every walker pools it for the life of
-//! the pane it serves.
+//! Every grid walker pools a [`RenderState`] + [`RowIterator`] +
+//! [`CellIterator`] for the life of its pane. The hazard this type closes: a
+//! pooled `RenderState` caches what it last walked, and libghostty's per-row
+//! dirty bits are drained by whichever state reads a row first. After a
+//! resize, or after the walked `Terminal` is replaced at the same geometry (a
+//! client replica republish, whose recycled allocation can pass libghostty's
+//! pointer-compared viewport pin as "unchanged"), a stale pooled state serves
+//! old rows as `Clean`. [`RenderPool::begin`] rebuilds the trio when the
+//! geometry or the caller's required [`TerminalGeneration`] changes.
 //!
-//! Pooling has one non-obvious hazard, and it is the reason this type exists
-//! rather than four private copies of the same three fields:
-//!
-//! > A pooled [`RenderState`] caches what it last walked. libghostty's per-row
-//! > dirty bits live on the `Terminal` and are drained by whichever
-//! > `RenderState` reads a row first, so after a geometry change a pooled state
-//! > can report the *new* dimensions while still serving *pre-resize* row
-//! > bodies (`phux-5pyx`). A freshly allocated state has no prior cache, so its
-//! > first walk observes every row as it is now.
-//!
-//! [`RenderPool::begin`] therefore rebuilds the trio whenever the terminal's
-//! `(cols, rows)` differ from the last walk, and hands back the three objects
-//! as disjoint borrows so a caller can drive the row/cell walk exactly as it
-//! did with three private fields.
-//!
-//! Geometry is not the only way a pooled state can go stale. The client
-//! REPLACES a pane's `Terminal` wholesale when a replica generation is
-//! republished (bootstrap resync), and a swap at identical geometry leaves
-//! `last_dims` equal while the pooled state's cache — including the viewport
-//! pin libghostty consults to decide whether a walk may skip clean rows —
-//! still belongs to the previous `Terminal`. That pin is compared by copied
-//! pointer value, so a replacement terminal whose pages land at a recycled
-//! address can masquerade as "unchanged" and be served the old terminal's
-//! rows as `Clean`. So [`RenderPool::begin`] also takes a
-//! [`TerminalGeneration`]: the caller names the identity of the terminal it
-//! walks, and a change of that token rebuilds the trio even at identical
-//! geometry (`phux-994s`).
-//!
-//! That token is a **required** argument rather than a second entry point.
-//! A walker whose terminal is fixed for the pool's life (the server walks one
-//! PTY-backed `Terminal` per pane for the pane's whole life) passes a
-//! constant, which is exactly "a generation that never changes"; a walker
-//! whose terminal can be replaced passes the live token. One entry point means
-//! there is no wrong one to reach for — and the failure mode of reaching for
-//! the wrong one was silent, allocator-dependent grid corruption.
-//!
-//! # What this type deliberately does NOT own
-//!
-//! **Dirty policy.** `RenderState::update` *consumes* the terminal's dirty
-//! bits; when and whether to clear [`Snapshot::set_dirty`] and each row's
-//! `set_dirty` is a per-consumer decision, and phux's consumers legitimately
-//! disagree: the server's `mark_synced` clears both, its
-//! `synthesize_incremental` clears neither (an unacked diff must stay
-//! re-emittable, ADR-0018), its per-consumer reference diff bypasses the dirty
-//! bits entirely, and the client's renderer clears only the rows it drew.
-//! Folding those into one type would erase four deliberate policies, so the
-//! pool owns allocation and geometry only and leaves every dirty decision at
-//! the call site.
-//!
-//! **The `Terminal`.** The terminal is passed to [`RenderPool::begin`] per
-//! walk rather than owned here. On the server one `Terminal` is walked by
-//! several pools (one per consumer); on the client the pool outlives
-//! individual replica generations. Owning it would be wrong at both ends.
-//!
-//! This module carries no wire types and does not participate in protocol
-//! versioning. It lives in `phux-protocol` behind the `render-pool` feature
-//! (`libghostty-vt` only; the `server` feature enables it along with png and
-//! the rest of the libghostty surface). `sgr` and `kitty_replay` stay on
-//! `server`: they are the image/replay helpers this pool deliberately does
-//! not pull in. `phux-core` (the only other crate every walker could import)
-//! carries no `libghostty-vt` dependency. See [ADR-0086].
-//!
-//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/docs/adr/0013-libghostty-bytes-on-wire.md
-//! [ADR-0018]: https://github.com/no-phux/phux/blob/main/docs/adr/0018-lazy-state-synchronization.md
-//! [ADR-0086]: https://github.com/no-phux/phux/blob/main/docs/adr/0086-shared-render-pool.md
+//! The pool owns allocation and geometry only. Dirty-bit clearing is a
+//! per-consumer policy (the server's sync, incremental synthesis, and
+//! reference diff, and the client renderer all differ), and the `Terminal`
+//! is passed per walk because several pools can walk one terminal.
 
 use libghostty_vt::{
     RenderState, Terminal as GhosttyTerminal,
     render::{CellIterator, RowIterator, Snapshot},
 };
 
-/// Opaque caller-chosen identity for the `Terminal` a pool walks.
+/// Opaque caller-chosen identity of the walked `Terminal`.
 ///
-/// The pool never inspects the value; it only compares it against the token
-/// of the previous walk, and a change rebuilds the pooled trio even at
-/// identical geometry (see [`RenderPool::begin`]). 128 bits so a composite
-/// identity — the client packs its replica key's non-zero 64-bit stream and
-/// bootstrap ids — fits without hashing or collision. A walker whose terminal
-/// is never replaced passes a constant.
+/// A change rebuilds the pool. 128 bits fit the client's stream + bootstrap ids unhashed; a
+/// walker whose terminal is never replaced passes a constant.
 pub type TerminalGeneration = u128;
 
-/// One pooled walk of a terminal's grid.
-///
-/// Returned by [`RenderPool::begin`]. The three members are disjoint borrows
-/// of the pool, so the usual walk still type-checks:
+/// One pooled walk of a terminal's grid; the members are disjoint borrows:
 ///
 /// ```ignore
 /// let RenderWalk { snapshot, rows, cells } = pool.begin(terminal, generation)?;
@@ -102,10 +39,8 @@ pub type TerminalGeneration = u128;
 /// ```
 #[derive(Debug)]
 pub struct RenderWalk<'alloc, 's> {
-    /// The snapshot produced by this walk's `RenderState::update`.
-    ///
-    /// Reading [`Snapshot::dirty`] drains nothing further; the drain already
-    /// happened inside `update`. Clearing it is the caller's decision.
+    /// The snapshot from this walk's `RenderState::update` (dirty bits
+    /// already drained; clearing them is the caller's decision).
     pub snapshot: Snapshot<'alloc, 's>,
     /// The pool's row iterator, borrowed for the duration of the walk.
     pub rows: &'s mut RowIterator<'alloc>,
@@ -114,22 +49,15 @@ pub struct RenderWalk<'alloc, 's> {
 }
 
 /// A pooled [`RenderState`] + [`RowIterator`] + [`CellIterator`], rebuilt when
-/// the terminal it walks changes geometry or identity.
-///
-/// Allocate one per walker (per pane, per consumer) and keep it warm across
-/// frames; see the module docs for the pooling hazard it exists to close.
+/// the walked terminal changes geometry or identity. One per walker.
 #[derive(Debug)]
 pub struct RenderPool<'alloc> {
     state: RenderState<'alloc>,
     rows: RowIterator<'alloc>,
     cells: CellIterator<'alloc>,
-    /// The `(cols, rows)` this pool last walked, or `None` before the first
-    /// walk. A change rebuilds the trio.
+    /// The `(cols, rows)` last walked; `None` forces the first rebuild.
     last_dims: Option<(u16, u16)>,
-    /// The caller-supplied terminal identity of the last [`Self::begin`]
-    /// walk. A change rebuilds the trio even at identical geometry. The
-    /// pre-first-walk value is arbitrary — `last_dims` is `None` until the
-    /// first walk, so that walk rebuilds regardless of the token it carries.
+    /// The generation of the last walk.
     last_generation: TerminalGeneration,
 }
 
@@ -152,30 +80,17 @@ impl<'alloc> RenderPool<'alloc> {
         self.last_dims
     }
 
-    /// Start a walk of `terminal` on behalf of the caller-named identity
-    /// `generation`, rebuilding the pooled trio first if either that token
-    /// or the terminal's geometry changed since the last walk.
-    ///
-    /// The token names *which terminal* this pool is walking, not a frame or
-    /// content revision: pass a value that changes exactly when the walked
-    /// `Terminal` object is replaced (the client passes its replica
-    /// generation), and the pool discards the previous terminal's cache
-    /// instead of letting it masquerade as this one's (`phux-994s`). A walker
-    /// whose terminal is fixed for the pool's life passes a constant.
-    ///
-    /// This performs the `RenderState::update` that **drains `terminal`'s
-    /// dirty bits into the pooled state**; what the caller then does with
-    /// [`Snapshot::dirty`] and the per-row bits is entirely the caller's
-    /// policy (see the module docs).
+    /// Start a walk of `terminal`, first rebuilding the trio if its geometry
+    /// or `generation` (which changes exactly when the walked `Terminal` is
+    /// replaced) changed. Drains the terminal's dirty bits into the pooled
+    /// state; what happens to them next is the caller's policy.
     pub fn begin<'s, 'cb>(
         &'s mut self,
         terminal: &GhosttyTerminal<'alloc, 'cb>,
         generation: TerminalGeneration,
     ) -> Result<RenderWalk<'alloc, 's>, libghostty_vt::Error> {
         self.rebuild_if_stale(terminal, generation)?;
-        // Destructure so the snapshot (which borrows `state`) and the two
-        // iterators are disjoint borrows rather than three overlapping
-        // borrows of `self`.
+        // Disjoint borrows: the snapshot borrows `state` only.
         let Self {
             state, rows, cells, ..
         } = self;
@@ -187,13 +102,7 @@ impl<'alloc> RenderPool<'alloc> {
         })
     }
 
-    /// Discard and reallocate the pooled trio when `terminal`'s dimensions
-    /// differ from the last walk (`phux-5pyx`), or when the caller-supplied
-    /// identity token says the walked `Terminal` was replaced since the last
-    /// walk (`phux-994s`).
-    ///
-    /// Scoped to the rare resize/republish tick rather than every call, so
-    /// the pooled allocation win survives on the steady-state hot path.
+    /// Reallocate the trio when the geometry or generation changed.
     fn rebuild_if_stale<'cb>(
         &mut self,
         terminal: &GhosttyTerminal<'alloc, 'cb>,
@@ -248,17 +157,10 @@ mod tests {
         dirty
     }
 
-    /// phux-994s: a generation change rebuilds the pooled state even at
-    /// identical geometry, so the first walk of the new generation reports
-    /// `Dirty::Full` instead of serving the previous generation's
-    /// already-painted cache as `Clean`.
-    ///
-    /// Driven against ONE terminal on purpose. The pool cannot observe the
-    /// walked terminal's allocation, so the same terminal under a new token
-    /// is exactly what a REPLACED terminal whose pages recycled the old
-    /// allocation looks like from the pool's seat — the case libghostty's
-    /// own viewport-pin comparison cannot catch and the caller-supplied
-    /// token exists to.
+    /// A generation change rebuilds at identical geometry, so the new
+    /// generation's first walk is `Full`, not the old cache's `Clean`. One
+    /// terminal under a new token is what a replaced terminal on a recycled
+    /// allocation looks like from the pool's seat.
     #[test]
     fn generation_change_rebuilds_at_identical_geometry() {
         let mut t = terminal(10, 2);

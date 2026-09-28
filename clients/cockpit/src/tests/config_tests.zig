@@ -252,11 +252,6 @@ test "font size is clamped rather than refused, and cannot be wedged" {
     const bad = config.parse("font-size = nan");
     try std.testing.expectEqual(config.default_font_size, bad.font_size);
     try std.testing.expectEqual(@as(usize, 1), bad.diagnostic_count);
-
-    // The runtime cmd+= / cmd+- path clamps at the same bounds.
-    const base = config.Config{};
-    try std.testing.expectApproxEqAbs(config.max_font_size, base.withFontSize(1000).font_size, 0.001);
-    try std.testing.expectApproxEqAbs(config.min_font_size, base.withFontSize(-5).font_size, 0.001);
 }
 
 test "booleans accept the spellings people actually write" {

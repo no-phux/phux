@@ -1,15 +1,6 @@
-//! UDS transport with length-prefixed frame I/O.
-//!
-//! Wraps a [`UnixStream`] split into owned read and write halves, so the
-//! attach loop can `tokio::select!` over the server's frames concurrently
-//! with stdin and signal sources. Both directions share the SPEC §5
-//! framing: a four-byte big-endian length header followed by the type byte
-//! and payload.
-//!
-//! Neither the framing rule nor the decoding lives here: SPEC §5 framing is
-//! owned by [`phux_protocol::wire::framing`] and body decoding by
-//! [`phux_protocol::wire`], so this module owns only the transport plumbing
-//! that feeds them. Errors funnel into [`super::outcome::AttachError`].
+//! A negotiated connection to a phux server over UDS, QUIC, or WebSocket,
+//! with SPEC §5 framing (owned by [`phux_protocol::wire::framing`]) and the
+//! correlated request/response primitives every verb uses.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -36,11 +27,7 @@ pub use super::quic::{CertTrust, QuicDial};
 use super::ws;
 pub use super::ws::WsDial;
 
-/// How an attach should reach its server.
-///
-/// Either the always-local Unix domain socket, or a remote QUIC listener
-/// (`phux-y8v6`, ADR-0007). Threaded through the attach loop so the reconnect
-/// machinery dials the same way on each attempt.
+/// How to reach a server; reconnects dial the same way each attempt.
 #[derive(Debug, Clone)]
 pub enum Dial {
     /// Connect over the Unix domain socket at this path.
@@ -52,97 +39,54 @@ pub enum Dial {
 }
 
 impl Dial {
-    /// A `Dial::Uds` borrowing-then-owning the given path. Lets the many
-    /// `&Path` call sites build a dial target without restating the variant.
+    /// A [`Dial::Uds`] for `path`.
     #[must_use]
     pub fn uds(path: &Path) -> Self {
         Self::Uds(path.to_path_buf())
     }
 }
 
-/// Production construction connects (UDS, QUIC, or WebSocket) and completes
-/// protocol negotiation before returning.
-///
-/// The two halves are independent after negotiation. All transports carry
-/// identical SPEC §5 frames; the variant only changes the byte plumbing
-/// underneath.
+/// A connection that has completed `HELLO` negotiation.
 ///
 /// # The COMMAND interleave contract
 ///
-/// `docs/spec/L1.md` §5: "A `COMMAND` is asynchronous: the server MAY emit
-/// other messages (including events relevant to the command's effect) before
-/// `COMMAND_RESULT`. Clients MUST tolerate that ordering."
-///
-/// This is not a theoretical allowance — the reference server exercises it on
-/// paths a client cannot avoid, and the frames it emits ahead of the ack are
-/// **never re-sent**:
-///
-/// - `ATTACH_RESOURCE`: `handle_attach_terminal`
-///   (`crates/phux-server/src/runtime/commands.rs`) pushes the authoritative
-///   bootstrap transcript before the acknowledgement. A caller that drops it
-///   has no opening screen and no geometry — the exact defect that made every
-///   `phux rec` capture come back as a 0x0 grid.
-/// - `GET_STATE` on a federation hub: `handle_get_state_federated` pushes an
-///   uncorrelated `ERROR` frame per unreachable satellite, deliberately
-///   ("observable degradation, not silence"), *before* returning the merged
-///   snapshot the ack carries. A caller that drops it reports a silently
-///   partial view of the fleet as if it were complete.
-/// - Any command on a connection that also holds a subscription
-///   (`ATTACH_RESOURCE`, `SUBSCRIBE_EVENTS`, an event registration): the
-///   handler's internal `.await` points let the pane actor's `EVENT` and
-///   `RESOURCE_OUTPUT` fanout reach this client's mailbox first.
-///
-/// Because a consumed frame is gone, `recv` alone cannot express a correct
-/// request/response. [`Connection::request`] is the safe form: it hands back
-/// the interleaved frames with the ack so a caller cannot lose them by
-/// omission. Reach for raw [`Connection::send`] + [`Connection::recv`] only in
-/// a full-duplex loop that already routes every frame kind (the attach
-/// driver).
+/// L1 §5 lets the server emit other frames before a `COMMAND_RESULT`, and it
+/// does so on paths a client cannot avoid: `ATTACH_RESOURCE` pushes the
+/// bootstrap transcript before its ack, a federation hub pushes one
+/// uncorrelated `ERROR` per unreachable satellite before a `GET_STATE`
+/// reply, and any subscription on the connection can fan events in first.
+/// Those frames are never re-sent, so use [`Connection::request`] (and its
+/// typed siblings), which return them with the answer. Raw
+/// [`Connection::send`] + [`Connection::recv`] is only for a full-duplex loop
+/// that routes every frame kind.
 #[derive(Debug)]
 pub struct Connection {
     reader: FrameReader,
     writer: FrameWriter,
-    /// Pid of the peer process, read from the UDS peer credentials at
-    /// connect time (`SO_PEERCRED` on Linux, `LOCAL_PEEREPID` on macOS).
-    /// `None` on the remote transports (QUIC/WS have no such channel) and
-    /// on platforms whose credentials carry no pid.
+    /// Peer pid from the UDS peer credentials; `None` on remote transports.
     peer_pid: Option<i32>,
-    /// Exact profile and bounds selected by the one successful `HELLO_OK`.
-    ///
-    /// Every production constructor fills this before returning. It is an
-    /// `Option` only for the crate's raw in-process transport test seam.
+    /// What `HELLO_OK` selected. `None` only on the `from_stream` test seam.
     negotiated_bootstrap: Option<NegotiatedBootstrap>,
-    /// `HELLO_OK.server_id` — the random 128-bit server-incarnation id
-    /// (ADR-0053 point 5). Kept beside, not inside, [`NegotiatedBootstrap`]
-    /// because that struct is `Copy` and a `Vec<u8>` would end that. The
-    /// acknowledged-input replay journal compares this across reconnects: a
-    /// changed incarnation means the server's dedupe cache is gone, so an
-    /// unresolved operation must be reported unknown rather than replayed.
+    /// `HELLO_OK.server_id`, the server-incarnation id (ADR-0053) the input
+    /// replay journal compares across reconnects.
     server_id: Option<Vec<u8>>,
     next_attach_id: u32,
-    /// QUIC multi-stream state (proto.md §4.2): built on the first
-    /// [`Self::bind_terminal`] and only ever on a QUIC connection whose
-    /// `HELLO_OK` advertised `QUIC_STREAMS`. `None` everywhere else — UDS,
-    /// WebSocket, and QUIC without the bit keep the single-stream shape.
+    /// Per-Terminal QUIC stream state (proto.md §4.2); QUIC only.
     multistream: Option<Multistream>,
 }
 
-/// QUIC multi-stream state (proto.md §4.2, ADR-0115).
-///
-/// Bound Terminal streams pump complete frames into one merged channel,
-/// which [`Connection::recv`] reads alongside the control stream; Terminal
-/// input, history requests, and acks write to the Terminal's own stream
-/// send half instead of control. Per-stream backpressure therefore never
-/// stalls another pane or the control channel.
+/// QUIC multi-stream state (proto.md §4.2, ADR-0115): each bound Terminal
+/// has its own stream, so per-stream backpressure never stalls another pane
+/// or the control channel. Their frames merge into one channel that
+/// [`Connection::recv`] reads beside the control stream.
 #[derive(Debug)]
 struct Multistream {
     /// The connection the Terminal streams ride.
     conn: quinn::Connection,
     /// Live Terminal streams by Terminal.
     bindings: std::collections::HashMap<ResourceId, MuxBinding>,
-    /// Next client-allocated app-level `StreamId`. Connection-local,
-    /// monotonic, never zero; a re-bind of the same Terminal gets a new
-    /// value (a new generation, per L1 §4.6).
+    /// Next app-level `StreamId`: monotonic, never zero; a re-bind gets a new
+    /// one (a new generation, L1 §4.6).
     next_stream_id: u64,
     /// Merged frames from every bound Terminal stream's pump task.
     frames_rx: tokio::sync::mpsc::Receiver<MuxItem>,
@@ -150,10 +94,9 @@ struct Multistream {
     frames_tx: tokio::sync::mpsc::Sender<MuxItem>,
     /// Connection-wide queued/incomplete Terminal-stream frame byte budget.
     frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
-    /// Terminals whose stream the server ended (death or teardown) and that
-    /// have not been re-bound. The end races the `RESOURCE_CLOSED` on control
-    /// (L1 §4.9), so a caller can still address the Terminal for a moment:
-    /// such a frame is dropped, and the close on control is how it learns.
+    /// Terminals whose stream the server ended. The end races
+    /// `RESOURCE_CLOSED` on control (L1 §4.9), so frames still addressed to
+    /// one are dropped rather than failed.
     ended: std::collections::HashSet<ResourceId>,
     #[cfg(feature = "testkit")]
     /// Maximum time from a Terminal frame's first byte to its complete body.
@@ -200,9 +143,8 @@ enum MuxItem {
     },
 }
 
-/// Depth of the mux's merged frame channel. Small: a stalled reader stalls
-/// every stream's pump, which is ordinary backpressure (the frames wait in
-/// QUIC's per-stream flow control), not loss.
+/// Depth of the merged frame channel; a stalled reader backpressures into
+/// QUIC flow control, not loss.
 const MUX_FRAME_CHANNEL: usize = 64;
 const MUX_FRAME_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CLIENT_TERMINAL_STREAMS: usize = 127;
@@ -247,8 +189,6 @@ impl Multistream {
         self.terminal_frame_deadline = deadline;
     }
 
-    // `self` carries the deadline only under `testkit`; the production build
-    // reads the constant, which is still a method so call sites don't fork.
     #[cfg_attr(not(feature = "testkit"), allow(clippy::unused_self))]
     const fn terminal_frame_deadline(&self) -> std::time::Duration {
         #[cfg(feature = "testkit")]
@@ -271,10 +211,7 @@ impl Multistream {
     }
 }
 
-/// Pump framed bytes from one server-to-client Terminal stream into the
-/// connection-wide receive queue. A frame is queued only after its complete
-/// length-prefixed body has arrived, so frames from different streams can be
-/// merged without corrupting one another.
+/// Pump complete frames from one Terminal stream into the merged queue.
 async fn pump_terminal_stream(
     mut recv: quinn::RecvStream,
     terminal_id: ResourceId,
@@ -367,8 +304,7 @@ async fn send_mux_error(
         .await;
 }
 
-/// Frames whose payload belongs to one Terminal and therefore routes over
-/// that Terminal's dedicated stream when one is bound.
+/// The Terminal whose dedicated stream `frame` routes over, if bound.
 const fn terminal_target(frame: &FrameKind) -> Option<&ResourceId> {
     match frame {
         FrameKind::InputKey { terminal_id, .. }
@@ -421,75 +357,44 @@ pub struct NegotiatedBootstrap {
     pub server_features: ServerFeatureSet,
 }
 
-/// Read half — pulls one [`FrameKind`] per call, over either transport.
 #[derive(Debug)]
-pub enum FrameReader {
-    /// Unix-domain-socket read half with a streaming reassembly buffer.
+enum FrameReader {
     Uds(UdsReader),
-    /// QUIC bidi-stream read half.
     Quic(QuicReader),
-    /// WebSocket message read half.
     Ws(WsReader),
 }
 
-/// Write half — encodes one [`FrameKind`] per call, over either transport.
 #[derive(Debug)]
-pub enum FrameWriter {
-    /// Unix-domain-socket write half.
+enum FrameWriter {
     Uds(UdsWriter),
-    /// QUIC bidi-stream write half.
     Quic(QuicWriter),
-    /// WebSocket message write half.
     Ws(WsWriter),
 }
 
-/// UDS read half — reads chunks into a buffer and decodes whole frames.
+/// UDS read half. Reads in chunks so one syscall can surface several queued
+/// frames, which `try_recv` drains so a burst coalesces into one paint.
 #[derive(Debug)]
-pub struct UdsReader {
+struct UdsReader {
     inner: OwnedReadHalf,
-    /// Streaming receive buffer. The socket is read in chunks (not one
-    /// `read_exact` per frame) so a single syscall can surface several
-    /// queued frames at once; [`Self::recv`] and [`Self::try_recv`] decode
-    /// complete frames out of the front and retain any partial tail for the
-    /// next read. This buffering is what lets the attach loop coalesce a
-    /// back-to-back output burst into one paint (phux-jhv8).
     buf: BytesMut,
-    /// Payload bounds selected by `HELLO_OK`, or the client's advertised
-    /// bounds while the handshake itself is being decoded.
+    /// Bounds from `HELLO_OK` (the client's own while it is decoded).
     bootstrap_limits: BootstrapLimits,
 }
 
-/// UDS write half.
 #[derive(Debug)]
-pub struct UdsWriter {
+struct UdsWriter {
     inner: OwnedWriteHalf,
-    /// Reusable encode buffer. Holds exactly one frame normally; holds the
-    /// whole corked batch while [`Self::corked`] is set.
+    /// Encode buffer: one frame, or the whole batch while `corked`.
     out: BytesMut,
-    /// phux-l96p.4: while set, [`Self::send`] appends the encoded frame to
-    /// `out` instead of writing it, and [`Self::uncork`] ships the batch in
-    /// one `write_all`.
-    ///
-    /// This is a *batching* cork, not a linger: it is only ever held across
-    /// the synchronous dispatch of events the client has ALREADY read, and it
-    /// is released before the loop parks again — so nothing is ever delayed
-    /// waiting for more input. One keystroke still costs exactly one write.
-    /// What it removes is the N writes and N `flush`es a multi-event read
-    /// (key auto-repeat, arrow spam, a mouse drag burst) used to pay.
+    /// Held only across dispatch of input already read, so it batches a
+    /// multi-event read into one write and never delays anything.
     corked: bool,
 }
 
-/// QUIC read half.
-///
-/// Reassembles length-prefixed frames off the bidi stream, byte-for-byte the
-/// same framing as the UDS path. quinn's `RecvStream` is a `tokio` `AsyncRead`,
-/// so this reads in chunks into a buffer exactly like [`UdsReader`] — a single
-/// read can surface several queued frames, which `try_recv` then drains so a
-/// back-to-back burst still coalesces into one paint (phux-jhv8). The
-/// cloned endpoint + connection are held so the I/O driver outlives the stream
-/// and the connection can be closed cleanly on teardown.
+/// QUIC read half: the same chunked reassembly as [`UdsReader`]. Holds the
+/// endpoint and connection so the I/O driver outlives the stream.
 #[derive(Debug)]
-pub struct QuicReader {
+struct QuicReader {
     recv: quinn::RecvStream,
     buf: BytesMut,
     /// Landing pad for [`Self::poll_read_once`], zero-initialized once.
@@ -499,43 +404,35 @@ pub struct QuicReader {
     bootstrap_limits: BootstrapLimits,
 }
 
-/// How much room [`QuicReader::poll_read_once`] offers quinn per non-blocking
-/// top-up. Sized to hold a full coalesced server write (`MAX_WRITE_COALESCE`
-/// frames of PTY output) so one poll usually drains the whole burst.
+/// Room offered per non-blocking QUIC top-up: a full coalesced server write.
 const QUIC_TRY_READ_BYTES: usize = 64 * 1024;
 
-/// QUIC write half. Holds the endpoint + connection for the same reasons as
-/// [`QuicReader`]; its [`Drop`] issues a best-effort `CONNECTION_CLOSE`.
+/// QUIC write half; its [`Drop`] issues a best-effort `CONNECTION_CLOSE`.
 #[derive(Debug)]
-pub struct QuicWriter {
+struct QuicWriter {
     send: quinn::SendStream,
-    /// Reusable encode buffer.
     out: BytesMut,
     endpoint: quinn::Endpoint,
     connection: quinn::Connection,
 }
 
-/// WebSocket read half: one binary message is one encoded phux frame.
+/// WebSocket read half: one binary message is one encoded frame.
 #[derive(Debug)]
-pub struct WsReader {
+struct WsReader {
     inner: ws::WsReader,
     bootstrap_limits: BootstrapLimits,
 }
 
-/// WebSocket write half.
 #[derive(Debug)]
-pub struct WsWriter {
+struct WsWriter {
     inner: ws::WsWriter,
     out: BytesMut,
 }
 
 impl Drop for QuicWriter {
     fn drop(&mut self) {
-        // Best-effort clean teardown: a `CONNECTION_CLOSE` lets the server reap
-        // this consumer immediately instead of waiting out its 30s idle timeout.
-        // The endpoint clone is still alive in this struct, so its driver can
-        // transmit the frame. For a guaranteed flush (the reconnect probe) the
-        // caller uses [`Connection::shutdown`], which also awaits `wait_idle`.
+        // Lets the server reap us now instead of at its idle timeout;
+        // `Connection::shutdown` is the awaited, guaranteed form.
         self.connection.close(0u32.into(), b"phux: detach");
     }
 }
@@ -545,16 +442,52 @@ fn default_client_name() -> String {
 }
 
 impl Connection {
-    /// Open the UDS at `socket` and negotiate the current L1 protocol.
-    ///
-    /// Control-plane callers advertise L3 because the shared command surface
-    /// includes metadata requests. Consumers with a narrower or richer profile
-    /// use [`Self::connect_with_hello`] instead.
+    /// An unnegotiated connection over the given transport halves.
+    const fn new(
+        reader: FrameReader,
+        writer: FrameWriter,
+        peer_pid: Option<i32>,
+        multistream: Option<Multistream>,
+    ) -> Self {
+        Self {
+            reader,
+            writer,
+            peer_pid,
+            negotiated_bootstrap: None,
+            server_id: None,
+            next_attach_id: 1,
+            multistream,
+        }
+    }
+
+    /// An unnegotiated connection over a connected Unix stream.
+    fn over_uds(stream: UnixStream) -> Self {
+        // Peer credentials are only readable before the split.
+        let peer_pid = stream.peer_cred().ok().and_then(|cred| cred.pid());
+        let (read, write) = stream.into_split();
+        Self::new(
+            FrameReader::Uds(UdsReader {
+                inner: read,
+                buf: BytesMut::with_capacity(8192),
+                bootstrap_limits: BootstrapLimits::default(),
+            }),
+            FrameWriter::Uds(UdsWriter {
+                inner: write,
+                out: BytesMut::with_capacity(4096),
+                corked: false,
+            }),
+            peer_pid,
+            None,
+        )
+    }
+
+    /// Open the UDS at `socket` and negotiate the control-plane profile
+    /// (L3 included, for metadata requests).
     ///
     /// # Errors
     ///
-    /// Surfaces `AttachError::Io` on any connect failure and handshake errors
-    /// when the server refuses or does not acknowledge `HELLO`.
+    /// Connect failures, or handshake errors when the server refuses or does
+    /// not acknowledge `HELLO`.
     pub async fn connect(socket: &Path) -> Result<Self, AttachError> {
         Self::connect_with_hello(socket, default_client_name(), control_client_caps()).await
     }
@@ -579,35 +512,10 @@ impl Connection {
             AttachError::Io(io::Error::new(io::ErrorKind::PermissionDenied, refusal))
         })?;
         let stream = UnixStream::connect(socket).await.map_err(AttachError::Io)?;
-        // Read the peer credentials while the stream is still whole: the
-        // split halves do not expose them, and the pid is free to capture
-        // here. Best-effort — a platform without a pid in its credentials
-        // yields `None`, never an error.
-        let peer_pid = stream.peer_cred().ok().and_then(|cred| cred.pid());
-        let (read, write) = stream.into_split();
-        Ok(Self {
-            reader: FrameReader::Uds(UdsReader {
-                inner: read,
-                buf: BytesMut::with_capacity(8192),
-                bootstrap_limits: BootstrapLimits::default(),
-            }),
-            writer: FrameWriter::Uds(UdsWriter {
-                inner: write,
-                out: BytesMut::with_capacity(4096),
-                corked: false,
-            }),
-            peer_pid,
-            negotiated_bootstrap: None,
-            server_id: None,
-            next_attach_id: 1,
-            multistream: None,
-        })
+        Ok(Self::over_uds(stream))
     }
 
-    /// Dial a remote QUIC listener and negotiate the current L1 protocol.
-    ///
-    /// Establishes TLS and the optional bearer-token preamble, then waits for
-    /// `HELLO_OK` before returning.
+    /// Dial a remote QUIC listener and negotiate the control-plane profile.
     ///
     /// # Errors
     ///
@@ -633,8 +541,7 @@ impl Connection {
     }
 
     #[cfg(feature = "testkit")]
-    /// Test seam for exercising incomplete Terminal frames without waiting for
-    /// the production deadline.
+    /// [`Self::connect_quic`] with a short incomplete-Terminal-frame deadline.
     ///
     /// # Errors
     ///
@@ -660,8 +567,8 @@ impl Connection {
 
     async fn connect_quic_transport(dial: &QuicDial) -> Result<Self, AttachError> {
         let (endpoint, connection, send, recv) = quic::dial(dial).await?;
-        Ok(Self {
-            reader: FrameReader::Quic(QuicReader {
+        Ok(Self::new(
+            FrameReader::Quic(QuicReader {
                 recv,
                 buf: BytesMut::with_capacity(8192),
                 scratch: vec![0_u8; QUIC_TRY_READ_BYTES].into_boxed_slice(),
@@ -669,21 +576,18 @@ impl Connection {
                 _connection: connection.clone(),
                 bootstrap_limits: BootstrapLimits::default(),
             }),
-            writer: FrameWriter::Quic(QuicWriter {
+            FrameWriter::Quic(QuicWriter {
                 send,
                 out: BytesMut::with_capacity(4096),
                 endpoint,
                 connection: connection.clone(),
             }),
-            peer_pid: None,
-            negotiated_bootstrap: None,
-            server_id: None,
-            next_attach_id: 1,
-            multistream: Some(Multistream::new(connection)),
-        })
+            None,
+            Some(Multistream::new(connection)),
+        ))
     }
 
-    /// Dial a remote WebSocket listener and negotiate the current L1 protocol.
+    /// Dial a remote WebSocket listener and negotiate the control-plane profile.
     ///
     /// # Errors
     ///
@@ -710,44 +614,30 @@ impl Connection {
     async fn connect_ws_transport(dial: &WsDial) -> Result<Self, AttachError> {
         let ws = ws::dial(dial).await?;
         let (tx, rx) = futures_util::StreamExt::split(ws);
-        Ok(Self {
-            reader: FrameReader::Ws(WsReader {
+        Ok(Self::new(
+            FrameReader::Ws(WsReader {
                 inner: ws::WsReader::new(rx),
                 bootstrap_limits: BootstrapLimits::default(),
             }),
-            writer: FrameWriter::Ws(WsWriter {
+            FrameWriter::Ws(WsWriter {
                 inner: ws::WsWriter { tx },
                 out: BytesMut::with_capacity(4096),
             }),
-            peer_pid: None,
-            negotiated_bootstrap: None,
-            server_id: None,
-            next_attach_id: 1,
-            multistream: None,
-        })
+            None,
+            None,
+        ))
     }
 
-    /// Pid of the peer process on a UDS connection, captured from the
-    /// socket's peer credentials at connect time — for a client dialing the
-    /// server socket, that is the server's pid. `None` on the remote
-    /// transports and on platforms whose peer credentials carry no pid.
-    ///
-    /// This is an OS fact about the socket, not a wire exchange: the server
-    /// neither knows nor participates, so it works against any server
-    /// version.
+    /// The server's pid, from the UDS peer credentials (an OS fact, not a wire
+    /// exchange). `None` on remote transports or when the platform omits it.
     #[must_use]
     pub const fn peer_pid(&self) -> Option<i32> {
         self.peer_pid
     }
 
-    /// Close the connection cleanly, awaiting transmission of the close frame.
-    ///
-    /// For QUIC this issues a `CONNECTION_CLOSE` and awaits `wait_idle`, so the
-    /// server reaps the consumer at once rather than at its idle timeout — used
-    /// by the reconnect probe, which would otherwise leave a phantom connection
-    /// per attempt. For UDS this is a no-op (dropping the socket halves is a
-    /// clean close already). [`QuicWriter`]'s [`Drop`] is the best-effort
-    /// backstop on paths that cannot await.
+    /// Close cleanly. On QUIC this sends `CONNECTION_CLOSE` and awaits
+    /// `wait_idle`, so the server reaps the consumer at once; elsewhere
+    /// dropping the halves already is a clean close.
     pub async fn shutdown(mut self) {
         self.unbind_all_terminals();
         if let FrameWriter::Quic(writer) = &self.writer {
@@ -756,7 +646,7 @@ impl Connection {
         }
     }
 
-    /// Connect over `dial` and negotiate the generic L1 profile.
+    /// Connect over `dial` and negotiate the control-plane profile.
     ///
     /// # Errors
     ///
@@ -782,40 +672,16 @@ impl Connection {
         }
     }
 
-    /// Build a `Connection` from an already-connected [`UnixStream`].
-    ///
-    /// Test-only seam: lets the dispatcher unit tests drive a real framed
-    /// transport over an in-process `UnixStream::pair` without a server
-    /// socket on disk. Mirrors the wiring [`Self::connect`] does after the
-    /// connect resolves.
+    /// An unnegotiated connection over an already-connected [`UnixStream`]:
+    /// the in-process test seam.
     #[cfg(any(test, feature = "testkit"))]
+    #[must_use]
     pub fn from_stream(stream: UnixStream) -> Self {
-        let peer_pid = stream.peer_cred().ok().and_then(|cred| cred.pid());
-        let (read, write) = stream.into_split();
-        Self {
-            reader: FrameReader::Uds(UdsReader {
-                inner: read,
-                buf: BytesMut::with_capacity(8192),
-                bootstrap_limits: BootstrapLimits::default(),
-            }),
-            writer: FrameWriter::Uds(UdsWriter {
-                inner: write,
-                out: BytesMut::with_capacity(4096),
-                corked: false,
-            }),
-            peer_pid,
-            negotiated_bootstrap: None,
-            server_id: None,
-            next_attach_id: 1,
-            multistream: None,
-        }
+        Self::over_uds(stream)
     }
 
-    /// Negotiate the current protocol once on an already-connected transport.
-    ///
-    /// Production constructors call this before returning. It is public so the
-    /// TUI crate's scripted tests can exercise the same handshake over
-    /// the testkit-only `from_stream` constructor.
+    /// Negotiate the protocol once. Production constructors already did; this
+    /// is public for tests driving a `from_stream` connection.
     ///
     /// # Errors
     ///
@@ -874,44 +740,33 @@ impl Connection {
         }
     }
 
-    /// Return the exact immutable bootstrap selection.
-    ///
-    /// Production constructors cannot return a connection without this value.
-    /// The `Option` exposes the unnegotiated state only to crate-internal raw
-    /// transport tests built with `Self::from_stream`.
+    /// What `HELLO_OK` selected; `None` only on the `from_stream` test seam.
     #[must_use]
     pub const fn negotiated_bootstrap(&self) -> Option<NegotiatedBootstrap> {
         self.negotiated_bootstrap
     }
 
-    /// The role an observer attaches with (ADR-0127): `VIEWER` when the
-    /// server advertises `ATTACH_ROLES`, so a recorder or a log follower can
-    /// never type into what it watches; `None`, an ordinary attach, on an
-    /// older server, which would ignore the byte anyway.
+    /// The role an observer attaches with (ADR-0127): `VIEWER` when the server
+    /// advertises `ATTACH_ROLES`, so it can never type into what it watches.
     #[must_use]
     pub fn observer_role_policy(&self) -> Option<phux_protocol::wire::frame::RolePolicy> {
         self.advertises(ServerFeature::AttachRoles)
             .then_some(phux_protocol::wire::frame::RolePolicy::VIEWER)
     }
 
-    /// Whether this connection's `HELLO_OK` advertised `feature`; `false` on
-    /// the unnegotiated test seam, which proved nothing.
+    /// Whether `HELLO_OK` advertised `feature`.
     fn advertises(&self, feature: ServerFeature) -> bool {
         self.negotiated_bootstrap
             .is_some_and(|negotiated| negotiated.server_features.contains(feature))
     }
 
-    /// `HELLO_OK.server_id` — this connection's server-incarnation identity
-    /// (ADR-0053 point 5), or `None` on the unnegotiated test seam.
+    /// `HELLO_OK.server_id`, the server-incarnation id (ADR-0053).
     #[must_use]
     pub fn server_id(&self) -> Option<&[u8]> {
         self.server_id.as_deref()
     }
 
-    /// Allocate a non-zero correlation id for the next `ATTACH`.
-    ///
-    /// IDs are connection-local. Wrapping skips zero so every emitted request
-    /// remains wire-valid.
+    /// Allocate a connection-local, non-zero correlation id for an `ATTACH`.
     pub const fn next_attach_id(&mut self) -> u32 {
         let id = self.next_attach_id;
         self.next_attach_id = self.next_attach_id.wrapping_add(1);
@@ -974,11 +829,9 @@ impl Connection {
         matches!(self.writer, FrameWriter::Quic(_)) && self.advertises(ServerFeature::QuicStreams)
     }
 
-    /// Open and bind one client-originated QUIC Terminal stream.
-    ///
-    /// The stream id is application-level and allocated by this connection;
-    /// it is never the QUIC stream id. The server consumes the bind header
-    /// before handing the stream's framed bytes to the normal dispatcher.
+    /// Open and bind a QUIC stream for `terminal_id` (a no-op when multistream
+    /// is off or it is already bound). The bind header carries an app-level
+    /// stream id, never the QUIC one.
     pub async fn bind_terminal(&mut self, terminal_id: &ResourceId) -> Result<(), AttachError> {
         if !self.multistream_enabled() {
             return Ok(());
@@ -1082,13 +935,8 @@ impl Connection {
         }
     }
 
-    /// Accumulate sends until [`Self::uncork`] instead of writing each one.
-    ///
-    /// The attach loop corks for the span of one input batch so a read that
-    /// decoded several events (auto-repeat, arrow spam, a drag burst) costs
-    /// one write instead of one per event. Callers MUST pair it with
-    /// [`Self::uncork`] on every exit path, including the error path — that is
-    /// what publishes the bytes.
+    /// Accumulate sends until [`Self::uncork`], so one input batch costs one
+    /// write. Callers MUST uncork on every exit path, errors included.
     pub fn cork(&mut self) {
         self.writer.cork();
     }
@@ -1101,17 +949,10 @@ impl Connection {
 
     /// Read the next frame from the server.
     ///
-    /// On the WebSocket lane this is also where liveness is maintained: the
-    /// read is paired with its own write half so an idle connection is
-    /// ping/pong probed, and a peer that stops answering surfaces as
-    /// [`AttachError::Disconnected`] rather than parking forever. UDS gets
-    /// EOF from the kernel and QUIC has its own keep-alive, so both read
-    /// straight through.
-    ///
-    /// A SPEC §5 framing violation is answered with
-    /// `ERROR { code: FRAME_TOO_LARGE }` (best-effort) before this returns
-    /// [`AttachError::Framing`]. Decode stays on the read half; emission
-    /// lives here because this is where the paired write half is in scope.
+    /// On WebSocket the read also ping/pong probes an idle peer, so one that
+    /// stops answering surfaces as [`AttachError::Disconnected`]. A SPEC §5
+    /// framing violation is answered with `ERROR { FRAME_TOO_LARGE }`
+    /// (best-effort) before [`AttachError::Framing`] is returned.
     pub async fn recv(&mut self) -> Result<FrameKind, AttachError> {
         let result = self.recv_frame().await;
         if let Err(err) = &result {
@@ -1132,17 +973,13 @@ impl Connection {
         }
     }
 
-    /// SPEC §5: send `ERROR { code: FRAME_TOO_LARGE }` before the caller
-    /// drops this connection. Best-effort — a peer that already vanished
-    /// cannot fail the close path (same rule as the server's per-client
-    /// loop and the hub's satellite links).
+    /// SPEC §5: send `ERROR { FRAME_TOO_LARGE }` before the caller drops
+    /// the connection. Best-effort: a vanished peer cannot fail the close.
     async fn emit_frame_too_large(&mut self, err: &AttachError) {
         let AttachError::Framing(violation) = err else {
             return;
         };
-        // A §5 goodbye is not an input event: drop any corked batch so the
-        // ERROR hits the wire instead of dying in the buffer with the
-        // connection.
+        // Drop any corked batch so the ERROR is not stuck behind it.
         if let FrameWriter::Uds(writer) = &mut self.writer {
             writer.corked = false;
             writer.out.clear();
@@ -1186,22 +1023,12 @@ impl Connection {
         }
     }
 
-    /// Pull a frame that is *already available* without awaiting the socket.
-    ///
-    /// Returns `Ok(Some(frame))` when a complete frame can be decoded from
-    /// data already buffered (or readable without blocking), `Ok(None)` when
-    /// the next frame is not yet fully here. Lets the attach loop drain a
-    /// back-to-back burst after the first `recv` so the whole run coalesces
-    /// into a single paint (phux-jhv8).
-    ///
-    /// A SPEC §5 framing violation is answered the same way as [`Self::recv`]:
-    /// the ERROR is polled once against a no-op waker so this stays
-    /// non-blocking. On a live UDS socket that write completes immediately.
+    /// A frame that is already available without waiting, or `Ok(None)`, so
+    /// the attach loop can drain a burst into one paint. Framing violations
+    /// are answered as in [`Self::recv`], without blocking.
     pub fn try_recv(&mut self) -> Result<Option<FrameKind>, AttachError> {
         let result = self.try_recv_frame();
         if let Err(err) = &result {
-            // Same emission as `recv`, without awaiting: a framing violation
-            // ends the connection, and this drain path must not park.
             let _ = futures_util::FutureExt::now_or_never(self.emit_frame_too_large(err));
         }
         result
@@ -1233,85 +1060,42 @@ impl Connection {
     }
 
     /// Send one `COMMAND` and wait for its reply, keeping every frame the
-    /// server interleaved ahead of it.
+    /// server interleaved ahead of it (see the interleave contract on
+    /// [`Connection`]).
     ///
-    /// This is the only correct request/response primitive on a `Connection`
-    /// — see the interleave contract on the type. The hand-rolled
-    /// `loop { match recv() { mine => return, _ => {} } }` it replaces is
-    /// *silently lossy*: the frames it drops are already consumed off the
-    /// socket and nothing re-sends them.
+    /// The frames come back inside [`Reply`], so the ack is unreachable
+    /// without deciding what to do with them; the only way to drop them is
+    /// the greppable [`Reply::into_result_ignoring_interleaved`].
     ///
-    /// # Why the frames come back in the return value
-    ///
-    /// Three shapes were possible; only one makes the loss impossible rather
-    /// than merely discouraged.
-    ///
-    /// - A `FnMut(FrameKind)` callback would let the discarding caller write
-    ///   `|_| {}` — a shorter, more innocent-looking spelling of the very bug
-    ///   this exists to prevent. It is also synchronous, so a caller that
-    ///   wants to *await* on each frame (feed a pump, write a cast event)
-    ///   cannot use it.
-    /// - A caller-supplied `&mut Vec<FrameKind>` sink has the same hole:
-    ///   `&mut Vec::new()` reads as ordinary setup, and a `&mut` out-param
-    ///   cannot be `#[must_use]`.
-    /// - Returning them inside [`Reply`] — which also owns the
-    ///   [`CommandResult`] — means the ack is *unreachable* without passing
-    ///   through a named accessor, and the only way to drop the frames is
-    ///   [`Reply::into_result_ignoring_interleaved`], whose name is the audit
-    ///   trail. `grep` for it and you have the complete list of places that
-    ///   claim the server cannot interleave; each one owes a citation of the
-    ///   server handler that makes the claim true.
-    ///
-    /// The `Vec` is allocated per call and is empty in the common case, which
-    /// is the right trade for a control-plane round trip: these are one per
-    /// CLI verb, not per keystroke.
-    ///
-    /// # Terminating frames
-    ///
-    /// Either a `COMMAND_RESULT` carrying `request_id`, or an `ERROR` frame
-    /// *correlated* to it (`proto.md` §9: `request_id` is "present if the
-    /// error is associated with a COMMAND"), which is normalized to
-    /// [`CommandResult::Error`]. Honouring the correlated `ERROR` is not
-    /// cosmetic — every hand-rolled loop in the workspace waited on
-    /// `COMMAND_RESULT` alone and would hang forever against a peer that
-    /// answers the way L1 §5 permits (`ERROR { code: INVALID_COMMAND }` for a
-    /// command the server does not implement). A hub already normalizes that
-    /// shape on the return leg from a satellite
-    /// (`crates/phux-server/src/hub/relay.rs`, `handle_inbound`); this does
-    /// the same for a direct peer.
-    ///
-    /// An *uncorrelated* `ERROR` (`request_id: None`) is not terminal — it is
-    /// the federation degradation notice, and it lands in
-    /// [`Reply::interleaved`] like any other pushed frame.
+    /// The reply is a `COMMAND_RESULT` for `request_id`, or an `ERROR`
+    /// correlated to it (proto.md §9), folded into [`CommandResult::Error`];
+    /// without that a peer refusing an unimplemented command would hang the
+    /// caller. An uncorrelated `ERROR` (a hub's satellite degradation notice)
+    /// is not an answer and lands in [`Reply::interleaved`].
     ///
     /// # Errors
     ///
-    /// Propagates transport and decode failures from [`Self::send`] /
-    /// [`Self::recv`]; a server that closes without replying surfaces as
-    /// [`AttachError::Disconnected`].
+    /// Transport and decode failures; a server that closes without replying
+    /// is [`AttachError::Disconnected`].
     pub async fn request(
         &mut self,
         request_id: u32,
         command: Command,
     ) -> Result<Reply, AttachError> {
-        self.send(&FrameKind::Command {
+        let frame = FrameKind::Command {
             request_id,
             command,
-        })
-        .await?;
-        let mut interleaved = Vec::new();
-        let answer = self
-            .await_answer(request_id, &mut interleaved, |frame| match frame {
+        };
+        let (answer, interleaved) = self
+            .round_trip(request_id, &frame, |frame| match frame {
                 FrameKind::CommandResult { request_id, result } => {
                     Some((*request_id, result.clone()))
                 }
                 _ => None,
             })
-            .await?;
-        // `CommandResult` already has an `Error` variant with exactly the
-        // `ERROR` frame's payload, so this pair folds the refusal into its
-        // reply type rather than surfacing an `Answer` — which is why the
-        // public signature is unchanged from before the engine existed.
+            .await?
+            .into_parts();
+        // `CommandResult::Error` carries exactly the `ERROR` payload.
         let result = answer.unwrap_or_else(|refusal| CommandResult::Error {
             code: refusal.code,
             message: refusal.message,
@@ -1323,13 +1107,8 @@ impl Connection {
     }
 
     /// Send one `GET_METADATA` and wait for its `METADATA_VALUE`, keeping
-    /// every frame the peer interleaved ahead of it.
-    ///
-    /// The L3 twin of [`Self::request`]. A refusal is an [`Answer::Err`]
-    /// rather than a `None` value: "the key is unset" and "the peer will not
-    /// serve this scope" are different facts, and collapsing them is how
-    /// `phux new` came to report "server did not register session" for a
-    /// server that had refused the read outright.
+    /// interleaved frames. A refusal is an `Err` answer, distinct from an
+    /// unset key (`Ok(None)`).
     ///
     /// # Errors
     ///
@@ -1341,30 +1120,20 @@ impl Connection {
         scope: Scope,
         key: String,
     ) -> Result<Reply<Answer<Option<Vec<u8>>>>, AttachError> {
-        self.send(&FrameKind::GetMetadata {
+        let frame = FrameKind::GetMetadata {
             request_id,
             scope,
             key,
+        };
+        self.round_trip(request_id, &frame, |frame| match frame {
+            FrameKind::MetadataValue { request_id, value } => Some((*request_id, value.clone())),
+            _ => None,
         })
-        .await?;
-        let mut interleaved = Vec::new();
-        let result = self
-            .await_answer(request_id, &mut interleaved, |frame| match frame {
-                FrameKind::MetadataValue { request_id, value } => {
-                    Some((*request_id, value.clone()))
-                }
-                _ => None,
-            })
-            .await?;
-        Ok(Reply {
-            result,
-            interleaved,
-        })
+        .await
     }
 
     /// Send one `LIST_METADATA` and wait for its `METADATA_KEYS`, keeping
-    /// every frame the peer interleaved ahead of it. A refusal is an
-    /// [`Answer`] `Err`, as for [`Self::request_metadata`].
+    /// interleaved frames.
     ///
     /// # Errors
     ///
@@ -1375,106 +1144,23 @@ impl Connection {
         request_id: u32,
         scope: Scope,
     ) -> Result<Reply<Answer<Vec<String>>>, AttachError> {
-        self.send(&FrameKind::ListMetadata { request_id, scope })
-            .await?;
-        let mut interleaved = Vec::new();
-        let result = self
-            .await_answer(request_id, &mut interleaved, |frame| match frame {
-                FrameKind::MetadataKeys { request_id, keys } => Some((*request_id, keys.clone())),
-                _ => None,
-            })
-            .await?;
-        Ok(Reply {
-            result,
-            interleaved,
+        let frame = FrameKind::ListMetadata { request_id, scope };
+        self.round_trip(request_id, &frame, |frame| match frame {
+            FrameKind::MetadataKeys { request_id, keys } => Some((*request_id, keys.clone())),
+            _ => None,
         })
-    }
-
-    /// Send one `LIST_DIRECTORY` and wait for its `DIRECTORY_LISTING`,
-    /// keeping every frame the peer interleaved ahead of it
-    /// (`docs/spec/L3.md` §4).
-    ///
-    /// The listing comes from the host of the server this connection is
-    /// dialed to, which is what makes a directory picker host-aware: over
-    /// `--remote` it lists the remote machine. `path` is absolute, `~`,
-    /// `~/rest`, or empty for the serving user's home.
-    ///
-    /// `host` names a satellite in the serving hub's registry, and the hub
-    /// relays the listing to that satellite (`docs/spec/L3.md` §4.1,
-    /// ADR-0108); `None` lists the serving host and sends the same bytes as
-    /// before the field existed. A named host requires
-    /// [`ServerFeature::ListDirectoryHost`] in this connection's `HELLO_OK`:
-    /// an older server skips the field and lists itself, so without the bit
-    /// this refuses before sending rather than return the wrong host's
-    /// directory under the requested host's name.
-    ///
-    /// The caller MUST check
-    /// [`ServerFeature::ListDirectory`] first: an older server drops the unknown frame and this would wait
-    /// until the transport closes. A filesystem refusal is the `Err` arm of
-    /// the inner [`DirectoryListingResult`](phux_protocol::wire::frame::DirectoryListingResult);
-    /// a protocol refusal (a correlated `ERROR`) is an [`Answer`] `Err`.
-    ///
-    /// # Errors
-    ///
-    /// [`AttachError::Protocol`] when `host` is set and the server did not
-    /// advertise [`ServerFeature::ListDirectoryHost`] (nothing is sent);
-    /// otherwise transport and decode failures from [`Self::send`] /
-    /// [`Self::recv`].
-    pub async fn request_directory(
-        &mut self,
-        request_id: u32,
-        path: String,
-        host: Option<phux_protocol::SatelliteHost>,
-    ) -> Result<Reply<Answer<phux_protocol::wire::frame::DirectoryListingResult>>, AttachError>
-    {
-        if let Some(host) = &host
-            && !self.advertises(ServerFeature::ListDirectoryHost)
-        {
-            return Err(AttachError::Protocol(format!(
-                "cannot list directories on satellite `{host}`: the server did not \
-                 advertise LIST_DIRECTORY_HOST, so it would list itself instead",
-            )));
-        }
-        self.send(&FrameKind::ListDirectory {
-            request_id,
-            path,
-            host,
-        })
-        .await?;
-        let mut interleaved = Vec::new();
-        let result = self
-            .await_answer(request_id, &mut interleaved, |frame| match frame {
-                FrameKind::DirectoryListing { request_id, result } => {
-                    Some((*request_id, result.clone()))
-                }
-                _ => None,
-            })
-            .await?;
-        Ok(Reply {
-            result,
-            interleaved,
-        })
+        .await
     }
 
     /// Send one `SPAWN_RESOURCE` and wait for its `RESOURCE_SPAWNED`, keeping
-    /// every frame the peer interleaved ahead of it.
-    ///
-    /// The correlation id is read out of `frame` rather than passed alongside
-    /// it, so the id waited on and the id sent cannot disagree.
-    ///
-    /// A satellite MAY answer a relayed spawn with a correlated `ERROR`
-    /// instead of `RESOURCE_SPAWNED` — a hub already normalizes exactly that
-    /// shape on the return leg (`crates/phux-server/src/hub/relay.rs`,
-    /// `handle_inbound`: "a satellite MAY answer a relayed spawn with a
-    /// generic correlated ERROR"). This is the same normalization for a
-    /// direct peer, and without it `phux spawn --satellite` waits forever for
-    /// a frame that is never coming.
+    /// interleaved frames. The correlation id is read from `frame`. A
+    /// satellite may answer a relayed spawn with a correlated `ERROR`, which
+    /// becomes an `Err` answer.
     ///
     /// # Errors
     ///
     /// [`AttachError::Protocol`] when `frame` is not a `SPAWN_RESOURCE`;
-    /// otherwise transport and decode failures from [`Self::send`] /
-    /// [`Self::recv`].
+    /// otherwise transport and decode failures.
     pub async fn request_spawn(
         &mut self,
         frame: &FrameKind,
@@ -1484,35 +1170,22 @@ impl Connection {
                 "request_spawn needs a SPAWN_RESOURCE frame, got {frame:?}",
             )));
         };
-        let request_id = *request_id;
-        self.send(frame).await?;
-        let mut interleaved = Vec::new();
-        let result = self
-            .await_answer(request_id, &mut interleaved, |frame| match frame {
-                FrameKind::ResourceSpawned { request_id, result } => {
-                    Some((*request_id, result.clone()))
-                }
-                _ => None,
-            })
-            .await?;
-        Ok(Reply {
-            result,
-            interleaved,
+        self.round_trip(*request_id, frame, |frame| match frame {
+            FrameKind::ResourceSpawned { request_id, result } => {
+                Some((*request_id, result.clone()))
+            }
+            _ => None,
         })
+        .await
     }
 
     /// Send one `MOVE_RESOURCE` and wait for its `RESOURCE_MOVED`, keeping
-    /// every frame the peer interleaved ahead of it (ADR-0056).
-    ///
-    /// The correlation id is read out of `frame` rather than passed
-    /// alongside it, so the id waited on and the id sent cannot disagree —
-    /// the same contract as [`Self::request_spawn`].
+    /// interleaved frames (ADR-0056). The correlation id is read from `frame`.
     ///
     /// # Errors
     ///
     /// [`AttachError::Protocol`] when `frame` is not a `MOVE_RESOURCE`;
-    /// otherwise transport and decode failures from [`Self::send`] /
-    /// [`Self::recv`].
+    /// otherwise transport and decode failures.
     pub async fn request_move(
         &mut self,
         frame: &FrameKind,
@@ -1522,16 +1195,24 @@ impl Connection {
                 "request_move needs a MOVE_RESOURCE frame, got {frame:?}",
             )));
         };
-        let request_id = *request_id;
+        self.round_trip(*request_id, frame, |frame| match frame {
+            FrameKind::ResourceMoved { request_id, result } => Some((*request_id, result.clone())),
+            _ => None,
+        })
+        .await
+    }
+
+    /// Send `frame`, then wait for its answer; see [`Self::await_answer`].
+    async fn round_trip<T>(
+        &mut self,
+        request_id: u32,
+        frame: &FrameKind,
+        recognize: impl Fn(&FrameKind) -> Option<(u32, T)>,
+    ) -> Result<Reply<Answer<T>>, AttachError> {
         self.send(frame).await?;
         let mut interleaved = Vec::new();
         let result = self
-            .await_answer(request_id, &mut interleaved, |frame| match frame {
-                FrameKind::ResourceMoved { request_id, result } => {
-                    Some((*request_id, result.clone()))
-                }
-                _ => None,
-            })
+            .await_answer(request_id, &mut interleaved, recognize)
             .await?;
         Ok(Reply {
             result,
@@ -1539,45 +1220,16 @@ impl Connection {
         })
     }
 
-    /// The workspace's only correlation loop.
+    /// The workspace's only correlation loop: read until the peer answers
+    /// `request_id`, pushing every other frame onto `interleaved`.
     ///
-    /// Reads frames until the peer answers `request_id`, pushing every frame
-    /// that is not that answer onto `interleaved`. `recognize` reports the
-    /// request id and payload of a frame that is *this pair's* reply frame,
-    /// and `None` for anything else.
-    ///
-    /// # Why one engine and typed wrappers, rather than a public generic
-    ///
-    /// The catalogued bug is a caller that waits on one frame variant and
-    /// drops the rest, so a peer answering with a correlated `ERROR`
-    /// (`proto.md` §9) wedges it until the transport dies. Two shapes could
-    /// have fixed it; only one makes the broken version unwriteable.
-    ///
-    /// - **A public generic `request_frame(id, frame, predicate)`.** The
-    ///   caller supplies the correlation, which means the caller can get the
-    ///   correlation wrong — and the specific way every site here got it
-    ///   wrong was *omitting the `ERROR` arm*. Handing that arm back to the
-    ///   author who already forgot it once is not an abstraction, it is a
-    ///   rename.
-    /// - **This: one private engine, one public method per pair.** The
-    ///   `ERROR` arm is not the pair's business at all; adding a pair means
-    ///   naming its reply frame, and the author cannot forget a rule they are
-    ///   never asked to state. Adding a pair *without* the engine means
-    ///   writing a visible `loop { recv() }` next to three methods that
-    ///   don't — reviewable in the diff, which the discarding version never
-    ///   was.
-    ///
-    /// `recognize` takes `&FrameKind` and clones the payload out rather than
-    /// consuming the frame. That is the load-bearing detail: a closure taking
-    /// the frame by value could not hand back the ones it does not recognize,
-    /// and "the frame it did not recognize is now gone" is the entire bug
-    /// class. The cost is one clone of a control-plane payload per round
-    /// trip — these are one per CLI verb, not per keystroke.
+    /// `recognize` names one pair's reply frame; the correlated-`ERROR` arm
+    /// lives here so no pair can forget it. It borrows each frame and clones
+    /// the payload out, so an unrecognized frame is never consumed.
     ///
     /// # Errors
     ///
-    /// Propagates transport and decode failures from [`Self::recv`]; a peer
-    /// that closes without answering surfaces as
+    /// Transport and decode failures; a peer that closes without answering is
     /// [`AttachError::Disconnected`].
     async fn await_answer<T>(
         &mut self,
@@ -1592,11 +1244,8 @@ impl Connection {
             {
                 return Ok(Ok(value));
             }
-            // `proto.md` §9: an `ERROR` carrying a `request_id` is *that*
-            // request's answer. An uncorrelated one (`request_id: None`) is
-            // not — on this wire it is the hub's per-satellite degradation
-            // notice — so it falls through to `interleaved` like any other
-            // pushed frame.
+            // proto.md §9: an `ERROR` carrying this `request_id` answers it;
+            // an uncorrelated one is a pushed notice.
             if let FrameKind::Error {
                 request_id: Some(got),
                 code,
@@ -1614,15 +1263,8 @@ impl Connection {
     }
 }
 
-/// The peer's correlated `ERROR` answer to one request (`proto.md` §9).
-///
-/// Distinct from an uncorrelated `ERROR`, which answers nothing and reaches
-/// the caller through [`Reply::interleaved`].
-///
-/// The `Display` renders the code through
-/// [`crate::explain::error_code_label`] — lowercase spaced words, not the
-/// `Debug` of a wire enum — because this string reaches users verbatim
-/// through every CLI verb that reports a refusal (phux-i0e8.7.4).
+/// The peer's correlated `ERROR` answer to one request (proto.md §9). Its
+/// `Display` renders the code as words, since it reaches users verbatim.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{}: {message}", crate::explain::error_code_label(*.code))]
 pub struct Refusal {
@@ -1634,27 +1276,11 @@ pub struct Refusal {
 
 /// A peer's answer to one correlated request: the reply payload, or the
 /// [`Refusal`] it answered with instead.
-///
-/// A plain `Result` on purpose. Every caller of a correlated round trip has
-/// to decide what a refusal means for it, and `Result` is the one shape the
-/// language will not let them skip: there is no accessor that yields the
-/// value while leaving the refusal unexamined, `?` and `map_err` compose the
-/// refusal into the caller's own error type, and [`Refusal`] is an
-/// `std::error::Error` so `thiserror` wrappers take it directly.
 pub type Answer<T> = Result<T, Refusal>;
 
-/// The complete outcome of one correlated round trip: the answer, plus every
-/// frame the peer pushed ahead of it.
-///
-/// Deliberately opaque. The fields are reachable only through methods, so a
-/// caller cannot destructure away the half it did not think about — the whole
-/// point of the type (see [`Connection::request`] for the design rationale and
-/// the interleave contract on [`Connection`] for why the frames matter).
-///
-/// `T` is whatever the pair's answer is: [`CommandResult`] for
-/// [`Connection::request`] (which folds a refusal into `CommandResult::Error`
-/// because that variant already carries exactly the `ERROR` payload), and
-/// [`Answer`] for the pairs whose reply type has nowhere to put one.
+/// One correlated round trip's answer plus every frame the peer pushed ahead
+/// of it. Opaque on purpose: the fields are reachable only through methods,
+/// so neither half can be destructured away by omission.
 #[derive(Debug)]
 #[must_use = "the reply carries frames the server will never re-send; dropping \
               it loses them"]
@@ -1667,9 +1293,6 @@ pub struct Reply<T = CommandResult> {
 
 impl<T> Reply<T> {
     /// The answer and the interleaved frames, in arrival order.
-    ///
-    /// The default way to consume a reply: binding both halves is what makes
-    /// forgetting one a visible act rather than an omission.
     #[must_use]
     pub fn into_parts(self) -> (T, Vec<FrameKind>) {
         (self.result, self.interleaved)
@@ -1687,17 +1310,11 @@ impl<T> Reply<T> {
         &self.interleaved
     }
 
-    /// Take the answer and drop the interleaved frames on the floor.
+    /// Take the answer and drop the interleaved frames.
     ///
-    /// **Only correct when the server provably pushes nothing to this
-    /// connection's mailbox before the ack** — i.e. the handler emits no frame
-    /// of its own *and* the connection holds no subscription that could fan
-    /// out onto it. Cite the server handler in a comment at every call site;
-    /// this method name is how the next audit finds you.
-    ///
-    /// A non-empty drop is logged at `warn`, so the failure mode is at worst
-    /// noisy rather than silent. The dropped frames are still gone: the log is
-    /// a diagnostic, not a recovery.
+    /// Only correct when the server provably pushes nothing before the ack
+    /// (no frame from the handler, no subscription on the connection); cite
+    /// the handler at each call site. A non-empty drop is logged at `warn`.
     #[must_use]
     pub fn into_result_ignoring_interleaved(self) -> T {
         if !self.interleaved.is_empty() {
@@ -1713,8 +1330,7 @@ impl<T> Reply<T> {
 }
 
 impl FrameWriter {
-    /// Encode `frame` and write it to the server over whichever transport.
-    pub async fn send(&mut self, frame: &FrameKind) -> Result<(), AttachError> {
+    async fn send(&mut self, frame: &FrameKind) -> Result<(), AttachError> {
         match self {
             Self::Uds(w) => w.send(frame).await,
             Self::Quic(w) => w.send(frame).await,
@@ -1722,13 +1338,8 @@ impl FrameWriter {
         }
     }
 
-    /// Batch sends until [`Self::uncork`] (phux-l96p.4).
-    ///
-    /// UDS only. QUIC already coalesces in its own send buffer, and the
-    /// WebSocket lane frames one binary message per phux frame, so
-    /// concatenating encodes there would be a protocol error rather than an
-    /// optimization. Both therefore keep writing per frame; corking is a
-    /// no-op for them and the driver needs no transport test.
+    /// Batch sends until [`Self::uncork`]. UDS only: QUIC coalesces in its own
+    /// send buffer, and WebSocket needs one message per frame.
     fn cork(&mut self) {
         if let Self::Uds(w) = self {
             w.cork();
@@ -1745,8 +1356,7 @@ impl FrameWriter {
 }
 
 impl FrameReader {
-    /// Read one complete frame off the wire over whichever transport.
-    pub async fn recv(&mut self) -> Result<FrameKind, AttachError> {
+    async fn recv(&mut self) -> Result<FrameKind, AttachError> {
         match self {
             Self::Uds(r) => r.recv().await,
             Self::Quic(r) => r.recv().await,
@@ -1762,15 +1372,9 @@ impl FrameReader {
         }
     }
 
-    /// Non-blocking sibling of [`Self::recv`]: decode a frame only if one is
-    /// already buffered (or, for UDS, becomes readable without blocking).
-    ///
-    /// Returns `Ok(None)` when the next frame is not yet fully available. Every
-    /// transport drains a coalesced burst out of its receive buffer; the UDS
-    /// path additionally tops up from the socket without blocking (quinn exposes
-    /// no sync ready-check, so QUIC drains buffered bytes only), and the
-    /// WebSocket path takes whatever tungstenite has already decoded.
-    pub fn try_recv(&mut self) -> Result<Option<FrameKind>, AttachError> {
+    /// Non-blocking [`Self::recv`]: `Ok(None)` when no complete frame is
+    /// available without waiting.
+    fn try_recv(&mut self) -> Result<Option<FrameKind>, AttachError> {
         match self {
             Self::Uds(r) => r.try_recv(),
             Self::Quic(r) => r.try_recv(),
@@ -1779,16 +1383,8 @@ impl FrameReader {
     }
 }
 
-/// Name the frame a failed write was carrying, preserving [`io::ErrorKind`].
-///
-/// phux-501l. "attach loop io error: Broken pipe (os error 32)" names the
-/// symptom and nothing else — not which write, so not which code path. That
-/// cost two wrong diagnoses of the last-pane-death race before anyone thought
-/// to ask the question this answers. A write error now says what it was
-/// sending.
-///
-/// The kind is carried through deliberately: `super::driver::peer_gone` (feature `tui`)
-/// classifies on `ErrorKind`, so wrapping must not flatten it to `Other`.
+/// Name the frame a failed write was carrying. The [`io::ErrorKind`] is kept:
+/// the TUI classifies a gone peer on it.
 fn write_failed(frame: &FrameKind, err: &io::Error) -> AttachError {
     AttachError::Io(io::Error::new(
         err.kind(),
@@ -1796,9 +1392,7 @@ fn write_failed(frame: &FrameKind, err: &io::Error) -> AttachError {
     ))
 }
 
-/// Sibling of [`write_failed`] for a corked batch, which has no single frame
-/// to name. The `ErrorKind` is carried through for the same reason:
-/// `super::driver::peer_gone` (feature `tui`) classifies on it.
+/// [`write_failed`] for a corked batch, which has no single frame to name.
 fn batch_write_failed(err: &io::Error) -> AttachError {
     AttachError::Io(io::Error::new(
         err.kind(),
@@ -1807,12 +1401,8 @@ fn batch_write_failed(err: &io::Error) -> AttachError {
 }
 
 impl UdsWriter {
-    /// Encode `frame` into the internal buffer and flush it to the socket.
-    ///
-    /// While corked the frame is appended instead, and [`Self::uncork`] ships
-    /// the accumulated batch. Wire order is identical either way: the bytes
-    /// are concatenated in send order into one stream that is already a byte
-    /// stream, so the server decodes exactly the same frame sequence.
+    /// Write one frame, or append it to the batch while corked; wire order is
+    /// the same either way.
     async fn send(&mut self, frame: &FrameKind) -> Result<(), AttachError> {
         if self.corked {
             frame.encode(&mut self.out);
@@ -1824,7 +1414,6 @@ impl UdsWriter {
             .write_all(&self.out)
             .await
             .map_err(|err| write_failed(frame, &err))?;
-        // `flush` on a `UnixStream` half is a no-op, but harmless and explicit.
         self.inner
             .flush()
             .await
@@ -1832,20 +1421,14 @@ impl UdsWriter {
         Ok(())
     }
 
-    /// Start accumulating sends instead of writing them.
-    ///
-    /// Idempotent, and it clears the buffer, so an [`Self::uncork`] that was
-    /// skipped by an early return can never leak stale bytes into the next
-    /// batch.
+    /// Start a batch. Clears the buffer, so a skipped uncork can never leak
+    /// stale bytes into the next batch.
     fn cork(&mut self) {
         self.out.clear();
         self.corked = true;
     }
 
     /// Ship everything accumulated since [`Self::cork`] in one write.
-    ///
-    /// A no-op when nothing was sent, which is the common case: most batches
-    /// resolve to a keybinding and never reach the wire at all.
     async fn uncork(&mut self) -> Result<(), AttachError> {
         self.corked = false;
         if self.out.is_empty() {
@@ -1862,43 +1445,32 @@ impl UdsWriter {
     }
 }
 
-impl UdsReader {
-    /// Read one complete frame off the wire.
-    ///
-    /// Returns [`AttachError::Disconnected`] on a clean EOF — the SPEC §5
-    /// length prefix is the only legal cut point. Drains a complete frame
-    /// from the receive buffer when one is already buffered; otherwise reads more
-    /// bytes (awaiting the socket) until a full frame lands.
-    async fn recv(&mut self) -> Result<FrameKind, AttachError> {
-        loop {
-            if let Some(frame) = decode_buffered(&mut self.buf, self.bootstrap_limits)? {
-                return Ok(frame);
-            }
-            // No complete frame buffered — pull more bytes. A read of zero is
-            // a clean EOF; mid-frame that is a truncated stream, but the only
-            // SPEC §5 cut point is a frame boundary, which `decode_buffered`
-            // already returned above.
-            let n = self
-                .inner
-                .read_buf(&mut self.buf)
-                .await
-                .map_err(AttachError::Io)?;
-            if n == 0 {
-                return Err(AttachError::Disconnected);
-            }
+/// Read chunks from `src` into `buf` until one complete frame decodes; EOF is
+/// [`AttachError::Disconnected`].
+async fn recv_buffered(
+    src: &mut (impl tokio::io::AsyncRead + Unpin),
+    buf: &mut BytesMut,
+    limits: BootstrapLimits,
+) -> Result<FrameKind, AttachError> {
+    loop {
+        if let Some(frame) = decode_buffered(buf, limits)? {
+            return Ok(frame);
+        }
+        if src.read_buf(buf).await.map_err(AttachError::Io)? == 0 {
+            return Err(AttachError::Disconnected);
         }
     }
+}
 
-    /// Non-blocking sibling of [`Self::recv`]: decode a frame only if one is
-    /// already buffered or becomes readable without blocking.
+impl UdsReader {
+    async fn recv(&mut self) -> Result<FrameKind, AttachError> {
+        recv_buffered(&mut self.inner, &mut self.buf, self.bootstrap_limits).await
+    }
+
     fn try_recv(&mut self) -> Result<Option<FrameKind>, AttachError> {
-        // A frame may already be sitting in the buffer behind the one `recv`
-        // just returned; hand it over before touching the socket.
         if let Some(frame) = decode_buffered(&mut self.buf, self.bootstrap_limits)? {
             return Ok(Some(frame));
         }
-        // Top up from the socket without blocking. `WouldBlock` just means
-        // nothing more is queued right now.
         match self.inner.try_read_buf(&mut self.buf) {
             Ok(0) => return Err(AttachError::Disconnected),
             Ok(_) => {}
@@ -1910,8 +1482,6 @@ impl UdsReader {
 }
 
 impl QuicWriter {
-    /// Encode `frame` and write it to the QUIC stream. quinn's `write_all`
-    /// queues the bytes for ordered, reliable delivery — no separate flush.
     async fn send(&mut self, frame: &FrameKind) -> Result<(), AttachError> {
         self.out.clear();
         frame.encode(&mut self.out);
@@ -1924,71 +1494,29 @@ impl QuicWriter {
 }
 
 impl QuicReader {
-    /// Read one complete frame off the QUIC stream. quinn's `RecvStream` is a
-    /// `tokio` `AsyncRead`, so this is the same chunk-and-reassemble loop as the
-    /// UDS path: a clean stream finish at a frame boundary surfaces as a read of
-    /// zero ([`AttachError::Disconnected`]).
     async fn recv(&mut self) -> Result<FrameKind, AttachError> {
-        loop {
-            if let Some(frame) = decode_buffered(&mut self.buf, self.bootstrap_limits)? {
-                return Ok(frame);
-            }
-            let n = self
-                .recv
-                .read_buf(&mut self.buf)
-                .await
-                .map_err(AttachError::Io)?;
-            if n == 0 {
-                return Err(AttachError::Disconnected);
-            }
-        }
+        recv_buffered(&mut self.recv, &mut self.buf, self.bootstrap_limits).await
     }
 
-    /// Drain a frame already sitting in the buffer behind the one
-    /// [`Self::recv`] just returned, topping the buffer up from the stream
-    /// first if quinn already holds more bytes.
-    ///
-    /// quinn exposes no `try_read`, but `RecvStream` is an [`AsyncRead`], so
-    /// "is there data without blocking" is answerable by polling that read
-    /// exactly once against a no-op waker: `Ready` means bytes were already
-    /// buffered in the connection, `Pending` means the socket would block and
-    /// we stop, which is the same contract [`UdsReader::try_recv`] offers via
-    /// `try_read_buf`. Abandoning a `Pending` poll is sound because quinn's
-    /// stream reads are cancel-safe (no byte is consumed by a poll that does
-    /// not return one) and because the caller's next `recv().await` re-polls
-    /// with the real waker, so the dropped no-op registration cannot lose a
-    /// wakeup.
-    ///
-    /// Without this the QUIC lane coalesced strictly less than UDS: it could
-    /// only peel off whatever one prior `read_buf` happened to over-read, so a
-    /// bulk burst (`seq 1 300000`, a full-screen repaint) decoded roughly one
-    /// frame per event-loop turn and paid a render plus a blocking flush for
-    /// each, instead of one paint per drained burst (phux-jhv8).
+    /// Drain a buffered frame, topping up from quinn if it already holds
+    /// bytes. quinn has no `try_read`, so [`Self::poll_read_once`] polls the
+    /// read once against a no-op waker; that is sound because quinn reads are
+    /// cancel-safe and the next `recv().await` re-polls with a real waker.
     fn try_recv(&mut self) -> Result<Option<FrameKind>, AttachError> {
         if let Some(frame) = decode_buffered(&mut self.buf, self.bootstrap_limits)? {
             return Ok(Some(frame));
         }
         match self.poll_read_once()? {
-            // Zero bytes read is a clean stream finish; let the next `recv`
-            // name it `Disconnected` rather than inventing an ending here.
+            // A clean finish: the next `recv` reports `Disconnected`.
             Some(0) | None => Ok(None),
             Some(_) => decode_buffered(&mut self.buf, self.bootstrap_limits),
         }
     }
 
-    /// Poll one `AsyncRead` into `self.buf` against a no-op waker.
-    ///
-    /// `Ok(None)` means the read is pending — nothing was buffered and nothing
-    /// was consumed. `Ok(Some(n))` means `n` bytes landed in `self.buf`.
-    ///
-    /// The read lands in `scratch` and only the filled prefix is copied on.
-    /// `phux-client` is `#![forbid(unsafe_code)]`, so reading straight into
-    /// `buf`'s spare capacity is not available; the alternative — growing
-    /// `buf` with zeroes and truncating back — would memset the whole window
-    /// on *every* call, and this is called once per empty-buffer turn of a
-    /// bulk drain, which made a `seq 1 300000` burst pay that memset per
-    /// stream chunk. `scratch` is initialized once at construction and reused,
-    /// so a top-up costs one `memcpy` of exactly the bytes that arrived.
+    /// Poll one read into `self.buf` against a no-op waker: `Ok(None)` when
+    /// pending, else the byte count. Reads land in the reused `scratch`
+    /// (this crate forbids `unsafe`, and zero-filling `buf` per call would
+    /// memset the window on every drain turn).
     fn poll_read_once(&mut self) -> Result<Option<usize>, AttachError> {
         use tokio::io::AsyncRead;
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
@@ -2020,20 +1548,14 @@ impl WsReader {
         self.decode(message)
     }
 
-    /// [`Self::recv`] with RFC 6455 liveness, which needs the paired write
-    /// half to ask the question. [`Connection::recv`] routes every WebSocket
-    /// read through here.
+    /// [`Self::recv`] with RFC 6455 liveness, which needs the write half.
     async fn recv_alive(&mut self, writer: &mut ws::WsWriter) -> Result<FrameKind, AttachError> {
         let message = ws::recv_message_alive(&mut self.inner, writer).await?;
         self.decode(message)
     }
 
-    /// Peel off a message tungstenite has already decoded, so the attach loop
-    /// coalesces a burst into one paint on this lane too (phux-l96p.10).
-    ///
-    /// `Ok(None)` covers both "nothing buffered" and a close seen without
-    /// awaiting: the caller's next `recv` reports the disconnect, and the
-    /// batch it has already collected is still applied.
+    /// A message tungstenite already decoded, if any. A close seen here is
+    /// also `Ok(None)`; the next `recv` reports it.
     fn try_recv(&mut self) -> Result<Option<FrameKind>, AttachError> {
         let Some(message) = self.inner.try_recv_message()? else {
             return Ok(None);
@@ -2045,12 +1567,8 @@ impl WsReader {
         let Some(frame) = message else {
             return Err(AttachError::Disconnected);
         };
-        // One binary message is exactly one frame: `check_frame` rejects an
-        // out-of-range length and a message size that disagrees with the
-        // length it declares, so the decode below cannot leave a tail. The
-        // violation stays typed (`AttachError::Framing`) rather than becoming
-        // prose here: `Connection::recv` / `try_recv` hold the write half and
-        // emit SPEC §5's `ERROR { FRAME_TOO_LARGE }` goodbye.
+        // One message is exactly one frame; `check_frame` rejects a length
+        // that disagrees with the message, so the decode leaves no tail.
         framing::check_frame(&frame)?;
         let (decoded, _rest) = FrameKind::decode_with_limits(&frame, self.bootstrap_limits)
             .map_err(|err| {
@@ -2060,20 +1578,13 @@ impl WsReader {
     }
 }
 
-/// Decode and consume one complete frame from the front of `buf`.
-///
-/// Returns `Ok(None)` when fewer than a full frame's bytes are buffered (the
-/// length prefix is missing, or the body has not all arrived). The decoded
-/// frame's bytes are dropped from the front; any trailing partial frame stays
-/// for the next read.
+/// Decode and consume one complete frame from the front of `buf`, or
+/// `Ok(None)` while it is still partial.
 fn decode_buffered(
     buf: &mut BytesMut,
     bootstrap_limits: BootstrapLimits,
 ) -> Result<Option<FrameKind>, AttachError> {
-    // Typed, like the WebSocket seam above: this helper has no write half,
-    // so `Connection::recv` / `try_recv` emit the §5 goodbye.
     let Some(framed) = framing::split_frame(buf)? else {
-        // Prefix or body still in flight — wait for more bytes.
         return Ok(None);
     };
     let (frame, _rest) = FrameKind::decode_with_limits(&framed, bootstrap_limits)
@@ -2091,16 +1602,8 @@ mod tests {
     use super::*;
 
     fn framed(seq: u64) -> BytesMut {
-        // A small, cheap-to-build frame with a distinguishing field so the
-        // burst-decode test can assert ordering.
-        let frame = FrameKind::FrameAck {
-            terminal_id: phux_protocol::ids::ResourceId::Local { id: 1 },
-            stream_id: phux_protocol::StreamId::new(1).expect("stream"),
-            bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
-            seq,
-        };
         let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
+        seq_ack(seq).encode(&mut buf);
         buf
     }
 
@@ -2129,12 +1632,8 @@ mod tests {
         )
     }
 
-    /// phux-l96p.4. The cork's whole point is one write for a multi-event
-    /// input batch, so assert both halves: nothing reaches the peer while
-    /// corked, and everything reaches it in send order on the uncork. The
-    /// `try_read` between the sends is what proves the frames were withheld
-    /// rather than merely fast — `write_all` has already returned by then, so
-    /// an uncorked writer would have bytes waiting.
+    /// Nothing reaches the peer while corked (`write_all` would already have
+    /// returned), and everything arrives in send order on the uncork.
     #[tokio::test]
     async fn a_corked_batch_is_withheld_then_shipped_in_order() {
         let (mut writer, peer) = writer_pair();
@@ -2169,9 +1668,7 @@ mod tests {
         assert!(buf.is_empty(), "the batch must be exactly what was corked");
     }
 
-    /// The uncork must also *un*-cork: a writer left corked would silently
-    /// swallow every later frame, which is a far worse failure than the
-    /// latency the cork buys back.
+    /// The uncork must un-cork, or every later frame is silently swallowed.
     #[tokio::test]
     async fn a_send_after_uncork_writes_straight_through() {
         let (mut writer, peer) = writer_pair();
@@ -2190,11 +1687,10 @@ mod tests {
         assert_eq!(decoded, seq_ack(9));
     }
 
+    /// One read can hold several frames and a partial tail: peel them in
+    /// order and keep the tail until the rest arrives.
     #[test]
-    fn decode_buffered_drains_back_to_back_frames_in_order() {
-        // The coalescing path (phux-jhv8) relies on a single socket read
-        // surfacing several queued frames: decode_buffered must peel them off
-        // the front one at a time, in order, leaving nothing behind.
+    fn decode_buffered_drains_whole_frames_and_holds_a_partial_one() {
         let mut buf = BytesMut::new();
         for seq in 1..=3 {
             buf.extend_from_slice(&framed(seq));
@@ -2207,17 +1703,10 @@ mod tests {
         }
         assert_eq!(seqs, vec![1, 2, 3]);
         assert!(buf.is_empty(), "fully consumed buffer");
-    }
 
-    #[test]
-
-    fn decode_buffered_holds_partial_frame() {
-        // A frame split across reads must not decode early: the prefix says
-        // more bytes are coming, so decode_buffered returns None and retains
-        // the partial bytes until the rest arrives.
         let whole = framed(7);
         let cut = whole.len() - 2;
-        let mut buf = BytesMut::from(&whole[..cut]);
+        buf.extend_from_slice(&whole[..cut]);
         assert!(
             decode_buffered(&mut buf, BootstrapLimits::default())
                 .expect("partial")
@@ -2232,24 +1721,11 @@ mod tests {
         assert!(buf.is_empty());
     }
 
-    #[test]
-    fn decode_buffered_empty_is_none() {
-        let mut buf = BytesMut::new();
-        assert!(
-            decode_buffered(&mut buf, BootstrapLimits::default())
-                .expect("empty")
-                .is_none()
-        );
-    }
-
-    // --- Connection::request -------------------------------------------
-    //
-    // `Connection` holds `!Send` transport halves, so the scripted server
-    // side runs on a `LocalSet` rather than `tokio::spawn`.
+    // --- correlated requests (scripted server on a LocalSet) -----------
 
     use bytes::Bytes;
     use phux_protocol::caps::BootstrapStreamProfile;
-    use phux_protocol::ids::{BootstrapId, ResourceId, SatelliteHost, StreamId};
+    use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
     use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, MAX_FRAME_LEN};
     use phux_protocol::wire::framing::FramingError;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -2263,28 +1739,32 @@ mod tests {
         tokio::task::LocalSet::new().block_on(&rt, fut)
     }
 
-    /// Drive one `request` against a server that replies with `script` in
-    /// order, and return the resulting reply.
+    /// A hanging wait is the defect under test, so every round trip is capped.
+    const WEDGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+    /// Spawn a server half that plays `script` once the request arrives.
+    fn scripted(script: Vec<FrameKind>) -> Connection {
+        let (client_stream, server_stream) = UnixStream::pair().expect("pair");
+        let mut server = Connection::from_stream(server_stream);
+        tokio::task::spawn_local(async move {
+            server.recv().await.expect("request frame");
+            for frame in &script {
+                server.send(frame).await.expect("scripted frame");
+            }
+        });
+        Connection::from_stream(client_stream)
+    }
+
+    /// One `COMMAND` round trip against `script`.
     fn request_against(script: Vec<FrameKind>) -> Reply {
         block_on(async {
-            let (client_stream, server_stream) = UnixStream::pair().expect("pair");
-            let mut client = Connection::from_stream(client_stream);
-            let mut server = Connection::from_stream(server_stream);
-            tokio::task::spawn_local(async move {
-                // Consume the COMMAND, then play the script back verbatim.
-                server.recv().await.expect("COMMAND");
-                for frame in &script {
-                    server.send(frame).await.expect("scripted frame");
-                }
-            });
-            client
-                .request(
-                    7,
-                    Command::GetState {
-                        scope: phux_protocol::wire::frame::StateScope::Server,
-                    },
-                )
+            let mut client = scripted(script);
+            let command = Command::GetState {
+                scope: phux_protocol::wire::frame::StateScope::Server,
+            };
+            tokio::time::timeout(WEDGE_TIMEOUT, client.request(7, command))
                 .await
+                .expect("the request must resolve")
                 .expect("reply")
         })
     }
@@ -2342,12 +1822,10 @@ mod tests {
         ));
     }
 
+    /// A hub pushes one uncorrelated ERROR per unreachable satellite before
+    /// the `GET_STATE` ack; swallowing it hides a partial fleet view.
     #[test]
     fn satellite_degradation_error_is_not_swallowed_by_get_state() {
-        // `handle_get_state_federated` emits one uncorrelated ERROR per
-        // unreachable satellite *before* the merged snapshot's ack, on
-        // purpose ("observable degradation, not silence"). Swallowing it
-        // turns a partial fleet view into a confidently complete-looking one.
         let reply = request_against(vec![
             FrameKind::Error {
                 request_id: None,
@@ -2368,13 +1846,10 @@ mod tests {
         }
     }
 
+    /// proto.md §9: an ERROR correlated to the request is its answer (e.g.
+    /// `INVALID_COMMAND` for an unimplemented command), not a reason to hang.
     #[test]
     fn correlated_error_answers_the_request_instead_of_hanging_forever() {
-        // proto.md §9: ERROR.request_id is "present if the error is
-        // associated with a COMMAND", and L1 §5 requires an unimplemented
-        // command to be refused with ERROR { INVALID_COMMAND }. Every
-        // hand-rolled loop waited on COMMAND_RESULT alone, so this shape
-        // would wedge the caller until the transport died.
         let reply = request_against(vec![FrameKind::Error {
             request_id: Some(7),
             code: ErrorCode::InvalidCommand,
@@ -2390,11 +1865,10 @@ mod tests {
         assert!(reply.interleaved().is_empty());
     }
 
+    /// Pipelined requests share a connection: another request's ack is kept
+    /// for its owner.
     #[test]
     fn another_requests_ack_is_kept_not_consumed() {
-        // Pipelined requests share a connection: a COMMAND_RESULT for a
-        // different request_id belongs to someone else's correlation and must
-        // survive for them, not vanish into this wait.
         let reply = request_against(vec![ack(99), ack(7)]);
         assert!(
             matches!(
@@ -2421,40 +1895,7 @@ mod tests {
         ));
     }
 
-    // --- the non-COMMAND pairs (phux-h5hj.12) --------------------------
-    //
-    // `GET_METADATA` and `SPAWN_RESOURCE` are their own request frames with
-    // their own `request_id`, so `Connection::request` never covered them and
-    // each grew a hand-rolled wait that matched one reply variant and dropped
-    // the rest. Every test below fails by *hanging* against that version,
-    // which is exactly how the bug presented in the field — so each one is
-    // capped by a timeout rather than left to nextest's slow-test reaper.
-
-    /// Long enough that a loaded machine cannot trip it, short enough that a
-    /// genuine wedge fails the run instead of hanging it.
-    const WEDGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
-
-    /// Spawn the scripted server half and hand back the client half.
-    ///
-    /// The script is played verbatim once the client's request frame arrives,
-    /// exactly as [`request_against`] does for `COMMAND`.
-    fn scripted(script: Vec<FrameKind>) -> Connection {
-        let (client_stream, server_stream) = UnixStream::pair().expect("pair");
-        let mut server = Connection::from_stream(server_stream);
-        tokio::task::spawn_local(async move {
-            server.recv().await.expect("request frame");
-            for frame in &script {
-                server.send(frame).await.expect("scripted frame");
-            }
-        });
-        Connection::from_stream(client_stream)
-    }
-
     /// One `GET_METADATA` round trip against `script`.
-    ///
-    /// Capped by [`WEDGE_TIMEOUT`] because the defect under test is a wait
-    /// that never ends: without the cap a regression hangs the whole run
-    /// instead of failing this one test.
     fn metadata_against(script: Vec<FrameKind>) -> Reply<Answer<Option<Vec<u8>>>> {
         block_on(async {
             let mut client = scripted(script);
@@ -2468,7 +1909,7 @@ mod tests {
         })
     }
 
-    /// One `SPAWN_RESOURCE` round trip against `script`, same cap.
+    /// One `SPAWN_RESOURCE` round trip against `script`.
     fn spawn_against(script: Vec<FrameKind>) -> Reply<Answer<SpawnResult>> {
         block_on(async {
             let mut client = scripted(script);
@@ -2494,12 +1935,10 @@ mod tests {
         }
     }
 
+    /// A correlated refusal answers a metadata read, and stays distinct from
+    /// an unset key.
     #[test]
-    fn metadata_refusal_answers_the_request_instead_of_hanging_forever() {
-        // The bug: `phux tag`, `phux new`, `phux config reload` and `phux
-        // agent set` each waited on METADATA_VALUE alone, so this shape left
-        // the verb running with no output and no exit — after its write had
-        // already landed, in the `set` cases.
+    fn metadata_refusal_answers_the_read_and_differs_from_unset() {
         let reply = metadata_against(vec![refusal(7)]);
         match reply.result() {
             Err(refused) => {
@@ -2508,13 +1947,13 @@ mod tests {
             }
             Ok(other) => panic!("a correlated ERROR is this read's answer, got {other:?}"),
         }
+        let unset = metadata_against(vec![metadata_value(7, None)]);
+        assert_eq!(unset.result().as_ref().ok(), Some(&None));
     }
 
+    /// Users see refusals verbatim, so the code renders as words, not Debug.
     #[test]
     fn refusal_display_renders_the_code_as_words_not_debug() {
-        // phux-i0e8.7.4: the old `{code:?}` render leaked the wire enum's
-        // CamelCase Debug name (`TerminalNotFound: ...`) to users through
-        // every verb that prints a refusal.
         let refused = Refusal {
             code: ErrorCode::TerminalNotFound,
             message: "pane @9 does not exist".to_owned(),
@@ -2526,38 +1965,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_refusal_is_distinct_from_an_unset_key() {
-        // Both used to reach the caller as "no value". They are different
-        // facts: `phux new` reported "server did not register session" for a
-        // server that had refused the read-back outright.
-        let refused = metadata_against(vec![refusal(7)]);
-        let unset = metadata_against(vec![metadata_value(7, None)]);
-        assert!(refused.result().is_err());
-        assert_eq!(unset.result().as_ref().ok(), Some(&None));
-    }
-
-    #[test]
-    fn metadata_wait_keeps_another_requests_reply() {
-        // Pipelined reads share a connection: a METADATA_VALUE for a
-        // different request_id belongs to someone else's correlation.
-        let reply = metadata_against(vec![
-            metadata_value(99, Some(b"theirs")),
-            metadata_value(7, None),
-        ]);
-        assert!(
-            matches!(
-                reply.interleaved(),
-                [FrameKind::MetadataValue { request_id: 99, .. }]
-            ),
-            "got {:?}",
-            reply.interleaved()
-        );
-    }
-
-    #[test]
     fn metadata_wait_keeps_an_uncorrelated_degradation_notice() {
-        // A hub's per-satellite ERROR carries no request_id, so it answers
-        // nothing and must survive to the caller like any pushed frame.
         let notice = FrameKind::Error {
             request_id: None,
             code: ErrorCode::SatelliteUnreachable,
@@ -2594,12 +2002,9 @@ mod tests {
         }
     }
 
+    /// A satellite may answer a relayed spawn with a correlated ERROR.
     #[test]
     fn spawn_refusal_answers_the_request_instead_of_hanging_forever() {
-        // `relay.rs`'s `handle_inbound` says a satellite MAY answer a relayed
-        // spawn with a generic correlated ERROR. `dispatch_spawn_async`
-        // matched RESOURCE_SPAWNED alone, so `phux spawn --satellite` against
-        // such a peer never returned.
         let reply = spawn_against(vec![refusal(7)]);
         assert!(
             reply.result().is_err(),
@@ -2629,11 +2034,10 @@ mod tests {
         ));
     }
 
+    /// The correlation id comes from the frame, so a non-spawn frame has no
+    /// id to wait on and is refused.
     #[test]
     fn spawn_rejects_a_frame_that_is_not_a_spawn() {
-        // The correlation id comes out of the frame, so a caller handing over
-        // the wrong frame has no id to wait on. Refuse loudly rather than
-        // wait on a fabricated one.
         block_on(async {
             let (client_stream, _server) = UnixStream::pair().expect("pair");
             let mut client = Connection::from_stream(client_stream);
@@ -2645,132 +2049,9 @@ mod tests {
         });
     }
 
-    // --- LIST_DIRECTORY host routing (phux-c2td.19, L3.md §4.1) -----------
+    // --- SPEC §5 ERROR { FRAME_TOO_LARGE } -------------------------------
 
-    /// Mark `client` as if its `HELLO_OK` had advertised exactly `features`.
-    fn negotiated(client: &mut Connection, features: &[ServerFeature]) {
-        client.negotiated_bootstrap = Some(NegotiatedBootstrap {
-            profile: BootstrapProfile::SynthesizedVtRaw,
-            limits: BootstrapLimits::default(),
-            server_features: ServerFeatureSet::with(features),
-        });
-    }
-
-    fn listing(request_id: u32, path: &str) -> FrameKind {
-        FrameKind::DirectoryListing {
-            request_id,
-            result: Ok(phux_protocol::wire::frame::DirectoryListing {
-                path: path.to_owned(),
-                parent: None,
-                entries: Vec::new(),
-                truncated: false,
-            }),
-        }
-    }
-
-    /// One `LIST_DIRECTORY` round trip against a server that advertised
-    /// `features`: the frame the server received, and the client's reply.
-    fn directory_against(
-        features: &[ServerFeature],
-        host: Option<&str>,
-    ) -> (
-        FrameKind,
-        Reply<Answer<phux_protocol::wire::frame::DirectoryListingResult>>,
-    ) {
-        block_on(async {
-            let (client_stream, server_stream) = UnixStream::pair().expect("pair");
-            let mut client = Connection::from_stream(client_stream);
-            negotiated(&mut client, features);
-            let mut server = Connection::from_stream(server_stream);
-            let received = tokio::task::spawn_local(async move {
-                let frame = server.recv().await.expect("LIST_DIRECTORY");
-                server.send(&listing(7, "/srv")).await.expect("listing");
-                frame
-            });
-            let reply = tokio::time::timeout(
-                WEDGE_TIMEOUT,
-                client.request_directory(7, "/srv".to_owned(), host.map(SatelliteHost::from)),
-            )
-            .await
-            .expect("the listing must resolve; a timeout here is the wedge itself")
-            .expect("directory reply");
-            drop(client);
-            (received.await.expect("server task"), reply)
-        })
-    }
-
-    #[test]
-    fn directory_without_host_sends_the_unchanged_frame() {
-        // No host is the pre-ADR-0108 request, so it needs no new bit.
-        let (sent, reply) = directory_against(&[ServerFeature::ListDirectory], None);
-        assert_eq!(
-            sent,
-            FrameKind::ListDirectory {
-                request_id: 7,
-                path: "/srv".to_owned(),
-                host: None,
-            }
-        );
-        assert!(matches!(reply.result(), Ok(Ok(listing)) if listing.path == "/srv"));
-    }
-
-    #[test]
-    fn directory_with_host_carries_it_when_advertised() {
-        let (sent, reply) = directory_against(
-            &[
-                ServerFeature::ListDirectory,
-                ServerFeature::ListDirectoryHost,
-            ],
-            Some("build-box"),
-        );
-        assert_eq!(
-            sent,
-            FrameKind::ListDirectory {
-                request_id: 7,
-                path: "/srv".to_owned(),
-                host: Some(SatelliteHost::new("build-box")),
-            }
-        );
-        assert!(matches!(reply.result(), Ok(Ok(_))));
-    }
-
-    #[test]
-    fn directory_with_host_is_refused_without_the_bit_and_sends_nothing() {
-        // An older server skips `host` and lists itself; the reply would then
-        // be presented as build-box's directory. Refuse before sending. The
-        // unnegotiated seam proved no bit at all, so it refuses too.
-        for features in [Some(&[ServerFeature::ListDirectory][..]), None] {
-            block_on(async {
-                let (client_stream, server_stream) = UnixStream::pair().expect("pair");
-                let mut client = Connection::from_stream(client_stream);
-                if let Some(features) = features {
-                    negotiated(&mut client, features);
-                }
-                let mut server = Connection::from_stream(server_stream);
-                let refused = client
-                    .request_directory(7, "/srv".to_owned(), Some(SatelliteHost::new("build-box")))
-                    .await;
-                assert!(
-                    matches!(&refused, Err(AttachError::Protocol(message))
-                        if message.contains("build-box")
-                            && message.contains("LIST_DIRECTORY_HOST")),
-                    "got {refused:?}"
-                );
-                drop(client);
-                assert!(
-                    matches!(server.recv().await, Err(AttachError::Disconnected)),
-                    "no frame may reach the server"
-                );
-                drop(server);
-            });
-        }
-    }
-
-    // --- phux-85ot: SPEC §5 ERROR { FRAME_TOO_LARGE } -------------------
-
-    /// Read one complete frame off `peer`, which is the far side of a
-    /// `from_stream` pair. The bytes must already be a well-formed frame —
-    /// this is how the test observes the client's §5 goodbye.
+    /// Read the client's §5 goodbye off the far side of a `from_stream` pair.
     async fn recv_one_frame(peer: &mut UnixStream) -> FrameKind {
         let mut buf = BytesMut::new();
         loop {
@@ -2830,9 +2111,8 @@ mod tests {
         });
     }
 
-    /// phux-85ot. SPEC §5: a peer receiving a length outside `1..=MAX_FRAME_LEN`
-    /// MUST send `ERROR { code: FRAME_TOO_LARGE }` and close. `recv` is the
-    /// attach path's decode/write seam.
+    /// SPEC §5: a peer receiving a length outside `1..=MAX_FRAME_LEN` MUST
+    /// send `ERROR { FRAME_TOO_LARGE }` and close.
     #[test]
     fn recv_answers_a_framing_violation_with_frame_too_large() {
         recv_answers_framing_violation(0u32.to_be_bytes());
@@ -2840,8 +2120,7 @@ mod tests {
         recv_answers_framing_violation(u32::MAX.to_be_bytes());
     }
 
-    /// Same obligation on the non-blocking drain path the attach loop uses
-    /// after the first `recv` of a burst (phux-jhv8).
+    /// Same obligation on the non-blocking drain path.
     #[test]
     fn try_recv_answers_a_framing_violation_with_frame_too_large() {
         block_on(async {

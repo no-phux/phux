@@ -583,12 +583,6 @@ impl Session {
         self.offered_caps
     }
 
-    /// Active engine scrollback byte/row budgets after atomic publication.
-    #[must_use]
-    pub fn active_history_budget(&self) -> Option<(usize, usize)> {
-        self.published_terminal()?.history_budget().ok()
-    }
-
     /// Whether this session has entered its terminal protocol-failure state.
     #[must_use]
     pub const fn is_failed(&self) -> bool {

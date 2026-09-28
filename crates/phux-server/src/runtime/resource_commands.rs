@@ -1,28 +1,15 @@
-//! Dispatch for the kind-aware verbs: spawning an `AgentSession`, feeding
-//! its stream, and bootstrapping a consumer onto it.
+//! `AgentSession` verbs (ADR-0102, ADR-0103): spawn a session under a
+//! Terminal parent, append to its stream, and bootstrap a consumer onto it.
 //!
-//! Everything a Terminal already handles stays in `runtime::commands` and
-//! `runtime::attach`; what lives here is the work that only exists because
-//! the server serves more than one [`ResourceKind`] (ADR-0102). The three
-//! entry points are the three places a client can address a session:
-//! `spawn_agent_session` creates one under a Terminal parent,
-//! `handle_append_resource_output` is the producer's write path
-//! (ADR-0103 §3), and `attach_agent_session` replays the retained ring and
-//! goes live.
-//!
-//! The state derived from the stream does not stay here. An accepted append
-//! yields at most one [`StreamEvidence`], and this module forwards it to the
-//! *parent* Terminal's control mailbox, where the same arbiter the detector
-//! and the hooks feed ranks it and writes `phux.agent/v1`. That is what
-//! makes `phux watch`, the `agent-state-changed` hook, and the TUI badge
-//! work over a stream without any of them learning a new surface.
+//! Stream-derived state ([`StreamEvidence`]) is forwarded to the parent
+//! Terminal's arbiter, so existing `phux.agent/v1` consumers see it
+//! unchanged.
 
 use bytes::Bytes;
 use phux_protocol::caps::{BootstrapLimits, BootstrapStreamProfile};
 use phux_protocol::ids::ResourceKind;
 use phux_protocol::wire::frame::{
     AgentEvent, CommandResult, CommandValue, ErrorCode, FrameKind, SpawnError, SpawnResource,
-    SpawnResult,
 };
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -34,25 +21,17 @@ use crate::resource::agent_session::{
     AgentSessionActor, AgentSessionBootstrap, AppendRejection, AppendRequest, BootstrapRequest,
     StreamEvidence,
 };
+use crate::runtime::attach::refuse_spawn;
 use crate::state::{ClientId, SharedState};
 
 /// Payload budget for one `BOOTSTRAP_CHUNK` when the connection negotiated
 /// none. Records are at most 16 KiB, so this fits several per chunk.
 const DEFAULT_AGENT_CHUNK_BYTES: usize = 64 * 1024;
 
-// ---- spawn ------------------------------------------------------------------
-
 /// Handle a `SPAWN_RESOURCE` whose kind is `AgentSession` (ADR-0103 §1).
-///
-/// The parent is validated before anything is created: it must resolve on
-/// this server, still be live, and be a Terminal. A session may not parent
-/// another (ADR-0104 §5), and that falls out of the kind check — an
-/// `AgentSession` parent is `ParentKindMismatch`, not a second level.
-///
-/// A satellite-addressed spawn never reaches the local registry: the parent
-/// is reduced to the satellite's `Local` space and the whole request is
-/// relayed, so the satellite binds a child to its own Terminal exactly as it
-/// would for a local consumer (ADR-0104 §6).
+/// The parent must be a live local Terminal (an `AgentSession` parent is
+/// `ParentKindMismatch`, ADR-0104 §5); a satellite-addressed spawn is relayed
+/// with the parent reduced to the satellite's `Local` space (ADR-0104 §6).
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) async fn spawn_agent_session(
     state: &SharedState,
@@ -66,7 +45,7 @@ pub(crate) async fn spawn_agent_session(
     connection_token: &CancellationToken,
 ) {
     let Some(provider) = resource.provider.as_deref().filter(|p| !p.is_empty()) else {
-        refuse(
+        refuse_spawn(
             out_tx,
             request_id,
             SpawnError::SpawnFailed("an agent session spawn must name a provider".to_owned()),
@@ -75,7 +54,7 @@ pub(crate) async fn spawn_agent_session(
         return;
     };
     let Some(parent) = resource.parent.clone() else {
-        refuse(out_tx, request_id, SpawnError::ParentNotFound).await;
+        refuse_spawn(out_tx, request_id, SpawnError::ParentNotFound).await;
         return;
     };
 
@@ -87,10 +66,7 @@ pub(crate) async fn spawn_agent_session(
         return;
     }
 
-    // A `Satellite`-tagged parent with no `satellite` field addresses a
-    // resource this server does not own, so it resolves to nothing here.
-    // `ParentNotFound` is the accurate answer: the hub has no such local
-    // resource, and routing is the consumer's to state.
+    // A `Satellite` parent without a `satellite` route is not ours.
     let Some((core_parent, wire_parent)) = state.with(|s| {
         parent
             .is_local()
@@ -99,7 +75,7 @@ pub(crate) async fn spawn_agent_session(
             .map(|core| (core, parent.clone()))
     }) else {
         debug!(?client_id, request_id, %parent, "SPAWN_RESOURCE: agent session parent not found");
-        refuse(out_tx, request_id, SpawnError::ParentNotFound).await;
+        refuse_spawn(out_tx, request_id, SpawnError::ParentNotFound).await;
         return;
     };
 
@@ -113,9 +89,7 @@ pub(crate) async fn spawn_agent_session(
         log_bytes,
     );
 
-    // Registry insert, engine registration, and wire-id interning happen in
-    // one borrow: a consumer that observes the id in an event must be able
-    // to resolve it in the same instant.
+    // One borrow: an id observed in an event must already resolve.
     let registered = state.with_mut(|s| {
         let facet = phux_core::resource::AgentFacet {
             provider: provider.to_owned(),
@@ -131,18 +105,9 @@ pub(crate) async fn spawn_agent_session(
         };
         let _ = s.spawn_resource_actor(core, bundle.handle.clone(), token, bundle.actor.run());
         let wire = s.intern_terminal_wire(core);
-        // The announcement a Terminal spawn makes, carrying what the
-        // envelope cannot say: this resource is a session, and it lives
-        // inside that pane. Journaled in the lock that registers it, before
-        // its exit watcher exists, so its `pane_spawned` always precedes
-        // its `pane_closed` (ADR-0123).
-        //
-        // It goes to the PANE's event subscribers as well as the session's.
-        // A consumer cannot subscribe to a resource it is being told about
-        // for the first time, so a fan-out scoped to the child alone reaches
-        // nobody but the server-wide watchers — which is what left `phux
-        // watch @parent` never seeing a session open inside the pane it was
-        // following.
+        // Journaled before the exit watcher exists (ADR-0123), and fanned out
+        // to the parent's subscribers too: nobody can be subscribed to a
+        // resource they are hearing about for the first time.
         let announcement = crate::state::EventRecord::new(
             Some(wire.clone()),
             AgentEvent::ResourceSpawned {
@@ -166,7 +131,7 @@ pub(crate) async fn spawn_agent_session(
     let (core_session, wire_session) = match registered {
         Ok(pair) => pair,
         Err(error) => {
-            refuse(out_tx, request_id, error).await;
+            refuse_spawn(out_tx, request_id, error).await;
             return;
         }
     };
@@ -179,9 +144,7 @@ pub(crate) async fn spawn_agent_session(
         None,
     );
 
-    // ADR-0103 §6: with a child bound, the parent's `REPORT_AGENT_STATE`
-    // becomes a synthesized `state` record on this stream instead of a
-    // second opinion beside it.
+    // ADR-0103 §6: the parent's `REPORT_AGENT_STATE` now lands on this stream.
     if let Some(parent_handle) = state.with(|s| s.resource_handle(core_parent).cloned())
         && let Ok(facet) = bundle.handle.agent_session()
     {
@@ -202,14 +165,8 @@ pub(crate) async fn spawn_agent_session(
             result: crate::runtime::attach::spawned_result(wire_session.clone(), instance),
         }))
         .await;
-    // A Terminal spawn's auto-subscribed owner also gets a live output
-    // pump wired in the same stroke (`attach::spawn_terminal_output_pump`),
-    // so `s.subscribe_terminal` above put this client on the subscriber
-    // *list* but nothing yet forwards `PaneOutput::Live` into its mailbox.
-    // Running the same bootstrap-then-pump the ATTACH_RESOURCE path runs —
-    // trivially empty, since nothing has been appended yet — closes that
-    // gap without a second delivery mechanism to keep in step with the
-    // first.
+    // The subscription alone forwards nothing: run the (empty) bootstrap and
+    // live pump the `ATTACH_RESOURCE` path runs.
     let _ = attach_agent_session(
         state,
         client_id,
@@ -246,7 +203,7 @@ async fn relay_agent_session_spawn(
         id,
     } = parent
     else {
-        refuse(
+        refuse_spawn(
             out_tx,
             request_id,
             SpawnError::SpawnFailed(
@@ -257,7 +214,7 @@ async fn relay_agent_session_spawn(
         return;
     };
     if parent_host != host {
-        refuse(
+        refuse_spawn(
             out_tx,
             request_id,
             SpawnError::SpawnFailed(
@@ -290,29 +247,9 @@ async fn relay_agent_session_spawn(
     .await;
 }
 
-/// Queue a typed `RESOURCE_SPAWNED` refusal.
-async fn refuse(out_tx: &tokio::sync::mpsc::Sender<Outbound>, request_id: u32, error: SpawnError) {
-    let _ = out_tx
-        .send(Outbound::Frame(FrameKind::ResourceSpawned {
-            request_id,
-            result: SpawnResult::Err(error),
-        }))
-        .await;
-}
-
-// ---- append -----------------------------------------------------------------
-
-/// Handle `APPEND_RESOURCE_OUTPUT` (ADR-0103 §3): the producer's write onto
-/// a session's stream.
-///
-/// The reply is the header the server stamped —
-/// `{"seq":…,"ts_ms":…}` — so a producer can print exactly what it wrote
-/// without reading the stream back.
-///
-/// The producer must hold the `Input` verb on the parent, which under the
-/// current policy every owner-socket client does and no remote client does:
-/// a stream that anyone reachable over the network could write would let a
-/// remote peer forge a local agent's lifecycle.
+/// Handle `APPEND_RESOURCE_OUTPUT` (ADR-0103 §3), replying with the stamped
+/// `{"seq":…,"ts_ms":…}` header. Only a local owner connection may produce:
+/// a remote peer must not forge a local agent's lifecycle.
 pub(crate) async fn handle_append_resource_output(
     state: &SharedState,
     client_id: ClientId,
@@ -382,14 +319,8 @@ pub(crate) async fn handle_append_resource_output(
     )))
 }
 
-/// Feed a question the stream carried into the parent's ask ledger at the
-/// `Stream` rung, and retract that rung when the turn ends.
-///
-/// A separate ledger from the state one on purpose (ADR-0036): a question
-/// outlives the `blocked` that announced it and is answered, not
-/// superseded. So a `stop` or a `session_end` retracts the stream's ask even
-/// though it is the state ladder that carries those words — the agent is no
-/// longer waiting on anyone.
+/// Feed a streamed question into the parent's ask ledger (ADR-0036), and
+/// retract the stream's ask when the turn ends.
 fn publish_stream_ask(
     state: &SharedState,
     parent: Option<phux_core::ids::ResourceId>,
@@ -429,28 +360,20 @@ fn publish_stream_ask(
     }
 }
 
-/// Record the session's derived state and feed it to the parent Terminal's
-/// arbiter at the `Stream` rank (ADR-0103 §5).
-///
-/// Two writes, deliberately: the session's own facet carries the state so
-/// the inventory reports it without a round trip, and the parent's
-/// `phux.agent/v1` record carries it so every consumer that already reads
-/// that record — `phux watch`, the `agent-state-changed` hook, the TUI
-/// badge — sees stream evidence without learning a new surface. The
-/// invariants that record is held to (I1 and I2 in [`crate::agent_state`])
-/// are unchanged, because the write still goes through the one path the
-/// detector's own reports take.
+/// Record the session's derived state on its own facet and feed it to the
+/// parent Terminal's arbiter at the `Stream` rank (ADR-0103 §5).
 async fn publish_stream_evidence(
     state: &SharedState,
     session: phux_core::ids::ResourceId,
     parent: Option<phux_core::ids::ResourceId>,
     evidence: StreamEvidence,
 ) {
-    let word = match evidence {
-        StreamEvidence::Working => Some("working"),
-        StreamEvidence::Blocked => Some("blocked"),
-        StreamEvidence::Done => Some("done"),
-        StreamEvidence::Retract => None,
+    use phux_protocol::wire::frame::ReportedAgentState;
+    let (word, reported) = match evidence {
+        StreamEvidence::Working => (Some("working"), Some(ReportedAgentState::Working)),
+        StreamEvidence::Blocked => (Some("blocked"), Some(ReportedAgentState::Blocked)),
+        StreamEvidence::Done => (Some("done"), Some(ReportedAgentState::Done)),
+        StreamEvidence::Retract => (None, None),
     };
     let parent_handle = state.with_mut(|s| {
         if let Some(facet) = s
@@ -467,37 +390,21 @@ async fn publish_stream_evidence(
     };
     let (reply, rx) = oneshot::channel();
     let request = crate::resource::ControlRequest::ReportStreamState {
-        state: word.map(|word| match word {
-            "working" => phux_protocol::wire::frame::ReportedAgentState::Working,
-            "blocked" => phux_protocol::wire::frame::ReportedAgentState::Blocked,
-            _ => phux_protocol::wire::frame::ReportedAgentState::Done,
-        }),
+        state: reported,
         reply,
     };
     if parent_handle.control.send(request).await.is_ok() {
-        // The engine answers `Err` for a pane with no detector, which is
-        // not a producer error: the record simply has no author here.
+        // `Err` means the pane has no detector, not a producer error.
         if let Ok(Err(reason)) = rx.await {
             debug!(%reason, "APPEND_RESOURCE_OUTPUT: parent declined the stream evidence");
         }
     }
 }
 
-// ---- attach -----------------------------------------------------------------
-
-/// Bootstrap a consumer onto an `AgentSession` stream (ADR-0103 §4).
-///
-/// The ADR-0070 shape with a different payload: `BOOTSTRAP_BEGIN` naming
-/// the `AgentEventsJsonlV1` profile and the cut, chunks carrying the
-/// retained records, then `READY`. The grid fields are `0 x 0` — a session
-/// has no grid, and the sentinel is what `ResourceInfo` reports for it too.
-/// `READY` carries no history cursor: the ring *is* the history, replayed
-/// whole, so there is no older page to page back through and
-/// `HISTORY_REQUEST` on this stream is refused.
-///
-/// The live subscription is taken *before* the cut is requested, so a
-/// record appended between the two is delivered rather than lost; the pump
-/// drops anything at or below `base_seq`, which the replay already carried.
+/// Bootstrap a consumer onto an `AgentSession` stream (ADR-0103 §4):
+/// `BEGIN` (profile `AgentEventsJsonlV1`, grid `0 x 0`), the retained ring in
+/// chunks, and `READY` with no history cursor, then live records. The live
+/// subscription precedes the cut so nothing appended between them is lost.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn attach_agent_session(
     state: &SharedState,
@@ -604,9 +511,7 @@ fn bootstrap_frames(
     let mut chunk_seq = 0u32;
     let mut payload: Vec<u8> = Vec::new();
     for record in &cut.records {
-        // A record is never split across chunks: every chunk this stream
-        // emits is itself a run of complete records, so a consumer that
-        // decodes chunk by chunk never holds a half line.
+        // Chunks hold whole records only.
         if !payload.is_empty() && payload.len().saturating_add(record.len()) > budget {
             frames.push(FrameKind::BootstrapChunk {
                 terminal_id: terminal_id.clone(),
@@ -672,8 +577,7 @@ async fn live_pump(
                     return;
                 }
             }
-            // A session emits no resync and no ordered control: it has no
-            // grid to reflow and no native generation to tombstone.
+            // A session has no grid to resync and no generation to tombstone.
             Ok(PaneOutput::Resync { .. } | PaneOutput::Control { .. }) => {}
             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                 warn!(

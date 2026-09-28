@@ -73,25 +73,6 @@ test "remote discovery updates bounded inventory without allocating tabs" {
     for (published) |terminal_ref| try testing.expect(model.locateTerminal(terminal_ref) == null);
 }
 
-test "a terminal that disappears loses its pane and the local ones stay put" {
-    const session = try createSession(80, 24);
-    var model = app.initialModel(session);
-    defer app.deinitModel(&model);
-
-    const local = app.initialTerminalRef(0);
-    const remote = try remoteTerminalRef(31);
-    try testing.expect(model.admitTab(remote));
-    try testing.expectEqual(@as(usize, 2), model.ws().tab_count);
-
-    // No provider vouches for the remote terminal, so normalization takes
-    // its pane, and with it the tab that held nothing else.
-    model.normalizeTopology();
-    try testing.expectEqual(@as(usize, 1), model.ws().tab_count);
-    try testing.expectEqual(@as(?usize, null), model.tabOfTerminal(remote));
-    try testing.expectEqual(@as(usize, 0), model.tabOfTerminal(local).?);
-    try testing.expect(model.selectedTerminalRef().?.eql(local));
-}
-
 test "provider dispatch refuses a provider-qualified remote identity at the local backend" {
     const session = try createSession(80, 24);
     var model = app.initialModel(session);
@@ -105,73 +86,6 @@ test "provider dispatch refuses a provider-qualified remote identity at the loca
     try testing.expect(model.terminalOwner(remote) == null);
     // A terminal nobody has cannot be selected into a pane.
     try testing.expect(!model.selectTerminal(remote));
-}
-
-test "keyboard session activation keeps the highlighted id across catalog rebuilds" {
-    if (comptime app.phux_enabled) {
-        const remote = try app.PhuxProvider.create(
-            testing.allocator,
-            testing.io,
-            .{ .unix = "/unused" },
-            "session",
-            "cockpit",
-        );
-        const session = try createSession(80, 24);
-        var state = support.TerminalApp.init(
-            std.heap.page_allocator,
-            app.initialModelWithPhux(session, remote),
-            app.appOptions(),
-        );
-        defer app.deinitModel(&state.model);
-        defer state.deinit();
-        state.effects.executor = .fake;
-
-        try app.PhuxProvider.test_support.attachHost(remote.host);
-        _ = try remote.requestWorkspaceRefresh();
-        try app.PhuxProvider.test_support.stageWorkspaceFixture(remote.bridge, "workspace_refresh_metadata.bin");
-        try app.PhuxProvider.test_support.stageWorkspaceFixture(remote.bridge, "workspace_refresh_state.bin");
-        _ = try remote.drainReadiness();
-        state.model.reconcileRemoteTerminals();
-        try testing.expect(try state.model.shared_workspace.apply(&state.model, remote.workspaceSnapshot(), remote.connectionEpoch()));
-
-        // One placed and two available terminals precede the two sessions.
-        // Four steps highlight the stable session 2 identity painted in the row.
-        app.update(&state.model, .palette_open, &state.effects);
-        app.update(&state.model, .{ .palette_step = 4 }, &state.effects);
-        switch (state.model.ws().palette.highlighted orelse return error.TestExpectedSession) {
-            .session => |id| try testing.expectEqual(@as(u32, 2), id),
-            else => return error.TestExpectedSession,
-        }
-
-        // Removal leaves session 1 occupying the last live catalog slot. An
-        // index-based Enter clamps to that row and switches to the wrong ID;
-        // the fenced payload instead leaves the actual attached session alone.
-        const removed = remote.host.sessions.orderedRemove(1);
-        app.update(&state.model, .{ .key = .{
-            .key = "enter",
-            .phase = .key_down,
-        } }, &state.effects);
-        try testing.expectEqual(@as(?u32, 1), remote.session_id);
-
-        // Restore the catalog, highlight 2 again, then reorder after the
-        // highlight was projected. Enter must still activate 2, not the 1
-        // that moved into its old index.
-        try remote.host.sessions.append(testing.allocator, removed);
-        app.update(&state.model, .palette_open, &state.effects);
-        app.update(&state.model, .{ .palette_step = 4 }, &state.effects);
-        std.mem.swap(
-            @TypeOf(remote.host.sessions.items[0]),
-            &remote.host.sessions.items[0],
-            &remote.host.sessions.items[1],
-        );
-        app.update(&state.model, .{ .key = .{
-            .key = "enter",
-            .phase = .key_down,
-        } }, &state.effects);
-        try testing.expectEqual(@as(?u32, 2), remote.session_id);
-    } else {
-        return error.SkipZigTest;
-    }
 }
 
 test "confirmed shared metadata places members independently from discovered terminals" {

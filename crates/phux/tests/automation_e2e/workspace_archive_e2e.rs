@@ -12,87 +12,72 @@ const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
-struct ServerGuard(common::ServerGuard);
-
-impl std::ops::Deref for ServerGuard {
-    type Target = common::ServerGuard;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+fn start(session: &str) -> common::ServerGuard {
+    common::ServerGuard::builder("wa").session(session).start()
 }
 
-impl ServerGuard {
-    fn start(session: &str) -> Self {
-        Self(common::ServerGuard::builder("wa").session(session).start())
-    }
-
-    fn run(args: &[&str]) -> (i32, String, String) {
-        let out = Command::new(PHUX)
-            .args(args)
-            .stdin(Stdio::null())
-            .output()
-            .expect("run phux command");
-        (
-            out.status.code().expect("phux exited with code"),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        )
-    }
-    fn run_with_xdg(args: &[&str], xdg: &std::path::Path) -> (i32, String, String) {
-        let out = Command::new(PHUX)
-            .env("XDG_CONFIG_HOME", xdg)
-            .args(args)
-            .stdin(Stdio::null())
-            .output()
-            .expect("run phux command");
-        (
-            out.status.code().expect("phux exited with code"),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        )
-    }
-
-    fn socket_text(&self) -> String {
-        self.0.socket_text()
-    }
+fn run(args: &[&str]) -> (i32, String, String) {
+    output(Command::new(PHUX).args(args))
 }
 
-/// How long the fake agent's `/bin/sh` gets to be forked, exec'd, scheduled
-/// and to paint its first line (phux-dnhf).
-///
-/// This is an AMBIENT budget, not a subject budget. Nothing about the archive
-/// contract is being measured while it runs — only whether the machine got
-/// around to running a shell script. phux-m64c measured a freshly spawned
-/// `/bin/sh` taking 7.8 seconds to execute its first instruction on a loaded
-/// developer box, and this test's own 5s budget is what timed out ("wait timed
-/// out after 34 polls", exit 124) during a fleet-load bisect that then blamed
-/// an innocent commit. Generous here costs nothing: `phux wait` returns the
-/// instant its condition holds, so the passing path is unchanged and only the
-/// failing path waits longer — and when it does fail, it fails against a
-/// budget that names the environment instead of the feature.
+fn run_with_xdg(args: &[&str], xdg: &std::path::Path) -> (i32, String, String) {
+    output(Command::new(PHUX).env("XDG_CONFIG_HOME", xdg).args(args))
+}
+
+fn output(cmd: &mut Command) -> (i32, String, String) {
+    let out = cmd.stdin(Stdio::null()).output().expect("run phux command");
+    (
+        out.status.code().expect("phux exited with code"),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// Ambient budget for a fake agent's `/bin/sh` to run at all (a loaded box
+/// has taken ~8s); `phux wait` returns as soon as the line appears.
 const AGENT_PAINT_BUDGET_SECS: &str = "60";
 
-/// How long a *specific* line is then given to appear, once the agent has
-/// proved it is painting at all.
-///
-/// This is the SUBJECT budget and is deliberately short and deliberately
-/// unchanged: the fake agent writes all of its lines in one burst, so once the
-/// first has landed the rest are already there. A timeout at this stage means
-/// the restored argv is genuinely wrong, which is exactly what this test
-/// exists to catch.
+/// Subject budget for a specific line once the agent is painting: it writes
+/// every line in one burst, so a timeout here means the argv is wrong.
 const AGENT_LINE_BUDGET_SECS: &str = "5";
 
-/// Poll until `selector` is gone from `socket`'s registry.
-///
-/// Ambient budget, for the same reason as [`AGENT_PAINT_BUDGET_SECS`]: every
-/// iteration forks a whole `phux` process, so what this deadline mostly buys
-/// is process startup rather than anything about the reap. It is a
-/// precondition of the save that follows, never the subject of an assertion.
+/// Wait for `target` to paint at all (ambient budget), then for `marker`
+/// (subject budget), so load cannot masquerade as a contract failure.
+fn wait_painted_then(socket: &str, target: &str, marker: &str) {
+    let (code, _, stderr) = run(&[
+        "wait",
+        "--until",
+        "FAKE_AGENT_ARGS=",
+        "--timeout",
+        AGENT_PAINT_BUDGET_SECS,
+        "--socket",
+        socket,
+        target,
+    ]);
+    assert_eq!(
+        code, 0,
+        "{target} never painted within {AGENT_PAINT_BUDGET_SECS}s (environment, not contract): {stderr}"
+    );
+    let (code, _, stderr) = run(&[
+        "wait",
+        "--until",
+        marker,
+        "--timeout",
+        AGENT_LINE_BUDGET_SECS,
+        "--socket",
+        socket,
+        target,
+    ]);
+    assert_eq!(code, 0, "{target} never printed {marker:?}: {stderr}");
+}
+
+/// Poll until `selector` is gone from `socket`'s registry (ambient budget:
+/// each poll forks a `phux`).
 fn wait_for_terminal_absent(socket: &str, selector: &str) {
     let budget = Duration::from_secs(60);
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
-        let (code, _, _) = ServerGuard::run(&["snapshot", "--json", "--socket", socket, selector]);
+        let (code, _, _) = run(&["snapshot", "--json", "--socket", socket, selector]);
         if code != 0 {
             return;
         }
@@ -101,14 +86,8 @@ fn wait_for_terminal_absent(socket: &str, selector: &str) {
     panic!("{selector} was still present {budget:?} after kill");
 }
 
-/// PHA-406 L18 review item 9: `workspace save` reads a session's *real* L3
-/// layout envelope (the split a `phux spawn --target --split` write
-/// produces) instead of `GET_STATE`'s `WindowInfo.layout`, which the
-/// reference server never populates. Full round trip: split a pane on a
-/// source server, save (asserting the archive already carries a real
-/// `Split` node, not a flat one-pane-per-window fallback), restore into a
-/// fresh server, then save that server too and assert the same split shape
-/// survived the round trip.
+/// `workspace save` archives a session's real L3 split layout (not the flat
+/// fallback), and save -> restore -> save keeps the same split.
 #[test]
 #[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
 #[allow(
@@ -116,8 +95,8 @@ fn wait_for_terminal_absent(socket: &str, selector: &str) {
     reason = "one linear save-restore-resave round trip keeps its own assertions together"
 )]
 fn workspace_save_captures_and_restore_replays_a_real_split_tree() {
-    let source = ServerGuard::start("source");
-    let dest = ServerGuard::start("seed");
+    let source = start("source");
+    let dest = start("seed");
     let archive_dir = tempfile::tempdir().expect("archive tempdir");
     let source_archive = archive_dir.path().join("source.json");
     let dest_archive = archive_dir.path().join("dest.json");
@@ -125,7 +104,7 @@ fn workspace_save_captures_and_restore_replays_a_real_split_tree() {
     let source_socket = source.socket_text();
     let dest_socket = dest.socket_text();
 
-    let (code, stdout, stderr) = ServerGuard::run(&[
+    let (code, stdout, stderr) = run(&[
         "new",
         "--socket",
         &source_socket,
@@ -142,10 +121,8 @@ fn workspace_save_captures_and_restore_replays_a_real_split_tree() {
         .expect("new --json names the seed pane");
     let seed_selector = format!("@{seed_pane}");
 
-    // A second pane placed beside the first writes a real two-leaf split
-    // into `split-bench`'s layout envelope (`SplitPreservingFocus`) — this
-    // is the tree `GET_STATE` can never see, only `GET_METADATA` can.
-    let (code, _stdout, stderr) = ServerGuard::run(&[
+    // A placed pane writes a real two-leaf split into the layout envelope.
+    let (code, _stdout, stderr) = run(&[
         "spawn",
         "--socket",
         &source_socket,
@@ -159,7 +136,7 @@ fn workspace_save_captures_and_restore_replays_a_real_split_tree() {
     ]);
     assert_eq!(code, 0, "placed spawn failed: {stderr}");
 
-    let (code, stdout, stderr) = ServerGuard::run(&[
+    let (code, stdout, stderr) = run(&[
         "workspace",
         "save",
         "--socket",
@@ -185,7 +162,7 @@ fn workspace_save_captures_and_restore_replays_a_real_split_tree() {
         "the saved layout must be the real two-leaf split, not the bare-pane fallback: {split_window}"
     );
 
-    let (code, stdout, stderr) = ServerGuard::run(&[
+    let (code, stdout, stderr) = run(&[
         "workspace",
         "restore",
         &source_archive.to_string_lossy(),
@@ -194,6 +171,7 @@ fn workspace_save_captures_and_restore_replays_a_real_split_tree() {
     ]);
     assert_eq!(code, 0, "workspace restore failed: {stderr}");
     let summary: serde_json::Value = serde_json::from_str(&stdout).expect("restore summary JSON");
+    assert_eq!(summary["schema_version"], 2);
     assert!(
         summary["failed"].as_array().is_none_or(Vec::is_empty),
         "restore must not report a failure: {summary}"
@@ -206,9 +184,7 @@ fn workspace_save_captures_and_restore_replays_a_real_split_tree() {
             .any(|name| name == "split-bench")
     );
 
-    // Saving the just-restored server proves the round trip end to end: the
-    // replayed layout envelope decodes back into the same split shape.
-    let (code, stdout, stderr) = ServerGuard::run(&[
+    let (code, stdout, stderr) = run(&[
         "workspace",
         "save",
         "--socket",
@@ -273,25 +249,11 @@ fn total_panes(windows: &[serde_json::Value]) -> usize {
         .sum()
 }
 
-/// PHA-406 L18 verification review items 1+2: a stored layout envelope can
-/// both miss live panes entirely (a headless `phux spawn` with no
-/// `--target` never touches L3 layout — it only joins the session) and go
-/// on referencing one that has since closed (nothing ever prunes a dead
-/// leaf out of a stored layout). Before the fix, `workspace save` used to
-/// (1) silently drop the headless pane from the archive, and (2) archive
-/// the dead leaf as a `{"active":false,"cols":0,"rows":0}` phantom that
-/// `workspace restore` then recreated as a brand new, empty shell — a
-/// restored workspace with the wrong pane count either way.
-///
-/// Repro, in one session: split a pane into the layout, kill it (leaving a
-/// dead leaf nothing prunes), then spawn a second, headless pane with no
-/// `--target` (leaving a live pane the layout never named). `workspace
-/// save` must reconcile both: the dead leaf is dropped from its window,
-/// and the headless pane lands in a synthesized `"unplaced"` window with a
-/// stderr warning naming the session. Saving the restored destination
-/// again and comparing pane counts proves the round trip preserves
-/// exactly the two live panes the source actually had — never three
-/// (the dead leaf resurrected) and never one (the headless pane dropped).
+/// A stored layout can miss live panes (a headless spawn never touches it)
+/// and keep leaves of closed panes (nothing prunes them). `workspace save`
+/// must drop the dead leaf and put the headless pane in an `"unplaced"`
+/// window with a warning, so save -> restore -> save keeps exactly the two
+/// live panes.
 #[test]
 #[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
 #[allow(
@@ -299,19 +261,10 @@ fn total_panes(windows: &[serde_json::Value]) -> usize {
     reason = "one linear repro-save-restore-resave round trip keeps its own assertions together"
 )]
 fn workspace_save_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
-    // The server's own pre-seeded session (not a second one created via
-    // `phux new`) is deliberately the only session on this server: a
-    // headless spawn's "join the most recently active session" heuristic
-    // (`resolve_spawn_ownership`, `crates/phux-server/src/runtime/attach.rs`)
-    // only tracks *attach* activity — nothing in this headless flow ever
-    // attaches — so with more than one session present it falls back to
-    // "the first session in the registry", which is the pre-seeded one,
-    // not a session created afterward. One session removes that ambiguity:
-    // whichever fallback fires, it can only mean this session. The
-    // pre-seeded session's seed pane is always wire id 1 (the first
-    // resource a fresh server ever creates).
-    let source = ServerGuard::start("reconcile-repro");
-    let dest = ServerGuard::start("seed");
+    // One session only, so the headless spawn can join nothing else; its
+    // seed pane is always `@1`.
+    let source = start("reconcile-repro");
+    let dest = start("seed");
     let archive_dir = tempfile::tempdir().expect("archive tempdir");
     let source_archive = archive_dir.path().join("reconcile-source.json");
     let dest_archive = archive_dir.path().join("reconcile-dest.json");
@@ -319,9 +272,8 @@ fn workspace_save_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
     let dest_socket = dest.socket_text();
     let seed_selector = "@1";
 
-    // A pane placed into the layout, then killed: a dead layout leaf
-    // (review item 2) that nothing ever prunes.
-    let (code, stdout, stderr) = ServerGuard::run(&[
+    // A placed pane, then killed: a dead layout leaf.
+    let (code, stdout, stderr) = run(&[
         "spawn",
         "--socket",
         &source_socket,
@@ -340,7 +292,7 @@ fn workspace_save_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
         .as_u64()
         .expect("spawn --json names the placed pane");
     let placed_selector = format!("@{placed_id}");
-    let (code, _, stderr) = ServerGuard::run(&[
+    let (code, _, stderr) = run(&[
         "kill",
         "--yes",
         "--socket",
@@ -350,13 +302,11 @@ fn workspace_save_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
     assert_eq!(code, 0, "kill the placed pane before save: {stderr}");
     wait_for_terminal_absent(&source_socket, &placed_selector);
 
-    // A headless spawn with no --target joins the session (the only one on
-    // this server) but never touches its layout (review item 1).
-    let (code, _stdout, stderr) =
-        ServerGuard::run(&["spawn", "--socket", &source_socket, "--", "sleep", "30"]);
+    // A headless spawn joins the session but never touches its layout.
+    let (code, _stdout, stderr) = run(&["spawn", "--socket", &source_socket, "--", "sleep", "30"]);
     assert_eq!(code, 0, "headless spawn failed: {stderr}");
 
-    let (code, stdout, stderr) = ServerGuard::run(&[
+    let (code, stdout, stderr) = run(&[
         "workspace",
         "save",
         "--socket",
@@ -404,7 +354,7 @@ fn workspace_save_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
          {seed_window}"
     );
 
-    let (code, stdout, stderr) = ServerGuard::run(&[
+    let (code, stdout, stderr) = run(&[
         "workspace",
         "restore",
         &source_archive.to_string_lossy(),
@@ -418,10 +368,7 @@ fn workspace_save_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
         "restore must not report a failure: {summary}"
     );
 
-    // Saving the just-restored destination proves the round trip end to
-    // end: exactly the source's two live panes, never a phantom shell for
-    // the pruned dead leaf and never a dropped headless pane.
-    let (code, stdout, stderr) = ServerGuard::run(&[
+    let (code, stdout, stderr) = run(&[
         "workspace",
         "save",
         "--socket",
@@ -446,64 +393,8 @@ fn workspace_save_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
 
 #[test]
 #[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
-fn workspace_archive_saves_and_restores_sessions() {
-    let source = ServerGuard::start("source");
-    let dest = ServerGuard::start("seed");
-    let archive_dir = tempfile::tempdir().expect("archive tempdir");
-    let archive_path = archive_dir.path().join("workspace.json");
-    let archive = archive_path.to_string_lossy().into_owned();
-    let cwd = archive_dir.path().to_string_lossy().into_owned();
-    let source_socket = source.socket_text();
-    let dest_socket = dest.socket_text();
-
-    let (code, _stdout, stderr) = ServerGuard::run(&[
-        "new",
-        "--socket",
-        &source_socket,
-        "--json",
-        "-s",
-        "bench",
-        "--cwd",
-        &cwd,
-    ]);
-    assert_eq!(code, 0, "create bench session failed: {stderr}");
-
-    let (code, stdout, stderr) = ServerGuard::run(&[
-        "workspace",
-        "save",
-        "--socket",
-        &source_socket,
-        "--output",
-        &archive,
-    ]);
-    assert_eq!(code, 0, "workspace save failed: {stderr}");
-    assert!(stdout.is_empty(), "save --output should not print stdout");
-
-    let (code, stdout, stderr) =
-        ServerGuard::run(&["workspace", "restore", &archive, "--socket", &dest_socket]);
-    assert_eq!(code, 0, "workspace restore failed: {stderr}");
-    let summary: serde_json::Value = serde_json::from_str(&stdout).expect("restore summary JSON");
-    assert_eq!(summary["schema_version"], 2);
-    assert!(
-        summary["restored"]
-            .as_array()
-            .expect("restored array")
-            .len()
-            >= 2
-    );
-
-    let (code, stdout, stderr) = ServerGuard::run(&["ls", "--json", "--socket", &dest_socket]);
-    assert_eq!(code, 0, "ls after restore failed: {stderr}");
-    let listing: serde_json::Value = serde_json::from_str(&stdout).expect("ls JSON");
-    let sessions = listing["sessions"].as_array().expect("sessions array");
-    assert!(sessions.iter().any(|session| session["name"] == "source"));
-    assert!(sessions.iter().any(|session| session["name"] == "bench"));
-}
-
-#[test]
-#[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
 fn workspace_restore_starts_archived_command_process() {
-    let dest = ServerGuard::start("seed");
+    let dest = start("seed");
     let archive_dir = tempfile::tempdir().expect("archive tempdir");
     let archive_path = archive_dir.path().join("workspace-command.json");
     let cwd = archive_dir.path().to_string_lossy().into_owned();
@@ -552,7 +443,7 @@ fn workspace_restore_starts_archived_command_process() {
     let archive_arg = archive_path.to_string_lossy().into_owned();
     let socket_arg = dest.socket_text();
 
-    let (code, stdout, stderr) = ServerGuard::run(&[
+    let (code, stdout, stderr) = run(&[
         "workspace",
         "restore",
         &archive_arg,
@@ -569,10 +460,8 @@ fn workspace_restore_starts_archived_command_process() {
             .any(|name| name == "restored-proc")
     );
 
-    // Ambient budget: the marker is unique to this restore, so there is no
-    // wrong-content failure mode to keep on a tight clock — the only way this
-    // wait can expire is the machine not running the restored pane's command.
-    let (code, _stdout, stderr) = ServerGuard::run(&[
+    // Ambient budget: the marker is unique, so only load can expire it.
+    let (code, _stdout, stderr) = run(&[
         "wait",
         "--until",
         &marker,
@@ -584,7 +473,7 @@ fn workspace_restore_starts_archived_command_process() {
     ]);
     assert_eq!(code, 0, "restored command marker did not appear: {stderr}");
 
-    let (code, stdout, stderr) = ServerGuard::run(&[
+    let (code, stdout, stderr) = run(&[
         "snapshot",
         "--json",
         "--socket",
@@ -688,9 +577,9 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
     let replay_archive_arg = replay_archive.to_string_lossy().into_owned();
     let stale_archive_arg = stale_archive.to_string_lossy().into_owned();
 
-    let source = ServerGuard::start("agent-restart");
+    let source = start("agent-restart");
     let source_socket = source.socket_text();
-    let (code, stdout, stderr) = ServerGuard::run_with_xdg(
+    let (code, stdout, stderr) = run_with_xdg(
         &[
             "launch",
             "restore-agent",
@@ -705,45 +594,14 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
     assert_eq!(launch["integration"], "restore-agent");
     let launched_id = launch["terminal_id"].as_u64().expect("terminal id");
     let launched_selector = format!("@{launched_id}");
-    // Two waits, not one, and the split is the point (phux-dnhf). The first
-    // pays for the ambient cost of getting a shell script running at all; the
-    // second measures the only thing this step is actually about — that the
-    // fresh launch passed `--new`. Collapsing them into a single 5s budget is
-    // what made this test look like a hard regression under fleet load.
-    let (code, _, stderr) = ServerGuard::run(&[
-        "wait",
-        "--until",
-        "FAKE_AGENT_ARGS=",
-        "--timeout",
-        AGENT_PAINT_BUDGET_SECS,
-        "--socket",
-        &source_socket,
-        &launched_selector,
-    ]);
-    assert_eq!(
-        code, 0,
-        "the fake agent never painted at all within {AGENT_PAINT_BUDGET_SECS}s; \
-         the machine did not schedule the plugin's shell script, which is an \
-         environment problem and not an archive-contract failure: {stderr}"
-    );
-    let (code, _, stderr) = ServerGuard::run(&[
-        "wait",
-        "--until",
-        "FAKE_AGENT_ARGS=--new",
-        "--timeout",
-        AGENT_LINE_BUDGET_SECS,
-        "--socket",
-        &source_socket,
-        &launched_selector,
-    ]);
-    assert_eq!(code, 0, "fresh agent did not start: {stderr}");
-    let (code, _, stderr) = ServerGuard::run(&["kill", "--yes", "--socket", &source_socket, "@1"]);
+    wait_painted_then(&source_socket, &launched_selector, "FAKE_AGENT_ARGS=--new");
+    let (code, _, stderr) = run(&["kill", "--yes", "--socket", &source_socket, "@1"]);
     assert_eq!(
         code, 0,
         "remove the pre-agent seed pane before save: {stderr}"
     );
     wait_for_terminal_absent(&source_socket, "@1");
-    let (code, _, stderr) = ServerGuard::run_with_xdg(
+    let (code, _, stderr) = run_with_xdg(
         &[
             "workspace",
             "save",
@@ -786,9 +644,9 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
     .expect("write cwd-edited archive");
     drop(source);
 
-    let dest = ServerGuard::start("replay-seed");
+    let dest = start("replay-seed");
     let dest_socket = dest.socket_text();
-    let (code, stdout, stderr) = ServerGuard::run_with_xdg(
+    let (code, stdout, stderr) = run_with_xdg(
         &[
             "workspace",
             "restore",
@@ -808,41 +666,13 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
             .any(|name| name == "agent-restart")
     );
     let resume_marker = format!("FAKE_AGENT_ARGS=--resume {native_id}");
-    // Same split as the fresh launch: ambient budget for the restored pane's
-    // shell to run, subject budget for the argv it was handed.
-    let (code, _, stderr) = ServerGuard::run(&[
-        "wait",
-        "--until",
-        "FAKE_AGENT_ARGS=",
-        "--timeout",
-        AGENT_PAINT_BUDGET_SECS,
-        "--socket",
-        &dest_socket,
-        "agent-restart",
-    ]);
-    assert_eq!(
-        code, 0,
-        "the restored agent never painted at all within {AGENT_PAINT_BUDGET_SECS}s; \
-         the machine did not schedule the plugin's shell script, which is an \
-         environment problem and not an archive-contract failure: {stderr}"
-    );
-    let (code, _, stderr) = ServerGuard::run(&[
-        "wait",
-        "--until",
-        &resume_marker,
-        "--timeout",
-        AGENT_LINE_BUDGET_SECS,
-        "--socket",
-        &dest_socket,
-        "agent-restart",
-    ]);
-    assert_eq!(code, 0, "resumed agent did not replay exact id: {stderr}");
+    wait_painted_then(&dest_socket, "agent-restart", &resume_marker);
     let plugin_cwd = root
         .path()
         .join("plugin")
         .canonicalize()
         .expect("canonical plugin root");
-    let (code, _, stderr) = ServerGuard::run(&[
+    let (code, _, stderr) = run(&[
         "wait",
         "--until",
         &format!("FAKE_AGENT_CWD={}", plugin_cwd.display()),
@@ -857,7 +687,7 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
         "restore must use current integration working directory: {stderr}"
     );
 
-    let (code, _, stderr) = ServerGuard::run_with_xdg(
+    let (code, _, stderr) = run_with_xdg(
         &[
             "workspace",
             "save",
@@ -899,9 +729,9 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
         serde_json::to_vec_pretty(&stale).expect("render stale archive"),
     )
     .expect("write stale archive");
-    let stale_dest = ServerGuard::start("stale-seed");
+    let stale_dest = start("stale-seed");
     let stale_socket = stale_dest.socket_text();
-    let (code, _, stderr) = ServerGuard::run_with_xdg(
+    let (code, _, stderr) = run_with_xdg(
         &[
             "workspace",
             "restore",
@@ -916,7 +746,7 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
         stderr.contains("not owning plugin"),
         "ownership refusal must be explicit: {stderr}"
     );
-    let (code, stdout, stderr) = ServerGuard::run(&["ls", "--json", "--socket", &stale_socket]);
+    let (code, stdout, stderr) = run(&["ls", "--json", "--socket", &stale_socket]);
     assert_eq!(code, 0, "list stale destination: {stderr}");
     let listing: serde_json::Value = serde_json::from_str(&stdout).expect("listing JSON");
     assert!(

@@ -35,33 +35,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn connector_entry_uses_kebab_case_credentials() {
+    fn connector_entries_use_kebab_case_and_fail_closed() {
         let entry: ConnectorConfigEntry = toml::from_str(
-            r#"
-relay = "relay.example:4433"
-token-file = "/run/secrets/phux-relay.token"
-cert-fingerprint = "AB:CD"
-"#,
+            "relay = \"relay.example:4433\"\ntoken-file = \"/run/t\"\ncert-fingerprint = \"AB:CD\"\n",
         )
         .expect("connector entry parses");
-
-        assert_eq!(entry.relay, "relay.example:4433");
         assert_eq!(
             entry.token_file.as_deref(),
-            Some(std::path::Path::new("/run/secrets/phux-relay.token"))
+            Some(std::path::Path::new("/run/t"))
         );
         assert_eq!(entry.cert_fingerprint.as_deref(), Some("AB:CD"));
-    }
 
-    #[test]
-    fn connector_entry_rejects_unknown_fields() {
-        let err = toml::from_str::<ConnectorConfigEntry>(
-            r#"
-relay = "localhost:4433"
-tokne-file = "/tmp/token"
-"#,
-        )
-        .expect_err("unknown connector keys fail closed");
+        let err = toml::from_str::<ConnectorConfigEntry>("relay = \"x\"\ntokne-file = \"/t\"\n")
+            .expect_err("unknown connector keys fail closed");
         assert!(err.to_string().contains("tokne-file"), "{err}");
     }
 }

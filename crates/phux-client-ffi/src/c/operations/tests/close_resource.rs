@@ -1,8 +1,7 @@
 use super::*;
 
 fn satellite_attachment(bound: bool) -> (Harness, ResourceId) {
-    let mut h = Harness::attached();
-    h.0.inner.conditional_kill = true;
+    let mut h = Harness::attached_with(&[ServerFeature::ConditionalKill]);
     let options = PhuxSpawnOptions {
         request_id: 1,
         satellite: bytes_out(b"sat"),
@@ -164,8 +163,7 @@ fn close_many(h: &mut Harness, request: u32, ids: &[u32]) -> PhuxClientResult {
 
 #[test]
 fn successful_abandonment_cleanup_releases_unsubscribed_binding_capacity() {
-    let mut h = Harness::attached();
-    h.0.inner.conditional_kill = true;
+    let mut h = Harness::attached_with(&[ServerFeature::ConditionalKill]);
     let token = [7; 16];
     for id in 1..=257 {
         let options = PhuxSpawnOptions {
@@ -485,8 +483,7 @@ fn result(h: &mut Harness, index: usize) -> PhuxOperationResult {
 
 #[test]
 fn explicit_close_requires_live_owned_attachment_and_keeps_state_until_server_closure() {
-    let mut h = Harness::new();
-    h.negotiate();
+    let mut h = Harness::negotiated(&[]);
     assert_eq!(close(&mut h, 1, 1), PhuxClientResult::InvalidState);
     assert!(h.0.inner.outgoing.is_empty());
 
@@ -616,8 +613,7 @@ fn explicit_close_never_survives_connection_loss_before_send() {
 
 #[test]
 fn explicit_close_uses_retained_instance_without_abandonment_conditions() {
-    let mut h = Harness::attached();
-    h.0.inner.conditional_kill = true;
+    let mut h = Harness::attached_with(&[ServerFeature::ConditionalKill]);
     let options = PhuxSpawnOptions {
         request_id: 1,
         ..PhuxSpawnOptions::default()

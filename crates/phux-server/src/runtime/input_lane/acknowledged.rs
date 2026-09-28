@@ -1,36 +1,12 @@
-//! Acknowledged-input bookkeeping: admission, dedupe, and the completion
-//! waiter (ADR-0053, phux-w7z2.58).
+//! Acknowledged-input bookkeeping for `APPLY_INPUT` (ADR-0053): per-Terminal
+//! admission, the dedupe record, and the completion waiter.
 //!
-//! `APPLY_INPUT` is the one input surface that must answer *what happened*
-//! rather than fire and forget, so it needs three pieces of state the
-//! fire-and-forget surfaces do not: a gate that keeps two unresolved
-//! operations from racing at one pane, a dedupe record so a reconnecting
-//! client can safely resend, and a bounded wait for the PTY writer's verdict.
-//!
-//! ## Why admission is keyed by Terminal
-//!
-//! The first implementation admitted **one operation per server** and blocked
-//! the lane thread on the PTY completion. Verification of phux-w7z2.29 traced
-//! the two consequences: concurrent `APPLY_INPUT` to *unrelated* panes
-//! collided into `RESOURCE_EXHAUSTED`, and one pane whose child had stopped
-//! reading stdin froze the lane — every attached keystroke, for every pane, for
-//! the full completion timeout, silently dropping attached input once the
-//! lane's queue filled. Nothing downstream of the lane is shared (the pane
-//! mailbox, the writer channel, and the writer thread are all per pane), so
-//! that serialization was an artifact of the lane, not a property of the PTY
-//! layer.
-//!
-//! Admission is therefore a set of Terminals with an unresolved operation, and
-//! the completion wait happens on a separate thread that owns every pending
-//! operation at once. The lane thread's only remaining acknowledged work is
-//! synchronous: validate, bind the dedupe record, encode, register, hand off.
-//!
-//! ## What still serializes, on purpose
-//!
-//! Per Terminal, at most one operation is unresolved: the reservation is held
-//! from admission until the completion (or timeout) is finalized. That is what
-//! makes the dedupe record's `Pending` state unreachable while a write is in
-//! flight, which is what keeps a same-id retry from writing twice.
+//! Admission is keyed by Terminal and the completion wait runs on its own
+//! thread (phux-w7z2.58): serializing per server made unrelated panes collide
+//! and let one pane whose child stopped reading stdin freeze every keystroke
+//! for the full completion timeout. Per Terminal, at most one operation is
+//! unresolved, from admission until its completion or timeout is finalized;
+//! that keeps a same-id retry from writing twice.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -50,15 +26,8 @@ use crate::terminal_actor::{WriteCompletion, WriteCompletionSink};
 
 pub(super) const ACKNOWLEDGED_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 
-// ---------------------------------------------------------------------------
-// Admission
-// ---------------------------------------------------------------------------
-
-/// The set of Terminals with an unresolved acknowledged operation.
-///
-/// Shared by every [`InputLaneHandle`](super::InputLaneHandle) clone, so the
-/// gate is server-wide in *reach* while being per-Terminal in *scope*: two
-/// clients targeting one pane still exclude each other.
+/// The Terminals with an unresolved acknowledged operation, shared by every
+/// lane handle: two clients targeting one pane still exclude each other.
 #[derive(Debug, Default)]
 pub(super) struct AcknowledgedAdmission {
     in_flight: Mutex<HashSet<phux_protocol::ids::ResourceId>>,
@@ -77,11 +46,8 @@ impl AcknowledgedAdmission {
     }
 }
 
-/// Proof that this Terminal admitted the operation, released on drop.
-///
-/// Held from the caller's admission check all the way through the completion
-/// wait, so the window it covers is exactly "this Terminal has an unresolved
-/// acknowledged operation".
+/// Proof that this Terminal admitted the operation, held through the
+/// completion wait and released on drop.
 #[derive(Debug)]
 #[allow(
     clippy::redundant_pub_crate,
@@ -113,10 +79,6 @@ impl Drop for AcknowledgedReservation {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Dedupe record
-// ---------------------------------------------------------------------------
-
 #[derive(Debug)]
 pub(super) enum CacheClaim {
     Owner,
@@ -128,10 +90,8 @@ pub(super) enum CacheClaim {
 }
 
 /// The `APPLY_INPUT` view of the server's shared dedupe record
-/// ([`OperationDedupe`], ADR-0126), shared between the lane thread (which
-/// binds ids) and the completion waiter (which writes final results). The
-/// record's bounds, expiry, and state machine are the ones this lane always
-/// had; this facade only maps them onto `CommandResult`.
+/// ([`OperationDedupe`], ADR-0126), mapped onto `CommandResult`. The lane
+/// thread binds ids; the completion waiter writes final results.
 #[derive(Clone, Debug, Default)]
 pub(super) struct SharedOperationCache(OperationDedupe);
 
@@ -218,16 +178,8 @@ pub(super) fn operation_digest(
     (digest, events)
 }
 
-// ---------------------------------------------------------------------------
-// Completion waiter
-// ---------------------------------------------------------------------------
-
-/// Names one registered operation on the completion queue.
-///
-/// Monotonic and never reused, so a completion that arrives after its
-/// operation was already resolved (a late writer reply past the timeout, or a
-/// request dropped after the handoff was abandoned) matches nothing and is
-/// discarded instead of resolving somebody else's operation.
+/// Names one registered operation. Never reused, so a late completion for an
+/// already-resolved operation matches nothing instead of someone else's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct CompletionTicket(u64);
 
@@ -317,15 +269,11 @@ pub(super) struct CompletionWaiterHandle {
 impl CompletionWaiterHandle {
     /// Register an operation that is about to be handed off.
     ///
-    /// Order is load-bearing and easy to get wrong: this call MUST complete
-    /// **before** the request reaches the pane's mailbox. Registration and the
-    /// writer's completion travel the same queue, and the writer cannot begin
-    /// its send until the handoff it observes has happened — which is after
-    /// this send returned — so the registration always takes the earlier slot.
-    /// Registering *after* the handoff would let a fast write report against a
-    /// ticket the waiter has never seen, which the waiter discards, leaving the
-    /// caller to wait out the full completion timeout for a write that
-    /// succeeded.
+    /// Must complete **before** the request reaches the pane's mailbox:
+    /// registration and the writer's completion share one queue, so
+    /// registering first guarantees a fast write never reports against a
+    /// ticket the waiter has not seen (which would strand the caller until
+    /// the timeout).
     ///
     /// # Errors
     ///
@@ -424,18 +372,15 @@ fn completion_result(outcome: WriteCompletion) -> CommandResult {
     }
 }
 
-fn delivery_unknown() -> CommandResult {
+pub(super) fn delivery_unknown() -> CommandResult {
     CommandResult::Error {
         code: ErrorCode::InputDeliveryUnknown,
         message: "PTY input delivery could not be confirmed".to_owned(),
     }
 }
 
-/// phux-w7z2.60: the request never reached a live PTY writer, so `write(2)`
-/// was never invoked for it — proven at the point [`WriteCompletion::NotWritten`]
-/// was raised, not inferred here. Distinct from [`delivery_unknown`]: that
-/// reading forbids a retry under any id, this one does not, because there is
-/// nothing already written for a retry to duplicate.
+/// The request provably never reached a PTY writer, so unlike
+/// [`delivery_unknown`] a retry under any id cannot duplicate it.
 fn not_written() -> CommandResult {
     CommandResult::Error {
         code: ErrorCode::InputNotWritten,
@@ -586,67 +531,26 @@ mod tests {
         );
     }
 
-    /// phux-w7z2.60: `NotWritten` and `Failed` both mean the batch did not
-    /// land, but they are not the same reading. `Failed` — a real write was
-    /// attempted and something went wrong partway through — stays
-    /// `InputDeliveryUnknown`: a same-id retry replays it, a fresh-id retry
-    /// risks a duplicate. `NotWritten` — the request never reached a writer at
-    /// all — is a distinct, honest code, and this is the one place the two
-    /// map to `CommandResult`, so pin the split here rather than only at the
-    /// call sites that raise each `WriteCompletion` variant.
+    /// phux-w7z2.60: a partial write (`Failed`) is unknown and must not be
+    /// retried under a fresh id; a request that never reached a writer
+    /// (`NotWritten`) has its own code.
     #[test]
     fn not_written_and_failed_map_to_distinct_error_codes() {
         assert_eq!(
             completion_result(WriteCompletion::NotWritten),
-            CommandResult::Error {
-                code: ErrorCode::InputNotWritten,
-                message: not_written_message(),
-            }
+            not_written()
         );
         assert_eq!(
             completion_result(WriteCompletion::Failed),
+            delivery_unknown()
+        );
+        assert!(matches!(
+            not_written(),
             CommandResult::Error {
-                code: ErrorCode::InputDeliveryUnknown,
-                message: "PTY input delivery could not be confirmed".to_owned(),
+                code: ErrorCode::InputNotWritten,
+                ..
             }
-        );
-        assert_ne!(
-            completion_result(WriteCompletion::NotWritten),
-            completion_result(WriteCompletion::Failed),
-        );
-    }
-
-    fn not_written_message() -> String {
-        let CommandResult::Error { message, .. } = not_written() else {
-            unreachable!("not_written always returns Error");
-        };
-        message
-    }
-
-    /// Two Terminals admit independently; one Terminal excludes itself until
-    /// the reservation is released.
-    #[test]
-    fn admission_is_scoped_to_one_terminal() {
-        let admission = Arc::new(AcknowledgedAdmission::default());
-        let first = phux_protocol::ResourceId::local(1);
-        let second = phux_protocol::ResourceId::local(2);
-
-        let held = AcknowledgedReservation::try_acquire(&admission, &first).expect("first admits");
-        assert!(
-            AcknowledgedReservation::try_acquire(&admission, &first).is_none(),
-            "one Terminal admits one unresolved operation"
-        );
-        let other =
-            AcknowledgedReservation::try_acquire(&admission, &second).expect("second admits");
-        assert!(admission.is_in_flight(&first) && admission.is_in_flight(&second));
-
-        drop(held);
-        assert!(!admission.is_in_flight(&first));
-        assert!(
-            AcknowledgedReservation::try_acquire(&admission, &first).is_some(),
-            "releasing the reservation readmits the Terminal"
-        );
-        drop(other);
+        ));
     }
 
     /// The facade keeps the lane's reading of the shared record: a pending

@@ -1695,18 +1695,12 @@ class OpenCodeLifecycle {
     });
   }
   toolStart(sessionId, toolName, toolUseId) {
-    if (this.disposed)
-      return this.tail;
-    const data = {
-      tool_name: toolName,
-      ...toolUseId === undefined ? {} : { tool_use_id: toolUseId }
-    };
-    return this.enqueue(async () => {
-      await this.publish(sessionId);
-      await this.emit(sessionId, "tool_start", data);
-    });
+    return this.toolEvent("tool_start", sessionId, toolName, toolUseId);
   }
   toolEnd(sessionId, toolName, toolUseId) {
+    return this.toolEvent("tool_end", sessionId, toolName, toolUseId);
+  }
+  toolEvent(type, sessionId, toolName, toolUseId) {
     if (this.disposed)
       return this.tail;
     const data = {
@@ -1715,7 +1709,7 @@ class OpenCodeLifecycle {
     };
     return this.enqueue(async () => {
       await this.publish(sessionId);
-      await this.emit(sessionId, "tool_end", data);
+      await this.emit(sessionId, type, data);
     });
   }
   deleteSession(sessionId) {

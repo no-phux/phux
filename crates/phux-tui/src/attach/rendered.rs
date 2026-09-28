@@ -1,26 +1,10 @@
 //! Compose the client's multi-pane view into dense structured cells
-//! (`phux snapshot --rendered`, phux-l5xa).
+//! (`phux snapshot --rendered`).
 //!
-//! This is the structured-cells counterpart to `paint::paint_full_frame`:
-//! where that emits VT to the outer terminal, `compose_full_frame_cells`
-//! assembles the *same* frame — pane content (tiled per the layout),
-//! dividers, and the status bar — into a [`RenderedFrame`] of dense
-//! grapheme + style cells, so an agent, a test, or an assistant debugging a
-//! composition bug can ask "what does the assembled screen look like right
-//! now" and get cells back with no external emulator in the loop.
-//!
-//! The composition order mirrors `paint_full_frame` exactly so the two stay
-//! in agreement:
-//!
-//! 1. Reserve the bar row (`pane_viewport`) and tile the panes
-//!    (`compute_layout`) into the remaining viewport.
-//! 2. Fill every pane's cells via [`super::render::TerminalRenderer::render_at_cells`].
-//! 3. Overlay the divider glyphs (read from the same ratatui `Buffer` the VT
-//!    path emits).
-//! 4. Overlay the status bar onto its reserved row.
-//! 5. Adopt the focused pane's cursor as the frame cursor — the focused pane
-//!    owns final cursor placement in the VT path, so the rendered frame
-//!    reports the same.
+//! The structured-cells counterpart to `paint::paint_full_frame`, in the same
+//! order so the two agree: tile the panes into the content rect and fill
+//! their cells, overlay dividers, the sidebar strip, and the status bar, and
+//! adopt the focused pane's cursor as the frame cursor.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
@@ -39,16 +23,11 @@ use crate::render::chrome::dividers::compose_buffer as compose_divider_buffer;
 use crate::render::chrome::sidebar::SidebarPainter;
 use crate::render::chrome::status_bar::{StatusBarPainter, make_context};
 
-/// Compose the assembled multi-pane frame into a dense [`RenderedFrame`].
-///
-/// `viewport_dims` is the full outer viewport `(cols, rows)`. When a status
-/// bar is present its row is reserved (via [`pane_viewport`]) before the
-/// panes are tiled, exactly as the live paint does. `now` feeds time-based
-/// status widgets so the rendered bar matches a live paint at the same
-/// instant.
+/// Compose the assembled multi-pane frame into a dense [`RenderedFrame`] for
+/// the outer viewport `viewport_dims`. `now` feeds time-based status widgets.
 #[allow(
     clippy::too_many_arguments,
-    reason = "phux-4h5a adds the sidebar reservation + painter to the compositor's paint context, mirroring paint_full_frame"
+    reason = "the paint context is passed flat, mirroring paint_full_frame"
 )]
 pub(super) fn compose_full_frame_cells(
     layout_state: &LayoutState,
@@ -57,10 +36,6 @@ pub(super) fn compose_full_frame_cells(
     focused_resource: Option<&ResourceId>,
     viewport_dims: (u16, u16),
     status_bar: Option<&StatusBarPainter>,
-    // phux-4h5a: the window-sidebar reservation. `None` (disabled, the
-    // default) makes `content_rect` the full pane viewport, byte-identical to
-    // the pre-sidebar tiling. When `Some`, panes inset and `sidebar_painter`
-    // overlays the strip into its reserved columns.
     sidebar: Option<SidebarReservation>,
     sidebar_painter: Option<&SidebarPainter>,
     session_name: &str,
@@ -77,9 +52,7 @@ pub(super) fn compose_full_frame_cells(
 
     let mut frame = RenderedFrame::blank(cols, rows);
 
-    // Fill every visible pane. The focused pane's cursor becomes the frame
-    // cursor (it owns final placement in the VT path); other panes' cursors
-    // are projected but discarded.
+    // The focused pane's cursor becomes the frame cursor.
     let mut frame_cursor = None;
     for (id, rect) in &multi.rects {
         let Some(slot) = panes.get_mut(id) else {
@@ -88,8 +61,7 @@ pub(super) fn compose_full_frame_cells(
         let Some(walk) = super::pane_state::published_replica(kernel, id) else {
             continue;
         };
-        // A render error on one pane shouldn't sink the whole introspection
-        // query; leave that pane's cells blank and move on.
+        // One pane's render error leaves its cells blank.
         let Ok(cursor) =
             slot.renderer
                 .render_at_cells(walk, &mut frame, (rect.x, rect.y), (rect.w, rect.h))
@@ -101,9 +73,7 @@ pub(super) fn compose_full_frame_cells(
         }
     }
 
-    // Overlay dividers. The divider buffer marks pane interiors `Skip` and
-    // carries only the box-drawing glyphs, so overlaying its non-skip,
-    // non-blank cells never clobbers pane content.
+    // Divider interiors are `Skip`, so overlaying never clobbers panes.
     let divider_buf = {
         let panes_ref = &*panes;
         compose_divider_buffer(&multi, content, rail, focused_resource, theme, |id| {
@@ -112,22 +82,15 @@ pub(super) fn compose_full_frame_cells(
     };
     overlay_buffer(&mut frame, &divider_buf, (0, 0), true);
 
-    // Overlay the sidebar strip into its reserved columns (phux-4h5a). The
-    // strip buffer is composed at origin (0,0), so shift it to the reserved
-    // rect's x. Its styled blanks/separator are kept (skip_blanks = false) so
-    // the strip's full extent shows; it sits in columns `content_rect` carved
-    // out, never over pane content.
+    // The strip, shifted to its reserved columns; styled blanks are kept.
     if let (Some(res), Some(painter)) = (sidebar, sidebar_painter) {
         let rect = sidebar_rect(viewport_dims, res);
         let strip = painter.compose_buffer(rect, super::paint::sidebar_rule(res.edge), rail);
         overlay_buffer(&mut frame, &strip, (rect.x, rect.y), false);
     }
 
-    // Overlay the status bar onto its reserved row. Styled blanks are kept
-    // (an error strip's reverse-video field spans the bar's full span); the bar
-    // row sits below the panes, so writing every cell is safe. phux-qtw8: the
-    // bar yields the sidebar's columns, so it composes at its own origin —
-    // the strip painted above keeps the columns the bar gave up.
+    // The status bar at its own origin (it yields the strip's columns);
+    // styled blanks kept so an error strip spans the bar.
     if let Some(painter) = status_bar {
         let ctx = make_context(session_name, now);
         if let Some((bar_buf, x, row_index)) =
@@ -174,13 +137,8 @@ fn overlay_buffer(frame: &mut RenderedFrame, buf: &Buffer, origin: (u16, u16), s
     }
 }
 
-/// Project a ratatui [`RatatuiCell`]'s style into a plain-data [`CellStyle`].
-///
-/// The inverse of the chrome layer's `to_ratatui_style`. Color is lossy by
-/// nature (a named ANSI color resolves to its palette index 0..=15; ratatui
-/// has no overline modifier), which is acceptable for the introspection
-/// surface — the structured frame reports *what the chrome painted*, and the
-/// chrome's colors are config-sourced names/indices/RGB to begin with.
+/// Project a ratatui cell's style into a [`CellStyle`] (lossy: named colours
+/// become palette indices, and there is no overline).
 const fn ratatui_cell_to_style(cell: &RatatuiCell) -> CellStyle {
     let m = cell.modifier;
     CellStyle {
@@ -232,468 +190,161 @@ mod tests {
     use super::*;
     use std::time::UNIX_EPOCH;
 
-    use crate::attach::pane_state::PaneSlot;
-    use crate::layout::{LayoutState, WindowState, Workspace};
-    use crate::render::chrome::status_bar::{Position, StatusBarPainter};
+    use crate::attach::paint::SidebarEdge;
+    use crate::attach::pane_state::published_test_state;
+    use crate::render::Theme;
+    use crate::render::chrome::status_bar::Position;
+    use phux_config::widget::WindowInfo;
     use phux_protocol::wire::info::{LayoutNode, SplitDir};
-    fn published_kernel(
-        entries: &[(&ResourceId, &[u8])],
-    ) -> super::super::pane_state::AttachKernel {
-        use phux_client_core::session::{
-            EffectBuffer as KernelEffectBuffer, KernelInput, SessionKernel,
-        };
-        use phux_protocol::{
-            BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, StreamId,
-        };
 
-        let terminals = entries
-            .iter()
-            .map(|(terminal_id, _)| (*terminal_id).clone())
-            .collect::<Vec<_>>();
-        let mut kernel = SessionKernel::new(
-            phux_client_core::engine::ghostty::GhosttyAdapter::new(BootstrapLimits::default()),
-            BootstrapProfile::SynthesizedVtRaw,
-        );
-        let mut effects = KernelEffectBuffer::new();
-        kernel
-            .update(
-                KernelInput::AttachStarted {
-                    attach_id: 1,
-                    terminals: &terminals,
-                },
-                &mut effects,
-            )
-            .expect("attach");
-        for (index, (terminal_id, replay)) in entries.iter().enumerate() {
-            let stream_id = StreamId::new(1).expect("stream");
-            let bootstrap_id = BootstrapId::new(index as u64 + 1).expect("bootstrap");
-            kernel
-                .update(
-                    KernelInput::BootstrapBegin {
-                        terminal_id,
-                        stream_id,
-                        bootstrap_id,
-                        profile: BootstrapStreamProfile::SynthesizedVtRaw,
-                        geometry: phux_client_core::engine::CanonicalGeometry::new(80, 24)
-                            .expect("geometry"),
-                        base_seq: 0,
-                    },
-                    &mut effects,
-                )
-                .expect("begin");
-            kernel
-                .update(
-                    KernelInput::BootstrapChunk {
-                        terminal_id,
-                        stream_id,
-                        bootstrap_id,
-                        chunk_seq: 0,
-                        payload: replay,
-                    },
-                    &mut effects,
-                )
-                .expect("chunk");
-            kernel
-                .update(
-                    KernelInput::BootstrapReady {
-                        terminal_id,
-                        stream_id,
-                        bootstrap_id,
-                        history_cursor: None,
-                    },
-                    &mut effects,
-                )
-                .expect("ready");
-        }
-        kernel
-    }
+    const STRIP: SidebarReservation = SidebarReservation {
+        edge: SidebarEdge::Left,
+        width: 20,
+    };
 
-    fn two_pane(left: &ResourceId, right: &ResourceId) -> Workspace {
-        Workspace {
-            windows: vec![WindowState::new(
-                "1".to_owned(),
-                LayoutState {
-                    tree: Some(LayoutNode::Split {
-                        dir: SplitDir::Horizontal,
-                        ratio: 0.5,
-                        left: Box::new(LayoutNode::Leaf(left.clone())),
-                        right: Box::new(LayoutNode::Leaf(right.clone())),
-                    }),
-                    focus: Some(left.clone()),
-                },
-            )],
-            active: 0,
+    fn split(left: &ResourceId, right: &ResourceId) -> LayoutState {
+        LayoutState {
+            tree: Some(LayoutNode::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 0.5,
+                left: Box::new(LayoutNode::Leaf(left.clone())),
+                right: Box::new(LayoutNode::Leaf(right.clone())),
+            }),
+            focus: Some(left.clone()),
         }
     }
 
-    fn pane_with(bytes: &[u8]) -> PaneSlot {
-        let mut slot = PaneSlot::new().expect("pane slot");
-        slot.terminal.vt_write(bytes);
-        slot
+    fn window(name: &str) -> WindowInfo {
+        WindowInfo {
+            name: name.to_owned(),
+            active: name == "editor",
+            zoomed: false,
+            attention: false,
+            branch: None,
+            exited: None,
+            badge: None,
+        }
     }
 
-    /// The compositor tiles each pane's content into its rect, draws the
-    /// divider between them, and adopts the focused pane's cursor as the
-    /// frame cursor — the render-verify harness contract (phux-l5xa).
-    #[test]
-    fn compose_places_pane_content_divider_and_focused_cursor() {
-        let left = ResourceId::local(1);
-        let right = ResourceId::local(2);
-        let workspace = two_pane(&left, &right);
-        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
-        panes.insert(left.clone(), pane_with(b"L"));
-        panes.insert(right.clone(), pane_with(b"R"));
-        let kernel = published_kernel(&[(&left, b"L"), (&right, b"R")]);
+    fn bar(widget: &str) -> StatusBarPainter {
+        let cfg = phux_config::StatusCfg {
+            left: vec![phux_config::Widget::Bare(widget.to_owned())],
+            ..Default::default()
+        };
+        let reg = phux_config::widget::WidgetRegistry::with_builtins();
+        StatusBarPainter::new(
+            phux_config::widget::StatusBar::build(&cfg, &reg).expect("bar build"),
+            Position::Bottom,
+        )
+    }
 
-        let frame = compose_full_frame_cells(
-            workspace.active_window().expect("active window"),
+    fn compose(
+        layout: &LayoutState,
+        entries: &[(&ResourceId, u16, u16, &[u8])],
+        status_bar: Option<&StatusBarPainter>,
+        sidebar: Option<(SidebarReservation, &SidebarPainter)>,
+    ) -> RenderedFrame {
+        let (kernel, _, mut panes) = published_test_state(entries);
+        compose_full_frame_cells(
+            layout,
             &mut panes,
             &kernel,
-            Some(&left),
+            layout.focus.as_ref(),
             (80, 24),
-            None,
-            None,
-            None,
-            "demo",
+            status_bar,
+            sidebar.map(|(res, _)| res),
+            sidebar.map(|(_, painter)| painter),
+            "alpha",
             UNIX_EPOCH,
-            &crate::render::theme::Theme::default(),
-        );
-
-        assert_eq!((frame.cols, frame.rows), (80, 24));
-        // No status bar ⇒ panes tile the whole viewport bar the pane-grid
-        // rail; reuse the SAME content rect the compositor used to learn
-        // each pane's exact origin.
-        let multi = super::super::multi_pane::compute_layout_in(
-            workspace.active_window().expect("active window"),
-            content_rect((80, 24), None, None),
-            (80, 24),
-        );
-        let left_rect = multi.rects.get(&left).copied().expect("left rect");
-        let right_rect = multi.rects.get(&right).copied().expect("right rect");
-        assert_eq!(
-            frame
-                .cell(left_rect.y, left_rect.x)
-                .expect("left cell")
-                .grapheme,
-            "L"
-        );
-        assert_eq!(
-            frame
-                .cell(right_rect.y, right_rect.x)
-                .expect("right cell")
-                .grapheme,
-            "R"
-        );
-
-        // A divider glyph sits in the gap column between the two rects.
-        let gap = left_rect.x + left_rect.w;
-        let divider = frame.cell(left_rect.y, gap).expect("gap cell");
-        assert!(
-            divider.grapheme != " " && !divider.grapheme.is_empty(),
-            "expected a divider glyph at the split column {gap}, got {:?}",
-            divider.grapheme
-        );
-
-        // Focused (left) pane owns the cursor: after "L" at pane col 1.
-        let cursor = frame.cursor.expect("frame cursor");
-        assert_eq!((cursor.x, cursor.y), (left_rect.x + 1, left_rect.y));
+            &Theme::default(),
+        )
     }
 
-    /// phux-4h5a enabled-path harness: with a Left sidebar reservation the
-    /// compositor (a) paints the window strip into its reserved columns
-    /// (labels + the `│` separator at the strip's last column), (b) insets the
-    /// panes so their content starts at the strip's right edge, and (c) leaves
-    /// the disabled (`None`) frame byte-identical to the pre-sidebar tiling.
+    fn row(frame: &RenderedFrame, r: u16, cols: std::ops::Range<u16>) -> String {
+        cols.filter_map(|c| frame.cell(r, c).map(|cell| cell.grapheme.clone()))
+            .collect()
+    }
+
+    /// Panes tile into their rects with a divider between them, and the
+    /// focused pane's cursor is the frame cursor; with a sidebar the strip
+    /// paints its columns (separator at col 19) and the panes inset past it,
+    /// while without one nothing is reserved.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one test covers the three enabled-path claims (strip / inset / disabled-unchanged) so they share one fixture"
-    )]
-    fn compose_insets_panes_and_paints_sidebar_strip_when_enabled() {
-        use crate::render::Theme;
-        use crate::render::chrome::sidebar::SidebarPainter;
-        use phux_config::widget::WindowInfo;
-        use phux_protocol::ids::ResourceId;
-
-        let left = ResourceId::local(1);
-        let right = ResourceId::local(2);
-        let workspace = two_pane(&left, &right);
-        let ls = workspace.active_window().expect("active window");
-
-        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
-        panes.insert(left.clone(), pane_with(b"L"));
-        panes.insert(right.clone(), pane_with(b"R"));
-        let kernel = published_kernel(&[(&left, b"L"), (&right, b"R")]);
-
-        // The same window list `window_infos` would hand the strip painter.
-        let mut sidebar_painter = SidebarPainter::new(Theme::default());
-        sidebar_painter.set_roster(vec![crate::render::chrome::sidebar::SessionRosterEntry {
+    fn compose_tiles_panes_divider_cursor_and_sidebar() {
+        let (left, right) = (ResourceId::local(1), ResourceId::local(2));
+        let layout = split(&left, &right);
+        let entries: [(&ResourceId, u16, u16, &[u8]); 2] =
+            [(&left, 80, 24, b"L"), (&right, 80, 24, b"R")];
+        let mut strip = SidebarPainter::new(Theme::default());
+        strip.set_roster(vec![crate::render::chrome::sidebar::SessionRosterEntry {
             name: "test".to_owned(),
             host: "test-host".to_owned(),
             active: true,
             selectable: true,
             ..Default::default()
         }]);
-        sidebar_painter.set_windows(vec![
-            WindowInfo {
-                name: "editor".to_owned(),
-                active: true,
-                zoomed: false,
-                attention: false,
-                branch: None,
-                exited: None,
-                badge: None,
-            },
-            WindowInfo {
-                name: "shell".to_owned(),
-                active: false,
-                zoomed: false,
-                attention: false,
-                branch: None,
-                exited: None,
-                badge: None,
-            },
-        ]);
+        strip.set_windows(vec![window("editor"), window("shell")]);
 
-        let res = SidebarReservation {
-            edge: super::super::paint::SidebarEdge::Left,
-            width: 20,
-        };
-        let enabled = compose_full_frame_cells(
-            ls,
-            &mut panes,
-            &kernel,
-            Some(&left),
-            (80, 24),
-            None,
-            Some(res),
-            Some(&sidebar_painter),
-            "demo",
-            UNIX_EPOCH,
-            &crate::render::theme::Theme::default(),
-        );
+        for sidebar in [None, Some(STRIP)] {
+            let frame = compose(&layout, &entries, None, sidebar.map(|res| (res, &strip)));
+            let multi = crate::attach::multi_pane::compute_layout_in(
+                &layout,
+                content_rect((80, 24), None, sidebar),
+                (80, 24),
+            );
+            let (l, r) = (multi.rects[&left], multi.rects[&right]);
+            assert_eq!(l.x, if sidebar.is_some() { 20 } else { 0 });
+            assert_eq!(frame.cell(l.y, l.x).unwrap().grapheme, "L");
+            assert_eq!(frame.cell(r.y, r.x).unwrap().grapheme, "R");
+            let divider = &frame.cell(l.y, l.x + l.w).unwrap().grapheme;
+            assert!(divider != " " && !divider.is_empty(), "{divider:?}");
+            let cursor = frame.cursor.clone().expect("frame cursor");
+            assert_eq!((cursor.x, cursor.y), (l.x + 1, l.y));
 
-        // (a) The strip occupies columns 0..20. Its separator rule sits in the
-        // strip's last column (19); the active window's label glyphs land in
-        // the strip's text columns.
-        let sep: String = (0..24)
-            .filter_map(|r| enabled.cell(r, 19).map(|c| c.grapheme.clone()))
-            .collect();
-        assert!(
-            sep.contains('│'),
-            "sidebar separator must sit at the strip's last column (19); got {sep:?}"
-        );
-        // The two fixed panels compose alongside the panes.
-        let strip_rows: Vec<String> = (0..24)
-            .map(|r| {
-                (0..19)
-                    .filter_map(|c| enabled.cell(r, c).map(|cell| cell.grapheme.clone()))
-                    .collect::<String>()
-            })
-            .collect();
-        assert!(
-            strip_rows.iter().any(|row| row.contains("Sessions")),
-            "the focused session's header must paint into the strip; got {strip_rows:?}"
-        );
-        assert!(
-            strip_rows.iter().any(|row| row.contains("editor")),
-            "active window label 'editor' must paint into the strip's text columns; got {strip_rows:?}"
-        );
-
-        // (b) Panes inset: with a 20-col Left strip, the content rect starts at
-        // x = 20, so the focused (left) pane's first cell lands at column 20.
-        let content = content_rect((80, 24), None, Some(res));
-        let multi = super::super::multi_pane::compute_layout_in(ls, content, (80, 24));
-        let left_rect = multi.rects.get(&left).copied().expect("left rect");
-        assert_eq!(left_rect.x, 20, "left pane must inset to the strip's edge");
-        assert_eq!(
-            enabled
-                .cell(left_rect.y, left_rect.x)
-                .expect("inset left cell")
-                .grapheme,
-            "L",
-            "focused pane content must start at the inset origin (col 20)"
-        );
-        // Nothing pane-authored bleeds into the strip's columns: col 0 of the
-        // pane row is strip text, never the 'L' the pane painted.
-        assert_ne!(
-            enabled.cell(left_rect.y, 0).expect("col 0").grapheme,
-            "L",
-            "pane content must not spill into the reserved sidebar columns"
-        );
-
-        // (c) The disabled (None) frame is unchanged: panes tile from col 0 and
-        // no separator rule is painted in the strip columns.
-        let mut panes_off: HashMap<ResourceId, PaneSlot> = HashMap::new();
-        panes_off.insert(left.clone(), pane_with(b"L"));
-        panes_off.insert(right, pane_with(b"R"));
-        let disabled = compose_full_frame_cells(
-            ls,
-            &mut panes_off,
-            &kernel,
-            Some(&left),
-            (80, 24),
-            None,
-            None,
-            None,
-            "demo",
-            UNIX_EPOCH,
-            &crate::render::theme::Theme::default(),
-        );
-        let off_multi = super::super::multi_pane::compute_layout_in(
-            ls,
-            content_rect((80, 24), None, None),
-            (80, 24),
-        );
-        let off_left = off_multi.rects.get(&left).copied().expect("off left rect");
-        assert_eq!(off_left.x, 0, "disabled path tiles from the origin");
-        assert_eq!(
-            disabled
-                .cell(off_left.y, off_left.x)
-                .expect("disabled left cell")
-                .grapheme,
-            "L"
-        );
-        // No sidebar separator glyph anywhere on the disabled frame's would-be
-        // strip column.
-        let off_sep: String = (0..24)
-            .filter_map(|r| disabled.cell(r, 19).map(|c| c.grapheme.clone()))
-            .collect();
-        assert!(
-            !off_sep.contains('│'),
-            "disabled path must paint no sidebar separator; got {off_sep:?}"
-        );
+            let separator: String = (0..24).map(|r| row(&frame, r, 19..20)).collect();
+            assert_eq!(separator.contains('│'), sidebar.is_some(), "{separator:?}");
+            if sidebar.is_some() {
+                let strip_rows: Vec<String> = (0..24).map(|r| row(&frame, r, 0..19)).collect();
+                assert!(
+                    strip_rows.iter().any(|r| r.contains("Sessions")),
+                    "{strip_rows:?}"
+                );
+                assert!(
+                    strip_rows.iter().any(|r| r.contains("editor")),
+                    "{strip_rows:?}"
+                );
+                assert_ne!(frame.cell(l.y, 0).unwrap().grapheme, "L");
+            }
+        }
     }
 
-    /// With a status bar the bottom row is reserved and carries the bar
-    /// content (here the session name), composited over the panes (phux-l5xa).
+    /// The status bar composes onto the reserved bottom row, beside (never
+    /// under) a sidebar whose full-height strip owns the corner cell.
     #[test]
-    fn compose_overlays_status_bar_on_the_bottom_row() {
+    fn compose_places_the_bar_beside_the_sidebar() {
         let pane = ResourceId::local(1);
-        let workspace = Workspace::single(pane.clone());
-        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
-        panes.insert(pane.clone(), pane_with(b"hi"));
-        let kernel = published_kernel(&[(&pane, b"hi")]);
-
-        let cfg = phux_config::StatusCfg {
-            left: vec![phux_config::Widget::Bare("session-name".to_owned())],
-            ..Default::default()
+        let layout = LayoutState {
+            tree: Some(LayoutNode::Leaf(pane.clone())),
+            focus: Some(pane.clone()),
         };
-        let reg = phux_config::widget::WidgetRegistry::with_builtins();
-        let bar = phux_config::widget::StatusBar::build(&cfg, &reg).expect("bar build");
-        let painter = StatusBarPainter::new(bar, Position::Bottom);
+        let entries: [(&ResourceId, u16, u16, &[u8]); 1] = [(&pane, 80, 24, b"hi")];
+        let frame = compose(&layout, &entries, Some(&bar("session-name")), None);
+        assert!(row(&frame, 23, 0..80).contains("alpha"));
+        assert_eq!(frame.cell(1, 0).unwrap().grapheme, "h", "row 0 is the rail");
 
-        let frame = compose_full_frame_cells(
-            workspace.active_window().expect("active window"),
-            &mut panes,
-            &kernel,
-            Some(&pane),
-            (80, 24),
-            Some(&painter),
-            None,
-            None,
-            "alpha",
-            UNIX_EPOCH,
-            &crate::render::theme::Theme::default(),
-        );
-
-        // The bottom row (23) carries the session name from the bar.
-        let bottom: String = (0..frame.cols)
-            .filter_map(|c| frame.cell(23, c).map(|cell| cell.grapheme.clone()))
-            .collect();
+        let mut tabs = bar("windows");
+        tabs.set_windows(vec![window("editor")]);
+        let mut strip = SidebarPainter::new(Theme::default());
+        strip.set_windows(vec![window("editor")]);
+        let frame = compose(&layout, &entries, Some(&tabs), Some((STRIP, &strip)));
         assert!(
-            bottom.contains("alpha"),
-            "status-bar row must show the session name, got {bottom:?}"
+            !row(&frame, 23, 0..20).contains("editor"),
+            "tabs must not paint under the strip"
         );
-        // Row 0 is the pane-grid rail; pane content starts on row 1,
-        // above the reserved bar.
-        assert_eq!(frame.cell(1, 0).expect("first pane row").grapheme, "h");
-    }
-
-    /// phux-qtw8: with the sidebar open the bar row belongs to the STRIP in the
-    /// strip's columns — the window tabs start beside it, not underneath. This
-    /// is the reported bug, asserted on the assembled frame: before the fix the
-    /// tabs composed from column 0 and read as sitting "under" the sidebar.
-    #[test]
-    fn compose_keeps_the_bar_out_of_the_sidebar_columns() {
-        use crate::render::Theme;
-        use phux_config::widget::WindowInfo;
-
-        let pane = ResourceId::local(1);
-        let workspace = Workspace::single(pane.clone());
-        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
-        panes.insert(pane.clone(), pane_with(b"hi"));
-        let kernel = published_kernel(&[(&pane, b"hi")]);
-
-        // A bar whose ONLY widget is the window tabs, left-slotted — the strip
-        // that was landing under the sidebar.
-        let cfg = phux_config::StatusCfg {
-            left: vec![phux_config::Widget::Bare("windows".to_owned())],
-            ..Default::default()
-        };
-        let reg = phux_config::widget::WidgetRegistry::with_builtins();
-        let bar = phux_config::widget::StatusBar::build(&cfg, &reg).expect("bar build");
-        let mut painter = StatusBarPainter::new(bar, Position::Bottom);
-        let windows = vec![WindowInfo {
-            name: "editor".to_owned(),
-            active: true,
-            zoomed: false,
-            attention: false,
-            branch: None,
-            exited: None,
-            badge: None,
-        }];
-        painter.set_windows(windows.clone());
-
-        let mut sidebar_painter = SidebarPainter::new(Theme::default());
-        sidebar_painter.set_windows(windows);
-
-        let strip = SidebarReservation {
-            edge: super::super::paint::SidebarEdge::Left,
-            width: 20,
-        };
-        let frame = compose_full_frame_cells(
-            workspace.active_window().expect("active window"),
-            &mut panes,
-            &kernel,
-            Some(&pane),
-            (80, 24),
-            Some(&painter),
-            Some(strip),
-            Some(&sidebar_painter),
-            "alpha",
-            UNIX_EPOCH,
-            &crate::render::theme::Theme::default(),
-        );
-
-        // The bar row's first 20 columns are the strip's, so the tab text
-        // ("0:editor") must not appear there.
-        let under_strip: String = (0..20)
-            .filter_map(|c| frame.cell(23, c).map(|cell| cell.grapheme.clone()))
-            .collect();
-        assert!(
-            !under_strip.contains("editor"),
-            "window tabs must not paint under the sidebar; got {under_strip:?}"
-        );
-        // The strip owns the bar row outright: full-height means its
-        // bottom-corner collapse chevron now lands ON that row (23, 19) — the
-        // cell the bar used to cover.
         assert_eq!(
-            frame
-                .cell(23, 19)
-                .expect("strip bottom corner")
-                .grapheme
-                .as_str(),
-            crate::render::chrome::sidebar::COLLAPSE_GLYPH,
-            "the full-height strip's collapse chevron owns the bar row's corner"
+            frame.cell(23, 19).unwrap().grapheme.as_str(),
+            crate::render::chrome::sidebar::COLLAPSE_GLYPH
         );
-        // The tabs themselves live beside the strip, from column 20 on.
-        let beside_strip: String = (20..80)
-            .filter_map(|c| frame.cell(23, c).map(|cell| cell.grapheme.clone()))
-            .collect();
-        assert!(
-            beside_strip.contains("editor"),
-            "window tabs must paint beside the strip; got {beside_strip:?}"
-        );
+        assert!(row(&frame, 23, 20..80).contains("editor"));
     }
 }

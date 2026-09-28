@@ -27,4 +27,4 @@ pub use resource::{AgentFacet, ResourceDescriptor, ResourceKind};
 pub use screen::{CursorState, SCHEMA_VERSION, ScreenState};
 pub use session::Session;
 pub use terminal::TerminalFacet;
-pub use window::{Direction, LayoutError, LayoutNode, SplitDir, Window};
+pub use window::{LayoutError, LayoutNode, SplitDir, Window};

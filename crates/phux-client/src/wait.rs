@@ -1,27 +1,13 @@
-//! Poll-floor wait primitive (phux-cfd, ADR-0022 §4).
+//! Poll-floor wait primitive (ADR-0022 §4).
 //!
-//! `wait` is the floor of the event surface: rather than a wire
-//! subscription, it polls the side-effect-free [`get_screen`] read until a
-//! condition holds. This always works — no shell integration, no new wire
-//! frames — and because [`get_screen`] never attaches or resizes, polling
-//! is safe against a pane another client is using.
+//! Polls the side-effect-free [`get_screen`] read until a condition holds:
+//! no shell integration, no new wire frames, safe against a pane another
+//! client is using. Conditions are evaluated client-side, so new ones are
+//! ordinary code rather than a frozen wire enum.
 //!
-//! Conditions are evaluated **client-side** against each fresh
-//! [`ScreenState`]. That is deliberate (ADR-0022 §4, "no one-way doors"):
-//! the matchable set grows here as ordinary code, never as a frozen wire
-//! enum. Server-pushed events (`command_finished`, `bell`, …) are a future
-//! *additive* acceleration of this same contract, not a replacement.
-//!
-//! # What a condition is matched against
-//!
-//! Never `ScreenState::lines`. Every condition here is evaluated over
-//! [`match_lines`], which is [`ScreenState::unwrapped_rows`] (rows as
-//! *written* — soft-wrapped runs joined) narrowed by a [`MatchScope`]. A
-//! substring that straddles a terminal-edge wrap is absent from the rows as
-//! painted, so matching raw rows fails silently and only for long lines:
-//! the wait runs to its timeout and the caller sees a hang with no
-//! explanation. That is the worst shape a bug can have, which is why the
-//! unwrapped projection is the only haystack this module exposes.
+//! Every condition matches [`match_lines`] (rows as *written*, soft wraps
+//! joined), never `ScreenState::lines`: a needle straddling a wrap is absent
+//! from painted rows, and matching those would hang to the timeout.
 //!
 //! [`get_screen`]: crate::snapshot::get_screen
 
@@ -35,32 +21,20 @@ use regex::Regex;
 use tokio::time::Instant;
 
 use crate::attach::AttachError;
+use crate::deadline::Deadline;
 use crate::snapshot::ScreenPollConnection;
 
-/// Default gap between polls. Below human settle perception, well above
-/// the per-poll round-trip cost on a local UDS.
+/// Default gap between polls.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(150);
 
-/// Floor on the adaptive poll interval.
-///
-/// For [`Condition::Idle`] the loop shrinks its poll gap toward `dwell / 4`
-/// so a small `--idle` is honored instead of being rounded up to a full
-/// [`DEFAULT_POLL_INTERVAL`]; this is the smallest gap it will use, bounding
-/// the per-poll round-trip cost.
-pub const MIN_POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// Floor on the adaptive [`Condition::Idle`] poll interval.
+const MIN_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
-/// Default dwell for [`Condition::Idle`] when the caller gives no explicit
-/// duration: the pane must hold still this long to count as settled.
+/// Default dwell for [`Condition::Idle`].
 pub const DEFAULT_IDLE_DWELL: Duration = Duration::from_millis(500);
 
-/// A `--regex` pattern, compiled once at argument-parse time.
-///
-/// The newtype exists so the CLI can spell the flag as
-/// `Option<MatchRegex>` and let clap's `FromStr` value parser reject a bad
-/// pattern as a **usage error, before the command runs at all**. An invalid
-/// regex is a mistake in the invocation, not a condition that might come
-/// true on the next poll; discovering it inside the loop would either abort
-/// a wait that had already started or — worse — silently never match.
+/// A `--regex` pattern, compiled at argument-parse time so a bad pattern is
+/// a usage error before the command runs, not a wait that never matches.
 #[derive(Debug, Clone)]
 pub struct MatchRegex(Regex);
 
@@ -71,10 +45,7 @@ impl MatchRegex {
         self.0.as_str()
     }
 
-    /// Whether `line` — one logical line — matches.
-    ///
-    /// Matching is per line, never across the joined stream: `^`/`$` anchor
-    /// to the line the caller sees, and no pattern can span two of them.
+    /// Whether one logical `line` matches (`^`/`$` anchor to the line).
     #[must_use]
     pub fn is_match(&self, line: &str) -> bool {
         self.0.is_match(line)
@@ -90,38 +61,18 @@ impl FromStr for MatchRegex {
     }
 }
 
-/// How much of the pane a condition is matched against.
-///
-/// The default — viewport only, every row — is what `wait` has always read,
-/// and costs no history request.
+/// How much of the pane a condition is matched against. The default is the
+/// viewport only, every row.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MatchScope {
-    /// Row-count window for the search.
-    ///
-    /// `None` reads the viewport only. `Some(n)` also requests the most
-    /// recent `n` history rows and then narrows the search to the last `n`
-    /// **logical** lines; [`ROW_WINDOW_ALL`] (`0`) as the count requests
-    /// all retained history, still capped by
-    /// [`phux_core::screen::ROW_WINDOW_MAX`].
-    ///
-    /// Unlike `snapshot --tail`, the viewport is **not** a floor here: this
-    /// window scopes a *search*, not a returned grid, so nothing about
-    /// `rows` / `cursor` / `cells` is claimed and a window narrower than the
-    /// viewport is honest. `--tail 3` really does mean "only the last three
-    /// logical lines count".
-    ///
-    /// The count is over lines with content: blank rows below the cursor
-    /// are the unused part of a full-height grid, and counting them would
-    /// make a small window match nothing on a pane whose prompt sits near
-    /// the top.
+    /// `None` reads the viewport only. `Some(n)` also requests the last `n`
+    /// history rows and narrows the search to the last `n` logical lines
+    /// with content ([`ROW_WINDOW_ALL`] = all retained history). Unlike
+    /// `snapshot --tail`, the viewport is not a floor: this scopes a search.
     pub tail: Option<u32>,
-    /// Skip logical lines carrying an OSC-133 `Input` mark — the shell's
-    /// echo of the command the caller just typed.
-    ///
-    /// Requires per-cell marks in the read (see [`Self::wants_cells`]) and
-    /// therefore a shell with OSC-133 integration. With no marks at all
-    /// nothing is skipped: see [`has_semantic_marks`], which the caller uses
-    /// to say so out loud rather than letting the filter be a silent no-op.
+    /// Skip logical lines carrying an OSC-133 `Input` mark (the shell's echo
+    /// of the typed command). Needs per-cell marks; without any, nothing is
+    /// skipped (see [`has_semantic_marks`]).
     pub output_only: bool,
 }
 
@@ -133,79 +84,39 @@ impl MatchScope {
     }
 
     /// Whether the read must ask for per-cell semantic marks.
-    ///
-    /// Only [`Self::output_only`] needs them, so the default poll stays the
-    /// cheap viewport read it has always been.
     #[must_use]
     pub const fn wants_cells(&self) -> bool {
         self.output_only
     }
 }
 
-/// What a poll loop waits for. Evaluated CLI-side against each fresh
-/// screen, so new variants are additive (ADR-0022 §4).
+/// What a poll loop waits for, evaluated against each fresh screen.
 #[derive(Debug, Clone)]
 pub enum Condition {
-    /// Met once any **logical line** contains this substring — the rows as
-    /// written, so a match that straddles a soft wrap is found.
+    /// Met once any logical line contains this substring.
     Contains(String),
-    /// Met once any **logical line** matches this pattern. One line at a
-    /// time: the pattern is never run against the joined stream, so `^`/`$`
-    /// mean the ends of a line the caller can see.
+    /// Met once any logical line matches this pattern (one line at a time).
     Matches(MatchRegex),
-    /// Met once the matched text holds still for this long — the pane has
-    /// "settled" (output stopped, prompt likely back).
-    ///
-    /// Settling is byte-exact over the same [`match_lines`] projection the
-    /// text conditions use, so a [`MatchScope`] narrows what counts as
-    /// activity too: `--idle` with `--tail 3` settles when the last three
-    /// logical lines hold still, whatever a spinner further up is doing.
-    ///
-    /// Idle resolution is bounded by the poll interval, which for this
-    /// condition is shrunk adaptively toward `dwell / 4` (down to
-    /// [`MIN_POLL_INTERVAL`]) so a small dwell is honored rather than
-    /// rounded up to a full [`DEFAULT_POLL_INTERVAL`]; see
-    /// [`effective_interval`].
-    ///
-    /// Limitation: a pane whose visible content changes on *every* poll —
-    /// a spinner, a live clock, a progress bar — never holds still and so
-    /// never satisfies `Idle`. There is no heuristic here that ignores
-    /// "churning" rows. For such panes, wait on specific output with
-    /// `--until` instead, and always pass a `--timeout` as a backstop.
+    /// Met once the matched lines hold still this long. The poll gap shrinks
+    /// toward `dwell / 4` so a small dwell is honored. A pane that changes on
+    /// every poll (a spinner, a clock) never settles; wait on text instead.
     Idle(Duration),
 }
 
-/// The poll gap [`poll_until`] should use for `condition`, given the
-/// caller's `requested` ceiling.
-///
-/// For the text conditions the gap is just `requested` (no benefit to
-/// polling faster than the caller asked). For [`Condition::Idle`] the gap
-/// shrinks to `clamp(dwell / 4, MIN_POLL_INTERVAL, requested)` so a dwell
-/// smaller than `requested` is still observed at sub-dwell granularity
-/// instead of being rounded up to one full poll. Sampling at roughly a
-/// quarter of the dwell means the tracker sees several unchanged reads
-/// before the dwell elapses, so the reported settle time tracks the
-/// request rather than overshooting by a whole interval.
-#[must_use]
-pub fn effective_interval(condition: &Condition, requested: Duration) -> Duration {
+/// The poll gap for `condition` under the caller's `requested` ceiling:
+/// `requested` for text conditions, `dwell / 4` clamped to
+/// `[MIN_POLL_INTERVAL, requested]` for [`Condition::Idle`].
+fn effective_interval(condition: &Condition, requested: Duration) -> Duration {
     match condition {
         Condition::Contains(_) | Condition::Matches(_) => requested,
-        // `max(MIN_POLL_INTERVAL)` first, then cap at `requested`: this is
-        // `clamp` without its `min > max` panic should a caller pass a
-        // `requested` below the floor.
+        // Not `clamp`: that panics when `requested` is below the floor.
         Condition::Idle(dwell) => (*dwell / 4).max(MIN_POLL_INTERVAL).min(requested),
     }
 }
 
-/// Whether `screen` carries any OSC-133 semantic mark at all.
-///
-/// `false` means the pane's shell has no OSC-133 integration (or the read
-/// did not ask for cells), so [`MatchScope::output_only`] has nothing to
-/// filter on and is a no-op. It cannot distinguish that from "a marked
-/// screen that happens to show no prompt or input right now" — which is
-/// exactly why this is reported to the operator rather than being turned
-/// into a refusal: refusing would hang a wait that is otherwise fine, and
-/// hanging is the failure this whole module exists to remove.
+/// Whether `screen` carries any OSC-133 semantic mark. `false` means
+/// [`MatchScope::output_only`] has nothing to filter on, which callers
+/// report rather than refuse.
 #[must_use]
 pub fn has_semantic_marks(screen: &ScreenState) -> bool {
     screen
@@ -214,10 +125,8 @@ pub fn has_semantic_marks(screen: &ScreenState) -> bool {
         .is_some_and(|cells| cells.iter().any(|cell| cell.semantic.is_some()))
 }
 
-/// Per **viewport row**: does the row carry an OSC-133 `Input` mark?
-///
-/// Cells are viewport-relative and sparse, so history rows are never marked
-/// (the caller treats them as output, which is what scrolled-off rows are).
+/// Per viewport row: does the row carry an OSC-133 `Input` mark? (History
+/// rows are never marked.)
 fn input_marked_rows(screen: &ScreenState) -> Vec<bool> {
     let mut marked = vec![false; screen.lines.len()];
     let Some(cells) = screen.cells.as_ref() else {
@@ -233,24 +142,13 @@ fn input_marked_rows(screen: &ScreenState) -> Vec<bool> {
     marked
 }
 
-/// Tag for a row carrying an `Input` mark, in the shadow stream below.
 const INPUT_TAG: &str = "i";
-/// Tag for any other row, in the shadow stream below.
 const OUTPUT_TAG: &str = "o";
 
-/// Per **logical line** of [`ScreenState::unwrapped_rows`]: did any row of
-/// the run that produced it carry an `Input` mark?
-///
-/// A typed command longer than the terminal is wide occupies several rows
-/// and unwraps into one logical line, so the answer has to be per run, not
-/// per row — otherwise `--output-only` would drop the first half of an
-/// echoed command and keep the tail, which is worse than not filtering.
-///
-/// Rather than re-deriving where the runs fall (a second unwrapper, which
-/// would drift from the real one), this unwraps a **shadow stream**: the
-/// same row counts and the same wrap bits, with each row replaced by a
-/// one-character tag. The joined tags land one-for-one on the joined text,
-/// by construction of the very function that joins it.
+/// Per logical line of [`ScreenState::unwrapped_rows`]: did any row of its
+/// run carry an `Input` mark? Computed by unwrapping a shadow stream of
+/// one-character tags with the same wrap bits, so the runs line up with the
+/// real unwrapper by construction.
 fn input_marked_lines(screen: &ScreenState) -> Vec<bool> {
     let shadow = ScreenState {
         scrollback: vec![OUTPUT_TAG.to_owned(); screen.scrollback.len()],
@@ -268,27 +166,19 @@ fn input_marked_lines(screen: &ScreenState) -> Vec<bool> {
         .collect()
 }
 
-/// The lines a [`Condition`] is matched against: rows as **written**,
-/// narrowed by `scope`.
+/// The lines a [`Condition`] is matched against: rows as written, narrowed
+/// by `scope`.
 ///
-/// The order is deliberate. The whole returned stream is unwrapped first,
-/// because a run can straddle the history/viewport seam and windowing before
-/// joining would cut a logical line in half — reintroducing the straddling
-/// miss this function exists to prevent. The row window then applies to
-/// logical lines, and `output_only` filters last, so the window means "the
-/// last N lines of the pane" and not "the last N lines that survived the
-/// filter".
+/// Unwrap first (a run can straddle the history seam), then
+/// window logical lines, then filter input, so `--tail N` means the pane's
+/// last N lines.
 #[must_use]
 pub fn match_lines(screen: &ScreenState, scope: &MatchScope) -> Vec<String> {
     let mut rows = screen.unwrapped_rows();
     let trimmed = if scope.tail.is_some() {
-        // A grid is always full height, so the rows below the cursor are
-        // blank padding, not content. Counting them would make `--tail 5`
-        // against a pane whose prompt sits near the top match nothing at
-        // all — the flag would be broken rather than merely surprising.
-        // Only a caller who asked for a window pays this, so the default
-        // projection (and with it `--idle`'s settle comparison) is
-        // byte-identical to reading the grid.
+        // Blank rows below the cursor are padding; counting them would make
+        // a small window match nothing. Only windowed reads trim, so the
+        // default projection stays byte-identical to the grid.
         let content = rows
             .iter()
             .rposition(|row| !row.trim().is_empty())
@@ -303,9 +193,7 @@ pub fn match_lines(screen: &ScreenState, scope: &MatchScope) -> Vec<String> {
     if !scope.output_only {
         return lines;
     }
-    // The mask is built over the untrimmed stream. Blank padding came off
-    // the end and the window came off the front, so the surviving lines
-    // start `dropped` in — element-for-element aligned from there.
+    // The mask covers the untrimmed stream: align past the dropped front.
     let marked = input_marked_lines(screen);
     let kept = marked.len().saturating_sub(trimmed);
     let dropped = kept.saturating_sub(lines.len());
@@ -322,9 +210,7 @@ pub fn match_lines(screen: &ScreenState, scope: &MatchScope) -> Vec<String> {
         .collect()
 }
 
-/// Tracks whether the matched lines have held still long enough to count as
-/// "settled" for [`Condition::Idle`]. Pulled out of the poll loop so the
-/// dwell logic is unit-testable with an injected clock.
+/// Tracks whether the matched lines have held still for a dwell.
 #[derive(Debug)]
 struct IdleTracker {
     last: Option<Vec<String>>,
@@ -339,10 +225,8 @@ impl IdleTracker {
         }
     }
 
-    /// Record the latest `lines` observed at `now`; return `true` once they
-    /// have been unchanged for at least `dwell`. The first observation, and
-    /// any observation that differs from the previous one, resets the dwell
-    /// clock and returns `false`.
+    /// Record `lines` at `now`; `true` once unchanged for `dwell`. A first or
+    /// changed observation resets the clock.
     fn observe(&mut self, lines: &[String], now: Instant, dwell: Duration) -> bool {
         if self.last.as_deref() == Some(lines) {
             now.duration_since(self.stable_since) >= dwell
@@ -354,11 +238,7 @@ impl IdleTracker {
     }
 }
 
-/// Evaluate `condition` against the already-projected `lines`.
-///
-/// Split out of the poll loop so the predicate the loop runs is the exact
-/// predicate the tests run: a test that re-spells the match arm proves
-/// nothing about the loop.
+/// The predicate the poll loop runs (and the tests run).
 fn condition_met(
     condition: &Condition,
     lines: &[String],
@@ -381,35 +261,24 @@ pub enum WaitOutcome {
     TimedOut,
 }
 
-/// The result of a poll loop: why it stopped, the last screen observed,
-/// and how many reads it took (useful for `--json` and diagnostics).
+/// The result of a poll loop.
 #[derive(Debug, Clone)]
 pub struct WaitResult {
     /// Why polling stopped.
     pub outcome: WaitOutcome,
-    /// The most recent completed screen read, or an empty default screen if
-    /// the deadline expired before the first read completed.
+    /// The most recent completed screen read (default if none completed).
     pub screen: ScreenState,
     /// Number of screen reads performed.
     pub polls: u32,
 }
 
-/// Poll `terminal_id` until `condition` holds or `timeout` elapses.
-///
-/// Reads the screen via the side-effect-free `GET_SCREEN`. The `interval`
-/// argument is the *requested ceiling*; the effective poll gap is derived
-/// per condition by [`effective_interval`], so [`Condition::Idle`] with a
-/// small dwell polls faster (down to [`MIN_POLL_INTERVAL`]) and resolves at
-/// sub-dwell granularity rather than rounding up to a full interval.
-///
-/// Returns [`WaitOutcome::TimedOut`] (not an error) when the deadline passes
-/// first, so callers map the two outcomes to their own exit codes.
-/// `timeout = None` waits indefinitely.
+/// Poll `terminal_id` until `condition` holds or `timeout` elapses (`None`
+/// waits forever), with the default [`MatchScope`]. A timeout is
+/// [`WaitOutcome::TimedOut`], not an error.
 ///
 /// # Errors
 ///
-/// Propagates [`AttachError`] from the underlying screen read (no server,
-/// transport failure, unknown terminal).
+/// Propagates [`AttachError`] from the screen read.
 pub async fn poll_until(
     socket: &Path,
     terminal_id: ResourceId,
@@ -417,61 +286,24 @@ pub async fn poll_until(
     timeout: Option<Duration>,
     interval: Duration,
 ) -> Result<WaitResult, AttachError> {
-    poll_until_scoped(
+    poll_until_scoped_with_deadline(
         socket,
         terminal_id,
         condition,
-        timeout,
+        Deadline::new(timeout),
         interval,
         &MatchScope::default(),
     )
     .await
 }
 
-/// [`poll_until`] with an explicit [`MatchScope`].
-///
-/// The scope decides what each poll reads (history rows, per-cell marks) and
-/// what the condition is matched against; [`poll_until`] is this with the
-/// default scope — viewport only, every line — which is the cheapest read
-/// and the historical behavior.
-///
-/// # Errors
-///
-/// See [`poll_until`].
-pub async fn poll_until_scoped(
-    socket: &Path,
-    terminal_id: ResourceId,
-    condition: &Condition,
-    timeout: Option<Duration>,
-    interval: Duration,
-    scope: &MatchScope,
-) -> Result<WaitResult, AttachError> {
-    poll_until_scoped_with_deadline(
-        socket,
-        terminal_id,
-        condition,
-        crate::deadline::Deadline::new(timeout),
-        interval,
-        scope,
-    )
-    .await
-}
-
-/// However short a wait's budget — even zero — its first screen read gets
-/// at least this long from the budget's start to land.
-///
-/// So a zero timeout means "check once, now", as it did before the budget
-/// covered connection setup: the condition is tested against one real read
-/// before an expired budget is honored. Against a server that never answers,
-/// the wait therefore ends at the later of its timeout and this floor.
+/// However short a wait's budget, its first screen read gets at least this
+/// long from the budget's start, so a zero timeout means "check once, now".
 pub const FIRST_READ_FLOOR: Duration = Duration::from_secs(2);
 
-/// Like [`poll_until_scoped`], with a budget started before target resolution.
-///
-/// The deadline bounds connection setup, every request, and the final sleep.
-/// The first read is bounded by the deadline raised to [`FIRST_READ_FLOOR`]
-/// (see [`crate::deadline::Deadline::floored`]); every later one by the
-/// deadline itself.
+/// [`poll_until`] with an explicit scope and a budget that also bounds
+/// connection setup; the first read is bounded by the budget raised to
+/// [`FIRST_READ_FLOOR`]. One connection is reused across polls.
 ///
 /// # Errors
 ///
@@ -484,7 +316,7 @@ pub async fn poll_until_scoped_with_deadline(
     socket: &Path,
     terminal_id: ResourceId,
     condition: &Condition,
-    deadline: crate::deadline::Deadline,
+    deadline: Deadline,
     interval: Duration,
     scope: &MatchScope,
 ) -> Result<WaitResult, AttachError> {
@@ -513,8 +345,7 @@ pub async fn poll_until_scoped_with_deadline(
         screen = read?;
         polls = polls.saturating_add(1);
         let lines = match_lines(&screen, scope);
-        let met = condition_met(condition, &lines, &mut idle, Instant::now());
-        if met {
+        if condition_met(condition, &lines, &mut idle, Instant::now()) {
             return Ok(WaitResult {
                 outcome: WaitOutcome::Met,
                 screen,
@@ -545,11 +376,18 @@ mod tests {
             pane: 1,
             cols: 80,
             rows: u16::try_from(lines.len()).unwrap_or(0),
-            cursor: None,
             lines: lines.iter().map(|s| (*s).to_owned()).collect(),
-            scrollback: Vec::new(),
-            cells: None,
             ..ScreenState::default()
+        }
+    }
+
+    fn wrapped(rows: &[&str]) -> ScreenState {
+        ScreenState {
+            soft_wrap: Some(SoftWrap {
+                lines: vec![0],
+                scrollback: Vec::new(),
+            }),
+            ..screen(rows)
         }
     }
 
@@ -576,8 +414,18 @@ mod tests {
         Condition::Matches(pattern.parse().expect("test pattern compiles"))
     }
 
-    /// A cell carrying an OSC-133 mark on `row`. Only `row` and `semantic`
-    /// matter to the filter; the rest is the sparse projection's baseline.
+    const fn tail(n: u32) -> MatchScope {
+        MatchScope {
+            tail: Some(n),
+            output_only: false,
+        }
+    }
+
+    const OUTPUT_ONLY: MatchScope = MatchScope {
+        tail: None,
+        output_only: true,
+    };
+
     fn mark(row: u16, semantic: SemanticContent) -> CellInfo {
         CellInfo {
             col: 0,
@@ -587,37 +435,13 @@ mod tests {
         }
     }
 
+    /// Text conditions match logical lines: across a soft wrap and the
+    /// history seam, one line at a time, and verbatim without wrap info.
     #[test]
-    fn contains_matches_any_line() {
-        let s = screen(&["building", "step 2", "all DONE here"]);
-        assert!(met(&contains("DONE"), &s, &MatchScope::default()));
-        assert!(!met(&contains("MISSING"), &s, &MatchScope::default()));
-    }
-
-    /// The bug this module's projection exists to fix: a needle that falls
-    /// across a terminal-edge wrap is in NO painted row, so the old
-    /// `screen.lines` match ran to timeout and the operator saw a hang.
-    #[test]
-    fn contains_matches_across_a_soft_wrap() {
-        let s = ScreenState {
-            soft_wrap: Some(SoftWrap {
-                lines: vec![0],
-                scrollback: Vec::new(),
-            }),
-            ..screen(&["cargo test: 41 passed, 1 fai", "led, 0 skipped"])
-        };
-        assert!(
-            !s.lines.iter().any(|l| l.contains("1 failed")),
-            "the needle must genuinely straddle the wrap, or this proves nothing"
-        );
-        assert!(met(&contains("1 failed"), &s, &MatchScope::default()));
-    }
-
-    /// A run straddling the history/viewport seam joins too — which is why
-    /// the whole stream is unwrapped before the window is applied.
-    #[test]
-    fn contains_matches_across_the_history_seam() {
-        let s = ScreenState {
+    fn text_conditions_match_logical_lines() {
+        let plain = screen(&["running 12 tests", "test result: ok. 12 passed"]);
+        let wrap = wrapped(&["cargo test: 41 passed, 1 fai", "led, 0 skipped"]);
+        let seam = ScreenState {
             scrollback: lines(&["quiet", "BUILD SUCC"]),
             soft_wrap: Some(SoftWrap {
                 lines: Vec::new(),
@@ -625,83 +449,39 @@ mod tests {
             }),
             ..screen(&["ESSFUL in 4s"])
         };
-        assert!(met(
-            &contains("BUILD SUCCESSFUL"),
-            &s,
-            &MatchScope {
-                tail: Some(0),
-                ..MatchScope::default()
-            }
-        ));
+        let default = MatchScope::default();
+        assert!(!wrap.lines.iter().any(|l| l.contains("1 failed")));
+        assert!(!plain.has_soft_wrap_info());
+        for (condition, s, scope, want) in [
+            (contains("12 passed"), &plain, default, true),
+            (contains("MISSING"), &plain, default, false),
+            (contains("tests test result"), &plain, default, false),
+            (contains("1 failed"), &wrap, default, true),
+            (contains("BUILD SUCCESSFUL"), &seam, tail(0), true),
+            (
+                regex(r"^test result: ok\. \d+ passed$"),
+                &plain,
+                default,
+                true,
+            ),
+            (regex(r"tests\s*test result"), &plain, default, false),
+            (regex(r"passed, \d+ failed"), &wrap, default, true),
+        ] {
+            assert_eq!(met(&condition, s, &scope), want, "{condition:?}");
+        }
     }
 
-    /// With no wrap bits (an older server) rows come back verbatim: the
-    /// match degrades to the historical behavior rather than guessing.
-    #[test]
-    fn without_wrap_info_rows_are_matched_verbatim() {
-        let s = screen(&["all DONE here"]);
-        assert!(!s.has_soft_wrap_info());
-        assert!(met(&contains("DONE"), &s, &MatchScope::default()));
-        assert!(!met(
-            &contains("here and there"),
-            &s,
-            &MatchScope::default()
-        ));
-    }
-
-    #[test]
-    fn regex_matches_one_logical_line_at_a_time() {
-        let s = screen(&["running 12 tests", "test result: ok. 12 passed"]);
-        assert!(met(
-            &regex(r"^test result: ok\. \d+ passed$"),
-            &s,
-            &MatchScope::default()
-        ));
-        // A pattern spanning two lines must NOT match: lines are matched
-        // individually, never as one joined blob.
-        assert!(!met(
-            &regex(r"tests\s*test result"),
-            &s,
-            &MatchScope::default()
-        ));
-    }
-
-    #[test]
-    fn regex_matches_across_a_soft_wrap() {
-        let s = ScreenState {
-            soft_wrap: Some(SoftWrap {
-                lines: vec![0],
-                scrollback: Vec::new(),
-            }),
-            ..screen(&["test result: FAILED. 3 pas", "sed; 2 failed"])
-        };
-        assert!(met(
-            &regex(r"FAILED\. \d+ passed; \d+ failed"),
-            &s,
-            &MatchScope::default()
-        ));
-    }
-
-    /// An invalid pattern is rejected at parse time. The CLI hangs this off
-    /// clap's value parser, so the process exits 2 before it ever connects.
     #[test]
     fn an_invalid_regex_fails_to_compile() {
         let err = "(unclosed".parse::<MatchRegex>().unwrap_err();
         assert!(
             err.contains("unclosed") || err.contains("regex parse error"),
-            "the usage error should carry the regex diagnostic, got {err:?}"
-        );
-        assert_eq!(
-            r"\d+ failed"
-                .parse::<MatchRegex>()
-                .expect("a valid pattern compiles")
-                .as_str(),
-            r"\d+ failed"
+            "{err:?}"
         );
     }
 
-    /// The command-echo footgun: a caller waiting for text that also appears
-    /// in the command it just typed matches its own echo instantly.
+    /// The command-echo footgun: waiting for text that also appears in the
+    /// typed command matches its own echo instantly without the filter.
     #[test]
     fn output_only_skips_the_echoed_command() {
         let s = ScreenState {
@@ -711,64 +491,30 @@ mod tests {
             ]),
             ..screen(&["$ cargo test | grep 'test result: ok'", "running 12 tests"])
         };
-        let default = MatchScope::default();
-        let output_only = MatchScope {
-            output_only: true,
-            ..MatchScope::default()
-        };
-        assert!(
-            met(&contains("test result: ok"), &s, &default),
-            "without the flag the echoed command still matches (the footgun)"
-        );
-        assert!(!met(&contains("test result: ok"), &s, &output_only));
-        assert!(!met(&regex(r"test result: (ok|FAILED)"), &s, &output_only));
-        // Output on an unmarked row is untouched by the filter.
-        assert!(met(&contains("running 12 tests"), &s, &output_only));
-    }
-
-    /// A typed command longer than the terminal is wide occupies several
-    /// rows: the WHOLE logical line is input, not just its first row.
-    #[test]
-    fn output_only_skips_a_wrapped_echoed_command() {
-        let s = ScreenState {
-            soft_wrap: Some(SoftWrap {
-                lines: vec![0],
-                scrollback: Vec::new(),
-            }),
-            cells: Some(vec![mark(0, SemanticContent::Input)]),
-            ..screen(&["$ cargo test 2>&1 | tee log # test re", "sult: ok"])
-        };
-        assert!(!met(
+        assert!(met(
             &contains("test result: ok"),
             &s,
-            &MatchScope {
-                output_only: true,
-                ..MatchScope::default()
-            }
+            &MatchScope::default()
         ));
-    }
+        assert!(!met(&contains("test result: ok"), &s, &OUTPUT_ONLY));
+        assert!(met(&contains("running 12 tests"), &s, &OUTPUT_ONLY));
 
-    /// Prompt-marked text is not input: a caller may legitimately wait for
-    /// the prompt string itself to come back.
-    #[test]
-    fn output_only_keeps_prompt_marked_rows() {
-        let s = ScreenState {
+        // A wrapped command is input across its whole logical line.
+        let long = ScreenState {
+            cells: Some(vec![mark(0, SemanticContent::Input)]),
+            ..wrapped(&["$ cargo test 2>&1 | tee log # test re", "sult: ok"])
+        };
+        assert!(!met(&contains("test result: ok"), &long, &OUTPUT_ONLY));
+
+        // Prompt-marked text is not input.
+        let prompt = ScreenState {
             cells: Some(vec![mark(1, SemanticContent::Prompt)]),
             ..screen(&["done", "user@host ~/src $"])
         };
-        assert!(met(
-            &contains("user@host"),
-            &s,
-            &MatchScope {
-                output_only: true,
-                ..MatchScope::default()
-            }
-        ));
+        assert!(met(&contains("user@host"), &prompt, &OUTPUT_ONLY));
     }
 
-    /// No OSC-133 integration means nothing to filter on. The filter fails
-    /// OPEN — a wait that would otherwise succeed must not hang — and
-    /// `has_semantic_marks` is how the caller says so out loud.
+    /// Without OSC-133 marks the filter fails open, and the caller can tell.
     #[test]
     fn output_only_without_semantic_marks_filters_nothing() {
         let s = ScreenState {
@@ -782,23 +528,12 @@ mod tests {
         };
         assert!(!has_semantic_marks(&s));
         assert!(!has_semantic_marks(&screen(&["$ cargo test"])));
-        assert!(met(
-            &contains("cargo test"),
-            &s,
-            &MatchScope {
-                output_only: true,
-                ..MatchScope::default()
-            }
-        ));
-    }
-
-    #[test]
-    fn has_semantic_marks_sees_a_marked_screen() {
-        let s = ScreenState {
+        assert!(met(&contains("cargo test"), &s, &OUTPUT_ONLY));
+        let marked = ScreenState {
             cells: Some(vec![mark(0, SemanticContent::Input)]),
             ..screen(&["$ cargo test"])
         };
-        assert!(has_semantic_marks(&s));
+        assert!(has_semantic_marks(&marked));
     }
 
     #[test]
@@ -807,110 +542,52 @@ mod tests {
             scrollback: lines(&["MARKER far above", "noise"]),
             ..screen(&["still noise", "tail line"])
         };
-        let all = MatchScope {
-            tail: Some(0),
-            ..MatchScope::default()
-        };
-        let last_two = MatchScope {
-            tail: Some(2),
-            ..MatchScope::default()
-        };
-        assert!(met(&contains("MARKER"), &s, &all));
-        assert!(!met(&contains("MARKER"), &s, &last_two));
-        assert!(met(&contains("tail line"), &s, &last_two));
+        assert!(met(&contains("MARKER"), &s, &tail(0)));
+        assert!(!met(&contains("MARKER"), &s, &tail(2)));
         assert_eq!(
-            match_lines(&s, &last_two),
+            match_lines(&s, &tail(2)),
             lines(&["still noise", "tail line"])
+        );
+        // Logical lines, not painted rows.
+        let wrap = wrapped(&["BUILD SUCC", "ESSFUL", "next"]);
+        assert_eq!(
+            match_lines(&wrap, &tail(2)),
+            lines(&["BUILD SUCCESSFUL", "next"])
         );
     }
 
-    /// The window counts LOGICAL lines, so it can never bisect a wrapped
-    /// run and reintroduce the straddling miss.
-    /// A terminal grid is always full height. If the blank rows under the
-    /// cursor counted, `--tail 2` against a pane whose prompt sits near the
-    /// top would match nothing, ever.
+    /// Blank rows under the cursor do not count toward a window, and the
+    /// default projection is untrimmed.
     #[test]
     fn tail_does_not_count_the_blank_rows_under_the_cursor() {
         let s = screen(&["MARKER here", "$", "", "", ""]);
-        let last_two = MatchScope {
-            tail: Some(2),
-            ..MatchScope::default()
-        };
-        assert_eq!(match_lines(&s, &last_two), lines(&["MARKER here", "$"]));
-        assert!(met(&contains("MARKER"), &s, &last_two));
-        // Without a window nothing is trimmed: the default projection stays
-        // the grid, so `--idle`'s byte-exact settle comparison is unchanged.
+        assert_eq!(match_lines(&s, &tail(2)), lines(&["MARKER here", "$"]));
         assert_eq!(match_lines(&s, &MatchScope::default()).len(), s.lines.len());
     }
 
-    /// Trimming happens off the end and the window off the front; the input
-    /// mask has to survive both at once.
+    /// The window applies before the input filter, and the mask survives
+    /// both the trimmed end and the windowed front.
     #[test]
-    fn tail_trimming_keeps_the_input_mask_aligned() {
-        let s = ScreenState {
-            cells: Some(vec![mark(2, SemanticContent::Input)]),
-            ..screen(&["oldest", "output line", "$ echo MARKER", "", ""])
-        };
-        let scope = MatchScope {
+    fn tail_and_output_only_compose_on_the_same_window() {
+        let both = MatchScope {
             tail: Some(2),
             output_only: true,
         };
-        assert_eq!(match_lines(&s, &scope), lines(&["output line"]));
-    }
-
-    #[test]
-    fn tail_counts_logical_lines_not_painted_rows() {
-        let s = ScreenState {
-            soft_wrap: Some(SoftWrap {
-                lines: vec![0],
-                scrollback: Vec::new(),
-            }),
-            ..screen(&["BUILD SUCC", "ESSFUL", "next"])
-        };
-        let last_two = MatchScope {
-            tail: Some(2),
-            ..MatchScope::default()
-        };
-        assert_eq!(
-            match_lines(&s, &last_two),
-            lines(&["BUILD SUCCESSFUL", "next"])
-        );
-        assert!(met(&contains("BUILD SUCCESSFUL"), &s, &last_two));
-    }
-
-    /// The window is applied before the input filter, so `--tail N` means
-    /// "the last N lines of the pane" and not "the last N that survived".
-    #[test]
-    fn tail_and_output_only_compose_on_the_same_window() {
         let s = ScreenState {
             cells: Some(vec![mark(1, SemanticContent::Input)]),
             ..screen(&["older output", "$ echo MARKER", "fresh output"])
         };
-        let scope = MatchScope {
-            tail: Some(2),
-            output_only: true,
+        assert_eq!(match_lines(&s, &both), lines(&["fresh output"]));
+        let padded = ScreenState {
+            cells: Some(vec![mark(2, SemanticContent::Input)]),
+            ..screen(&["oldest", "output line", "$ echo MARKER", "", ""])
         };
-        assert_eq!(match_lines(&s, &scope), lines(&["fresh output"]));
-        assert!(!met(&contains("MARKER"), &s, &scope));
-        assert!(!met(&contains("older output"), &s, &scope));
+        assert_eq!(match_lines(&padded, &both), lines(&["output line"]));
     }
 
-    #[test]
-    fn scope_drives_what_each_poll_reads() {
-        let default = MatchScope::default();
-        assert_eq!(default.history_request(), None);
-        assert!(!default.wants_cells());
-        let scoped = MatchScope {
-            tail: Some(200),
-            output_only: true,
-        };
-        assert_eq!(scoped.history_request(), Some(200));
-        assert!(scoped.wants_cells());
-    }
-
+    /// A change confined to a row outside the window is not activity.
     #[test]
     fn idle_observes_the_scoped_projection() {
-        // A change confined to a row outside the window is not activity.
         let before = ScreenState {
             scrollback: lines(&["spinner |"]),
             ..screen(&["settled"])
@@ -919,110 +596,58 @@ mod tests {
             scrollback: lines(&["spinner /"]),
             ..screen(&["settled"])
         };
-        let scope = MatchScope {
-            tail: Some(1),
-            ..MatchScope::default()
-        };
-        assert_eq!(match_lines(&before, &scope), match_lines(&after, &scope));
-    }
-
-    #[test]
-    fn effective_interval_regex_uses_requested() {
         assert_eq!(
-            effective_interval(&regex("x"), DEFAULT_POLL_INTERVAL),
-            DEFAULT_POLL_INTERVAL
+            match_lines(&before, &tail(1)),
+            match_lines(&after, &tail(1))
         );
     }
 
     #[test]
-    fn idle_first_observation_never_settles() {
+    fn effective_interval_clamps_idle_polling() {
+        let ms = Duration::from_millis;
+        for (condition, requested, want) in [
+            (regex("x"), DEFAULT_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
+            (contains("x"), DEFAULT_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
+            (
+                Condition::Idle(ms(40)),
+                DEFAULT_POLL_INTERVAL,
+                MIN_POLL_INTERVAL,
+            ),
+            (Condition::Idle(ms(400)), DEFAULT_POLL_INTERVAL, ms(100)),
+            (
+                Condition::Idle(ms(10_000)),
+                DEFAULT_POLL_INTERVAL,
+                DEFAULT_POLL_INTERVAL,
+            ),
+            // A ceiling below the floor must not panic; the cap wins.
+            (Condition::Idle(ms(400)), ms(10), ms(10)),
+        ] {
+            assert_eq!(
+                effective_interval(&condition, requested),
+                want,
+                "{condition:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn idle_settles_only_after_an_unchanged_dwell() {
         let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let dwell = ms(100);
         let mut idle = IdleTracker::new(t0);
-        // Even with a generous gap, the first read just records a baseline.
-        assert!(!idle.observe(
-            &lines(&["a"]),
-            t0 + Duration::from_secs(10),
-            Duration::from_millis(50)
-        ));
-    }
-
-    #[test]
-    fn idle_settles_after_dwell_without_change() {
-        let t0 = Instant::now();
-        let mut idle = IdleTracker::new(t0);
-        let dwell = Duration::from_millis(100);
-        assert!(!idle.observe(&lines(&["a"]), t0, dwell)); // baseline
-        // Unchanged but not yet dwelled.
-        assert!(!idle.observe(&lines(&["a"]), t0 + Duration::from_millis(60), dwell));
-        // Unchanged and past the dwell.
-        assert!(idle.observe(&lines(&["a"]), t0 + Duration::from_millis(160), dwell));
-    }
-
-    #[test]
-    fn effective_interval_contains_uses_requested() {
-        let cond = Condition::Contains("x".to_owned());
-        assert_eq!(
-            effective_interval(&cond, DEFAULT_POLL_INTERVAL),
-            DEFAULT_POLL_INTERVAL
-        );
-    }
-
-    #[test]
-    fn effective_interval_small_dwell_clamps_to_min() {
-        // dwell/4 = 10ms, below the 25ms floor.
-        let cond = Condition::Idle(Duration::from_millis(40));
-        assert_eq!(
-            effective_interval(&cond, DEFAULT_POLL_INTERVAL),
-            MIN_POLL_INTERVAL
-        );
-    }
-
-    #[test]
-    fn effective_interval_mid_dwell_tracks_quarter() {
-        // dwell/4 = 100ms, inside [25ms, 150ms].
-        let cond = Condition::Idle(Duration::from_millis(400));
-        assert_eq!(
-            effective_interval(&cond, DEFAULT_POLL_INTERVAL),
-            Duration::from_millis(100)
-        );
-    }
-
-    #[test]
-    fn effective_interval_large_dwell_clamps_to_requested() {
-        // dwell/4 = 2.5s, capped at the requested 150ms ceiling.
-        let cond = Condition::Idle(Duration::from_secs(10));
-        assert_eq!(
-            effective_interval(&cond, DEFAULT_POLL_INTERVAL),
-            DEFAULT_POLL_INTERVAL
-        );
-    }
-
-    #[test]
-    fn effective_interval_handles_requested_below_floor() {
-        // A pathological requested ceiling below MIN_POLL_INTERVAL must not
-        // panic; the cap wins.
-        let cond = Condition::Idle(Duration::from_millis(400));
-        let tiny = Duration::from_millis(10);
-        assert_eq!(effective_interval(&cond, tiny), tiny);
-    }
-
-    #[test]
-    fn idle_resets_dwell_on_any_change() {
-        let t0 = Instant::now();
-        let mut idle = IdleTracker::new(t0);
-        let dwell = Duration::from_millis(100);
-        assert!(!idle.observe(&lines(&["a"]), t0, dwell));
-        // Content changes well after the dwell would have elapsed — must NOT
-        // settle, and must restart the clock from this moment.
-        assert!(!idle.observe(&lines(&["b"]), t0 + Duration::from_millis(500), dwell));
-        // 60ms after the change: still not settled.
-        assert!(!idle.observe(&lines(&["b"]), t0 + Duration::from_millis(560), dwell));
-        // 110ms after the change: settled.
-        assert!(idle.observe(&lines(&["b"]), t0 + Duration::from_millis(610), dwell));
+        // The first read only records a baseline, however late.
+        assert!(!idle.observe(&lines(&["a"]), t0 + ms(10_000), dwell));
+        assert!(!idle.observe(&lines(&["a"]), t0 + ms(10_060), dwell));
+        assert!(idle.observe(&lines(&["a"]), t0 + ms(10_160), dwell));
+        // Any change restarts the clock.
+        assert!(!idle.observe(&lines(&["b"]), t0 + ms(10_500), dwell));
+        assert!(!idle.observe(&lines(&["b"]), t0 + ms(10_560), dwell));
+        assert!(idle.observe(&lines(&["b"]), t0 + ms(10_610), dwell));
     }
 }
 
-/// phux-69pq.10: a stalled peer ends the wait at the deadline, not never.
+/// A stalled peer ends the wait at the deadline, not never.
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod deadline_tests {
@@ -1070,13 +695,9 @@ mod deadline_tests {
     }
 
     fn assert_timed_out_on_time(result: &WaitResult, elapsed: Duration) {
-        assert!(
-            matches!(result.outcome, WaitOutcome::TimedOut),
-            "expected a timeout"
-        );
+        assert!(matches!(result.outcome, WaitOutcome::TimedOut));
         assert_eq!(result.polls, 0, "no read ever completed");
-        // The first read is always given the floor, so a stall costs the
-        // later of the budget and the floor.
+        // A stall costs the later of the budget and the first-read floor.
         let min = BUDGET.max(FIRST_READ_FLOOR);
         assert!(elapsed >= min, "gave up early after {elapsed:?}");
         assert!(elapsed < min + TOLERANCE, "overran: {elapsed:?}");
@@ -1119,109 +740,77 @@ mod deadline_tests {
         peer.abort();
     }
 
+    /// A zero budget checks exactly once: met if the screen matches, else a
+    /// prompt timeout.
     #[tokio::test]
-    async fn a_zero_budget_still_checks_once_and_is_met() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let socket = dir.path().join("ready.sock");
-        let listener = UnixListener::bind(&socket).expect("bind");
-        let screen = showing("READY");
-        let peer = tokio::spawn(testkit::serve_every(listener, move || {
-            ScriptSpec::new().screen(&screen)
-        }));
-
-        let (result, _) = wait_for(&socket, Duration::ZERO, "READY").await;
-        assert!(
-            matches!(result.outcome, WaitOutcome::Met),
-            "zero means check now"
-        );
-        assert_eq!(result.polls, 1);
-        peer.abort();
-    }
-
-    #[tokio::test]
-    async fn a_zero_budget_checks_once_then_times_out() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let socket = dir.path().join("busy.sock");
-        let listener = UnixListener::bind(&socket).expect("bind");
-        let screen = showing("still building");
-        let peer = tokio::spawn(testkit::serve_every(listener, move || {
-            ScriptSpec::new().screen(&screen)
-        }));
-
-        let (result, elapsed) = wait_for(&socket, Duration::ZERO, "READY").await;
-        assert!(matches!(result.outcome, WaitOutcome::TimedOut));
-        assert_eq!(
-            result.polls, 1,
-            "exactly one read, then the budget is honored"
-        );
-        assert_eq!(result.screen.lines, vec!["still building".to_owned()]);
-        assert!(
-            elapsed < TOLERANCE,
-            "no polling past the one read: {elapsed:?}"
-        );
-        peer.abort();
-    }
-
-    /// Acceptance for phux-69pq.8: the assertion observes only accepted UDS
-    /// connections, not how the polling loop is implemented. Every agent needs
-    /// multiple reads to satisfy `Idle`, yet opens exactly one connection.
-    async fn assert_polling_connection_count(agents: usize) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let socket = dir.path().join(format!("poll-{agents}.sock"));
-        let listener = UnixListener::bind(&socket).expect("bind");
-        let accepted = Arc::new(AtomicUsize::new(0));
-        let server_count = Arc::clone(&accepted);
-        let ready = showing("steady");
-        let peer = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.expect("accept polling client");
-                server_count.fetch_add(1, Ordering::Relaxed);
-                let spec = ScriptSpec::new().screen(&ready);
-                tokio::spawn(ScriptedServer::on_stream(stream, spec).run());
-            }
-        });
-
-        let mut waits = Vec::with_capacity(agents);
-        for _ in 0..agents {
-            let socket = socket.clone();
-            waits.push(tokio::spawn(async move {
-                poll_until_scoped_with_deadline(
-                    &socket,
-                    ResourceId::local(1),
-                    &Condition::Idle(Duration::ZERO),
-                    Deadline::new(Some(Duration::from_secs(2))),
-                    Duration::from_millis(1),
-                    &MatchScope::default(),
-                )
-                .await
-                .expect("poll wait")
+    async fn a_zero_budget_checks_once() {
+        for (text, outcome) in [
+            ("READY", WaitOutcome::Met),
+            ("still building", WaitOutcome::TimedOut),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let socket = dir.path().join("zero.sock");
+            let listener = UnixListener::bind(&socket).expect("bind");
+            let screen = showing(text);
+            let peer = tokio::spawn(testkit::serve_every(listener, move || {
+                ScriptSpec::new().screen(&screen)
             }));
+
+            let (result, elapsed) = wait_for(&socket, Duration::ZERO, "READY").await;
+            assert_eq!(result.outcome, outcome, "{text}");
+            assert_eq!(result.polls, 1, "{text}");
+            assert_eq!(result.screen.lines, vec![text.to_owned()]);
+            assert!(
+                elapsed < TOLERANCE,
+                "no polling past the one read: {elapsed:?}"
+            );
+            peer.abort();
         }
-        for wait in waits {
-            let result = wait.await.expect("poll task");
-            assert!(matches!(result.outcome, WaitOutcome::Met));
-            assert!(result.polls >= 2, "idle requires repeated reads");
+    }
+
+    /// Each wait needs several reads to satisfy `Idle`, yet opens exactly one
+    /// connection, however many agents poll at once.
+    #[tokio::test]
+    async fn each_wait_polls_over_one_persistent_connection() {
+        for agents in [1, 8, 32] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let socket = dir.path().join(format!("poll-{agents}.sock"));
+            let listener = UnixListener::bind(&socket).expect("bind");
+            let accepted = Arc::new(AtomicUsize::new(0));
+            let server_count = Arc::clone(&accepted);
+            let ready = showing("steady");
+            let peer = tokio::spawn(async move {
+                loop {
+                    let (stream, _) = listener.accept().await.expect("accept polling client");
+                    server_count.fetch_add(1, Ordering::Relaxed);
+                    let spec = ScriptSpec::new().screen(&ready);
+                    tokio::spawn(ScriptedServer::on_stream(stream, spec).run());
+                }
+            });
+
+            let mut waits = Vec::with_capacity(agents);
+            for _ in 0..agents {
+                let socket = socket.clone();
+                waits.push(tokio::spawn(async move {
+                    poll_until_scoped_with_deadline(
+                        &socket,
+                        ResourceId::local(1),
+                        &Condition::Idle(Duration::ZERO),
+                        Deadline::new(Some(Duration::from_secs(2))),
+                        Duration::from_millis(1),
+                        &MatchScope::default(),
+                    )
+                    .await
+                    .expect("poll wait")
+                }));
+            }
+            for wait in waits {
+                let result = wait.await.expect("poll task");
+                assert!(matches!(result.outcome, WaitOutcome::Met));
+                assert!(result.polls >= 2, "idle requires repeated reads");
+            }
+            assert_eq!(accepted.load(Ordering::Relaxed), agents);
+            peer.abort();
         }
-        assert_eq!(
-            accepted.load(Ordering::Relaxed),
-            agents,
-            "each wait owns one persistent control connection"
-        );
-        peer.abort();
-    }
-
-    #[tokio::test]
-    async fn polling_connection_count_is_pinned_for_1_agent() {
-        assert_polling_connection_count(1).await;
-    }
-
-    #[tokio::test]
-    async fn polling_connection_count_is_pinned_for_8_agents() {
-        assert_polling_connection_count(8).await;
-    }
-
-    #[tokio::test]
-    async fn polling_connection_count_is_pinned_for_32_agents() {
-        assert_polling_connection_count(32).await;
     }
 }

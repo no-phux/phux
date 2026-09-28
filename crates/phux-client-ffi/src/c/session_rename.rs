@@ -1,26 +1,11 @@
-//! Rename a session on the server this client is connected to
-//! (`phux.session.name/v1`, `docs/spec/L3.md` section 3.1).
+//! Rename a session on the connected server (`phux.session.name/v1`,
+//! `docs/spec/L3.md` section 3.1), with the shared `phux_client_core::rename`
+//! policy: judge against the latest session list, send `SET_METADATA`
+//! (`current\0new`), then a `GET_STATE` barrier whose answer is the outcome.
 //!
-//! A rename is a `SET_METADATA` of the conventional key with the value
-//! `current\0new`. The server applies it to its registry and broadcasts the
-//! applied value as `METADATA_CHANGED` to subscribers of the key; a refused
-//! or no-op rename broadcasts nothing, and `SET_METADATA` has no reply. So
-//! the bridge does what `phux rename` does: it judges the request against the
-//! latest session list first (an unknown session or a name another session
-//! holds is refused here, with a reason), then sends the write, then a
-//! `GET_STATE` as an ordering barrier. Frames are ordered on one connection,
-//! so once that read is answered the write has been applied or refused: the
-//! answer names the outcome even if no `METADATA_CHANGED` arrives.
-//!
-//! The first rename on a client subscribes to the key, so this client hears
-//! its own rename and every later one on that server, and applies each to
-//! the session list in place. A client that asks to follow renames
-//! (`phux_client_follow_session_names`) subscribes as soon as `HELLO_OK` is
-//! applied instead, so renames other clients make reach its list before it
-//! has renamed anything. Neither a listing nor an attached client needs to
-//! attach anything for this: the subscription is read-only and a rename
-//! writes metadata; neither sizes anything. The server delivers
-//! `METADATA_CHANGED` to a subscriber that never attached.
+//! The first rename subscribes to the key so this client applies every
+//! later rename to its session list; `phux_client_follow_session_names`
+//! subscribes at `HELLO_OK` instead. No attach is needed for either.
 #![allow(
     clippy::redundant_pub_crate,
     reason = "private module shared by the bridge dispatcher and Client"
@@ -441,23 +426,16 @@ pub unsafe extern "C" fn phux_client_session_rename_info(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::c::client::{Limits, SessionSummary};
+    use crate::c::client::SessionSummary;
+    use crate::c::test_support::{feed, negotiated_client, new_client};
     use crate::c::types::ABI_VERSION;
     use phux_protocol::wire::frame::{Command, ErrorCode};
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
     use phux_protocol::{ResourceId, SessionId, WindowId};
 
-    fn negotiated(names: &[&str]) -> *mut PhuxClient {
-        let mut inner = Client::new(Limits {
-            bootstrap_chunk: 1024,
-            history_page: 1024,
-            history_page_rows: 128,
-            history_cache_bytes: 4096,
-            history_materialized_rows: 1024,
-            history_prefetch_rows: 64,
-        });
-        inner.protocol_ready = true;
-        inner.sessions = names
+    /// Seeds the session catalogue a real attach or query would have delivered.
+    fn with_sessions(client: *mut PhuxClient, names: &[&str]) -> *mut PhuxClient {
+        let sessions = names
             .iter()
             .zip(1..)
             .map(|(name, id)| SessionSummary {
@@ -470,10 +448,23 @@ mod tests {
                 keep_empty: false,
             })
             .collect();
-        Box::into_raw(Box::new(PhuxClient {
-            inner,
-            _not_send_sync: std::marker::PhantomData,
-        }))
+        unsafe { (*client).inner.sessions = sessions };
+        client
+    }
+
+    fn negotiated(names: &[&str]) -> *mut PhuxClient {
+        with_sessions(negotiated_client(&[]), names)
+    }
+
+    /// A client that has queued HELLO and not yet heard `HELLO_OK`.
+    fn hello_pending(names: &[&str]) -> *mut PhuxClient {
+        let client = with_sessions(new_client(), names);
+        assert_eq!(
+            unsafe { crate::c::phux_client_queue_hello(client, span("test")) },
+            PhuxClientResult::Ok
+        );
+        unsafe { (*client).inner.outgoing.clear() };
+        client
     }
 
     fn span(text: &str) -> PhuxBytes {
@@ -508,12 +499,6 @@ mod tests {
             out.sessions_revision,
             String::from_utf8(message.to_vec()).expect("UTF-8"),
         )
-    }
-
-    fn feed(client: *mut PhuxClient, frame: &FrameKind) -> PhuxClientResult {
-        let mut encoded = bytes::BytesMut::new();
-        frame.encode(&mut encoded);
-        unsafe { crate::c::phux_client_feed_frame(client, encoded.as_ptr(), encoded.len()) }
     }
 
     fn sent(client: *mut PhuxClient) -> Vec<FrameKind> {
@@ -701,16 +686,10 @@ mod tests {
     }
 
     fn hello_ok() -> FrameKind {
-        FrameKind::HelloOk {
-            protocol_major: crate::c::PROTOCOL_VERSION.major,
-            protocol_minor: crate::c::PROTOCOL_VERSION.minor,
-            protocol_patch: crate::c::PROTOCOL_VERSION.patch,
-            server_caps: phux_protocol::caps::ServerCapabilities::new(),
-            server_id: b"server".to_vec(),
-            selected_profile: phux_protocol::BootstrapProfile::SynthesizedVtRaw,
-            bootstrap_limits: phux_protocol::caps::BootstrapLimits::new(1024, 1024)
-                .expect("limits"),
-        }
+        crate::c::test_support::hello_ok(
+            phux_protocol::caps::ServerCapabilities::new(),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        )
     }
 
     fn subscription() -> FrameKind {
@@ -722,12 +701,7 @@ mod tests {
 
     #[test]
     fn a_follower_subscribes_right_after_hello_ok_and_hears_other_clients_renames() {
-        // A client that has queued HELLO and not yet heard HELLO_OK.
-        let client = negotiated(&["build", "deploy"]);
-        unsafe {
-            (*client).inner.protocol_ready = false;
-            (*client).inner.hello_queued = true;
-        }
+        let client = hello_pending(&["build", "deploy"]);
         assert_eq!(
             unsafe { phux_client_follow_session_names(client) },
             PhuxClientResult::Ok
@@ -768,17 +742,17 @@ mod tests {
         unsafe { crate::c::phux_client_free(client) };
 
         // A client that never follows subscribes only at its first rename.
-        let lazy = negotiated(&["build"]);
-        unsafe {
-            (*lazy).inner.protocol_ready = false;
-            (*lazy).inner.hello_queued = true;
-        }
+        let lazy = hello_pending(&["build"]);
         assert_eq!(feed(lazy, &hello_ok()), PhuxClientResult::Ok);
         assert!(sent(lazy).is_empty());
         unsafe { crate::c::phux_client_free(lazy) };
 
         let ended = negotiated(&["build"]);
-        unsafe { (*ended).inner.detached = true };
+        let detached = FrameKind::Detached {
+            reason: None,
+            message: String::new(),
+        };
+        assert_eq!(feed(ended, &detached), PhuxClientResult::Ok);
         assert_eq!(
             unsafe { phux_client_follow_session_names(ended) },
             PhuxClientResult::InvalidState
@@ -789,13 +763,13 @@ mod tests {
 
     #[test]
     fn a_rename_is_refused_outside_its_lifecycle_or_with_a_bad_name() {
-        let client = negotiated(&["build"]);
-        unsafe { (*client).inner.protocol_ready = false };
+        let fresh = with_sessions(new_client(), &["build"]);
         assert_eq!(
-            rename(client, 1, "build", "x"),
+            rename(fresh, 1, "build", "x"),
             PhuxClientResult::InvalidState
         );
-        unsafe { (*client).inner.protocol_ready = true };
+        unsafe { crate::c::phux_client_free(fresh) };
+        let client = negotiated(&["build"]);
         assert_eq!(
             rename(client, 1, "build", ""),
             PhuxClientResult::InvalidArgument

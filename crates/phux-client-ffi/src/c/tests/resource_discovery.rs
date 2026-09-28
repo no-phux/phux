@@ -74,7 +74,7 @@ fn answer_requests(
             result: CommandResult::OkWith(CommandValue::State(snapshot)),
         },
     ] {
-        assert_eq!(feed_kind(client, &frame), PhuxClientResult::Ok);
+        assert_eq!(feed(client, &frame), PhuxClientResult::Ok);
     }
 }
 
@@ -129,7 +129,7 @@ fn agent_created_after_attach_is_discovered_subscribed_streamed_and_removed() {
         // The reference server sends bootstrap before the command acknowledgement.
         open_agent_stream(client);
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::CommandResult {
                     request_id,
@@ -173,7 +173,7 @@ fn agent_created_after_attach_is_discovered_subscribed_streamed_and_removed() {
         );
         assert_eq!(phux_client_effect_clear(client), PhuxClientResult::Ok);
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::ResourceClosed {
                     terminal_id: ResourceId::local(MIXED_AGENT),
@@ -211,7 +211,7 @@ fn explicit_agent_close_cannot_be_undone_by_an_outstanding_subscription_refusal(
     answer_read(client, snapshot(true));
     let request_id = subscription(client);
     assert_eq!(
-        feed_kind(
+        feed(
             client,
             &FrameKind::ResourceClosed {
                 terminal_id: ResourceId::local(MIXED_AGENT),
@@ -223,7 +223,7 @@ fn explicit_agent_close_cannot_be_undone_by_an_outstanding_subscription_refusal(
         PhuxClientResult::Ok
     );
     assert_eq!(
-        feed_kind(client, &subscription_refusal(request_id, false)),
+        feed(client, &subscription_refusal(request_id, false)),
         PhuxClientResult::Ok
     );
     refresh(client, 1, snapshot(true));
@@ -242,7 +242,7 @@ fn refresh_preserves_an_agent_replacement_generation_in_flight() {
     let request_id = subscription(client);
     open_agent_stream(client);
     assert_eq!(
-        feed_kind(
+        feed(
             client,
             &FrameKind::CommandResult {
                 request_id,
@@ -275,13 +275,13 @@ fn refresh_preserves_an_agent_replacement_generation_in_flight() {
                 payload: bytes::Bytes::from(record(4, "stop", "{}")),
             },
         ] {
-            assert_eq!(feed_kind(client, &frame), PhuxClientResult::Ok);
+            assert_eq!(feed(client, &frame), PhuxClientResult::Ok);
         }
         refresh(client, 1, snapshot(true));
         assert!(outgoing(client).is_empty());
         assert_eq!(phux_client_effect_count(client), 0);
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::BootstrapReady {
                     terminal_id: agent,
@@ -316,7 +316,7 @@ fn a_refused_agent_subscription_retries_without_losing_authoritative_membership(
     refresh(client, 1, snapshot(true));
     let request_id = subscription(client);
     assert_eq!(
-        feed_kind(
+        feed(
             client,
             &FrameKind::CommandResult {
                 request_id,
@@ -404,7 +404,7 @@ fn agent_discovery_does_not_spend_dynamic_terminal_admission() {
             );
             outgoing(client);
             assert_eq!(
-                feed_kind(
+                feed(
                     client,
                     &FrameKind::CommandResult {
                         request_id,
@@ -494,7 +494,7 @@ fn assert_subscription_refusal_preserves_mutation(standalone_error: bool) {
             "the new mutation reached the transport before the old refusal"
         );
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &subscription_refusal(subscription_id, standalone_error)
             ),
@@ -579,7 +579,7 @@ fn bootstrap_agent(
             history_cursor: None,
         },
     ] {
-        assert_eq!(feed_kind(client, &frame), PhuxClientResult::Ok);
+        assert_eq!(feed(client, &frame), PhuxClientResult::Ok);
     }
 }
 
@@ -592,7 +592,7 @@ fn satellite_inventory_withdrawal_allows_same_agent_to_return_with_a_fresh_gener
     let request_id = subscription_for(client, &agent);
     bootstrap_agent(client, &agent, AGENT_BOOTSTRAP, 1, "ask");
     assert_eq!(
-        feed_kind(
+        feed(
             client,
             &FrameKind::CommandResult {
                 request_id,
@@ -644,7 +644,7 @@ fn discovered_agent_delivers_multi_record_live_batch_at_its_final_sequence() {
         assert_eq!(phux_client_effect_clear(client), PhuxClientResult::Ok);
         let payload = record(2, "ask", "{}") + &record(3, "stop", "{}");
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::ResourceOutput {
                     terminal_id: agent,
@@ -704,7 +704,7 @@ fn assert_closed_agent_precedes_stale_inventory(withdraw_first: bool) {
         // Federated GET_STATE captures local inventory before awaiting satellites;
         // a local close can reach the subscriber before that stale result.
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &FrameKind::ResourceClosed {
                     terminal_id: ResourceId::local(MIXED_AGENT),

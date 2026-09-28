@@ -1,4 +1,11 @@
-//! Agent detection harness. Kept separate because its tests set process-wide
-//! detector timing overrides; nextest still runs each test in its own process.
+//! Agent detection harness. Its tests set process-wide detector timing
+//! overrides, so they stay out of the shared terminal binary.
+
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "tests"
+)]
 
 mod agent_detect;

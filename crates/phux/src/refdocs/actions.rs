@@ -1,22 +1,7 @@
 //! The generated actions reference: every dispatcher action with its
-//! parameter surface, description, and palette placement.
-//!
-//! Three in-code inventories feed the page, and tests keep them a
-//! partition of the real action set:
-//!
-//! - `phux_config::vocab::ACTION_NAMES` is the canonical name list (and
-//!   this page's row order);
-//! - `phux_tui::attach::action_registry::REGISTRY` supplies the
-//!   description, parameter surface, and palette category for every
-//!   palette-offered action;
-//! - `phux_tui::attach::action_registry::NON_PALETTE_ACTIONS` supplies
-//!   the same for the deliberate palette omissions, plus the reason each
-//!   has no palette row.
-//!
-//! The `every_action_has_exactly_one_doc_home` test in phux-tui pins
-//! the union of the last two to the first, so a new `run_action` arm
-//! cannot ship without a doc blurb — and the freshness test in
-//! `super::tests` then forces this page's regeneration.
+//! parameters, description, and palette placement, from `ACTION_NAMES` plus
+//! phux-tui's `REGISTRY` and `NON_PALETTE_ACTIONS` (a phux-tui test pins that
+//! the latter two partition the former).
 
 use phux_config::vocab::ACTION_NAMES;
 use phux_tui::attach::action_registry::{NON_PALETTE_ACTIONS, REGISTRY};

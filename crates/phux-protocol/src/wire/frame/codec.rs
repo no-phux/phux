@@ -12,10 +12,11 @@ use crate::input::focus::FocusEvent;
 use crate::input::key::KeyEvent;
 use crate::input::mouse::MouseEvent;
 use crate::input::paste::PasteEvent;
-use crate::wire::decode::Decoder;
+use crate::wire::decode::{Decoder, utf8_value};
 use crate::wire::encode::Encoder;
 use crate::wire::error::DecodeError;
 use crate::wire::field;
+use crate::wire::info::{decode_option_str, encode_option_str};
 
 use super::{
     ATTACH_TARGET_BY_ID, ATTACH_TARGET_BY_NAME, ATTACH_TARGET_CREATE_IF_MISSING,
@@ -29,10 +30,6 @@ use super::{
     SPAWN_RESULT_ERR, SPAWN_RESULT_OK, Scope, SpawnError, SpawnResult, ViewportInfo,
 };
 
-// -----------------------------------------------------------------------------
-// Helpers for the message-catalog variants. Kept in this file so encoder and
-// decoder share one source of truth for sub-record layout.
-// -----------------------------------------------------------------------------
 pub(in crate::wire) fn encode_bootstrap_codec(codec: BootstrapCodec, enc: &mut Encoder<'_>) {
     match codec {
         BootstrapCodec::SynthesizedVtV1 => {
@@ -55,18 +52,12 @@ pub(in crate::wire) fn decode_bootstrap_codec(
         BootstrapCodec::SYNTHESIZED_VT_V1_TAG => Ok(BootstrapCodec::SynthesizedVtV1),
         BootstrapCodec::NATIVE_TAG => {
             let value = dec.read_u8()?;
-            let codec =
-                EngineCodec::from_wire(value).ok_or_else(|| DecodeError::UnknownEnumValue {
-                    field: "EngineCodec",
-                    value: u32::from(value),
-                })?;
+            let codec = EngineCodec::from_wire(value)
+                .ok_or_else(|| DecodeError::unknown_enum("EngineCodec", value))?;
             Ok(BootstrapCodec::Native(codec))
         }
         BootstrapCodec::AGENT_EVENTS_JSONL_V1_TAG => Ok(BootstrapCodec::AgentEventsJsonlV1),
-        value => Err(DecodeError::UnknownEnumValue {
-            field: "BootstrapCodec",
-            value: u32::from(value),
-        }),
+        value => Err(DecodeError::unknown_enum("BootstrapCodec", value)),
     }
 }
 
@@ -92,11 +83,8 @@ pub(in crate::wire) fn decode_bootstrap_profile(
     match dec.read_u8()? {
         BootstrapProfile::NATIVE_STATE_TAG => {
             let value = dec.read_u8()?;
-            let codec =
-                EngineCodec::from_wire(value).ok_or_else(|| DecodeError::UnknownEnumValue {
-                    field: "EngineCodec",
-                    value: u32::from(value),
-                })?;
+            let codec = EngineCodec::from_wire(value)
+                .ok_or_else(|| DecodeError::unknown_enum("EngineCodec", value))?;
             let features = EngineFeatureSet::from_wire(dec.read_u32_be()?);
             if !features.supports_native() {
                 return Err(DecodeError::InvalidBootstrapProfile);
@@ -107,10 +95,7 @@ pub(in crate::wire) fn decode_bootstrap_profile(
         BootstrapProfile::SYNTHESIZED_VT_STATE_SYNC_TAG => {
             Ok(BootstrapProfile::SynthesizedVtStateSync)
         }
-        value => Err(DecodeError::UnknownEnumValue {
-            field: "BootstrapProfile",
-            value: u32::from(value),
-        }),
+        value => Err(DecodeError::unknown_enum("BootstrapProfile", value)),
     }
 }
 
@@ -154,7 +139,7 @@ pub(in crate::wire) fn encode_attach_target(target: &AttachTarget, enc: &mut Enc
             enc.write_u8(ATTACH_TARGET_CREATE_IF_MISSING);
             enc.write_str(name);
             encode_optional_string_list(command.as_deref(), enc);
-            encode_optional_str(cwd.as_deref(), enc);
+            encode_option_str(cwd.as_deref(), enc);
         }
     }
 }
@@ -170,13 +155,10 @@ pub(in crate::wire) fn decode_attach_target(
         ATTACH_TARGET_CREATE_IF_MISSING => {
             let name = dec.read_str()?.to_owned();
             let command = decode_optional_string_list(dec)?;
-            let cwd = decode_optional_str(dec)?.map(str::to_owned);
+            let cwd = decode_option_str(dec)?.map(str::to_owned);
             Ok(AttachTarget::CreateIfMissing { name, command, cwd })
         }
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "AttachTarget",
-            value: u32::from(other),
-        }),
+        other => Err(DecodeError::unknown_enum("AttachTarget", other)),
     }
 }
 
@@ -213,22 +195,18 @@ pub(in crate::wire) fn decode_focus_event(tag: u8) -> Result<FocusEvent, DecodeE
     match tag {
         0 => Ok(FocusEvent::Gained),
         1 => Ok(FocusEvent::Lost),
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "FocusEvent",
-            value: u32::from(other),
-        }),
+        other => Err(DecodeError::unknown_enum("FocusEvent", other)),
     }
 }
 
 pub(in crate::wire) fn encode_key_event(event: &KeyEvent, enc: &mut Encoder<'_>) {
-    // `KeyAction`/`PhysicalKey` are phux-owned `#[repr(u32)]` enums (ADR-0024);
-    // cast to the discriminant; the decoder round-trips via `TryFrom<u32>`.
+    // `#[repr(u32)]` discriminants (ADR-0024); decoded via `TryFrom<u32>`.
     enc.write_u32_be(event.action as u32);
     enc.write_u32_be(event.key as u32);
     enc.write_u16_be(event.mods.bits());
     enc.write_u16_be(event.consumed_mods.bits());
     enc.write_u8(u8::from(event.composing));
-    encode_optional_str(event.text.as_deref(), enc);
+    encode_option_str(event.text.as_deref(), enc);
     encode_optional_u32(event.unshifted_codepoint, enc);
 }
 
@@ -248,7 +226,7 @@ pub(in crate::wire) fn decode_key_event(dec: &mut Decoder<'_>) -> Result<KeyEven
     let mods = ModSet::from_bits_truncate(dec.read_u16_be()?);
     let consumed_mods = ModSet::from_bits_truncate(dec.read_u16_be()?);
     let composing = dec.read_u8()? != 0;
-    let text = decode_optional_str(dec)?.map(str::to_owned);
+    let text = decode_option_str(dec)?.map(str::to_owned);
     let unshifted_codepoint = decode_optional_u32(dec)?;
     Ok(KeyEvent {
         action,
@@ -311,31 +289,15 @@ pub(in crate::wire) fn decode_paste_event(
         0 => PasteTrust::Trusted,
         1 => PasteTrust::Untrusted,
         other => {
-            return Err(DecodeError::UnknownEnumValue {
-                field: "PasteTrust",
-                value: u32::from(other),
-            });
+            return Err(DecodeError::unknown_enum("PasteTrust", other));
         }
     };
     let data = dec.read_bytes()?.to_vec();
     Ok(PasteEvent { trust, data })
 }
 
-// -----------------------------------------------------------------------------
-// `ResourceId` tagged-union codec — ADR-0016 §Decision (phux-vp0.4).
-//
-// Every `ResourceId` on the wire is prefixed with a 1-byte tag:
-//
-//   tag = 0  → Local      { id: u32 }
-//   tag = 1  → Satellite  { host: str, id: u32 }
-//
-// v0.1 encoders only produce tag=0. v0.1 decoders MUST accept tag=1; the
-// dispatch layer (in `phux-server`) responds with `ERROR
-// { UnsupportedSatelliteRoute }` (SPEC §14) when the server is not a
-// federation hub. Unknown tags surface as `DecodeError::UnknownEnumValue`.
-// -----------------------------------------------------------------------------
-
-/// Encode a [`ResourceId`] including its discriminant byte.
+/// Encode a [`ResourceId`] (ADR-0016): tag `0` + `u32`, or tag `1` + host
+/// `str` + `u32`.
 pub(in crate::wire) fn encode_terminal_id(id: &ResourceId, enc: &mut Encoder<'_>) {
     match id {
         ResourceId::Local { id } => {
@@ -350,11 +312,8 @@ pub(in crate::wire) fn encode_terminal_id(id: &ResourceId, enc: &mut Encoder<'_>
     }
 }
 
-/// Decode a [`ResourceId`] previously written by [`encode_terminal_id`].
-///
-/// v0.1 decoders MUST accept the `Satellite` tag and surface it to the
-/// dispatcher; the dispatcher responds with `ERROR
-/// { UnsupportedSatelliteRoute }` when the server is not a federation hub.
+/// Decode a [`ResourceId`]; a non-hub server answers a `Satellite` id with
+/// `UnsupportedSatelliteRoute` at dispatch, not here.
 pub(in crate::wire) fn decode_terminal_id(
     dec: &mut Decoder<'_>,
 ) -> Result<ResourceId, DecodeError> {
@@ -369,144 +328,58 @@ pub(in crate::wire) fn decode_terminal_id(
             let id = dec.read_u32_be()?;
             Ok(ResourceId::Satellite { host, id })
         }
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "ResourceId",
-            value: u32::from(other),
-        }),
+        other => Err(DecodeError::unknown_enum("ResourceId", other)),
     }
 }
 
-// The optional `ResourceId` scope of `SUBSCRIBE_EVENTS` / `EVENT` is now
-// carried by TLV field *presence* (an absent `terminal` field = server-scoped
-// `None`), so the old `encode_optional_terminal_id` / `decode_optional_terminal_id`
-// presence-tag helpers were retired with the field-tagged migration.
-
-// -----------------------------------------------------------------------------
-// Small option-of-primitive helpers. Local to this module — `info.rs` has its
-// own parallel set tuned to its types (id newtypes, layout nodes).
-// -----------------------------------------------------------------------------
-
-pub(super) fn encode_optional_str(value: Option<&str>, enc: &mut Encoder<'_>) {
-    match value {
-        None => enc.write_u8(0),
-        Some(s) => {
-            enc.write_u8(1);
-            enc.write_str(s);
-        }
-    }
-}
-
-pub(in crate::wire) fn decode_optional_str<'a>(
-    dec: &mut Decoder<'a>,
-) -> Result<Option<&'a str>, DecodeError> {
-    let tag = dec.read_u8()?;
-    match tag {
-        0 => Ok(None),
-        1 => Ok(Some(dec.read_str()?)),
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "Option<str> tag",
-            value: u32::from(other),
-        }),
-    }
-}
+// Presence-byte option helpers for primitives.
 
 fn encode_optional_u16(value: Option<u16>, enc: &mut Encoder<'_>) {
-    match value {
-        None => enc.write_u8(0),
-        Some(n) => {
-            enc.write_u8(1);
-            enc.write_u16_be(n);
-        }
-    }
+    enc.write_option(value, Encoder::write_u16_be);
 }
 
 fn decode_optional_u16(dec: &mut Decoder<'_>) -> Result<Option<u16>, DecodeError> {
-    let tag = dec.read_u8()?;
-    match tag {
-        0 => Ok(None),
-        1 => Ok(Some(dec.read_u16_be()?)),
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "Option<u16> tag",
-            value: u32::from(other),
-        }),
-    }
+    dec.read_option("Option<u16> tag", Decoder::read_u16_be)
 }
 
 pub(super) fn encode_optional_u32(value: Option<u32>, enc: &mut Encoder<'_>) {
-    match value {
-        None => enc.write_u8(0),
-        Some(n) => {
-            enc.write_u8(1);
-            enc.write_u32_be(n);
-        }
-    }
+    enc.write_option(value, Encoder::write_u32_be);
 }
 
 pub(in crate::wire) fn decode_optional_u32(
     dec: &mut Decoder<'_>,
 ) -> Result<Option<u32>, DecodeError> {
-    let tag = dec.read_u8()?;
-    match tag {
-        0 => Ok(None),
-        1 => Ok(Some(dec.read_u32_be()?)),
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "Option<u32> tag",
-            value: u32::from(other),
-        }),
-    }
+    dec.read_option("Option<u32> tag", Decoder::read_u32_be)
 }
 
 fn encode_optional_string_list(value: Option<&[String]>, enc: &mut Encoder<'_>) {
-    match value {
-        None => enc.write_u8(0),
-        Some(list) => {
-            enc.write_u8(1);
-            debug_assert!(
-                u32::try_from(list.len()).is_ok(),
-                "string list length exceeds u32",
-            );
-            let len = u32::try_from(list.len()).unwrap_or(u32::MAX);
-            enc.write_u32_be(len);
-            for s in list {
-                enc.write_str(s);
-            }
+    enc.write_option(value, |e, list| {
+        debug_assert!(
+            u32::try_from(list.len()).is_ok(),
+            "string list length exceeds u32",
+        );
+        e.write_u32_be(u32::try_from(list.len()).unwrap_or(u32::MAX));
+        for s in list {
+            e.write_str(s);
         }
-    }
+    });
 }
 
 pub(in crate::wire) fn decode_optional_string_list(
     dec: &mut Decoder<'_>,
 ) -> Result<Option<Vec<String>>, DecodeError> {
-    let tag = dec.read_u8()?;
-    match tag {
-        0 => Ok(None),
-        1 => {
-            let len = dec.read_u32_be()?;
-            let len_usize = usize::try_from(len).map_err(|_| DecodeError::LengthOverflow)?;
-            // Clamp reservation to remaining bytes (each element is >=1 byte):
-            // an over-declared length errors on EOF below rather than driving
-            // an unbounded `Vec::with_capacity`.
-            let mut out = dec.bounded_capacity(len_usize);
-            for _ in 0..len_usize {
-                out.push(dec.read_str()?.to_owned());
-            }
-            Ok(Some(out))
+    dec.read_option("Option<list<str>> tag", |d| {
+        let len = usize::try_from(d.read_u32_be()?).map_err(|_| DecodeError::LengthOverflow)?;
+        let mut out = d.bounded_capacity(len);
+        for _ in 0..len {
+            out.push(d.read_str()?.to_owned());
         }
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "Option<list<str>> tag",
-            value: u32::from(other),
-        }),
-    }
+        Ok(out)
+    })
 }
 
-/// Encode a string list as a `u32` count + N length-prefixed UTF-8 strings,
-/// with no outer presence tag.
-///
-/// The optionality of a `SPAWN_RESOURCE.command` field is now carried by TLV
-/// field *presence* (an absent field is `None`); a present field always holds a
-/// concrete list, so the inner encoding drops the old `0/1` presence byte. An
-/// empty list (`Some(vec![])`) round-trips as a present field whose value is
-/// just a zero count.
+/// Encode a string list as a `u32` count + strings; optionality is the TLV
+/// field's presence.
 pub(in crate::wire) fn encode_string_list(list: &[String], enc: &mut Encoder<'_>) {
     debug_assert!(
         u32::try_from(list.len()).is_ok(),
@@ -519,11 +392,7 @@ pub(in crate::wire) fn encode_string_list(list: &[String], enc: &mut Encoder<'_>
     }
 }
 
-/// Decode a string list previously written by [`encode_string_list`].
-///
-/// Clamps the pre-reservation to the bytes remaining in the field value (each
-/// element is at least one byte on the wire), so an over-declared count errors
-/// on EOF rather than driving an unbounded `Vec::with_capacity`.
+/// Decode a string list written by [`encode_string_list`].
 pub(in crate::wire) fn decode_string_list(
     dec: &mut Decoder<'_>,
 ) -> Result<Vec<String>, DecodeError> {
@@ -536,9 +405,7 @@ pub(in crate::wire) fn decode_string_list(
     Ok(out)
 }
 
-/// Encode an environment list as a `u32` count + N `(key, value)` string pairs,
-/// with no outer presence tag (presence is the TLV field, as for
-/// [`encode_string_list`]).
+/// Encode an environment list as a `u32` count + `(key, value)` string pairs.
 pub(in crate::wire) fn encode_env(list: &[(String, String)], enc: &mut Encoder<'_>) {
     debug_assert!(
         u32::try_from(list.len()).is_ok(),
@@ -552,9 +419,7 @@ pub(in crate::wire) fn encode_env(list: &[(String, String)], enc: &mut Encoder<'
     }
 }
 
-/// Decode an environment list previously written by [`encode_env`]. Bounds
-/// pre-reservation by the remaining field bytes (each pair is at least eight
-/// bytes on the wire).
+/// Decode an environment list written by [`encode_env`].
 pub(in crate::wire) fn decode_env(
     dec: &mut Decoder<'_>,
 ) -> Result<Vec<(String, String)>, DecodeError> {
@@ -569,20 +434,7 @@ pub(in crate::wire) fn decode_env(
     Ok(out)
 }
 
-// Optional byte fields (`BOOTSTRAP_READY.history_cursor`,
-// `HISTORY_PAGE.next_cursor`, `METADATA_CHANGED.value`,
-// `METADATA_VALUE.value`) express `None` as an absent TLV field.
-
-// -----------------------------------------------------------------------------
-// Scope codec — SPEC §7.4 (phux-4li.2).
-//
-// Layout: 1-byte tag + variant body.
-//   0x00 Terminal   → tagged ResourceId (re-uses the L1 codec)
-//   0x01 Group      → u32 (the inner GroupId; once federation ships a
-//                     Local/Satellite tag will prefix this, mirroring the
-//                     ADR-0016 ResourceId shape)
-//   0x02 Global     → no body
-// -----------------------------------------------------------------------------
+// `Scope` (SPEC §7.4): tag, then a `ResourceId`, a `u32` group, or nothing.
 
 pub(in crate::wire) fn encode_scope(scope: &Scope, enc: &mut Encoder<'_>) {
     match scope {
@@ -606,19 +458,12 @@ pub(in crate::wire) fn decode_scope(dec: &mut Decoder<'_>) -> Result<Scope, Deco
         SCOPE_TAG_RESOURCE => Ok(Scope::Resource(decode_terminal_id(dec)?)),
         SCOPE_TAG_GROUP => Ok(Scope::Group(GroupId::new(dec.read_u32_be()?))),
         SCOPE_TAG_GLOBAL => Ok(Scope::Global),
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "Scope",
-            value: u32::from(other),
-        }),
+        other => Err(DecodeError::unknown_enum("Scope", other)),
     }
 }
 
 /// Decode the shared `{request_id, scope, key}` body of `GET_METADATA` and
-/// `DELETE_METADATA` (identical field-tagged shape; `docs/spec/L3.md` §1).
-///
-/// Loops over the message body's TLV fields using the `field::get_metadata::*`
-/// ids (shared by both messages) and surfaces a missing required `scope` /
-/// `key` as [`DecodeError::UnexpectedEof`].
+/// `DELETE_METADATA` (`docs/spec/L3.md` §1).
 pub(in crate::wire) fn decode_metadata_scope_key(
     dec: &mut Decoder<'_>,
 ) -> Result<(u32, Scope, String), DecodeError> {
@@ -627,19 +472,9 @@ pub(in crate::wire) fn decode_metadata_scope_key(
     let mut key: Option<String> = None;
     while let Some((id, value)) = dec.read_field()? {
         match id {
-            field::get_metadata::REQUEST_ID => {
-                request_id = Decoder::new(value).read_u32_be()?;
-            }
-            field::get_metadata::SCOPE => {
-                scope = Some(decode_scope(&mut Decoder::new(value))?);
-            }
-            field::get_metadata::KEY => {
-                key = Some(
-                    core::str::from_utf8(value)
-                        .map_err(|_| DecodeError::InvalidUtf8)?
-                        .to_owned(),
-                );
-            }
+            field::get_metadata::REQUEST_ID => request_id = Decoder::new(value).read_u32_be()?,
+            field::get_metadata::SCOPE => scope = Some(decode_scope(&mut Decoder::new(value))?),
+            field::get_metadata::KEY => key = Some(utf8_value(value)?),
             _ => {}
         }
     }
@@ -650,30 +485,13 @@ pub(in crate::wire) fn decode_metadata_scope_key(
     ))
 }
 
-// -----------------------------------------------------------------------------
-// SpawnResult / SpawnError codec — SPEC §7.2 / §10.1 (phux-4li.10).
-//
-// Layout (outer SpawnResult, the body of `RESOURCE_SPAWNED.result`):
-//   tag 0x00 Ok  → tagged ResourceId
-//   tag 0x01 Err → SpawnError body:
-//                    tag 0x00 GroupNotFound             → no further bytes
-//                    tag 0x01 SpawnFailed               → length-prefixed UTF-8
-//                    tag 0x02 UnsupportedSatelliteRoute → no further bytes
-//                    tag 0x03 SatelliteUnreachable      → length-prefixed UTF-8
-//                    tag 0x04 UnsupportedKind           → no further bytes
-//                    tag 0x05 ParentNotFound            → no further bytes
-//                    tag 0x06 ParentKindMismatch        → no further bytes
-//
-// The `Ok = 0x00 / Err = 0x01` convention deliberately mirrors the
-// `Option` tag convention (`None = 0x00 / Some = 0x01`) so hex-dump
-// readers do not need a second per-shape table.
-// -----------------------------------------------------------------------------
+// `SpawnResult` (SPEC §7.2 / §10.1): `Ok` + `ResourceId`, or `Err` + a
+// `SpawnError` tag, with a message for `SpawnFailed` / `SatelliteUnreachable`.
 
 pub(in crate::wire) fn encode_spawn_result(result: &SpawnResult, enc: &mut Encoder<'_>) {
     match result {
-        // A bound result is the same `Ok` bytes; its instance token rides
-        // `RESOURCE_SPAWNED` field 3, which an older decoder skips.
-        // A replayed result is the same `Ok` bytes too; its flag rides field 4.
+        // Bound and replayed results are `Ok` bytes; their extras ride
+        // `RESOURCE_SPAWNED` fields 3 and 4.
         SpawnResult::Ok(terminal_id)
         | SpawnResult::OkBound {
             id: terminal_id, ..
@@ -695,15 +513,15 @@ pub(in crate::wire) fn encode_spawn_result(result: &SpawnResult, enc: &mut Encod
 /// optional<str> || client_name: optional<str>` (ADR-0123).
 pub(in crate::wire) fn encode_actor_ref(actor: &ActorRef, enc: &mut Encoder<'_>) {
     enc.write_u32_be(actor.client.get());
-    crate::wire::info::encode_option_str(actor.credential_id.as_deref(), enc);
-    crate::wire::info::encode_option_str(actor.client_name.as_deref(), enc);
+    encode_option_str(actor.credential_id.as_deref(), enc);
+    encode_option_str(actor.client_name.as_deref(), enc);
 }
 
 /// Read an [`ActorRef`] written by [`encode_actor_ref`].
 pub(in crate::wire) fn decode_actor_ref(dec: &mut Decoder<'_>) -> Result<ActorRef, DecodeError> {
     let client = crate::ids::ClientId::new(dec.read_u32_be()?);
-    let credential_id = crate::wire::info::decode_option_str(dec)?.map(str::to_owned);
-    let client_name = crate::wire::info::decode_option_str(dec)?.map(str::to_owned);
+    let credential_id = decode_option_str(dec)?.map(str::to_owned);
+    let client_name = decode_option_str(dec)?.map(str::to_owned);
     Ok(ActorRef::new(client)
         .with_credential_id(credential_id)
         .with_client_name(client_name))
@@ -748,10 +566,7 @@ pub(in crate::wire) fn decode_spawn_result(
     match tag {
         SPAWN_RESULT_OK => Ok(SpawnResult::Ok(decode_terminal_id(dec)?)),
         SPAWN_RESULT_ERR => Ok(SpawnResult::Err(decode_spawn_error(dec)?)),
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "SpawnResult",
-            value: u32::from(other),
-        }),
+        other => Err(DecodeError::unknown_enum("SpawnResult", other)),
     }
 }
 
@@ -791,10 +606,7 @@ fn decode_spawn_error(dec: &mut Decoder<'_>) -> Result<SpawnError, DecodeError> 
         SPAWN_ERROR_TAG_PARENT_NOT_FOUND => Ok(SpawnError::ParentNotFound),
         SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH => Ok(SpawnError::ParentKindMismatch),
         SPAWN_ERROR_TAG_IDEMPOTENCY_CONFLICT => Ok(SpawnError::IdempotencyConflict),
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "SpawnError",
-            value: u32::from(other),
-        }),
+        other => Err(DecodeError::unknown_enum("SpawnError", other)),
     }
 }
 
@@ -834,15 +646,9 @@ pub(in crate::wire) fn decode_move_result(
                 MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE => {
                     Ok(MoveResult::Err(MoveError::UnsupportedSatelliteRoute))
                 }
-                other => Err(DecodeError::UnknownEnumValue {
-                    field: "MoveError",
-                    value: u32::from(other),
-                }),
+                other => Err(DecodeError::unknown_enum("MoveError", other)),
             }
         }
-        other => Err(DecodeError::UnknownEnumValue {
-            field: "MoveResult",
-            value: u32::from(other),
-        }),
+        other => Err(DecodeError::unknown_enum("MoveResult", other)),
     }
 }

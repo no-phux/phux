@@ -1,26 +1,13 @@
-//! Keep-empty sessions (ADR-0105) in Cockpit: the Empty session state
-//! (docs/REMOTE_HOSTS.md, "Empty sessions").
+//! Keep-empty sessions (ADR-0105): the Empty session state
+//! (docs/REMOTE_HOSTS.md, "Empty sessions"). A window shows it, with New Tab,
+//! for its exact attached session when that session is empty and the window
+//! has no tab, or for an exact empty pick (`Model.empty_picks`) in the window
+//! it was picked in. Bound picks follow their attachment through reconnect;
+//! failure withdraws the pending spawn but keeps the view.
 //!
-//! A keep-empty session with no windows is a real session, not a broken one.
-//! A window shows the Empty session state, with New Tab, for one of two:
-//!
-//! - the window's exact attached session, when it is empty and the
-//!   window holds no tab at all;
-//! - an exact empty session pick (`Model.empty_picks`), in
-//!   the window it was picked in.
-//!
-//! Bound picks follow their independent attachment through connection and
-//! projection. New Tab uses the Engine's exact-provider, exact-window callback.
-//! The legacy unqualified pick remains only for older fixtures/callers.
-//! A bound empty view holds its own attachment even without a pending tab.
-//! Failure withdraws the pending spawn while retaining the named view for
-//! reconnect. An empty session has no panes, so its attach sizes none.
-//!
-//! Runtime order per drain of one exact attachment, primary or peer:
-//! `pumpAttachment` (queue a ready first tab), then `settleAttachment` with
-//! that source's first-tab outcomes and whether the drain adopted a session
-//! list. Only the current connection's list, or a creation receipt noted on
-//! it (`noteCreationReceipt`), makes a bound view available.
+//! Per drain of one attachment: `pumpAttachment` (queue a ready first tab),
+//! then `settleAttachment`. Only the current connection's list, or a creation
+//! receipt on it (`noteCreationReceipt`), makes a bound view available.
 
 const std = @import("std");
 const support = @import("../phux_support.zig");
@@ -361,11 +348,8 @@ fn legacyReady(model: *Model, slot: usize, peer: *const support.PhuxProvider, pi
     return peer.selectedSessionId() == pick.session and model.peers.items[slot].workspace.session == pick.session and peer_edits.editable(model, pick.coordinator);
 }
 
-/// Whether this exact peer owns a bound empty view or a legacy first-tab hold.
-/// A bound view's opening flags settle only in settleAttachment, from the
-/// creation's own outcome: `pending_creations` reaching zero is queue absence,
-/// not an outcome, and serves the legacy singleton alone. The caller
-/// separately accounts for visible tabs.
+/// Whether this peer owns a bound empty view or a legacy first-tab hold.
+/// Bound views settle only in settleAttachment, from their creation outcome.
 pub fn holds(model: *Model, slot: usize, pending_creations: usize, visible: bool) bool {
     const remote = model.phuxPeerAt(slot) orelse return false;
     var held = false;
@@ -427,12 +411,9 @@ pub fn forgetAttachment(model: *Model, attachment_id: u64, dropped: bool) void {
     }
 }
 
-/// A creation receipt for `session`, from exactly `remote` on connection
-/// `connection_epoch` (the epoch the create was sent and answered on). The
-/// window must already be bound to that attachment. The receipt lets the
-/// Empty session state show before any list names the new session; it is
-/// refused when that connection is no longer current, so a receipt can
-/// never authorize a reconnected Client.
+/// A creation receipt for `session` from exactly `remote` on
+/// `connection_epoch`; it lets the Empty state show before any list names the
+/// session and is refused once that connection is no longer current.
 pub const Receipt = struct { session: u32, name: []const u8, connection_epoch: u64 };
 
 pub fn noteCreationReceipt(model: *Model, remote: *const support.PhuxProvider, window: usize, receipt: Receipt) bool {
@@ -484,12 +465,10 @@ pub const Evidence = struct {
     catalog_listed: bool = false,
 };
 
-/// After pumping `remote` and projecting it, settle every window bound to
-/// exactly that attachment: primary and peer alike, since the primary has
-/// no peer slot and so never reaches `holds`. A projected tab or a list
-/// without the session retires the pick; a refused or placed creation clears
-/// New Tab's opening state; a later list or a lost connection consumes the
-/// creation receipt. True when anything shown may have changed.
+/// Settle every window bound to exactly `remote` (primary and peers): a
+/// projected tab or a list without the session retires the pick; creation
+/// outcomes clear New Tab's opening state; a later list or lost connection
+/// consumes the receipt. True when anything shown may have changed.
 pub fn settleAttachment(model: *Model, remote: *const support.PhuxProvider, evidence: Evidence) bool {
     if (comptime !support.phux_enabled) return false;
     var changed = false;

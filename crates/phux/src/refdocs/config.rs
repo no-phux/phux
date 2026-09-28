@@ -1,20 +1,7 @@
-//! The generated config reference: a section index over the full schema,
-//! a scalar-key defaults table, and the annotated `default.toml` verbatim.
-//!
-//! Three sources, all compiled into this binary, keep the page honest:
-//!
-//! 1. [`SECTIONS`] names every top-level `Config` field. A unit test
-//!    serializes a fully-populated sample [`phux_config::Config`] and
-//!    asserts key-set equality, so a schema field added without a
-//!    `SECTIONS` row fails the test suite until it is documented here.
-//! 2. The scalar-key table is walked out of the serialized schema
-//!    defaults ([`phux_config::Config::default`]); a second test pins
-//!    that the embedded `default.toml` agrees with those values, so the
-//!    table can honestly be labelled "the shipped defaults".
-//! 3. The fenced TOML block is [`phux_config::DEFAULT_CONFIG_TOML`]
-//!    verbatim — the annotated base layer users actually inherit,
-//!    including the commented `[sidebar]` / `[[remote]]` /
-//!    `[[satellites]]` / `[[connector]]` blocks.
+//! The generated config reference: a section index, a scalar-key defaults
+//! table, and the annotated `default.toml` verbatim. Tests pin [`SECTIONS`] to
+//! the schema's key set and the table (walked from `Config::default()`) to the
+//! embedded `default.toml`.
 
 use phux_config::DEFAULT_CONFIG_TOML;
 
@@ -35,11 +22,8 @@ struct Section {
     summary: &'static str,
 }
 
-/// Every top-level `config.toml` section, in schema declaration order.
-///
-/// Pinned against the serde key set of a fully-populated
-/// [`phux_config::Config`] by `sections_cover_the_whole_schema`: adding a
-/// schema field without a row here fails CI until the reference names it.
+/// Every top-level `config.toml` section, in schema order; pinned by
+/// `sections_cover_the_whole_schema`.
 const SECTIONS: &[Section] = &[
     Section {
         key: "defaults",
@@ -142,10 +126,8 @@ const SECTIONS: &[Section] = &[
     },
 ];
 
-/// Collect every scalar leaf of `value` as a `(dotted-key, TOML literal)`
-/// row. Arrays (widget lists, hook entries, registry tables) are skipped:
-/// they are composition, not knobs, and the annotated TOML block shows
-/// their shape.
+/// Collect every scalar leaf of `value` as `(dotted-key, TOML literal)`;
+/// arrays are composition, shown in the TOML block instead.
 fn scalar_rows(value: &toml::Value, path: &str, rows: &mut Vec<(String, String)>) {
     match value {
         toml::Value::Table(table) => {
@@ -163,19 +145,9 @@ fn scalar_rows(value: &toml::Value, path: &str, rows: &mut Vec<(String, String)>
     }
 }
 
-/// Keys whose shipped state is **unset**, where "unset" is a documented
-/// behaviour rather than an absence.
-///
-/// [`default_scalar_rows`] serializes `Config::default()`, and serde omits a
-/// `None`, so an `Option` knob leaves no row — correct for `defaults.shell`
-/// (unset means "ask the OS") and wrong for a tri-state knob, where a reader
-/// scanning this table for the key finds nothing at all and concludes it does
-/// not exist. These rows put the key back with its unset meaning in the
-/// `Default` column.
-///
-/// Hand-written, and guarded: `tristate_keys_are_really_unset_in_the_schema`
-/// fails if one of these ever acquires a concrete serialized default, which is
-/// the moment the hand-written text would start lying.
+/// Keys whose shipped state is a documented "unset": serde omits a `None`,
+/// so these rows restore the key. Guarded by
+/// `tristate_keys_are_really_unset_in_the_schema`.
 const TRISTATE_ROWS: &[(&str, &str)] = &[
     (
         "experimental.predictive-echo",
@@ -201,13 +173,8 @@ const TRISTATE_ROWS: &[(&str, &str)] = &[
     ),
 ];
 
-/// The scalar knobs of the schema defaults, as rendered in the table.
-///
-/// Walked from `Config::default()` rather than the parsed `default.toml`
-/// so the rows are exactly the schema's scalar fields — the shipped
-/// file's binding maps and widget lists would otherwise leak their
-/// entries in as pseudo-keys. A unit test pins the two sources to agree
-/// on every one of these rows.
+/// The scalar knobs of the schema defaults, walked from `Config::default()`
+/// (the parsed file would leak binding maps and widget lists as keys).
 #[allow(
     clippy::expect_used,
     reason = "serializing the schema's own Default cannot fail, and a panic \
@@ -222,19 +189,12 @@ fn default_scalar_rows() -> Vec<(String, String)> {
     rows
 }
 
-/// The rendered `| Key | Default |` cells, presentation applied.
-///
-/// Deliberately separate from [`default_scalar_rows`], which stays the
-/// serialized truth and nothing else: `the_embedded_defaults_agree_with_the_schema_defaults`
-/// compares those raw values against `default.toml`, and it would have to
-/// strip formatting and special-case the unset rows if the two jobs shared one
-/// function. One function answers "what does the schema default to", the other
-/// "what does the table say".
+/// The rendered `| Key | Default |` cells. Kept apart from
+/// [`default_scalar_rows`], which stays the raw serialized values the
+/// agreement test compares.
 fn rendered_scalar_rows() -> Vec<(String, String)> {
-    // A serialized default is a literal, so it renders as one; a tri-state
-    // row's cell is prose carrying its own inline code spans. Formatting here
-    // rather than at the write site is what lets the two coexist in one column
-    // without nesting backticks.
+    // Serialized defaults render as code; tri-state rows are prose with their
+    // own code spans.
     let mut rows: Vec<(String, String)> = default_scalar_rows()
         .into_iter()
         .map(|(key, value)| (key, format!("`{value}`")))
@@ -387,15 +347,8 @@ mod tests {
         config
     }
 
-    /// The guard on [`TRISTATE_ROWS`]: every key listed there must really be
-    /// absent from the serialized defaults.
-    ///
-    /// The rows exist because serde omits a `None` and the table would
-    /// otherwise lose the key entirely. The moment one of them acquires a
-    /// concrete default, serde emits a row of its own, the page grows a
-    /// duplicate, and the hand-written "unset — ..." text becomes a lie. This
-    /// fails then, at the schema change, rather than in review of the rendered
-    /// page.
+    /// Every [`TRISTATE_ROWS`] key must really be absent from the serialized
+    /// defaults, or the page would carry a duplicate, stale row.
     #[test]
     fn tristate_keys_are_really_unset_in_the_schema() {
         let defaults =
@@ -412,10 +365,7 @@ mod tests {
         }
     }
 
-    /// THE coverage gate: `SECTIONS` and the schema's serde key set must
-    /// be identical. A new top-level `Config` field fails here until the
-    /// reference documents it; a `SECTIONS` row for a removed field fails
-    /// here until it is deleted.
+    /// `SECTIONS` and the schema's serde key set must be identical.
     #[test]
     fn sections_cover_the_whole_schema() {
         let serialized = toml::Value::try_from(fully_populated_sample())
@@ -435,11 +385,8 @@ mod tests {
         );
     }
 
-    /// The scalar table is walked from `Config::default()` but billed as
-    /// the shipped defaults, so the embedded `default.toml` must agree on
-    /// every scalar it also covers. If this fails, either the file set a
-    /// scalar the schema defaults differently (reconcile them) or a serde
-    /// default changed without regenerating (run `just docs-gen`).
+    /// The embedded `default.toml` must agree with the schema defaults on every
+    /// scalar it covers (else reconcile, or run `just docs-gen`).
     #[test]
     fn the_embedded_defaults_agree_with_the_schema_defaults() {
         let parsed =
@@ -466,10 +413,8 @@ mod tests {
         }
     }
 
-    /// The page carries all three parts: every section header in the
-    /// index (the `[sidebar]` / `[[remote]]` gaps this page closes
-    /// included), representative scalar rows, and the annotated defaults
-    /// verbatim inside the fence.
+    /// The page carries the section index, scalar rows, and the verbatim
+    /// defaults.
     #[test]
     fn config_page_renders_index_scalars_and_annotated_defaults() {
         let page = page();

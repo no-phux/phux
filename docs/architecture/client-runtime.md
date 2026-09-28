@@ -131,13 +131,10 @@ last sequence), so a renderer needs no engine type.
 
 ## What a consumer touches when the binding crate changes
 
-ADR-0135 records that a consumer of the mobile artifact re-pins with a
-`PHUX_REV` bump. The re-pin that followed it (phux-mobile #285) shows the
-real scope, which is wider whenever the binding crate's name, features, or
-example set change:
+A consumer of the mobile artifact re-pins with a `PHUX_REV` bump
+(ADR-0135). When the binding crate's name, features, or examples change,
+the consumer-visible scope also covers:
 
-- **The pin.** `PHUX_REV` names the phux commit whose artifact the consumer
-  installs; the artifact's provenance is verified against it.
 - **Artifact and module names.** `PhuxMobileFFI-*` assets, the `PhuxFFI`
   Swift module, the module map, and the provenance `format` keys are the
   consumer's contract; the library file names inside
@@ -148,10 +145,8 @@ example set change:
 - **Fixtures and rigs.** Anything seeded from a crate example
   (`rig_seed`) or gated on a Cargo feature name in a script or a privacy
   gate names the binding crate and its features.
-- **Prose and test comments** that point at the bridge's source files.
 
-A change to any of those in this repository is a consumer-visible change
-and belongs in the PR body, next to the artifact naming.
+Such a change belongs in the PR body.
 
 ## Extension points
 

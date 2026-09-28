@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-09-16
+last-reviewed: 2026-09-27
 ---
 
 # Coming from tmux or screen
@@ -33,43 +33,18 @@ both tools do the same job:
 `~/.config/phux/config.toml`; [Configuration](./CONFIG.md) is the
 reference.
 
-What is not a tmux clone:
-
-- There is no tmux scripting language, plugin host, or copy-mode
-  reimplementation on the server. Copy/navigation is a client overlay.
-- Each pane is a real terminal emulator in the server, so a second
-  client — TUI, Cockpit, CLI, agent — attaches to the same live
-  terminal instead of parsing a byte stream in the middle.
-- Headless control is `phux ls`, `phux snapshot`, `phux send-keys`,
-  `phux wait`, plus `phux-mcp`. That is the agent surface, not a
-  socket command dialect.
-
-If you want a battle-hardened local multiplexer and nothing else, tmux
-is still the answer. phux is the multiplexer you use when a human and
-an agent should share the same terminal. [When to use phux](./when-to-use.md).
+phux is not a tmux clone: there is no scripting language, plugin host, or
+server-side copy-mode, and every pane is a real terminal that a TUI, Cockpit,
+the CLI, or an agent attaches to as a peer.
+[When to use phux](./when-to-use.md) weighs that against tmux.
 
 ## If you used the old phux starter
 
-An old in-tree configuration bundle was briefly named `herdr`. It has no
-relationship to [Herdr](https://herdr.dev). For the product comparison, read
-[When to use phux](./when-to-use.md#compared-with-herdr).
-
-That starter's opinions — which-key delay, split and palette chords, tab
-strip, tokyonight chrome — are the shipped defaults. A naked `phux`
-already behaves the way installing that distro used to.
-
-What remains as a distro is the demo plugin set (workspace
-autosave/restore and agent-tools), because an embedded default cannot
-carry relative plugin paths. That layer is now named `starter`:
-
-```sh
-phux config init --distro starter
-```
-
-`--distro herdr` still resolves, as an alias, so existing notes keep
-working. The file is `distros/starter/starter.toml`. Configs that still
-extend `distros/herdr/herdr.toml` keep loading through a compatibility
-stub at that path.
+An old in-tree configuration bundle was briefly named `herdr`; it has no
+relationship to [Herdr](https://herdr.dev). Its opinions are now the shipped
+defaults, and its remaining demo plugin set is the `starter` distro
+(`phux config init --distro starter`; `--distro herdr` is an alias). See
+[Configuration](./CONFIG.md#starter-distributions-config-init---distro).
 
 ## screen
 

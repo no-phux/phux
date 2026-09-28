@@ -77,15 +77,9 @@ either surface, with no opt-in flag — passwords do not belong in a recording),
 and kitty-graphics images do not survive a re-render, because the replayer
 draws cells and an image is not one.
 
-**Agent-session streams are not recorded.** A pane's agent session
-([`agents.md`](./agents.md#this-tree-older-releases-two-agent-surfaces)) has its own output stream — JSON records,
-not VT bytes — and neither surface captures it: `phux rec` records the
-Terminal it was pointed at, and `phux --rec` records the glass. A cast is a
-terminal artifact, and folding a second stream into it would give asciinema
-a file it cannot play; the record stream is also where a prompt's length and
-a tool's name live, which a recording made to share should not carry by
-accident. Read or keep the log with `phux agent log`. See
-[`../CONCEPTS.md`](../CONCEPTS.md) for maturity. ADR-0103 owns the decision.
+**Agent-session streams are not recorded.** A cast is a terminal artifact;
+an agent session's JSON record stream is read with `phux agent log`
+(ADR-0103).
 
 ## 3. Formats
 
@@ -120,31 +114,21 @@ transcodes: `--from v2.cast -o v3.cast --cast-version 3`.
 
 ### asciicast version
 
-The default is **v2**. asciicast v3 is not backward compatible with v2 — the
-header schema changed and event times became relative intervals — so a v2-only
-reader that tolerates a v3 header plays a four-minute recording in a fraction
-of a second. v2 is read by asciinema CLI 2.x and 3.x, player 2.6 and later,
-and server builds back to 2017; v3 needs CLI 3.0, player 3.10.0, and a 2025
-server. There is no consumer that reads v3 but not v2. Pass
-`--cast-version 3` when you know your reader is new enough and you want it.
+The default is **v2**, which every asciinema reader plays; v3 is not
+backward compatible (a v2-only reader plays it at the wrong speed). Pass
+`--cast-version 3` when your reader supports it.
 
 ## 4. Tuning the capture and the render
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--fps N` | `10` | Sample rate, snapped to the nearest of 5, 10, 20, 25, 50. Those are the rates whose period divides 1000 ms exactly, which is what keeps timing drift-free and GIF delays exact in centiseconds. `--fps 30` therefore records at 25. |
+| `--fps N` | `10` | Sample rate, snapped to the nearest of 5, 10, 20, 25, 50 (periods that divide 1000 ms exactly), so `--fps 30` records at 25. |
 | `--idle-limit SECS` | `2.0` | Collapse any pause longer than `SECS` down to `SECS`. `0` disables. |
 | `--max-bytes N` | `8388608` | Stop encoding at this size, close the container cleanly, and report the artifact as truncated. |
 | `--duration SECS` | *(none)* | Stop the capture after `SECS`. Without it, recording runs until Ctrl-C or the pane exits. |
 
-The idle clamp is applied once, to the shared event list, before both the cast
-write and the render — so the `.cast` and the GIF derived from it can never
-disagree about how long a pause was.
-
-`--fps` is the main size lever. An idle terminal costs no frames at all
-(a sampled frame with nothing dirty extends the previous frame's delay instead
-of emitting a new one), so the cost of a higher rate is paid only by the parts
-of the recording that are actually moving.
+The idle clamp applies once, before both the cast write and the render, so
+they agree. `--fps` is the main size lever; idle stretches cost no frames.
 
 The interactive `--rec` surface has none of these knobs: it renders with the
 defaults. If you want a different rate, keep the `.cast` and re-render with
@@ -178,19 +162,15 @@ phux play demo.cast --loop --idle-limit 0.5
 phux play demo.cast --json                 # {"schema_version": 1, "terminal_id": 7, ...}
 ```
 
-The point is what the result *is*: an ordinary pane. Attach to it, read its
-grid with `phux snapshot @7`, resize it with `phux resize @7 100x30`, watch it
-from an agent over the same observer subscription `phux rec` uses, share it
-with a second client, re-record it, or end it with `phux kill @7`. Everything
-already aimed at panes works, because it is not a special object.
+The result is an ordinary pane: attach, snapshot, resize, watch, re-record,
+or kill it like any other.
 
 **TARGET says where the pane goes, never what gets overwritten.** The playback
 pane is created *beside* TARGET, splitting its window exactly as
 `phux spawn --target` does; TARGET itself is untouched. The default is `.`,
 the focused pane, so a playback appears next to whatever you are looking at.
-There is no flag that plays into a pane that already has a shell in it — a
-pane's process is its identity, and the only way to give one to a recording
-would be to kill the shell first, which is `phux kill` spelled confusingly.
+There is no flag that plays into an existing pane: a pane's process is its
+identity.
 
 | Flag | Default | What it does |
 |---|---|---|
@@ -212,32 +192,16 @@ but `manual`, see [`tui.md`](./tui.md#layout) — playback says so in one line a
 plays anyway. `--no-fit` suppresses the header fit and the recorded resizes
 alike.
 
-**When the recording ends, the pane holds its final frame** until you kill it.
-That is deliberate: the painted screen is the artifact, and a pane that erased
-itself on the last byte would make `phux snapshot` a race. `--close` ends the
-pane instead, and Ctrl-C in an attached playback pane stops it.
-
-Only `o` (output) and `r` (resize) events drive a pane. Recorded input (`i`),
-markers (`m`), and the recorded exit status (`x`) are read and ignored —
-replaying input would type a recording's keystrokes into a live PTY, which is
-not what anyone means by "play".
-
-There is no pause, no seek, and no scrubbing. Adding them would make this the
-shell-level player [ADR-0064](../adr/0064-playback-as-a-pane.md)
-deliberately does not build.
+**When the recording ends, the pane holds its final frame** until killed,
+so `phux snapshot` is not a race; `--close` ends it instead. Only `o` and
+`r` events drive the pane; recorded input, markers, and exit status are
+ignored. There is no pause, seek, or scrubbing.
 
 ## 7. Where this fits
 
-Recording adds nothing to the wire. It rides the `ATTACH_RESOURCE` observer
-subscription that [`../spec/L1.md`](../spec/L1.md) §5.1 already specifies —
-snapshot, then deltas, no session attach, no resize — and the GIF and APNG
-encoders are in-process, so `phux rec` works on a machine with no `agg`, no
-`vhs`, and no `ffmpeg`. The reasoning, and the design spaces it closes, are in
-[ADR-0060](../adr/0060-self-contained-session-recording.md).
-
-Playback adds nothing to the wire either. `SPAWN_RESOURCE` already carries a
-command, the server already tells a spawned pane its own id and socket, and
-`RESIZE_TERMINAL` already exists — so the pane's "process" is simply the phux
-binary re-invoked in a mode that writes a cast to its own stdout.
-[ADR-0064](../adr/0064-playback-as-a-pane.md) has the reasoning, including
-why the shell-level player stays unbuilt.
+Neither recording nor playback adds anything to the wire: `phux rec` rides the
+`ATTACH_RESOURCE` observer subscription ([`../spec/L1.md`](../spec/L1.md)
+§5.1) with in-process encoders, and a playback pane is the phux binary
+re-invoked as the spawned command. Rationale:
+[ADR-0060](../adr/0060-self-contained-session-recording.md) and
+[ADR-0064](../adr/0064-playback-as-a-pane.md).

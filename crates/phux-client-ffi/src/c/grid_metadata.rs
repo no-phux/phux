@@ -11,10 +11,6 @@ use phux_client_runtime::publication::{GridFrame, Rgb};
 use crate::c::error::{BridgeError, check_struct, terminal_id_in};
 use crate::c::{ABI_VERSION, PhuxClient, PhuxClientResult, PhuxResourceId, with_client_ref};
 
-pub const GRID_COLOR_DEFAULT: u8 = grid::COLOR_KIND_DEFAULT;
-pub const GRID_COLOR_PALETTE: u8 = grid::COLOR_KIND_PALETTE;
-pub const GRID_COLOR_RGB: u8 = grid::COLOR_KIND_RGB;
-
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PhuxGridRgb {

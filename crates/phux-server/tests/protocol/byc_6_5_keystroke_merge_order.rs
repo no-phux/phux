@@ -1,27 +1,8 @@
-//! `phux-byc.6.5` — keystroke merge arrival-order preserved.
-//!
-//! Wire-level integration test for the merge half of SPEC §12: when two
-//! clients attached to the same session send input, those keystrokes
-//! merge into the single pane's PTY in arrival order. We prove it
-//! end-to-end through the real wire path (`handle_client` →
-//! `InputKey` dispatch → pane actor → PTY), observing the order via the
-//! tty's own echo (a `/bin/cat` seed echoes each byte as it arrives).
-//!
-//! Race tolerance (per the byc.6.5 design note): plain interleaved sends
-//! from two independent tasks race on the wire, so the *global* order is
-//! not deterministic. We make it deterministic by serializing: send one
-//! key, wait until its echo lands on the shared stream, then send the
-//! next from the other client. The single PTY is the merge point; if it
-//! preserved arrival order, the echoed line reads back in send order.
-//!
-//! Complements `multi_client_scenario` (byc.6.4, fanout): that test
-//! proves both clients *see* a keystroke; this one proves the *order* of
-//! keystrokes from *different* clients is preserved at the pane.
+//! SPEC §12 merge half: keystrokes from two clients on one session merge
+//! into the pane's PTY in arrival order. Sends are serialized (each waits for
+//! its `cat` echo) so the wire order is deterministic; the PTY is the merge
+//! point.
 
-#![allow(clippy::expect_used, reason = "tests")]
-#![allow(clippy::unwrap_used, reason = "tests")]
-#![allow(clippy::panic, reason = "tests")]
-#![allow(clippy::future_not_send, reason = "LocalSet-driven tests")]
 #![allow(
     clippy::similar_names,
     reason = "client_a / client_b are the test's vocabulary"
@@ -43,9 +24,7 @@ use phux_server_testkit::{
     recv_typed, run_local, send_frame, spawn_server_with_seed_cmd, wait_for_socket,
 };
 
-/// Attach a fresh socket to `default` and drain the opening
-/// `ATTACHED + TERMINAL_SNAPSHOT` pair. Returns the stream and the pane's
-/// `terminal_id`.
+/// Attach to `default`, drain `ATTACHED` + snapshot, return the pane.
 async fn attach_default(socket_path: &std::path::Path) -> (UnixStream, ResourceId) {
     let mut stream = wait_for_socket(socket_path, SOCKET_CONNECT_DEADLINE).await;
     send_frame(&mut stream, &attach_by_name("default")).await;
@@ -68,8 +47,7 @@ async fn attach_default(socket_path: &std::path::Path) -> (UnixStream, ResourceI
     (stream, terminal_id)
 }
 
-/// Drain `RESOURCE_OUTPUT` from `stream` into `screen` until the merged
-/// echo line (row 0) contains `needle`, or `WIRE_RECV_TIMEOUT` elapses.
+/// Feed `RESOURCE_OUTPUT` into `screen` until row 0 contains `needle`.
 async fn drain_until_row0(stream: &mut UnixStream, screen: &mut Screen, needle: &str) {
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
     while tokio::time::Instant::now() < deadline {
@@ -95,9 +73,6 @@ fn byc_6_5_keystroke_merge_arrival_order_preserved() {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
 
-        // `cat` in a PTY: the tty driver echoes each input byte as it
-        // arrives, so the merged input order is observable as the echoed
-        // line without needing a newline flush.
         let cmd = CommandBuilder::new("/bin/cat");
         let (shutdown_tx, server_handle) =
             spawn_server_with_seed_cmd(socket_path.clone(), "default", cmd);
@@ -109,9 +84,6 @@ fn byc_6_5_keystroke_merge_arrival_order_preserved() {
             "both clients must share the same pane",
         );
 
-        // We observe the merged stream on client A. Serialize alternating
-        // sends A,B,A,B and wait for each echo before the next so the
-        // wire order is deterministic — the single PTY is the merge point.
         let mut screen = Screen::new(80, 24).expect("Screen::new");
         let steps = [
             (true, 'a', PhysicalKey::A, "a"),
@@ -138,14 +110,6 @@ fn byc_6_5_keystroke_merge_arrival_order_preserved() {
                 screen.row(0),
             );
         }
-
-        // Final invariant: the four keystrokes from the two clients merged
-        // into the pane in exact arrival order.
-        assert!(
-            screen.row(0).contains("abcd"),
-            "keystroke merge order not preserved; row0 = {:?}",
-            screen.row(0),
-        );
 
         drop(client_a);
         drop(client_b);

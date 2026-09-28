@@ -1,9 +1,7 @@
-//! The generated deprecations reference, rendered from the canonical
-//! table in `crate::deprecations` — the same rows the binary-level audit
-//! in `tests/deprecated_aliases.rs` runs one by one, so the page cannot
-//! list a spelling the binary no longer warns for, nor omit one it does.
+//! The generated deprecations reference, rendered from `crate::deprecations`
+//! — the same rows the binary-level audit runs.
 
-use crate::deprecations::{DEPRECATED, REMOVED};
+use crate::deprecations::DEPRECATED;
 
 use super::Page;
 
@@ -26,26 +24,16 @@ pub(crate) fn page() -> Page {
          A deprecated spelling survives at least one full release cycle \
          with the warning in place; the planned-removal release is the \
          earliest it can disappear. Move scripts to the replacement before \
-         then.\n\n",
+         then.\n\n\
+         | Deprecated spelling | Use instead | Deprecated in | Planned removal |\n\
+         |---|---|---|---|\n",
     );
 
-    // Matched as a slice pattern (not `.is_empty()`) so the empty arm stays
-    // live: `DEPRECATED` is a `const`, and clippy's `const_is_empty` flags an
-    // `is_empty()` call on it as always-true dead logic while the table has
-    // no rows.
+    // A slice pattern rather than `is_empty()`, which clippy flags as
+    // always-true on a `const` while the table has rows.
     match DEPRECATED {
-        [] => body.push_str(
-            "No spelling is currently deprecated. When one is added to \
-             `crate::deprecations::DEPRECATED`, it appears here as a row \
-             of this table:\n\n\
-             | Deprecated spelling | Use instead | Deprecated in | Planned removal |\n\
-             |---|---|---|---|\n",
-        ),
+        [] => body.push_str("\nNo spelling is currently deprecated.\n"),
         [first, ..] => {
-            body.push_str(
-                "| Deprecated spelling | Use instead | Deprecated in | Planned removal |\n\
-                 |---|---|---|---|\n",
-            );
             for row in DEPRECATED {
                 let _ = writeln!(
                     body,
@@ -58,27 +46,6 @@ pub(crate) fn page() -> Page {
                 "\nThe warning is one greppable stderr line per invocation, of \
                  the form:\n\n```text\n{}\n```\n",
                 first.note
-            );
-        }
-    }
-
-    if let [_, ..] = REMOVED {
-        body.push_str(
-            "\n## Removed\n\nThese spellings no longer parse. They are listed \
-             because a parse error names the replacement for them: clap's \
-             nearest-match is computed on string distance and is usually wrong \
-             here (`phux remote add` resolves to `rename`), so each row below \
-             adds a `hint:` line naming the real migration. Rows age out once \
-             nobody is still upgrading past the release that removed them, \
-             after which clap's ordinary message is the honest answer.\n\n\
-             | Removed spelling | Use instead | Removed in |\n\
-             |---|---|---|\n",
-        );
-        for row in REMOVED {
-            let _ = writeln!(
-                body,
-                "| `{}` | `{}` | {} |",
-                row.old, row.new, row.removed_in
             );
         }
     }
@@ -100,81 +67,27 @@ pub(crate) fn page() -> Page {
 
 #[cfg(test)]
 mod tests {
-    use super::{DEPRECATED, REMOVED, page};
+    use super::{DEPRECATED, page};
 
-    /// The page carries two tables now. Split the body so each assertion
-    /// reads only its own section: a row-count check that swept the whole
-    /// page would silently start counting the other table's rows.
-    fn sections() -> (String, String) {
-        let body = page().body;
-        body.split_once("\n## Removed\n").map_or_else(
-            || (body.clone(), String::new()),
-            |(deprecated, removed)| (deprecated.to_owned(), removed.to_owned()),
-        )
-    }
-
-    fn row_lines(section: &str) -> Vec<&str> {
-        section
-            .lines()
-            .filter(|line| line.starts_with("| `"))
-            .collect()
-    }
-
-    /// One table row per deprecation, and no extras — the one-table
-    /// contract of phux-i0e8.13.4.
+    /// One row per deprecation, each naming both lifecycle releases.
     #[test]
     fn deprecations_page_has_a_row_per_table_entry() {
-        let (deprecated, _) = sections();
-        for row in DEPRECATED {
+        let body = page().body;
+        let rows: Vec<&str> = body
+            .lines()
+            .filter(|line| line.starts_with("| `"))
+            .collect();
+        assert_eq!(rows.len(), DEPRECATED.len());
+        for (row, line) in DEPRECATED.iter().zip(&rows) {
             assert!(
-                deprecated.contains(&format!("| `{}` | `{}` |", row.old, row.new)),
-                "generated deprecations reference has no row for {}",
+                line.starts_with(&format!("| `{}` | `{}` |", row.old, row.new)),
+                "no row for {}",
                 row.old
             );
-        }
-        assert_eq!(
-            row_lines(&deprecated).len(),
-            DEPRECATED.len(),
-            "row count must match the canonical table exactly"
-        );
-    }
-
-    /// Every row names both lifecycle releases, so a reader always knows
-    /// when a spelling appeared on death row and when it goes.
-    #[test]
-    fn every_row_carries_both_lifecycle_releases() {
-        let (deprecated, _) = sections();
-        for line in row_lines(&deprecated) {
             let cells: Vec<&str> = line.split('|').map(str::trim).collect();
-            // Leading/trailing pipes produce empty first/last cells.
-            assert_eq!(cells.len(), 6, "four columns per row: {line}");
             assert!(
                 cells[3].starts_with('v') && cells[4].starts_with('v'),
                 "both release cells must carry a version: {line}"
-            );
-        }
-    }
-
-    /// The Removed section mirrors `REMOVED` exactly, so the page cannot
-    /// promise a migration hint the binary does not emit, nor omit one it
-    /// does.
-    #[test]
-    fn removed_section_has_a_row_per_removal() {
-        let (_, removed) = sections();
-        for row in REMOVED {
-            assert!(
-                removed.contains(&format!("| `{}` | `{}` |", row.old, row.new)),
-                "generated deprecations reference has no removal row for {}",
-                row.old
-            );
-        }
-        assert_eq!(row_lines(&removed).len(), REMOVED.len());
-        for line in row_lines(&removed) {
-            let cells: Vec<&str> = line.split('|').map(str::trim).collect();
-            assert_eq!(cells.len(), 5, "three columns per removal row: {line}");
-            assert!(
-                cells[3].starts_with('v'),
-                "the removal release must carry a version: {line}"
             );
         }
     }

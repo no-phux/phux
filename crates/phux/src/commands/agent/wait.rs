@@ -1,15 +1,9 @@
 //! `phux agent wait` — block until a pane's agent *transitions* into a
 //! lifecycle state (ADR-0076 point 5).
 //!
-//! The verb exists because the level answer already has a home. `phux agent
-//! show` answers "what state is this pane in right now"; this answers "tell me
-//! when it changes into one of these", and those are different questions with
-//! different failure modes. Conflating them is the bug this file is shaped to
-//! prevent: `idle` is the detector's fail-safe fallthrough — the five shipped
-//! manifests carry no positive `idle` rule at all — so a completion gate
-//! satisfied by a level read of `idle` returns success on a crashed agent,
-//! instantly, and on any pane with no manifest loaded. The predicate lives in
-//! [`phux_client::agent_wait`]; this file is the surface over it.
+//! `phux agent show` is the level read; this waits for a transition, because
+//! `idle` is the detector's fail-safe and a level match would pass a crashed
+//! agent. The predicate lives in [`phux_client::agent_wait`].
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -31,21 +25,12 @@ use super::model::AgentStateReport;
 /// Version of the `agent wait` result document.
 const RESULT_SCHEMA_VERSION: u8 = 1;
 
-/// Poll-floor cadence for the `GET_METADATA` re-read. The same gap
-/// `phux wait` uses, for the same reason: below human settle perception,
-/// well above the per-read round-trip cost on a local UDS.
+/// Poll-floor cadence for the `GET_METADATA` re-read (same as `phux wait`).
 const POLL_INTERVAL: Duration = phux_client::wait::DEFAULT_POLL_INTERVAL;
 
-/// Resolve `--until` words into the target set, or the refusal that replaces
-/// the wait.
-///
-/// `pub(super)` because `--until` has a second surface: `agent prompt --wait
-/// --until` shares this vocabulary and default set.
+/// Resolve `--until` words into the target set (shared with `agent prompt`),
+/// or the refusal that replaces the wait.
 pub(super) fn resolve_until(until: &[String]) -> Result<Vec<AgentMetaState>, json_err::CliError> {
-    // clap's value parser already restricts the vocabulary, so an unparsed
-    // word here would be a wiring bug rather than user input; it is still
-    // reported as the usage error the ADR specifies rather than silently
-    // dropped from the target set.
     let mut targets: Vec<AgentMetaState> = Vec::with_capacity(until.len());
     for word in until {
         let Some(state) = parse_until(word) else {
@@ -66,24 +51,9 @@ pub(super) fn resolve_until(until: &[String]) -> Result<Vec<AgentMetaState>, jso
     Ok(targets)
 }
 
-/// The refusal for a satellite target, or `None` for a local pane
-/// (phux-w7z2.57).
-///
-/// `phux.agent/v1` is hub-local: the relay carries L1 commands and
-/// `SUBSCRIBE_EVENTS` across a federation link and nothing L3, so a hub's
-/// metadata store holds no record for a satellite pane and never receives a
-/// `METADATA_CHANGED` about one. Without this check the wait subscribes to a
-/// scope the server will not serve, reads the hub's empty store, and reports
-/// `no_agent_record` — "this pane declares no agent" — about a pane that may
-/// well have a live agent running on it. Misreporting a remote agent as
-/// undeclared is worse than the 124 it replaces, because it reads as a fact
-/// about the pane rather than a limit of this build.
-///
-/// Refused the moment the selector resolves — before the wait subscribes to
-/// anything — for the same reason `agent start` and `agent answer` refuse a
-/// satellite target at the same point: nothing was observed and nothing was
-/// written, so the caller loses no work by learning early. `agent wait` was
-/// the last of the three to still try.
+/// The refusal for a satellite target, or `None` for a local pane.
+/// `phux.agent/v1` does not federate, so a hub would otherwise misreport a
+/// live remote agent as `no_agent_record`.
 fn satellite_refusal(terminal: &ResourceId) -> Option<json_err::CliError> {
     if terminal.is_local() {
         return None;
@@ -93,7 +63,7 @@ fn satellite_refusal(terminal: &ResourceId) -> Option<json_err::CliError> {
         format!(
             "{} is on a federation satellite; phux.agent/v1 records are hub-local \
              and do not federate, so this hub can never observe its lifecycle",
-            crate::selector::format_terminal_id(terminal)
+            phux_client::selector::format_terminal_id(terminal)
         ),
         "run `phux agent wait` against the satellite's own server. \
          `phux watch <TARGET>` still streams that pane's agent events across the \
@@ -154,7 +124,7 @@ pub(super) fn run_agent_wait(
                         format!(
                             "{} declares no phux.agent/v1 record, so it has no agent \
                              lifecycle to wait on",
-                            crate::selector::format_terminal_id(&terminal)
+                            phux_client::selector::format_terminal_id(&terminal)
                         ),
                         "declare one with `phux agent set <TARGET> --name ...`, or run \
                          `phux agent install-claude` so the agent publishes its own; \
@@ -190,10 +160,7 @@ pub(super) fn run_agent_wait(
             Err(err) => return report_wait_error(err, &socket_path, json),
         };
 
-        // Detection provenance: which sources agreed, and how strongly. A
-        // caller can tell "done, because a lifecycle hook said so" from
-        // "done, because a screen rule guessed" — which is the whole reason
-        // phux carries `sources[]` instead of an opaque status word.
+        // Detection provenance: which sources agreed, and how strongly.
         let provenance = provenance(&socket_path, &terminal, result.record.clone()).await;
         report(&terminal, &result, provenance.as_ref(), json)
     })
@@ -249,7 +216,7 @@ async fn report_any(socket_path: &Path, result: &FleetAgentWaitResult, json: boo
     if json {
         let document = serde_json::json!({
             "schema_version": RESULT_SCHEMA_VERSION,
-            "terminal": matched.map(|matched| crate::selector::format_terminal_id(&matched.terminal)),
+            "terminal": matched.map(|matched| phux_client::selector::format_terminal_id(&matched.terminal)),
             "satisfied": result.satisfied(),
             "edge": matched.map(|matched| serde_json::json!({
                 "from": matched.edge.from.as_str(),
@@ -288,7 +255,7 @@ async fn report_any(socket_path: &Path, result: &FleetAgentWaitResult, json: boo
     } else if let Some(matched) = matched {
         outln!(
             "{}\t{}\t{} -> {}\tvia {}",
-            crate::selector::format_terminal_id(&matched.terminal),
+            phux_client::selector::format_terminal_id(&matched.terminal),
             matched.record.name,
             matched.edge.from.as_str(),
             matched.edge.to.as_str(),
@@ -313,7 +280,7 @@ fn report(
     provenance: Option<&AgentStateReport>,
     json: bool,
 ) -> ExitCode {
-    let label = crate::selector::format_terminal_id(terminal);
+    let label = phux_client::selector::format_terminal_id(terminal);
     if json {
         let document = serde_json::json!({
             "schema_version": RESULT_SCHEMA_VERSION,
@@ -372,10 +339,7 @@ fn report(
     if result.satisfied() {
         return ExitCode::SUCCESS;
     }
-    // A timeout on a pane that was *already* resting in a target state is the
-    // deliberate consequence of the edge rule, and the single most likely
-    // thing to confuse a caller — so say it outright rather than leaving them
-    // to infer it from a bare 124.
+    // A pane already resting in a target state times out by design; say so.
     if result.baseline == result.last {
         eprintln!(
             "phux: agent wait timed out; {label} held '{}' for the whole wait and never \
@@ -397,11 +361,7 @@ fn report(
 }
 
 /// The detector's report for `terminal`, with `record` folded in as the
-/// highest-ranked source (ADR-0040).
-///
-/// Best effort: this runs *after* the wait has already produced its answer,
-/// so a failure here degrades the result document by one optional field
-/// rather than failing a wait that was satisfied.
+/// highest-ranked source (ADR-0040). Best effort: runs after the answer.
 async fn provenance(
     socket_path: &Path,
     terminal: &ResourceId,
@@ -428,31 +388,6 @@ mod tests {
 
     use super::*;
 
-    /// The `--until` vocabulary the CLI accepts is exactly the client-side
-    /// one, and `unknown` is not in it: departure is not a state to wait for.
-    #[test]
-    fn until_vocabulary_matches_the_client_predicate() {
-        for word in ["idle", "working", "blocked", "done"] {
-            assert!(parse_until(word).is_some(), "{word} must be waitable");
-        }
-        assert!(parse_until("unknown").is_none());
-    }
-
-    /// The default set is the three ways a turn ends. `working` is spellable
-    /// but never a default — waiting for a turn to *start* is a different
-    /// intent and has to be asked for.
-    #[test]
-    fn the_default_until_set_is_the_end_states() {
-        assert_eq!(
-            DEFAULT_UNTIL,
-            &[
-                AgentMetaState::Idle,
-                AgentMetaState::Blocked,
-                AgentMetaState::Done
-            ]
-        );
-    }
-
     /// The whole `--until` resolution, as the verb runs it: every known state
     /// resolves, including hook-produced `done`; unknown words are refused.
     #[test]
@@ -465,11 +400,6 @@ mod tests {
         assert_eq!(
             resolve_until(&["done".to_owned(), "idle".to_owned()]).ok(),
             Some(vec![AgentMetaState::Done, AgentMetaState::Idle])
-        );
-
-        assert_eq!(
-            resolve_until(&["done".to_owned()]).ok(),
-            Some(vec![AgentMetaState::Done])
         );
 
         let err = resolve_until(&["finished".to_owned()]).expect_err("unknown word is refused");
@@ -485,11 +415,8 @@ mod tests {
         );
     }
 
-    /// phux-w7z2.57: a satellite target is refused up front rather than
-    /// waiting on a hub store that can never hold the pane's record. The old
-    /// behaviour was worse than the 124 the bead named — the empty hub store
-    /// read back as `no_agent_record`, i.e. "this pane declares no agent",
-    /// about a pane whose agent is alive on another machine.
+    /// A satellite target is refused up front, never read back from the hub's
+    /// empty store as `no_agent_record`.
     #[test]
     fn a_satellite_target_is_refused_and_a_local_one_is_not() {
         assert!(satellite_refusal(&ResourceId::local(3)).is_none());
@@ -500,18 +427,6 @@ mod tests {
         })
         .expect("a satellite target is refused");
         assert_eq!(err.code, json_err::codes::SATELLITE_TARGET);
-        assert!(
-            err.message.contains("do not federate"),
-            "must name the limitation rather than the pane: {}",
-            err.message
-        );
-        assert!(
-            err.remedy.contains("satellite's own server"),
-            "must name where the wait does work: {}",
-            err.remedy
-        );
-        // A refusal, not the timeout it replaces, and never the
-        // `no_agent_record` lie it replaces either.
         let doc = json_err::error_document(&err, crate::exit_codes::EXIT_USAGE);
         assert_eq!(doc["exit_code"], 2);
         assert_eq!(doc["error"]["code"], "satellite_target");

@@ -1,28 +1,16 @@
-//! Reconnect policy: the backoff ladder and the refusals no retry can
-//! satisfy.
+//! Reconnect policy for every consumer (ADR-0133).
 //!
-//! One implementation for every consumer that reconnects (ADR-0133). The
-//! ladder and the fatal rule were phux-mobile's; the `phux` binary's attach
-//! loop and the agent verbs (`phux resource wait`) each carried their own
-//! before this crate existed, and the mobile bridge itself is moving onto
-//! this shared implementation at its next pin. Cockpit's Zig client never
-//! had a backoff ladder to absorb -- only a reconnecting-phase label. A
-//! consumer picks a [`Ladder`] preset for its lane instead of forking the
-//! arithmetic: the shape (double, hold at the ceiling, reset to the floor
-//! on progress) is the same on every lane; only the two rungs differ.
+//! The backoff ladder and the refusals no retry can satisfy. Lanes share one
+//! shape (double, hold at the ceiling, reset to the floor on progress) and
+//! differ only in their [`Ladder`] rungs.
 
 use std::time::Duration;
 
 use phux_dial::DialError;
 
 /// A backoff ladder: the first reconnect delay and the delay doubling
-/// stops at.
-///
-/// A consumer walks it by calling [`Ladder::next`] after each failed
-/// attempt and resetting to [`Ladder::floor`] once a connection makes
-/// progress. The presets are the ADR-0133 lanes; a consumer whose lane is
-/// none of them constructs one and says why at the call site, so the
-/// numbers still read as a policy rather than a magic sleep.
+/// stops at. Walk it with [`Ladder::next`]; reset to [`Ladder::floor`] on
+/// progress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ladder {
     /// The first reconnect delay, and the delay a connection that made
@@ -33,32 +21,22 @@ pub struct Ladder {
 }
 
 impl Ladder {
-    /// The interactive lane: a human attached over a network (the `phux`
-    /// binary's remote attach dials, the mobile bridge). Each probe is a
-    /// real TLS handshake on a radio, and the thing that broke is usually
-    /// the client's own network, so the ladder is patient: 500 ms doubling
-    /// to 8 s.
+    /// The interactive lane (a human over a network, where the client's own
+    /// radio usually broke): 500 ms doubling to 8 s.
     pub const INTERACTIVE: Self = Self {
         floor: Duration::from_millis(500),
         ceiling: Duration::from_secs(8),
     };
 
-    /// The agent-verb lane: a headless verb (`phux resource wait`) that a
-    /// caller is blocking on over the local socket. A reconnect here is a
-    /// cheap Unix connect, and every millisecond of pause is latency the
-    /// agent sees, so the ladder is fast: 50 ms doubling to 1 s. It still
-    /// doubles so a gap that repeats on every connection waits out the
-    /// caller's deadline instead of spinning.
+    /// The agent-verb lane (a caller blocking on a cheap local reconnect):
+    /// 50 ms doubling to 1 s.
     pub const AGENT_VERB: Self = Self {
         floor: Duration::from_millis(50),
         ceiling: Duration::from_secs(1),
     };
 
-    /// The local-upgrade lane: the ADR-0032 graceful-upgrade blink on a
-    /// Unix socket. The re-exec'd server keeps the socket bound and is back
-    /// in well under a second, and a `connect` that is not accepted is a
-    /// purely local failure, so a flat 100 ms poll re-attaches almost
-    /// invisibly and there is nothing to be gentle about.
+    /// The local-upgrade lane (the ADR-0032 re-exec blink on a still-bound
+    /// Unix socket): a flat 100 ms poll.
     pub const LOCAL_UPGRADE: Self = Self::flat(Duration::from_millis(100));
 
     /// A ladder that never grows: every delay is `delay`.
@@ -70,46 +48,17 @@ impl Ladder {
         }
     }
 
-    /// The next reconnect delay after one that waited `current`: double,
-    /// clamped to `[floor, ceiling]`. A flat ladder never grows. Clamping
-    /// the low end too means a caller that seeds the walk below the floor
-    /// (`Duration::ZERO`, most often) is pulled up to it instead of
-    /// doubling zero forever.
+    /// The next delay after one that waited `current`: double, clamped to
+    /// `[floor, ceiling]` (so a zero seed starts at the floor).
     #[must_use]
     pub fn next(self, current: Duration) -> Duration {
         current.saturating_mul(2).clamp(self.floor, self.ceiling)
     }
 }
 
-/// The first reconnect delay on the interactive lane, and the delay a
-/// connection that re-attaches resets to.
-pub const BACKOFF_FLOOR: Duration = Ladder::INTERACTIVE.floor;
-
-/// The longest reconnect delay on the interactive lane: doubling stops here.
-pub const BACKOFF_CEILING: Duration = Ladder::INTERACTIVE.ceiling;
-
-/// The next reconnect delay on the interactive lane after a failed attempt:
-/// double, capped at [`BACKOFF_CEILING`].
-///
-/// This is [`Ladder::INTERACTIVE`]'s [`Ladder::next`], kept as the
-/// plain-function API for the consumers that walk only that lane.
-#[must_use]
-pub fn next_backoff(current: Duration) -> Duration {
-    Ladder::INTERACTIVE.next(current)
-}
-
-/// Whether a refusal is one that retrying with the same credentials cannot
-/// change.
-///
-/// Such a session fails now with the real reason instead of walking the
-/// ladder past the caller's attach-wait window and reporting a generic
-/// timeout.
-///
-/// Two shapes qualify. The QUIC preamble answered [`DialError::AuthRefused`].
-/// The WebSocket upgrade was rejected with HTTP 401 or 403 by the ADR-0031
-/// pairing gate; the status stays in the detail so a consumer's diagnostics
-/// can key on it. Every other failure — a 503, a refused connect, a name
-/// that did not resolve, a stall — may heal and is retried.
+/// Whether retrying with the same credentials cannot change this refusal:
+/// a QUIC [`DialError::AuthRefused`] or an ADR-0031 401/403 on the
+/// WebSocket upgrade. Everything else may heal and is retried.
 #[must_use]
 pub fn is_fatal_refusal(error: &DialError) -> bool {
     match error {
@@ -119,25 +68,12 @@ pub fn is_fatal_refusal(error: &DialError) -> bool {
     }
 }
 
-/// How a refused pairing token reads once a consumer has rendered
-/// [`DialError::AuthRefused`] into its own error vocabulary.
-///
-/// `phux-client`'s `AttachError` has no auth-refused variant — a refused
-/// QUIC preamble and a 401 on the WebSocket upgrade are the same repair
-/// class there, so both arrive as a connect failure — and it words the
-/// flattened one with this phrase. Owning the phrase here keeps the consumer
-/// that writes it and [`is_fatal_refusal_detail`], which reads it, on one
-/// string rather than two that can drift apart.
+/// The phrase a consumer uses when it flattens [`DialError::AuthRefused`]
+/// into its own vocabulary; [`is_fatal_refusal_detail`] reads it back.
 pub const TOKEN_REFUSED: &str = "pairing token refused";
 
-/// [`is_fatal_refusal`] for a consumer holding only the *rendered* detail of
-/// a connect failure rather than the [`DialError`] it came from.
-///
-/// The attach loop is the case: its probe dials through the TUI's HELLO
-/// contract, which has already mapped the dial error into the attach
-/// vocabulary by the time the reconnect policy sees it. The rule is the
-/// same one — an ADR-0031 401/403 on the upgrade, or a refused pairing
-/// token — so it is written once here and read from both sides.
+/// [`is_fatal_refusal`] for a consumer holding only the rendered detail of
+/// a connect failure.
 #[must_use]
 pub fn is_fatal_refusal_detail(detail: &str) -> bool {
     detail.contains("401") || detail.contains("403") || detail.contains(TOKEN_REFUSED)
@@ -149,15 +85,9 @@ mod tests {
 
     #[test]
     fn backoff_doubles_to_the_ceiling() {
-        let mut delay = BACKOFF_FLOOR;
-        let mut ladder = vec![delay];
-        for _ in 0..6 {
-            delay = next_backoff(delay);
-            ladder.push(delay);
-        }
         assert_eq!(
-            ladder.iter().map(Duration::as_millis).collect::<Vec<_>>(),
-            vec![500, 1000, 2000, 4000, 8000, 8000, 8000],
+            schedule(Ladder::INTERACTIVE, 6),
+            vec![500, 1000, 2000, 4000, 8000, 8000, 8000]
         );
     }
 
@@ -169,18 +99,6 @@ mod tests {
             out.push(delay.as_millis());
         }
         out
-    }
-
-    /// The plain-function API is the interactive preset, so a consumer that
-    /// uses either sees the same ladder.
-    #[test]
-    fn the_free_functions_are_the_interactive_preset() {
-        assert_eq!(BACKOFF_FLOOR, Ladder::INTERACTIVE.floor);
-        assert_eq!(BACKOFF_CEILING, Ladder::INTERACTIVE.ceiling);
-        assert_eq!(
-            next_backoff(Duration::from_secs(3)),
-            Ladder::INTERACTIVE.next(Duration::from_secs(3))
-        );
     }
 
     /// The agent-verb lane keeps `phux resource wait`'s 50 ms..1 s cadence
@@ -208,14 +126,13 @@ mod tests {
     /// holds at the ceiling.
     #[test]
     fn next_saturates_at_the_ceiling() {
-        assert_eq!(Ladder::INTERACTIVE.next(Duration::MAX), BACKOFF_CEILING);
+        assert_eq!(
+            Ladder::INTERACTIVE.next(Duration::MAX),
+            Ladder::INTERACTIVE.ceiling
+        );
     }
 
-    /// `next` is clamped on both ends: a caller that seeds the walk below
-    /// the floor -- `Duration::ZERO`, most often -- lands on the floor
-    /// instead of doubling zero forever. Both in-tree callers seed with
-    /// `Ladder::floor` today, so this is a footgun guard for the next
-    /// adopter (the mobile bridge, Cockpit) rather than an observed bug.
+    /// A seed below the floor (usually `Duration::ZERO`) lands on the floor.
     #[test]
     fn next_never_drops_below_the_floor() {
         assert_eq!(

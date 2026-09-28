@@ -9,92 +9,26 @@
 #![allow(clippy::panic, reason = "tests")]
 #![allow(clippy::future_not_send, reason = "ServerRuntime owns LocalSet actors")]
 
-use std::net::{SocketAddr, UdpSocket};
-use std::path::{Path, PathBuf};
+mod support;
+
+use std::path::Path;
 use std::time::Duration;
 
 use phux_client::attach::connection::Connection;
-use phux_client::attach::{CertTrust, QuicDial};
 use phux_protocol::ids::{FileUploadId, InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, SpawnResult, StateScope,
 };
-use phux_server::{DEFAULT_GROUP_ID, ServerConfig, ServerRuntime};
+use phux_server::DEFAULT_GROUP_ID;
 use sha2::{Digest, Sha256};
+use support::{EnvGuard, STEP_DEADLINE, Server, dial, free_udp_addr, seeded_config};
 use tempfile::TempDir;
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep, timeout};
 
-const STEP_DEADLINE: Duration = Duration::from_secs(15);
 const CONTROL_DEADLINE: Duration = Duration::from_secs(1);
 const MINIMUM_TRANSCRIBE_HOLD: Duration = Duration::from_secs(2);
-
-struct EnvGuard {
-    previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
-}
-
-impl EnvGuard {
-    fn install(cert: &Path, key: &Path, upload_dir: &Path) -> Self {
-        phux_server::transport::tls::ensure_self_signed(cert, key).expect("provision QUIC cert");
-        let previous = [
-            "PHUX_WS_TLS_CERT",
-            "PHUX_WS_TLS_KEY",
-            "PHUX_UPLOAD_DIR",
-            "PHUX_WS_SECURE",
-            "PHUX_WORKLOAD_MTLS",
-            "PHUX_TEST_WORKLOAD_FAILURE",
-        ]
-        .into_iter()
-        .map(|name| (name, std::env::var_os(name)))
-        .collect();
-        unsafe {
-            std::env::set_var("PHUX_WS_TLS_CERT", cert);
-            std::env::set_var("PHUX_WS_TLS_KEY", key);
-            std::env::set_var("PHUX_UPLOAD_DIR", upload_dir);
-            std::env::remove_var("PHUX_WS_SECURE");
-            std::env::remove_var("PHUX_WORKLOAD_MTLS");
-            std::env::remove_var("PHUX_TEST_WORKLOAD_FAILURE");
-        }
-        Self { previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        for (name, value) in &self.previous {
-            unsafe {
-                match value {
-                    Some(value) => std::env::set_var(name, value),
-                    None => std::env::remove_var(name),
-                }
-            }
-        }
-    }
-}
-
-struct Server {
-    shutdown: Option<oneshot::Sender<()>>,
-    handle: Option<JoinHandle<Result<(), phux_server::ServerError>>>,
-}
-
-impl Server {
-    async fn stop(mut self) {
-        self.shutdown.take().unwrap().send(()).ok();
-        timeout(STEP_DEADLINE, self.handle.take().unwrap())
-            .await
-            .expect("server shutdown timed out")
-            .expect("server task panicked")
-            .expect("server shutdown failed");
-    }
-}
-
-fn free_udp_addr() -> SocketAddr {
-    let socket = UdpSocket::bind("127.0.0.1:0").expect("reserve UDP port");
-    socket.local_addr().expect("read UDP port")
-}
 
 fn paste(bytes: &[u8]) -> InputEvent {
     InputEvent::Paste(PasteEvent {
@@ -126,51 +60,6 @@ fn line_recorder(marker: &Path) -> Vec<String> {
         "sh".to_owned(),
         marker.display().to_string(),
     ]
-}
-
-fn spawn_server(socket: PathBuf, quic_addr: SocketAddr, started: &Path, release: &Path) -> Server {
-    let (shutdown, stopped) = oneshot::channel();
-    let mut config = ServerConfig {
-        socket_path: socket,
-        pre_seeded_session: Some("quic-command-isolation".to_owned()),
-        seed_with_pty: true,
-        seed_command: None,
-        ..ServerConfig::with_default_socket()
-    };
-    config.voice.transcriber = Some(blocking_transcriber(started, release));
-    config.voice.timeout_secs = Some(15);
-    let handle = tokio::task::spawn_local(async move {
-        ServerRuntime::new(config)
-            .listen_quic(quic_addr)
-            .run_async(async move {
-                let _ = stopped.await;
-            })
-            .await
-    });
-    Server {
-        shutdown: Some(shutdown),
-        handle: Some(handle),
-    }
-}
-
-async fn dial(addr: SocketAddr) -> Connection {
-    let dial = QuicDial {
-        addr,
-        server_name: "localhost".to_owned(),
-        token: None,
-        trust: CertTrust::SkipVerify,
-    };
-    let deadline = Instant::now() + STEP_DEADLINE;
-    loop {
-        match Connection::connect_quic(&dial).await {
-            Ok(connection) => return connection,
-            Err(error) if Instant::now() < deadline => {
-                let _ = error;
-                sleep(Duration::from_millis(25)).await;
-            }
-            Err(error) => panic!("QUIC server did not become ready: {error}"),
-        }
-    }
 }
 
 fn state_resource(result: CommandResult) -> ResourceId {
@@ -402,9 +291,12 @@ async fn prove_quic_isolation() {
     let started = tmp.path().join("transcriber-started");
     let release = tmp.path().join("transcriber-release");
     let input_marker = tmp.path().join("input-order");
-    let _env = EnvGuard::install(&cert, &key, &tmp.path().join("uploads"));
+    let _env = EnvGuard::install(&cert, &key, Some(&tmp.path().join("uploads")));
     let quic_addr = free_udp_addr();
-    let server = spawn_server(tmp.path().join("phux.sock"), quic_addr, &started, &release);
+    let mut config = seeded_config(tmp.path().join("phux.sock"), "quic-command-isolation");
+    config.voice.transcriber = Some(blocking_transcriber(&started, &release));
+    config.voice.timeout_secs = Some(15);
+    let server = Server::start(config, quic_addr);
     let mut connection = dial(quic_addr).await;
     assert!(
         connection.multistream_enabled(),

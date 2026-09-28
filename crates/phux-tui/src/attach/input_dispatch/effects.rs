@@ -1,15 +1,6 @@
 //! Resolved-action side effects: `ActionEffects`, the chord consumer,
 //! the effect applier, and the `ReattachTarget` vocabulary.
 
-//! Input dispatcher: translates parser-emitted events into wire frames
-//! or layout-action effects.
-//!
-//! Owns the resolver-intercept path (prefix chord → `ResolvedAction` →
-//! mutate the active window of the `Workspace`), the predict overlay's
-//! keystroke feed, and the parked-spawn bookkeeping (`PendingSplit` /
-//! `PendingWindow`) that bridges a local `split-pane` / `new-window`
-//! chord to its remote `SPAWN_RESOURCE` reply.
-
 use std::collections::{HashMap, HashSet};
 
 use phux_protocol::ResourceId;
@@ -29,20 +20,10 @@ use crate::predict::PredictionState;
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
 use super::ctx::DispatchCtx;
-use super::dispatch::apply_focus_transition;
 
-/// Apply the side-effects of a resolved action: layout-mutation repaint
-/// signal, focus move, prediction reset, `SET_METADATA` broadcast, bell,
-/// detach, parked spawn (split / new-window), and kill-frame sequences.
-///
-/// Shared by the keybinding path and the overlay-commit path (phux-ahv.1)
-/// so a rename committed from the prompt broadcasts and repaints exactly
-/// like a keybinding would. Returns `true` if the layout changed (the
-/// caller repaints).
-///
-/// The body is a flat, ordered sequence of per-effect appliers. The order
-/// effects are applied in is observable in the rendered result, so that
-/// order is the one thing this function encodes on its own.
+/// Apply a resolved action's side effects, shared by keybindings and overlay
+/// commits. The applier order is observable, and is the one thing this
+/// function encodes. Returns `true` if the layout changed.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -72,15 +53,9 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
         predict,
         panes,
     );
-    send_layout_metadata(
-        effects.set_metadata,
-        ctx.layout_read_complete,
-        conn,
-        ctx.workspace,
-        ctx.focused_session,
-        ctx.next_request_id,
-    )
-    .await?;
+    if effects.set_metadata {
+        broadcast_layout(conn, ctx).await?;
+    }
     if effects.bell {
         let _ = actions::write_bell(out);
     }
@@ -117,7 +92,7 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
         panes,
     ))
     .await;
-    // phux-foz.5: hand a `reload-config` up to the driver, which owns the
+    // Hand a `reload-config` up to the driver, which owns the
     // config-derived state (resolver, theme, keybindings snapshot, status
     // bar) this batch is still borrowing.
     if effects.reload_config {
@@ -145,12 +120,9 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     Ok(layout_changed)
 }
 
-/// Execute a picker-committed pane move on a dedicated control connection.
-///
-/// The live attach connection must remain owned by the full-duplex driver: a
-/// correlated metadata helper would otherwise consume pane output or events
-/// interleaved before its reply. A fresh connection also lets operation
-/// failures remain a visible toast rather than tearing down the attach.
+/// Execute a picker-committed pane move on a dedicated control connection:
+/// the attach connection's correlated helpers would consume interleaved pane
+/// output, and a failure stays a toast instead of ending the attach.
 #[allow(
     clippy::future_not_send,
     reason = "ADR-0003 binds TUI state and its async dispatcher to the current thread"
@@ -247,7 +219,7 @@ fn push_move_failure(ctx: &mut DispatchCtx<'_>, message: &str) {
         )));
 }
 
-/// phux-x2hm: flip pane-zoom. Un-zoom if zoomed; otherwise zoom the
+/// Flip pane-zoom. Un-zoom if zoomed; otherwise zoom the
 /// focused pane. `run_action` already gated single-pane windows.
 fn apply_zoom_toggle(
     toggle: bool,
@@ -264,7 +236,7 @@ fn apply_zoom_toggle(
     };
 }
 
-/// phux-4h5a: flip the window-sidebar on/off state. The driver re-folds
+/// Flip the window-sidebar on/off state. The driver re-folds
 /// `sidebar_enabled` into the per-frame reservation after dispatch, so
 /// the `layout_mutated` repaint tiles into the new content rect.
 const fn apply_sidebar_toggle(toggle: bool, sidebar_enabled: &mut bool) {
@@ -273,14 +245,8 @@ const fn apply_sidebar_toggle(toggle: bool, sidebar_enabled: &mut bool) {
     }
 }
 
-/// Move the driver's focused pane, or — when the action only invalidated
-/// the prediction queue — drop that queue.
-///
-/// Focus moved (keybinding pane navigation) — re-anchor predict to
-/// the new pane: reset its cursor + viewport and drop the old pane's
-/// queue, so a keystroke before the next reconcile echoes at the
-/// right place rather than the old pane's (mid-screen) coordinates
-/// (phux-7ry0). Subsumes the plain `clear_predict` drop.
+/// Move the driver's focus (re-anchoring predict to the new pane), or just
+/// drop the prediction queue when only that was asked.
 fn apply_focus_effect(
     set_focus: Option<ResourceId>,
     clear_predict: bool,
@@ -295,37 +261,32 @@ fn apply_focus_effect(
         }
         return;
     };
-    apply_focus_transition(focus_history, focused_resource, target);
+    focus_history.transition(focused_resource, Some(target));
     if let Some(fid) = focused_resource.as_ref() {
         reanchor_predict_to_pane(predict, panes, fid);
     }
 }
 
-/// Broadcast the mutated layout envelope as a `SET_METADATA`.
-///
-/// Encoding can fail only on an empty workspace (we just produced
-/// it — shouldn't happen), but propagate cleanly if it ever does.
-/// phux-jy4t: keyed per session so a split here persists to THIS
-/// session's layout, not a key every session shares.
-async fn send_layout_metadata(
-    set_metadata: bool,
-    layout_read_complete: bool,
+/// Broadcast the workspace on this session's layout key (`SET_METADATA`),
+/// once the initial shared read has landed.
+#[allow(
+    clippy::future_not_send,
+    reason = "DispatchCtx holds current-thread state"
+)]
+pub(super) async fn broadcast_layout(
     conn: &mut Connection,
-    workspace: &Workspace,
-    focused_session: Option<phux_protocol::ids::SessionId>,
-    next_request_id: &mut u32,
+    ctx: &mut DispatchCtx<'_>,
 ) -> Result<(), AttachError> {
-    if !set_metadata || !layout_read_complete {
+    if !ctx.layout_read_complete {
         return Ok(());
     }
-    let Some(session) = focused_session else {
+    let Some(session) = ctx.focused_session else {
         return Ok(());
     };
-    let Some(bytes) = encode_layout_or_log(workspace) else {
+    let Some(bytes) = encode_layout_or_log(ctx.workspace) else {
         return Ok(());
     };
-    let request_id = *next_request_id;
-    *next_request_id = next_request_id.wrapping_add(1);
+    let request_id = ctx.take_request_id();
     conn.send(&FrameKind::SetMetadata {
         request_id,
         scope: Scope::Group(DEFAULT_GROUP_ID),
@@ -351,10 +312,7 @@ async fn send_detach(
     Ok(())
 }
 
-/// Send the parked `SPAWN_RESOURCE` requests and remember their intent.
-///
-/// Parked split — send the `SPAWN_RESOURCE` and remember the intent.
-/// Parked new-window — same SPAWN flow; the reply opens a window.
+/// Send the parked split/new-window `SPAWN_RESOURCE`s and remember them.
 async fn send_parked_spawns(
     spawn_terminal: Option<(u32, PendingSplit, FrameKind)>,
     spawn_window: Option<(u32, PendingWindow, FrameKind)>,
@@ -388,11 +346,8 @@ async fn send_directory_request(
     conn.send(&frame).await
 }
 
-/// kill-pane / kill-window `KILL_RESOURCE` commands; the `RESOURCE_CLOSED`
-/// fold-out happens as each resource tears down. Park the targets and their
-/// request ids FIRST (phux-i0e8.2.2): once the frames are on the wire the
-/// close — or the refusal — can race back, and an unmarked close would
-/// notice-spam the user about a death they ordered.
+/// Send kill-pane/kill-window `KILL_RESOURCE`s, parking targets and request
+/// ids first: the close or refusal can race back before the send returns.
 async fn send_kill_frames(
     kill_frames: Vec<FrameKind>,
     targets: Vec<ResourceId>,
@@ -422,10 +377,8 @@ async fn send_command_frames(
     Ok(())
 }
 
-/// phux-r82.5: a plugin action runs as a spawned child-process task —
-/// fire-and-forget from the input loop's perspective. The driver's
-/// `select!` picks up the completion report and toasts failures. All
-/// client-local (config + exec); nothing goes on the wire (ADR-0017).
+/// Spawn a plugin action as a child-process task off the input loop
+/// (ADR-0017: nothing on the wire); the driver toasts failures.
 fn spawn_plugin_run(
     run_plugin: Option<(String, String)>,
     plugin_tx: Option<&tokio::sync::mpsc::UnboundedSender<PluginRunResult>>,
@@ -444,16 +397,9 @@ fn spawn_plugin_run(
     crate::attach::plugin_actions::spawn_plugin_action(tx.clone(), plugin_id, action_id);
 }
 
-/// phux-eb0 / new-session: an in-process re-attach request. Hand the
-/// target up to the driver via `ctx.switch_request`; `main_loop` reads
-/// it after this dispatch batch and returns a `SwitchTo` exit so the
-/// outer loop tears down the current session and re-attaches.
-///
-/// Switching to the CURRENT session without a window/pane target is a
-/// silent no-op. The session picker includes that row for orientation;
-/// committing it has already dismissed the overlay, so no reattach is
-/// needed. `new-session` is never a no-op — naming an existing session
-/// just attaches to it.
+/// Hand an in-process re-attach to the driver via `ctx.switch_request`.
+/// Switching to the current session with no window/pane target is a no-op
+/// (the picker's orientation row).
 fn record_reattach_request(
     reattach: Option<ReattachTarget>,
     switch_request: &mut Option<ReattachTarget>,
@@ -505,15 +451,10 @@ fn is_current_session(
     id.map_or_else(|| name == session_name, |id| Some(id) == focused_session)
 }
 
-/// rename-session: the shared [`phux_client::rename`] policy.
-///
-/// The attach connection cannot run `rename_checked` — a request/response
-/// helper would consume pane output interleaved ahead of the reply — so this
-/// sends the same frames and lets the driver correlate the barrier. The
-/// cached session list is the pre-check. A refusal or a no-op sends nothing;
-/// a refusal is parked on `rename_notice` for the status bar. The local
-/// status name stays unchanged until the barrier (or a `METADATA_CHANGED`
-/// on the subscribed key) confirms the write.
+/// rename-session via the shared [`phux_client::rename`] policy, correlated
+/// by the driver rather than awaited here (a request/response helper would
+/// eat interleaved output). A refusal is parked on `rename_notice`; the
+/// status name changes only once the barrier confirms.
 async fn send_session_rename(
     rename_session: Option<String>,
     conn: &mut Connection,
@@ -571,14 +512,8 @@ pub(super) enum ChordOutcome {
     Resolved(phux_config::keybind::ResolvedAction),
 }
 
-/// Convert a `KeyEvent` into a `KeyChord` and feed the resolver. Returns
-/// `None` when the resolver is disabled (no config) or the chord
-/// doesn't match any binding — caller forwards normally in that case.
-///
-/// Release / repeat events are NOT fed to the resolver — chord matching
-/// is press-only, matching the convention of `phux-config::keybind`'s
-/// tests and tmux's prefix table. Repeats of held keys (e.g. arrow keys
-/// scrolling) would otherwise re-fire actions per-tick.
+/// Feed a key press to the resolver (releases and repeats are ignored, so
+/// held keys do not re-fire). `None` without a resolver or on no match.
 pub(super) fn consume_chord(
     ctx: &mut DispatchCtx<'_>,
     key_event: &phux_protocol::input::key::KeyEvent,
@@ -617,41 +552,25 @@ pub(super) fn consume_chord(
 pub(super) struct ActionEffects {
     /// `true` ⇒ the active window was mutated in-place; driver repaints.
     pub(super) layout_mutated: bool,
-    /// phux-x2hm: `true` ⇒ flip the driver's pane-zoom state (zoom the
+    /// `true` ⇒ flip the driver's pane-zoom state (zoom the
     /// focused pane to fill the window, or un-zoom). `apply_action_effects`
     /// owns the actual toggle since the `zoomed` state lives in the driver.
     pub(super) toggle_zoom: bool,
-    /// phux-4h5a: `true` ⇒ flip the driver's window-sidebar on/off state.
-    /// `apply_action_effects` owns the toggle since `sidebar_enabled` lives in
-    /// the driver; it also sets `layout_mutated` so the panes reflow into (or
-    /// out of) the sidebar's reserved columns on the same-iteration repaint.
+    /// Flip the driver's sidebar state (and reflow).
     pub(super) toggle_sidebar: bool,
-    /// `Some(new_focus)` ⇒ swap the driver's `focused_resource` (input
-    /// routing follows). The action helper already updated the active
-    /// window's focus; this carries the new id so the driver
-    /// doesn't have to re-read it.
+    /// The new focused pane, already applied to the active window.
     pub(super) set_focus: Option<ResourceId>,
     /// `true` ⇒ emit `SET_METADATA` carrying the new layout envelope.
     pub(super) set_metadata: bool,
     /// `true` ⇒ emit a terminal bell (BEL `\x07`).
     pub(super) bell: bool,
-    /// phux-4li.16: `true` ⇒ the active window changed; the driver must
-    /// drop the prediction queue (anchored to the old window's focused
-    /// pane) so a stale ghost echo doesn't paint into the new window
-    /// before the next `RESOURCE_OUTPUT` reconciles.
+    /// The active window changed: drop the prediction queue.
     pub(super) clear_predict: bool,
     /// `true` ⇒ emit `DETACH` and wait for `DETACHED`.
     pub(super) detach: bool,
-    /// phux-4li.12: a `split-pane` action emitted a `SPAWN_RESOURCE`
-    /// and parked a [`PendingSplit`] keyed by `request_id`. The async
-    /// caller sends the frame, then inserts the parked entry into the
-    /// driver-wide `pending_splits` map.
+    /// A parked `split-pane` spawn: send, then park in `pending_splits`.
     pub(super) spawn_terminal: Option<(u32, PendingSplit, FrameKind)>,
-    /// phux-4li.15: a `new-window` action emitted a `SPAWN_RESOURCE` and
-    /// parked a [`PendingWindow`] keyed by `request_id`. The async caller
-    /// sends the frame and inserts the parked entry into the driver-wide
-    /// `pending_windows` map; the reply opens a new window on the
-    /// spawned pane.
+    /// A parked `new-window` spawn: send, then park in `pending_windows`.
     pub(super) spawn_window: Option<(u32, PendingWindow, FrameKind)>,
     /// A picker-confirmed existing-pane move. The async effect applier opens a
     /// dedicated control connection and runs the canonical headless operation.
@@ -660,38 +579,16 @@ pub(super) struct ActionEffects {
     /// async caller records it (id and listed host) as the pending listing,
     /// then sends it; the reply opens the directory picker.
     pub(super) list_directory: Option<(PendingDirectory, FrameKind)>,
-    /// A `kill-pane` / `kill-window` action's `KILL_RESOURCE` commands, one
-    /// per targeted Terminal. The async caller sends them in order; the
-    /// resulting `RESOURCE_CLOSED` from the server folds each pane out
-    /// of the layout in [`crate::attach::server_frame::handle_server_frame`].
+    /// `KILL_RESOURCE` commands, one per targeted Terminal, sent in order.
     pub(super) kill_frames: Vec<FrameKind>,
-    /// `(request_id, Terminal)` for each frame in `kill_frames`. The async
-    /// caller parks them in `DispatchCtx::pending_kills` so a
-    /// `TerminalNotFound` refusal can be attributed back to the leaf it
-    /// names: that reply is the only evidence a client gets that a pane
-    /// whose resource already died should leave the layout, since no
-    /// `RESOURCE_CLOSED` is ever broadcast for a resource the server does
-    /// not have.
+    /// `(request_id, Terminal)` per kill, parked in `pending_kills` so a
+    /// `TerminalNotFound` refusal can fold a dead leaf out.
     pub(super) kill_requests: Vec<(u32, ResourceId)>,
-    /// phux-i0e8.2.2: the Terminals `kill_frames` targets. The async
-    /// caller parks them in `DispatchCtx::expected_closes` so the
-    /// eventual `RESOURCE_CLOSED` is recognized as client-initiated and
-    /// its pane-exit notice suppressed.
+    /// The kill targets, parked in `expected_closes` to silence their notices.
     pub(super) expected_closes: Vec<ResourceId>,
-    /// ADR-0033: supervisory commands (`ACQUIRE_INPUT` / `RELEASE_INPUT` /
-    /// `SIGNAL_TERMINAL`) the `take-input` / `give-input` / `signal-terminal`
-    /// actions built for the focused pane. The async caller sends each as a
-    /// `COMMAND` frame in order; the server's `TerminalControl` broadcast (which
-    /// we subscribed to at attach) drives the chrome update on the way back.
+    /// ADR-0033 supervisory commands for the focused pane, sent in order.
     pub(super) command_frames: Vec<FrameKind>,
-    /// phux-4li.20 / phux-eb0 / new-session: an in-process re-attach the
-    /// driver should perform after this batch — either switch to an
-    /// existing session or create a new one. [`apply_action_effects`]
-    /// hands it up via `DispatchCtx::switch_request`; the driver's
-    /// `main_loop` returns a `SwitchTo` exit and the outer loop detaches
-    /// and re-attaches on the same connection. An `Existing` request
-    /// matching the current session without a window/pane target is a silent
-    /// no-op (the session picker uses that row to dismiss in place).
+    /// An in-process re-attach (switch or create) for the driver.
     pub(super) reattach: Option<ReattachTarget>,
     /// ADR-0140: `switch-host { host, name }` committed. Unlike
     /// [`Self::reattach`] this leaves the server: the batch detaches, then
@@ -707,18 +604,9 @@ pub(super) struct ActionEffects {
     /// so a rejected rename cannot lie. Peers learn the new name from the
     /// same subscribed broadcast rather than waiting for a re-attach.
     pub(super) rename_session: Option<String>,
-    /// phux-r82.5: a `plugin-action` dispatch carrying
-    /// `(plugin_id, action_id)`. The async caller
-    /// ([`apply_action_effects`]) spawns the child-process run via
-    /// [`crate::attach::plugin_actions::spawn_plugin_action`] so the input loop
-    /// never blocks on the plugin; completion lands on the driver's
-    /// plugin-events channel (failure output toasts there).
+    /// A `plugin-action` run `(plugin_id, action_id)`, spawned off the loop.
     pub(super) run_plugin: Option<(String, String)>,
-    /// phux-foz.5: `true` ⇒ the user asked for a live config reload
-    /// (`reload-config`, via palette or a bound chord). Carried up to the
-    /// driver via `DispatchCtx::reload_request`; the driver re-runs the
-    /// layered loader after this batch and swaps its config-derived
-    /// state atomically (old config kept on any failure).
+    /// A requested live config reload, run by the driver after the batch.
     pub(super) reload_config: bool,
     /// OSC 52 clipboard payload to emit on the host terminal after this
     /// action (the `report-bug` path copies the bundle path).
@@ -734,12 +622,8 @@ pub(super) struct PaneMoveIntent {
     pub(super) ratio: f32,
 }
 
-/// An in-process re-attach request raised by a dispatched action.
-///
-/// Produced by `switch-session` / `new-session` (phux-eb0) and carried up
-/// to the driver via `DispatchCtx::switch_request`; `main_loop` returns a
-/// `SwitchTo` exit and the outer loop detaches and re-attaches on the same
-/// connection without dropping the transport or leaving raw mode.
+/// An in-process re-attach raised by `switch-session`/`new-session`; the
+/// outer loop re-attaches on the same connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReattachTarget {
     /// Switch to an existing session (`switch-session`).
@@ -747,30 +631,15 @@ pub enum ReattachTarget {
         /// Target session display name. Used when `id` is absent (a typed
         /// name or a satellite hop) and as the human-facing log label.
         name: String,
-        /// Stable session identity from the painted roster/picker row.
-        /// When present, the outer loop attaches by this id so a rename
-        /// cannot retarget the click. Satellite rows leave this `None`:
-        /// their ids are host-local and not attachable on this hub.
+        /// Stable session identity from a painted row (a rename cannot
+        /// retarget it); `None` for satellite rows.
         id: Option<SessionId>,
-        /// phux-foz.8: window index to select once the target session's
-        /// persisted layout loads — the one-step cross-session window
-        /// pick. `None` keeps the session's own remembered focus. The
-        /// index addresses the target's L3 workspace (the same order its
-        /// own window picker shows); if the layout changed under us and
-        /// the index is out of range, the switch still lands and the
-        /// select is a logged no-op.
+        /// Window to select once the target's layout loads; out of range
+        /// is a logged no-op.
         window: Option<usize>,
-        /// phux-jpqd: DFS leaf ordinal within `window` to focus once the
-        /// target's layout loads — the one-step cross-session **pane**
-        /// pick the agent-fleet dashboard's foreign rows carry. `None`
-        /// keeps the window's own restored focus. Applied only after
-        /// `window` resolves in range; an out-of-range ordinal degrades to
-        /// a logged no-op, same as `window`.
+        /// DFS leaf ordinal within `window` to focus, likewise.
         pane: Option<usize>,
-        /// phux-ah84: authoritative pane identity from the server graph or
-        /// a persisted layout leaf. When present, the driver focuses this
-        /// `ResourceId` after re-attach instead of fabricating TUI window
-        /// or pane indices. Window/pane remain as layout-backed hints.
+        /// Pane identity to focus after re-attach, instead of indices.
         resource: Option<ResourceId>,
     },
     /// Create — or attach to, if it already exists — a session by name
@@ -778,12 +647,8 @@ pub enum ReattachTarget {
     Create(String),
 }
 
-/// An in-flight `rename-session` waiting on its `GET_STATE` barrier.
-///
-/// `SET_METADATA` has no reply frame, so the driver parks this until the
-/// snapshot after the write names the outcome. A `METADATA_CHANGED` on
-/// `SESSION_NAME_KEY` may apply the name earlier; the barrier still has
-/// to be consumed so its `COMMAND_RESULT` is not treated as a stray.
+/// An in-flight `rename-session` waiting on its `GET_STATE` barrier
+/// (`SET_METADATA` has no reply).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::attach) struct PendingSessionRename {
     /// Request id of the confirming `GET_STATE`.

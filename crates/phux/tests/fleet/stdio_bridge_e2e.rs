@@ -1,14 +1,7 @@
-//! End-to-end tests for `phux stdio-bridge` (phux-v45.9, ADR-0007).
-//!
-//! The bridge is the remote end of the SSH-stdio transport: it must be a
-//! byte-transparent splice between its stdin/stdout and the server's
-//! Unix socket. These tests spawn the REAL binary against a local UDS
-//! listener — no ssh required (the hub-side spawn/argv path is covered
-//! in `phux-server::hub::link` with a stub program). What is asserted
-//! here is the honest transport property: arbitrary bytes (including
-//! length-prefixed wire framing with embedded NUL/newline bytes) cross
-//! both directions unmodified, stdout stays protocol-pure, and the
-//! process exits cleanly when either side closes.
+//! `phux stdio-bridge` (ADR-0007), the remote end of the SSH-stdio transport,
+//! against a local UDS listener: bytes (including framing with NUL/newline)
+//! cross both ways unmodified, stdout stays protocol-pure, and the process
+//! exits cleanly when either side closes.
 
 #![allow(clippy::expect_used, reason = "tests")]
 

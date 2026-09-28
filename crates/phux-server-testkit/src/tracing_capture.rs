@@ -1,37 +1,9 @@
-//! In-memory tracing capture + auto-dump-on-panic (item 4 of the e2e
-//! flywheel).
-//!
-//! A failing repro is only useful if you can see what the server was doing
-//! when it broke. This module installs a process-local `tracing`
-//! subscriber whose `fmt` layer writes into a shared in-memory buffer, and
-//! returns a [`TracingCapture`]. If the guard is dropped during a panic
-//! (the normal way a `#[test]` fails an assertion), it dumps the captured
-//! log — plus an optional last-screen snapshot — to stderr AND to a
-//! `/tmp/phux-repro-*.log` file, so the failing run is immediately
-//! inspectable without re-running under `RUST_LOG`.
-//!
-//! It is deliberately self-contained: it does NOT touch the server's
-//! production `telemetry::init` (which the sibling agent owns). It uses a
-//! local `fmt` layer + a `Mutex<Vec<u8>>` `MakeWriter`, set as the default
-//! subscriber for the duration of the guard via
-//! `tracing::subscriber::set_default` (scoped, not global `init`, so
-//! parallel test binaries don't fight over the global default).
-//!
-//! Usage:
-//! ```ignore
-//! let cap = TracingCapture::install("resize_storm");
-//! // ... run the scenario; on panic the guard dumps automatically ...
-//! cap.attach_screen(client.screenshot().await.snapshot_text());
-//! // success path: drop quietly (no dump unless you call `dump()`).
-//! ```
+//! In-memory tracing capture that dumps the log (plus the last screen) to
+//! stderr and a temp file when the test panics; quiet on success.
 
 #![allow(
     clippy::print_stderr,
     reason = "the dump deliberately surfaces the captured log on stderr"
-)]
-#![allow(
-    clippy::format_push_string,
-    reason = "dump assembly: clarity over the marginal write! alloc saving"
 )]
 #![allow(
     clippy::significant_drop_tightening,
@@ -118,14 +90,8 @@ impl TracingCapture {
             Registry::default().with(filter).with(fmt_layer)
         };
         let guard = tracing::subscriber::set_default(make_subscriber());
-        // ALSO claim the process-global default (best-effort; first caller
-        // wins, later calls are a no-op `Err`). `set_default` above is
-        // thread-local, which misses the PTY reader/writer bridge threads
-        // (`phux-pty-reader` / `phux-pty-writer`) — exactly the threads
-        // whose death modes the route_input forensics need to see. Safe
-        // here because nextest runs one test per process; under plain
-        // `cargo test` a parallel sibling's threads could interleave into
-        // this buffer, which is acceptable noise for a debug artifact.
+        // Also claim the global default (first caller wins): the thread-local
+        // default misses the PTY bridge threads. nextest runs one test per process.
         let _ = tracing::subscriber::set_global_default(make_subscriber());
 
         Self {
@@ -145,14 +111,7 @@ impl TracingCapture {
         }
     }
 
-    /// Force a dump now (independent of panic). Returns the path written.
-    /// Used by the repro example to always leave an artifact, and by tests
-    /// that want the log on a soft failure.
-    pub fn dump(&self) -> std::path::PathBuf {
-        self.dump_inner(false)
-    }
-
-    fn dump_inner(&self, panicking: bool) -> std::path::PathBuf {
+    fn dump_on_panic(&self) {
         let log = self.buf.contents();
         let screen = self
             .last_screen
@@ -167,16 +126,10 @@ impl TracingCapture {
             .unwrap_or_default();
         let path = std::env::temp_dir().join(format!("phux-repro-{}-{ts}.log", self.label));
 
-        let mut body = String::new();
-        body.push_str(&format!("=== phux e2e repro dump: {} ===\n", self.label));
-        if panicking {
-            body.push_str("(captured on test panic)\n");
-        }
-        body.push_str("\n--- last screen ---\n");
-        body.push_str(&screen);
-        body.push_str("\n\n--- tracing log ---\n");
-        body.push_str(&log);
-        body.push('\n');
+        let body = format!(
+            "=== phux e2e repro dump: {} (test panicked) ===\n\n--- last screen ---\n{screen}\n\n--- tracing log ---\n{log}\n",
+            self.label
+        );
 
         if let Ok(mut f) = std::fs::File::create(&path) {
             let _ = f.write_all(body.as_bytes());
@@ -184,16 +137,13 @@ impl TracingCapture {
         // Also surface on stderr so a CI run shows it inline.
         eprintln!("{body}");
         eprintln!("[phux e2e] dump written to {}", path.display());
-        path
     }
 }
 
 impl Drop for TracingCapture {
     fn drop(&mut self) {
-        // The canonical "test failed" signal: a panic is unwinding through
-        // this guard's scope. Dump then. On the success path stay quiet.
         if std::thread::panicking() {
-            self.dump_inner(true);
+            self.dump_on_panic();
         }
     }
 }

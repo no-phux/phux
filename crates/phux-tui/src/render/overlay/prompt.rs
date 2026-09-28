@@ -1,13 +1,6 @@
-//! Prompt overlay (phux-ahv.1) — a single-line text input modal.
-//!
-//! Captures a string from the user, then commits it as a configured
-//! action: on Enter the overlay returns [`OverlayCommand::Commit`] with a
-//! [`ResolvedAction`] whose `args[arg_key]` is the typed text, which the
-//! dispatcher runs through the normal `run_action` path. Esc cancels.
-//!
-//! It is deliberately generic: the active use is `rename-window`, but any
-//! action that wants a single string argument can reuse it by varying
-//! `action` + `arg_key`.
+//! Prompt overlay: a single-line text input committing `action { arg_key:
+//! <text> }` through `run_action` on Enter ([`OverlayCommand::Commit`]); Esc
+//! cancels.
 
 use std::collections::BTreeMap;
 
@@ -36,14 +29,13 @@ pub struct PromptOverlay {
     /// Color slots snapshotted from the active [`Theme`] at construction.
     /// Captured (not borrowed) so the overlay stays `'static`.
     theme: Theme,
-    /// phux-huhi: `[chrome]` thresholds, stamped by `OverlayState::push`.
+    /// `[chrome]` thresholds, stamped by `OverlayState::push`.
     breakpoints: ChromeBreakpoints,
 }
 
 impl PromptOverlay {
-    /// Build a prompt that commits the typed text as
-    /// `action { arg_key: <text> }`. `initial` pre-fills the input
-    /// (cursor lands at the end); `theme` styles the modal chrome.
+    /// A prompt committing `action { arg_key: <text> }`, pre-filled with
+    /// `initial`.
     #[must_use]
     pub fn new(title: &str, action: &str, arg_key: &str, initial: &str, theme: &Theme) -> Self {
         Self {
@@ -69,11 +61,7 @@ impl PromptOverlay {
         )
     }
 
-    /// The `rename-session` prompt, pre-filled with the current session's
-    /// name and styled with `theme`. Committing it renames the session this
-    /// client is attached to (via the `RENAME_SESSION` command); the server
-    /// is authoritative and the next `ATTACHED` snapshot reconciles the name
-    /// across every attached client.
+    /// The `rename-session` prompt, pre-filled with the current name.
     #[must_use]
     pub fn rename_session(current_name: &str, theme: &Theme) -> Self {
         Self::new(
@@ -85,9 +73,7 @@ impl PromptOverlay {
         )
     }
 
-    /// The `new-session` prompt: type a name for a brand-new session.
-    /// Committing it re-attaches this client to the freshly-created
-    /// session (via the same in-process re-attach path as switch-session).
+    /// The `new-session` prompt; committing re-attaches to the new session.
     #[must_use]
     pub fn new_session(theme: &Theme) -> Self {
         Self::new("new session", "new-session", "name", "", theme)
@@ -108,10 +94,7 @@ impl PromptOverlay {
     /// A small centered modal: 50% width (min 20), fixed 3 rows (border
     /// + one input line).
     fn modal_area(outer: Rect, bp: ChromeBreakpoints) -> Rect {
-        // Reuse the shared centering for width/x, then pin height to 3
-        // rows (border + one input line) and re-center vertically against
-        // that fixed height — the fraction-based height a `Modal`-style
-        // box would otherwise get is wrong for a one-line prompt.
+        // Centered width, a fixed three-row height (border + input line).
         let wide = centered_panel(outer, 5, 20, 3, bp);
         let h = 3.min(outer.height);
         let y = outer.y + (outer.height.saturating_sub(h)) / 2;
@@ -122,9 +105,7 @@ impl PromptOverlay {
 impl RenderOverlay for PromptOverlay {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let modal_area = Self::modal_area(area, self.breakpoints);
-        // Input line + a reverse-video cursor block so the caret is
-        // visible without driving the host terminal cursor (the overlay
-        // paint hides it).
+        // A reverse-video caret (the host cursor is hidden during paint).
         let line = Line::from(vec![
             Span::styled(self.input.clone(), Style::default().fg(self.theme.text)),
             Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),

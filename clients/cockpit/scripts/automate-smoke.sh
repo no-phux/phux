@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Drive the real bundled app through the SDK's automation harness and assert on
-# what actually changes. This is the repeatable version of a session that was
-# otherwise twenty manual steps.
+# Drive the real bundled app through the SDK automation harness and assert on
+# what actually changes.
 #
 #   ./scripts/automate-smoke.sh                 # structure + driven interaction
 #   ./scripts/automate-smoke.sh --fullscreen    # ...and a real OS fullscreen round-trip
@@ -11,41 +10,18 @@
 #   ./scripts/automate-smoke.sh --churn --churn-actions 160
 #   ./scripts/automate-smoke.sh --keep          # leave the app running to poke at
 #
-# It builds the CLI from the PINNED SDK (see build-automation-cli.sh — the
-# automation dropbox is fingerprint-guarded, and a CLI from anywhere else will
-# refuse this app), packages a bundle with -Dautomation=true, launches it with
-# an ISOLATED config and state file so it cannot touch the user's own, waits
-# for readiness, and drives it.
+# Builds the automation CLI from the pinned SDK, packages with
+# -Dautomation=true, launches with an isolated config and state, and drives it.
+# `expect_change` asserts a pattern absent, acts, then asserts it present: an
+# assertion never seen to distinguish both states is not evidence.
 #
-# WHY EVERY ASSERTION HERE HAS A NEGATIVE CONTROL
-# ------------------------------------------------
-# `expect_change` asserts the pattern is ABSENT, performs the action, then
-# asserts it is PRESENT. The absent half is not ceremony — it is the only
-# thing standing between this script and the failure that produced it.
-#
-# On 2026-08-12 an earlier version of this file carried a confident warning
-# that automation input was silently broken. It was not. The assertion used to
-# "prove" it counted `role=textbox name="Terminal`, which only ever matches the
-# SELECTED tab's rendered pane — so `cmd+t` creating a second TAB could not
-# move it, no matter how perfectly the key was delivered. The harness was
-# telling the truth; the assertion could not fail for the right reason, and so
-# it manufactured a finding. See phux-cockpit-2ml.5.
-#
-# An assertion never seen to distinguish the two states is not evidence.
-# If you add one here, give it its before-half too.
-#
-# Verified observables for this app (2026-08-12, against the real bundle):
+# Observables:
 #   new tab            role=tab name="Terminal N
 #   rendered pane      role=textbox name="Terminal        (SELECTED tab only)
 #   scrollback search  role=group name="Scrollback search
 # measures: real-bundle structure, interaction, fullscreen, scheduler cadence, steady repaint, and split/close churn
 #
-# SERIAL ONLY (phux-cockpit-2ml.10). The identity-staged measurement bundles
-# deliberately reuse dev-run's `phux-cockpit-dev` process identity, so two live
-# measurement runs would make PID activation ambiguous even though each has a
-# private dropbox. scripts/lib/app-instance.sh refuses that state and keeps
-# checking the exact process and publisher PID between driven steps; the swap
-# that filed the bead happened in the MIDDLE of a sequence that started clean.
+# Serial only: see scripts/lib/app-instance.sh.
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -72,7 +48,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --keep) KEEP=1; shift ;;
         --phux) PHUX=1; shift ;;
-        -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,/^set -euo pipefail/{ /^set -euo pipefail/!p; }' "$0"; exit 0 ;;
         *) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
     esac
 done
@@ -211,11 +187,8 @@ terminal_pattern='role=textbox name="Terminal 1'
     'kind=gpu_surface' \
     "$terminal_pattern" \
     'dispatch_errors=0'
-# The terminal must reach glass through the PACKET path, where the AppKit host
-# rasterizes with CoreText. A fallback to `pixels` silently moves every glyph
-# onto the CPU reference renderer - the app then looks like its own
-# screenshots, which is exactly the failure no screenshot can report. See
-# docs/RENDER_FIDELITY.md.
+# The terminal must reach glass through the packet path (CoreText), not the
+# CPU `pixels` fallback. See docs/RENDER_FIDELITY.md.
 "$NATIVE" automate assert 'gpu_present_path=packet'
 "$NATIVE" automate assert --absent 'error event='
 printf 'structure: ok\n'

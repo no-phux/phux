@@ -1,30 +1,15 @@
 //! The generic resource core and the engines that back it.
 //!
-//! The server serves *resources*. Every resource, whatever its kind, has
-//! the same backing-agnostic surface: an ordered output stream with a
-//! checked `u64` sequence, a set of consumers attached to that stream, a
-//! semantic event sink the runtime drains into the server-wide event
-//! journal ([`event_sink`], ADR-0123), a lifecycle (a cancel
-//! token in, an exit notification out), and a supervisory control mailbox.
-//! [`ResourceCore`] owns that state on the engine side; [`ResourceHandle`]
-//! is the `Send + Clone` channel set the runtime holds for it.
+//! Every resource has the same backing-agnostic surface: an ordered output
+//! stream with a checked `u64` sequence, attached consumers, a semantic
+//! event sink ([`event_sink`], ADR-0123), a lifecycle, and a control
+//! mailbox. [`ResourceCore`] owns it engine-side; [`ResourceHandle`] is the
+//! `Send + Clone` channel set the runtime holds.
 //!
-//! What differs per kind is the *facet*: the channels only that engine
-//! serves. A Terminal answers snapshot, screen, resize, cwd, palette,
-//! native-checkpoint, and input requests; another kind does not. The
-//! facet lives behind [`ResourceHandle::facet`] as a
-//! [`ResourceFacetHandle`], and the runtime reaches it through
-//! [`ResourceHandle::terminal`] — the one place that turns "this resource is
-//! not a Terminal" into a [`WrongResourceKind`] error. Nothing else in the
-//! crate inspects the facet enum.
-//!
-//! Engines live in submodules: [`terminal`] is the PTY-plus-libghostty
-//! engine ([`terminal::TerminalActor`]). An engine embeds a
-//! [`ResourceCore`], builds its facet handle, and assembles the
-//! [`ResourceHandle`] in its constructor. ADR-0014's placement rule is the
-//! engine's to keep: an engine that owns `!Send` state runs as one
-//! `spawn_local` task and is the sole borrower of that state; the core adds
-//! no shared cells across tasks.
+//! Per-kind channels are the facet ([`ResourceFacetHandle`]), reached only
+//! through accessors such as [`ResourceHandle::terminal`], the single source
+//! of [`WrongResourceKind`]. Engines live in submodules and follow ADR-0014:
+//! `!Send` state stays in one `spawn_local` task.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -41,33 +26,21 @@ pub mod terminal;
 pub use phux_core::ids::ResourceId;
 pub use phux_core::resource::ResourceKind;
 
-/// The wire tag for a kind the server serves.
-///
-/// `phux-core` and `phux-protocol` must not depend on each other, so the
-/// domain kind and the wire kind are two enums and this crate — which
-/// depends on both — is where they meet, exactly as
-/// [`id_bridge`](crate::id_bridge) is where the two id spaces meet.
+/// The wire tag for a kind the server serves (this crate is where the
+/// domain and wire kind enums meet).
 #[must_use]
 pub const fn wire_kind(kind: ResourceKind) -> phux_protocol::ids::ResourceKind {
     match kind {
         ResourceKind::Terminal => phux_protocol::ids::ResourceKind::Terminal,
         ResourceKind::AgentSession => phux_protocol::ids::ResourceKind::AgentSession,
-        // The domain enum is `non_exhaustive` for the same forward-compat
-        // reason the wire one is, and this crate is where a new kind gets
-        // its tag. A domain kind with no tag here is a build that added one
-        // side of the pair; reporting it as opaque is the one answer that
-        // cannot be mistaken for a Terminal, and 255 is not an allocated
-        // tag.
+        // A domain kind with no tag yet is reported opaque (255 is
+        // unallocated), never mistaken for a Terminal.
         _ => phux_protocol::ids::ResourceKind::Unknown { tag: u8::MAX },
     }
 }
 
-/// The domain kind a wire tag names, or `None` for a tag this build does
-/// not serve.
-///
-/// `None` is not a decode failure — the wire enum is open on purpose, so a
-/// newer consumer naming a kind this server has never heard of gets a typed
-/// refusal (`SpawnError::UnsupportedKind`) instead of a dropped connection.
+/// The domain kind a wire tag names, or `None` for one this build does not
+/// serve (a typed refusal, not a decode failure).
 #[must_use]
 pub const fn core_kind(kind: phux_protocol::ids::ResourceKind) -> Option<ResourceKind> {
     match kind {
@@ -83,44 +56,26 @@ use terminal::{
     UpgradeHandleRequest,
 };
 
-/// Default capacity of the per-resource output broadcast channel.
-///
-/// Bytes fan out to subscribed clients. Sized for "burst tolerance" —
-/// a busy resource can emit a few dozen frames in a short window before a
-/// slow subscriber falls behind and gets a `RecvError::Lagged`.
+/// Default capacity of the per-resource output broadcast.
 pub const DEFAULT_OUTPUT_BROADCAST: usize = 256;
 
-/// Process-wide override of [`DEFAULT_OUTPUT_BROADCAST`], read by new
-/// resource cores. Zero is never stored; the default is 256.
+/// Process-wide override of [`DEFAULT_OUTPUT_BROADCAST`] (never zero).
 static OUTPUT_BROADCAST_CAPACITY: AtomicUsize = AtomicUsize::new(DEFAULT_OUTPUT_BROADCAST);
 
-/// Capacity used when a resource core opens its output broadcast.
-///
-/// Production always sees [`DEFAULT_OUTPUT_BROADCAST`]. Lagged-consumer
-/// tests shrink it with [`set_output_broadcast_capacity_for_test`] so a
-/// stall overflows the ring even when the PTY reader coalesces a burst
-/// into a handful of large frames.
+/// Capacity for a new output broadcast; production always gets the
+/// default.
 #[must_use]
 pub fn output_broadcast_capacity() -> usize {
     OUTPUT_BROADCAST_CAPACITY.load(Ordering::Relaxed).max(1)
 }
 
-/// Shrink (or restore) [`output_broadcast_capacity`] for this process.
-///
-/// The attach/broadcast path is otherwise unchanged: this is only a test
-/// seam so an `ATTACH_RESOURCE` consumer can be forced off the ring
-/// without dumping tens of megabytes past [`DEFAULT_OUTPUT_BROADCAST`]
-/// coalesced frames (phux-a1dn). Nextest runs each test in its own
-/// process, so the override does not leak.
+/// Override [`output_broadcast_capacity`] for this process (tests force
+/// lag cheaply; nextest isolates processes).
 pub fn set_output_broadcast_capacity_for_test(capacity: usize) {
     OUTPUT_BROADCAST_CAPACITY.store(capacity.max(1), Ordering::Relaxed);
 }
 
 /// Depth of the core's request mailboxes (event subscription, control).
-///
-/// Small on purpose: these are supervisory requests the server drains in
-/// the same event loop. A backed-up mailbox here means the engine has
-/// stalled, which is its own bug to investigate.
 const CORE_MAILBOX: usize = 64;
 
 // ---- output stream ----------------------------------------------------------
@@ -132,49 +87,32 @@ pub enum ResyncReason {
     Resize,
     /// A bounded output subscriber observed a sequence gap.
     OutboundGap,
-    /// The pane's child has exited. This snapshot is the final grid: a
-    /// fenced pump with a full mailbox must queue it before `RESOURCE_CLOSED`
-    /// and must not stay parked on an earlier snapshot (phux-fpgl.28).
+    /// The child exited; this is the final grid, queued before
+    /// `RESOURCE_CLOSED`.
     Exit,
 }
 
-/// One output pump on a pane: the server-local client that owns it and the
-/// wire stream it publishes on.
-///
-/// The same pair a [`PaneOutput::Control`] frame is routed by (`owner`, then
-/// the frame's own `stream_id`), so a resync can be addressed as precisely
-/// as a tombstone already is.
+/// One output pump on a pane: its owning client and wire stream, the same
+/// pair control frames are routed by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ResyncTarget {
     /// Server-local client id of the pump's consumer.
     pub owner: u64,
     /// Stream the pump publishes its generations on.
     pub stream_id: phux_protocol::ids::StreamId,
-    /// The generation the resync replaces: the one the pump was fenced on, or
-    /// the one a reflow tombstoned. Owner and stream alone can collide — an
-    /// `ATTACH` pump's stream id comes from its attach id and an
-    /// `ATTACH_RESOURCE` pump's from its client id — so without the generation
-    /// one addressed resync could revive two pumps, and their native captures
-    /// would race for the owner-keyed binding.
+    /// The generation being replaced. Owner and stream alone can collide
+    /// across pump kinds, so this keeps a resync from reviving two pumps.
     pub bootstrap_id: phux_protocol::ids::BootstrapId,
 }
 
-/// Which output pumps a [`PaneOutput::Resync`] replaces the generation of.
-///
-/// A resync is expensive for every pump that takes it: a tombstone, a full
-/// bootstrap on the wire, and for a native consumer a checkpoint capture on
-/// the actor. It is owed to *every* consumer only when the grid itself
-/// changed under them (a resize reflow). A pump that fell behind (a
-/// broadcast `Lagged`, or a chunk past the pump's staleness budget) lost
-/// frames nobody else lost, so its resync is addressed to it alone and every
-/// other pump on the pane keeps its generation.
+/// Which pumps a [`PaneOutput::Resync`] is for. A reflow owes everyone; a
+/// pump that fell behind is resynced alone so the others keep their
+/// generation (resyncs are expensive).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResyncAudience {
     /// Every subscriber replaces its generation.
     Everyone,
-    /// Only the named pumps replace their generation; every other subscriber
-    /// ignores this resync. More than one when several pumps asked inside
-    /// the same debounce window: they share one synthesis.
+    /// Only these pumps (several when they asked in one debounce window).
     Only(std::sync::Arc<[ResyncTarget]>),
 }
 
@@ -189,27 +127,12 @@ impl ResyncAudience {
     }
 }
 
-/// Payload of the per-resource output broadcast ([`ResourceHandle::output`]).
+/// Payload of the per-resource output broadcast.
 ///
-/// Subscribers (the per-attach output pumps in `runtime::attach`) map each
-/// variant to a distinct wire frame:
-///
-/// * [`PaneOutput::Live`] → `RESOURCE_OUTPUT` — a post-snapshot byte delta.
-/// * [`PaneOutput::Resync`] → `TERMINAL_SNAPSHOT` — the full post-reflow
-///   grid, carrying the new `(cols, rows)` so the client mirror RESIZES to
-///   them and repaints from authoritative state.
-/// * [`PaneOutput::Control`] → an ordered generation/history control frame
-///   routed only by the pump whose server-local owner matches.
-///
-/// Routing the resize-resync as a `TERMINAL_SNAPSHOT` (rather than raw
-/// output) is load-bearing. The client resizes its libghostty mirror ONLY
-/// on `TERMINAL_SNAPSHOT` (ADR-0013 / phux-wurs: the mirror's grid size is
-/// server-authoritative and never guessed from a client-side rect). A
-/// resync delivered as `RESOURCE_OUTPUT` would `vt_write` into a mirror
-/// still at its old size, so a resize that GROWS a pane — kill-pane reflow
-/// promoting the survivor, or enlarging the outer window — could never fill
-/// the freed space (phux-3ns5). The snapshot path resizes first, then
-/// applies the synthesized grid, so grow and shrink both reconverge.
+/// Each attach pump maps `Live` → `RESOURCE_OUTPUT`, `Resync` →
+/// `TERMINAL_SNAPSHOT` (so the client mirror resizes to the carried dims
+/// before repainting; raw output could never grow a pane), and `Control` →
+/// an ordered control frame for the matching owner.
 #[derive(Clone, Debug)]
 pub enum PaneOutput {
     /// Live output chunk forwarded as `RESOURCE_OUTPUT`.
@@ -218,17 +141,12 @@ pub enum PaneOutput {
         seq: u64,
         /// Verbatim output bytes for this sequence.
         bytes: Bytes,
-        /// When the producer read these bytes (for a Terminal, when the PTY
-        /// `read(2)` returned). A pump that dequeues a chunk long after this
-        /// is a consumer that has fallen behind in time, whatever the
-        /// broadcast's slot count says.
+        /// When the producer read these bytes; a pump dequeuing long after
+        /// has fallen behind in time.
         at: std::time::Instant,
     },
-    /// Post-resize grid resync forwarded as `TERMINAL_SNAPSHOT` at the
-    /// carried dims (phux-8v1 reconverge mechanism + phux-3ns5 mirror
-    /// resize). `bytes` is the synthesized grid replay (with its
-    /// `DECSTR + ED2 + home` reset preamble); `cols`/`rows` are the
-    /// post-reflow grid size the client mirror must adopt.
+    /// Full post-reflow grid replay (with reset preamble) and the dims the
+    /// client mirror must adopt.
     Resync {
         /// Post-reflow grid width the client mirror resizes to.
         cols: u16,
@@ -243,9 +161,8 @@ pub enum PaneOutput {
         /// Synthesized grid replay (with reset preamble) for `vt_write`.
         bytes: Bytes,
     },
-    /// Ordered native control. It shares the broadcast sequence with
-    /// [`Self::Live`] so a pump observes every prior raw sequence before
-    /// invalidating the matching generation or history cursor.
+    /// Ordered native control, sharing the sequence with [`Self::Live`] so a
+    /// pump sees all prior output before invalidating a generation.
     Control {
         /// Server-local pump owner; other subscribers ignore this control.
         owner: u64,
@@ -256,63 +173,35 @@ pub enum PaneOutput {
 
 // ---- supervisory control ----------------------------------------------------
 
-/// A supervisory control request delivered to a resource's engine over its
-/// `control` mailbox (ADR-0033, "take the wheel + kill").
+/// A supervisory request to a resource's engine (ADR-0033).
 ///
-/// The input *lease* itself lives in [`crate::state::ServerState`] (the input
-/// gate runs there, under the state lock, where the originating `ClientId` is
-/// known). The engine is the emitter of the
-/// [`phux_protocol::wire::frame::AgentEvent::TerminalControl`] event because
-/// it owns the process lifecycle that event reports — so the handler forwards
-/// the *fact* of a change and lets the engine stamp its current lifecycle and
-/// emit the event into its sink, which the runtime journals (ADR-0123).
-///
-/// The variant set is the union the runtime issues; an engine handles the
-/// variants that apply to its kind and answers the rest with an error reply
-/// where one exists.
+/// The input lease lives in `ServerState`; the engine emits `TerminalControl`
+/// because it owns the lifecycle. Engines answer inapplicable variants with an
+/// error where a reply exists.
 #[derive(Debug)]
 pub enum ControlRequest {
-    /// The input lease changed in `ServerState`; emit a `TerminalControl`
-    /// broadcast reflecting the new holder and the action that produced it.
+    /// The input lease changed; broadcast the new holder and action.
     LeaseChanged {
         /// The client now holding the lease, or `None` if released to `Open`.
         input_holder: Option<ClientId>,
-        /// What just happened (`Acquired` / `Seized` / `Released` /
-        /// `Expired`).
+        /// `Acquired` / `Seized` / `Released` / `Expired`.
         action: ControlAction,
-        /// The client that performed the action; `None` when the server
-        /// released the lease on its own — a TTL expiry (ADR-0033's
-        /// `ttl_ms`) or live revocation (`docs/spec/workload-auth.md` §7).
+        /// The acting client; `None` for a server-side release (TTL or
+        /// revocation).
         actor: Option<ClientId>,
     },
-    /// Something other than the detector wrote this pane's `phux.agent/v1`
-    /// record (an explicit `SET_METADATA` or `DELETE_METADATA`), so the
-    /// detector's edge filter — a model of its own emissions — is now a model
-    /// of a store that no longer exists (ADR-0046 §E).
-    ///
-    /// The engine clears the filter, re-arming exactly one republish on the
-    /// next tick. This is what makes `DELETE` mean "the detector resumes"
-    /// rather than "the record vanishes until the agent's state happens to
-    /// change" — which, for an agent sitting idle waiting on a human, is
-    /// never. No-op on a resource with no detector.
+    /// Something else wrote `phux.agent/v1` (ADR-0046 §E): clear the
+    /// detector's edge filter so it republishes once. No-op without a
+    /// detector.
     AgentRecordInvalidated,
-    /// Bind the producer channel of an `AgentSession` child that just
-    /// spawned under this Terminal (ADR-0103 §6), so a hook report becomes
-    /// a record on that child's stream rather than a second opinion beside
-    /// it. No reply: the binding is a fact, not a request.
+    /// Bind the producer channel of an `AgentSession` child just spawned
+    /// here (ADR-0103 §6). No reply.
     BindAgentSession {
         /// The child engine's append channel.
         append: mpsc::Sender<agent_session::AppendRequest>,
     },
-    /// Feed an `AgentSession` child's derived state into this Terminal's
-    /// detector at the `Stream` rank (ADR-0103 §5).
-    ///
-    /// The rank is what distinguishes this from
-    /// [`Self::ReportAgentState`]: while a session is producing records its
-    /// stream outranks the hook edge, because the stream carries the same
-    /// facts in order and with a replayable log behind them. `None` is the
-    /// retraction a `session_end` produces — the stream stops asserting a
-    /// state, and lower-ranked evidence resumes.
+    /// Feed an `AgentSession` child's state into the detector at the
+    /// `Stream` rank (ADR-0103 §5); `None` is the `session_end` retraction.
     ReportStreamState {
         /// The derived state, or `None` to withdraw the stream's claim.
         state: Option<ReportedAgentState>,
@@ -326,26 +215,17 @@ pub enum ControlRequest {
         /// Whether the detector accepted the evidence.
         reply: oneshot::Sender<Result<(), String>>,
     },
-    /// Turn hook-reported state into a synthesized `state` record on this
-    /// Terminal's live `AgentSession` child, so one source of truth - the
-    /// stream - feeds the arbiter (ADR-0103 decision 6).
-    ///
-    /// Routed here instead of [`Self::ReportAgentState`] only when the
-    /// binding graph says a live child exists; otherwise `REPORT_AGENT_STATE`
-    /// takes the ADR-0085 path unchanged. Two requests rather than a flag on
-    /// one, because the two do genuinely different things to different
-    /// resources and a boolean would hide that at every call site.
+    /// Append hook-reported state as a synthesized record on this
+    /// Terminal's live `AgentSession` child (ADR-0103 §6); used only when a
+    /// live child exists.
     SynthesizeAgentStateRecord {
-        /// Hook-reported state, to be appended as
-        /// `{"type":"state","data":{"state":...,"source":"hook"}}`.
+        /// Hook-reported state to append.
         state: ReportedAgentState,
         /// Whether the record was accepted.
         reply: oneshot::Sender<Result<(), String>>,
     },
-    /// Deliver `signal` to the pane's process group, update the lifecycle
-    /// (`Freeze` → `Frozen`, `Resume` → `Running`), and broadcast a
-    /// `TerminalControl`. `reply` carries `Ok(())` on delivery or a
-    /// human-readable error (no PTY / no pid / `killpg` failed).
+    /// Signal the pane's process group, update the lifecycle, and broadcast
+    /// `TerminalControl`; `reply` carries delivery or an error.
     Signal {
         /// The signal to deliver.
         signal: TerminalSignal,
@@ -353,20 +233,16 @@ pub enum ControlRequest {
         input_holder: Option<ClientId>,
         /// The client requesting the signal.
         by: ClientId,
-        /// The signal's `operation_id` (L1 §5.1.1), carried onto the
-        /// `terminal_control` it causes.
+        /// The signal's `operation_id` (L1 §5.1.1).
         operation_id: Option<phux_protocol::ids::IdempotencyKey>,
         /// Delivery acknowledgement.
         reply: oneshot::Sender<Result<(), String>>,
     },
-    /// The pane's process exited and the pane is retained (ADR-0124): report
-    /// `Exited` in every later `TerminalControl`, stop the agent detector (it
-    /// has no process to watch), and refuse input from now on. The grid,
-    /// history, and consumers stay. No reply: the exit is a fact.
+    /// The child exited and the pane is retained (ADR-0124): report
+    /// `Exited`, stop the detector, refuse input. No reply.
     Retire,
-    /// Replace the exited child with a fresh default shell in this same
-    /// Terminal. The identity, layout slot, and subscribers stay; clients
-    /// receive a resync of the new grid. Reply is the next-exit receiver.
+    /// Replace the exited child with a fresh default shell in place. Reply
+    /// is the next-exit receiver.
     ReplaceChild {
         /// Default-shell command for the replacement child.
         command: ReplacementCommand,
@@ -386,12 +262,8 @@ impl std::fmt::Debug for ReplacementCommand {
 
 // ---- handle -----------------------------------------------------------------
 
-/// A facet operation was requested of a resource of another kind.
-///
-/// Produced only by [`ResourceHandle::terminal`]; every runtime path that
-/// needs a Terminal-only channel goes through that accessor, so this is the
-/// single origin of the "wrong kind" condition inside the server. The
-/// protocol's `WRONG_RESOURCE_KIND` error code is the wire form.
+/// A facet operation requested of a resource of another kind (wire:
+/// `WRONG_RESOURCE_KIND`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("resource is {actual}, operation requires {required}")]
 pub struct WrongResourceKind {
@@ -401,18 +273,14 @@ pub struct WrongResourceKind {
     pub actual: ResourceKind,
 }
 
-/// The kind-specific channel set of one resource.
-///
-/// One variant per engine. Read only through the accessors on
-/// [`ResourceHandle`]; runtime code never matches on this enum directly.
+/// The kind-specific channel set of one resource, read only through
+/// [`ResourceHandle`]'s accessors.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum ResourceFacetHandle {
-    /// Terminal engine: input, snapshot, screen, resize, cwd, palette, and
-    /// native-checkpoint channels plus the construction-time grid size.
+    /// Terminal engine channels.
     Terminal(TerminalHandle),
-    /// Agent-session engine: producer appends, bootstrap cuts, and the
-    /// session's immutable provider and native id.
+    /// Agent-session engine channels plus provider and native id.
     AgentSession(AgentSessionHandle),
 }
 
@@ -427,66 +295,36 @@ impl ResourceFacetHandle {
     }
 }
 
-/// Cross-task handle to one resource's engine.
-///
-/// `ResourceHandle` is `Send + Clone`: per-client tasks clone it freely to
-/// subscribe to the output broadcast, attach consumers, subscribe to events,
-/// or send control. The engine itself (which may own `!Send` state, as the
-/// Terminal engine does) lives on the `LocalSet` and never crosses a thread
-/// boundary (ADR-0014).
-///
-/// Every field but `facet` exists for every kind. The payload types of
-/// `consumer_attach`, `consumer_detach`, `consumer_ack`, and `upgrade` are
-/// defined by the Terminal engine; the channels themselves are part of the
-/// generic surface.
+/// `Send + Clone` handle to one resource's engine (ADR-0014). Every field
+/// but `facet` exists for every kind.
 #[derive(Debug, Clone)]
 pub struct ResourceHandle {
     /// Which engine is behind this handle.
     pub kind: ResourceKind,
-    /// The resource this one is bound to, if any. Immutable for the
-    /// resource's lifetime.
+    /// The resource this one is bound to, if any (immutable).
     pub parent: Option<ResourceId>,
-    /// Output broadcast channel; subscribers receive every output chunk
-    /// ([`PaneOutput::Live`]) plus engine-generated resyncs
-    /// ([`PaneOutput::Resync`]) and ordered control ([`PaneOutput::Control`]).
+    /// Output broadcast: live chunks, resyncs, and ordered control.
     pub output: broadcast::Sender<PaneOutput>,
-    /// ADR-0018 per-consumer lifecycle (phux-q0e.2). The runtime sends a
-    /// [`ConsumerAttachRequest`] on each successful ATTACH so the engine
-    /// registers the consumer before the bootstrap goes out.
+    /// Register a consumer before its bootstrap goes out (ADR-0018).
     pub consumer_attach: mpsc::Sender<ConsumerAttachRequest>,
-    /// Counterpart to [`Self::consumer_attach`]. The runtime sends this on
-    /// DETACH (and on the EOF cleanup path). Silent no-op if the consumer
-    /// was never attached.
+    /// Drop a consumer (detach or EOF cleanup); idempotent.
     pub consumer_detach: mpsc::Sender<ConsumerDetachRequest>,
-    /// ADR-0018 inbound `FRAME_ACK` channel (phux-q0e.4). One
-    /// [`ConsumerAckRequest`] per decoded `FRAME_ACK` whose `terminal_id`
-    /// resolved to this resource. Silent no-op if the consumer is not
-    /// currently registered.
+    /// Inbound `FRAME_ACK`s for this resource.
     pub consumer_ack: mpsc::Sender<ConsumerAckRequest>,
-    /// Graceful-upgrade handoff channel (ADR-0032). The upgrade producer
-    /// sends an [`UpgradeHandleRequest`] per resource to collect what the
-    /// re-exec'd image needs to re-adopt it.
+    /// Graceful-upgrade handoff requests (ADR-0032).
     pub upgrade: mpsc::Sender<UpgradeHandleRequest>,
-    /// Supervisory control channel (ADR-0033). The runtime sends a
-    /// [`ControlRequest`] when a client takes the wheel, releases it, or
-    /// signals the resource. The engine emits the `TerminalControl` event
-    /// (it owns the lifecycle that event reports) and delivers what
-    /// applies to it.
+    /// Supervisory control (ADR-0033).
     pub control: mpsc::Sender<ControlRequest>,
     /// The kind-specific channels. Reach them through [`Self::terminal`].
     pub facet: ResourceFacetHandle,
 }
 
 impl ResourceHandle {
-    /// The Terminal facet: the only route from runtime code to a
-    /// Terminal-only channel (snapshot, screen, resize, cwd, palette,
-    /// native, input, grid size).
+    /// The Terminal facet.
     ///
     /// # Errors
     ///
-    /// [`WrongResourceKind`] when this resource is not a Terminal. This is
-    /// the sole producer of that error in the crate; callers map it into
-    /// their own reply shape.
+    /// [`WrongResourceKind`] when this resource is not a Terminal.
     pub const fn terminal(&self) -> Result<&TerminalHandle, WrongResourceKind> {
         match &self.facet {
             ResourceFacetHandle::Terminal(handle) => Ok(handle),
@@ -497,14 +335,11 @@ impl ResourceHandle {
         }
     }
 
-    /// The `AgentSession` facet: the only route from runtime code to a
-    /// session-only channel (producer append, bootstrap cut) and to the
-    /// session's provider and native id.
+    /// The `AgentSession` facet.
     ///
     /// # Errors
     ///
-    /// [`WrongResourceKind`] when this resource is not an agent session —
-    /// the reply `APPEND_RESOURCE_OUTPUT` on a Terminal earns.
+    /// [`WrongResourceKind`] when this resource is not an agent session.
     pub const fn agent_session(&self) -> Result<&AgentSessionHandle, WrongResourceKind> {
         match &self.facet {
             ResourceFacetHandle::AgentSession(handle) => Ok(handle),
@@ -518,55 +353,40 @@ impl ResourceHandle {
 
 // ---- engine-side core -------------------------------------------------------
 
-/// The generic, engine-side half of a resource.
-///
-/// Owned by exactly one engine task. Holds the checked output sequence, the
-/// output broadcast sender, the lifecycle (cancel token in, exit
-/// notification out), and the receiving end of the control mailbox. An
-/// engine polls the receiver in its own `select!` and calls back in for the
-/// bookkeeping. Semantic events leave through the engine's
-/// [`event_sink::EventSink`]; the subscriber registry is server state
-/// (ADR-0123), not the engine's.
+/// The engine-side half of a resource: output sequence and broadcast,
+/// lifecycle, and the control receiver, owned by one engine task.
 pub struct ResourceCore {
     /// Which engine owns this core.
     pub(super) kind: ResourceKind,
     /// The resource this one is bound to, if any.
     pub(super) parent: Option<ResourceId>,
-    /// Resource-global raw output sequence; never resets across bootstrap
-    /// generations. Advances only through [`Self::next_seq`].
+    /// Resource-global raw output sequence; advanced only by
+    /// [`Self::next_seq`].
     pub(super) seq: u64,
-    /// Output broadcast sender. The seed receiver is dropped at
-    /// construction, so `receiver_count()` is the live-subscriber count.
+    /// Output sender; the seed receiver was dropped, so `receiver_count()`
+    /// counts live subscribers.
     pub(super) output_tx: broadcast::Sender<PaneOutput>,
-    /// One-shot fired when the engine observes its backing exit. `Option`
-    /// so it can be `take()`n after firing — sending on a `oneshot::Sender`
-    /// is a by-value move. `None` after the first fire.
+    /// Fired once when the backing exits.
     pub(super) exit_notify: Option<oneshot::Sender<phux_core::process::ExitOutcome>>,
-    /// Cancellation token the engine's loop watches. Cancel to ask the
-    /// engine to shut down cleanly. Dropping the token does NOT cancel —
-    /// cancellation is always explicit.
+    /// Cancellation token the engine watches (dropping does not cancel).
     pub(super) token: CancellationToken,
     /// Supervisory control mailbox (ADR-0033).
     pub(super) control_rx: mpsc::Receiver<ControlRequest>,
 }
 
-/// The sender halves paired with a fresh [`ResourceCore`], for the engine
-/// to fold into its [`ResourceHandle`] and bundle.
+/// Sender halves paired with a fresh [`ResourceCore`].
 #[derive(Debug)]
 pub struct ResourceCoreChannels {
     /// Output broadcast sender, cloned into the handle.
     pub output: broadcast::Sender<PaneOutput>,
     /// Supervisory control sender.
     pub control: mpsc::Sender<ControlRequest>,
-    /// Fires with the exit outcome (code or signal) when the engine
-    /// observes its backing exit.
+    /// Fires with the exit outcome.
     pub exit_notify: oneshot::Receiver<phux_core::process::ExitOutcome>,
 }
 
 impl ResourceCore {
-    /// Build a core for a resource of `kind` bound to `parent`, whose
-    /// engine loop watches `token`, with an output broadcast of
-    /// `output_capacity` frames.
+    /// Build a core for `kind` bound to `parent`, watching `token`.
     #[must_use]
     pub fn new(
         kind: ResourceKind,
@@ -612,8 +432,7 @@ impl ResourceCore {
         self.seq
     }
 
-    /// Advance and return the next output sequence, or `None` when the
-    /// `u64` is exhausted — the engine must then stop rather than wrap.
+    /// Advance the output sequence; `None` when exhausted (never wraps).
     pub const fn next_seq(&mut self) -> Option<u64> {
         match self.seq.checked_add(1) {
             Some(seq) => {
@@ -624,16 +443,14 @@ impl ResourceCore {
         }
     }
 
-    /// Report the backing's exit outcome to whoever holds the bundle's
-    /// receiver. Fires at most once; later calls are no-ops.
+    /// Report the backing's exit once.
     pub fn notify_exit(&mut self, outcome: phux_core::process::ExitOutcome) {
         if let Some(tx) = self.exit_notify.take() {
             let _ = tx.send(outcome);
         }
     }
 
-    /// Arm a new exit oneshot after a child replacement. The previous
-    /// receiver has already fired.
+    /// Arm a new exit oneshot after a child replacement.
     pub fn arm_exit_notify(&mut self) -> oneshot::Receiver<phux_core::process::ExitOutcome> {
         let (tx, rx) = oneshot::channel();
         self.exit_notify = Some(tx);

@@ -1,12 +1,8 @@
 //! `phux agent set` / `clear` — write the structured `phux.agent/v1`
 //! record (ADR-0040), and the pipelined read-back the detector consumes.
 //!
-//! The record is the stable agent-identity path: it rides the existing L3
-//! `SET_METADATA` / `GET_METADATA` / `DELETE_METADATA` verbs (no wire
-//! change), the server stores it opaquely, and every consumer — this CLI's
-//! `agent list/show/explain`, the TUI sidebar, a future fleet dashboard —
-//! reads the same bytes instead of re-deriving state from title or screen
-//! substrings. See `docs/spec/L3.md` §3.7 for the normative schema.
+//! The record rides the L3 metadata verbs and is stored opaquely; every
+//! consumer reads the same bytes (`docs/spec/L3.md` §3.7).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -42,8 +38,6 @@ pub(super) fn run_agent_set(
     let record = AgentRecord {
         name: name.trim().to_owned(),
         kind: kind.map(str::to_owned),
-        // The clap value parsers restrict these to the v1 vocabulary, so
-        // the open-enum From<String> fallback is unreachable here.
         state: state
             .map(|s| AgentMetaState::from(s.to_owned()))
             .unwrap_or_default(),
@@ -52,19 +46,15 @@ pub(super) fn run_agent_set(
     };
     with_target_pane(target, socket, "agent set", move |conn, pane| {
         Box::pin(async move {
-            // The trailing GET inside `set_record` is load-bearing (same as
-            // `phux tag`): SET_METADATA has no reply frame, so without a
-            // round-trip the process could exit before the server reads the
-            // SET. Frames are ordered on the one connection, so the reply
-            // proves the write landed; we print that confirmed value.
+            // `set_record` reads back: SET_METADATA has no reply frame, so the
+            // read-back proves the write landed.
             let (answer, degradation) =
                 phux_client::agent_record::set_record(conn, 100, &pane, &record).await?;
             warn_interleaved_degradation(&degradation);
             match answer {
                 Ok(Some(rec)) => outln!("{}", render_record(&pane, Some(&rec))),
                 Ok(None) => eprintln!("phux: agent record did not persist"),
-                // Not the same statement: the server declined to read the key
-                // back, so whether the write landed is unknown.
+                // The server declined the read-back: the write is unknown.
                 Err(refusal) => {
                     eprintln!("phux: agent record could not be confirmed: {refusal}");
                 }
@@ -129,9 +119,8 @@ where
             Ok(view) => view.into_parts(),
             Err(err) => return report_no_server(&err, &socket_path, verb),
         };
-        // `%name` resolves to the named agent's pane or refuses (ADR-0075
-        // point 3); it never travels the set-valued path below.
-        let pane = if let crate::selector::Selector::Agent(name) = &selector {
+        // `%name` resolves to exactly one pane or refuses (ADR-0075 point 3).
+        let pane = if let phux_client::selector::Selector::Agent(name) = &selector {
             match phux_client::state::resolve_agent_target(&socket_path, name, &snapshot, false)
                 .await
             {
@@ -143,14 +132,9 @@ where
         } else {
             let candidates = resolve_targets(&socket_path, &selector, &snapshot).await;
             let Some(pane) =
-                crate::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
+                phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
             else {
-                // `agent set` / `clear` address a Terminal, and `panes` is
-                // the list a federation hub merges. A miss against a hub that
-                // could not reach a satellite is unresolved, not absent —
-                // writing the record onto the "no such target" branch would
-                // tell the operator of a fleet-wide agent script that a live
-                // pane had vanished.
+                // A miss under a partial fleet view is unresolved, not absent.
                 return partial::report_target_miss(target, &degradation);
             };
             pane
@@ -167,7 +151,7 @@ where
 /// `SELECTOR<TAB>record-json` (or `SELECTOR<TAB>-` for a cleared record) —
 /// one line, machine-splittable, mirroring `phux tag`'s confirmation output.
 fn render_record(pane: &ResourceId, record: Option<&AgentRecord>) -> String {
-    let selector = crate::selector::format_terminal_id(pane);
+    let selector = phux_client::selector::format_terminal_id(pane);
     record.map_or_else(
         || format!("{selector}\t-"),
         |rec| {
@@ -180,21 +164,8 @@ fn render_record(pane: &ResourceId, record: Option<&AgentRecord>) -> String {
 }
 
 /// Fetch the `phux.agent/v1` index — `ResourceId` → decoded record — for
-/// every pane in `snapshot`, over one fresh connection to `socket_path`.
-///
-/// One `GET_METADATA` round trip per pane, the same shape as `phux tag`'s
-/// `fetch_tag_index` — and, like it, sequential rather than pipelined since
-/// phux-h5hj.12: the pipelined version hand-rolled its own correlation and
-/// counted down only on `METADATA_VALUE`, so one correlated `ERROR`
-/// (`proto.md` §9) hung `phux agent ls` forever. The cost of the trade is one
-/// local round trip per pane on a CLI verb that has already paid milliseconds
-/// for process start.
-///
-/// A pane with no record, or bytes that fail the §3.7 validation, is simply
-/// absent from the index — as is one the server refuses to read, since this
-/// index has no channel to report a refusal on. Best-effort: transport
-/// failure returns what was collected so the caller degrades to heuristics
-/// instead of erroring.
+/// every pane in `snapshot`. Best effort: a pane with no valid record is
+/// absent, and a transport failure returns what was collected.
 pub(crate) async fn fetch_agent_index(
     socket_path: &std::path::Path,
     snapshot: &SessionSnapshot,

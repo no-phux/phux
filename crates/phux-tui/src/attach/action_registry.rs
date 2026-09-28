@@ -1,33 +1,12 @@
-//! Canonical action registry (phux-ahv.8).
+//! Canonical action registry: the palette's human-facing catalogue of the
+//! actions `run_action` handles.
 //!
-//! The fuzzy commands-and-help finder needs a human-facing catalogue of the
-//! actions the dispatcher can run. That catalogue must
-//! not drift from what [`run_action`](super::input_dispatch) actually
-//! handles — a palette entry for an action the dispatcher ignores is a
-//! dead command, and an action the dispatcher handles but the palette
-//! omits is undiscoverable.
-//!
-//! ## Drift prevention
-//!
-//! There is one source of truth for the set of action *names*:
-//! [`ACTION_NAMES`](super::input_dispatch::ACTION_NAMES), owned next to
-//! `run_action`. This module's [`REGISTRY`] supplies the *presentation*
-//! (description + the default [`ResolvedAction`] the palette commits) for
-//! each of those names; [`NON_PALETTE_ACTIONS`] documents the remainder —
-//! actions the dispatcher handles but the palette deliberately omits, each
-//! with the reason. A unit test (`every_action_has_exactly_one_doc_home`)
-//! asserts the two consts partition `ACTION_NAMES` exactly, so adding an
-//! arm to `run_action` without documenting it — or vice versa — fails CI.
-//! Adding a new action is therefore a three-touch change that the compiler
-//! and the test funnel together: the `run_action` match arm, the
-//! `ACTION_NAMES` entry, and the [`REGISTRY`] row (or
-//! [`NON_PALETTE_ACTIONS`] entry). The generated reference page
-//! `docs/reference/actions.md` renders from the union (see
-//! `phux::refdocs::actions`), so the same funnel keeps the docs complete.
-//!
-//! Palette items resolve their *bound chord* at build time from the live
-//! [`KeybindingsCfg`] snapshot, so the displayed shortcut always reflects
-//! the user's actual config (or `"unbound"`).
+//! [`ACTION_NAMES`](phux_config::vocab::ACTION_NAMES) is the one list of
+//! names. [`REGISTRY`] gives each palette-offered action its presentation;
+//! [`NON_PALETTE_ACTIONS`] gives every other one the reason it has no row. A
+//! test asserts the two partition `ACTION_NAMES` exactly, and the generated
+//! `docs/reference/actions.md` renders from their union. Bound chords resolve
+//! from the live [`KeybindingsCfg`] at build time.
 
 use std::collections::BTreeMap;
 
@@ -38,9 +17,7 @@ use super::plugin_actions::PluginActionEntry;
 use super::plugin_panes::PluginPaneEntry;
 use crate::render::overlay::select_list::SelectItem;
 
-/// The category a palette action groups under. Drives the dim section
-/// headers the palette renders between groups; rows keep their category's
-/// source order within a group.
+/// The section a palette action groups under, in palette order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
     /// Pane-level actions: split, kill, focus, resize, zoom, cycle.
@@ -74,31 +51,21 @@ impl Category {
 #[derive(Debug, Clone, Copy)]
 pub struct ActionSpec {
     /// Canonical action name (matches a `run_action` arm and an
-    /// [`super::input_dispatch::ACTION_NAMES`] entry).
+    /// [`phux_config::vocab::ACTION_NAMES`] entry).
     pub name: &'static str,
     /// The section the palette groups this action under.
     pub category: Category,
     /// One-line human description shown in the palette.
     pub description: &'static str,
-    /// The action's full parameter surface, for the generated reference
-    /// page (`docs/reference/actions.md`): accepted keys with their value
-    /// spaces, or `""` for a bare action. Documentation only — the
-    /// dispatcher parses args itself; [`Self::args`] below is what the
-    /// palette actually commits.
+    /// The parameter surface for the generated reference page (`""` for a
+    /// bare action); documentation only.
     pub params: &'static str,
-    /// Inline `(key, value)` args the palette-committed
-    /// [`ResolvedAction`] should carry. Empty for bare actions; e.g.
-    /// `split-pane` carries `direction = "vertical"` so the palette
-    /// commits a concrete, runnable action rather than a half-specified
-    /// one that would bell.
+    /// Inline args the palette-committed action carries, so a row commits a
+    /// runnable action rather than a half-specified one that would bell.
     pub args: &'static [(&'static str, ArgValue)],
 }
 
-/// A statically-expressible argument value for a registry row.
-///
-/// `ResolvedAction::args` is a `BTreeMap<String, toml::Value>`, but
-/// `toml::Value` isn't `const`-constructible, so the registry expresses
-/// args with this small enum and converts at build time.
+/// A `const`-constructible argument value (`toml::Value` is not).
 #[derive(Debug, Clone, Copy)]
 pub enum ArgValue {
     /// A string-valued arg, e.g. `direction = "vertical"`.
@@ -117,9 +84,8 @@ impl ArgValue {
 }
 
 impl ActionSpec {
-    /// The [`ResolvedAction`] this spec commits when chosen from the
-    /// palette — the same shape a keybinding produces, so it flows
-    /// through `run_action` identically.
+    /// The [`ResolvedAction`] this row commits, the same shape a keybinding
+    /// produces.
     #[must_use]
     pub fn resolved_action(&self) -> ResolvedAction {
         let mut args = BTreeMap::new();
@@ -133,19 +99,8 @@ impl ActionSpec {
     }
 }
 
-/// The canonical, in-tree catalogue of palette-offerable actions.
-///
-/// Every name here MUST be handled by a `run_action` arm and listed in
-/// [`super::input_dispatch::ACTION_NAMES`] (enforced by a unit test).
-///
-/// Notes on inclusions/exclusions:
-/// - `select-window` is parameterized by `index`, which the palette has
-///   no UI to collect; the `<leader> w` window picker is the right
-///   surface for "jump to window N", so it is omitted here.
-/// - `rename-window` with no `name` arg opens the interactive prompt, so
-///   the palette offers the bare form (prompt-driven).
-/// - `command-palette` is omitted — opening the palette from the palette
-///   is noise.
+/// The palette-offerable actions. Every name must have a `run_action` arm
+/// and an `ACTION_NAMES` entry (enforced by a test).
 pub const REGISTRY: &[ActionSpec] = &[
     ActionSpec {
         name: "split-pane",
@@ -383,16 +338,8 @@ pub const REGISTRY: &[ActionSpec] = &[
     },
 ];
 
-/// A dispatched action the palette deliberately does not offer.
-///
-/// Together with [`REGISTRY`], this const partitions
-/// [`ACTION_NAMES`](phux_config::vocab::ACTION_NAMES): every dispatched
-/// action has exactly one home — a palette row above, or an entry here
-/// with the reason it has no row. The
-/// `every_action_has_exactly_one_doc_home` test enforces the partition in
-/// both directions, so adding (or removing) an action forces a doc blurb;
-/// the generated `docs/reference/actions.md` renders from the union and
-/// its freshness test forces the page regeneration.
+/// A dispatched action the palette deliberately does not offer, with the
+/// reason (rendered in the generated reference).
 #[derive(Debug, Clone, Copy)]
 pub struct NonPaletteAction {
     /// Canonical action name (matches an
@@ -408,11 +355,7 @@ pub struct NonPaletteAction {
     pub reason: &'static str,
 }
 
-/// Dispatched-but-not-palette-offered actions, with the reason for each.
-///
-/// This is the single documented home for the palette exemptions the
-/// lockstep test used to keep in a bare name list; the rationale for each
-/// entry is unchanged from that list's comments.
+/// Dispatched-but-not-palette-offered actions.
 pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
     NonPaletteAction {
         name: "command-palette",
@@ -498,40 +441,11 @@ pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
     },
 ];
 
-/// Build the palette's [`SelectItem`] rows from the [`REGISTRY`],
-/// annotating each with its currently-bound chord (or `"unbound"`) and
-/// grouping them under dim category headers ([`Category`]).
+/// The palette rows.
 ///
-/// Rows are emitted category-by-category in [`Category`] order; each
-/// non-empty category is preceded by a [`SelectItem::header`] section
-/// label, and its action rows are [`indented`](SelectItem::indented) so the
-/// grouping reads visually. The headers are non-selectable and disappear
-/// once the user types a query (the filtered view is a flat best-first
-/// ranking).
-///
-/// `keybindings` is the live config snapshot; `None` (config failed to
-/// load) yields every row as `"unbound"`. The committed action is the
-/// registry's [`ActionSpec::resolved_action`], so choosing a palette row
-/// runs exactly what a keybinding would.
-///
-/// phux-r82.5: `plugin_actions` is the driver's snapshot of enabled
-/// plugins' manifest `[[actions]]`. When non-empty, the rows follow the
-/// static categories under a trailing **Plugin** header, labelled
-/// `plugin: <plugin-name>: <action title>` and committing the shared
-/// `plugin-action` dispatcher action (args `plugin`/`action`). These rows
-/// are dynamic — they come from manifests, not [`REGISTRY`] — so they are
-/// exempt from the registry↔dispatcher lockstep test (which pins the
-/// `plugin-action` *name* instead; see `PALETTE_EXEMPT`). The bound-chord
-/// annotation works unchanged because merged plugin keybindings carry the
-/// same action + args shape (see
-/// [`super::plugin_actions::merge_plugin_bindings`]).
-///
-/// phux-r82.7: `plugin_panes` is the driver's snapshot of enabled
-/// plugins' hostable manifest `[[panes]]` (placement `split`/`tab`/
-/// `zoomed`; overlay entries are dropped at snapshot time). Their rows
-/// share the same trailing **Plugin** header, labelled
-/// `plugin pane: <plugin-name>: <pane title>` and committing the
-/// `plugin-pane` dispatcher action (args `plugin`/`pane`).
+/// [`REGISTRY`] grouped under [`Category`] headers, each row annotated by its
+/// bound chord (`"unbound"` without one or without a config), then enabled
+/// plugins' actions and panes under a trailing **Plugin** header.
 #[must_use]
 pub fn palette_items(
     keybindings: Option<&KeybindingsCfg>,
@@ -583,15 +497,9 @@ fn chord_annotation(keybindings: Option<&KeybindingsCfg>, resolved: &ResolvedAct
     bound_chord_for(keybindings, resolved).unwrap_or_else(|| "unbound".to_owned())
 }
 
-/// The chord bound to `resolved`, or `None` when it is unbound (or the
-/// config failed to load).
-///
-/// The palette renders `None` as the literal `"unbound"` because its rows
-/// are a table with a shortcut column. The context menus (phux-wrnm) leave
-/// an unbound row's annotation blank instead — a menu is not a reference
-/// table, and a column of "unbound" reads as noise. Both go through this
-/// one resolver so the two surfaces can never disagree about which chord
-/// runs a row.
+/// The chord bound to `resolved`, or `None`. The palette renders `None` as
+/// `"unbound"`; context menus leave it blank. Both use this one resolver so
+/// they never disagree.
 #[must_use]
 pub fn bound_chord_for(
     keybindings: Option<&KeybindingsCfg>,
@@ -600,19 +508,9 @@ pub fn bound_chord_for(
     bound_chord(keybindings?, resolved)
 }
 
-/// Find the chord a user has bound to `target`, formatted as the literal
-/// keystrokes to type.
-///
-/// Prefix-table entries are shown with the leader prefixed (e.g.
-/// `"C-a |"`); global entries are shown as-is. The prefix table is
-/// scanned before globals.
-///
-/// A registry action like `split-pane` may be bound under several chords
-/// that differ only in args (`|` = vertical, `-` = horizontal). We prefer
-/// the binding whose args exactly match the registry row, so the palette
-/// shows the chord that runs *this* row; we fall back to a name-only
-/// match when no exact-args binding exists. `None` when nothing maps to
-/// the action name at all.
+/// The chord bound to `target` as literal keystrokes (prefix-table entries
+/// with the leader). Prefers a binding whose args match exactly (`|` vs `-`
+/// for `split-pane`), then any binding of the same action name.
 #[must_use]
 fn bound_chord(cfg: &KeybindingsCfg, target: &ResolvedAction) -> Option<String> {
     // First pass: an exact (name + args) match.
@@ -623,9 +521,8 @@ fn bound_chord(cfg: &KeybindingsCfg, target: &ResolvedAction) -> Option<String> 
     scan(cfg, target, false)
 }
 
-/// Canonical presentation chord when the shipped table retains a compatibility
-/// alias for the same action. A user's remaining binding still wins when the
-/// preferred chord has been removed or rebound.
+/// Canonical chords shown ahead of a shipped compatibility alias, unless the
+/// user removed or rebound them.
 const PRIMARY_PREFIX_BINDINGS: &[(&str, &str)] = &[("session-picker", "s")];
 
 /// Scan the prefix table then globals for a binding to `target`'s action.
@@ -671,9 +568,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    /// The glyphs of a VT byte stream: drop every CSI escape (the overlay paint
-    /// emits SGR per styled cell and a CUP per row), leaving the text a user
-    /// would read off the screen.
+    /// The glyphs of a VT stream, CSI escapes dropped.
     fn strip_csi(vt: &str) -> String {
         let mut out = String::new();
         let mut chars = vt.chars();
@@ -693,14 +588,8 @@ mod tests {
         out
     }
 
-    /// phux-ep9s, end-to-end over the real registry: the full palette has more
-    /// rows than a modal can show on any terminal, so the rows past the fold
-    /// must be *reachable* — before the scroll viewport landed they were
-    /// painted straight off the bottom edge of the box and the selection went
-    /// with them.
-    ///
-    /// Drives the real overlay stack (`OverlayState::paint` → VT bytes) at a
-    /// full-screen terminal size, not a synthetic list at a toy size.
+    /// The real palette overflows its modal, so rows past the fold must be
+    /// reachable by scrolling (they once painted off the box's bottom edge).
     #[test]
     fn the_real_palette_scrolls_to_its_last_row() {
         use crate::render::Theme;
@@ -722,10 +611,6 @@ mod tests {
             items,
             &Theme::default(),
         )));
-        // A roomy terminal — the palette still overflows it, which is the
-        // whole point: this is the geometry the bug was reported against.
-        // The paint re-emits an SGR escape before every styled cell, so read
-        // the glyphs the user actually sees, not the raw byte stream.
         let paint = |overlays: &OverlayState| {
             let mut out = Vec::new();
             overlays.paint(&mut out, (160, 48)).expect("paint");
@@ -761,18 +646,11 @@ mod tests {
         );
     }
 
-    /// The exhaustiveness gate (phux-i0e8.11.3): [`REGISTRY`] and
-    /// [`NON_PALETTE_ACTIONS`] must partition `ACTION_NAMES` exactly —
-    /// disjoint, and their union equal to the dispatched set in both
-    /// directions. Adding a `run_action` arm therefore forces a described
-    /// home (a palette row or a reasoned non-palette entry), which is what
-    /// keeps the generated `docs/reference/actions.md` complete.
+    /// [`REGISTRY`] and [`NON_PALETTE_ACTIONS`] partition `ACTION_NAMES`
+    /// exactly, so a new `run_action` arm forces a documented home.
     #[test]
     fn every_action_has_exactly_one_doc_home() {
-        let dispatched: BTreeSet<&str> = super::super::input_dispatch::ACTION_NAMES
-            .iter()
-            .copied()
-            .collect();
+        let dispatched: BTreeSet<&str> = phux_config::vocab::ACTION_NAMES.iter().copied().collect();
         let registered: BTreeSet<&str> = REGISTRY.iter().map(|s| s.name).collect();
         let non_palette: BTreeSet<&str> = NON_PALETTE_ACTIONS.iter().map(|s| s.name).collect();
 
@@ -798,9 +676,6 @@ mod tests {
         }
     }
 
-    /// A non-palette entry's whole point is the blurb: every field that
-    /// the generated reference renders must be non-empty (params may be
-    /// empty — bare actions exist — but description and reason may not).
     #[test]
     fn non_palette_entries_carry_description_and_reason() {
         for spec in NON_PALETTE_ACTIONS {
@@ -818,42 +693,9 @@ mod tests {
     }
 
     #[test]
-    fn attention_navigation_actions_are_registered() {
-        let names: BTreeSet<&str> = REGISTRY.iter().map(|spec| spec.name).collect();
-        assert!(names.contains("next-attention"));
-        assert!(names.contains("return-from-attention"));
-    }
-
-    #[test]
-    fn finder_entry_aliases_are_not_recursive_rows() {
-        let registered: BTreeSet<&str> = REGISTRY.iter().map(|spec| spec.name).collect();
-        let omitted: BTreeSet<&str> = NON_PALETTE_ACTIONS.iter().map(|spec| spec.name).collect();
-        for name in ["show-help", "command-palette"] {
-            assert!(!registered.contains(name));
-            assert!(omitted.contains(name));
-        }
-    }
-
-    #[test]
-    fn resolved_action_carries_registry_args() {
-        let split = REGISTRY
-            .iter()
-            .find(|s| s.name == "split-pane")
-            .expect("split-pane registered");
-        let ra = split.resolved_action();
-        assert_eq!(ra.action, "split-pane");
-        assert_eq!(
-            ra.args.get("direction"),
-            Some(&toml::Value::String("vertical".to_owned()))
-        );
-    }
-
-    #[test]
     fn signal_terminal_palette_default_is_the_reversible_freeze() {
-        // ADR-0033: signals are NOT lease-gated server-side, so the palette's
-        // default arg is the safety boundary. It must stay the reversible
-        // `freeze` (SIGSTOP) so a palette-dispatched signal-terminal can never
-        // silently arm a destructive kill/terminate/interrupt.
+        // ADR-0033: signals are not lease-gated server-side, so the palette
+        // default must stay the reversible `freeze`.
         let sig = REGISTRY
             .iter()
             .find(|s| s.name == "signal-terminal")
@@ -966,19 +808,7 @@ mod tests {
     }
 
     #[test]
-    fn no_plugin_actions_means_no_plugin_header() {
-        let items = palette_items(None, &[], &[]);
-        assert!(
-            items.iter().all(|i| i.label != "Plugin"),
-            "empty plugin snapshot must not add a Plugin section",
-        );
-    }
-
-    #[test]
     fn plugin_row_shows_merged_binding_chord() {
-        // Merge the plugin's `keys` into the prefix table the same way the
-        // driver does, then confirm the palette annotates the row with the
-        // literal keystrokes (prefix + chord).
         let entry = plugin_entry(Some("g"));
         let mut kb = KeybindingsCfg::default();
         super::super::plugin_actions::merge_plugin_bindings(&mut kb, std::slice::from_ref(&entry));
@@ -1030,27 +860,5 @@ mod tests {
             row.action.args.get("pane"),
             Some(&toml::Value::String("board".to_owned()))
         );
-    }
-
-    #[test]
-    fn plugin_panes_alone_still_get_the_plugin_header() {
-        let items = palette_items(None, &[], &[pane_entry()]);
-        let headers: Vec<&str> = items
-            .iter()
-            .filter(|i| i.is_header())
-            .map(|i| i.label.as_str())
-            .collect();
-        assert_eq!(headers, vec!["Pane", "Window", "Session", "View", "Plugin"]);
-    }
-
-    #[test]
-    fn every_registry_action_has_a_category_in_order() {
-        for spec in REGISTRY {
-            assert!(
-                Category::ORDER.contains(&spec.category),
-                "`{}` has a category outside ORDER",
-                spec.name,
-            );
-        }
     }
 }

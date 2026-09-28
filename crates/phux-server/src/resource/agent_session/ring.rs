@@ -1,11 +1,7 @@
 //! The bounded record ring an [`AgentSession`](super) retains and replays.
 //!
-//! The byte-ceiling shape ADR-0094 established for scrollback, applied to
-//! records instead of grid pages: one explicit bound in bytes, pruning from
-//! the oldest end, and a count of what pruning cost. The count is the part
-//! that matters — a replayed window that silently starts mid-turn is
-//! indistinguishable from a session that started there, so the bootstrap
-//! reports how many records the reader will never see.
+//! A byte ceiling (like ADR-0094 scrollback), oldest-first pruning, and a
+//! count of what was pruned so a replay can say it starts mid-session.
 
 use bytes::Bytes;
 
@@ -34,14 +30,9 @@ impl RecordRing {
         }
     }
 
-    /// Append `record` and prune the oldest entries back under the ceiling.
-    ///
-    /// The newest record is always retained, even when it alone exceeds the
-    /// ceiling: a producer that configures a ring smaller than one record
-    /// still gets a live stream, and the codec's own 16 KiB per-record limit
-    /// bounds what that costs. Eviction is never an error — it is the
-    /// retention policy working, and the bootstrap reports its toll through
-    /// [`Self::dropped`].
+    /// Append `record` and prune the oldest back under the ceiling. The
+    /// newest record is always kept (bounded by the 16 KiB record limit);
+    /// eviction is counted in [`Self::dropped`], never an error.
     pub fn push(&mut self, record: Bytes) {
         self.bytes = self.bytes.saturating_add(record.len());
         self.records.push_back(record);

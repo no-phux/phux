@@ -1,62 +1,14 @@
 #!/usr/bin/env bash
 # `zig build` with a per-worktree Zig global cache, an orphan reaper, and a
-# refusal to build a tree you are not standing in. See phux-cockpit-2ml.11.
+# refusal to build a tree you are not standing in.
 #
-# WHY A WRAPPER EXISTS AT ALL
-#
-# Zig's global cache (`~/.cache/zig` by default) is shared by every checkout on
-# the machine, and a cache entry is guarded by an EXCLUSIVE advisory lock on its
-# manifest file in `<global cache>/h/<hash>.txt`. The lock is held for the whole
-# time the entry is being produced. That is correct for one user and one
-# checkout: the second build waits a moment and then gets the first build's
-# work for free.
-#
-# With one worktree per agent it stops being correct. The manifests that land in
-# the global cache are project-independent -- a hello-world and this repo were
-# measured writing the SAME manifest, h/19941dd10bf085611a6d575c4f038f22.txt --
-# so every worktree on this machine queues on the same file. A build runner that
-# outlives its session holds that lock forever, and every other worktree stops.
-# That is the 30-minute starvation recorded on the bead, and it was reproduced
-# here deliberately:
-#
-#   held lock + shared global cache   -> blocked, killed at 45s (exit 124)
-#   held lock + isolated global cache -> exit 0 in 3s
-#   lock released + shared cache      -> exit 0 in 1s
-#
-# (scripts/zig-cache-isolation-check.sh runs that A/B on demand.)
-#
-# WHAT IS ISOLATED AND WHAT IS DELIBERATELY NOT
-#
-# Isolating the whole global cache per worktree would be the easy answer and the
-# wrong one: `p/` is the package cache, and re-fetching the pinned SDK and
-# ghostty per worktree costs a network round trip that an offline machine simply
-# cannot make. Measured on this repo, `zig build --fetch=all` into a brand-new
-# worktree:
-#
-#   fully private global cache   16s, 172 MB downloaded
-#   private cache, shared `p/`    7s, 0 bytes downloaded
-#
-# So `p/` is shared by symlink and everything else (b/ h/ o/ z/ tmp/) is private.
-# Sharing `p/` is safe in a way sharing the rest is not: its entries are
-# immutable, content-addressed and hash-verified, written once by an atomic
-# rename out of `tmp/`, and never rewritten. Nothing in it is produced under a
-# long-held lock, so it cannot starve anybody.
-#
-# The private half is cheap because Zig 0.16 already materializes dependency
-# SOURCE into a build-root-relative `zig-pkg/` (528-693 MB, per worktree,
-# already). What is left in the global cache for a full `zig build test` here is
-# 45 MB, of which the only substantial artifact is one `libcompiler_rt.a`:
-#
-#   du -sh <private global cache>/*  ->  b 28K   h 132K   o 3.1M   z 41M
-#
-# ORPHANS
-#
-# The other half of the damage: build runners outliving their session. A real
-# one was found while writing this -- pid 65004, ppid 1, 73 minutes old, still
-# spinning a test binary in a worktree whose session was long gone. Nothing was
-# going to read its exit code. This script kills orphaned runners for ITS OWN
-# build root before starting, never for anybody else's, and puts its own zig in
-# a process group it tears down on exit so it does not become the next one.
+# Zig's global cache guards entries with exclusive manifest locks whose
+# manifests are project-independent, so worktrees sharing `~/.cache/zig`
+# queue on the same files and an orphaned runner starves them all. Everything
+# but `p/` (immutable, content-addressed packages, shared by symlink so no
+# re-fetch is needed) is private per worktree. Orphaned runners for THIS
+# build root are killed before starting, and our own zig runs in a process
+# group torn down on exit.
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -80,7 +32,7 @@ ACTION=build
 ZIG_ARGS=()
 
 usage() {
-    sed -n '2,58p' "$0"
+    sed -n '2,/^set -euo pipefail/{ /^set -euo pipefail/!p; }' "$0"
     exit 0
 }
 
@@ -100,12 +52,9 @@ done
 
 # ---------------------------------------------------------------- orphans
 #
-# A Zig build runner's argv is
-#   <local cache>/o/<hash>/build <zig exe> <lib dir> <BUILD ROOT> <local cache> \
-#     <global cache> --seed ... <steps>
-# so the build root it is compiling is in the command line, and `ps` can tell
-# you which tree a runner belongs to without guessing. `pgrep -f` is not used
-# anywhere here: it matches the shell running it (phux-cockpit-2ml.11 rule 4).
+# A build runner's argv names its build root:
+#   <local cache>/o/<hash>/build <zig> <lib> <BUILD ROOT> <local cache> <global cache> ...
+# (`pgrep -f` is avoided: it matches the shell running it.)
 runners_matching() {
     # $1: a build root to match, or the empty string for every runner.
     local want="$1"
@@ -192,11 +141,7 @@ esac
 
 # ------------------------------------------------------- wrong-tree refusal
 #
-# The failure this whole bead is named for: an agent believed it was in its own
-# worktree, ran `zig build test`, and got a real exit code for somebody else's
-# code. A wrapper cannot read the agent's belief, but it can refuse the one
-# shape the mistake takes -- the tree you are STANDING IN is not the tree this
-# script would build.
+# Refuse when the tree you are standing in is not the tree this would build.
 if [ "$ALLOW_FOREIGN_CWD" = 0 ]; then
     cwd_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
     expected_root="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || true)"

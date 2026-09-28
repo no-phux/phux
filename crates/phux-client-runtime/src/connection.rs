@@ -1,20 +1,11 @@
 //! The async connection driver: dial, framing, keepalive, the reconnect
 //! ladder, and the pump that feeds the sans-IO control plane.
 //!
-//! One [`run_session`] future owns a session's whole life: it dials the
-//! [`Target`] over its lane, writes the frames the [`ControlPlane`] queues,
-//! feeds it every inbound frame, and when the transport drops walks the
-//! [`Ladder`] from `crate::reconnect`, with
-//! [`is_fatal_refusal`](crate::reconnect::is_fatal_refusal) ending the
-//! session terminally instead. A resync (a replica the kernel invalidated,
-//! or a consumer's request) redials at once; a nudge cuts a backoff short
-//! and probes a possibly-stale socket. The driver runs on whatever tokio
-//! runtime polls it; [`crate::runtime`] gives it one background thread so
-//! a synchronous binding drives the session with plain method calls.
-//!
-//! The control plane is shared with those callers through a mutex. The
-//! driver never calls foreign code while holding it: the wake callback runs
-//! after the lock is released.
+//! One [`run_session`] future owns a session's life: it dials the [`Target`],
+//! writes queued frames, feeds inbound ones, and walks the [`Ladder`] when
+//! the transport drops (a fatal refusal ends the session). A resync redials
+//! at once; a nudge cuts a backoff short. The control plane is shared
+//! through a mutex, and no foreign code runs while it is held.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};

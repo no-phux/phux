@@ -1,906 +1,375 @@
-//! ADR-0105 lifecycle tests: a keep-empty session survives its last window.
-//!
-//! Every test drives a real server over UDS through the production frame
-//! loop. Each server keeps a pre-seeded `anchor` session alive, so removing
-//! a test session never drains the server: these assertions are about the
-//! session. The server's own last-session self-exit is `server_self_exit.rs`.
-//!
-//! Reaping is asynchronous (the pane's exit watcher does it), so the tests
-//! that wait on a reap poll `GET_STATE` under a deadline rather than sleep.
-
-#![allow(clippy::expect_used, reason = "tests")]
-#![allow(clippy::unwrap_used, reason = "tests")]
-#![allow(clippy::panic, reason = "tests")]
-
-use std::time::Duration;
+//! ADR-0105/0114/0129: a keep-empty session survives its last window, and
+//! every session removal path cleans up its layout keys. Each server keeps a
+//! pre-seeded `anchor` session, so these assertions are about the session,
+//! not the server's own last-session exit (`server_self_exit.rs`).
 
 use phux_protocol::ids::{GroupId, ResourceId};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, DetachReason, FrameKind, SESSION_CREATE_KEY,
-    SESSION_CREATE_RESULT_KEY_PREFIX, SESSION_KEEP_EMPTY_KEY, Scope, SpawnResult, StateScope,
-    TYPE_ATTACHED, encode_session_keep_empty,
+    Command, CommandResult, DetachReason, FrameKind, SESSION_KEEP_EMPTY_KEY, Scope, SpawnResult,
+    encode_session_keep_empty,
 };
-use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
-use tempfile::TempDir;
+use phux_protocol::wire::info::SessionInfo;
+use phux_server_testkit::{command, send_frame, spawn_resource};
 use tokio::net::UnixStream;
-use tokio::time::timeout;
 
-use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown,
-    recv_command_result, recv_typed, run_local, send_frame, spawn_server_seed_pty_no_cmd,
-    wait_for_socket,
+use crate::common::{
+    Server, attach, create, create_result, create_seeded, get_metadata, send_create, session, sh,
+    state, token, wait_for_state, wait_frame,
 };
 
-/// The pre-seeded session that keeps every test server up.
 const ANCHOR: &str = "anchor";
 
-/// How long a test waits for an asynchronous reap to show in `GET_STATE`.
-const REAP_DEADLINE: Duration = Duration::from_secs(10);
-
-/// A seed command that stays alive on its PTY without producing output.
-fn blocking_seed_command() -> Vec<String> {
-    vec!["/bin/sh".to_owned(), "-c".to_owned(), "read _".to_owned()]
+async fn start() -> (Server, UnixStream) {
+    let server = Server::pty(Some(ANCHOR));
+    let conn = server.connect().await;
+    (server, conn)
 }
 
-/// Start a server with the anchor session and connect to it.
-async fn start(
-    tmp: &TempDir,
-) -> (
-    UnixStream,
-    tokio::sync::oneshot::Sender<()>,
-    tokio::task::JoinHandle<Result<(), phux_server::ServerError>>,
-) {
-    let socket_path = tmp.path().join("phux.sock");
-    let (shutdown_tx, server) = spawn_server_seed_pty_no_cmd(socket_path.clone(), Some(ANCHOR));
-    let conn = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-    (conn, shutdown_tx, server)
-}
-
-/// `GET_STATE { Server }` on `stream`.
-async fn get_state(stream: &mut UnixStream, request_id: u32) -> SessionSnapshot {
-    send_frame(
-        stream,
-        &FrameKind::Command {
-            request_id,
-            command: Command::GetState {
-                scope: StateScope::Server,
-            },
-        },
-    )
-    .await;
-    match timeout(WIRE_RECV_TIMEOUT, recv_command_result(stream, request_id))
-        .await
-        .expect("GET_STATE must be answered")
-    {
-        CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot,
-        other => panic!("GET_STATE failed: {other:?}"),
-    }
-}
-
-fn session<'a>(snapshot: &'a SessionSnapshot, name: &str) -> Option<&'a SessionInfo> {
-    snapshot.sessions.iter().find(|s| s.name == name)
-}
-
-/// Poll `GET_STATE` until `ready` holds, failing after [`REAP_DEADLINE`].
-async fn wait_for_state(
-    stream: &mut UnixStream,
-    first_request_id: u32,
-    what: &str,
-    ready: impl Fn(&SessionSnapshot) -> bool,
-) -> SessionSnapshot {
-    let end = tokio::time::Instant::now() + REAP_DEADLINE;
-    let mut request_id = first_request_id;
-    loop {
-        let snapshot = get_state(stream, request_id).await;
-        if ready(&snapshot) {
-            return snapshot;
-        }
-        assert!(
-            tokio::time::Instant::now() < end,
-            "timed out waiting for {what}"
-        );
-        request_id += 1;
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
-/// A request token the server accepts (UUID-shaped), unique per `request_id`.
-fn token(request_id: u32) -> String {
-    format!("00000000-0000-4000-8000-{request_id:012}")
-}
-
-/// Send one `phux.session.create/v1` write carrying a request token.
-async fn send_create(stream: &mut UnixStream, mut body: serde_json::Value, request_id: u32) {
-    body["request_token"] = serde_json::Value::String(token(request_id));
-    send_frame(
-        stream,
-        &FrameKind::SetMetadata {
-            request_id,
-            scope: Scope::Global,
-            key: SESSION_CREATE_KEY.to_owned(),
-            value: serde_json::to_vec(&body).unwrap(),
-        },
-    )
-    .await;
-}
-
-/// Read the one-shot result of the create sent with `request_id`.
-async fn create_result(stream: &mut UnixStream, request_id: u32) -> Option<serde_json::Value> {
-    let read_id = request_id + 10_000;
-    send_frame(
-        stream,
-        &FrameKind::GetMetadata {
-            request_id: read_id,
-            scope: Scope::Global,
-            key: format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{}", token(request_id)),
-        },
-    )
-    .await;
-    loop {
-        let (_type_byte, frame) = timeout(WIRE_RECV_TIMEOUT, recv_typed(stream))
-            .await
-            .expect("the create result read must be answered");
-        if let FrameKind::MetadataValue { request_id, value } = frame
-            && request_id == read_id
-        {
-            return value.map(|bytes| serde_json::from_slice(&bytes).unwrap());
-        }
-    }
-}
-
-/// Create a session and return its result document.
-async fn create(
-    stream: &mut UnixStream,
-    body: serde_json::Value,
-    request_id: u32,
-) -> serde_json::Value {
-    send_create(stream, body, request_id).await;
-    create_result(stream, request_id)
-        .await
-        .expect("a successful create publishes its result")
-}
-
-/// Create a seeded session running a blocking command and return its pane.
-async fn create_seeded(
-    stream: &mut UnixStream,
-    name: &str,
-    keep_empty: bool,
-    request_id: u32,
-) -> ResourceId {
-    let body = serde_json::json!({
-        "name": name,
-        "command": blocking_seed_command(),
-        "keep_empty": keep_empty,
-    });
-    let result = create(stream, body, request_id).await;
-    let id = result["terminal_id"]
-        .as_u64()
-        .and_then(|id| u32::try_from(id).ok())
-        .expect("a seeded create names its seed pane");
-    ResourceId::local(id)
-}
-
-/// Write `phux.session.keep_empty/v1` for `name`.
 async fn set_keep_empty(stream: &mut UnixStream, name: &str, keep: bool, request_id: u32) {
-    send_frame(
-        stream,
-        &FrameKind::SetMetadata {
-            request_id,
-            scope: Scope::Global,
-            key: SESSION_KEEP_EMPTY_KEY.to_owned(),
-            value: encode_session_keep_empty(name, keep),
-        },
-    )
-    .await;
+    let set = FrameKind::SetMetadata {
+        request_id,
+        scope: Scope::Global,
+        key: SESSION_KEEP_EMPTY_KEY.to_owned(),
+        value: encode_session_keep_empty(name, keep),
+    };
+    send_frame(stream, &set).await;
 }
 
-/// Send one command and require `COMMAND_RESULT { Ok }`.
-async fn command_ok(stream: &mut UnixStream, request_id: u32, command: Command) {
-    send_frame(
-        stream,
-        &FrameKind::Command {
-            request_id,
-            command,
-        },
-    )
-    .await;
-    let result = timeout(WIRE_RECV_TIMEOUT, recv_command_result(stream, request_id))
-        .await
-        .expect("the command must be answered");
+async fn command_ok(stream: &mut UnixStream, request_id: u32, cmd: Command) {
+    let result = command(stream, request_id, cmd).await;
     assert!(
         matches!(result, CommandResult::Ok),
         "command failed: {result:?}"
     );
 }
 
-/// `GET_METADATA` on `stream`, returning the value.
-async fn get_metadata(
-    stream: &mut UnixStream,
-    request_id: u32,
-    scope: Scope,
-    key: &str,
-) -> Option<Vec<u8>> {
-    send_frame(
-        stream,
-        &FrameKind::GetMetadata {
-            request_id,
-            scope,
-            key: key.to_owned(),
-        },
-    )
-    .await;
-    loop {
-        let (_type_byte, frame) = timeout(WIRE_RECV_TIMEOUT, recv_typed(stream))
-            .await
-            .expect("the metadata read must be answered");
-        if let FrameKind::MetadataValue {
-            request_id: id,
-            value,
-        } = frame
-            && id == request_id
-        {
-            return value;
-        }
+const fn kill(pane: ResourceId) -> Command {
+    Command::KillResource {
+        terminal_id: pane,
+        operation_id: None,
     }
 }
 
-/// A group kill of a keep-empty session with an attached client broadcasts
-/// the released mark and then detaches the client with `SESSION_KILLED`,
-/// instead of stranding it on a session that no longer exists.
+/// A client attached to `name` and subscribed to the keep-empty mark.
+async fn attached_watcher(server: &Server, name: &str) -> UnixStream {
+    let mut client = server.connect().await;
+    attach(&mut client, name).await;
+    let subscribe = FrameKind::SubscribeMetadata {
+        scope: Scope::Global,
+        key: SESSION_KEEP_EMPTY_KEY.to_owned(),
+    };
+    send_frame(&mut client, &subscribe).await;
+    state(&mut client, 50).await;
+    client
+}
+
+/// Read to `DETACHED`, returning its reason and whether the released mark
+/// was broadcast first.
+async fn released_then_detached(
+    client: &mut UnixStream,
+    name: &str,
+) -> (bool, Option<DetachReason>) {
+    let mut released = false;
+    let reason = wait_frame(client, "DETACHED", |frame| match frame {
+        FrameKind::MetadataChanged { key, value, .. } if key == SESSION_KEEP_EMPTY_KEY => {
+            assert_eq!(value, Some(encode_session_keep_empty(name, false)));
+            released = true;
+            None
+        }
+        FrameKind::Detached { reason, .. } => Some(reason),
+        _ => None,
+    })
+    .await;
+    (released, reason)
+}
+
+/// A group kill of a keep-empty session broadcasts the released mark, then
+/// detaches its attached client with `SESSION_KILLED`.
 #[test]
 fn group_kill_detaches_clients_attached_to_a_keep_empty_session() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let (mut conn, shutdown_tx, server) = start(&tmp).await;
-        let socket_path = tmp.path().join("phux.sock");
-        let pane = create_seeded(&mut conn, "kept", true, 1).await;
+    phux_server_testkit::run_local(async {
+        let (server, mut conn) = start().await;
+        let pane = create_seeded(&mut conn, 1, "kept", true).await;
+        let mut client = attached_watcher(&server, "kept").await;
 
-        let mut client = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        send_frame(&mut client, &attach_by_name("kept")).await;
-        let (type_byte, _attached) = timeout(WIRE_RECV_TIMEOUT, recv_typed(&mut client))
-            .await
-            .expect("the attach must be answered");
-        assert_eq!(type_byte, TYPE_ATTACHED);
-        send_frame(
-            &mut client,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Global,
-                key: SESSION_KEEP_EMPTY_KEY.to_owned(),
-            },
-        )
-        .await;
-        // Barrier: the subscribe ran before this answer was produced.
-        get_state(&mut client, 50).await;
-
-        command_ok(
-            &mut conn,
-            2,
-            Command::KillResources {
-                ids: vec![pane],
-                operation_id: None,
-            },
-        )
-        .await;
-
-        let mut released = false;
-        let reason = loop {
-            let (_type_byte, frame) = timeout(WIRE_RECV_TIMEOUT, recv_typed(&mut client))
-                .await
-                .expect("the attached client must be told the session went");
-            match frame {
-                FrameKind::MetadataChanged { key, value, .. } if key == SESSION_KEEP_EMPTY_KEY => {
-                    assert_eq!(value, Some(encode_session_keep_empty("kept", false)));
-                    released = true;
-                }
-                FrameKind::Detached { reason, .. } => break reason,
-                _ => {}
-            }
+        let kill_all = Command::KillResources {
+            ids: vec![pane],
+            operation_id: None,
         };
-        assert!(released, "the released mark is broadcast before the detach");
-        assert_eq!(reason, Some(DetachReason::SessionKilled));
+        command_ok(&mut conn, 2, kill_all).await;
+        assert_eq!(
+            released_then_detached(&mut client, "kept").await,
+            (true, Some(DetachReason::SessionKilled))
+        );
         wait_for_state(&mut conn, 100, "the session to go", |s| {
             session(s, "kept").is_none()
         })
         .await;
 
-        drop(client);
-        drop(conn);
-        join_after_shutdown(shutdown_tx, server).await;
+        drop((client, conn));
+        server.stop().await;
     });
 }
 
-/// A keep-empty session that loses its last window drops its stored TUI
-/// layout: the tree names only dead panes, and a later attach must see the
-/// empty state rather than adopt it.
+/// Close Tab of a keep-empty session's last pane leaves it listed and empty
+/// for a second attached client; clearing the mark (End Session) then reaps
+/// it and detaches that client.
 #[test]
-fn losing_the_last_window_deletes_the_stored_layout() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let (mut conn, shutdown_tx, server) = start(&tmp).await;
-
-        let pane = create_seeded(&mut conn, "kept", true, 1).await;
-        let wire_session = session(&get_state(&mut conn, 2).await, "kept")
-            .expect("listed")
-            .id;
-        let key = format!("phux.tui.layout/v1/{}", wire_session.get());
-        let layout_scope = Scope::Group(GroupId::new(1));
-        send_frame(
-            &mut conn,
-            &FrameKind::SetMetadata {
-                request_id: 3,
-                scope: layout_scope.clone(),
-                key: key.clone(),
-                value: b"stale tree".to_vec(),
-            },
-        )
-        .await;
-        assert!(
-            get_metadata(&mut conn, 4, layout_scope.clone(), &key)
-                .await
-                .is_some()
-        );
-
-        command_ok(
-            &mut conn,
-            5,
-            Command::KillResource {
-                terminal_id: pane,
-                operation_id: None,
-            },
-        )
-        .await;
-        wait_for_state(&mut conn, 100, "the last window to go", |s| {
-            session(s, "kept").is_some_and(SessionInfo::is_empty)
-        })
-        .await;
-        assert!(
-            get_metadata(&mut conn, 6, layout_scope, &key)
-                .await
-                .is_none(),
-            "the dead layout must be deleted with the last window"
-        );
-
-        drop(conn);
-        join_after_shutdown(shutdown_tx, server).await;
-    });
-}
-
-/// ADR-0129: an *ordinary* (non-keep-empty) session that reaps to zero
-/// windows is fully removed rather than kept parked, and the removal must
-/// not orphan its layout keys — the default TUI key and any named
-/// `--projection` alike, since both share the `<prefix>.layout/v1/<id>`
-/// shape (L3.md §3.2, §3.5). Before this fix only a keep-empty session's
-/// layout was ever cleaned up (`losing_the_last_window_deletes_the_stored_layout`
-/// above); a normally-reaped session left its keys behind forever.
-#[test]
-fn ordinary_session_reap_deletes_every_layout_key_it_wrote() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let (mut conn, shutdown_tx, server) = start(&tmp).await;
-
-        let pane = create_seeded(&mut conn, "gone", false, 1).await;
-        let wire_session = session(&get_state(&mut conn, 2).await, "gone")
-            .expect("listed")
-            .id;
-        let default_key = format!("phux.tui.layout/v1/{}", wire_session.get());
-        let named_key = format!("myapp.layout/v1/{}", wire_session.get());
-        let layout_scope = Scope::Group(GroupId::new(1));
-        for key in [&default_key, &named_key] {
-            send_frame(
-                &mut conn,
-                &FrameKind::SetMetadata {
-                    request_id: 3,
-                    scope: layout_scope.clone(),
-                    key: key.clone(),
-                    value: b"stale tree".to_vec(),
-                },
-            )
-            .await;
-        }
-        assert!(
-            get_metadata(&mut conn, 4, layout_scope.clone(), &default_key)
-                .await
-                .is_some()
-        );
-        assert!(
-            get_metadata(&mut conn, 5, layout_scope.clone(), &named_key)
-                .await
-                .is_some()
-        );
-
-        command_ok(
-            &mut conn,
-            6,
-            Command::KillResource {
-                terminal_id: pane,
-                operation_id: None,
-            },
-        )
-        .await;
-        wait_for_state(&mut conn, 100, "the ordinary session to be reaped", |s| {
-            session(s, "gone").is_none()
-        })
-        .await;
-
-        assert!(
-            get_metadata(&mut conn, 7, layout_scope.clone(), &default_key)
-                .await
-                .is_none(),
-            "an ordinary reap must delete the default layout key, not just a keep-empty one"
-        );
-        assert!(
-            get_metadata(&mut conn, 8, layout_scope, &named_key)
-                .await
-                .is_none(),
-            "a named projection over the same session must be deleted too"
-        );
-
-        drop(conn);
-        join_after_shutdown(shutdown_tx, server).await;
-    });
-}
-
-/// `empty: true` creates a keep-empty session with zero windows, answers
-/// with a `null` terminal id, and lists it as keep-empty and empty.
-#[test]
-fn empty_create_makes_a_windowless_keep_empty_session() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let (mut conn, shutdown_tx, server) = start(&tmp).await;
-
-        let result = create(
-            &mut conn,
-            serde_json::json!({ "name": "parked", "empty": true }),
-            1,
-        )
-        .await;
-        assert_eq!(result["name"], "parked");
-        assert!(result["terminal_id"].is_null());
-        assert_eq!(result["empty"], true);
-
-        let snapshot = get_state(&mut conn, 2).await;
-        let parked = session(&snapshot, "parked").expect("the empty session is listed");
-        assert_eq!(parked.window_count, 0);
-        assert!(parked.keep_empty);
-        assert!(parked.is_empty());
-        assert!(
-            !session(&snapshot, ANCHOR).unwrap().keep_empty,
-            "a default session is not keep-empty"
-        );
-
-        drop(conn);
-        join_after_shutdown(shutdown_tx, server).await;
-    });
-}
-
-/// An empty session has no terminal to run a command in: `empty` with a
-/// `command` is refused and creates nothing.
-#[test]
-fn empty_create_with_a_command_is_refused() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let (mut conn, shutdown_tx, server) = start(&tmp).await;
-
-        let body = serde_json::json!({
-            "name": "confused",
-            "empty": true,
-            "command": blocking_seed_command(),
-        });
-        send_create(&mut conn, body, 1).await;
-        assert!(create_result(&mut conn, 1).await.is_none());
-        assert!(session(&get_state(&mut conn, 2).await, "confused").is_none());
-
-        drop(conn);
-        join_after_shutdown(shutdown_tx, server).await;
-    });
-}
-
-/// The reap cascade stops at a keep-empty session: its last pane's death
-/// removes the window and keeps the session. A default session beside it
-/// still goes with its pane.
-#[test]
-fn cascade_stops_at_a_keep_empty_session() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let (mut conn, shutdown_tx, server) = start(&tmp).await;
-
-        let kept = create_seeded(&mut conn, "kept", true, 1).await;
-        let plain = create_seeded(&mut conn, "plain", false, 2).await;
-        command_ok(
-            &mut conn,
-            3,
-            Command::KillResource {
-                terminal_id: kept,
-                operation_id: None,
-            },
-        )
-        .await;
-        command_ok(
-            &mut conn,
-            4,
-            Command::KillResource {
-                terminal_id: plain,
-                operation_id: None,
-            },
-        )
-        .await;
-
-        let snapshot = wait_for_state(&mut conn, 100, "both reaps", |s| {
-            session(s, "plain").is_none() && session(s, "kept").is_some_and(SessionInfo::is_empty)
-        })
-        .await;
-        let kept = session(&snapshot, "kept").expect("the keep-empty session survives");
-        assert!(kept.keep_empty);
-        assert_eq!(kept.window_count, 0);
-
-        drop(conn);
-        join_after_shutdown(shutdown_tx, server).await;
-    });
-}
-
-/// A `KILL_RESOURCES` naming every pane of a keep-empty session is a group
-/// teardown: the session goes with its panes.
-#[test]
-fn kill_resources_naming_every_pane_removes_a_keep_empty_session() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let (mut conn, shutdown_tx, server) = start(&tmp).await;
-
-        let pane = create_seeded(&mut conn, "kept", true, 1).await;
-        command_ok(
-            &mut conn,
-            2,
-            Command::KillResources {
-                ids: vec![pane],
-                operation_id: None,
-            },
-        )
-        .await;
-        wait_for_state(&mut conn, 100, "the session to go", |s| {
-            session(s, "kept").is_none()
-        })
-        .await;
-
-        drop(conn);
-        join_after_shutdown(shutdown_tx, server).await;
-    });
-}
-
-/// A `CLOSE_TAB_RESOURCES` naming every pane of a keep-empty session is
-/// explicit Close Tab, not group teardown: the named session stays listed
-/// and empty (phux-2jza.4.2.1.2 / ADR-0114).
-#[test]
-fn close_tab_resources_naming_every_pane_leaves_a_keep_empty_session_empty() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let (mut conn, shutdown_tx, server) = start(&tmp).await;
-
-        let pane = create_seeded(&mut conn, "kept", true, 1).await;
-        command_ok(&mut conn, 2, Command::CloseTabResources { ids: vec![pane] }).await;
-        let snapshot = wait_for_state(&mut conn, 100, "the last window to go", |s| {
-            session(s, "kept").is_some_and(SessionInfo::is_empty)
-        })
-        .await;
-        let kept = session(&snapshot, "kept").expect("the keep-empty session survives");
-        assert!(kept.keep_empty);
-        assert_eq!(kept.window_count, 0);
-
-        drop(conn);
-        join_after_shutdown(shutdown_tx, server).await;
-    });
-}
-
-/// A second attached client sees the keep-empty session survive explicit
-/// Close Tab, then sees End Session (clearing the mark) reap it.
-#[test]
-fn close_tab_resources_leaves_keep_empty_visible_to_a_second_client() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let (mut conn, shutdown_tx, server) = start(&tmp).await;
-        let socket_path = tmp.path().join("phux.sock");
-        let pane = create_seeded(&mut conn, "kept", true, 1).await;
-
-        let mut client = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        send_frame(&mut client, &attach_by_name("kept")).await;
-        let (type_byte, _attached) = timeout(WIRE_RECV_TIMEOUT, recv_typed(&mut client))
-            .await
-            .expect("the attach must be answered");
-        assert_eq!(type_byte, TYPE_ATTACHED);
-        send_frame(
-            &mut client,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Global,
-                key: SESSION_KEEP_EMPTY_KEY.to_owned(),
-            },
-        )
-        .await;
-        get_state(&mut client, 50).await;
+fn close_tab_leaves_keep_empty_visible_until_the_mark_is_cleared() {
+    phux_server_testkit::run_local(async {
+        let (server, mut conn) = start().await;
+        let pane = create_seeded(&mut conn, 1, "kept", true).await;
+        let mut client = attached_watcher(&server, "kept").await;
 
         command_ok(&mut conn, 2, Command::CloseTabResources { ids: vec![pane] }).await;
         wait_for_state(&mut conn, 100, "the last window to go", |s| {
             session(s, "kept").is_some_and(SessionInfo::is_empty)
         })
         .await;
-
-        let listing = get_state(&mut client, 51).await;
-        let kept = session(&listing, "kept").expect("the second client still sees the session");
-        assert!(kept.keep_empty);
-        assert!(kept.is_empty());
+        let listing = state(&mut client, 51).await;
+        let kept = session(&listing, "kept").expect("the second client still sees it");
+        assert!(kept.keep_empty && kept.is_empty());
 
         set_keep_empty(&mut conn, "kept", false, 3).await;
-        let reason = loop {
-            let (_type_byte, frame) = timeout(WIRE_RECV_TIMEOUT, recv_typed(&mut client))
-                .await
-                .expect("the attached client must be told the session went");
-            match frame {
-                FrameKind::MetadataChanged { key, value, .. } if key == SESSION_KEEP_EMPTY_KEY => {
-                    assert_eq!(value, Some(encode_session_keep_empty("kept", false)));
-                }
-                FrameKind::Detached { reason, .. } => break reason,
-                _ => {}
-            }
-        };
-        assert_eq!(reason, Some(DetachReason::SessionKilled));
+        assert_eq!(
+            released_then_detached(&mut client, "kept").await.1,
+            Some(DetachReason::SessionKilled)
+        );
         wait_for_state(&mut conn, 200, "the session to go", |s| {
             session(s, "kept").is_none()
         })
         .await;
 
-        drop(client);
-        drop(conn);
-        join_after_shutdown(shutdown_tx, server).await;
+        drop((client, conn));
+        server.stop().await;
     });
 }
 
-/// Clearing the mark on an empty session removes it: the kill path for a
-/// session with no pane to name.
+/// The reap cascade stops at a keep-empty session when its last pane dies;
+/// a default session goes with its pane; a `KILL_RESOURCES` naming every
+/// pane of a keep-empty session is a group teardown that removes it.
 #[test]
-fn clearing_the_mark_on_an_empty_session_removes_it() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let (mut conn, shutdown_tx, server) = start(&tmp).await;
+fn reaps_stop_at_keep_empty_sessions_except_a_group_kill() {
+    phux_server_testkit::run_local(async {
+        let (server, mut conn) = start().await;
+        let kept = create_seeded(&mut conn, 1, "kept", true).await;
+        let plain = create_seeded(&mut conn, 2, "plain", false).await;
+        let grouped = create_seeded(&mut conn, 3, "grouped", true).await;
+        command_ok(&mut conn, 4, kill(kept)).await;
+        command_ok(&mut conn, 5, kill(plain)).await;
+        let kill_all = Command::KillResources {
+            ids: vec![grouped],
+            operation_id: None,
+        };
+        command_ok(&mut conn, 6, kill_all).await;
 
-        create(
-            &mut conn,
-            serde_json::json!({ "name": "parked", "empty": true }),
-            1,
-        )
-        .await;
-        set_keep_empty(&mut conn, "parked", false, 2).await;
-        // Frames are handled in order, so this GET_STATE sees the write.
-        let snapshot = get_state(&mut conn, 3).await;
-        assert!(session(&snapshot, "parked").is_none());
-        assert!(session(&snapshot, ANCHOR).is_some());
-
-        drop(conn);
-        join_after_shutdown(shutdown_tx, server).await;
-    });
-}
-
-/// ADR-0129 / PHA-406 L18 review item 8: clearing the keep-empty mark on an
-/// already-windowless session reaps it through the very same
-/// `reap_session_if_empty` choke point `reap_window_if_empty`'s cascade
-/// uses, and that path must delete the session's layout keys too — not
-/// only the "window closes while still keep-empty" path
-/// (`losing_the_last_window_deletes_the_stored_layout` above already
-/// covers that one). This pins the *other* removal path: a key written
-/// while the session sits parked (a named `--projection`, or a late TUI
-/// republish) must not survive the session finally going away when its
-/// mark is cleared.
-#[test]
-fn clearing_keep_empty_on_a_windowless_session_deletes_its_layout_keys_too() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let (mut conn, shutdown_tx, server) = start(&tmp).await;
-
-        let pane = create_seeded(&mut conn, "kept", true, 1).await;
-        let wire_session = session(&get_state(&mut conn, 2).await, "kept")
-            .expect("listed")
-            .id;
-        let named_key = format!("myapp.layout/v1/{}", wire_session.get());
-        let layout_scope = Scope::Group(GroupId::new(1));
-
-        // The window closes while the session is still keep-empty; the
-        // session survives, windowless.
-        command_ok(
-            &mut conn,
-            3,
-            Command::KillResource {
-                terminal_id: pane,
-                operation_id: None,
-            },
-        )
-        .await;
-        wait_for_state(&mut conn, 100, "the last window to go", |s| {
-            session(s, "kept").is_some_and(SessionInfo::is_empty)
+        let snapshot = wait_for_state(&mut conn, 100, "all three reaps", |s| {
+            session(s, "plain").is_none()
+                && session(s, "grouped").is_none()
+                && session(s, "kept").is_some_and(SessionInfo::is_empty)
         })
         .await;
+        let kept = session(&snapshot, "kept").unwrap();
+        assert!(kept.keep_empty);
+        assert_eq!(kept.window_count, 0);
 
-        // A key lands on the now-parked session — the scenario this test
-        // exists for: a named projection or a late republish, not the
-        // window-close broadcast the other test already covers.
-        send_frame(
-            &mut conn,
-            &FrameKind::SetMetadata {
-                request_id: 4,
-                scope: layout_scope.clone(),
-                key: named_key.clone(),
-                value: b"parked-write".to_vec(),
-            },
-        )
-        .await;
+        drop(conn);
+        server.stop().await;
+    });
+}
+
+/// Every way a session loses its last window or goes away deletes the
+/// `<prefix>.layout/v1/<id>` keys naming it (L3 §3.2/§3.5): the default TUI
+/// key and a named projection alike, whether the session is keep-empty
+/// (window closes), ordinary (reaped), or parked and then cleared.
+#[test]
+fn every_removal_path_deletes_the_sessions_layout_keys() {
+    phux_server_testkit::run_local(async {
+        let (server, mut conn) = start().await;
+        let scope = Scope::Group(GroupId::new(1));
+        let kept = create_seeded(&mut conn, 1, "kept", true).await;
+        let gone = create_seeded(&mut conn, 2, "gone", false).await;
+        let listing = state(&mut conn, 3).await;
+        let keys = |name: &str| {
+            let id = session(&listing, name).unwrap().id.get();
+            [
+                format!("phux.tui.layout/v1/{id}"),
+                format!("myapp.layout/v1/{id}"),
+            ]
+        };
+        let (kept_keys, gone_keys) = (keys("kept"), keys("gone"));
+        for (request_id, key) in (10..).zip(kept_keys.iter().chain(&gone_keys)) {
+            let set = FrameKind::SetMetadata {
+                request_id,
+                scope: scope.clone(),
+                key: key.clone(),
+                value: b"stale tree".to_vec(),
+            };
+            send_frame(&mut conn, &set).await;
+        }
         assert!(
-            get_metadata(&mut conn, 5, layout_scope.clone(), &named_key)
+            get_metadata(&mut conn, 20, scope.clone(), &gone_keys[1])
                 .await
                 .is_some()
         );
 
-        // Clearing the mark removes the (already windowless) session
-        // through `reap_session_if_empty`, not the window-close cascade.
-        set_keep_empty(&mut conn, "kept", false, 6).await;
-        wait_for_state(&mut conn, 100, "the cleared session to be reaped", |s| {
+        command_ok(&mut conn, 21, kill(kept)).await;
+        command_ok(&mut conn, 22, kill(gone)).await;
+        wait_for_state(&mut conn, 100, "both reaps", |s| {
+            session(s, "gone").is_none() && session(s, "kept").is_some_and(SessionInfo::is_empty)
+        })
+        .await;
+        for (n, key) in (30..).zip(kept_keys.iter().chain(&gone_keys)) {
+            assert!(
+                get_metadata(&mut conn, n, scope.clone(), key)
+                    .await
+                    .is_none(),
+                "{key} survived"
+            );
+        }
+
+        // A key written while `kept` sits parked goes when the cleared mark
+        // reaps it through `reap_session_if_empty`.
+        let parked_write = FrameKind::SetMetadata {
+            request_id: 40,
+            scope: scope.clone(),
+            key: kept_keys[1].clone(),
+            value: b"parked-write".to_vec(),
+        };
+        send_frame(&mut conn, &parked_write).await;
+        assert!(
+            get_metadata(&mut conn, 41, scope.clone(), &kept_keys[1])
+                .await
+                .is_some()
+        );
+        set_keep_empty(&mut conn, "kept", false, 42).await;
+        wait_for_state(&mut conn, 200, "the cleared session to go", |s| {
             session(s, "kept").is_none()
         })
         .await;
-
         assert!(
-            get_metadata(&mut conn, 7, layout_scope, &named_key)
+            get_metadata(&mut conn, 43, scope, &kept_keys[1])
                 .await
-                .is_none(),
-            "clearing keep-empty must delete layout keys too, not just the window-close path"
+                .is_none()
         );
 
         drop(conn);
-        join_after_shutdown(shutdown_tx, server).await;
+        server.stop().await;
     });
 }
 
-/// `phux.session.keep_empty/v1` sets the mark, broadcasts the applied value
-/// only when it changes, and is not stored.
+/// `empty: true` creates a windowless keep-empty session (and refuses a
+/// `command`); it is attachable with sentinel focus ids, a spawn from that
+/// attach opens its first window, and clearing the mark on an empty session
+/// removes it.
 #[test]
-fn keep_empty_mark_is_applied_and_broadcast_on_change() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let (mut writer, shutdown_tx, server) = start(&tmp).await;
-        let socket_path = tmp.path().join("phux.sock");
-        let mut watcher = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        send_frame(
-            &mut watcher,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Global,
-                key: SESSION_KEEP_EMPTY_KEY.to_owned(),
-            },
+fn empty_sessions_are_created_attached_filled_and_cleared() {
+    phux_server_testkit::run_local(async {
+        let (server, mut conn) = start().await;
+        let result = create(
+            &mut conn,
+            1,
+            serde_json::json!({ "name": "parked", "empty": true }),
         )
         .await;
-        // Barrier: the subscribe ran before this answer was produced.
-        get_state(&mut watcher, 1).await;
+        assert_eq!(result["name"], "parked");
+        assert!(result["terminal_id"].is_null());
+        assert_eq!(result["empty"], true);
+        let snapshot = state(&mut conn, 2).await;
+        let parked = session(&snapshot, "parked").unwrap();
+        assert!(parked.keep_empty && parked.is_empty() && parked.window_count == 0);
+        assert!(!session(&snapshot, ANCHOR).unwrap().keep_empty);
 
-        create_seeded(&mut writer, "work", false, 1).await;
+        let body = serde_json::json!({
+            "name": "confused",
+            "empty": true,
+            "command": ["/bin/sh", "-c", "read _"],
+            "request_token": token(3),
+        });
+        send_create(&mut conn, 3, &body).await;
+        assert!(create_result(&mut conn, 4, &token(3)).await.is_none());
+        assert!(session(&state(&mut conn, 5).await, "confused").is_none());
+
+        let mut client = server.connect().await;
+        let snapshot = attach(&mut client, "parked").await;
+        assert_eq!(snapshot.focused_resource, ResourceId::local(0));
+        assert_eq!(
+            snapshot.focused_session,
+            session(&snapshot, "parked").unwrap().id
+        );
+        let result = spawn_resource(&mut client, 7, sh("read _")).await;
+        assert!(matches!(result, SpawnResult::Ok(_)), "{result:?}");
+        assert_eq!(
+            session(&state(&mut conn, 6).await, "parked")
+                .unwrap()
+                .window_count,
+            1
+        );
+
+        create(
+            &mut conn,
+            8,
+            serde_json::json!({ "name": "doomed", "empty": true }),
+        )
+        .await;
+        set_keep_empty(&mut conn, "doomed", false, 9).await;
+        // Frames are handled in order, so this sees the write.
+        assert!(session(&state(&mut conn, 10).await, "doomed").is_none());
+
+        drop((client, conn));
+        server.stop().await;
+    });
+}
+
+/// `phux.session.keep_empty/v1` sets the mark, broadcasts only a change, and
+/// is never stored.
+#[test]
+fn keep_empty_mark_is_applied_and_broadcast_on_change() {
+    phux_server_testkit::run_local(async {
+        let (server, mut writer) = start().await;
+        let mut watcher = server.connect().await;
+        let subscribe = FrameKind::SubscribeMetadata {
+            scope: Scope::Global,
+            key: SESSION_KEEP_EMPTY_KEY.to_owned(),
+        };
+        send_frame(&mut watcher, &subscribe).await;
+        state(&mut watcher, 1).await;
+
+        create_seeded(&mut writer, 1, "work", false).await;
         set_keep_empty(&mut writer, "work", true, 2).await;
-        // A repeat of the same mark changes nothing and must not broadcast,
-        // so the next broadcast the watcher sees is the clear below.
-        set_keep_empty(&mut writer, "work", true, 3).await;
-        let snapshot = get_state(&mut writer, 4).await;
-        assert!(session(&snapshot, "work").unwrap().keep_empty);
+        set_keep_empty(&mut writer, "work", true, 3).await; // no change, no broadcast
+        assert!(
+            session(&state(&mut writer, 4).await, "work")
+                .unwrap()
+                .keep_empty
+        );
         set_keep_empty(&mut writer, "work", false, 5).await;
 
         let mut seen = Vec::new();
-        while seen.len() < 2 {
-            let (_type_byte, frame) = timeout(WIRE_RECV_TIMEOUT, recv_typed(&mut watcher))
-                .await
-                .expect("the watcher must hear both changes");
+        wait_frame(&mut watcher, "both changes", |frame| {
             if let FrameKind::MetadataChanged { key, value, .. } = frame
                 && key == SESSION_KEEP_EMPTY_KEY
             {
                 seen.push(value);
             }
-        }
+            (seen.len() == 2).then_some(())
+        })
+        .await;
         assert_eq!(
             seen,
-            vec![
+            [
                 Some(encode_session_keep_empty("work", true)),
                 Some(encode_session_keep_empty("work", false)),
             ]
         );
-
-        send_frame(
-            &mut writer,
-            &FrameKind::GetMetadata {
-                request_id: 6,
-                scope: Scope::Global,
-                key: SESSION_KEEP_EMPTY_KEY.to_owned(),
-            },
-        )
-        .await;
-        let stored = loop {
-            let (_type_byte, frame) = recv_typed(&mut writer).await;
-            if let FrameKind::MetadataValue {
-                request_id: 6,
-                value,
-            } = frame
-            {
-                break value;
-            }
-        };
-        assert!(stored.is_none(), "the mark is applied, never stored");
-
-        drop(watcher);
-        drop(writer);
-        join_after_shutdown(shutdown_tx, server).await;
-    });
-}
-
-/// The server accepts an attach to an empty session (sentinel focus ids),
-/// and a spawn from that attach creates the session's first window.
-#[test]
-fn attach_to_an_empty_session_then_spawn_opens_a_window() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let (mut conn, shutdown_tx, server) = start(&tmp).await;
-        let socket_path = tmp.path().join("phux.sock");
-
-        create(
-            &mut conn,
-            serde_json::json!({ "name": "parked", "empty": true }),
-            1,
-        )
-        .await;
-
-        let mut client = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        send_frame(&mut client, &attach_by_name("parked")).await;
-        let (type_byte, attached) = timeout(WIRE_RECV_TIMEOUT, recv_typed(&mut client))
-            .await
-            .expect("the attach must be answered");
-        assert_eq!(
-            type_byte, TYPE_ATTACHED,
-            "an empty session must be attachable"
-        );
-        let FrameKind::Attached { snapshot, .. } = attached else {
-            panic!("expected ATTACHED");
-        };
-        assert_eq!(snapshot.focused_resource, ResourceId::local(0));
-        let parked = session(&snapshot, "parked").unwrap();
-        assert!(parked.keep_empty && parked.is_empty());
-        assert_eq!(snapshot.focused_session, parked.id);
-
-        send_frame(
-            &mut client,
-            &FrameKind::SpawnResource {
-                request_id: 7,
-                group: GroupId::new(1),
-                command: Some(blocking_seed_command()),
-                cwd: None,
-                env: None,
-                term: None,
-                satellite: None,
-                owner_terminal: None,
-                agent_session: None,
-                initial_size: None,
-                resource: None,
-            },
-        )
-        .await;
-        let spawned = loop {
-            let (_type_byte, frame) = timeout(WIRE_RECV_TIMEOUT, recv_typed(&mut client))
-                .await
-                .expect("the spawn must be answered");
-            if let FrameKind::ResourceSpawned {
-                request_id: 7,
-                result,
-            } = frame
-            {
-                break result;
-            }
-        };
         assert!(
-            matches!(spawned, SpawnResult::Ok(_)),
-            "spawn into an empty session failed: {spawned:?}"
+            get_metadata(&mut writer, 6, Scope::Global, SESSION_KEEP_EMPTY_KEY)
+                .await
+                .is_none(),
+            "the mark is applied, never stored"
         );
-        let snapshot = get_state(&mut conn, 2).await;
-        assert_eq!(session(&snapshot, "parked").unwrap().window_count, 1);
 
-        drop(client);
-        drop(conn);
-        join_after_shutdown(shutdown_tx, server).await;
+        drop((watcher, writer));
+        server.stop().await;
     });
 }

@@ -1,22 +1,9 @@
-//! Binary-level end-to-end test for the ADR-0040 agent-identity record
-//! (`phux-3ert`): `phux agent set` writes `phux.agent/v1` through the real
-//! L3 `SET_METADATA` path, `phux agent show` reports from the record with
-//! `agent_record` authority plus detector provenance (no competing
-//! heuristics), and `phux agent clear` deletes it so the report falls back to
-//! the non-record sources.
-//!
-//! It also carries the phux-w7z2.26 join: the wrapper `phux agent
-//! install-claude` actually GENERATES, driven through its own `--phux-hook`
-//! entry point, against a live server on a pane painting a real Claude
-//! permission dialog — asserting the record ends up carrying a state only
-//! `rules/claude.toml` can produce. The two halves of that bug were
-//! previously proven apart (a rendered-string assertion in `shim.rs`, a
-//! hand-written identity-only `SET_METADATA` in
-//! `phux-server/tests/agent_detect.rs`) and joined only by reasoning.
-//!
-//! Same harness discipline as `run_wait_e2e.rs`: a real `phux server`
-//! child on a private UDS, each verb its own subprocess, guard-killed on
-//! drop. Kept in its own file so the `just e2e` lane lists it explicitly.
+//! The ADR-0040 agent-identity record end to end: `agent set` writes
+//! `phux.agent/v1` over `SET_METADATA`, `agent show` reports it with
+//! `agent_record` authority, and `agent clear` falls back to the other
+//! sources. Also drives the wrapper `agent install-claude` generates, through
+//! its `--phux-hook` entry, against a pane painting a real Claude permission
+//! dialog: the record must carry a state only `rules/claude.toml` produces.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -68,11 +55,8 @@ impl ServerGuard {
         Self::start_with_env(&[])
     }
 
-    /// As [`Self::start`], with extra environment on the *server* child.
-    ///
-    /// The detector's tuning seams (`PHUX_AGENT_STARTUP_GRACE_MS`, …) are
-    /// read once inside the server process, so they cannot be set from a
-    /// client verb after the fact.
+    /// As [`Self::start`], with extra environment on the server child (the
+    /// detector's tuning seams are read once, inside the server).
     fn start_with_env(envs: &[(&str, &str)]) -> Self {
         Self(
             common::ServerGuard::builder("agent")
@@ -173,12 +157,8 @@ impl ServerGuard {
         }
     }
 
-    /// Sample `agent show` across `window` and return every distinct `state`
-    /// observed, in first-seen order.
-    ///
-    /// A bounded negative assertion: the caller asserts on what did NOT
-    /// appear, so the window has to be long enough to cover several detector
-    /// ticks and the sampling has to be dense enough to catch a transient.
+    /// Every distinct `state` seen while sampling `agent show` densely across
+    /// `window`, in first-seen order: a bounded negative assertion.
     fn states_over(&self, target: &str, window: Duration) -> Vec<String> {
         let end = Instant::now() + window;
         let mut seen: Vec<String> = Vec::new();
@@ -341,26 +321,11 @@ fn config_agents_projection_tracks_live_record() {
     assert_eq!(agent["runtime"], serde_json::Value::Null);
 }
 
-/// Write an executable fake Claude named `claude` into `dir`.
-///
-/// Two things are load-bearing and neither is the script's logic:
-///
-/// * **The name on disk.** `agent_detect::identify` resolves the kind from
-///   the PTY foreground process group's argv, unwrapping runtime wrappers
-///   (`sh`, `node`, …), so a `#!/bin/sh` script literally named `claude` is
-///   what makes the shipped `rules/claude.toml` manifest apply. A title or a
-///   screen can be forged; a process name is what the kernel says.
-/// * **The screen.** It reproduces the shape Claude Code 2.1.207 actually
-///   paints for a permission dialog, captured in
-///   `phux-agent-rules/src/fixtures/claude/blocked_permission.txt`: a
-///   horizontal rule with the dialog below it (the dialog REPLACES the input
-///   box), carrying BOTH halves `prompt-permission-dialog` requires — the
-///   "do you want to " stem and a numbered option line. The transcript line
-///   above the rule is deliberate: `after-last-rule` must structurally
-///   exclude it.
-///
-/// Then it holds, so the live screen keeps saying `blocked` for the whole
-/// test rather than the pane being reaped mid-assertion.
+/// Write an executable fake Claude named `claude` (the kind is identified
+/// from the foreground process name) that paints the permission-dialog shape
+/// Claude Code actually draws (`phux-agent-rules` fixture
+/// `claude/blocked_permission.txt`: transcript above a rule, the dialog stem and
+/// numbered options below) and then holds.
 fn write_fake_claude(dir: &std::path::Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -392,12 +357,9 @@ fn write_fake_claude(dir: &std::path::Path) -> PathBuf {
     path
 }
 
-/// Run the installed wrapper's own hook entry point, exactly as Claude Code
-/// invokes it (`<shim> --phux-hook <event>`), with the environment a hook
-/// process inherits from a Claude running inside a phux pane.
-///
-/// `PHUX_AGENT_PHUX_BIN` is deliberately NOT set: the wrapper must reach the
-/// binary that installed it, which is the path baked in by `render_wrapper`.
+/// Run the installed wrapper's hook entry point (`<shim> --phux-hook
+/// <event>`) with a pane's environment. `PHUX_AGENT_PHUX_BIN` is unset: the
+/// wrapper must reach the binary baked in at install.
 fn run_hook(shim: &std::path::Path, event: &str, terminal_id: u32, socket: &std::path::Path) {
     let out = Command::new(shim)
         .args(["--phux-hook", event])
@@ -417,37 +379,16 @@ fn run_hook(shim: &std::path::Path, event: &str, terminal_id: u32, socket: &std:
     );
 }
 
-/// phux-w7z2.26, joined end to end: the wrapper `phux agent install-claude`
-/// GENERATES, run through its own hook entry point against a live server,
-/// leaves the ADR-0046 detector armed on the pane it instruments.
+/// The wrapper `agent install-claude` generates, run through its hook entry
+/// against a live server, leaves the ADR-0046 detector armed (the unit tests
+/// only pinned the rendered string and a hand-written identity-only write):
 ///
-/// This is the test the earlier fix could not produce, and its absence is why
-/// the bead stayed open. The mechanism was pinned by a rendered-string
-/// assertion in `commands::agent::shim` (the wrapper contains no `--state`)
-/// and the consequence was pinned by
-/// `phux-server/tests/agent_detect.rs::an_identity_only_set_gets_its_state_filled_in_by_the_detector`
-/// — which uses a HAND-WRITTEN identity-only `SET_METADATA`. Nothing executed
-/// the generated shim against a real server, so the two halves were joined by
-/// reasoning. For a bug whose entire shape was "a shipped integration
-/// silently disarms a shipped manifest", "the string looks right" is the same
-/// class of evidence that let the original defect ship.
-///
-/// Three phases, each an independent claim:
-///
-/// 1. **The detector reaches the record on a shim pane.** After the
-///    `SessionStart` hook, the pane converges on `blocked` — a state ONLY
-///    `rules/claude.toml`'s `prompt-permission-dialog` rule can produce, and
-///    one nothing in the shim can write.
-/// 2. **A per-hook write does not clobber it (phux-w7z2.37).** The `blocked`
-///    hook fires on every permission prompt and must reach `phux ask` and
-///    nothing else; schema 2 wrote identity here too, and because
-///    `SET_METADATA` replaces the record wholesale that published a
-///    `blocked -> unknown` edge which `agent wait` reads as departure.
-/// 3. **The counterfactual, so phase 1 cannot pass vacuously.** Declaring a
-///    state the way schema 1 did stands the detector down on the same pane
-///    with the same screen: the record sits on the declared value and never
-///    returns to `blocked`. That IS the bug, reproduced, one `phux agent set`
-///    away from the passing case.
+/// 1. after `SessionStart` the pane reaches `blocked`, a state only
+///    `rules/claude.toml` can produce;
+/// 2. repeated `blocked` hooks do not clobber it (a wholesale record write
+///    would publish `blocked -> unknown`, read by `agent wait` as departure);
+/// 3. counterfactual: declaring a state, as the old shim did, stands the
+///    detector down on the same screen.
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn the_generated_claude_shim_leaves_the_detector_armed_on_a_live_pane() {
@@ -475,11 +416,8 @@ fn the_generated_claude_shim_leaves_the_detector_armed_on_a_live_pane() {
     );
     let shim = data.join("phux").join("shims").join("claude");
     let installed = std::fs::read_to_string(&shim).expect("read the installed wrapper");
-    // The behavior stamp `phux doctor` keys its staleness check on
-    // (phux-w7z2.46). Deliberately NOT an assertion about `--state`: that is
-    // `shim.rs`'s unit test, and repeating it here would let this test fail
-    // on the rendered string before it ever reaches the live server — which
-    // is the exact substitution of evidence this test exists to end.
+    // The staleness stamp `phux doctor` keys on; `--state` is `shim.rs`'s unit
+    // test, not this one's.
     assert!(
         installed.contains("# phux-shim-schema: "),
         "the installed wrapper must carry its behavior stamp:\n{installed}"
@@ -534,11 +472,8 @@ fn the_generated_claude_shim_leaves_the_detector_armed_on_a_live_pane() {
     );
 }
 
-/// Write an executable fake Claude named `claude` that paints nothing and
-/// holds. The process NAME is what `agent_detect::identify` keys the kind on
-/// (see [`write_fake_claude`]); a blank screen keeps the screen rules out of
-/// the picture, so every lifecycle edge the assertions below read has to
-/// have come from the session stream.
+/// Write an executable `claude` that paints nothing and holds, so every
+/// lifecycle edge must come from the session stream.
 fn write_quiet_claude(dir: &std::path::Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -636,38 +571,13 @@ impl ServerGuard {
     }
 }
 
-/// phux-am9y.13, joined end to end: the wrapper `phux agent install-claude`
-/// GENERATES, driven through its own `--phux-hook` entry point with the JSON
-/// payloads Claude Code hands a hook, against a live server that serves
-/// `AgentSession` resources, opens a session child under the pane and feeds
-/// its stream — and the pane's projected `phux.agent/v1` state follows the
-/// stream rather than the (blank) screen.
-///
-/// The claims, in order:
-///
-/// 1. `SessionStart` opens the session with Claude's own `session_id` as the
-///    native id, and `agent show` reports it.
-/// 2. `UserPromptSubmit` logs a `prompt` record carrying the character count
-///    and never the text; the pane derives `working`.
-/// 3. `PreToolUse`/`PostToolUse` log `tool_start`/`tool_end` with the tool
-///    name and never `tool_input` or `tool_response`.
-/// 4. `PermissionRequest` logs `ask`; the pane derives `blocked`.
-/// 5. `Stop` logs `stop`; the pane derives `done`.
-/// 6. `SessionEnd` logs `session_end` and closes the session; the record is
-///    cleared.
-///
-/// The privacy half is asserted on the whole serialized log after every
-/// step: none of the three markers planted in prompt text, tool input, and
-/// tool output may appear anywhere in it.
-///
-/// The lifecycle states are read from a `phux watch` running for the whole
-/// scenario rather than by polling `phux agent show`, and that is not a
-/// stylistic preference: the arbiter publishes the stream's verdict and the
-/// ADR-0046 detector's very next screen tick supersedes it (~300 ms on a
-/// pane painting nothing), so a hook-fed state edge is observable on the
-/// event stream and essentially never on a reporting verb. `watch` is also
-/// the surface a harness would gate on, which makes it the right thing to
-/// prove.
+/// The generated wrapper, fed Claude's real hook payloads, drives an agent
+/// session end to end: `SessionStart` opens it with Claude's `session_id`;
+/// prompt, tool, ask, and stop hooks log records and the pane derives
+/// `working`, `blocked`, then `done`; `SessionEnd` closes it. No prompt text,
+/// tool input, or tool output may appear in the log. States are read from a
+/// `phux watch` because the detector's next screen tick supersedes a stream
+/// edge within ~300 ms.
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 #[allow(clippy::too_many_lines, reason = "one linear hook-by-hook scenario")]
@@ -698,12 +608,8 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
 
     let server =
         ServerGuard::start_with_env(&[("PHUX_AGENT_STARTUP_GRACE_MS", TEST_STARTUP_GRACE_MS)]);
-    // The wrapper takes its stream path only on a server that serves
-    // `AgentSession` resources, probing for exactly this bit through exactly
-    // this verb. With the session verbs landed (phux-am9y.12) the bit is no
-    // longer optional, so a server without it is a failure and not a reason
-    // to skip: the shim would quietly take its pre-resource-model fallback
-    // path and everything below would prove nothing.
+    // The wrapper takes its stream path only when the server serves
+    // `AgentSession`; without it the test would prove nothing.
     assert!(
         server.serves_resource_kinds(),
         "this server must advertise `resource_kinds`"
@@ -888,11 +794,8 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
             serde_json::json!({ "reason": "prompt_input_exit" }),
         ),
     );
-    // The stream-mode wrapper ends the session; it deliberately does NOT run
-    // `phux agent clear` (that is the pre-resource-model arm's job). So what
-    // `SessionEnd` must produce is the session gone from the pane's report
-    // and from the resource inventory — the record itself stays, handed back
-    // to the detector that owns a pane's idle state (ADR-0085).
+    // The stream wrapper ends the session without `agent clear`: the session
+    // leaves the report and inventory, and the record goes back to the detector.
     let end = Instant::now() + DETECT_DEADLINE;
     loop {
         let shown = server.agent_show(&target);

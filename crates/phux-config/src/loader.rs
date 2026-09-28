@@ -1,53 +1,29 @@
-//! Config loader: resolves the on-disk config path and parses it.
-//!
-//! Resolution rules (see `docs/consumers/tui.md` §4.1):
-//! * Prefer `$XDG_CONFIG_HOME/phux/config.toml` when `XDG_CONFIG_HOME` is set.
-//! * Otherwise use `$HOME/.config/phux/config.toml`.
-//! * If neither environment variable is set, fall back to the current
-//!   working directory — same behavior as most user-config crates.
-//!
-//! A missing config file is *not* an error: callers get
-//! [`Config::default`] and a `tracing::debug!` line. Any other I/O error
-//! propagates as [`ConfigError::Io`].
-//!
-//! Loading routes through [`parse_with_defaults`], so a config that
-//! declares `extends` (ADR-0039) has its layer stack resolved relative
-//! to the config file's directory; a missing or cyclic *layer* IS an
-//! error, unlike a missing root config.
+//! Config loader (`docs/consumers/tui.md` §4.1): a missing config file means
+//! the shipped defaults; a missing `extends` layer is an error.
 
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
 use crate::{Config, ConfigError, parse_with_defaults};
 
-/// Resolve the canonical config path: `$XDG_CONFIG_HOME/phux/config.toml`
-/// (with `~/.config/phux/config.toml` fallback when `XDG_CONFIG_HOME` is
-/// unset).
-///
-/// This is pure path math — it performs no I/O and does not check whether
-/// the returned path exists.
+/// The config path: `$XDG_CONFIG_HOME/phux/config.toml`, else
+/// `$HOME/.config/phux/config.toml` (no I/O).
 #[must_use]
 pub fn config_path() -> PathBuf {
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        let mut p = PathBuf::from(xdg);
-        p.push("phux");
-        p.push("config.toml");
-        return p;
-    }
-
-    let base = std::env::var_os("HOME").map_or_else(PathBuf::new, PathBuf::from);
-    let mut p = base;
-    p.push(".config");
-    p.push("phux");
-    p.push("config.toml");
-    p
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map_or_else(
+            || {
+                std::env::var_os("HOME")
+                    .map_or_else(PathBuf::new, PathBuf::from)
+                    .join(".config")
+            },
+            PathBuf::from,
+        )
+        .join("phux")
+        .join("config.toml")
 }
 
-/// Load the config from the canonical [`config_path`].
-///
-/// Missing-file is treated as "no overrides": returns `Ok(Config::default())`
-/// after logging at `debug`. Any other read failure bubbles up as
-/// [`ConfigError::Io`]; malformed TOML bubbles up as [`ConfigError::Parse`].
+/// Load the config from [`config_path`].
 ///
 /// # Errors
 ///
@@ -56,18 +32,13 @@ pub fn load() -> Result<Config, ConfigError> {
     load_from(&config_path())
 }
 
-/// Load the config from a specific path. Useful for tests and for a future
-/// `phux --config <path>` CLI flag.
-///
-/// Missing-file (`io::ErrorKind::NotFound`) returns `Ok(Config::default())`
-/// and emits a `tracing::debug!` event.
+/// Load the config from `path` over the shipped defaults; a missing file is
+/// no overrides.
 ///
 /// # Errors
 ///
-/// * [`ConfigError::Io`] if reading `path` fails for any reason other than
-///   "not found".
-/// * [`ConfigError::Parse`] if `path` exists but does not parse / validate
-///   against the schema.
+/// [`ConfigError::Io`] for a read failure other than not-found; any
+/// [`parse_with_defaults`] error.
 pub fn load_from(path: &Path) -> Result<Config, ConfigError> {
     match fs::read_to_string(path) {
         Ok(contents) => parse_with_defaults(&contents, path),
@@ -76,7 +47,6 @@ pub fn load_from(path: &Path) -> Result<Config, ConfigError> {
                 path = %path.display(),
                 "phux config not present; using embedded defaults"
             );
-            // Missing file ⇒ no user overrides, just the shipped defaults.
             parse_with_defaults("", path)
         }
         Err(err) => Err(ConfigError::Io(err)),

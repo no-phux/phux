@@ -1,26 +1,9 @@
-//! Generated reference documentation: the page registry and renderer behind
-//! the hidden `phux gen-reference-docs` subcommand and the freshness test.
-//!
-//! Every page under `docs/reference/` is a pure function of the compiled
-//! binary — the usage spec today, further inventories (config schema,
-//! actions, widgets, hooks) as they register here. The contract has three
-//! legs:
-//!
-//! 1. [`pages`] is the single registry. The generator writes exactly these
-//!    pages; the freshness test compares exactly these pages; the index page
-//!    lists exactly these pages. Registering a renderer here is the ONLY way
-//!    a file legitimately appears under `docs/reference/`.
-//! 2. Rendering is deterministic. No timestamps, no environment reads, no
-//!    terminal-width probes (help text never wraps to the terminal). Running
-//!    the generator twice yields identical bytes, which is what lets a unit
-//!    test byte-compare the checked-in tree against a fresh render.
-//! 3. Every page carries the doc-system scaffolding (frontmatter, TL;DR)
-//!    demanded by `scripts/check-docs.sh`, so the generated tree passes
-//!    `just docs-check` with no carve-outs, plus a GENERATED FILE marker so
-//!    a human reader knows not to edit it.
-//!
-//! See `../../../../docs/adr/0069-generated-reference-docs.md` for why the generator is a
-//! hidden subcommand rather than an xtask or a build script.
+//! Generated reference documentation behind the hidden `phux
+//! gen-reference-docs` subcommand (ADR-0069). [`pages`] is the single
+//! registry: the generator writes, the freshness test compares, and the index
+//! lists exactly these pages. Rendering is deterministic (no timestamps,
+//! environment, or terminal width), and every page carries the frontmatter,
+//! TL;DR, and GENERATED FILE marker `just docs-check` expects.
 
 pub(crate) mod actions;
 pub(crate) mod cli;
@@ -34,12 +17,8 @@ pub(crate) mod kinds;
 pub(crate) mod parity;
 pub(crate) mod widgets;
 
-/// The `last-reviewed` date stamped into every generated page's frontmatter.
-///
-/// Deliberately a fixed, generator-owned constant rather than "today":
-/// regeneration must be byte-idempotent, and a date that moved on every run
-/// would churn the tree without any content change. Bump it when a
-/// generator change meaningfully alters what the pages say.
+/// The fixed `last-reviewed` date for generated pages, so regeneration is
+/// byte-idempotent. Bump it when the pages meaningfully change.
 pub(crate) const GENERATED_LAST_REVIEWED: &str = "2026-09-15";
 
 /// The reader-facing warning embedded in every generated page, right after
@@ -93,12 +72,8 @@ impl Page {
     }
 }
 
-/// The full page registry: the index first, then every content page.
-///
-/// This is the extension point for further generated references: add a
-/// sibling module rendering a `Page` and push it into `content` here. The
-/// index table, the generator's write set, and the freshness test's compare
-/// set all follow automatically.
+/// The full page registry: the index first, then every content page. Add a
+/// new generated reference by pushing its `Page` here.
 pub(crate) fn pages() -> Vec<Page> {
     let content = vec![
         cli::page(),
@@ -161,11 +136,8 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference")
     }
 
-    /// The freshness gate (and the only CI wiring the generated docs have):
-    /// every registered page must match its on-disk bytes, and every on-disk
-    /// file must be a registered page. Hand edits, surface changes without a
-    /// regeneration, and stray hand-authored files all fail here, each with
-    /// `just docs-gen` as the named remedy.
+    /// The freshness gate: every registered page matches its on-disk bytes and
+    /// every on-disk file is registered. Remedy: `just docs-gen`.
     #[test]
     fn generated_reference_docs_match_the_tree() {
         let dir = reference_dir();

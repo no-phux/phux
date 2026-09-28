@@ -13,120 +13,46 @@ authors.workspace = true
 workspace = true
 
 [features]
-# phux-h5hj.3: exposes `phux_client::testkit`, the single scripted server the
-# workspace's client-side unit tests speak to. Off by default because it is
-# test scaffolding, not product surface; this crate's own `#[cfg(test)]` build
-# gets the module without it, and downstream crates (phux-tui, phux-mcp, the
-# phux binary) opt in from their dev-dependencies. No extra dependencies --
-# the harness is built from this crate's existing tokio + phux-protocol
-# surface.
-#
-# There is deliberately no `tui` feature: the interactive attach loop and the
-# ratatui chrome are the `phux-tui` crate (ADR-0100), which depends on this
-# one. That is what guarantees a headless consumer never links a terminal.
+# Exposes `phux_client::testkit`, the scripted server client-side tests
+# speak to. Test scaffolding: downstream crates enable it from
+# dev-dependencies. There is no `tui` feature; the TUI is `phux-tui`.
 testkit = []
 
 [dependencies]
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
-# ADR-0060: the asciicast event/codec vocabulary the headless observer
-# (`phux rec`) speaks. `default-features = false` drops phux-record's `render`
-# feature, so this crate never compiles `gif`, `png`, or a second libghostty
-# handle — it needs only the codec.
-#
-# Declared by path rather than `workspace = true` because cargo refuses to
-# let a member turn off a workspace dependency's default features unless the
-# `[workspace.dependencies]` entry already has them off — and the `phux`
-# binary wants `render` on by default. Restore the inherited form the moment
-# the root entry gains `default-features = false` and the binary opts back in
-# with `features = ["render"]`.
+# Only the asciicast codec: `default-features = false` drops `render`. By
+# path because cargo will not let a member disable a workspace dependency's
+# default features, and the `phux` binary wants `render` on.
 phux-record = { path = "../phux-record", default-features = false }
-# phux-0fv (ADR-0020): the ratatui-free pane-interior substrate — layout
-# math, multi-pane composition, predictive echo, the session kernel. The
-# layout verbs read it and it is re-exported so consumers keep their
-# `phux_client::{layout, multi_pane, predict}` paths.
+# The ratatui-free pane-interior substrate (ADR-0020), re-exported.
 phux-client-core.workspace = true
-# `phux snapshot` deserializes the `GET_SCREEN` JSON contract
-# (`phux_core::ScreenState`, ADR-0022 §2) returned by the server.
 serde_json.workspace = true
-# phux-nz4.5: status-bar composer (`StatusBar`) + widget contract live
-# in phux-config; the client owns rendering the composed bar to VT.
 phux-config.workspace = true
-# `AttachError::Ghostty` carries libghostty's error type so the TUI's render
-# failures and the headless verbs report through one exit vocabulary. The
-# replicas themselves live in `phux-tui`; this crate only names the error.
+# `AttachError::Ghostty` names libghostty's error type.
 libghostty-vt.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-# Async I/O + UDS transport (phux-9gw.3). The workspace tokio dep enables
-# `net`, `io-util`, `signal`, `macros`, `rt`. `io-std` is NOT enabled here:
-# only the TUI driver reads a terminal, and `phux-tui` turns it on itself.
 tokio.workspace = true
-# Frame encode/decode produces and consumes `BytesMut`; the attach loop owns
-# these buffers across its read and write halves.
 bytes.workspace = true
-# In-process performance telemetry (echo RTT, paint timings, `phux perf`).
 phux-perf.workspace = true
-# `phux run` / `phux snapshot` deserialize the server's JSON contracts
-# (run result, `GET_SCREEN` screen state) via serde derives. The layout
-# CBOR envelope and the predict layer (which also needed serde, ciborium,
-# unicode-width, and unicode-segmentation) moved to `phux-client-core` with
-# phux-0fv, so those deps are declared there now, not here.
 serde = { workspace = true }
-# Shared remote-transport establishment (phux-v45.3): QUIC/WS dialing, the
-# fingerprint-pin TLS trust policy, and the bearer-token auth moved to
-# `phux-dial` so the federation hub's outbound dialer (phux-server) reuses
-# the identical stack. The attach modules re-export its types under the
-# established `crate::attach::{quic,ws}` paths.
+# QUIC/WS dialing, TLS pinning, and bearer auth shared with the server.
 phux-dial.workspace = true
-# ADR-0133: reconnect policy lives once, in the client runtime. The agent
-# verbs that reconnect (`phux resource wait`) walk its agent-verb ladder
-# instead of carrying their own constants, so one edit changes every lane.
-# Workspace crate already built for phux-client-ffi; its own dependencies
-# (phux-config, phux-dial, phux-protocol, quinn, tokio) are all already this
-# crate's, so no new third-party dependency enters.
+# Reconnect policy (ADR-0133).
 phux-client-runtime.workspace = true
-# QUIC stream types (phux-y8v6, ADR-0007): `connection.rs` holds the quinn
-# endpoint/connection/stream halves phux-dial's establishment returns and
-# frames over them; same stack the server's `QuicListener` uses.
 quinn = { workspace = true }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
-# `phux wait --regex PATTERN` matches operator-supplied patterns against one
-# logical line at a time. The pattern is DATA, compiled once at argument-parse
-# time so an invalid one is a usage error rather than a wait that never
-# matches — the same shape (and the same reasoning) as the server-side
-# detection manifests, which already depend on this crate for exactly that.
-# `regex` also guarantees linear-time matching, so a caller cannot hand `wait`
-# a pattern that pegs a CPU on every poll. This compiles NO new crate: `regex`
-# is already in `Cargo.lock` (phux-server's direct dep, and transitively via
-# `tracing-subscriber`'s `env-filter`); naming it here only makes explicit
-# what the workspace already builds.
+# `phux wait --regex`: linear-time matching of operator patterns.
 regex = "1"
-# ADR-0053: the acknowledged-input replay journal mints each operation's
-# non-zero 128-bit random id (`InputOperationId`) client-side. `uuid` v4 is
-# the workspace's established source for exactly this (the `phux` binary's
-# agent verbs mint their operation ids the same way), so this compiles NO new
-# crate — it names a dependency the workspace already builds.
+# Input operation ids (ADR-0053).
 uuid = { workspace = true }
 
 [dev-dependencies]
-# The dial round-trip tests (tests/connection/{quic_dial,ws_dial}.rs) stand up
-# the *server* side of the transports the production code establishes
-# through phux-dial: a real `ServerRuntime` on a tempdir UDS, a rustls TLS 1.3
-# config for the mock quinn listener, and a tungstenite `accept_async`
-# WebSocket peer.
 phux-server.workspace = true
-# Production-path relay fallback measurements use the existing workspace relay
-# runtime; this is test-only and adds no external package.
-phux-relay.workspace = true
 sha2 = "0.11"
 tempfile.workspace = true
 rustls = { workspace = true }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
-# `agent_prompt`'s unit tests run the wait loop on a paused clock
-# (`Builder::start_paused`), which needs tokio's `test-util`. `command_isolation`
-# uses `tokio::fs`. That `fs` feature used to leak in through unification
-# from phux-server's WebTransport listener (`wtransport` enables `tokio/fs`).
-# Production WebTransport no longer depends on wtransport (phux-50wm), so the
-# test crate names `fs` itself. Test-only, no new crate.
+# `test-util` for paused clocks; `fs` for `command_isolation`.
 tokio = { workspace = true, features = ["test-util", "fs"] }

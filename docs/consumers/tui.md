@@ -59,18 +59,9 @@ are enough for a first run:
 Run `phux` again to reattach. The full first-run path, including driving
 the same pane from a second terminal, is [`../QUICKSTART.md`](../QUICKSTART.md).
 
-On the first attach for a profile, a compact overlay explains that the
-session outlives the view, names the Agents list as the fleet inbox, and
-shows the blocked (`●`) and working (`◐`) glyphs next to the live bindings
-for detach, Sessions & hosts, Commands, Settings, and copy mode. If the
-sidebar is off, the overlay names the live `toggle-sidebar` chord instead of
-assuming the list is already on screen. It also points out that Shift-drag
-uses the host terminal's selection. The first key dismisses it and still does
-what that key normally does. After the first intentional detach, the cooked
-terminal prints that the session is still running; the next attach shows a
-brief status-bar confirmation. Later attaches are quiet. The palette's
-**Getting started** row reopens the introduction without changing
-progress.
+The first attach for a profile shows a short overlay of the live bindings
+and agent glyphs; the first key dismisses it and still does what it
+normally does. The palette's **Getting started** row reopens it.
 
 A reader attached inside `phux` cannot run headless verbs in that TTY.
 Open a second terminal for `phux ls`, `phux snapshot .`, `phux send-keys`,
@@ -265,24 +256,13 @@ geometry, 80 columns by 24 rows; a tiny automation viewport therefore cannot
 strand a durable shell at 1x1. `manual` is the setting for a scripted geometry
 and holds an explicit size across detach.
 
-**Satellite splits.** A window may hold local and satellite panes side by
-side. With a satellite pane focused, `split-pane` opens the new pane on
-that same satellite, through the hub. `split-pane` with `host` spawns on
-that satellite even when the focused pane is local (`owner_terminal`
-stays unset, so the hub places the pane). `split-pane` with `resource`
-set to `host/@N` or `@N` attaches that existing pane into the current
-window. The split appears once the pane attaches. A refused spawn leaves
-no dead split and tries to kill a pane this client spawned; opening an
-existing pane never kills it. Against a hub that cannot spawn there, the
-split opens on the hub and a notice says so.
-
-A satellite pane's border and the status bar name its host. When the hub
-reports that satellite unreachable, the pane stays in the layout, the
-border and badge go grey, and keys to it are dropped. When a later host
-inventory says the satellite is back, the client reattaches and replays
-the snapshot into the same slot. Web and Cockpit see the same mixed
-window through the shared layout document: satellite ids already
-serialize there.
+**Satellite splits.** A window may mix local and satellite panes. With a
+satellite pane focused, `split-pane` opens on that satellite through the hub;
+`split-pane` with `host` spawns there from a local pane, and with `resource`
+(`host/@N` or `@N`) attaches an existing pane. A refused spawn leaves no dead
+split. A satellite pane's border and the status bar name its host; while the
+hub reports it unreachable the pane stays, greys out, and drops keys, and it
+reattaches into the same slot when the satellite returns.
 
 ## Status, sidebar, and theme
 
@@ -353,19 +333,12 @@ replaced in place by the server, so the attach stays on a fresh prompt.
 A keep-empty session stays attached and paints `Empty session` with the
 `new-window` chord after Close Tab of its last pane.
 
-**Retained panes.** A pane whose spawner asked the server to retain it
-(`SPAWN_RESOURCE.retain_secs`, or `defaults.retain-on-exit`, ADR-0124) does not
-close when its process exits. It keeps its place in the layout and shows its
-last screen. The sidebar and window tabs mark it with a dim `x` plus the exit
-status (`x3`, `xsig9`, or `x`) so it is visible without focus, and the bar
-shows `[ exited N ]` (`[ exited signal N ]` for a signal death) while it is
-focused. Keys, pastes, and mouse reports to it are dropped; scrolling its
-history and copy-mode still work. It closes like any
-other pane when the server purges it: on expiry, when the retained count bound
-evicts it, or when you kill it. The TUI's own splits and windows never ask for
-retention; with `defaults.retain-on-exit` set, every pane is retained, the seed
-pane included. A retained pane holds its grid and history (up to
-`defaults.history-bytes`) but no pseudoterminal.
+**Retained panes.** A pane spawned with retention (`--retain` or
+`defaults.retain-on-exit`, ADR-0124) keeps its place and last screen after its
+process exits. The sidebar and tabs mark it with a dim `x` plus status (`x3`,
+`xsig9`), and the bar shows `[ exited N ]` while focused. Input is dropped;
+scrollback and copy-mode still work. It closes when the server purges it or
+you kill it.
 
 **Reconnect.** If the server vanishes mid-session, the TUI drops to the
 cooked screen and waits: 10 seconds, polling every 100 ms, on the local
@@ -650,40 +623,13 @@ path. A terminal resize closes the menu; other overlays reflow.
 
 ## Config and reload
 
-phux is config-driven: one TOML file, never written back from running
-state. There is no `set-option`. Defaults live inside the binary; your
-`config.toml` is a sparse overlay. A missing file is not an error.
-
-```
-phux config path     # resolved path, no I/O
-phux config init     # commented starter; refuses to overwrite
-phux config show     # effective config as canonical TOML
-phux config check    # every unknown key and wrong value, with dotted path
-phux config reload   # validate, then apply to running clients
-```
-
-The file is `$XDG_CONFIG_HOME/phux/config.toml` (else
-`~/.config/phux/config.toml`). Schema, layers, widgets, and hooks:
-[`../CONFIG.md`](../CONFIG.md). Annotated defaults:
-`phux config show --default` and
-[`../reference/config.md`](../reference/config.md).
-
-### Reloading
-
-Reloads are explicit, never automatic. Three surfaces trigger the same
-in-place reload:
-
-- the `reload-config` action (palette row "Reload the config file";
-  unbound by default)
-- a committed edit on the settings page
-- `phux config reload` from any shell, which rings every attached client
-
-A reload rebuilds keybindings, the theme, the status-bar composition,
-and plugin palette rows, atomically. On any parse or validation error
-the previous config stays fully in effect and a dismissable toast names
-the error. The file is not watched. Not covered by a reload (detach and
-re-attach): `[sidebar]` geometry, `[experimental]`, and `[defaults]`
-(the server owns those last).
+The config file, its layers, and the `phux config` verbs are
+[`../CONFIG.md`](../CONFIG.md); there is no `set-option`. Reloads are
+explicit and never automatic: the `reload-config` action, a settings-page
+edit, or `phux config reload` from any shell. A reload rebuilds keybindings,
+theme, status bar, and plugin palette rows atomically; on any error the
+previous config stays in effect and a toast names it. `[sidebar]` geometry,
+`[experimental]`, and `[defaults]` need a re-attach.
 
 `[experimental] predictive-echo` is unset by default: prediction is on
 for a remote attach that actually leaves the machine, off on the local
@@ -693,25 +639,10 @@ another client, or a recording.
 
 ## Hooks
 
-Hooks fire at named server events. Config parsing and the dispatcher live
-with the rest of the file in [`../CONFIG.md`](../CONFIG.md). The TUI
-does not play sounds or post desktop notifications; `agent-state-changed`
-is the edge a notifier hook should match.
-
-Shipped events: `after-new-pane`, `pane-exit`, `focus-changed`,
-`client-attached`, `client-detached`, `agent-state-changed`. First match
-wins per event. Actions are child processes, fire-and-forget, bounded.
-Every hook child gets `PHUX_EVENT`, `PHUX_SOCKET`, and one `PHUX_*`
-variable per context key.
-
-```toml
-[[hooks.agent-state-changed]]
-when   = { to = "blocked" }
-action = { kind = "run", command = "afplay /System/Library/Sounds/Glass.aiff" }
-```
-
-`from` is absent on a first sighting. A withdrawn record arrives as
-`to = "unknown"`.
+The TUI plays no sounds and posts no desktop notifications; a server-side
+hook on `agent-state-changed` is the notifier edge. Hooks are
+[`../CONFIG.md`](../CONFIG.md) and
+[`../reference/hooks.md`](../reference/hooks.md).
 
 ## Where to go next
 

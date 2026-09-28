@@ -1,18 +1,12 @@
 //! Idempotent creates (ADR-0126, SPEC L1 §3.1, L3 §3.1): a keyed
-//! `SPAWN_RESOURCE` and a token-bearing `phux.session.create/v1`, both on the
-//! server's shared dedupe record ([`super::operation_dedupe`]).
+//! `SPAWN_RESOURCE` and a token-bearing `phux.session.create/v1`, on the
+//! shared dedupe record.
 //!
-//! A keyed spawn is admitted before it runs. The first admission owns the
-//! key and spawns; the spawn binds the key to the resource in the step that
-//! registers it, before anything can await, so no repeat ever observes the
-//! resource without its binding. A repeat with the same payload answers the
-//! bound resource marked replayed and runs nothing: no placement, no
-//! agent-session record, no second `pane_spawned`. A repeat with another
-//! payload is `IDEMPOTENCY_CONFLICT`. A spawn that failed binds nothing, and
-//! the next repeat spawns.
-//!
-//! A satellite-addressed spawn is not evaluated here: the hub forwards the
-//! key and the satellite that creates the resource owns its dedupe.
+//! The spawn binds its key in the step that registers the resource, before
+//! any await, so no repeat sees the resource unbound. A same-payload repeat
+//! answers the resource marked replayed and runs nothing; another payload is
+//! `IDEMPOTENCY_CONFLICT`; a failed spawn binds nothing. Satellite-addressed
+//! spawns are deduped by the satellite.
 
 use std::time::{Duration, Instant};
 
@@ -21,13 +15,12 @@ use phux_protocol::caps::{BootstrapLimits, BootstrapProfile};
 use phux_protocol::ids::{IdempotencyKey, ResourceId as WireResourceId};
 use phux_protocol::wire::frame::{FrameKind, SpawnError, SpawnResult};
 use sha2::{Digest, Sha256};
-use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use super::attach::{SpawnRequest, handle_spawn_terminal};
 use super::operation_dedupe::{
-    CachedOutcome, Claim, OperationClaim, OperationDomain, OperationKey, Waiter,
+    Admission, CachedOutcome, Claim, OperationClaim, OperationDomain, OperationKey, join_nothing,
 };
 use crate::state::{ClientId, Outbound, ServerState, SharedState};
 
@@ -114,8 +107,8 @@ fn spawned_outcome(s: &ServerState, id: &WireResourceId) -> CachedOutcome {
     }
 }
 
-/// How long a repeat waits for the same key's unresolved spawn before it is
-/// refused. The wait runs in the repeating connection's read loop.
+/// How long a repeat (in its connection's read loop) waits for an unresolved
+/// owner before it is refused.
 const REPEAT_WAIT: Duration = Duration::from_secs(10);
 
 enum SpawnAdmission {
@@ -145,39 +138,20 @@ async fn admit_keyed_spawn(
         return SpawnAdmission::Unkeyed;
     };
     let dedupe = state.with(|s| s.operation_dedupe().clone());
-    let key = spawn_key(key);
-    let digest = spawn_digest(request);
     let bind_instance = request.resource.as_ref().is_some_and(|r| r.bind_instance);
-    loop {
-        let pending = match dedupe.claim_at(key, digest, Instant::now(), join_spawn) {
-            Claim::Owner => return SpawnAdmission::Owner(OperationClaim::new(dedupe, key)),
-            Claim::Pending(pending) => pending,
-            Claim::Final(outcome) => {
-                return SpawnAdmission::Answer(replayed(&outcome, bind_instance));
-            }
-            Claim::PendingUncertain => {
-                return SpawnAdmission::Answer(refused(
-                    "a spawn under this idempotency key is still in flight; retry",
-                ));
-            }
-            Claim::Conflict => {
-                return SpawnAdmission::Answer(SpawnResult::Err(SpawnError::IdempotencyConflict));
-            }
-            Claim::Full => {
-                return SpawnAdmission::Answer(refused(
-                    "the server's idempotency record is full; retry later",
-                ));
-            }
-        };
-        match tokio::time::timeout(wait, pending).await {
-            Ok(Ok(outcome)) => {
-                return SpawnAdmission::Answer(replayed(&outcome, bind_instance));
-            }
-            // The owner bound nothing and released the key: admit again.
-            Ok(Err(_)) => {}
-            Err(_) => return SpawnAdmission::Answer(refused("operation in flight; retry")),
+    let answer = match dedupe
+        .admit(spawn_key(key), spawn_digest(request), wait)
+        .await
+    {
+        Admission::Owner(claim) => return SpawnAdmission::Owner(claim),
+        Admission::Final(outcome) => replayed(&outcome, bind_instance),
+        Admission::InFlight => {
+            refused("a spawn under this idempotency key is still in flight; retry")
         }
-    }
+        Admission::Conflict => SpawnResult::Err(SpawnError::IdempotencyConflict),
+        Admission::Full => refused("the server's idempotency record is full; retry later"),
+    };
+    SpawnAdmission::Answer(answer)
 }
 
 const fn spawn_key(key: IdempotencyKey) -> OperationKey {
@@ -208,14 +182,6 @@ fn spawn_digest(request: &SpawnRequest) -> [u8; 32] {
     let mut encoded = BytesMut::new();
     frame.encode(&mut encoded);
     Sha256::digest(&encoded).into()
-}
-
-fn join_spawn() -> (Waiter, oneshot::Receiver<CachedOutcome>) {
-    let (reply, outcome) = oneshot::channel();
-    let waiter: Waiter = Box::new(move |bound: &CachedOutcome| {
-        let _ = reply.send(bound.clone());
-    });
-    (waiter, outcome)
 }
 
 /// The reply to a repeat: the original id, marked replayed, with the
@@ -274,10 +240,6 @@ pub(crate) fn admit_session_create(
         }
         Claim::Full => SessionCreateAdmission::Refused("the server's idempotency record is full"),
     }
-}
-
-fn join_nothing() -> (Waiter, ()) {
-    (Box::new(|_| {}), ())
 }
 
 /// The 16 bytes of a `request_token` UUID (`8-4-4-4-12` hex), or `None` when
@@ -379,8 +341,12 @@ mod tests {
         let request = keyed("/bin/cat");
         let dedupe = state.with(|s| s.operation_dedupe().clone());
         let key = spawn_key(IdempotencyKey::new([4; 16]).expect("non-zero key"));
-        let Claim::Owner = dedupe.claim_at(key, spawn_digest(&request), Instant::now(), join_spawn)
-        else {
+        let Claim::Owner = dedupe.claim_at(
+            key,
+            spawn_digest(&request),
+            Instant::now(),
+            crate::runtime::operation_dedupe::join_outcome,
+        ) else {
             panic!("the stalled owner admits first");
         };
         let _stalled = OperationClaim::new(dedupe, key);
@@ -402,7 +368,12 @@ mod tests {
         let operation = spawn_key(key.expect("non-zero key"));
         let dedupe = state.with(|s| s.operation_dedupe().clone());
         let digest = spawn_digest(&request);
-        let owner = || match dedupe.claim_at(operation, digest, Instant::now(), join_spawn) {
+        let owner = || match dedupe.claim_at(
+            operation,
+            digest,
+            Instant::now(),
+            crate::runtime::operation_dedupe::join_outcome,
+        ) {
             Claim::Owner => true,
             Claim::Final(_) => false,
             _ => panic!("unexpected admission"),

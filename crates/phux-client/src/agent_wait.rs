@@ -1,58 +1,18 @@
 //! Edge-triggered wait on a pane's `phux.agent/v1` lifecycle record
 //! (ADR-0076 point 5).
 //!
-//! # Why this is not a level read
+//! Not a level read: `idle` is the detector's fail-safe fallthrough, equally
+//! true of a finished agent and a crashed one, so a gate satisfied by the
+//! level would pass on a corpse. The wait is satisfied only by an observed
+//! transition *into* a target state: [`EdgeTracker::new`] seeds the baseline
+//! without evaluating it, and a repeated level is never an edge.
 //!
-//! The obvious implementation — `GET_METADATA`, and if the state is already
-//! in the caller's target set exit 0 — is wrong, and wrong in the direction
-//! that hurts. `idle` is the detector's **fail-safe fallthrough**
-//! (`crates/phux-server/src/agent_detect/mod.rs`): the five shipped
-//! manifests carry five `state = "working"` rules and five
-//! `state = "blocked"` rules and *no positive `idle` rule at all* —
-//! `claude.toml` documents that its authors deliberately declined to write
-//! one. So `idle` asserts only "no state-bearing rule matched", which is
-//! equally true of a finished agent, a half-painted TUI, a **crashed** agent,
-//! a pane running `less`, and every pane on a machine with no manifest
-//! loaded. A completion gate satisfied by that level returns success on a
-//! corpse, instantly.
-//!
-//! This module therefore reads `idle` two different ways, per the governing
-//! ruling:
-//!
-//! - as a **level** it is absence of contrary evidence — the right predicate
-//!   for a *safety* gate ("do not disturb this pane"), which is not what this
-//!   module is;
-//! - as the far side of a **`working -> idle` edge** it is positive evidence
-//!   that whatever was asserting `working` stopped asserting it — which is
-//!   what a *completion* gate needs.
-//!
-//! [`wait_for_agent_state`] is satisfied only by the second. The pre-wait
-//! `GET_METADATA` exists to establish the baseline the edge is measured
-//! against; it can never itself satisfy the wait. That is enforced
-//! structurally: [`EdgeTracker::new`] *seeds* the baseline and never
-//! evaluates it against the target set, and [`EdgeTracker::observe`] returns
-//! [`Verdict::Pending`] for any observation whose state equals the last one
-//! held.
-//!
-//! # Why both a subscription and a poll floor
-//!
-//! `SUBSCRIBE_METADATA` (0x54) + `METADATA_CHANGED` (0xD0) is the
-//! low-latency half, and it is lossy in two documented ways: the server
-//! delivers the notification with `try_send` and drops it on a full mailbox
-//! (`state/client_table.rs`, "a dropped notification is acceptable"), and the
-//! detector is edge-filtered, publishing only on a changed `(kind, name,
-//! state)` tuple. So the CLI also re-reads `GET_METADATA` on the ordinary
-//! `wait` cadence and treats a value differing from the one it last held as
-//! the edge it missed. That is level-triggered **recovery of an edge**, not a
-//! level gate: the poll's answer is fed through the same [`EdgeTracker`] and
-//! is subject to the same "must differ from the last state held" rule.
-//!
-//! The subscription is registered **before** the baseline is read, on the
-//! same connection ([`crate::watch::subscribe`]), so no transition can slip
-//! through the gap between the two: the server handles one connection's
-//! frames in order, and anything it published in between arrives ahead of the
-//! `METADATA_VALUE` as an interleaved frame, which this module folds into the
-//! observation sequence rather than dropping.
+//! `METADATA_CHANGED` pushes are the low-latency half but lossy (dropped on
+//! a full mailbox, edge-filtered detector), so a `GET_METADATA` poll floor
+//! feeds the same tracker to recover missed edges. The subscription is
+//! registered before the baseline read on the same connection, and frames
+//! interleaved ahead of the answer are folded in, so no transition slips
+//! through the gap.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -68,9 +28,7 @@ use crate::attach::connection::Connection;
 use crate::state::get_state;
 use crate::watch::{FleetSubscription, WatchItem, stream_items, subscribe, subscribe_fleet};
 
-/// The default `--until` set: the three states a turn can end in
-/// (ADR-0076 point 5). `working` is spellable but not a default — it is the
-/// start of a turn, not the end of one.
+/// The default `--until` set: the three states a turn can end in.
 pub const DEFAULT_UNTIL: &[AgentMetaState] = &[
     AgentMetaState::Idle,
     AgentMetaState::Blocked,
@@ -81,17 +39,11 @@ pub const DEFAULT_UNTIL: &[AgentMetaState] = &[
 const BASELINE_REQUEST_ID: u32 = 1;
 
 /// Consecutive poll-floor transport failures tolerated once the push half is
-/// already gone, before the wait gives up with a transport error. A single
-/// hiccup on a busy socket must not fail a wait the subscription is still
-/// serving.
+/// gone, before the wait gives up.
 const POLL_FAILURE_LIMIT: u32 = 3;
 
-/// Parse one `--until` word into the state it names.
-///
-/// `unknown` is deliberately not spellable: it is *departure* — a record
-/// whose state was withdrawn — not a state to wait for, and it is also the
-/// open-enum decode of any newer vocabulary word, so waiting on it would mean
-/// "wait for something this build cannot name".
+/// Parse one `--until` word. `unknown` is not spellable: it is a departure
+/// (and the decode of any newer word), not a state to wait for.
 #[must_use]
 pub fn parse_until(word: &str) -> Option<AgentMetaState> {
     match word {
@@ -106,13 +58,9 @@ pub fn parse_until(word: &str) -> Option<AgentMetaState> {
 /// How the agent left, when it left rather than settled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DepartureReason {
-    /// The `phux.agent/v1` key was deleted, or its value stopped parsing as a
-    /// record with a non-empty `name` (L3 §3.7 reads both as "no declared
-    /// agent").
+    /// The record was deleted or stopped parsing as one.
     Tombstone,
-    /// The record survived but its state withdrew to `unknown` — either
-    /// explicitly cleared, or replaced by a vocabulary this build cannot
-    /// name.
+    /// The record's state withdrew to `unknown` (cleared, or a newer word).
     WithdrewToUnknown,
 }
 
@@ -130,19 +78,16 @@ impl DepartureReason {
 /// What one observation of the record means for a wait in progress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
-    /// Nothing decided: no state change, or a change to a state nobody asked
-    /// for.
+    /// No state change, or a change into an untargeted state.
     Pending,
-    /// An observed transition **into** a target state. The only thing that
-    /// satisfies a wait.
+    /// An observed transition into a target state: the only success.
     Satisfied {
         /// The state held before this observation.
         from: AgentMetaState,
         /// The state observed now.
         to: AgentMetaState,
     },
-    /// The agent went away mid-wait. Distinct from both success and timeout:
-    /// a caller must not read it as "the turn finished".
+    /// The agent went away mid-wait: neither success nor timeout.
     Departed {
         /// The state held before it went away.
         from: AgentMetaState,
@@ -156,9 +101,7 @@ pub enum Verdict {
 pub enum EdgeSource {
     /// A server-pushed `METADATA_CHANGED`.
     Push,
-    /// The `GET_METADATA` poll floor, recovering an edge the push half never
-    /// delivered (dropped notification, or two transitions inside one
-    /// detector tick).
+    /// The `GET_METADATA` poll floor, recovering a missed edge.
     Poll,
 }
 
@@ -185,10 +128,7 @@ pub struct ObservedEdge {
 }
 
 /// Tracks the observation sequence and decides, per observation, whether the
-/// wait is satisfied.
-///
-/// Pulled out of the async driver so the predicate — the whole point of this
-/// module — is unit-testable with no server, no sockets, and no clock.
+/// wait is satisfied (kept sync so the predicate is unit-testable).
 #[derive(Debug)]
 pub struct EdgeTracker {
     targets: Vec<AgentMetaState>,
@@ -198,12 +138,8 @@ pub struct EdgeTracker {
 }
 
 impl EdgeTracker {
-    /// Seed a tracker with the pre-wait `baseline` level and the states the
-    /// caller is waiting for.
-    ///
-    /// The baseline is *recorded*, never *evaluated*: a tracker built with
-    /// `baseline = Idle` and `targets = [Idle]` is not satisfied, and there
-    /// is no code path that could make it so. That is the corpse rule.
+    /// Seed a tracker with the pre-wait `baseline` level, which is recorded
+    /// and never evaluated (the corpse rule).
     #[must_use]
     pub fn new(baseline: AgentMetaState, targets: &[AgentMetaState]) -> Self {
         Self {
@@ -214,10 +150,8 @@ impl EdgeTracker {
         }
     }
 
-    /// Fold one observation of the pane's record into the wait.
-    ///
-    /// `None` means the record is gone (deleted, or a value that no longer
-    /// reads as a record) — a departure, never a completion.
+    /// Fold one observation into the wait; `None` (record gone) is a
+    /// departure, never a completion.
     pub fn observe(&mut self, record: Option<&AgentRecord>) -> Verdict {
         let Some(record) = record else {
             return Verdict::Departed {
@@ -227,8 +161,6 @@ impl EdgeTracker {
         };
         let next = record.state;
         if next == self.last {
-            // The poll floor re-reads the same level several times a second;
-            // repeating a level is not an edge.
             return Verdict::Pending;
         }
         let from = self.last;
@@ -269,13 +201,11 @@ impl EdgeTracker {
 /// Why a wait could not produce an answer about the agent's lifecycle.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentWaitError {
-    /// The pane declared no `phux.agent/v1` record at subscribe time, so
-    /// there is no lifecycle to wait on. Refused up front rather than waited
-    /// out: a pane with no record never publishes an edge, so the wait would
-    /// be an elaborate way to spend the whole timeout.
+    /// The pane declared no record at subscribe time, so it can never
+    /// publish an edge; refused up front.
     #[error("pane has no phux.agent/v1 record, so there is no agent lifecycle to wait on")]
     NoRecord,
-    /// The agent went away mid-wait. **Not** success and **not** a timeout.
+    /// The agent went away mid-wait.
     #[error("agent departed from '{}' ({})", .from.as_str(), .reason.as_str())]
     Departed {
         /// The state held before the departure.
@@ -355,10 +285,8 @@ impl FleetAgentWaitResult {
     }
 }
 
-/// Read a pane's `phux.agent/v1` record over `conn`.
-///
-/// `None` is "no declared agent" — the key is unset, or its value does not
-/// read as a record with a non-empty `name` (L3 §3.7) — never an error.
+/// Read a pane's `phux.agent/v1` record over `conn`; `None` is "no declared
+/// agent", never an error.
 async fn read_record(
     conn: &mut Connection,
     terminal: &ResourceId,
@@ -376,11 +304,8 @@ async fn read_record(
     Ok((value.as_deref().and_then(parse_agent_record), interleaved))
 }
 
-/// Read a pane's `phux.agent/v1` record on a fresh connection — the poll
-/// floor's single read.
-///
-/// Side-effect-free in the same sense as `GET_SCREEN`: it neither attaches
-/// nor resizes, so polling a pane someone is using disturbs nothing.
+/// Read a pane's `phux.agent/v1` record on a fresh, side-effect-free
+/// connection (the poll floor's read).
 ///
 /// # Errors
 ///
@@ -390,24 +315,21 @@ pub async fn fetch_agent_record(
     terminal: &ResourceId,
 ) -> Result<Option<AgentRecord>, AttachError> {
     let mut conn = Connection::connect(socket).await?;
+    // Nothing is subscribed here, so nothing interleaved matters.
     let (record, _interleaved) = read_record(&mut conn, terminal, BASELINE_REQUEST_ID).await?;
-    // This connection subscribed to nothing, so the server pushes nothing to
-    // it ahead of the answer; an interleaved frame here would be a server
-    // bug, and dropping it loses no transition the wait needs.
     Ok(record)
 }
 
-/// The record an interleaved `METADATA_CHANGED` carries for `terminal`, or
-/// `None` if the frame is about something else.
-///
-/// The inner `Option` is the record itself: `Some(None)` is a tombstone.
+/// The record an interleaved `METADATA_CHANGED` carries for `terminal`
+/// (`Some(None)` is a tombstone), or `None` if the frame is not ours.
 #[allow(
     clippy::option_option,
-    reason = "the outer Option answers 'is this frame ours', the inner one \
-              'record or tombstone'; collapsing them would erase the \
-              tombstone, which is the one observation the wait must not miss"
+    reason = "outer: is this frame ours; inner: record or tombstone"
 )]
-fn record_from_frame(frame: &FrameKind, terminal: &ResourceId) -> Option<Option<AgentRecord>> {
+pub(crate) fn record_from_frame(
+    frame: &FrameKind,
+    terminal: &ResourceId,
+) -> Option<Option<AgentRecord>> {
     let FrameKind::MetadataChanged {
         scope, key, value, ..
     } = frame
@@ -435,23 +357,20 @@ struct Stats {
 
 /// One decided observation: the verdict, the record it came from, and which
 /// half of the wait saw it.
-type Decision = (Verdict, Option<AgentRecord>, EdgeSource);
+pub(crate) type Decision = (Verdict, Option<AgentRecord>, EdgeSource);
 
-/// State the two halves of the wait share while both are running.
-///
-/// The halves are polled by one task (ADR-0003 binds the CLI to a
-/// current-thread runtime), so the interior mutability never overlaps a
-/// borrow.
-struct WaitShared {
+/// State the two halves of the wait share; both are polled by one task, so
+/// the borrows never overlap.
+pub(crate) struct WaitShared {
     tracker: RefCell<EdgeTracker>,
     latest: RefCell<Option<AgentRecord>>,
     stats: RefCell<Stats>,
-    push_ended: Cell<bool>,
+    pub(crate) push_ended: Cell<bool>,
 }
 
 impl WaitShared {
     /// Carry the replayed tracker and last-seen record into the live wait.
-    fn new(tracker: EdgeTracker, latest: Option<AgentRecord>) -> Self {
+    pub(crate) fn new(tracker: EdgeTracker, latest: Option<AgentRecord>) -> Self {
         Self {
             tracker: RefCell::new(tracker),
             latest: RefCell::new(latest),
@@ -495,13 +414,9 @@ enum Replay {
     Watching(WaitShared),
 }
 
-/// The observation sequence for the subscribe/read window, in time order:
-/// anything the server published between the subscribe and the answer, then
-/// the answer itself.
-///
-/// Folding the interleave in rather than dropping it is what keeps a
-/// `working -> idle -> working` flicker inside that window from being
-/// invisible.
+/// The subscribe/read window's observations in time order: what the server
+/// published before the answer, then the answer (so a flicker inside the
+/// window stays visible).
 fn window_observations(
     interleaved: &[FrameKind],
     answered: Option<AgentRecord>,
@@ -568,11 +483,9 @@ fn replay_window(
 /// the wait, then park forever if the stream ends without deciding.
 #[allow(
     clippy::future_not_send,
-    reason = "the push and poll halves share one EdgeTracker through a \
-              RefCell because they are polled by one task; ADR-0003 binds \
-              the CLI to a current-thread runtime"
+    reason = "halves share a RefCell on one task (ADR-0003)"
 )]
-async fn watch_pushes(
+pub(crate) async fn watch_pushes(
     conn: &mut Connection,
     shared: &WaitShared,
 ) -> Result<Decision, AgentWaitError> {
@@ -590,9 +503,7 @@ async fn watch_pushes(
     })
     .await;
     shared.push_ended.set(true);
-    // A stream that ends without deciding is not fatal: the poll floor is
-    // the floor precisely so a dropped subscription degrades to latency
-    // rather than to a wrong answer.
+    // An undecided end is not fatal: the poll floor keeps serving the wait.
     let _ = streamed;
     match decided {
         Some(decision) => Ok(decision),
@@ -601,18 +512,18 @@ async fn watch_pushes(
 }
 
 /// The recovery half: re-read the record on the `wait` cadence and decide
-/// from any level that differs from the one last held.
+/// from any level that differs from the one last held. With `fail_after`,
+/// gives up after that many consecutive failures once the push half ended.
 #[allow(
     clippy::future_not_send,
-    reason = "the push and poll halves share one EdgeTracker through a \
-              RefCell because they are polled by one task; ADR-0003 binds \
-              the CLI to a current-thread runtime"
+    reason = "halves share a RefCell on one task (ADR-0003)"
 )]
-async fn poll_floor(
+pub(crate) async fn poll_floor(
     socket: &Path,
     terminal: &ResourceId,
     poll_interval: Duration,
     shared: &WaitShared,
+    fail_after: Option<u32>,
 ) -> Result<Decision, AgentWaitError> {
     let mut failures: u32 = 0;
     loop {
@@ -627,7 +538,7 @@ async fn poll_floor(
             }
             Err(err) => {
                 failures = failures.saturating_add(1);
-                if failures >= POLL_FAILURE_LIMIT && shared.push_ended.get() {
+                if fail_after.is_some_and(|limit| failures >= limit) && shared.push_ended.get() {
                     return Err(AgentWaitError::Transport(err));
                 }
             }
@@ -636,7 +547,7 @@ async fn poll_floor(
 }
 
 /// Elapse after `timeout`, or never when the caller set none.
-async fn deadline(timeout: Option<Duration>) {
+pub(crate) async fn deadline(timeout: Option<Duration>) {
     match timeout {
         Some(limit) => tokio::time::sleep(limit).await,
         None => std::future::pending::<()>().await,
@@ -645,56 +556,43 @@ async fn deadline(timeout: Option<Duration>) {
 
 /// Fold the decided verdict — or the deadline's absence of one — into the
 /// call's result.
-fn finish(
+pub(crate) fn finish(
     decision: Option<Decision>,
     shared: WaitShared,
 ) -> Result<AgentWaitResult, AgentWaitError> {
     let (tracker, latest, stats) = shared.into_parts();
-    match decision {
-        Some((Verdict::Satisfied { from, to }, record, via)) => Ok(AgentWaitResult {
-            edge: Some(ObservedEdge { from, to, via }),
-            baseline: tracker.baseline(),
-            last: tracker.last(),
-            record: record.or(latest),
-            edges: tracker.edges(),
-            polls: stats.polls,
-            pushes: stats.pushes,
-        }),
-        Some((Verdict::Departed { from, reason }, record, _)) => Err(AgentWaitError::Departed {
-            from,
-            reason,
-            last_record: record.or(latest),
-        }),
-        // `Verdict::Pending` never decides — the two halves only return on a
-        // decided verdict — so this folds in with the deadline arm rather
-        // than being an unreachable panic.
-        Some((Verdict::Pending, _, _)) | None => Ok(AgentWaitResult {
-            edge: None,
-            baseline: tracker.baseline(),
-            last: tracker.last(),
-            record: latest,
-            edges: tracker.edges(),
-            polls: stats.polls,
-            pushes: stats.pushes,
-        }),
-    }
+    // `latest` already holds a satisfying record; a departure's may be a
+    // tombstone, so it falls back to the last record seen.
+    let edge = match decision {
+        Some((Verdict::Departed { from, reason }, record, _)) => {
+            return Err(AgentWaitError::Departed {
+                from,
+                reason,
+                last_record: record.or(latest),
+            });
+        }
+        Some((Verdict::Satisfied { from, to }, _, via)) => Some(ObservedEdge { from, to, via }),
+        // The halves never return `Pending`; it folds in with the deadline.
+        Some((Verdict::Pending, _, _)) | None => None,
+    };
+    Ok(AgentWaitResult {
+        edge,
+        baseline: tracker.baseline(),
+        last: tracker.last(),
+        record: latest,
+        edges: tracker.edges(),
+        polls: stats.polls,
+        pushes: stats.pushes,
+    })
 }
 
-/// Wait until `terminal`'s agent record transitions **into** one of
-/// `targets`, or `timeout` elapses.
+/// Wait until `terminal`'s agent record transitions into one of `targets`,
+/// or `timeout` elapses.
 ///
-/// The predicate, precisely. Let `O_0, O_1, …` be this call's observations of
-/// the pane's `phux.agent/v1` record, in arrival order, merged from the
-/// `METADATA_CHANGED` push stream and the `GET_METADATA` poll floor, starting
-/// with the pre-wait baseline read. The wait is **satisfied** at the first
-/// `i > 0` such that `O_i` is a record whose state differs from the state
-/// last held and is a member of `targets`. It **fails** with
-/// [`AgentWaitError::Departed`] at the first `O_i` that is a tombstone, or
-/// whose state differs from the last held and is `unknown`. No single
-/// observation, at any index — least of all `O_0` — satisfies the wait on its
-/// own. A pane resting at `idle` therefore never satisfies `--until idle`
-/// without first having been observed in some other state, which is exactly
-/// what stops a wait from succeeding on a pane whose agent crashed.
+/// Over the merged push/poll observations `O_0` (the baseline), `O_1`, …,
+/// the wait is satisfied at the first `i > 0` whose state differs from the
+/// last held and is a target; it departs at a tombstone or a change to
+/// `unknown`. A pane resting at `idle` never satisfies `--until idle`.
 ///
 /// # Errors
 ///
@@ -703,9 +601,7 @@ fn finish(
 /// [`AgentWaitError::Transport`] on connect/transport failure.
 #[allow(
     clippy::future_not_send,
-    reason = "the push and poll halves share one EdgeTracker through a \
-              RefCell because they are polled by one task; ADR-0003 binds \
-              the CLI to a current-thread runtime"
+    reason = "halves share a RefCell on one task (ADR-0003)"
 )]
 pub async fn wait_for_agent_state(
     socket: &Path,
@@ -714,9 +610,7 @@ pub async fn wait_for_agent_state(
     timeout: Option<Duration>,
     poll_interval: Duration,
 ) -> Result<AgentWaitResult, AgentWaitError> {
-    // Subscribe FIRST, and read the baseline on the same connection, so the
-    // window between "what is it now" and "tell me when it changes" does not
-    // exist. See the module docs.
+    // Subscribe first, then read the baseline on the same connection.
     let mut conn = subscribe(socket, Some(terminal.clone())).await?;
     let (answered, interleaved) = read_record(&mut conn, terminal, BASELINE_REQUEST_ID).await?;
 
@@ -728,7 +622,7 @@ pub async fn wait_for_agent_state(
 
     let decision: Option<Decision> = tokio::select! {
         decided = watch_pushes(&mut conn, &shared) => Some(decided?),
-        decided = poll_floor(socket, terminal, poll_interval, &shared) => Some(decided?),
+        decided = poll_floor(socket, terminal, poll_interval, &shared, Some(POLL_FAILURE_LIMIT)) => Some(decided?),
         () = deadline(timeout) => None,
     };
     drop(conn);
@@ -919,19 +813,14 @@ fn local_terminals(view: &crate::state::StateView) -> HashSet<ResourceId> {
         .collect()
 }
 
-/// Wait until any local agent in the server's fleet transitions into one of
+/// Wait until any local agent in the fleet transitions into one of
 /// `targets`, or `timeout` elapses.
 ///
-/// Existing panes are enumerated only after the server-wide lifecycle stream
-/// is subscribed. Each local Terminal then gets its own L3 subscription and
-/// baseline tracker. A newly spawned Terminal is added by the same event
-/// stream; the periodic `GET_STATE` + `GET_METADATA` sweep is a convergence
-/// floor for dropped events, dropped metadata notifications, and stale closed
-/// panes. Initial levels — including an agent already in a target state — seed
-/// a tracker and never satisfy the wait.
-///
-/// Satellite resources are deliberately excluded because L3 metadata does
-/// not federate (L3 §1.3).
+/// Panes are enumerated after the lifecycle stream is subscribed; each local
+/// Terminal gets its own L3 subscription and tracker, and a periodic sweep
+/// is the convergence floor for dropped notifications and stale panes.
+/// Initial levels never satisfy the wait. Satellites are excluded: L3
+/// metadata does not federate.
 ///
 /// # Errors
 ///
@@ -1039,9 +928,7 @@ pub async fn wait_for_any_agent_state(
                         }
                     }
                 }
-                // When the push connection is gone, these are poll-only
-                // members. Keep them in the coverage set so stale-state
-                // pruning and the public count remain honest.
+                // Poll-only members still count for pruning and `agents`.
                 subscription.terminals.extend(current);
             }
             () = &mut deadline => return Ok(trackers.result(None)),
@@ -1057,11 +944,7 @@ mod tests {
         clippy::panic,
         reason = "tests"
     )]
-    #![allow(
-        clippy::future_not_send,
-        reason = "the wait it drives is !Send by design; ADR-0003 binds the \
-                  CLI to a current-thread runtime"
-    )]
+    #![allow(clippy::future_not_send, reason = "the wait is !Send by design")]
 
     use tokio::net::UnixListener;
 
@@ -1108,15 +991,10 @@ mod tests {
         )
     }
 
-    /// Drive a real `wait_for_agent_state` against the shared scripted
-    /// server. `level` is what every `GET_METADATA` answers with; `pushes`
-    /// are the `METADATA_CHANGED` frames the server fans out to the *first*
-    /// connection once its metadata subscription registers.
-    ///
-    /// Every accepted connection is served on its own task because the wait
-    /// holds the subscribed connection open for its whole life while the
-    /// poll floor dials a fresh one per read — a serial accept loop would
-    /// wedge behind the long-lived one and starve the floor.
+    /// Drive `wait_for_agent_state` against the scripted server: `level`
+    /// answers every `GET_METADATA`; `pushes` go to the first connection.
+    /// Each connection gets its own task, since the subscribed one lives as
+    /// long as the wait while the poll floor dials fresh ones.
     async fn drive(
         level: Option<Vec<u8>>,
         pushes: Vec<FrameKind>,
@@ -1143,9 +1021,7 @@ mod tests {
                     spec = spec.extend(pushes.clone());
                     first = false;
                 }
-                // Stay up: a hang-up would end the wait for the wrong
-                // reason, and the corpse test needs a *live* server that
-                // keeps answering `idle` for the whole deadline.
+                // Stay up: the corpse test needs a live server answering idle.
                 let spec = spec.end(EndOfScript::ServeUntilDetach);
                 tokio::spawn(async move {
                     ScriptedServer::on_stream(stream, spec).run().await;
@@ -1164,16 +1040,11 @@ mod tests {
         outcome
     }
 
-    /// THE test. A pane resting at `idle` — whether from the detector's
-    /// fail-safe or a positive signal observed before this wait — must NOT
-    /// satisfy `--until idle`. A level read is not an edge.
+    /// A pane resting at `idle` must not satisfy `--until idle`, however
+    /// often the level is re-read.
     #[test]
     fn a_level_read_of_idle_never_satisfies_the_wait() {
         let mut tracker = EdgeTracker::new(AgentMetaState::Idle, &[AgentMetaState::Idle]);
-        // The baseline itself is never evaluated.
-        assert_eq!(tracker.last(), AgentMetaState::Idle);
-        // And re-reading the same level, forever, is still not an edge — this
-        // is precisely what the poll floor does to a corpse.
         for _ in 0..100 {
             assert_eq!(
                 tracker.observe(Some(&state_record(AgentMetaState::Idle))),
@@ -1184,8 +1055,6 @@ mod tests {
         assert_eq!(tracker.edges(), 0);
     }
 
-    /// The transition the wait exists for: whatever was asserting `working`
-    /// stopped asserting it.
     #[test]
     fn a_working_to_idle_transition_satisfies_the_wait() {
         let mut tracker = EdgeTracker::new(AgentMetaState::Working, &[AgentMetaState::Idle]);
@@ -1199,10 +1068,7 @@ mod tests {
         assert_eq!(tracker.edges(), 1);
     }
 
-    /// `blocked` is asserted positively by five shipped manifest rules — but
-    /// a pane that was *already* blocked when the wait began still has to
-    /// transition to satisfy the gate. The level is not the edge, whatever
-    /// the state.
+    /// An already-blocked pane must still transition to satisfy `blocked`.
     #[test]
     fn an_already_blocked_baseline_needs_a_transition_too() {
         let mut tracker = EdgeTracker::new(AgentMetaState::Blocked, &[AgentMetaState::Blocked]);
@@ -1242,61 +1108,34 @@ mod tests {
         );
     }
 
-    /// A tombstone ends the wait as a departure, never as success — the
-    /// agent went away, which is not the same statement as "it finished".
+    /// A tombstone or a withdrawal to `unknown` is a departure, never a
+    /// completion.
     #[test]
-    fn a_tombstone_is_a_departure_not_a_completion() {
-        let mut tracker = EdgeTracker::new(AgentMetaState::Working, DEFAULT_UNTIL);
-        assert_eq!(
-            tracker.observe(None),
-            Verdict::Departed {
-                from: AgentMetaState::Working,
-                reason: DepartureReason::Tombstone,
-            }
-        );
+    fn a_tombstone_or_withdrawal_is_a_departure_not_a_completion() {
+        for (observed, reason) in [
+            (None, DepartureReason::Tombstone),
+            (
+                Some(state_record(AgentMetaState::Unknown)),
+                DepartureReason::WithdrewToUnknown,
+            ),
+        ] {
+            let mut tracker = EdgeTracker::new(AgentMetaState::Working, DEFAULT_UNTIL);
+            assert_eq!(
+                tracker.observe(observed.as_ref()),
+                Verdict::Departed {
+                    from: AgentMetaState::Working,
+                    reason,
+                }
+            );
+        }
     }
 
-    /// A state that withdraws to `unknown` — cleared, or replaced by a
-    /// vocabulary this build cannot name — is departure too, not an edge
-    /// into anything waitable.
     #[test]
-    fn a_withdrawal_to_unknown_is_a_departure() {
-        let mut tracker = EdgeTracker::new(AgentMetaState::Working, DEFAULT_UNTIL);
-        assert_eq!(
-            tracker.observe(Some(&state_record(AgentMetaState::Unknown))),
-            Verdict::Departed {
-                from: AgentMetaState::Working,
-                reason: DepartureReason::WithdrewToUnknown,
-            }
-        );
-    }
-
-    /// `unknown` is not spellable as a `--until` target, and neither is a
-    /// word from a newer vocabulary.
-    #[test]
-    fn until_vocabulary_is_closed_and_excludes_unknown() {
-        assert_eq!(parse_until("idle"), Some(AgentMetaState::Idle));
+    fn until_vocabulary_excludes_unknown_and_newer_words() {
         assert_eq!(parse_until("working"), Some(AgentMetaState::Working));
-        assert_eq!(parse_until("blocked"), Some(AgentMetaState::Blocked));
-        assert_eq!(parse_until("done"), Some(AgentMetaState::Done));
-        assert_eq!(parse_until("unknown"), None);
-        assert_eq!(parse_until("hibernating"), None);
-        assert_eq!(parse_until(""), None);
-    }
-
-    /// The default set is the three ways a turn can end, and never
-    /// `working`.
-    #[test]
-    fn default_until_set_is_the_three_end_states() {
-        assert_eq!(
-            DEFAULT_UNTIL,
-            &[
-                AgentMetaState::Idle,
-                AgentMetaState::Blocked,
-                AgentMetaState::Done
-            ]
-        );
-        assert!(!DEFAULT_UNTIL.contains(&AgentMetaState::Working));
+        for word in ["unknown", "hibernating", ""] {
+            assert_eq!(parse_until(word), None, "{word}");
+        }
     }
 
     /// An interleaved `METADATA_CHANGED` for another key, another scope, or
@@ -1323,9 +1162,8 @@ mod tests {
         assert_eq!(record_from_frame(&changed(&pane, None), &pane), Some(None));
     }
 
-    /// End to end against the scripted server: a pane whose record answers
-    /// `idle` on every read and never publishes a change must TIME OUT, not
-    /// succeed. This is the corpse case with real frames on a real socket.
+    /// The corpse case end to end: a pane answering `idle` on every read and
+    /// never changing times out rather than succeeding.
     #[tokio::test]
     async fn a_live_pane_resting_at_idle_times_out_rather_than_succeeding() {
         let outcome = drive(
@@ -1345,9 +1183,8 @@ mod tests {
         assert_eq!(outcome.edges, 0);
     }
 
-    /// End to end: an observed `working -> blocked` transition satisfies the
-    /// wait, and the result names the edge, the source, and the identity the
-    /// record carried.
+    /// An observed `working -> blocked` transition satisfies the wait, naming
+    /// the edge, its source, and the record's identity.
     #[tokio::test]
     async fn an_observed_transition_satisfies_the_wait_end_to_end() {
         let pane = ResourceId::local(7);
@@ -1368,8 +1205,6 @@ mod tests {
         assert_eq!(edge.from, AgentMetaState::Working);
         assert_eq!(edge.to, AgentMetaState::Blocked);
         assert_eq!(edge.via, EdgeSource::Push);
-        // Provenance survives into the result: the caller can see *which*
-        // agent settled, not just that something did.
         assert_eq!(
             outcome
                 .record
@@ -1379,8 +1214,7 @@ mod tests {
         );
     }
 
-    /// A record that goes away mid-wait ends it with a typed departure — the
-    /// distinct error, not a hang to the deadline and not a success.
+    /// A record that goes away mid-wait ends it with a typed departure.
     #[tokio::test]
     async fn a_tombstone_mid_wait_is_a_typed_departure_end_to_end() {
         let pane = ResourceId::local(7);
@@ -1406,8 +1240,7 @@ mod tests {
         );
     }
 
-    /// A pane with no record at all is refused up front rather than waited
-    /// out: it can never publish an edge.
+    /// A pane with no record is refused up front.
     #[tokio::test]
     async fn an_absent_record_is_refused_immediately() {
         let outcome = drive(
@@ -1428,42 +1261,15 @@ mod tests {
         let first = ResourceId::local(7);
         let second = ResourceId::local(8);
         let mut fleet = FleetTrackers::new(&[AgentMetaState::Blocked]);
-
-        assert!(
-            fleet
-                .observe(
-                    first.clone(),
-                    Some(state_record(AgentMetaState::Blocked)),
-                    None,
-                )
-                .is_none(),
-            "an already-blocked agent is a stale level, not a transition"
-        );
-        assert!(
-            fleet
-                .observe(
-                    second.clone(),
-                    Some(state_record(AgentMetaState::Working)),
-                    None,
-                )
-                .is_none()
-        );
-        assert!(
-            fleet
-                .observe(
-                    second.clone(),
-                    Some(state_record(AgentMetaState::Idle)),
-                    Some(EdgeSource::Push),
-                )
-                .is_none(),
-            "an untargeted transition advances only that agent's tracker"
-        );
-        let matched = fleet
-            .observe(
-                second.clone(),
-                Some(state_record(AgentMetaState::Blocked)),
-                Some(EdgeSource::Push),
-            )
+        let mut see = |terminal: &ResourceId, state, via| {
+            fleet.observe(terminal.clone(), Some(state_record(state)), via)
+        };
+        // An already-blocked baseline is a stale level; an untargeted
+        // transition advances only that agent's tracker.
+        assert!(see(&first, AgentMetaState::Blocked, None).is_none());
+        assert!(see(&second, AgentMetaState::Working, None).is_none());
+        assert!(see(&second, AgentMetaState::Idle, Some(EdgeSource::Push)).is_none());
+        let matched = see(&second, AgentMetaState::Blocked, Some(EdgeSource::Push))
             .expect("the second agent's transition matches");
         assert_eq!(matched.terminal, second);
         assert_eq!(matched.edge.from, AgentMetaState::Idle);

@@ -38,12 +38,9 @@ impl AgentSessionRow {
 /// `AgentSession` rows grouped by their parent pane.
 pub(super) type AgentSessionRows = HashMap<ResourceId, Vec<AgentSessionRow>>;
 
-/// Project every live `AgentSession` the kernel holds onto its parent pane.
-///
-/// A session whose stream ended (`session_end`) is retracted and produces no
-/// row; a session with no declared parent cannot be placed under a pane and
-/// is skipped as well. Rows under one parent hold a stable order by resource
-/// id so repeated projections compare equal.
+/// Project every live `AgentSession` onto its parent pane. Ended or
+/// parentless sessions produce no row; rows per parent sort by id so repeated
+/// projections compare equal.
 pub(super) fn agent_session_rows(kernel: &AttachKernel) -> AgentSessionRows {
     let mut rows: AgentSessionRows = HashMap::new();
     for view in kernel.agent_sessions() {

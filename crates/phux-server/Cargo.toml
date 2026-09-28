@@ -15,116 +15,54 @@ workspace = true
 
 [features]
 default = ["webtransport", "native-engine"]
-# WebTransport (HTTP/3 over QUIC) listener for browser consumers
-# (phux-0wmf). Browsers cannot open raw QUIC, so this is their door to
-# QUIC-class transport; `phux-web` dials it, falling back to WebSocket.
-# On by default because the shipped binary should serve browsers out of
-# the box; disable for a leaner daemon that keeps UDS/WS/QUIC only.
+# WebTransport (HTTP/3 over QUIC) listener: the browser's QUIC-class door,
+# which `phux-web` dials before falling back to WebSocket.
 webtransport = ["dep:wtransport-proto", "dep:httlib-huffman"]
-# Compile-in the tokio-console async-runtime debugger. Off by default
-# (pulls a TCP server + extra task instrumentation). Requires Tokio
-# built with `--cfg tokio_unstable`, so build with:
-#   RUSTFLAGS='--cfg tokio_unstable' cargo build --features tokio-console
-# Then `cargo install tokio-console` and `tokio-console` to attach.
+# tokio-console debugger. Requires `RUSTFLAGS='--cfg tokio_unstable'`.
 tokio-console = ["dep:console-subscriber"]
-# Incremental native checkpoint capture/advertisement. The compatibility
-# synthesizers remain available independently of this feature.
+# Incremental native checkpoint capture/advertisement.
 native-engine = []
-# Benchmark/example tooling stays opt-in so default workspace tests do not
-# compile Criterion or DHAT merely because these targets exist.
+# Benchmark/example tooling, opt-in so default test builds skip Criterion
+# and DHAT.
 capture-bench = ["dep:criterion", "dep:dhat"]
 ack-allocations-example = ["dep:dhat"]
 
 
 [dependencies]
-# These tools are normal optional dependencies because Cargo enables every
-# dev-dependency while compiling tests. The target-specific features below
-# keep them out of the default test graph.
+# Optional (not dev-dependencies) so default test builds do not compile them.
 criterion = { workspace = true, optional = true }
 dhat = { workspace = true, optional = true }
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
-# Agent manifests and the offline explainer (phux-w7z2.24). The detector
-# evaluates them; it does not own the TOML or the region matcher.
+# Agent manifests and the region matcher the detector evaluates.
 phux-agent-rules.workspace = true
-# `GET_SCREEN --format vt`'s rendered capture is base64 (D9); already in
-# the dep graph via wtransport -> pem, see the workspace justification.
+# `GET_SCREEN --format vt` capture encoding.
 base64.workspace = true
-# phux-config supplies the canonical scrollback bounds — `ScrollbackLimits`
-# plus the `defaults.history-limit` / `defaults.history-bytes` defaults
-# (`DefaultsCfg::default().scrollback_limits()`) — so
-# `ServerConfig::with_default_socket` does not duplicate them. The dep is
-# config-shape only: the server reads the schema's defaults and threads the
-# resolved pair into each `TerminalActor`'s scrollback configuration.
+# Canonical scrollback bounds and config schema defaults.
 phux-config.workspace = true
-# phux-plugin supplies the shared child-process runner (`run_command_spec`:
-# env injection, kill_on_drop, timeout) behind the server-side event-hook
-# dispatcher (`crate::hooks`, phux-r82.1). Reusing it keeps a single
-# execution path — the no-in-process-host rule — for plugin actions and
-# event hooks. Internal workspace crate; adds no new external dependencies.
+# The shared child-process runner behind event hooks.
 phux-plugin.workspace = true
-# `[[hooks.<name>]]` `when` predicates are `BTreeMap<String, toml::Value>`
-# in the phux-config schema, so the hook dispatcher's matcher names
-# `toml::Value` directly. Already in the graph via phux-config.
+# Hook `when` predicates are `toml::Value`s.
 toml.workspace = true
-# `GET_SCREEN` serializes `phux_core::ScreenState` into the COMMAND_RESULT
-# JSON payload (ADR-0022 §2); the CLI deserializes the same contract.
+# `GET_SCREEN` JSON timestamps and workload certificate dates.
 chrono.workspace = true
-# `derive` for the versioned graceful-upgrade state blob (ADR-0032); the
-# JSON codec is `serde_json`, already in the dep graph.
+# The graceful-upgrade state blob and JSON records.
 serde.workspace = true
 serde_json.workspace = true
-# SIMD byte search for the PTY ingest hot path; see the workspace dep for the
-# full justification and the measurement that motivated it. Already in the
-# graph via `serde_json`, so it costs no additional compilation.
+# SIMD byte search on the PTY ingest hot path.
 memchr.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-# Non-blocking file sink for the telemetry foundation: `PHUX_LOG` tees
-# server logs to a file, and the client (which shares this module) logs
-# to a file only. See the workspace dep for the full justification.
+# Non-blocking log file sink.
 tracing-appender.workspace = true
 tokio.workspace = true
-# tokio-util gives us `CancellationToken` (hierarchical cancellation,
-# replacing the per-actor / per-loop `oneshot::Sender<()>` shutdown
-# pattern). The `rt` feature is what gates `sync::CancellationToken`
-# in current tokio-util releases.
+# `CancellationToken` (the `rt` feature gates it).
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
-# `nix` (signal feature only) delivers POSIX job-control signals to a pane's
-# process group for the supervisory "freeze / resume / interrupt / terminate /
-# kill" surface (ADR-0033). `portable_pty::Child` only exposes `.kill()`
-# (SIGKILL); the reversible `Freeze` (SIGSTOP) / `Resume` (SIGCONT) brake and
-# graceful `SIGTERM`/`SIGINT` need arbitrary signals sent to the whole process
-# group (`killpg`), which the safe `nix` wrapper provides without `unsafe`
-# libc FFI. Already in the lock tree (0.29) via the PTY stack; the `signal`
-# feature is the minimal surface.
-#
-# The `term` feature gates `nix::unistd::tcgetpgrp`, which the agent-state
-# detector (ADR-0046) uses to ask the kernel which process group currently
-# owns a pane's tty — that is how it identifies WHICH agent binary is
-# running, rather than parsing the title (a string the program merely chose
-# to print). `nix` is used here rather than `libc` because `libc` is declared
-# under a `cfg(target_os = "macos")` gate below and is therefore unavailable
-# on Linux; the safe `nix` wrapper is cross-platform and adds no new crate.
-#
-# `fs` + `feature` additionally gate `nix::unistd::{fpathconf, PathconfVar}`
-# (phux-mjmc): the canonical-mode PTY-write guard queries the pane's real
-# `MAX_CANON` via `fpathconf(fd, _PC_MAX_CANON)` rather than hardcoding a
-# platform table, since `MAX_CANON` is not a portable compile-time constant
-# and several `libc` targets do not expose it as one at all.
-#
-# `process` gates `nix::sys::wait::waitpid`, used by the detached reaper the
-# pane-kill path falls back to. Nothing else in the process collects children
-# — there is no SIGCHLD handler and no central reaper — so a child that
-# outlives the reap budget would otherwise stay a zombie for the life of the
-# server. Enabling a feature on a crate already in the build adds no new
-# dependency.
-#
-# `user` gates `nix::unistd::{getuid, User}` and `hostname` gates
-# `nix::unistd::gethostname`: the read-only `phux.whoami/v1` key (ADR-0106)
-# reports the serving OS user (uid and login name) and host name. Neither
-# feature pulls in another crate.
+# Safe POSIX wrappers: process-group signals (`signal`), foreground pgid
+# (`term`), `fpathconf(_PC_MAX_CANON)` (`fs` + `feature`), the detached
+# reaper's `waitpid` (`process`), and whoami's uid/login/host (`user`,
+# `hostname`). `libc` is macOS-only here, so these go through `nix`.
 nix = { version = "0.31", default-features = false, features = [
     "signal",
     "term",
@@ -137,182 +75,73 @@ nix = { version = "0.31", default-features = false, features = [
 bytes.workspace = true
 # In-process performance telemetry (`GET_PERF`, `phux perf`).
 phux-perf.workspace = true
-# `futures-util` brings `FuturesUnordered` + `StreamExt`, which `handle_attach`
-# uses to fan out per-pane `SnapshotRequest`s concurrently so attach latency
-# scales with the slowest pane's reply time, not their sum. Already in the
-# dep graph transitively via tokio; declared here for direct use. `std` (the
-# default feature set we want) is implied by leaving `default-features` on.
+# `FuturesUnordered` for concurrent per-pane attach snapshots.
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
-# WebSocket transport for browser consumers (phux-486.4). The browser client
-# speaks the identical length-prefixed FrameKind wire inside binary messages.
-# default-features off avoids pulling a TLS stack — ws:// is terminated locally
-# (dev) or at an edge proxy; the daemon only performs the server handshake.
+# WebSocket transport; TLS is terminated by rustls below, not by tungstenite.
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
-# Remote-consumer auth + encryption (ADR-0031). These are the vetted-crypto
-# substrate the "no homegrown crypto" rule (CONTRIBUTING.md) mandates; none was
-# in the tree before. rustls/tokio-rustls terminate TLS 1.3 on the WebSocket
-# listener for `wss://` remote consumers; the `ring` provider is selected
-# explicitly because it needs only a C compiler (no cmake, unlike aws-lc-rs).
-# PEM cert+key parsing uses rustls-pki-types (re-exported via rustls), not the
-# now-unmaintained rustls-pemfile (RUSTSEC-2025-0134). subtle gives a
-# constant-time token comparison (no timing oracle on the bearer token).
-# getrandom mints tokens from the OS CSPRNG. sha2 + hex compute the cert
-# fingerprint shown at pairing time. All are loopback-irrelevant: they only
-# engage when a TLS cert + token store are configured.
+# Remote-consumer auth and encryption (ADR-0031), vetted crates only: rustls
+# with the cmake-free `ring` provider for `wss://`, `subtle` for
+# constant-time token checks, `getrandom` for tokens, `sha2` + `hex` for
+# fingerprints.
 rustls.workspace = true
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
 subtle = "2"
 getrandom = "0.4"
 sha2 = "0.11"
 hex = "0.4"
-# rcgen generates the persisted self-signed certificate so a remote
-# (non-loopback) WebSocket listener provisions TLS with zero operator setup —
-# no openssl, no manual PEM (ADR-0031 "seamless"). `ring` backend (not the
-# default aws-lc-rs) keeps the cmake-free build the rest of the crypto stack
-# relies on. The generating itself is now phux-dial's (`provision` feature,
-# shared with phux-relay); what still needs the crate named here is
-# `TlsError::Rcgen`, which carries `rcgen::Error` in the public error surface.
-# Same version as phux-dial declares, so it is the same type. `x509-parser`
-# (already a direct dependency below, and already enabled on rcgen elsewhere
-# in the workspace, so Cargo.lock gains no row) adds the signature-verifying
-# CSR parser and `Issuer::from_ca_cert_der` that `phux workload add-key`
-# needs to certify a workload's key under the persisted CA.
+# `TlsError::Rcgen` and the workload CA's CSR signing (same version and
+# `ring` backend as phux-dial, so one type).
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "x509-parser"] }
-# Extract the SubjectPublicKeyInfo from a verified mTLS leaf so the transport
-# can map it to the workload registry's public-key-derived credential id.
+# SubjectPublicKeyInfo from a verified mTLS leaf (workload credential ids).
 x509-parser = "0.18"
-# QUIC transport (phux-y8v6, ADR-0007). quinn is the QUIC stack ADR-0007
-# names by name ("a future QUIC impl ... via `quinn`"); it gives connection
-# migration, 0-RTT resumption, and mandatory TLS 1.3 — the Mosh-class UX
-# properties — without reimplementing SSP. It is chosen over cloudflare/quiche
-# deliberately: quiche is sans-I/O (we would hand-drive UDP sockets + the
-# connection state machine) and links BoringSSL via cmake, whereas quinn is
-# tokio-native (its `RecvStream`/`SendStream` are `AsyncRead`/`AsyncWrite`, so
-# it drops straight into the `FrameReader`/`FrameWriter` trait surface) and
-# rides the rustls 0.23 + `ring` provider already in this crate — no new
-# native toolchain dependency. `default-features = false` with `rustls-ring`
-# keeps us off quinn's default aws-lc-rs/cmake path and off the
-# `platform-verifier` client cert verifier we do not use (the server is the
-# listener; the consumer pins the self-signed cert's fingerprint, exactly as
-# the `wss://` path does). The `log` feature is deliberately omitted: it
-# resolves to `tracing/log`, which feature-unification would turn on workspace-
-# wide, inflating every `tracing` macro's expansion (and tripping
-# `clippy::cognitive_complexity` in tracing-heavy functions far from here).
+# QUIC transport (ADR-0007) on the same rustls/`ring` stack; the `log`
+# feature is omitted because it would enable `tracing/log` workspace-wide.
 quinn.workspace = true
-# Hub outbound dialer (phux-v45.3, ADR-0038): the hub authenticates to its
-# satellites exactly like a remote consumer, so it dials through the same
-# shared establishment stack (fingerprint-pin TLS, bearer preamble /
-# Authorization header) the attach CLI uses. Internal workspace crate,
-# factored out of phux-client; adds no new external dependencies — quinn,
-# rustls, tokio-tungstenite, sha2, and hex are all already in this crate's
-# graph for the listener side.
-# `provision` additionally makes this crate's self-signed certificate
-# generator phux-dial's (`transport::tls` delegates to `phux_dial::cert`), so
-# phux-relay — which ADR-0051 forbids depending on phux-server — shares one
-# implementation instead of the near-verbatim copy it used to carry.
+# Shared dial/TLS stack for hub links; `provision` shares the self-signed
+# certificate generator with phux-relay.
 phux-dial = { workspace = true, features = ["provision"] }
-# WebTransport listener (phux-0wmf, `webtransport` feature). Browsers cannot
-# open raw QUIC, so the quinn listener above is unreachable from `phux-web`;
-# WebTransport (HTTP/3 CONNECT over QUIC, RFC 9220-adjacent draft) is the one
-# QUIC-class transport a browser exposes. The listener owns that CONNECT
-# accept path on quinn (phux-50wm) so duplicate `Authorization` fields are
-# refused before QPACK is collapsed into a map. `wtransport` stays a
-# test-only dialer (see `[dev-dependencies]`); production does not take it
-# as a runtime dependency. The hyperium h3 + h3-webtransport pair was
-# evaluated and rejected: h3-webtransport is server-only, and h3 0.0.8's
-# client builder cannot advertise the SETTINGS_ENABLE_WEBTRANSPORT the
-# server-side session accept requires — so the handshake, auth gating, and
-# wire echo could not be tested honestly without a browser in the loop.
-# `WtWriter` holds the same congestion-tracked send window
-# (`phux_dial::window`) as the raw-QUIC writer (phux-byyu).
-#
-# `wtransport-proto` is already in the graph via the test dialer. Promoted
-# so the listener can read CONNECT HEADERS frames and QPACK field lines on
-# a phux-owned accept path instead of vendoring a fork (phux-50wm). `async`
-# matches the feature wtransport already enables, so Cargo.lock gains no
-# new crate.
+# WebTransport CONNECT parsing on a phux-owned accept path (duplicate
+# `Authorization` fields are refused before QPACK collapses them). Already in
+# the graph via the test dialer.
 wtransport-proto = { version = "0.7.2", optional = true, features = ["async"] }
-# Already in the graph via wtransport-proto. Direct so the CONNECT uniqueness
-# scanner can decode Huffman-coded literal field names; skipping those names
-# would miss a hand-built duplicate `authorization` encoded as a literal.
+# Decodes Huffman-coded literal header names for that duplicate check.
 httlib-huffman = { version = "0.3.4", optional = true }
-# Optional: opt-in via the `tokio-console` feature. See the feature
-# comment above for the build incantation.
 console-subscriber = { version = "0.5", optional = true }
-# portable-pty is the PTY backend TerminalActor drives (phux-byc.5). It is a
-# regular dependency because the actor owns the master fd; its blocking
-# read/write halves bridge to async via spawn_blocking + mpsc channels.
+# The PTY backend; blocking halves bridge to async via threads.
 portable-pty.workspace = true
-# Re-adopt inherited PTY masters + children across the graceful-upgrade
-# re-exec (ADR-0032): rebuilds portable-pty trait objects from (fd, pid).
+# Re-adopt inherited PTY masters and children after an upgrade re-exec.
 portable-pty-adopt.workspace = true
-# Graceful-upgrade orchestration (ADR-0032): clear FD_CLOEXEC on the
-# descriptors the re-exec'd image inherits (`rustix::io` fcntl), and carry the
-# handoff blob in an anonymous temp file (`tempfile`). `rustix` is libc-free
-# and cross-platform, unlike this crate's macOS-gated `libc`.
+# Upgrade handoff: clear FD_CLOEXEC and carry the blob in a temp file.
 rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process"] }
 tempfile.workspace = true
 
-# libghostty-vt is workspace-pinned (see workspace Cargo.toml). It remains the
-# canonical native terminal backend for both synthesis and native checkpoints.
-# Build requires zig 0.16.x on PATH; the nix dev shell provides it.
-# Keeping the dependency target-qualified prevents a wasm dependency edge to
-# its C/Zig library.
+# The native terminal engine (needs zig 0.16.x); target-gated to keep its
+# C/Zig library off wasm.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 libghostty-vt.workspace = true
 
 
-# `defaults.cwd-inheritance = inherit-focused` (phux-cs6) opens a new pane
-# in the focused pane's live CWD. No portable VT signal carries this (the
-# bundled libghostty surfaces OSC 7 without exposing the path), so the
-# server queries the kernel for the PTY child's working directory. On
-# macOS that means `proc_pidinfo(PROC_PIDVNODEPATHINFO)` via `libc`; Linux
-# uses the dependency-free `/proc/<pid>/cwd` symlink (no extra dep). `libc`
-# is already in the dependency graph transitively (tokio, portable-pty);
-# this promotes it to a direct, macOS-gated dependency for the FFI decls.
+# macOS `proc_pidinfo` FFI for cwd and start-time queries (Linux uses /proc).
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
-insta.workspace = true
-# `test-util` enables `tokio::time::pause`/`advance` and the
-# `#[tokio::test(start_paused = true)]` macro arg. Required by the
-# `phux-q0e.3` tick-scheduler tests, which advance virtual time
-# deterministically to exercise the 33 Hz interval without wall-clock
-# sleeps.
+# `test-util`: paused time for tick and deadline tests.
 tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
-# The retry-generation wire regression drives the production server through
-# the same strict native session kernel exposed to Cockpit.
+# Drive the production server through the native session kernel.
 phux-client-ffi.workspace = true
-# Native actor regressions feed the server's real progressive frames through
-# the transport-neutral kernel without routing through the C ABI.
 phux-client-core.workspace = true
-# The relay e2e test (tests/relay_e2e.rs) runs the PRODUCTION
-# `RelayRuntime` between a real server and a phux-dial consumer. Dev-only
-# and one-directional on purpose: phux-relay must never depend on
-# phux-server (ADR-0051 invariant 4 — the relay shares no code with the
-# daemon), so the test dependency points the other way.
+# The relay e2e test runs the production relay. Dev-only: phux-relay must
+# never depend on phux-server (ADR-0051).
 phux-relay.workspace = true
-# Integration-test scaffolding, formerly `tests/common/`. Cargo compiles each
-# `tests/*.rs` as its own crate, so that module was rebuilt once per test
-# binary (46 times, ~86% of each binary's compile). As an rlib it is built once.
+# Shared integration-test scaffolding, built once as an rlib.
 phux-server-testkit.workspace = true
-# `testing` adds phux-dial's `DropProxy`, which blackholes a loopback path so
-# the send-window tests can assert how much a stalled writer buffers.
+# `testing` adds `DropProxy` for the send-window tests.
 phux-dial = { workspace = true, features = ["provision", "testing"] }
-# The WebTransport tests dial the listener with wtransport's native client;
-# `dangerous-configuration` unlocks `with_no_cert_validation` so the test
-# client trusts the throwaway self-signed leaf (the TLS handshake and full
-# HTTP/3 CONNECT are still exercised end-to-end). Test builds only.
+# WebTransport test client; `dangerous-configuration` trusts the throwaway
+# self-signed leaf.
 wtransport = { version = "0.7.2", default-features = false, features = ["ring", "dangerous-configuration"] }
-
-# Native capture tests inject allocator failures through libghostty's safe
-# allocator API to prove checkpoint cleanup. Keep those test-only features off
-# the wasm dependency graph with the same native target gate as production.
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-libghostty-vt = { workspace = true, features = ["allocator_api"] }
-allocator-api2 = "0.4"
 
 [[example]]
 name = "ack_allocations"

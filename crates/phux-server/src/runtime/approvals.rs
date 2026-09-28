@@ -38,6 +38,27 @@ pub(super) struct HeldContext {
     pub(super) defer_subscription: bool,
 }
 
+impl HeldContext {
+    /// Run `command` through the handler as this connection's dispatch.
+    pub(super) async fn run(&self, request_id: u32, command: Command) {
+        super::commands::handle_command(
+            &self.state,
+            self.client_id,
+            request_id,
+            command,
+            &self.out_tx,
+            self.client_caps,
+            self.profile,
+            self.limits,
+            self.input_lane.as_ref(),
+            &self.token,
+            &self.root_token,
+            self.defer_subscription,
+        )
+        .await;
+    }
+}
+
 /// How a held command's wait ended.
 enum Ending {
     Decided(Decision),
@@ -232,21 +253,7 @@ async fn run_approved(ctx: &HeldContext, request_id: u32, command: Command) {
         super::client::route(&command, ctx.input_lane.is_some()),
         super::client::Route::Handler
     );
-    super::commands::handle_command(
-        &ctx.state,
-        ctx.client_id,
-        request_id,
-        command,
-        &ctx.out_tx,
-        ctx.client_caps,
-        ctx.profile,
-        ctx.limits,
-        ctx.input_lane.as_ref(),
-        &ctx.token,
-        &ctx.root_token,
-        ctx.defer_subscription,
-    )
-    .await;
+    ctx.run(request_id, command).await;
 }
 
 /// The deferred result waits for mailbox capacity rather than being

@@ -1,8 +1,0 @@
----
-source: crates/phux-tui/src/attach/driver/tests.rs
-assertion_line: 1689
-expression: frame
----
- 0 nvim                                    switch
-──────────────────────────────────────────────────
-PANE-BASE

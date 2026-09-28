@@ -50,10 +50,6 @@ The history-loaded scenario is the less flattering and more useful case:
 | Warm reattach median | 117 ms | 85 ms |
 | PTY key echo p50 | 174 µs | 12,447 µs |
 
-The original raw run directory was not retained. The values above are the
-surviving campaign record; the command below produces a new timestamped raw
-result directory rather than reproducing these exact samples byte for byte.
-
 ## What is being timed
 
 The benchmark owns a pseudoterminal and drives each multiplexer through it. For
@@ -92,9 +88,8 @@ changed tail latency in prior investigations.
 
 - This is one Apple-silicon host, not a population study. OS scheduling,
   terminal geometry, shell output, and installed versions affect the result.
-- The raw September 2 sample directory is no longer available. The retained
-  campaign record supports the values above, but not recalculation or alternate
-  percentiles from that run.
+- The raw September 2 sample directory was not retained, so these values
+  cannot be recalculated; a new run writes a fresh raw directory.
 - The phux lanes share one binary but exercise different transports. The local
   UDS result should not be presented as remote-network performance.
 - Herdr and phux retain and render different product models. Equal fixture

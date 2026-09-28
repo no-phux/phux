@@ -1,48 +1,21 @@
-//! Heuristic URL detection over a row of terminal text.
-//!
-//! Terminal output is not markup: there is no author to tell us where a link
-//! starts and stops, only bytes that a human recognises as a URL because of
-//! their shape. So this is a heuristic, and it is written to fail toward "not
-//! a link" — a missed URL costs a click, a wrong one hands arbitrary terminal
-//! output to the OS as something to open.
-//!
-//! OSC 8 hyperlinks are a separate, EXPLICIT channel the engine already parses;
-//! where one exists it should win over anything found here. An explicit target
-//! arrives as bytes a program CHOSE rather than bytes a human recognised, so it
-//! carries none of the shape guarantees the heuristic gets for free — see
-//! `isAllowedTarget`, which is where an OSC 8 href has to earn the same trust
-//! this module's own output has by construction.
+//! Heuristic URL detection over a row of terminal text, biased toward "not a
+//! link" (a wrong one hands terminal output to the OS). Explicit OSC 8 hrefs
+//! win where present but must pass `isAllowedTarget`.
 
 const std = @import("std");
 
-/// Schemes worth linkifying from raw output.
-///
-/// Deliberately short. `file:` is absent because a terminal that prints a
-/// path should not be able to make the OS open a local file on one click, and
-/// `javascript:` because it is not a document at all. The effect layer
-/// validates again — this list is the first of two gates, not the only one.
+/// Schemes worth linkifying from raw output (no `file:` or `javascript:`).
+/// The SDK validates opened URLs again.
 const schemes = [_][]const u8{ "https://", "http://", "mailto:" };
 
 /// The longest run this will call a URL. Long enough for any real link,
 /// short enough that a screenful of base64 cannot become one.
 pub const max_url_bytes: usize = 2048;
 
-/// Whether an EXPLICITLY supplied target — an OSC 8 href — may be handed on
-/// as something to open.
-///
-/// The heuristic above cannot produce a bad scheme: it only ever returns bytes
-/// it matched a scheme in, from text a human can read on screen. An OSC 8 href
-/// has neither property. The program picks it, it never has to appear on the
-/// glass, and nothing about the DISPLAY text constrains it — so `file://`,
-/// `javascript:`, a NUL splice, or a megabyte of base64 all arrive here as
-/// ordinary parser output. Every one of them is refused WHOLE (nothing is
-/// trimmed, escaped, or coerced into a valid URL), because a target that has
-/// to be repaired is a target nobody vetted.
-///
-/// Deliberately the same shape as the SDK's `validation.validateOpenUrl`,
-/// which is the SECOND gate every opened URL still passes. Two gates, not one,
-/// and this is the one that runs while the app still knows the bytes came out
-/// of a terminal.
+/// Whether an OSC 8 href may be opened. Unlike heuristic matches, the program
+/// picks it and it need not be visible, so anything outside the allowed shape
+/// is refused whole, never repaired. The SDK's `validateOpenUrl` is the second
+/// gate.
 pub fn isAllowedTarget(target: []const u8) bool {
     if (target.len == 0 or target.len > max_url_bytes) return false;
     // Control bytes, whitespace, and DEL: a NUL truncates the URL at the C
@@ -50,11 +23,8 @@ pub fn isAllowedTarget(target: []const u8) bool {
     // well-formed URL. Refusing the class means `https://ok\x00javascript:...`
     // cannot survive as its harmless-looking prefix.
     for (target) |byte| {
-        // OSC 8 has no visual target of its own. Keep its destination in the
-        // same ASCII alphabet as the heuristic so Unicode bidi/formatting
-        // controls cannot make the hover preview read as a different URL.
-        // Internationalized destinations remain representable in their URL
-        // forms (punycode and percent encoding).
+        // ASCII only, so bidi/formatting controls cannot disguise the
+        // preview (IDNs remain representable as punycode/percent escapes).
         if (byte <= 0x20 or byte >= 0x7f) return false;
     }
     const scheme = matchScheme(target) orelse return false;
@@ -151,12 +121,8 @@ pub const Span = struct {
     }
 };
 
-/// Whether `byte` may appear inside a URL body.
-///
-/// RFC 3986's unreserved + reserved sets, minus the ones that in practice end
-/// a URL when it is embedded in prose or in a log line. Whitespace and control
-/// bytes end it; so do quotes, angle brackets, backticks and pipes, which
-/// terminals and humans both use to wrap a link.
+/// Whether `byte` may appear inside a URL body: RFC 3986 characters minus
+/// those that wrap links in prose (quotes, angle brackets, backticks, pipes).
 fn isBodyByte(byte: u8) bool {
     return switch (byte) {
         'a'...'z', 'A'...'Z', '0'...'9' => true,
@@ -222,14 +188,8 @@ pub fn nextFrom(row: []const u8, from: usize) ?Span {
     while (index < row.len) : (index += 1) {
         const rest = row[index..];
         const scheme = matchScheme(rest) orelse continue;
-        // A scheme has to start on a WORD boundary, or `nothttps://x`
-        // linkifies as `https://x` from inside a longer word.
-        //
-        // The guard is the RFC 3986 scheme charset, not the body charset:
-        // brackets and quotes are body bytes (they can appear inside a URL)
-        // but they are also exactly how a link gets wrapped in prose, so
-        // treating them as "inside a word" refused `(https://example.com)`
-        // outright.
+        // A scheme must start on a word boundary (RFC 3986 scheme charset),
+        // so `nothttps://x` is not a link but `(https://x)` is.
         if (index > 0 and isSchemeByte(row[index - 1])) continue;
         var end = index + scheme.len;
         while (end < row.len and isBodyByte(row[end])) end += 1;
@@ -257,13 +217,8 @@ fn matchScheme(rest: []const u8) ?[]const u8 {
     return null;
 }
 
-/// Display COLUMN of byte offset `offset` in `row` — the inverse of
-/// `byteOffsetForColumn`, and carrying exactly the same wide-scalar caveat.
-///
-/// This is what turns a found span back into the cells to underline, so the
-/// underline marks the same characters the click resolves. An offset past the
-/// row's end reports the column one past its last scalar, which is the honest
-/// answer for an exclusive end.
+/// Display column of byte offset `offset` (inverse of `byteOffsetForColumn`,
+/// same wide-scalar caveat); an offset past the end gives one past the last.
 pub fn columnForByteOffset(row: []const u8, offset: usize) usize {
     var cursor: usize = 0;
     var column: usize = 0;
@@ -274,12 +229,8 @@ pub fn columnForByteOffset(row: []const u8, offset: usize) usize {
     return column;
 }
 
-/// Byte offset of display COLUMN `column` in `row`.
-///
-/// Counts UTF-8 scalars, one per column. Wide (double-width) scalars will
-/// drift a column per occurrence; URLs are ASCII, so this is only reachable
-/// when wide text precedes one on the same row, and the cost is a hover
-/// landing on a neighbouring character rather than a wrong link.
+/// Byte offset of display column `column`, counting one column per scalar
+/// (wide scalars before a URL can drift the hover by a column).
 pub fn byteOffsetForColumn(row: []const u8, column: usize) ?usize {
     var offset: usize = 0;
     var seen: usize = 0;

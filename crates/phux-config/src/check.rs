@@ -1,41 +1,15 @@
 //! Config validation that says *where* the problem is.
 //!
-//! [`crate::Config`] already carries `#[serde(deny_unknown_fields)]`, so a
-//! typo is rejected rather than silently ignored. What it is not is
-//! *locatable*. serde names only the leaf field:
+//! `deny_unknown_fields` already rejects typos, but serde names only the leaf
+//! field, a merged layer stack has no usable span, and the loader stops at the
+//! first error. [`check`] reports every finding in one pass with its full
+//! dotted path (from [`serde_path_to_error`]) and the layer that introduced it
+//! (ADR-0039).
 //!
-//! ```text
-//! config.toml: unknown field `enabledd`, expected one of `enabled`, `width`, `position`
-//! ```
-//!
-//! Three things are wrong with that, and this module fixes all three.
-//!
-//! 1. **No parent path.** `enabledd` does not say which table it is in, and
-//!    several tables share key names (`enabled`, `width`, `position`). This
-//!    module reports `sidebar.enabledd`, derived from the schema walk by
-//!    [`serde_path_to_error`] — so it cannot drift the way a hand-maintained
-//!    key list would.
-//! 2. **No usable position.** A deserialize error on the merged layer stack
-//!    carries no span, because the value being deserialized is not the
-//!    user's text. (The loader used to fabricate a `1:1` here; it now
-//!    reports no position at all — phux-i0e8.3.5 — since a confident, wrong
-//!    line number is worse than none.)
-//!    This module attributes each finding to the layer that introduced it
-//!    (ADR-0039) instead, which with `extends` in play is the question the
-//!    operator actually has: is the typo mine, or the distro's?
-//! 3. **One at a time.** The loader stops at the first bad key, so fixing a
-//!    config with four typos takes four edit-run cycles. This module removes
-//!    each offending key and re-walks, collecting every finding in one pass.
-//!
-//! Beyond the schema walk, a **semantic pass** (phux-i0e8.3.2) runs over the
-//! merged-and-pruned [`Config`] once it deserializes: every keybinding chord
-//! must parse under the [`crate::keybind`] grammar, every action name must
-//! exist in [`crate::vocab::ACTION_NAMES`] (unknown names carry a
-//! did-you-mean suggestion), and the bindings as a set must build an
-//! unambiguous resolver. These are exactly the mistakes that parse fine and
-//! then do nothing at runtime — the silent-no-op traps the schema walk
-//! cannot see because chords are free-form `BTreeMap` string keys and
-//! actions are free-form strings.
+//! A semantic pass then runs over the deserialized [`Config`] for mistakes
+//! that parse fine and do nothing at runtime: out-of-range ceilings, chords
+//! that do not parse, unknown action / hook / widget names, and bindings that
+//! shadow each other.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -43,42 +17,30 @@ use std::path::Path;
 use serde_path_to_error::Segment;
 
 use crate::keybind::{KeybindError, Resolver, parse_chord, parse_chord_sequence};
-use crate::schema::{Widget, WidgetSpec};
 use crate::widget::{WidgetError, WidgetRegistry};
 use crate::{
-    Action, Config, ConfigError, DefaultsCfg, HookEntry, KeybindingsCfg, LayerSource,
-    merged_config_with_provenance, vocab,
+    Action, Config, ConfigError, ConfigProvenance, DefaultsCfg, HookEntry, KeybindingsCfg,
+    LayerSource, merged_config_with_provenance, vocab,
 };
 
-/// Upper bound on findings collected in one run.
-///
-/// Each finding costs one full re-walk of the merged table, so a config with
-/// hundreds of bad keys would otherwise spend quadratic time telling the
-/// operator something they learned from the first twenty. Reaching the cap is
-/// reported, never silently truncated.
+/// Upper bound on findings in one run: each finding costs a full re-walk of
+/// the merged table. Reaching the cap is reported, never silent.
 const MAX_FINDINGS: usize = 64;
 
 /// What kind of mistake a finding is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fault {
-    /// The schema has no such key: a typo, or a key removed in a later
-    /// version.
+    /// The schema has no such key.
     UnknownKey,
-    /// The key exists but the value has the wrong type or shape.
+    /// The key exists but the value has the wrong type, shape, or range.
     BadValue,
-    /// A keybinding chord that does not parse under the chord grammar, or
-    /// that clashes with another binding (one binding's sequence is a
-    /// strict prefix of another's, so the longer could never fire).
+    /// A chord that does not parse, or a binding another one shadows.
     BadChord,
-    /// A name outside the validation vocabulary ([`crate::vocab`]) — an
-    /// action name no dispatcher arm handles, a hook event the server
-    /// never fires, or a hook `when` key outside the event's context —
-    /// so the entry would parse, load, and then do nothing.
+    /// A name outside the validation vocabulary ([`crate::vocab`]): an
+    /// action, hook event, `when` key, or widget kind that does nothing.
     UnknownName,
-    /// A hook action that can never execute server-side (only `run`
-    /// does; `noop` is the deliberate sentinel and is not flagged). A
-    /// matched entry still consumes its event under first-match-wins,
-    /// so a dead action can also shadow a live entry below it.
+    /// A hook action that can never execute server-side (only `run` does);
+    /// a match still consumes the event under first-match-wins.
     DeadAction,
 }
 
@@ -101,21 +63,16 @@ impl Fault {
 pub struct Finding {
     /// Dotted path to the key, as TOML addresses it (e.g. `sidebar.enabledd`).
     pub path: String,
-    /// Whether the key is unknown or merely wrong.
+    /// What kind of mistake it is.
     pub fault: Fault,
-    /// serde's own message, which carries the `expected one of ...` list.
+    /// Human-readable detail (serde's own message for schema faults).
     pub message: String,
     /// The layer that introduced the key, when it can be attributed.
-    ///
-    /// `None` when provenance has no leaf entry for the path — the case for
-    /// an unknown *table*, whose leaves are recorded under their own longer
-    /// paths rather than under the table name.
     pub source: Option<LayerSource>,
 }
 
 impl Finding {
-    /// Human-readable origin: the layer's file, or a stable label for the
-    /// embedded defaults and for findings that could not be attributed.
+    /// Human-readable origin: the layer's file, or a stable label.
     #[must_use]
     pub fn origin(&self) -> String {
         match &self.source {
@@ -131,8 +88,7 @@ impl Finding {
 pub struct CheckReport {
     /// Every problem found, in discovery order.
     pub findings: Vec<Finding>,
-    /// Whether the internal finding cap was reached, so the caller can say
-    /// the list is partial rather than implying the config is now clean.
+    /// Whether the finding cap was reached, so the list is partial.
     pub truncated: bool,
 }
 
@@ -144,31 +100,21 @@ impl CheckReport {
     }
 }
 
-/// Check a config's whole resolved layer stack.
-///
-/// `user_input` and `path` are the pair [`crate::parse_with_defaults`] takes:
-/// the root config's text and its path, the latter both for error reporting
-/// and as the base directory for relative `extends` entries.
+/// Check a config's whole resolved layer stack. `path` is used for errors and
+/// as the base directory for relative `extends` entries.
 ///
 /// # Errors
 ///
-/// Propagates [`ConfigError`] only for failures that stop the check from
-/// running at all — TOML that does not parse, or a layer that cannot be read
-/// or is cyclic. "No findings" must never be reported for a file that was
-/// never successfully read.
+/// [`ConfigError`] only when the check cannot run at all (unparseable TOML, an
+/// unreadable or cyclic layer): a file never read is never reported clean.
 pub fn check(user_input: &str, path: &Path) -> Result<CheckReport, ConfigError> {
     let (mut merged, provenance) = merged_config_with_provenance(user_input, path)?;
-
     let mut findings = Vec::new();
     let mut truncated = false;
 
-    // Schema pass: peel unknown keys and bad values one at a time until the
-    // merged table deserializes. The successful deserialization is kept —
-    // it is the merged-and-pruned [`Config`] the semantic pass inspects.
+    // Schema pass: peel one offending key per round until the table
+    // deserializes; the result feeds the semantic pass.
     let config = loop {
-        // Deserializing a clone each round is the price of collecting more
-        // than one finding: the walk consumes the value, and the offending
-        // key has to be removed from the original before the next attempt.
         let attempt: Result<Config, _> =
             serde_path_to_error::deserialize(toml::Value::Table(merged.clone()));
         let err = match attempt {
@@ -177,9 +123,7 @@ pub fn check(user_input: &str, path: &Path) -> Result<CheckReport, ConfigError> 
         };
 
         let segments: Vec<&Segment> = err.path().iter().collect();
-        // serde's Display appends its own "in `<table>`" context on a second
-        // line. That is exactly what `path` already says, and it turns every
-        // finding into a three-line paragraph, so keep the first line only.
+        // serde appends an "in `<table>`" line that `path` already says.
         let raw = err.inner().to_string();
         let message = raw.lines().next().unwrap_or(&raw).to_owned();
         let fault = if message.starts_with("unknown field") {
@@ -189,9 +133,7 @@ pub fn check(user_input: &str, path: &Path) -> Result<CheckReport, ConfigError> 
         };
         let key_path = err.path().to_string();
 
-        // A finding we cannot locate in the table cannot be removed, so the
-        // next round would rediscover it forever. Record it and stop rather
-        // than spin: an incomplete list is recoverable, a hang is not.
+        // An unremovable finding would be rediscovered forever: stop instead.
         if !remove_at(&mut merged, &segments) {
             findings.push(Finding {
                 path: key_path,
@@ -201,25 +143,13 @@ pub fn check(user_input: &str, path: &Path) -> Result<CheckReport, ConfigError> 
             });
             break None;
         }
-
-        let source = attribute(&key_path, &provenance);
-        findings.push(Finding {
-            path: key_path,
-            fault,
-            message,
-            source,
-        });
-
+        push_semantic(&mut findings, &provenance, key_path, fault, message);
         if findings.len() >= MAX_FINDINGS {
             truncated = true;
             break None;
         }
     };
 
-    // Semantic pass: only meaningful over a config that actually
-    // deserialized. When the schema walk gave up early (unremovable
-    // finding, cap reached) the report is already loud and partial, and
-    // says so.
     if let Some(config) = config {
         semantic_pass(&config, &provenance, &mut findings);
         if findings.len() > MAX_FINDINGS {
@@ -234,14 +164,7 @@ pub fn check(user_input: &str, path: &Path) -> Result<CheckReport, ConfigError> 
     })
 }
 
-/// Validators that need the typed, merged-and-pruned [`Config`] rather
-/// than the raw TOML table: keybindings (phux-i0e8.3.2), hooks
-/// (phux-i0e8.3.3), and status-bar widgets (phux-i0e8.4.2).
-fn semantic_pass(
-    config: &Config,
-    provenance: &crate::ConfigProvenance,
-    findings: &mut Vec<Finding>,
-) {
+fn semantic_pass(config: &Config, provenance: &ConfigProvenance, findings: &mut Vec<Finding>) {
     defaults_findings(&config.defaults, provenance, findings);
     limits_findings(&config.limits, provenance, findings);
     keybinding_findings(&config.keybindings, provenance, findings);
@@ -249,25 +172,72 @@ fn semantic_pass(
     status_widget_findings(&config.status, provenance, findings);
 }
 
-/// Semantic validation for `[defaults]` values whose *range* matters.
-///
-/// `defaults.history-bytes` and `defaults.agent-log-bytes` are the two so
-/// far. Both parse as any `u32`, but a value above their ceiling costs the
-/// server more than it can reasonably give: retained scrollback is held
-/// resident per pane for the life of the session (ADR-0094, ADR-0119), and
-/// a retained agent-session ring is replayed in full on every attach to
-/// its stream (ADR-0103), so a large value buys depth at a cost in memory
-/// or in blocked server thread respectively. Flag them here rather than
-/// clamping silently, so the operator learns what they asked for instead of
-/// wondering why their setting did nothing.
-/// `defaults.approval-ttl-secs` and `defaults.approval-max-pending`
-/// (ADR-0128). A zero TTL would expire every hold before anyone could see
-/// it; the server floors it at one second and clamps both to their maxima.
-fn approval_findings(
+/// `[defaults]` values that parse as any `u32` but have a ceiling. Flagged
+/// rather than clamped silently, so the operator learns what they asked for.
+fn defaults_findings(
     defaults: &DefaultsCfg,
-    provenance: &crate::ConfigProvenance,
+    provenance: &ConfigProvenance,
     findings: &mut Vec<Finding>,
 ) {
+    let ceilings: [(&str, u32, u32, &str); 7] = [
+        (
+            "history-bytes",
+            defaults.history_bytes,
+            crate::MAX_HISTORY_BYTES,
+            " bytes (64 MiB); retained history is held resident per pane for the life of \
+             the session, so a larger value is memory the server will not spend",
+        ),
+        (
+            "agent-log-bytes",
+            defaults.agent_log_bytes,
+            crate::MAX_AGENT_LOG_BYTES,
+            " bytes (64 MiB); a session's retained records are replayed in full on every \
+             attach to its stream, so a larger value buys a transcript nobody waits out",
+        ),
+        (
+            "event-journal-entries",
+            defaults.event_journal_entries,
+            crate::MAX_EVENT_JOURNAL_ENTRIES,
+            " events; the journal is held resident for the life of the server",
+        ),
+        (
+            "event-journal-bytes",
+            defaults.event_journal_bytes,
+            crate::MAX_EVENT_JOURNAL_BYTES,
+            " bytes (64 MiB); the journal is held resident for the life of the server",
+        ),
+        (
+            "approval-max-pending",
+            defaults.approval_max_pending,
+            crate::MAX_APPROVAL_MAX_PENDING,
+            "; each pending approval keeps its command and a record in the server's metadata",
+        ),
+        (
+            "approval-max-pending-total",
+            defaults.approval_max_pending_total,
+            crate::MAX_APPROVAL_MAX_PENDING_TOTAL,
+            "",
+        ),
+        (
+            "retain-on-exit-max",
+            defaults.retain_on_exit_max,
+            crate::MAX_RETAIN_ON_EXIT_MAX,
+            " retained panes; each one holds its grid and history until it is purged",
+        ),
+    ];
+    for (key, value, max, why) in ceilings {
+        if value > max {
+            push_semantic(
+                findings,
+                provenance,
+                format!("defaults.{key}"),
+                Fault::BadValue,
+                format!("{value} exceeds the accepted maximum of {max}{why}"),
+            );
+        }
+    }
+
+    // A zero TTL would expire every hold before anyone could see it (ADR-0128).
     let ttl = defaults.approval_ttl_secs;
     if ttl == 0 || ttl > crate::MAX_APPROVAL_TTL_SECS {
         push_semantic(
@@ -282,141 +252,14 @@ fn approval_findings(
             ),
         );
     }
-    if defaults.approval_max_pending > crate::MAX_APPROVAL_MAX_PENDING {
-        push_semantic(
-            findings,
-            provenance,
-            "defaults.approval-max-pending".to_owned(),
-            Fault::BadValue,
-            format!(
-                "{} exceeds the accepted maximum of {}; each pending approval keeps its command \
-                 and a record in the server's metadata",
-                defaults.approval_max_pending,
-                crate::MAX_APPROVAL_MAX_PENDING,
-            ),
-        );
-    }
-    if defaults.approval_max_pending_total > crate::MAX_APPROVAL_MAX_PENDING_TOTAL {
-        push_semantic(
-            findings,
-            provenance,
-            "defaults.approval-max-pending-total".to_owned(),
-            Fault::BadValue,
-            format!(
-                "{} exceeds the accepted maximum of {}",
-                defaults.approval_max_pending_total,
-                crate::MAX_APPROVAL_MAX_PENDING_TOTAL,
-            ),
-        );
-    }
 }
 
-fn defaults_findings(
-    defaults: &DefaultsCfg,
-    provenance: &crate::ConfigProvenance,
-    findings: &mut Vec<Finding>,
-) {
-    if defaults.history_bytes > crate::MAX_HISTORY_BYTES {
-        push_semantic(
-            findings,
-            provenance,
-            "defaults.history-bytes".to_owned(),
-            Fault::BadValue,
-            format!(
-                "{} exceeds the accepted maximum of {} bytes (64 MiB); retained history is \
-                 held resident per pane for the life of the session, so a larger value is \
-                 memory the server will not spend",
-                defaults.history_bytes,
-                crate::MAX_HISTORY_BYTES,
-            ),
-        );
-    }
-    if defaults.agent_log_bytes > crate::MAX_AGENT_LOG_BYTES {
-        push_semantic(
-            findings,
-            provenance,
-            "defaults.agent-log-bytes".to_owned(),
-            Fault::BadValue,
-            format!(
-                "{} exceeds the accepted maximum of {} bytes (64 MiB); a session's retained \
-                 records are replayed in full on every attach to its stream, so a larger \
-                 value buys a transcript nobody waits out",
-                defaults.agent_log_bytes,
-                crate::MAX_AGENT_LOG_BYTES,
-            ),
-        );
-    }
-    event_journal_findings(defaults, provenance, findings);
-    approval_findings(defaults, provenance, findings);
-    if defaults.retain_on_exit_max > crate::MAX_RETAIN_ON_EXIT_MAX {
-        push_semantic(
-            findings,
-            provenance,
-            "defaults.retain-on-exit-max".to_owned(),
-            Fault::BadValue,
-            format!(
-                "{} exceeds the accepted maximum of {} retained panes; each one holds its grid \
-                 and history until it is purged",
-                defaults.retain_on_exit_max,
-                crate::MAX_RETAIN_ON_EXIT_MAX,
-            ),
-        );
-    }
-}
-
-/// The two event-journal bounds (ADR-0123): a value above either ceiling is
-/// memory the server would hold for events nobody replays that far back.
-fn event_journal_findings(
-    defaults: &DefaultsCfg,
-    provenance: &crate::ConfigProvenance,
-    findings: &mut Vec<Finding>,
-) {
-    if defaults.event_journal_entries > crate::MAX_EVENT_JOURNAL_ENTRIES {
-        push_semantic(
-            findings,
-            provenance,
-            "defaults.event-journal-entries".to_owned(),
-            Fault::BadValue,
-            format!(
-                "{} exceeds the accepted maximum of {} events; the journal is held resident \
-                 for the life of the server",
-                defaults.event_journal_entries,
-                crate::MAX_EVENT_JOURNAL_ENTRIES,
-            ),
-        );
-    }
-    if defaults.event_journal_bytes > crate::MAX_EVENT_JOURNAL_BYTES {
-        push_semantic(
-            findings,
-            provenance,
-            "defaults.event-journal-bytes".to_owned(),
-            Fault::BadValue,
-            format!(
-                "{} exceeds the accepted maximum of {} bytes (64 MiB); the journal is held \
-                 resident for the life of the server",
-                defaults.event_journal_bytes,
-                crate::MAX_EVENT_JOURNAL_BYTES,
-            ),
-        );
-    }
-}
-
-/// Semantic validation for `[limits]` values.
-///
-/// `limits.metadata-value-bytes` parses as any `u32`, including one below
-/// the built-in agent-session record write's own size
-/// (`MAX_AGENT_SESSION_RECORD_BYTES`): `reject_set_metadata`
-/// (`crates/phux-server/src/runtime/client.rs`) checks this generic cap
-/// *before* that per-key interceptor runs, so a smaller configured value
-/// would otherwise silently break `phux new`, `phux rename`, and
-/// keep-empty session metadata, not just agent-session resume (PHA-406
-/// L18 review item 3). The server clamps it back up at startup
-/// (`build_server_config`) rather than refuse to start, but a config
-/// that asked for less than it will get is exactly what this check
-/// exists to surface.
+/// `limits.metadata-value-bytes` below the server's own agent-session record
+/// size would break session metadata writes; the server clamps it up at
+/// startup, so a smaller value is not actually in force.
 fn limits_findings(
     limits: &crate::LimitsCfg,
-    provenance: &crate::ConfigProvenance,
+    provenance: &ConfigProvenance,
     findings: &mut Vec<Finding>,
 ) {
     let floor = u32::try_from(phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES)
@@ -438,26 +281,11 @@ fn limits_findings(
     }
 }
 
-/// Semantic keybinding validation (phux-i0e8.3.2), catching the two
-/// silent-no-op traps the schema walk cannot see:
-///
-/// 1. Chord strings are free-form `BTreeMap` keys, so a malformed chord
-///    parses as TOML and only fails at resolver-build time — where, before
-///    the lenient build, it silently disabled *every* binding.
-/// 2. Action names are free-form strings ([`Action::Bare`] accepts
-///    anything), so a typo'd action binds a key to nothing, logged at
-///    debug level only.
-///
-/// Parameters of [`Action::Parameterized`] are deliberately not validated
-/// here — per-action argument schemas live in the dispatcher, not the
-/// loader (see `crate::schema::ParamAction`); only the action *name* is
-/// checked. Cross-binding faults (ambiguous prefixes) come from the
-/// lenient resolver build, filtered to [`KeybindError::AmbiguousPrefix`]
-/// because per-binding parse errors were already reported with better
-/// paths above.
+/// Chords must parse and action names must exist. Parameterized-action
+/// arguments are validated by the dispatcher, not here.
 fn keybinding_findings(
     kb: &KeybindingsCfg,
-    provenance: &crate::ConfigProvenance,
+    provenance: &ConfigProvenance,
     findings: &mut Vec<Finding>,
 ) {
     if let Err(error) = parse_chord(&kb.prefix) {
@@ -484,18 +312,16 @@ fn keybinding_findings(
             }
             let name = action_name(action);
             if !vocab::ACTION_NAMES.contains(&name) {
-                let message = vocab::did_you_mean(name, vocab::ACTION_NAMES).map_or_else(
-                    || format!("unknown action `{name}`"),
-                    |suggestion| format!("unknown action `{name}` (did you mean `{suggestion}`?)"),
+                let message = format!(
+                    "unknown action `{name}`{}",
+                    suggest(name, vocab::ACTION_NAMES)
                 );
                 push_semantic(findings, provenance, path, Fault::UnknownName, message);
             }
         }
     }
 
-    // Cross-binding faults: build the resolver leniently and keep only the
-    // ambiguity diagnostics — syntax errors were reported per binding above,
-    // and reporting them twice would double-count every bad chord.
+    // Only ambiguity: per-binding syntax errors were reported above.
     let (_, diagnostics) = Resolver::new_lenient(kb);
     for diagnostic in diagnostics {
         if matches!(diagnostic.error, KeybindError::AmbiguousPrefix(_)) {
@@ -510,41 +336,21 @@ fn keybinding_findings(
     }
 }
 
-/// Semantic hook validation (phux-i0e8.3.3). Hooks fail open three
-/// ways, and each is a silent no-op at runtime the schema walk cannot
-/// see (`[[hooks.<name>]]` is a free-form map):
-///
-/// 1. An event name outside [`vocab::HOOK_EVENTS`] never fires — the
-///    whole table is dead, so one finding covers it and its entries are
-///    not validated further.
-/// 2. A `when` key outside the event's context
-///    ([`vocab::hook_context_keys`]) never matches. The `-startswith`
-///    suffix strips off before the lookup, mirroring the dispatcher's
-///    clause evaluation.
-/// 3. An action that never executes server-side
-///    ([`vocab::hook_action_is_executable`]) still consumes the event
-///    under first-match-wins. `noop` is exempt: consuming an event and
-///    doing nothing is that sentinel's documented job.
-///
-/// The server logs the same findings at startup
-/// (`HookCatalog::from_config` in phux-server) so a config that skipped
-/// `phux config check` is still loud.
+/// Hooks fail open three ways: an unknown event never fires (one finding for
+/// the whole table), a `when` key outside the event's context never matches,
+/// and an action other than `run` / `noop` consumes the event and does
+/// nothing. The server logs the same findings at startup.
 fn hook_findings(
     hooks: &BTreeMap<String, Vec<HookEntry>>,
-    provenance: &crate::ConfigProvenance,
+    provenance: &ConfigProvenance,
     findings: &mut Vec<Finding>,
 ) {
     for (event, entries) in hooks {
         let table_path = crate::layer::child_path("hooks", event);
         let Some(context_keys) = vocab::hook_context_keys(event) else {
-            let message = vocab::did_you_mean(event, vocab::HOOK_EVENTS).map_or_else(
-                || format!("unknown hook event `{event}`; these entries will never fire"),
-                |suggestion| {
-                    format!(
-                        "unknown hook event `{event}` (did you mean `{suggestion}`?); \
-                         these entries will never fire"
-                    )
-                },
+            let message = format!(
+                "unknown hook event `{event}`{}; these entries will never fire",
+                suggest(event, vocab::HOOK_EVENTS)
             );
             push_semantic(
                 findings,
@@ -565,16 +371,14 @@ fn hook_findings(
                 if context_keys.contains(&base) {
                     continue;
                 }
-                let suggestion = vocab::did_you_mean(base, context_keys)
-                    .map(|hit| format!(" (did you mean `{hit}`?)"))
-                    .unwrap_or_default();
                 findings.push(Finding {
                     path: crate::layer::child_path(&format!("{entry_path}.when"), key),
                     fault: Fault::UnknownName,
                     message: format!(
                         "unknown when key `{key}`: this clause can never match; \
-                         `{event}` context keys are {}{suggestion}",
+                         `{event}` context keys are {}{}",
                         context_keys.join(", "),
+                        suggest(base, context_keys),
                     ),
                     source: source.clone(),
                 });
@@ -603,21 +407,11 @@ fn hook_findings(
     }
 }
 
-/// Semantic status-bar widget validation (phux-i0e8.4.2). Widget specs
-/// are an open `kind` + `opts` map at the schema level, so a typo'd
-/// kind, a typo'd option, or a bad `style` table parses clean and only
-/// fails when the TUI builds the bar. The check runs the same build
-/// path — [`crate::widget::WidgetRegistry::build`] per widget, exactly
-/// what [`crate::widget::StatusBar::build`] does slot by slot — and
-/// converts each [`WidgetError`] into a located finding, so `phux
-/// config check` says ok only for a bar that will actually compose.
-///
-/// Building per widget (rather than one `StatusBar::build` call, which
-/// stops at the first error) reports every bad widget in one pass,
-/// matching this module's ethos.
+/// Build every status-bar widget exactly as the TUI will, one at a time so
+/// every bad widget is reported in one pass.
 fn status_widget_findings(
     status: &crate::StatusCfg,
-    provenance: &crate::ConfigProvenance,
+    provenance: &ConfigProvenance,
     findings: &mut Vec<Finding>,
 ) {
     let registry = WidgetRegistry::with_builtins();
@@ -629,33 +423,20 @@ fn status_widget_findings(
     ] {
         let table_path = format!("status.{slot}");
         for (index, entry) in widgets.iter().enumerate() {
-            let spec = match entry {
-                Widget::Bare(kind) => WidgetSpec {
-                    kind: kind.clone(),
-                    opts: BTreeMap::new(),
-                },
-                Widget::Spec(spec) => spec.clone(),
-            };
-            let Err(error) = registry.build(&spec) else {
+            let Err(error) = registry.build(&entry.to_spec()) else {
                 continue;
             };
-            let entry_path = format!("{table_path}[{index}]");
             let (fault, message) = match error {
-                WidgetError::UnknownKind(kind) => {
-                    let suggestion = vocab::did_you_mean(&kind, &kinds)
-                        .map(|hit| format!(" (did you mean `{hit}`?)"))
-                        .unwrap_or_default();
-                    (
-                        Fault::UnknownName,
-                        format!("unknown widget kind `{kind}`{suggestion}"),
-                    )
-                }
+                WidgetError::UnknownKind(kind) => (
+                    Fault::UnknownName,
+                    format!("unknown widget kind `{kind}`{}", suggest(&kind, &kinds)),
+                ),
                 invalid @ WidgetError::InvalidOption { .. } => {
                     (Fault::BadValue, invalid.to_string())
                 }
             };
             findings.push(Finding {
-                path: entry_path,
+                path: format!("{table_path}[{index}]"),
                 fault,
                 message,
                 source: array_entry_source(provenance, &table_path, index),
@@ -664,16 +445,18 @@ fn status_widget_findings(
     }
 }
 
-/// Resolve the layer that contributed element `index` of the array at
-/// `table_path` (hook entries, status-bar slots).
-///
-/// These entries live in TOML arrays, and provenance records arrays as
-/// a single leaf with per-element contributor indices
-/// ([`crate::KeyOrigin::elements`]) — with `-append` layering, entry 0
-/// and entry 1 of the same array can come from different files. Falls
-/// back to the array's own layer when the element index is out of range.
+/// `" (did you mean `x`?)"`, or empty when nothing is close.
+fn suggest(name: &str, vocabulary: &[&str]) -> String {
+    vocab::did_you_mean(name, vocabulary)
+        .map(|hit| format!(" (did you mean `{hit}`?)"))
+        .unwrap_or_default()
+}
+
+/// The layer that contributed element `index` of the array at `table_path`;
+/// with `-append` layering, elements of one array can come from different
+/// files. Falls back to the array's own layer.
 fn array_entry_source(
-    provenance: &crate::ConfigProvenance,
+    provenance: &ConfigProvenance,
     table_path: &str,
     index: usize,
 ) -> Option<LayerSource> {
@@ -687,11 +470,10 @@ fn array_entry_source(
     provenance.layers.get(layer).cloned()
 }
 
-/// Record one semantic finding, attributing it to the layer that set the
-/// key (same provenance lookup the schema walk uses).
+/// Record one finding, attributed to the layer that set the key.
 fn push_semantic(
     findings: &mut Vec<Finding>,
-    provenance: &crate::ConfigProvenance,
+    provenance: &ConfigProvenance,
     path: String,
     fault: Fault,
     message: String,
@@ -705,7 +487,6 @@ fn push_semantic(
     });
 }
 
-/// The action name a binding invokes, whichever spelling it used.
 fn action_name(action: &Action) -> &str {
     match action {
         Action::Bare(name) => name,
@@ -713,20 +494,14 @@ fn action_name(action: &Action) -> &str {
     }
 }
 
-/// Dotted path for a binding key in `[keybindings.<table>]`, quoted
-/// exactly the way provenance records it (chord keys are rarely bare:
-/// `keybindings.prefix-table."q-"`).
+/// Dotted path for a binding key, quoted the way provenance records it.
 fn binding_path(table: &str, binding: &str) -> String {
     crate::layer::child_path(&format!("keybindings.{table}"), binding)
 }
 
-/// Locate an [`KeybindError::AmbiguousPrefix`] diagnostic's binding text.
-///
-/// [`crate::keybind::BindingDiagnostic`] carries the binding as written
-/// but not which table it came from, so membership decides: the
-/// prefix-chord-conflict case reports the *global* binding that could
-/// never fire, so `global` is checked first; a diagnostic matching
-/// neither table carries the prefix string itself.
+/// Locate an ambiguous-prefix diagnostic's binding. The prefix-conflict case
+/// reports the global binding that can never fire, so `global` is checked
+/// first; a match in neither table is the prefix itself.
 fn ambiguous_binding_path(kb: &KeybindingsCfg, binding: &str) -> String {
     if kb.global.contains_key(binding) {
         binding_path("global", binding)
@@ -737,12 +512,9 @@ fn ambiguous_binding_path(kb: &KeybindingsCfg, binding: &str) -> String {
     }
 }
 
-/// Remove the value addressed by `segments` from `table`.
-///
-/// Returns whether something was actually removed. Only map segments are
-/// navigable: a fault inside an array element is reported against the
-/// element's path but cannot be surgically excised without renumbering the
-/// array, so those stop the walk (see the caller).
+/// Remove the value addressed by `segments`; returns whether anything was
+/// removed. Array elements cannot be excised without renumbering, so a
+/// non-map segment stops the walk.
 fn remove_at(table: &mut toml::Table, segments: &[&Segment]) -> bool {
     let mut keys = Vec::with_capacity(segments.len());
     for segment in segments {
@@ -765,13 +537,9 @@ fn remove_at(table: &mut toml::Table, segments: &[&Segment]) -> bool {
     cursor.remove(last).is_some()
 }
 
-/// Resolve which layer introduced `key`.
-///
-/// Provenance records *leaf* paths, so an unknown scalar hits directly. An
-/// unknown table has no leaf entry of its own, so fall back to the first leaf
-/// recorded beneath it — every leaf under an unknown table is equally
-/// unknown, and the layer that set the first one is the file to open.
-fn attribute(key: &str, provenance: &crate::ConfigProvenance) -> Option<LayerSource> {
+/// Which layer introduced `key`. An unknown table has no leaf entry of its
+/// own, so fall back to the first leaf recorded beneath it.
+fn attribute(key: &str, provenance: &ConfigProvenance) -> Option<LayerSource> {
     let index = provenance.keys.get(key).map_or_else(
         || {
             let prefix = format!("{key}.");
@@ -789,493 +557,214 @@ fn attribute(key: &str, provenance: &crate::ConfigProvenance) -> Option<LayerSou
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     use super::*;
 
+    const PATH: &str = "/nonexistent/config.toml";
+
     fn run(input: &str) -> CheckReport {
-        check(input, &PathBuf::from("/nonexistent/config.toml")).expect("check runs")
+        check(input, Path::new(PATH)).expect("check runs")
     }
 
     fn paths(report: &CheckReport) -> Vec<&str> {
         report.findings.iter().map(|f| f.path.as_str()).collect()
     }
 
-    /// The shipped defaults must be clean against their own schema. If this
-    /// fails, `default.toml` grew a key the struct does not read — which
-    /// would make every user's `config check` report a phux bug as their typo.
+    /// Configs that must check clean: the shipped defaults (otherwise every
+    /// user's check reports a phux bug as their typo) and valid use of each
+    /// free-form surface.
     #[test]
-    fn the_embedded_defaults_check_clean() {
-        let report = run("");
-        assert!(
-            report.is_ok(),
-            "default.toml drifted: {:?}",
-            report.findings
+    fn valid_configs_check_clean() {
+        let max_history = crate::MAX_HISTORY_BYTES;
+        let floor = phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES;
+        for input in [
+            String::new(),
+            "[keybindings]\nwhich-key = false\n\n[sidebar]\nenabled = true\n".to_owned(),
+            format!("[defaults]\nhistory-bytes = {max_history}\n"),
+            "[defaults]\nhistory-bytes = 1\n".to_owned(),
+            format!("[limits]\nmetadata-value-bytes = {floor}\n"),
+            "[[hooks.after-new-pane]]\nwhen = { session-startswith = \"work\" }\naction = \"noop\"\n".to_owned(),
+            "[keybindings]\nprefix = \"C-b\"\n\n[keybindings.global]\n\"M-Enter\" = \"detach\"\n\n[keybindings.prefix-table]\nw = \"window-picker\"\n".to_owned(),
+            // Parameterized-action arguments are the dispatcher's business.
+            "[keybindings.prefix-table]\nR = { action = \"resize-pane\", direction = \"left\", amount = 3, made-up-arg = true }\n".to_owned(),
+            "[[hooks.pane-exit]]\nwhen = { exit-code = 0 }\naction = \"noop\"\n\n\
+             [[hooks.pane-exit]]\nwhen = { exit-code = \"*\" }\naction = { kind = \"run\", command = \"say done\" }\n\n\
+             [[hooks.agent-state-changed]]\nwhen = { to = \"blocked\" }\naction = { kind = \"run\", command = [\"afplay\", \"/tmp/x.aiff\"] }\n".to_owned(),
+            "[status]\nleft = [{ kind = \"windows\", separator = \" | \" }]\n\
+             center = [\"help-hints\"]\n\
+             right = [{ kind = \"session-name\", format = \"[{name}]\", style = { fg = \"red\", bold = true } }, { kind = \"time\", format = \" %H:%M\" }]\n".to_owned(),
+        ] {
+            let report = run(&input);
+            assert!(report.is_ok(), "false positives for {input:?}: {:?}", report.findings);
+        }
+    }
+
+    /// Each fault class: located at its full path, classified, and carrying
+    /// the fix-oriented text (suggestion, maximum, valid keys).
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "one case table")]
+    fn each_mistake_is_located_classified_and_explained() {
+        let floor = phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES.to_string();
+        let cases: &[(&str, &str, Fault, &[&str])] = &[
+            (
+                "[sidebar]\nenabledd = true\n",
+                "sidebar.enabledd",
+                Fault::UnknownKey,
+                &["expected one of"],
+            ),
+            // A key removed in an earlier release is an ordinary unknown key.
+            (
+                "[defaults]\nrefresh-rate = 60\n",
+                "defaults.refresh-rate",
+                Fault::UnknownKey,
+                &[],
+            ),
+            (
+                "[keybindings]\nwhich-key = \"yes\"\n",
+                "keybindings.which-key",
+                Fault::BadValue,
+                &[],
+            ),
+            (
+                "[defaults]\nhistory-bytes = 134217728\n",
+                "defaults.history-bytes",
+                Fault::BadValue,
+                &["67108864"],
+            ),
+            (
+                "[limits]\nmetadata-value-bytes = 0\n",
+                "limits.metadata-value-bytes",
+                Fault::BadValue,
+                &[&floor],
+            ),
+            (
+                "[keybindings.prefix-table]\nq = \"kill-pain\"\n",
+                "keybindings.prefix-table.q",
+                Fault::UnknownName,
+                &["unknown action `kill-pain` (did you mean `kill-pane`?)"],
+            ),
+            (
+                "[keybindings.prefix-table]\n\"q-\" = \"kill-pane\"\n",
+                "keybindings.prefix-table.q-",
+                Fault::BadChord,
+                &[],
+            ),
+            (
+                "[keybindings]\nprefix = \"Ctrl-a\"\n",
+                "keybindings.prefix",
+                Fault::BadChord,
+                &[],
+            ),
+            (
+                "[keybindings.prefix-table]\nR = { action = \"resize-pain\", direction = \"left\" }\n",
+                "keybindings.prefix-table.R",
+                Fault::UnknownName,
+                &["`resize-pane`"],
+            ),
+            (
+                "[keybindings.prefix-table]\n\"y\" = \"copy-mode\"\n\"y x\" = \"kill-pane\"\n",
+                "keybindings.prefix-table.\"y x\"",
+                Fault::BadChord,
+                &["ambiguous prefix"],
+            ),
+            (
+                "[[hooks.pane-exited]]\naction = \"noop\"\n",
+                "hooks.pane-exited",
+                Fault::UnknownName,
+                &["unknown hook event `pane-exited` (did you mean `pane-exit`?)"],
+            ),
+            (
+                "[[hooks.pane-exit]]\nwhen = { exitcode = 0 }\naction = { kind = \"run\", command = \"true\" }\n",
+                "hooks.pane-exit[0].when.exitcode",
+                Fault::UnknownName,
+                &[
+                    "context keys are exit-code, terminal-id",
+                    "did you mean `exit-code`?",
+                ],
+            ),
+            // `-startswith` strips before the lookup; the full spelling is reported.
+            (
+                "[[hooks.after-new-pane]]\nwhen = { cwd-startswith = \"/x\" }\naction = \"noop\"\n",
+                "hooks.after-new-pane[0].when.cwd-startswith",
+                Fault::UnknownName,
+                &["unknown when key `cwd-startswith`"],
+            ),
+            (
+                "[[hooks.pane-exit]]\naction = { kind = \"run\", command = \"true\" }\n\n\
+              [[hooks.pane-exit]]\naction = { kind = \"message\", text = \"bye\" }\n",
+                "hooks.pane-exit[1].action",
+                Fault::DeadAction,
+                &["action `message` never executes server-side"],
+            ),
+            (
+                "[[hooks.pane-exit]]\naction = { kind = \"run\", command = [] }\n",
+                "hooks.pane-exit[0].action",
+                Fault::DeadAction,
+                &["no usable `command`"],
+            ),
+            (
+                "[status]\nleft = [\"windws\"]\n",
+                "status.left[0]",
+                Fault::UnknownName,
+                &["unknown widget kind `windws` (did you mean `windows`?)"],
+            ),
+            (
+                "[status]\nright = [{ kind = \"time\", formt = \"%H\" }]\n",
+                "status.right[0]",
+                Fault::BadValue,
+                &[
+                    "widget time",
+                    "unknown option `formt`",
+                    "did you mean `format`?",
+                ],
+            ),
+            (
+                "[status]\ncenter = [{ kind = \"session-name\", style = { colour = \"red\" } }]\n",
+                "status.center[0]",
+                Fault::BadValue,
+                &["`style` must be a style table"],
+            ),
+        ];
+        for &(input, path, fault, needles) in cases {
+            let report = run(input);
+            assert_eq!(paths(&report), vec![path], "{input:?}");
+            let finding = &report.findings[0];
+            assert_eq!(finding.fault, fault, "{input:?}");
+            for needle in needles {
+                assert!(
+                    finding.message.contains(needle),
+                    "{input:?}: {}",
+                    finding.message
+                );
+            }
+            // Schema and semantic findings alike name the file to open.
+            assert_eq!(
+                finding.source,
+                Some(LayerSource::User(PATH.into())),
+                "{input:?}: origin was {}",
+                finding.origin()
+            );
+        }
+    }
+
+    /// Every mistake in one pass, not one per edit-run cycle.
+    #[test]
+    fn every_finding_is_reported_in_one_pass() {
+        let report = run(
+            "[sidebar]\nenabledd = true\nwidht = 4\n\n[keybindings]\nwich-key = true\nwhich-key = \"yes\"\n",
         );
-    }
-
-    /// The whole point: the parent table is in the path. serde alone says
-    /// `enabledd`, which is ambiguous across the several tables that have an
-    /// `enabled`.
-    #[test]
-    fn an_unknown_key_carries_its_parent_table() {
-        let report = run("[sidebar]\nenabledd = true\n");
-        assert_eq!(paths(&report), vec!["sidebar.enabledd"]);
-        assert_eq!(report.findings[0].fault, Fault::UnknownKey);
-    }
-
-    /// serde's own text is preserved, because the `expected one of ...` list
-    /// is what turns a rejection into a fix.
-    #[test]
-    fn the_finding_keeps_serdes_suggestion_list() {
-        let report = run("[sidebar]\nenabledd = true\n");
-        assert!(
-            report.findings[0].message.contains("expected one of"),
-            "lost the suggestion list: {}",
-            report.findings[0].message
-        );
-    }
-
-    /// Every typo in one pass, not one per run. Fixing a four-typo config
-    /// should not take four edit-run cycles.
-    #[test]
-    fn every_unknown_key_is_reported_in_one_pass() {
-        let report =
-            run("[sidebar]\nenabledd = true\nwidht = 4\n\n[keybindings]\nwich-key = true\n");
         let found = paths(&report);
-        for want in ["sidebar.enabledd", "sidebar.widht", "keybindings.wich-key"] {
+        for want in [
+            "sidebar.enabledd",
+            "sidebar.widht",
+            "keybindings.wich-key",
+            "keybindings.which-key",
+        ] {
             assert!(found.contains(&want), "missing {want} in {found:?}");
         }
         assert!(!report.truncated);
-    }
 
-    /// A wrong value is a different mistake from an unknown key, and is
-    /// classified as such — they have different fixes.
-    #[test]
-    fn a_wrong_type_is_reported_as_a_bad_value() {
-        let report = run("[keybindings]\nwhich-key = \"yes\"\n");
-        assert_eq!(paths(&report), vec!["keybindings.which-key"]);
-        assert_eq!(report.findings[0].fault, Fault::BadValue);
-    }
-
-    /// A typo and a bad value in the same file both surface. Stopping at the
-    /// first would hide the other.
-    #[test]
-    fn a_typo_and_a_bad_value_are_both_reported() {
-        let report = run("[keybindings]\nwhich-key = \"yes\"\nwich-key = true\n");
-        let found = paths(&report);
-        assert!(found.contains(&"keybindings.which-key"), "{found:?}");
-        assert!(found.contains(&"keybindings.wich-key"), "{found:?}");
-    }
-
-    /// A correct config stays silent. A checker that cries wolf on a valid
-    /// file is worse than no checker.
-    #[test]
-    fn a_valid_config_reports_nothing() {
-        let report = run("[keybindings]\nwhich-key = false\n\n[sidebar]\nenabled = true\n");
-        assert!(report.is_ok(), "false positives: {:?}", report.findings);
-    }
-
-    /// `history-bytes` above the accepted maximum is a located finding, not a
-    /// silent clamp: the operator asked for scrollback depth that would cost
-    /// more resident memory per pane than the server will hold.
-    #[test]
-    fn an_oversized_history_bytes_is_flagged_with_the_maximum() {
-        let report = run("[defaults]\nhistory-bytes = 134217728\n");
-        assert_eq!(paths(&report), vec!["defaults.history-bytes"]);
-        let finding = &report.findings[0];
-        assert_eq!(finding.fault, Fault::BadValue);
-        assert!(
-            finding.message.contains("67108864"),
-            "message must name the maximum: {}",
-            finding.message,
-        );
-    }
-
-    /// The maximum itself, and any value under it, is accepted.
-    #[test]
-    fn history_bytes_at_or_under_the_maximum_is_clean() {
-        for bytes in [1_u32, 2 * 1024 * 1024, crate::MAX_HISTORY_BYTES] {
-            let report = run(&format!("[defaults]\nhistory-bytes = {bytes}\n"));
-            assert!(
-                report.is_ok(),
-                "false positive at {bytes}: {:?}",
-                report.findings
-            );
-        }
-    }
-
-    /// `metadata-value-bytes` at or below the built-in agent-session record
-    /// floor is a located finding naming that floor (PHA-406 L18 review
-    /// item 3): the server clamps it back up at startup rather than refuse
-    /// to start, so a value like `0` parses fine and yet does nothing —
-    /// exactly the silent-no-op class this checker exists to surface.
-    #[test]
-    fn a_metadata_value_bytes_below_the_floor_is_flagged_with_the_floor() {
-        let report = run("[limits]\nmetadata-value-bytes = 0\n");
-        assert_eq!(paths(&report), vec!["limits.metadata-value-bytes"]);
-        let finding = &report.findings[0];
-        assert_eq!(finding.fault, Fault::BadValue);
-        assert!(
-            finding
-                .message
-                .contains(&phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES.to_string()),
-            "message must name the floor: {}",
-            finding.message,
-        );
-    }
-
-    /// The floor itself, and any value at or above it, is accepted.
-    #[test]
-    fn metadata_value_bytes_at_or_above_the_floor_is_clean() {
-        for bytes in [
-            u32::try_from(phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES).unwrap(),
-            crate::DEFAULT_METADATA_VALUE_BYTES,
-        ] {
-            let report = run(&format!("[limits]\nmetadata-value-bytes = {bytes}\n"));
-            assert!(
-                report.is_ok(),
-                "false positive at {bytes}: {:?}",
-                report.findings
-            );
-        }
-    }
-
-    /// Free-form key spaces must not be flagged by the *schema* walk.
-    /// `hooks` is a map keyed by arbitrary event names; treating those as
-    /// unknown keys would make the checker unusable for anyone who uses
-    /// hooks. (The semantic pass has its own, vocabulary-aware opinion —
-    /// see the hook tests below — so this fixture uses a valid entry.)
-    #[test]
-    fn free_form_map_keys_are_not_unknown_keys() {
-        let report = run(
-            "[[hooks.after-new-pane]]\nwhen = { session-startswith = \"work\" }\naction = \"noop\"\n",
-        );
-        assert!(report.is_ok(), "hooks flagged: {:?}", report.findings);
-    }
-
-    /// A key that used to exist and was deleted (phux-i0e8.4.1 removed
-    /// `defaults.refresh-rate` and `defaults.log-filter`) must not fail
-    /// silently in a stale config: `deny_unknown_fields` rejects it, and
-    /// the check locates it — full path, unknown-key fault, and the layer
-    /// file that set it.
-    #[test]
-    fn a_removed_key_is_a_located_unknown_key_finding() {
-        let path = Path::new("/nonexistent/config.toml");
-        let report = check("[defaults]\nrefresh-rate = 60\n", path).expect("check runs");
-        assert_eq!(paths(&report), vec!["defaults.refresh-rate"]);
-        let finding = &report.findings[0];
-        assert_eq!(finding.fault, Fault::UnknownKey);
-        assert_eq!(
-            finding.source,
-            Some(LayerSource::User(path.to_path_buf())),
-            "origin was {}",
-            finding.origin()
-        );
-    }
-
-    /// The finding names the file to open, which is the real question once
-    /// `extends` layers are in play.
-    #[test]
-    fn a_user_file_finding_is_attributed_to_that_file() {
-        let path = Path::new("/nonexistent/config.toml");
-        let report = check("[sidebar]\nenabledd = true\n", path).expect("check runs");
-        assert_eq!(
-            report.findings[0].source,
-            Some(LayerSource::User(path.to_path_buf())),
-            "origin was {}",
-            report.findings[0].origin()
-        );
-    }
-
-    /// TOML that does not parse is an error, not an empty report. "No
-    /// findings" must never be said about a file that was never read.
-    #[test]
-    fn unparseable_toml_is_an_error_not_a_clean_report() {
-        let err = check(
-            "this is not = = toml\n",
-            Path::new("/nonexistent/config.toml"),
-        );
-        assert!(err.is_err(), "malformed TOML reported as clean");
-    }
-
-    // -- semantic pass: keybindings (phux-i0e8.3.2) ------------------------
-
-    /// The umbrella bead's motivating trap: `"kill-pain"` parses, loads,
-    /// and the key silently does nothing. The check must name the binding
-    /// and suggest the fix.
-    #[test]
-    fn a_typoed_action_is_flagged_with_a_suggestion() {
-        let report = run("[keybindings.prefix-table]\nq = \"kill-pain\"\n");
-        assert_eq!(paths(&report), vec!["keybindings.prefix-table.q"]);
-        let finding = &report.findings[0];
-        assert_eq!(finding.fault, Fault::UnknownName);
-        assert!(
-            finding
-                .message
-                .contains("unknown action `kill-pain` (did you mean `kill-pane`?)"),
-            "no suggestion in: {}",
-            finding.message
-        );
-        // Semantic findings carry layer attribution like schema findings do.
-        assert_eq!(
-            finding.source,
-            Some(LayerSource::User(PathBuf::from("/nonexistent/config.toml"))),
-            "origin was {}",
-            finding.origin()
-        );
-    }
-
-    /// A malformed chord key is valid TOML (chords are free-form map keys),
-    /// so only the semantic pass can catch it. Before the lenient resolver
-    /// this single typo silently disabled every binding including detach.
-    #[test]
-    fn a_malformed_chord_key_is_flagged_as_a_bad_chord() {
-        let report = run("[keybindings.prefix-table]\n\"q-\" = \"kill-pane\"\n");
-        // `-` is a bare TOML key character, so the path needs no quoting.
-        assert_eq!(paths(&report), vec!["keybindings.prefix-table.q-"]);
-        assert_eq!(report.findings[0].fault, Fault::BadChord);
-    }
-
-    /// A prefix that does not parse is located at its own key, not blamed
-    /// on the bindings that hang off it.
-    #[test]
-    fn a_malformed_prefix_is_flagged_at_its_own_path() {
-        let report = run("[keybindings]\nprefix = \"Ctrl-a\"\n");
-        assert_eq!(paths(&report), vec!["keybindings.prefix"]);
-        assert_eq!(report.findings[0].fault, Fault::BadChord);
-    }
-
-    /// A valid keybindings table — chords parse, actions exist — is clean.
-    /// The semantic pass must not cry wolf on a working config.
-    #[test]
-    fn valid_keybindings_check_clean() {
-        let report = run(
-            "[keybindings]\nprefix = \"C-b\"\n\n[keybindings.global]\n\"M-Enter\" = \"detach\"\n\n[keybindings.prefix-table]\nw = \"window-picker\"\n",
-        );
-        assert!(report.is_ok(), "false positives: {:?}", report.findings);
-    }
-
-    /// A parameterized action with a valid name is clean: the args are
-    /// deliberately not validated here — per-action argument schemas live
-    /// in the dispatcher, not the loader.
-    #[test]
-    fn a_parameterized_action_with_a_valid_name_is_clean() {
-        let report = run(
-            "[keybindings.prefix-table]\nR = { action = \"resize-pane\", direction = \"left\", amount = 3, made-up-arg = true }\n",
-        );
-        assert!(report.is_ok(), "false positives: {:?}", report.findings);
-    }
-
-    /// A parameterized action's *name* is still validated, suggestion and
-    /// all — only its arguments get a pass.
-    #[test]
-    fn a_parameterized_action_with_a_typoed_name_is_flagged() {
-        let report = run(
-            "[keybindings.prefix-table]\nR = { action = \"resize-pain\", direction = \"left\" }\n",
-        );
-        assert_eq!(paths(&report), vec!["keybindings.prefix-table.R"]);
-        assert_eq!(report.findings[0].fault, Fault::UnknownName);
-        assert!(
-            report.findings[0].message.contains("`resize-pane`"),
-            "no suggestion in: {}",
-            report.findings[0].message
-        );
-    }
-
-    /// One binding's sequence shadowing another's is a cross-binding fault
-    /// only the resolver build can see; the check reports it against the
-    /// binding that loses.
-    #[test]
-    fn an_ambiguous_prefix_pair_is_flagged() {
-        let report =
-            run("[keybindings.prefix-table]\n\"y\" = \"copy-mode\"\n\"y x\" = \"kill-pane\"\n");
-        assert_eq!(paths(&report), vec!["keybindings.prefix-table.\"y x\""]);
-        let finding = &report.findings[0];
-        assert_eq!(finding.fault, Fault::BadChord);
-        assert!(
-            finding.message.contains("ambiguous prefix"),
-            "wrong message: {}",
-            finding.message
-        );
-    }
-
-    // -- semantic pass: hooks (phux-i0e8.3.3) ------------------------------
-
-    /// `[[hooks.pane-exited]]` (real event: `pane-exit`) parses fine and
-    /// never fires. The check must flag the event name with a suggestion,
-    /// and must not pile per-entry findings onto an already-dead table.
-    #[test]
-    fn an_unknown_hook_event_is_flagged_with_a_suggestion() {
-        let report = run("[[hooks.pane-exited]]\naction = \"noop\"\n");
-        assert_eq!(paths(&report), vec!["hooks.pane-exited"]);
-        let finding = &report.findings[0];
-        assert_eq!(finding.fault, Fault::UnknownName);
-        assert!(
-            finding
-                .message
-                .contains("unknown hook event `pane-exited` (did you mean `pane-exit`?)"),
-            "no suggestion in: {}",
-            finding.message
-        );
-    }
-
-    /// A `when` key outside the event's context can never match, so the
-    /// entry silently never fires. The finding names the entry, the key,
-    /// and the keys that would work.
-    #[test]
-    fn an_unknown_when_key_is_flagged_with_the_valid_keys() {
-        let report = run(
-            "[[hooks.pane-exit]]\nwhen = { exitcode = 0 }\naction = { kind = \"run\", command = \"true\" }\n",
-        );
-        assert_eq!(paths(&report), vec!["hooks.pane-exit[0].when.exitcode"]);
-        let finding = &report.findings[0];
-        assert_eq!(finding.fault, Fault::UnknownName);
-        assert!(
-            finding
-                .message
-                .contains("context keys are exit-code, terminal-id"),
-            "valid keys missing from: {}",
-            finding.message
-        );
-        assert!(
-            finding.message.contains("did you mean `exit-code`?"),
-            "no suggestion in: {}",
-            finding.message
-        );
-    }
-
-    /// The `-startswith` suffix is match grammar, not part of the key: it
-    /// strips before validation, so a valid base passes and an invalid
-    /// base is flagged under the full spelling the user wrote.
-    #[test]
-    fn startswith_strips_before_the_context_key_lookup() {
-        let clean = run(
-            "[[hooks.after-new-pane]]\nwhen = { session-startswith = \"work\" }\naction = \"noop\"\n",
-        );
-        assert!(clean.is_ok(), "false positives: {:?}", clean.findings);
-
-        let report = run(
-            "[[hooks.after-new-pane]]\nwhen = { cwd-startswith = \"/x\" }\naction = \"noop\"\n",
-        );
-        assert_eq!(
-            paths(&report),
-            vec!["hooks.after-new-pane[0].when.cwd-startswith"]
-        );
-        assert_eq!(report.findings[0].fault, Fault::UnknownName);
-        assert!(
-            report.findings[0]
-                .message
-                .contains("unknown when key `cwd-startswith`"),
-            "wrong message: {}",
-            report.findings[0].message
-        );
-    }
-
-    /// A matched entry whose action never executes server-side consumes
-    /// the event and runs nothing — flagged per entry, with the index, so
-    /// the second entry of the same event is named precisely.
-    #[test]
-    fn a_never_executable_hook_action_is_flagged_per_entry() {
-        let report = run(
-            "[[hooks.pane-exit]]\naction = { kind = \"run\", command = \"true\" }\n\n\
-             [[hooks.pane-exit]]\naction = { kind = \"message\", text = \"bye\" }\n",
-        );
-        assert_eq!(paths(&report), vec!["hooks.pane-exit[1].action"]);
-        let finding = &report.findings[0];
-        assert_eq!(finding.fault, Fault::DeadAction);
-        assert!(
-            finding
-                .message
-                .contains("action `message` never executes server-side"),
-            "wrong message: {}",
-            finding.message
-        );
-    }
-
-    /// A `run` action without a usable `command` is just as dead as a
-    /// client-side kind, and gets a fix-oriented message.
-    #[test]
-    fn a_run_action_without_a_usable_command_is_flagged() {
-        let report = run("[[hooks.pane-exit]]\naction = { kind = \"run\", command = [] }\n");
-        assert_eq!(paths(&report), vec!["hooks.pane-exit[0].action"]);
-        assert_eq!(report.findings[0].fault, Fault::DeadAction);
-        assert!(
-            report.findings[0].message.contains("no usable `command`"),
-            "wrong message: {}",
-            report.findings[0].message
-        );
-    }
-
-    /// `noop` is the documented consume-and-do-nothing sentinel, not a
-    /// mistake; a valid hooks table stays clean.
-    #[test]
-    fn valid_hooks_including_noop_check_clean() {
-        let report = run(
-            "[[hooks.pane-exit]]\nwhen = { exit-code = 0 }\naction = \"noop\"\n\n\
-             [[hooks.pane-exit]]\nwhen = { exit-code = \"*\" }\naction = { kind = \"run\", command = \"say done\" }\n\n\
-             [[hooks.agent-state-changed]]\nwhen = { to = \"blocked\" }\naction = { kind = \"run\", command = [\"afplay\", \"/tmp/x.aiff\"] }\n",
-        );
-        assert!(report.is_ok(), "false positives: {:?}", report.findings);
-    }
-
-    // -- semantic pass: status-bar widgets (phux-i0e8.4.2) -----------------
-
-    /// A typo'd widget kind parses (the spec is an open `kind` string) and
-    /// then fails the bar build at TUI startup. The check flags it first,
-    /// locating the slot entry and suggesting the real kind.
-    #[test]
-    fn an_unknown_widget_kind_is_flagged_with_a_suggestion() {
-        let report = run("[status]\nleft = [\"windws\"]\n");
-        assert_eq!(paths(&report), vec!["status.left[0]"]);
-        let finding = &report.findings[0];
-        assert_eq!(finding.fault, Fault::UnknownName);
-        assert!(
-            finding
-                .message
-                .contains("unknown widget kind `windws` (did you mean `windows`?)"),
-            "no suggestion in: {}",
-            finding.message
-        );
-    }
-
-    /// An unknown widget option is rejected by the factory's closed opts
-    /// surface and surfaces as a located finding, suggestion included.
-    #[test]
-    fn an_unknown_widget_opt_is_a_located_finding() {
-        let report = run("[status]\nright = [{ kind = \"time\", formt = \"%H\" }]\n");
-        assert_eq!(paths(&report), vec!["status.right[0]"]);
-        let finding = &report.findings[0];
-        assert_eq!(finding.fault, Fault::BadValue);
-        assert!(
-            finding.message.contains("widget time")
-                && finding.message.contains("unknown option `formt`")
-                && finding.message.contains("did you mean `format`?"),
-            "wrong message: {}",
-            finding.message
-        );
-    }
-
-    /// The bead's motivating trap: a bad `style` table must fail the check,
-    /// not parse clean and render unstyled.
-    #[test]
-    fn a_bad_style_table_is_a_located_finding() {
-        let report =
-            run("[status]\ncenter = [{ kind = \"session-name\", style = { colour = \"red\" } }]\n");
-        assert_eq!(paths(&report), vec!["status.center[0]"]);
-        let finding = &report.findings[0];
-        assert_eq!(finding.fault, Fault::BadValue);
-        assert!(
-            finding.message.contains("`style` must be a style table"),
-            "wrong message: {}",
-            finding.message
-        );
-    }
-
-    /// Every bad widget is reported in one pass — the check builds per
-    /// widget rather than stopping at `StatusBar::build`'s first error.
-    #[test]
-    fn every_bad_widget_is_reported_in_one_pass() {
         let report = run(
             "[status]\nleft = [\"windws\", { kind = \"time\", formt = \"%H\" }]\nright = [\"not-even-close\"]\n",
         );
@@ -1285,46 +774,9 @@ mod tests {
         );
     }
 
-    /// A valid `[status]` — including a widget-level `style` table — is
-    /// clean; the check must not cry wolf on the shipped surface.
+    /// "No findings" must never be said about a file that was never read.
     #[test]
-    fn a_valid_status_bar_with_styles_checks_clean() {
-        let report = run(
-            "[status]\nleft = [{ kind = \"windows\", separator = \" | \" }]\n\
-             center = [\"help-hints\"]\n\
-             right = [{ kind = \"session-name\", format = \"[{name}]\", style = { fg = \"red\", bold = true } }, { kind = \"time\", format = \" %H:%M\" }]\n",
-        );
-        assert!(report.is_ok(), "false positives: {:?}", report.findings);
-    }
-
-    /// Widget findings carry layer attribution like every other finding.
-    #[test]
-    fn a_widget_finding_is_attributed_to_the_user_file() {
-        let path = Path::new("/nonexistent/config.toml");
-        let report = check("[status]\nleft = [\"windws\"]\n", path).expect("check runs");
-        assert_eq!(
-            report.findings[0].source,
-            Some(LayerSource::User(path.to_path_buf())),
-            "origin was {}",
-            report.findings[0].origin()
-        );
-    }
-
-    /// Hook findings carry layer attribution like every other finding:
-    /// the array element's contributing layer, which is the file to open.
-    #[test]
-    fn a_hook_finding_is_attributed_to_the_user_file() {
-        let path = Path::new("/nonexistent/config.toml");
-        let report = check(
-            "[[hooks.pane-exit]]\naction = { kind = \"message\", text = \"bye\" }\n",
-            path,
-        )
-        .expect("check runs");
-        assert_eq!(
-            report.findings[0].source,
-            Some(LayerSource::User(path.to_path_buf())),
-            "origin was {}",
-            report.findings[0].origin()
-        );
+    fn unparseable_toml_is_an_error_not_a_clean_report() {
+        assert!(check("this is not = = toml\n", Path::new(PATH)).is_err());
     }
 }

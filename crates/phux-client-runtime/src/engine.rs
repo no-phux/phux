@@ -1,15 +1,11 @@
 //! The engine owner thread (ADR-0133 decision 4).
 //!
-//! `SessionKernel` and every engine replica live on one dedicated thread.
-//! Nothing that is not `Send` ever leaves it: the control plane hands it
-//! owned [`EngineEvent`]s over a channel and gets owned [`EngineOutcome`]s
-//! back, and the grid it projects reaches consumers only through the
-//! `Publication` table. With the `engine` feature the adapter is
-//! libghostty's `GhosttyAdapter` and every damaged terminal is re-projected
-//! and published before the outcome is answered; without it a bounded
-//! `ByteAdapter` keeps the same kernel driving a byte buffer per
-//! terminal, so the transport and control-plane lanes build and test with
-//! no Zig toolchain (phux-mobile's headless lane).
+//! `SessionKernel` and every engine replica live on one dedicated thread;
+//! owned [`EngineEvent`]s go in over a channel and owned [`EngineOutcome`]s
+//! come back. With the `engine` feature the adapter is libghostty and every
+//! damaged terminal is re-projected and published before the outcome is
+//! answered; without it a bounded `ByteAdapter` keeps the transport and
+//! control-plane lanes buildable with no Zig toolchain.
 
 #[cfg(feature = "engine")]
 use std::collections::HashMap;

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-09
+last-reviewed: 2026-09-27
 ---
 
 # Scoped mutation testing
@@ -19,11 +19,9 @@ the command, and the observed assertion failure in the commit or PR. A compile
 error, missing dependency, or test-runner failure is not a reproduced bug.
 Restore the fix and run the relevant ordinary gate before committing.
 
-The permanent deliverable is the behavioral test. There is no required
-`// GUARD:` marker, saved `.guard` patch, or build-time patch-applicability check.
-The former Cockpit system is described in its
-[historical guard guide](../clients/cockpit/docs/GUARDS.md); old acceptance
-records remain evidence of the runs performed at those revisions.
+The permanent deliverable is the behavioral test; there is no `// GUARD:`
+marker, saved patch, or patch-applicability check (Cockpit's retired system
+is described in its [historical guard guide](../clients/cockpit/docs/GUARDS.md)).
 
 Automatic mutation testing asks a complementary question: can a tool insert a
 small change into current production code without the tests noticing? Generated
@@ -191,32 +189,3 @@ checkout. Run via Cockpit's private-cache build wrapper and check the source
 root, exit status, and complete Phux verdict. An existing archive from the
 unmodified tree invalidates that claim. Never edit source while Zig is building
 it. See [Cockpit setup](SETUP.md#cockpit) for the ordinary shipping graph gates.
-
-## Adoption evidence
-
-During the September 2026 guard retirement, a byte-level inventory confirmed
-that all 542 existing Cockpit test declarations and their bodies were retained;
-only 115 marker comments changed in source code. The same-checkout shipping
-test gate passed both before and after retirement (535 passed, 2 skipped),
-and the app build passed after retirement.
-
-The Rust default pilot passed its 50-test unmodified baseline and caught all
-eight selected mutations. Disposable fixtures independently demonstrated one
-caught mutation, one survivor, one compile failure, and one timeout, plus a
-failing baseline that prevented mutation execution. These are bounded adoption
-checks, not a claim of comprehensive mutation coverage.
-
-A follow-up scan of the layout rejection paths found five survivors among
-seven mutations. Package-local tests now verify that invalid split ratios,
-missing split targets, and missing kill targets return the correct error and
-preserve the existing layout. The same seven mutations were then all caught,
-with the unmodified package baseline passing. This strengthened public-contract
-coverage; production layout code was unchanged.
-
-The Zig pilot initially killed seven of eight selected mutations. The survivor
-changed the intent decoder's length/version `or` to `and`. A new module-local
-test rejects unsupported versions, every shorter packet length, and an overlong
-packet. The identical generated mutation then failed that named test at the
-version assertion; all eight selected mutations were killed with all six
-baseline tests passing. The final shipping Cockpit gate passed 536 tests with
-two skipped, and the app build passed. Production decoder code was unchanged.

@@ -26,7 +26,7 @@ fn grid(client: *mut PhuxClient) -> (PhuxTerminalGridView, String) {
 
 fn output(client: *mut PhuxClient, seq: u64, payload: &'static [u8]) {
     assert_eq!(
-        feed_kind(
+        feed(
             client,
             &FrameKind::ResourceOutput {
                 terminal_id: phux_protocol::ResourceId::local(1),
@@ -294,7 +294,7 @@ fn feed_native_bootstrap(client: *mut PhuxClient, bootstrap_id: u64, bytes: &[u8
             history_cursor: Some(bytes::Bytes::from_static(b"older")),
         },
     ] {
-        let result = feed_kind(client, &frame);
+        let result = feed(client, &frame);
         // SAFETY: this fixture owns the client throughout bootstrap.
         let error = unsafe { String::from_utf8_lossy(&(*client).inner.last_error).into_owned() };
         assert_eq!(result, PhuxClientResult::Ok, "{frame:?}: {error}");
@@ -302,54 +302,35 @@ fn feed_native_bootstrap(client: *mut PhuxClient, bootstrap_id: u64, bytes: &[u8
 }
 
 fn native_client(bootstrap: &[u8]) -> *mut PhuxClient {
-    let mut inner = Client::new(Limits {
+    let client = Box::into_raw(Box::new(PhuxClient::new(Client::new(Limits {
         bootstrap_chunk: 256 * 1024,
         history_page: 256 * 1024,
-        history_page_rows: 128,
         history_cache_bytes: 1024 * 1024,
-        history_materialized_rows: 1024,
-        history_prefetch_rows: 64,
-    });
-    inner.protocol_ready = true;
-    inner.attach_queued = true;
-    inner.expected_attach_id = Some(7);
-    inner.selected_profile = Some(phux_protocol::BootstrapProfile::NativeState {
-        codec: phux_protocol::EngineCodec::LibghosttySnapshotV1,
-        features: phux_protocol::EngineFeatureSet::required_native(),
-    });
-    inner.install_profile(
-        inner.selected_profile.unwrap(),
-        phux_protocol::BootstrapLimits::new(256 * 1024, 256 * 1024).unwrap(),
+        ..limits()
+    }))));
+    let mut hello = hello_ok(
+        phux_protocol::caps::ServerCapabilities::new(),
+        phux_protocol::BootstrapProfile::NativeState {
+            codec: phux_protocol::EngineCodec::LibghosttySnapshotV1,
+            features: phux_protocol::EngineFeatureSet::required_native(),
+        },
     );
-    let client = Box::into_raw(Box::new(PhuxClient {
-        inner,
-        _not_send_sync: std::marker::PhantomData,
-    }));
-    let terminal = phux_protocol::ResourceId::local(1);
-    let window = phux_protocol::WindowId::new(1);
-    let session = SessionId::new(1);
-    let snapshot =
-        phux_protocol::wire::info::SessionSnapshot::new(session, window, terminal.clone())
-            .with_windows(vec![phux_protocol::wire::info::WindowInfo::new(
-                window, session, "native",
-            )])
-            .with_resources(vec![phux_protocol::wire::info::ResourceInfo::new(
-                terminal, window, 40, 12,
-            )]);
+    if let FrameKind::HelloOk {
+        bootstrap_limits, ..
+    } = &mut hello
+    {
+        *bootstrap_limits = BootstrapLimits::new(256 * 1024, 256 * 1024).unwrap();
+    }
+    negotiate_frame(client, &hello);
+    queue_attach(client, 7);
+    let snapshot = single_terminal_snapshot(phux_protocol::ResourceId::local(1), 40, 12);
     assert_eq!(
-        feed_kind(
-            client,
-            &FrameKind::Attached {
-                attach_id: 7,
-                snapshot,
-                initial_client_id: phux_protocol::ClientId::new(9),
-            }
-        ),
+        feed(client, &attached_frame(7, snapshot)),
         PhuxClientResult::Ok
     );
     feed_native_bootstrap(client, 1, bootstrap);
     assert_eq!(
-        feed_kind(client, &FrameKind::AttachReady { attach_id: 7 }),
+        feed(client, &FrameKind::AttachReady { attach_id: 7 }),
         PhuxClientResult::Ok
     );
     client
@@ -394,7 +375,7 @@ fn clear_cancels_native_history_without_retiring_live_or_replacement_generations
     }
     for (i, (bytes, rows)) in history.iter().enumerate() {
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &history_page(1, bytes, *rows, i as u64 + 1, i + 1 == history.len())
             ),
@@ -411,7 +392,7 @@ fn clear_cancels_native_history_without_retiring_live_or_replacement_generations
     assert!(grid(client).0.history_loading);
     for (i, (bytes, rows)) in history.iter().enumerate() {
         assert_eq!(
-            feed_kind(
+            feed(
                 client,
                 &history_page(2, bytes, *rows, i as u64 + 1, i + 1 == history.len())
             ),

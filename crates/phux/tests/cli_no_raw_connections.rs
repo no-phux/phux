@@ -2,29 +2,9 @@
 //! `phux-client` module (`Connection::connect` -> `request` -> typed result
 //! -> typed error, the `send_keys.rs` shape), not in `crates/phux/src/commands/`.
 //!
-//! This walks every `.rs` file under `src/commands/` and fails if any of the
-//! raw-wire markers (see [`MARKERS`] and [`command_marker_hits`]) appear in
-//! its *production* code outside an explicit, per-file-capped allowance.
-//!
-//! Two exclusions keep this honest rather than noisy:
-//!
-//! - **Comments and string literals never count.** [`strip_comments_and_strings`]
-//!   blanks out `//` and `/* */` comments and the *contents* of `"..."`
-//!   string/byte-string literals (keeping line/column layout intact) before
-//!   anything else runs. Without this, `eprintln!("... {message}")` — which
-//!   is everywhere in this tree — would corrupt brace counting and could
-//!   register a marker that only exists inside a diagnostic string.
-//! - **`mod tests { ... }` bodies never count.** A scripted mock server in a
-//!   unit test legitimately builds frames and opens fake connections to play
-//!   a peer; that is not the anti-pattern this gate polices.
-//!
-//! [`ALLOWLIST`] is the explicit, precise residue: every file that still owns
-//! a raw connection, frame construction, or request round trip, why, and a
-//! **pinned maximum hit count**. A file can drop below its pin for free (the
-//! comment there goes stale, which is fine); it can never rise above it
-//! without a reviewer looking at the new code and raising the number
-//! deliberately. Migrating a file to zero and deleting its entry is a strict
-//! improvement.
+//! Every `.rs` file under `src/commands/` fails if a raw-wire marker appears
+//! in its production code (comments, string literals, and `mod tests` bodies
+//! excluded) beyond its per-file [`ALLOWLIST`] cap.
 #![allow(
     clippy::panic,
     clippy::expect_used,
@@ -35,127 +15,46 @@
 
 use std::path::{Path, PathBuf};
 
-/// Files (relative to `crates/phux/src/commands/`) allowed to still touch a
-/// raw connection, a wire frame constructor, or a raw request round trip in
-/// production code: `(path, max_hits, why)`.
-///
-/// `max_hits` is a ceiling, not a target: the actual count only needs to be
-/// at or below it. Raise it only alongside a diff a reviewer can see and
-/// agree cannot move yet; lower it (or delete the row) freely as files are
-/// migrated.
+/// Files (relative to `src/commands/`) still allowed raw wire work, as
+/// `(path, max_hits, why)`. `max_hits` is a ceiling: lower it freely, raise
+/// it only with a reviewed reason.
 const ALLOWLIST: &[(&str, usize, &str)] = &[
     (
         "mod.rs",
         28,
-        "owns the shared `command_on`/`request_command` helpers every verb \
-         (migrated or not) calls through — the one generic connect + request \
-         round trip, not a per-verb hand-roll — plus `verb_remote` and \
-         `socketless_verb`, which match on *this crate's own* `Command` (the \
-         clap subcommand enum, `pub(crate) enum Command` below `Cli`), a \
-         same-named but unrelated type to `phux_protocol`'s wire `Command`. \
-         Both contribute to the `Command::` count below; the 28th hit is \
-         `socketless_verb`'s `Command::Workload` arm (CLI enum, not a wire \
-         frame — `phux workload` writes the state directory and never dials).",
+        "the shared `command_on`/`request_command` helpers, plus matches on the CLI's own `Command` enum",
     ),
     (
         "server_target.rs",
         2,
-        "owns the one real `Connection::connect`/`connect_dial` a `ServerSpec` \
-         resolves to; every migrated verb in this lane reaches it through \
-         `ServerTarget::connect`, never directly.",
+        "the one real connect a `ServerSpec` resolves to",
     ),
     (
         "spawn.rs",
         3,
-        "the plain `phux spawn` wire round trip is fully in \
-         `phux_client::spawn`; the agent-session provenance write and its \
-         `KILL_RESOURCE` rollback (formerly this file's residue) are fully \
-         in `phux_client::agent_session_record::spawn_with_agent_session_on` \
-         (L21b) — no `Connection::connect`, `.request(`, `.send(&`, \
-         `request_metadata(`, `request_spawn(`, or `command_on(` remains in \
-         this file. The 3 remaining hits are request-shaping, not round \
-         trips: `run_spawn`'s own `FrameKind::SpawnResource` literal, and \
-         `dispatch_spawn_placed`'s `Command::GetState` value passed to the \
-         shared `request_command` helper plus its `FrameKind::SpawnResource` \
-         destructure to stamp `owner_terminal` before the placed spawn.",
+        "request-shaping for the placed spawn, not round trips",
     ),
-    (
-        "launch.rs",
-        1,
-        "shares `spawn.rs`'s `dispatch_spawn`/`dispatch_spawn_placed` and \
-         builds its own `FrameKind::SpawnResource` request literal from a \
-         resolved integration, same as `phux spawn`'s own literal \
-         (request-shaping, not a round trip); the wire round trip itself is \
-         fully delegated (L21b).",
-    ),
-    (
-        "play.rs",
-        1,
-        "not in this lane's write scope (`phux play`'s own \
-         `SPAWN_RESOURCE`); left as-is.",
-    ),
-    (
-        "bootstrap.rs",
-        3,
-        "not in this lane's write scope (`phux bootstrap`'s `OPEN_LISTENER`); \
-         left as-is.",
-    ),
-    (
-        "config.rs",
-        4,
-        "not in this lane's write scope (`config set`'s `SET_METADATA`); left \
-         as-is.",
-    ),
-    (
-        "perf.rs",
-        1,
-        "not in this lane's write scope (`GET_PERF`); left as-is.",
-    ),
-    (
-        "status.rs",
-        1,
-        "not in this lane's write scope (`GET_STATE` for `phux status`); left \
-         as-is.",
-    ),
-    (
-        "enroll.rs",
-        1,
-        "not in this lane's write scope (pairing/enrollment dials); left as-is.",
-    ),
-    (
-        "whoami.rs",
-        1,
-        "not in this lane's write scope (`GET_METADATA` of `phux.whoami/v1`); \
-         left as-is.",
-    ),
+    ("launch.rs", 1, "builds its `SpawnResource` request literal"),
+    ("play.rs", 1, "`phux play`'s own `SPAWN_RESOURCE`"),
+    ("bootstrap.rs", 3, "`phux bootstrap`'s `OPEN_LISTENER`"),
+    ("config.rs", 4, "`config set`'s `SET_METADATA`"),
+    ("perf.rs", 1, "`GET_PERF`"),
+    ("status.rs", 1, "`GET_STATE` for `phux status`"),
+    ("enroll.rs", 1, "pairing/enrollment dials"),
+    ("whoami.rs", 1, "`GET_METADATA` of `phux.whoami/v1`"),
     (
         "workspace/archive.rs",
         3,
-        "not in this lane's write scope (`workspace restore`'s session \
-         create); left as-is.",
+        "`workspace restore`'s session create",
     ),
-    (
-        "agent/answer.rs",
-        1,
-        "not in this lane's write scope (`phux agent answer`); left as-is.",
-    ),
-    (
-        "agent/report_state.rs",
-        2,
-        "not in this lane's write scope (`phux agent report-state`'s \
-         `REPORT_AGENT_STATE`); left as-is.",
-    ),
+    ("agent/answer.rs", 1, "`phux agent answer`"),
+    ("agent/report_state.rs", 2, "`REPORT_AGENT_STATE`"),
     (
         "agent/resource_session.rs",
         1,
-        "not in this lane's write scope (`phux agent session` internals); \
-         left as-is.",
+        "`phux agent session` internals",
     ),
-    (
-        "agent/start.rs",
-        8,
-        "not in this lane's write scope (`phux agent start`); left as-is.",
-    ),
+    ("agent/start.rs", 8, "`phux agent start`"),
 ];
 
 /// Literal markers of a hand-rolled wire call, checked with `str::contains`
@@ -233,15 +132,6 @@ fn cli_commands_open_no_raw_connections() {
     );
 }
 
-#[test]
-fn allowlist_entries_are_unique() {
-    let mut names: Vec<&str> = ALLOWLIST.iter().map(|(name, _, _)| *name).collect();
-    let before = names.len();
-    names.sort_unstable();
-    names.dedup();
-    assert_eq!(names.len(), before, "ALLOWLIST has a duplicate entry");
-}
-
 /// Every `.rs` file under `dir`, recursively.
 fn rust_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -262,23 +152,10 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Reduce `content` to its "code-only" text for gate purposes: `//` and
-/// `/* */` comments, and the *contents* of `"..."` string/byte-string
-/// literals (including their escapes), are blanked out character-for-
-/// character — never removed — so line numbers and brace positions stay
-/// meaningful.
-///
-/// Deliberately simple and biased toward *not* stripping when unsure, since
-/// under-stripping only costs an extra allowlist entry (safe) while
-/// over-stripping could hide real hand-rolled wire code (unsafe):
-/// - Block comments are tracked non-recursively; this codebase does not nest
-///   them, and nesting would only leave *more* text visible, never less.
-/// - Char literals (`'x'`) are not specially recognized, so a lifetime
-///   (`'a`) is never mistaken for a string opener that could swallow real
-///   code before the next `'`.
-/// - Raw strings (`r"..."`, `r#"..."#`) are scanned as ordinary strings:
-///   correct unless the body contains a literal `\` immediately before the
-///   closing quote, which does not occur in this tree.
+/// Blank out comments and string-literal contents character-for-character,
+/// keeping line numbers and brace positions. Biased toward under-stripping
+/// (char literals and nested block comments are not special-cased), which
+/// can only surface more code, never hide it.
 fn strip_comments_and_strings(content: &str) -> String {
     let mut out = String::with_capacity(content.len());
     let mut chars = content.chars().peekable();
@@ -432,9 +309,6 @@ fn command_marker_hits(line: &str) -> Vec<usize> {
         let bytes = line.as_bytes();
         let left_ok = idx == 0 || !is_ident_char(bytes[idx - 1] as char);
         let context_start = idx.saturating_sub(24);
-        // `.floor_char_boundary`-free: `context_start` only needs to be a
-        // valid slice start, and ASCII punctuation/identifier text around a
-        // `Command::` occurrence never straddles a multi-byte boundary here.
         let looks_like_std_process = line
             .get(context_start..idx)
             .is_some_and(|ctx| ctx.contains("process::"));

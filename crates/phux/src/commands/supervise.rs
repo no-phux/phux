@@ -35,12 +35,8 @@ pub(crate) fn run_give(target: &str, socket: Option<PathBuf>) -> ExitCode {
     run_lease(target, socket, None)
 }
 
-/// Seconds to the wire's `ttl_ms`: `None` (no `--ttl`) is `0`, "never" —
-/// today's default. `--ttl`'s clap-level `validate` already refuses a
-/// value that would overflow `u32` milliseconds (exit 2, before this ever
-/// runs); `saturating_mul` is defense in depth, not the primary guard —
-/// silently clamping an out-of-range value here, rather than rejecting it
-/// up front, was review round 2's low finding.
+/// Seconds to the wire's `ttl_ms` (`None` is `0`, never). `--ttl` is
+/// range-checked at parse time; the saturation is defense in depth.
 fn ttl_ms(ttl: Option<u32>) -> u32 {
     ttl.unwrap_or(0).saturating_mul(1000)
 }

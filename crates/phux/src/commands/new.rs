@@ -19,31 +19,18 @@ use crate::commands::{
     server::ensure_server_unseeded,
 };
 
-/// How many generated names an omitted-name `phux new` tries against the
-/// live session list before falling back to a numeric suffix. With ~8000
-/// adjective-noun pairs a miss this many times in a row means the space is
-/// crowded, and the suffix still guarantees a distinct name.
+/// How many generated names an omitted-name `phux new` tries before falling
+/// back to a numeric suffix.
 const RANDOM_NAME_ATTEMPTS: usize = 8;
 
 /// `phux new` — create a *new* session and attach to it.
 ///
-/// The name comes from the positional `NAME` or the `-s` flag (the same
-/// field, two spellings; a genuine conflict is an error). "New" is enforced
-/// client-side against a `GET_STATE` snapshot: a name that already exists is
-/// an error (like tmux's duplicate-session refusal), and an omitted name
-/// renders the configured `session-name-template` (`${cwd-basename}` by
-/// default): a taken `${random-name}` pick is redrawn a few times, and a
-/// numeric suffix settles anything still taken. The create+attach itself
-/// rides `CreateIfMissing` (ADR-0021 defers a dedicated create-session
-/// command).
-///
-/// `server` is the local socket or a `--remote` host (see `server_target`).
-/// Only the local server is auto-spawned: a remote one is the far host's to
-/// run.
-///
-/// `mode.empty` (ADR-0105) creates the session with no terminal; it is
-/// keep-empty by construction. With `--json` it prints the empty-session
-/// document; without, it attaches to the new session's empty state.
+/// The name comes from the positional `NAME` or `-s` (a conflict is an error).
+/// A name that already exists is refused; an omitted one renders
+/// `session-name-template`, redrawing a taken `${random-name}` and settling on a
+/// numeric suffix. The create+attach rides `CreateIfMissing`. Only a local
+/// server is auto-spawned. `mode.empty` (ADR-0105) creates a keep-empty session
+/// with no terminal.
 pub(crate) fn run_new(
     name: Option<String>,
     session: Option<String>,
@@ -78,10 +65,8 @@ pub(crate) fn run_new(
         }
         return run_new_attached(&rt, &target, requested, command, cwd);
     }
-    // The `--json` ⇒ `-s NAME` rule is clap-enforced on the `new` verb
-    // (phux-i0e8.8.4), so the CLI cannot reach this guard; it exists
-    // only so a future non-clap caller fails with the same exit code
-    // clap's usage error carries, never a panic.
+    // Clap enforces `--json` => `-s NAME`; this guard only keeps a future caller
+    // from panicking.
     let Some(name) = requested else {
         eprintln!("phux: `phux new --json` requires an explicit -s NAME");
         return ExitCode::from(2);
@@ -144,19 +129,14 @@ fn run_new_empty_attached(
 fn run_new_empty_json(rt: &tokio::runtime::Runtime, target: &ServerTarget, name: &str) -> ExitCode {
     ensure_local_unseeded_server(target, true);
     match rt.block_on(create_empty_session_via_metadata(target, name, true)) {
-        Ok(()) => print_json_document(&empty_session_json(name)),
+        Ok(()) => crate::output::json(&empty_session_json(name)),
         Err(code) => code,
     }
 }
 
-/// Make sure a local server is running to host a create-without-attach.
-///
-/// Auto-spawn seeds a throwaway session under [`DEFAULT_SESSION_NAME`] (kept
-/// distinct from the requested name so the create write that follows does
-/// not collide with the seed) and keeps the server alive. A remote server is
-/// never spawned from here. Failure is only logged: the create that follows
-/// fails with its own diagnostic, and under `--json` a prose line would make
-/// stderr unparseable for a caller that asked for machine output.
+/// Make sure a local server is running for a create-without-attach. The seed
+/// session uses [`DEFAULT_SESSION_NAME`] so it cannot collide with the create.
+/// Failure is only logged (never prose under `--json`); the create reports.
 fn ensure_local_server(target: &ServerTarget, json: bool) {
     if let Some(path) = target.socket_path()
         && let Err(err) = ensure_server(path, DEFAULT_SESSION_NAME, None, json)
@@ -176,24 +156,8 @@ fn ensure_local_unseeded_server(target: &ServerTarget, json: bool) {
     }
 }
 
-/// Pretty-print a `--json` result document on stdout.
-fn print_json_document(payload: &serde_json::Value) -> ExitCode {
-    match serde_json::to_string_pretty(payload) {
-        Ok(s) => {
-            outln!("{s}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            eprintln!("phux: failed to serialize create result as JSON: {err}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-/// The session name from the positional NAME or the `-s` flag.
-///
-/// They are the same field with two spellings. A genuine conflict is
-/// rejected rather than silently resolved in favor of one.
+/// The session name from the positional NAME or `-s`; a conflict is
+/// rejected.
 fn requested_session_name(
     name: Option<String>,
     session: Option<String>,
@@ -210,11 +174,8 @@ fn requested_session_name(
     }
 }
 
-/// Resolve the server `phux new` talks to.
-///
-/// phux-iwuc: a local socket path too long for `sockaddr_un` fails here,
-/// with the limit named, instead of after the 2s spawn timeout and a doomed
-/// connect.
+/// Resolve the server `phux new` talks to; a socket path too long for
+/// `sockaddr_un` fails here with the limit named.
 fn prepare_target(
     server: ServerSpec,
     json: bool,
@@ -271,24 +232,16 @@ fn run_new_attached(
     }
 }
 
-/// The session names already on the server, so "new" can reject a duplicate
-/// and auto-suffix an omitted name.
-///
-/// No local server yet means no names: the auto-spawn that follows seeds
-/// the chosen one. A server that does not answer contributes none either;
-/// the attach that follows reports why.
+/// The session names already on the server, for duplicate rejection and
+/// auto-suffixing. No server (or no answer) means none.
 fn existing_session_names(rt: &tokio::runtime::Runtime, target: &ServerTarget) -> Vec<String> {
     if target.socket_path().is_some_and(|path| !path.exists()) {
         return Vec::new();
     }
     rt.block_on(target.get_state()).map_or_else(
         |_| Vec::new(),
-        // Session names are hub-local: `handle_get_state_federated`
-        // discards every satellite's `sessions` list because its
-        // `u32` ids would collide with the hub's. So an unreachable
-        // satellite cannot hide the name we are about to reject or
-        // auto-suffix, and this duplicate check is exactly as sound
-        // on a degraded hub as on a healthy one. Warned, not refused.
+        // Session names are hub-local, so an unreachable satellite cannot hide a
+        // duplicate: warn, don't refuse.
         |view| {
             partial::warn_partial_view("new", view.degradation());
             view.snapshot()
@@ -304,12 +257,8 @@ fn existing_session_names(rt: &tokio::runtime::Runtime, target: &ServerTarget) -
 /// configured template made unique.
 fn choose_session_name(requested: Option<String>, existing: &[String]) -> Result<String, ExitCode> {
     let Some(requested) = requested else {
-        // No name given: start from the configured session-name-template,
-        // the same base every auto-create path uses, and disambiguate with
-        // fresh `${random-name}` picks, then a numeric suffix, instead of
-        // emitting a bare "0". `${cwd-basename}` renders against the local
-        // shell's directory even for a remote server: it names the session
-        // after where the user typed the command.
+        // No name given: render the session-name-template and disambiguate.
+        // `${cwd-basename}` uses the local directory even for a remote server.
         return Ok(fresh_session_name(
             existing,
             &configured_session_name_template(),
@@ -327,22 +276,10 @@ fn choose_session_name(requested: Option<String>, existing: &[String]) -> Result
 }
 
 /// `phux new --json` — create a session *without* attaching and print its
-/// seed pane's id as JSON.
-///
-/// Since the v0.3.0 "Option B" re-tier (ADR-0019 / ADR-0027) dissolved the
-/// L2 collection tier and removed the `CREATE_SESSION` verb, create-without-
-/// attach is expressed as an L3 `SET_METADATA` write of the conventional
-/// `phux.session.create/v1` key (`Scope::Global`, value = JSON `{name,
-/// command?, cwd?}`), via [`phux_client::session::create_session`]. The
-/// server seeds the session + pane atomically; the client then reads the
-/// seed-pane id back from the nonce-correlated result key via
-/// `GET_METADATA` (`SET_METADATA` carries no reply frame).
-///
-/// `--json` requires an explicit `-s NAME` (auto-naming is reserved for the
-/// attaching path); that rule is clap-enforced on the verb, so `name` is
-/// already resolved here. A name already in use is reported as an error
-/// (checked client-side against the pre-write snapshot) — create-only,
-/// never create-or-attach.
+/// seed pane's id. The create is an L3 `SET_METADATA` write of
+/// `phux.session.create/v1` via [`phux_client::session::create_session`]; the
+/// seed-pane id is read back from the nonce-correlated result key. Requires
+/// `-s NAME` (clap-enforced); a name in use is an error.
 pub(crate) fn run_new_json(
     rt: &tokio::runtime::Runtime,
     target: &ServerTarget,
@@ -375,7 +312,7 @@ pub(crate) fn run_new_json(
         true,
         idempotency_key,
     )) {
-        Ok(terminal_id) => print_json_document(&new_session_json(name, terminal_id)),
+        Ok(terminal_id) => crate::output::json(&new_session_json(name, terminal_id)),
         Err(code) => code,
     }
 }
@@ -404,12 +341,8 @@ fn empty_session_json(session: &str) -> serde_json::Value {
     })
 }
 
-/// Create an empty, keep-empty session named `name` (ADR-0105) through
-/// [`phux_client::session::create_empty_session`].
-///
-/// Refuses before writing when the server does not advertise
-/// `KeepEmptySessions`: an older server ignores the unknown `empty` field
-/// and would seed a shell under the name instead.
+/// Create an empty, keep-empty session (ADR-0105). Refuses before writing
+/// when the server lacks `KeepEmptySessions` (an older one would seed a shell).
 pub(crate) async fn create_empty_session_via_metadata(
     server: &ServerTarget,
     name: &str,
@@ -419,12 +352,8 @@ pub(crate) async fn create_empty_session_via_metadata(
         .connect()
         .await
         .map_err(|err| server.report_unreachable(json, &err, "new"))?;
-    // Checked before the duplicate-name `GET_STATE`, matching the
-    // pre-migration order: against a server that lacks the bit, this is the
-    // *only* round trip (no GET_STATE, and none of its partial-view
-    // wording), same as before create-without-attach existed as a
-    // `phux_client::session` extension. `create_empty_session`'s own check
-    // is a harmless second guard for a caller that reaches it directly.
+    // The capability check runs before the duplicate-name `GET_STATE`, so an
+    // unsupporting server costs exactly one round trip.
     if !phux_client::session::keep_empty_supported(&conn) {
         eprintln!(
             "phux: create-session failed: the server does not support empty sessions; upgrade it"
@@ -463,10 +392,8 @@ async fn require_atomic_agent_session_create(
     json: bool,
 ) -> Result<(), ExitCode> {
     let mut notices = Vec::new();
-    // Native restore must be atomic with session creation. Older servers treat
-    // the nonce-result namespace as ordinary metadata and cannot install
-    // `agent_session` in the create transaction. Current servers reserve it
-    // and reject the sentinel write. This consumes no protocol capability bit.
+    // Native restore must be atomic with session creation; the preflight
+    // detects servers that cannot install `agent_session` in the create.
     let result = phux_client::session::atomic_agent_session_preflight(conn, &mut notices).await;
     // Printed before the error is reported, in encounter order: a notice
     // collected before a later transport failure must not be dropped.
@@ -501,15 +428,10 @@ pub(crate) async fn preflight_atomic_agent_session_create(
 }
 
 /// Create a named session without attaching via
-/// [`phux_client::session::create_session`], then translate the typed
-/// outcome into this verb's historical stderr diagnostics.
-///
-/// `agent_session_preflighted` is true only when a multi-session caller has
-/// already run [`preflight_atomic_agent_session_create`] before creating any
-/// member of its batch; otherwise the create itself performs that probe.
-/// Returns the seed pane's local id on success, or the failure `ExitCode`
-/// (already reported to stderr) otherwise. Shared by `phux new --json`; mirrors
-/// the MCP `phux_new` path. `server` is the local socket or a `--remote` host.
+/// [`phux_client::session::create_session`] and map the typed outcome to this
+/// verb's stderr diagnostics. `agent_session_preflighted` is true when a batch
+/// caller already ran [`preflight_atomic_agent_session_create`]. Returns the
+/// seed pane's id, or the (already reported) failure code.
 #[allow(
     clippy::too_many_arguments,
     reason = "the shared create-without-attach path keeps the complete operation explicit"
@@ -591,11 +513,8 @@ pub(crate) async fn create_session_via_metadata(
     }
 }
 
-/// Translate a [`CreateSessionError`] into the verb's failure `ExitCode`,
-/// hardcoded to attribute transport failures to `"new"` regardless of the
-/// caller's own verb name — matching this probe's historical behavior even
-/// when reached through `preflight_atomic_agent_session_create`'s
-/// `"workspace restore"` connect.
+/// Map a [`CreateSessionError`] to the failure code, attributing transport
+/// failures to `"new"`.
 fn report_create_session_error(
     server: &ServerTarget,
     json: bool,
@@ -619,13 +538,8 @@ fn report_create_session_error(
     }
 }
 
-/// Reject a duplicate name before writing (the server also refuses it, but
-/// silently — `SET_METADATA` has no reply frame).
-///
-/// Same reasoning as the human path: only `panes` aggregate across a
-/// federation, so a partial fleet cannot hide a session name. The notice
-/// still goes to stderr — `phux new --json` puts its *result* on stdout,
-/// and a warning has no place in that document.
+/// Reject a duplicate name before writing (the server refuses silently:
+/// `SET_METADATA` has no reply). The partial-fleet notice goes to stderr.
 async fn reject_duplicate_session_name(
     conn: &mut Connection,
     server: &ServerTarget,
@@ -670,11 +584,8 @@ fn report_session_not_registered(name: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// A keyed create that registered nothing. The server publishes no result
-/// for a token that already belongs to a different create request (the
-/// result schema has no refusal form, ADR-0126), so this is the one place a
-/// reused key surfaces; a name already in use under a fresh key reads the
-/// same.
+/// A keyed create that registered nothing: a key reused for a different
+/// request (ADR-0126) and a name already in use read the same.
 fn report_keyed_session_not_registered(name: &str) -> ExitCode {
     eprintln!("phux: create-session failed: server did not register session '{name}'");
     eprintln!(
@@ -685,15 +596,9 @@ fn report_keyed_session_not_registered(name: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// The seed pane's working directory (phux-0db).
-///
-/// An explicit `--cwd` wins. An omitted one defaults to the *client's* cwd
-/// for a local server instead of `None`: `cwd: None` on the wire makes the
-/// seed pane inherit the daemon's CWD (typically `$HOME` for a long-lived
-/// server), which breaks tools whose persistence is keyed by directory —
-/// the `claude --resume` bug. A remote server gets no default, because a
-/// path on this machine names nothing on that one; it starts the pane in
-/// its own default directory instead.
+/// The seed pane's working directory: an explicit `--cwd`, else the client's
+/// cwd for a local server (so directory-keyed tools such as `claude --resume`
+/// work). A remote server gets no default.
 fn seed_cwd(explicit: Option<PathBuf>, remote: bool) -> Option<String> {
     let explicit = explicit.map(|path| path.to_string_lossy().into_owned());
     if remote {
@@ -702,12 +607,8 @@ fn seed_cwd(explicit: Option<PathBuf>, remote: bool) -> Option<String> {
     explicit.or_else(client_cwd)
 }
 
-/// Build the `CreateIfMissing` target for `phux new` from an already
-/// resolved seed cwd (see [`seed_cwd`]).
-///
-/// The server validates the path and falls back to its default spawn
-/// directory when it is not an enterable directory on the server host, so a
-/// stale or foreign client path can never fail the create.
+/// Build the `CreateIfMissing` target from a resolved seed cwd; the server
+/// falls back to its default directory for an unusable path.
 fn new_session_target(name: String, command: Vec<String>, cwd: Option<String>) -> AttachTarget {
     AttachTarget::CreateIfMissing {
         name,
@@ -720,13 +621,9 @@ fn new_session_target(name: String, command: Vec<String>, cwd: Option<String>) -
     }
 }
 
-/// A session name for an omitted-name `phux new` that is not in `existing`.
-///
-/// Renders `template` once; a free result wins. A taken result from a
-/// `${random-name}` template is re-rendered with fresh picks up to
-/// [`RANDOM_NAME_ATTEMPTS`] times in all. When every pick is taken, or the
-/// template is deterministic, the first render gets the numeric suffix
-/// [`unique_session_name`] guarantees.
+/// A session name for an omitted-name `phux new` not in `existing`: render
+/// once, redraw a taken `${random-name}` up to [`RANDOM_NAME_ATTEMPTS`] times,
+/// else suffix the first render via [`unique_session_name`].
 fn fresh_session_name(
     existing: &[String],
     template: &str,
@@ -762,10 +659,7 @@ fn is_taken(existing: &[String], name: &str) -> bool {
     existing.iter().any(|e| e == name)
 }
 
-/// `base` if it is free, otherwise `base-2`, `base-3`, … — the first
-/// available name. Lets `phux new` (no name given) reuse the configured
-/// session-name-template as its base and still guarantee a distinct
-/// session each time, instead of emitting bare numeric names ("0", "1").
+/// `base` if free, else the first free `base-2`, `base-3`, ...
 pub(crate) fn unique_session_name(existing: &[String], base: &str) -> String {
     if !existing.iter().any(|e| e == base) {
         return base.to_owned();
@@ -789,11 +683,8 @@ mod tests {
         unique_session_name,
     };
 
-    /// ADR-0105: `phux new --empty --json` keeps the three documented keys,
-    /// with `terminal_id` null, and adds `empty` and `keep_empty`. The
-    /// analogous request-document and result-matching shapes
-    /// (`phux.session.create/v1`'s wire encoding) are pinned in
-    /// `phux-client`'s `session.rs` tests, next to the code that builds them.
+    /// ADR-0105: `phux new --empty --json` keeps the three documented keys, with
+    /// `terminal_id` null, and adds `empty` and `keep_empty`.
     #[test]
     fn empty_session_json_pins_the_contract_shape() {
         let doc = empty_session_json("parked");
@@ -805,12 +696,8 @@ mod tests {
         assert_eq!(doc.as_object().map(serde_json::Map::len), Some(5));
     }
 
-    /// L21b review (fix 1): against a server that never advertises
-    /// `KeepEmptySessions`, `phux new --empty` must refuse on the
-    /// capability check alone — no `GET_STATE` round trip, and so no
-    /// possible partial-view warning from one. The pre-migration code
-    /// checked support before the duplicate-name lookup; this pins that
-    /// order surviving the move into `phux_client::session`.
+    /// Against a server without `KeepEmptySessions`, `phux new --empty` refuses
+    /// on the capability check alone, with no `GET_STATE`.
     #[tokio::test]
     async fn create_empty_session_refuses_before_any_get_state_when_unsupported() {
         use phux_client::testkit::{ScriptSpec, ScriptedServer};

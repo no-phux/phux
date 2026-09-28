@@ -93,7 +93,8 @@ pub(super) fn handle_open_listener(
     }
     let linger = effective_linger(request.linger_secs);
 
-    let Some((cert, key)) = super::quic_certificate(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)))
+    let Some((cert, key)) =
+        super::remote_certificate(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)), "quic")
     else {
         return refusal(
             ErrorCode::InternalError,

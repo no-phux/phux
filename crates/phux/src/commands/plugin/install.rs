@@ -24,7 +24,7 @@ use super::lock::{
     PluginLockEntry, PluginSourceKind, lockfile_path, read_lockfile, upsert_entry, write_lockfile,
 };
 use super::registry::temp_nonce;
-use super::{fail, json::print_json, upsert_config_entry};
+use super::{fail, upsert_config_entry};
 
 /// Per-build-step wall-clock bound. A plugin build that cannot finish in
 /// five minutes should ship prebuilt artifacts instead of hanging the CLI.
@@ -237,7 +237,7 @@ fn report_installed(
                 "enabled": entry.enabled,
             },
         });
-        return print_json(&doc);
+        return crate::output::json(&doc);
     }
     let state = if entry.enabled { "enabled" } else { "disabled" };
     let rev_note = resolved_rev.map_or_else(String::new, |rev| format!(" at {rev}"));
@@ -305,7 +305,7 @@ fn update(
             "schema_version": 1,
             "updated": updated,
         });
-        return Ok(print_json(&doc));
+        return Ok(crate::output::json(&doc));
     }
     if reports.is_empty() {
         outln!("no managed plugins installed");

@@ -1,64 +1,18 @@
-//! Acknowledged input delivery to an agent (ADR-0076 points 1-4, 6, 7;
-//! ADR-0053).
+//! Acknowledged input delivery to an agent (ADR-0053, ADR-0076): the client
+//! half of `phux agent prompt` and `phux agent send-keys`.
 //!
-//! This is the client half of `phux agent prompt` and, since phux-w7z2.36, of
-//! `phux agent send-keys` as well. Both verbs write to a pane that a human is
-//! not watching, so both need the same thing fire-and-forget `ROUTE_INPUT`
-//! cannot give: **a receipt with an operation id**, so that a caller which did
-//! not get an answer can ask again without risking a duplicate.
+//! `APPLY_INPUT`'s `OK` means every byte was written and flushed into the
+//! pane's tty input queue (L1 §6.2.1): more than `ROUTE_INPUT` attests, less
+//! than consumption. The acknowledged lane is server-wide and held across a
+//! 5 s completion wait, so the submit deadline and the `RESOURCE_EXHAUSTED`
+//! backoff both outlast it; prompting a fleet in parallel is unsupported.
 //!
-//! # What an `OK` actually attests, stated once
-//!
-//! `APPLY_INPUT`'s `OK` means `write_all` **and** `flush` completed on the PTY
-//! **master** (`phux-server/src/terminal_actor/spawn.rs`): every byte of the
-//! batch was accepted by the kernel into the tty's input queue for the slave.
-//! That is strictly more than `ROUTE_INPUT` states (which acks `Ok` even when
-//! a full pane mailbox drops the event) and strictly **less** than
-//! consumption: a slave that calls `tcsetattr(…, TCSAFLUSH, …)` — which every
-//! TUI does when it shells out and returns — discards an acknowledged batch
-//! with no error and no trace. See `docs/spec/L1.md` §6.2.1. Nothing in this
-//! module infers consumption from repaint activity; that is the output-inference
-//! oracle ADR-0053 declined, and it is unsound in both directions.
-//!
-//! # The lane is server-wide, and that shapes the retry policy
-//!
-//! Verified against `phux-server/src/runtime/input_lane.rs`: the admission
-//! gate is **one `AtomicBool` for the whole server**, not per Terminal, and it
-//! is held across a bounded completion wait of **5 s** on the single lane
-//! thread. Two consequences this module is built around:
-//!
-//! 1. The submit deadline must exceed that 5 s wait ([`SUBMIT_DEADLINE`]), or
-//!    the CLI abandons an operation whose id is about to be bound to a result
-//!    it will never see.
-//! 2. `RESOURCE_EXHAUSTED` is the *common* error in a fleet, not the rare one
-//!    — two orchestrators prompting two different panes collide — and the
-//!    worst-case interval before the lane frees is that same ~5 s, so the
-//!    backoff budget ([`backoff_schedule`]) runs past 6 s before giving up.
-//!    Prompting a fleet in parallel is therefore not supported; serialize it.
-//!
-//! # The two rules that must never be softened
-//!
-//! - **A new operation id is never minted for a retry.** The id is generated
-//!   once per process invocation by the caller and passed in here; every
-//!   retry this module performs reuses it verbatim. A fresh id is precisely
-//!   the duplicate the design exists to prevent.
-//! - **`INPUT_DELIVERY_UNKNOWN` is terminal.** A same-id retry replays the
-//!   cached unknown (the server caches every post-handoff outcome, unknown
-//!   included) and a new-id retry duplicates. So the verb reports it and
-//!   stops. The honest recovery is a *read* of the pane, by a human or by an
-//!   orchestrator.
-//!
-//! # Reuse, not a second wait
-//!
-//! [`prompt_agent`]'s `--wait` half is driven by [`EdgeTracker`] — the same
-//! predicate `phux agent wait` runs, imported from
-//! [`crate::agent_wait`] rather than re-derived. The corpse rule (a level read
-//! of `idle` never satisfies a completion gate) is therefore enforced by one
-//! implementation for both verbs. What is local here is only the *ordering*:
-//! ADR-0076 point 6 requires the subscribe, the baseline read, the submit and
-//! the wait to share **one connection**, and the tracker is constructed only
-//! **after** the `APPLY_INPUT` result, so a transition published before the
-//! write is structurally incapable of satisfying the gate.
+//! Two rules never soften: a retry reuses the caller's operation id (a fresh
+//! id is exactly the duplicate this exists to prevent), and
+//! `INPUT_DELIVERY_UNKNOWN` is terminal (recover by reading the pane). The
+//! `--wait` half reuses [`crate::agent_wait`]'s [`EdgeTracker`], seeded only
+//! after the `APPLY_INPUT` result on the one subscribed connection, so a
+//! pre-write transition cannot satisfy it (ADR-0076 point 6).
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -73,44 +27,26 @@ use phux_protocol::wire::frame::{
 
 use crate::agent_meta::{AgentMetaState, AgentRecord, RESOURCE_AGENT_KEY, parse_agent_record};
 use crate::agent_wait::{
-    AgentWaitResult, DepartureReason, EdgeSource, EdgeTracker, ObservedEdge, Verdict,
-    fetch_agent_record,
+    AgentWaitError, AgentWaitResult, DepartureReason, EdgeTracker, WaitShared, deadline, finish,
+    poll_floor, record_from_frame, watch_pushes,
 };
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 use crate::attach::input::StdinParser;
-use crate::watch::{WatchItem, stream_items, subscribe};
+use crate::watch::subscribe;
 
-/// Inline prompt-text ceiling, in bytes of UTF-8.
+/// Inline prompt-text ceiling, in bytes.
 ///
-/// Far below the 64 KiB wire cap ([`MAX_APPLY_INPUT_COMMAND_BODY`]) on
-/// purpose: the binding constraint is the **tty input queue**, not the wire.
-/// The server's writer thread makes a blocking `write(2)` on the PTY master,
-/// and the queue is 1024 bytes on darwin / 4096 on Linux, so a payload larger
-/// than the free space blocks until the slave drains it — and an agent busy
-/// in a tool call is not draining. The 5 s completion wait then expires and a
-/// prompt that lands whole a moment later is reported as
-/// `INPUT_DELIVERY_UNKNOWN`. 4096 keeps a compliant prompt to one
-/// non-blocking write on every platform this codebase models.
+/// Bound by the tty input queue, not the 64 KiB wire cap: a larger write can
+/// block on an agent that is not draining and read as unknown.
 pub const MAX_PROMPT_BYTES: usize = 4096;
 
-/// Client-side deadline for one `APPLY_INPUT` round trip.
-///
-/// **Must exceed the server's 5 s completion wait**
-/// (`ACKNOWLEDGED_COMPLETION_TIMEOUT`, `input_lane.rs`). Below it, the CLI
-/// would abandon an operation whose id is about to be bound to a result, and
-/// the caller would be told "unknown" for a batch the server is about to
-/// resolve either way. That constant appears in no spec document, which is
-/// why it is restated here.
+/// Client-side deadline for one `APPLY_INPUT` round trip; must exceed the
+/// server's 5 s completion wait (`ACKNOWLEDGED_COMPLETION_TIMEOUT`).
 pub const SUBMIT_DEADLINE: Duration = Duration::from_secs(8);
 
-/// Unjittered `RESOURCE_EXHAUSTED` backoff steps.
-///
-/// Sums to 7.2 s, and the number that matters is the *jittered floor*: at
-/// [`JITTER_PERMILLE`] the worst case is 6.12 s. The server-wide admission
-/// flag is held across a 5 s completion wait, so a schedule whose floor is
-/// under ~6 s fails spuriously against a single wedged pane. Every step is a
-/// resubmission of the **same** operation id.
+/// Unjittered `RESOURCE_EXHAUSTED` backoff steps (same operation id each
+/// time). The jittered floor, 6.12 s, must clear the 5 s admission hold.
 const BACKOFF_STEPS: &[Duration] = &[
     Duration::from_millis(200),
     Duration::from_millis(600),
@@ -120,24 +56,14 @@ const BACKOFF_STEPS: &[Duration] = &[
 ];
 
 /// Jitter half-width, in permille of each backoff step: +/-15 %.
-///
-/// Wide enough to decorrelate two orchestrators colliding on the server-wide
-/// lane, narrow enough that the schedule's floor still clears the 5 s
-/// admission hold without inflating the ceiling past ~8.3 s.
 const JITTER_PERMILLE: u64 = 150;
 
 /// Correlation id for the pre-submit ownership read.
 const OWNERSHIP_REQUEST_ID: u32 = 1;
 
-/// Correlation id for the `APPLY_INPUT` submit. One greater than the
-/// ownership read, on the same connection, so the two are consecutive frames
-/// and the server answers them in that order.
-///
-/// Reused verbatim by a `RESOURCE_EXHAUSTED` retry, and safely so: a retry
-/// only follows a *completed* round trip, because the one outcome that leaves
-/// a reply outstanding — the [`SUBMIT_DEADLINE`] elapsing — is
-/// [`ApplyVerdict::Unknown`], which is terminal and never retried. So no stale
-/// frame carrying this id can ever be in flight when the next one is sent.
+/// Correlation id for the `APPLY_INPUT` submit, right after the ownership
+/// read. Safe to reuse on retry: only a completed round trip is retried (a
+/// timeout is terminal `Unknown`), so no stale reply can be in flight.
 const SUBMIT_REQUEST_ID: u32 = 2;
 
 /// How the batch ended up, as reported in `--json`'s `delivery` field.
@@ -145,9 +71,8 @@ const SUBMIT_REQUEST_ID: u32 = 2;
 pub enum Delivery {
     /// Every byte was accepted into the pane's tty input queue.
     Acked,
-    /// Delivery is indeterminate in both directions: some, all, or none of
-    /// the bytes may have reached the tty, and a batch reported unknown can
-    /// still complete afterwards. Terminal — never retried.
+    /// Indeterminate: some, all, or none of the bytes may have reached the
+    /// tty. Terminal — never retried.
     Unknown,
     /// Nothing was written.
     Refused,
@@ -165,29 +90,20 @@ impl Delivery {
     }
 }
 
-/// A refusal in which **nothing was written**, and which resubmitting the
-/// identical batch cannot fix.
-///
-/// Every variant is exit 2 at the CLI. `RESOURCE_EXHAUSTED` is deliberately
-/// absent: it also wrote nothing, but it *can* succeed unchanged, so it is
-/// [`ApplyVerdict::Busy`] and is retried under the same id.
+/// A refusal in which nothing was written and which resubmitting the
+/// identical batch cannot fix (exit 2). `RESOURCE_EXHAUSTED` is
+/// [`ApplyVerdict::Busy`] instead: it can succeed unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     /// The prompt text is empty; there is nothing to submit.
     EmptyText,
-    /// The prompt text carries a raw newline (ADR-0076 point 3).
-    ///
-    /// `paste::encode` turns newlines into carriage returns when the pane has
-    /// **not** set DEC 2004, a mode no client can observe, so a multi-line
-    /// prompt can become N submissions. That is a silent N-plication —
-    /// strictly worse than the silent double this verb exists to prevent —
-    /// so it is refused rather than guessed at.
+    /// The prompt text carries a raw newline (ADR-0076 point 3): without DEC
+    /// 2004, which no client can observe, each would become a submission.
     MultilineText {
         /// How many raw newlines the text carries.
         newlines: usize,
     },
-    /// The payload is over a size ceiling. `wire` distinguishes the wire caps
-    /// (64 KiB body / 256 events) from the tighter inline prompt ceiling.
+    /// The payload is over a size ceiling; `wire` marks a protocol cap.
     TooLarge {
         /// What was measured (`"bytes"` or `"events"`).
         unit: &'static str,
@@ -198,36 +114,27 @@ pub enum Refusal {
         /// Whether `limit` is a protocol cap rather than a client policy.
         wire: bool,
     },
-    /// The target is a federation satellite. `APPLY_INPUT` is local-only, so
-    /// the acknowledged path does not exist there — and downgrading to
-    /// `ROUTE_INPUT` would make the verb's success code mean different things
-    /// on different hosts, the worst property a fleet primitive can have.
+    /// The target is a federation satellite; `APPLY_INPUT` is local-only and
+    /// is never downgraded to `ROUTE_INPUT`.
     SatelliteTarget {
         /// The satellite host token the target named.
         host: String,
     },
-    /// The server does not advertise `ACKNOWLEDGED_INPUT`. Refused, never
-    /// downgraded.
+    /// The server does not advertise `ACKNOWLEDGED_INPUT`.
     NoAcknowledgedInput,
-    /// The pane declares no `phux.agent/v1` record, so there is no agent
-    /// identity to verify against.
+    /// The pane declares no `phux.agent/v1` record to verify against.
     NoAgentRecord,
     /// The pane hosts a different agent than the caller named; the string
     /// describes the occupant.
     AgentMismatch(String),
-    /// Another client holds the pane's input lease (ADR-0033). Pre-handoff,
-    /// nothing written. This verb never acquires or seizes a lease: a prompt
-    /// is the least urgent input in the system, and seizing would override
-    /// exactly the signal the lease exists to carry.
+    /// Another client holds the pane's input lease (ADR-0033); these verbs
+    /// never seize it.
     InputLeaseHeld(String),
-    /// The pane's line discipline is canonical and the encoded batch has no
-    /// terminator to flush it, so writing it would have truncated silently.
-    /// Refused before any byte reached the pane — the only definitely-nothing
-    /// -happened post-handoff answer — and it cannot succeed unchanged.
+    /// A canonical-mode pane would have silently truncated a batch with no
+    /// terminator; refused before any byte was written.
     CanonicalLimitExceeded(String),
-    /// An untrusted paste failed the pane's safety policy. Structurally
-    /// unreachable for these verbs, which always send `Trusted`; mapped so
-    /// the vocabulary is total.
+    /// An untrusted paste failed the pane's policy (unreachable here: these
+    /// verbs send `Trusted`).
     UnsafePaste(String),
     /// The server rejected the batch structurally, or the operation id names
     /// input that differs from this batch.
@@ -288,59 +195,35 @@ impl std::fmt::Display for Refusal {
 }
 
 /// The one reading an `APPLY_INPUT` reply has.
-///
-/// Deliberately five cases and not more: every server error code collapses
-/// into "written", "nothing written and known retryable", "nothing written
-/// for some other proven reason", "nothing written and not retryable", or
-/// "indeterminate". A caller that has to guess which of those a code means is
-/// a caller that will guess wrong under load.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplyVerdict {
     /// Every byte was accepted into the tty input queue and flushed.
     Acked,
-    /// Pre-handoff refusal for want of the server-wide acknowledged lane.
-    /// Nothing was written; resubmitting the identical batch under the same
-    /// operation id is honest and is what this module does.
+    /// The server-wide lane was busy; nothing written, retried under the
+    /// same operation id.
     Busy(String),
-    /// phux-w7z2.60: nothing was written, proven at a point other than lane
-    /// contention — the pane had no PTY, a writer-side queue was full or its
-    /// channel closed, or the pane's own actor was gone before handoff. Unlike
-    /// [`Self::Busy`] this module does not auto-retry it (the cause may not
-    /// clear on its own), but unlike [`Self::Unknown`] a caller MAY resubmit
-    /// safely, under the same operation id or a fresh one — there is nothing
-    /// already written for a fresh id to duplicate.
+    /// Nothing was written for another proven reason (no PTY, writer queue
+    /// full or closed). Not auto-retried, but safe to resubmit.
     NotWritten(String),
     /// Nothing was written and the identical batch cannot succeed.
     Refused(Refusal),
     /// The Terminal is gone or was never here.
     NotFound(String),
-    /// Delivery is indeterminate. **Terminal**: a same-id retry replays this
-    /// same cached answer, and a new-id retry is a duplicate.
+    /// Delivery is indeterminate. Terminal: a same-id retry replays it and a
+    /// new-id retry duplicates.
     Unknown(String),
 }
 
 /// Map one `APPLY_INPUT` reply onto its single reading.
 ///
-/// `INTERNAL_ERROR` is pessimized to [`ApplyVerdict::Unknown`] on purpose: the
-/// server still raises it for at least one post-handoff case — "input lane
-/// stopped before `APPLY_INPUT` completed", raised when the whole lane is torn
-/// down with the operation's answer still outstanding, which may have already
-/// been resolved by a writer the caller never heard from — and the code alone
-/// does not distinguish that from a future, differently-caused `INTERNAL_ERROR`.
-/// Every pre-handoff cause this module can currently name instead carries its
-/// own code: [`ErrorCode::ResourceExhausted`] ([`ApplyVerdict::Busy`]) and
-/// [`ErrorCode::InputNotWritten`] ([`ApplyVerdict::NotWritten`]). Any code this
-/// build does not know at all is pessimized the same way as `INTERNAL_ERROR` —
-/// `ErrorCode` is `#[non_exhaustive]`, and inventing an optimistic default for
-/// a future code is how a duplicate gets written.
+/// `INTERNAL_ERROR`, `INPUT_DELIVERY_UNKNOWN`, and any code or shape this
+/// build cannot name pessimize to [`ApplyVerdict::Unknown`]: an optimistic
+/// default is how a duplicate gets written.
 #[must_use]
 pub fn classify(result: &CommandResult) -> ApplyVerdict {
     let (code, message) = match result {
         CommandResult::Ok | CommandResult::OkWith(_) => return ApplyVerdict::Acked,
         CommandResult::Error { code, message } => (*code, message.clone()),
-        // `CommandResult` is `#[non_exhaustive]`. A reply shape this build
-        // cannot name is not evidence that nothing was written, so it
-        // pessimizes with every other unknown.
         _ => {
             return ApplyVerdict::Unknown(
                 "the server answered APPLY_INPUT with a result this build cannot read".to_owned(),
@@ -363,24 +246,13 @@ pub fn classify(result: &CommandResult) -> ApplyVerdict {
             ApplyVerdict::Refused(Refusal::SatelliteTarget { host: message })
         }
         ErrorCode::TerminalNotFound => ApplyVerdict::NotFound(message),
-        // `InputDeliveryUnknown` shares this arm with `InternalError` and with
-        // every code a newer server may add. That is the pessimization, not an
-        // oversight: the named code and the unnameable ones lead to the same
-        // published reading, and a caller must not be able to tell "the server
-        // said it could not confirm" from "this build could not read what the
-        // server said" — both mean *go read the pane*.
         _ => ApplyVerdict::Unknown(message),
     }
 }
 
-/// The backoff schedule for `operation_id`, jittered +/-25 %.
-///
-/// The jitter is derived from the operation id rather than from a second RNG.
-/// The id is already CSPRNG material generated once per invocation, so two
-/// processes colliding on the server-wide lane get independent schedules and
-/// decorrelate — which is the only thing jitter is for — with no clock, no
-/// global state, and a schedule that is reproducible from the id in a bug
-/// report.
+/// The backoff schedule for `operation_id`, jittered by `JITTER_PERMILLE`
+/// from the id's own random bytes: colliding callers decorrelate, and a
+/// schedule is reproducible from the id.
 #[must_use]
 pub fn backoff_schedule(operation_id: &InputOperationId) -> Vec<Duration> {
     let bytes = operation_id.as_bytes();
@@ -400,18 +272,9 @@ pub fn backoff_schedule(operation_id: &InputOperationId) -> Vec<Duration> {
 
 /// The events one prompt submits: `[Paste(trusted, text), Key(Enter)]`.
 ///
-/// One batch, `Enter` **last**, and that ordering carries the whole
-/// truncation argument. The server encodes every event of a batch against one
-/// mode snapshot into one byte vector and hands it to the pane as a single
-/// write, so a partial write can only truncate the *tail* — and the tail is
-/// the submission. Split into two operations, the outcome space gains
-/// `{text unknown, Enter acked}`: an unknown-length prefix of the prompt
-/// submitted with confidence, which is exactly the class `docs/spec/input.md`
-/// exists to forbid.
-///
-/// The `Enter` atom is built by feeding `\r` through the same [`StdinParser`]
-/// the interactive client uses, so the key event is byte-identical to the one
-/// `phux send-keys … Enter` produces rather than a hand-rolled table entry.
+/// One batch with `Enter` last, so a partial write can only drop the
+/// submission, never submit a truncated prompt. `Enter` comes from the
+/// interactive [`StdinParser`], so it matches `phux send-keys … Enter`.
 #[must_use]
 pub fn prompt_events(text: &str) -> Vec<InputEvent> {
     let mut events = vec![InputEvent::Paste(PasteEvent {
@@ -422,10 +285,7 @@ pub fn prompt_events(text: &str) -> Vec<InputEvent> {
     events
 }
 
-/// Refuse prompt text that cannot be delivered honestly.
-///
-/// Runs before a connection is opened: an empty prompt, a multi-line one
-/// (see [`Refusal::MultilineText`]), or one over [`MAX_PROMPT_BYTES`].
+/// Refuse empty, multi-line, or oversized prompt text before connecting.
 ///
 /// # Errors
 ///
@@ -449,9 +309,7 @@ pub fn validate_prompt_text(text: &str) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Conservative upper bound on the encoded `APPLY_INPUT` command body for
-/// `events`: every event's payload plus a generous per-event TLV allowance
-/// plus the fixed operation-id / terminal-id / count header.
+/// Conservative upper bound on the encoded `APPLY_INPUT` command body.
 fn encoded_body_bound(events: &[InputEvent]) -> usize {
     /// Tag byte, 16-byte operation id, a worst-case satellite terminal id,
     /// and the `u16` event count.
@@ -467,15 +325,9 @@ fn encoded_body_bound(events: &[InputEvent]) -> usize {
     })
 }
 
-/// Refuse a batch the wire cannot carry, before it is on the wire.
-///
-/// The two protocol caps are [`MAX_APPLY_INPUT_EVENTS`] (256) and
-/// [`MAX_APPLY_INPUT_COMMAND_BODY`] (64 KiB). Both are checked client-side so
-/// an oversized batch is a local usage error naming the actual size, not a
-/// `DecodeError` the server answers with a bare `INVALID_COMMAND` — and,
-/// critically, so a caller never learns about the cap by having the batch
-/// silently split. Splitting one logical payload across operations is
-/// forbidden by `docs/spec/input.md`, and neither verb does it.
+/// Refuse a batch over [`MAX_APPLY_INPUT_EVENTS`] or
+/// [`MAX_APPLY_INPUT_COMMAND_BODY`] as a local usage error, never splitting
+/// it (`docs/spec/input.md`).
 ///
 /// # Errors
 ///
@@ -501,11 +353,8 @@ pub fn validate_batch(events: &[InputEvent]) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Whether `conn`'s server advertised `ACKNOWLEDGED_INPUT`.
-///
-/// A connection with no negotiated bootstrap is the crate's raw in-process
-/// test seam; it reports `false` so a caller can only ever *refuse* on the
-/// unnegotiated path, never silently proceed.
+/// Whether `conn`'s server advertised `ACKNOWLEDGED_INPUT` (`false` when
+/// unnegotiated, so callers refuse rather than proceed).
 #[must_use]
 pub fn supports_acknowledged_input(conn: &Connection) -> bool {
     conn.negotiated_bootstrap().is_some_and(|bootstrap| {
@@ -515,19 +364,11 @@ pub fn supports_acknowledged_input(conn: &Connection) -> bool {
     })
 }
 
-/// Submit `events` to `terminal` once, under `operation_id`, and classify the
-/// reply.
+/// Submit `events` to `terminal` once, under `operation_id`, and classify it.
 ///
-/// Returns the verdict plus every frame the server interleaved ahead of the
-/// result. The interleave is **returned rather than dropped**: this
-/// connection holds a metadata subscription, so a `METADATA_CHANGED` arriving
-/// between the submit and the result is already off the socket and nothing
-/// re-sends it. That is the one trap in this file, and it is why no call site
-/// here uses `into_result_ignoring_interleaved`.
-///
-/// The round trip is bounded by [`SUBMIT_DEADLINE`], which exceeds the
-/// server's own 5 s completion wait. Elapsing it is [`ApplyVerdict::Unknown`]
-/// — never a refusal, and never a reason to mint a second id.
+/// Interleaved frames are returned, not dropped: a subscribed connection's
+/// `METADATA_CHANGED` is never re-sent. Elapsing [`SUBMIT_DEADLINE`] is
+/// [`ApplyVerdict::Unknown`].
 ///
 /// # Errors
 ///
@@ -561,13 +402,9 @@ pub async fn apply_input_once(
     }
 }
 
-/// Run `attempt` under `operation_id`, retrying only [`ApplyVerdict::Busy`],
-/// on `schedule`, **always with the same id**.
-///
-/// `attempt` receives the id explicitly so the invariant is visible at the
-/// type level: there is no path through this function that constructs an
-/// `InputOperationId`. Returns the final verdict and how many attempts it
-/// took.
+/// Run `attempt` under `operation_id`, retrying only [`ApplyVerdict::Busy`]
+/// on `schedule`, always with the same id (nothing here can mint one).
+/// Returns the final verdict and the attempt count.
 ///
 /// # Errors
 ///
@@ -612,10 +449,7 @@ pub struct PromptWait {
 pub struct PromptOutcome {
     /// What the receipt attests.
     pub delivery: Delivery,
-    /// Lowercase hex of the operation id, so a caller can correlate a retry,
-    /// a server log line, and this run. Redacted in `Debug` on the wire type
-    /// by design; disclosed here to the caller who generated it, because
-    /// ADR-0076 point 2 requires the id in the failure report.
+    /// Lowercase hex of the operation id, for correlation (ADR-0076 point 2).
     pub operation_id: String,
     /// The record the ownership check passed on, immediately before the
     /// submit.
@@ -647,9 +481,7 @@ pub enum PromptError {
     /// Nothing was written and the identical batch cannot succeed. Exit 2.
     #[error("{0}")]
     Refused(Refusal),
-    /// The lane never freed. Nothing was written across every attempt, so
-    /// re-running the command is safe — but it is a failure, not a refusal.
-    /// Exit 1.
+    /// The lane never freed; nothing written, safe to re-run. Exit 1.
     #[error(
         "the server-wide acknowledged input lane stayed busy across {attempts} attempts \
          ({budget_ms}ms): {message}"
@@ -664,13 +496,7 @@ pub enum PromptError {
         /// The operation id, in hex.
         operation_id: String,
     },
-    /// phux-w7z2.60: nothing was written, proven at some point other than
-    /// lane contention (no PTY, a writer-side queue full or closed, or the
-    /// pane's own actor gone before handoff). Unlike [`Self::LaneBusy`] this
-    /// is not auto-retried — the cause may not clear on its own — but unlike
-    /// [`Self::DeliveryUnknown`] a caller MAY resubmit, under the same
-    /// operation id or a fresh one: there is nothing already written for a
-    /// fresh id to duplicate. Exit 1.
+    /// Nothing was written for a non-lane reason; safe to resubmit. Exit 1.
     #[error("nothing was written (operation {operation_id}): {message}")]
     NotWritten {
         /// The operation id, in hex.
@@ -681,10 +507,8 @@ pub enum PromptError {
     /// The Terminal is gone. Exit 1.
     #[error("terminal not found: {0}")]
     NotFound(String),
-    /// **Terminal, and the one rule an agent can violate catastrophically.**
-    /// Some, all, or none of the bytes reached the tty; a same-id retry
-    /// replays this cached answer and a new-id retry duplicates the prompt.
-    /// The recovery is to *read* the pane. Exit 1.
+    /// Terminal: some, all, or none of the bytes reached the tty; any retry
+    /// replays or duplicates. Read the pane instead. Exit 1.
     #[error("delivery unknown (operation {operation_id}): {message}")]
     DeliveryUnknown {
         /// The operation id, in hex — the only handle on what happened.
@@ -733,43 +557,8 @@ pub fn operation_id_hex(operation_id: &InputOperationId) -> String {
         })
 }
 
-/// The record an interleaved `METADATA_CHANGED` carries for `terminal`.
-///
-/// The inner `Option` is the record: `Some(None)` is a tombstone. Frame-shape
-/// matching only — the wait *predicate* is [`EdgeTracker`]'s and is not
-/// duplicated here.
-#[allow(
-    clippy::option_option,
-    reason = "the outer Option answers 'is this frame ours', the inner one \
-              'record or tombstone'; collapsing them erases the tombstone"
-)]
-fn record_from_frame(frame: &FrameKind, terminal: &ResourceId) -> Option<Option<AgentRecord>> {
-    let FrameKind::MetadataChanged {
-        scope, key, value, ..
-    } = frame
-    else {
-        return None;
-    };
-    if key != RESOURCE_AGENT_KEY {
-        return None;
-    }
-    let Scope::Resource(id) = scope else {
-        return None;
-    };
-    if id != terminal {
-        return None;
-    }
-    Some(value.as_deref().and_then(parse_agent_record))
-}
-
-/// Read the pane's `phux.agent/v1` record over `conn`, folding in anything
-/// the server pushed ahead of the answer.
-///
-/// Returns the **last** record observed at or before the answer, which is the
-/// value the ownership check runs against: an interleaved `METADATA_CHANGED`
-/// that arrived after the subscribe registered is newer than the `GET_METADATA`
-/// answer's own snapshot only in the sense that it is later in the connection's
-/// arrival order, and later is what "immediately before the write" means here.
+/// Read the pane's record over `conn`: the last one observed at or before
+/// the answer, interleaved pushes included (latest arrival wins).
 async fn read_pre_submit_record(
     conn: &mut Connection,
     terminal: &ResourceId,
@@ -792,17 +581,9 @@ async fn read_pre_submit_record(
     Ok(latest)
 }
 
-/// Re-verify the pane's occupant from the published record.
-///
-/// Not a fresh syscall (no wire verb exposes one) and not a server-side gate:
-/// detection fails safe toward `idle`, but input must fail safe toward
-/// delivery, so a text-matching manifest must never be able to make a pane
-/// start refusing keystrokes.
-#[allow(
-    clippy::future_not_send,
-    reason = "the verifier is a bare `&dyn Fn`, so this future is thread-bound; \
-              ADR-0003 binds the CLI to a current-thread runtime"
-)]
+/// Re-verify the pane's occupant from the published record (client-side, so
+/// a manifest can never make a pane refuse keystrokes).
+#[allow(clippy::future_not_send, reason = "the verifier is a bare `&dyn Fn`")]
 async fn verified_occupant(
     conn: &mut Connection,
     terminal: &ResourceId,
@@ -902,13 +683,9 @@ fn occupant_changed(detail: String, hex: &str, delivery: Delivery) -> PromptErro
     }
 }
 
-/// The last record observed before the result, having checked every frame the
-/// server pushed ahead of it for an occupant change.
-///
-/// Anything the server pushed ahead of the result is, by ADR-0076 point 6,
-/// incapable of satisfying a completion gate — it may be pre-write. It is
-/// still evidence about *who* the bytes went to, which is the one thing point
-/// 4 asks it for.
+/// The last record observed before the result, having checked every frame
+/// pushed ahead of it for an occupant change (evidence of who got the bytes,
+/// never of completion).
 fn confirm_occupant(
     interleaved: &[FrameKind],
     terminal: &ResourceId,
@@ -947,38 +724,19 @@ fn confirm_occupant(
     Ok(level)
 }
 
-/// Deliver an already-built, already-validated batch to `terminal` with a
-/// receipt, re-verifying the pane's occupant on the same connection first.
+/// Deliver a validated batch to `terminal` with a receipt.
 ///
-/// The full ordering, which is the contract:
-///
-/// 1. Refuse a satellite target before a socket is opened.
-/// 2. `subscribe` — `SUBSCRIBE_EVENTS` + `SUBSCRIBE_METADATA`, one connection.
-/// 3. Gate on `ACKNOWLEDGED_INPUT`; refuse rather than downgrade.
-/// 4. `GET_METADATA` (id 1) and run `verify` against the record.
-/// 5. `APPLY_INPUT` (id 2) under `operation_id`, retried only on
-///    `RESOURCE_EXHAUSTED` and only under that same id.
-/// 6. Report an occupant change seen before the result as delivery to an
-///    unknown occupant.
-/// 7. When `wait` is set, seed an [`EdgeTracker`] **after** the result and
-///    wait for a transition on the same connection.
-///
-/// Steps 4 and 5 are consecutive frames on one connection and the server
-/// handles a connection's frames in arrival order, so no frame from this
-/// client interleaves between them. Since the whole batch is now a single
-/// frame rather than one `ROUTE_INPUT` per event, that bound is *tighter*
-/// than the one `send-keys` shipped with: there is no longer a window
-/// between the first and last byte of the batch at all.
+/// The ordering is the contract: refuse satellites before connecting; subscribe; gate on
+/// `ACKNOWLEDGED_INPUT`; `GET_METADATA` (id 1) and `verify`; `APPLY_INPUT`
+/// (id 2), retried only on `RESOURCE_EXHAUSTED` under the same id; report an
+/// occupant change seen before the result; with `wait`, seed an
+/// [`EdgeTracker`] after the result and wait on the same connection.
 ///
 /// # Errors
 ///
 /// See [`PromptError`]. `verify` returning `Some(description)` is
 /// [`Refusal::AgentMismatch`].
-#[allow(
-    clippy::future_not_send,
-    reason = "ADR-0003 binds the CLI to a current-thread runtime; the wait \
-              half shares one EdgeTracker across two futures on that thread"
-)]
+#[allow(clippy::future_not_send, reason = "current-thread runtime (ADR-0003)")]
 pub async fn deliver_acknowledged(
     socket: &Path,
     terminal: &ResourceId,
@@ -988,10 +746,6 @@ pub async fn deliver_acknowledged(
     wait: Option<&PromptWait>,
 ) -> Result<PromptOutcome, PromptError> {
     let hex = operation_id_hex(&operation_id);
-    // 1. Satellites, before a socket is opened. `route_to_satellite` returns
-    //    `None` for `ApplyInput` and the server refuses a non-local id, so the
-    //    safety is structural either way; refusing here buys a better message
-    //    and no wasted round trip.
     if let Some(host) = terminal.host() {
         return Err(PromptError::Refused(Refusal::SatelliteTarget {
             host: host.as_str().to_owned(),
@@ -999,23 +753,12 @@ pub async fn deliver_acknowledged(
     }
     validate_batch(&events).map_err(PromptError::Refused)?;
 
-    // 2. One connection, subscribed before anything is read. `Connection::
-    //    connect` declares `Layer::L3`, without which the subscribe would be
-    //    dropped silently (ADR-0076 point 7).
     let mut conn = subscribe(socket, Some(terminal.clone())).await?;
-
-    // 3. The capability gate. Never a downgrade to ROUTE_INPUT: that command
-    //    acks `Ok` for an event a full mailbox drops, so the same verb would
-    //    return the same success code for two different guarantees.
     if !supports_acknowledged_input(&conn) {
         return Err(PromptError::Refused(Refusal::NoAcknowledgedInput));
     }
-
-    // 4. Ownership re-verification from the published record.
     let record = verified_occupant(&mut conn, terminal, verify).await?;
     let pre_submit_state = record.state;
-
-    // 5. The submit. One id, every attempt.
     let submitted = submit_batch(&mut conn, terminal, operation_id, events).await?;
     let delivery = delivery_from_verdict(
         submitted.verdict,
@@ -1024,44 +767,18 @@ pub async fn deliver_acknowledged(
         &hex,
     )?;
 
-    // 6. Who the bytes went to, read off the frames that arrived first.
     let level = confirm_occupant(&submitted.interleaved, terminal, &record, &hex, delivery)?;
 
-    let Some(wait) = wait else {
-        drop(conn);
-        return Ok(PromptOutcome {
-            delivery,
-            operation_id: hex,
-            agent: record,
-            pre_submit_state,
-            attempts: submitted.attempts,
-            submit_ms: submitted.submit_ms,
-            wait: None,
-            degraded_to_polling: false,
-        });
+    // The tracker is built after the result: the pre-submit level is
+    // unrepresentable, not merely unevaluated.
+    let (wait, degraded_to_polling) = match wait {
+        Some(wait) => {
+            let (result, degraded) =
+                drive_wait(&mut conn, socket, terminal, level, wait, &hex).await?;
+            (Some(result), degraded)
+        }
+        None => (None, false),
     };
-
-    // 7. The gate. Built here, after the result, so the pre-submit level is
-    //    not merely unevaluated but unrepresentable.
-    let seeded = EdgeTracker::new(level.state, &wait.targets);
-    let (result, degraded) = drive_wait(&mut conn, socket, terminal, seeded, level, wait)
-        .await
-        .map_err(|err| match err {
-            // The submit succeeded; only the wait failed, so the report must
-            // carry the operation id the submit was made under.
-            PromptError::Departed {
-                from,
-                reason,
-                delivery,
-                ..
-            } => PromptError::Departed {
-                from,
-                reason,
-                delivery,
-                operation_id: hex.clone(),
-            },
-            other => other,
-        })?;
     drop(conn);
     Ok(PromptOutcome {
         delivery,
@@ -1070,123 +787,42 @@ pub async fn deliver_acknowledged(
         pre_submit_state,
         attempts: submitted.attempts,
         submit_ms: submitted.submit_ms,
-        wait: Some(result),
-        degraded_to_polling: degraded,
+        wait,
+        degraded_to_polling,
     })
 }
 
-/// Wait for a post-result transition on the already-subscribed `conn`.
-///
-/// The predicate is `tracker`'s, and `tracker` is `phux agent wait`'s
-/// [`EdgeTracker`]: a level read never satisfies it, a repeated level is not
-/// an edge, a tombstone is a departure. What is local is only the two halves —
-/// the push stream on the connection that carried the submit (which is what
-/// makes every frame here strictly post-write) and the `GET_METADATA` poll
-/// floor that recovers an edge a dropped `try_send` notification never
-/// delivered.
-#[allow(
-    clippy::future_not_send,
-    reason = "ADR-0003 binds the CLI to a current-thread runtime"
-)]
+/// Wait for a post-result transition on the already-subscribed `conn`, with
+/// `phux agent wait`'s push and poll halves; the poll floor here never gives
+/// up before the deadline.
+#[allow(clippy::future_not_send, reason = "current-thread runtime (ADR-0003)")]
 async fn drive_wait(
     conn: &mut Connection,
     socket: &Path,
     terminal: &ResourceId,
-    tracker: EdgeTracker,
     seed: AgentRecord,
     wait: &PromptWait,
+    hex: &str,
 ) -> Result<(AgentWaitResult, bool), PromptError> {
-    use std::cell::{Cell, RefCell};
-
-    let tracker = RefCell::new(tracker);
-    let latest = RefCell::new(Some(seed));
-    let pushes = Cell::new(0_u32);
-    let polls = Cell::new(0_u32);
-    let push_ended = Cell::new(false);
-
-    let push_half = async {
-        let mut decided: Option<(Verdict, EdgeSource)> = None;
-        let _ = stream_items(conn, |item| {
-            let WatchItem::AgentState(update) = item else {
-                return true;
-            };
-            pushes.set(pushes.get().saturating_add(1));
-            let verdict = tracker.borrow_mut().observe(update.record.as_ref());
-            if update.record.is_some() {
-                latest.borrow_mut().clone_from(&update.record);
-            }
-            if matches!(verdict, Verdict::Pending) {
-                return true;
-            }
-            decided = Some((verdict, EdgeSource::Push));
-            false
-        })
-        .await;
-        push_ended.set(true);
-        match decided {
-            Some(decision) => decision,
-            // A stream that ends without deciding degrades to the poll floor
-            // rather than to a wrong answer.
-            None => std::future::pending().await,
-        }
-    };
-
-    let poll_half = async {
-        loop {
-            tokio::time::sleep(wait.poll_interval).await;
-            if let Ok(record) = fetch_agent_record(socket, terminal).await {
-                polls.set(polls.get().saturating_add(1));
-                let verdict = tracker.borrow_mut().observe(record.as_ref());
-                if record.is_some() {
-                    latest.borrow_mut().clone_from(&record);
-                }
-                if !matches!(verdict, Verdict::Pending) {
-                    return (verdict, EdgeSource::Poll);
-                }
-            }
-        }
-    };
-
-    let deadline = async {
-        match wait.timeout {
-            Some(limit) => tokio::time::sleep(limit).await,
-            None => std::future::pending::<()>().await,
-        }
-    };
-
+    let shared = WaitShared::new(EdgeTracker::new(seed.state, &wait.targets), Some(seed));
     let decision = tokio::select! {
-        decided = push_half => Some(decided),
-        decided = poll_half => Some(decided),
-        () = deadline => None,
-    };
-
-    let tracker = tracker.into_inner();
-    let latest = latest.into_inner();
-    let degraded = push_ended.get();
-    let result = AgentWaitResult {
-        edge: None,
-        baseline: tracker.baseline(),
-        last: tracker.last(),
-        record: latest,
-        edges: tracker.edges(),
-        polls: polls.get(),
-        pushes: pushes.get(),
-    };
-    match decision {
-        Some((Verdict::Satisfied { from, to }, via)) => Ok((
-            AgentWaitResult {
-                edge: Some(ObservedEdge { from, to, via }),
-                ..result
-            },
-            degraded,
-        )),
-        Some((Verdict::Departed { from, reason }, _)) => Err(PromptError::Departed {
+        decided = watch_pushes(conn, &shared) => Some(decided),
+        decided = poll_floor(socket, terminal, wait.poll_interval, &shared, None) => Some(decided),
+        () = deadline(wait.timeout) => None,
+    }
+    .transpose();
+    let degraded = shared.push_ended.get();
+    let result = decision.and_then(|decision| finish(decision, shared));
+    match result {
+        Ok(result) => Ok((result, degraded)),
+        Err(AgentWaitError::Departed { from, reason, .. }) => Err(PromptError::Departed {
             from,
             reason,
             delivery: Delivery::Acked,
-            operation_id: String::new(),
+            operation_id: hex.to_owned(),
         }),
-        Some((Verdict::Pending, _)) | None => Ok((result, degraded)),
+        Err(AgentWaitError::Transport(err)) => Err(err.into()),
+        Err(AgentWaitError::NoRecord) => Err(PromptError::Refused(Refusal::NoAgentRecord)),
     }
 }
 
@@ -1196,10 +832,7 @@ async fn drive_wait(
 /// # Errors
 ///
 /// See [`PromptError`].
-#[allow(
-    clippy::future_not_send,
-    reason = "ADR-0003 binds the CLI to a current-thread runtime"
-)]
+#[allow(clippy::future_not_send, reason = "current-thread runtime (ADR-0003)")]
 pub async fn prompt_agent(
     socket: &Path,
     terminal: &ResourceId,
@@ -1233,7 +866,7 @@ mod tests {
         reason = "the futures under test are !Send by design"
     )]
 
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     use tokio::net::UnixListener;
 
@@ -1252,20 +885,17 @@ mod tests {
         }
     }
 
-    // ---- point 3: the batch shape ------------------------------------
-
-    /// The batch is exactly `[Paste(trusted), Key(Enter)]`, in that order.
-    /// Enter last is the whole truncation argument: a partial write can then
-    /// only drop the submission, never submit a truncated prompt.
+    /// The batch is `[Paste(trusted), Key(Enter)]`, Enter last; text that
+    /// reads like a key spec (`Enter`) is still pasted as text.
     #[test]
     fn a_prompt_is_one_trusted_paste_then_enter() {
-        let events = prompt_events("ship it");
+        let events = prompt_events("Enter");
         assert_eq!(events.len(), 2, "{events:?}");
         assert_eq!(
             events[0],
             InputEvent::Paste(PasteEvent {
                 trust: PasteTrust::Trusted,
-                data: b"ship it".to_vec(),
+                data: b"Enter".to_vec(),
             })
         );
         assert!(
@@ -1274,26 +904,6 @@ mod tests {
         );
     }
 
-    /// Text that would otherwise be read as a key spec is still prompt text.
-    /// `phux agent prompt @7 Enter` prompts the word, it does not press the
-    /// key — the paste is built directly rather than through `events_for`'s
-    /// named-key grammar precisely so that cannot happen.
-    #[test]
-    fn prompt_text_is_never_reinterpreted_as_a_key_spec() {
-        let events = prompt_events("Enter");
-        assert_eq!(
-            events[0],
-            InputEvent::Paste(PasteEvent {
-                trust: PasteTrust::Trusted,
-                data: b"Enter".to_vec(),
-            })
-        );
-        assert_eq!(events.len(), 2);
-    }
-
-    /// ADR-0076 point 3: a raw newline is refused, not guessed at. The pane
-    /// may not have set DEC 2004, in which case the server turns each newline
-    /// into a carriage return — N submissions, silently.
     #[test]
     fn multiline_prompt_text_is_refused_before_any_round_trip() {
         assert_eq!(
@@ -1304,10 +914,6 @@ mod tests {
         assert_eq!(validate_prompt_text("one line"), Ok(()));
     }
 
-    // ---- oversized payloads ------------------------------------------
-
-    /// The inline ceiling binds at exactly 4096 bytes, and the refusal names
-    /// the measured size and the limit so a caller can act on it.
     #[test]
     fn the_inline_prompt_ceiling_binds_at_4096_bytes() {
         let at_limit = "x".repeat(MAX_PROMPT_BYTES);
@@ -1325,19 +931,11 @@ mod tests {
         );
     }
 
-    /// The wire caps are 65536 bytes and 256 events. A prompt is 2 events, so
-    /// the event cap never binds on this verb; the byte cap is checked
-    /// client-side so an oversized batch is a local usage error naming the
-    /// size, never a bare `INVALID_COMMAND` and never a silent split.
+    /// Both wire caps are enforced client-side with `wire: true`.
     #[test]
     fn the_wire_caps_are_enforced_client_side_and_never_split() {
-        assert_eq!(MAX_APPLY_INPUT_COMMAND_BODY, 64 * 1024);
-        assert_eq!(MAX_APPLY_INPUT_EVENTS, 256);
-        // A prompt at the inline ceiling is comfortably inside the wire cap.
         assert_eq!(validate_batch(&prompt_events(&"x".repeat(4096))), Ok(()));
 
-        // A payload past the wire cap is refused with `wire: true`, so the
-        // message can say "protocol cap" rather than "ceiling".
         let huge = prompt_events(&"x".repeat(MAX_APPLY_INPUT_COMMAND_BODY));
         match validate_batch(&huge) {
             Err(Refusal::TooLarge {
@@ -1352,8 +950,6 @@ mod tests {
             other => panic!("a 64 KiB payload must be refused on the wire cap: {other:?}"),
         }
 
-        // And the event cap, which is what `agent send-keys` can actually
-        // reach: a literal run not followed by Enter is one event per char.
         let many: Vec<InputEvent> = std::iter::repeat_n(
             InputEvent::Paste(PasteEvent {
                 trust: PasteTrust::Trusted,
@@ -1373,114 +969,59 @@ mod tests {
         );
     }
 
-    // ---- point 2: one reading per typed error -------------------------
-
-    /// `OK` is the receipt.
+    /// Every reply maps onto exactly one reading. Delivery-unknown, internal
+    /// errors, and unnameable codes pessimize to `Unknown`; only
+    /// `RESOURCE_EXHAUSTED` is `Busy`; `INPUT_NOT_WRITTEN` is neither.
     #[test]
-    fn ok_is_acked() {
-        assert_eq!(classify(&CommandResult::Ok), ApplyVerdict::Acked);
-    }
-
-    /// `INPUT_DELIVERY_UNKNOWN` is indeterminate and terminal. It is NOT a
-    /// refusal (nothing-written) and NOT a busy (retryable): reading it as
-    /// either is the mistake that writes a duplicate prompt.
-    #[test]
-    fn input_delivery_unknown_is_unknown_and_never_retryable() {
-        let verdict = classify(&error(ErrorCode::InputDeliveryUnknown));
-        assert!(matches!(verdict, ApplyVerdict::Unknown(_)), "{verdict:?}");
-        assert!(!matches!(verdict, ApplyVerdict::Busy(_)));
-    }
-
-    /// `INTERNAL_ERROR` still carries at least one genuinely post-handoff
-    /// reading (the lane torn down with an operation's answer outstanding),
-    /// so it stays pessimized to unknown. So is any code a newer server may
-    /// add — `ErrorCode` is `#[non_exhaustive]`, and an optimistic default
-    /// for an unknown code is how a duplicate gets written.
-    #[test]
-    fn internal_error_and_unknown_codes_pessimize_to_unknown() {
-        assert!(matches!(
-            classify(&error(ErrorCode::InternalError)),
-            ApplyVerdict::Unknown(_)
-        ));
-        assert!(matches!(
-            classify(&error(ErrorCode::NotAttached)),
-            ApplyVerdict::Unknown(_)
-        ));
-    }
-
-    /// phux-w7z2.60: `INPUT_NOT_WRITTEN` is its own reading — nothing was
-    /// written, proven at some point other than the server-wide lane — and it
-    /// must not collapse into either neighbour: not `Busy` (this module does
-    /// not auto-retry it) and not `Unknown` (a caller MAY resubmit safely,
-    /// because nothing already written could be duplicated).
-    #[test]
-    fn input_not_written_is_its_own_reading_distinct_from_busy_and_unknown() {
-        let verdict = classify(&error(ErrorCode::InputNotWritten));
-        assert!(
-            matches!(verdict, ApplyVerdict::NotWritten(_)),
-            "{verdict:?}"
-        );
-        assert!(!matches!(verdict, ApplyVerdict::Busy(_)));
-        assert!(!matches!(verdict, ApplyVerdict::Unknown(_)));
-    }
-
-    /// `RESOURCE_EXHAUSTED` is pre-handoff: nothing was written, and the
-    /// identical batch under the identical id may succeed once the
-    /// server-wide lane frees.
-    #[test]
-    fn resource_exhausted_is_the_only_retryable_reading() {
-        assert!(matches!(
-            classify(&error(ErrorCode::ResourceExhausted)),
-            ApplyVerdict::Busy(_)
-        ));
-    }
-
-    /// The nothing-written-and-cannot-succeed family, each with its own
-    /// refusal so the CLI message can say which one happened.
-    #[test]
-    fn each_pre_handoff_refusal_keeps_its_own_reading() {
-        /// One code and the refusal shape it must produce.
-        type Case = (ErrorCode, fn(&Refusal) -> bool);
+    fn every_reply_has_exactly_one_reading() {
+        type Case = (CommandResult, fn(&ApplyVerdict) -> bool);
         let cases: &[Case] = &[
-            (ErrorCode::InputLeaseHeld, |r| {
-                matches!(r, Refusal::InputLeaseHeld(_))
+            (CommandResult::Ok, |v| *v == ApplyVerdict::Acked),
+            (error(ErrorCode::InputDeliveryUnknown), |v| {
+                matches!(v, ApplyVerdict::Unknown(_))
             }),
-            (ErrorCode::CanonicalLimitExceeded, |r| {
-                matches!(r, Refusal::CanonicalLimitExceeded(_))
+            (error(ErrorCode::InternalError), |v| {
+                matches!(v, ApplyVerdict::Unknown(_))
             }),
-            (ErrorCode::UnsafePaste, |r| {
-                matches!(r, Refusal::UnsafePaste(_))
+            (error(ErrorCode::NotAttached), |v| {
+                matches!(v, ApplyVerdict::Unknown(_))
             }),
-            (ErrorCode::InvalidCommand, |r| {
-                matches!(r, Refusal::InvalidBatch(_))
+            (error(ErrorCode::InputNotWritten), |v| {
+                matches!(v, ApplyVerdict::NotWritten(_))
             }),
-            (ErrorCode::PermissionDenied, |r| {
-                matches!(r, Refusal::PermissionDenied(_))
+            (error(ErrorCode::ResourceExhausted), |v| {
+                matches!(v, ApplyVerdict::Busy(_))
             }),
-            (ErrorCode::UnsupportedSatelliteRoute, |r| {
-                matches!(r, Refusal::SatelliteTarget { .. })
+            (error(ErrorCode::TerminalNotFound), |v| {
+                matches!(v, ApplyVerdict::NotFound(_))
+            }),
+            (error(ErrorCode::InputLeaseHeld), |v| {
+                matches!(v, ApplyVerdict::Refused(Refusal::InputLeaseHeld(_)))
+            }),
+            (error(ErrorCode::CanonicalLimitExceeded), |v| {
+                matches!(v, ApplyVerdict::Refused(Refusal::CanonicalLimitExceeded(_)))
+            }),
+            (error(ErrorCode::UnsafePaste), |v| {
+                matches!(v, ApplyVerdict::Refused(Refusal::UnsafePaste(_)))
+            }),
+            (error(ErrorCode::InvalidCommand), |v| {
+                matches!(v, ApplyVerdict::Refused(Refusal::InvalidBatch(_)))
+            }),
+            (error(ErrorCode::PermissionDenied), |v| {
+                matches!(v, ApplyVerdict::Refused(Refusal::PermissionDenied(_)))
+            }),
+            (error(ErrorCode::UnsupportedSatelliteRoute), |v| {
+                matches!(v, ApplyVerdict::Refused(Refusal::SatelliteTarget { .. }))
             }),
         ];
-        for (code, expect) in cases {
-            match classify(&error(*code)) {
-                ApplyVerdict::Refused(refusal) => {
-                    assert!(expect(&refusal), "{code:?} produced {refusal:?}");
-                }
-                other => panic!("{code:?} must be a refusal, got {other:?}"),
-            }
+        for (result, check) in cases {
+            let verdict = classify(result);
+            assert!(check(&verdict), "{result:?} read as {verdict:?}");
         }
-        assert!(matches!(
-            classify(&error(ErrorCode::TerminalNotFound)),
-            ApplyVerdict::NotFound(_)
-        ));
     }
 
-    // ---- idempotency: the id is never regenerated ---------------------
-
-    /// The rule the whole design rests on: a retry reuses the operation id.
-    /// Minting a fresh one is precisely the duplicate `APPLY_INPUT` exists to
-    /// prevent, so this asserts every attempt carried the same id — and that
-    /// the retry happened at all, since `RESOURCE_EXHAUSTED` wrote nothing.
+    /// A retry reuses the operation id: a fresh one is exactly the duplicate
+    /// `APPLY_INPUT` exists to prevent.
     #[tokio::test(start_paused = true)]
     async fn a_retry_reuses_the_operation_id_and_never_mints_a_new_one() {
         let id = op_id(0x5a);
@@ -1509,13 +1050,11 @@ mod tests {
         );
     }
 
-    /// A verdict that is not `Busy` is never retried — in particular an
-    /// unknown, which a retry would either replay verbatim (same id) or
-    /// duplicate (new id).
+    /// A non-`Busy` verdict, in particular an unknown, is never retried.
     #[tokio::test(start_paused = true)]
     async fn an_unknown_result_is_submitted_exactly_once() {
         let id = op_id(0x11);
-        let calls = std::cell::Cell::new(0_u32);
+        let calls = Cell::new(0_u32);
         let (verdict, attempts) = submit_with_backoff(id, &backoff_schedule(&id), |_| {
             calls.set(calls.get() + 1);
             async { Ok::<_, AttachError>(ApplyVerdict::Unknown("delivery unknown".to_owned())) }
@@ -1528,11 +1067,8 @@ mod tests {
         assert_eq!(calls.get(), 1);
     }
 
-    /// The backoff budget outlives the server's 5 s completion wait, which is
-    /// how long the server-wide admission flag can stay held — **at every
-    /// jitter draw**, not merely on average. A floor under ~6 s would fail
-    /// spuriously against one wedged pane, so the floor is what is asserted:
-    /// the worst schedule any operation id can produce.
+    /// The backoff budget outlives the server's 5 s admission hold at every
+    /// jitter draw, and jitter decorrelates distinct ids.
     #[test]
     fn the_backoff_floor_outlasts_the_servers_completion_wait() {
         let floor: Duration = BACKOFF_STEPS
@@ -1547,7 +1083,6 @@ mod tests {
             SUBMIT_DEADLINE > Duration::from_secs(5),
             "the submit deadline must outlast the server's own completion wait"
         );
-        // Every id's schedule clears the floor and stays inside the band.
         for fill in [0x01, 0x7f, 0xfe, 0xff] {
             let schedule = backoff_schedule(&op_id(fill));
             let total: Duration = schedule.iter().sum();
@@ -1557,26 +1092,17 @@ mod tests {
                 assert!(*jittered <= base.mul_f64(1.151), "{jittered:?} vs {base:?}");
             }
         }
-        // Jitter is real and id-derived: two ids give different schedules, so
-        // two orchestrators colliding on the server-wide lane decorrelate.
         assert_ne!(
             backoff_schedule(&op_id(0x01)),
             backoff_schedule(&op_id(0xfe))
         );
     }
 
-    // ---- satellites: refuse, never downgrade --------------------------
-
-    /// A satellite target is refused **before a socket is opened**, so there
-    /// is no path on which it could fall back to fire-and-forget
-    /// `ROUTE_INPUT`. Downgrading would make the verb's own success code mean
-    /// "in the kernel queue" on one host and "accepted for delivery, maybe
-    /// dropped" on another.
+    /// A satellite target is refused before a socket is opened (the path
+    /// cannot exist), never downgraded to `ROUTE_INPUT`.
     #[tokio::test]
     async fn a_satellite_target_is_refused_rather_than_downgraded() {
         let outcome = prompt_agent(
-            // A socket path that cannot exist: reaching it would itself be
-            // the bug, since the refusal must precede the connect.
             Path::new("/nonexistent/phux-must-not-connect.sock"),
             &ResourceId::satellite("devbox", 3),
             "ship it",
@@ -1593,33 +1119,9 @@ mod tests {
         }
     }
 
-    /// The same refusal covers the server-side code, in case a future
-    /// topology puts a satellite id past the client-side gate.
-    #[test]
-    fn the_server_side_satellite_code_is_also_a_refusal() {
-        assert!(matches!(
-            classify(&error(ErrorCode::UnsupportedSatelliteRoute)),
-            ApplyVerdict::Refused(Refusal::SatelliteTarget { .. })
-        ));
-    }
-
-    // ---- the acknowledged path is required, never approximated -------
-
-    /// A server that does not advertise `ACKNOWLEDGED_INPUT` is **refused**,
-    /// not downgraded. The shared scripted server negotiates
-    /// `ServerCapabilities::new()` — no features — so it is exactly the older
-    /// server this gate exists for.
-    ///
-    /// Downgrading to `ROUTE_INPUT` would make one verb's success code mean
-    /// "every byte is in the kernel queue" against one server and "accepted
-    /// for delivery, possibly dropped on a full mailbox" against another. A
-    /// caller cannot branch on a code whose meaning depends on the host.
-    ///
-    /// The rest of the wire contract — the receipt, the same-id retry, the
-    /// terminal unknown, and the post-result edge gate — needs a server that
-    /// advertises the capability *and* can script an `APPLY_INPUT` refusal,
-    /// neither of which the shared harness expresses. It lives in
-    /// `tests/connection/agent_prompt_wire.rs`.
+    /// A server without `ACKNOWLEDGED_INPUT` (the scripted server advertises
+    /// no features) is refused, not downgraded. The rest of the wire contract
+    /// lives in `tests/connection/agent_prompt_wire.rs`.
     #[tokio::test]
     async fn a_server_without_acknowledged_input_is_refused_not_downgraded() {
         let dir = tempfile::tempdir().expect("temp dir");

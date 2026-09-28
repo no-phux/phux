@@ -46,26 +46,20 @@ pub(super) fn print_layers_json(config_path: &Path, provenance: &ConfigProvenanc
             serde_json::Value::Object(entry)
         })
         .collect();
-    print_json(
-        &serde_json::json!({
-            "schema_version": 1,
-            "config_path": config_path.display().to_string(),
-            "layers": layers,
-            "keys": keys,
-        }),
-        "config layers",
-    )
+    crate::output::json(&serde_json::json!({
+        "schema_version": 1,
+        "config_path": config_path.display().to_string(),
+        "layers": layers,
+        "keys": keys,
+    }))
 }
 
 pub(super) fn print_plugins_json(plugins: &[LoadedPlugin]) -> ExitCode {
     let plugins: Vec<_> = plugins.iter().map(plugin_json).collect();
-    print_json(
-        &serde_json::json!({
-            "schema_version": 1,
-            "plugins": plugins,
-        }),
-        "plugins",
-    )
+    crate::output::json(&serde_json::json!({
+        "schema_version": 1,
+        "plugins": plugins,
+    }))
 }
 
 /// The merged agents document (phux-r82.10). `schema_version` bumped
@@ -74,14 +68,11 @@ pub(super) fn print_plugins_json(plugins: &[LoadedPlugin]) -> ExitCode {
 /// document also gained the top-level `live` flag. See
 /// `docs/consumers/agents.md` section 4.6 for the schema notes.
 pub(super) fn print_agents_json(agents: &[AgentProjection], live: bool) -> ExitCode {
-    print_json(
-        &serde_json::json!({
-            "schema_version": 2,
-            "live": live,
-            "agents": agents,
-        }),
-        "agents",
-    )
+    crate::output::json(&serde_json::json!({
+        "schema_version": 2,
+        "live": live,
+        "agents": agents,
+    }))
 }
 
 fn plugin_json(plugin: &LoadedPlugin) -> serde_json::Value {
@@ -104,17 +95,4 @@ fn plugin_json(plugin: &LoadedPlugin) -> serde_json::Value {
         "links": manifest.links,
         "workspaces": manifest.workspaces,
     })
-}
-
-fn print_json(value: &serde_json::Value, label: &str) -> ExitCode {
-    match serde_json::to_string_pretty(value) {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            eprintln!("phux: could not render {label} JSON: {err}");
-            ExitCode::FAILURE
-        }
-    }
 }

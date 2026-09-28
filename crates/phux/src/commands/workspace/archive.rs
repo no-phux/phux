@@ -11,9 +11,9 @@ use phux_protocol::ids::{GroupId, ResourceId};
 use phux_protocol::wire::frame::{Command, FrameKind, SpawnResult};
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::agent::{
-    AgentSessionRecord, PreparedAgentSession, fetch_record_index, prepare,
-};
+use phux_client::agent_session_record::{AgentSessionRecord, fetch_record_index};
+
+use crate::commands::agent::{PreparedAgentSession, prepare};
 use crate::commands::new::{create_session_via_metadata, preflight_atomic_agent_session_create};
 use crate::commands::spawn::{dispatch_spawn_async, report_spawn_error};
 use crate::commands::{cli_runtime, partial, report_no_server};
@@ -43,24 +43,16 @@ pub(super) fn run_save(
         Ok(view) => view.into_parts(),
         Err(err) => return report_no_server(&err, &socket_path, "workspace save"),
     };
-    // A save writes a file the user will restore *later*, so an incomplete
-    // capture is the one degradation that outlives the command: panes on an
-    // unreachable satellite are simply not in the archive, and nothing at
-    // restore time can tell they were meant to be. Still not a failure —
-    // refusing to snapshot this laptop because a remote box is down would be
-    // worse — but it has to be said out loud before the file lands.
+    // An archive is restored later, so an incomplete capture outlives the
+    // command: warn before the file lands, but do not refuse.
     partial::warn_partial_view("workspace save", &degradation);
     let agent_sessions = match rt.block_on(fetch_record_index(&socket_path, &snapshot)) {
         Ok(index) => index,
         Err(err) => return fail(&format!("could not capture native agent sessions: {err}")),
     };
-    // ADR-0129 / PHA-406 L18 review item 9: `GET_STATE`'s `WindowInfo.layout`
-    // is never populated by the reference server, so the only place a
-    // session's real split tree lives is its own L3 layout envelope. Read
-    // it per session (best-effort — a session that never had one, or an
-    // undecodable value, just falls back to the bare pane-list projection
-    // `archive_from_snapshot` already produced for every session before
-    // this lane).
+    // `GET_STATE` never carries window layouts, so each session's split tree is
+    // read from its L3 layout envelope (best-effort; missing or undecodable falls
+    // back to the pane-list projection).
     let (layouts, layout_warnings) =
         rt.block_on(fetch_session_layouts(&socket_path, &snapshot, projection));
     let confirmation = match rt.block_on(phux_client::state::get_state(&socket_path)) {
@@ -91,22 +83,9 @@ pub(super) fn run_save(
     }
 }
 
-/// Validate a `workspace save --projection` value.
-///
-/// Unlike every other `--projection` flag (`insert-pane`, `move-pane`,
-/// `swap-pane`, `spawn`/`launch`'s placement), which takes one exact
-/// `<prefix>.layout/v1/<session-id>` key, `workspace save` addresses many
-/// sessions at once and so takes the bare *prefix* — `<prefix>.layout/v1`
-/// — appending `/<session-id>` itself per session. Passing a full key
-/// here (with the id already appended) used to exit 0 having silently
-/// found nothing at every session's `<key>/<id>` and fallen back to the
-/// registry-only projection for all of them.
-///
-/// # Errors
-///
-/// A ready-to-print message when `value` is empty, has an empty prefix
-/// before `.layout/v1`, or does not end in `.layout/v1` at all (most
-/// commonly because it already carries a trailing session id).
+/// Validate a `workspace save --projection` value. Unlike the other
+/// `--projection` flags it takes the bare `<prefix>.layout/v1` prefix and
+/// appends each session id itself; a full key would silently match nothing.
 fn validate_save_projection_prefix(value: &str) -> Result<(), String> {
     const SUFFIX: &str = ".layout/v1";
     let Some(prefix) = value.strip_suffix(SUFFIX) else {
@@ -130,18 +109,10 @@ fn usage_error(message: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
-/// Best-effort per-session L3 layout read (ADR-0129 review item 9): for
-/// every session in `snapshot`, read `<prefix>.layout/v1/<session-id>`
-/// (`prefix` from `--projection`, else the shared default) over one
-/// dedicated connection and decode it. A session with nothing stored under
-/// the *default* key, or a value that doesn't decode as the current v3
-/// envelope, is simply absent from the returned map —
-/// `archive_from_snapshot` falls back to its registry-window projection
-/// for exactly those sessions, the same projection every session used
-/// before this lane. When `projection` names an explicit key, the same
-/// absence is instead surfaced as a warning naming the session (review
-/// item 4): a caller who asked for a specific projection is more likely
-/// to have mistyped it than to be fine with a silent fallback.
+/// Best-effort per-session L3 layout read over one connection. A session
+/// with nothing decodable under the default key is absent from the map (and
+/// falls back to the registry projection); under an explicit `--projection` the
+/// absence is also a warning, since the key was probably mistyped.
 async fn fetch_session_layouts(
     socket_path: &Path,
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
@@ -197,10 +168,8 @@ pub(super) fn run_restore(archive_path: &Path, socket: Option<PathBuf>) -> ExitC
         Ok(plan) => plan,
         Err(err) => return fail(&err),
     };
-    // Only `create_session_via_metadata`'s embedded-agent-session path needs
-    // the atomic-create guarantee, and only a session's *seed* pane ever
-    // takes that path (every other archived pane is an ordinary
-    // `SPAWN_RESOURCE` + a follow-up record write, same as `phux launch`).
+    // Only a seed pane with an embedded agent session needs the atomic-create
+    // path.
     if plan
         .creates
         .iter()
@@ -210,11 +179,8 @@ pub(super) fn run_restore(archive_path: &Path, socket: Option<PathBuf>) -> ExitC
         return code;
     }
 
-    // PHA-406 L18 review item 5: a session's restore failure never aborts
-    // the rest of the archive. It rolls back that one session (every pane
-    // created for it so far) and the loop continues; the summary names
-    // both the restored and the failed sessions, and the process exits
-    // non-zero iff anything failed.
+    // One session's restore failure rolls back that session and the loop
+    // continues; the process exits non-zero if anything failed.
     let mut restored = Vec::with_capacity(plan.creates.len());
     let mut failed = Vec::new();
     let mut warnings = Vec::new();
@@ -267,22 +233,10 @@ struct SessionOutcome {
 }
 
 /// Create one archived session's seed pane (resuming its native agent
-/// session when the archive carries one and it can still be prepared —
-/// otherwise a plain shell, noted as a warning, PHA-406 L18 review item 6),
-/// then replay the rest of its archived split tree (ADR-0129): every other
-/// pane is spawned owned by the seed pane and placed to mirror the
-/// captured `WorkspaceLayoutNode` tree, with fresh window identities. This
-/// runs for every schema version — `restore_plan` copies a session's
-/// `windows` unconditionally — so a schema-1 archive still replays every
-/// archived pane, just placed in a simple linear chain rather than a real
-/// captured tree (schema 1 predates captured layouts entirely, so its
-/// windows carry panes but no `layout`, exactly like a schema-2 window
-/// archived before this lane). Only a session with no captured windows at
-/// all leaves the seed pane as the session's sole content.
-///
-/// On any failure past the seed's own creation, every pane created for this
-/// session so far (the seed included) is rolled back (review item 5) before
-/// the error is returned; the caller does not need to repeat that cleanup.
+/// session when possible, else a plain shell with a warning), then replay the
+/// rest of its split tree with fresh window identities (ADR-0129). Windows with
+/// no captured layout (schema 1) are placed as a linear chain. Any failure past
+/// the seed rolls back every pane created for the session.
 async fn restore_one_session(
     socket_path: &Path,
     create: model::CreateRequest,
@@ -361,10 +315,8 @@ async fn restore_one_session(
     }
 }
 
-/// Resolve one pane's archived native agent session, if any. A prep failure
-/// is a warning, not a fatal error (review item 6): the caller falls back
-/// to a plain shell (or the archive's own `command`/`cwd`) rather than
-/// failing the whole session over one unresolvable integration.
+/// Resolve one pane's archived native agent session. A prep failure is a
+/// warning and the pane falls back to a plain shell.
 fn prepare_pane_agent(
     agent_session: Option<&model::WorkspaceAgentSession>,
     cwd: Option<&str>,
@@ -376,11 +328,8 @@ fn prepare_pane_agent(
     };
     match prepare_archived_agent(record, cwd) {
         Ok(prepared) => Ok(Some(prepared)),
-        // A different plugin now owning the integration is a security
-        // boundary, not a "could not resolve" gap — fail the restore
-        // rather than silently handing the resume to a plugin that never
-        // owned it (pinned by
-        // `native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownership`).
+        // A different plugin now owning the integration is a security boundary:
+        // fail the restore rather than hand the resume to it.
         Err(PrepareAgentError::OwnershipMismatch(err)) => Err(err),
         Err(PrepareAgentError::Other(err)) => {
             warnings.push(format!(
@@ -393,12 +342,8 @@ fn prepare_pane_agent(
     }
 }
 
-/// Best-effort cleanup for one session whose restore failed partway
-/// through: kill every pane created for it so far (the seed and any panes
-/// spawned while replaying its split tree), so a failed session leaves no
-/// half-restored trace behind (PHA-406 L18 review item 5). Killing an id
-/// that already died on its own (e.g. `confirm_restored_agent`'s own
-/// cleanup) is a documented no-op, not an error.
+/// Kill every pane created so far for a failed session; an already-dead id
+/// is a no-op.
 async fn rollback_session(socket_path: &Path, created: &[ResourceId]) {
     if created.is_empty() {
         return;
@@ -416,12 +361,8 @@ async fn rollback_session(socket_path: &Path, created: &[ResourceId]) {
     }
 }
 
-/// Recreate every archived pane beyond the seed pane and write the session's
-/// default layout envelope to place them exactly as archived. A no-op when
-/// the archive named no windows (schema 1, or a session archived with no
-/// captured layout at all) — the seed pane already stands for the session.
-/// Every pane this creates is pushed onto `created` as it is spawned, so a
-/// caller that aborts partway through can roll back exactly what exists.
+/// Recreate the archived panes beyond the seed and write the session's
+/// layout envelope. Each spawned pane is pushed onto `created` for rollback.
 async fn replay_split_tree(
     socket_path: &Path,
     seed: &ResourceId,
@@ -459,10 +400,8 @@ async fn replay_split_tree(
     write_restored_layout(socket_path, seed, workspace).await
 }
 
-/// Spawn one archived pane, owned by the session's seed pane, resuming its
-/// archived native agent session when possible (review item 6). Owning it
-/// through the seed pane keeps it in the seed's session
-/// (`SPAWN_RESOURCE.owner_terminal`) without recreating the seed itself.
+/// Spawn one archived pane owned by the seed pane (keeping it in the seed's
+/// session), resuming its agent session when possible.
 async fn spawn_owned_pane(
     socket_path: &Path,
     owner: &ResourceId,
@@ -516,12 +455,8 @@ async fn spawn_owned_pane(
             ));
         }
     };
-    // Record the pane the instant the server confirms it exists, before the
-    // follow-up agent-session confirmation below — a transport failure
-    // confirming that write must still roll this pane back (review item
-    // 5b), not leak it because the failure happened after the spawn but
-    // before this function otherwise had a chance to report the id back to
-    // its caller.
+    // Record the pane as soon as it exists, so a later failure still rolls it
+    // back.
     created.push(spawned.clone());
     if let Some(prepared) = &prepared
         && let Err(err) = confirm_restored_agent(socket_path, &spawned, prepared).await
@@ -533,12 +468,8 @@ async fn spawn_owned_pane(
     Ok(spawned)
 }
 
-/// Build the `Workspace` envelope value to write for a restored session,
-/// mapping each archived window's `WorkspaceLayoutNode` onto the freshly
-/// spawned pane ids at the same positions (falling back to a linear chain
-/// when a window carries no captured layout). Window identities are fresh,
-/// derived from each window's own first leaf (`phux-client-core`'s
-/// `layout::identity`, via `WindowState::new`).
+/// Build the restored session's `Workspace` envelope, mapping each archived
+/// layout onto the fresh pane ids (linear chain without a captured layout).
 fn build_restored_workspace(
     windows: &[WorkspaceWindow],
     pane_ids: &[Vec<Option<ResourceId>>],
@@ -611,11 +542,8 @@ fn layout_node_from_archive(
     }
 }
 
-/// A window with no captured layout (schema 1, or a window archived before
-/// this feature) still has every archived pane; place them in a simple
-/// right-leaning chain rather than dropping any of them. Also shared by
-/// `snapshot::unplaced_window` (ADR-0129 review items 1+2) to place a live
-/// pane a reconciled layout had nowhere else to put.
+/// Place a window's panes in a right-leaning chain when no layout was
+/// captured; also used by `snapshot::unplaced_window`.
 pub(super) fn linear_chain(ids: &[ResourceId]) -> LayoutNode {
     let mut rest = ids.iter().rev();
     let Some(last) = rest.next() else {
@@ -636,13 +564,9 @@ pub(super) fn linear_chain(ids: &[ResourceId]) -> LayoutNode {
     tree
 }
 
-/// Write the freshly built `Workspace` as the seed pane's session's default
-/// layout envelope, through `LayoutOps`'s write-then-confirming-read (review
-/// item 7) rather than a fire-and-forget `SET_METADATA` — the session was
-/// just created and has never been attached, so this is always a fresh
-/// write, never a read-modify-write, but the confirming read is what turns
-/// a silently-dropped over-cap write into a reported restore failure
-/// instead of a session with panes and no layout.
+/// Write the restored `Workspace` through `LayoutOps`' write-then-confirm, so
+/// a dropped over-cap write is reported instead of leaving panes with no
+/// layout.
 async fn write_restored_layout(
     socket_path: &Path,
     seed: &ResourceId,
@@ -676,13 +600,7 @@ async fn write_restored_layout(
 
 /// Emit the restore summary document on stdout.
 fn render_restore_summary(summary: &RestoreSummary) -> ExitCode {
-    match serde_json::to_string_pretty(summary) {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => fail(&format!("could not render restore summary: {err}")),
-    }
+    crate::output::json(summary)
 }
 
 /// [`prepare_archived_agent`]'s failure, split by whether it is a security
@@ -765,12 +683,8 @@ fn read_archive_text(path: &Path) -> Result<String, String> {
 }
 
 /// The session names already on the server, for restore's collision check.
-///
-/// `into_snapshot_ignoring_degradation`: this reads `sessions` only, and a
-/// satellite's session list never enters the merge —
-/// `handle_get_state_federated` discards it because its `u32` ids would
-/// collide with the hub's. An unreachable satellite therefore cannot hide a
-/// name this check would otherwise catch.
+/// Session lists never aggregate across a federation, so degradation cannot
+/// hide a name.
 async fn fetch_existing_sessions(socket_path: &Path) -> Result<Vec<String>, ExitCode> {
     phux_client::state::get_state(socket_path)
         .await

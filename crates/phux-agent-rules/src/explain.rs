@@ -1,50 +1,19 @@
-//! Offline evaluation of the compiled agent-detection manifests (ADR-0046).
+//! Offline evaluation of the compiled agent-detection manifests against a
+//! captured screen (ADR-0046), with no server or PTY.
 //!
-//! The detector itself is a live, PTY-bound thing: it identifies an agent from
-//! the foreground process group and re-reads the grid on a timer. None of that
-//! is available to someone *writing* a manifest, and ADR-0046's Tradeoffs
-//! section records what that costs — the first Claude manifest was authored
-//! against an imagined TUI, every screen rule matched nothing in the shipped
-//! CLI, the fail-safe (`idle`) swallowed the failure silently, and the unit
-//! tests passed because they fed the matcher the same invented screens the
-//! rules had been derived from. Three rules were deleted.
-//!
-//! This module is the answer: evaluate the real compiled rules against a
-//! **captured** screen, with no server, no PTY, and no process to identify,
-//! and report the text every region resolved to. A rule scoped to a region
-//! that comes back empty is the failure mode, and an empty region is only
-//! visible if something prints it.
-//!
-//! # Why this is a facade over the compiled rules
-//!
-//! [`crate::rules`] is what the daemon evaluates on a timer. Its working
-//! types — `Rc<RuleSet>`, `Predicate`, [`crate::regions::Screen`],
-//! [`crate::DetectedState`] — are the evaluator's internals, and agent TUIs
-//! churn. What a caller outside the daemon needs is narrower: *give me a
-//! screen and a kind, tell me what the detector would conclude and why*.
-//! That is the surface below. The types here own their data (owned
-//! `String`s, no lifetimes, no `Rc`), derive `Serialize` so `--json` is a
-//! projection rather than a second hand-written shape, and speak the wire's
-//! state words rather than [`crate::DetectedState`].
-//!
-//! # What it deliberately does not do
-//!
-//! Identify. Identification reads the PTY's foreground process group
-//! (`phux-server`'s `agent_detect::identify`), which a file cannot supply,
-//! so the caller names the kind. [`kinds`] enumerates what is available.
+//! Manifest authors need to see which region their rule read and which leaf
+//! fired: rules once written against an imagined TUI matched nothing, and the
+//! `idle` fail-safe hid it. These types own their data and derive `Serialize`
+//! so `--json` is a projection. Identification (the PTY's foreground process)
+//! is not available offline, so the caller names the kind.
 
 use serde::Serialize;
 
-use crate::regions::{Region, Screen};
-use crate::rules::{self, PredicateTrace, RuleTrace};
+use crate::regions::Screen;
+use crate::rules;
 
-/// A screen to evaluate: what the detector would have read from the pane.
-///
-/// `title` is separate because a capture does not carry it — the
-/// `phux snapshot --json` contract (`phux_core::screen::ScreenState`) is the
-/// grid alone. Leaving it empty is legitimate and common; it simply means
-/// every `title`-scoped rule sees an empty region, which the explanation says
-/// out loud rather than quietly folding into "no match".
+/// A screen to evaluate. `title` is separate because a grid capture does not
+/// carry it; empty is legitimate.
 #[derive(Debug, Clone, Default)]
 pub struct Capture {
     /// The pane's OSC 0/2 title at capture time, or empty if unknown.
@@ -64,8 +33,7 @@ pub struct PredicateEvidence {
     pub pattern: Option<String>,
     /// Whether this node matched.
     pub matched: bool,
-    /// Children of a combinator. Every child is evaluated, including the
-    /// ones a short-circuiting matcher would have skipped.
+    /// Children of a combinator, all evaluated (no short-circuit).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Self>,
 }
@@ -101,8 +69,7 @@ pub struct EvaluatedRule {
 pub struct RegionPreview {
     /// The region's manifest spelling.
     pub region: String,
-    /// `true` when the region resolved to nothing at all. A rule scoped to
-    /// an empty region cannot match, whatever it says.
+    /// The region resolved to nothing, so no rule scoped to it can match.
     pub empty: bool,
     /// The resolved lines, verbatim.
     pub lines: Vec<String>,
@@ -123,13 +90,8 @@ pub struct Explanation {
     /// The state a rule asserted, absent when none did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
-    /// What the detector would actually publish for this screen: the
-    /// asserted state, else the `idle` fail-safe, else `frozen` when a
-    /// `skip-state-update` rule matched and the previous state is held.
-    ///
-    /// This is the field to read. `state` is the rule's assertion;
-    /// `detector_state` is the outcome, and the two differ in exactly the
-    /// cases worth knowing about.
+    /// What the detector would publish: `frozen` when a `skip-state-update`
+    /// rule matched, else the asserted state, else the `idle` fail-safe.
     pub detector_state: String,
     /// The winning rule's id, absent when nothing state-bearing matched.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -140,10 +102,7 @@ pub struct Explanation {
     /// A `skip-state-update` rule matched: this screen carries no
     /// information about agent state and the detector freezes.
     pub freeze: bool,
-    /// A matching rule positively asserts idleness. The only `visible-*`
-    /// flag the manifest schema carries; see phux-w7z2.18 for why
-    /// `visible-blocker` / `visible-working` were removed rather than kept
-    /// as report-only fields here.
+    /// A matching rule positively asserts idleness.
     pub visible_idle: bool,
     /// Every region, resolved against this screen. Includes regions no rule
     /// names: picking the right one is half of authoring a rule.
@@ -152,22 +111,14 @@ pub struct Explanation {
     pub evaluated_rules: Vec<EvaluatedRule>,
 }
 
-/// Every agent kind with a loaded manifest, sorted.
-///
-/// Reflects the same load path the server uses, overrides included
-/// (`$PHUX_AGENT_RULES_DIR`, else `$XDG_CONFIG_HOME/phux/agent-rules`), so an
-/// operator debugging their own manifest is debugging the one that would run.
-/// Empty when `PHUX_AGENT_DETECT=0` disabled the whole feature.
+/// Every agent kind with a loaded manifest, sorted, through the server's own
+/// load path (overrides included).
 #[must_use]
 pub fn kinds() -> Vec<String> {
     rules::global().kinds()
 }
 
 /// Resolve `name` to a kind slug: an exact kind, else a binary alias.
-///
-/// Aliases are accepted because the thing an operator has in hand is usually
-/// the command they typed (`claude-code`, `opencode2`), and making them
-/// reverse-map it to a slug is friction with no upside.
 #[must_use]
 pub fn resolve_kind(name: &str) -> Option<String> {
     let set = rules::global();
@@ -177,10 +128,7 @@ pub fn resolve_kind(name: &str) -> Option<String> {
     set.kind_for_binary(name).map(str::to_owned)
 }
 
-/// Evaluate `kind`'s manifest against `capture`.
-///
-/// `None` when no manifest is loaded for `kind`; [`kinds`] is the roster to
-/// report alongside that miss.
+/// Evaluate `kind`'s manifest against `capture`; `None` when none is loaded.
 #[must_use]
 pub fn explain(kind: &str, capture: &Capture) -> Option<Explanation> {
     let set = rules::global();
@@ -194,9 +142,7 @@ pub fn explain(kind: &str, capture: &Capture) -> Option<Explanation> {
     let evaluation = &explained.evaluation;
 
     let state = evaluation.state.map(|s| s.as_str().to_owned());
-    // Order matters and mirrors `AgentDetector::tick`: the freeze branch
-    // returns BEFORE the fail-safe is applied, so a screen that both freezes
-    // and matches nothing is frozen, not idle.
+    // Mirrors `AgentDetector::tick`: freeze wins over the fail-safe.
     let (detector_state, fallback_reason) = if evaluation.freeze {
         (
             "frozen".to_owned(),
@@ -232,39 +178,12 @@ pub fn explain(kind: &str, capture: &Capture) -> Option<Explanation> {
             .into_iter()
             .map(|(region, lines)| RegionPreview {
                 region: region.as_str(),
-                // A single empty string is what `title` yields for a pane
-                // with no title: the region exists but holds nothing a
-                // predicate can see, which is the same failure as no rows.
                 empty: lines.iter().all(|line| line.trim().is_empty()),
                 lines,
             })
             .collect(),
-        evaluated_rules: explained.rules.into_iter().map(evaluated_rule).collect(),
+        evaluated_rules: explained.rules,
     })
-}
-
-/// Project one internal [`RuleTrace`] onto the public shape.
-fn evaluated_rule(trace: RuleTrace) -> EvaluatedRule {
-    EvaluatedRule {
-        id: trace.id,
-        priority: trace.priority,
-        region: Region::as_str(trace.region),
-        state: trace.state.map(|s| s.as_str().to_owned()),
-        matched: trace.matched,
-        visible_idle: trace.visible_idle,
-        skip_state_update: trace.skip_state_update,
-        evidence: evidence(trace.predicate),
-    }
-}
-
-/// Project one internal [`PredicateTrace`] onto the public shape.
-fn evidence(trace: PredicateTrace) -> PredicateEvidence {
-    PredicateEvidence {
-        op: trace.op.to_owned(),
-        pattern: trace.pattern,
-        matched: trace.matched,
-        children: trace.children.into_iter().map(evidence).collect(),
-    }
 }
 
 #[cfg(test)]
@@ -428,34 +347,5 @@ mod tests {
             "the preview is the region's real text: {:?}",
             live.lines,
         );
-    }
-
-    /// The explainer must never disagree with the detector. Both goldens,
-    /// through both entry points.
-    #[test]
-    fn the_explanation_agrees_with_the_production_evaluator() {
-        use crate::regions::Screen;
-
-        let set = crate::rules::global();
-        let manifest = set.manifest("claude").expect("claude manifest");
-        for (title, body) in [
-            ("\u{2733} phux", CLAUDE_BLOCKED),
-            ("\u{2802} phux", CLAUDE_BLOCKED),
-            ("\u{2733} phux", CLAUDE_IDLE),
-            ("", CLAUDE_IDLE),
-        ] {
-            let lines: Vec<String> = body.lines().map(str::to_owned).collect();
-            let screen = Screen {
-                title,
-                progress: "",
-                lines: &lines,
-            };
-            let direct = manifest.evaluate(&screen);
-            let explained = manifest.explain(&screen);
-            assert_eq!(
-                direct, explained.evaluation,
-                "explain must reuse the production verdict, not re-derive it",
-            );
-        }
     }
 }

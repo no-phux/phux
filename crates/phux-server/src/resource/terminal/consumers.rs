@@ -10,22 +10,10 @@ use super::{
 };
 
 impl TerminalActor {
-    /// Register `client_id` as an attached consumer (phux-q0e.2).
-    ///
-    /// Allocates a fresh `RenderState`, primes it against the live
-    /// terminal (`update` + manual `set_dirty(Clean)` walk), and stores
-    /// the resulting [`ConsumerSyncState`] in `consumer_states`.
-    ///
-    /// Why prime + clear: the runtime's ATTACH path emits a
-    /// `TERMINAL_SNAPSHOT` immediately after this call returns, which
-    /// brings the consumer's mirror Terminal up to the current
-    /// canonical state. The per-consumer reference must reflect that same
-    /// reference point — otherwise the first incremental emission would
-    /// treat every row as changed and re-paint the screen the snapshot
-    /// just installed.
-    ///
-    /// Idempotent: re-attaching the same `client_id` (e.g. on a runtime
-    /// bug) overwrites the prior entry.
+    /// Register `client_id` as an attached consumer, priming its reference
+    /// to the live grid (the ATTACH snapshot that follows brings the mirror
+    /// to the same point, so the first delta is only what changed since).
+    /// Re-registering overwrites the prior entry.
     #[allow(
         clippy::too_many_arguments,
         reason = "the arguments are the complete consumer generation identity and synchronization cut"
@@ -41,33 +29,23 @@ impl TerminalActor {
         live_gate: watch::Receiver<bool>,
         next_seq: u64,
     ) -> Result<(), ConsumerAttachError> {
-        // Priming the per-consumer reference + cursor/mode capture costs two
-        // full-grid render passes, but a raw broadcast-pump consumer (the
-        // human attach path) never reads either: the tick serves only
-        // tick-managed consumers and `FRAME_ACK` is dropped for raw ones, and
-        // `wants_state_sync` is fixed at registration with no flip path. So
-        // do the work only when this consumer is actually tick-managed; a raw
-        // consumer attaches with an empty reference and a placeholder capture.
-        // (If it were ever tick-served, `needs_initial_emit` forces a full
-        // pass that primes both — see the tick emit gate.)
+        // Priming costs two full-grid renders; raw (pump-served) consumers
+        // never read the reference, so only tick-managed ones pay.
+        // `needs_initial_emit` would prime a raw one if it were ever ticked.
         let tick_managed = wants_state_sync || self.consumer_tick_emits;
         let (last_cursor_mode, reference) = if tick_managed {
             let canonical = self.terminal.borrow();
             let Some(terminal) = canonical.try_terminal() else {
                 return Err(crate::grid::SynthesisError::TerminalUnavailable.into());
             };
-            // Cursor + DEC mode capture happens against a one-shot
-            // `RenderState` so we don't conflict with the shared
-            // synthesizer's borrow used to prime the reference below.
+            // A one-shot render state, so priming below can borrow the
+            // shared synthesizer.
             let last_cursor_mode = {
                 let mut render_state = RenderState::new()?;
                 let snapshot = render_state.update(terminal)?;
                 LastAckedCursorMode::capture(terminal, &snapshot)
             };
-            // Prime the reference against the live terminal so the next
-            // `synthesize_against_reference` emits only deltas from *now* —
-            // the `TERMINAL_SNAPSHOT` the runtime emits right after this call
-            // already brings the consumer's mirror to this same point.
+            // Prime so the first diff reports only changes from now.
             let mut reference = ConsumerReference::new();
             self.synth
                 .borrow_mut()
@@ -85,26 +63,18 @@ impl TerminalActor {
                 stream_id,
                 bootstrap_id,
                 live_gate,
-                // The synthesized bootstrap and this sequence share one actor
-                // cut, so the first live delta is exactly `base_seq + 1`.
+                // The bootstrap and this sequence share one cut.
                 next_seq,
                 last_acked_seq: 0,
                 last_cursor_mode,
-                // Force one synthesis pass on the next tick even if the
-                // terminal is Clean since the previous tick (phux-4l0).
+                // Walk once on the next tick even on a clean terminal.
                 needs_initial_emit: true,
-                // Fresh consumer is not behind; `needs_initial_emit` already
-                // guarantees its first pass runs.
                 behind: false,
-                // No RTT sample yet — runs at the cold-start default until the
-                // first FRAME_ACK round-trip lands (phux-q0e.5).
+                // Cold-start cadence until the first ack round-trip.
                 rtt: RttEstimator::default(),
                 emit_instants: std::collections::BTreeMap::new(),
                 wants_state_sync,
-                // Loss-tolerance is opt-in and off by default (phux-v45.8):
-                // the reliable-transport emit-once model is the norm. The
-                // runtime flips it on via `enable_loss_tolerance` for a
-                // forwarded/lossy leg right after registration.
+                // Loss tolerance is opt-in via `enable_loss_tolerance`.
                 loss_tolerant: false,
                 acked_reference: ConsumerReference::new(),
                 pending_refs: std::collections::BTreeMap::new(),
@@ -161,9 +131,7 @@ impl TerminalActor {
             live_gate,
             reply,
         } = req;
-        // Registration, synthesized snapshot, and reference priming are one
-        // actor turn. No PTY event can land between the snapshot cut and the
-        // reference it installs.
+        // Registration, snapshot, and priming are one actor turn.
         let tick_managed = self.consumer_tick_emits || wants_state_sync;
         let result = (|| {
             let base_seq = self.core.seq();
@@ -222,25 +190,13 @@ impl TerminalActor {
         let _ = reply.send(result);
     }
 
-    /// Switch an already-registered consumer to the advance-on-ack
-    /// loss-tolerant emission model (phux-v45.8, ADR-0042).
-    ///
-    /// Idempotent-ish: sets [`ConsumerSyncState::loss_tolerant`] and primes
-    /// [`ConsumerSyncState::acked_reference`] to the live grid so the first
-    /// post-enable tick emits only deltas from *now* (the consumer's
-    /// `TERMINAL_SNAPSHOT` brought its mirror to this same point). Silent no-op
-    /// if the consumer is not registered (raced against detach). A failure to
-    /// prime the reference leaves the consumer on the emit-once path (the
-    /// reference stays empty, so the first tick would repaint everything — safe,
-    /// just not yet loss-tolerant); logged, not fatal.
+    /// Switch a registered consumer to the advance-on-ack loss-tolerant
+    /// model (ADR-0042), priming its acked reference to the live grid. No-op
+    /// for an unknown consumer; a failed prime leaves it on emit-once.
     pub(super) fn enable_loss_tolerance(&mut self, client_id: ClientId) {
-        // Disjoint field borrows: `self.terminal` / `self.synth` (RefCell
-        // interior) vs `self.consumer_states` (via `get_mut`).
         let canonical = self.terminal.borrow();
         let Some(terminal) = canonical.try_terminal() else {
-            // Priming needs the live grid. Leaving the consumer on the
-            // emit-once path is the documented safe fallback for a failed
-            // prime, and it is what a loaned terminal gets too.
+            // Needs the live grid; stay on emit-once while it is on loan.
             trace!(?client_id, "loss tolerance deferred: terminal is on loan");
             return;
         };
@@ -270,46 +226,19 @@ impl TerminalActor {
         }
     }
 
-    /// Drop the per-consumer state for `client_id` if present
-    /// (phux-q0e.2). Silent no-op if absent — matches the idempotency
-    /// of `ServerState::detach`.
+    /// Drop the per-consumer state for `client_id`, if present.
     pub(super) fn unregister_consumer(&mut self, client_id: ClientId) {
-        // `HashMap::remove` returns the entry; dropping it frees the
-        // per-consumer reference grid.
         let _ = self.consumer_states.remove(&client_id);
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         self.release_native_owner(u64::from(client_id.get()));
     }
 
-    /// Handle an inbound `FRAME_ACK` from `client_id` carrying cumulative
-    /// `seq` (phux-q0e.4, ADR-0018 addendum).
+    /// Handle a cumulative `FRAME_ACK` for `seq` (SPEC §8.2).
     ///
-    /// Under the v0.1 emit-once model (phux-ia4) the per-consumer
-    /// reference advances on *emit*, not on ack: a given change is shipped
-    /// exactly once and the reference is committed before the frame goes
-    /// out (see
-    /// [`crate::grid::SnapshotSynthesizer::synthesize_against_reference`]).
-    /// `FRAME_ACK` therefore no longer drives cache eviction; it tracks
-    /// `last_acked_seq` for backpressure accounting (proto.md §8.2) and
-    /// refreshes the informational cursor/mode capture. The loss-tolerance
-    /// "re-diff against an older reference on a dropped frame" property is
-    /// a future lossy-transport concern (ADR-0018), not wired on the
-    /// reliable v0.1 transports.
-    ///
-    /// Per proto.md §8.2 acks are cumulative: an ack for `seq = N` implies
-    /// all prior emissions up to `N`. Older / duplicate / out-of-order
-    /// acks (`seq <= last_acked_seq`) are silently dropped.
-    ///
-    /// Silent no-op if `client_id` is not currently registered. This
-    /// races cleanly against detach: the runtime may dispatch an
-    /// in-flight ack just as the consumer is being torn down, and the
-    /// ack should evaporate rather than recreate a dropped entry.
-    ///
-    /// Returns `true` when this ack folded a fresh RTT sample into the
-    /// consumer's [`RttEstimator`] (phux-q0e.5) — the `run` loop uses that as
-    /// a cue to recompute the shared adaptive tick cadence. `false` when no
-    /// sample was produced (no matching emit instant, older/duplicate ack,
-    /// or unregistered consumer).
+    /// Under emit-once the reference already advanced on emit, so the ack
+    /// tracks `last_acked_seq`, refreshes the cursor/mode capture, and feeds
+    /// RTT. Stale or unknown acks are ignored. Returns `true` when a fresh
+    /// RTT sample was folded in (the loop then re-evaluates the cadence).
     pub(super) fn on_generation_frame_ack(
         &mut self,
         client_id: ClientId,
@@ -334,13 +263,10 @@ impl TerminalActor {
     }
 
     pub(super) fn on_frame_ack(&mut self, client_id: ClientId, seq: u64) -> bool {
-        // Captured before the `&mut` borrow below: the global test override
-        // that forces every consumer onto the tick.
+        // The test override that forces every consumer onto the tick.
         let force_all_consumers = self.consumer_tick_emits;
         let Some(consumer) = self.consumer_states.get_mut(&client_id) else {
-            // Race against detach (or an ack for an unknown client). No
-            // bookkeeping; no warning — this is a steady-state event,
-            // not a misuse.
+            // An ack racing detach; steady-state, not a misuse.
             trace!(
                 ?client_id,
                 seq, "FRAME_ACK for unregistered consumer; dropping"
@@ -356,8 +282,8 @@ impl TerminalActor {
             Self::advance_acked_reference(consumer, seq);
         }
         let sampled = Self::fold_rtt_sample(client_id, consumer, seq);
-        // Capture through the tick renderer: a second RenderState would consume
-        // canonical dirty bits without refreshing the tick's cached row bodies.
+        // Capture through the tick renderer: a second render state would
+        // consume dirty bits without refreshing the tick's row cache.
         let canonical = self.terminal.borrow();
         if let Some(terminal) = canonical.try_terminal()
             && let Some(cm) = Self::capture_acked_cursor_mode(
@@ -378,22 +304,15 @@ impl TerminalActor {
         sampled
     }
 
-    /// Admission is read-only: rejected ACKs must not change accounting, RTT,
-    /// reference snapshots, or terminal rendering state.
+    /// Read-only admission: a rejected ack changes nothing.
     fn accepts_frame_ack(
         consumer: &ConsumerSyncState,
         client_id: ClientId,
         seq: u64,
         force_all_consumers: bool,
     ) -> bool {
-        // phux-38k6: only a tick-managed consumer's acks belong to this
-        // per-consumer seq space. A raw (broadcast-pump) consumer acks the
-        // pump's *local* seq, which is unrelated to this state's `next_seq` /
-        // `emit_instants`; folding it in would set `last_acked_seq` from a
-        // foreign counter and skew the RTT/backpressure accounting once the
-        // consumer is (or becomes) state-sync. Drop it — the pump owns no
-        // per-consumer state to update (phux-fseo made modes negotiable, so
-        // this is now reachable, not just defensive).
+        // A raw consumer acks the pump's own seq space, unrelated to this
+        // state; folding it in would corrupt accounting.
         if !force_all_consumers && !consumer.wants_state_sync {
             trace!(
                 ?client_id,
@@ -402,8 +321,7 @@ impl TerminalActor {
             return false;
         }
         if seq <= consumer.last_acked_seq {
-            // Older or duplicate ack — acks are cumulative (proto.md
-            // §8.2), so `seq <= last_acked_seq` carries no new information.
+            // Cumulative: nothing new.
             trace!(
                 ?client_id,
                 seq,
@@ -413,9 +331,7 @@ impl TerminalActor {
             return false;
         }
         if seq >= consumer.next_seq {
-            // Cumulative acknowledgements cannot cover data never emitted.
-            // Accepting a future sequence would erase the in-flight accounting
-            // and suppress every subsequent legitimate ACK in this generation.
+            // An ack beyond what was emitted is rejected.
             trace!(
                 ?client_id,
                 seq,
@@ -427,17 +343,9 @@ impl TerminalActor {
         true
     }
 
-    /// Advance a loss-tolerant consumer's acked reference to cover `seq`
-    /// (phux-v45.8, ADR-0042).
-    ///
-    /// A cumulative ack for `seq` acknowledges every emission up to and
-    /// including it, so the consumer's acked reference advances to the grid
-    /// snapshot of the highest emitted `seq` this ack covers, and every
-    /// pending snapshot at or below `seq` is dropped. This is the eviction the
-    /// emit-once path (see [`Self::fold_rtt_sample`], comment retained for
-    /// contrast) deliberately does NOT do: on a lossy leg the reference must
-    /// trail the ack so a dropped frame re-diffs against the last state the
-    /// consumer provably has.
+    /// Advance a loss-tolerant consumer's acked reference to the snapshot of
+    /// the highest emitted `seq` this ack covers, dropping older snapshots
+    /// (ADR-0042).
     fn advance_acked_reference(consumer: &mut ConsumerSyncState, seq: u64) {
         if let Some((&covered, _)) = consumer.pending_refs.range(..=seq).next_back()
             && let Some(snapshot) = consumer.pending_refs.remove(&covered)
@@ -454,15 +362,8 @@ impl TerminalActor {
         }
     }
 
-    /// Turn the ack for `seq` into an RTT sample and prune the acked emit
-    /// instants. `true` when a sample was folded into the EMA.
-    ///
-    /// RTT sample (phux-q0e.5). Acks are cumulative, so `seq` acknowledges
-    /// every emission up to and including it. Find the emit instant for
-    /// the highest emitted seq that is `<= seq` (the most recent frame
-    /// this ack covers) and time it against now. Then prune every emit
-    /// instant `<= seq`: those frames are acked and can never produce a
-    /// future sample, so the map stays bounded by the in-flight window.
+    /// Turn the ack into an RTT sample from the newest covered emit instant,
+    /// then prune every covered instant. `true` when a sample was folded.
     fn fold_rtt_sample(client_id: ClientId, consumer: &mut ConsumerSyncState, seq: u64) -> bool {
         let now = tokio::time::Instant::now();
         let rtt_sample = consumer
@@ -470,8 +371,6 @@ impl TerminalActor {
             .range(..=seq)
             .next_back()
             .map(|(_, &emitted_at)| now.saturating_duration_since(emitted_at));
-        // No split/rebuild of the retained in-flight tree on every ACK, and no
-        // successor arithmetic at the sequence boundary.
         while consumer
             .emit_instants
             .first_key_value()
@@ -494,9 +393,8 @@ impl TerminalActor {
         true
     }
 
-    /// Capture the informational cursor/mode state an ack should be paired
-    /// with, or `None` when the reusable `RenderState` could not be built or
-    /// updated (the prior capture is then kept).
+    /// Capture the cursor/mode state to pair with an ack; `None` (keep the
+    /// prior capture) if the render state fails.
     fn capture_acked_cursor_mode(
         synth: &mut crate::grid::SnapshotSynthesizer<'static>,
         terminal: &GhosttyTerminal<'static, '_>,
@@ -517,16 +415,9 @@ impl TerminalActor {
         }
     }
 
-    /// The shared adaptive tick interval for this actor: the minimum over
-    /// every attached consumer's desired interval (phux-q0e.5).
-    ///
-    /// One `tokio::time::Interval` drives the whole pane, but RTT is
-    /// per-consumer. Taking the *minimum* means the most-demanding (lowest
-    /// half-RTT) consumer sets the cadence: a fast local peer keeps its 50 Hz
-    /// feel even when sharing the pane with a slow satellite peer, and the
-    /// slow peer simply sees more empty/short diffs per tick (harmless — the
-    /// per-consumer reference advances only on a real delta). With no
-    /// consumers, or none yet sampled, this is [`DEFAULT_TICK_INTERVAL`].
+    /// The shared tick interval: the minimum desired interval over all
+    /// consumers, so the fastest peer sets the cadence (slower peers just see
+    /// more empty diffs). [`DEFAULT_TICK_INTERVAL`] with no samples.
     pub(super) fn adaptive_tick_interval(&self) -> std::time::Duration {
         self.consumer_states
             .values()
@@ -535,16 +426,9 @@ impl TerminalActor {
             .unwrap_or(DEFAULT_TICK_INTERVAL)
     }
 
-    /// Rebuild the shared state-sync timer to fire at `desired` if it differs
-    /// from the currently-armed `current` by more than [`TICK_RESET_DEADBAND`]
-    /// (phux-q0e.5).
-    ///
-    /// The deadband keeps a steady RTT from churning the scheduler on every
-    /// sub-millisecond EMA wobble. `tokio::time::Interval::reset_after`
-    /// re-anchors only the next deadline; the recurring `period` is fixed at
-    /// construction, so changing the cadence means rebuilding the interval.
-    /// The first new tick is anchored one full `desired` out so the cadence
-    /// change doesn't fire a tick immediately.
+    /// Rebuild the shared timer at `desired` when it differs from `current`
+    /// by more than [`TICK_RESET_DEADBAND`]. `Interval`'s period is fixed, so
+    /// a new cadence means a new interval, first tick one period out.
     pub(super) fn rearm_tick(
         tick: &mut tokio::time::Interval,
         current: &mut std::time::Duration,

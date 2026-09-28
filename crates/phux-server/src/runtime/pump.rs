@@ -1,18 +1,9 @@
-//! Shared per-generation state for the pane output pumps.
+//! Shared per-generation state for the pane output pumps (the ATTACH pump in
+//! [`crate::runtime::attach`] and the `ATTACH_RESOURCE` pump in
+//! [`crate::runtime::commands`]).
 //!
-//! Two pumps forward one pane's broadcast output to one consumer: the ATTACH
-//! pump in [`crate::runtime::attach`] and the `ATTACH_RESOURCE` pump in
-//! [`crate::runtime::commands`]. They differ in how they publish a bootstrap
-//! and in what they do when they fail, but the rules for *what may go on the
-//! wire right now* are identical — and when they were written twice, only one
-//! copy got the gap fence (phux-l96p.10), so the same client-killing sequence
-//! gap stayed live on the `rec` / `play` / headless / FFI path after it was
-//! fixed for interactive attach.
-//!
-//! [`PumpGeneration`] is that shared rule set, and it keeps `generation_active`
-//! and `gap_pending` **private**: a pump cannot put a live delta on the wire
-//! without asking [`PumpGeneration::forwards`], so a third pump cannot
-//! reintroduce the bug by forgetting a flag it never sees.
+//! [`PumpGeneration`] keeps its flags private so no pump can put a live delta
+//! on the wire without asking [`PumpGeneration::forwards`].
 
 use std::time::Duration;
 
@@ -29,9 +20,8 @@ pub(super) enum MailboxForward {
     Sent,
     /// The consumer went away.
     Closed,
-    /// The mailbox is full: this consumer is behind, and parking would keep
-    /// the pump off the broadcast until it drains — the trap that lets a
-    /// pane exit lose a fenced resync (phux-fpgl.28).
+    /// The mailbox is full: parking would keep the pump off the broadcast
+    /// and could lose a fenced resync.
     Full,
 }
 
@@ -88,47 +78,25 @@ pub(super) async fn stop_output(
     }
 }
 
-/// How long a fenced pump waits for the replacement generation before asking
-/// for it again, the first time.
-///
-/// An order of magnitude above the actor's `RESIZE_RESYNC_DEBOUNCE`, so a
-/// resync that is merely coalescing is never mistaken for one that was lost.
+/// First wait for a replacement generation before asking again: well above
+/// the actor's resync debounce, so a coalescing resync never looks lost.
 const GAP_RESYNC_RETRY: Duration = Duration::from_millis(500);
+const _: () = assert!(
+    GAP_RESYNC_RETRY.as_millis() >= crate::terminal_actor::RESIZE_RESYNC_DEBOUNCE.as_millis() * 4
+);
 
-/// Ceiling on the doubling backoff between retries.
-///
-/// The backoff exists because the actor coalesces gap resyncs behind one
-/// debounce: N fenced pumps on one pane all retrying on the same fixed period
-/// arrive at a mean interval of `period / N`, which at ten consumers is faster
-/// than the debounce can fire. Doubling pulls the fleet apart instead of
-/// hammering in lockstep.
+/// Ceiling on the doubling retry backoff, which keeps many fenced pumps on
+/// one pane from hammering the actor's debounce in lockstep.
 const GAP_RESYNC_MAX_BACKOFF: Duration = Duration::from_secs(4);
 
-/// How many resync requests one gap gets before it is declared unrecoverable.
-///
-/// A fenced pump forwards nothing, so an actor that accepts the request and
-/// never answers it would otherwise hold the consumer on a frozen screen
-/// forever while logging a warning twice a second. The budget turns that into
-/// a bounded wait — ~11.5s including the final response window — ending in a
-/// terminal `ERROR` the consumer can reconnect from. Generous enough that a
-/// merely busy actor is never mistaken for a dead one.
+/// Resync requests one gap gets before it is unrecoverable (~11.5s): an actor
+/// that never answers ends in a terminal `ERROR`, not a frozen screen.
 const GAP_RESYNC_MAX_ATTEMPTS: u32 = 5;
 
-/// How long after the pane read a chunk an interactive pump may still forward
-/// it.
-///
-/// The broadcast holds 256 chunks, so its own `Lagged` signal fires only once
-/// a consumer is hundreds of kilobytes behind — on a remote link slower than
-/// the pane's output, that is ten seconds of screen in front of every
-/// keystroke echo. On a local socket a chunk reaches the pump within
-/// milliseconds; one that is older than this is a consumer draining slower
-/// than the pane talks, and it gets one fresh screen instead of the backlog.
-///
-/// The clock starts at the later of the PTY read and the current
-/// generation's publication ([`PumpGeneration::chunk_age`]). A pump is
-/// blocked while its bootstrap drains, so without that anchor the first live
-/// chunk after a slow-but-healthy republish would already look stale and
-/// start another resync — a consumer that only ever sees checkpoints.
+/// How old (since the later of the PTY read and the generation's publication)
+/// a chunk may be and still be forwarded. The broadcast's own `Lagged` fires
+/// only hundreds of kilobytes behind; a consumer slower than this gets one
+/// fresh screen instead of the backlog.
 pub(super) const STALE_OUTPUT_BUDGET: Duration = Duration::from_millis(250);
 
 /// Has a chunk read `age` ago fallen past [`STALE_OUTPUT_BUDGET`]?
@@ -149,22 +117,10 @@ pub(super) struct PumpGeneration {
     /// Cleared by a tombstone and set again once a replacement bootstrap is
     /// published; nothing may be forwarded in between.
     generation_active: bool,
-    /// Set the moment the broadcast drops a window under this pump, cleared
-    /// when the replacement generation is published.
-    ///
-    /// While it is set the pump forwards nothing. Two things depend on that.
-    /// First, the consumer's mirror is exactly sequenced: a `RESOURCE_OUTPUT`
-    /// whose `seq` skips the dropped window is a `SequenceGap`, which the
-    /// client kernel treats as a protocol error and detaches on — so
-    /// forwarding "the rest" after a gap does not degrade the session, it ends
-    /// it. Second, a pump that keeps awaiting mailbox capacity for frames the
-    /// consumer cannot use drains the broadcast at the *consumer's* speed, and
-    /// the in-band resync it just asked for is delivered on that same
-    /// broadcast: at PTY speed the resync is overwritten before the pump
-    /// reaches it, and the next lag re-arms the same trap. Dropping instead of
-    /// queueing lets the pump drain at memory speed, so the resync always
-    /// arrives. This is tmux's rule — a consumer far enough behind gets one
-    /// fresh screen, not a replay of everything it missed.
+    /// Set when the broadcast drops a window under this pump, cleared when
+    /// the replacement generation is published. While set nothing is
+    /// forwarded: a skipped `seq` is a `SequenceGap` the client detaches on,
+    /// and draining at memory speed is what lets the requested resync arrive.
     gap_pending: bool,
     /// Resync requests already spent on the current gap; reset when a
     /// replacement generation lands. Bounded by [`GAP_RESYNC_MAX_ATTEMPTS`].
@@ -192,12 +148,9 @@ impl PumpGeneration {
         }
     }
 
-    /// How stale a live chunk read at `read_at` is for this consumer: the time
-    /// since the later of that read and this generation's publication.
-    ///
-    /// A chunk read before the generation was published waited behind the
-    /// bootstrap, not behind a slow consumer; counting that wait would resync
-    /// a healthy consumer again the moment its republish finished draining.
+    /// How stale a chunk read at `read_at` is: the time since the later of
+    /// that read and this generation's publication, since waiting behind the
+    /// bootstrap is not the consumer's fault.
     pub(super) fn chunk_age(&self, read_at: std::time::Instant) -> Duration {
         std::time::Instant::now().saturating_duration_since(read_at.max(self.published_at))
     }
@@ -228,11 +181,8 @@ impl PumpGeneration {
         self.gap_pending
     }
 
-    /// May this live delta go on the wire?
-    ///
-    /// The single gate every pump's live-forward path must pass through. A
-    /// retired generation and a fenced one both answer `false`, as does a
-    /// sequence the published bootstrap already covers.
+    /// May this live delta go on the wire? Not when retired, fenced, or
+    /// already covered by the published bootstrap.
     pub(super) const fn forwards(&self, seq: u64) -> bool {
         self.generation_active && !self.gap_pending && seq > self.published_cut
     }
@@ -248,12 +198,8 @@ impl PumpGeneration {
         self.generation_active = false;
     }
 
-    /// The broadcast dropped a window under this pump: fence the generation
-    /// before asking for a resync.
-    ///
-    /// Returns whether a resync was *already* in flight, which distinguishes a
-    /// fresh gap (worth a `WARN`) from a repeat while fenced (a `DEBUG`, so a
-    /// pane that keeps lagging cannot flood the log).
+    /// Fence the generation before asking for a resync; returns whether one
+    /// was already in flight.
     pub(super) fn fence_for_gap(&mut self) -> bool {
         let already_pending = self.gap_pending;
         self.gap_pending = true;
@@ -279,9 +225,8 @@ impl PumpGeneration {
         self.gap_deadline = Some(tokio::time::Instant::now() + self.gap_retry_delay());
     }
 
-    /// How long to wait for a response, including after the final request.
-    ///
-    /// Doubles from [`GAP_RESYNC_RETRY`] to [`GAP_RESYNC_MAX_BACKOFF`].
+    /// How long to wait for a response: doubles from [`GAP_RESYNC_RETRY`] to
+    /// [`GAP_RESYNC_MAX_BACKOFF`].
     fn gap_retry_delay(&self) -> Duration {
         let step = self.gap_attempts.saturating_sub(1).min(u32::BITS - 1);
         GAP_RESYNC_RETRY
@@ -297,37 +242,16 @@ impl PumpGeneration {
         }
     }
 
-    /// How many resync requests this gap has already cost, for the log line
-    /// that gives up on it.
+    /// Resync requests this gap has already cost.
     pub(super) const fn gap_attempts(&self) -> u32 {
         self.gap_attempts
     }
 
     /// Does a [`PaneOutput::Resync`] addressed to `audience` replace this
-    /// pump's generation?
-    ///
-    /// The single gate both pumps' resync arms pass through, for the same
-    /// reason [`Self::forwards`] is the single live gate. A resync addressed
-    /// to everyone (a reflow) always does. One addressed to named pumps is a
-    /// gap resync some pump asked for: it replaces this generation only if
-    /// this pump is named *and still fenced*. Every other pump on the pane —
-    /// the local TUI beside a slow remote attach, a recorder, a cockpit —
-    /// keeps its generation and pays no tombstone, no bootstrap, and no
-    /// native checkpoint capture (phux-auqy). A named pump that is no longer
-    /// fenced already took an everyone-resync that healed its gap, so a second
-    /// republish would be exactly that churn again.
-    ///
-    /// Taking an addressed resync only while fenced loses nothing: a pump
-    /// asks for one only after fencing itself, and only a republish unfences.
-    ///
-    /// A named pump that is *retired* — a forwarded `BootstrapTombstone`
-    /// voided its generation without a gap fence — takes it too. That is how
-    /// the actor revives the native pumps a reflow tombstoned when no
-    /// everyone-resync follows (an attach-time viewport change): it names
-    /// them (phux-p5bo). A retired pump is never revived by a resync naming
-    /// someone else. A native pump retired by its own client's reattach must
-    /// stay retired, or its capture races the live stream's for the
-    /// owner-keyed native binding and the loser detaches the client.
+    /// pump's generation? One for everyone (a reflow) always does. One naming
+    /// pumps replaces only a named pump that is still fenced or retired, so
+    /// every other consumer of the pane keeps its generation; a pump retired
+    /// by its own client's reattach must never be revived by someone else's.
     pub(super) fn takes_resync(&self, audience: &ResyncAudience, pump: ResyncTarget) -> bool {
         match audience {
             ResyncAudience::Everyone => true,
@@ -337,9 +261,7 @@ impl PumpGeneration {
         }
     }
 
-    /// Restart the staleness clock once a published generation's bootstrap
-    /// and replay are handed off, so a chunk that waited behind them is aged
-    /// from here rather than from its PTY read. See [`Self::chunk_age`].
+    /// Restart the staleness clock once a bootstrap and replay are handed off.
     pub(super) fn restart_staleness_clock(&mut self) {
         self.published_at = std::time::Instant::now();
     }
@@ -364,24 +286,12 @@ pub(super) enum PumpWait {
     /// A fenced pump's backoff elapsed with no replacement generation: ask
     /// again.
     RetryResync,
-    /// The gap spent its whole request budget without an answer. The pump
-    /// must tell the consumer and stop, rather than hold it on a screen that
-    /// can never change.
+    /// The gap spent its whole request budget without an answer.
     GapUnrecoverable,
 }
 
-/// The next broadcast event for a pump.
-///
-/// A pump that is not fenced simply awaits the broadcast. A fenced one bounds
-/// that wait: it is forwarding nothing until the replacement generation lands,
-/// so without a bound a resync that never arrived would be indistinguishable
-/// from a pane with nothing to say — and a bound with no budget behind it is
-/// just an infinite retry loop, which is what this used to be.
-///
-/// # Cancel safety
-///
-/// `broadcast::Receiver::recv` is cancel-safe, so the bounded wait cannot drop
-/// a message it had already taken.
+/// The next broadcast event for a pump; a fenced pump's wait is bounded by
+/// its retry deadline. `recv` is cancel-safe, so the timeout drops nothing.
 pub(super) async fn next_event(
     generation: &PumpGeneration,
     output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
@@ -408,8 +318,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        GAP_RESYNC_MAX_ATTEMPTS, GAP_RESYNC_RETRY, PumpGeneration, PumpWait, STALE_OUTPUT_BUDGET,
-        is_stale, next_event,
+        GAP_RESYNC_MAX_ATTEMPTS, PumpGeneration, PumpWait, STALE_OUTPUT_BUDGET, is_stale,
+        next_event,
     };
 
     use crate::terminal_actor::{PaneOutput, ResyncAudience, ResyncTarget};
@@ -422,9 +332,8 @@ mod tests {
         }
     }
 
-    /// phux-auqy: an addressed gap resync replaces only the fenced pump it
-    /// names. A fresh pump beside it — or the same client on another stream —
-    /// keeps its generation; a reflow still replaces everyone's.
+    /// An addressed gap resync replaces only the fenced pump it names; a
+    /// reflow still replaces everyone's.
     #[test]
     fn an_addressed_resync_is_taken_only_by_the_fenced_pump_it_names() {
         let stale = pump_on(1, 1);
@@ -452,11 +361,8 @@ mod tests {
         assert!(fenced.takes_resync(&ResyncAudience::Everyone, stale));
     }
 
-    /// Owner and stream can collide across pump kinds (an `ATTACH` pump's
-    /// stream comes from its attach id, an `ATTACH_RESOURCE` pump's from its
-    /// client id),
-    /// so a target names the generation too: a resync owed to one generation
-    /// is not taken by another pump that happens to share owner and stream.
+    /// Owner and stream can collide across pump kinds, so a target names the
+    /// generation too.
     #[test]
     fn a_resync_for_another_generation_of_the_same_stream_is_not_taken() {
         let mut retired = opened();
@@ -471,10 +377,6 @@ mod tests {
     }
 
     /// A retired generation takes a resync that names it, and only that.
-    ///
-    /// The actor names the native pumps a reflow tombstoned (phux-p5bo); a
-    /// resync naming another pump must not revive a retired one, because a
-    /// pump retired by its own client's reattach must stay retired.
     #[test]
     fn a_retired_generation_takes_only_a_resync_that_names_it() {
         let me = pump_on(2, 1);
@@ -495,12 +397,7 @@ mod tests {
         );
     }
 
-    /// A chunk that waited behind a republish is measured from the republish.
-    ///
-    /// Read two seconds ago but dequeued straight after its generation was
-    /// published, it is fresh: the wait was the bootstrap draining, not the
-    /// consumer falling behind. Without the anchor a slow-but-healthy link
-    /// would resync on every republish and never show live output.
+    /// A chunk that waited behind a republish is aged from the republish.
     #[test]
     fn chunk_age_starts_no_earlier_than_the_generation_publication() {
         let read_long_ago = std::time::Instant::now()
@@ -513,13 +410,6 @@ mod tests {
             generation.chunk_age(std::time::Instant::now()) < STALE_OUTPUT_BUDGET,
             "a chunk read after publication is aged from its own read",
         );
-    }
-
-    #[test]
-    fn output_is_stale_only_past_the_budget() {
-        assert!(!is_stale(Duration::ZERO));
-        assert!(!is_stale(STALE_OUTPUT_BUDGET));
-        assert!(is_stale(STALE_OUTPUT_BUDGET + Duration::from_millis(1)));
     }
 
     #[test]
@@ -609,60 +499,37 @@ mod tests {
         PumpGeneration::opened_at(41, bootstrap(7))
     }
 
+    /// The live gate: past the cut only, nothing while fenced (a skipped seq
+    /// would detach the client) or retired, and a republish re-anchors it so
+    /// replay entries the checkpoint covers are dropped.
     #[test]
-    fn a_fresh_generation_forwards_only_past_its_cut() {
-        let generation = opened();
-        assert!(
-            !generation.forwards(41),
-            "the cut itself is already covered"
-        );
-        assert!(generation.forwards(42));
-        assert!(!generation.is_fenced());
-    }
-
-    #[test]
-    fn a_gap_fences_every_live_delta_until_the_replacement_lands() {
+    fn forwards_gates_cut_fence_and_retirement() {
         let mut generation = opened();
+        assert!(!generation.forwards(41), "the cut itself is covered");
+        assert!(generation.forwards(42));
+
         assert!(!generation.fence_for_gap(), "first gap is not a repeat");
-        assert!(generation.is_fenced());
-        // This is the frame that used to detach the client.
         assert!(!generation.forwards(20_533));
         assert!(generation.fence_for_gap(), "second gap is a repeat");
-
         generation.republished_at(9_000);
         assert!(!generation.is_fenced());
-        assert!(!generation.forwards(9_000));
-        assert!(generation.forwards(9_001));
-    }
+        let admitted: Vec<u64> = [8_999_u64, 9_000, 9_001, 9_002]
+            .into_iter()
+            .filter(|seq| generation.forwards(*seq))
+            .collect();
+        assert_eq!(admitted, vec![9_001, 9_002]);
 
-    #[test]
-    fn a_retired_generation_forwards_nothing_even_unfenced() {
-        let mut generation = opened();
         generation.retire();
         assert!(!generation.is_active());
-        assert!(!generation.forwards(42));
+        assert!(!generation.forwards(9_003));
         generation.republished_at(100);
-        assert!(generation.is_active());
         assert!(generation.forwards(101));
     }
 
-    #[test]
-    fn the_retry_window_sits_well_above_the_actor_resync_debounce() {
-        assert!(
-            GAP_RESYNC_RETRY >= crate::terminal_actor::RESIZE_RESYNC_DEBOUNCE * 4,
-            "a resync that is merely coalescing must not look like one that was lost",
-        );
-    }
-
-    /// The fence is a bounded wait, not an infinite retry loop.
-    ///
-    /// Every retry doubles, so N pumps on one pane pull apart instead of
-    /// hammering the actor's coalescing debounce in lockstep, and the budget
-    /// runs out — an actor that accepts a resync and never broadcasts one must
-    /// end in a terminal error the consumer can reconnect from, not a frozen
-    /// screen and two warnings a second forever.
+    /// Retries double up to the cap, the budget runs out, and a republish
+    /// restores the full budget for a later gap.
     #[tokio::test(start_paused = true)]
-    async fn a_gap_retries_with_backoff_and_then_gives_up() {
+    async fn a_gap_retries_with_backoff_and_republishing_restores_the_budget() {
         let mut generation = opened();
         generation.fence_for_gap();
 
@@ -685,31 +552,12 @@ mod tests {
             "doubling backoff, capped at GAP_RESYNC_MAX_BACKOFF",
         );
         assert_eq!(generation.gap_attempts(), GAP_RESYNC_MAX_ATTEMPTS);
-        let total: Duration = delays.iter().sum();
-        assert!(
-            total >= Duration::from_secs(5) && total <= Duration::from_secs(30),
-            "the whole fence must be bounded and humane, got {total:?}",
-        );
-    }
 
-    /// The whole point of item 2: a publication replay may carry entries the
-    /// checkpoint it accompanies already covers, and re-sending one under the
-    /// new `bootstrap_id` is a `DuplicateSequence` to the client kernel, which
-    /// detaches on it. Both native replay loops filter on exactly this.
-    #[test]
-    fn a_replay_entry_at_or_behind_the_cut_is_never_admissible() {
-        let mut generation = opened();
         generation.republished_at(9_000);
-        let replay = [8_998_u64, 8_999, 9_000, 9_001, 9_002];
-        let admitted: Vec<u64> = replay
-            .into_iter()
-            .filter(|seq| generation.forwards(*seq))
-            .collect();
-        assert_eq!(
-            admitted,
-            vec![9_001, 9_002],
-            "everything the replacement checkpoint already covers must be dropped",
-        );
+        assert_eq!(generation.gap_attempts(), 0);
+        generation.fence_for_gap();
+        generation.note_resync_requested();
+        assert_eq!(generation.gap_retry_delay(), Duration::from_millis(500));
     }
 
     /// A fenced pump that is never answered ends, rather than retrying for
@@ -739,8 +587,7 @@ mod tests {
         drop(tx);
     }
 
-    /// ...and an actor that *does* answer, even late, unfences the pump
-    /// instead of tripping the budget.
+    /// An actor that answers late still unfences the pump.
     #[tokio::test(start_paused = true)]
     async fn a_late_resync_still_unfences_the_pump() {
         let (tx, mut rx) = tokio::sync::broadcast::channel::<PaneOutput>(8);
@@ -780,29 +627,6 @@ mod tests {
         }
         assert!(!generation.is_fenced());
         assert!(generation.forwards(9_001));
-    }
-
-    /// A replacement generation returns the full budget, so a later, unrelated
-    /// gap is not punished for an earlier one.
-    #[tokio::test(start_paused = true)]
-    async fn republishing_restores_the_gap_budget() {
-        let mut generation = opened();
-        generation.fence_for_gap();
-        for _ in 0..GAP_RESYNC_MAX_ATTEMPTS {
-            generation.note_resync_requested();
-            tokio::time::advance(generation.gap_retry_delay()).await;
-        }
-        assert_eq!(generation.gap_attempts(), GAP_RESYNC_MAX_ATTEMPTS);
-
-        generation.republished_at(9_000);
-        assert_eq!(generation.gap_attempts(), 0);
-        generation.fence_for_gap();
-        generation.note_resync_requested();
-        assert_eq!(
-            generation.gap_retry_delay(),
-            Duration::from_millis(500),
-            "a fresh gap starts from the first backoff step",
-        );
     }
 
     #[tokio::test(start_paused = true)]

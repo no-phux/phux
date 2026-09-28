@@ -2,32 +2,17 @@
 //! remote phux server the way `phux attach --remote HOST` does (ADR-0007,
 //! ADR-0031, ADR-0093 rung 1).
 //!
-//! The session kernel behind such an embedder is sans-IO: the embedder owns
-//! the socket and moves SPEC §5 frames. A local server is a Unix-domain
-//! socket the embedder can open itself. A remote one is QUIC or TLS
-//! WebSocket with a pinned certificate and a bearer token, which no embedder
-//! should reimplement. So the tunnel keeps the embedder's socket model and
-//! supplies the far side of it: the embedder creates a connected Unix-domain
-//! socket pair, keeps one end for its ordinary framed I/O, and hands the
-//! other to a [`Tunnel`], which dials the host on its own thread and relays
-//! frames through it byte-for-byte.
+//! The embedder creates a connected Unix-domain socket pair, keeps one end
+//! for its ordinary framed I/O, and hands the other to a [`Tunnel`], which
+//! dials the pinned QUIC or TLS WebSocket host on its own thread and relays
+//! frames byte-for-byte. QUIC is a byte copy; WebSocket cuts the outbound
+//! stream at frame boundaries and checks each inbound message is exactly
+//! one frame. Nothing is decoded.
 //!
-//! Framing is untouched in both directions. QUIC carries the same
-//! length-prefixed byte stream as a Unix socket, so that lane is a byte copy.
-//! WebSocket carries exactly one frame per binary message, so that lane cuts
-//! the embedder's byte stream at frame boundaries on the way out and checks
-//! each message is exactly one frame on the way in. Nothing is decoded, and
-//! the session kernel on the embedder's side never learns which lane it is
-//! on.
-//!
-//! Both lanes run their two directions concurrently. An embedder's socket
-//! worker typically reads only between its own writes (Cockpit's does), so a
-//! lane that stopped reading the embedder while it delivered to it would
-//! deadlock a large paste against heavy output as soon as both socket
-//! buffers filled.
-//!
-//! The bearer token is read from the entry's token file inside the tunnel,
-//! just before the dial, and never leaves this thread.
+//! Both directions run concurrently: an embedder that reads only between
+//! its own writes would otherwise deadlock a large paste against heavy
+//! output. The bearer token is read just before the dial and never leaves
+//! the tunnel thread.
 
 use std::os::unix::net::UnixStream;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -304,21 +289,10 @@ impl Drop for Tunnel {
 
 /// Run one tunnel to completion on the calling (dedicated) thread.
 ///
-/// The terminal state is published BEFORE the embedder's socket is dropped,
-/// so an embedder that reads EOF and then asks why always finds the answer.
-///
-/// A Rust panic on this thread used to abort the host process (Cockpit
-/// links the FFI with `panic = unwind`, and this is the one remote-dial
-/// thread the C ABI's `catch_unwind` does not wrap). Contain it, publish
-/// FAILED, then drop the socket so the embedder still reads a reason
-/// before EOF.
-///
-/// This does not contain SIGILL. Cockpit 0.23.3 aborted on Apple ARM64
-/// during QUIC TLS 1.3 signature verify (`p256_mul_mont`) because
-/// `dead_strip` dropped ring's local helpers. That is
-/// `keepRingP256Helpers` in the Cockpit build, not a trust-policy bug:
-/// [`phux_dial::CertTrust::Pinned`] and [`phux_dial::CertTrust::SkipVerify`]
-/// both still call ring ECDSA.
+/// The terminal state is published before the embedder's socket is dropped,
+/// so an embedder that reads EOF always finds the reason. A panic here is
+/// contained and published as FAILED: this thread is not wrapped by the C
+/// ABI's `catch_unwind`.
 fn run(shared: &Arc<TunnelShared>, cancel: &Arc<Notify>, resolved: &Resolved, stream: UnixStream) {
     // Keep the embedder's pair open across an unwind so FAILED is published
     // before EOF, matching the ordinary failure contract.

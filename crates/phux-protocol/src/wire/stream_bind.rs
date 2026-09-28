@@ -1,20 +1,9 @@
 //! `STREAM_BIND` header for QUIC multi-stream (`docs/spec/proto.md` §4.2,
 //! ADR-0115).
 //!
-//! Transport establishment, not a phux frame: the first bytes a client writes
-//! on a newly opened Terminal stream, binding that QUIC stream to one
-//! `(terminal_id, stream_id)` pair. Layout on the wire:
-//!
-//! ```text
-//! len: u32 BE || terminal_id || stream_id: u64 BE
-//! ```
-//!
-//! where `terminal_id` is the canonical `ResourceId` encoding (tag byte +
-//! `u32`, or tag + length-prefixed host + `u32` for satellite ids) and `len`
-//! counts everything after it. Like the bearer preamble, the header takes no
-//! frame discriminant; the server answers with that generation's
-//! `BOOTSTRAP_BEGIN` on the same stream, or refuses with an uncorrelated
-//! `ERROR` on control and a stream reset.
+//! Not a phux frame: the first bytes on a new Terminal stream, binding it to
+//! one `(terminal_id, stream_id)` pair as
+//! `len: u32 BE || terminal_id || stream_id: u64 BE`.
 
 use bytes::BytesMut;
 
@@ -24,23 +13,16 @@ use super::error::DecodeError;
 use super::frame::{decode_terminal_id, encode_terminal_id};
 use crate::ids::{ResourceId, StreamId};
 
-/// Upper bound on a `STREAM_BIND` header body, in bytes.
-///
-/// A satellite id carries at most a 255-byte host; the body is one tag byte,
-/// one `u32` id, and one `u64` stream id around it. Anything larger is
-/// hostile, not a Terminal name, and is refused before allocation — the same
-/// posture as the bearer preamble's length cap.
+/// Upper bound on a `STREAM_BIND` body (a 255-byte host plus fixed fields);
+/// anything larger is refused before allocation.
 pub const MAX_STREAM_BIND_BYTES: usize = 512;
 
-/// A decoded `STREAM_BIND` header: the Terminal the stream carries and the
-/// app-level stream generation it opens under.
+/// A decoded `STREAM_BIND` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamBind {
     /// The Terminal whose §4 frames ride this QUIC stream.
     pub terminal_id: ResourceId,
-    /// The app-level `StreamId` this stream opens under. Never the QUIC
-    /// stream id, which encodes initiator/type bits and is unstable across
-    /// reconnects.
+    /// The app-level `StreamId` (never the QUIC stream id).
     pub stream_id: StreamId,
 }
 
@@ -52,26 +34,17 @@ pub fn encode(bind: &StreamBind, buf: &mut BytesMut) {
         encode_terminal_id(&bind.terminal_id, &mut enc);
         enc.write_u64_be(bind.stream_id.get());
     }
-    // Bounded by construction (one tag byte, one `u32`, one `u64`, one host
-    // of at most 255 bytes); on a hypothetical overflow the saturated
-    // length fails decode, never truncates (the `unwrap_or` convention from
-    // `Encoder::write_bytes`).
     debug_assert!(body.len() <= MAX_STREAM_BIND_BYTES);
     let len = u32::try_from(body.len()).unwrap_or(u32::MAX);
     let mut enc = Encoder::new(buf);
     enc.write_u32_be(len);
-    // Raw append, not `write_bytes`: that helper length-prefixes its input
-    // as a leaf primitive, which would double-frame the header.
+    // Raw append: `write_bytes` would add a second length prefix.
     buf.extend_from_slice(&body);
 }
 
-/// Decode one `STREAM_BIND` header from the front of `input`.
-///
-/// Returns the bind plus the number of bytes consumed (length prefix and
-/// body). A declared length that disagrees with the available input, exceeds
-/// [`MAX_STREAM_BIND_BYTES`], or leaves trailing bytes after the
-/// `terminal_id || stream_id` pair is refused: a bind is fixed-shape, so
-/// trailing bytes are corruption, not extension.
+/// Decode one `STREAM_BIND` header from the front of `input`, returning it
+/// and the bytes consumed. The shape is fixed, so trailing body bytes are
+/// corruption.
 pub fn decode(input: &[u8]) -> Result<(StreamBind, usize), DecodeError> {
     let mut dec = Decoder::new(input);
     let len = dec.read_u32_be()? as usize;
@@ -110,15 +83,11 @@ mod tests {
     }
 
     #[test]
-    fn local_bind_roundtrips() {
+    fn local_and_satellite_binds_roundtrip() {
         roundtrip(&StreamBind {
             terminal_id: ResourceId::local(7),
             stream_id: StreamId::new(1).expect("nonzero"),
         });
-    }
-
-    #[test]
-    fn satellite_bind_roundtrips() {
         roundtrip(&StreamBind {
             terminal_id: ResourceId::satellite("devbox", 12),
             stream_id: StreamId::new(u64::MAX).expect("nonzero"),

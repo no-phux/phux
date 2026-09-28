@@ -79,16 +79,9 @@ pub struct ReplicaKey {
 }
 
 impl ReplicaKey {
-    /// Opaque 128-bit identity of this replica generation, for consumers
-    /// that pool per-terminal state across republishes.
-    ///
-    /// Packs the same `(stream_id, bootstrap_id)` pair the kernel itself
-    /// treats as the generation identity (`GenerationId`), losslessly: both
-    /// ids are non-zero `u64`s, so distinct generations always produce
-    /// distinct tokens and no hashing is involved. A frontend hands this to
-    /// `phux_protocol::render_pool::RenderPool::begin` alongside the terminal
-    /// it walks, so a pooled render cache is discarded when the published
-    /// `Terminal` is replaced at unchanged geometry (`phux-994s`).
+    /// Lossless 128-bit `(stream_id, bootstrap_id)` generation token, so a
+    /// pooled render cache is dropped when the published replica is replaced
+    /// at unchanged geometry.
     #[must_use]
     pub fn generation_token(&self) -> u128 {
         u128::from(self.stream_id.get()) << 64 | u128::from(self.bootstrap_id.get())
@@ -358,26 +351,14 @@ pub enum KernelSend {
         /// Negotiated response row bound.
         max_rows: u32,
     },
-    /// Subscribe to the connection-wide `AgentEvent` stream
-    /// (`SUBSCRIBE_EVENTS`, `docs/spec/L1.md` §7.5) so the terminal-scoped
-    /// status effects [`KernelInput::Event`] produces actually arrive.
-    ///
-    /// Emitted once every time the attach barrier releases
-    /// ([`SessionKernel::update`] on [`KernelInput::AttachReady`]).
-    /// Re-subscribing the same scope is a documented no-op on the wire, so
-    /// the kernel does not need to track whether it already asked.
+    /// Subscribe to the `AgentEvent` stream (`docs/spec/L1.md` §7.5) so
+    /// [`KernelInput::Event`] statuses arrive. Emitted on every attach-barrier
+    /// release; re-subscribing is a wire no-op.
     SubscribeEvents {
-        /// `None` subscribes to every Terminal local to the server the
-        /// client is connected to. On a federation hub this is a hub-local
-        /// scope only — it does not proxy to a satellite, whose events
-        /// require their own explicit `Some(terminal)` subscription routed
-        /// through the hub (`docs/spec/L1.md` §7.5,
-        /// `phux-server::runtime::client::handle_subscribe_events`).
+        /// `None` subscribes to every Terminal local to the connected server
+        /// (hub-local on a federation hub; satellites need `Some`).
         terminal: Option<ResourceId>,
-        /// Journal cursor (`SUBSCRIBE_EVENTS.after_seq`, ADR-0123). `None`
-        /// is the live-only subscription every client without a resume
-        /// cursor sends. The kernel emits `None` on attach; a host that is
-        /// catching up supplies a cursor on the FFI subscribe path.
+        /// Journal resume cursor (ADR-0123); `None` is live-only.
         after_seq: Option<u64>,
     },
 }
@@ -464,11 +445,8 @@ pub enum KernelStatus {
         /// when the shell did not include one.
         exit_code: Option<i32>,
     },
-    /// The Terminal's process exited, sourced from either a natural
-    /// `TerminalControl { action: Exited }` event (a retained resource
-    /// stays attached, ADR-0124) or a `RESOURCE_CLOSED` teardown. Reported
-    /// at most once per terminal even when both arrive (see
-    /// `SessionKernel::exited_status_once`).
+    /// The Terminal's process exited, from `TerminalControl { action: Exited }`
+    /// (ADR-0124) or `RESOURCE_CLOSED`; reported at most once per terminal.
     Exited {
         /// The Terminal that exited.
         terminal_id: ResourceId,
@@ -480,10 +458,7 @@ pub enum KernelStatus {
         /// so this is always `None` when sourced from that event; a
         /// `RESOURCE_CLOSED`-sourced exit carries the frame's own `signal`.
         signal: Option<i32>,
-        /// Why the resource closed. `TerminalControl`-sourced exits are
-        /// always [`CloseReason::Exited`] (a natural process exit is the
-        /// only cause that event reports); a `RESOURCE_CLOSED`-sourced exit
-        /// carries the frame's own reason.
+        /// Why the resource closed ([`CloseReason::Exited`] for `TerminalControl`).
         reason: CloseReason,
     },
 }
@@ -719,12 +694,6 @@ impl<E: EngineAdapter> ClosedReplica<E> {
     #[must_use]
     pub const fn engine_mut(&mut self) -> &mut E::Replica {
         &mut self.engine
-    }
-
-    /// Consume the wrapper and retain only the engine replica.
-    #[must_use]
-    pub fn into_engine(self) -> E::Replica {
-        self.engine
     }
 }
 
@@ -1135,21 +1104,13 @@ pub struct SessionKernel<E: EngineAdapter> {
     closed_replicas: HashMap<ResourceId, ClosedReplica<E>>,
     /// Terminals whose next close should retain the published generation.
     retain_replica_on_close: HashSet<ResourceId>,
-    /// Kind per resource, from the attach inventory, a declaration, or the
-    /// first bootstrap profile. Survives closure so a close can still be
-    /// classified; released with the resource.
+    /// Kind per resource; survives closure, released with the resource.
     kinds: HashMap<ResourceId, ResourceKind>,
     /// `AgentSession` resources: record streams without replicas.
     agents: HashMap<ResourceId, AgentStream>,
     closed: HashSet<ResourceId>,
-    /// Terminals for which [`KernelStatus::Exited`] has already been
-    /// emitted. A retained resource (D3) reports its exit once via
-    /// `TerminalControl { action: Exited }` while still attached, then again
-    /// via `RESOURCE_CLOSED` at purge; this set makes the second report a
-    /// no-op instead of clobbering the first with a less-informative one
-    /// (every later `TerminalControl` on the same id restamps the same
-    /// `Exited` lifecycle on unrelated lease changes, ADR-0033). Cleared only
-    /// when the terminal is fully forgotten ([`Self::release_terminal`]).
+    /// Terminals whose [`KernelStatus::Exited`] was already emitted: a retained
+    /// resource reports its exit via `TerminalControl` and again at purge.
     exit_reported: HashSet<ResourceId>,
     attach: Option<AttachState>,
     engine_effects: EngineEffectBuffer,
@@ -1802,12 +1763,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 Ok(())
             }
             KernelInput::Event { terminal_id, event } => {
-                // Mirrors the close path's own scope: a terminal this kernel
-                // does not track, or one already fully closed, gets no
-                // status. The FFI's `ensure_participant` already narrows
-                // this for that one host, but other kernel embedders (e.g.
-                // a UniFFI mobile bridge) have no equivalent guard of their
-                // own, so the kernel enforces it once, here.
+                // Untracked or already-closed terminals get no status.
                 if self.terminals.contains_key(terminal_id)
                     && !self.closed.contains(terminal_id)
                     && let Some(status) = self.status_for_agent_event(terminal_id, event)
@@ -3251,12 +3207,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
             | HistoryUnavailableReason::CodecFailure => HistoryLoadState::Tombstoned,
         };
         if !replica.history.invalidate_cursor(&cursor, state) {
-            // A cursor-scoped tombstone can race a page that advanced this
-            // replica to a newer cursor. It then names an already-resolved
-            // request rather than the one now outstanding. History is a
-            // recoverable, optional stream, so accepting that stale control
-            // frame as a fatal protocol gap would disconnect an otherwise
-            // healthy live pane.
+            // A tombstone for an already-advanced cursor is stale; history is
+            // optional, so ignore it rather than fail a healthy live pane.
             return Ok(());
         }
         self.adapter.clear_document_state(&mut replica.engine);
@@ -3475,14 +3427,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
         effects: &mut EffectBuffer,
     ) {
         self.perf_echo.forget(terminal_id);
-        // Only a resource this kernel actually tracks in `self.terminals`
-        // gets an OS process-exit status: an `AgentSession` is never
-        // inserted there (its provider-side outcome rides
-        // `AgentSessionStatus`, not `exit_status`/`signal`), and a close
-        // that names an id the kernel has already fully forgotten — a
-        // redundant close after that id's host projection was already
-        // withdrawn and released, `phux-client-ffi`'s
-        // `Subscriptions::was_withdrawn` case — has nothing new to report.
+        // Only tracked Terminals get a process-exit status: agent sessions report
+        // via `AgentSessionStatus`, and a forgotten id has nothing new to say.
         let was_tracked_terminal = self.terminals.contains_key(terminal_id);
         self.agents.remove(terminal_id);
         let damage_blocked = self.attach_blocks(terminal_id);
@@ -3601,13 +3547,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
         }
     }
 
-    /// Translate one subscribed [`AgentEvent`] into the frontend status it
-    /// produces, or `None` for every event kind this build does not surface —
-    /// grid dirty/idle, bell, title, spawn, asked, a lease change, and any tag
-    /// this decoder does not recognise (`AgentEvent::Unknown`). Bell and title
-    /// already reach a frontend through their own dedicated frames
-    /// (`BELL`/title damage), so this deliberately does not re-derive them from
-    /// the event stream too.
+    /// The frontend status one [`AgentEvent`] produces, or `None` for kinds
+    /// surfaced elsewhere (bell, title) or not at all.
     fn status_for_agent_event(
         &mut self,
         terminal_id: &ResourceId,
@@ -3625,42 +3566,19 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 terminal_id: terminal_id.clone(),
                 exit_code: *exit_code,
             }),
-            // `action` (not `lifecycle`) is the transition marker: the
-            // server restamps the actor's *current* lifecycle on every
-            // `TerminalControl` broadcast (acquire/seize/release/signal/...,
-            // ADR-0033), so a retained resource's later lease changes would
-            // each carry `lifecycle: Exited` too. Only `action: Exited`
-            // fires exactly once, at the actual transition.
+            // `action` marks the transition once; `lifecycle` is restamped on
+            // every later lease change (ADR-0033).
             AgentEvent::TerminalControl {
                 action: ControlAction::Exited,
                 exit_status,
                 ..
-            } => self.exited_status_once(
-                terminal_id,
-                *exit_status,
-                // `TerminalControl` does not carry a signal detail; the
-                // wire's only signal-bearing carrier is `RESOURCE_CLOSED`
-                // (see `KernelInput::ResourceClosed`).
-                None,
-                // `TerminalControl { action: Exited }` reports only a
-                // natural process exit (a retained resource stays attached
-                // instead of closing); `RESOURCE_CLOSED` carries every other
-                // cause on its own `reason` field.
-                CloseReason::Exited,
-            ),
+            } => self.exited_status_once(terminal_id, *exit_status, None, CloseReason::Exited),
             _ => None,
         }
     }
 
-    /// Produce [`KernelStatus::Exited`] for `terminal_id` at most once.
-    ///
-    /// A retained resource (D3) reports its exit twice at the wire level:
-    /// once via `TerminalControl { action: Exited }` while still attached,
-    /// and again via `RESOURCE_CLOSED` at eventual purge. Only the first
-    /// call for a given id produces a status; every later one — including a
-    /// `RESOURCE_CLOSED` that could offer a more complete `reason`/`signal`
-    /// — is suppressed rather than re-reported, since an effect already
-    /// delivered cannot be revised in place.
+    /// [`KernelStatus::Exited`] for `terminal_id` at most once; later reports
+    /// (even a richer `RESOURCE_CLOSED`) are suppressed.
     fn exited_status_once(
         &mut self,
         terminal_id: &ResourceId,

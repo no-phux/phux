@@ -1,13 +1,8 @@
-//! Placeholder overlay for a picker whose data is still on its way from the
-//! server (the `go-to-directory` listing).
+//! Placeholder overlay for a picker whose data is still in flight.
 //!
-//! It exists so the gap between sending a request and receiving its reply is
-//! modal like the picker that follows: keystrokes are swallowed instead of
-//! reaching the focused pane, and Escape cancels. It remembers the request it
-//! stands in for, so the driver can swap the real picker in only while this
-//! placeholder is still the active overlay
+//! Used for the `go-to-directory` listing: it swallows keys, Escape cancels, and the
+//! real picker replaces it only while it is still on top
 //! ([`OverlayState::replace_pending`](super::OverlayState::replace_pending)).
-//! Once it is dismissed, a late reply finds nothing to replace and is dropped.
 
 use phux_protocol::input::key::{KeyAction, KeyEvent, PhysicalKey};
 use ratatui::buffer::Buffer;

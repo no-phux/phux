@@ -1,9 +1,5 @@
-//! Structured bearer-credential authentication for remote consumers.
-//!
-//! The on-disk store contains only SHA-256 verifiers, never bearer secrets.
-//! Credentials carry stable identity and authorization metadata for the
-//! authority boundary described by ADR-0092; scope enforcement is deliberately
-//! owned by the follow-up authorization work, not this module.
+//! Bearer-credential authentication for remote consumers (ADR-0092). The
+//! store holds only SHA-256 verifiers, never secrets.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
@@ -18,14 +14,9 @@ use subtle::ConstantTimeEq;
 
 use phux_protocol::policy::PeerIdentity;
 
-/// The one bearer secret an on-demand listener admits (`OPEN_LISTENER`,
-/// ADR-0120).
-///
-/// Held in memory and never written to the store: it lives exactly as long
-/// as the listener that minted it, so closing the listener is its
-/// revocation, and nothing accumulates on disk however many attaches
-/// bootstrap over ssh. Like the store it keeps only a SHA-256 verifier and
-/// compares in constant time.
+/// The bearer secret an on-demand listener admits (`OPEN_LISTENER`,
+/// ADR-0120): in memory only, as a SHA-256 verifier compared in constant
+/// time, and revoked by closing the listener.
 pub struct ListenerToken {
     verifier: [u8; 32],
     id: String,
@@ -45,12 +36,11 @@ impl ListenerToken {
     /// `phux whoami` reports for such a connection.
     pub const PRINCIPAL: &'static str = "ssh-bootstrap";
 
-    /// Mint a token, returning it with the secret the client must present.
-    /// The secret is handed out once and not kept.
+    /// Mint a token and its one-time secret.
     ///
     /// # Errors
     ///
-    /// Fails only when the OS CSPRNG cannot be read.
+    /// When the OS CSPRNG cannot be read.
     pub fn mint() -> Result<(Self, [u8; TOKEN_LEN]), AuthError> {
         let (id, secret) = random_identity_and_secret()?;
         let mut verifier = [0u8; 32];
@@ -103,9 +93,8 @@ const VERIFIER_PREFIX: &str = "sha256:";
 // authentication retries again if writers keep replacing the store.
 const STABLE_READ_ATTEMPTS: usize = 3;
 
-/// The initial scope of an ordinary terminal pairing. Work-plane access is
-/// intentionally absent: ADR-0092 says existing terminal pairing is not
-/// implicitly work authorization.
+/// The initial scope of a terminal pairing; work-plane access is not
+/// implied (ADR-0092).
 pub const TERMINAL_CONTROL_SCOPE: &str = "terminal.control";
 
 /// Errors from loading or changing credentials.
@@ -169,9 +158,8 @@ struct CredentialRecord {
     expires_at: Option<DateTime<Utc>>,
     revoked_at: Option<DateTime<Utc>>,
     generation: u64,
-    /// When a bearer presentation last authenticated this generation.
-    /// Absent on credentials never used since mint (or minted before this
-    /// field existed). Older stores without the key deserialize as `None`.
+    /// Last successful authentication of this generation; `None` if never
+    /// used (or an older store).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_seen: Option<DateTime<Utc>>,
 }
@@ -208,13 +196,9 @@ impl PruneOutcome {
     }
 }
 
-/// Identity and policy metadata captured when a connection is established.
-///
-/// This value is a snapshot of what admitted the connection, not its live
-/// authority: revocation and expiry end an established connection too
-/// (`docs/spec/workload-auth.md` §7; ADR-0116 supersedes ADR-0031's
-/// survive-until-drop), through the retained [`BearerAdmission`] and the
-/// connection's grant.
+/// Identity and policy captured at connection establishment. Revocation
+/// and expiry still end the connection live (`workload-auth.md` §7), via
+/// [`BearerAdmission`] and the grant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthenticatedCredential {
     /// Stable credential identifier shared by its rotated generations.
@@ -230,35 +214,26 @@ pub struct AuthenticatedCredential {
     /// Monotonic generation within the credential identifier. For a workload
     /// credential, the generation of the registry snapshot that admitted it.
     pub generation: u64,
-    /// For a workload credential, the random instance id of the registry
-    /// file that admitted it; `None` for bearer credentials and for registry
-    /// files not yet rewritten. A generation is meaningful only within one
-    /// instance: key anything derived from it on `(registry_instance,
-    /// generation)`, never on the generation alone.
+    /// The admitting registry file's instance id (workload credentials);
+    /// key generation-derived state on `(registry_instance, generation)`.
     pub registry_instance: Option<String>,
 }
 
-/// Transport-derived identity plus the credential attestation captured at
-/// connection establishment.
-///
-/// The credential is absent for local/SSH trust paths. It is retained unchanged
-/// for the connection lifetime so the downstream authorization seam can inspect
-/// principal, scopes, generation, expiry, and id without re-reading the store.
+/// Transport identity plus the credential attestation from establishment
+/// (absent for local and SSH trust paths), retained for the connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectionIdentity {
     /// Existing transport identity used by current terminal policy.
     pub peer: PeerIdentity,
     /// Structured remote credential, when bearer authentication was used.
     pub credential: Option<AuthenticatedCredential>,
-    /// The ssh endpoints a same-uid `phux stdio-bridge` announced in HELLO
-    /// (`docs/spec/L3.md` §3.9). Always `None` at accept. Set afterwards only
-    /// for a Unix-socket peer running as the serving uid. It relabels the
-    /// whoami route and nothing else: policy never reads it.
+    /// The ssh endpoints a same-uid `phux stdio-bridge` announced
+    /// (`docs/spec/L3.md` §3.9); relabels the whoami route only, never read
+    /// by policy.
     pub ssh_origin: Option<phux_protocol::wire::ssh_origin::SshOrigin>,
-    /// The pairing-store credential that admitted the connection, when a
-    /// bearer token did. Retained so its revocation or expiry ends the
-    /// connection live. `None` for the owner socket, a loopback listener, and
-    /// an `OPEN_LISTENER` door, whose token dies with its listener.
+    /// The pairing credential that admitted the connection, so its
+    /// revocation or expiry ends it live; `None` for local, loopback, and
+    /// `OPEN_LISTENER` connections.
     pub bearer: Option<BearerAdmission>,
 }
 
@@ -281,9 +256,7 @@ impl std::ops::Deref for ConnectionIdentity {
     }
 }
 
-/// The pairing-store credential that admitted a connection, retained so the
-/// credential's revocation or expiry ends the connection while it is live
-/// (`docs/spec/workload-auth.md` §7).
+/// The pairing credential that admitted a connection (§7).
 #[derive(Clone, Debug)]
 pub struct BearerAdmission {
     store: std::sync::Arc<ReloadingTokenStore>,
@@ -364,9 +337,8 @@ impl MintedCredential {
         &self.secret
     }
 
-    /// Whether the containing directory was successfully synced after rename.
-    /// `false` means the credential is active and visible, but a crash could
-    /// lose the directory entry; callers must not retry and mint another secret.
+    /// Whether the directory was synced after rename. `false`: the
+    /// credential is live but a crash could lose it; do not retry.
     #[must_use]
     pub const fn is_durable(&self) -> bool {
         self.durable
@@ -755,20 +727,11 @@ impl ReloadingTokenStore {
         Self::load_observed(path, |_| {})
     }
 
-    /// Load the current snapshot, or — when it will not load yet — start
-    /// empty and adopt the file on the first read after it loads.
-    ///
-    /// Remote *listeners* use this. A listener's job is to be reachable, and
-    /// the store already gates who gets in by failing closed at
-    /// authentication time, exactly as it does for an empty store
-    /// ([`TokenStore::load`] on a missing file yields no credentials). A
-    /// store that will not load at boot — a pre-versioned file awaiting
-    /// `phux pair --migrate-legacy`, a file mid-repair, the wrong mode on a
-    /// file about to be fixed — must not strand the whole remote surface
-    /// until someone restarts the server. So the listener binds, refuses
-    /// every authentication until the file loads, and then picks it up on
-    /// its next read. The boot-time error is returned so the caller can say
-    /// what is wrong.
+    /// Load the current snapshot, or start empty and adopt the file once it
+    /// loads. Listeners use this so a store that will not load at boot
+    /// (legacy, mid-repair, wrong mode) refuses every authentication instead
+    /// of keeping the remote surface down until restart. Returns the boot
+    /// error for reporting.
     #[must_use]
     pub fn load_deferred(path: PathBuf) -> (Self, Option<AuthError>) {
         match Self::load_observed(path.clone(), |_| {}) {
@@ -815,9 +778,8 @@ impl ReloadingTokenStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Bring `cached` up to the file's current generation. On failure the
-    /// cache holds the empty store, never the prior generation, and the
-    /// failure is returned for the caller to report.
+    /// Refresh `cached` to the file's generation; on failure it holds the
+    /// empty store and the error is returned.
     fn refresh(
         &self,
         cached: &mut Cached,
@@ -851,14 +813,10 @@ impl ReloadingTokenStore {
         }
     }
 
-    /// The store as the live revocation watcher may judge it: a copy of the
-    /// current generation, only when it loaded cleanly and holds at least
-    /// one credential (`docs/spec/workload-auth.md` §7). A missing, empty,
-    /// insecure, unparseable, or unreadable store is no verdict for
-    /// sessions already admitted, because it may be mid-write or mid-repair:
-    /// this returns `None` and warns at most once a minute, naming the
-    /// condition and its remedy. New admissions still fail closed against
-    /// it.
+    /// The store for the live revocation watcher (§7): a copy of the
+    /// current generation only if it loaded cleanly with at least one
+    /// credential. Anything else is no verdict (warned at most once a
+    /// minute); new admissions still fail closed.
     #[must_use]
     pub fn watch_snapshot(&self) -> Option<TokenStore> {
         let mut cached = self.lock();
@@ -887,11 +845,8 @@ impl ReloadingTokenStore {
         self.with_current(|store| store.authenticate(presented))
     }
 
-    /// Authenticate and, on success, record `last_seen` for the credential.
-    ///
-    /// Connection admission uses this so `phux pair ls` / `prune` see real
-    /// activity; [`Self::authenticate`] stays read-only for standing checks
-    /// and tests that must not rewrite the store.
+    /// Authenticate and record `last_seen` (admission path);
+    /// [`Self::authenticate`] stays read-only.
     #[must_use]
     pub fn authenticate_and_touch(&self, presented: &[u8]) -> Option<AuthenticatedCredential> {
         let authenticated = self.authenticate(presented)?;
@@ -998,10 +953,7 @@ fn mint_credential_unlocked(
     })
 }
 
-/// Rotate a credential with a bounded overlap.
-///
-/// The atomic replacement means interruption exposes either the old complete
-/// store or the new complete store, never half a rotation.
+/// Rotate a credential with a bounded overlap, atomically.
 pub fn rotate_credential(
     path: &Path,
     id: &str,
@@ -1066,12 +1018,9 @@ fn rotate_credential_at(
     })
 }
 
-/// Mint a generation-one credential, revoking any live credential whose
-/// current bearer matches `previous_secret_hex` first.
-///
-/// Used by `phux host add` when re-enrolling a name that already holds a
-/// token: the new secret replaces the old one in a single store rewrite so
-/// the remote-tokens file does not accumulate abandoned live credentials.
+/// Mint a generation-one credential, first revoking any live credential
+/// matching `previous_secret_hex` (`phux host add` re-enrollment), in one
+/// rewrite.
 pub fn mint_token_replacing(
     path: &Path,
     previous_secret_hex: &str,
@@ -1115,12 +1064,8 @@ pub fn list_credentials(path: &Path) -> Result<Vec<CredentialSummary>, AuthError
     Ok(summarize_credentials(&store.file))
 }
 
-/// Revoke every still-live credential whose last activity is at least
-/// `unused_for` ago.
-///
-/// Last activity is `last_seen` when recorded, otherwise `issued_at` (a
-/// credential never presented since mint is unused from the moment it was
-/// created). Already-revoked credentials are left alone.
+/// Revoke every live credential unused for `unused_for` (`last_seen`, else
+/// `issued_at`).
 pub fn prune_unused(path: &Path, unused_for: Duration) -> Result<PruneOutcome, AuthError> {
     with_store_lock(path, || {
         let mut file = load_file_for_update(path)?;
@@ -1202,11 +1147,8 @@ fn credential_id_for_secret(file: &CredentialFile, secret: &[u8; TOKEN_LEN]) -> 
     matched
 }
 
-/// Record that credential `id` authenticated successfully.
-///
-/// Best-effort and rate-limited: a write at most once per minute per
-/// credential so reconnect storms do not rewrite the store on every dial.
-/// Failures are swallowed — admission already succeeded.
+/// Record a successful authentication for `id`: best effort, at most once
+/// a minute per credential.
 pub fn record_credential_seen(path: &Path, id: &str) {
     let _ = with_store_lock(path, || {
         record_credential_seen_unlocked(path, id, Utc::now())
@@ -1585,9 +1527,8 @@ fn atomic_write_with_fault(
         match FileSync::sync_directory(parent) {
             Ok(()) => Ok(CommitOutcome { durable: true }),
             Err(error) => {
-                // Rename already committed. Reporting an ordinary error would
-                // invite a retry that mints another secret or resurrects stale
-                // state. Return a visible-but-not-durable outcome instead.
+                // Committed but not durable: report that rather than invite a
+                // retry that would mint again.
                 tracing::warn!(path = %path.display(), %error, "credential store replacement is visible but directory fsync failed; do not retry the mutation");
                 Ok(CommitOutcome { durable: false })
             }
@@ -1635,9 +1576,8 @@ mod tests {
         hex::decode(minted.secret()).unwrap()
     }
 
-    /// The live revocation watcher's view of one credential generation
-    /// (`workload-auth.md` §7): active until revoked, removed, or expired,
-    /// and a store that stops parsing stands for nothing.
+    /// The watcher's view of a credential generation: active until revoked,
+    /// removed, or expired; an unparseable store stands for nothing.
     #[test]
     fn standing_follows_the_stores_current_generation() {
         let dir = tempfile::tempdir().unwrap();
@@ -1676,9 +1616,7 @@ mod tests {
             store.standing("test-credential", 1),
             Some(Standing::Active { .. })
         ));
-        // None of these is a verdict for sessions already admitted: the store
-        // may be mid-write or mid-repair. Each gives `None`, and new
-        // admissions still fail closed against it.
+        // None is a verdict for admitted sessions; new ones still fail closed.
         let replace = |contents: &str| {
             let staged = dir.path().join("staged");
             std::fs::write(&staged, contents).unwrap();
@@ -1762,11 +1700,8 @@ mod tests {
         assert_eq!(authenticated.id, legacy_peer_id(&secret));
     }
 
-    /// The remote listeners bind through `load_deferred`, so a store that will
-    /// not load at boot must not leave the whole remote surface down until a
-    /// restart: the store starts empty — admitting nobody, exactly like the
-    /// empty store before the first `phux pair` — and adopts the file on its
-    /// next read once it loads.
+    /// A store that will not load at boot starts empty and is adopted once
+    /// it loads.
     #[test]
     fn deferred_store_admits_nobody_until_the_file_loads_then_adopts_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -2317,9 +2252,7 @@ mod tests {
             mint_credential(&path, None, &[TERMINAL_CONTROL_SCOPE.to_owned()], None).unwrap();
         let stale_bearer = secret(&stale);
 
-        // Reproduce the initialization race deterministically: the first read
-        // sees the credential, then deletion lands before the generation probe
-        // that the old load-then-probe implementation cached beside it.
+        // Deletion lands between the first read and the generation probe.
         let init_path = path.clone();
         let store = ReloadingTokenStore::load_observed(path.clone(), move |attempt| {
             if attempt == 0 {
@@ -2345,9 +2278,7 @@ mod tests {
         );
         assert_eq!(store.reloads(), 1);
 
-        // Force another reload, then delete after its first file read. The
-        // stable-read retry must commit the absent generation, not credentials
-        // from the now-deleted generation.
+        // Delete during a reload: the absent generation must be committed.
         mint_credential(&path, None, &[TERMINAL_CONTROL_SCOPE.to_owned()], None).unwrap();
         let reload_path = path;
         let accepted = store.with_current_observed(

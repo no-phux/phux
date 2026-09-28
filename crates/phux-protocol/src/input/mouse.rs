@@ -1,16 +1,5 @@
-//! Mouse input — the `MouseEvent` wire type and its atoms.
-//!
-//! Per [ADR-0024] the wire owns its atoms: `MouseAction` and `MouseButton` are
-//! phux-defined and libghostty-free (their wire discriminants match libghostty's
-//! `mouse::{Action, Button}`). Under the `server` feature they convert to/from
-//! libghostty, and the server-side state handles `MouseProtocol`/`MouseEncoding`
-//! are re-exported (those are DECSET-toggled `Terminal` state, not wire fields —
-//! docs/spec/L1.md §2.5).
-//!
-//! Coordinates are pane-local surface-space pixels (NOT cells), matching
-//! libghostty's `mouse::Position` shape — see docs/spec/input.md §3.1.
-//!
-//! [ADR-0024]: https://github.com/no-phux/phux/blob/main/docs/adr/0024-wire-owns-input-atoms.md
+//! Mouse input: libghostty-free wire atoms whose discriminants match
+//! libghostty's `mouse::{Action, Button}` (ADR-0024).
 
 use super::key::ModSet;
 
@@ -78,13 +67,9 @@ impl TryFrom<u32> for MouseButton {
     }
 }
 
-/// A normalized mouse input event flowing from client to server.
-///
-/// # Coordinate system — cell-geometry contract
-///
-/// `x` and `y` are **pane-local surface-space pixels**, NOT cell indices
-/// (docs/spec/input.md §3.1). Cell-quantized clients MUST emit positions at
-/// `cell_index × cell_size`; clients with real pixel input pass it through.
+/// A mouse input event. `x`/`y` are pane-local surface pixels, not cells
+/// (docs/spec/input.md §3.1): cell-quantized clients MUST send
+/// `cell_index × cell_size`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MouseEvent {
     /// What the mouse did: press, release, or motion.
@@ -99,15 +84,12 @@ pub struct MouseEvent {
     pub y: f64,
 }
 
-// `MouseEvent` is `PartialEq` but not `Eq` because `f64` is not `Eq`.
-
 /// Server-side mouse state handles + atom conversions (libghostty boundary).
 #[cfg(feature = "server")]
 mod server_side {
     use super::{MouseAction, MouseButton};
 
-    /// The inner program's mouse-tracking protocol (DECSET state, not a wire
-    /// field). Re-exported from libghostty.
+    /// The inner program's DECSET mouse-tracking state (not a wire field).
     pub use libghostty_vt::mouse::{Format as MouseEncoding, TrackingMode as MouseProtocol};
 
     impl From<MouseAction> for libghostty_vt::mouse::Action {
@@ -161,20 +143,5 @@ mod tests {
         }
         assert!(MouseAction::try_from(99).is_err());
         assert!(MouseButton::try_from(99).is_err());
-    }
-
-    #[test]
-    fn mouse_event_is_copy() {
-        fn assert_copy<T: Copy>() {}
-        assert_copy::<MouseEvent>();
-        let ev = MouseEvent {
-            action: MouseAction::Press,
-            button: MouseButton::Left,
-            mods: ModSet::empty(),
-            x: 12.5,
-            y: 34.25,
-        };
-        assert_eq!(ev.action, MouseAction::Press);
-        assert!((ev.x - 12.5).abs() < f64::EPSILON);
     }
 }

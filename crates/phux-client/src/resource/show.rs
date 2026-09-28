@@ -1,10 +1,6 @@
-//! `phux resource show` (PHA-406): one resource's inspection record.
-//!
-//! Everything a caller would otherwise stitch together from four verbs, read
-//! on one connection: the inventory entry (kind, parent, lifecycle, the exit
-//! facet of a retained resource, the input-lease holder), the Terminal's
-//! typed process facet from `GET_TERMINAL_STATE`, its tags, and its
-//! declared agent record. Read-only: no attach, no resize, no subscription.
+//! `phux resource show`: one resource's inspection record (inventory entry,
+//! process facet, tags, agent record), read on one connection without
+//! attaching or subscribing.
 
 use std::path::Path;
 
@@ -181,11 +177,10 @@ mod tests {
     use phux_protocol::ids::{ClientId, SessionId, WindowId};
     use phux_protocol::wire::frame::{CloseReason, ResourceLifecycle};
     use phux_protocol::wire::info::{ExitFacet, SessionInfo, WindowInfo};
-    use tokio::net::UnixListener;
 
     use super::*;
     use crate::agent_meta::RESOURCE_AGENT_KEY;
-    use crate::testkit::{ScriptSpec, ScriptedServer};
+    use crate::testkit::{ScriptSpec, serve_one};
 
     fn fixture() -> SessionSnapshot {
         let session = SessionId::new(1);
@@ -211,9 +206,7 @@ mod tests {
         id: ResourceId,
     ) -> Result<ResourceDetails, LookupError> {
         let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir.path().join("show.sock");
-        let listener = UnixListener::bind(&socket).expect("bind");
-        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        let (socket, server) = serve_one(dir.path(), spec);
         let result = show(&socket, &id).await;
         server.await.expect("scripted server");
         result

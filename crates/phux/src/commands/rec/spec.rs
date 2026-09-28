@@ -1,21 +1,10 @@
-//! Where a recording lands, and in what format.
+//! Where a recording lands, and in what format: one planner ([`plan`]) for
+//! both `--rec PATH` and `phux rec -o PATH`.
 //!
-//! One planner, shared by both recording surfaces: the `--rec PATH` global
-//! flag on the interactive attach path and the headless `phux rec TARGET -o
-//! PATH` verb. Both hand a user-supplied path and an optional explicit format
-//! to [`plan`] and get back a fully-resolved [`RecordSpec`]; neither has to
-//! know the inference rules, so the two can never disagree about what
-//! `demo.png` means.
-//!
-//! # Why the cast is always written
-//!
-//! Every export goes through an on-disk asciicast, even when the user asked
-//! for a GIF. The `.cast` is the archival artifact — small, diffable, and
-//! re-renderable at any fps with any idle limit — and the animation is a
-//! derivative of it. For a GIF or an APNG the cast is an intermediate in the
-//! temp directory, deleted once the render succeeds; if the render *fails* it
-//! is deliberately retained and its path printed, so a capture that took
-//! forty minutes of a live session is never lost to an encoder bug.
+//! Every export goes through an on-disk asciicast (the archival,
+//! re-renderable artifact). For GIF/APNG it is a temp intermediate, deleted
+//! after a successful render and kept, with its path printed, when the render
+//! fails.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -49,24 +38,13 @@ impl From<RecFormat> for OutputFormat {
     }
 }
 
-/// Resolve `out` plus an optional explicit format into a [`RecordSpec`].
+/// Resolve `out` plus an optional explicit format into a [`RecordSpec`]:
 ///
-/// The inference rules, in order:
-///
-/// 1. An explicit `--format` / `--rec-format` wins outright and the path is
-///    left exactly as the user typed it — they named both halves, so there is
-///    nothing left to infer and nothing we should be renaming.
-/// 2. Otherwise the extension decides, case-insensitively: `cast`, `gif`, and
-///    `png`/`apng`. `.png` maps to APNG because an *animated* PNG is what a
-///    recording is; a still frame is not a thing this verb produces.
-/// 3. A path with no extension at all becomes a GIF, and `.gif` is appended.
-///    GIF is the shareable, embeddable default — it drops into a README, a
-///    PR, or a chat window with no player and no plugin.
-/// 4. An extension we do not recognize is an error naming the three we do.
-///    Silently guessing GIF here would write a `demo.mp4` that is not an MP4.
-///
-/// Errors are reported on stderr and returned as the failure exit code, which
-/// is the house shape for a CLI planner (see `commands::parse_selector`).
+/// 1. An explicit format wins and the path is left as typed.
+/// 2. Otherwise the extension decides, case-insensitively: `cast`, `gif`, or
+///    `png`/`apng` (APNG).
+/// 3. No extension means GIF, with `.gif` appended.
+/// 4. An unknown extension is an error naming the three.
 pub(crate) fn plan(out: &Path, explicit: Option<RecFormat>) -> Result<RecordSpec, ExitCode> {
     let extension = out
         .extension()
@@ -78,11 +56,8 @@ pub(crate) fn plan(out: &Path, explicit: Option<RecFormat>) -> Result<RecordSpec
         (None, Some("gif")) => (OutputFormat::Gif, out.to_path_buf()),
         (None, Some("png" | "apng")) => (OutputFormat::Apng, out.to_path_buf()),
         (None, None) => {
-            // A value-taking flag will happily swallow the next word:
-            // `phux --rec attach` parses as "record into a file named
-            // attach", and the user sits there wondering why their session
-            // never came up. Only an extension-less value can be confused
-            // for a verb, so the guard costs nothing on every real path.
+            // `phux --rec attach` would record into a file named `attach`; an
+            // extension-less value naming a verb is refused.
             if let Some(name) = subcommand_named(out) {
                 eprintln!(
                     "phux: --rec wants an output path, not a subcommand; \
@@ -124,11 +99,7 @@ pub(crate) fn plan(out: &Path, explicit: Option<RecFormat>) -> Result<RecordSpec
     })
 }
 
-/// The subcommand `out` names, if it names one.
-///
-/// Asks the real clap tree rather than a hand-kept list, so a verb added
-/// tomorrow is guarded the day it lands. Only reached for an extension-less
-/// path, so building the command tree is not on any hot path.
+/// The subcommand `out` names, if any, asked of the real command tree.
 fn subcommand_named(out: &Path) -> Option<String> {
     // Only a bare word can be a verb; `./attach` or `dir/attach` is
     // unambiguously a path the user typed on purpose.

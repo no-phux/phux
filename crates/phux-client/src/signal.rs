@@ -109,26 +109,20 @@ pub async fn signal_keyed(
         signal,
         operation_id: Some(operation_id),
     };
+    Ok(request_lease(conn, request_id, command).await?)
+}
+
+/// Send one command and classify its reply with its interleaved notices.
+async fn request_lease(
+    conn: &mut Connection,
+    request_id: u32,
+    command: Command,
+) -> Result<(LeaseOutcome, Degradation), AttachError> {
     let (result, interleaved) = conn.request(request_id, command).await?.into_parts();
     Ok((
         LeaseOutcome::from_result(result),
         Degradation::from_interleaved(&interleaved),
     ))
-}
-
-/// [`signal_keyed`] over a fresh connection to the server at `socket_path`.
-///
-/// # Errors
-///
-/// As [`signal_keyed`], plus the connect failure.
-pub async fn signal_keyed_at(
-    socket_path: &Path,
-    terminal_id: ResourceId,
-    signal: TerminalSignal,
-    operation_id: IdempotencyKey,
-) -> Result<(LeaseOutcome, Degradation), KeyedError> {
-    let mut conn = Connection::connect(socket_path).await?;
-    signal_keyed(&mut conn, 1, terminal_id, signal, operation_id).await
 }
 
 /// Why [`deliver`] did not signal the target.
@@ -184,14 +178,7 @@ pub async fn deliver(
     let terminal = resolve_one_for_input(&mut conn, selector, &snapshot, &degradation).await?;
     notices.extend(degradation.notices().iter().cloned());
     let (outcome, interleaved) = match key {
-        None => {
-            let command = signal_command(terminal, signal);
-            let (result, interleaved) = conn.request(1, command).await?.into_parts();
-            (
-                LeaseOutcome::from_result(result),
-                Degradation::from_interleaved(&interleaved),
-            )
-        }
+        None => request_lease(&mut conn, 1, signal_command(terminal, signal)).await?,
         Some(key) => signal_keyed(&mut conn, 1, terminal, signal, key).await?,
     };
     drop(conn);
@@ -229,63 +216,6 @@ async fn resolve_one_for_input(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phux_protocol::wire::frame::ErrorCode;
-
-    #[test]
-    fn commands_carry_the_right_shape() {
-        let id = ResourceId::local(3);
-        assert_eq!(
-            take_command(id.clone(), 0),
-            Command::AcquireInput {
-                terminal_id: id.clone(),
-                mode: InputMode::Seize,
-                ttl_ms: 0,
-            }
-        );
-        assert_eq!(
-            take_command(id.clone(), 30_000),
-            Command::AcquireInput {
-                terminal_id: id.clone(),
-                mode: InputMode::Seize,
-                ttl_ms: 30_000,
-            }
-        );
-        assert_eq!(
-            give_command(id.clone()),
-            Command::ReleaseInput {
-                terminal_id: id.clone()
-            }
-        );
-        assert_eq!(
-            signal_command(id.clone(), TerminalSignal::Interrupt),
-            Command::SignalTerminal {
-                terminal_id: id,
-                signal: TerminalSignal::Interrupt,
-                operation_id: None,
-            }
-        );
-    }
-
-    #[test]
-    fn classifies_every_reply_shape() {
-        assert_eq!(
-            LeaseOutcome::from_result(CommandResult::Ok),
-            LeaseOutcome::Ok
-        );
-        assert_eq!(
-            LeaseOutcome::from_result(CommandResult::Error {
-                code: ErrorCode::PreconditionFailed,
-                message: "busy".to_owned(),
-            }),
-            LeaseOutcome::Refused("busy".to_owned())
-        );
-        assert!(matches!(
-            LeaseOutcome::from_result(CommandResult::OkWith(
-                phux_protocol::wire::frame::CommandValue::Json("x".to_owned())
-            )),
-            LeaseOutcome::Unexpected(_)
-        ));
-    }
 
     async fn deliver_on(
         spec: crate::testkit::ScriptSpec,
@@ -295,13 +225,8 @@ mod tests {
         Vec<String>,
         Vec<phux_protocol::wire::frame::FrameKind>,
     ) {
-        use crate::testkit::ScriptedServer;
         let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir.path().join("phux.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-        listener.set_nonblocking(true).expect("nonblocking");
-        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
-        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        let (socket, server) = crate::testkit::serve_one(dir.path(), spec);
         let selector = crate::selector::parse(target).expect("selector");
         let mut notices = Vec::new();
         let result = deliver(

@@ -1,68 +1,29 @@
-//! Hub-to-satellite frame relay (phux-v45.4, ADR-0007 §4).
+//! Hub-to-satellite frame relay (ADR-0007 §4).
 //!
-//! The routing layer that replaces the blanket `UnsupportedSatelliteRoute`
-//! rejections on a `phux server --hub`: a frame targeting
-//! `ResourceId::Satellite { host, id }` is resolved to the live outbound
-//! link the dialer (phux-v45.3) maintains for `host`, its terminal id is
-//! rewritten to `Local { id }`, and the frame is forwarded **verbatim** —
-//! the hub never re-encodes VT bytes (ADR-0007: opaque relay). Responses
-//! and subscribed streams coming back from the satellite are re-tagged
-//! `Local { id }` -> `Satellite { host, id }` before they reach the
-//! consumer, so the consumer only ever sees the hub-scoped address it
-//! asked for. Satellites stay unaware of each other: a frame arriving
-//! from a satellite already tagged `Satellite` is dropped, never chained.
+//! A frame addressed to `ResourceId::Satellite { host, id }` is rewritten to
+//! `Local { id }` and forwarded verbatim over the link for `host`; replies
+//! and streams coming back are re-tagged `Satellite { host, id }`. Frames
+//! already tagged `Satellite` from a satellite are dropped, never chained.
 //!
-//! One `RelaySession` lives inside each link supervisor
-//! (`super::link::run_link`) while its connection is up. It owns the
-//! per-link `request_id` remap (the hub allocates its own id space toward
-//! the satellite; the consumer's `request_id` never crosses the link) and
-//! the proxy-subscription registry (which hub consumers observe which
-//! satellite terminals). Consumers talk to it through a `RelayHandle` —
-//! a bounded mailbox published in `HubRelays` on shared state.
+//! One `RelaySession` lives in each connected link supervisor
+//! (`super::link::run_link`) and owns the link-side `request_id` remap and
+//! the proxy-subscription registry. Consumers reach it through a
+//! `RelayHandle` (a bounded mailbox published in `HubRelays`).
 //!
-//! **Fail fast, never hang.** No live connection means a typed
-//! `ErrorCode::SatelliteUnreachable` reply, immediately: the link
-//! supervisor drains the relay mailbox during dial, backoff, and
-//! fail-closed refusal phases, failing every queued request. A satellite
-//! disconnect fails all in-flight commands the same way and pushes one
-//! typed `ERROR { SatelliteUnreachable }` frame to every proxy-subscribed
-//! consumer before the registry is cleared — teardown is observable, not
-//! silence. A *silently* dead satellite — one whose link still looks
-//! `Connected` because the network partitioned without FIN/RST, or one
-//! that reads frames but never answers — is bounded twice over: every
-//! relayed command carries a hub-side deadline (`RELAY_COMMAND_TIMEOUT`)
-//! resolving to the same typed error, and the link supervisor enforces a
-//! transport keepalive / idle contract (`super::link`) so the partition
-//! itself is detected and torn down. Abandoned entries in the
-//! pending-command map are pruned on the supervisor's keepalive tick
-//! (`RelaySession::prune_abandoned`), so a satellite that swallows
-//! frames cannot grow hub state without bound.
+//! **Fail fast, never hang.** Without a live connection every request gets
+//! a typed `SatelliteUnreachable` at once; a disconnect fails in-flight
+//! commands and notifies every proxy subscriber. A silently dead satellite
+//! is bounded by `RELAY_COMMAND_TIMEOUT` and the link keepalive, and
+//! abandoned pending entries are pruned on the keepalive tick.
 //!
-//! **Backpressure.** The relay mailbox is bounded (`RELAY_MAILBOX`) and
-//! every producer uses `try_send`: a saturated link fails commands with
-//! `ResourceExhausted` and drops fire-and-forget frames with a warn,
-//! mirroring the pane-input mailbox semantics. Return-leg fan-out to
-//! consumers uses `try_send` into each consumer's bounded outbound
-//! mailbox (the same discipline as `crate::runtime::client::broadcast_event`),
-//! so one slow consumer never stalls the link or the hub's other work.
-//! The one exception is the attach ordering anchor (phux-v45.12, L1 §9.1):
-//! a return-leg `TERMINAL_SNAPSHOT` a briefly-full consumer refuses is
-//! *retained* per subscriber and that consumer's later deltas are
-//! suppressed until it lands, so a `RESOURCE_OUTPUT` can never overtake the
-//! snapshot across the two-hop attach — the non-blocking mirror of the
-//! local attach's snapshot gate (`RelaySession::fan_out` /
-//! `flush_pending_snapshots`). Still no head-of-line stall: the retry is
-//! per-consumer, not a link-wide await.
+//! **Backpressure.** Every producer uses `try_send` into bounded mailboxes;
+//! a saturated link fails commands with `ResourceExhausted`. The one
+//! exception is the attach snapshot (L1 §9.1): a snapshot a full consumer
+//! refuses is retained per subscriber and its later deltas are held until
+//! it lands, so a delta never overtakes it. No link-wide stall.
 //!
-//! **Directory listings** (`docs/spec/L3.md` §4.1). A `LIST_DIRECTORY`
-//! naming this satellite rides the same link as a correlated request of its
-//! own: the session allocates the link-side `request_id`, the satellite
-//! answers from its own filesystem, and the `DIRECTORY_LISTING` resolves the
-//! consumer's waiter, which replies under the consumer's own `request_id`.
-//! Every failure (saturated or dead link, a satellite without
-//! `LIST_DIRECTORY`, a correlated `ERROR`, teardown, or
-//! `RELAY_LIST_DEADLINE`) resolves to a typed `DIRECTORY_LISTING` refusal
-//! naming the host, never a hang.
+//! **Directory listings** (`docs/spec/L3.md` §4.1) ride the link as
+//! correlated requests; every failure is a typed refusal naming the host.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -84,16 +45,13 @@ use tracing::{debug, trace, warn};
 
 use crate::state::{ClientId, Outbound};
 
-/// Capacity of each per-satellite relay mailbox. Small and bounded: the
-/// link is a single ordered stream, so queueing more than a burst behind
-/// it only adds latency. Producers `try_send` and fail fast on `Full`.
+/// Capacity of each per-satellite relay mailbox; the link is one ordered
+/// stream, so deeper queues only add latency.
 pub(crate) const RELAY_MAILBOX: usize = 64;
-/// Relay retention policy: one generation may carry at most 16 MiB / 128
-/// frames; one slow subscriber may retain at most 2 MiB / 16 frames; and one
-/// satellite connection may retain at most 8 MiB / 64 frames across all
-/// subscribers. These are deliberately independent of the negotiated
-/// per-frame ceiling: multiplying that ceiling by a large chunk count made a
-/// single hostile generation a gigabyte-scale memory commitment.
+/// Relay retention limits: per generation 16 MiB / 128 frames, per slow
+/// subscriber 2 MiB / 16 frames, per satellite connection 8 MiB / 64 frames.
+/// Independent of the negotiated frame ceiling so one hostile generation
+/// cannot commit gigabytes.
 const MAX_RELAY_GENERATION_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_RELAY_GENERATION_FRAMES: u32 = 128;
 const MAX_RELAY_SUBSCRIBER_RETAINED_BYTES: usize = 2 * 1024 * 1024;
@@ -103,29 +61,18 @@ const MAX_RELAY_CONNECTION_RETAINED_FRAMES: usize = 64;
 const RETAINED_FRAME_OVERHEAD: usize = 256;
 const RELAY_RETIREMENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Upper bound on one relayed command round trip, measured at the
-/// consumer-facing [`RelayHandle::command`]. Deliberately equal to the
-/// transport idle timeout (`phux-dial`'s QUIC `max_idle_timeout`, mirrored
-/// by the WS keepalive in `super::link`): a link that dies loudly resolves
-/// in-flight commands through session teardown well before this fires, so
-/// the deadline is the backstop for the quiet failures — a partition the
-/// transport has not noticed yet, or a satellite that reads frames but
-/// never answers. Elapsing resolves to a typed `SatelliteUnreachable`
-/// error, never an indefinite wait (L1 §9.1).
+/// Upper bound on one relayed command round trip. Equal to the transport
+/// idle timeout: a loud link failure resolves sooner through teardown, so
+/// this catches quiet partitions and satellites that never answer.
 pub(crate) const RELAY_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Upper bound on one relayed `LIST_DIRECTORY` round trip, measured at
-/// [`RelayHandle::list_directory`]. The satellite bounds its own walk at 5 s
-/// and answers a slow filesystem with a refusal (`docs/spec/L3.md` §4), so a
-/// healthy link always answers well inside this; the extra 5 s covers the
-/// link round trip. It is shorter than [`RELAY_COMMAND_TIMEOUT`] because a
-/// person is watching the picker's placeholder: a satellite that reads the
-/// request and never answers must turn into a refusal they can act on.
+/// Upper bound on one relayed `LIST_DIRECTORY`: the satellite's own 5 s walk
+/// bound plus link time. Shorter than [`RELAY_COMMAND_TIMEOUT`] because a
+/// person is waiting on the picker.
 pub(crate) const RELAY_LIST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// A `DIRECTORY_LISTING` refusal for `path` with [`DirectoryErrorCode::Other`]:
-/// the one code a routing failure maps to (`docs/spec/L3.md` §4.1). The
-/// message names the host, which is what tells the user why.
+/// A `DIRECTORY_LISTING` refusal for `path` (code `Other`, message naming
+/// the host).
 pub(crate) fn listing_refusal(path: &str, message: impl Into<String>) -> DirectoryListingError {
     DirectoryListingError {
         path: path.to_owned(),
@@ -134,9 +81,7 @@ pub(crate) fn listing_refusal(path: &str, message: impl Into<String>) -> Directo
     }
 }
 
-/// One hub-side consumer's registration on the return leg of a link:
-/// which satellite-local terminal it observes and where re-tagged frames
-/// for it should land.
+/// One hub consumer's registration on a link's return leg.
 #[derive(Debug)]
 pub(crate) struct ProxySubscription {
     /// Satellite-local terminal id (the `id` of `Satellite { host, id }`).
@@ -145,76 +90,49 @@ pub(crate) struct ProxySubscription {
     pub(crate) client: ClientId,
     /// The client's outbound mailbox.
     pub(crate) out_tx: mpsc::Sender<Outbound>,
-    /// Cancels the owning client connection when bounded failure delivery can
-    /// no longer make progress. Dropping one mailbox sender is insufficient:
-    /// production plumbing retains control- and stream-writer clones.
+    /// Cancels the owning client connection when failure delivery cannot
+    /// progress (other writer clones keep the mailbox alive).
     pub(crate) consumer_cancel: CancellationToken,
-    /// Monotonic ordering token stamped by [`RelayHandle`] at enqueue
-    /// (phux-v45.7 reorder guard). A registration and its later
-    /// withdrawal ride *different* channels — the bounded request mailbox
-    /// vs. the unbounded unsubscribe channel — which the link session's
-    /// `select!` may drain in either order. Carrying the issue order lets
-    /// the session tell a fresh re-attach (higher token) from a stale
-    /// detach (lower token) so a detach-then-reattach of the same
-    /// `(client, terminal)` cannot silently tear the re-attach down.
-    /// Producers set this via `RelayHandle::next_seq`; direct session-test
-    /// construction sets it explicitly.
+    /// Issue-order token from [`RelayHandle`]. A registration and its later
+    /// withdrawal ride different channels that may drain in either order;
+    /// the token keeps a stale detach from tearing down a newer re-attach.
     pub(crate) seq: u64,
-    /// Whether this registration establishes a *content* stream that opens
-    /// with a return-leg `TERMINAL_SNAPSHOT` — i.e. it rode a relayed
-    /// `ATTACH_RESOURCE` (phux-v45.14). When `true`, the freshly-registered
-    /// subscriber starts gated: its content deltas are suppressed until its
-    /// own snapshot lands (L1 §9.1 snapshot-precedes-delta), because a
-    /// second consumer attaching to a terminal already streaming to another
-    /// consumer would otherwise observe that ongoing stream's
-    /// `RESOURCE_OUTPUT` before its own snapshot arrives ~1 RTT later.
-    /// `false` for event-only subscriptions (`SUBSCRIBE_RESOURCE_EVENTS`,
-    /// `SUBSCRIBE_EVENTS`): those carry no snapshot, so their `EVENT` deltas
-    /// must flow immediately and gating them would strand the subscriber.
+    /// Whether this is a content stream (a relayed `ATTACH_RESOURCE`) that
+    /// opens with its own snapshot. Such a subscriber starts gated until that
+    /// snapshot lands (L1 §9.1). Event-only subscriptions carry no snapshot
+    /// and must flow at once.
     pub(crate) awaits_snapshot: bool,
-    /// Exact bootstrap selection of the downstream consumer connection.
-    /// Content subscriptions require both values and must match the
-    /// satellite link exactly; event-only subscriptions may carry `None`
-    /// because they never receive terminal content bytes.
+    /// The downstream connection's bootstrap selection. Content
+    /// subscriptions must match the link exactly; event-only may be `None`.
     pub(crate) bootstrap_profile: Option<BootstrapProfile>,
     /// Exact per-frame bounds selected by the downstream connection.
     pub(crate) bootstrap_limits: Option<BootstrapLimits>,
 }
 
-/// A subscription-withdrawal request, carried on the relay's dedicated
-/// **unbounded** unsubscribe channel (phux-v45.11 finding 1): teardown
-/// must never be droppable under mailbox pressure, or a detached
-/// consumer's `ProxySubscriber` entry outlives it and every future
-/// return-leg frame is `try_send`-ed into a dead mailbox. Unbounded is
-/// safe here — at most a handful per consumer disconnect.
+/// A subscription withdrawal, on the relay's unbounded unsubscribe channel:
+/// teardown must never be dropped under mailbox pressure, or a dead
+/// consumer's entry outlives it.
 #[derive(Debug)]
 pub(crate) enum Unsubscribe {
-    /// Drop every proxy subscription `ClientId` holds on this link
-    /// (consumer detach / disconnect).
+    /// Drop every proxy subscription `ClientId` holds on this link.
     Client(ClientId),
-    /// Drop one client's subscription to one satellite-local terminal
-    /// (the relayed `DETACH_RESOURCE` path, phux-v45.7).
+    /// Drop one client's subscription to one terminal (relayed `DETACH_RESOURCE`).
     Terminal {
         /// The unsubscribing hub-side client.
         client: ClientId,
         /// The satellite-local terminal id it stops observing.
         terminal: u32,
-        /// Ordering token this withdrawal was issued with (see
-        /// [`ProxySubscription::seq`]). The session applies the
-        /// withdrawal only when no registration with a *newer* token
-        /// exists — otherwise a same-`(client, terminal)` re-attach that
-        /// the request mailbox delivered first would be torn down by this
-        /// stale detach.
+        /// Issue-order token (see [`ProxySubscription::seq`]); ignored if a
+        /// newer registration exists.
         seq: u64,
-        /// Resolves after the link removes the proxy. Dropped by disconnected
-        /// supervisor drains, where no proxy registry exists to withdraw from.
+        /// Resolves after the link removes the proxy; `None` from drains that
+        /// have no registry.
         reply: Option<WithdrawalReceipt>,
     },
 }
 
-/// Serializes a timeout's cancellation with the link's synchronous mutation.
-/// A completed result wins even if its waiting task has not been polled yet.
-/// No lock is held across an await or an upstream write.
+/// Serializes a timeout's cancellation with the link's synchronous mutation;
+/// a completed result wins. No lock is held across an await.
 #[derive(Debug)]
 pub(crate) struct WithdrawalReceipt {
     reply: oneshot::Sender<CommandResult>,
@@ -256,8 +174,7 @@ fn lock_withdrawal_outcome(
     outcome.lock().expect("withdrawal outcome poisoned")
 }
 
-/// Validated spawn payload for one satellite. The runtime checks the owner's
-/// host before reducing its address to a satellite-local numeric id.
+/// Validated spawn payload for one satellite.
 #[derive(Debug)]
 pub(crate) struct SatelliteSpawn {
     /// Group under which the satellite spawns (validated there).
@@ -274,86 +191,59 @@ pub(crate) struct SatelliteSpawn {
     pub(crate) owner_terminal: Option<u32>,
     /// Initial grid and PTY dimensions requested by the consumer.
     pub(crate) initial_size: Option<(u16, u16)>,
-    /// Kind, parent, and agent-session provenance, with the parent already
-    /// reduced to the satellite's `Local` space (ADR-0104 §6). `None` for
-    /// the plain Terminal spawn every pre-kinds consumer sends.
+    /// Kind, parent, and agent-session provenance, parent already reduced to
+    /// the satellite's `Local` space (ADR-0104 §6). `None` for a plain spawn.
     pub(crate) resource: Option<Box<phux_protocol::wire::frame::SpawnResource>>,
 }
 
 /// A request from a hub-side consumer path to one satellite's relay.
 #[derive(Debug)]
 pub(crate) enum RelayRequest {
-    /// Relay a `COMMAND` whose terminal ids are already rewritten to the
-    /// satellite's `Local` space. The session allocates the link-side
-    /// `request_id` and resolves `reply` with the correlated
-    /// `COMMAND_RESULT` (or a typed error on disconnect).
+    /// Relay a `COMMAND` (ids already satellite-local) and resolve `reply`
+    /// with the correlated result or a typed error.
     Command {
         /// The command to forward, ids already satellite-local.
         command: Command,
-        /// Resolved with the satellite's result; dropping the receiver is
-        /// legal (detached fire-and-forget relays do exactly that).
+        /// Dropping the receiver is legal (detached relays do).
         reply: oneshot::Sender<CommandResult>,
-        /// A proxy subscription to register **atomically with** the
-        /// command enqueue (phux-v45.11 finding 2): either the command
-        /// goes on the wire and the hub-side registration exists, or
-        /// neither happens. Rolled back if the satellite answers with an
-        /// error (finding 3) — an errored subscribe took no effect
-        /// satellite-side, so the hub must not keep fanning to a consumer
-        /// the satellite will never feed.
+        /// A proxy subscription registered atomically with the enqueue and
+        /// rolled back if the satellite answers with an error.
         subscribe: Option<ProxySubscription>,
     },
     /// Relay a fire-and-forget frame (`INPUT_*`, `FRAME_ACK`,
-    /// `RESIZE_TERMINAL`), terminal ids already rewritten satellite-local.
-    /// No reply; a dead link drops it (with the teardown notification
-    /// covering the observable side).
+    /// `RESIZE_TERMINAL`); a dead link drops it.
     Forward {
         /// The frame to forward verbatim.
         frame: FrameKind,
     },
-    /// Relay a `SPAWN_RESOURCE` to this satellite (phux-v45.6, L1 §3.1 /
-    /// §9.1). Like [`Self::Command`] the session allocates the link-side
-    /// `request_id` (the spawn shares the pending id space) and resolves
-    /// `reply` with the correlated `RESOURCE_SPAWNED.result`, the freshly
-    /// allocated id re-tagged `Local -> Satellite { host, id }`. The
-    /// frame put on the wire carries `satellite: None` — the satellite
-    /// spawns locally; hub-and-spoke never chains.
+    /// Relay a `SPAWN_RESOURCE` (L1 §3.1). The wire frame carries
+    /// `satellite: None`; the reply's new id is re-tagged to this host.
     Spawn {
         /// Spawn fields, with owner addressing already validated.
         spawn: SatelliteSpawn,
-        /// Resolved with the re-tagged spawn result (or a typed
-        /// `SpawnError` on disconnect / timeout).
+        /// Resolved with the re-tagged spawn result or a typed error.
         reply: oneshot::Sender<SpawnResult>,
     },
-    /// Register a proxy subscription AND put `forward` on the wire, as
-    /// one atomic step (phux-v45.11 finding 2). Used by the satellite-
-    /// scoped `SUBSCRIBE_EVENTS` path, whose forward has no reply frame:
-    /// if this request cannot be enqueued, the caller pushes a typed
-    /// error to the consumer and nothing is registered anywhere.
-    /// Idempotent per `(terminal, client)`.
+    /// Register a proxy subscription and forward `forward` in one step (the
+    /// replyless satellite `SUBSCRIBE_EVENTS`). Idempotent per
+    /// `(terminal, client)`.
     Subscribe {
         /// The consumer registration.
         subscription: ProxySubscription,
-        /// The frame to forward to the satellite in the same step
-        /// (already rewritten satellite-local).
+        /// The frame to forward (already satellite-local).
         forward: FrameKind,
     },
-    /// Relay a `LIST_DIRECTORY` to this satellite (`docs/spec/L3.md` §4.1).
-    /// Like [`Self::Command`] the session allocates the link-side
-    /// `request_id`; `reply` resolves with the satellite's
-    /// `DIRECTORY_LISTING` result, or a refusal naming the host. The frame
-    /// put on the wire carries no `host`: the satellite lists its own
-    /// filesystem, and hub-and-spoke never chains.
+    /// Relay a `LIST_DIRECTORY` (`docs/spec/L3.md` §4.1); `reply` resolves
+    /// with the listing or a refusal naming the host.
     ListDirectory {
         /// The requested path, verbatim.
         path: String,
         /// Resolved with the listing or a typed refusal.
         reply: oneshot::Sender<DirectoryListingResult>,
     },
-    /// Relay a keyed `COMMAND` (an `APPLY_INPUT`, or a kill or signal
-    /// carrying an `operation_id`) from hub consumer `actor`, ids already
-    /// satellite-local (L1 §9.1). Like [`Self::Command`], but the session
-    /// forwards it only to a satellite that evaluates it and never across a
-    /// satellite restart, and it records `actor` for the events it causes.
+    /// Relay a keyed `COMMAND` (`APPLY_INPUT`, or a kill/signal with an
+    /// `operation_id`) from consumer `actor` (L1 §9.1): forwarded only to a
+    /// satellite that evaluates it, never across a restart.
     Keyed {
         /// The command to forward, ids already satellite-local.
         command: Command,
@@ -362,35 +252,30 @@ pub(crate) enum RelayRequest {
         /// Resolved with the satellite's result or the hub's refusal.
         reply: oneshot::Sender<CommandResult>,
     },
-    /// Subscribe and read the agent-metadata allowlist for one
-    /// satellite-local terminal (ADR-0136). Idempotent per connection:
-    /// a terminal already mirrored on this session sends nothing.
+    /// Subscribe and read the agent-metadata allowlist for one terminal
+    /// (ADR-0136), once per connection.
     MirrorTerminal {
         /// Satellite-local terminal id.
         terminal: u32,
     },
 }
 
-/// The receiving half of one satellite's relay: the bounded request
-/// mailbox plus the unbounded unsubscribe channel, both drained by the
-/// link supervisor ([`super::link::run_link`]).
+/// Receiving half of one satellite's relay, drained by
+/// [`super::link::run_link`].
 #[derive(Debug)]
 pub(crate) struct RelayMailbox {
     /// Bounded consumer-request mailbox ([`RELAY_MAILBOX`]).
     pub(crate) requests: mpsc::Receiver<RelayRequest>,
     /// Unbounded, undroppable subscription teardown (phux-v45.11).
     pub(crate) unsubscribes: mpsc::UnboundedReceiver<Unsubscribe>,
-    /// The hub's own state, whose event journal re-stamps every relayed
-    /// `EVENT` (ADR-0123). `None` in link tests that exercise delivery
-    /// alone; such a relay forwards the satellite's stamp untouched.
+    /// The hub state whose journal re-stamps relayed events (ADR-0123);
+    /// `None` forwards the satellite's stamp.
     pub(crate) journal: Option<crate::state::SharedState>,
-    /// This satellite's incarnation fence (L1 §9.1), shared by every
-    /// session the link supervisor runs, so it outlives a reconnect.
+    /// This satellite's incarnation fence (L1 §9.1); survives reconnects.
     pub(crate) operations: super::operation_fence::OperationFence,
 }
 
-/// The `dropped` count a satellite's link-level `journal_gap` stands for:
-/// the gap it sends the link's own subscription names no Terminal.
+/// The `dropped` count of a satellite's link-level `journal_gap`.
 const fn link_journal_gap(frame: &FrameKind) -> Option<u64> {
     match frame {
         FrameKind::Event {
@@ -410,12 +295,8 @@ const fn link_journal_gap(frame: &FrameKind) -> Option<u64> {
     }
 }
 
-/// Rewrite a satellite's `journal_gap` as the hub's `source_gap`.
-///
-/// The satellite sent the gap to the link's own subscription, naming
-/// satellite sequences no hub consumer can resume from. What it means on
-/// the hub is that events for that terminal were lost before the hub could
-/// journal them, which is exactly `source_gap { dropped }` (ADR-0123).
+/// Rewrite a satellite's `journal_gap` as the hub's `source_gap`: events for
+/// that terminal were lost before the hub could journal them (ADR-0123).
 fn satellite_gap_as_source_gap(event: &mut AgentEvent) {
     if let AgentEvent::JournalGap {
         first_missing,
@@ -433,12 +314,8 @@ pub(crate) struct RelayHandle {
     host: SatelliteHost,
     tx: mpsc::Sender<RelayRequest>,
     unsub_tx: mpsc::UnboundedSender<Unsubscribe>,
-    /// Shared monotonic source of the ordering token every proxy
-    /// registration and terminal unsubscribe carries (see
-    /// [`ProxySubscription::seq`]). One counter per link, shared across
-    /// every `RelayHandle` clone for the host, so all of that host's
-    /// subscribe/detach operations are totally ordered by issue time
-    /// regardless of which mailbox they ride.
+    /// Issue-order token source shared by every handle for this host, so
+    /// all of its subscribe/detach operations are totally ordered.
     seq: Arc<AtomicU64>,
 }
 
@@ -463,44 +340,26 @@ impl RelayHandle {
         )
     }
 
-    /// Allocate the next issue-order token for a registration or a
-    /// terminal withdrawal (phux-v45.7 reorder guard). `Relaxed` is
-    /// sufficient: the hub runs on a single-threaded `LocalSet`
-    /// (ADR-0014), so all allocations are already program-ordered; the
-    /// atomic only needs to hand out distinct, increasing values.
+    /// Next issue-order token. `Relaxed` suffices on the single-threaded hub.
     fn next_seq(&self) -> u64 {
         self.seq.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// The satellite host this handle relays to (aggregation callers
-    /// re-tag return-leg ids with it — phux-v45.5).
+    /// The satellite host this handle relays to.
     pub(crate) const fn host(&self) -> &SatelliteHost {
         &self.host
     }
 
-    /// Relay `command` and await the correlated result. Fails fast — a
-    /// saturated mailbox, a dead link task, or a link lost mid-flight all
-    /// produce a typed error instead of a hang (the session and the link
-    /// supervisor's drain phases guarantee the oneshot always resolves or
-    /// drops promptly) — and fails *bounded* even when nothing else does:
-    /// [`RELAY_COMMAND_TIMEOUT`] caps the wait against a silently
-    /// partitioned or frame-swallowing satellite whose link still looks
-    /// `Connected`. This is the whole-connection safety valve: the caller
-    /// (`handle_command`) is awaited inline in the consumer's read loop,
-    /// so an unbounded wait here would wedge every subsequent frame from
-    /// that consumer. Timing out drops the oneshot receiver, which marks
-    /// the session's pending entry for pruning
-    /// ([`RelaySession::prune_abandoned`]).
+    /// Relay `command` and await the result. Fails fast with a typed error on
+    /// a full mailbox or dead link, and is bounded by
+    /// [`RELAY_COMMAND_TIMEOUT`], because callers await this inline in a
+    /// consumer's read loop.
     pub(crate) async fn command(&self, command: Command) -> CommandResult {
         self.command_inner(command, None).await
     }
 
-    /// Relay `command` and register `subscription` atomically with its
-    /// enqueue (phux-v45.11 finding 2): a request that never reaches the
-    /// link registers nothing, and the session rolls the registration
-    /// back if the satellite answers with an error (finding 3). This is
-    /// the path for commands that establish a return-leg stream —
-    /// `SUBSCRIBE_RESOURCE_EVENTS` and `ATTACH_RESOURCE` (phux-v45.7).
+    /// Relay `command` and register `subscription` atomically with the
+    /// enqueue (for `SUBSCRIBE_RESOURCE_EVENTS` and `ATTACH_RESOURCE`).
     pub(crate) async fn command_subscribing(
         &self,
         command: Command,
@@ -509,11 +368,9 @@ impl RelayHandle {
         self.command_inner(command, Some(subscription)).await
     }
 
-    /// Relay `command` from hub consumer `actor`. A keyed command (an
-    /// `APPLY_INPUT`, or a kill or signal carrying an `operation_id`) goes
-    /// through the satellite's capability check and incarnation fence and
-    /// records `actor` for the events it causes (L1 §9.1); any other
-    /// command relays exactly as [`Self::command`].
+    /// Relay `command` from consumer `actor`. Keyed commands go through the
+    /// capability check and incarnation fence (L1 §9.1); others relay as
+    /// [`Self::command`].
     pub(crate) async fn command_from(&self, command: Command, actor: ClientId) -> CommandResult {
         if super::operation_fence::fenced_key(&command).is_none() {
             return self.command(command).await;
@@ -535,8 +392,7 @@ impl RelayHandle {
         command: Command,
         subscribe: Option<ProxySubscription>,
     ) -> CommandResult {
-        // Stamp the registration's issue-order token before it can race a
-        // later detach across the channel split (phux-v45.7).
+        // Stamp the issue-order token before it can race a later detach.
         let subscribe = subscribe.map(|mut sub| {
             sub.seq = self.next_seq();
             sub
@@ -592,13 +448,9 @@ impl RelayHandle {
         }
     }
 
-    /// Relay a `SPAWN_RESOURCE` and await the correlated re-tagged
-    /// `SpawnResult` (phux-v45.6). The same fail-fast / bounded contract
-    /// as [`Self::command`], expressed in the spawn reply's own typed
-    /// error vocabulary: a saturated mailbox is `SpawnFailed` (retryable,
-    /// the link is up), a dead or unanswering link is
-    /// `SatelliteUnreachable`. Timing out drops the oneshot receiver,
-    /// which marks the pending entry for [`RelaySession::prune_abandoned`].
+    /// Relay a `SPAWN_RESOURCE` with the same fail-fast, bounded contract as
+    /// [`Self::command`]: a full mailbox is `SpawnFailed` (retryable), a dead
+    /// or silent link `SatelliteUnreachable`.
     pub(crate) async fn spawn(&self, spawn: SatelliteSpawn) -> SpawnResult {
         let (reply, rx) = oneshot::channel();
         match self.tx.try_send(RelayRequest::Spawn { spawn, reply }) {
@@ -630,12 +482,8 @@ impl RelayHandle {
         }
     }
 
-    /// Relay a `LIST_DIRECTORY` for `path` and await the satellite's
-    /// listing (`docs/spec/L3.md` §4.1). Fails fast on a saturated or dead
-    /// link and fails bounded at [`RELAY_LIST_DEADLINE`] against a satellite
-    /// that never answers; every failure is a refusal whose message names
-    /// the host. Timing out drops the oneshot receiver, which marks the
-    /// pending entry for [`RelaySession::prune_abandoned`].
+    /// Relay a `LIST_DIRECTORY`, fail-fast and bounded at
+    /// [`RELAY_LIST_DEADLINE`]; every failure names the host.
     pub(crate) async fn list_directory(&self, path: String) -> DirectoryListingResult {
         let attempted = path.clone();
         let (reply, rx) = oneshot::channel();
@@ -669,8 +517,7 @@ impl RelayHandle {
         }
     }
 
-    /// Relay `command` without awaiting the result (the idempotent batch
-    /// path — `KILL_RESOURCES` semantics tolerate a silent skip).
+    /// Relay `command` without awaiting (`KILL_RESOURCES` tolerates a skip).
     pub(crate) fn command_detached(&self, command: Command) {
         let (reply, _rx) = oneshot::channel();
         if self
@@ -686,9 +533,8 @@ impl RelayHandle {
         }
     }
 
-    /// Relay an uncorrelated frame. Input and state acknowledgements have
-    /// distinct drop categories: neither is retried here, and the warning says
-    /// which semantic class failed before reaching the ordered link writer.
+    /// Relay an uncorrelated frame; drops are logged by semantic class and
+    /// never retried.
     pub(crate) fn forward(&self, frame: FrameKind) {
         let category = forward_drop_category(&frame);
         if let Err(err) = self.tx.try_send(RelayRequest::Forward { frame }) {
@@ -703,15 +549,9 @@ impl RelayHandle {
         }
     }
 
-    /// Register a proxy subscription and forward `forward` to the
-    /// satellite, atomically (see [`RelayRequest::Subscribe`]). On a
-    /// saturated or dead link **nothing** is registered and the consumer
-    /// gets a typed `ERROR` push instead of silence (phux-v45.11
-    /// finding 2 — `SUBSCRIBE_EVENTS` has no reply frame to carry the
-    /// failure, so the push is the only observable channel).
-    /// `false` when the request never reached the link (saturated or down);
-    /// the consumer has already been sent the typed error, and the caller
-    /// rolls back anything it installed for the subscription.
+    /// Register a proxy subscription and forward `forward` atomically. On a
+    /// full or dead link nothing is registered, the consumer gets a typed
+    /// `ERROR` push, and this returns `false` so the caller rolls back.
     pub(crate) fn subscribe(
         &self,
         mut subscription: ProxySubscription,
@@ -752,11 +592,8 @@ impl RelayHandle {
         false
     }
 
-    /// Ask the link to mirror `terminal`'s agent metadata (ADR-0136).
-    ///
-    /// A full or dead mailbox drops the request. The session marks the
-    /// terminal mirrored only once it accepts the request, so the next
-    /// inventory or subscribe retries.
+    /// Ask the link to mirror `terminal`'s agent metadata (ADR-0136). A full
+    /// or dead mailbox drops the request; the next inventory retries.
     pub(crate) fn mirror_terminal(&self, terminal: u32) {
         if let Err(err) = self.tx.try_send(RelayRequest::MirrorTerminal { terminal }) {
             trace!(
@@ -768,19 +605,14 @@ impl RelayHandle {
         }
     }
 
-    /// Drop every proxy subscription `client` holds on this link.
-    /// Undroppable (phux-v45.11 finding 1): rides the unbounded
-    /// unsubscribe channel, so mailbox pressure can never leave a stale
-    /// `ProxySubscriber` behind. If the link task is gone its registry is
-    /// gone too — the send error is then meaningless.
+    /// Drop every proxy subscription `client` holds on this link, via the
+    /// undroppable unsubscribe channel.
     pub(crate) fn unsubscribe_client(&self, client: ClientId) {
         let _ = self.unsub_tx.send(Unsubscribe::Client(client));
     }
 
-    /// Drop `client`'s subscription to one satellite-local terminal
-    /// (the relayed `DETACH_RESOURCE` path, phux-v45.7). Same undroppable
-    /// channel as [`Self::unsubscribe_client`]. Waits for proxy withdrawal
-    /// before success; a stalled link returns a bounded error instead.
+    /// Drop `client`'s subscription to one terminal and wait for the proxy
+    /// withdrawal, bounded by [`RELAY_COMMAND_TIMEOUT`].
     pub(crate) async fn unsubscribe_terminal(
         &self,
         client: ClientId,
@@ -796,10 +628,8 @@ impl RelayHandle {
             seq,
             reply: Some(reply),
         });
-        // A dropped receipt means the supervisor has no live session (refused,
-        // connecting, backing off, or shut down), hence no proxy can fan out.
-        // Timeout cancels an unapplied withdrawal under the same lock used by
-        // application. If application already won, return its actual result.
+        // A dropped receipt means no live session, hence no proxy. A timeout
+        // cancels an unapplied withdrawal; if it already applied, report that.
         match tokio::time::timeout(RELAY_COMMAND_TIMEOUT, received).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => CommandResult::Ok,
@@ -833,9 +663,8 @@ const fn forward_drop_category(frame: &FrameKind) -> &'static str {
     }
 }
 
-/// Shared registry of per-satellite [`RelayHandle`]s, mirrored into
-/// server state at hub bring-up (the sibling of
-/// [`super::link::HubLinkStatuses`]). Empty on a non-hub server.
+/// Shared registry of per-satellite [`RelayHandle`]s; empty on a non-hub
+/// server.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct HubRelays {
     inner: Arc<Mutex<BTreeMap<SatelliteHost, RelayHandle>>>,
@@ -864,14 +693,10 @@ impl HubRelays {
     }
 }
 
-/// Fail one queued request while the link is not connected (dial in
-/// flight, backoff, fail-closed refusal). Used by the link supervisor's
-/// drain arms so a consumer never hangs on a dead satellite.
+/// Fail one queued request while the link is not connected.
 pub(crate) fn fail_fast(request: RelayRequest, host: &SatelliteHost, why: &str) {
     match request {
-        // A command's atomic `subscribe` rider registers nothing here:
-        // the request never reached a session, so failing the oneshot is
-        // the whole story (the consumer sees the typed error reply).
+        // Nothing was registered; failing the oneshot is enough.
         RelayRequest::Command { reply, .. } | RelayRequest::Keyed { reply, .. } => {
             let _ = reply.send(CommandResult::Error {
                 code: ErrorCode::SatelliteUnreachable,
@@ -893,10 +718,7 @@ pub(crate) fn fail_fast(request: RelayRequest, host: &SatelliteHost, why: &str) 
             )));
         }
         RelayRequest::Subscribe { subscription, .. } => {
-            // A subscription to an unreachable satellite gets the same
-            // typed notification a disconnect would produce — observable,
-            // not silence (SUBSCRIBE_EVENTS has no reply frame). Nothing
-            // was registered, so there is nothing to roll back.
+            // Notify like a disconnect would; nothing to roll back.
             let _ = subscription
                 .out_tx
                 .try_send(Outbound::Frame(unreachable_error(host, why)));
@@ -908,8 +730,7 @@ pub(crate) fn fail_fast(request: RelayRequest, host: &SatelliteHost, why: &str) 
             );
         }
         RelayRequest::MirrorTerminal { terminal } => {
-            // Not yet marked mirrored. The next inventory or subscribe
-            // queues it again once the link is up.
+            // Not marked mirrored; the next inventory retries.
             trace!(
                 satellite = %host,
                 terminal,
@@ -920,8 +741,7 @@ pub(crate) fn fail_fast(request: RelayRequest, host: &SatelliteHost, why: &str) 
     }
 }
 
-/// The typed `ERROR` frame consumers receive when a satellite they observe
-/// (or tried to observe) is unreachable.
+/// The typed `ERROR` for an unreachable satellite.
 fn unreachable_error(host: &SatelliteHost, why: &str) -> FrameKind {
     FrameKind::Error {
         request_id: None,
@@ -950,57 +770,38 @@ struct ProxySubscriber {
     client: ClientId,
     out_tx: mpsc::Sender<Outbound>,
     consumer_cancel: CancellationToken,
-    /// Issue-order token of the registration currently held for this
-    /// `(terminal, client)` (see [`ProxySubscription::seq`]). Compared
-    /// against a terminal withdrawal's token so a stale detach cannot
-    /// tear down a newer re-attach.
+    /// Token of the registration held for this `(terminal, client)`.
     seq: u64,
-    /// This subscriber's L1 §9.1 snapshot-ordering gate (phux-v45.12 /
-    /// phux-v45.14). Content deltas (`RESOURCE_OUTPUT`) are held back until
-    /// the subscriber's own `TERMINAL_SNAPSHOT` has been delivered, so a
-    /// delta can never overtake the snapshot across the two-hop attach. See
-    /// [`SnapshotGate`].
+    /// Snapshot-ordering gate (L1 §9.1); see [`SnapshotGate`].
     gate: SnapshotGate,
-    /// Remove this subscriber only after its queued `RESOURCE_CLOSED` has
-    /// actually been delivered.
+    /// Remove only after the queued `RESOURCE_CLOSED` is delivered.
     retire_after_flush: bool,
-    /// Latest generation identity observed for this subscription. History and
-    /// lifecycle frames carry this forward so overflow can emit a terminal-
-    /// scoped tombstone rather than an uncorrelated text error.
+    /// Latest generation identity, so overflow can emit a terminal-scoped
+    /// tombstone.
     current_generation: Option<(StreamId, BootstrapId, u64)>,
 }
 
-/// The per-subscriber snapshot-ordering gate on the return leg (L1 §9.1,
-/// "the snapshot MUST precede the first delta"). A subscriber may only
-/// receive content deltas once its own attach `TERMINAL_SNAPSHOT` has
-/// landed; this enum is the non-blocking mirror of the local attach's
-/// snapshot gate, holding the ordering guarantee without stalling the link
-/// for one slow consumer.
+/// Per-subscriber return-leg gate: content deltas flow only after the
+/// subscriber's own attach snapshot lands (L1 §9.1), without stalling the
+/// link for one slow consumer.
 #[derive(Debug)]
 enum SnapshotGate {
-    /// The subscriber attached (a relayed `ATTACH_RESOURCE`) but its own
-    /// return-leg snapshot has not been delivered yet (phux-v45.14). Deltas
-    /// are suppressed: a second consumer attaching to a terminal already
-    /// streaming to another consumer must not observe that ongoing stream's
-    /// `RESOURCE_OUTPUT` before its own snapshot arrives ~1 RTT later. The
-    /// first snapshot to fan out (its attach snapshot) clears this to
-    /// [`Self::Open`], or, if the mailbox refuses it, to [`Self::Retained`].
+    /// Attached, but its own snapshot has not been delivered: deltas are
+    /// suppressed, so a second attacher never sees the ongoing stream's
+    /// output first. The first snapshot moves to `Open` (or `Retained`).
     AwaitingFirst,
-    /// The subscriber's snapshot has been delivered (or it is an event-only
-    /// subscription that carries no snapshot): deltas flow normally.
+    /// Snapshot delivered (or event-only): deltas flow.
     Open,
-    /// Ordered bootstrap frames refused by a briefly-full consumer mailbox.
-    /// The queue is bounded independently per subscriber and across the
-    /// satellite connection; exceeding either budget reaps the subscriber.
+    /// Bootstrap frames a full mailbox refused, bounded per subscriber and
+    /// per connection; exceeding either reaps the subscriber.
     Retained {
         frames: VecDeque<FrameKind>,
         retained_bytes: usize,
         open_after: bool,
     },
-    /// Delivery exceeded the bounded retained queue. The subscriber remains
-    /// registered until this resource-scoped failure actually reaches its
-    /// mailbox or the retirement deadline expires; only then is it removed.
-    /// Live streams detach upstream, while an already-closed resource does not.
+    /// Delivery overflowed. The subscriber stays until its resource-scoped
+    /// failure is delivered or the deadline passes. Live streams detach
+    /// upstream; an already-closed resource does not.
     Retiring {
         failure: FrameKind,
         deadline: std::time::Instant,
@@ -1029,48 +830,28 @@ struct FanOutFrame<'a> {
     kind: FanOutKind,
 }
 
-/// One in-flight relayed command: the waiting consumer plus, when the
-/// command carried an atomic subscription rider, what to roll back if
-/// the satellite answers with an error (phux-v45.11 finding 3).
+/// One in-flight relayed command, plus what to roll back on an error reply.
 #[derive(Debug)]
 struct PendingCommand {
     reply: oneshot::Sender<CommandResult>,
-    /// `(terminal, client, effect)` — the registration effect this command's
-    /// subscription rider had, so a satellite error undoes exactly what it did
-    /// (phux-v45.11 finding 3, phux-v45.15). See [`Registration`].
+    /// `(terminal, client, effect)` of the subscription rider.
     subscription: Option<(u32, ClientId, Registration)>,
 }
 
-/// What registering a subscription rider did, remembered so a satellite error
-/// can roll back precisely (phux-v45.11 finding 3, phux-v45.15).
+/// What registering a subscription rider did, for precise rollback.
 #[derive(Debug, Clone, Copy)]
 enum Registration {
-    /// A brand-new `(terminal, client)` subscriber was pushed. An error
-    /// removes it.
+    /// A new `(terminal, client)` subscriber; an error removes it.
     New,
-    /// An idempotent re-subscribe that **re-gated** an already-`Open`
-    /// subscriber to `AwaitingFirst` because it upgraded to a
-    /// snapshot-bearing attach (phux-v45.15). The attach's own snapshot
-    /// re-opens the gate — but a satellite error means that snapshot never
-    /// comes, so the error must restore the gate to `Open` **if it is still
-    /// `AwaitingFirst`**, or the pre-existing (event-only, or already-attached
-    /// and snapshot-landed) stream is stranded behind a gate that never
-    /// opens. A snapshot retained while the command was in flight supersedes
-    /// this rollback and must remain gated until it is delivered.
+    /// A re-subscribe that upgraded an `Open` subscriber to a snapshot
+    /// attach and re-gated it. An error restores `Open` if still
+    /// `AwaitingFirst` (a snapshot retained meanwhile stays gated).
     Regated,
-    /// An idempotent re-subscribe that left the existing gate untouched (the
-    /// pre-existing registration belongs to an earlier successful subscribe
-    /// and must survive). An error rolls back nothing.
+    /// A re-subscribe that left the gate alone; an error undoes nothing.
     Idempotent,
 }
 
-/// The per-connection relay state a link supervisor drives while its
-/// satellite connection is up (see [`super::link::run_link`]).
-///
-/// Owns the link-side `request_id` allocation, the pending-command map,
-/// and the proxy-subscription registry. All state is session-scoped:
-/// [`Self::teardown`] fails pending commands and notifies subscribers, so
-/// a reconnected link starts clean (consumers re-issue and re-subscribe).
+/// One in-flight bootstrap generation on the return leg.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RelayBootstrapFlow {
     stream_id: StreamId,
@@ -1082,8 +863,8 @@ struct RelayBootstrapFlow {
     ready: bool,
 }
 
-/// Reject a chunk whose stream/bootstrap identity drifted away from the
-/// in-flight generation, or that arrives after that generation reached READY.
+/// Reject a chunk whose identity drifted from the in-flight generation or
+/// that arrives after READY.
 fn ensure_chunk_identity(
     host: &SatelliteHost,
     terminal: u32,
@@ -1114,9 +895,7 @@ fn ensure_chunk_sequence(
     Ok(())
 }
 
-/// One more frame charged against `limit`, or the rejection a satellite gets
-/// for outrunning `budget` (a spent budget and an overflowed counter are the
-/// same refusal).
+/// Charge one frame against `limit`, or reject a satellite over `budget`.
 fn charge_frame(
     host: &SatelliteHost,
     budget: &str,
@@ -1129,8 +908,7 @@ fn charge_frame(
         .ok_or_else(|| format!("satellite {host} exceeded the {budget}"))
 }
 
-/// `payload_len` more bytes charged against `limit`, or the rejection a
-/// satellite gets for outrunning `budget`.
+/// Charge `payload_len` bytes against `limit`, or reject.
 fn charge_bytes(
     host: &SatelliteHost,
     budget: &str,
@@ -1173,6 +951,11 @@ struct PendingDetach {
     deadline: tokio::time::Instant,
 }
 
+/// Per-connection relay state driven by [`super::link::run_link`].
+///
+/// Owns link-side request ids, pending replies, and the proxy registry.
+/// Session-scoped: [`Self::teardown`] fails pending work so a reconnect
+/// starts clean.
 #[derive(Debug)]
 pub(crate) struct RelaySession {
     host: SatelliteHost,
@@ -1181,50 +964,40 @@ pub(crate) struct RelaySession {
     next_request_id: u32,
     pending: HashMap<u32, PendingCommand>,
     enforce_bootstrap_flow: bool,
-    /// Relayed `SPAWN_RESOURCE`s awaiting their `RESOURCE_SPAWNED`
-    /// (phux-v45.6). Shares the link-side `request_id` space with
-    /// [`Self::pending`] so one allocator covers both reply frames.
+    /// Relayed spawns awaiting `RESOURCE_SPAWNED`, in the shared id space.
     pending_spawns: HashMap<u32, oneshot::Sender<SpawnResult>>,
-    /// Relayed `LIST_DIRECTORY`s awaiting their `DIRECTORY_LISTING`
-    /// (`docs/spec/L3.md` §4.1), in the same link-side id space.
+    /// Relayed listings awaiting `DIRECTORY_LISTING`, in the same id space.
     pending_listings: HashMap<u32, PendingListing>,
-    /// Features the satellite advertised in its `HELLO_OK`. A listing is
-    /// relayed only when it names `LIST_DIRECTORY`: an older satellite would
-    /// drop the frame and the consumer would wait out the deadline.
+    /// The satellite's `HELLO_OK` features; listings need `LIST_DIRECTORY`.
     satellite_features: ServerFeatureSet,
-    /// Upstream detach barriers. Old frames may still arrive until the
-    /// correlated reply, including after a downstream proxy has reattached.
+    /// Upstream detach barriers: old frames may arrive until the reply.
     pending_detaches: HashMap<u32, PendingDetach>,
-    /// Satellite-local terminals whose agent-metadata allowlist this
-    /// connection has already subscribed (ADR-0136).
+    /// Terminals whose metadata allowlist is already mirrored (ADR-0136).
     mirrored: HashSet<u32>,
     /// Link-side `GET_METADATA` ids for that allowlist: terminal and key.
     pending_mirror_gets: HashMap<u32, (u32, String)>,
     subscribers: HashMap<u32, Vec<ProxySubscriber>>,
-    /// An explicit content attach has been forwarded since the last upstream
-    /// detach. Event-only proxies do not establish this ownership. Even a
-    /// refused attach cannot resurrect the automatic SPAWN generation that
-    /// its preflight barrier retired.
+    /// Terminals with an explicit content attach since the last upstream
+    /// detach; a refused attach cannot resurrect the retired SPAWN
+    /// generation.
     explicit_content: HashSet<u32>,
-    /// Legacy `SUBSCRIBE_EVENTS` is removed by upstream `DETACH_RESOURCE`, unlike
-    /// actor-level `SUBSCRIBE_RESOURCE_EVENTS`. Restore it after internal cuts.
+    /// Legacy `SUBSCRIBE_EVENTS` terminals, re-subscribed after internal
+    /// detaches (which remove them upstream).
     legacy_events: HashSet<u32>,
     bootstrap_flows: HashMap<u32, RelayBootstrapFlow>,
     retained_bytes: usize,
     retained_frames: usize,
-    /// Terminals whose final downstream subscriber was removed by delivery
-    /// failure. The link driver drains these into ordered upstream detaches.
+    /// Terminals whose last subscriber was removed by delivery failure,
+    /// drained by the link into upstream detaches.
     orphaned_by_delivery: HashSet<u32>,
     inflight_generation_bytes: u64,
     inflight_generation_frames: u32,
     encode_buf: BytesMut,
-    /// The hub's state, whose journal re-stamps relayed events
-    /// ([`Self::restamp_event`]). `None` forwards the satellite's stamp.
+    /// Hub state for re-stamping relayed events; `None` keeps the satellite's.
     journal: Option<crate::state::SharedState>,
     /// The satellite's `HELLO_OK.server_id` on this connection.
     incarnation: super::operation_fence::Incarnation,
-    /// The satellite's incarnation fence and operation-to-consumer record,
-    /// shared with the link's other sessions (L1 §9.1).
+    /// Incarnation fence shared with the link's other sessions (L1 §9.1).
     operations: super::operation_fence::OperationFence,
 }
 
@@ -1299,10 +1072,8 @@ impl RelaySession {
         self.operations = operations;
     }
 
-    /// A first explicit attach must start after any automatically published
-    /// SPAWN generation on the link has stopped. No downstream proxy owns that
-    /// generation. Fence it upstream before forwarding the attach; peers that
-    /// already share a subscription must keep their stream throughout.
+    /// Before a first explicit attach, fence any automatic SPAWN generation
+    /// upstream (no proxy owns it); shared subscriptions keep streaming.
     pub(crate) fn prepare_request(&mut self, request: &RelayRequest) -> Vec<Vec<u8>> {
         if let RelayRequest::MirrorTerminal { terminal } = request {
             return self.mirror_terminal_frames(*terminal);
@@ -1341,8 +1112,7 @@ impl RelaySession {
         frames
     }
 
-    /// Service one consumer request. `None` means the request was rejected
-    /// locally before registration and its consumer was already notified.
+    /// Service one request. `None`: rejected locally, consumer already told.
     pub(crate) fn handle_request_checked(&mut self, request: RelayRequest) -> Option<Vec<u8>> {
         match request {
             RelayRequest::Command {
@@ -1360,9 +1130,8 @@ impl RelaySession {
                     let _ = reply.send(CommandResult::Error { code, message });
                     return None;
                 }
-                // Register the subscription rider in the same step as the
-                // command enqueue (phux-v45.11 finding 2), remembering
-                // enough to roll it back on an error reply (finding 3).
+                // Register the rider with the enqueue, remembering how to
+                // roll it back.
                 let subscription = subscribe.map(|sub| {
                     let (terminal, client) = (sub.terminal, sub.client);
                     if sub.awaits_snapshot {
@@ -1424,16 +1193,12 @@ impl RelaySession {
                     cwd: spawn.cwd,
                     env: spawn.env,
                     term: spawn.term,
-                    // The satellite spawns locally: the addressing field
-                    // never crosses the link (hub-and-spoke, no chaining).
+                    // Hub-and-spoke: the satellite spawns locally.
                     satellite: None,
                     owner_terminal: spawn.owner_terminal.map(ResourceId::local),
                     agent_session: None,
                     initial_size: spawn.initial_size,
-                    // The kind and its already-retagged parent cross the
-                    // link intact: a satellite-addressed AgentSession spawn
-                    // is the satellite's to validate and bind, exactly as a
-                    // local one would be (ADR-0104 §6).
+                    // Kind and retagged parent cross intact (ADR-0104 §6).
                     resource: spawn.resource,
                 }))
             }
@@ -1447,9 +1212,9 @@ impl RelaySession {
         }
     }
 
-    /// `SUBSCRIBE_METADATA` plus `GET_METADATA` for each allowlisted key,
-    /// once per terminal per connection. The GET correlates through
-    /// [`Self::pending_mirror_gets`] because `METADATA_VALUE` carries no key.
+    /// `SUBSCRIBE_METADATA` plus a `GET_METADATA` per allowlisted key, once
+    /// per terminal per connection (`METADATA_VALUE` carries no key, hence
+    /// [`Self::pending_mirror_gets`]).
     fn mirror_terminal_frames(&mut self, terminal: u32) -> Vec<Vec<u8>> {
         if !self.mirrored.insert(terminal) {
             return Vec::new();
@@ -1473,16 +1238,12 @@ impl RelaySession {
         frames
     }
 
-    /// What the satellite advertised in its `HELLO_OK`, for the hub's own
-    /// dispatch (ADR-0127: whether the link can carry an attach's takeover).
+    /// The satellite's `HELLO_OK` features (ADR-0127).
     pub(crate) const fn satellite_features(&self) -> ServerFeatureSet {
         self.satellite_features
     }
 
-    /// Fields a satellite would skip, so a retry or a retained exit would
-    /// not mean what the consumer asked. The hub refuses instead of
-    /// forwarding. `None` when the spawn carries neither, or the satellite
-    /// advertised every bit it needs.
+    /// Refuse a spawn with fields the satellite would silently skip.
     fn spawn_capability_rejection(&self, spawn: &SatelliteSpawn) -> Option<SpawnError> {
         let resource = spawn.resource.as_ref()?;
         if resource.idempotency_key.is_some()
@@ -1508,9 +1269,8 @@ impl RelaySession {
         None
     }
 
-    /// The typed refusal for a command this satellite cannot evaluate, sent
-    /// without touching the link: a conditional kill it cannot decode
-    /// (ADR-0109), or a keyed operation it would run without dedupe.
+    /// Refuse, without touching the link, a command this satellite cannot
+    /// evaluate (conditional kill, or a keyed op without dedupe).
     fn command_rejection(&self, command: &Command) -> Option<CommandResult> {
         if let Some(message) = self.conditional_kill_rejection(command) {
             return Some(CommandResult::Error {
@@ -1521,11 +1281,9 @@ impl RelaySession {
         self.keyed_capability_rejection(command)
     }
 
-    /// L1 §9.1: a keyed operation reaches only a satellite that owns its
-    /// dedupe. `APPLY_INPUT` needs `ACKNOWLEDGED_INPUT`; a kill or signal
-    /// carrying an `operation_id` needs `KEYED_SIGNAL`, since an older
-    /// satellite ignores the trailing key and would run a retry again. The
-    /// refusal is the unchanged `UNSUPPORTED_SATELLITE_ROUTE`.
+    /// A keyed operation reaches only a satellite that dedupes it
+    /// (`ACKNOWLEDGED_INPUT` / `KEYED_SIGNAL`), else
+    /// `UNSUPPORTED_SATELLITE_ROUTE` (L1 §9.1).
     fn keyed_capability_rejection(&self, command: &Command) -> Option<CommandResult> {
         let (needed, name) = match command {
             Command::ApplyInput { .. } => (ServerFeature::AcknowledgedInput, "ACKNOWLEDGED_INPUT"),
@@ -1547,11 +1305,9 @@ impl RelaySession {
         })
     }
 
-    /// L1 §9.1: the incarnation fence. An operation id this hub already
-    /// forwarded to an earlier incarnation of the satellite is refused with
-    /// `INCARNATION_CHANGED`, never forwarded: the satellite's dedupe record
-    /// died with that process (ADR-0053 item 5). A new id is recorded, with
-    /// `actor`, for the events it causes.
+    /// The incarnation fence (L1 §9.1): an operation id already sent to an
+    /// earlier incarnation is refused `INCARNATION_CHANGED`; a new id is
+    /// recorded with `actor`.
     fn fence_rejection(&self, command: &Command, actor: ClientId) -> Option<CommandResult> {
         use super::operation_fence::{FenceVerdict, fenced_key};
         let key = fenced_key(command)?;
@@ -1578,10 +1334,8 @@ impl RelaySession {
         }
     }
 
-    /// ADR-0109: a satellite that never advertised `CONDITIONAL_KILL` cannot
-    /// decode `KILL_RESOURCE_IF`, so the hub refuses it here with the typed
-    /// "nothing was killed" code instead of letting the consumer wait out
-    /// the relay deadline. `None` for every other command.
+    /// Refuse `KILL_RESOURCE_IF` to a satellite without `CONDITIONAL_KILL`
+    /// (ADR-0109) instead of letting the consumer time out.
     fn conditional_kill_rejection(&self, command: &Command) -> Option<String> {
         let Command::KillResourceIf { .. } = command else {
             return None;
@@ -1598,10 +1352,8 @@ impl RelaySession {
         ))
     }
 
-    /// Put one relayed `LIST_DIRECTORY` on the wire under a link-side id,
-    /// or refuse it at once when the satellite never advertised the query
-    /// (it would drop the frame and the consumer would wait out the
-    /// deadline for nothing).
+    /// Put one `LIST_DIRECTORY` on the wire, or refuse it when the satellite
+    /// never advertised the query.
     fn enqueue_listing(
         &mut self,
         path: String,
@@ -1687,12 +1439,8 @@ impl RelaySession {
         ))
     }
 
-    /// Register one proxy subscriber, idempotently. Returns the
-    /// [`Registration`] effect so a satellite error can undo exactly what this
-    /// did. A brand-new `(terminal, client)` pair is [`Registration::New`]; a
-    /// re-subscribe refreshes the stored mailbox and is either
-    /// [`Registration::Regated`] (an UPGRADE that re-gated an `Open` stream) or
-    /// [`Registration::Idempotent`] (gate left untouched).
+    /// Register one proxy subscriber idempotently, returning the
+    /// [`Registration`] effect for rollback.
     fn register_subscriber(&mut self, subscription: ProxySubscription) -> Registration {
         let ProxySubscription {
             terminal,
@@ -1709,22 +1457,11 @@ impl RelaySession {
         if let Some(existing) = subs.iter_mut().find(|s| s.client == client) {
             existing.out_tx = out_tx;
             existing.consumer_cancel = consumer_cancel;
-            // Advance to the freshest token seen: a re-attach must never
-            // regress the stored order below a withdrawal it superseded.
+            // Keep the freshest token.
             existing.seq = existing.seq.max(seq);
-            // Upgrade re-gating (phux-v45.15): a same-client re-subscribe that
-            // upgrades from an event-only stream (or an already-attached,
-            // snapshot-landed stream) to a snapshot-bearing attach must
-            // re-suppress deltas until *this* attach's own snapshot lands —
-            // otherwise the attach's deltas ride ahead of its snapshot on the
-            // still-`Open` gate (the L1 §9.1 violation v45.14 fixed for a
-            // fresh second attach, resurfacing on the upgrade path). Only an
-            // `Open` gate is re-gated: an `AwaitingFirst`/`Retained` gate
-            // already suppresses deltas until a snapshot lands, and the fresh
-            // attach's snapshot supersedes a retained one (freshest-wins) when
-            // it fans out. A non-attach (event-only) re-subscribe carries no
-            // snapshot and leaves the gate untouched, so an in-order stream
-            // the consumer is already reading is never re-suppressed.
+            // An upgrade from an `Open` stream to a snapshot attach re-gates
+            // until this attach's snapshot lands (L1 §9.1). Other gates
+            // already suppress deltas; event-only re-subscribes leave it.
             if awaits_snapshot && matches!(existing.gate, SnapshotGate::Open) {
                 existing.gate = SnapshotGate::AwaitingFirst;
                 Registration::Regated
@@ -1737,9 +1474,7 @@ impl RelaySession {
                 out_tx,
                 consumer_cancel,
                 seq,
-                // An attach gates until its own snapshot lands (phux-v45.14);
-                // an event-only subscription carries no snapshot, so it opens
-                // straight away or its EVENT deltas would never flow.
+                // Attaches gate until their snapshot; event-only opens now.
                 gate: if awaits_snapshot {
                     SnapshotGate::AwaitingFirst
                 } else {
@@ -1752,15 +1487,10 @@ impl RelaySession {
         }
     }
 
-    /// Withdraw proxy subscriptions (the undroppable unsubscribe channel,
-    /// phux-v45.11 findings 1 and 4). Returns the encoded wire frames to
-    /// send to the satellite: one `COMMAND { DETACH_RESOURCE }` per
-    /// terminal whose **last** proxy subscriber just went away (or whose
-    /// explicit withdrawal found no proxy after an automatic spawn), so the
-    /// satellite stops streaming output for terminals nobody on this hub
-    /// observes anymore. The upstream reply retires the old bootstrap flow;
-    /// frames preceding it cannot reach a newly registered proxy. The
-    /// downstream receipt certifies local proxy removal, not the upstream reply.
+    /// Withdraw proxy subscriptions. Returns the upstream
+    /// `DETACH_RESOURCE` frames for terminals that lost their last proxy (or
+    /// had none after an automatic spawn). The upstream reply retires the old
+    /// bootstrap flow; the downstream receipt certifies only local removal.
     pub(crate) fn handle_unsubscribe(&mut self, unsubscribe: Unsubscribe) -> Vec<Vec<u8>> {
         match unsubscribe {
             Unsubscribe::Client(client) => {
@@ -1824,13 +1554,11 @@ impl RelaySession {
         terminal: u32,
         seq: u64,
     ) -> Result<Option<u32>, CommandResult> {
-        // A relayed SPAWN publishes to the link before any explicit proxy
-        // attaches. Idempotent detach must stop that unobserved producer too.
+        // A relayed SPAWN streams before any proxy attaches; detach stops it.
         let Some(subs) = self.subscribers.get_mut(&terminal) else {
             return Ok(Some(terminal));
         };
-        // Registrations and withdrawals ride different channels. Never let a
-        // stale detach remove a newer registration for the same client.
+        // Never let a stale detach remove a newer registration.
         if subs.iter().any(|s| s.client == client && s.seq >= seq) {
             debug!(satellite = %self.host, terminal, ?client,
                 "stale terminal unsubscribe superseded by a newer re-attach; dropping");
@@ -1868,8 +1596,8 @@ impl RelaySession {
         })
     }
 
-    /// Dispatch one frame arriving from the satellite: resolve relayed
-    /// command and spawn replies and re-tag + fan out subscribed streams.
+    /// Dispatch one frame from the satellite: resolve replies, re-tag and fan
+    /// out streams.
     pub(crate) fn handle_inbound(&mut self, framed: &[u8]) -> Result<(), String> {
         let frame = FrameKind::decode_with_limits(framed, self.bootstrap_limits)
             .map_err(|err| format!("satellite {} sent an undecodable frame: {err:?}", self.host))?
@@ -1914,9 +1642,7 @@ impl RelaySession {
             FrameKind::MetadataValue { request_id, value } => {
                 self.apply_mirrored_value(request_id, value);
             }
-            // Any other metadata frame is not part of the mirror. Absorb
-            // it: treating it as direction-invalid would tear the link the
-            // moment the allowlist subscription is live.
+            // Other metadata frames are not part of the mirror; absorb them.
             FrameKind::GetMetadata { .. }
             | FrameKind::SetMetadata { .. }
             | FrameKind::DeleteMetadata { .. }
@@ -1933,8 +1659,8 @@ impl RelaySession {
         Ok(())
     }
 
-    /// The old upstream generation remains fenced until a successful joined
-    /// detach receipt. A refusal cannot authorize a fresh stream on this link.
+    /// The old upstream generation stays fenced until a successful detach
+    /// receipt; a refusal cannot authorize a fresh stream.
     fn resolve_detach_reply(&mut self, frame: &FrameKind) -> Result<bool, String> {
         let (request_id, succeeded) = match frame {
             FrameKind::CommandResult { request_id, result } => {
@@ -1960,10 +1686,8 @@ impl RelaySession {
         Ok(true)
     }
 
-    /// Resolve a correlated `ERROR` against whichever request kind holds the
-    /// id — commands own it in the common case, but a satellite MAY answer a
-    /// relayed spawn with a generic correlated ERROR instead of
-    /// `RESOURCE_SPAWNED`.
+    /// Resolve a correlated `ERROR` against whichever request holds the id
+    /// (a satellite may answer a spawn with a generic error).
     fn resolve_correlated_error(&mut self, request_id: u32, code: ErrorCode, message: String) {
         if self.pending_mirror_gets.remove(&request_id).is_some() {
             debug!(
@@ -1998,9 +1722,7 @@ impl RelaySession {
         self.resolve_pending(request_id, CommandResult::Error { code, message });
     }
 
-    /// Resolve a link-side listing id back to its waiting consumer. The
-    /// listing passes through untouched: its paths are the satellite's own,
-    /// which is exactly what the consumer asked for.
+    /// Resolve a listing id to its waiting consumer; paths pass through.
     fn resolve_pending_listing(&mut self, request_id: u32, result: DirectoryListingResult) {
         let Some(pending) = self.pending_listings.remove(&request_id) else {
             debug!(
@@ -2014,9 +1736,8 @@ impl RelaySession {
         let _ = pending.reply.send(result);
     }
 
-    /// Forward one terminal-scoped return-leg stream frame: resolve its
-    /// satellite-local terminal id, clear the bootstrap-flow gate its kind
-    /// carries, then re-tag the scope and fan it out to subscribers.
+    /// Forward one terminal-scoped return-leg frame: check its flow gate,
+    /// re-tag, fan out.
     fn relay_stream_frame(&mut self, frame: FrameKind) -> Result<(), String> {
         if let Some(dropped) = link_journal_gap(&frame) {
             self.relay_link_gap(dropped);
@@ -2031,8 +1752,7 @@ impl RelaySession {
                 .values()
                 .any(|pending| pending.terminal == id)
         {
-            // These frames precede the satellite's joined detach reply. A
-            // fresh proxy must never mistake them for its new attach prefix.
+            // Pre-detach frames; a fresh proxy must not take them as its prefix.
             return Ok(());
         }
         if self.enforce_bootstrap_flow {
@@ -2043,13 +1763,9 @@ impl RelaySession {
         Ok(())
     }
 
-    /// Deliver one re-tagged return-leg frame. An `EVENT` goes through the
-    /// hub's event registry (ADR-0123, L1 §7.3): it takes the hub's next
-    /// `seq`, since the satellite's stamp names a journal a hub consumer
-    /// cannot subscribe to, and reaches exactly the consumers subscribed to
-    /// its satellite Terminal, with the registry's gap tracking. Without a
-    /// journal (link tests) the stamp is dropped and the event fans out
-    /// like any other stream frame.
+    /// Deliver one re-tagged frame. An `EVENT` is re-stamped by the hub's
+    /// registry (ADR-0123, L1 §7.3) and reaches that Terminal's subscribers;
+    /// without a journal it fans out with its stamp dropped.
     fn deliver_stream_frame(&mut self, id: u32, frame: FrameKind) {
         let FrameKind::Event {
             terminal,
@@ -2063,8 +1779,7 @@ impl RelaySession {
         satellite_gap_as_source_gap(&mut event);
         self.mirror_satellite_lease_state(id, &event, stamp.as_deref().map(|s| s.seq));
         if let (Some(journal), Some(scope)) = (self.journal.clone(), terminal.clone()) {
-            // L1 §9.1: an event a keyed operation caused names the hub
-            // consumer that sent the operation, found by its `operation_id`.
+            // L1 §9.1: a keyed operation's event names the consumer that sent it.
             let actor = stamp
                 .as_deref()
                 .and_then(|stamp| stamp.operation_id.as_ref())
@@ -2081,31 +1796,14 @@ impl RelaySession {
         self.fan_out(id, &unstamped);
     }
 
-    /// Mirror a satellite-originated lease transition into the hub's own
-    /// ledger (ADR-0033's `ttl_ms`, this lane: "the satellite owns the
-    /// timer, the hub reflects the satellite's `Expired`/`Released`").
+    /// Mirror a satellite lease transition into the hub's ledger (ADR-0033):
+    /// the satellite owns the timer, the hub reflects it.
     ///
-    /// The satellite is the source of truth for whether its lease is
-    /// free — its own TTL timer or its own `RELEASE_INPUT` handling
-    /// already decided that before emitting this event. Without this the
-    /// hub's `satellite` ledger would keep naming a holder after the
-    /// satellite dropped it, wrongly denying the next hub consumer's
-    /// Cooperative `ACQUIRE_INPUT`.
-    ///
-    /// `is_end` tells `ServerState::mirror_satellite_lease_event` which
-    /// role this event plays: Acquired/Seized (`false`) never changes who
-    /// the ledger names by itself — the hub's own `ACQUIRE_INPUT` relay
-    /// already installs the new holder from the correlated reply
-    /// (`commands::relay_satellite_acquire_input`), which can race this
-    /// event and must win — but it still clears a pending acquire's mark
-    /// and records `seq` as ordering evidence. Released/Expired (`true`)
-    /// is what can actually evict a holder, and is the one that gets
-    /// ignored while an acquire's reply is still waiting for the stream to
-    /// catch up, or when `seq` is not newer than the last Acquired/Seized
-    /// recorded (review round 2, medium finding: reply and event delivery
-    /// share one link but are not ordered against each other, so a stale
-    /// report about a lease a *later* acquire already superseded must not
-    /// clear the new holder).
+    /// Acquired/Seized never change the holder by themselves (the hub's own
+    /// `ACQUIRE_INPUT` reply installs it) but clear a pending mark and record
+    /// `seq`. Released/Expired may evict, except while an acquire reply is
+    /// pending or when `seq` is not newer: reply and event share the link but
+    /// are not ordered against each other.
     fn mirror_satellite_lease_state(&self, id: u32, event: &AgentEvent, seq: Option<u64>) {
         let Some(journal) = &self.journal else {
             return;
@@ -2124,15 +1822,8 @@ impl RelaySession {
         journal.with_mut(|s| s.mirror_satellite_lease_event(&self.host, id, is_end, seq));
     }
 
-    /// Report a satellite's `journal_gap` on the link's own subscription.
-    ///
-    /// The satellite addressed it to no Terminal, because one subscription
-    /// carries every scope the link watches, so it spans all of them. Each
-    /// relayed Terminal's consumers are told with a `source_gap`: events for
-    /// it were lost before the hub could journal them. Its `dropped` is an
-    /// upper bound: the satellite's range counts every sequence its journal
-    /// skipped for the link, including events for scopes a given Terminal's
-    /// consumers never subscribed to.
+    /// Report a satellite's link-level `journal_gap` as a `source_gap` to
+    /// every relayed Terminal's consumers. `dropped` is an upper bound.
     fn relay_link_gap(&mut self, dropped: u64) {
         let terminals: Vec<u32> = self.subscribers.keys().copied().collect();
         for id in terminals {
@@ -2145,10 +1836,8 @@ impl RelaySession {
         }
     }
 
-    /// The cursor the link's own `SUBSCRIBE_EVENTS` carries: journal
-    /// semantics with no replay (`2^64 - 1`) when the satellite speaks
-    /// them, so an `EXPIRED` lease crosses the link as itself (L1 §7.1);
-    /// otherwise the live-only subscription an older satellite expects.
+    /// The cursor for the link's own `SUBSCRIBE_EVENTS`: journal semantics
+    /// with no replay when the satellite speaks them (L1 §7.1), else live-only.
     fn link_event_cursor(&self) -> Option<u64> {
         self.satellite_features
             .contains(ServerFeature::EventJournal)
@@ -2164,8 +1853,7 @@ impl RelaySession {
         forward
     }
 
-    /// The bootstrap-flow gate each stream frame kind must clear before it is
-    /// forwarded. `EVENT` carries no flow state and clears trivially.
+    /// The bootstrap-flow gate each stream frame must clear.
     fn enforce_stream_frame_flow(&mut self, id: u32, frame: &FrameKind) -> Result<(), String> {
         match frame {
             FrameKind::ResourceOutput {
@@ -2225,12 +1913,8 @@ impl RelaySession {
         }
     }
 
-    /// Re-tag one stream frame's terminal scope `Local { id }` ->
-    /// `Satellite { host, id }`. Every other field is forwarded verbatim
-    /// (ADR-0007: opaque relay), so the scope is rewritten in place rather
-    /// than the frame rebuilt field by field. An event's journal stamp is
-    /// the one field that does not cross as-is; [`Self::restamp_event`]
-    /// replaces it after the re-tag (`docs/spec/L1.md` §7.3).
+    /// Re-tag a stream frame's scope `Local { id }` -> `Satellite { host,
+    /// id }`, leaving every other field verbatim (ADR-0007).
     fn retag_stream_frame(&self, mut frame: FrameKind, id: u32) -> FrameKind {
         let scope = ResourceId::satellite(self.host.clone(), id);
         match &mut frame {
@@ -2248,12 +1932,8 @@ impl RelaySession {
         frame
     }
 
-    /// Deliver `RESOURCE_CLOSED`, then reap everything the satellite terminal
-    /// owned on this link.
-    ///
-    /// `reason` is the satellite's (ADR-0104 §4): the hub retags the id and
-    /// forwards the fact unchanged. A hub that substituted its own reason
-    /// would tell a consumer a satellite-side cascade was a plain exit.
+    /// Deliver `RESOURCE_CLOSED` with the satellite's reason unchanged
+    /// (ADR-0104 §4), then reap what the terminal owned on this link.
     fn relay_terminal_closed(
         &mut self,
         terminal_id: &ResourceId,
@@ -2269,9 +1949,8 @@ impl RelaySession {
                 subscriber.retire_after_flush = true;
             }
         }
-        // The close bypasses an AwaitingFirst gate, but follows any already
-        // retained live output. Subscribers are removed only after the close
-        // itself reaches their mailbox.
+        // Past an AwaitingFirst gate but after retained output; subscribers
+        // are removed once the close reaches them.
         self.fan_out_ungated(
             id,
             &FrameKind::ResourceClosed {
@@ -2281,8 +1960,7 @@ impl RelaySession {
                 signal,
             },
         );
-        // No upstream detach is needed: the satellite already declared the
-        // terminal gone.
+        // The satellite already declared it gone: no upstream detach.
         self.orphaned_by_delivery.remove(&id);
         self.recalculate_retained_totals();
         self.retire_bootstrap_flow(id);
@@ -2296,15 +1974,8 @@ impl RelaySession {
         let Some(id) = self.retag_inbound(Some(terminal_id)) else {
             return;
         };
-        // Best-effort delivery bypassing the snapshot gate
-        // (phux-v45.15): a BELL is an ephemeral notification the
-        // `TERMINAL_SNAPSHOT` does not capture, so gating it behind
-        // an `AwaitingFirst` subscriber's snapshot would drop it
-        // permanently — unlike a `RESOURCE_OUTPUT` delta, which the
-        // snapshot supersedes (freshest full grid wins), so gating
-        // content is safe but gating a bell loses it. Ordering
-        // against the snapshot does not matter for a side-channel
-        // notification, the same rationale as `RESOURCE_CLOSED`.
+        // A bell is not in the snapshot, so it bypasses the gate rather than
+        // being dropped.
         self.fan_out_ungated(
             id,
             &FrameKind::Bell {
@@ -2313,9 +1984,8 @@ impl RelaySession {
         );
     }
 
-    /// Fail every in-flight command and notify every subscribed consumer,
-    /// then clear the registries. Called exactly once per session, on
-    /// disconnect or hub shutdown.
+    /// Fail in-flight commands, notify subscribers, clear registries. Once
+    /// per session.
     pub(crate) fn teardown(&mut self, why: &str) {
         for (_, pending) in self.pending.drain() {
             let _ = pending.reply.send(CommandResult::Error {
@@ -2335,8 +2005,7 @@ impl RelaySession {
                 format!("satellite {} is unreachable: {why}", self.host),
             )));
         }
-        // One typed ERROR per consumer (not per subscription): the frame
-        // names the host, and every terminal of that host is gone at once.
+        // One typed ERROR per consumer, naming the host.
         let mut notified: Vec<ClientId> = Vec::new();
         let error = unreachable_error(&self.host, why);
         for subs in self.subscribers.values() {
@@ -2370,9 +2039,8 @@ impl RelaySession {
         self.inflight_generation_frames = 0;
     }
 
-    /// The link is gone, so every consumer's satellite scope on it is
-    /// interrupted: dropped from the hub's event registry and owed a
-    /// `journal_gap`, because its stream stopped mid-flight (ADR-0123).
+    /// Drop every consumer's satellite scope from the event registry, owing
+    /// each a `journal_gap` (ADR-0123).
     fn interrupt_consumer_scopes(&self) {
         let Some(journal) = &self.journal else {
             return;
@@ -2385,15 +2053,9 @@ impl RelaySession {
         }
     }
 
-    /// Drop pending entries whose consumer stopped waiting (the
-    /// [`RelayHandle::command`] deadline elapsed, the consumer
-    /// disconnected, or the relay was detached from the start). Returns
-    /// how many entries were pruned.
-    ///
-    /// Called from the link supervisor's keepalive tick: without it, a
-    /// satellite that reads relayed commands but never answers would grow
-    /// the pending map without bound (only [`RELAY_MAILBOX`] entries drain
-    /// per mailbox refill, and nothing else removes them).
+    /// Drop pending entries whose consumer stopped waiting; returns how many.
+    /// Run on the keepalive tick so a satellite that never answers cannot
+    /// grow the map without bound.
     pub(crate) fn prune_abandoned(&mut self) -> usize {
         let before = self.pending_request_count();
         self.pending.retain(|_, pending| !pending.reply.is_closed());
@@ -2418,11 +2080,8 @@ impl RelaySession {
         self.pending.len() + self.pending_spawns.len() + self.pending_listings.len()
     }
 
-    /// A peer that remains alive but never acknowledges teardown must not
-    /// retain barriers indefinitely or strand a new proxy behind one.
-    /// Unlike an abandoned read-only command, a missing teardown receipt leaves
-    /// upstream generation ownership uncertain. Reset the shared link rather
-    /// than releasing stale content into any subsequent bootstrap.
+    /// A peer that never acknowledges a detach leaves generation ownership
+    /// uncertain, so an expired barrier resets the link.
     pub(crate) fn check_detach_deadlines(&self) -> Result<(), String> {
         let now = tokio::time::Instant::now();
         if self
@@ -2439,14 +2098,8 @@ impl RelaySession {
         Ok(())
     }
 
-    /// Resolve a link-side `request_id` back to its waiting consumer.
-    ///
-    /// An error reply rolls back the command's atomic subscription rider
-    /// when this command was the one that created it (phux-v45.11
-    /// finding 3): the satellite refused, so nothing will ever stream for
-    /// that registration and keeping it would fan future frames (from a
-    /// later, unrelated subscriber's stream) to a consumer that was told
-    /// its subscribe failed.
+    /// Resolve a link-side id to its consumer. An error reply rolls back the
+    /// command's subscription rider.
     fn resolve_pending(&mut self, request_id: u32, result: CommandResult) {
         match self.pending.remove(&request_id) {
             Some(pending) => {
@@ -2468,14 +2121,10 @@ impl RelaySession {
         }
     }
 
-    /// Undo the registration effect a failed subscribing command had
-    /// (phux-v45.11 finding 3, phux-v45.15). The satellite refused, so this
-    /// registration's own stream and snapshot never come.
+    /// Undo a failed subscribing command's registration effect.
     fn roll_back_subscription(&mut self, terminal: u32, client: ClientId, effect: Registration) {
         match effect {
-            // The command created the subscriber: remove it, or a later
-            // unrelated subscriber's stream would fan out to a consumer told
-            // its subscribe failed.
+            // The command created it: remove it.
             Registration::New => {
                 if let Some(subs) = self.subscribers.get_mut(&terminal) {
                     subs.retain(|s| s.client != client);
@@ -2490,12 +2139,9 @@ impl RelaySession {
                     );
                 }
             }
-            // The command upgraded an already-`Open` stream to an attach and
-            // re-gated it to `AwaitingFirst`; the attach's snapshot never
-            // comes, so restore the gate to `Open` or the pre-existing stream
-            // is stranded (phux-v45.15). Do so only if this command's gate is
-            // still present: a snapshot retained while the reply was in
-            // flight must stay ahead of later deltas (phux-v45.16).
+            // Restore `Open` after a failed upgrade, but only if this
+            // command's gate is still there: a snapshot retained meanwhile
+            // must stay ahead of later deltas.
             Registration::Regated => {
                 if let Some(sub) = self
                     .subscribers
@@ -2512,19 +2158,13 @@ impl RelaySession {
                     );
                 }
             }
-            // A pre-existing registration this command did not touch: nothing
-            // to undo.
             Registration::Idempotent => {}
         }
         self.recalculate_retained_totals();
     }
 
-    /// Resolve a link-side spawn `request_id` back to its waiting
-    /// consumer, re-tagging a successful result's freshly allocated id
-    /// `Local { id }` -> `Satellite { host, id }` (phux-v45.6). A
-    /// `Satellite`-tagged id in the satellite's own reply is out of the
-    /// hub-and-spoke topology and resolves as a `SpawnFailed` error
-    /// rather than being chained onward.
+    /// Resolve a spawn reply, re-tagging the new id to this host; a
+    /// `Satellite`-tagged id in the reply becomes `SpawnFailed`.
     fn resolve_pending_spawn(&mut self, request_id: u32, result: SpawnResult) {
         let Some(reply) = self.pending_spawns.remove(&request_id) else {
             debug!(
@@ -2539,9 +2179,8 @@ impl RelaySession {
         let _ = reply.send(retagged);
     }
 
-    /// The satellite-local id of an inbound frame's terminal scope, or
-    /// `None` when the frame is unscoped or (out of ADR-0007 topology)
-    /// already satellite-tagged — satellites do not chain.
+    /// The satellite-local id of an inbound frame's scope; `None` when
+    /// unscoped or already satellite-tagged (never chained).
     fn retag_inbound(&self, terminal: Option<&ResourceId>) -> Option<u32> {
         match terminal {
             Some(ResourceId::Local { id }) => Some(*id),
@@ -2755,28 +2394,14 @@ impl RelaySession {
         }
     }
 
-    /// Push `frame` to every proxy subscriber of satellite-local terminal
-    /// `id`. `try_send` per consumer: a slow consumer drops its copy, the
-    /// link and its siblings keep flowing.
+    /// Push `frame` to every proxy subscriber of terminal `id` via
+    /// `try_send`.
     ///
-    /// A `TERMINAL_SNAPSHOT` is the ordering anchor (L1 §9.1): a subscriber
-    /// receives content deltas only once its own snapshot has landed, gated
-    /// by [`SnapshotGate`]. Two cases hold the guarantee across the two-hop
-    /// attach. First, a second consumer attaching to a terminal already
-    /// streaming to another consumer starts [`SnapshotGate::AwaitingFirst`]
-    /// (phux-v45.14): the ongoing stream's `RESOURCE_OUTPUT` is suppressed
-    /// for it until its own attach snapshot fans out. Second, if a
-    /// consumer's briefly-full mailbox refuses that snapshot it is
-    /// **retained** (phux-v45.12, [`SnapshotGate::Retained`]) and retried —
-    /// here on the next delta, and on the keepalive tick — before any delta
-    /// may ride, with a newer snapshot (a satellite resync) replacing it.
-    /// This mirrors the local attach's snapshot gate without blocking the
-    /// link: a sustained-saturation consumer may still lag on *content* (the
-    /// pre-existing slow-consumer condition) but never sees a delta before a
-    /// snapshot. `RESOURCE_CLOSED` and `BELL` are the exceptions
-    /// ([`Self::fan_out_ungated`]): snapshot-independent lifecycle / notice
-    /// frames the snapshot does not capture, best-effort delivered past the
-    /// gate rather than dropped.
+    /// A `TERMINAL_SNAPSHOT` anchors ordering (L1 §9.1): a new attacher waits
+    /// in [`SnapshotGate::AwaitingFirst`] and a refused snapshot is retained
+    /// ([`SnapshotGate::Retained`]) and retried before any delta; a newer
+    /// snapshot replaces it. `RESOURCE_CLOSED` and `BELL` bypass the gate
+    /// ([`Self::fan_out_ungated`]).
     fn fan_out(&mut self, id: u32, frame: &FrameKind) {
         let host = &self.host;
         let Some(subs) = self.subscribers.get_mut(&id) else {
@@ -3294,10 +2919,8 @@ impl RelaySession {
                 detach_upstream,
             } => {
                 if matches!(&frame, FrameKind::ResourceClosed { .. }) {
-                    // The authoritative upstream close supersedes any queued
-                    // local delivery-gap fence. Sending the stale tombstone
-                    // would hide the real lifecycle event and then schedule a
-                    // redundant detach for a resource already gone.
+                    // The upstream close supersedes a queued delivery-gap
+                    // fence (and its redundant detach).
                     sub.gate = SnapshotGate::Retiring {
                         failure: frame,
                         deadline,
@@ -3335,19 +2958,9 @@ impl RelaySession {
         };
     }
 
-    /// Best-effort deliver a snapshot-independent frame to every proxy
-    /// subscriber, **bypassing** the snapshot gate. Two return-leg frames take
-    /// this path: `RESOURCE_CLOSED` (phux-v45.14 sub-finding a) and `BELL`
-    /// (phux-v45.15). Neither is content the `TERMINAL_SNAPSHOT` captures, so
-    /// gating them behind an `AwaitingFirst` subscriber's not-yet-delivered
-    /// snapshot would drop them permanently — a close would tear the consumer
-    /// down before it learned its terminal is gone, and a bell notification
-    /// would simply vanish. A content `RESOURCE_OUTPUT` delta, by contrast,
-    /// the snapshot supersedes (freshest full grid wins), so gating it is
-    /// safe; these are not. Ordering against the snapshot is irrelevant for a
-    /// lifecycle signal or a side-channel notification. `try_send`,
-    /// fire-and-forget: refusal reaps the saturated or closed subscriber so
-    /// a permanently unread mailbox cannot retain relay state.
+    /// Best-effort delivery past the snapshot gate for frames the snapshot
+    /// does not capture (`RESOURCE_CLOSED`, `BELL`). A refusal reaps the
+    /// subscriber.
     fn fan_out_ungated(&mut self, id: u32, frame: &FrameKind) {
         let host = &self.host;
         let Some(subs) = self.subscribers.get_mut(&id) else {
@@ -3400,10 +3013,8 @@ impl RelaySession {
         self.recalculate_retained_totals();
     }
 
-    /// Retry one subscriber's retained bootstrap prefix (phux-v45.12).
-    /// Returns `(may_send_delta, subscriber_alive)`: a full mailbox remains
-    /// retained, an `AwaitingFirst` gate still suppresses deltas, and a closed
-    /// mailbox is reported dead so callers reap it immediately.
+    /// Retry one subscriber's retained bootstrap prefix. Returns
+    /// `(may_send_delta, subscriber_alive)`.
     fn flush_pending_snapshot(sub: &mut ProxySubscriber) -> (bool, bool) {
         let gate = std::mem::replace(&mut sub.gate, SnapshotGate::AwaitingFirst);
         if let SnapshotGate::Retiring {
@@ -3416,10 +3027,8 @@ impl RelaySession {
                 Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => (false, false),
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     if std::time::Instant::now() >= deadline {
-                        // The mailbox sender stored here is only one of
-                        // several production clones. Cancel the owning
-                        // connection so its control and bound-stream writers
-                        // close even while those clones remain alive.
+                        // Other clones keep the mailbox alive; cancel the
+                        // connection itself.
                         sub.consumer_cancel.cancel();
                         (false, false)
                     } else {
@@ -3472,11 +3081,8 @@ impl RelaySession {
         (open_after, !sub.retire_after_flush)
     }
 
-    /// Retry every subscriber's retained attach snapshot (phux-v45.12).
-    /// Driven from the link supervisor's keepalive tick so a consumer whose
-    /// mailbox was briefly full at attach still converges even if no further
-    /// return-leg frame arrives for its terminal to trigger the inline retry
-    /// in [`Self::fan_out`].
+    /// Retry every retained snapshot (keepalive tick), for terminals with no
+    /// further traffic to trigger the inline retry.
     pub(crate) fn flush_pending_snapshots(&mut self) {
         let mut orphaned = Vec::new();
         for (terminal, subs) in &mut self.subscribers {
@@ -3526,9 +3132,7 @@ impl RelaySession {
         self.retained_frames = frames;
     }
 
-    /// Allocate the next link-side request id, skipping ids still pending
-    /// in any reply map (u32 wrap-around safety, not a practical
-    /// collision).
+    /// Next link-side request id, skipping ids still pending (wrap safety).
     fn allocate_request_id(&mut self) -> u32 {
         loop {
             let id = self.next_request_id;
@@ -3548,8 +3152,7 @@ impl RelaySession {
             || self.pending_mirror_gets.contains_key(&id)
     }
 
-    /// Store one allowlisted `METADATA_CHANGED`, retagged `Local` to
-    /// `Satellite`. A non-allowlisted key or a non-local scope is dropped.
+    /// Store one allowlisted `METADATA_CHANGED`, retagged to `Satellite`.
     fn apply_mirrored_metadata(&self, scope: &Scope, key: &str, value: Option<Vec<u8>>) {
         let Some(journal) = &self.journal else {
             return;
@@ -3591,12 +3194,8 @@ impl RelaySession {
     }
 }
 
-/// The kill verbs' outbound rewrite: `KILL_RESOURCE` and `KILL_RESOURCE_IF`
-/// both move to the satellite's `Local` id space. The precondition crosses
-/// the link unchanged, and the satellite evaluates it against its own
-/// instance and provenance (ADR-0109). A keyed kill's `operation_id`
-/// crosses verbatim too: the satellite that kills owns its dedupe (L1
-/// §9.1). `None` for any other command.
+/// Rewrite `KILL_RESOURCE`/`KILL_RESOURCE_IF` to the satellite's `Local`
+/// id; precondition and `operation_id` cross verbatim (ADR-0109, L1 §9.1).
 fn route_kill_to_satellite(command: &Command) -> Option<(SatelliteHost, Command)> {
     match command {
         Command::KillResource {
@@ -3631,9 +3230,7 @@ fn route_kill_to_satellite(command: &Command) -> Option<(SatelliteHost, Command)
     }
 }
 
-/// `APPLY_INPUT`'s outbound rewrite (L1 §9.1): the batch and its operation
-/// id cross verbatim, with the id moved to the satellite's `Local` space.
-/// The satellite that writes the batch owns its dedupe.
+/// Rewrite `APPLY_INPUT` to the satellite's `Local` id (L1 §9.1).
 fn route_input_to_satellite(command: &Command) -> Option<(SatelliteHost, Command)> {
     let Command::ApplyInput {
         operation_id,
@@ -3654,13 +3251,9 @@ fn route_input_to_satellite(command: &Command) -> Option<(SatelliteHost, Command
     ))
 }
 
-/// Re-tag a satellite's spawn reply for the consumer (phux-v45.6): the
-/// freshly allocated `Local { id }` becomes `Satellite { host, id }`, and an
-/// instance token binding it passes through unchanged (ADR-0109), since it
-/// names the satellite's id space. A `Satellite`-tagged id in the
-/// satellite's own reply is out of the hub-and-spoke topology and becomes
-/// `SpawnFailed` rather than chaining. A refusal, or a future variant that
-/// carries no id, passes through untouched.
+/// Re-tag a satellite's spawn reply: `Local { id }` becomes
+/// `Satellite { host, id }`, the instance token passes through (ADR-0109),
+/// and a `Satellite`-tagged id becomes `SpawnFailed`.
 fn retag_spawn_result(host: &SatelliteHost, result: SpawnResult) -> SpawnResult {
     let Some(spawned) = result.spawned_id() else {
         return result;
@@ -3675,8 +3268,7 @@ fn retag_spawn_result(host: &SatelliteHost, result: SpawnResult) -> SpawnResult 
         ));
     };
     let id = ResourceId::satellite(host.clone(), *id);
-    // A replayed reply stays replayed (ADR-0126): a keyed retry through the
-    // hub must not look like a fresh spawn.
+    // A replayed reply stays replayed (ADR-0126).
     match (result.is_replayed(), result.instance()) {
         (true, instance) => SpawnResult::Replayed { id, instance },
         (false, Some(instance)) => SpawnResult::OkBound { id, instance },
@@ -3692,13 +3284,10 @@ pub(crate) fn satellite_route(terminal_id: &ResourceId) -> Option<(SatelliteHost
     }
 }
 
-/// The command a hub's link sends for a consumer's (ADR-0127).
+/// The command a hub's link sends for a consumer's attach (ADR-0127).
 ///
-/// A consumer's declared role is the hub's to hold: the link is one identity
-/// on the satellite, shared by every consumer, so a viewer mark sent there
-/// would make all of them observe-only. Only a deliberate takeover crosses,
-/// and only to a satellite that advertised `ATTACH_ROLES`, where the attach
-/// and the seize land in one command. Every other command is unchanged.
+/// The link is one identity shared by every consumer, so only a deliberate
+/// takeover crosses, and only to a satellite advertising `ATTACH_ROLES`.
 pub(crate) fn link_attach_command(command: Command, satellite: ServerFeatureSet) -> Command {
     let Command::AttachResource {
         terminal_id,
@@ -3715,11 +3304,9 @@ pub(crate) fn link_attach_command(command: Command, satellite: ServerFeatureSet)
     }
 }
 
-/// If `command` targets a single satellite-owned terminal, produce the
-/// owning host and the command rewritten to the satellite's `Local` id
-/// space (ADR-0007 outbound leg). `None` for local targets, unscoped
-/// commands (`GET_STATE`, `UPGRADE` — hub-local by design), and
-/// `KILL_RESOURCES` (a mixed batch, partitioned by its own handler).
+/// If `command` targets one satellite-owned terminal, the host and the
+/// command rewritten to `Local` ids. `None` for local targets, hub-local
+/// commands, and mixed batches.
 #[allow(
     clippy::too_many_lines,
     reason = "one mechanical rewrite arm per per-terminal Command variant; splitting hides the catalog"
@@ -3731,9 +3318,8 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
             role_policy,
         } => {
             let (host, id) = satellite_route(terminal_id)?;
-            // The consumer's declared intent rides to the hub's satellite
-            // dispatch unchanged; what the link itself sends is decided
-            // there and in `RelaySession::link_command` (ADR-0127).
+            // The consumer's intent rides unchanged; the link command is
+            // decided at dispatch (ADR-0127).
             Some((
                 host,
                 Command::AttachResource {
@@ -3901,11 +3487,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
                 },
             ))
         }
-        // GET_STATE / UPGRADE are hub-local; KILL_RESOURCES and
-        // CLOSE_TAB_RESOURCES partition mixed batches in
-        // `handle_kill_terminals` / `handle_close_tab_resources`; forward-compat commands
-        // this hub does not know cannot be routed (their terminal scope is
-        // unreadable) and fall through to the local INVALID_COMMAND path.
+        // Hub-local, batch-partitioned, or unknown commands.
         _ => None,
     }
 }
@@ -3931,10 +3513,7 @@ mod tests {
         buf.to_vec()
     }
 
-    /// Register a proxy subscription through the atomic Subscribe request
-    /// (the `SUBSCRIBE_EVENTS` shape) and assert the paired forward frame
-    /// was produced. Registers at the baseline issue-order token 1;
-    /// [`subscribe_at`] controls the token for reorder tests.
+    /// Register a `SUBSCRIBE_EVENTS`-shaped subscription at token 1.
     fn subscribe(
         session: &mut RelaySession,
         terminal: u32,
@@ -3944,8 +3523,7 @@ mod tests {
         subscribe_at(session, terminal, client, 1, out_tx);
     }
 
-    /// [`subscribe`] with an explicit issue-order token, for exercising
-    /// the detach/reattach reorder guard (phux-v45.7).
+    /// [`subscribe`] with an explicit issue-order token.
     fn subscribe_at(
         session: &mut RelaySession,
         terminal: u32,
@@ -3960,8 +3538,6 @@ mod tests {
                 out_tx,
                 consumer_cancel: CancellationToken::new(),
                 seq,
-                // The SUBSCRIBE_EVENTS shape: no return-leg snapshot, so the
-                // subscriber opens ungated.
                 awaits_snapshot: false,
                 bootstrap_profile: None,
                 bootstrap_limits: None,
@@ -3977,12 +3553,7 @@ mod tests {
         );
     }
 
-    /// Register an `ATTACH_RESOURCE` proxy subscription (the snapshot-bearing
-    /// content-stream shape, phux-v45.14): the subscriber starts gated and
-    /// its deltas are suppressed until its own return-leg `TERMINAL_SNAPSHOT`
-    /// lands. The command reply receiver is dropped — the registration is
-    /// applied synchronously in `handle_request`, which is all these
-    /// ordering tests exercise.
+    /// Register an `ATTACH_RESOURCE` subscription (starts gated).
     fn attach(
         session: &mut RelaySession,
         terminal: u32,
@@ -4014,9 +3585,7 @@ mod tests {
 
     // --- outbound command rewrite ---------------------------------------
 
-    /// ADR-0127: the link carries a deliberate takeover only to a satellite
-    /// advertising `ATTACH_ROLES`; a viewer mark and a plain `PRIMARY` never
-    /// cross, because the link's identity is shared by every hub consumer.
+    /// ADR-0127: only a takeover crosses, and only with `ATTACH_ROLES`.
     #[test]
     fn hub_relays_role_policy_to_the_satellite_when_it_advertises_attach_roles() {
         use phux_protocol::wire::frame::RolePolicy;
@@ -4083,8 +3652,6 @@ mod tests {
             .is_none()
         );
         assert!(route_to_satellite(&Command::Upgrade).is_none());
-        // Mixed batches partition in handle_kill_terminals /
-        // handle_close_tab_resources, not here.
         assert!(
             route_to_satellite(&Command::KillResources {
                 ids: vec![ResourceId::satellite("devbox", 1)],
@@ -4148,8 +3715,6 @@ mod tests {
                 terminal_id: sat.clone(),
                 state: phux_protocol::wire::frame::ReportedAgentState::Done,
             },
-            // L1 §9.1: APPLY_INPUT crosses to the satellite that owns its
-            // dedupe (it was local-only before KEYED_SIGNAL).
             Command::ApplyInput {
                 operation_id: phux_protocol::InputOperationId::new([1; 16]).expect("id"),
                 terminal_id: sat.clone(),
@@ -4884,8 +4449,6 @@ mod tests {
             satellite, None,
             "the addressing field never crosses the link (no chaining)"
         );
-        // The satellite answers with its Local id; the consumer sees it
-        // re-tagged with this link's host.
         session
             .handle_inbound(&encode(&FrameKind::ResourceSpawned {
                 request_id,
@@ -4935,8 +4498,7 @@ mod tests {
         );
     }
 
-    /// ADR-0109: the bind request crosses the link, and the satellite's
-    /// instance token comes back unchanged beside the re-tagged id.
+    /// ADR-0109: the instance token comes back beside the re-tagged id.
     #[test]
     fn session_keeps_a_bound_spawn_token_while_retagging_the_id() {
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
@@ -4979,9 +4541,7 @@ mod tests {
         );
     }
 
-    /// ADR-0126: the idempotency key crosses the link, and a satellite's
-    /// replayed reply stays replayed beside the re-tagged id, so a keyed
-    /// retry through the hub never looks like a fresh spawn.
+    /// ADR-0126: a replayed reply stays replayed through the hub.
     #[test]
     fn session_keeps_a_replayed_spawn_replayed_while_retagging_the_id() {
         let key = phux_protocol::ids::IdempotencyKey::new([7; 16]);
@@ -5033,10 +4593,8 @@ mod tests {
         }
     }
 
-    /// ADR-0124: `retain_secs` crosses the link when the satellite advertised
-    /// `RETAIN_ON_EXIT`. A satellite without the bit would skip the field and
-    /// close at exit, so the hub refuses instead. A spawn that omits the
-    /// field still relays.
+    /// ADR-0124: `retain_secs` crosses only with `RETAIN_ON_EXIT`; the hub
+    /// refuses otherwise. A spawn without it still relays.
     #[test]
     fn hub_forwards_retain_secs_only_to_a_satellite_that_honors_it() {
         let mut capable = RelaySession::new_negotiated(
@@ -5090,9 +4648,8 @@ mod tests {
         );
     }
 
-    /// ADR-0126: a satellite without `SPAWN_IDEMPOTENCY` would skip the key
-    /// and spawn again on a retry, so the hub refuses a keyed spawn to it
-    /// before anything crosses the link. An unkeyed spawn still relays.
+    /// ADR-0126: a keyed spawn to a satellite without `SPAWN_IDEMPOTENCY`
+    /// is refused; an unkeyed one relays.
     #[test]
     fn hub_refuses_a_keyed_satellite_spawn_when_the_satellite_lacks_the_bit() {
         let key = phux_protocol::ids::IdempotencyKey::new([7; 16]);
@@ -5124,9 +4681,8 @@ mod tests {
         );
     }
 
-    /// ADR-0109: a satellite that never advertised `CONDITIONAL_KILL` never
-    /// sees the tag, and the consumer gets the typed refusal at once; one
-    /// that did receives the precondition unchanged.
+    /// ADR-0109: without `CONDITIONAL_KILL` the consumer is refused at once;
+    /// with it the precondition crosses unchanged.
     #[test]
     fn a_conditional_kill_reaches_only_a_satellite_that_evaluates_it() {
         let command = Command::KillResourceIf {
@@ -5209,8 +4765,7 @@ mod tests {
         }
     }
 
-    /// Hand `command` to `session` as consumer `actor`'s keyed request:
-    /// the wire bytes it put on the link, if any, and its reply.
+    /// Send `command` as `actor`'s keyed request: wire bytes and reply.
     fn send_keyed(
         session: &mut RelaySession,
         command: Command,
@@ -5316,8 +4871,6 @@ mod tests {
         );
         assert!(wire.is_some());
 
-        // The link reconnects to a restarted satellite: a new session, the
-        // same fence, a new HELLO_OK.server_id.
         let mut after = keyed_session(&features, [2; 16], &fence);
         for retry in [keyed_kill(5), apply_input_to(ResourceId::local(9))] {
             let (wire, mut rx) = send_keyed(&mut after, retry, ClientId(4));
@@ -5569,8 +5122,6 @@ mod tests {
                 Some(Box::new(satellite_stamp)),
             ),
             (Some(ResourceId::local(9)), scoped_gap, None),
-            // A satellite's gap on the link's own subscription names no
-            // Terminal; it spans every scope the link relays.
             (None, link_gap, None),
         ] {
             session
@@ -5611,12 +5162,9 @@ mod tests {
         assert_eq!(journal.with(crate::state::ServerState::journal_head), 3);
     }
 
-    // --- session: lease TTL mirror (ADR-0033, "the satellite owns the
-    // timer, the hub reflects Expired/Released") -------------------------
+    // --- lease TTL mirror (ADR-0033) ---
 
-    /// An `EXPIRED` (or `RELEASED`) `terminal_control` arriving from the
-    /// satellite is the ground truth that its lease is free; the hub must
-    /// stop gating other hub consumers against the holder it evicts.
+    /// A satellite `EXPIRED`/`RELEASED` frees the hub's ledger entry.
     #[test]
     fn a_satellite_expiry_or_release_clears_the_hubs_satellite_lease() {
         for action in [ControlAction::Expired, ControlAction::Released] {
@@ -5654,9 +5202,7 @@ mod tests {
         }
     }
 
-    /// A `SEIZED` from the satellite names a new holder, not a free lease —
-    /// the mirror must not touch the ledger for it (the SEIZE path already
-    /// updates it explicitly, from the acquiring consumer's own request).
+    /// A `SEIZED` is not a free lease; the ledger is left alone.
     #[test]
     fn a_satellite_seize_does_not_clear_the_hubs_satellite_lease() {
         let journal = crate::state::SharedState::new();
@@ -5687,11 +5233,8 @@ mod tests {
         );
     }
 
-    /// Review round 2's medium finding, reproduced: a hub consumer's
-    /// `ACQUIRE_INPUT` reply bypasses the event pump and can resolve
-    /// before an *earlier* Released/Expired for the terminal's *prior*
-    /// holder has finished arriving over the link's event stream. The
-    /// stale event must not evict the holder the reply just installed.
+    /// A stale Released that arrives after a newer acquire's reply must not
+    /// evict the new holder.
     #[test]
     fn a_stale_released_arriving_after_a_newer_acquires_reply_does_not_evict_it() {
         let journal = crate::state::SharedState::new();
@@ -5705,14 +5248,9 @@ mod tests {
             s.set_satellite_lease(host(), 9, a, a_tx);
         });
 
-        // B's ACQUIRE_INPUT relay starts (this is what
-        // `commands::relay_satellite_acquire_input` does before awaiting
-        // the satellite's reply)...
+        // B's acquire relay marks pending...
         journal.with_mut(|s| s.mark_satellite_lease_acquire_pending(host(), 9));
-        // ...and its reply resolves OK first, well ahead of the event
-        // pump (the correlated reply path bypasses it entirely). The
-        // pending mark is deliberately left set — only the event mirror
-        // below clears it.
+        // ...and its reply lands first; only the event mirror clears the mark.
         journal.with_mut(|s| {
             s.set_satellite_lease(host(), 9, b, b_tx);
         });
@@ -5722,8 +5260,7 @@ mod tests {
             "precondition: the reply already installed B"
         );
 
-        // A's Released — emitted by the satellite *before* B's acquire
-        // even happened, but delayed in the event pump — finally arrives.
+        // A's delayed Released arrives.
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         session.set_journal(Some(journal.clone()));
         session
@@ -5746,9 +5283,7 @@ mod tests {
             "a stale Released arriving after a newer reply must not evict the holder it installed"
         );
 
-        // The pending mark was consumed by that one stale event; a
-        // *second*, unrelated Released now applies normally (self-healing
-        // — the window does not stay open forever).
+        // The mark is consumed; a later Released applies normally.
         session
             .handle_inbound(&encode(&FrameKind::Event {
                 terminal: Some(ResourceId::local(9)),
@@ -5769,10 +5304,8 @@ mod tests {
         );
     }
 
-    /// L1 §7.1 / ADR-0123: the link subscribes with journal semantics (and
-    /// no replay) only when the satellite speaks them, so `EXPIRED` crosses
-    /// the link as itself and an older satellite still gets the frame it
-    /// knows.
+    /// L1 §7.1 / ADR-0123: journal semantics on the link only when the
+    /// satellite speaks them.
     #[test]
     fn the_link_subscribes_events_with_journal_semantics_when_the_satellite_speaks_them() {
         for (features, cursor) in [
@@ -5875,8 +5408,6 @@ mod tests {
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), out_tx);
-        // ADR-0007: satellites are unaware of each other; a nested
-        // Satellite tag must never be re-relayed.
         session
             .handle_inbound(&encode(&FrameKind::Event {
                 terminal: Some(ResourceId::satellite("nested", 9)),
@@ -6152,13 +5683,9 @@ mod tests {
 
     #[tokio::test]
     async fn full_mailbox_retains_the_snapshot_so_a_delta_never_overtakes_it() {
-        // L1 §9.1: the snapshot MUST precede the first delta. When the
-        // consumer's mailbox is briefly full at attach the return-leg
-        // snapshot cannot be delivered; it must be retained (not dropped)
-        // so a later RESOURCE_OUTPUT does not reach the consumer first.
+        // A snapshot refused by a full mailbox is retained, so a later delta
+        // cannot reach the consumer first (L1 §9.1).
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
-        // Capacity two so both the retried snapshot and the delta can land
-        // in order once the fillers drain.
         let (out_tx, mut out_rx) = mpsc::channel(2);
         subscribe(&mut session, 9, ClientId(1), out_tx.clone());
         // Saturate the mailbox: the snapshot's fan-out will be refused.
@@ -6183,8 +5710,6 @@ mod tests {
             Outbound::Frame(FrameKind::Detach)
         ));
 
-        // A later OUTPUT delta must flush the retained snapshot FIRST and
-        // only then ride after it.
         session
             .handle_inbound(&encode(&output_frame(9, 1, b"delta")))
             .expect("valid satellite frame");
@@ -6211,9 +5736,7 @@ mod tests {
 
     #[tokio::test]
     async fn deltas_are_suppressed_until_the_retained_snapshot_flushes_on_the_tick() {
-        // While the snapshot stays stuck behind a full mailbox, deltas are
-        // suppressed (never delivered ahead of it); the keepalive-tick flush
-        // converges the consumer once the mailbox drains.
+        // A stuck snapshot suppresses deltas; the keepalive flush converges.
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(1);
         subscribe(&mut session, 9, ClientId(1), out_tx.clone());
@@ -6229,8 +5752,6 @@ mod tests {
             .handle_inbound(&encode(&output_frame(9, 1, b"delta")))
             .expect("valid satellite frame");
 
-        // Only the filler is queued: neither the snapshot nor the delta
-        // reached the consumer (the delta was suppressed, not reordered).
         assert!(matches!(
             out_rx.try_recv().expect("filler drains"),
             Outbound::Frame(FrameKind::Detach)
@@ -6240,8 +5761,6 @@ mod tests {
             "no frame may reach the consumer while the snapshot is stuck"
         );
 
-        // The keepalive tick retries the retained snapshot; the mailbox now
-        // has room, so it lands — and it was never preceded by the delta.
         session.flush_pending_snapshots();
         let Outbound::Frame(frame) = out_rx.try_recv().expect("snapshot flushed on tick") else {
             panic!("unexpected terminal outbound sentinel")
@@ -6258,8 +5777,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_fresher_snapshot_replaces_a_retained_one() {
-        // A satellite resync sends a newer snapshot while an older one is
-        // still retained: the freshest full-grid must win.
+        // A newer snapshot replaces a retained one.
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(1);
         subscribe(&mut session, 9, ClientId(1), out_tx.clone());
@@ -6296,11 +5814,8 @@ mod tests {
 
     #[test]
     fn a_second_attach_sees_its_snapshot_before_any_delta_of_the_ongoing_stream() {
-        // The core phux-v45.14 fix. Consumer A is already attached and
-        // streaming; consumer B attaches to the same satellite terminal. B's
-        // registration lands immediately, but its own return-leg
-        // TERMINAL_SNAPSHOT arrives ~1 RTT after A's ongoing RESOURCE_OUTPUT.
-        // B must NOT observe that delta before its snapshot (L1 §9.1).
+        // B attaches while A streams: B must not see A's delta before its own
+        // snapshot (L1 §9.1).
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (tx_a, mut rx_a) = mpsc::channel(8);
         let (tx_b, mut rx_b) = mpsc::channel(8);
@@ -6315,13 +5830,8 @@ mod tests {
         };
         assert!(matches!(a_snap, FrameKind::BootstrapReady { .. }));
 
-        // B attaches to the same terminal (registration is immediate) but its
-        // snapshot has not been requested/answered yet.
         attach(&mut session, 9, ClientId(2), tx_b);
 
-        // A's stream produces a delta before B's snapshot arrives. It fans
-        // out to both subscribers — A (Open) receives it; B (AwaitingFirst)
-        // must have it suppressed.
         session
             .handle_inbound(&encode(&output_frame(9, 1, b"a-stream")))
             .expect("valid satellite frame");
@@ -6366,10 +5876,7 @@ mod tests {
 
     #[test]
     fn a_gated_attach_still_receives_terminal_closed_before_being_reaped() {
-        // phux-v45.14 sub-finding (a): a subscriber still awaiting its first
-        // snapshot is reaped when the terminal closes. RESOURCE_CLOSED must
-        // be delivered best-effort past the gate, or the consumer is torn
-        // down without ever learning its terminal is gone.
+        // A gated subscriber still receives RESOURCE_CLOSED.
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (tx_b, mut rx_b) = mpsc::channel(8);
         // B attaches: gate is AwaitingFirst, no snapshot delivered yet.
@@ -6418,9 +5925,7 @@ mod tests {
 
     #[test]
     fn an_event_only_subscription_is_not_gated_by_the_snapshot() {
-        // A SUBSCRIBE_EVENTS / SUBSCRIBE_RESOURCE_EVENTS registration carries
-        // no snapshot: its EVENT deltas must flow immediately (gating them
-        // would strand the subscriber forever, since no snapshot ever comes).
+        // Event-only subscriptions carry no snapshot and flow at once.
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), out_tx);
@@ -6445,9 +5950,7 @@ mod tests {
         );
     }
 
-    /// L1.md §7.3: a satellite's journal stamp names the satellite's
-    /// journal, so the hub re-tags the event and drops the stamp rather than
-    /// hand a consumer a cursor into a journal it cannot subscribe to.
+    /// L1 §7.3: the hub drops the satellite's journal stamp.
     #[test]
     fn a_satellite_event_stamp_does_not_cross_the_hub() {
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
@@ -6479,14 +5982,8 @@ mod tests {
 
     #[test]
     fn subscribe_then_attach_upgrade_gates_deltas_until_the_attach_snapshot() {
-        // phux-v45.15 edge (1). A client is already event-subscribed to a
-        // satellite terminal (gate Open, its stream flowing) and then UPGRADES
-        // to an attach on the SAME terminal. The upgrade must re-gate the
-        // stream to AwaitingFirst so the attach's content deltas cannot ride
-        // ahead of the attach's own snapshot (L1 §9.1) — the same guarantee a
-        // fresh second attach gets (phux-v45.14), resurfacing on the upgrade
-        // path. Without the re-gate the delta at step 3 leaks, so this test is
-        // non-vacuous.
+        // An event subscriber upgrading to an attach is re-gated until the
+        // attach's snapshot (L1 §9.1).
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
 
@@ -6507,8 +6004,6 @@ mod tests {
         // 2. UPGRADE the same client to an attach on the same terminal.
         attach(&mut session, 9, ClientId(1), out_tx);
 
-        // 3. A content delta arrives before the attach's snapshot. It must now
-        //    be suppressed — the upgrade re-gated the stream.
         session
             .handle_inbound(&encode(&output_frame(9, 1, b"pre-snapshot")))
             .expect("valid satellite frame");
@@ -6548,10 +6043,7 @@ mod tests {
 
     #[test]
     fn an_event_only_re_subscribe_does_not_re_gate_a_flowing_stream() {
-        // The re-gate is scoped to an attach UPGRADE (a snapshot-bearing
-        // re-subscribe). An event-only re-subscribe carries no snapshot, so it
-        // must leave an already-Open stream flowing — re-gating it would strand
-        // the consumer forever (no snapshot ever comes to re-open the gate).
+        // An event-only re-subscribe leaves an open stream flowing.
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), out_tx.clone());
@@ -6572,10 +6064,7 @@ mod tests {
 
     #[test]
     fn a_gated_attach_still_receives_a_bell_past_the_gate() {
-        // phux-v45.15 edge (2). A BELL is an ephemeral notification the
-        // snapshot does not capture, so gating it behind an AwaitingFirst
-        // subscriber's not-yet-delivered snapshot would drop it permanently.
-        // It routes past the gate best-effort, like RESOURCE_CLOSED.
+        // A bell passes an AwaitingFirst gate.
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (tx, mut rx) = mpsc::channel(8);
         // Attach: gate is AwaitingFirst, no snapshot delivered yet.
@@ -6607,8 +6096,7 @@ mod tests {
             "a gated subscriber must still see a BELL"
         );
 
-        // The gate is still closed: a further delta stays suppressed until the
-        // snapshot lands (the bell bypass does not open the gate).
+        // ...without opening it.
         session
             .handle_inbound(&encode(&output_frame(9, 2, b"still-gated")))
             .expect("valid satellite frame");
@@ -6674,8 +6162,7 @@ mod tests {
             }))
             .expect("valid satellite frame");
         assert!(out_rx.try_recv().is_err());
-        // phux-v45.11 finding 4: the last proxy subscriber left, so the
-        // session tells the satellite to stop streaming the terminal.
+        // The last proxy left: detach upstream.
         assert_eq!(frames.len(), 1, "one satellite-side detach expected");
         let FrameKind::Command { command, .. } = decode(&frames[0]) else {
             panic!("expected COMMAND on the wire");
@@ -6697,9 +6184,7 @@ mod tests {
         let (tx_b, mut rx_b) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), tx_a);
         subscribe(&mut session, 9, ClientId(2), tx_b);
-        // Client 1 detaches its terminal: client 2 still observes it, so
-        // no satellite-side DETACH_RESOURCE may be emitted (it would tear
-        // down the link's single shared stream under client 2).
+        // Client 2 still observes it: no upstream detach.
         let frames = session.handle_unsubscribe(Unsubscribe::Terminal {
             client: ClientId(1),
             terminal: 9,
@@ -6732,20 +6217,10 @@ mod tests {
 
     #[test]
     fn stale_terminal_unsubscribe_does_not_tear_down_a_fresher_reattach() {
-        // phux-v45.7 reorder guard. A consumer's DETACH_RESOURCE rides the
-        // unbounded unsubscribe channel; its immediate same-terminal
-        // re-ATTACH rides the bounded request mailbox. The link session's
-        // `select!` can drain the re-attach first, so by the time the
-        // stale detach is applied a newer registration already exists.
-        // The detach carries the token it was issued with (2); the live
-        // registration carries the re-attach token (3), so the withdrawal
-        // is dropped: no subscriber removed, no satellite-side
-        // DETACH_RESOURCE emitted, and the re-attached stream keeps
-        // flowing.
+        // Reorder guard: a stale detach (token 2) applied after a re-attach
+        // (token 3) that raced ahead is dropped.
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
-        // Original attach (token 1), then the re-attach that raced ahead
-        // of the stale detach (token 3).
         subscribe_at(&mut session, 9, ClientId(1), 1, out_tx.clone());
         subscribe_at(&mut session, 9, ClientId(1), 3, out_tx);
 
@@ -6780,8 +6255,7 @@ mod tests {
                 if terminal_id == ResourceId::satellite("devbox", 9)
         ));
 
-        // A genuine later detach (token newer than the registration) still
-        // withdraws and detaches satellite-side.
+        // A newer detach still withdraws.
         let frames = session.handle_unsubscribe(Unsubscribe::Terminal {
             client: ClientId(1),
             terminal: 9,
@@ -6793,8 +6267,7 @@ mod tests {
 
     #[tokio::test]
     async fn unsubscribe_survives_a_full_relay_mailbox() {
-        // phux-v45.11 finding 1: unsubscribes ride a dedicated unbounded
-        // channel, so a saturated request mailbox cannot drop them.
+        // Unsubscribes ride an unbounded channel.
         let (handle, mut mailbox) = RelayHandle::new(host());
         for _ in 0..RELAY_MAILBOX {
             handle.forward(FrameKind::Detach);
@@ -6807,8 +6280,6 @@ mod tests {
             mailbox.unsubscribes.try_recv().expect("delivered"),
             Unsubscribe::Client(ClientId(1))
         ));
-        // The issue-order token is opaque here; match on the routing
-        // fields (the reorder guard's semantics are covered separately).
         assert!(matches!(
             mailbox.unsubscribes.try_recv().expect("delivered"),
             Unsubscribe::Terminal {
@@ -6930,8 +6401,7 @@ mod tests {
         let detach = handle.unsubscribe_terminal(ClientId(1), 9);
         tokio::pin!(detach);
         assert!(futures_util::poll!(&mut detach).is_pending());
-        // Mirrors the supervisor's disconnected/refused/backoff drain: there
-        // is no session, so dropping the receipt certifies no proxy can emit.
+        // No session: dropping the receipt certifies no proxy can emit.
         drop(mailbox.unsubscribes.try_recv().unwrap());
         assert_eq!(detach.await, CommandResult::Ok);
         drop(mailbox);
@@ -7048,8 +6518,7 @@ mod tests {
             out_rx.try_recv().is_err(),
             "new content proxy still waits for its own prefix"
         );
-        // The prefix itself may have been queued before withdrawal. It must
-        // not open a new proxy's gate, nor fail validation against the old cut.
+        // A prefix queued before withdrawal opens no new gate.
         session.handle_inbound(&encode(&begin_frame(9, 2))).unwrap();
         session.handle_inbound(&encode(&snapshot_frame(9))).unwrap();
         session
@@ -7159,9 +6628,8 @@ mod tests {
 
     #[tokio::test]
     async fn subscribe_on_a_full_mailbox_registers_nothing_and_notifies_the_consumer() {
-        // phux-v45.11 finding 2: the register + forward pair is atomic —
-        // when the request cannot be enqueued the consumer gets a typed
-        // error push and no hub-side registration exists.
+        // Register + forward is atomic: on a full mailbox nothing registers
+        // and the consumer gets an error push.
         let (handle, _mailbox) = RelayHandle::new(host());
         for _ in 0..RELAY_MAILBOX {
             handle.forward(FrameKind::Detach);
@@ -7199,8 +6667,7 @@ mod tests {
 
     #[test]
     fn satellite_error_rolls_back_the_commands_subscription() {
-        // phux-v45.11 finding 3: a subscribing command the satellite
-        // refuses must not leave a proxy registration behind.
+        // A refused subscribing command leaves no registration.
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
         let (reply, mut reply_rx) = oneshot::channel();
@@ -7216,10 +6683,7 @@ mod tests {
                 out_tx,
                 consumer_cancel: CancellationToken::new(),
                 seq: 1,
-                // Ungated on purpose: this exercises the phux-v45.11 rollback
-                // path in isolation. If rollback regressed, the trailing
-                // RESOURCE_OUTPUT must actually leak — a gated subscriber
-                // would suppress it and mask the regression.
+                // Ungated so a rollback regression would visibly leak.
                 awaits_snapshot: false,
                 bootstrap_profile: Some(BootstrapProfile::SynthesizedVtRaw),
                 bootstrap_limits: Some(BootstrapLimits::default()),
@@ -7256,15 +6720,9 @@ mod tests {
 
     #[test]
     fn errored_upgrade_preserves_a_concurrently_retained_snapshot() {
-        // phux-v45.16's exact triple-coincidence regression:
-        //
-        // 1. B's event subscription upgrades to an attach, re-gating its
-        //    flowing stream to AwaitingFirst.
-        // 2. C attaches to the same terminal; its return-leg snapshot fans
-        //    out while B's mailbox is full, so B retains that snapshot.
-        // 3. B's upgrade gets a transient error reply. Its Regated rollback
-        //    must not replace the newer Retained gate with Open, or the next
-        //    delta reaches B without the snapshot (L1 §9.1).
+        // B upgrades (re-gated), C attaches and B retains C's snapshot, then
+        // B's upgrade errors: the rollback must not replace Retained with
+        // Open (L1 §9.1).
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (tx_b, mut rx_b) = mpsc::channel(2);
         let (tx_c, mut rx_c) = mpsc::channel(8);
@@ -7280,8 +6738,6 @@ mod tests {
             .expect("valid satellite frame");
         assert!(rx_b.try_recv().is_ok(), "B's event stream must be open");
 
-        // B upgrades. Keep its request id so the delayed error can arrive
-        // after C's attach snapshot.
         let (reply_b, mut reply_rx_b) = oneshot::channel();
         let wire = session.handle_request(RelayRequest::Command {
             command: Command::AttachResource {
@@ -7304,8 +6760,6 @@ mod tests {
             panic!("expected B's attach COMMAND");
         };
 
-        // C attaches, then B's mailbox fills before C's snapshot returns.
-        // The snapshot lands for C but is retained for B.
         attach(&mut session, 9, ClientId(3), tx_c);
         tx_b.try_send(Outbound::Frame(FrameKind::Detach))
             .expect("B filler one");
@@ -7319,8 +6773,6 @@ mod tests {
             Outbound::Frame(FrameKind::BootstrapReady { .. })
         ));
 
-        // The delayed transient error rolls back B's upgrade. It may only
-        // undo AwaitingFirst; B's concurrently Retained snapshot must win.
         session
             .handle_inbound(&encode(&FrameKind::Error {
                 request_id: Some(request_id),
@@ -7333,9 +6785,7 @@ mod tests {
             CommandResult::Error { .. }
         ));
 
-        // Once B has room, its next delta must flush the retained snapshot
-        // first and then follow it. The old unconditional rollback delivered
-        // only this delta, proving this assertion is non-vacuous.
+        // B's next delta flushes the retained snapshot first.
         assert!(matches!(
             rx_b.try_recv().expect("B filler one drains"),
             Outbound::Frame(FrameKind::Detach)
@@ -7359,13 +6809,7 @@ mod tests {
 
     #[test]
     fn satellite_error_never_rolls_back_a_preexisting_subscription() {
-        // The rollback never removes a registration the failing command did
-        // not create: an idempotent re-subscribe that errors must leave the
-        // original (successful) subscribe streaming. Here the re-subscribe
-        // upgrades an event-only stream to an attach, so it re-gates the
-        // stream (phux-v45.15, `Registration::Regated`); the error must
-        // *restore* the gate to `Open` rather than strand the pre-existing
-        // stream behind a snapshot that a refused attach never sends.
+        // An errored upgrade re-subscribe restores the original stream's gate.
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(8);
         subscribe(&mut session, 9, ClientId(1), out_tx.clone());
@@ -7381,8 +6825,6 @@ mod tests {
                 client: ClientId(1),
                 out_tx,
                 consumer_cancel: CancellationToken::new(),
-                // The UPGRADE: a newer token than the pre-existing event-only
-                // registration at 1, now awaiting the attach's snapshot.
                 seq: 2,
                 awaits_snapshot: true,
                 bootstrap_profile: Some(BootstrapProfile::SynthesizedVtRaw),
@@ -7440,10 +6882,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn handle_command_times_out_against_a_silent_satellite() {
         let (handle, rx) = RelayHandle::new(host());
-        // Keep the receiver alive but never drain it: the link looks up
-        // (mailbox accepts) yet no reply ever arrives — the silent
-        // partition / frame-swallowing satellite shape. Paused time
-        // auto-advances past the deadline.
+        // The mailbox accepts, nothing answers; paused time hits the deadline.
         let result = handle.command(Command::Upgrade).await;
         assert!(matches!(
             result,
@@ -7480,8 +6919,7 @@ mod tests {
         drop(gone_rx);
         assert_eq!(session.prune_abandoned(), 1, "abandoned entry pruned");
 
-        // A late reply for the pruned id is dropped without touching the
-        // still-live command; the live one still resolves (via teardown).
+        // A late reply for the pruned id is dropped.
         session
             .handle_inbound(&encode(&FrameKind::CommandResult {
                 request_id,
@@ -7652,8 +7090,6 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_listing_times_out_against_a_silent_satellite() {
         let (handle, rx) = RelayHandle::new(host());
-        // The mailbox accepts, nothing ever answers: paused time advances to
-        // the listing deadline, which resolves as a refusal, not a hang.
         let message = refusal_message(handle.list_directory("/srv".to_owned()).await);
         assert!(
             message.contains("did not answer the listing within 10s"),

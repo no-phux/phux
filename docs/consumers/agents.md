@@ -33,25 +33,15 @@ field meaning, and typed errors.
 
 **Viewport-safe against a live pane.** `snapshot`, `wait`, `watch`,
 `run`, `send-keys`, `paste`, `ask`, `agent wait`, and
-`agent send-keys` neither attach nor resize. Reads use `GET_SCREEN` /
-`GET_METADATA`; input rides `ROUTE_INPUT` to a pane id. None of them
-moves an attached human's local focus or viewport. `resize` is the
-deliberate exception — changing the grid is its job — and it still never
-attaches, so a headless caller cannot drag a pane toward the 80x24 size
-a process with no TTY would otherwise report. Layout verbs
-(`insert-pane`, `move-pane`, `swap-pane`) change persisted topology, not
-client-local focus. CLI and MCP cannot take or give an input lease that
-outlives the calling process; MCP therefore exposes no `take` / `give`
-tools ([`mcp.md`](./mcp.md)). `phux take --ttl SECS` is a second, orthogonal
-deadline (ADR-0033): the server itself now enforces `ttl_ms` and releases
-the lease after `SECS` even if the holder never calls `phux give` — a
-bound any holder can ask for, CLI or a longer-lived client (the TUI's
-take-the-wheel keybinding, a `phux-client`-based agent) alike.
-An attach may also declare its intent (ADR-0127): `phux attach --viewer`
-watches and can type nothing, and `phux attach --take` attaches and takes the
-wheel in one step. `phux rec` and `phux agent log` attach as viewers on a
-server that advertises attach roles, so an observer can never type into what
-it watches.
+`agent send-keys` neither attach nor resize, and never move an attached
+human's focus or viewport. `resize` changes the grid by design but still
+never attaches. Layout verbs (`insert-pane`, `move-pane`, `swap-pane`)
+change persisted topology, not client-local focus. CLI and MCP cannot hold
+an input lease beyond the calling process, so MCP has no `take` / `give`
+([`mcp.md`](./mcp.md)); `phux take --ttl SECS` asks the server to release
+the lease itself after `SECS` (ADR-0033). `phux attach --viewer` watches
+without input and `--take` attaches holding the wheel (ADR-0127); `phux rec`
+and `phux agent log` attach as viewers.
 
 `--socket` wins, then `PHUX_SOCKET`, then the daemon default. `phux ls`
 does not auto-start a server.
@@ -385,18 +375,13 @@ object (exceptions noted). `--json` is the long flag; there is no `-j`.
 }
 ```
 
-`unreachable` is **always present**. Non-empty means `sessions` and
-`terminals` are a lower bound, not an inventory; branch on
-`unreachable == []`, never on diagnostic substrings. An absent key is a
-pre-v3 binary. `terminals` is the Terminal-kind inventory. `resources`
-is additive: omit it on an older server; `kind` is `terminal` or
-`agent_session` (unknown kinds render as `unknown`). `lifecycle`
-(`running`, `frozen`, or `exited`) and `exit` are additive: `exited`
-with an `exit` object `{ status, signal, reason, exited_at_ms,
-retained_until_ms }` is a pane spawned with `--retain` whose process
-ended; read an absent key as `running` / `null`. `keep_empty` /
-`empty` are additive; read an absent key as `false`. `sessions` lists
-this host only. `hosts` is the fleet grouped by machine; read it as
+`unreachable` is **always present**; non-empty means `sessions` and
+`terminals` are a lower bound, so branch on `unreachable == []`, never on
+diagnostic text. `resources`, `lifecycle` (`running`, `frozen`, `exited`),
+`exit` (`{ status, signal, reason, exited_at_ms, retained_until_ms }` for a
+retained pane), `keep_empty`, and `empty` are additive: read an absent key as
+absent / `running` / `null` / `false`. `kind` is `terminal`, `agent_session`,
+or `unknown`. `sessions` lists this host only. `hosts` is the fleet grouped by machine; read it as
 complete only when `hosts_complete` is `true` (the server advertises
 `HOST_SESSIONS`). `host` is `null` for this machine (`local: true`).
 `id` in `hosts[].sessions` is the session's id **on its own host**,
@@ -429,38 +414,24 @@ listed with `reachable: false` and no sessions.
 `scrollback` is tri-state on the wire: flag absent → viewport only;
 `--scrollback` / `0` → all retained history; `N` → most-recent N rows.
 **`soft_wrap` is three-way:** present and non-empty (these rows wrap);
-present and empty (wrapping was reported, nothing wraps); **absent**
-(the producer says nothing — today, a server predating the field).
+present and empty (nothing wraps); **absent** (the producer says nothing).
 Indices are per-array; a wrapped final `scrollback` index continues into
 `lines[0]`. **`truncated` is scoped to the requested window**, not to
-rows the emulator evicted from its history ring. `truncated_reason` is a
-string; tolerate an unknown value. `title` `None` means no title *or* a
-producer that predates the field. `--cells` fills a sparse `cells`
-array: `{ col, row, semantic?, style }`. `semantic` is `Input` or
-`Prompt`; `Output` is collapsed to absence. `style` is nine SGR
-booleans plus `fg` / `bg`, each a tagged `CellColor` (`default`,
-`palette` `{ index }`, or `rgb` `{ r, g, b }`) so "terminal default"
-is distinct from "explicitly black". The right half of a double-width
-glyph is skipped. `--format html|vt` fills `rendered`:
-`{ format: "html" | "vt", data }`, rendered through the server's own
-libghostty-vt Formatter, its history window capped at 10000 rows and its
-byte size checked before allocation (over 8 MiB refuses the whole read with
-a `resource_exhausted`-class error, naming the budget) — `data` is UTF-8
-text for `"html"`, standard base64 for `"vt"` (VT output is not guaranteed
-valid UTF-8). `--unwrap` with `--format` asks the Formatter itself to join
-soft-wrapped rows, rather than the client-side `unwrap` this surface uses
-otherwise. When a rendering is requested, `lines`/`scrollback`/`soft_wrap`
-are omitted from the reply (the capture already carries that text) and
-`truncated` reads `false`. `rendered` is `null` when no rendering was
-requested, or when one was requested but the CLI/MCP call itself failed
-(see below); `rendered_error` names a same-server render failure that the
-plain projection survived. **No server negotiation gates `--format`**: a
-server predating it silently answers as if it were absent, so the CLI/MCP
-layer detects a missing `rendered` after a non-`None` request and reports a
-typed failure (`phux snapshot`: exit 2; MCP: a tool error) instead of quietly
-returning success with no capture. Text output writes `data` straight to
-stdout instead of the boxed view (VT decoded to raw bytes); `--json` keeps
-the whole document.
+rows the emulator evicted. Tolerate an unknown `truncated_reason`. `title`
+`null` means no title or an older producer. `--cells` fills a sparse
+`cells` array: `{ col, row, semantic?, style }`; `semantic` is `Input` or
+`Prompt` (`Output` is absence); `style` is nine SGR booleans plus tagged
+`fg` / `bg` (`default`, `palette { index }`, `rgb { r, g, b }`). The right
+half of a double-width glyph is skipped.
+
+`--format html|vt` fills `rendered: { format, data }` through the server's
+libghostty-vt Formatter (history capped at 10000 rows; over 8 MiB refuses
+the read). `data` is UTF-8 for `html` and base64 for `vt`. With a rendering,
+`lines` / `scrollback` / `soft_wrap` are omitted and `truncated` is `false`;
+`rendered_error` names a render failure the plain projection survived. An
+older server silently ignores `--format`, so the CLI/MCP layer turns a
+missing `rendered` into a typed failure (exit 2 / tool error). Text output
+writes `data` straight to stdout.
 
 ### `run` — `RunResult` (no `schema_version`)
 
@@ -518,15 +489,10 @@ ignored. Launch adds `integration`,
 `plugin`, and the resolved `argv`. `--list` / `--print` are separate
 documents; placement does not add a second success shape.
 
-`kill` and `signal` take `--idempotency-key HEX32` too, for a supervisor
-that must not act twice: a retry under the same key answers the first
-result instead of killing or signalling again, and a keyed `kill @N` is
-sent as written, so a retry after the pane is already gone still gets the
-first answer. Both need `keyed_signal` in `features`; without it they are
-refused before sending with `unsupported_server`, exit 2. Through a hub, a
-keyed retry whose satellite restarted in between is refused with
-`INCARNATION_CHANGED` and nothing reaches the satellite: read state and
-decide afresh under a new key.
+`kill` and `signal` take `--idempotency-key HEX32` too (feature
+`keyed_signal`): a retry answers the first result, even after the pane is
+gone. Through a hub, a keyed retry across a satellite restart is refused with
+`INCARNATION_CHANGED`; re-read state and use a new key.
 
 Spatial edits emit `schema_version` 1 with `operation` and `session_id`.
 `direction` is the CLI divider (`vertical` = side-by-side,
@@ -675,24 +641,15 @@ gate keeps working, and the new names gate on exactly one kind.
 
 That is `resource wait --json`. `outcome` is `exited`, `gone`, or
 `timed_out`; the document is printed on **stdout for all three** (exit
-0, 1, 124), so branch on `outcome`. `exit` is `null` unless `exited`;
-inside it any fact the client could not learn is `null` (a close seen
-only as an event carries no `reason`). `retained` says the resource is
-still listed. `cursor` is `null` on a server without the event journal.
-A malformed `--after` is `invalid_cursor`, exit 2; an absence in a
-partial fleet view is `partial_view`, exit 3, never `gone`. A resumed
-wait does not answer `gone` until the replay has reached the server's
-journal head at the snapshot cut, so a close still being replayed is
-reported as the exit it was. That head is the connection's own (the
-newest event its subscription admits), so other panes' events never
-keep a resumed wait on a gone pane waiting. `evidence_lost: true` means
-the replay reported a range the journal had already evicted: a close in
-that range was never seen, so a `gone` may hide an exit (resume sooner,
-or retain the pane). A wait that saw no event returns that head
-as its `cursor`, so a resume replays nothing already accounted for, and
-an error exit names the cursor it reached in its remedy. A scoped
-workload refused the subscription or the state read gets
-`permission_denied`, exit 2.
+0, 1, 124), so branch on `outcome`. `exit` is `null` unless `exited`, and
+any fact the client could not learn inside it is `null`. `retained` says
+the resource is still listed; `cursor` is `null` without the event journal.
+A malformed `--after` is `invalid_cursor` (exit 2); an absence in a partial
+fleet view is `partial_view` (exit 3), never `gone`. A resumed wait does not
+answer `gone` until replay reaches the journal head, so a close being
+replayed reports as the exit it was; `evidence_lost: true` means the replay
+hit an evicted range, so a `gone` may hide an exit. A scoped workload
+refused the read gets `permission_denied`, exit 2.
 
 `resource show --json` is `{ schema_version: 1, resource, kind, parent,
 session, title, cwd, lifecycle, exit, input_holder, viewers, process,
@@ -787,27 +744,12 @@ Every key is present; `null` means the server could not find out, never
 `exit.signal` reports a death by signal that `RESOURCE_CLOSED.exit_status`
 reads as `null`. Normative rules: [`../spec/L1.md`](../spec/L1.md) §6.3.
 
-**Retained exits.** A Terminal spawned with `SPAWN_RESOURCE.retain_secs`
-(ADR-0124; `0` asks for the server default, `defaults.retain-on-exit-secs`)
-does not close when its process exits. The server emits `terminal_control`
-with `action: exited` and the exit status, and keeps the resource: `GET_STATE`
-lists it with `lifecycle: EXITED` and an exit facet (`exit_status`, `signal`,
-`reason`, `exited_at_ms`, `retained_until_ms`), and `GET_SCREEN`,
-`GET_TERMINAL_STATE` (the same exit as `process.exit`), history, and
-`ATTACH_RESOURCE` keep answering. Input answers `INPUT_NOT_WRITTEN`;
-`SIGNAL_TERMINAL` answers `INVALID_COMMAND`. So a waiter that arrives after
-the exit reads the status instead of `TERMINAL_NOT_FOUND`: subscribe to the
-Terminal's events, then read `GET_STATE`. The resource closes with the
-ordinary `RESOURCE_CLOSED` when retention expires, when the server's retained
-count bound (`defaults.retain-on-exit-max`) evicts it, oldest first, or when
-you `KILL_RESOURCE` it (`reason: KILLED`, idempotent). A retained Terminal holds
-its grid and history until then (up to `defaults.history-bytes`, so roughly
-512 MiB at the default bound of 256 with the 2 MiB default) but no
-pseudoterminal or descriptor. Check `RETAIN_ON_EXIT`
-in `HELLO_OK` first; a server without it closes the Terminal at exit. From the
-CLI: `phux spawn --retain[=SECS]` sets the field (refused with
-`unsupported_server` when the bit is absent), and `phux resource wait` is that
-waiter.
+**Retained exits.** A Terminal spawned with `retain_secs` stays listed as
+`EXITED` with its exit facet after its process ends, still answering screen,
+state, history, and attach reads until retention expires, the retained
+count bound evicts it, or it is killed; input and signals are refused. Gate
+on `RETAIN_ON_EXIT` (normative: [`../spec/L1.md`](../spec/L1.md),
+[ADR-0124](../adr/0124-retain-on-exit.md)).
 
 ### Other `--json` verbs
 
@@ -915,124 +857,49 @@ delivered; retry safe), `delivery_unknown` (never resend),
 
 ## 9. Projection scoping
 
-A session has exactly one *named shared* projection: its
-`phux.tui.layout/v1/<session-id>` L3 envelope (schema v3), holding window
-order, split trees, and pane placement
-([`../spec/L3.md`](../spec/L3.md) §3.2). `insert-pane`, `move-pane`, and
-`swap-pane` mutate that envelope; a cross-session move additionally issues
-one `MOVE_RESOURCE` (L1). Layout is a consumer projection of the shared
-engine, not wire state, generalized from Terminal to every resource kind
-by [ADR-0102](../adr/0102-resources-the-server-serves-kinds.md)
-(superseding [ADR-0030](../adr/0030-engine-delegated-wire-and-projection-consumers.md)).
-
-**Focus never rides the shared envelope.** The envelope's
-`focused_window_index` and per-window `focused_terminal` fields stay in
-the schema for compatibility, but a reader ignores them on
-reconciliation and repairs local focus deterministically instead
+A session's one *named shared* projection is its
+`phux.tui.layout/v1/<session-id>` L3 envelope: window order, split trees,
+pane placement ([`../spec/L3.md`](../spec/L3.md) §3.2). The spatial verbs
+mutate it; a cross-session move adds one `MOVE_RESOURCE`. Writes are
+whole-value last-write-wins, and a spatial edit against a vanished anchor
+refuses with a typed code rather than inventing placement (§7). Focus never
+rides the envelope: its focus fields are ignored on read, and
+`phux.tui.focus/v1` is per-client
 ([ADR-0049](../adr/0049-client-local-focus-and-advisory-attention.md)).
-Separately, `phux.tui.focus/v1` is per-client metadata — namespaced by
-client UUID — and is never synchronized across clients
-([`../spec/L3.md`](../spec/L3.md) §3.3). No script moves another client's
-viewport by writing layout.
 
-**When the anchor pane vanished concurrently,** phux does not invent
-placement: a spatial edit against a missing or already-placed pane
-refuses with a typed code (`pane_not_in_layout`, `pane_already_in_layout`,
-`layout_rejected`, `destination_changed`; the full table is above, in §7's
-`spawn` / `launch` / spatial JSON index). A write that does land is
-whole-value last-write-wins, so concurrent writers converge on one value
-rather than merging (`../spec/L3.md` §3.2).
-
-**A script wanting its own arrangement uses its own key prefix** —
-`app.foo.layout/v1` rather than the TUI's schema — per
-[`../spec/L3.md`](../spec/L3.md) §3.5. Sharing the TUI's layout schema is
-opt-in, not the default.
-
-**`--projection KEY` names that choice on the CLI.** `insert-pane`,
-`move-pane`, `swap-pane`, and the placement flags on `spawn` / `launch`
-accept `--projection <prefix>.layout/v1/<session-id>` naming any envelope
-of the §3.2 shape for the session addressed; omitting it keeps the shared
-default. A cross-session `move-pane` touches two distinct envelopes — pass
-`--projection` twice (source and destination, either order) or not at all,
-never exactly once. There is still no projection resource: naming a key is
-the whole mechanism, and durability is `phux workspace save` / `restore`
-replaying the archived split tree, not server-held state
+A script wanting its own arrangement uses its own key prefix
+(`app.foo.layout/v1`, [`../spec/L3.md`](../spec/L3.md) §3.5) and names it
+with `--projection <prefix>.layout/v1/<session-id>` on the spatial and
+placement verbs; a cross-session `move-pane` passes it twice or not at all.
+Durability is `phux workspace save` / `restore`, which read and replay each
+session's split tree from that envelope
 ([ADR-0129](../adr/0129-projections-are-named-by-key.md)).
-
-`phux workspace save` reads each session's real split tree from that same
-envelope (`--projection KEY` there names the key *prefix* to read every
-session's own copy from, default the shared one); `GET_STATE` never carries
-one, so a session with nothing stored falls back to a bare pane list.
-`phux workspace restore` replays every archived pane, not only a session's
-seed process — including a native agent session's own resume, where it
-still resolves to the plugin that owns it — and rolls back just the one
-session on a partial failure rather than the whole archive.
 
 ## 10. Fallback hierarchy
 
-Rank affordances by how much of the answer is typed fact versus inferred
-from raw bytes, and prefer the higher rung:
+Prefer the highest rung the target exposes:
 
-1. **Typed command.** `run`, `resize`, `agent emit`/`log`, the
-   spatial verbs, `tag`, `whoami` — a versioned JSON document or a typed
-   refusal code, checked by the server before anything is inferred.
-2. **Semantic stream.** The AgentSession stream (`emit`/`log`, one JSON
-   record per producer-stamped event) and the `EVENT` / `AgentEvent` push
-   stream behind `watch` and `agent wait`. Lower latency than polling, but
-   today's `EVENT` stream is "an additive accelerator ... not a normative
-   structured contract" (`../spec/L1.md` §7): delivery is best-effort per
-   connection, and a slow subscriber's mailbox drops silently rather than
-   gapping. A consumer that depends on it still needs the poll floor
-   underneath, the way `agent wait` already runs one.
-3. **Text/JSON capture.** `GET_SCREEN` / `snapshot`, and the `wait` poll
-   built on it. This is a rendered projection of the shared engine's grid
-   — lines, optional per-cell `semantic` tags (`Input` / `Prompt`), a
-   viewport or scrollback window — not a typed fact about the process
-   behind it. Matching text is fuzzier than checking a typed field, and a
-   truncated or soft-wrapped read can misrepresent a line the process
-   never emitted that way. `snapshot --format html|vt` (`../spec/L1.md`
-   §6.1) rides the same rung: the server renders the capture through its
-   own libghostty-vt Formatter (never reimplemented, per CONTRIBUTING)
-   into HTML with inline styles or re-playable VT escape sequences, for a
-   consumer that wants styling or an exact byte-for-byte replay rather
-   than the plain-text/JSON projection — still a rendered projection, not
-   a typed fact.
-4. **Synthetic input.** `send-keys`, `paste`, and their wire form
-   (`ROUTE_INPUT` fire-and-forget, `APPLY_INPUT` acknowledged). This is
-   the fallback of last resort: acknowledgment proves kernel tty-queue
-   receipt, not that the target program consumed or acted on the input
-   (§4); an untrusted paste can be silently dropped by the pane's safety
-   gate; and unlike every rung above, this one changes program state by
-   emulating a human's keystrokes rather than reading or calling a typed
-   surface — the least observable rung and the one carrying the most risk.
-
-No rung below typed commands is authoritative on its own: read the
-highest rung the target kind actually exposes.
+1. **Typed command** — `run`, `resize`, `agent emit` / `log`, spatial
+   verbs, `tag`, `whoami`: a versioned document or typed refusal.
+2. **Semantic stream** — the AgentSession stream and the `EVENT` stream
+   behind `watch` / `agent wait`. `EVENT` is best-effort per connection
+   (`../spec/L1.md` §7), so keep a poll floor under it.
+3. **Text/JSON capture** — `snapshot`, `wait`, `snapshot --format`: a
+   rendered projection, fuzzier than a typed field.
+4. **Synthetic input** — `send-keys`, `paste`: acknowledgment proves tty
+   receipt only, an untrusted paste can be dropped, and it changes program
+   state. Last resort.
 
 ## 11. Authority: phux is live-state truth
 
-phux is the sole authority for live resource state: the current
-lifecycle, screen content, and process facts of every Terminal and
-AgentSession it runs. Its own push stream says as much of itself —
-`EVENT` is a convenience accelerator, not a normative structured
-contract, and a consumer that ignores it still converges by polling
-(`../spec/L1.md` §7). The AgentSession stream is retained as a bounded
-ring: "live and bounded, not durable evidence"
-([ADR-0103](../adr/0103-agent-session-resource-and-producer-fed-streams.md)).
-A durable *work* record — objectives, runs, artifacts — belongs to a
-separate, independently versioned coordinator endpoint that references
-phux resources without carrying their bytes
-([ADR-0097](../adr/0097-durable-coordinator-is-a-separate-bounded-endpoint.md)).
-
-Today phux and Blackbird do not connect at all: Blackbird holds no phux
-workload key, and phux writes nothing to Blackbird beyond one optional
-field inside `phux.agent/v1` that lets the two ledgers be joined after
-the fact ([ADR-0095](../adr/0095-the-blackbird-boundary.md)). The rule
-that follows applies to any external durable-work journal, present or
-future: it may hold and journal work intent, but any signal it receives —
-a phux event included — is a cue to re-read phux's current state, never a
-substitute for it. Treat an event as wake-then-read: it tells an agent to
-look, not what it will find.
+phux is the sole authority for live resource state. The AgentSession ring is
+"live and bounded, not durable evidence"
+([ADR-0103](../adr/0103-agent-session-resource-and-producer-fed-streams.md));
+durable work records belong to a separate coordinator endpoint
+([ADR-0097](../adr/0097-durable-coordinator-is-a-separate-bounded-endpoint.md),
+[ADR-0095](../adr/0095-the-blackbird-boundary.md)). Any external journal
+treats a phux event as wake-then-read: a cue to re-read phux, never a
+substitute for it.
 
 ## 12. MCP and SDK
 

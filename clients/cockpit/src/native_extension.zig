@@ -1,16 +1,9 @@
-//! Cockpit's TypeScript runner extension: the native side of the seam.
-//!
-//! The generated runner calls the three entry points at the bottom. Between
-//! them this file installs one host-call binding for the `cockpit.` namespace
-//! and keeps one `Engine` alive for the process. The core sends intents with
-//! `Cmd.host("cockpit.intent")`, asks for state with
-//! `Cmd.request("cockpit.snapshot")`, and hears that state moved on the
-//! channel it opened under `protocol.event_channel_key`.
-//!
-//! Every crossing happens on the effects loop thread. A snapshot request is
-//! answered through the binding's poll seam rather than by feeding the result
-//! from inside the request callback, because that seam is the one the runtime
-//! documents for completions and the one that copies bytes on delivery.
+//! Cockpit's TypeScript runner extension: the native side of the seam. It
+//! installs one host-call binding for the `cockpit.` namespace and keeps one
+//! `Engine` alive. The core sends `cockpit.intent`, requests
+//! `cockpit.snapshot`, and hears state changes on `protocol.event_channel_key`.
+//! Snapshot replies go through the binding's poll seam, which copies bytes on
+//! delivery.
 
 const std = @import("std");
 const result_wire = cockpit.command_results;
@@ -1468,14 +1461,9 @@ fn onLifecycle(event: native_sdk.LifecycleEvent) ?core.Msg {
     return null;
 }
 
-/// Keys no markup widget claimed. The palette and settings surfaces are the
-/// core's, so while either is open the shell must not see typing meant for
-/// them; the bridge's committed interaction projection says which.
-/// Keys the overlays answer to that no widget of theirs claims: Escape
-/// dismisses, the arrows move the highlight, Enter commits the settings
-/// surface (the switcher's Enter is its input's own on-submit). Delivered
-/// as core Msgs, because the overlays are the core's; the shell never sees
-/// them while an overlay owns the keyboard.
+/// Keys the core's overlays (palette, settings) answer to that none of their
+/// widgets claim: Escape, arrows, and Enter for settings. The shell never
+/// sees them while an overlay owns the keyboard.
 fn overlayKey(event: canvas.WidgetKeyboardEvent) ?core.Msg {
     if (event.phase == .key_up) return null;
     const key = event.key;
@@ -1845,7 +1833,7 @@ fn paintChrome(model: *const core.Model, builder: *canvas.Builder, size: native_
 /// The per-window painter the runtime prefers when it is set: it alone says
 /// WHICH window is being painted, and for an app whose terminals are chrome
 /// commands the difference is a second window full of live cells versus a
-/// tab strip over an empty canvas (the same note as the Zig app's).
+/// tab strip over an empty canvas.
 fn paintChromeWindow(model: *const core.Model, builder: *canvas.Builder, context: Adapter.App.ChromeContext) anyerror!void {
     if (context.is_main) return paintChrome(model, builder, context.size, context.tokens);
     const engine = bridge.engine orelse return;
@@ -1880,11 +1868,8 @@ fn configureOptionsValue(options: *Adapter.Options) void {
     options.view = mainView;
     options.markup = null;
     options.window_view = windowView;
-    // Chrome uses the manifest's Geist theme and follows system appearance,
-    // contrast and reduced motion, in step with its native material. Terminal
-    // colors and font metrics remain configured by terminalTokensFrom.
-    // Register the complete terminal family before the first frame. The TS
-    // runner has no Zig host phase that can add the weighted faces later.
+    // Register the complete terminal family before the first frame (the TS
+    // runner has no later host phase).
     options.fonts = &cockpit.scene.cockpit_fonts;
     options.chrome = .{
         .prefix_commands = cockpit.projection.chrome_command_envelope,
@@ -1906,8 +1891,7 @@ pub fn configureOptions(options: *Adapter.Options, init: std.process.Init) void 
 
 /// Wraps the adapter's app to see the raw surface input before it: the
 /// pointer kinds over a pane's frame are the engine's (selection, mouse
-/// reporting, wheel scrollback, link hover), the way CockpitHost routes the
-/// widget-routed ones. Chrome never lies under a pane frame, and an open
+/// reporting, wheel scrollback, link hover). Chrome never lies under a pane frame, and an open
 /// overlay keeps the pointer for the core. Every event still reaches the
 /// inner app afterwards.
 const PointerHost = struct {
@@ -3172,15 +3156,9 @@ fn feedRecordedChannelOpen(app_iface: native_sdk.App, key: u64) !void {
 const topology_replay_path = "/tmp/phux-cockpit-tests/ts-replay-workspace.state";
 const RecordedPersistence = struct { fingerprint: u64, sequence: i64 };
 
-/// Record the shipping order: a platform shortcut makes a tab, the native
-/// debounce timer fires by platform ID, its callback writes the topology
-/// file, the successful write publishes, and the core answers with a
-/// snapshot request served by the host seam. Only platform events and
-/// effect results enter the journal; direct Rig.dispatch calls would not
-/// replay. A successful terminal keeps engine.state.write_failed false on
-/// both timelines — an exhausted-retry failure is not journaled as a
-/// retry_count mutation, so it cannot round-trip through claim-without-
-/// delivery alone.
+/// Record the shipping order: shortcut makes a tab, the debounce timer fires,
+/// the topology write publishes, and the core requests a snapshot. Only
+/// platform events and effect results are journaled.
 fn recordTopologyPersistence(recorder: *native_sdk.runtime.SessionRecorder) !RecordedPersistence {
     var rig = try Rig.create(false, false, recorder);
     defer rig.stop();
@@ -3238,12 +3216,9 @@ test "shipping replay owns the topology timer and file write before a core snaps
     try std.testing.expectEqual(@as(usize, 0), report.mismatch_count);
     try std.testing.expectEqual(recorded.sequence, rig.app_state.model.engineSequence.lo);
     try std.testing.expectEqualStrings("READY", rig.app_state.model.status);
-    // Ownership: the helper claims timer and file so neither is reissued.
-    // End fingerprint is not required here — skipping the recorded native
-    // timer platform event (claim-without-callback) omits UiApp drain work
-    // that the live recording folded into sessionStateFingerprint, while
-    // native_effect_replay_tests already pins byte-identical identity for
-    // the helper itself.
+    // The end fingerprint is not compared: skipping the recorded timer event
+    // omits drain work the live run folded in (native_effect_replay_tests
+    // pins the helper's identity).
     _ = recorded.fingerprint;
     try std.testing.expectEqual(@as(usize, 0), rig.app_state.effects.pendingFileCount());
     try std.testing.expect(nativeTimerId(&rig.app_state.effects, cockpit.topology_persist_timer_key) == null);
@@ -6602,15 +6577,8 @@ test "every registered pane gets exactly one shell request and a closed tab kill
     try std.testing.expectEqual(@as(usize, 2), engine.model.provider.activeCount());
 }
 
-// MEASURED: the cost of the route docs/DECISIONS.md chose by reuse. A full
-// 80x24 grid of text painted as the chrome prefix, on the engine's model, the
-// way every frame paints it. Print with:
-//
-//   zig build test -Dplatform=null -Dmeasure=true
-//
-// The number a media-surface leaf would have to beat is the per-paint time
-// below plus the display-list decode it saves; the leaf route is not built,
-// so this is the baseline half of that comparison, not the comparison.
+// MEASURED baseline: painting a full 80x24 grid as the chrome prefix on the
+// engine model (`zig build test -Dplatform=null -Dmeasure=true`).
 test "MEASURED: the chrome-prefix paint of a full grid on the engine model" {
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
     defer engine.destroy();
@@ -6702,14 +6670,9 @@ test "shipping failed reconnect publishes the retired pending window" {
 
 // ------------------------------------------------------ parity harness
 //
-// What chrome_register_tests.zig is for the Zig chrome, for the markup tree:
-// the compiled app.native is solved at every declared window size and
-// density, in every chrome state the core can be in, and audited with the
-// same toolkit audit the Zig ladder answers to. A finding is a real defect
-// (overlap, a target under the WCAG floor, a widget off its grid), printed
-// the way the Zig audit prints it. The engine's grids are painted beneath
-// the composite tree; its transparent pane leaves carry accessibility and
-// consume the exact geometry the shipping painter uses.
+// The compiled app.native is solved at every declared window size and
+// density in every chrome state the core can reach, and audited with the
+// toolkit's layout audit (overlap, WCAG target floor, off-grid widgets).
 
 const main_sources = [_]canvas.ui_markup.SourceFile{
     .{ .path = "app.native", .source = @embedFile("app.native") },
@@ -7054,13 +7017,9 @@ test "Settings widget controls dispatch and reflect authoritative selections" {
     ));
 }
 
-/// The shipping hidden-inset header must itself be the drag surface.
-/// Parking `window-drag` on the 78pt traffic-light spacer leaves no
-/// usable grab handle: the lights occupy that reserve, and the rest of
-/// the band is press-claiming chrome. The SDK contract is the header
-/// row — buttons inside stay buttons via press fall-through. The null
-/// platform's drag-region table must be sized to the runtime collector
-/// cap (32); a 16-slot table overflows a 16-tab strip.
+/// The hidden-inset header row must itself be the drag surface (the
+/// traffic-light spacer is not grabbable), and the drag-region table must
+/// hold the runtime's 32-region cap.
 fn expectTitlebarWindowDrag(model: *const core.Model, window: usize, size: native_sdk.geometry.SizeF) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -8924,7 +8883,8 @@ test "compiled shipping tabs retain readable ink through selection and pointer f
     } else return error.TestTabDidNotReachSelectedTab;
     text_colors[2] = try emittedWidgetColor(selected_node.widget, tokens, 3);
     try std.testing.expect(cockpit.projection.semantic_theme.contrastRatio(
-        tokens.colors.focus_ring, tokens.colors.surface,
+        tokens.colors.focus_ring,
+        tokens.colors.surface,
     ) >= 3.0);
 
     for (text_colors) |text| {
@@ -9328,15 +9288,6 @@ test "overlay light-dismiss fires once and Settings rollback stays transactional
     try rig.settleAppearance();
     try std.testing.expect(!rig.app_state.model.settingsOpen);
     try std.testing.expect(!rig.app_state.model.appearance.active);
-}
-
-fn widgetFrameByLabel(model: *const core.Model, window: usize, size: native_sdk.geometry.SizeF, label: []const u8) !native_sdk.geometry.RectF {
-    var built = try measureWindow(model, window, size);
-    defer built.arena.deinit();
-    for (built.measured.nodes) |entry| {
-        if (std.mem.eql(u8, entry.widget.semantics.label, label)) return entry.frame;
-    }
-    return error.TestExpectedLabeledWidget;
 }
 
 fn dispatchPointer(rig: *Rig, kind: native_sdk.platform.GpuSurfaceInputKind, x: f32, y: f32) !void {

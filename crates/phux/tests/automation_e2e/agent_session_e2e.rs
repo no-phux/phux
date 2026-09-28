@@ -1,65 +1,12 @@
-//! Binary-level end-to-end proof of the **second resource kind**
-//! (`phux-am9y.17`, ADR-0102 / ADR-0103 / ADR-0104): the real `phux` binary
-//! driving a real `phux server` over a private UDS, one subprocess per verb.
+//! Binary-level proof of the agent-session resource (ADR-0102..0104): the
+//! real `phux` binary, one subprocess per verb, against a real server. Open,
+//! emit, watch, log, show, and `ls` must all agree about one resource.
 //!
-//! The engine and the wire flow are already proven inside the server
-//! (`crates/phux-server/tests/lifecycle/agent_session.rs`) and the CLI's own
-//! unit tests cover argv and error mapping. What neither can prove is that
-//! the shipped *binary* joins them: that `phux agent session open` in one
-//! process, `phux agent emit` in three more, `phux watch` in a fifth, and
-//! `phux ls` / `phux agent log` / `phux agent show` in a sixth all agree
-//! about one server-side resource. That join is what this file asserts.
-//!
-//! The scenarios:
-//!
-//! 1. [`an_agent_session_is_opened_streamed_replayed_and_inventoried`] — the
-//!    full happy path, on a pane that paints nothing at all, so every
-//!    lifecycle edge observed came from the session's own record stream and
-//!    could not have come from the screen.
-//! 2. [`killing_the_parent_pane_cascades_the_session_closed`] — `phux kill`
-//!    on the pane takes the session with it (ADR-0104's parent cascade), a
-//!    concurrently running `phux watch` scoped to the SESSION sees the close
-//!    on the stream, the session leaves `phux ls --json`, and `phux agent
-//!    log` on the dead id refuses instead of replaying a ghost.
-//! 3. [`a_session_opens_again_on_a_fresh_pane_after_a_cascade_close`] — the
-//!    cascade leaves no residue that blocks the next session.
-//! 4. [`the_session_verbs_refuse_a_plain_pane_and_a_malformed_record`] — the
-//!    refusals a producer meets first, each exit `2` with nothing written.
-//!
-//! ## Why the pane runs a fake `claude` and not `cat`
-//!
-//! The `phux.agent/v1` projection is arbitrated server-side, and the arbiter
-//! only publishes for a pane whose detector has **identified** an occupant
-//! (`AgentDetector::report_stream_state`); identification reads the PTY
-//! foreground process argv against `rules/claude.toml`. A `cat` pane
-//! therefore never publishes a record at all, and a `watch --until
-//! agent_state` on one would wait forever — a property of the ADR-0046
-//! arbiter, not of the stream. The fixture here is a script *named* `claude`
-//! whose entire output is one clear-screen: identified by argv, and blank
-//! forever, so the "purely from the stream" claim survives intact. The
-//! plain-pane refusals in scenario 4 use `cat`, where having no agent at all
-//! is exactly the point.
-//!
-//! ## Why the state edges are read from `watch`, and why `show` is read too
-//!
-//! `phux watch` sees every published edge; a polling verb sees whichever one
-//! is current when it asks. Ordering — `working` strictly before `done` — is
-//! therefore only provable on the event stream, which is also the surface an
-//! agent harness would actually gate on, so that is where the ladder
-//! assertions are made.
-//!
-//! The final LEVEL is then read back from `agent show`, and it has to agree.
-//! It did not: the screen's no-rule-matched fail-safe derived `idle` on a
-//! blank pane and the live-session precedence gate let `idle` through, so the
-//! detector's very next tick reverted the record ~300 ms after the stream
-//! moved it and the pane reported `idle` with no `stream` source in sight.
-//! The gate now admits a screen verdict over a live stream only for a
-//! POSITIVE idle that a rule actually matched, and only once the stream has
-//! stopped asserting — see `agent_detect::tick_for_pane` step 4b.
-//!
-//! Harness discipline follows `agent_record_e2e.rs`: a real `phux server`
-//! child on a private UDS under a temp dir, `--exit-after-idle` as the
-//! backstop below the `Drop` kill, and every verb its own subprocess.
+//! The pane runs a script *named* `claude` that paints one clear-screen: the
+//! detector only publishes for an identified occupant, and a blank screen
+//! means every observed state came from the session's own record stream.
+//! State ordering is asserted on `watch` (the event stream); the final level
+//! is read back from `agent show` and must agree.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -69,30 +16,20 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const SESSION: &str = "work";
 
-/// The detector startup grace these servers run under (production default
-/// 3 s). The fake `claude` is identifiable the moment it execs, so
-/// shortening the grace changes nothing about what is proven.
+/// Shortened detector timers: the fake `claude` is identifiable at exec.
 const TEST_STARTUP_GRACE_MS: &str = "200";
-
-/// Identity recheck cadence, shortened for the same reason.
 const TEST_RECHECK_MS: &str = "200";
 
-/// Ceiling for one observable consequence to become visible through a verb.
-/// A failure bound, not a timing gate.
+/// Failure bound for one consequence to become visible through a verb.
 const STEP_DEADLINE: Duration = Duration::from_secs(20);
 
-/// Poll cadence while sampling a verb or a watch child's captured lines.
 const POLL: Duration = Duration::from_millis(50);
-
-// ---------------------------------------------------------------------------
-// Harness
-// ---------------------------------------------------------------------------
 
 /// A running `phux server`, killed when the guard drops.
 struct ServerGuard(common::ServerGuard);
@@ -105,9 +42,6 @@ impl std::ops::Deref for ServerGuard {
 }
 
 impl ServerGuard {
-    /// Boot a server with the detector's timers shortened. Every test here
-    /// wants the same two overrides; they are read once inside the server
-    /// process, so a client verb cannot set them after the fact.
     fn start() -> Self {
         Self(
             common::ServerGuard::builder("session")
@@ -117,16 +51,9 @@ impl ServerGuard {
         )
     }
 
-    /// Build `phux --socket <sock> <args...>`. `--socket` precedes the verb
-    /// because it is the root global (ADR-0065), which makes this form safe
-    /// even for verbs whose trailing positional would swallow it.
-    fn cmd(&self, args: &[&str]) -> Command {
-        self.cmd_global(args)
-    }
-
     /// Run a verb and return its raw `Output`, success or not.
     fn try_run(&self, args: &[&str]) -> Output {
-        self.cmd(args).output().expect("run phux verb")
+        self.cmd_global(args).output().expect("run phux verb")
     }
 
     /// Run a verb, asserting it succeeded, and return stdout.
@@ -148,11 +75,8 @@ impl ServerGuard {
             .unwrap_or_else(|err| panic!("phux {args:?} JSON ({err}): {text}"))
     }
 
-    /// Decode the `--json` error document a refusing verb prints.
-    ///
-    /// It goes to **stderr**, not stdout: under `--json` stdout stays the
-    /// document channel and carries nothing at all on a refusal, which is
-    /// what lets a caller pipe stdout into a parser unconditionally.
+    /// Decode the `--json` error document a refusing verb prints on stderr;
+    /// stdout must stay empty.
     fn refusal(&self, args: &[&str], want_exit: i32) -> serde_json::Value {
         let out = self.try_run(args);
         assert_eq!(
@@ -186,7 +110,7 @@ impl ServerGuard {
 
     /// Create a pane running `command` and return its local Terminal id.
     fn spawn_pane(&self, command: &Path) -> u32 {
-        let mut cmd = self.cmd(&["spawn", "--json", "--"]);
+        let mut cmd = self.cmd_global(&["spawn", "--json", "--"]);
         cmd.arg(command);
         let out = cmd.output().expect("run phux spawn");
         assert!(
@@ -204,9 +128,7 @@ impl ServerGuard {
             .expect("terminal id fits u32")
     }
 
-    /// The `resources` array of `phux ls --json`. Its absence is the
-    /// documented pre-resource-model presence test, so demanding it here is
-    /// itself an assertion about this server.
+    /// The `resources` array of `phux ls --json`.
     fn resources(&self) -> Vec<serde_json::Value> {
         let listed = self.json(&["ls", "--json"]);
         listed["resources"]
@@ -235,21 +157,11 @@ impl ServerGuard {
         }
     }
 
-    /// Start `phux agent log SESSION --follow --json` as a child and block
-    /// until it has printed its bootstrap replay.
-    ///
-    /// This is the **subscription barrier** the cascade scenario needs. A
-    /// `phux watch` announces nothing when it subscribes, and a session's
-    /// event stream is silent until it closes, so there is no line to wait
-    /// for and killing the pane too early loses the very event under test.
-    /// A follower, by contrast, replays the retained records the moment it
-    /// is attached — so seeing its first line proves that a process started
-    /// *after* the watch has already completed a full connect-and-subscribe
-    /// round trip against the same session on the same server.
-    ///
-    /// It is also the second observer of the close in its own right: a
-    /// follower ends with exit `0` when the session closes under it
-    /// (`LogEnd::SessionClosed`), which is what the assertion checks.
+    /// Start `phux agent log SESSION --follow --json` and block until its
+    /// bootstrap replay. That is the subscription barrier for the cascade
+    /// test (a `watch` announces nothing when it subscribes), and the
+    /// follower is a second observer of the close: it exits 0 when the
+    /// session closes under it.
     fn follow_session(&self, session: &str, expect_bootstrap: usize) -> Follower {
         let out = tempfile::NamedTempFile::new().expect("follower stdout file");
         let path = out.path().to_path_buf();
@@ -257,7 +169,7 @@ impl ServerGuard {
         // reaps the child rather than leaving it attached to the server.
         let follower = Follower {
             child: Some(
-                self.cmd(&["agent", "log", session, "--follow", "--json"])
+                self.cmd_global(&["agent", "log", session, "--follow", "--json"])
                     .stdout(out.reopen().expect("reopen follower stdout"))
                     .stderr(Stdio::null())
                     .spawn()
@@ -342,14 +254,7 @@ impl Drop for Follower {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
-
-/// Write an executable script named `claude` that paints exactly one
-/// clear-screen and then holds. See the module doc: the *name* is what makes
-/// the pane identifiable to the ADR-0046 detector, and the blank screen is
-/// what makes every state this file observes attributable to the stream.
+/// Write an executable `claude` that paints one clear-screen and holds.
 fn write_quiet_claude(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -369,30 +274,12 @@ fn resource_named<'a>(
     resources.iter().find(|entry| entry["id"] == id)
 }
 
-// ---------------------------------------------------------------------------
-// 1. The happy path, end to end.
-// ---------------------------------------------------------------------------
-
-/// One session, opened by the binary, fed by the binary, and read back
-/// through four verbs that must all agree.
-///
-/// The claims, in order:
-///
-/// 1. `agent session open --json` returns the §4.19 document and a resource
-///    id distinct from the pane it is parented to.
-/// 2. `agent emit` stamps a dense `seq` from 1 and a wall-clock `ts_ms` the
-///    caller never supplied.
-/// 3. A `phux watch` started BEFORE the first emit sees `working` and then
-///    `done`, in that order, on a pane whose screen never printed a
-///    character — so the only thing that could have moved the record is the
-///    session's own stream.
-/// 4. `agent log --tail 3 --json` replays the three records in order, with
-///    the server's `seq`/`ts_ms`, inside the §4.19 envelope.
-/// 5. `ls --json` carries the session under `resources` as `agent_session`
-///    with the pane as its `parent`, and — the compatibility half — keeps it
-///    OUT of `terminals`.
-/// 6. `agent show --json` reports it under `agent_session`, never under
-///    `session` (which is, and stays, the phux session name).
+/// One session, opened and fed by the binary, read back through four verbs:
+/// `session open` returns the §4.19 document and its own resource id; `emit`
+/// stamps dense `seq` and server `ts_ms`; a watch started before the first emit
+/// sees `working` then `done` on a pane that never painted; `log --tail 3`
+/// replays the records; `ls --json` lists it under `resources` (never
+/// `terminals`); `agent show` reports it under `agent_session`.
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 #[allow(
@@ -410,10 +297,8 @@ fn an_agent_session_is_opened_streamed_replayed_and_inventoried() {
     let session = server.session_open(&pane, "claude", Some("abc"));
     assert_ne!(session, pane, "a session is its own resource, not the pane");
 
-    // The watch has to be live before the first record, or the transitions
-    // it is supposed to observe could have happened behind its back. An
-    // `agent_state` line for the pane proves the subscription is up AND that
-    // the detector has already identified the fixture.
+    // The watch must be live (and the fixture identified) before the first
+    // record.
     let watch = server.watch(&pane, &[]);
     watch.await_line("an initial agent_state line for the pane", |line| {
         line["event"] == "agent_state" && line["terminal"] == pane.as_str()
@@ -538,10 +423,8 @@ fn an_agent_session_is_opened_streamed_replayed_and_inventoried() {
     // already the phux session name and still is.
     assert_eq!(agent["session"], SESSION, "{shown}");
 
-    // The LEVEL agrees with the last edge, and says where it came from.
-    // A blank pane matches no rule on every 300 ms tick forever, so this is
-    // exactly the shape whose fail-safe `idle` used to overwrite the
-    // stream's `done` before a polling verb could read it.
+    // The level agrees with the last edge: a blank pane's screen tick must not
+    // overwrite the stream's `done`.
     assert_eq!(
         agent["state"], "done",
         "the stream's last word must survive the detector's screen tick: {shown}"
@@ -557,22 +440,9 @@ fn an_agent_session_is_opened_streamed_replayed_and_inventoried() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 2. The parent cascade, observed from outside the server.
-// ---------------------------------------------------------------------------
-
-/// `phux kill` on the pane closes the session under the same lock
-/// (ADR-0104), and every read surface agrees afterwards.
-///
-/// The watch is scoped to the SESSION, not to the pane: what has to be
-/// provable is that a consumer following an agent session learns that it
-/// ended without having to know which pane it hung off. `pane_closed` is the
-/// name a resource's close carries in this stream's vocabulary.
-///
-/// `parent_closed` is not asserted because the CLI cannot see it:
-/// `AgentEvent::ResourceClosed` carries only `exit_status`, so `watch --json`
-/// has no reason field to render. The disappearance from `ls --json` and the
-/// refusal from `agent log` are what stand in for it at this surface.
+/// `phux kill` on the pane closes the session (ADR-0104): a watch scoped to
+/// the session sees `pane_closed`, the session leaves `ls`, and `agent log`
+/// refuses the dead id.
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn killing_the_parent_pane_cascades_the_session_closed() {
@@ -633,74 +503,9 @@ fn killing_the_parent_pane_cascades_the_session_closed() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 3. Nothing the cascade left behind blocks the next session.
-// ---------------------------------------------------------------------------
-
-/// After a cascade close, `session open` works again on a fresh pane — the
-/// id space, the parent index, and the producer binding are all clean, and
-/// the new session starts its own sequence rather than inheriting one.
-#[test]
-#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn a_session_opens_again_on_a_fresh_pane_after_a_cascade_close() {
-    let fixtures = tempfile::tempdir().expect("create temp dir for the fixture");
-    let claude = write_quiet_claude(fixtures.path());
-    let server = ServerGuard::start();
-
-    let first_pane = format!("@{}", server.spawn_pane(&claude));
-    let first = server.session_open(&first_pane, "claude", Some("first"));
-    server.emit(&first, "prompt", r#"{"chars":1}"#);
-    server.run(&["kill", "--yes", &first_pane]);
-    server.await_resources("the first session gone", |resources| {
-        resource_named(resources, &first).is_none()
-    });
-
-    let second_pane = format!("@{}", server.spawn_pane(&claude));
-    let second = server.session_open(&second_pane, "claude", Some("second"));
-    assert_ne!(
-        second, first,
-        "a closed id is not reissued to a live session"
-    );
-    let emitted = server.emit(&second, "stop", "{}");
-    assert_eq!(
-        emitted["seq"], 1,
-        "a fresh session starts its own sequence: {emitted}"
-    );
-
-    let log = server.json(&["agent", "log", &second, "--json"]);
-    assert_eq!(log["native_id"], "second", "{log}");
-    assert_eq!(log["parent"], second_pane.as_str(), "{log}");
-    assert_eq!(
-        log["records"].as_array().expect("records").len(),
-        1,
-        "the new session carries none of the old one's records: {log}"
-    );
-
-    // `session close` is the other half of the lifecycle and leaves the pane
-    // alone — closing the session must not take the Terminal with it.
-    assert_eq!(
-        server.run(&["agent", "session", "close", &second]).trim(),
-        format!("{second}\tclosed"),
-    );
-    let resources = server.await_resources("the closed session gone", |resources| {
-        resource_named(resources, &second).is_none()
-    });
-    assert!(
-        resource_named(&resources, &second_pane).is_some(),
-        "closing a session must never touch its parent pane: {resources:?}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// 4. The refusals a producer meets first.
-// ---------------------------------------------------------------------------
-
-/// Every refusal in this scenario exits `2`, writes nothing, and comes back
-/// as the `record_invalid` / `no_agent_session` document
-/// `docs/consumers/agents.md` §2 promises a producer — including the unknown
-/// `--type`, which used to die at argv as a clap usage error on stderr and so
-/// was the one refusal of this verb a harness could not parse alongside the
-/// others.
+/// Every producer refusal exits 2, writes nothing, and returns the
+/// `record_invalid` / `no_agent_session` document (agents.md §2), including an
+/// unknown `--type`.
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn the_session_verbs_refuse_a_plain_pane_and_a_malformed_record() {

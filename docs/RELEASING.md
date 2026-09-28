@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-22
+last-reviewed: 2026-09-27
 ---
 
 # Releasing
@@ -37,12 +37,9 @@ same release.
 | Moving `next` prerelease (green `main`), CLI and Cockpit | `next-release.yml` |
 
 `release.yml` never creates a tag, release, or release body. It uploads assets
-onto the draft release-please made and only flips that draft to public after the
-complete target matrix succeeds, so it cannot clobber the generated changelog or
-expose a half-built release. The Homebrew push runs *after* that flip: the tap
-validates every push by re-resolving the release through the GitHub API, and a
-draft is invisible to it, so a formula pushed before publish is a guaranteed red
-tap build.
+onto the draft release-please made and flips it public only after the complete
+target matrix succeeds. The Homebrew push runs *after* that flip, because the
+tap re-resolves the release through the GitHub API and a draft is invisible.
 
 ## Release control surface
 
@@ -84,44 +81,21 @@ tap build.
 | Linear release report | called by `publish` after a public release, or manual dispatch | `linear-release.yml`. Names the Linear release after the tag and copies the tagged changelog section. Root `vX.Y.Z` goes to pipeline `phux`; `cockpit-vX.Y.Z` goes to `phux-cockpit` (secret `LINEAR_COCKPIT_RELEASE_ACCESS_KEY`). A missing Cockpit key warns and skips; it does not hold the GitHub release in draft. |
 | next channel | `ci.yml` success on `main`, one run in flight, pending runs coalesced | Release-profile `phux` + `phux-mcp` for the three portable targets, and an ad-hoc-signed Phux Cockpit when its inputs moved, attached to the moving `next` prerelease. No Homebrew. `phux update --channel next` follows `channel.json`; `install-cockpit.sh --channel next` and the app follow `cockpit-channel.json`. |
 
-### Standard public runner policy
+### Runners, caches, and concurrency
 
-This repository is public. Standard GitHub-hosted runners are
-[free for public repositories](https://docs.github.com/en/billing/concepts/product-billing/github-actions)
-and do not consume the private-repository minute allowance. Workflows use only
-standard `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, and `xcode-27`
-labels (`xcode-27` is macOS 27 with Xcode 27). Blacksmith and larger hosted runners are excluded. Public PR code does not execute on the owner's Mac mini, and phux needs no self-hosted
-runner registration. GitHub artifact/cache storage is a separate billing surface.
+The repository is public, so standard GitHub-hosted runners are free.
+Workflows use only `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, and
+`xcode-27` (macOS 27 with Xcode 27); no larger or self-hosted runners.
 
-### Cache budget
+The Actions cache is capped at 10 GB per repository with LRU eviction, and a
+cache saved on `refs/pull/N/merge` is only restorable from that PR. So
+`rust-cache` saves on `main` only and sccache runs `SCCACHE_GHA_RW_MODE=READ_ONLY`
+off `main`; any new PR-lane cache needs the same treatment. The account allows
+20 concurrent standard jobs, only 5 of them macOS. `pr-janitor` cancels a
+closed PR's live runs and deletes its merge-ref caches. Concurrency groups use
+the `mini-v1-` namespace.
 
-Free runner minutes are not the scarce resource; the two shared budgets below
-are, and both are reclaimed by `pr-janitor` when a pull request closes.
-
-**Actions cache is capped at 10 GB for the whole repository**, evicted
-least-recently-used across every ref. A cache saved on `refs/pull/N/merge` is
-restorable only from that pull request — never from `main`, never from another
-PR — so once the PR closes the entry is unreachable while still occupying the
-cap until the 7-day idle eviction. The budget is therefore shared between the
-warm `main` entries every lane restores from and the per-PR entries nothing can
-restore.
-
-Two policies keep `main`'s entries resident, and they are deliberately
-symmetric. `rust-cache` sets `save-if` to `main` only. sccache's GHA backend
-sets `SCCACHE_GHA_RW_MODE=READ_ONLY` off `main`: it stores one cache entry per
-compilation object, so a read-write PR lane writes thousands of unreachable
-entries and evicts the very objects it wants to restore next time. Read-only PR
-lanes still restore `main`'s objects and contribute nothing to the cap. Any new
-cache added to a PR-triggered lane needs the same treatment or an explanation
-of why it does not.
-
-**Standard-runner concurrency is 20 jobs, and only 5 of them may be macOS.**
-That is the account limit, not a per-workflow one, so the macOS Cockpit and
-release legs contend across every open PR at once. Runs for a closed PR keep
-holding those slots until they time out, which is what `pr-janitor` cancels.
-
-
-Root release targets retain their artifact names and native architectures:
+Root release targets:
 
 | Target | Standard runner | Build userspace |
 |---|---|---|
@@ -129,24 +103,10 @@ Root release targets retain their artifact names and native architectures:
 | `x86_64-unknown-linux-gnu` | `ubuntu-24.04` | `ubuntu:22.04` container (glibc 2.35) |
 | `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` | `ubuntu:22.04` container (glibc 2.35) |
 
-The [standard runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
-lists Ubuntu 24.04 for both Linux architectures. Linux release jobs run in an
-`ubuntu:22.04` container so the compiler links against glibc 2.35 after GitHub
-[deprecated the hosted Ubuntu 22.04 labels](https://github.com/actions/runner-images/issues/14254).
-Before building, every matrix leg checks its OS/architecture; Linux also requires
-Ubuntu 22.04 and glibc 2.35 inside that container. Existing binary portability and executable smoke
-checks remain mandatory before upload. This is a native ARM build,
-not an x64 emulation or a relabeled macOS binary. Every target must succeed
-before the root draft is published; no partial-matrix publication is allowed.
-
-All workflow concurrency groups use the `mini-v1-` cutover namespace. New
-pushes cannot cancel pre-cutover groups; root/Cockpit main validation still
-keeps one group per SHA. The PR-close janitor is retired to a manual read-only
-policy report, with no cancellation permission or endpoint. Already queued or
-running workflows retain their original definitions: this policy does not stop,
-rerun or migrate those jobs. After review, validate the first future ARM Linux
-release build and the standard macOS raster/soak lanes before declaring the
-new execution environments proven.
+Linux legs build in an `ubuntu:22.04` container to link against glibc 2.35.
+Every leg checks its OS/architecture first, binary portability and smoke
+checks run before upload, and every target must succeed before the root draft
+is published.
 
 ### Monorepo CI routing
 
@@ -205,7 +165,6 @@ the shared entry. Dependency caches remain best-effort accelerators.
 Signing, packaging, downloaded-byte verification and release lifecycle checks
 remain release-owned. The aborting root `release` profile and unwinding Cockpit
 `ffi-release` profile are distinct; their binaries are never interchanged.
-Historical tags retain their legacy build path when the new helpers are absent.
 
 Required secrets:
 
@@ -216,53 +175,25 @@ Required secrets:
 | `MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGNING_IDENTITY` | `cockpit-release.yml` | Optional all-or-nothing Developer ID signing. With none, Cockpit is explicitly ad-hoc signed. | no |
 | `APPLE_NOTARY_KEY`, `APPLE_NOTARY_KEY_ID`, `APPLE_NOTARY_ISSUER_ID` | `cockpit-release.yml` | Optional all-or-nothing notarization; required whenever Developer ID signing is configured. | no |
 | _(none)_ | `agent-integration-release.yml` | Publishing `@phux/*` to npm — uses OIDC trusted publishing, not a secret. See below. | n/a |
-There is deliberately **no npm secret**. `agent-integration-release.yml` publishes
-through [npm trusted publishing](https://docs.npmjs.com/trusted-publishers), which
-exchanges the workflow's OIDC identity for a short-lived registry credential, so
-there is no long-lived token to leak, rotate, or find missing at release time.
-
-Three things that lane depends on, all enforced in CI by
-`scripts/check-install-surface.sh` so they cannot drift back:
-
-- **The publish job runs on `ubuntu-latest`.** npm rejects OIDC from self-hosted
-  runners. Standard public GitHub runners preserve the supported trusted-publisher
-  identity for both the build gates and the small publication job.
-- **Each package's `repository.url` matches this repository exactly**
-  (`https://github.com/no-phux/phux.git`). npm validates it during the token
-  exchange and when attaching provenance.
-- **No `NODE_AUTH_TOKEN`/`NPM_TOKEN` is wired in.** Its presence would mean the
-  lane had silently reverted to a long-lived credential.
-
-**Trusted publishing cannot perform a package's *first* publish.** A trusted
-publisher is configured on npmjs.com against a package that already exists, so a
-brand-new package has to be bootstrapped once by a human with an authenticated
-`npm publish`, after which the trusted publisher is configured and every later
-release is hands-off. Budget for that the first time a new `@phux/*` package
-ships; it is a one-time cost per package, not per release.
-
-The lane is idempotent: it verifies rather than republishes a version already on
-the registry, so re-dispatching a tag is always safe.
+There is deliberately **no npm secret**: `agent-integration-release.yml` uses
+[npm trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC).
+`scripts/check-install-surface.sh` enforces that the publish job runs on
+`ubuntu-latest`, that each package's `repository.url` is exactly
+`https://github.com/no-phux/phux.git`, and that no `NODE_AUTH_TOKEN`/`NPM_TOKEN`
+is wired in. Trusted publishing cannot do a package's *first* publish: a new
+`@phux/*` package is bootstrapped once by a human `npm publish`. The lane is
+idempotent; re-dispatching a tag verifies rather than republishes.
 
 ## When a release goes quiet
 
-Every release defect this repo has hit failed **silently**, which is why the
-drift check exists and why it is worth understanding what it looks for.
-
-`v0.19.0` was prepared and then dropped: release-please's release step aborted
-*inside a green run*, so there was no tag, no release, and no artifacts, while
-the merged release PR kept its `autorelease: pending` label — which in turn
-blocks release-please from opening the *next* release PR. The agent integration
-lane failed on all four of its first invocations and left four permanent
-0-asset drafts. Nothing was red in any of those cases.
-
-So a release is finished only when all four of these hold, and
-`scripts/check-release-drift.mjs` asserts each one:
+Release failures have been silent (an aborted release-please step inside a
+green run, 0-asset drafts), so `scripts/check-release-drift.mjs` asserts:
 
 | Assertion | The failure it catches |
 |---|---|
 | No release has been a draft longer than the grace window | A publish lane that never attached assets or never flipped the draft |
 | No published release has zero assets | A draft flipped public before, or instead of, its upload |
-| No merged PR still carries `autorelease: pending` | release-please built no release for a merged release PR |
+| No merged PR still carries `autorelease: pending` | release-please built no release for a merged release PR (this also blocks the next release PR) |
 | Every version in `.release-please-manifest.json` has its tag | A release prepared, merged, and then never cut |
 
 A failing drift run means a release is stuck, not that the check is broken; the
@@ -324,24 +255,13 @@ phux-<tag>-<target>/
 runs the binary checks before the tarball is sealed. Homebrew installs both
 binaries from the same tarball.
 
-`phux update` from a build that still expected `LICENSE-MIT` and
-`LICENSE-APACHE` will refuse this tarball. Reinstall once through
-Homebrew or the curl installer; later updates use the new member list.
-(The curl installer and current `phux update` both accept either license
-layout, so a reinstall lands regardless of which side of the cutover the
-running version is on; only an old binary updating itself to a new tarball
-hits the refusal above.)
-
 **This layout is a consumed contract, not just a convention.** `phux update`
-(the in-binary self-update path, [ADR-0074](adr/0074-self-update-trust-boundary.md))
-resolves the release, derives `phux-<tag>-<target>.tar.gz` and its `.sha256`
-sidecar from exactly this naming, verifies the digest before unpacking, and
-refuses any archive whose members are not precisely the members listed above. Renaming an
-artifact, dropping the sidecar, changing the `"<64 hex>  <archive>"` sidecar
-format, or adding a member to the tarball breaks every installed phux's ability
-to update itself — silently for the naming, loudly for the members. Change them
-together with `scripts/pack-release.sh`, `crates/phux/src/commands/update/release.rs`,
-and `crates/phux/src/commands/update/apply.rs`, or not at all.
+([ADR-0074](adr/0074-self-update-trust-boundary.md)) derives
+`phux-<tag>-<target>.tar.gz` and its `"<64 hex>  <archive>"` `.sha256` sidecar
+from this naming, verifies the digest before unpacking, and refuses any
+archive whose members differ. Change them together with
+`scripts/pack-release.sh`, `crates/phux/src/commands/update/release.rs`, and
+`crates/phux/src/commands/update/apply.rs`, or not at all.
 
 The opt-in `next` channel ([ADR-0113](adr/0113-next-release-channel.md))
 reuses the same member set (either license layout accepted). GitHub's tag is the moving prerelease `next`;
@@ -378,12 +298,10 @@ components do not mirror the Rust workspace version.
 conventional-commit log and writes it into `[workspace.package].version` on the
 release PR (via a TOML jsonpath updater configured in
 `release-please-config.json`). The same extra-files list rewrites annotated
-`PHUX_VERSION` literals in `docs/site/worker/Dockerfile`; without that, the
-hosted native pin lags the workspace and `just toolchain-check` fails on main
-(#700, #711). The `sync-lockfile` job then runs
+`PHUX_VERSION` literals in `docs/site/worker/Dockerfile`, which
+`just toolchain-check` compares. The `sync-lockfile` job then runs
 `cargo update --workspace` in the root and standalone browser workspace on the
-same PR so both lockfiles record the new internal package versions while
-retaining external pins; release-please cannot update those lockfiles itself.
+same PR, since release-please cannot update lockfiles itself.
 
 Pre-1.0 bump rules, set in `release-please-config.json`:
 
@@ -422,48 +340,30 @@ longer holds the release in draft; the tap's own scheduled update workflow
 re-resolves the public release and lands the same formula within fifteen
 minutes.
 
-**Backfilling an old tag is safe; it will not move the tap backwards.**
-`release.yml` is dispatchable against any existing tag, which is how a release
-whose build failed gets its assets attached after the fact. Assets are per-tag,
-so re-running an old tag only fills in that release. The tap is not per-tag —
-`Formula/phux.rb` is version-pinned and is a single moving pointer — so the
-`homebrew` job compares the tag against the version the formula currently serves
-and skips the push if it would be a downgrade, emitting a warning annotation
-instead. Backfilling `v0.9.0` after `v0.10.0` had shipped is exactly the case
-that motivated this; before the guard it silently rewrote the tap to `v0.9.0`.
+**Backfilling an old tag is safe.** `release.yml` is dispatchable against any
+existing tag and only fills in that release's assets; the `homebrew` job skips
+(with a warning) any push that would downgrade the version-pinned formula.
 
 Release builds use rustup plus the official Zig tarballs instead of the Nix dev
 shell, because portable release binaries must not record `/nix/store` dynamic
 library paths.
 
-`scripts/check-binary-portability.sh` enforces that on **both** platforms before
-packaging: macOS binaries may link only `/usr/lib/**` and `/System/Library/**`,
-Linux binaries only the glibc runtime set (`libc`, `libm`, `libgcc_s`, `libdl`,
-`libpthread`, `librt`, `libutil`, `ld-linux`). It also fails if a Linux binary
-demands a glibc symbol version above `PHUX_GLIBC_MAX` (2.35, the Ubuntu 22.04
-floor the Linux legs build against), so a runner image bump cannot quietly raise the
-minimum distro. Before this existed the check was a `grep` for `/nix/store` in
-`otool -L` output — macOS only, one failure mode, and nothing whatsoever on
-Linux.
+`scripts/check-binary-portability.sh` enforces that before packaging: macOS
+binaries may link only `/usr/lib/**` and `/System/Library/**`, Linux binaries
+only the glibc runtime set (`libc`, `libm`, `libgcc_s`, `libdl`, `libpthread`,
+`librt`, `libutil`, `ld-linux`), and no Linux binary may demand a glibc symbol
+version above `PHUX_GLIBC_MAX` (2.35).
 
-Those tarballs are pinned by SHA-256 in `.config/zig-toolchain.json`, one digest per target,
-and the digests are hand-written on purpose — a checksum fetched at build time
-would verify nothing about the server that served the tarball. **Bumping
-`ZIG_VERSION` means re-pinning all three digests in the same commit.** Missing
-that is what published `v0.10.0` with no assets: the version moved to `0.16.0`
-while every digest stayed on `0.15.2`, so all three matrix legs failed at
-`shasum -c`, and release.yml runs only after the tag and release already exist.
-`just zig-pin-check` (`scripts/check-zig-pins.sh`, a `just ci` and ci.yml step)
-compares the pins against `https://ziglang.org/download/index.json` and fails on
-a stale one; it skips itself when the index is unreachable.
+The Zig tarballs are pinned by hand-written SHA-256 in
+`.config/zig-toolchain.json`, one per target. **Bumping `ZIG_VERSION` means
+re-pinning all three digests in the same commit**, or every matrix leg fails
+after the tag already exists. `just zig-pin-check` (`scripts/check-zig-pins.sh`)
+compares the pins against `https://ziglang.org/download/index.json` and skips
+when the index is unreachable.
 
-The latest GitHub release is always the portable public release to point at.
-Naming a current version in prose is how the README came to advertise a
-long-superseded tag while the repo shipped `v0.7.0`, so don't reintroduce one
-here. `v0.0.1` is the single exception worth naming: it was seeded with a Linux
-x86_64 tarball plus checksum, but that first artifact is Nix-linked and not
-portable, so
-do not point installers or the tap at it.
+The latest GitHub release is always the portable public release to point at;
+do not name a current version in prose. `v0.0.1` is Nix-linked and not
+portable, so do not point installers or the tap at it.
 
 For an emergency host-only artifact, use the same dist layout locally:
 
@@ -487,11 +387,9 @@ produced by [`scripts/gen-formula.sh`](../scripts/gen-formula.sh), which
 emits a stable top-level URL plus overrides only for the targets that actually
 built — so a partial-matrix release still yields an installable formula.
 
-Because a platform with no matching `on_*` override silently falls back to that
-top-level URL, the generator also emits a fatal `depends_on` guard for every
-platform with no artifact. macOS ships arm64 only, so the formula carries
-`depends_on arch: :arm64` inside `on_macos`: an Intel Mac is refused at install
-time instead of receiving an arm64 binary that cannot exec.
+The generator emits a fatal `depends_on` guard for every platform with no
+artifact (macOS carries `depends_on arch: :arm64`), so an Intel Mac is refused
+at install time instead of receiving a binary that cannot exec.
 
 ### Curl installer contract
 
@@ -504,22 +402,16 @@ curl -fsSL https://phux.sh/install | sh
 ```
 
 `phux.sh/install` and `phux.sh/install.sh` are `scripts/install.sh` served
-verbatim. `docs/site/scripts/sync-docs.ts` copies the script into the site's
-`public/` at build time and both destinations are gitignored, so the published
-installer cannot drift from the one in this repository. Two consequences worth
-remembering when you touch either side: `site-deploy.yml` lists
-`scripts/install.sh` in its path filter, and the script must stay POSIX `sh`
-because that URL is piped to `sh`. Its `#!/bin/sh` shebang is what makes
-`just shellcheck` lint it as such, and `sync-docs.ts` refuses to publish a
-script that does not carry it.
+verbatim: `docs/site/scripts/sync-docs.ts` copies it into the site's
+gitignored `public/` at build time and refuses a script without a `#!/bin/sh`
+shebang. `site-deploy.yml` lists `scripts/install.sh` in its path filter, and
+the script must stay POSIX `sh`.
 
-Keep it aligned with the release layout above. It should download the target
-tarball and `.sha256` sidecar from the selected release, verify the checksum
-before unpacking, and install `phux` + `phux-mcp` into
-`${PHUX_INSTALL_DIR:-$HOME/.local/bin}`. With no `--version`, it resolves the
+The installer downloads the target tarball and `.sha256` sidecar, verifies the
+checksum before unpacking, and installs `phux` + `phux-mcp` into
+`${PHUX_INSTALL_DIR:-$HOME/.local/bin}`; with no `--version` it resolves the
 current GitHub release. Keep the explicit `v0.0.1` refusal as a historical
-safety guard. User-facing docs should point at the latest GitHub release rather
-than naming a version, which goes stale the moment the next one ships.
+safety guard.
 
 ### CPU baselines
 
@@ -677,62 +569,6 @@ without mutating a release. The mobile repository resolves the workflow run by
 its pinned phux commit and can fall back to building this script from an exact
 phux checkout after run-artifact retention expires.
 
-## One-time Cockpit import cutover
-
-The imported branch contains a real two-parent merge whose second parent is
-Cockpit's rewritten 199-commit history. GitHub's enabled squash/rebase merge
-methods would discard that parent, while the required-linear-history rule
-rejects an ordinary merge commit. Therefore the migration is reviewed as a PR
-but landed once as a non-force fast-forward by an organization administrator
-using the ruleset bypass.
-
-1. Add `commitlint` to the live required checks beside `check` and `test` (the
-   2026-09-03 audit found it missing). Push the migration branch once and open
-   it ready for review; avoid draft and synchronization churn. Wait for all
-   root and Cockpit checks on that exact head.
-2. Fetch immediately before landing and prove `origin/main` is still the tested
-   PR base. If it moved, merge current `main` into the migration branch and
-   rerun CI; never rebase or squash the imported graph.
-3. With explicit authorization for this upstream operation, fast-forward
-   `main` without force:
-
-   ```sh
-   git fetch origin main
-   head="$(git rev-parse integration/cockpit-monorepo)"
-   test "$(git merge-base origin/main "$head")" = "$(git rev-parse origin/main)"
-   git push origin "$head:refs/heads/main"
-   git fetch origin main
-   git merge-base --is-ancestor "$(<.github/cockpit-history-tip)" origin/main
-   ```
-
-4. Confirm the canonical Cockpit workflows are visible, then disable the four
-   standalone scheduled/tag workflows so one change cannot consume two macOS
-   lanes:
-
-   ```sh
-   for workflow in ci.yml release-please.yml release.yml sdk-head.yml; do
-     gh workflow disable "$workflow" --repo no-phux/phux-cockpit
-   done
-   ```
-
-5. Do not archive the standalone repository yet. The first canonical
-   `cockpit-v*` release must prove the tag, notes, ZIP, DMG, checksums, signing
-   status, publication, and Homebrew cask. Then archive the old repository or
-   leave it read-only as the pre-monorepo release record.
-
-The first canonical Cockpit release temporarily used a top-level
-`bootstrap-sha` at the final filtered standalone tip so it included only
-post-cutover work rather than relisting 199 historical commits. That exception
-was removed after `cockpit-v0.16.2` published successfully; canonical
-`cockpit-v*` tags are now the permanent baseline. Do not reintroduce the
-bootstrap setting.
-
-There is no history-removing rollback. Before the fast-forward, stop and fix the
-branch. After it, fix forward or land an ordinary forward revert of the visible
-integration files; never reset `main`, delete the imported parent, or force-push
-the branch, because that would destroy the property this cutover exists to
-preserve.
-
 ## Publishing phux-protocol to crates.io
 
 Publishing is irreversible — versions cannot be reused and the name cannot be
@@ -764,6 +600,21 @@ this workflow. For users, the idiomatic crates.io command is
 `cargo add phux-protocol`; `cargo install phux is unsupported` until
 the binary crate and its internal dependencies are intentionally made
 publishable.
+
+## Local fallback: dsr
+
+When Actions is throttled or queued, an operator can run `dsr`
+([phall1/doodlestein_self_releaser](https://github.com/phall1/doodlestein_self_releaser))
+to replay `release.yml`'s build steps locally (`act`/Docker for Linux, bare
+metal for macOS) and `gh release upload` the tarballs and sidecars onto the
+existing draft. It reads `release.yml` directly, so nothing here needs syncing;
+its target configuration lives in `~/.config/dsr/`. It never publishes the
+draft, touches crates.io, or updates the tap: publish the draft first
+(`gh release edit vX.Y.Z --draft=false`), then let the tap's scheduled update
+land the formula or run `bash scripts/gen-formula.sh` and push it by hand.
+`dsr check no-phux/phux`, `dsr build phux --targets linux/amd64`,
+`dsr release phux --version vX.Y.Z`, and `dsr fallback phux --version vX.Y.Z`
+are the entry points; builds refuse a dirty tree without `--allow-dirty`.
 
 ## Installing from the tap
 

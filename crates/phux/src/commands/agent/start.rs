@@ -1,75 +1,25 @@
 //! `phux agent start` — start an agent **into an existing shell pane** and
 //! return only once it is detected and ready for interactive input.
 //!
-//! # Why this is a verb and not a flag on `launch`
+//! Unlike `phux launch` (which spawns argv into a new pane), this types one
+//! quoted command line into a pane whose child is a live shell, so it adds a
+//! precondition family and shares only the resolver
+//! ([`phux_plugin::resolve_launch`], [`super::prepare_for_launch`]).
 //!
-//! `phux launch` returns a Terminal id: its whole success statement is "a pane
-//! now exists". This returns a *readiness assertion about a pane that already
-//! existed*, and it creates, splits, and moves nothing — that separation is
-//! the point of the verb. Two more divergences make a shared flag wrong rather
-//! than merely awkward: `launch` hands an argv vector to `SPAWN_RESOURCE`
-//! (structured, no shell, deliberately so per ADR-0042), while the only way
-//! into a pane whose child is a live shell is to *type a command line*; and
-//! the failure families are disjoint (this verb has no spawn errors and adds
-//! an entire precondition family). What *is* shared is the resolver:
-//! [`phux_plugin::resolve_launch`] and [`super::prepare_for_launch`] are
-//! called unchanged, and only the delivery step diverges.
+//! **Ready** is the first detector publication after submit: an observed
+//! transition off the `unknown` this verb binds before typing, via
+//! [`phux_client::agent_wait::wait_for_agent_state`]. Every derived state
+//! counts, because an agent that starts into `blocked` (a trust prompt) is
+//! ready for input. The pending phase lives only in this process, so a killed
+//! `agent start` leaves just the inert bound name (`phux agent clear`).
 //!
-//! # What "ready" means here, and what it deliberately does not
+//! No sequence counter is needed: the bind is read back before anything is
+//! typed, and the agent process cannot exist until the shell consumes the
+//! Enter this verb sends, so any derived state observed is post-submit.
 //!
-//! **Not `state == idle`.** Most idle results are the fail-safe fallthrough,
-//! though Claude can now publish positive idle evidence through OSC 9;4. A
-//! pre-existing idle level still says nothing about this invocation. Ready is
-//! instead **the first detector publication after submit**, which is an
-//! observed *transition* off the `unknown` this verb binds before typing
-//! anything. That predicate already has a home:
-//! [`phux_client::agent_wait::wait_for_agent_state`] (ADR-0076 point 5)
-//! *seeds* its baseline and never evaluates it, so this file composes against
-//! it rather than carrying a second copy of the same plumbing.
-//!
-//! The default target set is every derived state — `idle`, `working`,
-//! `blocked`, `done` — because an agent that starts straight into `blocked`
-//! (a trust-this-folder prompt) *is* ready for interactive input, which is the
-//! verb's actual promise.
-//!
-//! # Where the readiness phase lives
-//!
-//! ADR-0046 point 2 is emphatic that the detector is level-triggered and
-//! "nothing is remembered but the last published tuple", which is in tension
-//! with a phase machine that must remember it is pending. The resolution is
-//! that **the phase machine lives in neither the detector nor the server**: it
-//! is this process's stack frame, held open across one subscription for the
-//! whole operation. `Pending` is "I bound the name and I hold a subscription";
-//! `Active` is "a qualifying transition arrived"; `Failed` is a deadline or a
-//! departure. A killed `phux agent start` therefore leaves no server-side
-//! phase state to garbage-collect — only the bound name, which is inert
-//! (ADR-0075 point 7 refuses input to a withdrawn record) and cleared by
-//! `phux agent clear`.
-//!
-//! # Ordering, and why no sequence counter is needed
-//!
-//! The bind writes `state: "unknown"` and is read back before anything is
-//! typed, so the level the wait baselines on is known by construction. No
-//! publication about the *new* agent can precede the submit, because the agent
-//! process does not exist until the shell execs it — which happens after the
-//! Enter this verb sends is consumed, and the detector then owes a full
-//! identification plus its startup grace on top. So any derived state the wait
-//! observes is strictly post-submit without the CLI needing a sequence field.
-//!
-//! # The available-shell precondition
-//!
-//! herdr's gate is three clauses: the pane's foreground pgid equals its child
-//! pid, the job holds only that shell, and the name is a known shell. phux has
-//! the raw materials for clauses 1 and 3 server-side, where the detector
-//! already makes both process queries. It publishes the privacy-bounded answer
-//! as `phux.pane-occupant/v1`. The CLI waits through the detector's first tick,
-//! refuses a foreground process that is not the pane shell, and accepts an
-//! unmarked shell from that server-owned record.
-//!
-//! OSC-133 remains a conservative cross-check: a Prompt/Input mark on the
-//! cursor row corroborates availability, while marks elsewhere positively
-//! prove the screen is busy and override a possibly stale periodic process
-//! observation. `--force` skips the entire precondition.
+//! The available-shell precondition reads the server-published
+//! `phux.pane-occupant/v1` record, cross-checked against OSC-133 marks;
+//! `--force` skips it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -102,41 +52,24 @@ const RESULT_SCHEMA_VERSION: u8 = 1;
 /// same gap `phux wait` and `phux agent wait` use.
 const POLL_INTERVAL: Duration = phux_client::wait::DEFAULT_POLL_INTERVAL;
 
-/// Default readiness deadline, in seconds.
-///
-/// Bounded by default, unlike `phux agent wait`: a verb whose success *is* a
-/// readiness claim must not hang forever when the claim cannot be made. The
-/// number is sized off the server's own constants rather than taste. After the
-/// command line lands, an already-existing pane's detector is past its
-/// identify-acquire window and re-identifies on a 5 s cadence; identification
-/// then owes a 3 s startup grace before it may publish at all, plus one 300 ms
-/// tick. Worst case is therefore ~8.3 s of pure detector latency before the
-/// agent's own splash is even considered, and a cold agent binary adds its
-/// own. 60 s leaves generous headroom over that without being unbounded.
+/// Default readiness deadline, in seconds. Bounded (unlike `agent wait`)
+/// because success *is* a readiness claim; detector latency alone is ~8.3 s
+/// worst case (5 s re-identify + 3 s grace + one tick).
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 
 /// The addressable agent-name grammar (ADR-0075 point 5), as prose for the
 /// refusal message.
 const NAME_GRAMMAR: &str = "^[a-z][a-z0-9_-]{0,31}$";
 
-/// Longest shell line this verb will type, in bytes.
-///
-/// One sixteenth of ADR-0053's 65536-byte `APPLY_INPUT` command-body cap, so
-/// the batch limit can never be the thing that fails, and comfortably inside
-/// every shell's line buffer. A resolved launch argv longer than this is
-/// pathological and is refused before anything is written rather than
-/// truncated on the way in.
+/// Longest shell line this verb will type, in bytes: well inside ADR-0053's
+/// `APPLY_INPUT` command-body cap (asserted below), so the batch limit can
+/// never fail after a name is already bound.
 const MAX_SHELL_LINE: usize = 4096;
 
-/// The typed line must sit inside ADR-0053's command-body cap, or the batch
-/// limit could be the thing that fails after a name is already bound. Checked
-/// at compile time so the two constants cannot drift apart silently.
 const _: () = assert!(MAX_SHELL_LINE < phux_protocol::MAX_APPLY_INPUT_COMMAND_BODY);
 
-/// The readiness target set: every *derived* state.
-///
-/// `unknown` is deliberately absent — it is the level this verb binds, and
-/// the wait treats a return to it as departure rather than arrival.
+/// The readiness target set: every *derived* state. `unknown` is the level
+/// this verb binds, so a return to it is departure, not arrival.
 const READY_STATES: &[AgentMetaState] = &[
     AgentMetaState::Idle,
     AgentMetaState::Working,
@@ -145,39 +78,23 @@ const READY_STATES: &[AgentMetaState] = &[
 ];
 
 /// One `agent start` invocation, as parsed.
-///
-/// A struct rather than a nine-argument function so the call site in
-/// `mod.rs` reads as the flag list it is.
 #[derive(Debug)]
 pub(super) struct StartRequest<'a> {
-    /// Human-facing agent name to bind to the pane.
     pub(super) name: &'a str,
-    /// Detection-manifest kind slug the started agent must identify as.
     pub(super) kind: &'a str,
-    /// Selector for the existing pane to start into.
     pub(super) target: &'a str,
-    /// Launch integration id; when absent, resolved from `--kind` through
-    /// the enabled templates' `[agent_identity]` blocks, falling back to
-    /// the kind slug itself.
     pub(super) integration: Option<&'a str>,
-    /// Readiness deadline in seconds.
     pub(super) timeout: Option<u64>,
-    /// Submit and return without waiting for readiness.
     pub(super) no_wait: bool,
-    /// Skip the available-shell precondition.
     pub(super) force: bool,
-    /// Emit the machine-readable result document.
     pub(super) json: bool,
-    /// Extra arguments appended to the integration's launch argv.
     pub(super) args: &'a [String],
 }
 
 /// A refusal: the error document plus the status to exit with.
 #[derive(Debug)]
 struct Refusal {
-    /// The stable code / message / remedy triple.
     err: json_err::CliError,
-    /// The exit status this refusal carries.
     exit: u8,
 }
 
@@ -196,18 +113,8 @@ impl Refusal {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pure core: name grammar, shell-line construction, the shell precondition.
-// Everything here is unit-testable with no server, no socket, and no clock.
-// ---------------------------------------------------------------------------
-
 /// Whether `name` is spellable under the addressable agent-name grammar
-/// (ADR-0075 point 5).
-///
-/// Checked locally so a typo fails before any round trip. The record's `name`
-/// stays "any non-empty string" per `L3.md` §3.7 — this narrower grammar is
-/// reserved for `%name` if ADR-0075 is accepted. The shipped selector surface
-/// still requires a direct Terminal id.
+/// (ADR-0075 point 5), checked locally so a typo fails before any round trip.
 #[must_use]
 pub(super) fn is_addressable_name(name: &str) -> bool {
     let mut chars = name.chars();
@@ -223,14 +130,9 @@ pub(super) fn is_addressable_name(name: &str) -> bool {
     chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
 }
 
-/// Quote one word for a POSIX shell, unconditionally.
-///
-/// Single-quote everything, escaping an embedded `'` as `'\''`. No
-/// "it looks safe" fast path: the argv comes from a plugin-authored template
-/// with `${PHUX_PLUGIN_ROOT}` already expanded to an absolute path that may
-/// contain spaces, and ADR-0068 native session ids are attacker-adjacent data
-/// validated only for "non-option-shaped, control-free, <=1024 bytes" —
-/// nothing in that validation stops a `$(...)` or a `;`.
+/// Quote one word for a POSIX shell, unconditionally (`'` becomes `'\''`).
+/// No "looks safe" fast path: template paths and native session ids may
+/// carry spaces, `$(...)`, or `;`.
 #[must_use]
 pub(super) fn shell_quote(word: &str) -> String {
     let mut out = String::with_capacity(word.len().saturating_add(2));
@@ -254,8 +156,7 @@ pub(super) enum ShellLineError {
     /// An element carries a control character, so quoting cannot contain it —
     /// a newline in the line is a second command.
     Control {
-        /// Zero-based index into the argv (env pairs come first, negatively
-        /// indexed conceptually; this names the argv element).
+        /// Zero-based index into the argv.
         index: usize,
         /// The offending element, as resolved.
         element: String,
@@ -269,15 +170,11 @@ pub(super) enum ShellLineError {
     },
 }
 
-/// Assemble the one shell line that starts the agent.
+/// Assemble the one shell line that starts the agent, every word quoted.
 ///
-/// Environment goes through `env` rather than a `VAR=v cmd` prefix: that form
-/// is not valid fish, and phux does not know which shell the pane is running.
-/// Every element — `argv[0]`, every flag, every `-- extra` argument, and each
-/// `NAME=value` pair — is quoted by [`shell_quote`].
-///
-/// This is the one place phux gains a shell-evaluation surface it did not
-/// have, which is why the refusals below are absolute rather than best effort.
+/// Environment goes through `env` rather than a `VAR=v cmd` prefix, which is
+/// not valid fish. This is a shell-evaluation surface, so the refusals are
+/// absolute rather than best effort.
 pub(super) fn shell_line(
     argv: &[String],
     env: &BTreeMap<String, String>,
@@ -328,15 +225,10 @@ pub(super) enum KindVerdict {
     /// The published record's `kind` is the requested one — the kernel says
     /// that binary's process group owns the pane's tty.
     Confirmed,
-    /// The record carries no `kind`, so nothing confirmed the occupant. Not a
-    /// failure: an explicit hook writer may own this record and stand the
-    /// detector down (ADR-0046 point 8), in which case no kind was ever
-    /// derived. Reported rather than refused.
+    /// The record carries no `kind` (an explicit hook writer may own it,
+    /// ADR-0046 point 8). Reported rather than refused.
     Unconfirmed,
-    /// The record names a different kind than the one requested. The
-    /// observed kind is not carried here: the caller already holds the record
-    /// and formats it, and duplicating the string would give two places for
-    /// it to be wrong.
+    /// The record names a different kind than the one requested.
     Mismatch,
 }
 
@@ -354,13 +246,7 @@ pub(super) fn kind_verdict(record: Option<&AgentRecord>, requested: &str) -> Kin
 }
 
 /// Where the state that satisfied readiness came from, in the manifest's own
-/// terms.
-///
-/// The point of publishing this is that `manifest_asserts_idle` is `false` for
-/// every shipped manifest, and a caller who reads it learns the thing an
-/// opaque status word hides: *this readiness is an absence of contrary
-/// evidence, not a positive observation.* A careful orchestrator can then wait
-/// for a transition into `working` before trusting the pane.
+/// terms, so a caller can tell a positive observation from a fail-safe.
 #[must_use]
 fn state_source(explanation: &Explanation) -> &'static str {
     if explanation.freeze {
@@ -374,58 +260,16 @@ fn state_source(explanation: &Explanation) -> &'static str {
         .iter()
         .all(|rule| rule.state.is_none())
     {
-        // A manifest that declares binaries but no state-bearing rule would
-        // identify, publish `idle` at grace expiry, and satisfy readiness — a
-        // genuine false ready. No shipped manifest is shaped that way; a
-        // user-supplied one under PHUX_AGENT_RULES_DIR may be.
+        // A user manifest with no state-bearing rule publishes `idle` at grace
+        // expiry: a false ready worth naming.
         return "no-rules";
     }
     "fail-safe"
 }
 
-// ---------------------------------------------------------------------------
-// The verb.
-// ---------------------------------------------------------------------------
-
-/// `phux agent start NAME --kind K --target TARGET [--integration ID]
-/// [--timeout SECS] [--no-wait] [--force] [--json] [-- ARGS]`.
-pub(super) fn run_agent_start(action: &super::AgentAction, socket: Option<PathBuf>) -> ExitCode {
-    let super::AgentAction::Start {
-        name,
-        kind,
-        target,
-        integration,
-        timeout,
-        no_wait,
-        force,
-        json,
-        args,
-    } = action
-    else {
-        // Unreachable: `run_agent` routes only its own variant here.
-        return ExitCode::FAILURE;
-    };
-    start(
-        &StartRequest {
-            name,
-            kind,
-            target,
-            integration: integration.as_deref(),
-            timeout: *timeout,
-            no_wait: *no_wait,
-            force: *force,
-            json: *json,
-            args,
-        },
-        socket,
-    )
-}
-
-/// The verb proper, over a parsed request.
-fn start(req: &StartRequest<'_>, socket: Option<PathBuf>) -> ExitCode {
-    // Steps 1-6 are local: every cheap refusal happens before the first byte
-    // is written, so the common failures (typo in the name, unsupported kind,
-    // no such integration) never leave residue in a pane.
+/// `phux agent start`, over a parsed request.
+pub(super) fn start(req: &StartRequest<'_>, socket: Option<PathBuf>) -> ExitCode {
+    // Every cheap refusal happens locally, before the first byte is written.
     let plan = match preflight(req) {
         Ok(plan) => plan,
         Err(refusal) => return json_err::emit(req.json, &refusal.err, refusal.exit),
@@ -449,11 +293,8 @@ struct Plan {
     kind: String,
     /// The one line to type.
     line: String,
-    /// Directory the integration wants to run in.
     resolved_cwd: PathBuf,
-    /// Integration id that produced the argv, for diagnostics.
     integration_id: String,
-    /// Readiness deadline.
     timeout: Duration,
 }
 
@@ -472,15 +313,8 @@ fn preflight(req: &StartRequest<'_>) -> Result<Plan, Refusal> {
         ));
     }
 
-    // The most important refusal in the verb. A kind with no loaded manifest
-    // is never identified at all, so the detector publishes nothing, forever
-    // — readiness is unreachable and the verb would spend its whole timeout
-    // *after* having typed a command into the pane and bound a name to it. The
-    // agent starts fine; phux just can never say so. Refusing up front is free
-    // and pre-write, and it draws the line in the right place: `launch` and
-    // `spawn` keep working for any agent whatsoever, because neither makes a
-    // readiness promise. This verb is the one that promises, so it is the one
-    // that has to check it can keep the promise.
+    // A kind with no loaded manifest is never identified, so readiness is
+    // unreachable; refuse before typing anything rather than time out after.
     let loaded = agent_explain::kinds();
     let kind = if req.no_wait {
         agent_explain::resolve_kind(req.kind).unwrap_or_else(|| req.kind.to_owned())
@@ -522,11 +356,8 @@ fn preflight(req: &StartRequest<'_>) -> Result<Plan, Refusal> {
             EXIT_FAILURE,
         )
     })?;
-    // One walk of the enabled plugin tree resolves the integration id *and*
-    // builds its argv. The kind passed here is the canonical one, never
-    // `req.kind` as typed: an unclaimed kind falls back to the id spelled
-    // like the kind, and falling back to ` CLAUDE ` would fail by a name no
-    // template could ever have.
+    // Pass the canonical kind, never `req.kind` as typed: an unclaimed kind
+    // falls back to an integration id spelled like the kind.
     let resolved = phux_plugin::resolve_launch_for_kind(
         &config_path,
         req.integration,
@@ -562,10 +393,6 @@ fn preflight(req: &StartRequest<'_>) -> Result<Plan, Refusal> {
 }
 
 /// Render a [`phux_plugin::KindLaunchError`] as its refusal.
-///
-/// The mapping from a resolution failure to phux's error vocabulary stays
-/// here, in the CLI: the resolution rules themselves live in `phux-plugin`
-/// beside every other integration-resolution rule.
 fn launch_refusal(err: phux_plugin::KindLaunchError) -> Refusal {
     match err {
         phux_plugin::KindLaunchError::Ambiguous { kind, claimants } => Refusal::new(
@@ -636,16 +463,14 @@ fn shell_line_refusal(integration_id: &str, err: &ShellLineError) -> Refusal {
 async fn drive(
     req: &StartRequest<'_>,
     plan: &Plan,
-    selector: &crate::selector::Selector,
+    selector: &phux_client::selector::Selector,
     socket_path: &Path,
 ) -> ExitCode {
     let terminal = match resolve_target(socket_path, selector, "agent start", req.json).await {
         Ok(id) => id,
         Err(code) => return code,
     };
-    // APPLY_INPUT is local-only (ADR-0076 point 1) and `phux.agent/v1` does
-    // not federate, so a satellite target would be a write phux cannot make
-    // and a readiness claim phux cannot observe.
+    // APPLY_INPUT is local-only and `phux.agent/v1` does not federate.
     if !matches!(terminal, ResourceId::Local { .. }) {
         return emit(
             req.json,
@@ -654,7 +479,7 @@ async fn drive(
                 format!(
                     "{} is a satellite pane; acknowledged input and agent metadata are \
                      hub-local",
-                    crate::selector::format_terminal_id(&terminal)
+                    phux_client::selector::format_terminal_id(&terminal)
                 ),
                 "run `phux agent start` against the satellite's own server",
                 EXIT_USAGE,
@@ -681,12 +506,9 @@ async fn drive(
         }
     }
 
-    // THE BIND. Name only, never `kind`: the server fills `kind` only when the
-    // stored record has none, so pre-declaring `--kind claude` on a pane that
-    // actually starts `codex` would leave a permanently wrong kind blessed by
-    // the detector and undetectable as a mismatch. Binding name only makes the
-    // record's `kind` the detector's kernel-derived answer, which is precisely
-    // what the readiness check compares against.
+    // Bind the name only, never `kind`: the server fills `kind` only when the
+    // record has none, so the readiness check compares against the detector's
+    // kernel-derived answer rather than our own claim.
     let bound = AgentRecord {
         name: req.name.to_owned(),
         ..AgentRecord::default()
@@ -700,11 +522,8 @@ async fn drive(
     let events = submit_events(&plan.line);
     let operation_id = new_operation_id();
     if let Err(failure) = apply_input(&mut conn, &terminal, operation_id, events).await {
-        // Rolling a name back is only safe when we know nothing was typed.
-        // Once bytes are on the PTY, deleting the name would leave a running
-        // agent with no handle — strictly worse than a name pointing at a pane
-        // whose state says `unknown`, which ADR-0075 point 7 already refuses
-        // input to.
+        // Roll the name back only when provably nothing was typed; otherwise a
+        // running agent would be left without a handle.
         if failure.wrote_nothing {
             rollback_bind(&mut conn, &terminal, &bound_bytes).await;
         }
@@ -753,18 +572,10 @@ fn acknowledged_input_available(conn: &Connection) -> Result<(), Refusal> {
     ))
 }
 
-/// Re-read the pane's occupant on the connection that is about to write.
+/// Re-read the pane's occupant on the connection that is about to write, so
+/// the check and the bind are ordered within one connection.
 ///
-/// The occupancy check in [`check_preconditions`] rode a different connection,
-/// so it carries no ordering guarantee against the bind. The server handles one
-/// connection's frames in arrival order, so nothing this client sends can
-/// interleave between this answer and the `SET_METADATA` that follows. That is
-/// the same bound `phux agent send-keys` documents — one server frame-handling
-/// turn, not atomicity — and it closes the window that actually bites: the
-/// seconds between reading the fleet and typing into a pane.
-///
-/// `Err(Ok(_))` is a refusal, `Err(Err(_))` a transport failure; the caller
-/// reports them on different channels.
+/// `Err(Ok(_))` is a refusal, `Err(Err(_))` a transport failure.
 async fn recheck_occupant(
     conn: &mut Connection,
     terminal: &ResourceId,
@@ -776,7 +587,7 @@ async fn recheck_occupant(
                 format!(
                     "{} began hosting '{}' ({}) while the preconditions were being checked; \
                      nothing was typed",
-                    crate::selector::format_terminal_id(terminal),
+                    phux_client::selector::format_terminal_id(terminal),
                     occupant.name,
                     occupant.state.as_str()
                 ),
@@ -802,11 +613,7 @@ async fn check_preconditions(
     terminal: &ResourceId,
     socket_path: &Path,
 ) -> Result<(), Refusal> {
-    // Fail CLOSED. A precondition that cannot be evaluated is not a
-    // precondition that passed: skipping the block on a read failure would
-    // turn a mid-flight disconnect into a launch command typed into an
-    // unexamined pane, which is the one outcome this whole section exists to
-    // prevent.
+    // Fail closed: a precondition that cannot be evaluated has not passed.
     let Ok((snapshot, _degradation)) = super::fetch_snapshot(socket_path, "agent start").await
     else {
         return Err(Refusal::new(
@@ -840,7 +647,7 @@ fn check_name_free(
         .filter(|(id, record)| {
             *id != terminal && record.name.trim().eq_ignore_ascii_case(name.trim())
         })
-        .map(|(id, _)| crate::selector::format_terminal_id(id))
+        .map(|(id, _)| phux_client::selector::format_terminal_id(id))
         .collect();
     if holders.is_empty() {
         return Ok(());
@@ -872,7 +679,7 @@ fn check_pane_free(
         codes::AGENT_PANE_BUSY,
         format!(
             "{} already hosts '{}'{} ({})",
-            crate::selector::format_terminal_id(terminal),
+            phux_client::selector::format_terminal_id(terminal),
             occupant.name,
             occupant
                 .kind
@@ -886,11 +693,8 @@ fn check_pane_free(
     ))
 }
 
-/// The pane's shell is already somewhere, and this verb will not `cd` it.
-///
-/// Silently moving a human's shell is a side effect that outlives the verb,
-/// and a `working_directory = "plugin-root"` template would land it inside a
-/// plugin tree after the agent exits.
+/// The pane's shell is already somewhere, and this verb will not `cd` it:
+/// that side effect would outlive the verb.
 fn check_cwd_agreement(
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
     terminal: &ResourceId,
@@ -913,7 +717,7 @@ fn check_cwd_agreement(
             "integration '{}' wants to run in {} but {} is in {pane_cwd}",
             plan.integration_id,
             plan.resolved_cwd.display(),
-            crate::selector::format_terminal_id(terminal),
+            phux_client::selector::format_terminal_id(terminal),
         ),
         "`agent start` never `cd`s someone's shell; run it from that directory, or use \
          `phux launch`, which spawns its own pane with the right cwd",
@@ -921,13 +725,10 @@ fn check_cwd_agreement(
     ))
 }
 
-/// The available-shell precondition, rendered as this verb's refusals.
-///
-/// The verdict itself comes from [`phux_client::agent_meta::pane_shell_availability`],
-/// shared with `phux run` so the two verbs cannot drift on what "a shell is
-/// in the foreground" means; only the prose and exit status are this verb's.
+/// The available-shell precondition (shared verdict with `phux run`),
+/// rendered as this verb's refusals.
 async fn check_shell_available(socket_path: &Path, terminal: &ResourceId) -> Result<(), Refusal> {
-    let label = crate::selector::format_terminal_id(terminal);
+    let label = phux_client::selector::format_terminal_id(terminal);
     match pane_shell_availability(socket_path, terminal).await {
         ShellAvailability::Available => Ok(()),
         ShellAvailability::BusyProcess(foreground) => Err(Refusal::new(
@@ -961,11 +762,8 @@ async fn check_shell_available(socket_path: &Path, terminal: &ResourceId) -> Res
     }
 }
 
-/// Write the `phux.agent/v1` bind and confirm it landed.
-///
-/// The trailing `GET` is load-bearing exactly as in `phux agent set`:
-/// `SET_METADATA` has no reply frame, so without a round trip the process
-/// could submit input before the server had even read the write.
+/// Write the `phux.agent/v1` bind and confirm it landed. `SET_METADATA` has
+/// no reply, so the read-back orders the write before any input.
 async fn bind_name(
     conn: &mut Connection,
     terminal: &ResourceId,
@@ -1006,15 +804,9 @@ async fn bind_name(
     }
 }
 
-/// Undo the bind, but only after proving nothing else changed it.
-///
-/// Read-compare-delete rather than a bare delete: L3 has no compare-and-swap
-/// and `SET_METADATA` is whole-record last-writer-wins, so different bytes
-/// mean either the detector already filled `state` (the agent *did* start and
-/// our observation failed, not the start) or a third party wrote. In both
-/// cases the right move is to leave them and say so. The race window is one
-/// round trip and cannot be closed without a wire change; reporting it beats
-/// pretending.
+/// Undo the bind, but only after proving nothing else changed it
+/// (read-compare-delete; L3 has no compare-and-swap). Different bytes mean
+/// the detector or a third party wrote, so leave them and say so.
 async fn rollback_bind(conn: &mut Connection, terminal: &ResourceId, expected: &[u8]) {
     match read_record(conn, terminal, 200).await {
         Ok(Answer::Ok(Some(record))) if record.encode() == expected => {
@@ -1066,24 +858,15 @@ async fn read_record(
     Ok(answer.map(|value| value.as_deref().and_then(parse_agent_record)))
 }
 
-/// The one input batch: the command line as a trusted paste, then Enter.
-///
-/// Built through `phux_client::send_keys::events_for` so the batching rule
-/// lives in one place — a literal run immediately before `Enter` becomes one
-/// trusted paste plus the real Enter key, which is exactly the ADR-0076
-/// point 3 shape. Enter last means a partial delivery drops the *submission*
-/// and leaves unsubmitted text on screen, the recoverable failure. No submit
-/// delay: the two events are one batch encoded against one mode snapshot.
+/// The one input batch: the command line as a trusted paste, then Enter
+/// (ADR-0076 point 3). Enter last means a partial delivery leaves unsubmitted
+/// text on screen, the recoverable failure.
 #[must_use]
 fn submit_events(line: &str) -> Vec<InputEvent> {
     phux_client::send_keys::events_for(&[line.to_owned(), "Enter".to_owned()])
 }
 
-/// A fresh CSPRNG operation id (ADR-0053).
-///
-/// `UUIDv4` bytes: 122 bits from the OS entropy source with the version and
-/// variant bits set, so the all-zero value the wire reserves is unreachable by
-/// construction rather than by a retry loop.
+/// A fresh CSPRNG operation id (ADR-0053): `UUIDv4` bytes, never all-zero.
 fn new_operation_id() -> Option<InputOperationId> {
     InputOperationId::new(*uuid::Uuid::new_v4().as_bytes())
 }
@@ -1091,10 +874,8 @@ fn new_operation_id() -> Option<InputOperationId> {
 /// A failed submit, plus whether the pane is provably untouched.
 #[derive(Debug)]
 struct SubmitFailure {
-    /// What to report.
     refusal: Refusal,
-    /// `true` only for refusals the server makes *before* handing bytes to the
-    /// PTY, which are therefore safe to unwind.
+    /// `true` only when the server provably handed no bytes to the PTY.
     wrote_nothing: bool,
 }
 
@@ -1144,9 +925,7 @@ async fn apply_input(
 /// and bind-unwind safety.
 fn submit_verdict(verdict: ApplyVerdict) -> SubmitFailure {
     match verdict {
-        // Terminal, and NOT exit 3: a same-id retry replays the cached unknown
-        // and a new-id retry is the duplicate the acknowledged lane exists to
-        // prevent, so "retry is correct" would be a lie.
+        // NOT exit 3: any retry either replays the unknown or duplicates.
         ApplyVerdict::Unknown(message) => SubmitFailure {
             refusal: Refusal::new(
                 codes::AGENT_START_UNKNOWN,
@@ -1228,7 +1007,7 @@ fn submit_verdict(verdict: ApplyVerdict) -> SubmitFailure {
 
 /// Turn a wait error into its refusal.
 fn wait_refusal(terminal: &ResourceId, err: AgentWaitError) -> Refusal {
-    let label = crate::selector::format_terminal_id(terminal);
+    let label = phux_client::selector::format_terminal_id(terminal);
     match err {
         // Unreachable in practice: this verb binds the record itself before
         // subscribing. It stays an error rather than an unwrap.
@@ -1260,7 +1039,7 @@ fn wait_refusal(terminal: &ResourceId, err: AgentWaitError) -> Refusal {
 
 /// `--no-wait`: the honest escape hatch. Submitted, readiness unclaimed.
 fn report_submitted(req: &StartRequest<'_>, plan: &Plan, terminal: &ResourceId) -> ExitCode {
-    let label = crate::selector::format_terminal_id(terminal);
+    let label = phux_client::selector::format_terminal_id(terminal);
     if req.json {
         let document = serde_json::json!({
             "schema_version": RESULT_SCHEMA_VERSION,
@@ -1287,7 +1066,7 @@ async fn report_ready(
     latency: Duration,
     socket_path: &Path,
 ) -> ExitCode {
-    let label = crate::selector::format_terminal_id(terminal);
+    let label = phux_client::selector::format_terminal_id(terminal);
     let record = result.record.as_ref();
     let observed_kind = record.and_then(|rec| rec.kind.as_deref()).unwrap_or("");
     match kind_verdict(record, &plan.kind) {
@@ -1353,13 +1132,9 @@ async fn report_ready(
 }
 
 /// The `readiness` sub-document: provenance, not a word.
-///
-/// Every field says something a caller can act on. `manifest_asserts_idle` is
-/// the load-bearing one: it is `false` for all five shipped manifests, which
-/// means a `state: "idle"` readiness is *absence of contrary evidence*, not a
-/// positive observation — and the caller can decide whether that is good
-/// enough. The evaluation is client-side, against a screen read a moment after
-/// the server's, so it can legitimately disagree with the server's own trace.
+/// `manifest_asserts_idle: false` tells the caller an `idle` readiness is an
+/// absence of contrary evidence. Evaluated client-side, so it can disagree
+/// with the server's own trace.
 fn readiness_document(
     result: &AgentWaitResult,
     explanation: Option<&Explanation>,
@@ -1393,11 +1168,8 @@ fn readiness_document(
     })
 }
 
-/// Re-run the same manifest the server just ran, client-side, so the answer
-/// carries evidence rather than a word.
-///
-/// Best effort: this runs *after* readiness has already been established, so a
-/// failure here costs one optional sub-document rather than the result.
+/// Re-run the manifest client-side so the answer carries evidence. Best
+/// effort: a failure costs one optional sub-document, not the result.
 async fn provenance(socket_path: &Path, terminal: &ResourceId, kind: &str) -> Option<Explanation> {
     let screen =
         phux_client::snapshot::get_screen_scrollback(socket_path, terminal.clone(), None, false)
@@ -1430,7 +1202,7 @@ fn report_timeout(
     terminal: &ResourceId,
     result: &AgentWaitResult,
 ) -> ExitCode {
-    let label = crate::selector::format_terminal_id(terminal);
+    let label = phux_client::selector::format_terminal_id(terminal);
     emit(
         req.json,
         &Refusal::new(
@@ -1512,95 +1284,48 @@ mod tests {
         assert_eq!(shell_quote("$(whoami)"), "'$(whoami)'");
     }
 
-    /// Env rides `env NAME=value` rather than a `VAR=v cmd` prefix, because
-    /// that prefix is not valid fish and phux does not know the pane's shell.
+    /// Env rides `env NAME=value` (a `VAR=v cmd` prefix is not valid fish);
+    /// control characters, bad env names, empty and oversized lines are refused.
     #[test]
-    fn env_is_delivered_through_env_not_a_prefix() {
-        let mut env = BTreeMap::new();
-        env.insert("PHUX_CLAUDE_SESSION_ID".to_owned(), "abc-123".to_owned());
-        let line = shell_line(&argv(&["/abs/claude", "--resume", "abc-123"]), &env)
-            .expect("a clean argv must assemble");
+    fn shell_line_quotes_every_word_and_refuses_what_quoting_cannot_contain() {
+        let env = |key: &str, value: &str| BTreeMap::from([(key.to_owned(), value.to_owned())]);
         assert_eq!(
-            line,
-            "env 'PHUX_CLAUDE_SESSION_ID=abc-123' '/abs/claude' '--resume' 'abc-123'"
+            shell_line(
+                &argv(&["/abs/claude", "--resume", "abc-123"]),
+                &env("PHUX_CLAUDE_SESSION_ID", "abc-123")
+            ),
+            Ok(
+                "env 'PHUX_CLAUDE_SESSION_ID=abc-123' '/abs/claude' '--resume' 'abc-123'"
+                    .to_owned()
+            )
         );
-        assert!(!line.starts_with("PHUX_"), "no VAR=v prefix form: {line}");
-    }
-
-    /// With no env there is no `env` word at all — the line is just the
-    /// quoted argv.
-    #[test]
-    fn an_empty_env_adds_no_env_word() {
-        let line =
-            shell_line(&argv(&["codex"]), &BTreeMap::new()).expect("a bare argv must assemble");
-        assert_eq!(line, "'codex'");
-    }
-
-    /// A newline in an argv element would be a second command, and quoting
-    /// cannot contain it. Refused before anything is typed.
-    #[test]
-    fn a_control_character_in_argv_is_refused_not_quoted() {
-        let err = shell_line(&argv(&["claude", "--flag\nrm -rf /"]), &BTreeMap::new())
-            .expect_err("a newline must be refused");
         assert_eq!(
-            err,
-            ShellLineError::Control {
+            shell_line(&argv(&["codex"]), &BTreeMap::new()),
+            Ok("'codex'".to_owned())
+        );
+        assert_eq!(
+            shell_line(&argv(&["claude", "--flag\nrm -rf /"]), &BTreeMap::new()),
+            Err(ShellLineError::Control {
                 index: 1,
                 element: "--flag\nrm -rf /".to_owned(),
-            }
+            })
         );
         assert!(shell_line(&argv(&["cl\u{0}aude"]), &BTreeMap::new()).is_err());
-    }
-
-    /// An empty argv is a template bug, not a launch.
-    #[test]
-    fn an_empty_argv_is_refused() {
         assert_eq!(
-            shell_line(&[], &BTreeMap::new()).expect_err("empty argv"),
-            ShellLineError::Empty
+            shell_line(&[], &BTreeMap::new()),
+            Err(ShellLineError::Empty)
         );
-    }
-
-    /// The line is bounded well inside ADR-0053's command-body cap, so the
-    /// batch limit can never be the thing that fails.
-    #[test]
-    fn an_oversized_line_is_refused_below_the_apply_input_cap() {
-        // The bound-vs-cap relation is a compile-time `const _` assertion at
-        // the top of this module; this pins the runtime refusal.
-        let long = "x".repeat(MAX_SHELL_LINE);
-        let err = shell_line(&argv(&["claude", &long]), &BTreeMap::new())
-            .expect_err("an oversized line must be refused");
-        assert!(matches!(err, ShellLineError::TooLong { .. }), "{err:?}");
-    }
-
-    /// An environment name that is not a shell identifier is refused rather
-    /// than emitted into a line the shell would reinterpret.
-    #[test]
-    fn a_non_identifier_env_name_is_refused() {
-        let mut env = BTreeMap::new();
-        env.insert("NOT AN IDENT".to_owned(), "x".to_owned());
+        assert!(matches!(
+            shell_line(
+                &argv(&["claude", &"x".repeat(MAX_SHELL_LINE)]),
+                &BTreeMap::new()
+            ),
+            Err(ShellLineError::TooLong { .. })
+        ));
         assert_eq!(
-            shell_line(&argv(&["claude"]), &env).expect_err("bad env name"),
-            ShellLineError::EnvName("NOT AN IDENT".to_owned())
+            shell_line(&argv(&["claude"]), &env("NOT AN IDENT", "x")),
+            Err(ShellLineError::EnvName("NOT AN IDENT".to_owned()))
         );
-    }
-
-    /// Readiness is every DERIVED state, not `idle`. An agent that starts
-    /// straight into `blocked` (a trust-this-folder prompt) is ready for
-    /// interactive input, which is what the verb promises; `unknown` is the
-    /// level the bind writes and is never a target.
-    #[test]
-    fn readiness_accepts_every_derived_state_and_never_unknown() {
-        assert_eq!(
-            READY_STATES,
-            &[
-                AgentMetaState::Idle,
-                AgentMetaState::Working,
-                AgentMetaState::Blocked,
-                AgentMetaState::Done
-            ]
-        );
-        assert!(!READY_STATES.contains(&AgentMetaState::Unknown));
     }
 
     /// The kind comparison is what turns "something started" into "the thing
@@ -1695,14 +1420,10 @@ mod tests {
         );
     }
 
-    /// A kind with no compiled manifest is refused BEFORE anything is typed,
-    /// and the refusal names the roster — a silent timeout just makes the
-    /// verb look broken, while a visible roster is the pressure that grows it.
-    #[test]
-    fn an_unmanifested_kind_is_refused_before_any_write() {
-        let request = StartRequest {
-            name: "build",
-            kind: "no-such-agent-kind",
+    fn request<'a>(name: &'a str, kind: &'a str) -> StartRequest<'a> {
+        StartRequest {
+            name,
+            kind,
             target: "@7",
             integration: None,
             timeout: None,
@@ -1710,8 +1431,19 @@ mod tests {
             force: false,
             json: false,
             args: &[],
-        };
-        let refusal = preflight(&request).expect_err("an unmanifested kind must be refused");
+        }
+    }
+
+    /// A bad name is refused before the kind is resolved, and a kind with no
+    /// manifest is refused before anything is typed, naming a way forward.
+    #[test]
+    fn an_unmanifested_kind_is_refused_before_any_write() {
+        let refusal = preflight(&request("Build Bot", "no-such-agent-kind"))
+            .expect_err("a bad name must be refused");
+        assert_eq!(refusal.err.code, codes::INVALID_AGENT_NAME);
+
+        let refusal = preflight(&request("build", "no-such-agent-kind"))
+            .expect_err("an unmanifested kind must be refused");
         assert_eq!(refusal.err.code, codes::UNSUPPORTED_AGENT_KIND);
         assert_eq!(refusal.exit, EXIT_USAGE);
         assert!(
@@ -1721,39 +1453,8 @@ mod tests {
         );
     }
 
-    /// The name is checked before the kind, before the integration, and
-    /// before anything opens a socket.
-    #[test]
-    fn a_bad_name_refuses_before_the_kind_is_even_resolved() {
-        let request = StartRequest {
-            name: "Build Bot",
-            kind: "no-such-agent-kind",
-            target: "@7",
-            integration: None,
-            timeout: None,
-            no_wait: false,
-            force: false,
-            json: false,
-            args: &[],
-        };
-        let refusal = preflight(&request).expect_err("a bad name must be refused");
-        assert_eq!(refusal.err.code, codes::INVALID_AGENT_NAME);
-    }
-
-    /// phux-8514's inherited defect: the integration id a kind falls back to
-    /// must be the *canonical* kind, never the string the caller typed.
-    ///
-    /// `--kind CLAUDE` resolves through the detection manifests' binary map
-    /// (which lowercases) to the canonical `claude`, and the fallback id has
-    /// to follow it there. It used to take a second, raw copy of `--kind`, so
-    /// an unclaimed `--kind CLAUDE` went looking for an integration literally
-    /// named `CLAUDE` and failed by a name no template could have. The same
-    /// applies to any alias the manifests resolve — `--kind <binary>` names
-    /// the binary, and the integration is spelled like the kind.
-    ///
-    /// Asserted on whichever side of the resolution this host lands on: with
-    /// no `claude` integration enabled the refusal must name the canonical
-    /// id, and with one enabled the plan must carry it.
+    /// An unclaimed `--kind CLAUDE` falls back to the integration id of the
+    /// canonical kind (`claude`), never the string as typed.
     #[test]
     fn an_unclaimed_kind_falls_back_to_the_canonical_kind_not_the_typed_one() {
         if agent_explain::resolve_kind("CLAUDE").as_deref() != Some("claude") {
@@ -1761,18 +1462,7 @@ mod tests {
             // `the_shipped_manifests_resolve_as_kinds` covers that separately.
             return;
         }
-        let request = StartRequest {
-            name: "canonical-kind",
-            kind: "CLAUDE",
-            target: "%1",
-            integration: None,
-            timeout: None,
-            no_wait: false,
-            force: false,
-            json: false,
-            args: &[],
-        };
-        match preflight(&request) {
+        match preflight(&request("canonical-kind", "CLAUDE")) {
             Ok(plan) => {
                 assert_eq!(plan.kind, "claude");
                 assert!(

@@ -1,51 +1,22 @@
-//! Per-client VT byte-stream rewriter (SPEC §6.2, [ADR-0013]).
+//! Per-client VT byte-stream rewriter (SPEC §6.2, ADR-0013).
 //!
-//! Under ADR-0013 the server forwards raw PTY bytes to each subscribed
-//! client as `RESOURCE_OUTPUT` frames. Per SPEC §6.2 those bytes MUST be
-//! adapted to the client's advertised capability set before forwarding:
-//!
-//! - Truecolor SGR (`CSI 38;2;R;G;B m` / `CSI 48;2;R;G;B m`) is quantised
-//!   to the client's [`ColorSupport`] tier. ITU-style colon-separated
-//!   form (`CSI 38:2::R:G:B m` per ECMA-48 §8.3.117) is recognised
-//!   equivalently.
-//! - Image-protocol escapes (sixel `DCS ... q ... ST`, kitty graphics
-//!   `APC G ... ST`, iTerm2 `OSC 1337 ; ... ST`) are dropped when the
-//!   client did not advertise the matching [`ImageProtocol`] bit.
-//! - Kitty keyboard-protocol replies (`APC` without a leading `G`) are
-//!   stripped when the client did not negotiate `kbd_protocols`. The
-//!   server's canonical Terminal still processes them locally; this is
-//!   wire-side filtering only.
-//! - OSC 8 hyperlinks (`OSC 8 ; params ; URI ST`) are stripped when the
-//!   client did not advertise `hyperlinks`. The intervening text between
-//!   open and close hyperlinks is preserved — only the OSC bracketing
-//!   bytes go.
-//!
-//! Every other escape (CSI for non-SGR finals, other OSCs, DCS, SOS/PM,
-//! two-byte escapes) is passed through verbatim — phux is a multiplexer,
-//! not a sanitiser, and unknown sequences must reach the client
-//! byte-for-byte.
-//!
-//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/docs/adr/0013-libghostty-bytes-on-wire.md
+//! Raw PTY bytes are adapted to each client's capabilities: truecolor SGR
+//! (semicolon or ITU colon form) is quantised to its [`ColorSupport`]; sixel,
+//! kitty graphics, and iTerm2 images are dropped without the matching
+//! [`ImageProtocol`]; kitty keyboard replies without `kbd_protocols` and
+//! OSC 8 hyperlink framing without `hyperlinks` are stripped. Everything
+//! else passes through byte for byte.
 
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, ImageProtocol, KeyboardProtocol};
 
-/// Rewrite an outbound VT byte stream to fit the client's color tier.
-///
-/// Thin wrapper over [`rewrite_bytes_with_caps`] preserved for existing
-/// call sites that only care about color downsampling. Image, keyboard
-/// and hyperlink escapes pass through unchanged.
+/// Rewrite for the client's color tier only (other escapes pass through).
 #[must_use]
 pub fn rewrite_bytes(input: &[u8], support: ColorSupport) -> Vec<u8> {
     rewrite_bytes_with_caps(input, ClientCapabilities::new().with_color_support(support))
 }
 
-/// `true` when the client's caps need no VT rewriting — the bytes can be
-/// forwarded verbatim.
-///
-/// A truecolor client with every image, keyboard and hyperlink capability
-/// permissive triggers no quantisation or escape dropping, so callers can
-/// skip [`rewrite_bytes_with_caps`] entirely and forward the source buffer
-/// (e.g. the refcounted broadcast [`bytes::Bytes`]) without a copy.
+/// Whether the caps need no rewriting, so the source bytes can be forwarded
+/// as-is.
 #[must_use]
 pub fn caps_pass_through(caps: ClientCapabilities) -> bool {
     matches!(caps.color_support, ColorSupport::TrueColor)
@@ -54,12 +25,7 @@ pub fn caps_pass_through(caps: ClientCapabilities) -> bool {
         && caps.hyperlinks
 }
 
-/// Rewrite an outbound VT byte stream to fit the full client capability
-/// set per SPEC §6.2.
-///
-/// The hot loop reuses a single output `Vec`; dropped sequences cost
-/// nothing beyond the scan. Truecolor-only clients with everything
-/// permissive get the fast path (single allocation + copy).
+/// Rewrite an outbound VT stream for the full capability set (SPEC §6.2).
 #[must_use]
 pub fn rewrite_bytes_with_caps(input: &[u8], caps: ClientCapabilities) -> Vec<u8> {
     // Fast path: nothing to rewrite or drop. Hot path on capable clients.
@@ -118,15 +84,9 @@ const ESC: u8 = 0x1B;
 /// ASCII bell / OSC string terminator.
 const BEL: u8 = 0x07;
 
-/// Handle a CSI sequence starting at `input[start] == ESC` with
-/// `input[start + 1] == '['`. Returns the new position past the sequence.
-///
-/// Only `CSI ... m` (SGR) is structurally inspected; every other CSI
-/// final byte passes through verbatim. The parameter byte set per
-/// ECMA-48 is `0x30..=0x3F`; intermediates are `0x20..=0x2F`; the final
-/// byte is `0x40..=0x7E`. We treat any byte outside the param/intermediate
-/// range as the final byte, which matches what real terminals do on
-/// truncated/malformed input.
+/// Handle a CSI at `input[start]`; returns the position past it. Only SGR
+/// (`m`) is inspected. Any byte outside the parameter and intermediate
+/// ranges ends the sequence, as real terminals treat malformed input.
 fn handle_csi(input: &[u8], start: usize, support: ColorSupport, out: &mut Vec<u8>) -> usize {
     let csi_body_start = start + 2; // past ESC [
     let mut j = csi_body_start;
@@ -152,10 +112,8 @@ fn handle_csi(input: &[u8], start: usize, support: ColorSupport, out: &mut Vec<u
     j + 1
 }
 
-/// Locate the string terminator (`BEL` or `ESC \\`) for the
-/// OSC/DCS/APC/SOS/PM sequence starting at `input[start]`. Returns the
-/// position one past the terminator. If no terminator is found the
-/// sequence runs to EOF.
+/// Position past the `BEL` or `ESC \` terminator of the string sequence at
+/// `start` (EOF if none).
 const fn scan_string_terminated(input: &[u8], start: usize) -> usize {
     let mut j = start + 2;
     while j < input.len() {
@@ -190,16 +148,11 @@ fn handle_osc(input: &[u8], start: usize, caps: ClientCapabilities, out: &mut Ve
         p += 1;
     }
     let code = &input[body_start..p];
-    // OSC 8 hyperlinks. Strip framing only; the text between open and
-    // close OSC 8 lives outside this sequence and is preserved by the
-    // outer loop.
+    // OSC 8: strip only the framing; the linked text is outside it.
     if !caps.hyperlinks && code == b"8" {
         return end;
     }
-    // OSC 1337 iTerm2 inline image. The protocol overloads OSC 1337
-    // for non-image messages (e.g. shell integration) but per SPEC §6.2
-    // the gating is on the OSC code, not the payload subkey — that
-    // matches what tmux ships.
+    // OSC 1337 is gated on the code, not its subkey, as tmux does.
     if !caps.image_protocols.contains(ImageProtocol::Iterm2) && code == b"1337" {
         return end;
     }
@@ -207,9 +160,7 @@ fn handle_osc(input: &[u8], start: usize, caps: ClientCapabilities, out: &mut Ve
     end
 }
 
-/// Handle `ESC P` (DCS). The sixel introducer is `DCS Pi ; Pa ; Ph q ...
-/// ST` — the final `q` of the introducer is what marks it as sixel.
-/// Other DCS strings (DECRQSS, tmux passthrough, etc.) pass through.
+/// Handle DCS: drop sixel (introducer final `q`), pass the rest.
 fn handle_dcs(input: &[u8], start: usize, caps: ClientCapabilities, out: &mut Vec<u8>) -> usize {
     let end = scan_string_terminated(input, start);
     if !caps.image_protocols.contains(ImageProtocol::Sixel) && is_sixel_dcs(&input[start + 2..end])
@@ -220,12 +171,8 @@ fn handle_dcs(input: &[u8], start: usize, caps: ClientCapabilities, out: &mut Ve
     end
 }
 
-/// True when a DCS body (bytes past `ESC P`) is a sixel introducer.
-///
-/// Sixel uses `DCS Pa ; Pb ; Pc q ...` — parameter bytes only, no
-/// intermediates, final `q`. DECRQSS also has `q` as final but with
-/// `$` as an intermediate (`DCS $ q ... ST`); excluding intermediates
-/// keeps DECRQSS, tmux passthrough, and other DCS payloads intact.
+/// Whether a DCS body is a sixel introducer: parameters only, then `q`
+/// (DECRQSS's `$ q` has an intermediate).
 fn is_sixel_dcs(body: &[u8]) -> bool {
     let mut i = 0;
     while i < body.len() && (0x30..=0x3F).contains(&body[i]) {
@@ -234,9 +181,8 @@ fn is_sixel_dcs(body: &[u8]) -> bool {
     body.get(i).is_some_and(|b| *b == b'q')
 }
 
-/// Handle `ESC _` (APC). Kitty splits APC on the first payload byte:
-/// `G` = graphics, otherwise it's a kitty keyboard protocol reply
-/// (digits-and-semicolons-and-other-codes). Gate each independently.
+/// Handle APC: `G` is kitty graphics, anything else a kitty keyboard reply;
+/// each gated separately.
 fn handle_apc(input: &[u8], start: usize, caps: ClientCapabilities, out: &mut Vec<u8>) -> usize {
     let end = scan_string_terminated(input, start);
     let payload_start = start + 2;
@@ -253,14 +199,8 @@ fn handle_apc(input: &[u8], start: usize, caps: ClientCapabilities, out: &mut Ve
     end
 }
 
-/// Rewrite the parameter bytes of an SGR sequence (everything between
-/// `CSI` and the terminating `m`), emitting `CSI <rewritten> m` into `out`.
-///
-/// Handles both the classic `;`-separated form (`CSI 38;2;R;G;B m`) and
-/// the ITU/ECMA-48 §8.3.117 colon form (`CSI 38:2::R:G:B m`). The ITU
-/// form reserves the field after the colour-space tag (`2`) for the
-/// colour-space identifier; it is conventionally left empty and we
-/// tolerate any value there.
+/// Rewrite SGR parameters into `CSI <rewritten> m`, handling both the
+/// semicolon form and the ITU colon form (any colour-space id tolerated).
 fn rewrite_sgr(params: &[u8], support: ColorSupport, out: &mut Vec<u8>) {
     out.extend_from_slice(b"\x1b[");
 
@@ -281,10 +221,8 @@ fn rewrite_sgr(params: &[u8], support: ColorSupport, out: &mut Vec<u8>) {
             continue;
         }
 
-        // Classic semicolon form: inspect the following four groups without
-        // collecting every parameter into a heap Vec. Besides avoiding a
-        // per-SGR allocation, this gives aggregate bootstrap adaptation the
-        // exact peak bound of source bytes plus one output allocation.
+        // Semicolon form: inspect the next four groups without collecting
+        // (no per-SGR allocation).
         if !raw.contains(&b':')
             && let Some(selector) = parse_single_param(raw)
             && matches!(selector, 38 | 48)
@@ -295,9 +233,7 @@ fn rewrite_sgr(params: &[u8], support: ColorSupport, out: &mut Vec<u8>) {
             continue;
         }
 
-        // Anything else passes through verbatim. The group's original bytes
-        // (including any `:` sub-separators, e.g. `4:3` curly underline)
-        // survive intact.
+        // Other groups (including colon sub-parameters) pass verbatim.
         if !first {
             out.push(b';');
         }
@@ -346,9 +282,7 @@ fn classic_truecolor(
 /// per ECMA-48 default. Non-decimal → `None`.
 fn parse_single_param(raw: &[u8]) -> Option<u32> {
     if raw.is_empty() {
-        // ECMA-48: empty parameter defaults to 0. We surface that as 0
-        // for matching purposes; emit-side path still respects the
-        // original byte form so passthrough cases preserve emptiness.
+        // An empty parameter means 0 for matching; output keeps the bytes.
         return Some(0);
     }
     let mut n: u32 = 0;
@@ -361,17 +295,8 @@ fn parse_single_param(raw: &[u8]) -> Option<u32> {
     Some(n)
 }
 
-/// Try to parse a single SGR group as an ITU colon-form truecolor spec
-/// for `selector` (38 for fg, 48 for bg). Accepts:
-///
-/// - 5 fields: `selector:2:R:G:B` (some implementations skip the
-///   colourspace slot).
-/// - 6 fields: `selector:2:<colourspace>:R:G:B`. The colourspace field
-///   is conventionally empty per ECMA-48 §8.3.117 but any value is
-///   tolerated.
-///
-/// Returns `None` if the group lacks `:` (classic form lives at a
-/// higher level), or if the selector / type-tag don't match.
+/// Parse an ITU colon-form truecolor group for `selector` (38/48):
+/// `selector:2:R:G:B` or `selector:2:<space>:R:G:B`. `None` otherwise.
 fn parse_itu_truecolor(raw: &[u8], selector: u32) -> Option<[u8; 3]> {
     if !raw.contains(&b':') {
         return None;
@@ -394,9 +319,7 @@ fn parse_itu_truecolor(raw: &[u8], selector: u32) -> Option<[u8; 3]> {
     Some([clamp_u8(r), clamp_u8(g), clamp_u8(b)])
 }
 
-/// Emit either `38;5;N` / `48;5;N` (Indexed256) or `3N` / `9N` /
-/// `4N` / `10N` (Indexed16) into `out`, prefixing with `;` if `*first`
-/// is false. Updates `*first` to false after emission.
+/// Emit indexed-256 or indexed-16 color params, `;`-prefixed unless first.
 fn emit_color_params(
     rgb: [u8; 3],
     foreground: bool,
@@ -433,9 +356,7 @@ fn emit_color_params(
         ColorSupport::Indexed16 => {
             emit_indexed16(rgb, foreground, out);
         }
-        // `ColorSupport` is `#[non_exhaustive]`. Treat any future tier as
-        // Indexed16 (most-restrictive) so we never accidentally forward
-        // truecolor to a tier we don't yet model.
+        // Unknown future tiers get the most restrictive treatment.
         _ => emit_indexed16(rgb, foreground, out),
     }
 }
@@ -479,11 +400,7 @@ const fn clamp_u8(n: u32) -> u8 {
     if n > 255 { 255 } else { n as u8 }
 }
 
-// -----------------------------------------------------------------------------
-// Palette tables (preserved from the pre-ADR-0013 `phux_protocol::diff::cell`
-// module, now relocated here because byte-stream rewriting is the only
-// remaining consumer).
-// -----------------------------------------------------------------------------
+// --- Palette tables ---
 
 /// xterm 16-color system palette in RGB. Indices 0..=7 are the base ANSI
 /// colors; 8..=15 are the bright variants.
@@ -652,349 +569,126 @@ mod tests {
     use super::*;
     use phux_protocol::caps::{ImageProtocolSet, KeyboardProtocolSet};
 
-    fn caps_color(c: ColorSupport) -> ClientCapabilities {
-        ClientCapabilities::new().with_color_support(c)
-    }
-
-    fn caps_strip_images() -> ClientCapabilities {
-        ClientCapabilities::new().with_image_protocols(ImageProtocolSet::new())
-    }
-
     #[test]
-    fn truecolor_path_is_byte_identical() {
-        let input = b"\x1b[38;2;255;0;0mhello\x1b[0m world";
-        let out = rewrite_bytes(input, ColorSupport::TrueColor);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn ascii_passthrough_under_any_tier() {
-        let input = b"hello world\nplain ASCII\r\n";
-        for tier in [
-            ColorSupport::TrueColor,
-            ColorSupport::Indexed256,
-            ColorSupport::Indexed16,
-        ] {
-            assert_eq!(rewrite_bytes(input, tier), input);
+    fn color_tier_rewrites() {
+        use ColorSupport::{Indexed16 as I16, Indexed256 as I256, TrueColor as TC};
+        let cases: &[(&[u8], ColorSupport, &[u8])] = &[
+            (
+                b"\x1b[38;2;255;0;0mhello\x1b[0m world",
+                TC,
+                b"\x1b[38;2;255;0;0mhello\x1b[0m world",
+            ),
+            (
+                b"hello world\nplain ASCII\r\n",
+                I16,
+                b"hello world\nplain ASCII\r\n",
+            ),
+            (
+                b"hello world\nplain ASCII\r\n",
+                I256,
+                b"hello world\nplain ASCII\r\n",
+            ),
+            (b"\x1b[38;2;255;0;0mX", I256, b"\x1b[38;5;196mX"),
+            (b"\x1b[48;2;0;0;255mZ", I256, b"\x1b[48;5;21mZ"),
+            (b"\x1b[38;2;255;0;0mX", I16, b"\x1b[91mX"),
+            (b"\x1b[48;2;255;0;0mY", I16, b"\x1b[101mY"),
+            (b"\x1b[38;2;128;0;0mX", I16, b"\x1b[31mX"),
+            // Lab, not RGB distance: dark cyan is not black, dim blue is dim.
+            (b"\x1b[38;2;0;64;64mX", I16, b"\x1b[36mX"),
+            (b"\x1b[48;2;0;40;192mX", I16, b"\x1b[44mX"),
+            (b"\x1b[1;38;2;255;0;0;4mX", I256, b"\x1b[1;38;5;196;4mX"),
+            (
+                b"\x1b[2J\x1b[Hhello\x1b[31m!",
+                I16,
+                b"\x1b[2J\x1b[Hhello\x1b[31m!",
+            ),
+            (
+                b"\x1b]0;hello world\x1b\\rest",
+                I16,
+                b"\x1b]0;hello world\x1b\\rest",
+            ),
+            (b"\x1b]2;title\x07rest", I256, b"\x1b]2;title\x07rest"),
+            (b"\x1b[mX", I256, b"\x1b[mX"),
+            (b"abc\x1b", I256, b"abc\x1b"),
+            (b"abc\x1b[38;2;1", I256, b"abc\x1b[38;2;1"),
+            (b"\x1b=foo", I256, b"\x1b=foo"),
+            // ITU colon forms: empty, explicit, and absent colour-space slot.
+            (b"\x1b[38:2::255:0:0mX", I256, b"\x1b[38;5;196mX"),
+            (b"\x1b[48:2::255:0:0mY", I16, b"\x1b[101mY"),
+            (b"\x1b[38:2:0:255:0:0mX", I256, b"\x1b[38;5;196mX"),
+            (b"\x1b[38:2:255:0:0mX", I256, b"\x1b[38;5;196mX"),
+            (b"\x1b[38:2::255:0:0mX", TC, b"\x1b[38:2::255:0:0mX"),
+            // Curly underline is not a color.
+            (b"\x1b[4:3mX", I256, b"\x1b[4:3mX"),
+        ];
+        for (input, tier, want) in cases {
+            assert_eq!(rewrite_bytes(input, *tier), *want, "{input:?} at {tier:?}");
         }
     }
 
     #[test]
-    fn truecolor_fg_to_256_red() {
-        let input = b"\x1b[38;2;255;0;0mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, b"\x1b[38;5;196mX");
+    fn capability_gated_escapes() {
+        let all = ClientCapabilities::new();
+        let no_links = ClientCapabilities::new().with_hyperlinks(false);
+        let no_images = ClientCapabilities::new().with_image_protocols(ImageProtocolSet::new());
+        let no_kbd = ClientCapabilities::new().with_kbd_protocols(KeyboardProtocolSet::new());
+        let no_kitty_graphics =
+            ClientCapabilities::new().with_image_protocols(ImageProtocolSet::with(&[
+                ImageProtocol::Sixel,
+                ImageProtocol::Iterm2,
+            ]));
+        let osc8: &[u8] = b"\x1b]8;;https://example.com\x1b\\hello\x1b]8;;\x1b\\";
+        let sixel: &[u8] = b"prefix\x1bP0;0;0q#0;2;100;0;0~~~\x1b\\suffix";
+        let kitty_gfx: &[u8] = b"start\x1b_Ga=T,f=24;payload\x1b\\end";
+        let iterm2: &[u8] = b"a\x1b]1337;File=name=test:AAAA\x1b\\b";
+        let kbd: &[u8] = b"head\x1b_13;2u\x1b\\tail";
+        let cases: &[(&[u8], ClientCapabilities, &[u8])] = &[
+            (osc8, all, osc8),
+            (osc8, no_links, b"hello"),
+            (
+                b"\x1b]8;;https://x.example\x07link text\x1b]8;;\x07trailing",
+                no_links,
+                b"link texttrailing",
+            ),
+            (
+                b"\x1b]0;window title\x1b\\rest",
+                no_links,
+                b"\x1b]0;window title\x1b\\rest",
+            ),
+            (sixel, all, sixel),
+            (sixel, no_images, b"prefixsuffix"),
+            // DECRQSS (`$ q`) is not sixel.
+            (b"\x1bP$q\"p\x1b\\", no_images, b"\x1bP$q\"p\x1b\\"),
+            (kitty_gfx, all, kitty_gfx),
+            (kitty_gfx, no_images, b"startend"),
+            (iterm2, all, iterm2),
+            (iterm2, no_images, b"ab"),
+            (kbd, all, kbd),
+            (kbd, no_kbd, b"headtail"),
+            (b"x\x1b_Ga=T;abc\x1b\\y", no_kbd, b"x\x1b_Ga=T;abc\x1b\\y"),
+            (
+                b"x\x1b_13;2u\x1b\\y",
+                no_kitty_graphics,
+                b"x\x1b_13;2u\x1b\\y",
+            ),
+        ];
+        for (i, (input, caps, want)) in cases.iter().enumerate() {
+            assert_eq!(rewrite_bytes_with_caps(input, *caps), *want, "case {i}");
+        }
     }
 
     #[test]
-    fn truecolor_bg_to_256_blue() {
-        let input = b"\x1b[48;2;0;0;255mZ";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, b"\x1b[48;5;21mZ");
-    }
-
-    #[test]
-    fn truecolor_fg_to_16_red_is_bright_red() {
-        let input = b"\x1b[38;2;255;0;0mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed16);
-        assert_eq!(out, b"\x1b[91mX");
-    }
-
-    #[test]
-    fn truecolor_bg_to_16_red_is_bright_red_bg() {
-        let input = b"\x1b[48;2;255;0;0mY";
-        let out = rewrite_bytes(input, ColorSupport::Indexed16);
-        assert_eq!(out, b"\x1b[101mY");
-    }
-
-    #[test]
-    fn truecolor_fg_to_16_dark_red_is_dark_red() {
-        let input = b"\x1b[38;2;128;0;0mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed16);
-        assert_eq!(out, b"\x1b[31mX");
-    }
-
-    #[test]
-    fn indexed16_uses_lab_for_dark_cyan_instead_of_black() {
-        // RGB squared distance ties this with black; Lab keeps the visible hue.
-        let input = b"\x1b[38;2;0;64;64mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed16);
-        assert_eq!(out, b"\x1b[36mX");
-    }
-
-    #[test]
-    fn indexed16_uses_lab_lightness_for_dim_blue() {
-        // RGB squared distance prefers bright blue; Lab picks the dim ANSI blue.
-        let input = b"\x1b[48;2;0;40;192mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed16);
-        assert_eq!(out, b"\x1b[44mX");
-    }
-
-    #[test]
-    fn mixed_sgr_parameters_partial_rewrite() {
-        let input = b"\x1b[1;38;2;255;0;0;4mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, b"\x1b[1;38;5;196;4mX");
-    }
-
-    #[test]
-    fn non_sgr_csi_passes_through() {
-        let input = b"\x1b[2J\x1b[Hhello\x1b[31m!";
-        let out = rewrite_bytes(input, ColorSupport::Indexed16);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn osc_sequences_pass_through() {
-        let input = b"\x1b]0;hello world\x1b\\rest";
-        let out = rewrite_bytes(input, ColorSupport::Indexed16);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn osc_bell_terminated_passes_through() {
-        let input = b"\x1b]2;title\x07rest";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn empty_sgr_is_preserved() {
-        let input = b"\x1b[mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, b"\x1b[mX");
-    }
-
-    #[test]
-    fn lone_esc_at_eof_passes_through() {
-        let input = b"abc\x1b";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn truncated_csi_at_eof_passes_through() {
-        let input = b"abc\x1b[38;2;1";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn two_byte_escape_passes_through() {
-        let input = b"\x1b=foo";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, input);
-    }
-
-    // --- ITU colon SGR (phux-9gz) -----------------------------------------
-
-    #[test]
-    fn itu_colon_truecolor_fg_downgrades_to_256() {
-        // CSI 38:2::255:0:0 m → indexed256 red 196.
-        // The empty middle field is the ECMA-48 colourspace slot.
-        let input = b"\x1b[38:2::255:0:0mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, b"\x1b[38;5;196mX");
-    }
-
-    #[test]
-    fn itu_colon_truecolor_bg_downgrades_to_16() {
-        let input = b"\x1b[48:2::255:0:0mY";
-        let out = rewrite_bytes(input, ColorSupport::Indexed16);
-        assert_eq!(out, b"\x1b[101mY");
-    }
-
-    #[test]
-    fn itu_colon_truecolor_with_explicit_colourspace_is_tolerated() {
-        // Some emitters fill the colourspace slot with `0` rather than
-        // leaving it empty. Tolerate per ECMA-48 §8.3.117.
-        let input = b"\x1b[38:2:0:255:0:0mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, b"\x1b[38;5;196mX");
-    }
-
-    #[test]
-    fn itu_colon_5field_form_also_works() {
-        // Some implementations emit 38:2:R:G:B (no colourspace slot).
-        let input = b"\x1b[38:2:255:0:0mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, b"\x1b[38;5;196mX");
-    }
-
-    #[test]
-    fn itu_colon_truecolor_passthrough_under_truecolor_client() {
-        // Under TrueColor + everything-permissive, the fast path returns
-        // the input bytewise — including the ITU form intact.
-        let input = b"\x1b[38:2::255:0:0mX";
-        let out = rewrite_bytes(input, ColorSupport::TrueColor);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn non_color_colon_sgr_passes_through_verbatim() {
-        // `4:3` is the curly-underline SGR. Must survive verbatim — the
-        // rewriter only recognises color sub-sequences.
-        let input = b"\x1b[4:3mX";
-        let out = rewrite_bytes(input, ColorSupport::Indexed256);
-        assert_eq!(out, input);
-    }
-
-    // --- OSC 8 hyperlinks (phux-9gz) --------------------------------------
-
-    #[test]
-    fn osc8_open_close_passthrough_when_hyperlinks_allowed() {
-        // OSC 8 ; ; https://example.com ST  hello  OSC 8 ; ; ST
-        let input = b"\x1b]8;;https://example.com\x1b\\hello\x1b]8;;\x1b\\";
-        let out = rewrite_bytes_with_caps(input, ClientCapabilities::new());
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn osc8_stripped_when_hyperlinks_disabled() {
-        let input = b"\x1b]8;;https://example.com\x1b\\hello\x1b]8;;\x1b\\";
-        let caps = ClientCapabilities::new().with_hyperlinks(false);
-        let out = rewrite_bytes_with_caps(input, caps);
-        // Only the inner `hello` survives.
-        assert_eq!(out, b"hello");
-    }
-
-    #[test]
-    fn osc8_with_bel_terminator_also_stripped() {
-        // Some emitters use BEL instead of ST.
-        let input = b"\x1b]8;;https://x.example\x07link text\x1b]8;;\x07trailing";
-        let caps = ClientCapabilities::new().with_hyperlinks(false);
-        let out = rewrite_bytes_with_caps(input, caps);
-        assert_eq!(out, b"link texttrailing");
-    }
-
-    #[test]
-    fn osc_non_8_unaffected_by_hyperlink_strip() {
-        // Window title (OSC 0) must NOT be stripped when hyperlinks=false.
-        let input = b"\x1b]0;window title\x1b\\rest";
-        let caps = ClientCapabilities::new().with_hyperlinks(false);
-        let out = rewrite_bytes_with_caps(input, caps);
-        assert_eq!(out, input);
-    }
-
-    // --- Image protocols (phux-9gz) ---------------------------------------
-
-    #[test]
-    fn sixel_passthrough_when_bit_set() {
-        // DCS 0 ; 0 ; 0 q ... ST — minimal sixel body.
-        let input = b"prefix\x1bP0;0;0q#0;2;100;0;0~~~\x1b\\suffix";
-        let out = rewrite_bytes_with_caps(input, ClientCapabilities::new());
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn sixel_dropped_when_bit_unset() {
-        let input = b"prefix\x1bP0;0;0q#0;2;100;0;0~~~\x1b\\suffix";
-        let out = rewrite_bytes_with_caps(input, caps_strip_images());
-        assert_eq!(out, b"prefixsuffix");
-    }
-
-    #[test]
-    fn non_sixel_dcs_survives_image_strip() {
-        // DECRQSS-style DCS (final `|`, not `q`) must not be dropped
-        // when only sixel is disabled.
-        let input = b"\x1bP$q\"p\x1b\\";
-        let out = rewrite_bytes_with_caps(input, caps_strip_images());
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn kitty_graphics_passthrough_when_bit_set() {
-        // APC G a=T,f=24;<payload> ST
-        let input = b"start\x1b_Ga=T,f=24;payload\x1b\\end";
-        let out = rewrite_bytes_with_caps(input, ClientCapabilities::new());
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn kitty_graphics_dropped_when_bit_unset() {
-        let input = b"start\x1b_Ga=T,f=24;payload\x1b\\end";
-        let out = rewrite_bytes_with_caps(input, caps_strip_images());
-        assert_eq!(out, b"startend");
-    }
-
-    #[test]
-    fn iterm2_image_dropped_when_bit_unset() {
-        // OSC 1337 ; File=name=...:base64 ST
-        let input = b"a\x1b]1337;File=name=test:AAAA\x1b\\b";
-        let out = rewrite_bytes_with_caps(input, caps_strip_images());
-        assert_eq!(out, b"ab");
-    }
-
-    #[test]
-    fn iterm2_image_passthrough_when_bit_set() {
-        let input = b"a\x1b]1337;File=name=test:AAAA\x1b\\b";
-        let out = rewrite_bytes_with_caps(input, ClientCapabilities::new());
-        assert_eq!(out, input);
-    }
-
-    // --- Kitty keyboard protocol APC (phux-9gz) ---------------------------
-
-    #[test]
-    fn kitty_kbd_reply_stripped_when_disabled() {
-        // APC without leading `G` — kitty kbd protocol payload.
-        let input = b"head\x1b_13;2u\x1b\\tail";
-        let caps = ClientCapabilities::new().with_kbd_protocols(KeyboardProtocolSet::new());
-        let out = rewrite_bytes_with_caps(input, caps);
-        assert_eq!(out, b"headtail");
-    }
-
-    #[test]
-    fn kitty_kbd_reply_survives_when_enabled() {
-        let input = b"head\x1b_13;2u\x1b\\tail";
-        let out = rewrite_bytes_with_caps(input, ClientCapabilities::new());
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn kitty_graphics_not_stripped_by_kbd_disable() {
-        // Disabling kbd_protocols must not affect APC `G` graphics
-        // payloads (they are gated independently).
-        let input = b"x\x1b_Ga=T;abc\x1b\\y";
-        let caps = ClientCapabilities::new().with_kbd_protocols(KeyboardProtocolSet::new());
-        let out = rewrite_bytes_with_caps(input, caps);
-        assert_eq!(out, input);
-    }
-
-    #[test]
-    fn kitty_kbd_not_stripped_by_graphics_disable() {
-        // Conversely, disabling kitty_graphics must not eat kbd replies.
-        let input = b"x\x1b_13;2u\x1b\\y";
-        let caps = ClientCapabilities::new().with_image_protocols(ImageProtocolSet::with(&[
-            ImageProtocol::Sixel,
-            ImageProtocol::Iterm2,
-        ]));
-        let out = rewrite_bytes_with_caps(input, caps);
-        assert_eq!(out, input);
-    }
-
-    // --- Composition ------------------------------------------------------
-
-    #[test]
-    fn caps_with_color_downgrade_and_image_strip_compose() {
-        // Truecolor SGR + sixel inside the same stream; client wants
-        // Indexed256 and refuses sixel.
+    fn color_downgrade_and_image_strip_compose() {
         let input = b"\x1b[38;2;255;0;0mhi\x1bP0;0;0qsixel\x1b\\done";
-        let caps =
-            caps_color(ColorSupport::Indexed256).with_image_protocols(ImageProtocolSet::with(&[
+        let caps = ClientCapabilities::new()
+            .with_color_support(ColorSupport::Indexed256)
+            .with_image_protocols(ImageProtocolSet::with(&[
                 ImageProtocol::KittyGraphics,
                 ImageProtocol::Iterm2,
             ]));
-        let out = rewrite_bytes_with_caps(input, caps);
-        assert_eq!(out, b"\x1b[38;5;196mhidone");
-    }
-
-    #[test]
-    fn caps_color_function_smoke() {
-        // Smoke-check that the convenience helper produces a permissive
-        // base with just color toggled.
-        let c = caps_color(ColorSupport::Indexed16);
-        assert!(c.image_protocols.contains(ImageProtocol::Sixel));
-        assert!(c.hyperlinks);
-        assert!(matches!(c.color_support, ColorSupport::Indexed16));
+        assert_eq!(
+            rewrite_bytes_with_caps(input, caps),
+            b"\x1b[38;5;196mhidone"
+        );
     }
 }

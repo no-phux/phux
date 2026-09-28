@@ -1,49 +1,15 @@
-//! Server-side event-hook dispatcher (`docs/consumers/tui.md` §9, phux-r82.1).
+//! Server-side event-hook dispatcher (`docs/consumers/tui.md` §9).
 //!
-//! Two hook sources feed one dispatcher:
+//! Config `[[hooks.<name>]]` entries (first match wins; only `run` and the
+//! `noop` sentinel act server-side) and enabled plugins' `[[events]]` hooks
+//! (all matches fire) share one dispatcher. Hooks run as child processes
+//! via [`phux_plugin::run_command_spec`] with the context in `PHUX_*` env
+//! vars, including `PHUX_SOCKET` so a hook's `phux` reaches this server.
 //!
-//! * **Config hooks** — `[[hooks.<name>]]` entries from `config.toml`
-//!   ([`phux_config::HookEntry`]): a `when` predicate plus an action.
-//!   First match wins per event; only `run` actions (and the `noop`
-//!   sentinel) are executable server-side — other action kinds (e.g.
-//!   `message`) are client-side and skipped here.
-//! * **Plugin event hooks** — enabled plugin manifests' `[[events]]`
-//!   entries whose `on` names the event. Every matching plugin hook fires
-//!   (the first-match-wins rule applies to config entries only).
-//!
-//! Execution is **child-process argv only** (the no-in-process-host rule),
-//! via [`phux_plugin::run_command_spec`]: env injection, `kill_on_drop`,
-//! and a per-hook timeout. Event context rides environment variables —
-//! `PHUX_EVENT` plus one `PHUX_*` variable per context key, plus
-//! `PHUX_SOCKET` (the server's listening UDS path, phux-d4rf) so a hook
-//! script's bare `phux` invocation targets the firing server even when it
-//! listens off the default socket path.
-//!
-//! # Threading
-//!
-//! Per ADR-0014 the server runs on a current-thread `LocalSet`.
-//! [`HookDispatcher::fire`] is a synchronous, non-blocking `try_send` onto
-//! a bounded queue: the terminal-actor hot path never awaits hook work,
-//! and a full queue drops the event (hooks are an accelerator, never a
-//! guarantee). The dispatcher task drains the queue and runs each matched
-//! command on its own `spawn_local` task, gated by a semaphore so at most
-//! [`MAX_CONCURRENT_HOOKS`] children run at once.
-//!
-//! # On the `hooks` <-> `state` import cycle
-//!
-//! This module names [`crate::state::ClientId`] in the constructors of
-//! client-scoped events and takes [`crate::state::SharedState`] in
-//! `fire_hook`; [`crate::state`] in turn stores a [`HookDispatcher`].
-//! That is a genuine cycle and it stays deliberately (phux-4fbs.5).
-//!
-//! Breaking it would mean these constructors accept a bare `u64` instead of
-//! a `ClientId`, which downgrades a typed id to an untyped integer at a
-//! public boundary — exactly the confusion the newtype exists to prevent,
-//! and the one phux-4fbs.2 spent a commit consolidating. The alternative,
-//! hoisting `ClientId` out of `state`, moves the identity of a client away
-//! from the table that mints and owns it. A dispatcher that knows the state
-//! type and a state that holds a dispatcher is the honest shape of "hooks
-//! observe server state"; the cycle is the cost of typing it correctly.
+//! [`HookDispatcher::fire`] is a non-blocking `try_send` onto a bounded
+//! queue (a full queue drops the event); the dispatcher runs each command on
+//! its own task, at most [`MAX_CONCURRENT_HOOKS`] at once. The `hooks` ↔
+//! `state` import cycle is deliberate: it keeps `ClientId` typed.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -58,50 +24,32 @@ use tracing::{debug, warn};
 /// Upper bound on concurrently-running hook child processes.
 pub const MAX_CONCURRENT_HOOKS: usize = 8;
 
-/// Bounded depth of the dispatcher's event queue. A full queue drops the
-/// event (with a warning) rather than blocking the emitter.
+/// Depth of the event queue; a full queue drops the event.
 pub const HOOK_EVENT_QUEUE: usize = 64;
 
-/// Per-hook execution timeout. A hook still running when it expires is
-/// killed and logged; it never wedges the dispatcher's concurrency budget.
+/// Per-hook timeout; the child is killed and logged.
 pub const HOOK_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Hook point names (`docs/consumers/tui.md` §9). The definitions live
-/// in [`phux_config::vocab`] (phux-i0e8.3.1) so `phux config check` can
-/// validate `[[hooks.<event>]]` names; these re-exports keep the
-/// server-side paths working.
+/// Hook point names (defined in [`phux_config::vocab`]).
 pub use phux_config::vocab::{
     AFTER_NEW_PANE, AGENT_STATE_CHANGED, CLIENT_ATTACHED, CLIENT_DETACHED, FOCUS_CHANGED, PANE_EXIT,
 };
 
-/// One hook event as the generated reference documents it: the canonical
-/// name and context keys from [`phux_config::vocab`], plus the per-event
-/// prose only this dispatcher can vouch for (phux-i0e8.11.4).
-///
-/// This is a *documentation* projection, not a dispatch structure: the
-/// name list and key lists are owned by the vocab (the validators' single
-/// source of truth); [`hook_event_specs`] adds the "fires when" sentence
-/// per event. The `spec_table_roundtrips_through_the_constructors` test
-/// pins the whole table to the real [`HookEvent`] constructors, so the
-/// reference page regenerated from this table cannot describe an event
-/// the server does not fire.
+/// One hook event as the generated reference documents it: the vocab's
+/// name and context keys plus this dispatcher's "fires when" prose. A test
+/// pins it to the real constructors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookEventSpec {
     /// Canonical event name, a member of [`phux_config::vocab::HOOK_EVENTS`].
     pub name: &'static str,
     /// When the server fires the event — one sentence of prose.
     pub doc: &'static str,
-    /// The context keys the event can carry, sorted ascending
-    /// ([`phux_config::vocab::hook_context_keys`]). Optional keys are
-    /// included; a firing may omit them.
+    /// The event's context keys, sorted (optional ones included).
     pub context_keys: &'static [&'static str],
 }
 
-/// Every hook event the server fires, in [`vocab::HOOK_EVENTS`] order.
-///
-/// Names and context keys come from the vocab; only the prose is added
-/// here. Consumed by the generated `docs/reference/hooks.md` renderer in
-/// the `phux` binary.
+/// Every hook event, in [`vocab::HOOK_EVENTS`] order, for the generated
+/// `docs/reference/hooks.md`.
 #[must_use]
 pub fn hook_event_specs() -> Vec<HookEventSpec> {
     vocab::HOOK_EVENTS
@@ -114,11 +62,7 @@ pub fn hook_event_specs() -> Vec<HookEventSpec> {
         .collect()
 }
 
-/// The one-sentence "fires when" prose for a canonical event name.
-///
-/// Exhaustive over [`vocab::HOOK_EVENTS`] by the roundtrip test: a new
-/// vocab event without a sentence here panics the test suite, not a
-/// reader.
+/// The "fires when" sentence for an event name (a test enforces coverage).
 fn event_doc(name: &str) -> &'static str {
     match name {
         AFTER_NEW_PANE => {
@@ -147,19 +91,11 @@ fn event_doc(name: &str) -> &'static str {
     }
 }
 
-/// The `to` value the agent hook reports when the detector withdraws a
-/// record: the agent is gone, so its state is no longer knowable.
-///
-/// Matches the `unknown` word the L3 agent vocabulary already uses for a
-/// withdrawn state, so a `when = { to = "unknown" }` clause reads the same
-/// as the record a client would see.
+/// The `to` value when the detector withdraws a record (the L3 `unknown`).
 pub const AGENT_STATE_UNKNOWN: &str = "unknown";
 
-/// One fired hook event: a name from the §9 catalog plus its context.
-///
-/// Context keys use the same kebab-case vocabulary the config `when`
-/// clauses match against (`exit-code`, `session`, ...); each key is also
-/// exported to the hook child as `PHUX_<KEY>` (upper-cased, `-` → `_`).
+/// One fired event: a §9 name plus context. Keys are kebab-case and reach the
+/// child as `PHUX_<KEY>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookEvent {
     /// Event name (e.g. [`PANE_EXIT`]).
@@ -191,8 +127,7 @@ impl HookEvent {
         Self::new(AFTER_NEW_PANE, context)
     }
 
-    /// [`PANE_EXIT`]: fired when a pane's inner process exits.
-    /// `exit-code` is present only when the OS reported a code.
+    /// [`PANE_EXIT`]: a pane's process exited; `exit-code` only when known.
     #[must_use]
     pub fn pane_exit(
         terminal_id: &phux_protocol::ids::ResourceId,
@@ -205,8 +140,7 @@ impl HookEvent {
         Self::new(PANE_EXIT, context)
     }
 
-    /// [`FOCUS_CHANGED`]: fired when a client's focus lands on a pane
-    /// (an `INPUT_FOCUS` gained event that passed the routing gates).
+    /// [`FOCUS_CHANGED`]: a client's focus landed on a pane.
     #[must_use]
     pub fn focus_changed(
         terminal_id: &phux_protocol::ids::ResourceId,
@@ -229,9 +163,8 @@ impl HookEvent {
         )
     }
 
-    /// [`CLIENT_DETACHED`]: fired when an attached client detaches for any
-    /// reason (explicit DETACH, transport drop). `session` may be absent if
-    /// the session was reaped before the detach ran.
+    /// [`CLIENT_DETACHED`]: a client detached; `session` may be absent if
+    /// already reaped.
     #[must_use]
     pub fn client_detached(client_id: crate::state::ClientId, session: Option<&str>) -> Self {
         let mut context = vec![("client-id".to_owned(), client_id.0.to_string())];
@@ -241,19 +174,9 @@ impl HookEvent {
         Self::new(CLIENT_DETACHED, context)
     }
 
-    /// [`AGENT_STATE_CHANGED`]: fired when the detector's published agent
-    /// state for a pane actually changes (ADR-0046).
-    ///
-    /// This is the notification seam. phux ships no sound player and no
-    /// desktop-notification client — a `run` action reaching whatever the
-    /// host already has (`osascript`, `notify-send`, `afplay`, `tput bel`)
-    /// composes better than a built-in that must be configured to be
-    /// silenced. What the server owes the operator is the *edge*, delivered
-    /// once, with enough context to decide.
-    ///
-    /// `from` is absent when the pane had no prior record, which is how a
-    /// first sighting is distinguished from a transition. Both `from` and
-    /// `to` use the L3 agent-state vocabulary.
+    /// [`AGENT_STATE_CHANGED`]: the detector's published state changed
+    /// (ADR-0046); the notification seam for host tools. `from` is absent
+    /// on a first sighting.
     #[must_use]
     pub fn agent_state_changed(
         terminal_id: &phux_protocol::ids::ResourceId,
@@ -299,8 +222,7 @@ pub struct PluginEventHook {
     pub plugin_root: PathBuf,
 }
 
-/// Everything the dispatcher matches events against: config `[[hooks.*]]`
-/// entries plus the event hooks of every enabled plugin manifest.
+/// Config hook entries plus enabled plugins' event hooks.
 #[derive(Debug, Clone, Default)]
 pub struct HookCatalog {
     /// `[[hooks.<name>]]` entries keyed by hook name.
@@ -310,27 +232,16 @@ pub struct HookCatalog {
 }
 
 impl HookCatalog {
-    /// `true` when there is nothing to dispatch — the runtime skips
-    /// spawning the dispatcher task entirely.
+    /// Nothing to dispatch (the runtime then spawns no dispatcher).
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.config_hooks.is_empty() && self.plugin_events.is_empty()
     }
 
-    /// Build a catalog from a loaded config.
-    ///
-    /// `config_path` anchors relative plugin-manifest paths (they resolve
-    /// against the config file's directory, matching the phux-plugin action
-    /// runtime). Disabled plugins are skipped, as are `[[events]]` entries
-    /// whose `platforms` list excludes the current OS. A manifest that
-    /// fails to load is logged and skipped rather than failing the server.
-    ///
-    /// Config hook entries that can never do what they say — unknown
-    /// event names, `when` keys outside the event's context, actions
-    /// that never execute server-side — are each warned about once here
-    /// (phux-i0e8.3.3), so a config that never saw `phux config check`
-    /// is still loud at startup. The entries are kept, not dropped:
-    /// first-match-wins semantics are unchanged.
+    /// Build a catalog from a loaded config. Plugin manifest paths resolve
+    /// against the config's directory; disabled plugins and other-platform
+    /// events are skipped; unloadable manifests are logged. Config entries
+    /// that can never act are warned about once but kept.
     #[must_use]
     pub fn from_config(cfg: &Config, config_path: &Path) -> Self {
         for problem in offending_config_hooks(&cfg.hooks) {
@@ -378,25 +289,16 @@ impl HookCatalog {
     }
 }
 
-/// One config hook table or entry that can never do what it says: a
-/// log-ready label (`hooks.pane-exit[1]`, matching the dispatch labels)
-/// plus what is wrong with it.
+/// A config hook entry that can never act, with a log label.
 #[derive(Debug, PartialEq, Eq)]
 struct HookConfigProblem {
     label: String,
     detail: String,
 }
 
-/// Find every config hook entry `phux config check` would flag
-/// (phux-i0e8.3.3), one problem record per offending entry.
-///
-/// Same vocabulary the check's semantic pass uses
-/// ([`phux_config::vocab`]), so startup warnings and check findings
-/// cannot disagree: an unknown event name yields one record for the
-/// whole (dead) table; a known event's entries each yield at most one
-/// record aggregating their unknown `when` keys (checked after
-/// stripping the `-startswith` suffix) and never-executable action
-/// (`noop` is the deliberate sentinel, not a mistake).
+/// Every config hook entry `phux config check` would flag, one record each,
+/// using the same vocabulary (unknown event, unknown `when` keys, a
+/// never-executable action).
 fn offending_config_hooks(hooks: &BTreeMap<String, Vec<HookEntry>>) -> Vec<HookConfigProblem> {
     let mut problems = Vec::new();
     for (event, entries) in hooks {
@@ -439,8 +341,7 @@ fn offending_config_hooks(hooks: &BTreeMap<String, Vec<HookEntry>>) -> Vec<HookC
     problems
 }
 
-/// The action name a config hook entry invokes, whichever spelling
-/// (`action = "noop"` or `{ kind = "run", ... }`) it used.
+/// The action name a config hook entry invokes.
 fn config_action_name(action: &Action) -> &str {
     match action {
         Action::Bare(name) => name,
@@ -448,8 +349,7 @@ fn config_action_name(action: &Action) -> &str {
     }
 }
 
-/// `true` when the current OS is allowed by a manifest `platforms` list
-/// (`None` = every platform).
+/// Whether the current OS is allowed (`None` means every platform).
 fn platform_enabled(platforms: Option<&[PluginPlatform]>) -> bool {
     let Some(platforms) = platforms else {
         return true;
@@ -477,11 +377,8 @@ pub struct HookDispatcher {
 }
 
 impl HookDispatcher {
-    /// Queue `event` for dispatch. **Never blocks**: this is a bounded
-    /// `try_send`; when the queue is full (or the dispatcher is gone) the
-    /// event is dropped with a log line. Safe to call from any server task,
-    /// but not while holding the [`crate::state::SharedState`] lock — see
-    /// the crate-internal `fire_hook` helper.
+    /// Queue `event` without blocking; drops (logged) when full or gone.
+    /// Do not call with the state lock held.
     pub fn fire(&self, event: HookEvent) {
         match self.tx.try_send(event) {
             Ok(()) => {}
@@ -494,19 +391,15 @@ impl HookDispatcher {
         }
     }
 
-    /// Test-only constructor wrapping a raw queue so call-site wiring can
-    /// be observed without spawning the dispatcher task.
+    /// A dispatcher over a raw queue (tests).
     #[cfg(test)]
     pub(crate) const fn from_sender(tx: mpsc::Sender<HookEvent>) -> Self {
         Self { tx }
     }
 }
 
-/// Fire `event` through the dispatcher registered on `state`, if any.
-///
-/// Synchronous and non-blocking (see [`HookDispatcher::fire`]). Takes the
-/// state lock briefly to clone the handle, so it MUST NOT be called from
-/// inside a `with` / `with_mut` closure (the mutex is not reentrant).
+/// Fire `event` through the state's dispatcher, if any. Takes the state lock
+/// briefly, so never call it inside `with`/`with_mut`.
 pub(crate) fn fire_hook(state: &crate::state::SharedState, event: HookEvent) {
     let Some(dispatcher) = state.with(|s| s.hook_dispatcher().cloned()) else {
         return;
@@ -514,20 +407,11 @@ pub(crate) fn fire_hook(state: &crate::state::SharedState, event: HookEvent) {
     dispatcher.fire(event);
 }
 
-/// Spawn the dispatcher task on the current `LocalSet` and return the
-/// fire handle.
+/// Spawn the dispatcher on the current `LocalSet` and return its handle.
 ///
-/// The task drains the bounded event queue; each matched hook command runs
-/// on its own `spawn_local` task behind a [`MAX_CONCURRENT_HOOKS`]-wide
-/// semaphore, with [`HOOK_TIMEOUT`] and `kill_on_drop` (via
-/// [`phux_plugin::run_command_spec`]). The task exits when every
-/// [`HookDispatcher`] clone is dropped.
-///
-/// `server_socket` is the UDS path this server listens on, injected into
-/// every hook child as `PHUX_SOCKET` (phux-d4rf) — the hook analogue of
-/// [`crate::terminal_actor::apply_server_socket`] (phux-cufw). `None`
-/// (test-only wiring) leaves the environment untouched, preserving any
-/// `PHUX_SOCKET` the daemon itself inherited.
+/// Each matched command runs on its own task behind the concurrency cap,
+/// with [`HOOK_TIMEOUT`] and `kill_on_drop`; `server_socket` becomes
+/// `PHUX_SOCKET`. Exits when every handle is dropped.
 #[must_use]
 pub fn spawn_hook_dispatcher(
     catalog: HookCatalog,
@@ -540,8 +424,7 @@ pub fn spawn_hook_dispatcher(
             for run in matched_runs(&catalog, &event, server_socket.as_deref()) {
                 let semaphore = Arc::clone(&semaphore);
                 tokio::task::spawn_local(async move {
-                    // `acquire_owned` fails only if the semaphore is closed,
-                    // which never happens here (we never call `close`).
+                    // The semaphore is never closed.
                     let Ok(_permit) = semaphore.acquire_owned().await else {
                         return;
                     };
@@ -561,9 +444,8 @@ struct HookRun {
     spec: phux_plugin::CommandSpec,
 }
 
-/// Resolve every command `event` should fire: the first matching config
-/// entry (first-match-wins per §9) plus every plugin event hook whose `on`
-/// names the event.
+/// Every command `event` fires: the first matching config entry plus every
+/// matching plugin hook.
 fn matched_runs(
     catalog: &HookCatalog,
     event: &HookEvent,
@@ -577,8 +459,7 @@ fn matched_runs(
             if !when_matches(&entry.when, &event.context) {
                 continue;
             }
-            // First match wins: this entry consumes the event whether or
-            // not its action is executable server-side.
+            // The first match consumes the event even if not executable.
             if let Some(argv) = action_argv(&entry.action) {
                 runs.push(HookRun {
                     label: format!("hooks.{}[{index}]", event.name),
@@ -627,12 +508,8 @@ fn matched_runs(
     runs
 }
 
-/// The environment injected into every hook child: `PHUX_EVENT` plus one
-/// `PHUX_<KEY>` entry per context key (`-` → `_`, upper-cased).
-///
-/// When `server_socket` is known, `PHUX_SOCKET` is injected too (phux-d4rf),
-/// mirroring [`crate::terminal_actor::apply_server_socket`]'s `Option`
-/// handling: absent means the environment is left untouched.
+/// The hook child's env: `PHUX_EVENT`, `PHUX_<KEY>` per context key, and
+/// `PHUX_SOCKET` when known.
 fn event_env(event: &HookEvent, server_socket: Option<&Path>) -> Vec<(String, String)> {
     let mut env = vec![("PHUX_EVENT".to_owned(), event.name.clone())];
     for (key, value) in &event.context {
@@ -644,13 +521,8 @@ fn event_env(event: &HookEvent, server_socket: Option<&Path>) -> Vec<(String, St
     env
 }
 
-/// The environment variable a context key rides into a hook child as:
-/// `exit-code` → `PHUX_EXIT_CODE` (upper-cased, `-` → `_`, `PHUX_`
-/// prefix).
-///
-/// Public so the generated hooks reference (phux-i0e8.11.4) renders the
-/// projection from the same function the dispatcher injects with — the
-/// doc column and the child's real environment cannot disagree.
+/// The env var a context key rides as (`exit-code` → `PHUX_EXIT_CODE`),
+/// shared with the generated reference.
 #[must_use]
 pub fn context_env_var(key: &str) -> String {
     let mut name = String::with_capacity(key.len() + 5);
@@ -665,16 +537,9 @@ pub fn context_env_var(key: &str) -> String {
     name
 }
 
-/// Evaluate a config entry's `when` clauses against the event context.
-///
-/// All clauses must hold (AND). Per §9 the language is deliberately tiny:
-///
-/// * `"*"` matches unconditionally.
-/// * A key ending in `-startswith` prefix-matches the base context key
-///   (`cwd-startswith = "/x"` matches context `cwd = "/x/y"`).
-/// * Anything else is an exact string match against the context value
-///   (non-string TOML scalars compare via their canonical rendering, so
-///   `exit-code = 0` matches context `exit-code = "0"`).
+/// Whether all `when` clauses hold: `"*"` matches, `<key>-startswith`
+/// prefix-matches, anything else is an exact match (TOML scalars compared
+/// via their rendering).
 fn when_matches(when: &BTreeMap<String, toml::Value>, context: &BTreeMap<String, String>) -> bool {
     when.iter()
         .all(|(key, expected)| clause_matches(key, expected, context))
@@ -694,8 +559,7 @@ fn clause_matches(key: &str, expected: &toml::Value, context: &BTreeMap<String, 
     context.get(key).is_some_and(|value| *value == expected)
 }
 
-/// Render a TOML scalar the way the context strings are rendered
-/// (`0` → `"0"`, `true` → `"true"`, strings verbatim).
+/// Render a TOML scalar like context strings (`0` → `"0"`).
 fn toml_scalar_string(value: &toml::Value) -> String {
     match value {
         toml::Value::String(s) => s.clone(),
@@ -706,13 +570,8 @@ fn toml_scalar_string(value: &toml::Value) -> String {
     }
 }
 
-/// Resolve a config hook action to a child-process argv.
-///
-/// Only `run` is executable server-side: `command` may be a string
-/// (executed via `/bin/sh -c`, still a child process — the
-/// no-in-process-host rule is about hosting plugin code, not about using
-/// the shell as the argv) or an array of argv strings. `noop` and every
-/// other action kind (`message`, ... — client-side by design) yield `None`.
+/// A config action's argv: only `run` executes (a string command runs via
+/// `/bin/sh -c`, an array as argv); `noop` and client-side kinds are `None`.
 fn action_argv(action: &Action) -> Option<Vec<String>> {
     let parameterized = match action {
         Action::Bare(_) => return None,
@@ -781,50 +640,48 @@ mod tests {
     }
 
     #[test]
-    fn when_empty_matches_everything() {
-        assert!(when_matches(&BTreeMap::new(), &ctx(&[])));
-        assert!(when_matches(&BTreeMap::new(), &ctx(&[("exit-code", "1")])));
-    }
-
-    #[test]
-    fn when_exact_string_and_integer_match_context() {
-        let w = when("exit-code = 0");
-        assert!(when_matches(&w, &ctx(&[("exit-code", "0")])));
-        assert!(!when_matches(&w, &ctx(&[("exit-code", "1")])));
-        // Missing key never matches an exact clause.
-        assert!(!when_matches(&w, &ctx(&[])));
-        let w = when("session = \"work\"");
-        assert!(when_matches(&w, &ctx(&[("session", "work")])));
-        assert!(!when_matches(&w, &ctx(&[("session", "home")])));
-    }
-
-    #[test]
-    fn when_star_matches_even_absent_keys() {
-        let w = when("exit-code = \"*\"");
-        assert!(when_matches(&w, &ctx(&[("exit-code", "137")])));
-        // Signal-killed child: no exit code in context. `"*"` still fires.
-        assert!(when_matches(&w, &ctx(&[])));
-    }
-
-    #[test]
-    fn when_startswith_prefix_matches_base_key() {
-        let w = when("cwd-startswith = \"/Users/x/work\"");
-        assert!(when_matches(&w, &ctx(&[("cwd", "/Users/x/work/repo")])));
-        assert!(!when_matches(&w, &ctx(&[("cwd", "/tmp")])));
-        assert!(!when_matches(&w, &ctx(&[])));
-    }
-
-    #[test]
-    fn when_multiple_clauses_are_anded() {
-        let w = when("exit-code = 0\nsession = \"work\"");
-        assert!(when_matches(
-            &w,
-            &ctx(&[("exit-code", "0"), ("session", "work")])
-        ));
-        assert!(!when_matches(
-            &w,
-            &ctx(&[("exit-code", "0"), ("session", "home")])
-        ));
+    fn when_clauses_match_context() {
+        type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], bool);
+        let cases: &[Case<'_>] = &[
+            ("", &[], true),
+            ("", &[("exit-code", "1")], true),
+            ("exit-code = 0", &[("exit-code", "0")], true),
+            ("exit-code = 0", &[("exit-code", "1")], false),
+            ("exit-code = 0", &[], false),
+            ("session = \"work\"", &[("session", "work")], true),
+            ("session = \"work\"", &[("session", "home")], false),
+            // `"*"` fires even without the key (a signal-killed child).
+            ("exit-code = \"*\"", &[("exit-code", "137")], true),
+            ("exit-code = \"*\"", &[], true),
+            (
+                "cwd-startswith = \"/Users/x/work\"",
+                &[("cwd", "/Users/x/work/repo")],
+                true,
+            ),
+            (
+                "cwd-startswith = \"/Users/x/work\"",
+                &[("cwd", "/tmp")],
+                false,
+            ),
+            ("cwd-startswith = \"/Users/x/work\"", &[], false),
+            (
+                "exit-code = 0\nsession = \"work\"",
+                &[("exit-code", "0"), ("session", "work")],
+                true,
+            ),
+            (
+                "exit-code = 0\nsession = \"work\"",
+                &[("exit-code", "0"), ("session", "home")],
+                false,
+            ),
+        ];
+        for (clauses, context, want) in cases {
+            assert_eq!(
+                when_matches(&when(clauses), &ctx(context)),
+                *want,
+                "{clauses:?} vs {context:?}"
+            );
+        }
     }
 
     fn action(toml_inline: &str) -> Action {
@@ -876,11 +733,8 @@ mod tests {
         );
     }
 
-    /// Agreement test (phux-i0e8.3.3): the pure predicate
-    /// `phux_config::vocab::hook_action_is_executable` must agree with
-    /// [`action_argv`], the dispatcher's actual resolver, on every
-    /// action shape — otherwise `phux config check` would bless hooks
-    /// the server skips, or flag hooks that run fine.
+    /// `vocab::hook_action_is_executable` agrees with [`action_argv`] on every
+    /// shape.
     #[test]
     fn executability_predicate_agrees_with_action_argv() {
         let cases = [
@@ -906,11 +760,7 @@ mod tests {
         }
     }
 
-    /// Agreement test (phux-i0e8.3.3): `vocab::hook_context_keys` is
-    /// documented code-is-truth against these constructors. Build each
-    /// event with every optional key present and assert the key sets
-    /// match exactly — a constructor growing a key without teaching the
-    /// vocab (or vice versa) fails here, not in a user's silent hook.
+    /// `vocab::hook_context_keys` matches the constructors exactly.
     #[test]
     fn vocab_context_keys_match_the_event_constructors() {
         let terminal = phux_protocol::ids::ResourceId::local(7);
@@ -936,11 +786,7 @@ mod tests {
         }
     }
 
-    /// Startup validation (phux-i0e8.3.3): each offending config entry
-    /// yields exactly one problem record — an unknown event covers its
-    /// whole table, an entry's unknown when key and dead action
-    /// aggregate — and a clean config yields none. `from_config` warns
-    /// once per record.
+    /// Each offending entry yields one problem record; a clean config none.
     #[test]
     fn offending_config_hooks_flags_each_bad_entry_once() {
         let cfg: Config = toml::from_str(
@@ -989,14 +835,8 @@ mod tests {
         assert_eq!(context_env_var("session"), "PHUX_SESSION");
     }
 
-    /// Roundtrip pin for the documentation table (phux-i0e8.11.4): the
-    /// spec table and the real event constructors must describe the same
-    /// surface. Full const coverage — one spec per [`vocab::HOOK_EVENTS`]
-    /// name, in order, each with doc prose; name membership — every
-    /// constructor-built event's name has exactly that spec; context-key
-    /// subset — a constructor-built event's keys (every optional key
-    /// present) are exactly the spec's documented keys, so no firing can
-    /// carry a key the reference does not list.
+    /// The spec table and the constructors describe the same events and
+    /// keys, with prose for each.
     #[test]
     fn spec_table_roundtrips_through_the_constructors() {
         let specs = hook_event_specs();
@@ -1054,8 +894,7 @@ mod tests {
 
     #[test]
     fn first_matching_config_entry_wins_and_consumes_the_event() {
-        // Entry 0 (noop) matches exit-code 0 and consumes the event, so
-        // the catch-all `run` in entry 1 must NOT fire.
+        // The noop entry consumes the event, so the catch-all does not fire.
         let catalog = catalog_from_toml(
             r#"
             [[hooks.pane-exit]]
@@ -1098,8 +937,7 @@ mod tests {
         assert!(env.contains(&("PHUX_EVENT".to_owned(), "pane-exit".to_owned())));
         assert!(env.contains(&("PHUX_EXIT_CODE".to_owned(), "0".to_owned())));
         assert!(env.contains(&("PHUX_TERMINAL_ID".to_owned(), "7".to_owned())));
-        // No server socket configured: the env carries no PHUX_SOCKET at
-        // all, preserving anything the daemon itself inherited (phux-d4rf).
+        // No socket configured: no PHUX_SOCKET.
         assert!(env.iter().all(|(key, _)| key != "PHUX_SOCKET"));
     }
 
@@ -1198,8 +1036,6 @@ mod tests {
         assert_eq!(catalog.plugin_events[0].plugin_id, "plugin-on");
         assert_eq!(catalog.plugin_events[0].on, AFTER_NEW_PANE);
 
-        // Dispatcher-level proof: a disabled plugin's event never fires
-        // because it is simply not in the catalog.
         let event = HookEvent::new(AFTER_NEW_PANE, []);
         let runs = matched_runs(&catalog, &event, None);
         assert_eq!(runs.len(), 1);
@@ -1244,9 +1080,7 @@ mod tests {
         fire_hook(&state, HookEvent::new(PANE_EXIT, []));
     }
 
-    /// End-to-end through the real dispatcher task: a config `run` hook
-    /// executes as a child process with the event env injected, including
-    /// the server's socket path as `PHUX_SOCKET` (phux-d4rf).
+    /// A config `run` hook executes with the event env and `PHUX_SOCKET`.
     #[tokio::test(flavor = "current_thread")]
     async fn dispatcher_executes_config_hook_with_env_injection() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1256,8 +1090,6 @@ mod tests {
             "printf '%s %s %s' \"$PHUX_EVENT\" \"$PHUX_TERMINAL_ID\" \"$PHUX_SOCKET\" > {}",
             marker.display()
         );
-        // Built programmatically: the shell command mixes quote styles
-        // that are painful to embed in a TOML literal.
         let entry = HookEntry {
             when: BTreeMap::new(),
             action: Action::Parameterized(phux_config::ParamAction {
@@ -1286,8 +1118,7 @@ mod tests {
         assert_eq!(contents, format!("after-new-pane 42 {}", socket.display()));
     }
 
-    /// A plugin `[[events]]` hook runs with the plugin root as cwd and the
-    /// plugin identity env vars alongside the event env.
+    /// A plugin hook runs in the plugin root with its identity env.
     #[tokio::test(flavor = "current_thread")]
     async fn dispatcher_executes_plugin_event_in_plugin_root_with_plugin_env() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1324,8 +1155,7 @@ mod tests {
         assert_eq!(contents, format!("notifier 0 {}", root.display()));
     }
 
-    /// A slow hook must not block `fire` (the emitter's contract) — the
-    /// child runs on its own task behind the semaphore.
+    /// A slow hook does not block `fire`.
     #[tokio::test(flavor = "current_thread")]
     async fn fire_returns_immediately_while_hook_still_runs() {
         let catalog = catalog_from_toml(
@@ -1344,8 +1174,7 @@ mod tests {
                     started.elapsed() < Duration::from_millis(200),
                     "fire must not wait for the hook child",
                 );
-                // Give the dispatcher a beat to spawn the child, then drop
-                // everything: kill_on_drop reaps the sleeping child.
+                // Let it spawn, then drop everything (kill_on_drop reaps).
                 tokio::time::sleep(Duration::from_millis(10)).await;
             })
             .await;

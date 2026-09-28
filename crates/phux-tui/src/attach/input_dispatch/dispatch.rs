@@ -1,15 +1,6 @@
 //! The event dispatcher: parser events to wire frames, resolver
 //! intercepts, mouse routing, and the pane/overlay geometry helpers.
 
-//! Input dispatcher: translates parser-emitted events into wire frames
-//! or layout-action effects.
-//!
-//! Owns the resolver-intercept path (prefix chord → `ResolvedAction` →
-//! mutate the active window of the `Workspace`), the predict overlay's
-//! keystroke feed, and the parked-spawn bookkeeping (`PendingSplit` /
-//! `PendingWindow`) that bridges a local `split-pane` / `new-window`
-//! chord to its remote `SPAWN_RESOURCE` reply.
-
 use std::collections::HashMap;
 
 use libghostty_vt::terminal::{Mode, Point, PointCoordinate, PointSpace, ScrollViewport};
@@ -18,11 +9,10 @@ use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::{ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
-use phux_protocol::wire::frame::{FrameKind, Scope};
+use phux_protocol::wire::frame::FrameKind;
 
 use crate::attach::actions::{self, PendingSplit};
 use crate::attach::connection::Connection;
-use crate::attach::focus::FocusHistory;
 use crate::attach::input::make_named_key;
 use crate::attach::input_replay::{InputReplayJournal, mint_input_operation_id};
 use crate::attach::outcome::AttachError;
@@ -35,12 +25,10 @@ use crate::layout::Workspace;
 use crate::predict::{Overlay, PredictionState};
 use crate::render::chrome::sidebar::{SidebarHit, hit_test};
 use crate::render::overlay::{ContextMenu, OverlayOutcome, OverlayState, ScreenSelectionPoint};
-use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
 use super::args::switch_session_args;
 use super::chrome_drag;
 use super::ctx::{DispatchCtx, DividerGrab, DragGrab, WindowStrip};
-use super::effects::encode_layout_or_log;
 use super::effects::{ChordOutcome, apply_action_effects, consume_chord};
 use super::run_action::run_action;
 
@@ -112,14 +100,8 @@ struct EventChange {
     predicted: bool,
 }
 
-/// Everything one dispatch batch threads through every per-event stage:
-/// the render sink, the wire connection, the driver-owned focus / detach /
-/// predict / pane mirrors, and the dispatch context.
-///
-/// This is the argument list of [`dispatch_input_events`] itself, bundled
-/// once at the top of the batch so each stage takes one parameter instead
-/// of eight. The public entry point keeps its flat signature — the driver
-/// owns these pieces separately and lends them per call.
+/// The arguments of [`dispatch_input_events`], bundled once per batch so each
+/// stage takes one parameter.
 struct EventEnv<'a, 'c, W: crate::attach::RenderSink> {
     out: &'a mut W,
     conn: &'a mut Connection,
@@ -130,26 +112,14 @@ struct EventEnv<'a, 'c, W: crate::attach::RenderSink> {
     ctx: &'a mut DispatchCtx<'c>,
 }
 
-/// Translate a batch of parser events into wire frames and ship them.
-///
-/// Detach actions short-circuit into a single `FrameKind::Detach` and
-/// flip `detach_pending`. Pre-attach events (no `focused_resource` yet) are
-/// dropped with a debug log — the wire spec has no "pre-attach buffer"
-/// notion.
-///
-/// phux-4li.5: when a `KeyEvent` matches a configured keybind, the
-/// chord is consumed by the dispatcher and the corresponding layout
-/// action runs (focus move / resize / etc.). The key is NOT forwarded
-/// to the focused pane in that case — same convention as tmux's
-/// `prefix` table.
-///
-/// Each event walks the stage pipeline in `EventEnv::dispatch_event`;
-/// this is the batch frame around it — accumulate, then paint the
-/// predictions once.
-// arg list bundles transport + render + predict context; the driver owns
-// each piece separately, so they arrive flat and are bundled into
-// `EventEnv` for the stages below.
-#[allow(clippy::too_many_arguments, reason = "see comment above")]
+/// Translate a batch of parser events into wire frames and ship them. Each
+/// event walks the stages in `EventEnv::dispatch_event`; a chord that
+/// resolves runs its action and is not forwarded (tmux's prefix table).
+/// Predictions paint once per batch.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the driver owns each piece separately and lends them flat"
+)]
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -178,7 +148,7 @@ pub(in crate::attach) async fn dispatch_input_events<W: crate::attach::RenderSin
         let mut predicted_any = false;
         let mut layout_changed = false;
         // Drained rather than consumed: the driver owns `events` for the life of
-        // the attach and reuses its allocation for every batch (phux-l96p.4).
+        // the attach and reuses its allocation for every batch.
         for ev in events.drain(..) {
             let change = env.dispatch_event(ev).await?;
             layout_changed |= change.layout_changed;
@@ -198,16 +168,10 @@ pub(in crate::attach) async fn dispatch_input_events<W: crate::attach::RenderSin
     Ok(layout_changed)
 }
 
-/// phux-foz.2: the which-key popup is transparent to input. It is
-/// dismissed by — and never consumes — the next event: a key press
-/// pops it and then executes exactly as if the popup were absent
-/// (the resolver still holds the pending prefix, so the chord
-/// completes normally), except Esc, which pops it AND cancels the
-/// pending prefix without reaching the pane. Mouse input pops it
-/// and cancels the prefix too (a click is not a chord
-/// continuation), then routes normally. Non-press key events and
-/// paste/focus bypass the popup entirely (it stays up; they flow
-/// to the pane) — the popup must never eat or delay real input.
+/// Passthrough popups (which-key, guidance) never eat input: a key press
+/// dismisses and then executes as if the popup were absent, except Esc,
+/// which also cancels the pending prefix; mouse input dismisses and cancels
+/// the prefix, then routes normally. Other events pass untouched.
 fn dismiss_passthrough_popup(ctx: &mut DispatchCtx<'_>, ev: &InputEvent) -> StageOutcome {
     use phux_protocol::input::key::KeyAction;
     if !ctx.overlays.top_is_passthrough() {
@@ -254,10 +218,8 @@ const fn is_key_press(ev: &InputEvent) -> bool {
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
 impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
-    /// Walk one event through the dispatch stages in the order they are
-    /// defined below — which-key dismissal, overlay capture, resolver
-    /// chord, mouse routing — and forward whatever none of them claimed
-    /// to the focused pane. The first stage that claims the event wins.
+    /// Walk one event through the stages (popup dismissal, overlay capture,
+    /// chord, mouse) and forward what none claimed to the focused pane.
     async fn dispatch_event(&mut self, ev: InputEvent) -> Result<EventChange, AttachError> {
         let mut change = EventChange::default();
         if matches!(ev, InputEvent::Focus(FocusEvent::Lost)) {
@@ -291,12 +253,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         Ok(change)
     }
 
-    /// A key press headed for the pane snaps a scrolled viewport back to
-    /// the live screen (tmux behavior). Without this, a wheel scroll into
-    /// scrollback pins the viewport there forever and the pane looks
-    /// frozen — new output (e.g. the shell prompt after a TUI app exits)
-    /// lands below the visible rows and never paints. Runs BEFORE the
-    /// predict peek so grid reads see the active area.
+    /// A key press headed for the pane snaps a scrolled viewport back to the
+    /// live screen (tmux), before the predict peek reads the grid.
     fn snap_focused_viewport(&mut self) -> bool {
         snap_scrolled_viewport(
             self.ctx.engine_kernel,
@@ -308,10 +266,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         )
     }
 
-    /// Run a [`ResolvedAction`](phux_config::keybind::ResolvedAction)
-    /// through the single action path every trigger shares — keybinding,
-    /// overlay commit, sidebar click, status-bar tab, context-menu row.
-    /// Returns `true` iff the layout changed.
+    /// Run an action through the path every trigger shares; true iff the
+    /// layout changed.
     async fn run_resolved(
         &mut self,
         resolved: &phux_config::keybind::ResolvedAction,
@@ -339,28 +295,10 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         .await
     }
 
-    /// phux-5ke.4: while any overlay is active the stack captures all
-    /// input. Key events flow to `OverlayState::handle_key`, which
-    /// routes them to the *top* overlay (which may dismiss, popping
-    /// back to whatever is beneath it). Mouse and paste events stay within
-    /// the overlay too; focus events are dropped rather than reaching the pane.
-    ///
-    /// The keybind resolver is bypassed entirely while an overlay is
-    /// up: the overlay owns every keystroke, exactly as tmux's command
-    /// prompt and menus consume the prefix key as literal input rather
-    /// than firing prefix bindings. This keeps a prefix chord (e.g. the
-    /// leader `C-a`) from being swallowed by the resolver before it can
-    /// reach the overlay — a name typed into the rename prompt that
-    /// starts with the leader key must land verbatim. Detach while a
-    /// modal is open is reachable by dismissing first (Esc), then
-    /// chording. The resolver is reset on entry so a partial chord begun
-    /// before the overlay opened cannot leak into post-dismiss input.
-    ///
-    /// phux-foz.2: a passthrough popup (which-key) is excluded — the
-    /// stage above already dismissed it for presses/mouse, and events
-    /// it deliberately ignores (key release/repeat, paste, focus) must
-    /// flow to the pane, not be captured (and must NOT reset the
-    /// resolver, which is holding the pending prefix the popup shows).
+    /// While a (non-passthrough) overlay is up it captures all input: keys and
+    /// mouse go to the top overlay, pastes fill its text, focus is dropped.
+    /// The resolver is bypassed and reset, so a leader chord typed into a
+    /// prompt lands verbatim and a half-chord cannot leak past dismissal.
     async fn capture_into_overlay(&mut self, ev: &InputEvent) -> Result<StageOutcome, AttachError> {
         if !self.ctx.overlays.is_active() || self.ctx.overlays.top_is_passthrough() {
             return Ok(StageOutcome::PASS);
@@ -392,7 +330,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             resolver.reset();
         }
         let was_active = self.ctx.overlays.is_active();
-        // phux-ahv.1: an overlay may commit an action (e.g. the
+        // An overlay may commit an action (e.g. the
         // rename prompt returning `rename-window { name }`); run
         // it through the same path as a keybinding.
         let outcome = self.ctx.overlays.handle_key(key_event);
@@ -421,11 +359,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
 
     /// Feed one mouse event to the top overlay and run whatever it commits.
     async fn handle_overlay_mouse(&mut self, mouse: &MouseEvent) -> Result<bool, AttachError> {
-        // Copy-mode tracks pane-local cells but the parser emits
-        // outer-viewport coordinates; translate into the focused
-        // pane's frame so a drag over a non-origin pane highlights
-        // the cells actually under the pointer. Modal overlays (the
-        // only other mouse consumers) keep viewport coords.
+        // Copy mode tracks pane-local cells; modals keep viewport coords.
         let routed = if self.ctx.overlays.copy_selection().is_some() {
             let rect = focused_pane_rect(self.ctx, self.focused_resource.as_ref());
             let mut m = *mouse;
@@ -441,11 +375,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         // has to come back off the pane's cells.
         let copy_commit = matches!(outcome, OverlayOutcome::Copy(_));
         let ran = self.apply_overlay_outcome(outcome).await? || copy_commit;
-        // phux-wrnm: a pointer dismissal (clicking outside a context
-        // menu) leaves the overlay's cells on screen with nothing
-        // scheduled to erase them — the key path has always
-        // repainted on dismiss; the mouse path never did, because
-        // until now no overlay could be dismissed by a click.
+        // Clicking a menu away must repaint the cells it covered.
         let dismissed = was_active && !self.ctx.overlays.is_active();
         Ok(ran || dismissed)
     }
@@ -459,10 +389,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         match outcome {
             OverlayOutcome::RunAction(resolved) => self.run_resolved(&resolved).await,
             OverlayOutcome::Copy(req) => {
-                // Copy-mode commit: resolve the selection against the
-                // focused pane's own engine and write it to the host
-                // clipboard via OSC 52. Client-local per ADR-0030 —
-                // no wire traffic.
+                // ADR-0030: resolve against the focused pane and copy via
+                // OSC 52; client-local.
                 if let Some(fid) = self.focused_resource.as_ref()
                     && let Some(terminal) = published_terminal(self.ctx.engine_kernel, fid)
                 {
@@ -488,7 +416,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         }
     }
 
-    /// phux-4li.5: resolver intercept. Runs BEFORE the predict layer
+    /// Resolver intercept. Runs BEFORE the predict layer
     /// so a chord that resolves to e.g. `focus-direction` doesn't
     /// leave a stale ghost overlay on the previous focused pane.
     async fn intercept_chord(&mut self, ev: &InputEvent) -> Result<StageOutcome, AttachError> {
@@ -509,32 +437,10 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         }
     }
 
-    /// Predictive echo only fires for key events; mouse / paste / focus
-    /// intentionally bypass the prediction layer (they target the
-    /// server's input model, not the visual grid). The stage is
-    /// skipped entirely when the config flag is off — `predict_key`
-    /// returns `Disabled` and no overlay paint is scheduled.
-    ///
-    /// Arrows over a known cell on the current line (phux-9gw.1.3)
-    /// need a grid peek to know the width of the grapheme they step
-    /// over; we hand `read_grapheme_at` to the predict layer so it
-    /// can refuse the prediction when the cell is blank.
-    ///
-    /// phux-4li.6: peek the focused pane's grid via the active
-    /// window's focus. The driver also mirrors that id into its
-    /// `focused_resource` local (server-frame handlers rely on it);
-    /// either reads the same `ResourceId` here.
-    ///
-    /// ADR-0090: predictions queue on both screens; only *display* is
-    /// policy. The predictor learns which screen the pane is on (a
-    /// transition drops the queue and the echo evidence) and stamps
-    /// each guess with a monotonic clock so the display TTL can expire
-    /// an overlay the server never answered. On the alternate screen
-    /// the overlay stays hidden until the app proves it echoes (vim
-    /// insert mode, an agent TUI's prompt), so non-echoing apps (htop,
-    /// less) behave exactly as under the retired binary gate
-    /// (phux-51n6.1). The keystroke still travels upstream normally
-    /// afterwards.
+    /// Feed a key to predictive echo (mouse/paste/focus bypass it), peeking
+    /// the focused pane's grid so arrows can size the grapheme they cross.
+    /// ADR-0090: predictions queue on both screens; on the alternate screen
+    /// display waits for echo evidence.
     fn feed_predict(&mut self, ev: &InputEvent) -> bool {
         use crate::predict::PredictionOutcome;
         let InputEvent::Key(key_event) = ev else {
@@ -567,15 +473,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         matches!(outcome, PredictionOutcome::Predicted)
     }
 
-    /// phux-4li.6: `INPUT_KEY` / `INPUT_FOCUS` / `INPUT_PASTE` all target
-    /// the client's focused pane (per ADR-0019 decision 6). Focus
-    /// is canonically the active window's focus; the driver-side
-    /// `focused_resource` mirror stays in sync for the render path.
-    /// When focus is unset (pre-ATTACHED), drop the event with a
-    /// debug log instead of panicking — wave-A's "always Some
-    /// post-ATTACHED" invariant is enforced by the seed in
-    /// `handle_server_frame`, but a stray input race during
-    /// bootstrap shouldn't take the loop down.
+    /// Forward key/focus/paste input to the focused pane (ADR-0019). Input
+    /// before ATTACHED, or to an exited or unreachable pane, is dropped.
     async fn forward_to_focused_pane(&mut self, ev: InputEvent) -> Result<bool, AttachError> {
         let Some(pane) = self
             .ctx
@@ -593,17 +492,13 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             tracing::debug!(terminal = ?pane, "dropping input: the pane's process exited");
             return Ok(false);
         }
-        // phux-lxov.1: a down satellite keeps its slot and its last
+        // A down satellite keeps its slot and its last
         // snapshot, and takes no new input until the link returns.
         if crate::attach::pane_state::pane_satellite_down(self.panes, &pane) {
             tracing::debug!(terminal = ?pane, "dropping input: satellite unreachable");
             return Ok(false);
         }
-        // phux-foz.1: forwarding key/paste input to a pane answers (or at
-        // least engages) its pending agent question, so clear its asked
-        // attention flag. Focus/mouse events don't clear — merely looking
-        // at a pane is not answering it. A real transition schedules the
-        // chrome repaint via the returned flag.
+        // Typing into a pane answers its pending question; looking does not.
         let layout_changed = matches!(ev, InputEvent::Key(_) | InputEvent::Paste(_))
             && clear_attention_on_input(self.panes, &pane);
         let acknowledged = matches!(ev, InputEvent::Paste(_));
@@ -642,12 +537,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         send_replay_frames(self.conn, journal, &frames).await
     }
 
-    /// Paint the queued predictions. Predictions are pane-local; shift
-    /// them by the focused pane's render origin so a non-top-left pane
-    /// echoes over its own cells (phux-7ry0). ADR-0090: the display
-    /// policy gates the paint — on the alternate screen without echo
-    /// evidence (or while tentative / past the TTL) the queue reconciles
-    /// silently and nothing is painted.
+    /// Paint queued predictions at the focused pane's origin when the
+    /// ADR-0090 display policy allows.
     fn paint_predictions(&mut self, overlay: &Overlay) {
         if !self.predict.should_display(predict_now_ms()) {
             return;
@@ -661,7 +552,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             .and_then(|fid| self.panes.get(fid))
             .map_or((0, 0), |s| s.renderer.last_origin());
         let _ = overlay.render(self.predict, origin, self.out);
-        // phux-esge: the guesses now sit over the focused pane's cells; its
+        // The guesses now sit over the focused pane's cells; its
         // front buffer must not keep claiming what was there before them.
         if let Some(slot) = focused.and_then(|fid| self.panes.get_mut(fid)) {
             crate::attach::pane_state::invalidate_predicted_rows(slot, self.predict);
@@ -673,7 +564,9 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     clippy::future_not_send,
     reason = "the attach loop and its RefCell replay journal are current-thread state"
 )]
-pub(super) async fn send_replay_frames(
+/// Send a replay batch in request order; on a failed write, the frames not
+/// yet handed to the transport roll back to their previous definite state.
+pub(in crate::attach) async fn send_replay_frames(
     conn: &mut Connection,
     journal: &std::cell::RefCell<InputReplayJournal>,
     frames: &[FrameKind],
@@ -698,40 +591,22 @@ pub(super) fn wheel_scroll_delta(mouse: &MouseEvent) -> Option<isize> {
     }
 }
 
-/// Scale a pane-local CELL-coordinate mouse event to the Terminal-local
-/// surface-space PIXELS the wire carries (SPEC input.md §3.1: cell-quantized
-/// clients emit `cell_index x cell_size`). The dispatcher hit-tests and
-/// routes in cells; this runs at the `INPUT_MOUSE` send boundary only, so
-/// every local consumer (overlays, wheel branch, drag) keeps cell units.
-/// Axes are clamped to 1px so a degenerate geometry can never zero out the
-/// position (phux-yyex).
+/// Scale pane-local cells to the surface pixels `INPUT_MOUSE` carries (SPEC
+/// input.md §3.1), at the send boundary only; axes clamp to at least 1px.
 pub(super) fn scale_to_surface_pixels(mut mouse: MouseEvent, cell_px: (u16, u16)) -> MouseEvent {
     mouse.x *= f64::from(cell_px.0.max(1));
     mouse.y *= f64::from(cell_px.1.max(1));
     mouse
 }
 pub(super) fn terminal_wants_mouse_tracking(terminal: &libghostty_vt::Terminal<'_, '_>) -> bool {
-    // Same source of truth the server encoder and the FFI bridge use.
-    // The four DECSET bits (9/1000/1002/1003) are the common cases, but
-    // `TrackingMode` is non-exhaustive — a Mode-list miss is what sent
-    // grok/opencode wheels into local scroll (phux-2vnl).
+    // The encoder's own reading; `TrackingMode` is non-exhaustive, so a
+    // hand-kept DECSET list would miss modes.
     libghostty_vt::mouse::EncoderOptions::from_terminal(terminal)
         .is_ok_and(|options| options.tracking_mode != libghostty_vt::mouse::TrackingMode::None)
 }
 
-/// Whether the pane's mirror has DECSET 1007 (xterm "alternate scroll")
-/// active. libghostty defaults it ON — matching ghostty — so wheel-to-arrow
-/// translation works out of the box for alt-screen apps without mouse
-pub(super) fn terminal_alt_scroll(terminal: &libghostty_vt::Terminal<'_, '_>) -> bool {
-    terminal.mode(Mode::ALT_SCROLL).unwrap_or(false)
-}
-
-/// Monotonic milliseconds since the first call, for stamping predictions
-/// and evaluating the ADR-0090 display policy. Process-local epoch: the
-/// absolute value is meaningless, only differences matter, which is all
-/// [`PredictionState::should_display`] needs. Lives here (not in
-/// `phux-client-core`) because `std::time::Instant` is unavailable on the
-/// wasm targets the core also serves.
+/// Monotonic milliseconds for prediction stamps (ADR-0090). Here, not in
+/// `phux-client-core`, because `Instant` is unavailable on wasm.
 pub(in crate::attach) fn predict_now_ms() -> u64 {
     use std::sync::OnceLock;
     use std::time::Instant;
@@ -740,19 +615,8 @@ pub(in crate::attach) fn predict_now_ms() -> u64 {
     u64::try_from(epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
-/// Whether the pane's mirror is on the alternate screen buffer — the
-/// screen-mode signal for predictive echo's confirmation-gated display
-/// (ADR-0090).
-///
-/// A pane running vim/nvim, `less`, `htop`, a pager, or an agent TUI (Claude
-/// Code, codex) switches to the alternate screen via DEC private mode `?1049h`
-/// (or the legacy `?1047h` / `?47h`). The driver feeds this into
-/// [`PredictionState::set_alt_screen`], which flips the display policy to
-/// confirmation-gated: predictions still queue and reconcile there, but the
-/// overlay stays hidden until the app proves it echoes. libghostty tracks
-/// each variant independently and reports it via `terminal.mode()` (verified
-/// against a `?1049h`/`?1047h` probe), the same query path the mouse-tracking
-/// and synchronized-output gates use.
+/// Whether the pane is on the alternate screen (`?1049h`, `?1047h`, `?47h`),
+/// the signal for predictive echo's confirmation-gated display (ADR-0090).
 pub(in crate::attach) fn terminal_in_alt_screen(
     terminal: &libghostty_vt::Terminal<'_, '_>,
 ) -> bool {
@@ -856,14 +720,8 @@ pub(super) fn focused_pane_rect(
     )
 }
 
-/// Resolve `SPAWN_RESOURCE.initial_size` for a spawn this client is about to
-/// issue (phux-a5xj), by asking `predict` for the tile the new leaf will
-/// occupy in the current content rect.
-///
-/// `None` — and therefore an absent wire field — whenever the server did not
-/// advertise the capability, the content rect is degenerate, or `predict`
-/// cannot answer. Every one of those falls back to the pre-field behavior:
-/// the server spawns at its default and the reflow resize sizes the pane.
+/// `SPAWN_RESOURCE.initial_size`: the tile `predict` says the new leaf will
+/// occupy, or `None` (field absent) when unsupported or degenerate.
 pub(super) fn spawn_initial_size(
     ctx: &DispatchCtx<'_>,
     predict: impl FnOnce(crate::layout::Rect) -> Option<(u16, u16)>,
@@ -921,28 +779,9 @@ pub(in crate::attach) fn focused_pane_rect_for(
         .unwrap_or(content)
 }
 
-/// phux-z6wt: single choke point for "the focused pane's rect may have
-/// changed without a SIGWINCH firing" — recomputes it via
-/// [`focused_pane_rect_for`] and fans it out to every surviving overlay
-/// ([`OverlayState::on_viewport_resize`]).
-///
-/// PR #331 (phux-d26y) added that fan-out only on the SIGWINCH edge, but a
-/// peer's layout broadcast (`FrameOutcome::layout_replaced` in
-/// `server_frame.rs`) moves the focused pane's rect too, with no SIGWINCH
-/// involved. The same flag also covers the ResourceSpawned/ResourceClosed
-/// reflow path — every `reflow_panes: true` in `server_frame.rs` is emitted
-/// alongside `layout_replaced: true` — so routing through `layout_replaced`
-/// picks up both triggers via one call site instead of three. Toggling zoom
-/// or the sidebar can move the rect too, but both are local keybindings
-/// dispatched through this same module, which routes every key to the
-/// active overlay while one is up (copy-mode included); they cannot fire
-/// while an overlay needs this fan-out, so they are deliberately not wired
-/// here.
-///
-/// Copy-mode is the only overlay this matters to today (see
-/// [`crate::render::overlay::copy_mode`]); every other overlay's
-/// `on_viewport_resize` is a no-op, and the `is_active` guard keeps the
-/// steady-state (no overlay up) cost at one `Vec::is_empty`.
+/// Hand every overlay the focused pane's current rect. The choke point for
+/// rect changes without SIGWINCH (a peer's layout, a spawn/close reflow);
+/// copy mode is the overlay that cares.
 pub(in crate::attach) fn sync_overlays_to_focused_pane(
     overlays: &mut OverlayState,
     workspace: &Workspace,
@@ -957,13 +796,4 @@ pub(in crate::attach) fn sync_overlays_to_focused_pane(
     }
     let pane = focused_pane_rect_for(workspace, zoomed, focused_resource, viewport, bar, sidebar);
     overlays.on_viewport_resize(pane.w, pane.h);
-}
-
-/// Apply a client-local focus change through the single MRU transition path.
-pub(super) fn apply_focus_transition(
-    history: &mut FocusHistory,
-    focused_resource: &mut Option<ResourceId>,
-    target: ResourceId,
-) {
-    history.transition(focused_resource, Some(target));
 }

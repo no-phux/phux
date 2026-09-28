@@ -1,19 +1,9 @@
 //! The [`Registry`] — single source of truth for sessions, windows, and
 //! resources.
 //!
-//! All domain entities live in [`slotmap::SlotMap`]s keyed by the typed IDs
-//! from [`crate::ids`]. The registry preserves parent → child invariants:
-//!
-//! * Removing a [`ResourceDescriptor`] removes every resource bound to it
-//!   as a parent, and — for a Terminal — removes it from its [`Window`]'s
-//!   `slots` list and collapses it out of the layout tree.
-//! * Removing a [`Window`] cascades to every resource in its slots (and
-//!   their children) and unlinks the window from its parent [`Session`].
-//! * Removing a [`Session`] cascades fully to every window and resource it
-//!   owns.
-//!
-//! Lookups by an unknown (e.g. removed) key return `None`. Mutating calls
-//! that reference an unknown parent return [`RegistryError`].
+//! Removal cascades parent to child: session -> windows -> slot resources
+//! -> bound child resources. Unknown keys look up as `None`; mutations
+//! naming an unknown parent return [`RegistryError`].
 
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -73,10 +63,7 @@ impl Registry {
 
     // ---- creation ---------------------------------------------------------
 
-    /// Insert a new session with the given name and return its ID.
-    ///
-    /// `created_at` is stamped with [`SystemTime::now`]. The new session has
-    /// no windows, no active window, and is not keep-empty.
+    /// Insert a new, empty session with the given name.
     pub fn new_session(&mut self, name: String) -> SessionId {
         self.sessions.insert_with_key(|id| Session {
             id,
@@ -88,11 +75,7 @@ impl Registry {
         })
     }
 
-    /// Insert a new window under `session` and return its ID.
-    ///
-    /// The new window is appended to the session's `windows` list. If the
-    /// session previously had no active window, the new window becomes
-    /// active.
+    /// Append a new window to `session`, making it active if none was.
     pub fn new_window(&mut self, session: SessionId) -> Result<WindowId, RegistryError> {
         if !self.sessions.contains_key(session) {
             return Err(RegistryError::UnknownSession(session));
@@ -116,13 +99,8 @@ impl Registry {
 
     /// Insert a new Terminal-kind resource under `window` and return its ID.
     ///
-    /// The terminal is appended to the window's `slots` list and inserted
-    /// into the layout tree. If the window was empty the new terminal becomes
-    /// the sole [`Leaf`](crate::window::LayoutNode::Leaf); otherwise it is
-    /// added by splitting the currently active terminal horizontally at
-    /// `0.5` (tmux-default behavior). If the window had no active terminal,
-    /// the new terminal becomes active. Default dims are `(80, 24)`; cwd
-    /// defaults to the empty path; title is `None`.
+    /// It seeds an empty layout (and becomes active) or splits the active
+    /// terminal horizontally at `0.5`. Dims default to `(80, 24)`.
     pub fn new_terminal(&mut self, window: WindowId) -> Result<ResourceId, RegistryError> {
         if !self.windows.contains_key(window) {
             return Err(RegistryError::UnknownWindow(window));
@@ -145,12 +123,8 @@ impl Registry {
         Ok(terminal_id)
     }
 
-    /// Insert a new AgentSession-kind resource bound to the Terminal
-    /// `parent` and return its ID.
-    ///
-    /// The binding is set here and never changes. An agent session occupies
-    /// no window slot; it is reachable only through its parent and its own
-    /// id.
+    /// Insert a new AgentSession-kind resource bound (permanently) to the
+    /// Terminal `parent`. It occupies no window slot.
     ///
     /// # Errors
     ///
@@ -183,25 +157,15 @@ impl Registry {
         }))
     }
 
-    /// Re-parent a live terminal into another window (ADR-0056), possibly
-    /// in a different session.
-    ///
-    /// Ownership only: the terminal keeps its id, facet, and children.
-    /// The source window's `slots`, layout, and `active` drop the leaf
-    /// exactly as [`Self::remove_resource`] would; the destination window
-    /// gains it exactly as [`Self::new_terminal`] would (seed when empty,
-    /// else split the active slot horizontally at `0.5` — geometry is the
-    /// caller's L3 concern, this placement is just a valid tree). Moving a
-    /// terminal to the window it already occupies is an idempotent no-op.
-    /// An emptied source window persists; the caller reaps it by its
-    /// existing rules.
+    /// Re-parent a live terminal into another window (ADR-0056), keeping its
+    /// id, facet, and children. The source drops the leaf as
+    /// [`Self::remove_resource`] would; the destination gains it as
+    /// [`Self::new_terminal`] would. Moving to the current window is a no-op.
     ///
     /// # Errors
     ///
-    /// [`RegistryError::UnknownResource`] / [`RegistryError::UnknownWindow`]
-    /// when either end does not exist, and `UnknownResource` when `id`
-    /// names a resource that holds no window slot; nothing is mutated on
-    /// error.
+    /// `UnknownWindow` / `UnknownResource` when either end is missing or `id`
+    /// holds no window slot; nothing is mutated on error.
     pub fn move_terminal(&mut self, id: ResourceId, window: WindowId) -> Result<(), RegistryError> {
         if !self.windows.contains_key(window) {
             return Err(RegistryError::UnknownWindow(window));
@@ -233,24 +197,19 @@ impl Registry {
         w.slots.push(id);
         match target {
             None => {
-                // Window was empty — seed the layout. This cannot fail
-                // because the layout is None here.
                 let _ = w.seed_layout(id);
                 w.active = Some(id);
             }
             Some(t) => {
-                // Split the active slot horizontally at the tmux default
-                // ratio. A layout error here is not a registry error: the
-                // slot list stays authoritative and the proptest invariants
-                // catch any drift between it and the tree.
+                // A layout error is not a registry error: slots stay
+                // authoritative.
                 let _ = w.split(t, id, SplitDir::Horizontal, 0.5);
             }
         }
     }
 
-    /// Drop `id` from `w.slots`, collapse it out of the layout, and move
-    /// focus off it. `LastPane` from the collapse is fine — the layout
-    /// becomes `None` and the window persists until removed.
+    /// Drop `id` from `w.slots` and the layout, and move focus off it.
+    /// `LastPane` is fine: the layout becomes `None`.
     fn vacate_slot(w: &mut Window, id: ResourceId) {
         w.slots.retain(|p| *p != id);
         let _ = w.kill_pane(id);
@@ -262,14 +221,7 @@ impl Registry {
     // ---- removal ----------------------------------------------------------
 
     /// Remove a resource, its bound descendants, and (for a Terminal) its
-    /// window slot.
-    ///
-    /// Returns the removed [`ResourceDescriptor`] if it existed, otherwise
-    /// `None`. Every resource whose `parent` is `id` is removed as well, and
-    /// theirs — a descendant never outlives its ancestor. For a Terminal the
-    /// owning window's `slots`, layout tree, and `active` are all updated to
-    /// drop the removed key; when it was the only leaf the window's `layout`
-    /// is cleared (the window persists, empty, until [`Self::remove_window`]).
+    /// window slot. An emptied window persists until [`Self::remove_window`].
     pub fn remove_resource(&mut self, id: ResourceId) -> Option<ResourceDescriptor> {
         let resource = self.resources.remove(id)?;
         self.remove_children_of(id);
@@ -279,36 +231,28 @@ impl Registry {
         Some(resource)
     }
 
-    /// Remove every resource bound to `parent`, then theirs.
-    ///
-    /// Collects one generation, then recurses so a grandchild cannot outlive
-    /// the ancestor `remove_resource` was asked to drop (phux-v4tv). Spawn
-    /// still refuses a second level (ADR-0104 §5); the registry does not
-    /// assume that.
+    /// Remove every resource bound to `parent`, recursively, so no
+    /// descendant outlives its ancestor.
     fn remove_children_of(&mut self, parent: ResourceId) {
-        let children: Vec<ResourceId> = self
-            .resources
-            .iter()
-            .filter(|(_, r)| r.parent == Some(parent))
-            .map(|(id, _)| id)
-            .collect();
-        for child in children {
+        for child in self.children(parent) {
             self.remove_children_of(child);
             self.resources.remove(child);
         }
     }
 
-    /// Remove a window, cascading to all of its slots' resources and their
-    /// children.
-    ///
-    /// Returns the removed [`Window`] if it existed. The parent session's
-    /// `windows` and `active` are updated.
-    pub fn remove_window(&mut self, id: WindowId) -> Option<Window> {
-        let window = self.windows.remove(id)?;
+    /// Drop every resource in `window`'s slots and their descendants.
+    fn remove_slots_of(&mut self, window: &Window) {
         for terminal_id in &window.slots {
             self.resources.remove(*terminal_id);
             self.remove_children_of(*terminal_id);
         }
+    }
+
+    /// Remove a window, cascading to its slots' resources and their
+    /// children, and unlink it from its session.
+    pub fn remove_window(&mut self, id: WindowId) -> Option<Window> {
+        let window = self.windows.remove(id)?;
+        self.remove_slots_of(&window);
         if let Some(s) = self.sessions.get_mut(window.session) {
             s.windows.retain(|w| *w != id);
             if s.active == Some(id) {
@@ -320,16 +264,11 @@ impl Registry {
 
     /// Remove a session, cascading to all of its windows and their
     /// resources.
-    ///
-    /// Returns the removed [`Session`] if it existed.
     pub fn remove_session(&mut self, id: SessionId) -> Option<Session> {
         let session = self.sessions.remove(id)?;
         for window_id in &session.windows {
             if let Some(window) = self.windows.remove(*window_id) {
-                for terminal_id in &window.slots {
-                    self.resources.remove(*terminal_id);
-                    self.remove_children_of(*terminal_id);
-                }
+                self.remove_slots_of(&window);
             }
         }
         Some(session)
@@ -343,17 +282,8 @@ impl Registry {
         self.sessions.get(id)
     }
 
-    /// Iterate over every live `(SessionId, &Session)` pair in the registry.
-    ///
-    /// Order matches [`slotmap::SlotMap::iter`] — i.e. insertion-stable for
-    /// the slots currently occupied, but **not** strictly insertion order
-    /// across remove+reinsert cycles (a removed slot may be re-occupied by a
-    /// later `new_session` and appear earlier in iteration than newer slots).
-    /// Callers that need a stable ordering should sort on a session field
-    /// they own (e.g. `created_at` or `name`).
-    ///
-    /// This is the canonical lookup-by-name primitive: the server crate uses
-    /// it to resolve `ATTACH` requests without maintaining a side ledger.
+    /// Iterate over every live session in slotmap order, which is not
+    /// insertion order across remove/reinsert; sort on a field if it matters.
     pub fn sessions(&self) -> impl Iterator<Item = (SessionId, &Session)> + '_ {
         self.sessions.iter()
     }
@@ -423,24 +353,10 @@ impl Registry {
             .collect()
     }
 
-    // ---- counts -----------------------------------------------------------
-
     /// Number of live sessions.
     #[must_use]
     pub fn session_count(&self) -> usize {
         self.sessions.len()
-    }
-
-    /// Number of live windows.
-    #[must_use]
-    pub fn window_count(&self) -> usize {
-        self.windows.len()
-    }
-
-    /// Number of live resources of every kind.
-    #[must_use]
-    pub fn resource_count(&self) -> usize {
-        self.resources.len()
     }
 
     /// Number of live Terminal-kind resources across every session.

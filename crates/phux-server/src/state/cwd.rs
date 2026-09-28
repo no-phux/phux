@@ -5,18 +5,14 @@ use phux_core::ids::{ResourceId, SessionId, WindowId};
 use super::ServerState;
 
 impl ServerState {
-    /// Read the frozen session-creation directory recorded for `session`
-    /// under the `session-root` cwd-inheritance policy (phux-nyx), if one
-    /// has been captured.
+    /// `session`'s frozen creation directory (`session-root`), if captured.
     #[must_use]
     pub fn session_root(&self, session: SessionId) -> Option<&PathBuf> {
         self.sessions.root(session)
     }
 
-    /// Freeze `root` as `session`'s creation directory the first time it is
-    /// observed; later calls are no-ops so a `cd` in the seed pane cannot
-    /// move an already-recorded root (phux-nyx, `session-root`). Returns the
-    /// effective recorded root.
+    /// Record `session`'s root the first time only; returns the recorded
+    /// root.
     pub fn record_session_root(&mut self, session: SessionId, root: PathBuf) -> &PathBuf {
         self.sessions.record_root(session, root)
     }
@@ -41,9 +37,7 @@ impl ServerState {
         self.sessions.active_window_of(session)
     }
 
-    /// Resolve the seed (oldest) pane of `session` — the first pane of its
-    /// first window. The `session-root` policy reads this pane's CWD to
-    /// establish the session's creation directory.
+    /// `session`'s seed (oldest) pane.
     #[must_use]
     pub fn seed_pane_of_session(&self, session: SessionId) -> Option<ResourceId> {
         self.sessions.seed_pane_of(session)

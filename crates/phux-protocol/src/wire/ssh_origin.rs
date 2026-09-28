@@ -1,25 +1,15 @@
 //! The ssh origin `phux stdio-bridge` stamps on the HELLO it relays
 //! (`docs/spec/proto.md` §6.1 field 9, `docs/spec/L3.md` §3.9).
 //!
-//! `ssh HOST phux stdio-bridge` makes the bridge a Unix-socket client of
-//! HOST's server, so on its own the server would report the ssh-bridged
-//! connection as a local one. The bridge knows more: sshd puts the
-//! connection's endpoints in the remote command's environment
-//! (`SSH_CONNECTION`). The bridge rewrites the client's HELLO to carry them
-//! as the additive `ssh_origin` field. The server accepts the field only from
-//! a Unix-socket peer running as the serving uid, and then reports the route
-//! as `ssh-stdio`.
+//! The bridge, a Unix-socket client of HOST's server, rewrites the relayed
+//! HELLO to carry sshd's `SSH_CONNECTION` endpoints. The server accepts the
+//! field only from a same-uid Unix peer and then reports the route as
+//! `ssh-stdio`.
 //!
-//! The field only labels a connection. It grants nothing: the connection is
-//! authenticated and authorized exactly like any other Unix-socket peer. The
-//! value is whatever the connecting side reported, not an authenticated fact.
-//! The ssh client chooses the remote command and can set the bridge's
-//! `SSH_CONNECTION`, an older bridge forwards a client's own field, and any
-//! process running as the serving user can send one. The bridge always
-//! removes any `ssh_origin` the remote client put in its own HELLO before
-//! adding its own. That guarantees the sshd-reported value only when ssh
-//! forces the bridge command.
-//! Gated on [`ServerFeature::SshOrigin`](crate::caps::ServerFeature::SshOrigin).
+//! The field only labels a connection and grants nothing: it is whatever the
+//! connecting side reported, not an authenticated fact. The bridge always
+//! strips a client-supplied `ssh_origin` before adding its own. Gated on
+//! [`ServerFeature::SshOrigin`](crate::caps::ServerFeature::SshOrigin).
 
 use std::net::{IpAddr, SocketAddr};
 
@@ -38,7 +28,6 @@ pub struct SshOrigin {
     /// The ssh client's address and source port.
     pub client: SocketAddr,
     /// The sshd address and port the client reached, when known.
-    /// `SSH_CLIENT`, the older variable, does not name the server address.
     pub server: Option<SocketAddr>,
 }
 
@@ -46,13 +35,7 @@ pub struct SshOrigin {
 /// `client_addr: str, client_port: u16, has_server: u8, [server_addr: str, server_port: u16]`.
 pub(in crate::wire) fn encode_ssh_origin(origin: &SshOrigin, enc: &mut Encoder<'_>) {
     write_endpoint(origin.client, enc);
-    match origin.server {
-        Some(server) => {
-            enc.write_u8(1);
-            write_endpoint(server, enc);
-        }
-        None => enc.write_u8(0),
-    }
+    enc.write_option(origin.server, |e, server| write_endpoint(server, e));
 }
 
 fn write_endpoint(endpoint: SocketAddr, enc: &mut Encoder<'_>) {
@@ -60,9 +43,8 @@ fn write_endpoint(endpoint: SocketAddr, enc: &mut Encoder<'_>) {
     enc.write_u16_be(endpoint.port());
 }
 
-/// Read a HELLO field-9 value. An unreadable value decodes as `None`: an
-/// origin the server cannot parse is ignored, never a reason to refuse the
-/// HELLO.
+/// Read a HELLO field-9 value; an unreadable one is ignored (`None`), never a
+/// reason to refuse the HELLO.
 pub(in crate::wire) fn decode_ssh_origin(value: &[u8]) -> Option<SshOrigin> {
     let mut dec = Decoder::new(value);
     let client = read_endpoint(&mut dec)?;
@@ -80,21 +62,12 @@ fn read_endpoint(dec: &mut Decoder<'_>) -> Option<SocketAddr> {
     Some(SocketAddr::new(ip, port))
 }
 
-/// Rewrite one complete `HELLO` frame so that its `ssh_origin` field is
-/// exactly `origin`.
+/// Rewrite one whole `HELLO` frame so its `ssh_origin` is exactly `origin`.
 ///
-/// `frame` is the whole frame: length prefix, type byte, and body. Every other
-/// field is copied byte for byte and in order. Every `ssh_origin` already
-/// present is always dropped. `origin`, when `Some`, is appended only if the
-/// HELLO still fits the frame cap; otherwise the HELLO leaves with no
-/// `ssh_origin` at all, and the server reports `uds`. A client-supplied field
-/// 9 never survives a rewrite, whatever the frame's size.
-///
-/// Returns `None` only when forwarding `frame` unchanged cannot carry a
-/// client-supplied field 9 into an accepted HELLO: it is not one well-framed
-/// HELLO, its body is not a TLV field sequence (the server walks the same
-/// fields and refuses such a HELLO), or it carries no `ssh_origin` and none is
-/// to be added.
+/// Other fields are copied in order; every existing `ssh_origin` is dropped;
+/// `origin` is appended only if it fits the frame cap. `None` means the frame
+/// is safe to forward unchanged: not a well-framed TLV HELLO (the server
+/// refuses it anyway), or no origin present and none to add.
 #[must_use]
 pub fn restamp_hello(frame: &[u8], origin: Option<SshOrigin>) -> Option<Vec<u8>> {
     let body = hello_body(frame)?;
@@ -132,9 +105,8 @@ fn fields_without_origin(body: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-/// Append `origin` as field 9 unless the HELLO would then exceed the frame
-/// cap. Leaving it out only makes the server report `uds`; the client's own
-/// field 9 is already gone either way.
+/// Append `origin` as field 9 unless the HELLO would exceed the frame cap
+/// (then the server just reports `uds`).
 fn append_origin_if_it_fits(fields: &mut Vec<u8>, origin: SshOrigin) {
     let mut encoded = BytesMut::new();
     Encoder::new(&mut encoded).write_field_with(field::hello::SSH_ORIGIN, |enc| {
@@ -147,9 +119,7 @@ fn append_origin_if_it_fits(fields: &mut Vec<u8>, origin: SshOrigin) {
     }
 }
 
-/// Frame `fields` as one HELLO. Infallible: `fields` is never longer than a
-/// body that already fit a `u32` length prefix, plus an origin appended only
-/// under the cap.
+/// Frame `fields` as one HELLO (always under the cap by construction).
 fn hello_frame(fields: &[u8]) -> Vec<u8> {
     let body_len = 1 + fields.len();
     let length = u32::try_from(body_len).unwrap_or(u32::MAX);

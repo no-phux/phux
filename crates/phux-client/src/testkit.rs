@@ -1,78 +1,17 @@
 //! One scripted server for every client-side test, so a fake cannot lie
 //! about the protocol.
 //!
-//! # Why this module exists
+//! The harness owns frame **order** (in `reference_reply`, each arm citing
+//! the server handler it models); a test supplies only **payloads**. So a
+//! test can describe any scenario but not an ordering the reference server
+//! would not produce. Encoded orderings: the attach bootstrap precedes the
+//! `ATTACH_RESOURCE` ack (and is mandatory); a hub's degradation `ERROR`s
+//! precede the `GET_STATE` ack; `SUBSCRIBE_EVENTS`, `SUBSCRIBE_METADATA`, and
+//! `SET_METADATA` get no reply; `SPAWN_RESOURCE` gets a correlated
+//! `RESOURCE_SPAWNED` (mandatory) or `ERROR`.
 //!
-//! Before it, every module that needed a server stood up its own fake, and
-//! each fake encoded what its author *believed* the server does. That is the
-//! same belief that produced the bug the test is supposed to catch, so the
-//! fake catches nothing. The concrete failure: seventeen `phux rec` unit
-//! tests passed against a completely non-functional feature, because the
-//! local fake answered `COMMAND_RESULT` *before* the priming bootstrap
-//! transcript while the reference server does the opposite. Every capture
-//! against a real server came back as a 0x0 grid with nothing playable in it,
-//! and the suite was green throughout.
-//!
-//! The fix is not "write better fakes". It is to have exactly one place
-//! where the server's frame *order* is written down — the private
-//! `reference_reply` function below — and to make every test route through it.
-//!
-//! # What is owned here versus supplied by the test
-//!
-//! The harness owns **order**. A test supplies **payloads**:
-//!
-//! - the priming snapshot's geometry and replay bytes, but never whether it
-//!   precedes the ack (it always does);
-//! - the `GET_STATE` snapshot, but never whether a hub's degradation
-//!   `ERROR`s precede the ack (they always do);
-//! - metadata values, but never their correlation.
-//!
-//! That split is the whole point: a test can still describe any scenario,
-//! and cannot describe an ordering the reference server would not produce.
-//!
-//! # The orderings encoded, with their reference-server citations
-//!
-//! - `ATTACH_RESOURCE` — `handle_attach_terminal`
-//!   (`crates/phux-server/src/runtime/commands.rs`) pushes the authoritative
-//!   bootstrap transcript before the acknowledgement and never re-sends it.
-//!   [`ScriptSpec::priming_snapshot`] is therefore **mandatory** for any script
-//!   whose client attaches a Terminal: a script without one panics rather than
-//!   silently modelling a
-//!   server that does not exist.
-//! - `GET_STATE` — `handle_get_state_federated` emits one uncorrelated
-//!   `ERROR` per unreachable satellite *ahead of* the merged snapshot's ack,
-//!   deliberately ("observable degradation, not silence").
-//! - `SUBSCRIBE_EVENTS` — `handle_subscribe_events`
-//!   (`crates/phux-server/src/runtime/client.rs`) registers the subscription
-//!   and sends **no reply at all**. A fake that acked it would teach the
-//!   client to wait for a frame that never comes.
-//! - `SUBSCRIBE_METADATA` — `handle_subscribe_metadata`
-//!   (`crates/phux-server/src/runtime/client.rs`) likewise registers and
-//!   replies with nothing, and captures the connection's mailbox so fanout
-//!   reaches a consumer that never attached. A script carrying a
-//!   `METADATA_CHANGED` therefore waits for *this* frame rather than
-//!   `SUBSCRIBE_EVENTS` before it plays.
-//! - `HELLO` — answered with `HELLO_OK` echoing this build's
-//!   [`PROTOCOL_VERSION`].
-//! - `GET_METADATA` / `SET_METADATA` — correlated `METADATA_VALUE` /
-//!   `COMMAND_RESULT` on the caller's `request_id`.
-//! - `SPAWN_RESOURCE` — `handle_spawn_terminal`
-//!   (`crates/phux-server/src/runtime/client.rs`) answers with
-//!   `RESOURCE_SPAWNED` on the caller's `request_id`, behind any frames
-//!   already queued for the connection. [`ScriptSpec::spawn_result`] is
-//!   therefore **mandatory** for a script whose client spawns.
-//!   [`ScriptSpec::refuse_spawn`] models the other legal answer: the
-//!   correlated `ERROR` a hub surfaces when a satellite refuses the relayed
-//!   spawn (`crates/phux-server/src/hub/relay.rs`, `handle_inbound`).
-//!
-//! # Scope
-//!
-//! Deliberately a *client-side* harness: it speaks the server half of a
-//! `UnixStream` with [`phux_protocol`]'s codec and nothing else. It is not a
-//! second implementation of the server — for behaviour (PTY, layout,
-//! federation) the integration tests drive the real `ServerRuntime`. This
-//! exists for the unit tests that must not pay for a PTY, and whose only
-//! previous alternative was a hand-written fake.
+//! A client-side harness only: behaviour (PTY, layout, federation) is tested
+//! against the real `ServerRuntime`.
 
 #![allow(
     clippy::expect_used,
@@ -143,20 +82,14 @@ pub struct ScriptSpec {
     /// Answers `GET_METADATA` for keys the session has not itself written;
     /// `None` answers every such key with no value.
     metadata: Option<MetadataResponder>,
-    /// Keys this session stored via `SET_METADATA`. A later `GET_METADATA`
-    /// reads them back, which is what `handle_set_metadata` /
-    /// `handle_get_metadata` do — and what a read-modify-write caller (the
-    /// layout CAS) depends on being true.
+    /// Keys this session stored via `SET_METADATA`, read back by a later
+    /// `GET_METADATA` (what a read-modify-write caller depends on).
     metadata_store: Vec<(Scope, String, Vec<u8>)>,
     /// When set, every metadata request is refused with a *correlated*
     /// `ERROR` instead of answered.
     metadata_error: Option<(ErrorCode, String)>,
-    /// `SET_METADATA` on one of these `(scope, key)` pairs is silently
-    /// ignored — never stored, no reply (there is none to send anyway) —
-    /// the same real-world shape as a value over
-    /// `limits.metadata-value-bytes` or a concurrent writer's own write
-    /// landing after this session's confirming `GET_METADATA` already
-    /// captured the old value. See [`Self::drop_metadata_writes`].
+    /// `SET_METADATA` on these `(scope, key)` pairs is silently ignored.
+    /// See [`Self::drop_metadata_writes`].
     dropped_metadata_writes: std::collections::HashSet<(Scope, String)>,
     /// The `RESOURCE_SPAWNED` payload a `SPAWN_RESOURCE` is answered with.
     spawn: Option<SpawnResult>,
@@ -165,19 +98,13 @@ pub struct ScriptSpec {
     spawn_error: Option<(ErrorCode, String)>,
     /// The `RESOURCE_MOVED` payload a `MOVE_RESOURCE` is answered with.
     move_result: Option<MoveResult>,
-    /// The client count a `DetachClients` command acks with. `None` defaults
-    /// to `0` (nobody was attached) — `handle_detach_clients`
-    /// (`crates/phux-server/src/runtime/commands.rs`) always answers
-    /// `OkWith(Json(count))` and never refuses, so this needs no error twin.
+    /// The client count a `DetachClients` command acks with (default `0`).
     detach_result: Option<u64>,
-    /// The `COMMAND_RESULT` an `APPEND_RESOURCE_OUTPUT` is answered with.
-    /// `None` answers a bare `Ok`, the reply of a server that stamps nothing
-    /// back; a test that wants the stamped header or a typed refusal sets
-    /// it.
+    /// The `COMMAND_RESULT` an `APPEND_RESOURCE_OUTPUT` is answered with
+    /// (default a bare `Ok`).
     append_result: Option<CommandResult>,
-    /// The additive features the scripted server advertises in `HELLO_OK`.
-    /// Empty by default, so a client's feature gate is exercised by
-    /// omission: a verb that needs a bit must refuse against `new()`.
+    /// The features `HELLO_OK` advertises; empty by default, so a verb that
+    /// needs a bit must refuse against `new()`.
     server_features: ServerFeatureSet,
     /// When set, `GET_SCREEN` is never answered: the connection stays open
     /// and silent. See [`ScriptSpec::wedge_screen_reads`].
@@ -200,9 +127,8 @@ pub struct ScriptSpec {
     terminal_state: Option<String>,
     /// Pushed once the client's `SUBSCRIBE_EVENTS` registers.
     script: Vec<FrameKind>,
-    /// phux-k0cw: frames released only when the client subscribes to that
-    /// exact `(scope, key)` — the fanout rule a real server applies, and the
-    /// only way to assert a client subscribed to the RIGHT key.
+    /// Frames released only when the client subscribes to that exact
+    /// `(scope, key)`, as the real fanout does.
     keyed_script: Vec<(Scope, String, Vec<FrameKind>)>,
     /// What to do after the script.
     end: EndOfScript,
@@ -211,31 +137,10 @@ pub struct ScriptSpec {
 impl fmt::Debug for ScriptSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ScriptSpec")
-            .field("priming", &self.priming)
-            .field("keyed_script", &self.keyed_script.len())
             .field("state", &self.state)
-            .field("states", &self.states)
-            .field("pre_ack", &self.pre_ack)
-            .field("metadata", &self.metadata.is_some())
-            .field("metadata_store", &self.metadata_store)
-            .field("metadata_error", &self.metadata_error)
-            .field("dropped_metadata_writes", &self.dropped_metadata_writes)
-            .field("spawn", &self.spawn)
-            .field("spawn_error", &self.spawn_error)
-            .field("move_result", &self.move_result)
-            .field("detach_result", &self.detach_result)
-            .field("append_result", &self.append_result)
-            .field("server_features", &self.server_features)
-            .field("wedge_screen_reads", &self.wedge_screen_reads)
-            .field("screen", &self.screen)
-            .field("input_acks_left", &self.input_acks_left)
-            .field("state_error", &self.state_error)
-            .field("after_state", &self.after_state)
-            .field("server_id", &self.server_id)
-            .field("terminal_state", &self.terminal_state)
             .field("script", &self.script)
             .field("end", &self.end)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -288,11 +193,8 @@ impl ScriptSpec {
     /// The retained `AgentEventsJsonlV1` transcript pushed before the
     /// `ATTACH_RESOURCE` acknowledgement of an `AgentSession` resource.
     ///
-    /// The agent-session twin of [`Self::priming_snapshot`]: `BOOTSTRAP_BEGIN`
-    /// carries `cols = rows = 0` (a session has no grid) and the JSONL
-    /// profile; one `BOOTSTRAP_CHUNK` per retained line follows, so a test
-    /// exercises the reader's chunk boundary handling for free; `READY`
-    /// closes the transcript.
+    /// A 0x0 JSONL-profile `BOOTSTRAP_BEGIN`, one `BOOTSTRAP_CHUNK` per
+    /// line, then `READY`.
     ///
     /// # Panics
     ///
@@ -355,25 +257,16 @@ impl ScriptSpec {
         self
     }
 
-    /// Frames pushed right after the next `GET_STATE` ack: one batch per
-    /// call, consumed by successive acks in order.
-    ///
-    /// The reference server fans an `EVENT` out to a subscribed connection
-    /// whenever it happens (`broadcast_event`), so an event can follow any
-    /// ack. This models the one ordering a subscribe-then-read client must
-    /// handle after its read: an event that happened after the snapshot was
-    /// cut.
+    /// Frames pushed right after the next `GET_STATE` ack (one batch per
+    /// call): an event that happened after the snapshot was cut.
     #[must_use]
     pub fn push_after_state(mut self, frames: Vec<FrameKind>) -> Self {
         self.after_state.push_back(frames);
         self
     }
 
-    /// The JSON a `GET_TERMINAL_STATE` is answered with.
-    ///
-    /// `handle_get_terminal_state` answers `OK_WITH(JSON(..))` and pushes
-    /// nothing ahead of the ack. Without this the harness answers a bare
-    /// `Ok`, which a client rightly reads as "no process facet".
+    /// The JSON a `GET_TERMINAL_STATE` is answered with (else a bare `Ok`:
+    /// no process facet).
     #[must_use]
     pub fn terminal_state(mut self, json: &serde_json::Value) -> Self {
         self.terminal_state = Some(json.to_string());
@@ -394,13 +287,8 @@ impl ScriptSpec {
         self
     }
 
-    /// A hub's per-satellite degradation notice: an *uncorrelated* `ERROR`
+    /// A hub's per-satellite degradation notice: an uncorrelated `ERROR`
     /// pushed ahead of the next command ack.
-    ///
-    /// `handle_get_state_federated` emits one of these per unreachable
-    /// satellite on purpose. It is not any command's answer (`proto.md` §9),
-    /// so a client that treats it as one reports a partial fleet view as
-    /// complete.
     #[must_use]
     pub fn degradation_notice(mut self, message: &str) -> Self {
         self.pre_ack.push(FrameKind::Error {
@@ -436,12 +324,8 @@ impl ScriptSpec {
     }
 
     /// Seed the stored value for one (scope, key), as if a prior writer had
-    /// `SET_METADATA`'d it.
-    ///
-    /// Prefer this over [`Self::metadata`] whenever the client will *write*
-    /// the key too: the store is read back on the next `GET_METADATA`, so a
-    /// read-modify-write round trip behaves the way it does against the real
-    /// server instead of replaying a canned answer.
+    /// set it. Prefer this over [`Self::metadata`] when the client also
+    /// writes the key.
     #[must_use]
     pub fn stored_metadata(mut self, scope: Scope, key: &str, value: Vec<u8>) -> Self {
         self.metadata_store.push((scope, key.to_owned(), value));
@@ -459,36 +343,24 @@ impl ScriptSpec {
         self
     }
 
-    /// Refuse every metadata request with a *correlated* `ERROR`.
-    ///
-    /// L1 §5 lets a server answer a request it will not serve (a foreign
-    /// Group, an unimplemented command) with `ERROR { request_id: Some(..) }`
-    /// rather than a reply frame; the correlation is what stops the caller
-    /// waiting forever.
+    /// Refuse every metadata request with a correlated `ERROR` (L1 §5).
     #[must_use]
     pub fn refuse_metadata(mut self, code: ErrorCode, message: &str) -> Self {
         self.metadata_error = Some((code, message.to_owned()));
         self
     }
 
-    /// Make `SET_METADATA` on this exact `(scope, key)` a silent no-op: the
-    /// value is never stored, and (since `SET_METADATA` has no reply frame
-    /// to carry an error) nothing is sent back either — the same shape a
-    /// value over `limits.metadata-value-bytes` has on the real server, or
-    /// what a concurrent writer's own later write looks like from this
-    /// session's side. Pair with [`Self::stored_metadata`] to seed the
-    /// value a subsequent `GET_METADATA` (a confirming read) sees instead.
+    /// Make `SET_METADATA` on this `(scope, key)` a silent no-op, as an
+    /// oversized value or a racing writer looks from this session. Pair
+    /// with [`Self::stored_metadata`] to seed what a confirming read sees.
     #[must_use]
     pub fn drop_metadata_writes(mut self, scope: Scope, key: &str) -> Self {
         self.dropped_metadata_writes.insert((scope, key.to_owned()));
         self
     }
 
-    /// The `RESOURCE_SPAWNED` payload a `SPAWN_RESOURCE` is answered with.
-    ///
-    /// Mandatory for any script whose client spawns: without it the harness
-    /// panics rather than modelling a server that answers a spawn with
-    /// silence.
+    /// The `RESOURCE_SPAWNED` payload a `SPAWN_RESOURCE` is answered with;
+    /// mandatory for a script whose client spawns.
     #[must_use]
     pub fn spawn_result(mut self, result: SpawnResult) -> Self {
         self.spawn = Some(result);
@@ -510,13 +382,8 @@ impl ScriptSpec {
         self
     }
 
-    /// Refuse every `SPAWN_RESOURCE` with a *correlated* `ERROR`.
-    ///
-    /// A satellite MAY answer a relayed spawn this way instead of with
-    /// `RESOURCE_SPAWNED` — `crates/phux-server/src/hub/relay.rs`
-    /// (`handle_inbound`) normalizes exactly that shape on the return leg, so
-    /// it is a shape a hub's own clients can see. The correlation is what
-    /// stops the caller waiting forever.
+    /// Refuse every `SPAWN_RESOURCE` with a correlated `ERROR`, as a hub
+    /// relays a satellite's refusal.
     #[must_use]
     pub fn refuse_spawn(mut self, code: ErrorCode, message: &str) -> Self {
         self.spawn_error = Some((code, message.to_owned()));
@@ -531,24 +398,16 @@ impl ScriptSpec {
         self
     }
 
-    /// Never answer `GET_SCREEN`: the connection stays open and silent.
-    ///
-    /// This deliberately models a server that does *not* behave like the
-    /// reference one — a wedged pane actor or a stuck hub relay — because
-    /// that is exactly the peer a deadline has to survive. Everything else
-    /// (`HELLO`, `GET_STATE`, the `ROUTE_INPUT` acks) is still answered in
-    /// reference order, so a client reaches the read before it stalls.
+    /// Never answer `GET_SCREEN`: a deliberately wedged peer a deadline must
+    /// survive. Everything else is still answered.
     #[must_use]
     pub const fn wedge_screen_reads(mut self) -> Self {
         self.wedge_screen_reads = true;
         self
     }
 
-    /// The screen a `GET_SCREEN` is answered with.
-    ///
-    /// `handle_get_screen` answers `OK_WITH(JSON(ScreenState))` and pushes
-    /// nothing ahead of the ack (see `crate::snapshot`). Without this the
-    /// harness answers a bare `Ok`, which the client rightly refuses.
+    /// The screen a `GET_SCREEN` is answered with (else a bare `Ok`, which
+    /// the client refuses).
     ///
     /// # Panics
     ///
@@ -559,13 +418,8 @@ impl ScriptSpec {
         self
     }
 
-    /// Acknowledge the first `acked` `ROUTE_INPUT`s, then never answer
-    /// another.
-    ///
-    /// Like [`Self::wedge_screen_reads`] this deliberately models a wedged
-    /// server rather than the reference one: the case where a command line
-    /// lands but its Enter never does, which a client deadline must report
-    /// as partial input instead of a command that ran.
+    /// Acknowledge the first `acked` `ROUTE_INPUT`s, then go silent: a
+    /// command line that lands without its Enter.
     #[must_use]
     pub const fn wedge_input_after(mut self, acked: usize) -> Self {
         self.input_acks_left = Some(acked);
@@ -586,15 +440,8 @@ impl ScriptSpec {
         self
     }
 
-    /// Append frames released only once the client has subscribed to THIS
-    /// exact `(scope, key)` pair (phux-k0cw).
-    ///
-    /// The unkeyed [`Self::push`] releases its whole script on the first
-    /// `SUBSCRIBE_METADATA` of any shape. That is fine while a client has one
-    /// metadata subscription, but it cannot express "the server fans this out
-    /// to subscribers of THIS key" — so a test written against it passes
-    /// against a client that subscribed to the WRONG key, which is precisely
-    /// the bug worth catching once a client watches several.
+    /// Append frames released only once the client subscribes to this exact
+    /// `(scope, key)`, so a client watching the wrong key sees nothing.
     #[must_use]
     pub fn push_after_subscribe(
         mut self,
@@ -617,10 +464,7 @@ impl ScriptSpec {
     /// fans out to a metadata subscriber, so [`ScriptedServer::run`] knows
     /// which `SUBSCRIBE_*` unlocks it.
     fn script_needs_metadata_subscription(&self) -> bool {
-        // A keyed script is by definition released by a SUBSCRIBE_METADATA,
-        // so it must also hold the hang-up open past SUBSCRIBE_EVENTS —
-        // otherwise the fixture closes before the client has asked for the
-        // key, and every keyed assertion would vacuously fail (phux-k0cw).
+        // A keyed script must hold the hang-up open past SUBSCRIBE_EVENTS.
         !self.keyed_script.is_empty()
             || self
                 .script
@@ -647,14 +491,8 @@ impl ScriptedServer {
         }
     }
 
-    /// Accept one connection on `listener` and serve `spec` on it — the
-    /// on-disk-socket shape, for the paths that dial with
-    /// `Connection::connect` rather than a stream pair.
-    ///
-    /// Borrowed rather than owned so one listener can serve a sequence of
-    /// client connections (`phux resize` reads back over a second dial); the
-    /// `'static` future `tokio::spawn` wants is an `async move` block that
-    /// captures the listener and lends it here.
+    /// Accept one connection on `listener` and serve `spec` on it. Borrowed
+    /// so one listener can serve a sequence of connections.
     ///
     /// # Panics
     ///
@@ -668,10 +506,8 @@ impl ScriptedServer {
     /// or the client hangs up. Returns every frame the client sent, in order
     /// — which is what the "never sends ATTACH" style guards inspect.
     ///
-    /// Under the default [`EndOfScript::ServeUntilDetach`] the future only
-    /// resolves once the client's side of the socket is gone, exactly like a
-    /// real server: a test that keeps its `Connection` in scope and then
-    /// joins this task will hang. Drop the connection first.
+    /// Under [`EndOfScript::ServeUntilDetach`] it resolves only once the
+    /// client hangs up: drop the `Connection` before joining.
     ///
     /// # Panics
     ///
@@ -684,18 +520,9 @@ impl ScriptedServer {
             for reply in reference_reply(&frame, &mut self.spec) {
                 self.link.send(&reply).await;
             }
-            // The script stands in for the pane actor's fanout, which only
-            // reaches a client once its subscription is registered. Playing
-            // it earlier would emit EVENT frames to a client the server does
-            // not yet know is listening.
-            //
-            // Which subscription unlocks it depends on what the script
-            // carries. `METADATA_CHANGED` is fanned out to metadata
-            // subscribers only (`broadcast_metadata_changed`), and a `watch`
-            // client sends `SUBSCRIBE_EVENTS` *then* `SUBSCRIBE_METADATA`,
-            // so a script with a metadata push must wait for the second one
-            // or it would model a server pushing L3 to a client that had not
-            // asked for it.
+            // The script stands in for fanout, which reaches a client only
+            // once the matching subscription registers: `METADATA_CHANGED`
+            // waits for `SUBSCRIBE_METADATA`, everything else for events.
             let subscribed = if self.spec.script_needs_metadata_subscription() {
                 matches!(frame, FrameKind::SubscribeMetadata { .. })
             } else {
@@ -706,10 +533,7 @@ impl ScriptedServer {
                     self.link.send(&pushed).await;
                 }
             }
-            // phux-k0cw: a keyed push models the real fanout rule — a
-            // METADATA_CHANGED reaches only the clients subscribed to that
-            // (scope, key). Released on the matching subscribe and never
-            // before, so a client that watched the wrong key sees nothing.
+            // A keyed push is released on the matching subscribe only.
             if let FrameKind::SubscribeMetadata { scope, key } = &frame {
                 let mut released: Vec<FrameKind> = Vec::new();
                 self.spec.keyed_script.retain(|(s, k, frames)| {
@@ -736,15 +560,9 @@ impl ScriptedServer {
                 break;
             }
             if subscribed && self.spec.end == EndOfScript::HangUp {
-                // Half-close the server's write side before draining the
-                // client. Dropping a Unix socket with unread client frames
-                // can surface as ECONNRESET instead of the clean EOF this
-                // fixture promises (a terminal-scoped watch sends its
-                // metadata subscription immediately after SUBSCRIBE_EVENTS).
-                // The client observes EOF while this side gives the one
-                // immediately-following frame a bounded chance to land.
-                // Do not wait for the client's final close: some harness
-                // callers keep their Connection alive while joining us.
+                // Half-close so the client sees a clean EOF rather than
+                // ECONNRESET from unread frames; give one racing frame a
+                // bounded chance to land, without waiting for the close.
                 self.link.close_output().await;
                 if let Ok(Some(frame)) =
                     tokio::time::timeout(std::time::Duration::from_millis(50), self.link.recv())
@@ -759,12 +577,28 @@ impl ScriptedServer {
     }
 }
 
+/// Bind `phux.sock` in `dir` and serve `spec` to the one client that dials
+/// it. Returns the socket path and the server task, which yields every frame
+/// the client sent.
+///
+/// # Panics
+///
+/// If the bind fails.
+#[must_use]
+pub fn serve_one(
+    dir: &std::path::Path,
+    spec: ScriptSpec,
+) -> (std::path::PathBuf, tokio::task::JoinHandle<Vec<FrameKind>>) {
+    let socket = dir.join("phux.sock");
+    let listener = UnixListener::bind(&socket).expect("bind scripted server");
+    let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+    (socket, server)
+}
+
 /// Serve every connection `listener` accepts with a fresh spec from
 /// `make_spec`, until the task is dropped.
 ///
-/// For clients that dial more than once in one operation — `phux run`
-/// resolves its target, submits input, and reads the screen over separate
-/// connections.
+/// For clients that dial more than once in one operation (`phux run`).
 ///
 /// # Panics
 ///
@@ -782,9 +616,7 @@ pub async fn serve_every(
 /// Accept every connection and never read from or write to it: a peer that
 /// is listening but never answers `HELLO`.
 ///
-/// Not a model of the reference server; it is the stalled peer a client
-/// deadline must survive. Each accepted stream is parked in its own task that
-/// never finishes, so the client sees silence rather than EOF.
+/// The stalled peer a client deadline must survive: silence, not EOF.
 ///
 /// # Panics
 ///
@@ -802,10 +634,8 @@ pub async fn hold_silent(listener: UnixListener) {
 /// The frames the reference server emits in response to one client frame,
 /// **in the exact order it emits them**.
 ///
-/// This function is the contract. It is the only place in the workspace's
-/// test code that decides what precedes an ack, and every scripted server
-/// routes through it. Extending it means citing the server handler that
-/// justifies the new ordering, the way the existing arms do.
+/// The only place test code decides what precedes an ack; a new arm cites
+/// the server handler that justifies its ordering.
 ///
 /// # Panics
 ///
@@ -831,24 +661,13 @@ fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
             request_id,
             command,
         } => command_reply(*request_id, command, spec),
-        // `handle_subscribe_events` registers the subscription and replies
-        // with nothing at all. Spelled out rather than folded into the
-        // wildcard because "no reply" is the load-bearing fact here: a fake
-        // that acked SUBSCRIBE_EVENTS would teach a client to wait forever.
+        // `handle_subscribe_events` / `handle_subscribe_metadata` register
+        // and reply with nothing; an ack would teach a client to wait forever.
         #[allow(
             clippy::match_same_arms,
             reason = "documents an ordering fact, not a fallthrough"
         )]
-        FrameKind::SubscribeEvents { .. } => Vec::new(),
-        // `handle_subscribe_metadata` (`crates/phux-server/src/runtime/client.rs`)
-        // likewise registers the subscription and replies with nothing —
-        // and, since it captures the connection's mailbox, does so whether
-        // or not the client ever attached.
-        #[allow(
-            clippy::match_same_arms,
-            reason = "documents an ordering fact, not a fallthrough"
-        )]
-        FrameKind::SubscribeMetadata { .. } => Vec::new(),
+        FrameKind::SubscribeEvents { .. } | FrameKind::SubscribeMetadata { .. } => Vec::new(),
         FrameKind::GetMetadata {
             request_id,
             scope,
@@ -869,12 +688,8 @@ fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
                 .retain(|(stored_scope, stored_key, _)| stored_scope != scope || stored_key != key);
             Vec::new()
         }
-        // `handle_spawn_terminal` (`crates/phux-server/src/runtime/client.rs`)
-        // answers with `RESOURCE_SPAWNED` on the caller's `request_id`, after
-        // whatever this connection already had queued. A hub relaying to a
-        // satellite may instead surface the satellite's *correlated* `ERROR`
-        // (`crates/phux-server/src/hub/relay.rs`, `handle_inbound`), which is
-        // what [`ScriptSpec::refuse_spawn`] models.
+        // `handle_spawn_terminal`: `RESOURCE_SPAWNED` after anything queued,
+        // or a hub-relayed correlated `ERROR`.
         FrameKind::SpawnResource { request_id, .. } => {
             let mut out = std::mem::take(&mut spec.pre_ack);
             if let Some((code, message)) = spec.spawn_error.clone() {
@@ -902,32 +717,22 @@ fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
                 "a scripted server whose client sends MOVE_RESOURCE must declare an outcome",
             ),
         }],
-        // Request-shaped frames the reference server *does* answer but this
-        // harness has not modelled yet. Refusing loudly beats replying with
-        // nothing: a silent no-reply wedges the client until its transport
-        // dies, and the test that added the call would time out with no clue
-        // why.
+        // Answered by the real server but not modelled yet: fail loudly
+        // rather than wedge the client with silence.
         FrameKind::Attach { .. } | FrameKind::ListMetadata { .. } => {
             panic!(
-                "the scripted server has no reference ordering for {frame:?} yet. The                  real server answers it (ATTACHED / METADATA_LIST); add the arm to                  `reference_reply` with the handler citation rather than hand-rolling a                  fake for one test."
+                "the scripted server has no reference ordering for {frame:?} yet; add an \
+                 arm to `reference_reply` citing the server handler"
             )
         }
-        // Everything else is genuinely fire-and-forget on this wire —
-        // ROUTE_INPUT, VIEWPORT_RESIZE, FRAME_ACK, DETACH, PING's pong aside.
+        // Everything else is fire-and-forget on this wire.
         _ => Vec::new(),
     }
 }
 
-/// `SET_METADATA` is **fire-and-forget**: `handle_set_metadata`
-/// (`crates/phux-server/src/runtime/client.rs`) is not even handed the
-/// outbound sender, and says so in prose — "`SET_METADATA` has no reply
-/// frame to carry an error", so a malformed write is a silent no-op. Acking
-/// it here would be precisely the class of lie this module exists to
-/// prevent: a client written against the ack would wait for a frame the
-/// server never sends. The write is still *stored* unless `key` is one of
-/// [`ScriptSpec::drop_metadata_writes`]'s pinned no-ops, so a
-/// read-modify-write caller sees its own value on the confirming GET,
-/// which is how the layout CAS actually closes.
+/// `SET_METADATA` has no reply (`handle_set_metadata`); the write is stored
+/// unless pinned by [`ScriptSpec::drop_metadata_writes`], so a confirming
+/// read sees it.
 fn set_metadata_reply(
     request_id: u32,
     scope: &Scope,
@@ -957,9 +762,7 @@ fn set_metadata_reply(
 
 /// The reply sequence for one `COMMAND`, pre-ack pushes first.
 fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> Vec<FrameKind> {
-    // Every command ack is preceded by whatever the server had queued for
-    // this connection. Draining here (rather than per-command) is what makes
-    // the interleave unavoidable for the first ack of any session.
+    // Every command ack is preceded by whatever was queued.
     let mut out = std::mem::take(&mut spec.pre_ack);
     match command {
         Command::AttachResource { .. } => {
@@ -1000,10 +803,7 @@ fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> V
                 result: CommandResult::OkWith(CommandValue::Json(json)),
             });
         }
-        // `handle_detach_clients` (`crates/phux-server/src/runtime/commands.rs`)
-        // always answers `OkWith(Json(count))`, never a bare `Ok` — modeled
-        // explicitly rather than falling into the generic wildcard below,
-        // which would teach a client under test the wrong reply shape.
+        // `handle_detach_clients` always answers `OkWith(Json(count))`.
         Command::DetachClients { .. } => {
             let count = spec.detach_result.unwrap_or(0);
             out.push(FrameKind::CommandResult {
@@ -1011,11 +811,7 @@ fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> V
                 result: CommandResult::OkWith(CommandValue::Json(count.to_string())),
             });
         }
-        // `APPEND_RESOURCE_OUTPUT` is answered with a correlated
-        // `COMMAND_RESULT`: `Ok` (optionally carrying the stamped header as
-        // JSON), or `Error` with one of `WRONG_RESOURCE_KIND` /
-        // `NOT_PRODUCER` / `RECORD_INVALID` / `OVERFLOW`
-        // (`docs/spec/L1.md`, ADR-0103). The test supplies which.
+        // `APPEND_RESOURCE_OUTPUT`: the test supplies the result.
         Command::AppendResourceOutput { .. } => {
             let result = spec.append_result.clone().unwrap_or(CommandResult::Ok);
             out.push(FrameKind::CommandResult { request_id, result });
@@ -1072,12 +868,7 @@ fn metadata_reply(request_id: u32, scope: &Scope, key: &str, spec: &mut ScriptSp
     FrameKind::MetadataValue { request_id, value }
 }
 
-/// Length-prefixed frame I/O over the server half of a `UnixStream`.
-///
-/// The same SPEC §5 framing `Connection` speaks, minus the coalescing
-/// buffer: a harness reads one frame at a time by construction, and the
-/// hand-rolled copies of this that used to live in four test modules are
-/// exactly what this replaces.
+/// Length-prefixed SPEC §5 frame I/O over the server half of a `UnixStream`.
 #[derive(Debug)]
 struct FrameLink {
     stream: UnixStream,
@@ -1095,9 +886,7 @@ impl FrameLink {
     /// The next client frame, or `None` on a clean EOF.
     async fn recv(&mut self) -> Option<FrameKind> {
         let mut header = [0_u8; LENGTH_PREFIX];
-        // A read that ends at a frame boundary is the client hanging up; any
-        // other short read is a genuinely truncated stream and should fail
-        // the test loudly rather than look like a tidy close.
+        // EOF at a frame boundary is a hang-up; anything else fails loudly.
         match self.stream.read_exact(&mut header).await {
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => return None,

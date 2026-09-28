@@ -6,20 +6,10 @@ use phux_core::session::Session;
 use super::{AttachSnapshotPane, ServerState};
 
 impl ServerState {
-    /// Build a [`phux_protocol::wire::info::SessionSnapshot`] describing
-    /// the entire registry plus the attaching client's initial focus.
-    ///
-    /// Used by the ATTACH handler in [`crate::runtime`] to populate the
-    /// `ATTACHED` frame per SPEC §13. Allocates wire ids on demand so
-    /// every entity in the registry gets one before this returns.
-    ///
-    /// `focus_session` is the resolved target of the ATTACH request;
-    /// the attaching client's focused window/pane fall back to the
-    /// session's `active` / window's `active` (tmux semantics).
-    /// Returns `None` only if `focus_session` is unknown. A session with no
-    /// active window or pane (a keep-empty session with zero windows,
-    /// ADR-0105) carries the `0` sentinel ids in the required
-    /// `focused_window` / `focused_resource` fields.
+    /// Build the `ATTACHED` [`phux_protocol::wire::info::SessionSnapshot`]
+    /// (SPEC §13), interning wire ids as needed. Focus falls back to the
+    /// session's and window's active entries; a windowless keep-empty
+    /// session carries `0` sentinels. `None` if `focus_session` is unknown.
     #[allow(clippy::too_many_lines)]
     pub fn build_session_snapshot(
         &mut self,
@@ -75,10 +65,7 @@ impl ServerState {
                 let window_wire = self.intern_window_wire(*wid);
                 let active_pane_wire = window.active.map(|p| self.intern_terminal_wire(p));
 
-                // Layout-on-the-wire mirroring is its own concern;
-                // for phux-byc.8 we ship `None` and let later tickets
-                // translate `phux_core::LayoutNode` →
-                // `phux_protocol::wire::info::LayoutNode`.
+                // Layout is not mirrored on the wire.
                 windows.push(
                     WindowInfo::new(window_wire, session_wire, format!("window-{index}"))
                         .with_index(u16::try_from(index).unwrap_or(u16::MAX))
@@ -100,9 +87,7 @@ impl ServerState {
                     } else {
                         phux_protocol::wire::frame::ResourceLifecycle::Running
                     };
-                    // ADR-0033: who currently has the wheel, if anyone —
-                    // this lane's half of "inventories show the holder"
-                    // (L1 §1.1).
+                    // ADR-0033: the current lease holder, if any.
                     let input_holder = self.input_lease_holder(*pid).map(|holder| {
                         phux_protocol::ids::ClientId::new(
                             u32::try_from(holder.0).unwrap_or(u32::MAX),
@@ -137,11 +122,8 @@ impl ServerState {
             }
         }
 
-        // Non-Terminal resources hold no window slot, so the window walk
-        // above never reaches them (ADR-0102). They are listed after it,
-        // carrying the `0 x 0` grid and `WindowId(0)` sentinel that says "no
-        // grid, no window", their immutable parent, and the facet a
-        // consumer needs to render them without a second query.
+        // Non-Terminal resources have no window (ADR-0102): listed after the
+        // walk with `0 x 0`, `WindowId(0)`, their parent, and facet.
         for (id, descriptor) in self
             .sessions
             .registry
@@ -173,9 +155,7 @@ impl ServerState {
         });
 
         let focused_session_wire = self.idspace.intern_session(focus_session);
-        // A keep-empty session with no window left (ADR-0105) has nothing to
-        // focus; the wire still requires the pair, so it carries the `0`
-        // sentinels no allocator ever mints.
+        // Windowless keep-empty sessions carry the `0` sentinels.
         let (focused_window_wire, focused_pane_wire) = match focus_pair {
             Some((window, pane)) => (
                 self.intern_window_wire(window),
@@ -198,10 +178,7 @@ impl ServerState {
         Some(snapshot)
     }
 
-    /// Collect panes in `session` that have live actor handles, with wire ids.
-    ///
-    /// Protocol dispatch (`runtime::handle_attach`) uses this to drive per-pane
-    /// snapshot/output setup without touching `Session`/`Window` internals.
+    /// Panes in `session` with live handles, with their wire ids.
     #[must_use]
     pub fn attach_snapshot_panes(&mut self, session: SessionId) -> Vec<AttachSnapshotPane> {
         let window_ids = self

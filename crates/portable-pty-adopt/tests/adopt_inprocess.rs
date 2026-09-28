@@ -9,53 +9,13 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stdout)]
 
+mod common;
+
+use common::{OUTPUT_DEADLINE, read_until};
 use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use portable_pty_adopt::{AdoptedChild, AdoptedMaster};
 use std::io::Write;
 use std::os::fd::{FromRawFd, OwnedFd};
-use std::sync::mpsc;
-use std::time::Duration;
-
-/// Ceiling for "the adopted child should have echoed by now" waits.
-///
-/// Not load-bearing: the assertion is that the needle appears at all, never
-/// how fast. A real PTY child on a saturated box can be descheduled for
-/// seconds, so this is sized to be unreachable rather than hand-picked
-/// (phux-br1f); a child that never writes still fails the run, just later.
-const OUTPUT_DEADLINE: Duration = Duration::from_secs(30);
-
-fn read_until<R: std::io::Read + Send + 'static>(
-    mut reader: R,
-    needle: &str,
-    timeout: Duration,
-) -> bool {
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut acc = Vec::new();
-        let mut buf = [0u8; 1024];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    acc.extend_from_slice(&buf[..n]);
-                    if tx.send(String::from_utf8_lossy(&acc).into_owned()).is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    });
-
-    let deadline = std::time::Instant::now() + timeout;
-    while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {
-        match rx.recv_timeout(remaining) {
-            Ok(seen) if seen.contains(needle) => return true,
-            Ok(_) => {}
-            Err(_) => break,
-        }
-    }
-    false
-}
 
 #[test]
 fn adopts_master_and_child_from_fd_and_pid() {

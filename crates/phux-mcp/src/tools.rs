@@ -1,15 +1,10 @@
-//! The phux tool catalog and `tools/call` dispatch.
+//! The phux tool catalog, `tools/call` dispatch, and the shared argument
+//! helpers.
 //!
-//! Each tool is a thin wrapper over a `phux-client` library home, called
-//! in-process. MCP is a thin adapter over the same structured surface the
-//! CLI uses — not a separate core (ADR-0022 §5). The few tools that still
-//! run the canonical CLI are the residue named in `crate::tool_table`, each
-//! with its reason.
-//!
-//! A tool either returns a JSON `Value` (serialized into the MCP
-//! `content[0].text` field) or a [`ToolError`] carrying a readable message
-//! that becomes a `tools/call` result with `isError: true`. Tool failures
-//! never crash the JSON-RPC loop.
+//! Each tool wraps the `phux-client` function the CLI verb calls (ADR-0022
+//! §5); the residue that still runs the CLI is named in `crate::tool_table`.
+//! A tool returns a JSON `Value` or a [`ToolError`], which becomes a
+//! `tools/call` result with `isError: true`, never a crash.
 
 #![allow(
     clippy::similar_names,
@@ -31,8 +26,6 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::input::paste::PasteTrust;
 use serde_json::{Value, json};
 
-use crate::socket;
-
 /// A tool-level failure: surfaced to the caller as a `tools/call` result
 /// with `isError: true`, never as a process crash.
 #[derive(Debug)]
@@ -51,19 +44,13 @@ impl From<AttachError> for ToolError {
 }
 
 /// Shared `inputSchema` description for the `target` selector argument.
-///
-/// The four targeted tools accept the CLI's full `TARGET` grammar
-/// (`docs/consumers/tui.md` §3), resolved client-side against a `GET_STATE`
-/// snapshot exactly as the CLI resolves it (ADR-0021).
 const TARGET_DESC: &str = "Target selector: session, session:window, \
     session:window.pane, @paneid, or `.` for the focused session. `=` is \
     unsupported because MCP has no attached-client focus history. Omit for \
     the focused session.";
 
-/// The MCP tool catalog: name, description, and JSON-Schema input shape.
-///
-/// Returned verbatim by `tools/list`. Schemas are minimal but valid JSON
-/// Schema (`type: object` with `properties`/`required`).
+/// The MCP tool catalog `tools/list` returns: name, description, and
+/// JSON-Schema input shape.
 #[must_use]
 #[allow(
     clippy::too_many_lines,
@@ -220,13 +207,9 @@ pub(crate) fn catalog() -> Value {
         crate::cli_tools::move_schema(),
         crate::cli_tools::swap_schema(),
         crate::cli_tools::workspace_schema(),
-        crate::plugin_action::schema(),
-        crate::plugin_workspace::schema(),
+        crate::plugin_tools::action_schema(),
+        crate::plugin_tools::workspace_schema(),
     ]);
-    // The `phux_agent_*` family is appended rather than inlined because it
-    // is a list that grows one entry per agent verb, and each entry freezes
-    // its own argument shape (ADR-0071 point 7(b)). The diagnostics follow
-    // for the same reason.
     if let Value::Array(entries) = &mut tools {
         entries.extend(crate::agent_tools::schemas());
         entries.extend(crate::diagnostic_tools::schemas());
@@ -238,18 +221,13 @@ pub(crate) fn catalog() -> Value {
     tools
 }
 
-/// Dispatch a `tools/call` by tool name. Returns the tool's JSON result on
-/// success, or a [`ToolError`] (rendered as `isError: true`) on failure.
+/// Dispatch a `tools/call` by tool name.
 ///
 /// # Errors
 ///
-/// Returns [`ToolError`] for an unknown tool, a malformed/missing required
-/// argument, or any failure from the underlying agent surface (no server,
-/// unknown session, transport error).
+/// An unknown tool, a malformed argument, or any underlying failure.
 pub(crate) async fn dispatch(name: &str, args: &Value) -> Result<Value, ToolError> {
-    // The one confirmation check (ADR-0128): a tool whose own action is a
-    // catalog-dangerous method needs `confirm: true`, before any argument
-    // parsing, socket resolution, or wire traffic.
+    // ADR-0128: confirm before any parsing, socket resolution, or traffic.
     crate::annotations::require_confirmation(name, args)?;
     match name {
         "phux_ls" => phux_ls(args).await,
@@ -267,8 +245,8 @@ pub(crate) async fn dispatch(name: &str, args: &Value) -> Result<Value, ToolErro
         | "phux_insert_pane" | "phux_move_pane" | "phux_swap_pane" | "phux_workspace" => {
             crate::cli_tools::call(name, args).await
         }
-        "phux_plugin_action" => crate::plugin_action::call(args).await,
-        "phux_plugin_workspace" => crate::plugin_workspace::call(args),
+        "phux_plugin_action" => crate::plugin_tools::action(args).await,
+        "phux_plugin_workspace" => crate::plugin_tools::workspace(args),
         agent if crate::agent_tools::owns(agent) => crate::agent_tools::call(agent, args).await,
         diagnostic if crate::diagnostic_tools::owns(diagnostic) => {
             crate::diagnostic_tools::call(diagnostic, args).await
@@ -283,10 +261,8 @@ pub(crate) async fn dispatch(name: &str, args: &Value) -> Result<Value, ToolErro
     }
 }
 
-/// `phux_ls` — the `phux ls --json` document, built in-process by
-/// [`phux_client::session_list::document`], the builder the CLI prints.
-/// Like the CLI it never auto-starts a server, and a partial listing is a
-/// result whose `unreachable` list says what could not be seen.
+/// `phux_ls` — the `phux ls --json` document. Never auto-starts a server; a
+/// partial listing names what could not be seen in `unreachable`.
 async fn phux_ls(args: &Value) -> Result<Value, ToolError> {
     strict_object(args, &["socket"], &[])?;
     let socket = socket_arg(args)?;
@@ -298,18 +274,11 @@ async fn phux_ls(args: &Value) -> Result<Value, ToolError> {
         .map_err(|err| ToolError::new(format!("failed to serialize session list: {err}")))
 }
 
-/// `phux_snapshot` — read a pane as structured data, in-process.
-///
-/// `scrollback` is tri-state, matching `phux snapshot --scrollback`:
-/// absent ⇒ viewport only; `0` ⇒ all retained history; `N` ⇒ the
-/// most-recent `N` rows. `cells` adds per-cell OSC-133 marks + styles.
-/// `tail` and `unwrap` are the ADR-0077 read modifiers: client-side
-/// projections of the same `GET_SCREEN` reply, applied by
-/// [`phux_client::snapshot::project`] — the one implementation `phux
-/// snapshot --tail/--unwrap` also calls, so the two return the same
-/// document.
+/// `phux_snapshot` — read a pane as structured data. `scrollback` is
+/// tri-state (absent: viewport; `0`: all history; `N`: last `N` rows);
+/// `tail`/`unwrap` are the ADR-0077 projections `phux snapshot` applies too.
 async fn phux_snapshot(args: &Value) -> Result<Value, ToolError> {
-    let socket = socket::resolve(str_arg(args, "socket"));
+    let socket = socket_or_default(args);
     let selector = parse_target(args)?;
     let read = SnapshotRead::parse(args)?;
     let view = state::get_state(&socket).await?;
@@ -375,9 +344,7 @@ impl<'a> SnapshotRead<'a> {
             .map_or(0, |format| format_wire_byte(format) | unwrap)
     }
 
-    /// The document: projected by the modifiers, and bounded when a
-    /// modifier ran, at the 1 MiB the CLI subprocess's stdout used to cap
-    /// this read at before it moved in-process.
+    /// The document, projected by the modifiers and bounded when one ran.
     fn document(&self, screen: ScreenState) -> Result<Value, ToolError> {
         let screen = phux_client::snapshot::project(screen, self.unwrap, self.tail);
         if self.tail.is_none() && !self.unwrap {
@@ -389,8 +356,7 @@ impl<'a> SnapshotRead<'a> {
     }
 }
 
-/// Read and validate the `format` argument: `None` when absent, otherwise
-/// `"html"` or `"vt"` (D9); any other string is a usage error.
+/// The optional `format` argument: `"html"` or `"vt"`.
 fn snapshot_format_arg(args: &Value) -> Result<Option<&str>, ToolError> {
     match str_arg(args, "format") {
         None => Ok(None),
@@ -412,7 +378,7 @@ fn format_wire_byte(format: &str) -> u8 {
 
 /// `phux_send_keys` — send input to the pane named by the selector.
 async fn phux_send_keys(args: &Value) -> Result<Value, ToolError> {
-    let socket = socket::resolve(str_arg(args, "socket"));
+    let socket = socket_or_default(args);
     let selector = required_target(args)?;
     let keys = string_array(args, "keys")?;
     if keys.is_empty() {
@@ -422,24 +388,19 @@ async fn phux_send_keys(args: &Value) -> Result<Value, ToolError> {
     }
     let view = state::get_state(&socket).await?;
     let pane = resolve_one(&socket, &selector, &view).await?;
-    // `send_to` returns `()`; echo the pane we resolved ourselves.
     phux_client::send_keys::send_to(&socket, pane.clone(), &keys).await?;
     Ok(json!({ "sent": true, "pane": pane_value(&pane) }))
 }
 
-/// `phux_paste` — paste a payload into the pane named by the selector.
-///
-/// One `InputEvent::Paste` over `ROUTE_INPUT` (no attach, no resize); the
-/// server brackets the payload when the pane's DEC mode 2004 is on.
-/// Trusted by default, mirroring `phux paste`; `untrusted: true` opts
-/// into the server-side safety gate.
+/// `phux_paste` — one paste event into the pane named by the selector;
+/// trusted by default, as `phux paste`.
 async fn phux_paste(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
         &["target", "text", "untrusted", "socket"],
         &["target", "text"],
     )?;
-    let socket = socket::resolve(str_arg(args, "socket"));
+    let socket = socket_or_default(args);
     let selector = required_target(args)?;
     let text = required_str(args, "text")?.to_owned();
     let untrusted = bool_arg(args, "untrusted").unwrap_or(false);
@@ -463,29 +424,26 @@ async fn phux_run(args: &Value) -> Result<Value, ToolError> {
     )?;
     let target = crate::cli_adapter::bounded_string(args, "target", true)?.unwrap_or_default();
     let command = crate::cli_adapter::bounded_string(args, "command", true)?.unwrap_or_default();
-    let timeout_secs = match args.get("timeout_secs") {
-        None => RUN_DEFAULT_TIMEOUT_SECS,
-        Some(value) => value
-            .as_u64()
-            .filter(|value| (1..=3600).contains(value))
-            .ok_or_else(|| ToolError::new("`timeout_secs` must be an integer in 1..=3600"))?,
-    };
+    let timeout_secs = args
+        .get("timeout_secs")
+        .map_or(Ok(RUN_DEFAULT_TIMEOUT_SECS), |value| {
+            value
+                .as_u64()
+                .filter(|value| (1..=3600).contains(value))
+                .ok_or_else(|| ToolError::new("`timeout_secs` must be an integer in 1..=3600"))
+        })?;
     let mut argv = vec![
         "run".to_owned(),
         "--json".to_owned(),
         "--timeout".to_owned(),
         timeout_secs.to_string(),
     ];
-    // Opt-in only: without it `phux run` refuses a pane whose foreground is
-    // not a shell, which is the whole point of the precondition.
     if bool_arg(args, "force").unwrap_or(false) {
         argv.push("--force".to_owned());
     }
     crate::cli_adapter::push_socket(&mut argv, args)?;
     argv.extend([target, command]);
-    // `phux run` mirrors the command's exit code, so a failing command is a
-    // successful tool call reporting a nonzero `exit_code` — the case an agent
-    // most needs the document for. Anything else would hand back only stderr.
+    // A failing command is a successful call reporting its `exit_code`.
     crate::cli_adapter::CliAdapter::for_residue("phux_run")?
         .run_json_mirrored_exit(argv, Duration::from_secs(timeout_secs.saturating_add(5)))
         .await
@@ -493,10 +451,9 @@ async fn phux_run(args: &Value) -> Result<Value, ToolError> {
 
 /// `phux_wait` — poll the pane named by the selector until a condition holds.
 async fn phux_wait(args: &Value) -> Result<Value, ToolError> {
-    let socket = socket::resolve(str_arg(args, "socket"));
+    let socket = socket_or_default(args);
     let selector = parse_target(args)?;
-    // `until` takes precedence; otherwise settle on idle (explicit ms or
-    // the default dwell). Mirrors `phux wait`.
+    // `until` wins; otherwise settle on idle, as `phux wait`.
     let condition = str_arg(args, "until").map_or_else(
         || {
             let dwell = num_arg(args, "idle_ms").map_or(DEFAULT_IDLE_DWELL, Duration::from_millis);
@@ -523,12 +480,7 @@ async fn phux_wait(args: &Value) -> Result<Value, ToolError> {
     Ok(json!({ "outcome": outcome, "polls": result.polls }))
 }
 
-/// `phux_new` — create a named session without attaching.
-///
-/// Mirrors canonical `phux new --json`: `name` is required (the create-only
-/// path never auto-names), while `command` and `cwd` are optional. The CLI owns
-/// server startup and the returned `{session, terminal_id}` JSON contract, so
-/// this stays on the residue (`crate::tool_table`).
+/// `phux_new` — `phux new --json` for a named session, without attaching.
 async fn phux_new(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
@@ -554,13 +506,8 @@ async fn phux_new(args: &Value) -> Result<Value, ToolError> {
         .await
 }
 
-/// `phux_kill` — tear down the Terminal(s) a selector resolves to.
-///
-/// In-process through [`phux_client::kill::selected`], the same path
-/// `phux kill` calls: tag-aware resolution, whole-session atomic teardown,
-/// empty-session clear, per-pane fallback, and clean-disconnect handling.
-/// A hit against a partial fleet view prints the same stderr warning the
-/// CLI does.
+/// `phux_kill` — tear down the Terminal(s) a selector resolves to, through
+/// [`phux_client::kill::selected`], the path `phux kill` calls.
 async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
@@ -573,8 +520,7 @@ async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
         .map(crate::pane_tools::idempotency_key)
         .transpose()?;
     let socket = socket_arg(args)?;
-    let selector = selector::parse(&target)
-        .map_err(|err| ToolError::new(format!("invalid target '{target}': {err}")))?;
+    let selector = parse_selector(&target)?;
     let mut conn = Connection::connect(&socket).await?;
     let mut notices = Vec::new();
     let result =
@@ -602,28 +548,16 @@ fn kill_error(err: phux_client::kill::KillError) -> ToolError {
         KillError::Unresolved {
             target,
             degradation,
-        } => ToolError::new(format!(
-            "could not resolve '{target}': this server's view of the fleet is incomplete ({}), so a \
-             miss here does not mean the target is gone",
-            degradation.notices().join("; ")
-        )),
+        } => incomplete_view_miss(&format!("'{target}'"), degradation.notices()),
         other => ToolError::new(other.to_string()),
     }
 }
 
-/// `phux_detach` — force-detach clients from *outside* the attach UI.
-///
-/// `DETACH_CLIENTS` through [`phux_client::detach::detach_clients`], the
-/// home `phux detach` also calls. The CLI verb has no `--json`, and the one
-/// fact this tool exists to report — how many clients were actually
-/// disconnected — only rides the wire reply (`OkWith(Json(count))`). This is
-/// the bounded, request/response half of "attach or detach" (bead
-/// phux-fwwa): unlike `phux attach`, it does not open a live terminal
-/// stream, so it fits the one-text-content-block `tools/call` envelope the
-/// way `phux_agent_*`'s header comment says a raw ANSI stream cannot.
+/// `phux_detach` — `DETACH_CLIENTS` from outside the attach UI, reporting
+/// how many clients the server actually disconnected.
 async fn phux_detach(args: &Value) -> Result<Value, ToolError> {
     strict_object(args, &["session", "confirm", "socket"], &["confirm"])?;
-    let socket = socket::resolve(str_arg(args, "socket"));
+    let socket = socket_or_default(args);
     let session = crate::cli_adapter::bounded_string(args, "session", false)?;
     let mut conn = Connection::connect(&socket).await?;
     let outcome = phux_client::detach::detach_clients(&mut conn, 1, session.clone()).await;
@@ -641,8 +575,7 @@ async fn phux_detach(args: &Value) -> Result<Value, ToolError> {
         Ok((DetachOutcome::Unexpected(other), _)) => Err(ToolError::new(
             phux_client::explain::explain_unexpected("detach", &other),
         )),
-        // Detaching never tears the server down, so a disconnect before the
-        // reply is a failure to confirm, not an implicit success.
+        // Detaching never stops the server: a disconnect is unconfirmed.
         Err(AttachError::Disconnected) => {
             Err(ToolError::new("connection closed before the detach reply"))
         }
@@ -650,30 +583,15 @@ async fn phux_detach(args: &Value) -> Result<Value, ToolError> {
     }
 }
 
-/// `phux_watch` — collect server-pushed watch items, bounded.
-///
-/// The streaming `phux watch` doesn't fit a request/response tool call, so
-/// this returns a finite batch: it stops at `max_events`, after
-/// `timeout_secs`, or when the server closes, whichever comes first, and
-/// returns the collected items as structured JSON. Omitting both bounds
-/// blocks until the server exits — callers SHOULD pass `timeout_secs`.
-///
-/// It collects [`WatchItem`]s rather than calling
-/// `phux_client::watch::collect_events`, which filters agent-state changes
-/// out on purpose: that collector's contract is the `EVENT` taxonomy, and
-/// widening it is a decision about *this* document, not about the streaming
-/// layer. Both kinds ride one connection, so the returned array preserves
-/// the order the server pushed them in — an `agent_state` line sits exactly
-/// where it happened relative to the surrounding events.
+/// `phux_watch` — a bounded batch of watch items (events and `agent_state`
+/// changes, in push order): stops at `max_events`, `timeout_secs`, or server
+/// close. Without `target` it follows the whole local fleet.
 async fn phux_watch(args: &Value) -> Result<Value, ToolError> {
-    let socket = socket::resolve(str_arg(args, "socket"));
-    // `target` is optional: absent means the fleet-wide enumerate-and-follow
-    // stream, including one metadata subscription per local Terminal.
+    let socket = socket_or_default(args);
     let terminal = match str_arg(args, "target") {
         None => None,
         Some(raw) => {
-            let selector = selector::parse(raw)
-                .map_err(|err| ToolError::new(format!("invalid target '{raw}': {err}")))?;
+            let selector = parse_selector(raw)?;
             let view = state::get_state(&socket).await?;
             Some(resolve_one(&socket, &selector, &view).await?)
         }
@@ -683,27 +601,12 @@ async fn phux_watch(args: &Value) -> Result<Value, ToolError> {
 
     let items = collect_watch_items(&socket, terminal, max_items, timeout).await?;
     let rendered: Vec<Value> = items.iter().map(watch_item_json).collect();
-    // Versioned, unlike the CLI's `phux watch --json`. That surface is an
-    // unbounded NDJSON stream a consumer may join mid-flight, so it is
-    // versioned by the binary instead; this one is an ordinary bounded
-    // request/response document, so it carries `schema_version` like every
-    // other MCP result.
-    //
-    // `2` because `events[].event` gained the `agent_state` value. Adding a
-    // *key* would not move the number — `docs/consumers/agents.md` §4.1 is
-    // explicit that consumers ignore unknown keys — but this widens the
-    // value domain of an existing discriminant a consumer branches on, and
-    // that is the case the version exists to signal. The CLI stream answers
-    // the same question by having no version at all and declaring the event
-    // name to *be* the contract; this document has a version, so it uses it.
+    // `2`: `events[].event` gained the `agent_state` value.
     Ok(json!({ "schema_version": 2, "events": rendered, "count": rendered.len() }))
 }
 
-/// Bounded one-shot collection of both watch item kinds.
-///
-/// The MCP twin of `phux_client::watch::collect_events`, differing only in
-/// that it keeps `WatchItem::AgentState`. `timeout` elapsing is success —
-/// the collected prefix is returned, not an error.
+/// Bounded collection of both watch item kinds; `timeout` elapsing returns
+/// the collected prefix, not an error.
 async fn collect_watch_items(
     socket: &std::path::Path,
     terminal: Option<ResourceId>,
@@ -733,26 +636,14 @@ async fn collect_watch_items(
 /// Project one [`WatchItem`] to its JSON line.
 fn watch_item_json(item: &WatchItem) -> Value {
     match item {
-        WatchItem::Event(event) => agent_event_json(event),
+        WatchItem::Event(event) => phux_client::watch::event_json(event),
         WatchItem::AgentState(update) => agent_state_json(update),
     }
 }
 
-/// Project one `AgentStateUpdate` to the same `agent_state` shape the
-/// CLI's `phux watch --json` emits.
-///
-/// Three choices are load-bearing and mirror the CLI exactly, because a
-/// consumer should be able to read either stream with one parser:
-///
-/// - **Identity survives the tombstone.** `name`/`kind` fall back to the
-///   record last seen, so a consumer filtering by agent name still
-///   recognizes the line that says its agent went away.
-/// - **`state` is present-and-null on a deletion**, not absent, so a
-///   consumer keyed on `state` sees the record go rather than reading the
-///   previous value forever.
-/// - **`attention` is the *effective* level.** The ADR-0046 detector never
-///   writes the field and L3 §3.7 derives it from `state`, so the declared
-///   value would be absent on every server-derived line.
+/// Project one `AgentStateUpdate` to the CLI's `agent_state` line shape:
+/// identity survives the tombstone, `state` is present-and-null on a
+/// deletion, and `attention` is the effective level.
 fn agent_state_json(update: &phux_client::watch::AgentStateUpdate) -> Value {
     let mut obj = serde_json::Map::new();
     obj.insert("event".to_owned(), Value::from("agent_state"));
@@ -789,33 +680,15 @@ fn agent_state_json(update: &phux_client::watch::AgentStateUpdate) -> Value {
     Value::Object(obj)
 }
 
-/// Project one [`phux_client::watch::WatchEvent`] to the stable JSON shape the
-/// CLI's `phux watch --json` emits: the `event` name, the `terminal`, the
-/// payload fields, and the journal stamp (`seq`, `ts_ms`, `actor`) when the
-/// server journals. One projection for both surfaces
-/// ([`phux_client::watch::event_json`]).
-///
-/// `schema_version` stays 2: the journal fields are added keys, and the
-/// newly named events (`cwd_changed`, `terminal_control`, `journal_gap`,
-/// `source_gap`) used to arrive as `unknown`, a value every consumer of this
-/// document already had to tolerate.
-fn agent_event_json(ev: &phux_client::watch::WatchEvent) -> Value {
-    phux_client::watch::event_json(ev)
-}
-
 // -----------------------------------------------------------------------------
 // Shared helpers.
 // -----------------------------------------------------------------------------
 
-/// Default `phux_run` timeout when `timeout_secs` is unset (seconds).
-/// Matches `phux run`'s default so the surfaces agree.
+/// Default `phux_run` timeout, matching `phux run`'s.
 const RUN_DEFAULT_TIMEOUT_SECS: u64 = 600;
 
-/// Enforce the runtime half of a strict JSON object schema.
-///
-/// JSON Schema is advisory at the MCP boundary, so handlers also reject
-/// non-object arguments, unknown keys, and absent required keys before any
-/// subprocess or wire side effect.
+/// Enforce a strict object schema at runtime (JSON Schema is advisory at
+/// the MCP boundary): an object, no unknown keys, every required key.
 pub(crate) fn strict_object(
     args: &Value,
     allowed: &[&str],
@@ -833,59 +706,45 @@ pub(crate) fn strict_object(
     Ok(())
 }
 
-/// Parse the optional `target` argument into a [`Selector`], defaulting to
-/// the focused session when absent. Mirrors the CLI's `parse_selector`
-/// front door (phux-n95).
-///
-/// # Errors
-///
-/// Returns [`ToolError`] when an explicit `target` is present but malformed
-/// (e.g. `@nope`, `work:1.x`).
-fn parse_target(args: &Value) -> Result<Selector, ToolError> {
-    str_arg(args, "target").map_or(Ok(Selector::Current), |raw| {
-        selector::parse(raw).map_err(|err| ToolError::new(format!("invalid target '{raw}': {err}")))
-    })
-}
-
-/// Parse a required `target` argument into a [`Selector`]. Used by tools
-/// where the target is not optional (`send_keys`, `run`).
-///
-/// # Errors
-///
-/// Returns [`ToolError`] when `target` is missing/not a string, or present
-/// but malformed.
-fn required_target(args: &Value) -> Result<Selector, ToolError> {
-    let raw = required_str(args, "target")?;
+/// Parse a selector, naming the bad input in the error.
+pub(crate) fn parse_selector(raw: &str) -> Result<Selector, ToolError> {
     selector::parse(raw).map_err(|err| ToolError::new(format!("invalid target '{raw}': {err}")))
 }
 
-/// Resolve `selector` against `view` to a single pane, exactly as the
-/// CLI does (ADR-0021): resolve to the candidate terminals, then narrow via
-/// [`selector::pick_target_pane`] (prefer the focused pane, else the first).
-///
-/// Takes the whole [`StateView`] rather than its snapshot because the miss
-/// message depends on the other half. A federation hub that could not reach a
-/// satellite still answers `GET_STATE`, with that satellite's panes simply
-/// absent from the merge — so "no such target" against a degraded view is a
-/// guess, and one an agent will act on. Every MCP tool below funnels its
-/// resolution through here, which is why this is the only place that has to
-/// know the difference.
+/// The optional `target` as a [`Selector`], the focused session when absent.
+fn parse_target(args: &Value) -> Result<Selector, ToolError> {
+    str_arg(args, "target").map_or(Ok(Selector::Current), parse_selector)
+}
+
+/// The required `target` as a [`Selector`].
+fn required_target(args: &Value) -> Result<Selector, ToolError> {
+    parse_selector(required_str(args, "target")?)
+}
+
+/// A miss against a degraded fleet view: the target may exist on a
+/// satellite that could not be reached, so it is not "no such target".
+pub(crate) fn incomplete_view_miss(subject: &str, notices: &[String]) -> ToolError {
+    ToolError::new(format!(
+        "could not resolve {subject}: this server's view of the fleet is incomplete ({}), so a \
+         miss here does not mean the target is gone",
+        notices.join("; ")
+    ))
+}
+
+/// Resolve `selector` against `view` to one pane as the CLI does (ADR-0021),
+/// preferring the focused pane. A miss against a degraded view says so
+/// rather than claiming the target is gone.
 ///
 /// # Errors
 ///
-/// Returns [`ToolError`] when the selector matches no pane, saying which of
-/// the two reasons it was.
+/// A [`ToolError`] when the selector matches no pane.
 pub(crate) async fn resolve_one(
     socket: &std::path::Path,
     selector: &Selector,
     view: &StateView,
 ) -> Result<ResourceId, ToolError> {
     let snapshot = view.snapshot();
-    // `%name` never reaches `pick_target_pane` (ADR-0075 point 3): it
-    // resolves to exactly one agent or refuses with the reason. MCP's
-    // remaining callers here are not input verbs; `phux_signal` uses
-    // [`phux_client::signal::deliver`], which applies the withdrawn-record
-    // guard itself.
+    // `%name` resolves to exactly one agent or refuses (ADR-0075 point 3).
     if let Selector::Agent(name) = selector {
         return state::resolve_agent_target(socket, name, snapshot, false)
             .await
@@ -897,36 +756,36 @@ pub(crate) async fn resolve_one(
         if view.is_complete() {
             ToolError::new("no such target")
         } else {
-            ToolError::new(format!(
-                "could not resolve the target: this server's view of the fleet is \
-                 incomplete ({}), so a miss here does not mean the target is gone",
-                view.degradation().notices().join("; ")
-            ))
+            incomplete_view_miss("the target", view.degradation().notices())
         }
     })
 }
 
-/// The socket an in-process tool dials: the explicit `socket` argument,
-/// which must be a string (as the CLI's `--socket` was), else the shared
-/// default (`$PHUX_SOCKET`, then the daemon default).
+/// The explicit socket path, else `$PHUX_SOCKET`, else the daemon default.
+fn socket_path(explicit: Option<&str>) -> PathBuf {
+    explicit.map_or_else(phux_config::socket::default_socket_path, PathBuf::from)
+}
+
+/// The `socket` argument if it is a string, else the default.
+pub(crate) fn socket_or_default(args: &Value) -> PathBuf {
+    socket_path(str_arg(args, "socket"))
+}
+
+/// The `socket` argument, which must be a string when present.
 ///
 /// # Errors
 ///
 /// A present `socket` that is not a string.
 pub(crate) fn socket_arg(args: &Value) -> Result<PathBuf, ToolError> {
     match args.get("socket") {
-        None => Ok(socket::resolve(None)),
-        Some(Value::String(path)) => Ok(socket::resolve(Some(path))),
+        None => Ok(socket_path(None)),
+        Some(Value::String(path)) => Ok(socket_path(Some(path))),
         Some(_) => Err(ToolError::new("`socket` must be a string")),
     }
 }
 
-/// A refusal as the CLI's `--json` error contract prints it: one line,
-/// `{"error":{"code","message"},"exit_code","remedy","schema_version":1}`.
-///
-/// Used by the in-process tools whose former CLI path ran under `--json`
-/// (spawn, the spatial edits), so their tool errors keep carrying the
-/// stable `code` a caller branches on.
+/// A refusal on the CLI's one-line `--json` error contract, so the tool
+/// error carries the stable `code` a caller branches on.
 pub(crate) fn contract_error(
     code: &str,
     message: impl Into<String>,
@@ -981,45 +840,51 @@ pub(crate) fn str_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(Value::as_str)
 }
 
-/// Read a required string argument, erroring with a readable message when
-/// it is missing or not a string.
-fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
+/// Read a required string argument.
+pub(crate) fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
     str_arg(args, key).ok_or_else(|| ToolError::new(format!("missing required string `{key}`")))
 }
 
-/// Read an optional non-negative integer argument (as `u64`). Values that
-/// are not non-negative integers are treated as absent.
-fn num_arg(args: &Value, key: &str) -> Option<u64> {
+/// Read an optional non-negative integer; anything else is absent.
+pub(crate) fn num_arg(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(Value::as_u64)
 }
 
-/// Read an optional non-negative integer argument as `u32`. A value that is
-/// not a non-negative integer, or that overflows `u32`, is treated as
-/// absent. Used for `scrollback`, whose `None`/`Some(0)`/`Some(n)` triad is
-/// load-bearing (viewport / all history / last-n rows).
+/// Read an optional `u32`; anything else (including overflow) is absent.
 fn u32_arg(args: &Value, key: &str) -> Option<u32> {
     num_arg(args, key).and_then(|n| u32::try_from(n).ok())
 }
 
-/// Read an optional boolean argument. Non-boolean values are treated as
-/// absent.
+/// Read an optional boolean; a non-boolean is absent.
 fn bool_arg(args: &Value, key: &str) -> Option<bool> {
     args.get(key).and_then(Value::as_bool)
 }
 
 /// Read a required array-of-strings argument.
 fn string_array(args: &Value, key: &str) -> Result<Vec<String>, ToolError> {
-    let arr = args
-        .get(key)
-        .and_then(Value::as_array)
-        .ok_or_else(|| ToolError::new(format!("missing required array `{key}`")))?;
+    optional_string_array(args, key)?
+        .ok_or_else(|| ToolError::new(format!("missing required array `{key}`")))
+}
+
+/// Read an optional array-of-strings argument.
+pub(crate) fn optional_string_array(
+    args: &Value,
+    key: &str,
+) -> Result<Option<Vec<String>>, ToolError> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    let arr = value
+        .as_array()
+        .ok_or_else(|| ToolError::new(format!("`{key}` must be an array of strings")))?;
     arr.iter()
         .map(|v| {
             v.as_str()
                 .map(str::to_owned)
                 .ok_or_else(|| ToolError::new(format!("`{key}` must contain only strings")))
         })
-        .collect()
+        .collect::<Result<Vec<String>, _>>()
+        .map(Some)
 }
 
 #[cfg(test)]
@@ -1067,66 +932,6 @@ mod tests {
     }
 
     #[test]
-    fn catalog_lists_all_tools_with_object_schemas() {
-        let cat = catalog();
-        let arr = cat.as_array().expect("catalog is an array");
-        let names: Vec<&str> = arr.iter().filter_map(|t| t["name"].as_str()).collect();
-        assert_eq!(
-            names,
-            vec![
-                "phux_ls",
-                "phux_snapshot",
-                "phux_send_keys",
-                "phux_paste",
-                "phux_run",
-                "phux_wait",
-                "phux_new",
-                "phux_kill",
-                "phux_detach",
-                "phux_watch",
-                "phux_ask",
-                "phux_launch",
-                "phux_spawn",
-                "phux_signal",
-                "phux_tag",
-                "phux_rename",
-                "phux_insert_pane",
-                "phux_move_pane",
-                "phux_swap_pane",
-                "phux_workspace",
-                "phux_plugin_action",
-                "phux_plugin_workspace",
-                "phux_agent_list",
-                "phux_agent_show",
-                "phux_agent_explain",
-                "phux_agent_set",
-                "phux_agent_clear",
-                "phux_agent_wait",
-                "phux_agent_send_keys",
-                "phux_agent_prompt",
-                "phux_agent_answer",
-                "phux_agent_start",
-                "phux_agent_session_open",
-                "phux_agent_session_close",
-                "phux_agent_emit",
-                "phux_agent_log",
-                "phux_status",
-                "phux_doctor",
-                "phux_whoami",
-                "phux_resource_show",
-                "phux_resource_wait",
-                "phux_resource_methods",
-                "phux_approvals",
-                "phux_approve",
-            ]
-        );
-        for tool in arr {
-            assert_eq!(tool["inputSchema"]["type"], json!("object"));
-            assert!(tool["description"].is_string());
-        }
-    }
-
-    #[test]
     fn compiled_skill_teaches_discovery_and_load_bearing_rules() {
         let skill = crate::SKILL;
         for rule in [
@@ -1145,107 +950,6 @@ mod tests {
         assert!(!skill.contains("docs/"));
     }
 
-    /// `phux-mcp --schema` renders the catalog as a standalone document.
-    /// The dump has to survive a round-trip, because its whole purpose is to
-    /// be read by a tool that is not this binary.
-    #[test]
-    fn the_catalog_round_trips_as_a_standalone_json_document() {
-        let rendered = serde_json::to_string_pretty(&catalog()).expect("catalog serializes");
-        let parsed: Value = serde_json::from_str(&rendered).expect("dump re-parses");
-        assert_eq!(parsed, catalog(), "the dump lost information");
-        assert!(
-            parsed.as_array().is_some_and(|a| !a.is_empty()),
-            "the dump is not a non-empty array"
-        );
-    }
-
-    /// `phux_new` exposes a required `name` and optional `cwd`/`command`/
-    /// `socket` props, with `command` typed as a string array.
-    #[test]
-    fn catalog_phux_new_requires_name_and_object_schema() {
-        let cat = catalog();
-        let arr = cat.as_array().expect("catalog is an array");
-        let new = arr
-            .iter()
-            .find(|t| t["name"] == json!("phux_new"))
-            .expect("phux_new present");
-
-        assert_eq!(new["inputSchema"]["type"], json!("object"));
-        assert_eq!(new["inputSchema"]["required"], json!(["name"]));
-
-        let props = &new["inputSchema"]["properties"];
-        assert_eq!(props["name"]["type"], json!("string"));
-        assert_eq!(props["cwd"]["type"], json!("string"));
-        assert_eq!(props["socket"]["type"], json!("string"));
-        assert_eq!(props["command"]["type"], json!("array"));
-        assert_eq!(props["command"]["items"]["type"], json!("string"));
-    }
-
-    /// The grown snapshot surface: `scrollback` + `cells` params, plus the
-    /// unified `target` selector (no more `session`-name-only `session`
-    /// param) on all four targeted tools.
-    #[test]
-    fn catalog_exposes_scrollback_cells_and_target_selector() {
-        let cat = catalog();
-        let arr = cat.as_array().expect("catalog is an array");
-        let tool = |name: &str| {
-            arr.iter()
-                .find(|t| t["name"] == json!(name))
-                .unwrap_or_else(|| panic!("missing tool {name}"))
-                .clone()
-        };
-
-        let snap = tool("phux_snapshot");
-        let props = &snap["inputSchema"]["properties"];
-        assert_eq!(props["scrollback"]["type"], json!("number"));
-        assert_eq!(props["cells"]["type"], json!("boolean"));
-        assert_eq!(props["format"]["type"], json!("string"));
-        assert_eq!(props["format"]["enum"], json!(["html", "vt"]));
-        // snapshot's selector is optional (no `required`).
-        assert!(snap["inputSchema"].get("required").is_none());
-
-        // Every targeted tool documents the unified `target` selector and
-        // dropped the old `session`-only param.
-        for name in ["phux_snapshot", "phux_send_keys", "phux_run", "phux_wait"] {
-            let t = tool(name);
-            let p = &t["inputSchema"]["properties"];
-            assert!(p["target"].is_object(), "{name} missing target");
-            assert!(p.get("session").is_none(), "{name} still has session");
-        }
-
-        // send_keys/run now require `target` (not `session`).
-        assert_eq!(
-            tool("phux_send_keys")["inputSchema"]["required"],
-            json!(["target", "keys"]),
-        );
-        // paste requires an explicit target and payload; `untrusted` is an
-        // optional boolean (trusted is the default).
-        assert_eq!(
-            tool("phux_paste")["inputSchema"]["required"],
-            json!(["target", "text"]),
-        );
-        assert_eq!(
-            tool("phux_paste")["inputSchema"]["properties"]["untrusted"]["type"],
-            json!("boolean"),
-        );
-        assert_eq!(
-            tool("phux_run")["inputSchema"]["required"],
-            json!(["target", "command"]),
-        );
-
-        // Destructive kill requires both an explicit target and confirmation;
-        // watch's target is optional.
-        assert_eq!(
-            tool("phux_kill")["inputSchema"]["required"],
-            json!(["target", "confirm"]),
-        );
-        assert_eq!(
-            tool("phux_kill")["inputSchema"]["properties"]["confirm"]["const"],
-            true,
-        );
-        assert!(tool("phux_watch")["inputSchema"].get("required").is_none());
-    }
-
     #[tokio::test]
     async fn added_tool_dispatch_routes_to_strict_validation() {
         let kill_error = dispatch("phux_kill", &json!({ "target": "@1" }))
@@ -1255,8 +959,6 @@ mod tests {
             kill_error.0, "phux_kill is destructive; pass `confirm: true`",
             "kill must reject before discovering or starting the CLI",
         );
-        // Same check as `kill`: rejected before any socket connection, and a
-        // present-but-false `confirm` is refused like an absent one.
         let detach_error = dispatch("phux_detach", &json!({})).await.unwrap_err();
         assert_eq!(
             detach_error.0,
@@ -1279,8 +981,6 @@ mod tests {
             "phux_detach has no `target` — it addresses a session, not a pane",
         );
         assert!(dispatch("phux_launch", &json!({})).await.is_err());
-        // paste rejects a missing payload and unknown keys before any
-        // socket resolution or wire side effect.
         let paste_error = dispatch("phux_paste", &json!({ "target": "@1" }))
             .await
             .unwrap_err();
@@ -1308,9 +1008,6 @@ mod tests {
                 .await
                 .is_err()
         );
-        // The split agent family routes through `dispatch` by name, and the
-        // retired multiplexer spelling is now an unknown tool rather than a
-        // silently-accepted legacy shape.
         assert_eq!(
             dispatch("phux_agent", &json!({ "action": "list" }))
                 .await
@@ -1333,8 +1030,6 @@ mod tests {
             "`until` must contain only: idle, working, blocked, done (got \"unknown\"; \
              'unknown' is a departure, not a waitable state)",
         );
-        // `unwrap` + `cells` is refused before any read: the join destroys
-        // the grid coordinates `cells` is expressed in.
         assert_eq!(
             dispatch(
                 "phux_snapshot",
@@ -1348,40 +1043,7 @@ mod tests {
         );
     }
 
-    /// `phux_snapshot` grew the ADR-0077 read modifiers, and `phux_watch`
-    /// documents that agent-state items need a named target.
-    #[test]
-    fn catalog_exposes_the_read_modifiers_and_the_agent_state_scope_caveat() {
-        let cat = catalog();
-        let arr = cat.as_array().expect("catalog is an array");
-        let tool = |name: &str| {
-            arr.iter()
-                .find(|t| t["name"] == json!(name))
-                .unwrap_or_else(|| panic!("missing tool {name}"))
-                .clone()
-        };
-
-        let snapshot = tool("phux_snapshot");
-        assert_eq!(
-            snapshot["inputSchema"]["properties"]["tail"]["type"],
-            json!("number"),
-        );
-        assert_eq!(
-            snapshot["inputSchema"]["properties"]["unwrap"]["type"],
-            json!("boolean"),
-        );
-
-        let watch = tool("phux_watch");
-        let description = watch["description"].as_str().expect("a description");
-        assert!(description.contains("agent_state"), "{description}");
-        assert!(
-            description.contains("every local Terminal in the fleet"),
-            "a server-wide watch carries fleet agent_state; that must be stated: {description}",
-        );
-    }
-
-    /// `agent_state` items ride the same array as events, in push order,
-    /// with the same field shape the CLI's `phux watch --json` emits.
+    /// `agent_state` items carry the CLI's `phux watch --json` line shape.
     #[test]
     fn agent_state_json_matches_the_cli_line_shape() {
         use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
@@ -1395,8 +1057,6 @@ mod tests {
             session: Some("fleet".to_owned()),
         };
 
-        // A transition carries identity, the new state, the derived
-        // attention, and where it came from.
         let moved = AgentStateUpdate {
             terminal: Some(ResourceId::local(7)),
             record: Some(record(AgentMetaState::Blocked)),
@@ -1417,10 +1077,7 @@ mod tests {
              (absent) declared one",
         );
 
-        // The tombstone: `state` is present-and-null so a consumer keyed on
-        // it sees the record go away instead of reading the last value
-        // forever, and the identity it had survives so that consumer still
-        // recognizes whose line it is.
+        // The tombstone: `state` present-and-null, identity kept.
         let cleared = AgentStateUpdate {
             terminal: Some(ResourceId::local(7)),
             record: None,
@@ -1436,8 +1093,6 @@ mod tests {
         assert_eq!(value["from"], json!("working"));
         assert!(value.get("attention").is_none());
 
-        // Both kinds project through one function, so one array can carry
-        // them in the order the server pushed them.
         let event = WatchItem::Event(phux_client::watch::WatchEvent {
             terminal: None,
             event: phux_protocol::wire::frame::AgentEvent::Bell,
@@ -1450,101 +1105,6 @@ mod tests {
         );
     }
 
-    /// `agent_event_json` projects each event kind to the same stable shape
-    /// the CLI's `phux watch --json` emits (`event` name + payload field).
-    #[test]
-    fn agent_event_json_projects_kind_and_payload() {
-        use phux_client::watch::WatchEvent;
-        use phux_protocol::wire::frame::AgentEvent;
-
-        let ev = WatchEvent {
-            stamp: None,
-            terminal: None,
-            event: AgentEvent::CommandFinished {
-                exit_code: Some(42),
-            },
-        };
-        let v = agent_event_json(&ev);
-        assert_eq!(v["event"], json!("command_finished"));
-        assert_eq!(v["exit_code"], json!(42));
-
-        let bell = WatchEvent {
-            stamp: None,
-            terminal: None,
-            event: AgentEvent::Bell,
-        };
-        assert_eq!(agent_event_json(&bell)["event"], json!("bell"));
-
-        let titled = WatchEvent {
-            stamp: None,
-            terminal: None,
-            event: AgentEvent::TitleChanged {
-                title: "vim".to_owned(),
-            },
-        };
-        let tv = agent_event_json(&titled);
-        assert_eq!(tv["event"], json!("title_changed"));
-        assert_eq!(tv["title"], json!("vim"));
-
-        let satellite = WatchEvent {
-            stamp: None,
-            terminal: Some(ResourceId::satellite("devbox", 7)),
-            event: AgentEvent::Dirty,
-        };
-        assert_eq!(agent_event_json(&satellite)["terminal"], json!("devbox/@7"));
-        assert_eq!(pane_value(&ResourceId::local(3)), json!("@3"));
-        assert_eq!(
-            pane_value(&ResourceId::satellite("devbox", 7)),
-            json!("devbox/@7"),
-        );
-
-        let asked = WatchEvent {
-            stamp: None,
-            terminal: None,
-            event: AgentEvent::Asked {
-                id: "q1".to_owned(),
-                question: "Deploy to prod?".to_owned(),
-                suggestions: vec!["Yes".to_owned(), "No".to_owned()],
-                elapsed_seconds: None,
-            },
-        };
-        let av = agent_event_json(&asked);
-        assert_eq!(av["event"], json!("asked"));
-        assert_eq!(av["id"], json!("q1"));
-        assert_eq!(av["question"], json!("Deploy to prod?"));
-        assert_eq!(av["suggestions"], json!(["Yes", "No"]));
-        assert!(av["elapsed_seconds"].is_null());
-    }
-
-    /// `scrollback`/`cells` arg plumbing: the tri-state scrollback and the
-    /// optional bool map as documented.
-    #[test]
-    fn scrollback_and_cells_args_parse() {
-        // Absent → None (viewport only); 0 → Some(0) (all history); N → N.
-        assert_eq!(u32_arg(&json!({}), "scrollback"), None);
-        assert_eq!(u32_arg(&json!({ "scrollback": 0 }), "scrollback"), Some(0));
-        assert_eq!(
-            u32_arg(&json!({ "scrollback": 25 }), "scrollback"),
-            Some(25)
-        );
-        // Negative / overflowing values are treated as absent.
-        assert_eq!(u32_arg(&json!({ "scrollback": -3 }), "scrollback"), None);
-        assert_eq!(
-            u32_arg(
-                &json!({ "scrollback": u64::from(u32::MAX) + 1 }),
-                "scrollback"
-            ),
-            None,
-        );
-
-        assert_eq!(bool_arg(&json!({}), "cells"), None);
-        assert_eq!(bool_arg(&json!({ "cells": true }), "cells"), Some(true));
-        assert_eq!(bool_arg(&json!({ "cells": false }), "cells"), Some(false));
-        assert_eq!(bool_arg(&json!({ "cells": "yes" }), "cells"), None);
-    }
-
-    /// `snapshot_format_arg` (D9): absent is `None`, `"html"`/`"vt"` pass
-    /// through, anything else is a usage error naming the bad value.
     #[test]
     fn snapshot_format_arg_validates_the_closed_vocabulary() {
         assert_eq!(snapshot_format_arg(&json!({})).unwrap(), None);
@@ -1560,8 +1120,7 @@ mod tests {
         assert!(err.0.contains("png"), "{}", err.0);
     }
 
-    /// `parse_target` is the optional-selector front door (snapshot/wait):
-    /// absent ⇒ `Current`, supported grammar parses, malformed/`=` ⇒ error.
+    /// Absent ⇒ `Current`; malformed and headless `=` ⇒ error.
     #[test]
     fn parse_target_defaults_and_accepts_grammar() {
         assert_eq!(parse_target(&json!({})).unwrap(), Selector::Current);
@@ -1577,40 +1136,22 @@ mod tests {
             parse_target(&json!({ "target": "@100" })).unwrap(),
             Selector::ResourceId(100),
         );
-        // Malformed and headless `=` both error before any server round trip.
         assert!(parse_target(&json!({ "target": "@nope" })).is_err());
         let err = parse_target(&json!({ "target": "=" })).unwrap_err();
         assert!(err.0.contains("attached-TUI focus history"), "{err:?}");
     }
 
-    /// `required_target` (the `send_keys`/`run` front door) rejects a
-    /// missing target and a malformed one alike.
-    #[test]
-    fn required_target_demands_a_selector() {
-        assert!(required_target(&json!({})).is_err());
-        assert_eq!(
-            required_target(&json!({ "target": "work" })).unwrap(),
-            Selector::Session("work".to_owned()),
-        );
-        assert!(required_target(&json!({ "target": "work:1.x" })).is_err());
-    }
-
-    /// `resolve_one` maps each selector form to the expected pane against a
-    /// multi-session/window/pane snapshot, exactly as the CLI does, and
-    /// errors on a miss.
     #[tokio::test]
     async fn resolve_one_maps_every_selector_form() {
         let whole = whole_fleet();
         let socket = std::path::Path::new("unused-for-non-tag-selectors");
 
-        // Bare session → focused-or-first pane of the session.
         assert_eq!(
             resolve_one(socket, &selector::parse("work").unwrap(), &whole)
                 .await
                 .unwrap(),
             ResourceId::local(100),
         );
-        // Window, exact pane, local id, and satellite id selectors.
         for (raw, expected) in [
             ("work:1", ResourceId::local(101)),
             ("work:editor", ResourceId::local(101)),
@@ -1625,8 +1166,6 @@ mod tests {
                 expected,
             );
         }
-        // `.` targets the focused session's focused pane; headless `=` is
-        // rejected during parsing because MCP has no attached-client MRU.
         assert_eq!(
             resolve_one(socket, &Selector::Current, &whole)
                 .await
@@ -1647,9 +1186,7 @@ mod tests {
     }
 
     /// A miss against a hub that could not reach a satellite must not be
-    /// reported as "no such target": an agent reading that will conclude the
-    /// pane is gone and act on it (recreate it, fail the run), when the pane
-    /// is alive on a link that is merely down.
+    /// reported as "no such target": the pane may be alive behind that link.
     #[tokio::test]
     async fn a_miss_against_a_partial_fleet_does_not_claim_the_target_is_absent() {
         let socket = std::path::Path::new("unused-for-non-tag-selectors");
@@ -1675,15 +1212,12 @@ mod tests {
         );
     }
 
-    /// MCP `#tag` resolution fetches the shared L3 tag index and retains
-    /// snapshot ordering before applying focused-pane preference.
+    /// `#tag` resolution fetches the tag index, then prefers the focused pane.
     #[tokio::test]
     async fn resolve_one_fetches_tag_fixture() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("mcp-tag.sock");
         let listener = UnixListener::bind(&socket).unwrap();
-        // The shared harness owns the correlation (one METADATA_VALUE per
-        // request id, in order); this closure supplies only the values.
         let spec = ScriptSpec::new().metadata(|scope, key| {
             assert_eq!(key, RESOURCE_TAGS_KEY);
             let Scope::Resource(terminal_id) = scope else {
@@ -1699,11 +1233,7 @@ mod tests {
             .unwrap();
         assert_eq!(pane, ResourceId::local(100));
         let seen = server.await.unwrap();
-        // One per pane, satellite panes included. The hand-written fake this
-        // replaced served exactly four and then dropped the socket, so the
-        // fifth (satellite-scoped) lookup was answered by a transport EOF
-        // rather than by the server — `fetch_tag_index`'s best-effort
-        // degradation was masking the gap instead of the test covering it.
+        // One lookup per pane, satellite panes included.
         assert!(
             matches!(seen.first(), Some(FrameKind::Hello { .. })),
             "the client must negotiate before metadata lookup; got {seen:?}"
@@ -1722,9 +1252,8 @@ mod tests {
         );
     }
 
-    /// `phux_detach` sends `DetachClients { session }` over the wire (no CLI
-    /// subprocess — the CLI verb has no `--json`) and reports the real
-    /// count the server acked, not an echo of the input.
+    /// `phux_detach` sends `DetachClients { session }` and reports the count
+    /// the server acked, not an echo of the input.
     #[tokio::test]
     async fn phux_detach_reports_the_server_acked_count() {
         let dir = tempfile::tempdir().unwrap();
@@ -1760,10 +1289,8 @@ mod tests {
         );
     }
 
-    /// Omitting `session` detaches server-wide — `None` rides the wire as
-    /// `None`, not the empty string, and the JSON result's `session` is
-    /// `null` rather than absent, so a consumer keyed on the field sees the
-    /// server-wide call distinctly from a per-session one.
+    /// Omitting `session` detaches server-wide: `None` on the wire, and a
+    /// present-and-null `session` in the result.
     #[tokio::test]
     async fn phux_detach_omits_session_for_a_server_wide_call() {
         let dir = tempfile::tempdir().unwrap();
@@ -1820,8 +1347,6 @@ mod tests {
             ResourceInfo::new(ResourceId::local(101), w1, 80, 24),
             ResourceInfo::new(ResourceId::local(102), w1, 80, 24),
             ResourceInfo::new(ResourceId::local(200), p0, 80, 24),
-            // Aggregated federation inventory carries satellite panes without
-            // inventing hub-local session/window joins.
             ResourceInfo::new(
                 ResourceId::satellite("devbox", 7),
                 WindowId::new(999),

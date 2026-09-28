@@ -1,25 +1,12 @@
-//! User configuration.
-//!
-//! A terminal someone actually lives in has to be theirs: their font, their
-//! size, their colors, their shell. Until now Cockpit had no knob at all —
-//! every one of these was a literal in the source.
-//!
-//! The syntax is deliberately Ghostty's, because that is what the people
-//! switching already have in their fingers: one `key = value` per line,
-//! `#` starts a comment, blank lines are ignored, and an unknown key is a
-//! warning rather than a fatal error so a config written for a newer build
-//! still loads on an older one.
-//!
-//! Parsing is allocation-free. Strings are copied into fixed buffers owned
-//! by the `Config` itself, so a loaded config outlives the file bytes and
-//! can be embedded directly in the model.
+//! User configuration, in Ghostty's syntax: `key = value` per line, `#`
+//! comments, and unknown keys as warnings so newer configs still load.
+//! Parsing is allocation-free; strings are copied into the `Config`.
 
 const std = @import("std");
 const theme_module = @import("theme.zig");
 pub const keybindings_module = @import("keybindings.zig");
 
 pub const Theme = theme_module.Theme;
-pub const builtin_themes = theme_module.builtins;
 
 /// Bounds. These are generous for their purpose and keep `Config` a plain
 /// value type that can be copied without an allocator.
@@ -39,13 +26,7 @@ pub const max_phux_remote_bytes: usize = 255;
 pub const max_diagnostics: usize = 16;
 pub const max_config_bytes: usize = 64 * 1024;
 
-/// How much of the offending key or value a diagnostic carries.
-///
-/// The longest key this parser accepts fits comfortably inside 64 bytes, as do
-/// the values worth quoting back (a colour, a size, a cursor style, a short
-/// command). It is deliberately not the size of the largest configurable
-/// string: this storage is paid `max_diagnostics` times inside a `Config` that
-/// is copied by value into the model.
+/// How much of the offending key or value a diagnostic quotes back.
 pub const max_diagnostic_text_bytes: usize = 64;
 
 pub const palette_len: usize = 16;
@@ -113,11 +94,6 @@ fn fromThemeRgb(color: theme_module.Rgb) Rgb {
     return .{ .r = color.r, .g = color.g, .b = color.b };
 }
 
-/// The reverse crossing, for callers measuring a resolved colour's contrast.
-pub fn toThemeRgb(color: Rgb) theme_module.Rgb {
-    return .{ .r = color.r, .g = color.g, .b = color.b };
-}
-
 fn hexDigit(c: u8) ?u8 {
     return switch (c) {
         '0'...'9' => c - '0',
@@ -140,11 +116,8 @@ fn eq(a: []const u8, b: []const u8) bool {
 /// A parse problem, kept rather than thrown. A single bad line must not cost
 /// someone every other setting in the file.
 pub const Diagnostic = struct {
-    /// `unsupported_key` is NOT `unknown_key`. The key is spelled correctly and
-    /// parses; this build simply cannot honour it, and says so rather than
-    /// letting someone believe a setting took effect. A knob that accepts a
-    /// value and does nothing is worse than one that is missing, because the
-    /// missing one sends you to the docs and the silent one sends you hunting.
+    /// `unsupported_key`: spelled correctly but not honoured by this build,
+    /// said out loud rather than silently ignored.
     pub const Kind = enum {
         unknown_key,
         bad_value,
@@ -152,10 +125,7 @@ pub const Diagnostic = struct {
         too_long,
         unsupported_key,
 
-        /// The phrase a one-line surface uses. Short because it has to share a
-        /// band with a line number and a dismiss control; the startup log
-        /// spells the same five cases out as whole sentences, where there is
-        /// room for them.
+        /// The short phrase for the one-line config band.
         pub fn summary(kind: Kind) []const u8 {
             return switch (kind) {
                 .unknown_key => "unknown setting",
@@ -169,16 +139,8 @@ pub const Diagnostic = struct {
 
     line: u32 = 0,
     kind: Kind = .bad_value,
-    /// The offending key or value, OWNED.
-    ///
-    /// It used to be a slice borrowed from the source bytes, and nothing that
-    /// reads a diagnostic is alive while those bytes are: the composition root
-    /// reads the file into a buffer local to the read, parses, and returns the
-    /// `Config` BY VALUE — so every borrowed slice pointed into a dead stack
-    /// frame before the first log line was even formatted, and the model keeps
-    /// the same `Config` for the life of the process. A bounded copy is what
-    /// makes a diagnostic mean something later, which is the whole point of
-    /// collecting one.
+    /// The offending key or value, copied: the source bytes do not outlive
+    /// parsing.
     detail: DiagnosticText = .{},
 
     /// The offending key or value, or empty when the kind carries none.
@@ -238,12 +200,7 @@ pub const PhuxValueSource = enum {
     }
 };
 
-/// Cut `text` to at most `limit` bytes WITHOUT splitting a UTF-8 sequence.
-///
-/// A diagnostic's text is quoted straight back into a log line and an
-/// accessibility label, and a label that ends mid-codepoint is a label with an
-/// invalid byte in it. Walking back off continuation bytes costs at most three
-/// steps and removes the whole class.
+/// Cut `text` to at most `limit` bytes without splitting a UTF-8 sequence.
 fn truncateUtf8(text: []const u8, limit: usize) []const u8 {
     if (text.len <= limit) return text;
     var end = limit;
@@ -263,96 +220,32 @@ pub const default_font_size: f32 = 13;
 pub const default_scrollback_bytes: u64 = 50 * 1024 * 1024;
 pub const max_scrollback_bytes: u64 = 2 * 1024 * 1024 * 1024;
 
-/// `minimum-contrast` bounds. Ghostty's own range, and its own meaning: 1 is
-/// "no floor at all" (the disable value) and 21 is the most any sRGB display
-/// can produce, black on white. Out-of-range is CLAMPED rather than refused,
-/// the way `font-size` is — `minimum-contrast = 100` is an unambiguous "as
-/// much as you can give me".
+/// `minimum-contrast` bounds (Ghostty's): 1 disables the floor, 21 is black on
+/// white. Out-of-range values clamp.
 pub const min_minimum_contrast: f32 = 1;
 pub const max_minimum_contrast: f32 = 21;
 
-/// The default contrast floor, and the ONE place this build knowingly diverges
-/// from Ghostty (whose default is 1, i.e. off).
-///
-/// WHY DIVERGE. Ghostty ships 1 because a general-purpose terminal's first
-/// duty is to paint the colour the application asked for. Cockpit inherits
-/// that duty and still has a defect Ghostty does not: its ground is #090b0f,
-/// which is darker than any ground the ANSI-16 defaults were calibrated
-/// against, and the owner's standing report is "the text is see-through or
-/// black or something". A floor that ships disabled does not answer that
-/// report — it answers it only for the person who already knows the key name.
-///
-/// WHY 3 AND NOT SOMETHING ELSE. Measured, not chosen. Every ratio below is
-/// libghostty's own default palette entry against the app's own default
-/// ground, through `theme.contrastRatio`; reproduce with
-///
-///   python3 - <<'PY'
-///   def lin(c):
-///       c /= 255.0
-///       return c/12.92 if c <= 0.03928 else ((c+0.055)/1.055)**2.4
-///   def L(c): return 0.2126*lin(c[0]) + 0.7152*lin(c[1]) + 0.0722*lin(c[2])
-///   def ratio(a, b):
-///       la, lb = L(a), L(b)
-///       return (max(la,lb)+0.05)/(min(la,lb)+0.05)
-///   bg = (0x09,0x0b,0x0f)
-///   for name, c in [("SGR 30 black",(0x1d,0x1f,0x21)),
-///                   ("SGR 2 faint blue",(0x45,0x56,0x66)),
-///                   ("SGR 90 bright black",(0x66,0x66,0x66)),
-///                   ("SGR 2 faint default fg",(0x7e,0x81,0x85)),
-///                   ("SGR 31 red",(0xcc,0x66,0x66))]:
-///       print(name, round(ratio(c, bg), 2))
-///   PY
-///
-///   SGR 30 black            #1d1f21   1.19    illegible
-///   SGR 2 faint blue        #455666   2.60    illegible
-///   SGR 90 bright black     #666666   3.43    dim, but readable
-///   SGR 2 faint default fg  #7e8185   5.03    readable (clears WCAG AA)
-///   SGR 31 red              #cc6666   5.31    readable
-///
-/// The two illegible cases sit at or below 2.60 and the first legible one at
-/// 3.43, so any floor in (2.60, 3.43] lifts exactly what is unreadable and
-/// touches nothing else. 3 is the round number inside that window, and it is
-/// also WCAG SC 1.4.11's non-text-contrast minimum — the line below which a
-/// shape stops being distinguishable from its ground at all.
-///
-/// It is deliberately NOT `theme.wcag_aa_body_text` (4.5). This floor does not
-/// dim a colour towards readability, it REPLACES it with pure white or pure
-/// black (see `Palette.contrasted`), so every raised cell loses its hue. At
-/// 4.5 the grey a prompt uses for de-emphasis becomes the same pure white as
-/// the text it was de-emphasising, which destroys information rather than
-/// revealing it. At 3 the grey stays grey.
+/// Default contrast floor; deliberately not Ghostty's 1 (off). Against our
+/// #090b0f ground the default palette's illegible entries (SGR 30 black 1.19,
+/// faint blue 2.60) sit below 3 and the first legible one (bright black 3.43)
+/// above it, so 3 lifts exactly the unreadable cells. Not 4.5: the floor
+/// replaces a colour with pure white/black, which would erase de-emphasis greys.
 pub const default_minimum_contrast: f32 = 3;
 
 pub const Config = struct {
     font_family: FontFamily = FontFamily.init(""),
     font_size: f32 = default_font_size,
-    /// The name from `theme = <name>`, empty for "no theme named". Only ever
-    /// holds a name `theme.byName` recognizes: an unrecognized one is a
-    /// `bad_value` diagnostic and is NOT stored, so nothing downstream has to
-    /// re-check whether the name means anything.
+    /// The theme in effect; empty for none. Only ever a name `theme.byName`
+    /// recognizes.
     theme: ThemeName = ThemeName.init(""),
-    /// `theme = auto`: the theme FOLLOWS the system light/dark setting instead
-    /// of naming one.
-    ///
-    /// It is a second field rather than a magic value inside `theme` because
-    /// everything downstream reads `theme` expecting a name it can resolve —
-    /// storing "auto" there would put a string that means nothing to
-    /// `theme.byName` in front of every colour lookup in the app. Here, the
-    /// pair reads honestly: `theme` is always the theme in effect right now,
-    /// and this says who chose it.
+    /// `theme = auto`: follow the system light/dark setting (`theme` still
+    /// names the member in effect).
     follow_system_theme: bool = false,
 
-    /// Null means "the palette the terminal engine ships", which is a real
-    /// terminal palette. Only an explicit `palette = N=#rrggbb` overrides it.
-    ///
-    /// Deliberately NOT reached by `theme` — see the module comment on
-    /// `theme.zig` for why the ANSI-16 slots stay the emulator's.
+    /// Explicit `palette = N=#rrggbb` overrides; null keeps the emulator's
+    /// palette. Themes never reach it (see `theme.zig`).
     palette: [palette_len]?Rgb = [_]?Rgb{null} ** palette_len,
-    /// The EXPLICIT `background` / `foreground` keys. Null means the user did
-    /// not write one, which is not the same as "black": it is what lets a
-    /// theme fill in underneath, and what lets an explicit key outrank one.
-    /// Everything downstream reads `resolvedBackground` / `resolvedForeground`
-    /// rather than these, so the precedence lives in ONE place.
+    /// Explicit keys only (null = not written); read through `resolved*`.
     background: ?Rgb = null,
     foreground: ?Rgb = null,
     cursor_color: ?Rgb = null,
@@ -362,13 +255,8 @@ pub const Config = struct {
     cursor_style: CursorStyle = .block,
     cursor_style_blink: bool = true,
 
-    /// The WCAG contrast ratio a cell's foreground must clear against the
-    /// background it is painted on. 1 disables the floor entirely, which is
-    /// Ghostty's default and this build's OFF switch rather than its default;
-    /// see `default_minimum_contrast` for why the default is 3 here.
-    ///
-    /// Always in `[min_minimum_contrast, max_minimum_contrast]`: the parser
-    /// clamps, so nothing downstream re-checks the range.
+    /// WCAG contrast floor for cell foregrounds (1 = off); always clamped to
+    /// the valid range by the parser.
     minimum_contrast: f32 = default_minimum_contrast,
 
     scrollback_bytes: u64 = default_scrollback_bytes,
@@ -423,25 +311,8 @@ pub const Config = struct {
         return theme_module.byName(name);
     }
 
-    /// THE colour precedence, stated once.
-    ///
-    ///   1. an explicit `foreground` / `background` / `selection-background`
-    ///      key, because someone who wrote a hex value meant that hex value;
-    ///   2. the named theme's own colour;
-    ///   3. null — meaning "the app's own register", which the design tokens
-    ///      already hold.
-    ///
-    /// Resolved HERE rather than at parse time on purpose. Doing it at parse
-    /// time would make the file ORDER-SENSITIVE: `foreground = #ff0000` above
-    /// `theme = nord` would lose and the same two lines swapped would win,
-    /// which is a rule nobody can hold in their head and nothing in the file
-    /// makes visible. Keeping both and deciding at the read site means an
-    /// explicit key outranks a theme wherever the two happen to sit.
-    ///
-    /// Every one of the three flows on to the terminal through the design
-    /// tokens (`terminalTokensFrom`), which are rebuilt every frame — so a
-    /// mutation of `Model.config` repaints on the next frame with nothing to
-    /// invalidate.
+    /// Colour precedence: explicit key, then the named theme, then null (the
+    /// app's own tokens). Resolved at read time so file order does not matter.
     pub fn resolvedForeground(config: *const Config) ?Rgb {
         if (config.foreground) |explicit| return explicit;
         const active = config.resolvedTheme() orelse return null;
@@ -460,15 +331,8 @@ pub const Config = struct {
         return fromThemeRgb(active.selection_background);
     }
 
-    /// Adopt a theme by name, dropping an unknown one rather than storing it.
-    /// False means nothing changed, which is what the settings surface needs
-    /// to know before it decides whether to write the file.
-    ///
-    /// Naming a theme ENDS the subscription: picking one in the settings
-    /// surface while `theme = auto` was in effect is a choice, and the next
-    /// sunset must not overrule it. Writing the config file is the settings
-    /// surface's own step — it writes the NAME, so the file stops saying
-    /// `auto` at exactly the moment the app stops following.
+    /// Adopt a known theme by name; false when nothing changed. Naming a theme
+    /// ends `theme = auto`.
     pub fn setTheme(config: *Config, name: []const u8) bool {
         if (name.len != 0 and theme_module.byName(name) == null) return false;
         const following = config.follow_system_theme;
@@ -488,15 +352,6 @@ pub const Config = struct {
         // `setTheme` is deliberately not reused: it ends the subscription, and
         // this IS the subscription.
         return true;
-    }
-
-    /// Font sizing steps by whole points, which is what cmd+= / cmd+- do in
-    /// every Mac terminal. Returns the clamped result so callers can tell
-    /// when they hit the end of the range.
-    pub fn withFontSize(config: Config, size: f32) Config {
-        var next = config;
-        next.font_size = std.math.clamp(size, min_font_size, max_font_size);
-        return next;
     }
 
     /// Store an already-validated startup socket together with its provenance.
@@ -683,22 +538,14 @@ fn applyTheme(config: *Config, line: u32, value: []const u8) void {
         config.follow_system_theme = false;
         return;
     }
-    // `auto` is not a theme, it is a SUBSCRIPTION: the app adopts the
-    // light or dark member of the pair as the system reports it, and
-    // re-adopts on every flip. The name written here is the one that is in
-    // effect until the first appearance event lands — which the host emits
-    // before the run loop arms, so in practice it is only ever the value
-    // in the very first painted frame.
+    // `auto` follows system appearance; the name stored here only lasts
+    // until the first appearance event.
     if (theme_module.isAutoName(value)) {
         config.follow_system_theme = true;
         config.theme.set(theme_module.auto_dark) catch config.note(line, .too_long, value);
         return;
     }
-    // A name this build does not ship is a `bad_value` and is NOT stored.
-    // Storing it would leave `Config.theme` holding a string that resolves
-    // to nothing, so every reader downstream would have to re-check
-    // whether the name means anything — and the settings surface would
-    // show a theme that does not exist as the one in effect.
+    // An unknown name is a `bad_value` and is not stored.
     if (theme_module.byName(value) == null) {
         config.note(line, .bad_value, value);
         return;
@@ -716,13 +563,8 @@ fn applyColorPair(config: *Config, line: u32, key: []const u8, value: []const u8
         }
     }
     if (eq(key, "selection-foreground")) {
-        // Parsed, but inert: canvas.TerminalGrid carries ONE selection_color
-        // and the painter draws a WASH over the cell rather than overriding
-        // the glyph's foreground. Honouring this needs an SDK field.
-        //
-        // Only ONE diagnostic per line: a malformed colour is a bad_value and
-        // that is the more actionable of the two, so the unsupported note is
-        // added only when the value itself was fine.
+        // Inert until the SDK grid carries a selection foreground. A bad value
+        // takes precedence over the unsupported note (one diagnostic per line).
         setColor(config, line, &config.selection_foreground, value);
         if (config.selection_foreground != null) config.note(line, .unsupported_key, key);
         return true;
@@ -855,11 +697,8 @@ fn setPhuxSession(config: *Config, line: u32, value: []const u8) void {
     if (!config.setPhuxSession(value, .config)) config.note(line, .bad_value, detail);
 }
 
-/// A `#` starts a comment ONLY at the start of a line (after any leading
-/// whitespace). There are deliberately no trailing comments: `#` is also
-/// how every color value begins, and a rule like "a `#` after whitespace
-/// ends the line" silently eats `background = #1e1e2e`. Ghostty makes the
-/// same call, so a config carried over from it behaves identically.
+/// `#` starts a comment only at the start of a line (as in Ghostty), since
+/// colour values begin with `#`.
 fn stripComment(line: []const u8) []const u8 {
     const body = std.mem.trimStart(u8, line, " \t");
     if (body.len > 0 and body[0] == '#') return line[0..0];
@@ -899,10 +738,7 @@ pub fn joinPath(config_dir: []const u8, output: []u8) error{NoSpaceLeft}![]const
     return output[0..total];
 }
 
-/// Parse bytes the caller read, or fall back to defaults when there were
-/// none. A missing config is the normal case, not an error — file IO stays
-/// with the caller so this module has no ambient dependency and stays
-/// trivially testable.
+/// Parse bytes the caller read, or defaults when there were none.
 pub fn loadOrDefault(bytes: ?[]const u8) Config {
     return parse(bytes orelse return .{});
 }
@@ -956,36 +792,11 @@ test "validation retains errors beyond the visible diagnostic cap and binding ca
 
 // ------------------------------------------------------------------ writing
 
-/// Rewrite a config file's bytes so that `key` reads `value`, touching as
-/// little else as it possibly can.
-///
-/// THE RULE THIS FUNCTION EXISTS TO OBEY: this file is hand-written. Someone's
-/// comments, their spacing, their ordering, and every key this build has never
-/// heard of are all THEIRS, and an app that rewrites a person's file by
-/// serializing its own parsed model back out would silently delete all of it —
-/// including keys a NEWER build understands and this one does not. So the file
-/// is edited as TEXT: every byte that is not the one line being set is copied
-/// through verbatim, line terminators included.
-///
-/// The two things it does change, and why:
-///
-///   * a matching key's line is REPLACED IN PLACE, so the setting keeps the
-///     position in the file its author gave it;
-///   * a SECOND and later line naming the same key is DROPPED. The parser is
-///     last-wins, so leaving a later duplicate would mean this function
-///     returned successfully and the setting still did not take effect — a
-///     silent no-op, which is the exact failure this whole round exists to
-///     end. A duplicate key is already a bug in the file; collapsing it to the
-///     one line that now holds the value is the honest repair.
-///
-/// A key that appears nowhere is APPENDED, with a newline first when the file
-/// does not already end in one. Nothing else is added — no banner, no
-/// "written by" comment, no reordering.
-///
-/// Comment lines are matched by the same rule the parser uses (`stripComment`:
-/// a `#` in the first non-blank column), so a commented-out `# theme = nord`
-/// is left exactly where it is and the live key is added separately. That is
-/// the conservative reading: the user commented it out on purpose.
+/// Rewrite a hand-written config's bytes so `key` reads `value`, editing text
+/// rather than re-serializing so comments, order and unknown keys survive.
+/// The first matching line is replaced in place; later duplicates are dropped
+/// (the parser is last-wins); a missing key is appended. Commented-out lines
+/// are left alone.
 pub fn setKey(
     source: []const u8,
     key: []const u8,

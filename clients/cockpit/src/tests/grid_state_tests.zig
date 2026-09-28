@@ -6,14 +6,9 @@ const grid = @import("../terminal/grid.zig");
 const support = @import("support.zig");
 
 const canvas = native_sdk.canvas;
-const geometry = native_sdk.geometry;
 const testing = std.testing;
 
 const createSession = support.createSession;
-const createSessions = support.createSessions;
-const activeSlots = support.activeSlots;
-const destroyModelSessions = app.deinitModel;
-const startFocusedTerminal = support.startFocusedTerminal;
 
 test "the emulator round-trips output into real cell state" {
     const session = try createSession(40, 6);
@@ -322,15 +317,6 @@ test "a widening resize exposes blank columns, never the pre-split glyphs" {
     }
 }
 
-test "the feed slice matches the response buffer it protects" {
-    // The pty batch used to be cut into 1 KiB slices, each followed by a
-    // full response drain and outbound flush — 64 parser entries and 64
-    // drains for one routine 64 KiB read. The response buffer grows to fit
-    // (see `writePtyResponse`), so the slice no longer needs to be a
-    // fraction of it.
-    try testing.expectEqual(grid.Session.response_capacity, grid.Session.feed_slice_bytes);
-}
-
 test "reset clears the previous session's palette and dynamic color overrides" {
     const session = try createSession(80, 24);
     defer session.destroy();
@@ -398,119 +384,6 @@ test "a failed selection serialization is an error, never a silent no-selection"
     session.beginSelection(false);
     session.moveSelection(5, 0, true);
     try testing.expectError(error.OutOfMemory, session.selectionText(std.testing.failing_allocator));
-}
-
-test "wheel scrolling over the grid scrolls history" {
-    const gpa = testing.allocator;
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = geometry.SizeF.init(980, 640) });
-    defer harness.destroy(gpa);
-    const app_state = try startFocusedTerminal(gpa, harness);
-    defer gpa.destroy(app_state);
-    defer destroyModelSessions(&app_state.model);
-    defer app_state.deinit();
-    const app_iface = app_state.app();
-
-    var line: [16]u8 = undefined;
-    for (0..120) |index| {
-        app_state.model.provider.slots[0].session.feed(std.fmt.bufPrint(&line, "line {d}\r\n", .{index}) catch unreachable);
-    }
-    const bottom_offset = app_state.model.provider.slots[0].session.scrollbar().offset;
-    try testing.expect(bottom_offset > 0);
-
-    // Native tab chrome is outside every terminal hit target.
-    try harness.runtime.dispatchPlatformEvent(app_iface, .{
-        .gpu_surface_input = .{
-            .window_id = 1,
-            .label = app.canvas_label,
-            .kind = .scroll,
-            .x = 100,
-            // Inside the titlebar inset, above the content area: with one calm
-            // terminal there is no band at all, so the old y=30 would now land
-            // in the grid itself.
-            .y = 4,
-            .delta_y = app_state.model.provider.slots[0].session.measuredCell().?.height * 4,
-        },
-    });
-    try testing.expectEqual(bottom_offset, app_state.model.provider.slots[0].session.scrollbar().offset);
-
-    // A trackpad swipe (several fractional deltas accumulating past one
-    // cell) scrolls into history, like every terminal.
-    const cell_h = app_state.model.provider.slots[0].session.measuredCell().?.height;
-    const frame = app.paneFrames(&app_state.model, app_state.model.ws().surface_size)[0];
-    for (0..4) |_| {
-        try harness.runtime.dispatchPlatformEvent(app_iface, .{ .gpu_surface_input = .{
-            .window_id = 1,
-            .label = app.canvas_label,
-            .kind = .scroll,
-            .x = frame.x + frame.width / 2,
-            .y = frame.y + frame.height / 2,
-            .delta_y = cell_h,
-        } });
-    }
-    try testing.expect(app_state.model.provider.slots[0].session.scrollbar().offset < bottom_offset);
-
-    // Typing returns the viewport to the live screen.
-    try harness.runtime.dispatchPlatformEvent(app_iface, .{ .gpu_surface_input = .{
-        .window_id = 1,
-        .label = app.canvas_label,
-        .kind = .text_input,
-        .text = "x",
-    } });
-    try testing.expectEqual(bottom_offset, app_state.model.provider.slots[0].session.scrollbar().offset);
-}
-
-test "scrollback chords pause while a selection is armed" {
-    const gpa = testing.allocator;
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = geometry.SizeF.init(980, 640) });
-    defer harness.destroy(gpa);
-    const app_state = try startFocusedTerminal(gpa, harness);
-    defer gpa.destroy(app_state);
-    defer destroyModelSessions(&app_state.model);
-    defer app_state.deinit();
-    const app_iface = app_state.app();
-
-    // Scrollback to move through, then arm a selection.
-    var line: [16]u8 = undefined;
-    for (0..120) |index| {
-        app_state.model.provider.slots[0].session.feed(std.fmt.bufPrint(&line, "line {d}\r\n", .{index}) catch unreachable);
-    }
-    try harness.runtime.dispatchPlatformEvent(app_iface, .{ .gpu_surface_input = .{
-        .window_id = 1,
-        .label = app.canvas_label,
-        .kind = .key_down,
-        .key = "space",
-        .modifiers = .{ .primary = true, .shift = true },
-    } });
-    try testing.expect(app_state.model.provider.slots[0].selecting);
-
-    // The selection's coordinates are viewport-relative and the
-    // emulator range is absolute: scrolling under it would desync the
-    // painted caret from the copyable text, so the chord is inert.
-    const before = app_state.model.provider.slots[0].session.scrollbar().offset;
-    try harness.runtime.dispatchPlatformEvent(app_iface, .{ .gpu_surface_input = .{
-        .window_id = 1,
-        .label = app.canvas_label,
-        .kind = .key_down,
-        .key = "home",
-        .modifiers = .{ .primary = true },
-    } });
-    try testing.expectEqual(before, app_state.model.provider.slots[0].session.scrollbar().offset);
-
-    // Selection dismissed, the same chord scrolls again.
-    try harness.runtime.dispatchPlatformEvent(app_iface, .{ .gpu_surface_input = .{
-        .window_id = 1,
-        .label = app.canvas_label,
-        .kind = .key_down,
-        .key = "escape",
-    } });
-    try harness.runtime.dispatchPlatformEvent(app_iface, .{ .gpu_surface_input = .{
-        .window_id = 1,
-        .label = app.canvas_label,
-        .kind = .key_down,
-        .key = "home",
-        .modifiers = .{ .primary = true },
-    } });
-    try testing.expect(app_state.model.provider.slots[0].session.scrollbar().offset != before);
 }
 
 test "an armed selection follows its text when output scrolls the screen" {

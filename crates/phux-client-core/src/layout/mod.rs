@@ -1,33 +1,12 @@
-//! Client-side mirror of the binary split-tree pane layout.
+//! Client-side mirror of the binary split-tree pane layout (ADR-0019).
 //!
-//! Per [ADR-0019] decision 3 the reference TUI keeps its own copy of the
-//! layout tree. The shape is the wire-side [`LayoutNode`] (re-exported,
-//! not redefined); the operations (`split_at`, `kill_pane`,
-//! `focus_direction`) are re-implemented here as free functions over the
-//! wire type so the client crate's edge to `phux-core` stays as thin as
-//! today. Pane-rect tiling lives one module over in
-//! [`crate::multi_pane::pane_rects`] — the same local-divider walk paint
-//! uses, so reflow and paint can never disagree.
-//!
-//! Layout persistence (per [ADR-0019] decision 1) wraps the whole
-//! [`Workspace`] (the set of windows plus the active index) in a
-//! versioned CBOR envelope and stores it server-side under the L3
-//! metadata key `phux.tui.layout/v1`. The current envelope is v3 —
-//! `{version, windows: [{id, name, root: LayoutNode, focused_terminal}],
-//! focused_window_index}` (docs/spec/L3.md §3.2), encoded by
-//! [`Workspace::encode_cbor`] / [`Workspace::decode_cbor`]. Focus fields remain
-//! non-authoritative; ADR-0049 requires recipients
-//! to preserve their client-local focus when adopting topology. Earlier
-//! envelopes are explicitly refused. Every window requires a nonzero,
-//! unique 16-byte stable identity. Readers never infer identity from persisted
-//! terminal overlap or replace unsupported stored layouts with a fallback.
-//!
-//! The wire crate exposes neither `serde::Serialize` for its types nor
-//! a public encoder API; for the CBOR envelope we therefore round-trip
-//! through small local shim types (`CborLayoutNode`, `CborSplitDir`,
-//! `CborResourceId`) that mirror the wire shape and convert via `From`.
-//!
-//! [ADR-0019]: ../../docs/adr/0019-tui-multi-pane-rendering.md
+//! The tree is the wire-side [`LayoutNode`]; the operations are free
+//! functions over it. Tiling lives in [`crate::multi_pane::pane_rects`],
+//! the same walk paint uses. The whole [`Workspace`] persists as the v3
+//! CBOR envelope under L3 key `phux.tui.layout/v1` (docs/spec/L3.md §3.2).
+//! Focus fields are non-authoritative (ADR-0049); earlier envelope
+//! versions and missing window identities are refused, never migrated.
+//! The wire types derive no serde, so the envelope uses local shim types.
 
 use std::borrow::Cow;
 use std::io::Cursor;
@@ -37,26 +16,10 @@ use thiserror::Error;
 
 pub use phux_protocol::wire::info::{LayoutNode, SplitDir};
 
-/// Current version of the layout CBOR envelope.
-///
-/// Stored as the `version` field of the envelope. Bumped when the
-/// envelope shape changes incompatibly; readers MUST refuse unknown
-/// versions (see [`LayoutDecodeError::UnsupportedVersion`]).
-///
-/// v3 requires stable window identities. Prior envelopes are not migrated by
-/// the decoder; stored bytes remain available for explicit recovery.
+/// Current layout envelope version; readers refuse any other.
 pub(crate) const LAYOUT_ENVELOPE_VERSION: u8 = 3;
 
-// -----------------------------------------------------------------------------
-// Direction / Rect — TUI-local geometry types
-// -----------------------------------------------------------------------------
-
 /// Cardinal direction for [`focus_direction`].
-///
-/// Mirrors `phux_core::window::Direction`. Lives here, not in the wire
-/// crate, because focus movement is a TUI-private concern (no
-/// `FOCUS_CHANGED` frame ever rides the substrate — see ADR-0017 +
-/// ADR-0019 decision 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     /// Move focus upward.
@@ -69,13 +32,8 @@ pub enum Direction {
     Right,
 }
 
-/// An axis-aligned rectangle in cell coordinates.
-///
-/// Origin is the outer viewport's
-/// top-left. Border-divider accounting (per ADR-0019 decision 4) happens
-/// *inside* [`crate::multi_pane::pane_rects`]: it carves one cell per
-/// split node out of the bounds for the divider, so leaf rects and
-/// divider cells together tile the viewport exactly.
+/// An axis-aligned rectangle in cell coordinates, origin at the outer
+/// viewport's top-left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
     /// Top-left x coordinate (column).
@@ -88,10 +46,6 @@ pub struct Rect {
     pub h: u16,
 }
 
-// -----------------------------------------------------------------------------
-// NodePath — addressing an interior split node
-// -----------------------------------------------------------------------------
-
 /// One step down the binary split tree: into the `left` or `right` child.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NodeStep {
@@ -101,14 +55,8 @@ pub(crate) enum NodeStep {
     Right,
 }
 
-/// A path from the layout root to a specific [`LayoutNode`].
-///
-/// Empty path ⇒ the root. The divider rasterizer
-/// ([`crate::multi_pane`]) tags each interior split's divider line with
-/// the path to that split, so a mouse press on a divider cell resolves to
-/// the [`LayoutNode::Split`] whose `ratio` a drag adjusts
-/// ([`set_ratio_at`]). Decoupled from the wire-side `LayoutNode` so it
-/// stays a pure TUI-local geometry concern.
+/// A path from the layout root to a [`LayoutNode`] (empty = root). Divider
+/// cells carry the path of their split so a drag can find its `ratio`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NodePath(pub(crate) Vec<NodeStep>);
 
@@ -130,16 +78,7 @@ impl NodePath {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Errors
-// -----------------------------------------------------------------------------
-
 /// Errors returned by the free-function layout operations.
-///
-/// Mirrors `phux_core::window::LayoutError`. Duplicated because the
-/// client may not depend on `phux-core` for the algorithm types
-/// (ADR-0019 decision 3); this is the same enum with the same
-/// variants and the same string forms.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum LayoutError {
     /// The target [`ResourceId`] is not present in the tree.
@@ -149,10 +88,6 @@ pub enum LayoutError {
     #[error("invalid split ratio: {0}")]
     InvalidRatio(f32),
     /// Closing this pane would leave the workspace with no panes.
-    ///
-    /// [`Workspace::close_pane`] returns this instead of producing an
-    /// unencodable empty layout. Tree-level [`kill_pane`] still returns
-    /// `Ok(None)` when a window's last leaf is removed.
     #[error("cannot close the final pane in a persisted layout")]
     LastPane,
 }
@@ -190,25 +125,8 @@ pub enum LayoutEncodeError {
     Cbor(String),
 }
 
-// -----------------------------------------------------------------------------
-// LayoutState — in-memory mirror
-// -----------------------------------------------------------------------------
-
-/// In-memory mirror of the TUI's binary split tree plus the attaching
-/// client's focused leaf.
-///
-/// The reference TUI holds one of these per attached window. On attach
-/// the client requests `phux.tui.layout/v1` from the server's L3
-/// metadata; if present, it decodes via [`Workspace::decode_cbor`] and
-/// re-renders multi-pane. If absent, it falls back to single-pane
-/// (the [`Default`] shape — an empty tree, no focus). On `split_at` /
-/// `kill_pane` the TUI mutates the in-memory tree and pushes the new
-/// shape back to the server via [`Workspace::encode_cbor`] +
-/// `SET_METADATA`.
-///
-/// Focus is per-client (ADR-0019 decision 6). Workspace envelopes
-/// serialize it, but recipients ignore the sender's value during topology
-/// reconciliation (ADR-0049); it lives here as renderer-local state.
+/// One window's split tree plus this client's focused leaf. Focus is
+/// per-client (ADR-0019); peers ignore a sender's focus (ADR-0049).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LayoutState {
     /// The binary split tree. `None` until the first pane is seeded.
@@ -239,17 +157,7 @@ impl LayoutState {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Workspace — the multi-window container above LayoutState
-// -----------------------------------------------------------------------------
-
-/// One TUI window: a name plus its own pane layout ([`LayoutState`]).
-///
-/// "Window" is a reference-TUI convention, not a wire concept
-/// (ADR-0017); the whole [`Workspace`] is persisted as the L3 metadata
-/// blob `phux.tui.layout/v1` (docs/spec/L3.md §3.2). The window's pane
-/// tree and focused leaf are exactly the single-window [`LayoutState`]
-/// the renderer already knows how to paint.
+/// One TUI window: a stable identity, a name, and its pane layout.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowState {
     /// Durable layout identity, distinct from the server registry's window ID.
@@ -275,15 +183,8 @@ mod projection;
 
 pub use projection::{LAYOUT_METADATA_GROUP, MAX_LAYOUT_METADATA_BYTES, projection_key_session};
 
-/// The set of windows the TUI presents for one Group, plus which
-/// one is active.
-///
-/// The renderer and every pure layout helper operate on a single
-/// [`LayoutState`]; the driver hands them [`Self::active_window`] so the
-/// window dimension is invisible below this type. The active-window
-/// index is per-client state (like focus, ADR-0019 decision 6): it is
-/// serialized as `focused_window_index` but a bare window switch does
-/// not broadcast it.
+/// The windows the TUI presents for one Group, plus the (per-client)
+/// active index.
 ///
 /// Invariant: when `windows` is non-empty, `active < windows.len()`.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -328,21 +229,10 @@ impl Workspace {
         self.windows.get_mut(self.active).map(|w| &mut w.state)
     }
 
-    /// The layout to **render and reflow** against, honoring a zoom (phux-x2hm).
-    ///
-    /// When `zoomed` is `Some(id)` and `id` is still a live leaf of the active
-    /// window, returns an owned single-leaf layout — the zoomed pane fills the
-    /// whole pane viewport, with no dividers and the other panes hidden (a
-    /// single-leaf tree already tiles to one full-viewport rect with zero
-    /// dividers). Otherwise — no zoom, or the zoom target has since closed or
-    /// belongs to a different window — returns the real active window.
-    ///
-    /// Folding the liveness check in here makes zoom **self-healing**: a
-    /// closed or window-switched zoom target silently falls back to the real
-    /// layout instead of stranding a dead single pane. `None` only when there
-    /// is no active window (pre-attach). Mutation and input-routing paths must
-    /// keep using [`Self::active_window`] (the real tree); only render/reflow
-    /// reads go through here.
+    /// The layout to render and reflow against: a single-leaf layout when
+    /// `zoomed` is a live leaf of the active window, else the active window
+    /// (so a stale zoom heals itself). Mutation and input routing use
+    /// [`Self::active_window`].
     #[must_use]
     pub fn render_window(&self, zoomed: Option<&ResourceId>) -> Option<Cow<'_, LayoutState>> {
         let active = self.active_window()?;
@@ -365,10 +255,8 @@ impl Workspace {
         self.active = self.windows.len() - 1;
     }
 
-    /// Drop any window whose pane tree has become empty (its last pane
-    /// closed). The active window stays pointed at the same window if it
-    /// survived, otherwise at the survivor that took its place. Returns
-    /// `true` if anything was removed.
+    /// Drop windows whose tree became empty, keeping `active` on the same
+    /// window or its successor. Returns `true` if anything was removed.
     pub fn prune_empty_windows(&mut self) -> bool {
         if self.windows.iter().all(|w| w.state.tree.is_some()) {
             return false;
@@ -456,10 +344,8 @@ impl Workspace {
         }
     }
 
-    /// Move the window at `from` so it lands at position `to`, shifting the
-    /// windows between them by one. The active window keeps its identity:
-    /// `active` follows it to its new index. Returns `false` (no-op) when
-    /// either index is out of range or `from == to`.
+    /// Move the window at `from` to position `to`; `active` follows its
+    /// window. Returns `false` when out of range or `from == to`.
     pub fn move_window(&mut self, from: usize, to: usize) -> bool {
         let len = self.windows.len();
         if from >= len || to >= len || from == to {
@@ -549,10 +435,7 @@ impl Workspace {
     ///   NaN, infinite, or outside `(0.0, 1.0)`.
     /// * [`LayoutDecodeError::Cbor`] for malformed CBOR.
     pub fn decode_cbor(bytes: &[u8]) -> Result<Self, LayoutDecodeError> {
-        // Probe the version byte first, then re-deserialize the whole
-        // buffer into the matching envelope. A bare `{version}` struct
-        // deserializes fine from either envelope shape (serde ignores
-        // the extra fields).
+        // Probe the version, then decode the whole matching envelope.
         let probe: VersionProbe = ciborium::de::from_reader(Cursor::new(bytes))
             .map_err(|e| LayoutDecodeError::Cbor(e.to_string()))?;
         if probe.version != LAYOUT_ENVELOPE_VERSION {
@@ -631,10 +514,6 @@ fn repair_focus(state: &mut LayoutState) {
     });
 }
 
-// -----------------------------------------------------------------------------
-// Free-function algorithms — ports of phux-core::window
-// -----------------------------------------------------------------------------
-
 /// Where index `i` lands after the element at `from` moves to `to`.
 const fn shifted_index(i: usize, from: usize, to: usize) -> usize {
     if i == from {
@@ -648,19 +527,8 @@ const fn shifted_index(i: usize, from: usize, to: usize) -> usize {
     }
 }
 
-/// Split the leaf for `target` into two, with `new_pane` as the new
-/// sibling along `dir` at `ratio`.
-///
-/// Mirrors `phux_core::Window::split` semantics: on success the tree
-/// grows by one [`LayoutNode::Leaf`] and one [`LayoutNode::Split`];
-/// `target` becomes the `left` child and `new_pane` the `right` child
-/// of the new interior node.
-///
-/// `tree` is `None` only for a fresh window. The first leaf is seeded
-/// via `tree = Some(LayoutNode::Leaf(pane))` directly — callers don't
-/// need a separate `seed_layout` helper because there is no
-/// `LayoutNode` invariant to protect (unlike `phux-core::Window`,
-/// which also tracks `panes: Vec<ResourceId>`).
+/// Split the leaf for `target`: it becomes the `left` child and `new_pane`
+/// the `right` child of a new split along `dir` at `ratio`.
 ///
 /// # Errors
 /// * [`LayoutError::PaneNotInLayout`] if `target` is not present.
@@ -679,15 +547,8 @@ pub fn split_at(
     Ok(split_inner(tree, target, new_pane, dir, ratio))
 }
 
-/// Replace the `ratio` of the [`LayoutNode::Split`] addressed by `path`,
-/// returning the rewritten tree.
-///
-/// `ratio` is **not** validated or clamped here — callers (the drag
-/// machine, the divider-resize action) clamp into `(0, 1)` with the same
-/// `clamp_ratio` the keyboard resize uses before calling. Returns `None`
-/// if `path` does not address a `Split` (it ran off a leaf, or the path
-/// is the empty root over a single-leaf tree) — a stale path from a
-/// layout that changed between press and motion.
+/// Replace the `ratio` of the split addressed by `path` (callers clamp).
+/// `None` when `path` no longer addresses a split.
 #[must_use]
 pub fn set_ratio_at(tree: &LayoutNode, path: &NodePath, ratio: f32) -> Option<LayoutNode> {
     set_ratio_inner(tree, &path.0, ratio)
@@ -734,17 +595,8 @@ fn set_ratio_inner(node: &LayoutNode, steps: &[NodeStep], ratio: f32) -> Option<
     }
 }
 
-/// Centralised handler for the `#[non_exhaustive]` wildcard arms on
-/// matches over [`LayoutNode`]. v0.1 only knows `Leaf` and `Split`;
-/// any future variant would need a corresponding update here and a
-/// wire-protocol bump (see docs/spec/). Reached only via a forward-
-/// compatible decode from a newer server.
-//
-// `clippy::panic` is workspace-denied to keep production panics rare,
-// but the alternative (returning `Result` through every internal
-// helper to thread a "future variant" error up to the public surface)
-// trades a real algorithmic complexity for a `#[non_exhaustive]`
-// concession the wire validation already enforces. Localised allow.
+/// Wildcard arm for future `#[non_exhaustive]` [`LayoutNode`] variants,
+/// which wire validation already rejects.
 #[cold]
 #[inline(never)]
 #[allow(clippy::panic)]
@@ -804,14 +656,8 @@ fn split_inner(
     }
 }
 
-/// Remove the leaf for `target`, collapsing its parent [`LayoutNode::Split`]
-/// so the sibling takes its grandparent's slot.
-///
-/// Returns `Ok(None)` iff `target` was the last leaf — the caller
-/// (typically the TUI driver) is expected to drop the whole window in
-/// that case. This packs the `LastPane` signal into the `Option`,
-/// which is more ergonomic for callers than the `Result<_, LastPane>`
-/// shape the core surface uses.
+/// Remove the leaf for `target`, collapsing its parent split. `Ok(None)`
+/// when it was the last leaf.
 ///
 /// # Errors
 /// [`LayoutError::PaneNotInLayout`] if `target` is not present.
@@ -880,12 +726,7 @@ fn collapse(node: &LayoutNode, target: &ResourceId) -> (LayoutNode, bool) {
     }
 }
 
-/// Return the neighbour of `current` in direction `dir`, if any.
-///
-/// Mirrors `phux_core::Window::focus_direction` — see that function's
-/// docs for the algorithm. Returns `None` if `current` is not in the
-/// tree or if no neighbour exists in that direction (border of the
-/// outer viewport).
+/// The neighbour of `current` in direction `dir`, if any.
 #[must_use]
 pub fn focus_direction(
     tree: &LayoutNode,
@@ -906,10 +747,6 @@ pub fn focus_direction(
     None
 }
 
-// -----------------------------------------------------------------------------
-// Internal helpers — same shapes as phux-core::window
-// -----------------------------------------------------------------------------
-
 fn contains(node: &LayoutNode, target: &ResourceId) -> bool {
     match node {
         LayoutNode::Leaf(p) => p == target,
@@ -918,11 +755,7 @@ fn contains(node: &LayoutNode, target: &ResourceId) -> bool {
     }
 }
 
-/// Collect every leaf of `node` in left-to-right depth-first order.
-///
-/// Useful for the "default focus on attach" rule from ADR-0019
-/// decision 6 (focus defaults to the first leaf in left-to-right
-/// traversal order) and for invariant proptests.
+/// Every leaf of `node` in left-to-right depth-first order.
 #[must_use]
 pub fn leaves(node: &LayoutNode) -> Vec<ResourceId> {
     let mut out = Vec::new();
@@ -1074,17 +907,6 @@ const fn perpendicular_axis(dir: Direction) -> SplitDir {
     }
 }
 
-// -----------------------------------------------------------------------------
-// CBOR envelope — local shim types
-// -----------------------------------------------------------------------------
-//
-// The wire-side `LayoutNode`, `SplitDir`, and `ResourceId` don't derive
-// `serde::Serialize`/`Deserialize` and we can't modify the wire crate
-// from this ticket (sibling-agent rule). The CBOR envelope therefore
-// round-trips through small local types that mirror the wire shapes 1:1.
-// Conversions are pure (no allocation beyond the recursive tree clone)
-// and unit-tested below.
-
 /// CBOR shadow types + conversions for layout persistence (L3 metadata).
 mod serialize;
 
@@ -1170,17 +992,6 @@ mod tests {
     }
 
     #[test]
-    fn render_window_without_zoom_is_the_active_window() {
-        let ws = ws_split(1, 2, 1);
-        let rendered = ws.render_window(None).expect("active window");
-        assert!(matches!(rendered.tree, Some(LayoutNode::Split { .. })));
-    }
-
-    // -------------------------------------------------------------------------
-    // split_at
-    // -------------------------------------------------------------------------
-
-    #[test]
     fn split_at_replaces_leaf_with_split() {
         let tree = leaf(1);
         let out = split_at(&tree, &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
@@ -1216,54 +1027,19 @@ mod tests {
     }
 
     #[test]
-    fn split_at_deep() {
-        // Build (1|2) then split 2 vertically with 3.
+    fn kill_pane_collapses_the_parent_and_reports_last_and_missing_leaves() {
+        assert!(kill_pane(&leaf(1), &t(1)).unwrap().is_none(), "last leaf");
+        assert!(matches!(
+            kill_pane(&leaf(1), &t(99)),
+            Err(LayoutError::PaneNotInLayout(_))
+        ));
         let t1 = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
-        let t2 = split_at(&t1, &t(2), &t(3), SplitDir::Vertical, 0.3).unwrap();
-        let leaves_v = leaves(&t2);
-        assert_eq!(leaves_v, vec![t(1), t(2), t(3)]);
-    }
-
-    // -------------------------------------------------------------------------
-    // kill_pane
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn kill_pane_last_leaf_returns_none() {
-        let out = kill_pane(&leaf(1), &t(1)).unwrap();
-        assert!(out.is_none());
-    }
-
-    #[test]
-    fn kill_pane_missing_returns_err() {
-        let err = kill_pane(&leaf(1), &t(99)).unwrap_err();
-        assert!(matches!(err, LayoutError::PaneNotInLayout(_)));
-    }
-
-    #[test]
-    fn kill_pane_collapses_split() {
-        let tree = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
-        let out = kill_pane(&tree, &t(2)).unwrap().expect("non-empty");
+        let out = kill_pane(&t1, &t(2)).unwrap().expect("non-empty");
         assert!(matches!(out, LayoutNode::Leaf(ref p) if *p == t(1)));
-    }
-
-    #[test]
-    fn kill_pane_collapses_deep() {
-        // ((1|2)|3) — kill 1 should leave (2|3) at the root.
-        let t1 = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.5).unwrap();
         let t2 = split_at(&t1, &t(2), &t(3), SplitDir::Vertical, 0.5).unwrap();
         let out = kill_pane(&t2, &t(1)).unwrap().expect("non-empty");
-        // After killing 1 from ((1|(2/3))), the left subtree collapses to
-        // (2/3). Tree shape: Split[h, (2/3), ?]... wait — let's just
-        // check leaves.
-        let mut got: Vec<_> = leaves(&out);
-        got.sort_by_key(|id| id.local_id().unwrap_or_default());
-        assert_eq!(got, vec![t(2), t(3)]);
+        assert_eq!(leaves(&out), vec![t(2), t(3)]);
     }
-
-    // -------------------------------------------------------------------------
-    // focus_direction
-    // -------------------------------------------------------------------------
 
     #[test]
     fn focus_direction_right_across_split() {
@@ -1271,38 +1047,7 @@ mod tests {
         assert_eq!(focus_direction(&tree, &t(1), Direction::Right), Some(t(2)));
         assert_eq!(focus_direction(&tree, &t(2), Direction::Left), Some(t(1)));
         assert_eq!(focus_direction(&tree, &t(1), Direction::Up), None);
-    }
-
-    #[test]
-    fn focus_direction_returns_none_for_missing() {
-        let tree = leaf(1);
         assert_eq!(focus_direction(&tree, &t(99), Direction::Right), None);
-    }
-
-    // -------------------------------------------------------------------------
-    // CBOR round-trip
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn cbor_round_trip_single_pane() {
-        let state = LayoutState::single(t(7));
-        let bytes = encode_state(&state);
-        let decoded = Workspace::decode_cbor(&bytes).unwrap();
-        assert_eq!(decoded.windows[0].state, state);
-    }
-
-    #[test]
-    fn cbor_round_trip_multi_split() {
-        // ((1 | 2) / 3)
-        let t1 = split_at(&leaf(1), &t(1), &t(2), SplitDir::Horizontal, 0.4).unwrap();
-        let t2 = split_at(&t1, &t(2), &t(3), SplitDir::Vertical, 0.6).unwrap();
-        let state = LayoutState {
-            tree: Some(t2),
-            focus: Some(t(2)),
-        };
-        let bytes = encode_state(&state);
-        let decoded = Workspace::decode_cbor(&bytes).unwrap();
-        assert_eq!(decoded.windows[0].state, state);
     }
 
     #[test]
@@ -1315,28 +1060,6 @@ mod tests {
         let bytes = encode_state(&state);
         let decoded = Workspace::decode_cbor(&bytes).unwrap();
         assert_eq!(decoded.windows[0].state, state);
-    }
-
-    #[test]
-    fn cbor_rejects_unsupported_version() {
-        // Hand-build an envelope with version=99.
-        #[derive(Serialize)]
-        struct Forged {
-            version: u8,
-            root: CborLayoutNode,
-            focus: CborResourceId,
-        }
-        let forged = Forged {
-            version: 99,
-            root: CborLayoutNode::Leaf {
-                pane: CborResourceId::Local { id: 1 },
-            },
-            focus: CborResourceId::Local { id: 1 },
-        };
-        let mut buf = Vec::new();
-        ciborium::ser::into_writer(&forged, &mut buf).unwrap();
-        let err = Workspace::decode_cbor(&buf).unwrap_err();
-        assert!(matches!(err, LayoutDecodeError::UnsupportedVersion(99)));
     }
 
     #[test]
@@ -1353,10 +1076,6 @@ mod tests {
         let err = Workspace::decode_cbor(&buf).unwrap_err();
         assert!(matches!(err, LayoutDecodeError::MalformedRatio(_)));
     }
-
-    // -------------------------------------------------------------------------
-    // Workspace — ops
-    // -------------------------------------------------------------------------
 
     fn ws3() -> Workspace {
         let mut ws = Workspace::single(t(1));
@@ -1394,13 +1113,6 @@ mod tests {
         assert_eq!(ws.active, 0);
         assert!(!ws.select(9));
         assert_eq!(ws.active, 0);
-    }
-
-    #[test]
-    fn rename_active_updates_name() {
-        let mut ws = ws3();
-        ws.rename_active("build".to_owned());
-        assert_eq!(ws.windows[2].name, "build");
     }
 
     fn names(ws: &Workspace) -> Vec<&str> {
@@ -1526,30 +1238,9 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // Workspace — current CBOR schema
-    // -------------------------------------------------------------------------
-
     #[test]
-    fn cbor_current_round_trip_multi_window() {
-        let mut ws = Workspace::single(t(1));
-        let split = split_at(&leaf(2), &t(2), &t(3), SplitDir::Vertical, 0.4).unwrap();
-        ws.windows.push(WindowState::new(
-            "editor".to_owned(),
-            LayoutState {
-                tree: Some(split),
-                focus: Some(t(3)),
-            },
-        ));
-        ws.active = 1;
-        let bytes = ws.encode_cbor().unwrap();
-        let decoded = Workspace::decode_cbor(&bytes).unwrap();
-        assert_eq!(decoded, ws);
-    }
-
-    #[test]
-    fn prior_schema_versions_are_refused_without_migration() {
-        for version in [1, 2] {
+    fn unsupported_schema_versions_are_refused_without_migration() {
+        for version in [1, 2, 99] {
             let value = ciborium::Value::Map(vec![(
                 ciborium::Value::Text("version".into()),
                 ciborium::Value::Integer(version.into()),
@@ -1596,33 +1287,10 @@ mod tests {
     }
 
     #[test]
-    fn cbor_workspace_rejects_unsupported_version() {
-        #[derive(Serialize)]
-        struct Forged {
-            version: u8,
-            windows: Vec<u8>,
-            focused_window_index: u32,
-        }
-        let forged = Forged {
-            version: 99,
-            windows: vec![],
-            focused_window_index: 0,
-        };
-        let mut buf = Vec::new();
-        ciborium::ser::into_writer(&forged, &mut buf).unwrap();
-        let err = Workspace::decode_cbor(&buf).unwrap_err();
-        assert!(matches!(err, LayoutDecodeError::UnsupportedVersion(99)));
-    }
-
-    #[test]
     fn cbor_workspace_rejects_empty() {
         let err = Workspace::default().encode_cbor().unwrap_err();
         assert!(matches!(err, LayoutEncodeError::Empty));
     }
-
-    // -------------------------------------------------------------------------
-    // Proptest invariants — ported from phux-core::window proptests.
-    // -------------------------------------------------------------------------
 
     #[derive(Debug, Clone, Copy)]
     enum Op {

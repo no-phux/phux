@@ -1,16 +1,8 @@
-//! phux-r82.6: per-client interval runners behind `exec` status widgets.
-//!
-//! The widget side (`phux_config::widget::ExecWidget`) only ever renders a
-//! cached strip; this module is the host half that keeps the cache fresh.
-//! One tokio task per [`ExecFeed`] runs the configured argv as a bounded
-//! child process — `kill_on_drop` via [`phux_plugin::run_command_spec`],
-//! exactly like plugin actions — and folds captured stdout into the feed.
-//!
-//! The render loop is never blocked: a run that hangs is killed at its
-//! timeout, a failed run keeps the last good output, and the painter picks
-//! updated cells up on its normal repaint tick (its row cache diffs the
-//! new strip in). Dropping the returned [`ExecFeedRunners`] guard aborts
-//! every task; `kill_on_drop` then reaps any in-flight child.
+//! Per-client interval runners behind `exec` status widgets: one task per
+//! [`ExecFeed`] runs its argv as a bounded, `kill_on_drop` child
+//! ([`phux_plugin::run_command_spec`]) and folds stdout into the feed. A hung
+//! run is killed at its timeout, a failed one keeps the last output, and
+//! dropping [`ExecFeedRunners`] aborts every task.
 
 use std::time::Duration;
 

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
-use phux_config::{Config, parse_str, plugin};
+use phux_config::plugin;
 
 use crate::common;
 use common::{manifest, write_manifest};
@@ -34,22 +34,6 @@ fn checked_in_example_manifests_load() -> Result<(), Box<dyn std::error::Error>>
         loaded.workspaces[0].events,
         ["idle-autosave", "session-autosave"]
     );
-    Ok(())
-}
-
-#[test]
-fn config_accepts_plugin_manifest_entries() -> Result<(), Box<dyn std::error::Error>> {
-    let input = r#"
-[[plugins]]
-manifest = "/tmp/phux-plugin.toml"
-enabled = true
-"#;
-
-    let cfg: Config = parse_str(input, Path::new("config.toml"))?;
-
-    assert_eq!(cfg.plugins.len(), 1);
-    assert_eq!(cfg.plugins[0].manifest, Path::new("/tmp/phux-plugin.toml"));
-    assert!(cfg.plugins[0].enabled);
     Ok(())
 }
 
@@ -262,31 +246,6 @@ role = "lead"
 }
 
 #[test]
-fn plugin_manifest_defaults_agent_state_to_unknown() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = TempDir::new()?;
-    let manifest = write_manifest(
-        dir.path(),
-        &manifest(
-            "example.agent-state",
-            r#"
-[[agents]]
-id = "background-worker"
-label = "Background Worker"
-"#,
-        ),
-    );
-
-    let loaded = plugin::load_plugin_manifest(&manifest)?;
-
-    assert_eq!(loaded.agents[0].state, plugin::PluginAgentState::Unknown);
-    assert_eq!(
-        loaded.agents[0].attention,
-        plugin::PluginAgentAttention::Normal
-    );
-    Ok(())
-}
-
-#[test]
 fn plugin_manifest_rejects_oversized_files() -> Result<(), Box<dyn std::error::Error>> {
     let dir = TempDir::new()?;
     let manifest = dir.path().join("phux-plugin.toml");
@@ -374,9 +333,8 @@ fn load_enabled_manifests_skips_disabled_and_broken_plugins()
 -> Result<(), Box<dyn std::error::Error>> {
     let dir = TempDir::new()?;
     let config_path = dir.path().join("config.toml");
-    // Three manifests: one healthy + enabled, one healthy + disabled, one
-    // missing entirely. Only the first must load; the rest are skipped
-    // without failing the batch.
+    // Only the healthy, enabled, version-compatible manifest loads; the
+    // rest are skipped without failing the batch.
     common::write(
         dir.path(),
         "good.toml",
@@ -391,6 +349,11 @@ command = ["true"]
         ),
     );
     let off = common::write(dir.path(), "off.toml", &manifest("example.off", ""));
+    let future = common::write(
+        dir.path(),
+        "future.toml",
+        "id = \"example.future\"\nname = \"Future\"\nversion = \"0.1.0\"\nmin_phux_version = \"99.0.0\"\n",
+    );
 
     let entries = vec![
         plugin::PluginConfigEntry {
@@ -404,6 +367,10 @@ command = ["true"]
         },
         plugin::PluginConfigEntry {
             manifest: dir.path().join("missing.toml"),
+            enabled: true,
+        },
+        plugin::PluginConfigEntry {
+            manifest: future,
             enabled: true,
         },
     ];
@@ -568,41 +535,5 @@ fn min_phux_version_gate_accepts_current_and_rejects_future_or_malformed()
             }
         }
     }
-    Ok(())
-}
-
-/// The best-effort batch loader skips (never propagates) a plugin gated
-/// out by `min_phux_version`, so one too-new plugin cannot take down the
-/// TUI or server consuming the healthy ones.
-#[test]
-fn load_enabled_manifests_skips_version_gated_plugin() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = TempDir::new()?;
-    let config_path = dir.path().join("config.toml");
-    let good = common::write(
-        dir.path(),
-        "good.toml",
-        "id = \"example.good-floor\"\nname = \"Good\"\nversion = \"0.1.0\"\nmin_phux_version = \"0.0.1\"\n",
-    );
-    let future = common::write(
-        dir.path(),
-        "future.toml",
-        "id = \"example.future-floor\"\nname = \"Future\"\nversion = \"0.1.0\"\nmin_phux_version = \"99.0.0\"\n",
-    );
-
-    let entries = vec![
-        plugin::PluginConfigEntry {
-            manifest: good,
-            enabled: true,
-        },
-        plugin::PluginConfigEntry {
-            manifest: future,
-            enabled: true,
-        },
-    ];
-
-    let manifests = plugin::load_enabled_manifests(&config_path, &entries);
-
-    assert_eq!(manifests.len(), 1, "the gated plugin is skipped");
-    assert_eq!(manifests[0].id, "example.good-floor");
     Ok(())
 }

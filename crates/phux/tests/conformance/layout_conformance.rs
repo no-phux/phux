@@ -1,131 +1,23 @@
 //! Conformance: the three split-tree encodings must describe the same tree.
 //!
-//! The binary split tree of [ADR-0012] exists three times in this workspace,
-//! deliberately:
+//! The ADR-0012 split tree exists as `phux_core::window::LayoutNode` (domain),
+//! `phux_protocol::wire::info::LayoutNode` (wire mirror; the protocol crate
+//! cannot depend on core), and `phux_server::upgrade::blob::LayoutBlob` (the
+//! serde carrier for graceful upgrade, keyed by wire id). Each has its own
+//! round-trip test; this file builds one corpus into all three and projects
+//! them back to a shared normal form so a drift in axis convention, child
+//! order, or ratio domain fails on the commit that caused it.
 //!
-//!   * `phux_core::window::{LayoutNode, SplitDir}` — the domain tree, keyed by
-//!     the registry's opaque `ResourceId`;
-//!   * `phux_protocol::wire::info::{LayoutNode, SplitDir}` — the wire mirror,
-//!     keyed by the wire `ResourceId`, with its own tag bytes and its own
-//!     decode-time validation;
-//!   * `phux_server::upgrade::blob::{LayoutBlob, SplitDirBlob}` — the
-//!     graceful-upgrade carrier, keyed by `u32` wire id, deriving `Serialize`
-//!     / `Deserialize`.
+//! There is no core-to-wire conversion yet (the snapshot ships `layout: None`),
+//! so core and wire are compared as independently built shapes; core-to-blob
+//! drives the real upgrade producer.
 //!
-//! Each duplication is a decision, and each rationale is sound. The
-//! core/protocol split is `phux-protocol`'s independence rule, written down at
-//! the top of `crates/phux-protocol/src/wire/info.rs`: the wire crate cannot
-//! depend on the domain crate, so it mirrors the shape instead. The blob
-//! exists because [ADR-0032] needs a `serde`-derivable shape keyed by *wire*
-//! id — generational `SlotMap` keys are meaningless in a fresh process, so the
-//! carrier cannot reuse the core type.
-//!
-//! What did not exist is a guard. Each encoding has its own round-trip test
-//! and each passes in isolation, so a drift in axis convention (which of
-//! `Horizontal`/`Vertical` means side-by-side), in child order (which child
-//! `ratio` belongs to), or in the accepted ratio domain shows up only as a
-//! layout that looks subtly wrong after an upgrade or a reattach — months
-//! later, with nobody left who remembers which of the three moved. One
-//! abstract corpus, built into all three and projected back to a shared normal
-//! form, turns that into a red test on the commit that caused it.
-//!
-//! # There is no core-to-wire conversion (yet), and that shapes this file
-//!
-//! `phux_server`'s snapshot builder ships `layout: None` unconditionally —
-//! see the comment at `crates/phux-server/src/state/snapshot.rs`, which defers
-//! the `phux_core::LayoutNode` → `phux_protocol::wire::info::LayoutNode`
-//! translation to a later ticket. So encodings 1 and 2 cannot drift *through*
-//! a conversion, because there is no conversion. They can only drift as type
-//! shapes and validation domains, which is therefore what this file asserts:
-//! one corpus built independently into each encoding, not a conversion
-//! round-trip. Encodings 1 and 3 *do* have a live conversion
-//! (`crates/phux-server/src/state/upgrade_blob.rs`), and
-//! [`core_built_tree_matches_the_blob_the_upgrade_writes`] drives the real
-//! producer rather than a re-implementation of it. When the deferred
-//! core↔wire conversion lands, add the same kind of end-to-end assertion for
-//! it here; the corpus and the normal form are already in place.
-//!
-//! # Why this file lives in `crates/phux/tests/`
-//!
-//! The test must see all three encodings at once. The `phux` binary crate
-//! already depends on `phux-core`, `phux-protocol`, and `phux-server`, so this
-//! costs no new crate, no new dependency edge, and no new published surface —
-//! `phux` is `publish = false`. It is *not* the only workspace member that
-//! could host it: `phux-server` depends on core and protocol and defines
-//! `LayoutBlob` itself, so its own integration tests could reach all three
-//! too. The tie-breaker is precedent — `crates/phux/tests/conformance/cell_projection_conformance.rs`
-//! is the existing cross-crate conformance file and this is its sibling.
-//!
-//! # What is deliberately outside the corpus
-//!
-//! `phux_client_core::layout::{LayoutNode, SplitDir}` are **not** a fourth
-//! encoding: `crates/phux-client-core/src/layout/mod.rs` re-exports the wire
-//! types verbatim (`pub use phux_protocol::wire::info::{LayoutNode,
-//! SplitDir}`). Only `LayoutState` / `WindowState` / `Workspace` are
-//! client-local, and those are a different *model* (per [ADR-0017] and
-//! [ADR-0019]), not a mirror of this tree; including them would be comparing a
-//! screen model against a domain model.
-//!
-//! There are two genuine further encodings, and both are unreachable from an
-//! integration test:
-//!
-//!   * `CborLayoutNode` / `CborSplitDir` in
-//!     `crates/phux-client-core/src/layout/serialize.rs` — the serde shadow
-//!     behind the `phux.tui.layout/v1` L3 envelope. `pub(super)`.
-//!   * `WorkspaceLayoutNode` / `WorkspaceSplitDir` in
-//!     `crates/phux/src/commands/workspace/archive/model.rs` — the archive
-//!     shape for `phux workspace save`. `pub(super)`, and doubly out of reach
-//!     because `crates/phux` has no lib target, so a file in
-//!     `crates/phux/tests/` can never name `phux::` at all.
-//!
-//! Both stay guarded by their crates' own unit tests. Widening this corpus to
-//! cover them needs a visibility change, which is a bigger decision than
-//! adding a test.
-//!
-//! # Where the three cannot agree, and why
-//!
-//! Two asymmetries are structural, not drift. Both are asserted here rather
-//! than normalised away in silence:
-//!
-//!   1. **The three accept different ratio domains.** [ADR-0012] fixes `ratio`
-//!      in the *open* interval `(0.0, 1.0)` and `phux_core`'s `Window::split`
-//!      enforces exactly that. The wire decoder accepts the *closed* interval
-//!      and rejects only non-finite values — deliberately, because the TUI's
-//!      `resize-pane` banks unbounded ratios it has not yet applied
-//!      (`crates/phux-client-core/src/multi_pane/layout.rs`, [ADR-0048]), and
-//!      a transport that rejected the endpoints would drop legitimate client
-//!      state. `LayoutBlob` validates nothing at all. Pinned by
-//!      [`ratio_domains_diverge_by_design_and_here_is_the_map`]. **If a later
-//!      change unifies the three domains — which would be the right long-term
-//!      move — that test fails by construction. That is the test working, not
-//!      a regression: update the map, do not delete the assertion.**
-//!   2. **Only the wire bounds depth.** `phux_protocol` caps decode recursion
-//!      at `MAX_LAYOUT_DEPTH` because it parses bytes from a peer; `phux_core`
-//!      has no cap at all, and the blob's ceiling is whatever `serde_json`
-//!      will parse. Pinned by
-//!      [`depth_bounds_diverge_by_design_and_here_is_the_map`]. That core has
-//!      no gate is a real gap — a 200-pane window is already un-sendable over
-//!      the wire — but closing it means making `Registry::new_terminal`'s
-//!      swallowed split error observable, which is a behaviour change and its
-//!      own ticket, not a rider on a test.
-//!
-//! Writing asymmetry 2 down is what found the bug this change also fixes:
-//! `serde_json`'s default 128-level recursion limit made a 63-pane window's
-//! `StateBlob` writable but not readable, so `phux upgrade` on such a server
-//! lost **all** state, not just that window. See
-//! [`a_window_deep_enough_to_reach_the_json_recursion_limit_survives_an_upgrade`]
-//! and the `# Depth` note in `crates/phux-server/src/upgrade/blob.rs`.
-//!
-//! The corpus itself carries `ratio` values in every encoding's *carrying*
-//! capacity (including the exact `0.0` / `1.0` endpoints), because what the
-//! corpus tests is the shape of the data, not the constructors' guards. The
-//! guards are test 1 above.
-//!
-//! [ADR-0012]: ../../../docs/adr/0012-tui-layout-model.md
-//! [ADR-0017]: ../../../docs/adr/0017-tui-client-architecture.md
-//! [ADR-0019]: ../../../docs/adr/0019-tui-multi-pane-rendering.md
-//! [ADR-0032]: ../../../docs/adr/0032-graceful-upgrade.md
-//! [ADR-0048]: ../../../docs/adr/0048-tui-command-surface.md
+//! Two asymmetries are structural and asserted, not normalised away: the
+//! encodings accept different ratio domains (core open interval, wire closed,
+//! blob unchecked), and only the wire bounds depth. If a later change unifies
+//! them, update the map in those tests rather than deleting the assertion.
+//! The depth map found a real bug: `serde_json`'s recursion limit made a
+//! 63-pane window's upgrade blob writable but unreadable.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -146,17 +38,6 @@ use phux_protocol::wire::info::{
 };
 use phux_server::state::ServerState;
 use phux_server::upgrade::blob::{LayoutBlob, SplitDirBlob, StateBlob};
-
-// ---------------------------------------------------------------------------
-// The shared normal form.
-//
-// Spelled in *semantic* vocabulary, not any encoding's. `Horizontal` is the
-// word all three use for a side-by-side split (a vertical divider bar), which
-// is exactly the kind of naming that invites a silent flip. Projecting through
-// `SideBySide` / `Stacked` means a rename that changes the meaning of
-// `Horizontal` in one encoding shows up as a corpus mismatch instead of
-// passing on the strength of the shared spelling.
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Axis {
@@ -238,18 +119,9 @@ impl Shape {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The corpus.
-// ---------------------------------------------------------------------------
-
-/// Panes in the deep-spine corpus entry.
-///
-/// `Registry::new_terminal` always splits the window's *active* pane, and
-/// splitting never moves `active`, so every new pane nests one level further
-/// down the **left** spine: `n` panes is `n - 1` splits nested `n - 1` deep.
-/// `MAX_LAYOUT_DEPTH` panes is therefore exactly the deepest single-window
-/// tree the wire codec will carry, which makes it the right ceiling for a
-/// corpus meant to cover what the system can legitimately produce.
+/// Panes in the deep-spine entry: the registry nests each new pane one level
+/// down the left spine, so `MAX_LAYOUT_DEPTH` panes is the deepest tree the
+/// wire will carry.
 const DEEP_SPINE_PANES: usize = MAX_LAYOUT_DEPTH;
 
 /// One shape per interesting structural or numeric case. Every entry is fed
@@ -310,14 +182,10 @@ fn corpus() -> Vec<(&'static str, Shape)> {
     ]
 }
 
-/// The tree `Registry::new_terminal` actually builds for `panes` panes.
-///
-/// Pane 0 stays the window's active leaf for the whole sequence, so pane `i`
-/// becomes the *right* sibling of the subtree built so far and the nesting
-/// runs down the left edge. The outermost right child is therefore pane 1 and
-/// the innermost is pane `n - 1`, which is the reverse of the naive guess —
-/// it is asserted against the real registry in
-/// [`core_built_tree_matches_the_blob_the_upgrade_writes`] rather than trusted.
+/// The tree `Registry::new_terminal` builds for `panes` panes: the active
+/// pane 0 is split each time, so pane 1 is the outermost right child (checked
+/// against the real registry in
+/// [`core_built_tree_matches_the_blob_the_upgrade_writes`]).
 fn registry_spine(panes: usize) -> Shape {
     let mut node = Shape::Pane(0);
     for i in (1..u32::try_from(panes).expect("corpus is small")).rev() {
@@ -342,13 +210,6 @@ fn balanced(depth: u32, next: &mut u32) -> Shape {
     let second = balanced(depth - 1, next);
     Shape::split(axis, 0.5, first, second)
 }
-
-// ---------------------------------------------------------------------------
-// Encoding 1: phux_core::window::LayoutNode.
-//
-// Keyed by opaque `ResourceId`s, which only a `Registry` can mint, so the
-// builder takes the ids it should use for pane indices `0..n`.
-// ---------------------------------------------------------------------------
 
 fn build_core(shape: &Shape, ids: &[CoreResourceId]) -> CoreNode {
     match shape {
@@ -389,13 +250,6 @@ fn project_core(node: &CoreNode, index_of: &HashMap<CoreResourceId, u32>) -> Sha
         },
     }
 }
-
-// ---------------------------------------------------------------------------
-// Encoding 2: phux_protocol::wire::info::LayoutNode.
-//
-// Wire pane ids are `index + 1`; `ResourceId::new(0)` is a legal id but a
-// confusing sentinel to read in a failure message.
-// ---------------------------------------------------------------------------
 
 const fn wire_pane_id(index: u32) -> WireResourceId {
     WireResourceId::new(index + 1)
@@ -444,20 +298,11 @@ fn project_wire(node: &WireNode) -> Shape {
             first: Box::new(project_wire(left)),
             second: Box::new(project_wire(right)),
         },
-        // Both wire types are `#[non_exhaustive]` (additive growth is
-        // non-breaking there). A new variant is not something this corpus can
-        // silently ignore: it is a fourth tree shape the other two encodings
-        // do not have, and it needs a decision, not a default.
+        // A new `#[non_exhaustive]` variant is a shape the other encodings lack and
+        // needs a decision, not a default.
         other => panic!("wire LayoutNode grew a variant this corpus does not map: {other:?}"),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Encoding 3: phux_server::upgrade::blob::LayoutBlob.
-//
-// Keyed by the same `u32` wire id the wire encoding uses, so `build_blob` and
-// `build_wire` agree on `index + 1`.
-// ---------------------------------------------------------------------------
 
 fn build_blob(shape: &Shape) -> LayoutBlob {
     match shape {
@@ -499,10 +344,6 @@ fn project_blob(node: &LayoutBlob, index_of: &HashMap<u32, u32>) -> Shape {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers.
-// ---------------------------------------------------------------------------
-
 /// A registry holding one session, one window, and `panes` terminals; returns
 /// the ids in creation order so pane index `i` maps to `ids[i]`.
 fn seeded_registry(panes: usize) -> (Registry, CoreWindowId, Vec<CoreResourceId>) {
@@ -519,10 +360,6 @@ fn seeded_registry(panes: usize) -> (Registry, CoreWindowId, Vec<CoreResourceId>
 fn blob_index_map(shape: &Shape) -> HashMap<u32, u32> {
     shape.panes().into_iter().map(|i| (i + 1, i)).collect()
 }
-
-// ---------------------------------------------------------------------------
-// The guard.
-// ---------------------------------------------------------------------------
 
 /// One abstract corpus, built independently into all three encodings and
 /// projected back. Any drift in axis vocabulary, child order, ratio placement,
@@ -570,12 +407,8 @@ fn all_three_encodings_describe_the_same_tree() {
     }
 }
 
-/// Each encoding survives its own serialization round-trip *and still equals
-/// the corpus shape afterwards*, so a codec bug cannot hide behind a
-/// symmetric encode/decode pair that agrees with itself.
-///
-/// The core encoding has no serialization of its own — it never leaves the
-/// process — so only the wire and the blob have a round trip to take.
+/// Wire and blob each survive their own round trip and still equal the corpus
+/// shape, so a self-consistent codec bug cannot hide (core never serializes).
 #[test]
 fn wire_and_blob_round_trips_land_back_on_the_corpus_shape() {
     for (name, shape) in corpus() {
@@ -631,14 +464,8 @@ fn round_trip_layout_through_a_frame(node: &WireNode) -> Result<WireNode, Decode
         .expect("layout survived the round trip"))
 }
 
-/// A golden-byte pin on the wire's tag numbering.
-///
-/// `encode`/`decode` symmetry cannot catch a renumbering — flip both tags and
-/// every round-trip test still passes while every already-deployed client
-/// misreads the axis. The tag constants are `pub(crate)`, so this reads the
-/// numbering off real encoded bytes instead, the same technique
-/// `crates/phux-protocol/tests/wire_roundtrip.rs` uses for its hand-rolled
-/// frames.
+/// A golden-byte pin on the wire's tag numbering, which round-trip symmetry
+/// cannot catch.
 #[test]
 fn wire_split_tags_are_pinned_to_their_spec_bytes() {
     // LAYOUT_TAG_SPLIT = 0x01, SPLIT_DIR_HORIZONTAL = 0x00,
@@ -719,15 +546,9 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
-/// The one test that drives the real, private core→blob conversion rather than
-/// this file's re-implementation of it: build a window through the registry,
-/// ask `ServerState` for the upgrade blob it would hand the next image, and
-/// assert the blob's tree is the core tree.
-///
-/// The panes here carry no actor, which is the documented "recorded from its
-/// descriptor with no handoff" path in
-/// `crates/phux-server/src/state/upgrade_blob.rs` — nothing is awaited per
-/// pane, so this cannot block on a mailbox that never answers.
+/// Drives the real core-to-blob conversion: build a window through the
+/// registry and assert `ServerState`'s upgrade blob carries the core tree
+/// (actor-less panes, so nothing blocks on a mailbox).
 #[tokio::test(flavor = "current_thread")]
 async fn core_built_tree_matches_the_blob_the_upgrade_writes() {
     const PANES: usize = 6;
@@ -807,11 +628,8 @@ fn state_with_one_window(
     (state, wid, index_of_core, index_of_blob)
 }
 
-/// The three encodings accept three different ratio domains. This is the map,
-/// asserted rather than normalised away — see the module doc's asymmetry 1.
-///
-/// If a later change unifies the domains this test fails by construction. That
-/// is the test working. Update the map; do not weaken it.
+/// The three ratio domains, asserted as a map. If they are ever unified this
+/// fails by construction: update the map, do not weaken it.
 #[test]
 fn ratio_domains_diverge_by_design_and_here_is_the_map() {
     // --- phux_core: the open interval (0.0, 1.0), per ADR-0012. ------------
@@ -834,13 +652,8 @@ fn ratio_domains_diverge_by_design_and_here_is_the_map() {
         );
     }
 
-    // --- phux_protocol: the closed interval [0.0, 1.0], finite only. ------
-    //
-    // Wider than core on purpose. The TUI's `resize-pane` banks ratios it has
-    // not applied yet (crates/phux-client-core/src/multi_pane/layout.rs,
-    // ADR-0048), so a transport that rejected the endpoints would drop
-    // legitimate client state. `crates/phux-protocol/tests/wire_roundtrip.rs`
-    // pins the same table from the decoder's side.
+    // --- phux_protocol: closed [0.0, 1.0], finite only; wider than core because
+    // the TUI banks unapplied `resize-pane` ratios (ADR-0048).
     for accepted in [0.0, 1.0, f32::EPSILON, 0.5] {
         let node = build_wire(&Shape::split(
             Axis::SideBySide,
@@ -869,11 +682,7 @@ fn ratio_domains_diverge_by_design_and_here_is_the_map() {
         );
     }
 
-    // --- upgrade blob: no validation at all, and non-finite is lossy. -----
-    //
-    // The blob is a core→core carrier across one `execve`; it inherits core's
-    // domain and checks nothing itself. Out-of-domain finite ratios survive
-    // verbatim...
+    // --- upgrade blob: no validation; out-of-domain finite ratios survive...
     for unchecked in [-0.5, 1.5, 0.0, 1.0] {
         let blob = LayoutBlob::Split {
             dir: SplitDirBlob::Horizontal,
@@ -885,10 +694,8 @@ fn ratio_domains_diverge_by_design_and_here_is_the_map() {
         let back: LayoutBlob = serde_json::from_slice(&json).expect("deserializes");
         assert_eq!(back, blob, "the blob must carry ratio {unchecked} verbatim");
     }
-    // ...but a non-finite ratio becomes JSON `null` on the way out and then
-    // fails to parse on the way back in, taking the *whole* blob with it.
-    // Nothing upstream can produce one today (core rejects NaN at the
-    // constructor), which is exactly why this is worth writing down.
+    // ...but a non-finite ratio becomes JSON `null` and then fails to parse,
+    // taking the whole blob with it.
     for lossy in [f32::NAN, f32::INFINITY] {
         let blob = LayoutBlob::Split {
             dir: SplitDirBlob::Horizontal,
@@ -969,22 +776,10 @@ async fn depth_bounds_diverge_by_design_and_here_is_the_map() {
         .await;
 }
 
-/// A window with enough panes to nest the blob's JSON past `serde_json`'s
-/// default recursion limit must still survive `phux upgrade`.
-///
-/// `LayoutBlob`'s externally-tagged serde shape costs **two** JSON object
-/// levels per split (`{"Split":{...}}`), and `Registry::new_terminal` builds
-/// one split per pane down a single spine, so the nesting grows at twice the
-/// pane count. Measured against `serde_json`'s default 128-level limit, a
-/// window of 62 panes round-trips and 63 does not. Before the fix in
-/// `crates/phux-server/src/upgrade/blob.rs`, `StateBlob::to_bytes` happily
-/// wrote such a blob and `StateBlob::from_bytes` then refused to read it back
-/// — which surfaces as `ServerError::Resume` in
-/// `crates/phux-server/src/runtime/resume.rs` and loses the *entire* server
-/// state, every session, not just the offending window.
-///
-/// [`DEEP_SPINE_PANES`] is the deepest single-window tree the wire will carry,
-/// so this is a layout the protocol itself considers legal.
+/// A window deep enough to pass `serde_json`'s default recursion limit (two
+/// JSON levels per split: 62 panes fit, 63 did not) must survive
+/// `phux upgrade`; before the fix the blob was written but unreadable and the
+/// whole server state was lost on resume.
 #[tokio::test(flavor = "current_thread")]
 async fn a_window_deep_enough_to_reach_the_json_recursion_limit_survives_an_upgrade() {
     let panes = DEEP_SPINE_PANES;

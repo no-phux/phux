@@ -1,23 +1,8 @@
-//! The one place a wire resource id becomes something the runtime can act on.
-//!
-//! Every terminal-scoped frame and command carries a
-//! [`phux_protocol::ids::ResourceId`], and every handler needs the same three
-//! answers from it: is this resource ours, does it belong to a satellite we
-//! relay for, or is it nothing we know? [`ServerState::resolve_resource`]
-//! answers all three once, so the handlers stop open-coding the
-//! `is_local()` / `terminal_from_wire` / `resource_handle` ladder and the
-//! classification cannot drift between them.
-//!
-//! The seam classifies; it does not act. [`Resolved::Remote`] hands back the
-//! route the hub path already needs (host, the id rewritten into the
-//! satellite's own `Local` space, and the link when this server is a hub for
-//! that host) and leaves the forwarding — and the off-hub warn-drop or
-//! `UnsupportedSatelliteRoute` reply — to the caller, because each frame
-//! shapes those differently. Location stays orthogonal to kind (ADR-0016):
-//! `Local` yields the kind-agnostic [`ResourceHandle`], and reaching a
-//! Terminal-only channel still goes through
-//! [`ResourceHandle::terminal`](crate::resource::ResourceHandle::terminal),
-//! the crate's sole producer of `WrongResourceKind`.
+//! The one place a wire resource id becomes something actionable:
+//! [`ServerState::resolve_resource`] classifies it as local, relayed to a
+//! satellite (with the rewritten id and link, if a hub), or unknown. It
+//! does not act; callers forward or refuse. `Local` yields the
+//! kind-agnostic [`ResourceHandle`].
 
 use phux_protocol::ids::{ResourceId as WireResourceId, SatelliteHost};
 
@@ -62,9 +47,8 @@ pub(crate) struct RelayRoute {
     /// The resource's id inside the satellite's own `Local` id space —
     /// what every relayed frame and command carries on the wire.
     pub(crate) id: u32,
-    /// The link to `host`, or `None` when this server is not a federation
-    /// hub for it. `None` is the caller's `UnsupportedSatelliteRoute`
-    /// signal, exactly as a missing `hub_relay` lookup was.
+    /// The link to `host`; `None` when not a hub for it
+    /// (`UnsupportedSatelliteRoute`).
     pub(crate) relay: Option<RelayHandle>,
 }
 
@@ -111,15 +95,8 @@ pub(crate) enum ResolvedOwned {
 }
 
 impl ServerState {
-    /// Classify one wire resource id as local, relayed, or unknown.
-    ///
-    /// The single seam every terminal-scoped handler routes through.
-    /// Satellite-tagged ids are `Remote` whether or not this server is a
-    /// hub for the host — the tag alone decides location, and the absent
-    /// [`RelayRoute::relay`] is what tells a non-hub server to refuse.
-    /// A `Local`-tagged id is `Local` only when it is interned *and* an
-    /// engine handle is registered; those two are installed and retired
-    /// together, so either miss means the same thing to a caller.
+    /// Classify a wire resource id. Satellite tags are `Remote` hub or not;
+    /// `Local` requires both an interned id and a registered handle.
     pub(crate) fn resolve_resource(&self, wire: &WireResourceId) -> Resolved<'_> {
         if let Some((host, id)) = crate::hub::relay::satellite_route(wire) {
             let relay = self.hub_relay(&host);
@@ -144,9 +121,7 @@ mod tests {
     use crate::hub::relay::{HubRelays, RelayHandle};
     use crate::state::tests::mk_handle;
 
-    /// The three classifications, on one state: a resource this server
-    /// spawned, a satellite-tagged id (with and without a link), and an id
-    /// nothing here ever minted.
+    /// Local, satellite with and without a link, and unknown ids.
     #[test]
     fn resolve_resource_separates_local_relayed_and_unknown() {
         let mut server = ServerState::new();

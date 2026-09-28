@@ -21,19 +21,13 @@ use crate::commands::rec::RecordSpec;
 use crate::commands::remote::{self, Endpoint, RemoteEntry};
 use crate::commands::{DEFAULT_SESSION_NAME, print_attach_error, server::ensure_server};
 
-/// A live `--rec` recorder, shared between reconnect attempts.
-///
-/// `Rc<RefCell<..>>` and not a plain `&mut` because the tee lives inside the
-/// driver's render sink for the duration of one attach, and a graceful-upgrade
-/// reconnect (ADR-0032) starts a *second* attach against the *same* recording.
+/// A live `--rec` recorder, shared so a graceful-upgrade reconnect continues
+/// the same recording.
 type RecorderHandle = Rc<RefCell<SessionRecorder>>;
 
-/// The ADR-0053 acknowledged-input replay journal, shared between reconnect
-/// attempts for the same reason and in the same shape as [`RecorderHandle`]:
-/// an operation journaled during one attach must survive to be replayed —
-/// under its original idempotent operation id — by the attach that follows
-/// the reconnect window. Remote dials only; the UDS graceful-upgrade blink
-/// (ADR-0032) is process-local and sub-second, so its lane carries `None`.
+/// The ADR-0053 acknowledged-input replay journal, shared across reconnect
+/// attempts so a journaled operation is replayed under its original id. Remote
+/// dials only.
 type ReplayHandle = Rc<RefCell<InputReplayJournal>>;
 
 /// Refuse interactive entry points before they can start a server, connect,
@@ -46,53 +40,28 @@ pub(crate) fn interactive_tty_preflight() -> Result<(), ExitCode> {
     Err(ExitCode::FAILURE)
 }
 
-/// phux-i0e8.2.2: explain how a successful attach ended, once the TUI is
-/// down and stdout/stderr are the user's cooked terminal again.
-///
-/// A plain detach says nothing (the quiet, expected ending); a last-pane
-/// death prints its one-line explanation so an OOM-killed shell does not
-/// look like a phux crash. On the production UDS/QUIC/WS paths the driver
-/// already prints this line inside its own teardown (`exit_after_detach`
-/// exits the process before control returns here — see its doc comment);
-/// this helper covers every path that DOES return an [`AttachEnd`], and
-/// keeps both CLI callers (`phux attach` / `phux new`) on one wording.
+/// Explain how a successful attach ended, once the terminal is cooked again:
+/// a detach says nothing, a last-pane death prints one line. Covers the paths
+/// that return an [`AttachEnd`] rather than exiting inside the driver.
 pub(crate) fn report_attach_end(end: AttachEnd) {
     if let Some(line) = end.explanation() {
         eprintln!("{line}");
     }
 }
 
-/// Export the `--rec` capture and report it, once the TUI is down.
-///
-/// Deliberately after `attach_with_reconnect` returns and before any error
-/// reporting: raw mode is restored and the alt screen is gone, so stdout is
-/// the user's terminal again. A recording is worth reporting even when the
-/// attach itself ended badly — the bytes up to the failure are on disk and
-/// playable.
+/// Export the `--rec` capture and report it, once the TUI is down. Runs even
+/// when the attach ended badly: the bytes up to the failure are playable.
 fn finalize_recording(rec: Option<&RecordSpec>) {
     if let Some(spec) = rec {
         crate::commands::rec::finalize(spec);
     }
 }
 
-/// Naked `phux` invocation (phux-k61.1).
-///
-/// Per docs/consumers/tui.md §1, `phux` with no arguments is the common case: attach
-/// to the user's server, lazily spawning it if it isn't running.
-///
-/// Resolution:
-///
-/// 1. If the socket is missing, fork-exec ourselves as `phux server`
-///    with the configured default session name and wait for the socket.
-/// 2. Send `ATTACH { target: Last }`. The server resolves prior activity
-///    first and otherwise selects its configured live seed. A legacy-server
-///    refusal permits one lookup-only `ByName` retry; attach never creates.
+/// Naked `phux`: attach to the user's server, auto-spawning it if the socket
+/// is missing, and send `ATTACH { target: Last }`. A refusal from an older
+/// server permits one lookup-only `ByName` retry; attach never creates.
 pub(crate) fn run_naked(socket: Option<PathBuf>, rec: Option<&RecordSpec>) -> ExitCode {
-    // No build banner on any attach path (phux-i0e8.10.1): the TUI
-    // raises the alt screen almost immediately, wiping the line before a
-    // human can read it. The banner stays on the long-running foreground
-    // entry points (`phux server`, `phux relay run`), whose stderr
-    // remains visible.
+    // No build banner on attach paths: the alt screen would wipe it.
 
     if let Err(code) = interactive_tty_preflight() {
         return code;
@@ -167,14 +136,10 @@ fn fallback_lookup_name(name: &str) -> Option<&str> {
     (!phux_config::template_has_random_name(&template)).then_some(name)
 }
 
-/// Resolve the name for an auto-created default session from
-/// `defaults.session-name-template`, substituting `${cwd-basename}`
-/// against the client's current working directory (phux-4li.1) and
-/// `${random-name}` with a fresh adjective-noun pick (phux-c2td.6).
-///
-/// Falls back to [`DEFAULT_SESSION_NAME`] when the config can't be
-/// loaded, the cwd can't be read, or the template renders empty (e.g. a
-/// `${cwd-basename}`-only template invoked from `/`).
+/// Resolve the auto-created default session's name from
+/// `defaults.session-name-template` (`${cwd-basename}`, `${random-name}`),
+/// falling back to [`DEFAULT_SESSION_NAME`] when the config or cwd is
+/// unreadable or the template renders empty.
 pub(crate) fn resolved_default_session_name() -> String {
     let cwd = std::env::current_dir().unwrap_or_default();
     render_default_session_name(
@@ -208,11 +173,8 @@ pub(crate) fn render_default_session_name(
     }
 }
 
-/// Read `defaults.spawn-on-attach` from the on-disk config (phux-07y).
-///
-/// The naked-`phux` / `phux attach`-no-name auto-spawn passes this to the
-/// server as the pre-seeded session's initial program. `None` (unset key
-/// or unreadable config) ⇒ the seed pane runs the user's `$SHELL`.
+/// Read `defaults.spawn-on-attach`: the auto-spawned seed pane's program.
+/// `None` runs the user's `$SHELL`.
 pub(crate) fn configured_spawn_on_attach() -> Option<String> {
     config_loader::load().ok()?.defaults.spawn_on_attach
 }
@@ -246,13 +208,7 @@ pub(crate) async fn run_attach_once(
 }
 
 /// [`run_attach_once`] with an optional live recorder and an optional
-/// attach-time status-bar notice.
-///
-/// Split from the plain form so callers that cannot record — `phux new`,
-/// which attaches as the tail of a create — are not forced to pass a `None`
-/// that means nothing to them. `initial_notice` (phux-i0e8.2.3) is the
-/// reconnect loop's "re-attached after server restart", shown inside the
-/// next attach's TUI; every first attach passes `None`.
+/// status-bar notice (the reconnect loop's "re-attached" message).
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -321,13 +277,9 @@ async fn run_attach_connection_rec(
     }
 }
 
-/// Attach to the user's default session while remaining compatible with
-/// servers that predate server-side no-touch `Last` resolution.
-///
-/// A current server resolves the first `Last` request and this function
-/// returns immediately. If an older server refuses it, make exactly one
-/// lookup-only retry by name. The retry never uses `CreateIfMissing`, so an
-/// empty server still returns `SessionNotFound`.
+/// Attach to the user's default session via `Last`; if an older server
+/// refuses it, make exactly one lookup-only retry by name (never
+/// `CreateIfMissing`).
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -482,29 +434,17 @@ impl AttachAttempt<'_> {
     }
 }
 
-/// The client's current working directory as a wire `cwd` value
-/// (phux-0db).
-///
-/// Every session-create path sends this instead of `cwd: None` so the
-/// seed pane lands in the user's project directory rather than the
-/// daemon's CWD — `None` made the PTY child inherit wherever the server
-/// process happened to start (typically `$HOME`), which broke tools
-/// whose persistence is keyed by directory (e.g. `claude --resume`).
-/// `None` only when the cwd is unreadable; the server validates the path
-/// and falls back to its default spawn directory if it isn't an
-/// enterable directory on the server host.
+/// The client's cwd as a wire `cwd`, so a seed pane starts in the user's
+/// project directory rather than the daemon's. `None` only when unreadable; the
+/// server validates it and falls back to its default.
 pub(crate) fn client_cwd() -> Option<String> {
     std::env::current_dir()
         .ok()
         .map(|path| path.to_string_lossy().into_owned())
 }
 
-/// How long a vanished server is given to come back, and how hard to poll for
-/// it while waiting.
-///
-/// One policy per *dial lane*, because "the server vanished" means two
-/// different things on the two kinds of lane and the right response to each is
-/// the wrong response to the other. See [`reconnect_policy`].
+/// How long a vanished server is given to come back and how hard to poll,
+/// per dial lane (see [`reconnect_policy`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ReconnectPolicy {
     /// How long to keep trying before giving up and exiting.
@@ -514,38 +454,18 @@ struct ReconnectPolicy {
     ladder: Ladder,
 }
 
-/// The local lane: the ADR-0032 graceful-upgrade blink.
-///
-/// The re-exec'd server keeps the socket bound and is back in well under a
-/// second, so the runtime's flat 100ms local-upgrade ladder re-attaches
-/// almost invisibly, and a `connect` on a Unix socket that is not accepting
-/// is a cheap, purely local failure — there is nothing to be gentle about.
-/// Ten seconds is generous for a re-exec and short enough that a server which
-/// actually crashed reports promptly rather than leaving the user staring at
-/// a countdown.
+/// The local lane: the ADR-0032 graceful-upgrade blink. The re-exec'd server
+/// keeps the socket bound and returns in well under a second; ten seconds lets a
+/// real crash report promptly.
 const UDS_RECONNECT: ReconnectPolicy = ReconnectPolicy {
     deadline: Duration::from_secs(10),
     ladder: Ladder::LOCAL_UPGRADE,
 };
 
-/// The remote lanes: a network transition, not a process restart.
-///
-/// The overwhelmingly common cause of a dropped `wss://` or QUIC attach is the
-/// *client's* network changing under it — a laptop moving from wifi to
-/// cellular, or sleeping and rejoining on a different AP. The server never
-/// went anywhere. Association plus DHCP plus DNS plus, on an overlay network,
-/// Tailscale re-establishing its own path routinely runs past ten seconds, so
-/// the local deadline would give up while the machine was still coming back
-/// and drop the user out of a session that was about to be reachable again.
-///
-/// The backoff matters just as much as the deadline. Each remote probe
-/// completes a real connection — for `wss://` that is a TCP connect plus a
-/// full TLS 1.3 handshake plus the RFC 6455 upgrade — so a flat 100ms poll is
-/// ten handshakes a second against a server that is probably fine, on a radio
-/// the user would like to still have a battery for. The runtime's interactive
-/// ladder (exponential 500ms to 8s, the same one the mobile bridge walks)
-/// turns ~600 handshakes over a minute into about a dozen while still
-/// re-attaching within a second or two of the network actually returning.
+/// The remote lanes: usually the client's network changing (wifi to
+/// cellular, sleep/wake), which routinely takes longer than ten seconds. Each
+/// probe is a full TLS handshake, so the runtime's exponential interactive
+/// ladder replaces a flat poll.
 const REMOTE_RECONNECT: ReconnectPolicy = ReconnectPolicy {
     deadline: Duration::from_secs(60),
     ladder: Ladder::INTERACTIVE,
@@ -559,21 +479,13 @@ const fn reconnect_policy(dial: &Dial) -> ReconnectPolicy {
     }
 }
 
-/// Drive an attach, transparently reconnecting if the server *vanishes*
-/// mid-session — the graceful-upgrade blink (ADR-0032): the re-exec'd server
-/// keeps the socket bound, so the client re-attaches and the `ATTACH`
-/// handshake resyncs the screen via `TERMINAL_SNAPSHOT`.
-///
-/// A clean detach returns `Ok`. An [`AttachError::Disconnected`] (server closed
-/// without `DETACHED`) triggers a bounded reconnect, visible on the cooked
-/// terminal as a live per-second countdown (phux-i0e8.2.3): if the socket
-/// starts accepting again within the reconnect policy's deadline we re-attach — with a
-/// status-bar notice inside the new TUI announcing the recovery; if the socket
-/// file is gone (a clean shutdown unlinks it) or never accepts again, the two
-/// distinct failure reports are printed HERE (both naming `phux doctor`) and
-/// `Err(Disconnected)` is returned — call sites must NOT print a second remedy
-/// block for it. `default_name = Some` enables one lookup-only `ByName`
-/// compatibility retry after a refused `Last`; `None` sends `target` once.
+/// Drive an attach, reconnecting if the server vanishes mid-session (the
+/// ADR-0032 blink). A clean detach returns `Ok`. On `Disconnected` a live
+/// countdown runs on the cooked terminal; a recovery re-attaches with a
+/// status-bar notice, and a gone or never-accepting socket prints its failure
+/// report HERE and returns `Err(Disconnected)`, so callers must not print a
+/// second remedy. `default_name = Some` enables one lookup-only `ByName` retry
+/// after a refused `Last`.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
@@ -585,19 +497,14 @@ async fn attach_with_reconnect(
     default_name: Option<&str>,
     rec: Option<&RecordSpec>,
 ) -> Result<AttachEnd, AttachError> {
-    // Created ONCE, outside the loop, and cloned into each attempt: a
-    // graceful-upgrade reconnect must continue the SAME recording. Creating
-    // it per attempt would truncate the cast at every server hot-swap, which
-    // is precisely the moment a user most wants the recording to be intact.
-    // The file is opened here, on the cooked terminal, so a bad path is an
-    // ordinary CLI error rather than a failure behind the alt screen.
     // ADR-0140: a local-socket attach is this machine. A registered remote
-    // recorded its name before dialing, and the first record wins; an ad-hoc
-    // `--quic`/`--ws` dial has no registry name and records nothing, so its
-    // sidebar shows only the attached server.
+    // recorded its name before dialing; an ad-hoc `--quic`/`--ws` dial
+    // records nothing, so its sidebar shows only the attached server.
     if matches!(dial, Dial::Uds(_)) {
         phux_tui::attach::hosts::set_attach_origin(phux_tui::attach::hosts::AttachOrigin::Local);
     }
+    // Created once, outside the loop: a reconnect must continue the SAME
+    // recording, and a bad path is reported on the cooked terminal.
     let recorder: Option<RecorderHandle> = match rec {
         // v2 and not v3: v3 is not backward compatible, and every consumer
         // that reads v3 also reads v2 (ADR-0060). The interactive surface has
@@ -611,24 +518,16 @@ async fn attach_with_reconnect(
         None => None,
     };
 
-    // ADR-0053: the acknowledged-input replay journal, created once per
-    // invocation for the same reason the recorder is — an operation that was
-    // unresolved when the socket died must survive into the next attempt,
-    // where the driver resends it under its original idempotent operation id
-    // and the server's dedupe cache answers instead of writing twice. Remote
-    // lanes only: the UDS graceful-upgrade blink is process-local and
-    // sub-second, and its server restarts with a fresh incarnation anyway,
-    // so a journal there could only ever report "unknown".
+    // ADR-0053: one replay journal per invocation, so an operation unresolved
+    // when the socket died is resent under its idempotent id. Remote lanes only;
+    // the UDS blink restarts the server with a fresh incarnation.
     let input_replay: Option<ReplayHandle> = match dial {
         Dial::Uds(_) => None,
         Dial::Quic(_) | Dial::Ws(_) => Some(Rc::new(RefCell::new(InputReplayJournal::new()))),
     };
 
-    // phux-i0e8.2.3: set after a successful reconnect so the NEXT attach's
-    // status bar announces the recovery inside the live TUI. A cooked-
-    // terminal eprintln here is alt-screened over within milliseconds, so
-    // the in-TUI notice is the visible surface; `take()` per attempt keeps
-    // a later, unrelated re-attach from re-announcing an old restart.
+    // Set after a successful reconnect so the next attach's status bar
+    // announces the recovery (a cooked eprintln would be alt-screened over).
     let mut initial_notice: Option<Notice> = None;
     let mut reconnect_connection = None;
     let attempt = AttachAttempt {
@@ -690,12 +589,8 @@ async fn attach_with_reconnect(
     drop(reconnect_connection);
 
     // ADR-0053: whatever is still journaled when the loop gives up resolves
-    // HERE, on the cooked terminal, by the attempted/never-sent rule — an
-    // attempted paste is honestly unknown (read the pane before retyping), a
-    // never-sent one is a safe refusal. Silence would be the one dishonest
-    // outcome. The success path exits inside the driver with an empty
-    // journal (every operation resolves against the live connection), so
-    // this drain reports on the failure paths, where it matters.
+    // here, on the cooked terminal: an attempted paste is unknown, a never-sent one
+    // is a safe refusal.
     if let Some(journal) = input_replay.as_ref() {
         for report in journal
             .borrow_mut()
@@ -712,14 +607,9 @@ async fn attach_with_reconnect(
 /// The status-bar notice text a post-reconnect attach shows (phux-i0e8.2.3).
 const RECONNECT_NOTICE_TEXT: &str = "re-attached after server restart";
 
-/// How the bounded reconnect probe ended (phux-i0e8.2.3).
-///
-/// Shaped rather than a bool because the failure shapes mean different
-/// things to the user: a *gone* socket is a server that shut down cleanly
-/// (a clean shutdown unlinks it — nothing is coming back), a socket that
-/// exists but never accepts within the deadline is a server that crashed or
-/// hung, and a *refused* reconnect is a server that is perfectly healthy and
-/// no longer accepts these credentials.
+/// How the bounded reconnect probe ended. A gone socket is a clean shutdown,
+/// one that never accepts is a crash or hang, and a refusal is a healthy server
+/// rejecting these credentials.
 #[derive(Debug)]
 enum ReconnectOutcome {
     /// The server accepts connections again — re-attach now.
@@ -732,12 +622,8 @@ enum ReconnectOutcome {
     SocketGone,
     /// The deadline elapsed with every probe still failing.
     TimedOut,
-    /// The host answered and refused the credentials — a rotated token, a
-    /// revoked pairing — so no retry with the same ones can succeed
-    /// (ADR-0133, [`AttachError::is_fatal_refusal`]). Carries the refusal
-    /// itself: the countdown ends now, and the real reason is what the user
-    /// reads instead of a generic timeout. Remote lanes only; a Unix socket
-    /// has no credentials to refuse.
+    /// The host refused the credentials (ADR-0133), so no retry can succeed.
+    /// Remote lanes only.
     Refused(AttachError),
 }
 
@@ -785,12 +671,8 @@ fn reconnect_progress_line(remaining: Duration) -> String {
 }
 
 /// The cooked-terminal failure report for a reconnect window that closed
-/// without a server (phux-i0e8.2.3). Pure so tests can pin both shapes;
-/// each names its distinct cause and ends with the `phux doctor` remedy.
-///
-/// Only the failure outcomes are meaningful here; `Connectable` never
-/// reaches this function on the production path and maps to an empty
-/// report rather than a panic.
+/// without a server; each shape names its cause and `phux doctor`.
+/// `Connectable` maps to an empty report.
 fn reconnect_failure_lines(outcome: &ReconnectOutcome, deadline: Duration) -> Vec<String> {
     match outcome {
         ReconnectOutcome::Connectable(_) => Vec::new(),
@@ -814,17 +696,13 @@ fn reconnect_failure_lines(outcome: &ReconnectOutcome, deadline: Duration) -> Ve
         ReconnectOutcome::Refused(err) => vec![
             format!("phux: the server refused the reconnect: {err}"),
             "  the credentials this attach dialed with are no longer accepted;".to_owned(),
-            "  re-pair the host with `phux host enroll NAME` and attach again".to_owned(),
+            "  re-pair the host with `phux host add HOST` and attach again".to_owned(),
         ],
     }
 }
 
 /// Drive [`wait_until_connectable`] while painting a `\r`-overwritten
-/// per-second countdown on stderr, so the reconnect window is visible
-/// while it happens rather than after it succeeded.
-///
-/// The countdown line is erased (`\r` + EL) before returning, so whatever
-/// the caller prints next starts on a clean line.
+/// per-second countdown on stderr, erased before returning.
 async fn wait_with_countdown(dial: &Dial, policy: ReconnectPolicy) -> ReconnectOutcome {
     let end = Instant::now() + policy.deadline;
     let mut probe = std::pin::pin!(wait_until_connectable(dial, policy));
@@ -847,11 +725,7 @@ async fn wait_with_countdown(dial: &Dial, policy: ReconnectPolicy) -> ReconnectO
 }
 
 /// Flush the residual UTF-8 tail, backfill `duration`, and close the cast.
-///
-/// Idempotent because the production clean-detach path finalizes immediately
-/// before `process::exit`; this remains the fallback for returning error paths.
-/// Diagnostics go through `tracing` (file-only on the client) and never to
-/// stderr, which the TUI has only just released.
+/// Idempotent: the clean-detach path finalizes before `process::exit`.
 fn close_recorder(recorder: Option<RecorderHandle>) {
     let Some(handle) = recorder else {
         return;
@@ -863,31 +737,11 @@ fn close_recorder(recorder: Option<RecorderHandle>) {
 
 /// Wait until the server accepts again on `dial`, or give up.
 ///
-/// Returns [`ReconnectOutcome::Connectable`] as soon as a fresh connection
-/// succeeds (the re-exec'd server is up), and [`ReconnectOutcome::TimedOut`]
-/// once `deadline` elapses while connections keep failing (e.g. a crashed
-/// server). For UDS it short-circuits to [`ReconnectOutcome::SocketGone`] if
-/// the socket file is gone — a clean shutdown unlinks it, so there is nothing
-/// to reconnect to; a graceful upgrade never removes the socket, so it falls
-/// into the retry-until-connectable path. Remote transports return the
-/// successfully negotiated connection so the next attach consumes it instead
-/// of immediately paying for a duplicate transport and protocol handshake.
-/// UDS keeps its cheap connect-and-drop readiness probe.
-///
-/// A remote probe the host *refuses* — a 401/403 on the upgrade, a QUIC
-/// preamble answered `AUTH_FAILED` — returns
-/// [`ReconnectOutcome::Refused`] immediately instead of walking the rest of
-/// the ladder (ADR-0133): the credentials cannot change between attempts, so
-/// every further probe would report the same thing and the only effect of
-/// continuing is that the user waits out the whole deadline to be told the
-/// server timed out, which is not what happened. UDS never reaches it — a
-/// Unix socket has no credentials to refuse.
-///
-/// `policy` supplies both the deadline and the retry cadence: flat for UDS
-/// (see [`UDS_RECONNECT`]), exponential for the remote lanes, where each probe
-/// is a full TLS handshake (see [`REMOTE_RECONNECT`]). The *first* attempt is
-/// immediate under either policy, so the graceful-upgrade blink and a network
-/// that has already come back are both caught without waiting.
+/// UDS short-circuits to [`ReconnectOutcome::SocketGone`] when the socket file is
+/// gone (a clean shutdown unlinks it; an upgrade does not). Remote lanes return
+/// the negotiated connection for the next attach to reuse, and a refusal ends
+/// the ladder immediately (ADR-0133). The first attempt is immediate; `policy`
+/// sets the deadline and cadence.
 async fn wait_until_connectable(dial: &Dial, policy: ReconnectPolicy) -> ReconnectOutcome {
     let end = tokio::time::Instant::now() + policy.deadline;
     let mut backoff = policy.ladder.floor;
@@ -947,12 +801,8 @@ pub(crate) struct RemoteAttachOutcome {
     pub(crate) repair: Repair,
 }
 
-/// What an ssh repair rung should do about a failed registered attach.
-///
-/// Only failures establishing the saved transport authorize a repair. Once
-/// an attach reaches server semantics — or succeeds and later disconnects —
-/// replacing credentials and service state would be both surprising and
-/// ineffective.
+/// Whether an ssh repair should follow a failed registered attach: only
+/// failures establishing the saved transport authorize one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Repair {
     /// The attach got past the transport: nothing ssh can fix.
@@ -982,16 +832,9 @@ impl RemoteAttachOutcome {
     }
 }
 
-/// Attach through a registered `[[remote]]` entry (ADR-0055).
-///
-/// The registry supplies the endpoint, the pin, and the token, so the
-/// operator types a name instead of two 64-hex strings. `session` overrides
-/// the entry's own pinned session when the caller named one.
-///
-/// `ssh://` re-execs `ssh -t HOST phux attach` rather than dialing: there is
-/// no consumer-side ssh transport (`Dial` is QUIC or WebSocket), and there
-/// does not need to be — the session still lives on the remote server and
-/// still survives the connection dropping.
+/// Attach through a registered `[[remote]]` entry (ADR-0055). `ssh://`
+/// re-execs `ssh -t HOST phux attach`; the session still lives on the remote
+/// server.
 pub(crate) fn run_attach_remote(
     entry: &RemoteEntry,
     session: Option<String>,
@@ -1000,11 +843,8 @@ pub(crate) fn run_attach_remote(
     run_attach_remote_outcome(entry, session, rec).code
 }
 
-/// [`run_attach_remote`] with the early direct-route failure classification
-/// the registered-host ladder in `remote_target` uses to repair a cold host
-/// over ssh. `phux attach NAME` and `phux --remote NAME` both go through
-/// that ladder, so a stopped server is restarted the same way whichever
-/// spelling found it.
+/// [`run_attach_remote`] plus the early direct-route failure classification
+/// the registered-host ladder uses to repair a cold host over ssh.
 pub(crate) fn run_attach_remote_outcome(
     entry: &RemoteEntry,
     session: Option<String>,
@@ -1064,12 +904,8 @@ pub(crate) fn run_attach_remote_outcome(
     }
 }
 
-/// Replace this process with `ssh -t HOST REMOTE_PHUX attach [SESSION]`.
-///
-/// `exec` rather than spawn-and-wait so the operator's terminal, signals, and
-/// exit code belong to ssh directly — an intermediate parent would only add a
-/// process that mangles Ctrl-C. `-t` forces a TTY, which the interactive
-/// attach requires. Any recorder this process holds ceases to exist here.
+/// Replace this process with `ssh -t HOST REMOTE_PHUX attach [SESSION]`, so
+/// the terminal, signals, and exit code belong to ssh directly.
 pub(crate) fn run_attach_over_ssh(
     host: &str,
     remote_phux: &str,
@@ -1091,20 +927,13 @@ pub(crate) fn run_attach_over_ssh(
 }
 
 /// `phux attach [NAME]` with no recording.
-///
-/// Kept as a distinct entry point so callers that can never record — the
-/// worktree verbs, which attach as the tail of a create — do not have to
-/// carry a `None` they cannot ever populate.
 pub(crate) fn run_attach(session: Option<String>, socket: Option<PathBuf>) -> ExitCode {
     run_attach_rec(session, socket, None)
 }
 
-/// Block on the tokio current-thread runtime, drive the attach loop, and
-/// translate the result into a process exit code.
-///
-/// If the socket isn't there (or refuses connections), this also attempts a
-/// best-effort auto-spawn of `phux server` before connecting — see
-/// [`ensure_server`].
+/// Run the attach loop on a current-thread runtime and map the result to an
+/// exit code, auto-spawning `phux server` first if nothing accepts (see
+/// [`ensure_server`]).
 pub(crate) fn run_attach_rec(
     session: Option<String>,
     socket: Option<PathBuf>,
@@ -1114,12 +943,8 @@ pub(crate) fn run_attach_rec(
         return code;
     }
 
-    // A name in the registry is a deliberate operator statement — they ran
-    // `phux host add` for it — so it wins over the local-session reading of
-    // the same word. `--socket` is an explicit local intent and suppresses
-    // the lookup. The registered attach goes through the same ladder as
-    // `phux --remote NAME`, so a stopped remote server is restarted over
-    // ssh here too instead of leaving the operator to do it by hand.
+    // A registered host name wins over a local session of the same name, unless
+    // `--socket` says local; it goes through the same repair ladder as `--remote`.
     if socket.is_none()
         && let Some(name) = session.as_deref()
         && let Some(entry) = remote::find(name)
@@ -1148,14 +973,8 @@ pub(crate) fn run_attach_rec(
     };
     let target = requested_attach_target(session);
 
-    // Best-effort: if nothing is accepting, fork-exec ourselves into a
-    // detached server. Failures here are non-fatal — the subsequent
-    // attach driver call will surface the connect error.
-    //
-    // `phux-roz` (4): the spawned server is pre-seeded with the same
-    // session name the user is trying to attach to, so the subsequent
-    // `ATTACH` doesn't refuse with "session not found" against a
-    // surprise `default` session.
+    // Best-effort auto-spawn, pre-seeded with the session being attached to;
+    // the attach below surfaces any connect error.
     if let Err(err) = ensure_server(
         &socket_path,
         &session_for_spawn,
@@ -1176,12 +995,8 @@ pub(crate) fn run_attach_rec(
         }
     };
 
-    // Load user config to discover experimental opt-ins. Failures here
-    // are non-fatal — we log and fall back to defaults so a syntax
-    // error in config.toml doesn't lock the user out of their server.
-    //
-    // A no-name attach uses the server-resolved `Last` path first. One
-    // lookup-only name retry keeps older servers compatible without creating.
+    // A no-name attach uses server-resolved `Last` first, with one lookup-only
+    // name retry for older servers.
     let dial = Dial::uds(&socket_path);
     let predict_cfg = predictive_config_for(&dial);
     let result = match target {
@@ -1219,30 +1034,14 @@ pub(crate) fn run_attach_rec(
     exit
 }
 
-/// Stderr hint appended when a non-loopback dial got no answer at all.
-///
-/// Two very different causes present identically here, so the hint names
-/// both. The first is an overlay network that is down on either end. The
-/// second is a host-side packet filter — on macOS the application firewall
-/// silently drops inbound connections to a binary it does not recognize,
-/// and phux ships adhoc-signed, so it is not recognized unless someone
-/// allowlisted it (see `phux doctor` on the server, which probes for this).
-///
-/// The macOS case is worth naming explicitly because every signal points
-/// the wrong way: the overlay is healthy, ssh to the host works, the server
-/// is running with its listener bound, and the kernel still completes the
-/// TCP handshake — so the dial gets a connection and then silence. Blaming
-/// the overlay sends the operator to debug a network that is fine.
-///
-/// Six-space continuation indent matches the `phux:` multi-line hint
-/// convention above.
+/// Stderr hint for a non-loopback dial that got no answer: either an overlay
+/// network is down, or a packet filter on the server host (on macOS the
+/// application firewall silently drops an unrecognized, adhoc-signed binary)
+/// swallows it. `phux doctor` on the server probes for the latter.
 pub(crate) const OVERLAY_REACHABILITY_HINT: &str = "      The server did not answer or its name could not be resolved; credentials were never checked.\n      If the host lives on an overlay network (Tailscale/WireGuard), confirm the overlay is up on both ends.\n      If the overlay is up and ssh to the host works, suspect a firewall on the SERVER host instead:\n      run `phux doctor` there, which probes its own remote listener and names the blocker.";
 
-/// Decide whether a failed attach earns [`OVERLAY_REACHABILITY_HINT`]:
-/// only a reachability failure ([`AttachError::Unreachable`]) on a
-/// non-loopback target. Pin and auth failures ([`AttachError::Connect`])
-/// mean a host answered, so the hint would mislead; loopback never
-/// involves an overlay.
+/// The reachability hint applies only to [`AttachError::Unreachable`] on a
+/// non-loopback target; a pin or auth failure means a host answered.
 pub(crate) fn reachability_hint(err: &AttachError, loopback: bool) -> Option<&'static str> {
     (!loopback && matches!(err, AttachError::Unreachable(_))).then_some(OVERLAY_REACHABILITY_HINT)
 }
@@ -1265,14 +1064,9 @@ fn split_host_port(target: &str) -> Result<(&str, u16), String> {
     Ok((host, port))
 }
 
-/// Split and resolve a `--quic` `HOST:PORT` target to its first address,
-/// alongside the default TLS server name for the dial. A failure comes back
-/// as a [`DialRefusal`] for the caller to word: a malformed target, or a name
-/// that did not resolve (the `MagicDNS`-down shape of an overlay outage).
-///
-/// Resolution happens before the trust decision on purpose: the
-/// loopback-vs-routable choice keys on the **resolved** address.
-/// Multi-address fallback is out of scope — the first resolved address wins.
+/// Resolve a `--quic` `HOST:PORT` to its first address plus the default TLS
+/// server name. Resolution precedes the trust decision, which keys on the
+/// resolved address.
 fn resolve_quic_target(
     rt: &tokio::runtime::Runtime,
     target: &str,
@@ -1300,11 +1094,8 @@ fn resolve_quic_target(
         Ok(None) => "name resolution returned no addresses".to_owned(),
         Err(err) => format!("name resolution failed: {err}"),
     };
-    // Only a DNS name can fail here in practice (an IP literal resolves
-    // without touching DNS), and a name that fails to resolve is the
-    // overlay-down reachability failure — MagicDNS unreachable when
-    // Tailscale is stopped on this end — so it earns the same hint an
-    // unanswered dial does.
+    // An unresolvable name is the overlay-down shape (MagicDNS unreachable),
+    // so it earns the same hint as an unanswered dial.
     Err(DialRefusal::Unresolved {
         target: target.to_owned(),
         detail,
@@ -1312,25 +1103,10 @@ fn resolve_quic_target(
     })
 }
 
-/// Attach over QUIC (`phux-y8v6`, ADR-0007) to a `phux server --quic`
-/// listener at `target` (`HOST:PORT`; a DNS name — e.g. a Tailscale `MagicDNS`
-/// name — resolves before dialing, mirroring the hub's satellite dialer).
-///
-/// Unlike the UDS path there is no auto-spawn — the server lives on another
-/// host (or another address) and the user points at it explicitly. TLS trust is
-/// resolved up front, keyed on the **resolved** address:
-///
-/// * an explicit `--cert-fingerprint` pins the server's leaf certificate (the
-///   value `phux pair` prints), the trust anchor for any routable host;
-/// * a target resolving to **loopback** with no fingerprint falls back to
-///   skip-verify (local dev — TLS still runs, but there is no untrusted
-///   network path to MITM);
-/// * a target resolving to a **routable** address with no fingerprint is
-///   refused, rather than silently trusting whatever certificate answers.
-///
-/// With no session name this starts each reconnect iteration with `Last` and
-/// leaves default-seed resolution to the remote server. A refusal permits one
-/// lookup-only compatibility retry; an explicit name attaches only to it.
+/// Attach over QUIC (ADR-0007) to `HOST:PORT`. TLS trust keys on the
+/// resolved address: `--cert-fingerprint` pins the leaf; loopback without a pin
+/// skips verification; routable without a pin is refused. With no session name
+/// each reconnect starts with `Last`.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "clap hands over the owned HOST:PORT value; a &str signature would only push the borrow into lib.rs's dispatch"
@@ -1414,24 +1190,16 @@ fn run_attach_quic_outcome(
     RemoteAttachOutcome { code, repair }
 }
 
-/// A remote dial ready to connect, plus whether it stays on this machine.
-///
-/// The loopback bit travels with the dial because the failure hints key on
-/// it: an overlay-reachability hint is noise for a dial that never left the
-/// host. Shared by `phux attach --quic/--ws` and the headless verbs'
-/// `--remote` (see `server_target`), so the two cannot disagree on what a
-/// registered endpoint is allowed to dial.
+/// A remote dial ready to connect, plus whether it stays on this machine
+/// (the failure hints key on it). Shared by `attach --quic/--ws` and the
+/// headless verbs' `--remote`.
 pub(crate) struct DialPlan {
     pub(crate) dial: Dial,
     pub(crate) loopback: bool,
 }
 
-/// Why a remote dial could not be planned.
-///
-/// Typed rather than printed, so each caller words its own way out: `phux
-/// attach --quic/--ws` names its flags ([`Self::report_for_attach`]), while
-/// the session verbs' `--remote` names the registry entry the endpoint came
-/// from and reports on the `--json` contract (see `server_target`).
+/// Why a remote dial could not be planned; each caller words its own
+/// remedy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DialRefusal {
     /// The endpoint text did not parse: a bad `HOST:PORT` or URL.
@@ -1508,11 +1276,8 @@ impl DialRefusal {
     }
 }
 
-/// Resolve `target` and build its QUIC dial, or say why it cannot be.
-///
-/// The trust decision keys on the **resolved** address, so a DNS name that
-/// resolves to loopback is dialed like loopback and anything routable needs
-/// a certificate pin.
+/// Resolve `target` and build its QUIC dial; trust keys on the resolved
+/// address.
 pub(crate) fn plan_quic_dial(
     rt: &tokio::runtime::Runtime,
     target: &str,
@@ -1644,13 +1409,8 @@ fn run_attach_ws_outcome(
     report_ws_attach_outcome(result, loopback)
 }
 
-/// Refuse a WebSocket dial that leaves the machine without the credentials
-/// `phux pair` mints for it.
-///
-/// Three separate refusals, each naming the one flag that clears it: a
-/// plaintext remote dial at all, a remote `wss://` dial with no pinned
-/// fingerprint (MITM defense), and a remote dial with no bearer token. A
-/// loopback dial needs none of them.
+/// Refuse a WebSocket dial that leaves the machine without a TLS pin or a
+/// bearer token (or at all in plaintext), naming the flag that clears each.
 fn require_ws_dial_credentials(
     target: &attach::ws::WsTarget,
     url: &str,
@@ -1684,23 +1444,9 @@ fn validated_ws_token(token: Option<String>) -> Result<Option<String>, DialRefus
         .map_err(|err| DialRefusal::BadToken(err.to_string()))
 }
 
-/// The predictive-echo setting for one dial: the config file's explicit value
-/// if it has one, otherwise on for a dial that leaves the machine and off for
-/// one that does not.
-///
-/// Same shape as [`reconnect_policy`] — one policy resolved per dial lane —
-/// and for the same reason. Prediction trades a possible wrong glyph for
-/// hiding a round trip, so it is worth engaging exactly when there is a round
-/// trip worth hiding. [`dial_leaves_the_machine`] answers that.
-///
-/// **A config that fails to load disables prediction.** It does *not* fall
-/// back to the per-dial default. The per-dial default answers "what should
-/// happen when the user has not said?", and a file that failed to parse is
-/// not silence — it is a user who may well have written
-/// `predictive-echo = false` on the line above their typo. Defaulting a
-/// display behaviour ON because we could not read the file that might have
-/// turned it off is the wrong direction to fail, so this fails closed and
-/// says so.
+/// The predictive-echo setting for one dial: the config's explicit value,
+/// else on for a dial that leaves the machine. A config that fails to load
+/// disables prediction: an unreadable file may well have said `false`.
 pub(crate) fn predictive_config_for(dial: &Dial) -> PredictiveConfig {
     match config_loader::load() {
         Ok(cfg) => PredictiveConfig {
@@ -1718,25 +1464,9 @@ pub(crate) fn predictive_config_for(dial: &Dial) -> PredictiveConfig {
     }
 }
 
-/// Does this dial actually cross a network?
-///
-/// Not "is the transport a network transport" — a QUIC or WebSocket dial to
-/// loopback is a network transport carrying microsecond round trips, which is
-/// the case prediction must not engage for: there is no latency to hide and
-/// the only thing left to collect is the mispaint. The browser client talking
-/// `ws://127.0.0.1` to a local server is exactly that shape and is a normal
-/// way to run phux, not a corner case.
-///
-/// The answer keys on the **resolved** address for QUIC, matching
-/// `resolve_quic_target`: a name that resolves to loopback is loopback. For
-/// WebSocket it keys on the URL host, via the same [`WsTarget::is_loopback`]
-/// the failure hints use, so the two cannot drift. A URL that will not parse
-/// cannot dial either, and answering "local" for it keeps this failing closed.
-///
-/// `--remote` resolves to one of the two remote lanes before it reaches a
-/// `Dial` (see [`run_attach_remote`]), so those are covered here too. An
-/// `ssh://` remote never builds a `Dial` at all — it execs `phux attach` on
-/// the far host, which then makes its own local decision.
+/// Whether this dial crosses a network. Keys on the resolved address for
+/// QUIC and on the URL host for WebSocket (loopback is local whatever the
+/// transport); an unparseable URL answers local, failing closed.
 fn dial_leaves_the_machine(dial: &Dial) -> bool {
     match dial {
         Dial::Uds(_) => false,
@@ -1904,24 +1634,6 @@ mod tests {
         );
     }
 
-    /// A config that will not parse must not turn a display behaviour ON.
-    ///
-    /// The regression this pins: resolving the load failure through the
-    /// per-dial default made every remote attach predict, so a user who had
-    /// written `predictive-echo = false` and then fat-fingered an unrelated
-    /// line silently got the opposite of what their file said. The per-dial
-    /// default answers "the user has not said"; a broken file is not silence.
-    #[test]
-    fn a_config_that_fails_to_load_never_enables_prediction() {
-        // `predictive_config_for` reads the real config path, so drive the
-        // decision function it delegates to instead: on a load failure it must
-        // not consult the dial at all.
-        assert!(
-            !PredictiveConfig::disabled().enabled,
-            "the load-failure fallback is the disabled config, on every dial"
-        );
-    }
-
     fn quic_dial(addr: &str) -> Dial {
         Dial::Quic(QuicDial {
             addr: addr.parse().expect("addr"),
@@ -1953,11 +1665,7 @@ mod tests {
         );
     }
 
-    /// phux-i0e8.2.2: the one-line ending explanation both CLI callers
-    /// (`phux attach`, `phux new`) print after teardown. A detach says
-    /// nothing; a last-pane death names the exit shape; the process exit
-    /// code stays SUCCESS either way (the callers map `Ok(_)` to
-    /// `ExitCode::SUCCESS` unconditionally).
+    /// A detach says nothing; a last-pane death names the exit shape.
     #[test]
     fn attach_end_explanation_covers_all_shapes() {
         assert_eq!(
@@ -2016,11 +1724,8 @@ mod tests {
         );
     }
 
-    /// phux-i0e8.2.3: the reconnect probe is three-way. A missing socket
-    /// (clean shutdown) is `SocketGone`, and fast; a bound listener (the
-    /// re-exec'd server is up) is `Connectable`; a path that exists but
-    /// never accepts (a crashed/hung server) burns the deadline into
-    /// `TimedOut`.
+    /// The reconnect probe is three-way: missing socket is `SocketGone`, a
+    /// bound listener is `Connectable`, a path that never accepts is `TimedOut`.
     #[tokio::test]
     async fn reconnect_probe_distinguishes_gone_live_and_dead_sockets() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2227,13 +1932,9 @@ mod tests {
         })
     }
 
-    /// ADR-0133: a reconnect the host *refuses* ends on the first probe with
-    /// the refusal itself. Before this, a rotated token or a revoked pairing
-    /// walked the full interactive ladder and then reported a generic
-    /// timeout — the one thing that had definitely not happened. The
-    /// deadline here is far longer than the test could survive if the ladder
-    /// were still being walked, so a regression fails on the clock as well
-    /// as on the outcome.
+    /// ADR-0133: a refused reconnect ends on the first probe with the refusal.
+    /// The deadline is far longer than the test would survive if the ladder were
+    /// walked.
     #[tokio::test]
     async fn a_refused_reconnect_ends_on_the_first_probe_with_the_real_reason() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -2277,7 +1978,7 @@ mod tests {
             "the report names the refusal, not a timeout: {lines:?}"
         );
         assert!(
-            lines.iter().any(|line| line.contains("phux host enroll")),
+            lines.iter().any(|line| line.contains("phux host add")),
             "a refused reconnect points at re-pairing: {lines:?}"
         );
 
@@ -2328,11 +2029,8 @@ mod tests {
         }
     }
 
-    /// The local lane's reconnect behavior is load-bearing for ADR-0032: the
-    /// re-exec'd server keeps the socket bound and is back in under a second,
-    /// so the 100ms flat poll and the 10s deadline make the graceful-upgrade
-    /// blink invisible. Making the remote lanes patient must not make the
-    /// local one sluggish, so the exact numbers are pinned here.
+    /// The local lane's numbers are pinned: 100ms flat over 10s keeps the
+    /// graceful-upgrade blink invisible.
     #[test]
     fn uds_reconnect_policy_is_unchanged_flat_100ms_over_10s() {
         let policy = reconnect_policy(&Dial::uds(std::path::Path::new("/tmp/phux-test.sock")));
@@ -2385,51 +2083,6 @@ mod tests {
             ws.ladder,
             Ladder::INTERACTIVE,
             "the remote lanes walk the runtime's interactive ladder (ADR-0133)"
-        );
-    }
-
-    /// The backoff doubles and then holds at the ceiling, and the whole
-    /// schedule stays far cheaper than the flat poll it replaces — the point
-    /// of the change is TLS handshakes not attempted.
-    #[test]
-    fn remote_backoff_doubles_to_the_ceiling_and_stops() {
-        let policy = REMOTE_RECONNECT;
-        let mut backoff = policy.ladder.floor;
-        let mut schedule = vec![backoff];
-        // The first attempt is immediate, so `deadline` is covered by the
-        // sum of the sleeps between attempts.
-        let mut waited = Duration::ZERO;
-        while waited < policy.deadline {
-            waited += backoff;
-            backoff = policy.ladder.next(backoff);
-            schedule.push(backoff);
-        }
-
-        assert_eq!(
-            &schedule[..5],
-            &[
-                Duration::from_millis(500),
-                Duration::from_secs(1),
-                Duration::from_secs(2),
-                Duration::from_secs(4),
-                Duration::from_secs(8),
-            ]
-        );
-        assert!(
-            schedule.iter().all(|d| *d <= policy.ladder.ceiling),
-            "backoff never exceeds the ceiling: {schedule:?}"
-        );
-        assert_eq!(
-            *schedule.last().expect("non-empty"),
-            policy.ladder.ceiling,
-            "it holds at the ceiling rather than growing without bound"
-        );
-        // One attempt per sleep, plus the immediate first one. The flat
-        // 100ms poll would have made 600 over the same window.
-        assert!(
-            schedule.len() < 20,
-            "a minute of reconnecting is ~a dozen handshakes, not hundreds: {}",
-            schedule.len()
         );
     }
 

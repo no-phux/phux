@@ -166,15 +166,10 @@ pub(crate) struct Client {
     pub callbacks: PhuxClientCallbacks,
     pub in_callback: bool,
     pub attached_notified: bool,
-    pub hello_queued: bool,
     pub protocol_ready: bool,
     pub attached: bool,
     pub attach_queued: bool,
     pub expected_attach_id: Option<u32>,
-    #[cfg(test)]
-    pub selected_profile: Option<phux_protocol::BootstrapProfile>,
-    #[cfg(test)]
-    pub offered_caps: Option<phux_protocol::ClientCapabilities>,
     pub terminal_reply: bool,
     pub list_directory: bool,
     pub list_directory_host: bool,
@@ -265,15 +260,10 @@ impl Client {
             callbacks: PhuxClientCallbacks::default(),
             in_callback: false,
             attached_notified: false,
-            hello_queued: false,
             protocol_ready: false,
             attached: false,
             attach_queued: false,
             expected_attach_id: None,
-            #[cfg(test)]
-            selected_profile: None,
-            #[cfg(test)]
-            offered_caps: None,
             terminal_reply: false,
             list_directory: false,
             list_directory_host: false,
@@ -302,57 +292,6 @@ impl Client {
             self.attach_role = None;
         }
         role
-    }
-
-    #[cfg(test)]
-    pub(crate) fn install_profile(
-        &mut self,
-        profile: phux_protocol::BootstrapProfile,
-        limits: BootstrapLimits,
-    ) {
-        self.limits.bootstrap_chunk = limits.max_chunk_bytes();
-        self.limits.history_page = limits.max_history_page_bytes();
-        if self.control().status() == phux_client_runtime::control::Status::Idle {
-            let _ = self.control().open_explicit("ffi-test".to_owned());
-            let _ = self.control().take_outbound();
-        }
-        let mut features = Vec::new();
-        for (enabled, feature) in [
-            (self.terminal_reply, ServerFeature::TerminalReply),
-            (self.list_directory, ServerFeature::ListDirectory),
-            (self.list_directory_host, ServerFeature::ListDirectoryHost),
-            (self.keep_empty_sessions, ServerFeature::KeepEmptySessions),
-            (self.conditional_kill, ServerFeature::ConditionalKill),
-            (self.event_journal, ServerFeature::EventJournal),
-            (self.retain_on_exit, ServerFeature::RetainOnExit),
-            (self.spawn_idempotency, ServerFeature::SpawnIdempotency),
-            (self.close_tab_resources, ServerFeature::CloseTabResources),
-            (self.attach_roles, ServerFeature::AttachRoles),
-        ] {
-            if enabled {
-                features.push(feature);
-            }
-        }
-        let layers = if self.l3_metadata {
-            phux_protocol::LayerSet::with(&[Layer::L3])
-        } else {
-            phux_protocol::LayerSet::new()
-        };
-        let server_caps = phux_protocol::caps::ServerCapabilities::new()
-            .with_features(phux_protocol::ServerFeatureSet::with(&features))
-            .with_layers(layers);
-        self.control()
-            .feed(FrameKind::HelloOk {
-                protocol_major: phux_protocol::PROTOCOL_VERSION.major,
-                protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
-                protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
-                server_caps,
-                server_id: b"ffi-test-server".to_vec(),
-                selected_profile: profile,
-                bootstrap_limits: limits,
-            })
-            .expect("test profile must be accepted by runtime control");
-        self.drain_outbound();
     }
 
     pub(crate) fn is_agent_stream(&self, id: &ResourceId) -> bool {
@@ -403,9 +342,7 @@ impl Client {
     }
 
     pub(crate) fn ensure_attached(&self) -> Result<(), BridgeError> {
-        if (self.control().status() == RuntimeStatus::Attached || cfg!(test) && self.attached)
-            && !self.detached
-        {
+        if self.control().status() == RuntimeStatus::Attached && !self.detached {
             Ok(())
         } else {
             Err(BridgeError::state("operation requires an attached client"))
@@ -1097,42 +1034,17 @@ impl Client {
         };
         self.protocol_ready = true;
         self.server_id.clone_from(&server.id);
-        self.terminal_reply = negotiated_test_feature(
-            self.terminal_reply,
-            server.has(ServerFeature::TerminalReply),
-        );
-        self.list_directory = negotiated_test_feature(
-            self.list_directory,
-            server.has(ServerFeature::ListDirectory),
-        );
-        self.list_directory_host = negotiated_test_feature(
-            self.list_directory_host,
-            server.has(ServerFeature::ListDirectoryHost),
-        );
-        self.keep_empty_sessions = negotiated_test_feature(
-            self.keep_empty_sessions,
-            server.has(ServerFeature::KeepEmptySessions),
-        );
-        self.conditional_kill = negotiated_test_feature(
-            self.conditional_kill,
-            server.has(ServerFeature::ConditionalKill),
-        );
-        self.event_journal =
-            negotiated_test_feature(self.event_journal, server.has(ServerFeature::EventJournal));
-        self.retain_on_exit =
-            negotiated_test_feature(self.retain_on_exit, server.has(ServerFeature::RetainOnExit));
-        self.spawn_idempotency = negotiated_test_feature(
-            self.spawn_idempotency,
-            server.has(ServerFeature::SpawnIdempotency),
-        );
-        self.close_tab_resources = negotiated_test_feature(
-            self.close_tab_resources,
-            server.has(ServerFeature::CloseTabResources),
-        );
-        self.attach_roles =
-            negotiated_test_feature(self.attach_roles, server.has(ServerFeature::AttachRoles));
-        self.l3_metadata =
-            negotiated_test_feature(self.l3_metadata, server.layers.contains(Layer::L3));
+        self.terminal_reply = server.has(ServerFeature::TerminalReply);
+        self.list_directory = server.has(ServerFeature::ListDirectory);
+        self.list_directory_host = server.has(ServerFeature::ListDirectoryHost);
+        self.keep_empty_sessions = server.has(ServerFeature::KeepEmptySessions);
+        self.conditional_kill = server.has(ServerFeature::ConditionalKill);
+        self.event_journal = server.has(ServerFeature::EventJournal);
+        self.retain_on_exit = server.has(ServerFeature::RetainOnExit);
+        self.spawn_idempotency = server.has(ServerFeature::SpawnIdempotency);
+        self.close_tab_resources = server.has(ServerFeature::CloseTabResources);
+        self.attach_roles = server.has(ServerFeature::AttachRoles);
+        self.l3_metadata = server.layers.contains(Layer::L3);
     }
 
     fn engine(&self) -> Result<phux_client_runtime::engine::EngineHandle, BridgeError> {
@@ -1286,18 +1198,6 @@ fn render_cache_matches(
         && cache.view.history_bytes_loaded == history.bytes
         && cache.view.history_loading == history.loading
         && cache.view.history_has_more == history.has_more
-}
-
-const fn negotiated_test_feature(current: bool, negotiated: bool) -> bool {
-    #[cfg(test)]
-    {
-        current || negotiated
-    }
-    #[cfg(not(test))]
-    {
-        let _ = current;
-        negotiated
-    }
 }
 
 fn engine_bridge(error: EngineError) -> BridgeError {

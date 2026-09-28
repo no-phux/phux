@@ -1,11 +1,7 @@
 //! [`ResourceDescriptor`] — the leaf record for anything the server serves.
 //!
-//! A resource is one server-owned addressable thing: a PTY-plus-libghostty
-//! Terminal, or an agent session whose output is producer-fed. Every
-//! resource has a [`ResourceKind`]; the kind fixes which *facet* the
-//! descriptor carries. The facets are plain data. The server attaches the
-//! engine (libghostty terminal, PTY plumbing, record ring) on top of this
-//! record, keyed by [`ResourceId`].
+//! A resource is a PTY-backed Terminal or a producer-fed agent session; its
+//! [`ResourceKind`] fixes which plain-data facet the descriptor carries.
 
 use crate::ids::{ResourceId, WindowId};
 use crate::terminal::TerminalFacet;
@@ -52,19 +48,12 @@ pub struct AgentFacet {
     pub state: Option<String>,
 }
 
-/// Descriptor for a single resource.
-///
-/// Pure data — no PTY, no grid, no async state. Exactly the facet named by
-/// `kind` is populated: a `Terminal` carries `terminal` and `window`, an
-/// `AgentSession` carries `agent` and `parent`. The [`Registry`] upholds
-/// that shape; nothing outside it constructs a descriptor.
-///
-/// [`Registry`]: crate::registry::Registry
+/// Descriptor for a single resource. Exactly the facet named by `kind` is
+/// populated (`Terminal`: `terminal` + `window`; `AgentSession`: `agent` +
+/// `parent`); the registry upholds that shape.
 #[derive(Debug, Clone)]
 pub struct ResourceDescriptor {
-    /// The stable identifier issued by the [`Registry`].
-    ///
-    /// [`Registry`]: crate::registry::Registry
+    /// The stable identifier issued by the registry.
     pub id: ResourceId,
     /// Which facet this resource carries.
     pub kind: ResourceKind,
@@ -96,11 +85,5 @@ impl ResourceDescriptor {
     #[must_use]
     pub const fn agent(&self) -> Option<&AgentFacet> {
         self.agent.as_ref()
-    }
-
-    /// Mutably borrow the agent-session facet, or `None` for another kind.
-    #[must_use]
-    pub const fn agent_mut(&mut self) -> Option<&mut AgentFacet> {
-        self.agent.as_mut()
     }
 }

@@ -18,10 +18,8 @@ pub struct SatelliteConfigEntry {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Path to a file holding the pairing bearer token minted by `phux pair`
-    /// on the satellite host (ADR-0038): one hex token on one line, owner-only
-    /// permissions — the same shape as the server's token store. The token
-    /// itself never appears in `config.toml`; this key only points at it.
+    /// Path to the pairing token file `phux pair` minted (ADR-0038); the
+    /// token itself never appears in `config.toml`.
     #[serde(
         default,
         rename = "token-file",
@@ -29,9 +27,7 @@ pub struct SatelliteConfigEntry {
     )]
     pub token_file: Option<PathBuf>,
 
-    /// SHA-256 fingerprint pin of the satellite's TLS leaf certificate, in
-    /// the colon-or-bare hex shape `phux pair` prints. Not a secret — pinning
-    /// it here is what defeats a man-in-the-middle on a routable endpoint.
+    /// SHA-256 pin of the satellite's TLS leaf certificate.
     #[serde(
         default,
         rename = "cert-fingerprint",

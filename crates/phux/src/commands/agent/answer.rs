@@ -1,70 +1,20 @@
 //! `phux agent answer` — reply to a pending agent question by **validated
 //! choice**, not by blind keystroke.
 //!
-//! # What makes this different from `send-keys`
+//! The bytes typed are always a string the asking agent published in its
+//! ADR-0035 ask (`--choice N` sends `suggestions[N-1]` verbatim, `--text T`
+//! is checked against the same list), unless `--allow-unlisted` is passed.
 //!
-//! `AgentEvent::Asked` (ADR-0035) carries the question *and the suggestions
-//! the asking agent itself published*. Everything downstream follows from
-//! that one fact: an orchestrator that saw the event knows the exact
-//! vocabulary the agent will accept, so it can answer with a string the agent
-//! named rather than guessing at a menu. The contract this verb enforces is
-//! therefore small and total:
+//! Refusals: no live ask (`no_active_ask`); a different question than the
+//! `--id` named (`ask_stale`, the failure this verb exists to prevent); and an
+//! ask with no id (`ask_unidentified`), which cannot be told apart from the
+//! next one worded the same way.
 //!
-//! > **The bytes phux types are always a string the asking agent published**,
-//! > unless the caller explicitly passes `--allow-unlisted`.
-//!
-//! `--choice N` sends `suggestions[N-1]` verbatim; `--text T` sends `T` only
-//! after checking it against the same list. An agent that wants numeric input
-//! publishes numeric suggestions (`?s=1|2|3`); phux does not invent a keystroke
-//! the agent never named.
-//!
-//! # The three ways this refuses, and why each one exists
-//!
-//! 1. **No live ask** (`no_active_ask`). The pane's title carries no ADR-0035
-//!    sentinel, so there is no question on the screen to answer and typing
-//!    would land in whatever is running now.
-//! 2. **Stale ask** (`ask_stale`). The pane *is* asking, but a different
-//!    question than the one the caller named. This is the failure the verb
-//!    exists to prevent: an orchestrator that read an `asked` event, went away
-//!    to think, and came back after the agent had already moved on. `--id` is
-//!    required precisely so this check has something to compare against —
-//!    answering "whatever is being asked right now" is a level read, and
-//!    `docs/spec/L3.md` §3.7 is explicit that a level read asserts only the
-//!    absence of contrary evidence.
-//! 3. **Unidentified ask** (`ask_unidentified`). The sentinel omitted its
-//!    `[id]`. An anonymous ask is indistinguishable from the next anonymous
-//!    ask worded the same way, so the staleness check above would pass across
-//!    a question boundary. Refused rather than guessed.
-//!
-//! # Free-form answers
-//!
-//! When the live ask published a suggestion set, an answer outside that set is
-//! refused unless `--allow-unlisted` is passed. The default is refusal because
-//! the whole value of this verb is that the answer was validated against what
-//! the agent said it would accept; an unlisted string typed into a closed
-//! selector is not an answer, it is noise that may dismiss the prompt in an
-//! unspecified way. The flag exists because closed sets are not always
-//! genuinely closed — "3. No, and tell me what to do differently" takes prose
-//! after the choice — and a caller who has read the question may legitimately
-//! know better than the list. Refusal is the default, the override is one
-//! explicit flag, and neither is silent.
-//!
-//! # Delivery, and double-submission
-//!
-//! One `APPLY_INPUT` batch of `[Paste(trusted, answer), Key(Enter)]` under a
-//! CSPRNG operation id (ADR-0053) — the same acknowledged write path
-//! `agent prompt` uses (ADR-0076), not a second mechanism invented here. What
-//! actually prevents a double submission is the staleness gate: a delivered
-//! answer makes the agent retitle, so a second `--id` for the same question
-//! finds no live ask and refuses. ADR-0053's dedupe cache is the narrower
-//! guarantee — the *same* operation id replays rather than re-types — and this
-//! verb never reuses an id across invocations, so it never leans on it.
-//!
-//! Deriving the operation id from `(pane, ask id, answer)` was considered and
-//! rejected: it would make two orchestrators answering identically collapse
-//! into one write, but a derivable id is a guessable id, and an unrelated
-//! client that binds it first turns every legitimate answer into an id-reuse
-//! conflict.
+//! Delivery is one acknowledged `APPLY_INPUT` batch of trusted paste + Enter
+//! under a fresh CSPRNG operation id (ADR-0053, ADR-0076). Double submission is
+//! prevented by the staleness gate: a delivered answer retitles the pane, so a
+//! second answer finds no live ask. Ids are never derived from content, since
+//! a derivable id is a guessable one.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -78,20 +28,11 @@ use phux_server::runtime::default_socket_path;
 use crate::commands::json_err::codes;
 use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target_for_input};
 
-/// Longest free-form answer this verb will type, in bytes.
-///
-/// Matches the server's own `MAX_QUESTION_BYTES` ceiling on the ask side, and
-/// sits far under `APPLY_INPUT`'s 64 KiB encoded-body cap. An answer longer
-/// than this is prose, not an answer; `phux agent prompt` is the verb for
-/// prose.
+/// Longest answer this verb will type, in bytes (the ask side's own ceiling);
+/// longer is prose, for `phux agent prompt`.
 const MAX_ANSWER_BYTES: usize = 4096;
 
-/// A refusal: the closed-vocabulary code, the diagnostic, the remedy, and the
-/// exit status, decided together at the point the refusal is discovered.
-///
-/// Bundled rather than returned as three loose values because the exit code is
-/// part of the contract a script branches on, and separating it from the
-/// message is how a `2` and a `3` end up swapped.
+/// A refusal: code, diagnostic, remedy, and exit status, decided together.
 #[derive(Debug)]
 struct Refusal {
     code: &'static str,
@@ -125,11 +66,6 @@ impl Refusal {
 }
 
 /// Confirm the pane is still asking the question `expected_id` names.
-///
-/// The whole staleness story, in one pure function: a title with no sentinel
-/// means the ask is gone, a sentinel with no id cannot be correlated, and a
-/// sentinel with a *different* id means the agent has moved on and typing now
-/// would answer the wrong question.
 fn live_ask(title: Option<&str>, expected_id: &str) -> Result<AskMarker, Refusal> {
     let Some(marker) = title.and_then(parse_ask_title) else {
         return Err(Refusal::new(
@@ -196,11 +132,6 @@ impl AnswerSource {
 
 /// Resolve the caller's flags against the **live** marker into the exact
 /// string to type.
-///
-/// Resolution happens against the marker read moments ago, never against the
-/// one the caller saw in an event: `--choice 2` means "the second thing this
-/// pane is offering right now", and if that list changed the ask id changed
-/// with it and [`live_ask`] already refused.
 fn select_answer(
     marker: &AskMarker,
     choice: Option<usize>,
@@ -261,9 +192,7 @@ fn select_answer(
     ))
 }
 
-/// Neither `--choice` nor `--text`. Shared so the pre-flight check and
-/// [`select_answer`] cannot drift into two different diagnostics for one
-/// mistake.
+/// Neither `--choice` nor `--text`.
 fn no_answer_refusal() -> Refusal {
     Refusal::new(
         codes::NO_ANSWER,
@@ -274,14 +203,9 @@ fn no_answer_refusal() -> Refusal {
     )
 }
 
-/// Reject an answer that cannot be typed safely, whatever produced it.
-///
-/// The multi-line refusal is the load-bearing one. libghostty's paste encoder
-/// rewrites newlines as carriage returns when the pane has *not* set DEC 2004,
-/// so an answer containing `\n` becomes N submissions on a paste-unaware pane
-/// — and no client can observe that mode, so phux cannot tell in advance
-/// which pane it is holding. Refusing costs a retry; guessing costs whatever
-/// the extra submissions did.
+/// Reject an answer that cannot be typed safely. A line break becomes an
+/// extra submission on a pane without bracketed paste, which no client can
+/// observe, so it is refused outright.
 fn validate_answer(answer: &str) -> Result<String, Refusal> {
     if answer.trim().is_empty() {
         return Err(Refusal::new(
@@ -331,20 +255,9 @@ fn numbered(suggestions: &[String]) -> String {
 }
 
 /// Map the acknowledged-write verdict onto this verb's exit contract.
-///
-/// The verdict vocabulary is `agent prompt`'s, not one invented here, and the
-/// split that matters is pre- versus post-handoff.
-/// [`ApplyVerdict::Unknown`] is the only outcome where bytes may have reached
-/// the tty — and it absorbs `INTERNAL_ERROR` and every code a newer server may
-/// add, because assuming the optimistic reading of a code you cannot name is
-/// how a duplicate submission gets written. So it is exit 3 ("phux cannot
-/// answer that") and explicitly not retryable: a fresh operation id would be
-/// the double submission, and the same id replays the cached unknown. Every
-/// other arm wrote nothing, `NotWritten` included — it shares
-/// `ANSWER_REFUSED`'s code with `Busy`/`NotFound`/`Refused` (this verb
-/// discriminates by message and exit code, not by a fourth code for every
-/// nothing-written reason), and it is safe to resubmit precisely because
-/// nothing already reached the pane for a resubmission to duplicate.
+/// [`ApplyVerdict::Unknown`] (which absorbs unnamed codes) is the only outcome
+/// where bytes may have reached the tty: exit 3 and not retryable. Every other
+/// arm wrote nothing and is safe to resubmit.
 fn refusal_for_verdict(verdict: ApplyVerdict, label: &str) -> Refusal {
     match verdict {
         // Handled by the caller; folded in so the mapping stays total.
@@ -402,8 +315,7 @@ pub(super) fn run_agent_answer(
     json: bool,
     socket: Option<PathBuf>,
 ) -> ExitCode {
-    // A usage mistake must not need a running server to diagnose. clap's
-    // `conflicts_with` rejects passing both; neither is checked here.
+    // A usage mistake must not need a running server to diagnose.
     if choice.is_none() && text.is_none() {
         return no_answer_refusal().emit(json);
     }
@@ -441,9 +353,7 @@ pub(super) fn run_agent_answer(
                 return json_err::report_no_server(json, &err, &socket_path, "agent answer");
             }
         };
-        // The acknowledged write path is an additive server feature. Sending
-        // APPLY_INPUT to a server that does not advertise it would be an
-        // unknown command tag, and an unknown tag is silence.
+        // An unknown APPLY_INPUT tag would be silence on an older server.
         if !supports_acknowledged_input(&conn) {
             return Refusal::new(
                 json_err::codes::SERVER_TOO_OLD,
@@ -456,16 +366,9 @@ pub(super) fn run_agent_answer(
             .emit(json);
         }
 
-        // The liveness read and the write are consecutive frames on ONE
-        // connection: the server handles a connection's frames in arrival
-        // order, so nothing this client sends interleaves between them. That
-        // is the same bound `agent send-keys` documents — a server
-        // frame-handling turn, not atomicity against a concurrent writer.
-        // Degradation cannot change this answer: an unreachable satellite
-        // omits *its* panes, and the pane in hand was already established to
-        // be local a few lines above. A partial fleet view therefore cannot
-        // turn a live ask into an absent one here — and `resolve_target`
-        // already warned about the degradation the caller does care about.
+        // The liveness read and the write are consecutive frames on one
+        // connection, so nothing this client sends interleaves between them.
+        // Degradation is irrelevant: the pane is already known to be local.
         let snapshot = match phux_client::state::get_state_on(&mut conn).await {
             Ok(view) => view.into_snapshot_ignoring_degradation(),
             Err(err) => {
@@ -501,14 +404,8 @@ pub(super) fn run_agent_answer(
             )
             .emit(json);
         };
-        // request id 0 was the GET_STATE above.
-        //
-        // `Busy` is NOT retried here, unlike `agent prompt`. That verb owns
-        // the whole write and can back off under the same operation id; this
-        // one is holding a liveness check that goes stale while it waits, and
-        // re-checking would mean a second GET_STATE the ask may have moved
-        // past. Reporting the busy lane and letting the caller re-run the
-        // command re-establishes the check it depends on.
+        // `Busy` is not retried (unlike `agent prompt`): the liveness check
+        // would go stale while waiting, so the caller re-runs the command.
         let verdict = deliver_answer(&mut conn, &pane, operation_id, 1, &answer).await;
         drop(conn);
         match verdict {
@@ -579,18 +476,14 @@ mod tests {
         }
     }
 
-    /// The happy path: the live sentinel names the question the caller named.
+    /// The failure this verb exists to prevent: the agent moved on, so the
+    /// answer must not land in whatever replaced the question.
     #[test]
-    fn a_matching_id_resolves_the_live_ask() {
+    fn an_id_the_pane_has_moved_past_is_refused_as_stale() {
         let marker = live_ask(Some("phux-ask[deploy]:Deploy to prod??s=Yes|No"), "deploy")
             .expect("a live sentinel with the named id is answerable");
         assert_eq!(marker.suggestions, ["Yes", "No"]);
-    }
 
-    /// The failure this verb exists to prevent. The agent moved on; the answer
-    /// must not land in whatever replaced the question.
-    #[test]
-    fn an_id_the_pane_has_moved_past_is_refused_as_stale() {
         let refusal = live_ask(Some("phux-ask[migrate]:Run migrations??s=Yes|No"), "deploy")
             .expect_err("a different live question must not be answered");
         assert_eq!(refusal.code, super::codes::ASK_STALE);
@@ -647,16 +540,6 @@ mod tests {
         }
     }
 
-    /// `--choice` against an ask that published nothing is a distinct refusal:
-    /// the caller's remedy is `--text`, not a different number.
-    #[test]
-    fn choice_against_an_ask_with_no_suggestions_says_so() {
-        let ask = marker("deploy", &[]);
-        let refusal =
-            select_answer(&ask, Some(1), None, false).expect_err("there is nothing to choose");
-        assert_eq!(refusal.code, super::codes::NO_SUGGESTIONS);
-    }
-
     /// `--text` matching a suggestion is accepted, trimmed and
     /// case-insensitively: shell quoting must not read as a different answer.
     #[test]
@@ -697,55 +580,32 @@ mod tests {
         assert_eq!(source, AnswerSource::Text);
     }
 
-    /// Neither flag is a usage refusal, not a bare Enter.
+    /// Answers that cannot be typed safely, and choices against an ask with no
+    /// suggestions, are refused before anything is typed.
     #[test]
-    fn no_answer_at_all_is_refused() {
-        let ask = marker("deploy", &["Yes"]);
-        let refusal =
-            select_answer(&ask, None, None, false).expect_err("an answer has to be given");
-        assert_eq!(refusal.code, super::codes::NO_ANSWER);
-    }
-
-    /// The multi-line refusal: on a paste-unaware pane every line break is
-    /// another submission, and no client can observe that mode.
-    #[test]
-    fn a_multiline_answer_is_refused_before_anything_is_typed() {
-        let ask = marker("deploy", &[]);
-        for answer in ["yes\nno", "yes\r\nno", "yes\r"] {
-            let refusal = select_answer(&ask, None, Some(answer), false)
-                .expect_err("a line break would submit more than once");
-            assert_eq!(refusal.code, super::codes::INVALID_ANSWER);
-        }
-    }
-
-    /// Empty and whitespace-only answers are a bare Enter wearing a disguise.
-    #[test]
-    fn an_empty_answer_is_refused() {
-        let ask = marker("deploy", &[]);
-        for answer in ["", "   "] {
-            let refusal = select_answer(&ask, None, Some(answer), false)
-                .expect_err("an empty answer is a different act");
-            assert_eq!(refusal.code, super::codes::INVALID_ANSWER);
-        }
-    }
-
-    /// Oversized answers are refused before the wire, not truncated on it.
-    #[test]
-    fn an_oversized_answer_is_refused() {
-        let ask = marker("deploy", &[]);
+    fn unanswerable_input_is_refused_before_anything_is_typed() {
+        let open = marker("deploy", &[]);
         let long = "x".repeat(super::MAX_ANSWER_BYTES + 1);
-        let refusal = select_answer(&ask, None, Some(&long), false)
-            .expect_err("an answer past the ceiling is prose");
-        assert_eq!(refusal.code, super::codes::INVALID_ANSWER);
+        let cases: [(&AskMarker, Option<usize>, Option<&str>, &str); 8] = [
+            (&open, Some(1), None, super::codes::NO_SUGGESTIONS),
+            (&open, None, None, super::codes::NO_ANSWER),
+            (&open, None, Some("yes\nno"), super::codes::INVALID_ANSWER),
+            (&open, None, Some("yes\r\nno"), super::codes::INVALID_ANSWER),
+            (&open, None, Some("yes\r"), super::codes::INVALID_ANSWER),
+            (&open, None, Some(""), super::codes::INVALID_ANSWER),
+            (&open, None, Some("   "), super::codes::INVALID_ANSWER),
+            (&open, None, Some(&long), super::codes::INVALID_ANSWER),
+        ];
+        for (ask, choice, text, code) in cases {
+            let refusal = select_answer(ask, choice, text, false)
+                .expect_err("unanswerable input must be refused");
+            assert_eq!(refusal.code, code, "{choice:?} {text:?}");
+        }
     }
 
     /// Exit-code contract for the server's answers, keyed on the wire code so
-    /// this pins the whole path — `agent_prompt::classify` plus this verb's
-    /// mapping — rather than only the half this file owns.
-    ///
-    /// The split that matters: `INPUT_DELIVERY_UNKNOWN` is exit 3 because
-    /// bytes may have landed, and `INTERNAL_ERROR` joins it because the server
-    /// raises that both before and after the handoff.
+    /// it pins `agent_prompt::classify` plus this verb's mapping. Delivery
+    /// unknown and internal errors are exit 3: bytes may have landed.
     #[test]
     fn server_refusals_map_to_the_documented_exit_codes() {
         use phux_client::agent_prompt::classify;
@@ -791,24 +651,5 @@ mod tests {
             "{}",
             unknown.remedy
         );
-    }
-
-    /// phux-w7z2.60: `NotWritten` is provably nothing-written, so — unlike
-    /// `Unknown` right above — its remedy must not tell the caller to hold
-    /// off. It shares `Busy`/`NotFound`/`Refused`'s `ANSWER_REFUSED` code
-    /// (this verb discriminates by message, not by a code per reason) but its
-    /// own exit and its own "resubmitting is safe" wording.
-    #[test]
-    fn not_written_says_resubmitting_is_safe_unlike_unknown() {
-        let not_written =
-            super::refusal_for_verdict(super::ApplyVerdict::NotWritten("no PTY".to_owned()), "@7");
-        assert_eq!(not_written.code, super::codes::ANSWER_REFUSED);
-        assert_eq!(not_written.exit, crate::exit_codes::EXIT_FAILURE);
-        assert!(
-            !not_written.remedy.contains("do NOT retry"),
-            "{}",
-            not_written.remedy
-        );
-        assert!(not_written.message.contains("@7"));
     }
 }

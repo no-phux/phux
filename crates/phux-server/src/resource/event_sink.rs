@@ -1,12 +1,8 @@
-//! The engine-to-runtime event sink, and the loss counter behind it
-//! (ADR-0123 "no silent loss").
+//! The engine-to-runtime event sink and its loss counter (ADR-0123).
 //!
-//! An engine emits semantic events from its own task and must never stall
-//! on them, so the sink is a bounded channel written with `try_send`. The
-//! runtime drains it into the server-wide journal. The one place an event
-//! can be lost before the journal is a full sink, so every such drop is
-//! counted here; the drain reads the count and journals a `source_gap`
-//! scoped to the resource, which turns a silent drop into a typed one.
+//! Engines `try_send` into a bounded channel the runtime drains into the
+//! journal. A full sink is the only pre-journal loss, so drops are counted
+//! and journaled as a resource-scoped `source_gap`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,9 +12,8 @@ use phux_protocol::wire::frame::AgentEvent;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 
-/// One event an engine emitted, with the key of the operation that caused
-/// it (`docs/spec/L1.md` §7.3): a keyed `SIGNAL_TERMINAL`'s
-/// `terminal_control` carries its `operation_id` into the journal stamp.
+/// One emitted event plus the key of the operation that caused it
+/// (`docs/spec/L1.md` §7.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Emitted {
     /// The event.
@@ -66,9 +61,8 @@ pub fn event_sink(capacity: usize) -> (EventSink, EventSource) {
 }
 
 impl EventSink {
-    /// Queue `event`, or count it as dropped when the sink is full. A
-    /// closed sink means nobody drains it any more, so there is nothing to
-    /// report a loss to.
+    /// Queue `event`, or count a drop when full. A closed sink has nobody
+    /// to report to.
     pub fn emit(&self, event: AgentEvent) {
         self.emit_keyed(event, None);
     }

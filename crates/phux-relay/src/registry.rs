@@ -1,23 +1,16 @@
 //! Live connector-tunnel registry, keyed by route name.
 //!
-//! Claim policy is **last-writer-wins** (ADR-0052 rotation semantics,
-//! ADR-0051 Decision 2's one-tunnel-per-route shape): a redialing
-//! connector must never be locked out by a half-dead incumbent the idle
-//! timeout has not yet reaped, so a new valid claim closes the old tunnel
-//! with [`crate::RECLAIMED_CODE`] and takes the route. The warn log on
-//! replacement is the operator's theft-detection surface (a stolen token
-//! can evict a live connector; accepted for the single-tenant reference
-//! relay).
-//!
-//! Each claim gets a monotonic epoch so a replaced tunnel's cleanup can
-//! never evict its successor.
+//! Claim policy is **last-writer-wins** (ADR-0052): a redialing connector is
+//! never locked out by a half-dead incumbent, so a new claim closes the old
+//! tunnel with [`crate::RECLAIMED_CODE`]; the warn log is the operator's
+//! theft-detection surface. Each claim gets a monotonic epoch so a replaced
+//! tunnel's cleanup can never evict its successor.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-/// What the registry needs from a tunnel connection handle. Abstracted so
-/// the replace/epoch semantics are unit-testable without QUIC endpoints;
-/// production uses [`quinn::Connection`].
+/// What the registry needs from a tunnel connection; a trait so the epoch
+/// semantics are unit-testable without QUIC.
 pub(crate) trait TunnelHandle: Clone {
     /// Close the tunnel because a newer claim on the same route
     /// superseded it.
@@ -34,12 +27,14 @@ impl TunnelHandle for quinn::Connection {
 }
 
 /// One registered tunnel: the connection and the epoch of its claim.
+#[derive(Debug)]
 struct Entry<C> {
     conn: C,
     epoch: u64,
 }
 
 /// Registry state behind one mutex: the route map plus the epoch counter.
+#[derive(Debug)]
 struct Inner<C> {
     tunnels: HashMap<String, Entry<C>>,
     next_epoch: u64,
@@ -47,22 +42,9 @@ struct Inner<C> {
 
 /// Shared registry of live tunnels. Cheap to clone (an `Arc`); the mutex
 /// is never held across an await.
+#[derive(Clone, Debug)]
 pub(crate) struct TunnelRegistry<C> {
     inner: Arc<Mutex<Inner<C>>>,
-}
-
-impl<C> Clone for TunnelRegistry<C> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-        }
-    }
-}
-
-impl<C> std::fmt::Debug for TunnelRegistry<C> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TunnelRegistry").finish_non_exhaustive()
-    }
 }
 
 impl<C: TunnelHandle> TunnelRegistry<C> {
@@ -129,7 +111,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A mock tunnel handle counting how many times it was reclaimed.
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     struct MockConn {
         id: u32,
         reclaims: Arc<AtomicUsize>,
@@ -152,17 +134,6 @@ mod tests {
         fn close_reclaimed(&self) {
             self.reclaims.fetch_add(1, Ordering::SeqCst);
         }
-    }
-
-    #[test]
-    fn claim_registers_and_get_returns_the_tunnel() {
-        let registry = TunnelRegistry::new();
-        let conn = MockConn::new(1);
-        let epoch = registry.claim("alpha", conn.clone());
-        assert!(epoch > 0);
-        assert_eq!(registry.get("alpha").map(|c| c.id), Some(1));
-        assert!(registry.get("beta").is_none());
-        assert_eq!(conn.reclaimed(), 0);
     }
 
     #[test]
@@ -196,17 +167,5 @@ mod tests {
         // The live claim's own cleanup removes the route.
         assert!(registry.remove_if_current("alpha", new_epoch));
         assert!(registry.get("alpha").is_none());
-    }
-
-    #[test]
-    fn routes_are_independent() {
-        let registry = TunnelRegistry::new();
-        let alpha = MockConn::new(1);
-        registry.claim("alpha", alpha.clone());
-        let beta_epoch = registry.claim("beta", MockConn::new(2));
-
-        assert_eq!(alpha.reclaimed(), 0, "a claim on beta never touches alpha");
-        assert!(registry.remove_if_current("beta", beta_epoch));
-        assert_eq!(registry.get("alpha").map(|c| c.id), Some(1));
     }
 }

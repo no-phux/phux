@@ -1,63 +1,82 @@
-//! Server-side dispatch for the generic `COMMAND` envelope (SPEC §5,
-//! phux-k61 / ADR-0021).
-//!
-//! Covers the v0.1 commands the CLI control verbs ride:
-//!
-//! 1. **GET_STATE** → `COMMAND_RESULT { Ok_With(State(snapshot)) }` whose
-//!    `sessions` list names the seeded session (this is what `phux ls`
-//!    reads, and what client-side selector resolution walks).
-//! 2. **GET_SCREEN on a live pane** → `COMMAND_RESULT { Ok_With(Json(..)) }`
-//!    carrying a `ScreenState` whose pane id and dims match the target —
-//!    the side-effect-free agent read (ADR-0022 §5). Plus the unknown-id
-//!    `TerminalNotFound` path.
-//! 3. **KILL_RESOURCE on an unknown id** → `COMMAND_RESULT { Error(
-//!    TerminalNotFound, …) }`.
-//! 4. **KILL_RESOURCE on a live pane** → `COMMAND_RESULT { Ok }` plus the
-//!    asynchronous `RESOURCE_CLOSED` the reap path emits. Because the
-//!    seeded session is the server's only one, the kill also triggers the
-//!    tmux-model self-exit (phux-60s), so the test tolerates the
-//!    connection closing.
-//! 5. **KILL_RESOURCES** → `COMMAND_RESULT { Ok }` atomically tearing down a
-//!    multi-terminal group in one round-trip (the v0.3.0 "Option B" re-tier
-//!    op that replaced KILL_COLLECTION; ADR-0019 / ADR-0027), plus the
-//!    unknown-id no-op (idempotent) path.
-//! 6. **Session create / rename via L3 metadata** — the v0.3.0 replacements
-//!    for the dissolved CREATE_SESSION / RENAME_SESSION verbs: a
-//!    `SESSION_CREATE_KEY` write seeds a session and publishes its seed-pane
-//!    id under `SESSION_CREATE_RESULT_KEY`; a `SESSION_NAME_KEY` write
-//!    renames a session (GET_STATE reflects the new name).
-
-#![allow(clippy::expect_used, reason = "tests")]
-#![allow(clippy::unwrap_used, reason = "tests")]
-#![allow(clippy::panic, reason = "tests")]
-#![allow(
-    clippy::doc_markdown,
-    reason = "test narrative uses bare wire-frame names (COMMAND, GET_STATE, …) for symmetry with sibling tests"
-)]
+//! Dispatch of the generic `COMMAND` envelope (SPEC §5, ADR-0021) and of the
+//! L3 session create/rename keys, driven through the production read loop.
 
 use std::time::Duration;
 
 use base64::Engine as _;
 use libghostty_vt::terminal::{Point, PointCoordinate};
-use phux_protocol::ids::{GroupId, InputOperationId, ResourceId};
+use phux_core::screen::ScreenState;
+use phux_protocol::PROTOCOL_VERSION;
+use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeature};
+use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, ErrorCode, FrameKind, Scope, StateScope, TYPE_ATTACHED,
-    TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED, TYPE_RESOURCE_CLOSED,
+    Command, CommandResult, CommandValue, ErrorCode, FrameKind, RESOURCE_AGENT_SESSION_KEY,
+    SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY, SESSION_CREATE_RESULT_KEY_PREFIX,
+    SESSION_NAME_KEY, Scope, SpawnResult, StateScope,
 };
+use phux_protocol::wire::info::SessionSnapshot;
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, await_command_result,
-    join_after_shutdown, recv_typed, recv_until, recv_until_deadline, run_local, send_frame,
-    spawn_server_connected, spawn_server_seed_pty_no_cmd, try_recv_typed, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, attach_by_name, command,
+    join_after_shutdown, recv_typed, recv_until, recv_until_deadline, recv_until_detached,
+    run_local, send_frame, spawn_resource, spawn_server_connected, spawn_server_seed_pty_no_cmd,
+    spawn_server_with_seed_cmd, try_recv_typed, wait_for_raw_socket, wait_for_server_screen_text,
+    wait_for_socket,
 };
 
-async fn read_metadata_value(
+async fn attach(stream: &mut UnixStream, session: &str) -> SessionSnapshot {
+    send_frame(stream, &attach_by_name(session)).await;
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::Attached { snapshot, .. } => Some(snapshot),
+        _ => None,
+    })
+    .await
+}
+
+async fn snapshot(stream: &mut UnixStream, request_id: u32) -> SessionSnapshot {
+    let get_state = Command::GetState {
+        scope: StateScope::Server,
+    };
+    match command(stream, request_id, get_state).await {
+        CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot,
+        other => panic!("expected State, got {other:?}"),
+    }
+}
+
+fn session_names(snapshot: &SessionSnapshot) -> Vec<&str> {
+    snapshot.sessions.iter().map(|s| s.name.as_str()).collect()
+}
+
+const fn get_screen(
+    terminal_id: ResourceId,
+    scrollback: Option<u32>,
+    cells: bool,
+    format: u8,
+) -> Command {
+    Command::GetScreen {
+        terminal_id,
+        request_scrollback: scrollback,
+        cells,
+        format,
+    }
+}
+
+async fn screen(stream: &mut UnixStream, request_id: u32, get: Command) -> ScreenState {
+    match command(stream, request_id, get).await {
+        CommandResult::OkWith(CommandValue::Json(json)) => {
+            serde_json::from_str(&json).expect("GET_SCREEN reply is a ScreenState")
+        }
+        other => panic!("expected Json, got {other:?}"),
+    }
+}
+
+async fn get_metadata(
     stream: &mut UnixStream,
     request_id: u32,
     scope: Scope,
@@ -82,26 +101,215 @@ async fn read_metadata_value(
     .await
 }
 
-async fn list_metadata_keys(stream: &mut UnixStream, request_id: u32, scope: Scope) -> Vec<String> {
-    send_frame(stream, &FrameKind::ListMetadata { request_id, scope }).await;
-    recv_until(stream, |_, frame| match frame {
-        FrameKind::MetadataKeys {
-            request_id: got,
-            keys,
-        } if got == request_id => Some(keys),
-        _ => None,
-    })
-    .await
+async fn set_global(stream: &mut UnixStream, request_id: u32, key: &str, value: Vec<u8>) {
+    send_frame(
+        stream,
+        &FrameKind::SetMetadata {
+            request_id,
+            scope: Scope::Global,
+            key: key.to_owned(),
+            value,
+        },
+    )
+    .await;
 }
 
-async fn recv_attached(stream: &mut UnixStream) -> phux_protocol::wire::info::SessionSnapshot {
-    recv_until(stream, |_, frame| match frame {
-        FrameKind::Attached { snapshot, .. } => Some(snapshot),
-        _ => None,
-    })
+/// Write a `SESSION_CREATE_KEY` request and return its published result.
+async fn create_session(
+    stream: &mut UnixStream,
+    request_id: u32,
+    request: serde_json::Value,
+) -> serde_json::Value {
+    set_global(
+        stream,
+        request_id,
+        SESSION_CREATE_KEY,
+        serde_json::to_vec(&request).unwrap(),
+    )
+    .await;
+    let bytes = get_metadata(
+        stream,
+        request_id + 1,
+        Scope::Global,
+        SESSION_CREATE_RESULT_KEY,
+    )
     .await
+    .expect("a successful create publishes its result");
+    serde_json::from_slice(&bytes).unwrap()
 }
 
+fn created_terminal(result: &serde_json::Value) -> ResourceId {
+    let id = result["terminal_id"]
+        .as_u64()
+        .expect("result carries a terminal_id");
+    ResourceId::local(u32::try_from(id).unwrap())
+}
+
+fn pane_cwd(snapshot: &SessionSnapshot, id: &ResourceId) -> std::path::PathBuf {
+    let pane = snapshot
+        .resources
+        .iter()
+        .find(|p| &p.id == id)
+        .expect("pane in snapshot");
+    let raw = std::path::PathBuf::from(pane.cwd.as_ref().expect("pane has a cwd"));
+    raw.canonicalize().unwrap_or(raw)
+}
+
+/// Read-only verbs on one server: the HELLO feature bits, `GET_STATE`,
+/// `GET_SCREEN` (plain, cells, unknown format), `GET_TERMINAL_STATE`, the
+/// `TerminalNotFound` path of every terminal verb, and concurrent correlated
+/// replies across two connections.
+#[test]
+fn read_verbs_answer_over_the_wire() {
+    run_local(async {
+        let (server, mut stream) = spawn_server_connected(Some("work")).await;
+        let pane = attach(&mut stream, "work").await.resources[0].clone();
+
+        assert!(session_names(&snapshot(&mut stream, 1).await).contains(&"work"));
+
+        let plain = screen(&mut stream, 2, get_screen(pane.id.clone(), None, false, 0)).await;
+        assert_eq!(plain.schema_version, phux_core::screen::SCHEMA_VERSION);
+        assert_eq!(Some(plain.pane), pane.id.local_id());
+        assert_eq!((plain.cols, plain.rows), (pane.cols, pane.rows));
+        assert_eq!(plain.lines.len(), usize::from(pane.rows));
+        assert!(plain.scrollback.is_empty() && plain.cells.is_none() && plain.rendered.is_none());
+        let with_cells = screen(&mut stream, 3, get_screen(pane.id.clone(), None, true, 0)).await;
+        assert!(
+            with_cells.cells.is_some(),
+            "cells: true threads through dispatch"
+        );
+        let unknown_format =
+            command(&mut stream, 4, get_screen(pane.id.clone(), None, false, 3)).await;
+        assert!(
+            matches!(
+                unknown_format,
+                CommandResult::Error {
+                    code: ErrorCode::InvalidCommand,
+                    ..
+                }
+            ),
+            "an undefined format is refused, never guessed: {unknown_format:?}"
+        );
+
+        let state = Command::GetTerminalState {
+            terminal_id: pane.id.clone(),
+            include_scrollback: false,
+            max_scrollback_lines: 0,
+        };
+        let CommandResult::OkWith(CommandValue::Json(json)) = command(&mut stream, 5, state).await
+        else {
+            panic!("GET_TERMINAL_STATE must answer Json");
+        };
+        let obj: serde_json::Value = serde_json::from_str(&json).unwrap();
+        for field in [
+            "cols",
+            "rows",
+            "cells",
+            "cursor",
+            "scrollback",
+            "scrollback_count_total",
+            "shell_state",
+            "timestamp_secs",
+            "seq",
+        ] {
+            assert!(obj.get(field).is_some(), "TerminalState lacks {field}");
+        }
+
+        let ghost = ResourceId::local(99_999);
+        for (request_id, verb) in [
+            (6, get_screen(ghost.clone(), None, false, 0)),
+            (
+                7,
+                Command::KillResource {
+                    terminal_id: ghost.clone(),
+                    operation_id: None,
+                },
+            ),
+            (
+                8,
+                Command::GetTerminalState {
+                    terminal_id: ghost.clone(),
+                    include_scrollback: false,
+                    max_scrollback_lines: 0,
+                },
+            ),
+        ] {
+            let result = command(&mut stream, request_id, verb).await;
+            let CommandResult::Error {
+                code: ErrorCode::TerminalNotFound,
+                message,
+            } = result
+            else {
+                panic!("request {request_id}: expected TerminalNotFound, got {result:?}");
+            };
+            assert!(
+                request_id != 8 || message.contains("no such terminal"),
+                "{message}"
+            );
+        }
+
+        // Two connections interleaving GET_SCREENs get every reply, correlated.
+        let mut other = server.connect().await;
+        let (a, b) = tokio::join!(
+            async {
+                for id in 100..110 {
+                    screen(&mut stream, id, get_screen(pane.id.clone(), None, false, 0)).await;
+                }
+            },
+            async {
+                for id in 200..210 {
+                    screen(&mut other, id, get_screen(pane.id.clone(), None, false, 0)).await;
+                }
+            }
+        );
+        let ((), ()) = (a, b);
+    });
+}
+
+/// Every feature bit the wire suites rely on is advertised in `HELLO_OK`.
+#[test]
+fn hello_ok_advertises_the_command_features() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("phux.sock");
+        let (shutdown, handle) = phux_server_testkit::spawn_server(socket.clone(), None);
+        let mut raw = wait_for_raw_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        send_frame(
+            &mut raw,
+            &FrameKind::Hello {
+                client_name: "features".to_owned(),
+                protocol_major: PROTOCOL_VERSION.major,
+                protocol_minor: PROTOCOL_VERSION.minor,
+                protocol_patch: PROTOCOL_VERSION.patch,
+                client_caps: ClientCapabilities::new()
+                    .with_color_support(ColorSupport::TrueColor)
+                    .with_layers(LayerSet::all()),
+            },
+        )
+        .await;
+        let FrameKind::HelloOk { server_caps, .. } = recv_typed(&mut raw).await.1 else {
+            panic!("expected HELLO_OK");
+        };
+        for feature in [
+            ServerFeature::GetPerf,
+            ServerFeature::Whoami,
+            ServerFeature::SshOrigin,
+            ServerFeature::ListDirectory,
+            ServerFeature::ListDirectoryHost,
+            ServerFeature::Transcribe,
+            ServerFeature::OpenListener,
+        ] {
+            assert!(
+                server_caps.features.contains(feature),
+                "{feature:?} not advertised"
+            );
+        }
+        drop(raw);
+        join_after_shutdown(shutdown, handle).await;
+    });
+}
+
+/// `APPLY_INPUT` acks only after the bytes reached the real PTY.
 #[test]
 fn apply_input_acks_after_real_pty_write_and_flush() {
     run_local(async {
@@ -112,12 +320,9 @@ fn apply_input_acks_after_real_pty_write_and_flush() {
             "-c",
             "IFS= read -r line; printf 'APPLIED:%s\\n' \"$line\"; sleep 1",
         ]);
-        let (_shutdown_tx, _server) =
-            phux_server_testkit::spawn_server_with_seed_cmd(socket_path.clone(), "work", cmd);
+        let (_shutdown, _server) = spawn_server_with_seed_cmd(socket_path.clone(), "work", cmd);
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        send_frame(&mut stream, &attach_by_name("work")).await;
-        let terminal_id = recv_attached(&mut stream).await.resources[0].id.clone();
+        let terminal_id = attach(&mut stream, "work").await.resources[0].id.clone();
 
         send_frame(
             &mut stream,
@@ -134,12 +339,10 @@ fn apply_input_acks_after_real_pty_write_and_flush() {
             },
         )
         .await;
-
-        let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
         let mut output = Vec::new();
         let mut acknowledged = false;
-        while tokio::time::Instant::now() < deadline {
-            let (_, frame) = recv_typed(&mut stream).await;
+        let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
+        recv_until_deadline(&mut stream, deadline, |_, frame| {
             match frame {
                 FrameKind::CommandResult {
                     request_id: 77,
@@ -151,1357 +354,419 @@ fn apply_input_acks_after_real_pty_write_and_flush() {
                 FrameKind::ResourceOutput { bytes, .. } => output.extend_from_slice(&bytes),
                 _ => {}
             }
-            if acknowledged
-                && output
-                    .windows(b"APPLIED:hello-ack".len())
-                    .any(|window| window == b"APPLIED:hello-ack")
-            {
-                return;
-            }
-        }
-        panic!("acknowledged={acknowledged}; real PTY output={output:?}");
+            (acknowledged && output.windows(17).any(|w| w == b"APPLIED:hello-ack")).then_some(())
+        })
+        .await
+        .unwrap_or_else(|| panic!("acknowledged={acknowledged}; PTY output={output:?}"));
     });
 }
 
+/// `GET_SCREEN` formats render through the server's own libghostty
+/// Formatter: html carries styling, vt replays into a fresh engine with the
+/// same text and cell styling, and `request_scrollback` bounds the capture.
 #[test]
-fn get_state_lists_the_seeded_session() {
-    run_local(async {
-        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
-
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 1,
-                command: Command::GetState {
-                    scope: StateScope::Server,
-                },
-            },
-        )
-        .await;
-
-        let result = await_command_result(&mut stream, 1).await;
-        match result {
-            CommandResult::OkWith(CommandValue::State(snapshot)) => {
-                let names: Vec<&str> = snapshot.sessions.iter().map(|s| s.name.as_str()).collect();
-                assert!(
-                    names.contains(&"work"),
-                    "GET_STATE snapshot must list the seeded session; got {names:?}",
-                );
-            }
-            other => panic!("expected Ok_With(State(..)), got {other:?}"),
-        }
-    });
-}
-
-#[test]
-fn get_screen_returns_structured_screen_for_live_pane() {
-    run_local(async {
-        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
-
-        // Attach to learn a real wire terminal id + its dims.
-        send_frame(&mut stream, &attach_by_name("work")).await;
-        let snap = recv_attached(&mut stream).await;
-        let (pane_id, cols, rows) = (
-            snap.resources[0].id.clone(),
-            snap.resources[0].cols,
-            snap.resources[0].rows,
-        );
-
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 5,
-                command: Command::GetScreen {
-                    terminal_id: pane_id.clone(),
-                    request_scrollback: None,
-                    cells: false,
-                    format: 0,
-                },
-            },
-        )
-        .await;
-
-        let result = await_command_result(&mut stream, 5).await;
-        match result {
-            CommandResult::OkWith(CommandValue::Json(json)) => {
-                let screen: phux_core::screen::ScreenState = serde_json::from_str(&json)
-                    .expect("GET_SCREEN reply must be valid ScreenState");
-                assert_eq!(screen.schema_version, phux_core::screen::SCHEMA_VERSION);
-                assert_eq!(
-                    screen.pane,
-                    pane_id.local_id().unwrap(),
-                    "projected pane id must match the requested terminal",
-                );
-                assert_eq!((screen.cols, screen.rows), (cols, rows));
-                assert_eq!(
-                    screen.lines.len(),
-                    usize::from(rows),
-                    "one line per grid row",
-                );
-                assert!(
-                    screen.scrollback.is_empty(),
-                    "no scrollback requested -> empty scrollback (phux-o1v)",
-                );
-                assert!(
-                    screen.cells.is_none(),
-                    "no cells requested -> cells None (phux-8yl)",
-                );
-                assert!(
-                    screen.rendered.is_none(),
-                    "format: 0 -> no rendered key at all (D9)",
-                );
-            }
-            other => panic!("expected Ok_With(Json(..)), got {other:?}"),
-        }
-    });
-}
-
-/// Wire-level GET_SCREEN with `cells: true` must drive the production read
-/// loop (`handle_client`) all the way to a `ScreenState` whose `cells`
-/// field is `Some(..)` rather than `None` (`phux-8yl`). This proves the
-/// flag threads from the decoded `Command::GetScreen` through dispatch ->
-/// `ScreenRequest` -> the grid walk; the per-cell *content* (semantic
-/// marks, styles) is exercised by the grid.rs unit tests against a
-/// Terminal seeded with `vt_write`, where the grid is deterministic.
-#[test]
-fn get_screen_with_cells_requests_cell_projection() {
-    run_local(async {
-        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
-
-        send_frame(&mut stream, &attach_by_name("work")).await;
-        let pane_id = recv_attached(&mut stream).await.resources[0].id.clone();
-
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 21,
-                command: Command::GetScreen {
-                    terminal_id: pane_id.clone(),
-                    request_scrollback: None,
-                    cells: true,
-                    format: 0,
-                },
-            },
-        )
-        .await;
-
-        let result = await_command_result(&mut stream, 21).await;
-        match result {
-            CommandResult::OkWith(CommandValue::Json(json)) => {
-                let screen: phux_core::screen::ScreenState = serde_json::from_str(&json)
-                    .expect("GET_SCREEN reply must be valid ScreenState");
-                assert!(
-                    screen.cells.is_some(),
-                    "cells: true must populate Some(..) through dispatch (phux-8yl)",
-                );
-            }
-            other => panic!("expected Ok_With(Json(..)), got {other:?}"),
-        }
-    });
-}
-
-/// Send a command naming a wire id the server never allocated, assert the
-/// reply is `TerminalNotFound`, and hand back the error message.
-///
-/// The three tests below differ only in which command carries the bogus id.
-/// Each stays its own `#[test]` so a failure names the command that regressed,
-/// and the message comes back so a caller can assert more than the code.
-async fn unknown_terminal_error(request_id: u32, command: Command) -> String {
-    let (_server, mut stream) = spawn_server_connected(Some("work")).await;
-
-    send_frame(
-        &mut stream,
-        &FrameKind::Command {
-            request_id,
-            command,
-        },
-    )
-    .await;
-
-    match await_command_result(&mut stream, request_id).await {
-        CommandResult::Error { code, message } => {
-            assert_eq!(code, ErrorCode::TerminalNotFound);
-            message
-        }
-        other => panic!("expected Error(TerminalNotFound), got {other:?}"),
-    }
-}
-
-#[test]
-fn get_screen_unknown_id_returns_terminal_not_found() {
-    run_local(async {
-        unknown_terminal_error(
-            8,
-            Command::GetScreen {
-                terminal_id: ResourceId::local(99_999),
-                request_scrollback: None,
-                cells: false,
-                format: 0,
-            },
-        )
-        .await;
-    });
-}
-
-/// `GET_SCREEN` with a `format` byte this build does not define must be
-/// refused with `INVALID_COMMAND`, never guessed at or silently treated as
-/// `0` (D9).
-#[test]
-fn get_screen_unknown_format_returns_invalid_command() {
-    run_local(async {
-        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
-
-        send_frame(&mut stream, &attach_by_name("work")).await;
-        let pane_id = recv_attached(&mut stream).await.resources[0].id.clone();
-
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 22,
-                command: Command::GetScreen {
-                    terminal_id: pane_id,
-                    request_scrollback: None,
-                    cells: false,
-                    format: 3,
-                },
-            },
-        )
-        .await;
-
-        match await_command_result(&mut stream, 22).await {
-            CommandResult::Error { code, .. } => {
-                assert_eq!(code, ErrorCode::InvalidCommand);
-            }
-            other => panic!("expected Error(InvalidCommand), got {other:?}"),
-        }
-    });
-}
-
-/// `GET_SCREEN { format: Html }` on a pane with styled content must return
-/// a `ScreenState.rendered` carrying HTML markup for that styling — the
-/// server's own libghostty-vt Formatter, never a reimplementation
-/// (CONTRIBUTING).
-#[test]
-fn get_screen_format_html_returns_markup_for_styled_cells() {
+fn get_screen_formats_render_html_and_replayable_vt_bounded_by_scrollback() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
-        let mut cmd = CommandBuilder::new("/bin/sh");
-        cmd.args(["-c", "printf '\\033[1;31mHELLO\\033[0m'; sleep 5"]);
-        let (_shutdown_tx, _server) =
-            phux_server_testkit::spawn_server_with_seed_cmd(socket_path.clone(), "work", cmd);
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        send_frame(&mut stream, &attach_by_name("work")).await;
-        let pane_id = recv_attached(&mut stream).await.resources[0].id.clone();
-        phux_server_testkit::wait_for_server_screen_text(
-            &mut stream,
-            &pane_id,
-            "HELLO",
-            WIRE_RECV_TIMEOUT,
-        )
-        .await;
-
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 23,
-                command: Command::GetScreen {
-                    terminal_id: pane_id,
-                    request_scrollback: None,
-                    cells: false,
-                    format: 1,
-                },
-            },
-        )
-        .await;
-
-        match await_command_result(&mut stream, 23).await {
-            CommandResult::OkWith(CommandValue::Json(json)) => {
-                let screen: phux_core::screen::ScreenState = serde_json::from_str(&json)
-                    .expect("GET_SCREEN reply must be valid ScreenState");
-                let rendered = screen
-                    .rendered
-                    .expect("format: html must populate ScreenState.rendered");
-                assert_eq!(rendered.format, "html");
-                assert!(
-                    rendered.data.contains("HELLO"),
-                    "html rendering must carry the pane's text, got: {}",
-                    rendered.data
-                );
-                assert!(
-                    rendered.data.to_ascii_lowercase().contains("style")
-                        || rendered.data.contains("color"),
-                    "html rendering of bold-red text must carry inline styling, got: {}",
-                    rendered.data
-                );
-            }
-            other => panic!("expected Ok_With(Json(..)), got {other:?}"),
-        }
-    });
-}
-
-/// `GET_SCREEN { format: Vt }` must return VT bytes (base64-encoded) that,
-/// replayed into a fresh `libghostty_vt::Terminal` of the same dimensions,
-/// reproduce the same grid text — proof the server's own Formatter is
-/// producing a faithful re-playable capture, not a lossy summary.
-#[test]
-fn get_screen_format_vt_roundtrips_into_a_fresh_engine_with_the_same_grid() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        // Styled, not plain: a byte-faithful replay must reproduce the
-        // SGR state too, not just the codepoints (review item 5).
+        // 40 lines push the first into scrollback; the sentinel is not a
+        // substring of any later line.
         let mut cmd = CommandBuilder::new("/bin/sh");
         cmd.args([
             "-c",
-            "printf '\\033[1;31mroundtrip-vt-check\\033[0m'; sleep 5",
+            "echo SCROLLBACK-FIRST-LINE; \
+             i=2; while [ $i -le 40 ]; do echo \"scrollback-line-$i\"; i=$((i+1)); done; \
+             printf '\\033[1;31mroundtrip-vt-check\\033[0m'; sleep 5",
         ]);
-        let (_shutdown_tx, _server) =
-            phux_server_testkit::spawn_server_with_seed_cmd(socket_path.clone(), "work", cmd);
+        let (_shutdown, _server) = spawn_server_with_seed_cmd(socket_path.clone(), "work", cmd);
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        send_frame(&mut stream, &attach_by_name("work")).await;
-        let snap = recv_attached(&mut stream).await;
-        let (pane_id, cols, rows) = (
-            snap.resources[0].id.clone(),
-            snap.resources[0].cols,
-            snap.resources[0].rows,
-        );
-        phux_server_testkit::wait_for_server_screen_text(
+        let pane = attach(&mut stream, "work").await.resources[0].clone();
+        wait_for_server_screen_text(
             &mut stream,
-            &pane_id,
+            &pane.id,
             "roundtrip-vt-check",
             WIRE_RECV_TIMEOUT,
         )
         .await;
 
-        // `cells: true` alongside `format: 2` still populates the sparse
-        // per-cell projection (only `lines`/`scrollback`/`soft_wrap` are
-        // omitted for a non-zero format, review item 2(c)) — the
-        // structured "source" style to compare the replay against.
-        send_frame(
+        let html = screen(&mut stream, 23, get_screen(pane.id.clone(), None, false, 1)).await;
+        let html = html.rendered.expect("format html populates rendered");
+        assert_eq!(html.format, "html");
+        assert!(html.data.contains("roundtrip-vt-check"), "{}", html.data);
+        assert!(
+            html.data.to_ascii_lowercase().contains("style") || html.data.contains("color"),
+            "bold red text carries inline styling: {}",
+            html.data
+        );
+        assert!(
+            !html.data.contains("SCROLLBACK-FIRST-LINE"),
+            "no scrollback requested"
+        );
+        let with_history = screen(
             &mut stream,
-            &FrameKind::Command {
-                request_id: 24,
-                command: Command::GetScreen {
-                    terminal_id: pane_id.clone(),
-                    request_scrollback: None,
-                    cells: true,
-                    format: 2,
-                },
-            },
+            26,
+            get_screen(pane.id.clone(), Some(0), false, 1),
         )
         .await;
+        assert!(
+            with_history
+                .rendered
+                .expect("html")
+                .data
+                .contains("SCROLLBACK-FIRST-LINE"),
+            "Some(0) reaches the oldest retained row"
+        );
 
-        let (screen, rendered) = match await_command_result(&mut stream, 24).await {
-            CommandResult::OkWith(CommandValue::Json(json)) => {
-                let screen: phux_core::screen::ScreenState = serde_json::from_str(&json)
-                    .expect("GET_SCREEN reply must be valid ScreenState");
-                let rendered = screen
-                    .rendered
-                    .clone()
-                    .expect("format: vt must populate ScreenState.rendered");
-                (screen, rendered)
-            }
-            other => panic!("expected Ok_With(Json(..)), got {other:?}"),
-        };
+        let vt = screen(&mut stream, 24, get_screen(pane.id.clone(), None, true, 2)).await;
+        let rendered = vt.rendered.clone().expect("format vt populates rendered");
         assert_eq!(rendered.format, "vt");
         assert!(
-            screen.lines.is_empty() && screen.scrollback.is_empty(),
-            "a non-zero format must omit the duplicate text projection \
-             (review item 2(c)), got lines={:?} scrollback={:?}",
-            screen.lines,
-            screen.scrollback,
+            vt.lines.is_empty() && vt.scrollback.is_empty(),
+            "no duplicate text projection"
         );
-        let source_cell = screen
+        let styled = vt
             .cells
             .as_ref()
             .and_then(|cells| cells.iter().find(|c| c.style.bold))
-            .expect("the styled marker must produce at least one bold source cell");
-
-        let vt_bytes = base64::engine::general_purpose::STANDARD
+            .expect("a bold source cell");
+        let bytes = base64::engine::general_purpose::STANDARD
             .decode(&rendered.data)
-            .expect("vt rendering data must be valid base64");
-
-        let mut replay = libghostty_vt::Terminal::new(cols, rows).expect("fresh terminal");
-        replay.vt_write(&vt_bytes);
-        let text = replay_plain_text(&replay);
-        assert!(
-            text.contains("roundtrip-vt-check"),
-            "VT replay into a fresh engine must reproduce the captured text, got: {text:?}",
-        );
-
-        // Attribute comparison, not just text: the same cell coordinate
-        // the source reported as styled must still be styled after the
-        // VT bytes replay into a completely fresh engine.
+            .unwrap();
+        let mut replay = libghostty_vt::Terminal::new(pane.cols, pane.rows).unwrap();
+        replay.vt_write(&bytes);
+        let mut formatter = libghostty_vt::fmt::Formatter::new(
+            &replay,
+            libghostty_vt::fmt::FormatterOptions::new()
+                .with_format(libghostty_vt::fmt::Format::Plain)
+                .with_trim(true),
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&formatter.format_alloc(None).unwrap()).into_owned();
+        assert!(text.contains("roundtrip-vt-check"), "{text:?}");
         let replay_styled = replay
             .grid_ref(Point::Viewport(PointCoordinate {
-                x: source_cell.col,
-                y: u32::from(source_cell.row),
+                x: styled.col,
+                y: u32::from(styled.row),
             }))
             .and_then(|grid_ref| grid_ref.cell())
             .and_then(libghostty_vt::screen::Cell::has_styling)
             .unwrap_or(false);
         assert!(
             replay_styled,
-            "the source's styled cell at ({}, {}) must still carry styling after VT replay",
-            source_cell.col, source_cell.row,
+            "cell ({}, {}) keeps its styling",
+            styled.col, styled.row
         );
     });
 }
 
-/// Format `terminal`'s whole screen as plain text via the same
-/// libghostty-vt Formatter the production code uses (never a hand-rolled
-/// walker here either) — the comparison surface for a VT-replay test.
-fn replay_plain_text(terminal: &libghostty_vt::Terminal<'_, '_>) -> String {
-    let mut formatter = libghostty_vt::fmt::Formatter::new(
-        terminal,
-        libghostty_vt::fmt::FormatterOptions::new()
-            .with_format(libghostty_vt::fmt::Format::Plain)
-            .with_trim(true),
-    )
-    .expect("formatter init for replay verification");
-    let bytes = formatter
-        .format_alloc(None)
-        .expect("format replay terminal");
-    String::from_utf8_lossy(&bytes).into_owned()
-}
-
-/// `GET_SCREEN { format: Vt, request_scrollback: Some(n) }` must extend the
-/// rendered capture's selection into history exactly as far as the request
-/// asks — the same tri-state convention `screen_state_with_scrollback`
-/// already applies to `lines`/`scrollback` (D9).
+/// `KILL_RESOURCE` and `KILL_RESOURCES` ack `Ok` and close every live pane
+/// named; unknown ids in a `KILL_RESOURCES` are skipped (idempotent).
 #[test]
-fn get_screen_format_respects_request_scrollback() {
+fn kill_resource_and_kill_resources_ack_and_close() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
-        // 80x24 is the test viewport (`attach_by_name`); 40 echoed lines
-        // plus the marker push line 1 well into scrollback so "no
-        // scrollback requested" and "Some(0)" are actually distinguishable.
-        // The first line gets its own unambiguous sentinel rather than
-        // "scrollback-line-1": that string is also a *substring* of
-        // "scrollback-line-10".."-19", which would make a later-line-only
-        // capture pass the "reached line 1" assertion by accident.
-        let mut cmd = CommandBuilder::new("/bin/sh");
-        cmd.args([
-            "-c",
-            "echo SCROLLBACK-FIRST-LINE; \
-             i=2; while [ $i -le 40 ]; do echo \"scrollback-line-$i\"; i=$((i+1)); done; \
-             printf 'scrollback-marker'; sleep 5",
-        ]);
-        let (_shutdown_tx, _server) =
-            phux_server_testkit::spawn_server_with_seed_cmd(socket_path.clone(), "work", cmd);
+        let (_shutdown, _server) = spawn_server_seed_pty_no_cmd(socket_path.clone(), Some("work"));
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        send_frame(&mut stream, &attach_by_name("work")).await;
-        let pane_id = recv_attached(&mut stream).await.resources[0].id.clone();
-        phux_server_testkit::wait_for_server_screen_text(
-            &mut stream,
-            &pane_id,
-            "scrollback-marker",
-            WIRE_RECV_TIMEOUT,
-        )
-        .await;
-
-        // No scrollback requested: the rendered capture must not reach back
-        // into history far enough to see the first echoed line.
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 25,
-                command: Command::GetScreen {
-                    terminal_id: pane_id.clone(),
-                    request_scrollback: None,
-                    cells: false,
-                    format: 1,
-                },
-            },
-        )
-        .await;
-        let viewport_only = match await_command_result(&mut stream, 25).await {
-            CommandResult::OkWith(CommandValue::Json(json)) => {
-                let screen: phux_core::screen::ScreenState = serde_json::from_str(&json).unwrap();
-                screen.rendered.expect("format: html").data
-            }
-            other => panic!("expected Ok_With(Json(..)), got {other:?}"),
+        let pane_a = attach(&mut stream, "work").await.resources[0].id.clone();
+        let SpawnResult::Ok(pane_b) = spawn_resource(&mut stream, 41, Spawn::default()).await
+        else {
+            panic!("spawn b");
+        };
+        let SpawnResult::Ok(pane_c) = spawn_resource(&mut stream, 42, Spawn::default()).await
+        else {
+            panic!("spawn c");
         };
 
-        // `Some(0)`: all retained history, so the rendered capture must
-        // reach back to the first echoed line.
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 26,
-                command: Command::GetScreen {
-                    terminal_id: pane_id,
-                    request_scrollback: Some(0),
-                    cells: false,
-                    format: 1,
-                },
-            },
-        )
-        .await;
-        let with_history = match await_command_result(&mut stream, 26).await {
-            CommandResult::OkWith(CommandValue::Json(json)) => {
-                let screen: phux_core::screen::ScreenState = serde_json::from_str(&json).unwrap();
-                screen.rendered.expect("format: html").data
-            }
-            other => panic!("expected Ok_With(Json(..)), got {other:?}"),
+        let kill_one = Command::KillResource {
+            terminal_id: pane_b.clone(),
+            operation_id: None,
         };
-
-        assert!(
-            with_history.contains("SCROLLBACK-FIRST-LINE"),
-            "Some(0) must reach the oldest retained history row, got: {with_history}",
-        );
-        assert!(
-            !viewport_only.contains("SCROLLBACK-FIRST-LINE"),
-            "no scrollback requested must not silently include history, got: {viewport_only}",
-        );
-    });
-}
-
-#[test]
-fn kill_terminal_unknown_id_returns_terminal_not_found() {
-    run_local(async {
-        unknown_terminal_error(
-            7,
-            Command::KillResource {
-                // A wire id the server never allocated.
-                terminal_id: ResourceId::local(99_999),
-                operation_id: None,
-            },
-        )
-        .await;
-    });
-}
-
-#[test]
-fn kill_terminal_live_pane_acks_and_closes() {
-    run_local(async {
-        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
-
-        // Attach to learn a real wire terminal id from the snapshot.
-        send_frame(&mut stream, &attach_by_name("work")).await;
-        let pane_id = recv_attached(&mut stream).await.resources[0].id.clone();
-
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 3,
-                command: Command::KillResource {
-                    terminal_id: pane_id.clone(),
-                    operation_id: None,
+        let kill_many = Command::KillResources {
+            ids: vec![pane_a.clone(), pane_c.clone(), ResourceId::local(999_999)],
+            operation_id: None,
+        };
+        for (request_id, kill, panes) in [
+            (43, kill_one, vec![pane_b]),
+            (44, kill_many, vec![pane_a, pane_c]),
+        ] {
+            send_frame(
+                &mut stream,
+                &FrameKind::Command {
+                    request_id,
+                    command: kill,
                 },
-            },
-        )
-        .await;
-
-        // The Ok ack and an async RESOURCE_CLOSED may arrive in either
-        // order (SPEC §5). Collect both, tolerating the server's self-exit
-        // close once its only session is reaped.
-        let mut saw_ok = false;
-        let mut saw_closed = false;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        while !(saw_ok && saw_closed) && tokio::time::Instant::now() < deadline {
-            let remaining = deadline - tokio::time::Instant::now();
-            let Ok(maybe) = timeout(remaining, try_recv_typed(&mut stream)).await else {
-                break;
-            };
-            let Some((type_byte, frame)) = maybe else {
-                break; // server self-exited and closed the connection
-            };
-            match (type_byte, frame) {
-                (
-                    _,
+            )
+            .await;
+            // The ack and each RESOURCE_CLOSED arrive in any order; the
+            // last kill self-exits the server and closes the connection.
+            let (mut acked, mut closed) = (false, Vec::new());
+            while !(acked && closed.len() == panes.len()) {
+                let Ok(Some((_, frame))) =
+                    timeout(Duration::from_secs(3), try_recv_typed(&mut stream)).await
+                else {
+                    break;
+                };
+                match frame {
                     FrameKind::CommandResult {
-                        request_id: 3,
-                        result: CommandResult::Ok,
-                    },
-                ) => {
-                    saw_ok = true;
-                }
-                (TYPE_RESOURCE_CLOSED, FrameKind::ResourceClosed { terminal_id, .. })
-                    if terminal_id == pane_id =>
-                {
-                    saw_closed = true;
-                }
-                _ => {}
-            }
-        }
-        assert!(saw_ok, "KILL_RESOURCE must ack with COMMAND_RESULT::Ok");
-        assert!(
-            saw_closed,
-            "KILL_RESOURCE must drive RESOURCE_CLOSED for the pane"
-        );
-    });
-}
-
-/// **KILL_RESOURCES** atomically tears down a multi-terminal group in ONE
-/// round-trip — the irreducible op the v0.3.0 "Option B" re-tier (ADR-0019 /
-/// ADR-0027) put in place of the dissolved KILL_COLLECTION verb. The test
-/// attaches to "work", adds a second pane via SPAWN_RESOURCE so the session
-/// owns two Terminals, then KILL_RESOURCES both ids and asserts the `Ok` ack
-/// plus a RESOURCE_CLOSED for *each* pane. The whole path rides
-/// `handle_client` (the production read loop).
-#[test]
-fn kill_terminals_tears_down_a_multi_terminal_group_atomically() {
-    run_local(async {
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (_shutdown_tx, _server) =
-            spawn_server_seed_pty_no_cmd(socket_path.clone(), Some("work"));
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        // Attach to learn the seed pane id and to satisfy SPAWN_RESOURCE's
-        // "spawning client must be attached" precondition.
-        send_frame(&mut stream, &attach_by_name("work")).await;
-        let pane_a = recv_attached(&mut stream).await.resources[0].id.clone();
-
-        // Add a second pane to the same session.
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 40,
-                command: Command::GetState {
-                    scope: StateScope::Server,
-                },
-            },
-        )
-        .await;
-        let _ = await_command_result(&mut stream, 40).await;
-        send_frame(
-            &mut stream,
-            &FrameKind::SpawnResource {
-                request_id: 41,
-                group: GroupId::new(1),
-                command: None,
-                cwd: None,
-                env: None,
-                term: None,
-                satellite: None,
-                owner_terminal: None,
-                agent_session: None,
-                initial_size: None,
-                resource: None,
-            },
-        )
-        .await;
-        let pane_b = recv_until(&mut stream, |_, frame| match frame {
-            FrameKind::ResourceSpawned {
-                request_id: 41,
-                result,
-            } => match result {
-                phux_protocol::wire::frame::SpawnResult::Ok(id) => Some(id),
-                other => panic!("SPAWN_RESOURCE failed: {other:?}"),
-            },
-            _ => None,
-        })
-        .await;
-        assert_ne!(pane_a, pane_b, "the two panes must be distinct");
-
-        // Atomic teardown of BOTH panes in one round-trip.
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 42,
-                command: Command::KillResources {
-                    ids: vec![pane_a.clone(), pane_b.clone()],
-                    operation_id: None,
-                },
-            },
-        )
-        .await;
-
-        // Expect the Ok ack plus a RESOURCE_CLOSED for each pane (any order;
-        // tolerate the server's self-exit close once its only session reaps).
-        let mut saw_ok = false;
-        let mut closed_a = false;
-        let mut closed_b = false;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-        while !(saw_ok && closed_a && closed_b) && tokio::time::Instant::now() < deadline {
-            let remaining = deadline - tokio::time::Instant::now();
-            let Ok(maybe) = timeout(remaining, try_recv_typed(&mut stream)).await else {
-                break;
-            };
-            let Some((type_byte, frame)) = maybe else {
-                break; // server self-exited and closed the connection
-            };
-            match (type_byte, frame) {
-                (
-                    _,
-                    FrameKind::CommandResult {
-                        request_id: 42,
-                        result: CommandResult::Ok,
-                    },
-                ) => saw_ok = true,
-                (TYPE_RESOURCE_CLOSED, FrameKind::ResourceClosed { terminal_id, .. }) => {
-                    if terminal_id == pane_a {
-                        closed_a = true;
-                    } else if terminal_id == pane_b {
-                        closed_b = true;
+                        request_id: got,
+                        result,
+                    } if got == request_id => {
+                        assert_eq!(result, CommandResult::Ok);
+                        acked = true;
                     }
+                    FrameKind::ResourceClosed { terminal_id, .. }
+                        if panes.contains(&terminal_id) =>
+                    {
+                        closed.push(terminal_id);
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
+            assert!(acked, "kill {request_id} acks Ok");
+            assert_eq!(
+                closed.len(),
+                panes.len(),
+                "kill {request_id} closes {panes:?}: {closed:?}"
+            );
         }
-        assert!(saw_ok, "KILL_RESOURCES must ack with COMMAND_RESULT::Ok");
-        assert!(closed_a, "KILL_RESOURCES must close the first pane");
-        assert!(closed_b, "KILL_RESOURCES must close the second pane");
     });
 }
 
-/// **KILL_RESOURCES with an unknown / already-dead id is a no-op**, not an
-/// error: the op is idempotent so a caller racing a natural exit still
-/// succeeds. A list mixing one live pane and one bogus id acks `Ok` and
-/// closes only the live pane.
+/// `SESSION_CREATE_KEY` seeds a session (listed by `GET_STATE`), publishes its
+/// seed pane, installs resume provenance, honors a valid wire `cwd`, and falls
+/// back (rather than failing) for a missing or unenterable one.
 #[test]
-fn kill_terminals_skips_unknown_ids() {
+fn session_create_via_metadata_seeds_session_and_validates_cwd() {
+    use std::os::unix::fs::PermissionsExt;
     run_local(async {
-        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
-
-        send_frame(&mut stream, &attach_by_name("work")).await;
-        let pane = recv_attached(&mut stream).await.resources[0].id.clone();
-
-        // One live id + one id that does not exist.
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 45,
-                command: Command::KillResources {
-                    ids: vec![pane.clone(), ResourceId::local(999_999)],
-                    operation_id: None,
-                },
-            },
-        )
-        .await;
-
-        let mut saw_ok = false;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        while !saw_ok && tokio::time::Instant::now() < deadline {
-            let remaining = deadline - tokio::time::Instant::now();
-            let Ok(maybe) = timeout(remaining, try_recv_typed(&mut stream)).await else {
-                break;
-            };
-            let Some((_t, frame)) = maybe else { break };
-            if matches!(
-                frame,
-                FrameKind::CommandResult {
-                    request_id: 45,
-                    result: CommandResult::Ok,
-                }
-            ) {
-                saw_ok = true;
-            }
-        }
-        assert!(
-            saw_ok,
-            "KILL_RESOURCES with an unknown id must still ack Ok (idempotent)"
-        );
-    });
-}
-
-/// Session create-without-attach via the conventional `SESSION_CREATE_KEY`
-/// L3 metadata write (the v0.3.0 replacement for CREATE_SESSION). The server
-/// seeds the session + pane and publishes the seed-pane id under
-/// `SESSION_CREATE_RESULT_KEY`; a fresh GET_STATE lists the new session and a
-/// GET_METADATA on the result key returns the id.
-#[test]
-fn session_create_via_metadata_seeds_session_and_publishes_id() {
-    run_local(async {
-        use phux_protocol::wire::frame::{
-            RESOURCE_AGENT_SESSION_KEY, SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY,
-        };
-        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let (shutdown, server) = spawn_server_seed_pty_no_cmd(socket_path.clone(), None);
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
 
         let agent_session =
             br#"{"plugin_id":"com.phux.agents","integration_id":"codex","native_id":"session-42"}"#
                 .to_vec();
-        let value = serde_json::to_vec(&serde_json::json!({
-            "name": "scratch",
-            "command": serde_json::Value::Null,
-            "cwd": serde_json::Value::Null,
-            "agent_session": agent_session.clone(),
-        }))
-        .unwrap();
-        send_frame(
+        let result = create_session(
             &mut stream,
-            &FrameKind::SetMetadata {
-                request_id: 1,
-                scope: Scope::Global,
-                key: SESSION_CREATE_KEY.to_owned(),
-                value,
-            },
+            1,
+            serde_json::json!({ "name": "scratch", "command": null, "cwd": null, "agent_session": agent_session }),
         )
         .await;
-
-        // GET_STATE must list the new session.
-        send_frame(
+        assert_eq!(result["name"], "scratch");
+        let scratch = created_terminal(&result);
+        let provenance = get_metadata(
             &mut stream,
-            &FrameKind::Command {
-                request_id: 2,
-                command: Command::GetState {
-                    scope: StateScope::Server,
-                },
-            },
-        )
-        .await;
-        match await_command_result(&mut stream, 2).await {
-            CommandResult::OkWith(CommandValue::State(snapshot)) => {
-                let names: Vec<&str> = snapshot.sessions.iter().map(|s| s.name.as_str()).collect();
-                assert!(
-                    names.contains(&"scratch"),
-                    "session-create must register the session; got {names:?}",
-                );
-            }
-            other => panic!("expected Ok_With(State(..)), got {other:?}"),
-        }
-
-        // The result key carries {name, terminal_id} for the created session.
-        let bytes = read_metadata_value(&mut stream, 3, Scope::Global, SESSION_CREATE_RESULT_KEY)
-            .await
-            .expect("result key must be present after a successful create");
-        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json.get("name").and_then(|v| v.as_str()), Some("scratch"));
-        let terminal_id = json
-            .get("terminal_id")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|id| u32::try_from(id).ok())
-            .map(phux_protocol::ids::ResourceId::local)
-            .expect("result must carry a local terminal_id");
-
-        let restored_record = read_metadata_value(
-            &mut stream,
-            4,
-            Scope::Resource(terminal_id),
+            3,
+            Scope::Resource(scratch),
             RESOURCE_AGENT_SESSION_KEY,
         )
         .await;
         assert_eq!(
-            restored_record,
+            provenance,
             Some(agent_session),
-            "session creation must install resume provenance with its seed pane",
+            "resume provenance installed with the seed pane"
         );
+
+        let valid = TempDir::new().unwrap();
+        let valid_path = valid.path().canonicalize().unwrap();
+        let locked = tmp.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let bogus = tmp.path().join("does-not-exist");
+        let mut created = Vec::new();
+        for (n, (name, cwd)) in [
+            ("rooted", &valid_path),
+            ("fallback", &bogus),
+            ("locked-cwd", &locked),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let request_id = 10 + 2 * u32::try_from(n).unwrap();
+            let request = serde_json::json!({ "name": name, "command": null, "cwd": cwd.display().to_string() });
+            let result = create_session(&mut stream, request_id, request).await;
+            assert_eq!(result["name"], name, "a bad cwd must not fail the create");
+            created.push(created_terminal(&result));
+        }
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).ok();
+
+        let state = snapshot(&mut stream, 20).await;
+        for name in ["scratch", "rooted", "fallback", "locked-cwd"] {
+            assert!(session_names(&state).contains(&name), "{name}");
+        }
+        assert_eq!(
+            pane_cwd(&state, &created[0]),
+            valid_path,
+            "a valid wire cwd is honored"
+        );
+        for id in &created[1..] {
+            let cwd = pane_cwd(&state, id);
+            assert!(
+                cwd.is_dir() && cwd != bogus && cwd != locked,
+                "fell back to a real dir: {}",
+                cwd.display()
+            );
+        }
+
+        drop(stream);
+        join_after_shutdown(shutdown, server).await;
     });
 }
 
+/// Correlated create results are one-shot and connection-private: not listed,
+/// not readable or deletable by another connection, consumed on read.
 #[test]
 fn correlated_session_create_results_cannot_reuse_another_creators_success() {
     run_local(async {
-        use phux_protocol::wire::frame::{SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY_PREFIX};
         let (server, mut winner) = spawn_server_connected(Some("work")).await;
         let mut loser = server.connect().await;
         let winner_token = "11111111-1111-4111-8111-111111111111";
         let loser_token = "22222222-2222-4222-8222-222222222222";
+        let result_key = |token: &str| format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{token}");
 
         for (stream, request_id, token, command) in [
             (&mut winner, 10, winner_token, "winner"),
             (&mut loser, 20, loser_token, "loser"),
         ] {
-            let value = serde_json::to_vec(&serde_json::json!({
+            let value = serde_json::json!({
                 "name": "contended",
                 "command": ["sh", "-c", format!("printf {command}")],
-                "cwd": serde_json::Value::Null,
+                "cwd": null,
                 "request_token": token,
-            }))
-            .unwrap();
-            send_frame(
+            });
+            set_global(
                 stream,
-                &FrameKind::SetMetadata {
-                    request_id,
-                    scope: Scope::Global,
-                    key: SESSION_CREATE_KEY.to_owned(),
-                    value,
-                },
+                request_id,
+                SESSION_CREATE_KEY,
+                serde_json::to_vec(&value).unwrap(),
             )
             .await;
-            // A correlated command reply is an ordering barrier for the
-            // preceding fire-and-forget metadata write on this connection.
-            let _ = get_server_snapshot(stream, request_id + 1).await;
+            // A correlated reply orders the fire-and-forget write before it.
+            let _ = snapshot(stream, request_id + 1).await;
         }
 
-        let listed = list_metadata_keys(&mut winner, 29, Scope::Global).await;
+        send_frame(
+            &mut winner,
+            &FrameKind::ListMetadata {
+                request_id: 29,
+                scope: Scope::Global,
+            },
+        )
+        .await;
+        let listed = recv_until(&mut winner, |_, frame| match frame {
+            FrameKind::MetadataKeys {
+                request_id: 29,
+                keys,
+            } => Some(keys),
+            _ => None,
+        })
+        .await;
         assert!(
             listed
                 .iter()
                 .all(|key| !key.starts_with(SESSION_CREATE_RESULT_KEY_PREFIX)),
-            "one-shot create results must not disclose their nonces through LIST_METADATA",
+            "{listed:?}"
         );
-
         assert!(
-            read_metadata_value(
-                &mut loser,
-                29,
-                Scope::Global,
-                &format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{winner_token}"),
-            )
-            .await
-            .is_none(),
-            "a different connection must not read or consume a known nonce result",
+            get_metadata(&mut loser, 29, Scope::Global, &result_key(winner_token))
+                .await
+                .is_none()
         );
-
         send_frame(
             &mut loser,
             &FrameKind::DeleteMetadata {
                 request_id: 30,
                 scope: Scope::Global,
-                key: format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{winner_token}"),
+                key: result_key(winner_token),
             },
         )
         .await;
-        let _ = get_server_snapshot(&mut loser, 31).await;
+        let _ = snapshot(&mut loser, 31).await;
 
-        let won_bytes = read_metadata_value(
-            &mut winner,
-            30,
-            Scope::Global,
-            &format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{winner_token}"),
-        )
-        .await
-        .expect("winner owns its correlated result");
-        let won: serde_json::Value = serde_json::from_slice(&won_bytes).unwrap();
-        assert_eq!(
-            won.get("request_token").and_then(serde_json::Value::as_str),
-            Some(winner_token)
+        let won = get_metadata(&mut winner, 30, Scope::Global, &result_key(winner_token))
+            .await
+            .expect("winner owns its correlated result");
+        let won: serde_json::Value = serde_json::from_slice(&won).unwrap();
+        assert_eq!(won["request_token"], winner_token);
+        assert!(
+            get_metadata(&mut loser, 31, Scope::Global, &result_key(loser_token))
+                .await
+                .is_none()
         );
         assert!(
-            read_metadata_value(
-                &mut loser,
-                31,
-                Scope::Global,
-                &format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{loser_token}"),
-            )
-            .await
-            .is_none(),
-        );
-        assert!(
-            read_metadata_value(
-                &mut winner,
-                32,
-                Scope::Global,
-                &format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{winner_token}"),
-            )
-            .await
-            .is_none(),
+            get_metadata(&mut winner, 32, Scope::Global, &result_key(winner_token))
+                .await
+                .is_none(),
+            "consumed on read"
         );
     });
 }
 
-/// Read the `terminal_id` (the seed pane's local wire id) that a
-/// `SESSION_CREATE_KEY` write publishes under `SESSION_CREATE_RESULT_KEY`.
-/// `None` when the key is absent — the shape a *failed* create leaves,
-/// since the server only publishes the result on success.
-async fn read_session_create_terminal_id(stream: &mut UnixStream, request_id: u32) -> Option<u64> {
-    use phux_protocol::wire::frame::{SESSION_CREATE_RESULT_KEY, Scope};
-    send_frame(
-        stream,
-        &FrameKind::GetMetadata {
-            request_id,
-            scope: Scope::Global,
-            key: SESSION_CREATE_RESULT_KEY.to_owned(),
-        },
-    )
-    .await;
-    let value = recv_until(stream, |_, frame| match frame {
-        FrameKind::MetadataValue {
-            request_id: got,
-            value,
-        } if got == request_id => Some(value),
-        _ => None,
-    })
-    .await;
-    let bytes = value?;
-    let json: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    json.get("terminal_id").and_then(serde_json::Value::as_u64)
-}
-
-/// Fetch the whole-server `GET_STATE` snapshot.
-async fn get_server_snapshot(
-    stream: &mut UnixStream,
-    request_id: u32,
-) -> phux_protocol::wire::info::SessionSnapshot {
-    send_frame(
-        stream,
-        &FrameKind::Command {
-            request_id,
-            command: Command::GetState {
-                scope: StateScope::Server,
-            },
-        },
-    )
-    .await;
-    match await_command_result(stream, request_id).await {
-        CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot,
-        other => panic!("expected Ok_With(State(..)), got {other:?}"),
-    }
-}
-
-/// A successful headless session create is a control client interaction: it
-/// arms last-session self-exit just like an attached TUI. Environment entries
-/// in the create request must reach the seed process unchanged.
+/// A headless create forwards its `env` to the seed process and arms
+/// last-session self-exit like an attached client.
 #[test]
 fn headless_session_create_forwards_env_and_arms_last_session_exit() {
     run_local(async {
-        use phux_protocol::wire::frame::{SESSION_CREATE_KEY, Scope};
-
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
-        let marker_path = tmp.path().join("seed-env");
-        let (_shutdown_tx, server) =
+        let marker = tmp.path().join("seed-env");
+        let (_shutdown, server) =
             spawn_server_seed_pty_no_cmd(socket_path.clone(), Some("bootstrap"));
         let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
 
-        let value = serde_json::to_vec(&serde_json::json!({
+        // Write-then-rename so the poll never sees a half-written file.
+        let request = serde_json::json!({
             "name": "managed",
             "command": [
-                "/bin/sh",
-                "-c",
-                // Write beside the marker and rename into place. `>` creates
-                // and truncates before `printf` writes a byte, so the poll
-                // below — which breaks as soon as the path is *readable* —
-                // could observe a legitimately empty file and assert `""`
-                // against `"forwarded"` (measured: 1 failure in 50 runs on a
-                // loaded box). A same-directory `mv` is atomic on POSIX, so
-                // the poll now sees either no file or the whole value, and
-                // the assertion stays a real assertion about env forwarding
-                // rather than a second, weaker "is it non-empty yet" poll.
-                "printf %s \"$GC_PHUX_TEST_VALUE\" > \"$1.partial\"; \
-                 mv \"$1.partial\" \"$1\"; sleep 60",
-                "sh",
-                marker_path,
+                "/bin/sh", "-c",
+                "printf %s \"$GC_PHUX_TEST_VALUE\" > \"$1.partial\"; mv \"$1.partial\" \"$1\"; sleep 60",
+                "sh", marker,
             ],
-            "cwd": serde_json::Value::Null,
-            "env": {
-                "GC_PHUX_TEST_VALUE": "forwarded",
-            },
-        }))
-        .unwrap();
-        send_frame(
-            &mut stream,
-            &FrameKind::SetMetadata {
-                request_id: 10,
-                scope: Scope::Global,
-                key: SESSION_CREATE_KEY.to_owned(),
-                value,
-            },
-        )
-        .await;
-        let _created = read_session_create_terminal_id(&mut stream, 11)
-            .await
-            .expect("managed seed pane");
-
-        let marker = timeout(Duration::from_secs(2), async {
+            "cwd": null,
+            "env": { "GC_PHUX_TEST_VALUE": "forwarded" },
+        });
+        let _ = create_session(&mut stream, 10, request).await;
+        let value = timeout(Duration::from_secs(2), async {
             loop {
-                if let Ok(value) = tokio::fs::read_to_string(&marker_path).await {
+                if let Ok(value) = tokio::fs::read_to_string(&marker).await {
                     break value;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .expect("seed process did not write environment marker");
-        assert_eq!(marker, "forwarded");
+        .expect("seed process wrote the env marker");
+        assert_eq!(value, "forwarded");
 
-        let snapshot = get_server_snapshot(&mut stream, 12).await;
-        assert_eq!(snapshot.sessions.len(), 2, "bootstrap + managed");
-        let ids = snapshot.resources.into_iter().map(|pane| pane.id).collect();
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 13,
-                command: Command::KillResources {
-                    ids,
-                    operation_id: None,
-                },
-            },
-        )
-        .await;
-        assert_eq!(
-            await_command_result(&mut stream, 13).await,
-            CommandResult::Ok
-        );
+        let state = snapshot(&mut stream, 12).await;
+        assert_eq!(state.sessions.len(), 2, "bootstrap + managed");
+        let kill = Command::KillResources {
+            ids: state.resources.into_iter().map(|pane| pane.id).collect(),
+            operation_id: None,
+        };
+        assert_eq!(command(&mut stream, 13, kill).await, CommandResult::Ok);
         drop(stream);
-
         timeout(Duration::from_secs(2), server)
             .await
-            .expect("headless-managed server stayed alive after its last session exited")
-            .expect("server task panicked")
-            .expect("server failed during self-exit");
+            .expect("the server self-exits after its last session")
+            .unwrap()
+            .unwrap();
     });
 }
 
-/// The `cwd` (canonicalized) of the snapshot pane whose local wire id is
-/// `local_id`, or `None` if the pane is absent or carries no cwd.
-fn pane_cwd_by_local_id(
-    snapshot: &phux_protocol::wire::info::SessionSnapshot,
-    local_id: u64,
-) -> Option<std::path::PathBuf> {
-    let target = u32::try_from(local_id).ok()?;
-    let pane = snapshot
-        .resources
-        .iter()
-        .find(|p| p.id.local_id() == Some(target))?;
-    let raw = std::path::PathBuf::from(pane.cwd.as_ref()?);
-    Some(raw.canonicalize().unwrap_or(raw))
-}
-
-/// phux-0v1l: the `SESSION_CREATE_KEY` create-without-attach path honors a
-/// valid wire `cwd`, seeding the new session's pane in that directory —
-/// uniform with the attach `CreateIfMissing` seed path.
+/// An applied `SESSION_NAME_KEY` rename updates `GET_STATE` and fans out
+/// `METADATA_CHANGED`; a refused (unknown session) or no-op rename sent first
+/// does not (ordering, not timing, proves the suppression).
 #[test]
-fn session_create_honors_valid_wire_cwd() {
+fn session_rename_applies_and_broadcasts_only_applied_renames() {
     run_local(async {
-        use phux_protocol::wire::frame::{SESSION_CREATE_KEY, Scope};
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        // PTY mode, no server-wide override command: the wire cwd takes effect.
-        let (shutdown_tx, server_handle) = spawn_server_seed_pty_no_cmd(socket_path.clone(), None);
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        let cwd_dir = TempDir::new().unwrap();
-        let cwd_path = cwd_dir.path().canonicalize().expect("canonicalize cwd");
-
-        let value = serde_json::to_vec(&serde_json::json!({
-            "name": "rooted",
-            "command": serde_json::Value::Null,
-            "cwd": cwd_path.display().to_string(),
-        }))
-        .unwrap();
-        send_frame(
-            &mut stream,
-            &FrameKind::SetMetadata {
-                request_id: 1,
-                scope: Scope::Global,
-                key: SESSION_CREATE_KEY.to_owned(),
-                value,
-            },
-        )
-        .await;
-
-        let terminal_id = read_session_create_terminal_id(&mut stream, 2)
-            .await
-            .expect("create must publish a terminal_id (a valid cwd must not fail the create)");
-        let snapshot = get_server_snapshot(&mut stream, 3).await;
-        let pane_cwd = pane_cwd_by_local_id(&snapshot, terminal_id)
-            .expect("the created pane must appear in the snapshot with a cwd");
-        assert_eq!(
-            pane_cwd, cwd_path,
-            "seed pane must start in the wire-supplied cwd",
-        );
-
-        drop(stream);
-        join_after_shutdown(shutdown_tx, server_handle).await;
-    });
-}
-
-/// phux-0v1l: a `SESSION_CREATE_KEY` write whose wire `cwd` does not name an
-/// existing directory must NOT fail the create. Previously the path was
-/// passed to `portable_pty` unvalidated, so a stale cwd failed the seed and
-/// the session was never created. The validate-and-fall-back path now drops
-/// the bad cwd and seeds the pane in the default directory instead.
-#[test]
-fn session_create_invalid_wire_cwd_falls_back_without_failing() {
-    run_local(async {
-        use phux_protocol::wire::frame::{SESSION_CREATE_KEY, Scope};
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (shutdown_tx, server_handle) = spawn_server_seed_pty_no_cmd(socket_path.clone(), None);
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        // A path guaranteed absent: inside a fresh tempdir, never created.
-        let bogus = tmp.path().join("does-not-exist");
-        assert!(!bogus.exists(), "fixture path must not exist");
-
-        let value = serde_json::to_vec(&serde_json::json!({
-            "name": "fallback",
-            "command": serde_json::Value::Null,
-            "cwd": bogus.display().to_string(),
-        }))
-        .unwrap();
-        send_frame(
-            &mut stream,
-            &FrameKind::SetMetadata {
-                request_id: 1,
-                scope: Scope::Global,
-                key: SESSION_CREATE_KEY.to_owned(),
-                value,
-            },
-        )
-        .await;
-
-        // The create must succeed despite the bad cwd: the result key is
-        // published only on success.
-        let terminal_id = read_session_create_terminal_id(&mut stream, 2)
-            .await
-            .expect("create must succeed and publish a terminal_id even with an invalid cwd");
-        let snapshot = get_server_snapshot(&mut stream, 3).await;
-        // The session is registered...
-        let names: Vec<&str> = snapshot.sessions.iter().map(|s| s.name.as_str()).collect();
-        assert!(
-            names.contains(&"fallback"),
-            "an invalid cwd must not prevent the session from being created; got {names:?}",
-        );
-        // ...and the bogus path was NOT honored; the pane fell back to a real
-        // directory.
-        let pane_cwd = pane_cwd_by_local_id(&snapshot, terminal_id)
-            .expect("the created pane must appear in the snapshot with a cwd");
-        assert_ne!(
-            pane_cwd,
-            bogus.canonicalize().unwrap_or_else(|_| bogus.clone()),
-            "the bogus cwd must not be honored",
-        );
-        assert!(
-            pane_cwd.is_dir(),
-            "fallback cwd must be a real directory, got {}",
-            pane_cwd.display(),
-        );
-
-        drop(stream);
-        join_after_shutdown(shutdown_tx, server_handle).await;
-    });
-}
-
-/// phux-0v1l: a wire `cwd` that is an existing directory but is NOT
-/// enterable (no search/execute permission) must fall back rather than fail
-/// the create. A plain `is_dir()` gate accepts such a directory, which then
-/// fails `portable_pty`'s spawn (contradicting the fallback contract); the
-/// enterability gate rejects it up front. Unix-only: the fixture uses a
-/// mode-000 directory (`is_dir()` true, `X_OK` denied for its non-root
-/// owner).
-#[cfg(unix)]
-#[test]
-fn session_create_unenterable_wire_cwd_falls_back_without_failing() {
-    use std::os::unix::fs::PermissionsExt;
-    run_local(async {
-        use phux_protocol::wire::frame::{SESSION_CREATE_KEY, Scope};
-        let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (shutdown_tx, server_handle) = spawn_server_seed_pty_no_cmd(socket_path.clone(), None);
-        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-
-        // A real directory stripped of all permissions: it stats as a
-        // directory but cannot be entered (chdir needs X_OK).
-        let locked = tmp.path().join("locked");
-        std::fs::create_dir(&locked).unwrap();
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
-
-        let value = serde_json::to_vec(&serde_json::json!({
-            "name": "locked-cwd",
-            "command": serde_json::Value::Null,
-            "cwd": locked.display().to_string(),
-        }))
-        .unwrap();
-        send_frame(
-            &mut stream,
-            &FrameKind::SetMetadata {
-                request_id: 1,
-                scope: Scope::Global,
-                key: SESSION_CREATE_KEY.to_owned(),
-                value,
-            },
-        )
-        .await;
-
-        // Under a non-root owner the enterability gate rejects the locked dir
-        // and the create still succeeds (fallback). The result key is
-        // published only on success — its presence is the regression guard.
-        let created = read_session_create_terminal_id(&mut stream, 2).await;
-
-        // Restore permissions so the TempDir can be cleaned up on drop,
-        // regardless of the assertion outcome below.
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).ok();
-
-        assert!(
-            created.is_some(),
-            "an unenterable cwd must not fail the create (enterability gate must fall back)",
-        );
-
-        drop(stream);
-        join_after_shutdown(shutdown_tx, server_handle).await;
-    });
-}
-
-/// Session rename via the conventional `SESSION_NAME_KEY` L3 metadata write
-/// (the v0.3.0 replacement for RENAME_SESSION). The server intercepts the
-/// `current\0new` value and applies the registry rename; a fresh GET_STATE
-/// reflects the new name.
-#[test]
-fn session_rename_via_metadata_updates_registry_name() {
-    run_local(async {
-        use phux_protocol::wire::frame::{SESSION_NAME_KEY, Scope};
-        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
-
-        let mut value = b"work".to_vec();
-        value.push(0);
-        value.extend_from_slice(b"renamed");
-        send_frame(
-            &mut stream,
-            &FrameKind::SetMetadata {
-                request_id: 1,
-                scope: Scope::Global,
-                key: SESSION_NAME_KEY.to_owned(),
-                value,
-            },
-        )
-        .await;
-
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 2,
-                command: Command::GetState {
-                    scope: StateScope::Server,
-                },
-            },
-        )
-        .await;
-        match await_command_result(&mut stream, 2).await {
-            CommandResult::OkWith(CommandValue::State(snapshot)) => {
-                let names: Vec<&str> = snapshot.sessions.iter().map(|s| s.name.as_str()).collect();
-                assert!(
-                    names.contains(&"renamed") && !names.contains(&"work"),
-                    "session-rename must reflect the new name in GET_STATE; got {names:?}",
-                );
-            }
-            other => panic!("expected Ok_With(State(..)), got {other:?}"),
+        fn rename(current: &str, new_name: &str) -> Vec<u8> {
+            [current.as_bytes(), b"\0", new_name.as_bytes()].concat()
         }
-    });
-}
-
-/// phux-q7ks regression: an *applied* session rename fans out a
-/// `METADATA_CHANGED` on `(Global, SESSION_NAME_KEY)` to subscribers of that
-/// key, so an attached client's roster learns the new name without a poll or
-/// a re-attach. Before the fix the interception branch returned without any
-/// broadcast, and no subscriber ever heard about a rename.
-///
-/// Drives the production read loop over the wire: client A attaches and
-/// subscribes; client B renames. The two suppression cases are pinned by
-/// ordering rather than by timing sleeps: B issues a failed rename (unknown
-/// session) and a no-op rename (same name) BEFORE the real one, all on one
-/// connection, so if either wrongly broadcast, its frame would arrive ahead
-/// of the real rename's and the first-value assertion below would fail.
-#[test]
-fn session_rename_broadcasts_metadata_changed_to_subscribers() {
-    run_local(async {
-        use phux_protocol::wire::frame::{SESSION_NAME_KEY, Scope};
-
-        fn rename_value(current: &str, new_name: &str) -> Vec<u8> {
-            let mut value = current.as_bytes().to_vec();
-            value.push(0);
-            value.extend_from_slice(new_name.as_bytes());
-            value
-        }
-
         let (server, mut subscriber) = spawn_server_connected(Some("work")).await;
-
-        // Client A: attach (giving the L3 fanout a mailbox), then subscribe
-        // to the session-name key under the scope renames are written to.
-        send_frame(&mut subscriber, &attach_by_name("work")).await;
-        recv_until(&mut subscriber, |type_byte, _| {
-            (type_byte == TYPE_ATTACHED).then_some(())
-        })
-        .await;
+        attach(&mut subscriber, "work").await;
         send_frame(
             &mut subscriber,
             &FrameKind::SubscribeMetadata {
@@ -1510,232 +775,65 @@ fn session_rename_broadcasts_metadata_changed_to_subscribers() {
             },
         )
         .await;
-        // SUBSCRIBE_METADATA has no ack frame; a command round-trip on the
-        // same connection is the barrier proving the in-order read loop has
-        // registered the subscription before client B writes the rename.
-        send_frame(
-            &mut subscriber,
-            &FrameKind::Command {
-                request_id: 1,
-                command: Command::GetState {
-                    scope: StateScope::Server,
-                },
-            },
-        )
-        .await;
-        let _ = await_command_result(&mut subscriber, 1).await;
+        let _ = snapshot(&mut subscriber, 1).await; // barrier: subscription installed
 
-        // Client B: a failed rename, a no-op rename, then the real one.
         let mut renamer = server.connect().await;
         for (request_id, value) in [
-            (10, rename_value("ghost", "phantom")), // unknown session: refused
-            (11, rename_value("work", "work")),     // same name: applied no-op
-            (12, rename_value("work", "renamed")),  // the real rename
+            (10, rename("ghost", "phantom")),
+            (11, rename("work", "work")),
+            (12, rename("work", "renamed")),
         ] {
-            send_frame(
-                &mut renamer,
-                &FrameKind::SetMetadata {
-                    request_id,
-                    scope: Scope::Global,
-                    key: SESSION_NAME_KEY.to_owned(),
-                    value,
-                },
-            )
-            .await;
+            set_global(&mut renamer, request_id, SESSION_NAME_KEY, value).await;
         }
-
-        // The FIRST session-name notification the subscriber sees must be
-        // the applied rename's `current\0new` transition.
         let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-        let (scope, key, value) = recv_until_deadline(&mut subscriber, deadline, |_, frame| {
-            match frame {
+        let (scope, key, value) =
+            recv_until_deadline(&mut subscriber, deadline, |_, frame| match frame {
                 FrameKind::MetadataChanged {
                     scope, key, value, ..
                 } => Some((scope, key, value)),
                 _ => None,
-            }
-        })
-        .await
-        .unwrap_or_else(|| panic!("no METADATA_CHANGED for the applied rename within deadline"));
-        assert_eq!(scope, Scope::Global, "rename fanout scope");
-        assert_eq!(key, SESSION_NAME_KEY, "rename fanout key");
+            })
+            .await
+            .expect("METADATA_CHANGED for the applied rename");
+        assert_eq!((scope, key.as_str()), (Scope::Global, SESSION_NAME_KEY));
         assert_eq!(
-            value.as_deref(),
-            Some(rename_value("work", "renamed").as_slice()),
-            "the broadcast must carry the applied current\\0new transition \
-             (a failed or no-op rename arriving first means suppression broke)",
+            value,
+            Some(rename("work", "renamed")),
+            "the first broadcast is the applied rename"
         );
-    });
-}
-
-/// **GET_TERMINAL_STATE** on a live pane returns a structured `TerminalState`
-/// JSON object with grid dimensions, cells, cursor, scrollback, shell state,
-/// and metadata (sequence number, timestamp).
-#[test]
-fn get_terminal_state_returns_structured_snapshot_for_live_pane() {
-    run_local(async {
-        let (_server, mut stream) = spawn_server_connected(Some("work")).await;
-
-        // Attach to learn a real wire terminal id.
-        send_frame(&mut stream, &attach_by_name("work")).await;
-        let pane_id = recv_attached(&mut stream).await.resources[0].id.clone();
-
-        send_frame(
-            &mut stream,
-            &FrameKind::Command {
-                request_id: 10,
-                command: Command::GetTerminalState {
-                    terminal_id: pane_id.clone(),
-                    include_scrollback: false,
-                    max_scrollback_lines: 0,
-                },
-            },
-        )
-        .await;
-
-        let result = await_command_result(&mut stream, 10).await;
-        match result {
-            CommandResult::OkWith(CommandValue::Json(json)) => {
-                // Parse as a generic JSON object to verify structure.
-                let obj: serde_json::Value = serde_json::from_str(&json)
-                    .expect("GET_TERMINAL_STATE reply must be valid JSON");
-
-                // Verify TerminalState contract fields.
-                assert!(obj.get("cols").is_some(), "TerminalState must include cols");
-                assert!(obj.get("rows").is_some(), "TerminalState must include rows");
-                assert!(
-                    obj.get("cells").is_some(),
-                    "TerminalState must include cells"
-                );
-                assert!(
-                    obj.get("cursor").is_some(),
-                    "TerminalState must include cursor"
-                );
-                assert!(
-                    obj.get("scrollback").is_some(),
-                    "TerminalState must include scrollback"
-                );
-                assert!(
-                    obj.get("scrollback_count_total").is_some(),
-                    "TerminalState must include scrollback_count_total"
-                );
-                assert!(
-                    obj.get("shell_state").is_some(),
-                    "TerminalState must include shell_state"
-                );
-                assert!(
-                    obj.get("timestamp_secs").is_some(),
-                    "TerminalState must include timestamp_secs"
-                );
-                assert!(obj.get("seq").is_some(), "TerminalState must include seq");
-            }
-            other => panic!("expected Ok_With(Json(..)), got {other:?}"),
-        }
-    });
-}
-
-/// **GET_TERMINAL_STATE** on an unknown terminal_id is rejected with
-/// `TERMINAL_NOT_FOUND` error.
-#[test]
-fn get_terminal_state_unknown_terminal_returns_not_found_error() {
-    run_local(async {
-        let message = unknown_terminal_error(
-            11,
-            Command::GetTerminalState {
-                terminal_id: ResourceId::local(9999),
-                include_scrollback: false,
-                max_scrollback_lines: 0,
-            },
-        )
-        .await;
+        let names = session_names(&snapshot(&mut renamer, 13).await)
+            .iter()
+            .map(|n| (*n).to_owned())
+            .collect::<Vec<_>>();
         assert!(
-            message.contains("no such terminal"),
-            "Error message: {message}"
+            names.contains(&"renamed".to_owned()) && !names.contains(&"work".to_owned()),
+            "{names:?}"
         );
     });
 }
 
-/// DETACH_CLIENTS (tag 0x13, `phux detach`) force-detaches an attached client
-/// from *outside* the attach UI: a second connection issues the command
-/// targeting the victim's session, the victim's connection receives a DETACHED
-/// frame, and the command replies `OkWith(Json(count))` with the number of
-/// clients detached. This is the wire proof behind the `phux detach` verb.
+/// `DETACH_CLIENTS` from another connection detaches the session's clients
+/// and reports how many; an unknown session reports zero.
 #[test]
-fn detach_clients_force_detaches_attached_client() {
+fn detach_clients_force_detaches_and_counts() {
     run_local(async {
         let (server, mut victim) = spawn_server_connected(Some("work")).await;
-
-        // Victim: attach to "work", drain ATTACHED + SNAPSHOT.
-        send_frame(&mut victim, &attach_by_name("work")).await;
-        let (t, _) = recv_typed(&mut victim).await;
-        assert_eq!(t, TYPE_ATTACHED, "victim expected ATTACHED");
-        let (t, _) = recv_typed(&mut victim).await;
-        assert_eq!(t, TYPE_BOOTSTRAP_BEGIN, "victim expected SNAPSHOT");
-
-        // Controller: a separate connection issues DETACH_CLIENTS { "work" }.
+        attach(&mut victim, "work").await;
         let mut controller = server.connect().await;
-        send_frame(
-            &mut controller,
-            &FrameKind::Command {
-                request_id: 5,
-                command: Command::DetachClients {
-                    session: Some("work".to_owned()),
-                },
-            },
-        )
-        .await;
-
-        // The command reports exactly one client detached.
-        match await_command_result(&mut controller, 5).await {
-            CommandResult::OkWith(CommandValue::Json(count)) => {
-                assert_eq!(count, "1", "expected exactly one client detached");
-            }
-            other => panic!("expected OkWith(Json(count)), got {other:?}"),
-        }
-
-        // The victim's connection receives DETACHED.
-        let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-        let mut saw_detached = false;
-        while tokio::time::Instant::now() < deadline {
-            let remaining = deadline - tokio::time::Instant::now();
-            let Ok((t, _)) = timeout(remaining, recv_typed(&mut victim)).await else {
-                break;
+        for (request_id, session, expected) in [(5, "work", "1"), (9, "nope", "0")] {
+            let detach = Command::DetachClients {
+                session: Some(session.to_owned()),
             };
-            if t == TYPE_DETACHED {
-                saw_detached = true;
-                break;
+            match command(&mut controller, request_id, detach).await {
+                CommandResult::OkWith(CommandValue::Json(count)) => {
+                    assert_eq!(count, expected, "{session}");
+                }
+                other => panic!("expected a count, got {other:?}"),
             }
         }
-        assert!(
-            saw_detached,
-            "victim must receive DETACHED after DETACH_CLIENTS",
-        );
-    });
-}
-
-/// DETACH_CLIENTS with an unknown session name is a no-op that reports zero
-/// clients detached — not an error (mirrors KILL_RESOURCES's skip-silently
-/// shape for unknown ids).
-#[test]
-fn detach_clients_unknown_session_reports_zero() {
-    run_local(async {
-        let (_server, mut controller) = spawn_server_connected(Some("work")).await;
-        send_frame(
-            &mut controller,
-            &FrameKind::Command {
-                request_id: 9,
-                command: Command::DetachClients {
-                    session: Some("nope".to_owned()),
-                },
-            },
-        )
-        .await;
-
-        match await_command_result(&mut controller, 9).await {
-            CommandResult::OkWith(CommandValue::Json(count)) => {
-                assert_eq!(count, "0", "unknown session detaches nobody");
-            }
-            other => panic!("expected OkWith(Json(\"0\")), got {other:?}"),
-        }
+        assert!(matches!(
+            recv_until_detached(&mut victim).await,
+            FrameKind::Detached { .. }
+        ));
     });
 }

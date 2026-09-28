@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: stable
-last-reviewed: 2026-09-08
+last-reviewed: 2026-09-27
 ---
 
 # phux Project Instructions for Agents
@@ -10,25 +10,14 @@ last-reviewed: 2026-09-08
 (universal rules): how to build and test (`mise install` or `nix develop`,
 then `just ci`), the crate/architecture map, and the project conventions.
 
-See [`AGENTS.md`](./AGENTS.md) for universal agent instructions
-(shell hygiene, session completion protocol). This file adds
-phux-project-specific guidance: build, test, architecture, and conventions.
-
-**Commit verified task changes before handoff** unless the user explicitly
-requests otherwise. Follow [AGENTS.md's completion policy](./AGENTS.md#finish-the-work):
-local commits are authorized by default, an explicit request to land work is
-carried through integration, and routine commit/push/merge/cleanup steps do not
-get separate Beads tasks. That repository policy overrides the conservative
-commit defaults in the managed Beads block and `bd prime`.
-
----
+Commit verified task changes before handoff per
+[AGENTS.md's completion policy](./AGENTS.md#finish-the-work); that policy
+overrides the conservative commit defaults in the managed Beads block and
+`bd prime`.
 
 ## Build & Test
 
-Start at [`docs/SETUP.md`](./docs/SETUP.md). Pick `mise install` or
-`nix develop`, then the same commands. Keep setup/version details in that
-guide, not here. Browser engine regeneration uses verified pinned source.
-Beads is maintainer/agent task tracking, not a contributor gate.
+Setup and version details live in [`docs/SETUP.md`](./docs/SETUP.md).
 
 ```bash
 mise install        # or: nix develop
@@ -40,39 +29,20 @@ just check          # quick type-check
 just test           # cargo nextest run --workspace
 ```
 
-**`just ci-full` is the full root PR bar; scoped gates are the inner loop.** CI's
-`test` job runs `cargo nextest run --workspace` *plus* `just e2e` *plus*
-`just agents-fleet-smoke`, and only the first of those is inside `just ci` —
-so a branch can be `just ci` green and still fail a required check. `just e2e`
-is kept out of `just ci` deliberately (it spawns real PTY-backed servers, so a
-`just ci` failure always means a real defect); `just ci-full` is where you pay
-for that coverage. See CONTRIBUTING.md §"Bar for any change" for the
-gate-by-gate map.
-
-`commitlint` lints **every commit in the PR**, not just the title. The live
-ruleset verified on 2026-09-09 requires `ci` and `commitlint`.
+**`just ci-full` is the full root PR bar; scoped gates are the inner loop.**
+CI's `test` job also runs `just e2e` and `just agents-fleet-smoke`, which
+`just ci` omits, so `just ci` green can still fail a required check. See
+CONTRIBUTING.md §"Bar for any change" for the gate-by-gate map. `commitlint`
+lints every commit in the PR, not just the title.
 
 ## How work reaches `main`
 
-`main` currently carries one active ruleset:
-
-| Ruleset | Rules | Bypass |
-|---|---|---|
-| `main` | deletion, non-fast-forward, linear history, pull request, required `ci` / `commitlint` | organization admin and the release App, always |
-
-Ordinary maintainers cannot push directly. An organization administrator can
-use the bypass, including for the one-time Cockpit history import documented in
-`docs/RELEASING.md`; use a non-force fast-forward even when bypass is available.
-The aggregate `ci` check covers compile-free guards and the routed product
-lanes; raw `check` and `test` jobs remain visible.
-
-An administrator bypass never replaces validation: run `just ci-full` and use a
-PR for review and hosted checks before any exceptional fast-forward. Normal
-changes and Release Please branches use the ordinary PR path.
-
-Cockpit-only diffs are routed away from the Rust compile lanes while retaining
-the required root contexts; shared FFI/protocol/Cargo inputs run both surfaces.
-See `docs/RELEASING.md` for the routing matrix.
+`main` has one ruleset: no deletion, no force push, linear history, pull
+request required, required checks `ci` and `commitlint`. Organization admins
+and the release App may bypass it; a bypass never replaces `just ci-full` and a
+PR with hosted checks, and still lands as a non-force fast-forward.
+Cockpit-only diffs skip the Rust compile lanes; see `docs/RELEASING.md` for the
+routing matrix.
 
 ## Architecture Overview
 
@@ -90,17 +60,12 @@ current-thread runtime; UDS transport with a QUIC future
 Authoritative docs, in order of priority:
 
 - [`docs/CONCEPTS.md`](./docs/CONCEPTS.md) — canonical mental model.
-  Read this first if you haven't.
-- [`docs/CONVENTIONS.md`](./docs/CONVENTIONS.md) — doc system,
-  frontmatter, TL;DR rule, ADR template.
+- [`docs/CONVENTIONS.md`](./docs/CONVENTIONS.md) — doc system, ADR template.
 - [`docs/spec/`](./docs/spec/) — normative wire protocol. Code conforms
   to it, not vice versa.
-- [`docs/architecture/`](./docs/architecture/) — internal structure
-  (process model, crate graph, data model, threading, transport).
-- [`docs/consumers/tui.md`](./docs/consumers/tui.md) — TUI consumer
-  surface (CLI, config, keybindings, status bar, hooks).
-- [`docs/operations.md`](./docs/operations.md) — error model, logging,
-  security boundaries.
+- [`docs/architecture/`](./docs/architecture/) — internal structure.
+- [`docs/consumers/tui.md`](./docs/consumers/tui.md) — TUI consumer surface.
+- [`docs/operations.md`](./docs/operations.md) — errors, logging, security.
 - [`docs/vision.md`](./docs/vision.md) — the long arc.
 - [`docs/adr/`](./docs/adr/) — decisions, with rationale and tradeoffs.
 
@@ -111,47 +76,32 @@ explain), `phux-server` (daemon), `phux-tui` (the attach driver, libghostty
 replicas, and ratatui chrome), `phux-client` (the headless client library
 behind the agent verbs and MCP; no `ratatui`), `phux-client-core`
 (pane-interior substrate and session kernel; no `ratatui` and no `tokio`,
-so both boundaries are compiler-enforced, ADR-0020 and ADR-0100),
-`phux-client-runtime` (the one client orchestration layer between that kernel
-and a binding: registry resolution, dial planning, reconnect policy, the relay
-tunnel; ADR-0133), `phux-client-ffi` (the one binding crate: `projection/`
-derives the product vocabulary from the runtime once, and two encoders sit
-behind features — `c-abi` for the stable native C ABI non-Rust embedders and
-Cockpit link, `uniffi` for the Swift/Kotlin artifact phux-mobile pins;
-ADR-0135), `phux-config` (TOML + widgets + the settings catalogue),
-`phux` (binary).
-The other nine are narrow single-purpose surfaces. Every crate has a section in
+ADR-0020 and ADR-0100), `phux-client-runtime` (the one client orchestration
+layer: registry resolution, dial planning, reconnect policy, the relay tunnel;
+ADR-0133), `phux-client-ffi` (the one binding crate: `projection/` plus the
+`c-abi` encoder for Cockpit and native embedders and the `uniffi` encoder for
+phux-mobile; ADR-0135), `phux-config` (TOML + widgets + the settings
+catalogue), `phux` (binary). Every crate has a section in
 [`docs/architecture/module-structure.md`](./docs/architecture/module-structure.md)
-— read it before assuming a capability is missing.
-`phux-protocol` is publishable; the rest are `publish = false`.
+— read it before assuming a capability is missing. `phux-protocol` is
+publishable; the rest are `publish = false`.
 
 ## Conventions & Patterns
 
-- **Doc system is layered.** Read [`docs/CONVENTIONS.md`](./docs/CONVENTIONS.md)
-  before adding or moving docs. Every `.md` outside `README.md` carries
-  YAML frontmatter (audience/stability/last-reviewed) and a `**TL;DR.**`
-  block. `just docs-check` enforces the gates in CI.
-- **No emojis in committed files.** Plain prose only.
+- **Docs follow [`docs/CONVENTIONS.md`](./docs/CONVENTIONS.md)**: frontmatter,
+  `**TL;DR.**`, one fact per home; `just docs-check` enforces it.
+- **No emojis in committed files.**
 - **Conventional commits.** `feat(scope): ...`, `fix(scope): ...`,
   `docs(scope): ...`, `chore(scope): ...`.
-- **`docs/spec/` is normative.** Wire changes update the relevant
-  `docs/spec/*.md` + add an entry to `docs/spec/CHANGELOG.md` + bump
-  version (see CONTRIBUTING.md). Wire bytes are owned by
-  `phux-protocol`; `phux-server`, `phux-client`, and `phux-tui` consume them.
-- **ADR for any decision that closes off a design space.** Strict
-  template per `docs/CONVENTIONS.md` — controlled `Status:` vocabulary,
-  ~150-line cap. Bug fixes don't need an ADR; "should this be in `core`
-  or `server`?" does.
+- **`docs/spec/` is normative.** Wire changes update the spec, add a
+  `docs/spec/CHANGELOG.md` entry, and follow the versioning rules in
+  CONTRIBUTING.md. Wire bytes are owned by `phux-protocol`.
+- **ADR for any decision that closes off a design space**; bug fixes don't
+  need one.
 - **`unsafe` requires a `// SAFETY:` comment.** Library crates default
   to `forbid(unsafe_code)`.
 - **No new deps without a paragraph of justification in the PR.**
 - **Linear history on `main`.** Rebase, ff-only merges; no `--no-ff`.
-- **Never implement on `main` or in the primary repository worktree.** Create
-  a dedicated branch and linked worktree from current `main` before editing;
-  make code, docs, tests, and commits there. The primary worktree is for
-  integration only: update `main`, squash or fast-forward verified work, push,
-  and remove completed worktrees. Never stash, reset, clean, or overwrite a
-  dirty primary worktree to make room.
-- **Multi-agent fan-out uses self-managed worktrees** — see
-  CONTRIBUTING.md §"Multi-agent fan-out" for the wave-1 race that
-  motivated this.
+- **Never implement on `main` or in the primary repository worktree**; see
+  AGENTS.md §"Worktree Isolation". Parallel agents use self-managed worktrees
+  (CONTRIBUTING.md §"Multi-agent fan-out").

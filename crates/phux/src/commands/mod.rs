@@ -286,7 +286,7 @@ pub(crate) mod toml_registry;
 pub(crate) mod update;
 pub(crate) mod upgrade;
 pub(crate) mod wait;
-// Stalled peers for the run/wait deadline tests (phux-69pq.10).
+// Stalled peers for the run/wait deadline tests.
 #[cfg(test)]
 mod stall_peer;
 pub(crate) mod watch;
@@ -724,11 +724,8 @@ pub(crate) enum Command {
     /// versioned machine shape instead of the human text; with no server
     /// that shape is `{"running": false, ...}` on stdout, still exiting
     /// non-zero.
-    // `status` is the one verb whose JSON failure shape differs from the
-    // shared `JsonOpt` contract: "no server" is an answer, not an error, so
-    // it lands on stdout as `{"running": false, ...}`. The flattened struct
-    // cannot carry per-verb help, so the arg's help is overridden here to
-    // state the exception next to the flag (phux-i0e8.11.6 wave-8 nit).
+    // `status` reports "no server" as a stdout answer, not an error, so its
+    // `--json` help differs from the shared `JsonOpt` wording.
     #[usage(help_heading = "Maintain", display_order = 50)]
     Status {
         #[usage(flatten)]
@@ -772,11 +769,8 @@ pub(crate) enum Command {
     /// resizes, and the create is atomic server-side (no attach race).
     /// `--json` requires an explicit `-s NAME`, and a name already in use
     /// is an error (create-only, never create-or-attach).
-    // The `--json` ⇒ `-s` rule is enforced here at the clap level (the
-    // group's `requires` fires whenever `--json` is present) rather than as
-    // a runtime gate, so the refusal is a usage error with usage text
-    // (phux-i0e8.8.4). A group is used because `json` lives on the shared
-    // flattened `JsonOpt` and cannot carry a per-verb `requires` itself.
+    // `--json` requires `-s`; a group carries the rule because `json` lives
+    // on the shared flattened `JsonOpt`.
     #[usage(help_heading = "Sessions", display_order = 11)]
     New {
         /// Session name. `phux new work` creates a session named "work".
@@ -1111,9 +1105,6 @@ pub(crate) enum Command {
     },
 
     /// Set a pane's grid size, with no TTY.
-    // Spelled out in `long_about` (the shape `rec` and `play` set) because
-    // clap reflows doc-comment paragraphs: as a doc comment the examples
-    // below collapse onto one run-on line.
     #[usage(
         help = "Set a pane's grid size",
         long_help = "Set a pane's grid size, with no TTY.\n\n\
@@ -1210,8 +1201,6 @@ pub(crate) enum Command {
     },
 
     /// Signal a pane's process group.
-    // `long_about` for the same reason `rec` spells one out: clap reflows
-    // doc-comment paragraphs and the examples need real newlines.
     #[usage(
         help = "Send a signal to a pane's process group",
         long_help = "Signal a pane's process group.\n\n\
@@ -1286,9 +1275,6 @@ pub(crate) enum Command {
     },
 
     /// Update phux to the latest stable or next release, keeping sessions alive.
-    // `long_about` spelled out for the same reason `rec` and `signal` do it:
-    // clap reflows doc-comment paragraphs and the worked examples need real
-    // newlines.
     #[usage(
         help = "Update phux, keeping sessions alive",
         long_help = "Update phux to the latest stable or next release, keeping sessions alive.\n\n\
@@ -1328,7 +1314,6 @@ pub(crate) enum Command {
     },
 
     /// Show or switch the release channel.
-    // `long_help` spelled out so the examples keep real newlines.
     #[usage(
         help = "Show or switch the release channel",
         long_help = "Show or switch the release channel.\n\n\
@@ -1491,8 +1476,6 @@ pub(crate) enum Command {
     },
 
     /// Send keys to a pane.
-    // `long_about` for the same reason `rec` spells one out: clap reflows
-    // doc-comment paragraphs and the examples need real newlines.
     #[usage(
         name = "send-keys",
         help = "Send keys to a pane",
@@ -1521,8 +1504,6 @@ pub(crate) enum Command {
     },
 
     /// Paste text into a pane.
-    // `long_about` for the same reason `rec` spells one out: clap reflows
-    // doc-comment paragraphs and the examples need real newlines.
     #[usage(
         help = "Paste text into a pane",
         long_help = "Paste text into a pane.\n\n\
@@ -1561,8 +1542,6 @@ pub(crate) enum Command {
     },
 
     /// Block until a pane meets a condition.
-    // `long_about` for the same reason `rec` spells one out: clap reflows
-    // doc-comment paragraphs and the examples need real newlines.
     #[usage(
         help = "Block until a pane meets a condition",
         long_help = "Block until a pane meets a condition.\n\n\
@@ -1668,8 +1647,6 @@ pub(crate) enum Command {
     ///   phux watch build
     ///   phux watch --json work:1.0
     ///   phux watch --until asked --timeout 120 reviewer
-    // `long_about` because clap reflows doc-comment paragraphs and the exit
-    // codes need to survive as their own lines.
     #[usage(
         help = "Stream a pane's events as they happen",
         long_help = "Stream a pane's live events (the push half of the agent surface).\n\n\
@@ -1742,9 +1719,6 @@ pub(crate) enum Command {
 
     /// Record a pane and export it as an asciinema cast, an animated GIF, or
     /// an APNG.
-    // The user-facing text is spelled out in `long_about` (the same shape the
-    // root command uses) because clap reflows doc-comment paragraphs: as a
-    // doc comment the three examples below collapse onto one run-on line.
     #[usage(
         help = "Record a pane to a cast, GIF, or APNG",
         long_help = "Record a pane and export it as an asciinema cast, an animated GIF, or an APNG.\n\n\
@@ -1824,9 +1798,6 @@ pub(crate) enum Command {
     },
 
     /// Play a recording back as a live pane.
-    // Spelled out in `long_about` for the same reason `rec` is: clap reflows
-    // doc-comment paragraphs into one run-on line and the examples need real
-    // newlines.
     #[usage(
         help = "Play a recording back as a live pane",
         long_help = "Play a recording back as a live pane.\n\n\
@@ -1912,8 +1883,6 @@ pub(crate) enum Command {
     },
 
     /// Report that an agent in a pane is waiting on a human answer.
-    // `long_about` for the same reason `rec` spells one out: clap reflows
-    // doc-comment paragraphs and the examples need real newlines.
     #[usage(
         help = "Report that an agent is waiting on a human",
         long_help = "Report that an agent in a pane is waiting on a human answer.\n\n\
@@ -1962,8 +1931,6 @@ pub(crate) enum Command {
     },
 
     /// Run a command in a pane and capture its exit code.
-    // `long_about` for the same reason `rec` spells one out: clap reflows
-    // doc-comment paragraphs and the examples need real newlines.
     #[usage(
         help = "Run a command in a pane and capture its exit code",
         long_help = "Run a command in a pane and capture its exit code.\n\n\
@@ -2071,10 +2038,7 @@ pub(crate) enum Command {
     /// `ssh://` satellites through it. The bridge neither
     /// parses nor injects bytes; stdout is protocol-only and diagnostics
     /// go to stderr. Exits when either side closes.
-    // Hidden: machine-only plumbing that `ssh HOST phux stdio-bridge`
-    // invokes — a human never types it, so it stays out of `--help`, the
-    // generated completions, and the docs/reference pages while continuing
-    // to parse (phux-i0e8.12.5, re-landed by phux-06nn).
+    // Hidden: machine-only plumbing invoked as `ssh HOST phux stdio-bridge`.
     #[usage(name = "stdio-bridge", hide)]
     StdioBridge {},
 
@@ -2084,8 +2048,7 @@ pub(crate) enum Command {
     /// running, asks it for a listener that admits only a token minted for
     /// it, and prints one JSON line naming the port, the certificate
     /// fingerprint to pin, and the token.
-    // Hidden: `phux attach --ssh` runs it over ssh and no human types it,
-    // the same reasoning as `stdio-bridge` above.
+    // Hidden: `phux attach --ssh` runs it over ssh.
     #[usage(name = "bootstrap", hide)]
     Bootstrap {
         /// The version of the phux that asked, named in a mismatch report.
@@ -2209,9 +2172,6 @@ pub(crate) enum Command {
     /// The two registries stay separate in config (`[[remote]]` vs
     /// `[[satellites]]`) because they encode opposite trust directions;
     /// this verb absorbs the split into a flag.
-    // The successor to the former `remote`, `satellite`, and top-level
-    // `enroll` verbs (ADR-0066), removed in v0.12.1 once their deprecation
-    // window closed (phux-dpjf).
     #[usage(alias = "machine", help_heading = "Machines", display_order = 40)]
     Host {
         #[usage(subcommand)]
@@ -2233,9 +2193,6 @@ pub(crate) enum Command {
         action: ServiceAction,
     },
     /// Print a shell completion script on stdout.
-    // `long_about` for the same reason `rec` spells one out: clap reflows
-    // doc-comment paragraphs and the three install commands need real
-    // newlines — run together on one line they do copy-paste damage.
     #[usage(
         help = "Print a shell completion script",
         long_help = "Print a shell completion script on stdout.\n\n\
@@ -2271,9 +2228,6 @@ pub(crate) enum Command {
     },
 
     /// Print the agent skill this binary ships with, on stdout.
-    // `long_about` spelled out for the same reason `completion` spells one
-    // out: clap reflows doc-comment paragraphs, and the install one-liners
-    // need real newlines or they run together and do copy-paste damage.
     #[usage(
         help = "Print the agent skill this binary ships with",
         long_help = "Print the agent skill this binary ships with, on stdout.\n\n\
@@ -2421,9 +2375,8 @@ pub(crate) enum ServiceAction {
         /// Accept QUIC clients on this `HOST:PORT`. A routable address
         /// (e.g. `0.0.0.0:8788`) engages TLS and requires a `phux pair`
         /// token. Prefer this over `--listen` where UDP is open.
-        // The same `SocketAddr` type as `server --quic`, so a bad address
-        // fails at parse time here instead of at the supervised server's
-        // first start (phux-i0e8.8.4).
+        // Parsed as `SocketAddr` so a bad address fails here, not at the
+        // supervised server's first start.
         #[usage(long, value_name = "HOST:PORT")]
         quic: Option<std::net::SocketAddr>,
 
@@ -3009,13 +2962,15 @@ fn no_server_lines(
     lines
 }
 
-/// Parse an optional target string into a [`crate::selector::Selector`],
+/// Parse an optional target string into a [`phux_client::selector::Selector`],
 /// defaulting to the focused session when absent. On a parse error,
 /// prints a diagnostic and returns the failure exit code for the caller to
 /// bubble.
-pub(crate) fn parse_selector(session: Option<&str>) -> Result<crate::selector::Selector, ExitCode> {
-    session.map_or(Ok(crate::selector::Selector::Current), |target| {
-        crate::selector::parse(target).map_err(|err| {
+pub(crate) fn parse_selector(
+    session: Option<&str>,
+) -> Result<phux_client::selector::Selector, ExitCode> {
+    session.map_or(Ok(phux_client::selector::Selector::Current), |target| {
+        phux_client::selector::parse(target).map_err(|err| {
             eprintln!("phux: invalid target '{target}': {err}");
             ExitCode::FAILURE
         })
@@ -3045,7 +3000,7 @@ pub(crate) fn parse_selector(session: Option<&str>) -> Result<crate::selector::S
 /// and keep the historical prose.
 pub(crate) async fn resolve_target(
     socket_path: &Path,
-    selector: &crate::selector::Selector,
+    selector: &phux_client::selector::Selector,
     verb: &str,
     json: bool,
 ) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
@@ -3058,7 +3013,7 @@ pub(crate) async fn resolve_target(
 /// shape is refused (ADR-0075 point 5) rather than resolved.
 pub(crate) async fn resolve_target_for_input(
     socket_path: &Path,
-    selector: &crate::selector::Selector,
+    selector: &phux_client::selector::Selector,
     verb: &str,
     json: bool,
 ) -> Result<phux_protocol::ids::ResourceId, ExitCode> {
@@ -3067,7 +3022,7 @@ pub(crate) async fn resolve_target_for_input(
 
 async fn resolve_target_with(
     socket_path: &Path,
-    selector: &crate::selector::Selector,
+    selector: &phux_client::selector::Selector,
     verb: &str,
     json: bool,
     for_input: bool,
@@ -3080,7 +3035,7 @@ async fn resolve_target_with(
     // never travels the set-valued path below where `pick_target_pane` would
     // narrow it (ADR-0075 point 3). A Terminal-facet verb acts on the named
     // agent's pane; the session verbs resolve their own side.
-    if let crate::selector::Selector::Agent(name) = selector {
+    if let phux_client::selector::Selector::Agent(name) = selector {
         let target =
             phux_client::state::resolve_agent_target(socket_path, name, &snapshot, for_input)
                 .await
@@ -3089,8 +3044,10 @@ async fn resolve_target_with(
         return Ok(target.terminal);
     }
     let candidates = resolve_targets(socket_path, selector, &snapshot).await;
-    let picked = crate::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
-        .ok_or_else(|| partial::report_target_miss_keeping_status_for(json, None, &degradation))?;
+    let picked = phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
+        .ok_or_else(|| {
+        partial::report_target_miss_keeping_status_for(json, None, &degradation)
+    })?;
     // A hit is still worth a word: the pane we picked is the best of what a
     // partial fleet offered, and the user is about to act on it.
     partial::warn_partial_view(verb, &degradation);
@@ -3161,7 +3118,7 @@ pub(crate) fn report_agent_resolve_error(
 /// the caller reports it as a selector miss, never a hang.
 pub(crate) async fn resolve_targets(
     socket_path: &Path,
-    selector: &crate::selector::Selector,
+    selector: &phux_client::selector::Selector,
     snapshot: &phux_protocol::wire::info::SessionSnapshot,
 ) -> Vec<phux_protocol::ids::ResourceId> {
     phux_client::state::resolve_targets(socket_path, selector, snapshot).await
@@ -3219,13 +3176,8 @@ fn attach_error_lines(
         AttachError::NotATty => {
             vec!["phux: attach requires an interactive terminal (stdin is not a TTY).".to_owned()]
         }
-        // phux-i0e8.2.3: a dedicated arm for the mid-session disconnect that
-        // reaches here WITHOUT the reconnect window (e.g. `phux new`'s
-        // attach tail; `attach_with_reconnect` reports its own failures and
-        // its call sites skip this printer for `Disconnected`). The server
-        // went away, so the reason lives in its log; name it and doctor
-        // instead of the old dead-end "attach failed: connection closed by
-        // server before DETACHED".
+        // A mid-session disconnect outside the reconnect window (e.g. `phux
+        // new`'s attach tail): the reason lives in the server log.
         AttachError::Disconnected => vec![
             "phux: the server closed the connection unexpectedly".to_owned(),
             format!(
@@ -3255,7 +3207,7 @@ mod tests {
     use phux_client::attach::AttachError;
 
     use crate::commands::{attach_error_lines, no_server_lines, parse_selector};
-    use crate::selector::{Selector, WindowRef};
+    use phux_client::selector::Selector;
 
     fn refused_io() -> AttachError {
         AttachError::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused))
@@ -3394,86 +3346,11 @@ mod tests {
         assert_eq!(lines.len(), 3);
     }
 
-    /// The full `TARGET` grammar now feeds run/send-keys/snapshot/wait/kill
-    /// alike (phux-n95). `parse_selector` is the shared CLI front door:
-    /// `None` defaults to the focused session, and every documented
-    /// form parses to its [`Selector`] variant.
+    /// The grammar itself is tested in `phux_client::selector`; the CLI
+    /// door adds only the absent-target default.
     #[test]
-    fn parse_selector_accepts_every_grammar_form() {
-        // Absent target defaults to the focused session. Headless callers
-        // have no client-local MRU, so `=` is an explicit error.
+    fn parse_selector_defaults_to_the_focused_session() {
         assert_eq!(parse_selector(None).unwrap(), Selector::Current);
-        assert_eq!(parse_selector(Some(".")).unwrap(), Selector::Current);
-        assert!(parse_selector(Some("=")).is_err());
-        assert_eq!(
-            parse_selector(Some("work")).unwrap(),
-            Selector::Session("work".to_owned()),
-        );
-        assert_eq!(
-            parse_selector(Some("work:1")).unwrap(),
-            Selector::Window("work".to_owned(), WindowRef::Index(1)),
-        );
-        assert_eq!(
-            parse_selector(Some("work:editor")).unwrap(),
-            Selector::Window("work".to_owned(), WindowRef::Tag("editor".to_owned())),
-        );
-        assert_eq!(
-            parse_selector(Some("work:1.2")).unwrap(),
-            Selector::Pane("work".to_owned(), WindowRef::Index(1), 2),
-        );
-        assert_eq!(
-            parse_selector(Some("work:editor.0")).unwrap(),
-            Selector::Pane("work".to_owned(), WindowRef::Tag("editor".to_owned()), 0),
-        );
-        assert_eq!(
-            parse_selector(Some("@42")).unwrap(),
-            Selector::ResourceId(42),
-        );
-        assert_eq!(
-            parse_selector(Some("devbox/@42")).unwrap(),
-            Selector::SatelliteResourceId {
-                host: "devbox".to_owned(),
-                id: 42,
-            },
-        );
-        // ADR-0075 reserves `%name` for singular agent-name resolution. No
-        // shipped command calls that resolver yet, so it currently fails
-        // closed through the set-valued path.
-        assert_eq!(
-            parse_selector(Some("%build")).unwrap(),
-            Selector::Agent("build".to_owned()),
-        );
-    }
-
-    /// Malformed targets fail at parse time with the CLI failure code,
-    /// before any server round trip (so run/send-keys reject bad syntax up
-    /// front rather than resolving it). A nonexistent-but-well-formed target
-    /// parses fine here; it fails later as a resolution miss.
-    #[test]
-    fn parse_selector_rejects_malformed_targets() {
-        // Explicit empty string is a parse error (distinct from `None`).
         assert!(parse_selector(Some("")).is_err());
-        // `@N` with a non-numeric id.
-        assert!(parse_selector(Some("@nope")).is_err());
-        // Pane index after the `.` must be numeric.
-        assert!(parse_selector(Some("work:1.x")).is_err());
-        // A well-formed but unknown session is NOT a parse error — it
-        // resolves to nothing later.
-        assert_eq!(
-            parse_selector(Some("ghost")).unwrap(),
-            Selector::Session("ghost".to_owned()),
-        );
-        // ADR-0075 point 4: the addressable agent grammar is
-        // `^[a-z][a-z0-9_-]{0,31}$`, checked here so a typo costs no round
-        // trip. A bare `%` is a parse error, as a bare `#` is.
-        assert!(parse_selector(Some("%")).is_err());
-        assert!(parse_selector(Some("%Build")).is_err());
-        assert!(parse_selector(Some("%my agent")).is_err());
-        // But an addressable name that no pane currently carries is NOT a
-        // parse error — it refuses later, as a selector miss.
-        assert_eq!(
-            parse_selector(Some("%ghost")).unwrap(),
-            Selector::Agent("ghost".to_owned()),
-        );
     }
 }

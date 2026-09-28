@@ -140,7 +140,7 @@ async fn a_bearer_revoked_since_its_upgrade_is_refused_at_hello() {
 
         crate::auth::revoke_credential(&tokens, TOKEN_ID).unwrap();
         let late = fx.connect(phone_identity(&store), None);
-        late.send(&hello());
+        late.send(&hello("revocation-conformance"));
         late.wait_for("the HELLO refusal", |frame| {
             matches!(
                 frame,

@@ -1,24 +1,14 @@
-//! Wire decode errors.
-//!
-//! Owned by phux-6yl.4. See `docs/spec/proto.md` §5 and `docs/spec/appendix-encoding.md`.
+//! Wire decode errors (`docs/spec/proto.md` §5, `appendix-encoding.md`).
 
 use thiserror::Error;
 
-/// Errors that can occur while decoding a wire frame.
+/// A malformed-input condition the decoder surfaces instead of panicking.
 ///
-/// Every variant corresponds to a malformed-input condition that the decoder
-/// MUST surface without panicking. See `docs/spec/proto.md` §5 (framing) and Appendix A
-/// (encoding primitives).
-/// `PartialEq` is implemented but **not** `Eq` because
-/// [`Self::MalformedLayoutRatio`] carries an `f32`. Two `MalformedLayoutRatio`
-/// errors compare equal iff their ratios are bitwise-`PartialEq` (NaN errors
-/// never compare equal to each other — desired: tests assert exact-decoding
-/// behavior on finite/out-of-range ratios separately from NaN).
+/// Not `Eq`: [`Self::MalformedLayoutRatio`] carries an `f32`.
 #[derive(Debug, Error, PartialEq)]
 #[non_exhaustive]
 pub enum DecodeError {
-    /// The input buffer was exhausted before the decoder finished reading the
-    /// expected number of bytes for a primitive, field, or frame.
+    /// Input ended mid-primitive, mid-field, or before a required field.
     #[error("unexpected end of input")]
     UnexpectedEof,
 
@@ -26,45 +16,29 @@ pub enum DecodeError {
     #[error("invalid UTF-8 in string field")]
     InvalidUtf8,
 
-    /// A `FRAME_COMPRESSED` envelope did not carry a valid DEFLATE stream, or
-    /// the stream did not inflate to exactly the length it declared.
-    ///
-    /// Both halves matter. An invalid stream is ordinary corruption; a length
-    /// mismatch is the case worth naming, because accepting it would let a
-    /// sender declare a small buffer and then either overrun it or hand the
-    /// dispatcher a truncated frame body that decodes as a different message.
+    /// A `FRAME_COMPRESSED` envelope was not valid DEFLATE, did not inflate to
+    /// exactly its declared length, or was nested.
     #[error("compressed frame did not inflate to its declared length")]
     CompressedFrameInvalid,
 
     /// The frame's type byte did not match any known `FrameKind` discriminant.
     #[error("unknown frame kind: 0x{tag:04x}")]
     UnknownFrameKind {
-        /// The unrecognised discriminant. Stored as `u16` so future minor
-        /// versions can extend the space without changing the error shape.
+        /// The unrecognised discriminant.
         tag: u16,
     },
 
-    /// A declared length prefix would, if accepted, exceed the remaining
-    /// buffer or the protocol's hard frame-size cap of 16 MiB (`docs/spec/proto.md` §5).
+    /// A declared length exceeds the buffer or the 16 MiB frame cap
+    /// (`docs/spec/proto.md` §5).
     #[error("declared length exceeds buffer or protocol cap")]
     LengthOverflow,
 
-    /// A `SessionId` carried the `SATELLITE` tag from ADR-0007 §3. v0.1
-    /// decoders accept only `LOCAL`; satellite routing arrives in v0.2+.
-    #[error("satellite-routed session ids are not supported in this protocol version")]
-    UnsupportedSatelliteRoute,
-
-    /// An enumerated field on the wire carried a value the decoder does not
-    /// recognise. Used for libghostty atoms (`Key`, `KeyAction`, `MouseAction`,
-    /// `MouseButton`) where minor protocol versions MAY add values; v0.1
-    /// rejects unknown discriminants so that misinterpretation can't silently
-    /// corrupt downstream encoding.
+    /// An enumerated field carried a value this decoder does not recognise.
     #[error("unknown enum discriminant in field '{field}': {value}")]
     UnknownEnumValue {
-        /// Logical name of the field that carried the bad value, for diagnostics.
+        /// Logical name of the field, for diagnostics.
         field: &'static str,
-        /// The unrecognised discriminant, widened to `u32` to cover every
-        /// enumerated type the codec emits.
+        /// The unrecognised discriminant, widened to `u32`.
         value: u32,
     },
 
@@ -72,13 +46,11 @@ pub enum DecodeError {
     #[error("input operation id must not be zero")]
     InvalidInputOperationId,
 
-    /// An idempotency key (`SPAWN_RESOURCE` field 17 or `EVENT` field 6) was
-    /// not exactly 16 bytes, or used the reserved all-zero value.
+    /// An idempotency key was not 16 non-zero bytes.
     #[error("idempotency key must be 16 non-zero bytes")]
     InvalidIdempotencyKey,
 
-    /// An `APPLY_INPUT` command exceeded its event-count or command-body
-    /// limit and was rejected before allocating the event vector.
+    /// An `APPLY_INPUT` command exceeded its event-count or body limit.
     #[error("APPLY_INPUT batch exceeds protocol limits")]
     ApplyInputLimitExceeded,
 
@@ -103,8 +75,7 @@ pub enum DecodeError {
     /// A history page used the reserved all-zero sequence value.
     #[error("history page sequence must not be zero")]
     InvalidHistoryPageSequence,
-    /// A native history status used zero rows where forbidden or exceeded the
-    /// protocol row bound.
+    /// A history status used zero rows where forbidden or exceeded the bound.
     #[error("history page rows violate protocol limits")]
     HistoryRowLimitExceeded,
 
@@ -121,9 +92,8 @@ pub enum DecodeError {
     #[error("APPEND_RESOURCE_OUTPUT payload exceeds protocol limits")]
     AppendResourceOutputLimitExceeded,
 
-    /// A `SPAWN_RESOURCE` body carried a field its `kind` forbids, or omitted
-    /// one its `kind` requires (`docs/spec/L1.md` §3.1). `field` is the
-    /// offending field id; `required` says which of the two rules fired.
+    /// A `SPAWN_RESOURCE` body broke its kind's field rules
+    /// (`docs/spec/L1.md` §3.1).
     #[error(
         "SPAWN_RESOURCE field {field} violates the field rules for kind {kind} (required: {required})"
     )]
@@ -132,45 +102,40 @@ pub enum DecodeError {
         kind: u8,
         /// The field id that was missing (`required`) or present (forbidden).
         field: u32,
-        /// `true` when the field was required and absent; `false` when it
-        /// was present but forbidden for the kind.
+        /// `true` when required and absent; `false` when present but forbidden.
         required: bool,
     },
 
-    /// A `SPAWN_RESOURCE` `provider` or `native_id` string was empty or
-    /// exceeded its byte bound.
+    /// A `SPAWN_RESOURCE` `provider` or `native_id` was empty or too long.
     #[error("SPAWN_RESOURCE agent facet string exceeds protocol limits")]
     AgentFacetLimitExceeded,
 
-    /// A `DIRECTORY_LISTING` declared more entries than
-    /// [`MAX_DIRECTORY_ENTRIES`](crate::wire::frame::MAX_DIRECTORY_ENTRIES)
-    /// (`docs/spec/L3.md` §4); rejected before allocating for them.
+    /// A `DIRECTORY_LISTING` declared more than
+    /// [`MAX_DIRECTORY_ENTRIES`](crate::wire::frame::MAX_DIRECTORY_ENTRIES).
     #[error("DIRECTORY_LISTING entry count exceeds protocol limits")]
     DirectoryEntryLimitExceeded,
 
-    /// A [`crate::wire::info::LayoutNode`] tree nested deeper than the
-    /// decoder's recursion bound (see
-    /// [`crate::wire::info::MAX_LAYOUT_DEPTH`]).
-    ///
-    /// The codec is recursive; without a bound, attacker-controlled bytes
-    /// describing a pathologically deep split tree would overflow the stack
-    /// and abort the process. Real layouts nest only a handful of levels, so
-    /// the bound is far above any legitimate value. Surfacing this as a clean
-    /// decode error keeps a malformed `ATTACHED` / `COMMAND_RESULT` from
-    /// crashing the peer.
+    /// A layout tree nested deeper than
+    /// [`MAX_LAYOUT_DEPTH`](crate::wire::info::MAX_LAYOUT_DEPTH), which would
+    /// otherwise overflow the stack.
     #[error("layout tree nested deeper than the decoder bound")]
     LayoutTooDeep,
 
-    /// A [`crate::wire::info::LayoutNode::Split`] carried a `ratio` outside
-    /// the closed interval `[0.0, 1.0]` or one that was NaN / infinite.
-    ///
-    /// SPEC §13 leaves layout-tree ratios implicit; phux validates on decode
-    /// to reject values that would round-trip but produce nonsense layouts.
-    /// See `phux_core::window::Window::split`, which applies the same
-    /// validation on the core side.
+    /// A [`LayoutNode::Split`](crate::wire::info::LayoutNode::Split) ratio was
+    /// NaN, infinite, or outside `[0.0, 1.0]`.
     #[error("malformed layout ratio: {ratio}")]
     MalformedLayoutRatio {
-        /// The offending ratio value (NaN, infinite, or out of `[0.0, 1.0]`).
+        /// The offending ratio.
         ratio: f32,
     },
+}
+
+impl DecodeError {
+    /// [`Self::UnknownEnumValue`] for `field` carrying `value`.
+    pub(crate) fn unknown_enum(field: &'static str, value: impl Into<u32>) -> Self {
+        Self::UnknownEnumValue {
+            field,
+            value: value.into(),
+        }
+    }
 }

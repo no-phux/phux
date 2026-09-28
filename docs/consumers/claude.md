@@ -86,23 +86,18 @@ permission or elicitation `notification`, done on `stop`, retracted on
 `session_end`), so `phux agent wait --until done` and the sidebar's state
 glyph read the harness's own account of the turn rather than a screen rule.
 
-**Fallback.** Against a server without `RESOURCE_KINDS` — an older server, or
-a hub relaying a pane it does not own — `session open` refuses with
-`unsupported_server`, the shim notes that once, and the per-turn arms do what
-the schema-4 shim does: `phux agent report-state` with `working`, `blocked`,
-or `done`, feeding the detector directly. Identity at `SessionStart`,
-`phux ask` on the blocking arms, and `clear` at `SessionEnd` run on every
-server either way. Nothing is lost that was available before; the event log
-is what is missing.
+**Fallback.** Against a server without `RESOURCE_KINDS` (an older server, or
+a hub relaying a pane it does not own), `session open` refuses with
+`unsupported_server` and the per-turn arms fall back to
+`phux agent report-state`, as the table shows.
 
 **Privacy.** Prompts are not forwarded: `prompt` carries a character count
 and nothing else. Tool records carry the tool's name and never its input or
 output. The hook's raw stdin JSON is emitted as `provider_raw` only when
 `PHUX_AGENT_EMIT_RAW=1` is set in Claude's environment; it is off by
-default and the shim never sets it. The retained stream lives in server
-memory under `defaults.agent-log-bytes` (4 MiB per session by default), is
-readable by any client on the socket through `phux agent log`, and is not
-recorded by `phux rec` ([`recording.md`](./recording.md) §2).
+default and the shim never sets it. The retained stream is bounded by
+`defaults.agent-log-bytes`, readable by any client on the socket through
+`phux agent log`, and not recorded by `phux rec`.
 
 The marketplace plugin's own hooks keep the identity-and-ask contract
 described under Runtime contract until they are moved onto the same arms.

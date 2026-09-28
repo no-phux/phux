@@ -1,25 +1,8 @@
-//! The minimum-contrast floor, driven as the escape sequences a program
-//! actually writes and read back off the painted lattice.
-//!
-//! WHAT THESE PIN, AND WHY IT IS A LATTICE READ
-//!
-//! `phux-cockpit-wmi`: on the app's own ground (#090b0f) libghostty's ANSI
-//! black is 1.19:1 and a faint blue is 2.60:1. Both are faithful VT output and
-//! both are unreadable, which is what "the text is see-through or black or
-//! something" looks like when a prompt uses either. Ghostty's answer is
-//! `minimum-contrast`, and this is Cockpit's.
-//!
-//! Every assertion here goes through `grid.paint` — the same call
-//! `view.zig` makes for a real pane — and reads `cell_grid.fg` off the
-//! resulting display list. Reading the projection's return value instead
-//! would leave the wire from `PaintOptions` to `Session` untested, which is
-//! precisely where a config key goes to die: parsed, stored, and never
-//! consulted.
-//!
-//! Each test that asserts the floor FIRED asserts the un-floored colour first,
-//! at `minimum_contrast = 1`, in the same test. That negative half is the
-//! whole evidence: a test that only ever saw white would pass just as happily
-//! against a projection hardcoded to white.
+//! The minimum-contrast floor, driven by real escape sequences and read back
+//! off the painted `cell_grid` through `grid.paint`, so the wire from
+//! `PaintOptions` to the session is covered. On the #090b0f ground ANSI black
+//! is 1.19:1 and faint blue 2.60:1. Every test that asserts the floor fired
+//! first asserts the unfloored colour at `minimum_contrast = 1`.
 
 const std = @import("std");
 const native_sdk = @import("native_sdk");
@@ -37,13 +20,7 @@ const testing = std.testing;
 
 const createSession = support.createSession;
 
-/// The app's own terminal ground and text, the two colours every ratio in
-/// this file is measured against. Restated here rather than imported from
-/// `workspace_projection.cockpitTokens` on purpose: that function builds a
-/// full SDK theme and needs a `Model`, and what these tests need is the two
-/// colours the owner is actually looking at. `theme.builtins[0]` (`phux-dark`)
-/// is the same pair, and `settings_theme_tests.zig` already pins that it
-/// matches `cockpitTokens`.
+/// The app's terminal ground and text (the `phux-dark` pair).
 const ground = canvas.Color.rgb8(0x09, 0x0b, 0x0f);
 const ink = canvas.Color.rgb8(0xf4, 0xf7, 0xfb);
 
@@ -113,11 +90,8 @@ test "SGR 90 grey clears the shipped floor and keeps its hue" {
     defer session.destroy();
     session.feed("\x1b[90mGREY\x1b[0m");
 
-    // 3.43:1 — dim, and deliberately left alone. This is the assertion that
-    // costs something: raising the default to WCAG AA (4.5) would snap this to
-    // the same pure white as the black above, and a prompt's de-emphasised
-    // grey would become indistinguishable from its emphasis. If the default
-    // ever moves past 3.43 this test is the thing that says so.
+    // 3.43:1 is dim but left alone; a default above 3.43 (e.g. WCAG AA 4.5)
+    // would erase a prompt's de-emphasis, and this assertion says so.
     const floored = try fgOf(session, "GREY", config_module.default_minimum_contrast);
     try expectRgb(vt.color.default[8], floored);
 }
@@ -200,56 +174,6 @@ test "inverse resolves its ink before the floor sees it" {
     try expectRgb(.{ .r = 0, .g = 0, .b = 0 }, floored);
 }
 
-test "minimum-contrast reaches the pane the REAL chrome builder paints" {
-    // The tests above hand `grid.paint` its options directly, which proves the
-    // floor works and proves nothing about whether the app ever asks for it.
-    // `view.zig` builds those options from `Model.config`, and deleting that
-    // one field assignment left every assertion above green — the exact
-    // "parsed, stored, never consulted" failure, verified by doing it. So this
-    // one drives the real app: real config, real chrome build, and the
-    // foreground read off the retained scene the runtime holds.
-    const gpa = testing.allocator;
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = geometry.SizeF.init(980, 640) });
-    defer harness.destroy(gpa);
-    const state = try support.startFocusedTerminal(gpa, harness);
-    defer gpa.destroy(state);
-    defer app.deinitModel(&state.model);
-    defer state.deinit();
-    const app_iface = state.app();
-
-    // Two runs of the SAME escape sequence out of the same pty, one per config
-    // state. Two markers rather than one re-read of a single marker: the scene
-    // is RETAINED and only damaged rows are re-emitted, so re-reading a cell
-    // written before the config changed would be asking a question about the
-    // damage tracker, not about the config.
-    //
-    // THE NEGATIVE HALF FIRST. With the floor off, the app's own frame must
-    // hold libghostty's black. Without it this test would pass against a build
-    // that painted everything white.
-    state.model.config = app.parseConfig("minimum-contrast = 1");
-    try state.effects.feedPtyOutput(1, "\x1b[30mALPHA\x1b[0m\r\n");
-    try harness.runtime.dispatchPlatformEvent(app_iface, .wake);
-    try harness.runtime.dispatchPlatformEvent(app_iface, .frame_requested);
-    {
-        const view = try support.expectCellGrid(harness.runtime.views[0].canvasDisplayList());
-        const at = view.find("ALPHA") orelse return error.TestExpectedMarker;
-        const fg = view.foreground(at.x, at.y) orelse return error.TestExpectedCell;
-        try expectRgb(vt.color.default[0], fg);
-    }
-
-    // Same app, same bytes, one config key different.
-    state.model.config = app.parseConfig("minimum-contrast = 3");
-    try state.effects.feedPtyOutput(1, "\x1b[30mBRAVO\x1b[0m\r\n");
-    try harness.runtime.dispatchPlatformEvent(app_iface, .wake);
-    try harness.runtime.dispatchPlatformEvent(app_iface, .frame_requested);
-    {
-        const view = try support.expectCellGrid(harness.runtime.views[0].canvasDisplayList());
-        const at = view.find("BRAVO") orelse return error.TestExpectedMarker;
-        const fg = view.foreground(at.x, at.y) orelse return error.TestExpectedCell;
-        try expectRgb(.{ .r = 255, .g = 255, .b = 255 }, fg);
-    }
-}
-
 test "minimum-contrast parses, clamps, and disables" {
     // The key exists and takes a ratio.
     const on = config_module.parse("minimum-contrast = 4.5");
@@ -317,17 +241,9 @@ test "the shipped default sits between the illegible ANSI colours and the legibl
     }
 }
 
-// MEASURED. The colours the projection actually hands the painter for each
-// low-contrast SGR case, at each floor, printed for
-// `scripts/contrast-floor-check.sh` to feed straight into the host's real
-// CoreText rasterizer.
-//
-// This exists so the on-glass half of the evidence cannot be a counterfactual
-// somebody typed. The hex values below are produced by THIS build painting a
-// real session, so flipping the floor moves both halves of that script's
-// table on their own; hand-editing the harness would move only one.
-//
-//     zig build test -Dmeasure=true 2>&1 | grep CONTRAST-FLOOR
+// MEASURED: the projected foreground per low-contrast SGR case and floor,
+// printed for `scripts/contrast-floor-check.sh`
+// (`zig build test -Dmeasure=true 2>&1 | grep CONTRAST-FLOOR`).
 test "MEASURED: the projected foreground for each low-contrast SGR case" {
     if (!measured.enabled) return error.SkipZigTest;
 

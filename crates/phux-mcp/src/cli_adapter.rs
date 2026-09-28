@@ -1,15 +1,9 @@
 //! Bounded, shell-free adapter to the canonical `phux` CLI JSON surface.
 //!
-//! Only the **residue** runs here: the tools whose [`crate::tool_table`] row
-//! is [`Exec::Cli`], each with its one-line reason in that table. Every other
-//! tool calls `phux-client` in-process, and [`CliAdapter::for_residue`]
-//! refuses to build an adapter for it, so a migrated tool cannot quietly
-//! regrow a subprocess.
-//!
-//! A residue tool executes the sibling `phux` binary directly with argv —
-//! never through a shell — and parses the CLI's versioned JSON. Child lifetime
-//! is bounded, cancellation kills the child, and stdout/stderr are drained with
-//! fixed memory caps so a broken command cannot exhaust the MCP host.
+//! Only the residue tools (rows marked [`Exec::Cli`] in [`crate::tool_table`])
+//! run here; [`CliAdapter::for_residue`] refuses every other tool. The child
+//! runs with argv (never a shell), under a deadline, is killed on cancel, and
+//! its output is drained under fixed memory caps.
 
 #![allow(
     clippy::similar_names,
@@ -42,12 +36,8 @@ pub(crate) struct CliAdapter {
 #[derive(Debug)]
 pub(crate) struct CliOutput {
     pub(crate) stdout: String,
-    /// The child's stderr, kept for the [`Self::stdout`]-is-empty case under
-    /// an *allowed* non-zero exit. The failure path below already turns
-    /// stderr into the error message; a verb whose non-zero exit is
-    /// sometimes a result and sometimes a failure (`phux status`, `phux
-    /// doctor`) has to make that call itself, and it needs the same line to
-    /// do it with.
+    /// Kept for verbs whose allowed non-zero exit is sometimes a result and
+    /// sometimes a failure (`status`, `doctor`): they decide from stdout.
     pub(crate) stderr: String,
 }
 
@@ -101,20 +91,10 @@ impl CliAdapter {
         })
     }
 
-    /// Like [`Self::run_json`], but a nonzero child exit is treated as data
-    /// rather than an adapter failure.
-    ///
-    /// `phux run --json` prints the whole `RunResult` and *then* mirrors the
-    /// command's exit code (`crates/phux/src/commands/run.rs`), so for that
-    /// one verb a nonzero status is the reported result, not a failure to
-    /// report one. Every other verb's nonzero exit is a genuine failure,
-    /// which is why this is opt-in rather than the default in [`Self::run`].
-    /// [`Self::run_allowing`] cannot cover it either: the mirrored codes are
-    /// the *command's*, so no allow-list can name them up front.
-    ///
-    /// A nonzero exit carrying no parseable document still surfaces the
-    /// stderr prose, so a real failure (no server, refused target, `run`'s
-    /// own timeout) reads exactly as it does through [`Self::run`].
+    /// Like [`Self::run_json`], but a nonzero exit is data: `phux run --json`
+    /// prints its `RunResult` and then mirrors the command's exit code, so no
+    /// allow-list can name the codes up front. Without a parseable document
+    /// the stderr failure is reported as [`Self::run`] would.
     pub(crate) async fn run_json_mirrored_exit<I, S>(
         &self,
         args: I,
@@ -124,15 +104,8 @@ impl CliAdapter {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let (mut child, stdout, stderr) = self.spawn_capturing(args)?;
-        let (status, stdout, stderr) = drain_within(&mut child, stdout, stderr, timeout).await?;
-        let output = CliOutput {
-            stdout: decode_bounded(&stdout, "stdout", STDOUT_LIMIT)?,
-            stderr: decode_bounded(&stderr, "stderr", STDERR_LIMIT)?,
-        };
+        let (status, output) = self.execute(args, timeout).await?;
         serde_json::from_str(&output.stdout).map_err(|err| {
-            // A document parsed: the exit code is data. Nothing parsed: fall
-            // back to the failure `run` would have reported.
             check_exit(status, &output.stderr, &[])
                 .err()
                 .unwrap_or_else(|| {
@@ -152,18 +125,8 @@ impl CliAdapter {
         self.run_allowing(args, timeout, &[]).await
     }
 
-    /// Like [`Self::run`], but treats each code in `allowed` as a successful
-    /// completion rather than a failure.
-    ///
-    /// This exists for one shape of verb: the ones whose *interesting*
-    /// answer rides out on stdout under a non-zero exit. `phux agent wait`
-    /// prints its whole result document — baseline, observed edge, the
-    /// detector's evidence — and then exits `124` when no transition was
-    /// observed. Treating that as a bare failure would throw the document
-    /// away and hand the caller an error string, which is precisely the
-    /// reading ADR-0076 warns against: a timeout there is not "the tool
-    /// broke", it is "no transition happened", and the difference is legible
-    /// only in the document.
+    /// Like [`Self::run`], but each code in `allowed` is a completion whose
+    /// document rides on stdout (`agent wait`'s 124: no transition observed).
     pub(crate) async fn run_allowing<I, S>(
         &self,
         args: I,
@@ -174,14 +137,28 @@ impl CliAdapter {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
+        let (status, output) = self.execute(args, timeout).await?;
+        check_exit(status, &output.stderr, allowed)?;
+        Ok(output)
+    }
+
+    /// Spawn, drain both pipes under `timeout`, and decode them.
+    async fn execute<I, S>(
+        &self,
+        args: I,
+        timeout: Duration,
+    ) -> Result<(ExitStatus, CliOutput), ToolError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
         let (mut child, stdout, stderr) = self.spawn_capturing(args)?;
         let (status, stdout, stderr) = drain_within(&mut child, stdout, stderr, timeout).await?;
         let output = CliOutput {
             stdout: decode_bounded(&stdout, "stdout", STDOUT_LIMIT)?,
             stderr: decode_bounded(&stderr, "stderr", STDERR_LIMIT)?,
         };
-        check_exit(status, &output.stderr, allowed)?;
-        Ok(output)
+        Ok((status, output))
     }
 
     /// Spawn the CLI with argv only — never through a shell — and take both
@@ -405,11 +382,8 @@ pub(crate) fn ratio(args: &Value) -> Result<Option<f64>, ToolError> {
     }
 }
 
-/// Test-only instrumentation: every CLI spawn this thread attempted.
-///
-/// Thread-local because a `#[tokio::test]` runs its current-thread runtime
-/// on the test's own thread, and the spawn happens synchronously on it, so
-/// parallel tests cannot see each other's spawns.
+/// Test-only record of every CLI spawn this thread attempted. Thread-local:
+/// a `#[tokio::test]` runs on its own thread, so parallel tests stay apart.
 #[cfg(test)]
 pub(crate) mod spawn_record {
     use std::cell::RefCell;
@@ -430,6 +404,44 @@ pub(crate) mod spawn_record {
     /// Drain and return what this thread spawned since the last call.
     pub(crate) fn take() -> Vec<String> {
         SPAWNED.with(|spawned| std::mem::take(&mut *spawned.borrow_mut()))
+    }
+}
+
+/// Shared fake `phux` executables for the tool tests.
+#[cfg(test)]
+pub(crate) mod fake {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+
+    use tempfile::TempDir;
+
+    use super::CliAdapter;
+
+    /// A fake `phux` that logs its argv one entry per line to the returned
+    /// path, then runs `body`; `{dir}` in `body` is the temp directory.
+    pub(crate) fn cli(body: &str) -> (TempDir, CliAdapter, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let log = temp.path().join("argv");
+        let executable = temp.path().join("phux");
+        let script = format!(
+            "#!/bin/sh\n: > '{log}'\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\" >> '{log}'; done\n{body}",
+            log = log.display(),
+            body = body.replace("{dir}", &temp.path().display().to_string()),
+        );
+        std::fs::write(&executable, script).unwrap();
+        let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&executable, permissions).unwrap();
+        (temp, CliAdapter::new(executable), log)
+    }
+
+    /// The argv the fake CLI logged on its last run.
+    pub(crate) fn logged(log: &Path) -> Vec<String> {
+        std::fs::read_to_string(log)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 }
 
@@ -499,15 +511,10 @@ mod tests {
         );
     }
 
-    /// `phux run` prints its `RunResult` and *then* mirrors the command's
-    /// exit code, so a failing command is a successful tool call carrying a
-    /// nonzero `exit_code`. The adapter must keep that document instead of
-    /// replacing it with stderr. Regression for phux-8gv.
+    /// A failing `phux run` command is a successful tool call carrying a
+    /// nonzero `exit_code`; the document must not be replaced by stderr.
     #[tokio::test]
     async fn mirrored_exit_keeps_the_document_a_failing_command_printed() {
-        // `sh` only to synthesize "print a document, then exit nonzero" in a
-        // single process. The adapter still execs argv directly; nothing in
-        // the production path gains a shell.
         let adapter = CliAdapter::new("sh");
         let argv = [
             "-c",
@@ -520,14 +527,10 @@ mod tests {
             .unwrap();
         assert_eq!(value, json!({ "schema_version": 1, "exit_code": 3 }));
 
-        // The default path is unchanged: a nonzero exit is still fatal there,
-        // which is what every other verb relies on.
         assert!(adapter.run(argv, DEFAULT_CALL_TIMEOUT).await.is_err());
     }
 
-    /// A nonzero exit with nothing parseable on stdout is a genuine failure
-    /// (no server, refused target, `run`'s own timeout). It must keep
-    /// reporting the stderr prose rather than degrading into a confusing
+    /// A nonzero exit with no document reports the stderr prose, not a
     /// "malformed JSON" complaint.
     #[tokio::test]
     async fn mirrored_exit_still_reports_stderr_when_there_is_no_document() {

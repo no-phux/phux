@@ -8,21 +8,13 @@
 )]
 
 //! The `UniFFI` encoder: the Swift and Kotlin surface, over
-//! [`crate::projection`].
+//! [`crate::projection`] (ADR-0135).
 //!
-//! `phux-client-runtime` owns transport, reconnect, the control plane and the
-//! connected-client engine. The projection layer decides what its values
-//! mean. This module only lowers those decisions into the vocabulary `UniFFI`
-//! can carry across the language boundary, and holds the small amount of
-//! binding-local state a polling consumer needs (the pending metadata reads,
-//! the per-pane generation the last render observed).
-//!
-//! The isolated [`engine`] module also serves local playground and test
-//! terminals that have no connection and no runtime session at all.
-//!
-//! Before ADR-0135 this was a separate crate, `phux-mobile-ffi`, with its own
-//! hand-written projection of the same runtime. One crate, one projection,
-//! two encoders replaced it.
+//! The runtime owns transport, reconnect, the control plane and the engine;
+//! the projection layer decides what its values mean. This module only
+//! lowers those decisions into `UniFFI` vocabulary and holds the little
+//! binding-local state a polling consumer needs. The isolated [`engine`]
+//! module serves connectionless playground and test terminals.
 
 // The VT engine grid surface (ADR-0007), and the local playground terminal
 // built on it.

@@ -1,15 +1,6 @@
-//! Backpressure through the PRODUCTION relay (phux-5y0f).
-//!
-//! When the consumer's link is the slow hop, the relay must neither absorb
-//! the backlog nor hide it from the server. Its consumer-facing send tracks
-//! the consumer connection's congestion window, and each tunnel stream gets a
-//! small per-stream receive window — the tunnel dials with a tagged initial
-//! connection ID, so the relay picks that config before it accepts — so the
-//! server's writer blocks after a bounded number of bytes. That is what lets
-//! the server's output pump go stale and resync the consumer, exactly as on a
-//! direct QUIC link. The bound is per consumer: a stalled consumer never
-//! holds back another on the same route, and consumer uploads keep quinn's
-//! default credit.
+//! Backpressure through the production relay: a slow consumer blocks the
+//! server's writer after a bounded backlog, per consumer, while consumer
+//! uploads keep quinn's default credit.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

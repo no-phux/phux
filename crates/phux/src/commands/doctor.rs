@@ -1,20 +1,9 @@
-//! `phux doctor` — one command that answers "why isn't this working?".
+//! `phux doctor` — one command that answers "why isn't this working?", by
+//! composing the checks behind `config check`, `plugin validate`, the socket
+//! length guard, a `GET_STATE` probe, and the log inventory.
 //!
-//! Every check here already existed as its own verb: `config check`,
-//! `plugin validate`, a socket-length guard buried in the spawn path, a
-//! `GET_STATE` probe inside `ls`, the log-path inventory behind
-//! `phux logs`. Knowing to run all of them, in the right order, and how
-//! to read each one, is exactly the knowledge a person debugging phux
-//! does not have — that is the whole problem. So this composes them and
-//! reports one verdict.
-//!
-//! Two rules keep it honest:
-//!
-//! * **A check that cannot run is not a check that passed.** Every check
-//!   reports [`Status::Warn`] rather than `Pass` when its precondition is
-//!   missing, so "no server running" never renders as a green tick.
-//! * **Nothing here mutates anything.** A diagnostic that repairs things is
-//!   a diagnostic nobody can trust to describe the system.
+//! Two rules: a check that cannot run reports [`Status::Warn`], never `Pass`;
+//! and nothing here mutates anything.
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -97,11 +86,8 @@ impl Check {
     }
 }
 
-/// `phux doctor [--json] [--socket PATH]`.
-///
-/// Exit codes: 0 when nothing failed (warnings do not fail the run — a
-/// stopped server is a normal state, not a broken install), 1 when any check
-/// failed.
+/// Exit codes: 0 when nothing failed (warnings do not fail the run), 1 when
+/// any check failed.
 pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let mut checks = vec![
@@ -110,9 +96,7 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
         check_socket_path(&socket_path),
         check_server(&socket_path),
     ];
-    // Not a single `Check`: several server-health conditions can hold at
-    // once, and per phux-67wg they co-occur more than they don't. See
-    // `check_server_health`'s doc comment.
+    // Several server-health conditions can hold at once; each is reported.
     checks.extend(check_server_health(&socket_path));
     checks.extend([
         check_plugins(),
@@ -135,10 +119,8 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
 // checks
 // ---------------------------------------------------------------------------
 
-/// Does the config parse, and does every key exist in the schema?
-///
-/// Reuses `phux config check`, so the two can never disagree about what a
-/// valid config is.
+/// Does the config parse, and does every key exist in the schema? Reuses
+/// `phux config check`.
 fn check_config() -> Check {
     let path = phux_config::loader::config_path();
 
@@ -180,13 +162,8 @@ fn check_config() -> Check {
     }
 }
 
-/// Which instance is this binary talking to, and why (phux-zomb.2)?
-///
-/// Earns its place because the isolation is *automatic*: a developer running
-/// a `target/` build gets a different socket, state directory, and session
-/// list than their installed phux, and the only symptom of not realising it
-/// is "my sessions are gone". Naming the profile and the reason it was chosen
-/// turns that into a one-line answer.
+/// Which instance is this binary talking to, and why? Profile isolation is
+/// automatic and silent, so naming it answers "my sessions are gone".
 fn check_instance() -> Check {
     let profile = phux_config::instance::profile();
     let state = phux_config::instance::state_dir();
@@ -201,8 +178,6 @@ fn check_instance() -> Check {
     } else {
         "this is a development build (not an installed release)"
     };
-    // A warning, not a failure: an isolated instance is working as designed.
-    // It is surfaced at all because the isolation is silent by construction.
     Check::warn(
         "instance",
         format!("profile {profile} ({reason}); state {}", state.display()),
@@ -212,21 +187,10 @@ fn check_instance() -> Check {
     )
 }
 
-/// Is the server crash-looping, is it running a stale build, and is its
-/// supervisor the pre-phux-zomb.4 kind that hides both?
-///
-/// This is the check whose absence let a broken server pass for a working one
-/// for weeks. A supervised server that dies and restarts is externally
-/// indistinguishable from one that never fell over — the socket answers
-/// either way. Counting restarts is the only way the difference becomes
-/// visible without reading a log (ADR-0080).
-///
-/// Gathers the three signals and hands them to [`server_health_checks`],
-/// which reports every one that applies (phux-dsg1) — a crash-looping host
-/// with a legacy unit is not a corner case: per phux-67wg, a legacy unit's
-/// unthrottled restarts are exactly what produces a crash-loop, so the two
-/// conditions co-occur precisely when hearing about only one is least
-/// useful.
+/// Is the server crash-looping, running a stale build, under a legacy
+/// (unthrottled) supervisor, or armed but not yet supervised? A restarting
+/// server is otherwise indistinguishable from a healthy one (ADR-0080).
+/// Every applicable condition is reported; they tend to co-occur.
 fn check_server_health(socket_path: &std::path::Path) -> Vec<Check> {
     let unit = legacy_service_unit_path().filter(|path| path.exists());
     let legacy_unit = unit
@@ -236,16 +200,10 @@ fn check_server_health(socket_path: &std::path::Path) -> Vec<Check> {
     let crash_loop = phux_server::health::crash_loop()
         .map(|count| (count, phux_server::health::CRASH_LOOP_WINDOW.as_secs() / 60));
 
-    // Supervision armed by `--adopt` but not yet active (ADR-0088): the unit
-    // is written and deliberately unloaded while the incumbent server runs.
-    // Scoped to the socket being diagnosed — a marker armed against another
-    // profile or another `--socket` override is not this instance's state,
-    // and reporting it here would describe a server that is not the one the
-    // rest of this run is about.
+    // Armed-but-inactive supervision (ADR-0088), scoped to this socket.
     let armed_unit = super::service::armed_adoption_unit(socket_path);
 
-    // Version skew: a package manager replaced the binary but nothing
-    // restarted the server, so it is still serving the old build (phux-zomb.7).
+    // Version skew: the binary was replaced but the server was not restarted.
     let ours = env!("CARGO_PKG_VERSION");
     let theirs = phux_server::health::running_version();
     let version_skew = theirs
@@ -262,16 +220,8 @@ fn check_server_health(socket_path: &std::path::Path) -> Vec<Check> {
     )
 }
 
-/// The pure half of [`check_server_health`]: turns already-gathered signals
-/// into every applicable [`Check`], instead of the first one found. Split out
-/// so the co-occurrence behavior itself is testable without a running
-/// server, a real supervisor unit on disk, or a mutated environment — same
-/// idiom as [`shim_check`] beside [`check_agent_shim`].
-///
-/// `recent_starts` is a closure, not a value, so the Pass-fallback count is
-/// read only when nothing else already applies — matching the original
-/// early-return version, which never paid for that read once a fail or warn
-/// fired first.
+/// The pure half of [`check_server_health`]. `recent_starts` is only read for
+/// the pass fallback.
 fn server_health_checks(
     crash_loop: Option<(usize, u64)>,
     legacy_unit: Option<&std::path::Path>,
@@ -294,10 +244,8 @@ fn server_health_checks(
         ));
     }
 
-    // A unit generated before phux-zomb.4 restarts on *every* exit with no
-    // throttle. `phux service reconcile` replaces its restart-policy keys with
-    // the throttled, failure-only ones, which is both the fix and the way a
-    // crash-loop stays visible.
+    // A legacy unit restarts on every exit, unthrottled; the remedy is the
+    // non-destructive `phux service reconcile`.
     if let Some(unit) = legacy_unit {
         checks.push(Check::warn(
             "server-health",
@@ -305,15 +253,6 @@ fn server_health_checks(
                 "the supervisor unit at {} restarts on every exit, unthrottled",
                 unit.display()
             ),
-            // This hint used to name `phux service install`, which reloads the
-            // unit -- and the reload boots out the running job, so following
-            // it ended every pane and its in-flight shells, agents, and
-            // subagents. A Warn exits 0 and reads as routine housekeeping,
-            // which is exactly when an unannounced destructive step does the
-            // most damage (phux-nvi2). `reconcile` (phux-l1yx) rewrites the
-            // policy in place and stops nothing, so the hint can now point at
-            // a remedy whose cost is zero -- and say where it is not yet in
-            // force, rather than leaving macOS users to assume it is.
             "it resurrects servers you stopped and hides crash-loops — run \
              `phux service reconcile` to correct it in place; nothing is \
              stopped and no pane is lost (on macOS the corrected policy takes \
@@ -321,11 +260,8 @@ fn server_health_checks(
         ));
     }
 
-    // Supervision that is armed but not yet active (ADR-0088, phux-8514).
-    // Working as designed — and surfaced for the same reason ADR-0080
-    // surfaced the crash-loop: an invisible supervision state is how a
-    // broken server passes for a working one, and until the hand-over the
-    // running server is not restart-managed by anything.
+    // Armed supervision is working as designed, but until the hand-over the
+    // running server is not restart-managed; surface it.
     if let Some(unit) = armed_unit {
         checks.push(Check::warn(
             "server-health",
@@ -360,51 +296,13 @@ fn server_health_checks(
     checks
 }
 
-/// Whether `unit` was generated before the restart policy was corrected.
+/// Whether `unit`'s restart behavior is dangerous: not failure-only, or not
+/// throttled to a positive interval. Checks values, not key presence.
 ///
-/// Compares actual VALUES against what [`crate::commands::service`]'s
-/// renderers write, not just whether the keys that carry them appear
-/// anywhere in the file. A unit that merely contains the tokens
-/// `ThrottleInterval` / `RestartSec` / `SuccessfulExit` / `Restart=on-failure`
-/// — with a zero throttle, a `Restart=always` policy, or a stray match inside
-/// an unrelated line — is not the corrected policy; only the values the
-/// generator actually writes are. A unit missing them entirely predates
-/// phux-zomb.4 (or was hand-edited into the same unthrottled shape), and
-/// either way deserves the same warning.
-///
-/// ## Why this stays a second predicate next to `service::reconcile_unit` (phux-x2k8)
-///
-/// `service::Reconcile::Current` ([`crate::commands::service::reconcile_unit`])
-/// answers a byte-exact question: would patching this file with today's
-/// [`crate::commands::service::launchd_policy_lines`] /
-/// [`crate::commands::service::systemd_policy_lines`] change anything? That is
-/// the right question for the reconciler — it has to be a fixed point
-/// (`reconcile(reconcile(x)) == reconcile(x)`) and its whole job is
-/// converging a unit onto this build's exact canonical bytes.
-///
-/// A diagnostic needs a looser question: is this unit's restart behavior
-/// dangerous — unthrottled, or restarting on a clean exit — regardless of
-/// which build wrote it? Keying the warning to byte-exact match would make it
-/// fire on a plain constant retune (say, a future release changing the
-/// throttle interval) even though the installed unit is still perfectly
-/// safe: throttled, failure-only, just pinned to an older number. A `Warn`
-/// that starts firing on every such release trains people to ignore it,
-/// which is the failure mode `server-health` staying a trustworthy exit-0
-/// warning (phux-nvi2) exists to avoid. So this predicate checks value shape
-/// (failure-only, throttle greater than zero) rather than byte identity, and
-/// is deliberately allowed to disagree with `reconcile_unit` on that one
-/// case.
-///
-/// They are required to agree on every case that has actually occurred in
-/// practice — a freshly generated unit, the pre-zomb.4 shape, and dsg1's two
-/// false-pass fixtures — which
-/// `supervisor_unit_is_legacy_and_reconcile_unit_agree_on_known_cases` (below)
-/// pins directly against both functions. The one case they must NOT agree on
-/// is pinned by
-/// `a_retuned_but_positive_throttle_is_not_legacy_though_reconcile_would_still_rewrite_it`.
-/// Both predicates independently stay cross-checked against the real
-/// renderers, so neither can silently drift from what `phux service install`
-/// actually writes.
+/// Deliberately looser than [`crate::commands::service::reconcile_unit`]'s
+/// byte-exact "current" test, so retuning the throttle constant does not make
+/// every previously installed (still safe) unit warn. The tests pin where the
+/// two predicates agree and the one case where they may not.
 fn supervisor_unit_is_legacy(unit: &std::path::Path) -> bool {
     let Ok(body) = std::fs::read_to_string(unit) else {
         return false;
@@ -412,10 +310,8 @@ fn supervisor_unit_is_legacy(unit: &std::path::Path) -> bool {
     !(restart_is_failure_only(&body) && restart_is_throttled(&body))
 }
 
-/// Does `body` restart only on abnormal exit — launchd's
-/// `<key>SuccessfulExit</key><false/>`, or systemd's exact `Restart=on-failure`
-/// (never `Restart=always`, which still contains the bare substring
-/// `Restart=` the old check keyed on)?
+/// Does `body` restart only on abnormal exit (launchd `SuccessfulExit` false,
+/// or systemd exactly `Restart=on-failure`)?
 fn restart_is_failure_only(body: &str) -> bool {
     if let Some((_, rest)) = body.split_once("<key>SuccessfulExit</key>") {
         return rest.trim_start().starts_with("<false/>");
@@ -426,10 +322,8 @@ fn restart_is_failure_only(body: &str) -> bool {
     false
 }
 
-/// Does `body` throttle restarts to a positive interval — launchd's
-/// `<key>ThrottleInterval</key><integer>N</integer>`, or systemd's
-/// `RestartSec=Ns` — with `N` greater than zero in both cases? `N == 0` wears
-/// the corrected key over the legacy (unthrottled) behavior.
+/// Does `body` throttle restarts to a positive interval (`ThrottleInterval`
+/// or `RestartSec` greater than zero)?
 fn restart_is_throttled(body: &str) -> bool {
     if let Some((_, rest)) = body.split_once("<key>ThrottleInterval</key>") {
         return plist_integer(rest).is_some_and(|n| n > 0);
@@ -440,24 +334,21 @@ fn restart_is_throttled(body: &str) -> bool {
     false
 }
 
-/// The `<integer>N</integer>` immediately following a plist key's closing
-/// tag, exactly as [`crate::commands::service::render_launchd_plist`] emits
-/// it: `rest` starts right after `</key>`.
+/// The `<integer>N</integer>` following a plist key (`rest` starts after
+/// `</key>`).
 fn plist_integer(rest_after_key: &str) -> Option<u64> {
     let (_, rest) = rest_after_key.split_once("<integer>")?;
     let (digits, _) = rest.split_once("</integer>")?;
     digits.trim().parse().ok()
 }
 
-/// The next whitespace-delimited token in `rest`, which starts right after a
-/// systemd `Key=` marker.
+/// The next whitespace-delimited token after a systemd `Key=`.
 fn value_token(rest: &str) -> &str {
     let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
     rest[..end].trim()
 }
 
-/// The leading run of ASCII digits in `value`, parsed as an integer — enough
-/// to read a systemd time span like `30s`, or a bare `30`.
+/// The leading ASCII digits of `value` (reads `30s` or `30`).
 fn leading_digits(value: &str) -> Option<u64> {
     let digits: String = value.chars().take_while(char::is_ascii_digit).collect();
     if digits.is_empty() {
@@ -467,122 +358,17 @@ fn leading_digits(value: &str) -> Option<u64> {
     }
 }
 
-/// Which init system a legacy unit would have been written for. Mirrors
-/// `service::Manager`, kept as its own type (rather than importing that one)
-/// for the same reason [`legacy_service_unit_path`] duplicates its path
-/// logic instead of calling it.
-///
-/// The allow sits on the *type*, not on one variant, and that is the whole
-/// subtlety: `host()` constructs exactly one of these per target, so which
-/// variant is dead depends on which platform is compiling. Allowing only
-/// `Systemd` passed on macOS and failed CI on Linux with "variant `Launchd`
-/// is never constructed". Both stay constructible from tests on every
-/// platform, which is the point — `legacy_service_unit_path_for` must be
-/// driveable for both managers regardless of which host runs the suite.
-#[allow(
-    dead_code,
-    reason = "host() constructs one variant per target; the other is reached \
-              only from tests, and which one that is flips with the platform"
-)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LegacyManager {
-    Launchd,
-    Systemd,
-}
-
-impl LegacyManager {
-    /// The manager for the host we were built for. `None` on a platform with
-    /// neither — there is no legacy unit to look for there.
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "None is reachable on targets that are neither macOS nor Linux; clippy only sees the active cfg"
-    )]
-    const fn host() -> Option<Self> {
-        #[cfg(target_os = "macos")]
-        {
-            Some(Self::Launchd)
-        }
-        #[cfg(target_os = "linux")]
-        {
-            Some(Self::Systemd)
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        {
-            None
-        }
-    }
-}
-
-/// Where `service install` writes its unit.
-///
-/// Duplicated from the `service` module's private path logic rather than
-/// exposed from it, because doctor must keep reporting the location even for
-/// units this build would no longer generate. That reasoning still holds,
-/// but the duplication now has to track more than a fixed pair of paths:
-/// `service::launchd_label_for` / `service::systemd_unit_for` profile-scope
-/// every unit but the default profile's (phux-gyza), and this mirrors that
-/// scoping. Without it, doctor would silently stop finding a legacy unit on
-/// any non-default profile — exactly the profile-aware detection ADR-0080
-/// exists to give.
+/// Where `service install` writes this profile's unit, if this platform has
+/// a generator and `HOME` is set.
 fn legacy_service_unit_path() -> Option<PathBuf> {
-    legacy_service_unit_path_for(
-        LegacyManager::host()?,
-        std::env::var_os("HOME"),
-        std::env::var_os("XDG_CONFIG_HOME"),
-        legacy_profile_suffix().as_deref(),
-    )
+    let manager = super::service::Manager::host()?;
+    manager
+        .unit_path(super::service::profile_suffix().as_deref())
+        .ok()
 }
 
-/// The active ADR-0080 profile when it is not the default, else `None`. Same
-/// rule as `service::profile_suffix`, duplicated for the same reason as
-/// [`legacy_service_unit_path`].
-fn legacy_profile_suffix() -> Option<String> {
-    (!phux_config::instance::is_default_profile()).then(phux_config::instance::profile)
-}
-
-/// [`legacy_service_unit_path`] with every input injectable: which manager,
-/// `HOME`, `XDG_CONFIG_HOME`, and the active profile. Lets a test drive both
-/// managers and either profile from one platform, and an unset `HOME`,
-/// without mutating the process environment (`env::set_var` is unsafe under
-/// edition 2024 and this crate forbids unsafe code) — same idiom as
-/// `service::home_dir_from`.
-fn legacy_service_unit_path_for(
-    manager: LegacyManager,
-    home: Option<std::ffi::OsString>,
-    xdg_config_home: Option<std::ffi::OsString>,
-    profile: Option<&str>,
-) -> Option<PathBuf> {
-    let home = PathBuf::from(home.filter(|value| !value.is_empty())?);
-    match manager {
-        LegacyManager::Launchd => {
-            let label = profile.map_or_else(
-                || "com.phux.server".to_owned(),
-                |profile| format!("com.phux.server.{profile}"),
-            );
-            Some(
-                home.join("Library")
-                    .join("LaunchAgents")
-                    .join(format!("{label}.plist")),
-            )
-        }
-        LegacyManager::Systemd => {
-            let config = xdg_config_home
-                .filter(|value| !value.is_empty())
-                .map_or_else(|| home.join(".config"), PathBuf::from);
-            let unit = profile.map_or_else(
-                || "phux.service".to_owned(),
-                |profile| format!("phux-{profile}.service"),
-            );
-            Some(config.join("systemd").join("user").join(unit))
-        }
-    }
-}
-
-/// Will the socket path fit in a `sockaddr_un`?
-///
-/// This one earns its place: the failure mode is a connect that times out
-/// with no explanation, and the cause is a path length limit nobody thinks
-/// about until they hit it (phux-iwuc).
+/// Will the socket path fit in a `sockaddr_un`? Otherwise connects time out
+/// with no explanation.
 fn check_socket_path(socket_path: &std::path::Path) -> Check {
     match phux_server::runtime::validate_socket_path_len(socket_path) {
         Ok(()) => Check::pass("socket-path", socket_path.display().to_string()),
@@ -594,11 +380,8 @@ fn check_socket_path(socket_path: &std::path::Path) -> Check {
     }
 }
 
-/// Is a server running, and does it speak a protocol this binary knows?
-///
-/// A stopped server is a `warn`, not a `fail`: running `doctor` before
-/// starting phux is a perfectly ordinary thing to do, and a red line there
-/// would train people to ignore red lines.
+/// Is a server running, and does it speak a protocol this binary knows? A
+/// stopped server is a warning: running doctor first is ordinary.
 fn check_server(socket_path: &std::path::Path) -> Check {
     if !socket_path.exists() {
         return Check::warn(
@@ -626,13 +409,8 @@ fn check_server(socket_path: &std::path::Path) -> Check {
                 phux_protocol::PROTOCOL_VERSION.minor,
                 phux_protocol::PROTOCOL_VERSION.patch,
             );
-            // A hub that answered but could not reach a satellite is exactly
-            // what `doctor` exists to surface: the server is up, so this is
-            // not a FAIL (which would set the exit code and read as "phux is
-            // broken"), but reporting PASS would hide the one fact an
-            // operator running `phux doctor` on a federated setup is looking
-            // for. WARN is the shape that says "working, and here is what is
-            // not".
+            // A hub that could not reach every satellite is working but incomplete:
+            // warn, do not fail.
             if view.is_complete() {
                 Check::pass(
                     "server",
@@ -655,9 +433,7 @@ fn check_server(socket_path: &std::path::Path) -> Check {
                 )
             }
         }
-        // A socket file with nothing behind it is the classic stale-socket
-        // case, and it is a real failure: every CLI verb will hang or refuse
-        // until it is cleared.
+        // A socket file with nothing behind it is a stale socket: a real failure.
         Err(err) => Check::fail(
             "server",
             format!(
@@ -682,25 +458,10 @@ fn check_plugins() -> Check {
     }
 }
 
-/// Is the installed Claude shim the one this binary knows how to write?
-///
-/// This check exists because the shim is **not part of the binary**
-/// (phux-w7z2.46). It is a `/bin/sh` script written once into a phux-owned
-/// directory, and it keeps running whatever text it was written with, so
-/// upgrading phux does not upgrade an installed shim. Someone who upgrades and
-/// never re-runs `phux agent install-claude` keeps last release's behavior
-/// indefinitely with nothing anywhere saying so.
-///
-/// That would be a cosmetic complaint if the versions were cosmetic, and they
-/// are not: a schema-1 shim declares an agent `state` on every Claude hook,
-/// which per `docs/spec/L3.md` §3.7 outranks the server's derivation for the
-/// life of the record — so on that machine the ADR-0046 detector is stood down
-/// on every Claude pane, and a `SIGKILL`ed Claude keeps a `working` badge. The
-/// bug is fixed in the binary and still live on disk. A silent, install-time
-/// mismatch with a one-command remedy is precisely doctor's remit.
-///
-/// `Warn`, never `Fail`: phux works fine, and doctor's exit code gates setup
-/// scripts that have nothing to do with Claude.
+/// Is the installed Claude shim the one this binary writes? The shim is a
+/// script written once at install time, so upgrading phux does not upgrade it,
+/// and old schemas misbehave (e.g. schema 1 stands the detector down). Warn,
+/// never fail: doctor's exit code gates scripts unrelated to Claude.
 fn check_agent_shim() -> Check {
     use crate::commands::agent::shim;
 
@@ -714,14 +475,11 @@ fn check_agent_shim() -> Check {
     shim_check(shim::installed_shim_schema(&path), shim::SHIM_SCHEMA, &path)
 }
 
-/// The pure half of [`check_agent_shim`]: compare what is on disk against what
-/// this binary writes. Split out so every branch is testable without an
-/// installed shim or a mutated environment.
+/// The pure half of [`check_agent_shim`].
 fn shim_check(installed: Option<u32>, current: u32, path: &std::path::Path) -> Check {
     let where_ = path.display();
     match installed {
-        // Never installed is a normal state, not a missing precondition:
-        // `install-claude` is opt-in and most users never run it.
+        // `install-claude` is opt-in; never installed is normal.
         None => Check::pass("agent-shim", "no claude-in-phux shim installed"),
         Some(found) if found == current => Check::pass(
             "agent-shim",
@@ -738,8 +496,7 @@ fn shim_check(installed: Option<u32>, current: u32, path: &std::path::Path) -> C
                 stale_shim_consequence(found)
             ),
         ),
-        // Newer on disk than this binary writes: a downgraded or older phux.
-        // Still a mismatch worth naming, and the remedy differs.
+        // Newer on disk than this binary writes: an older phux.
         Some(found) => Check::warn(
             "agent-shim",
             format!(
@@ -752,11 +509,8 @@ fn shim_check(installed: Option<u32>, current: u32, path: &std::path::Path) -> C
     }
 }
 
-/// What the user is actually living with, per stale schema.
-///
-/// Deliberately concrete: "your shim is old" is not a diagnosis, and these two
-/// versions fail in different, individually recognizable ways. The wording
-/// tracks the `install-claude` upgrade notice so the two never disagree.
+/// What the user is living with, per stale schema (tracks the
+/// `install-claude` upgrade notice).
 const fn stale_shim_consequence(found: u32) -> &'static str {
     match found {
         0 | 1 => {
@@ -781,15 +535,9 @@ const fn stale_shim_consequence(found: u32) -> &'static str {
     }
 }
 
-/// Where would a crash have been logged, and could it have been?
-///
-/// Resolves every path through `phux_server::telemetry` — the same helpers
-/// the writers use — so this line can never disagree with `phux logs`. An
-/// absent log is a normal state (nothing has run yet), so this check never
-/// fails; the one thing worth a warning is a state dir that exists but
-/// cannot be written, because then the next crash leaves no evidence and
-/// nothing else would ever say so. The probe is read-only: creating the dir
-/// or a test file to find out would break doctor's nothing-mutates contract.
+/// Where would a crash have been logged, and could it have been? Paths come
+/// from `phux_server::telemetry`, shared with `phux logs`. Only an unwritable
+/// state dir warns; the probe is read-only.
 fn check_logs() -> Check {
     check_logs_at(
         &phux_server::telemetry::state_dir(),
@@ -797,37 +545,8 @@ fn check_logs() -> Check {
     )
 }
 
-/// Does the remote-consumer certificate name the address phux advertises?
-///
-/// This check exists because the answer is fixed at generation time and can
-/// never be corrected in place (phux-q9a0, ADR-0091). SANs are chosen when the
-/// certificate is minted; widening them means a new certificate, which means a
-/// new SHA-256 fingerprint, which un-pairs every device that pinned the old
-/// one. So a certificate generated before phux learned to name the overlay
-/// address stays narrow for as long as it exists, and nothing else on the
-/// system would ever say so — the server keeps working, `phux pair` keeps
-/// printing a link, and only a third-party client that validates the server
-/// name ever sees the mismatch. That silent, install-time, one-command-remedy
-/// shape is exactly doctor's remit.
-///
-/// `Warn`, never `Fail`: every phux consumer pins the fingerprint and ignores
-/// the name (`phux-dial`'s `CertTrust`, and phux-mobile's verifier), so the
-/// documented pairing flow works end to end on a narrow certificate. Calling
-/// that a failure would turn doctor's exit code red on installs where nothing
-/// is broken.
-/// Can the credential store the remote listeners gate admission on be read?
-///
-/// A broken store means no device can authenticate: the server keeps running,
-/// local clients keep working, `phux ls` and `phux status` stay green, and the
-/// entire remote surface authenticates nobody. A server that predates lenient
-/// store loading goes further and disables every remote transport at boot, so
-/// the surface is gone entirely — which is precisely the state an operator
-/// runs `phux doctor` to have explained.
-///
-/// [`check_remote_reachable`] would notice the absence, but only as "nothing
-/// is listening", which reads like "you have not paired yet" and sends the
-/// reader to `phux pair`. This check names the actual cause and carries the
-/// actual remedy.
+/// Can the credential store the remote listeners authenticate against be
+/// read? A broken store admits no device while everything local stays green.
 fn check_token_store() -> Check {
     let path = std::env::var_os("PHUX_WS_TOKENS")
         .map_or_else(phux_server::auth::default_token_store_path, PathBuf::from);
@@ -837,8 +556,7 @@ fn check_token_store() -> Check {
     )
 }
 
-/// The pure half of [`check_token_store`], so the failure branch is testable
-/// without arranging a broken store in the real environment.
+/// The pure half of [`check_token_store`].
 fn token_store_check(path: &std::path::Path, error: Option<phux_server::auth::AuthError>) -> Check {
     let Some(error) = error else {
         return Check::pass(
@@ -846,9 +564,6 @@ fn token_store_check(path: &std::path::Path, error: Option<phux_server::auth::Au
             format!("credential store at {} loads", path.display()),
         );
     };
-    // A store that exists and will not load takes the remote listeners down
-    // with it, so this is a failure, not a warning: `phux --remote` cannot
-    // work until it is resolved.
     let remedy = if error.to_string().contains("legacy") {
         "the server refuses to guess at a pre-versioned store: convert it with \
          `phux pair --migrate-legacy`; the running server re-reads it on the next \
@@ -930,39 +645,26 @@ fn workload_authority_check(ca_cert: &std::path::Path, registry: &std::path::Pat
     }
 }
 
-/// How long the reachability probe waits for the listener to say anything.
-///
-/// Generous relative to a loopback-speed handshake, because the probe rides
-/// whatever overlay the operator uses; short enough that `phux doctor` stays
-/// an interactive command when the answer is "blocked".
+/// How long the reachability probe waits for the listener to answer.
 const REMOTE_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// What dialing our own routable listener revealed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reachability {
-    /// The listener answered. A completed handshake and a refusal at the auth
-    /// layer both land here on purpose: either way packets reached phux, which
-    /// is the only thing this check is asking.
+    /// The listener answered (a handshake or an auth refusal both prove packets
+    /// reached phux).
     Answered,
     /// The connection was refused, so nothing is bound there.
     NoListener,
-    /// The connection was accepted and then nothing came back. This is the
-    /// shape a host packet filter produces: the kernel completes the TCP
-    /// handshake, so the dial "connects", but the bytes never reach the
-    /// process and the dial hangs until it times out.
+    /// Accepted, then silence: the shape of a host packet filter.
     Silent,
     /// The address could not be reached at all.
     Unreachable,
 }
 
-/// Did every remote listener the *running server* expected actually bind?
-///
-/// [`check_token_store`] reads the file on disk right now. That is the right
-/// check when the file is still broken, and the wrong one when the file was
-/// fixed after a failed boot, or when the listeners died for a cert/TLS/bind
-/// reason that has nothing to do with the store. This check asks the serving
-/// process over UDS what it recorded at bind time (phux-kyna), so a green
-/// local store cannot hide a dead remote surface.
+/// Did every remote listener the running server expected actually bind? Asks
+/// the server over UDS, so a fixed-on-disk store cannot hide a dead remote
+/// surface.
 fn check_remote_listeners(socket_path: &std::path::Path) -> Check {
     if !socket_path.exists() {
         return Check::warn(
@@ -1067,26 +769,12 @@ fn remote_listeners_check(
     )
 }
 
-/// Does traffic to the routable listener actually reach the server?
-///
-/// Every other check here reads local state — a bound socket, a parsed
-/// config, a cert on disk — and local state is exactly what stays healthy
-/// when a host firewall is dropping inbound packets. A server can be running,
-/// listening, correctly paired, and completely unreachable, and before this
-/// check `phux doctor` reported that server as entirely fine.
-///
-/// So this one leaves the machine: it dials this server's bound off-loopback
-/// address with the same stack a real client uses. UDS answering (we just
-/// asked `GET_STATE`) plus a silent TCP handshake is the Application
-/// Firewall stealth-drop (phux-9lj9), not a dead server. A loopback-only
-/// bind is skipped; an unspecified `0.0.0.0`/`::` bind is rewritten onto an
-/// overlay IP when one is detected, otherwise warned rather than passed.
+/// Does traffic to this server's routable wss listener actually reach it?
+/// Dials the bound off-loopback address with the real client stack, catching
+/// a firewall stealth-drop that every local check reports as healthy. A
+/// loopback-only bind is skipped; `0.0.0.0`/`::` is rewritten onto a detected
+/// overlay IP, otherwise warned.
 fn check_remote_reachable(socket_path: &std::path::Path) -> Check {
-    // Ask *this* server first. Overlay detection used to dial whatever was
-    // on :8787 — on a machine with a live unsupervised server that is a
-    // different process, and the 4s probe made `phux doctor` in isolated
-    // tests non-hermetic (phux-vlv1). The probe target is now this process's
-    // bound address; overlay detect is only a rewrite for 0.0.0.0/::.
     match server_wss_offer(socket_path) {
         WssOffer::Disabled(reason) => remote_reachable_check(
             "this server's wss listener",
@@ -1139,9 +827,6 @@ fn bound_needs_overlay(bound: Option<&str>) -> bool {
 }
 
 /// Pick a dial target from this server's bound wss address.
-///
-/// Pure, so the loopback / unspecified / concrete matrix is testable
-/// without a tailnet, a listener, or a firewall.
 fn off_loopback_target(bound: Option<&str>, overlay: &[IpAddr]) -> OffLoopbackTarget {
     let Some(raw) = bound else {
         return OffLoopbackTarget::NoOffLoopback {
@@ -1171,8 +856,7 @@ fn off_loopback_target(bound: Option<&str>, overlay: &[IpAddr]) -> OffLoopbackTa
     OffLoopbackTarget::Dial(addr)
 }
 
-/// The pure half of the bound-address verdict, so skip / warn / fail
-/// classifications are testable without dialing.
+/// The pure half of the bound-address verdict.
 fn remote_reachable_verdict(
     target: OffLoopbackTarget,
     probe: impl FnOnce(&str) -> Reachability,
@@ -1234,11 +918,8 @@ fn server_wss_offer(socket_path: &std::path::Path) -> WssOffer {
     }
 }
 
-/// Dial `url` and classify the answer.
-///
-/// Trust is [`CertTrust::SkipVerify`] and no token is sent: this is a
-/// reachability probe, not an auth check. A 401 from the upgrade is a
-/// perfectly good answer — it proves the packets landed.
+/// Dial `url` and classify the answer. No token and no cert verification:
+/// this asks only whether packets land.
 fn probe_remote_listener(url: &str) -> Reachability {
     let Ok(runtime) = cli_runtime() else {
         return Reachability::Unreachable;
@@ -1253,14 +934,9 @@ fn probe_remote_listener(url: &str) -> Reachability {
         let Ok(outcome) =
             tokio::time::timeout(REMOTE_PROBE_TIMEOUT, phux_dial::ws::dial(&dial)).await
         else {
-            // Nothing came back inside the window. The connection was
-            // accepted and then went nowhere — see [`Reachability::Silent`].
             return Reachability::Silent;
         };
         match outcome {
-            // `Unreachable` is the dial's own "refused / no route / network
-            // down" bucket, and only a refusal proves the address itself is
-            // fine with nothing bound behind it.
             Err(phux_dial::DialError::Unreachable(err)) => {
                 if err.to_lowercase().contains("refused") {
                     Reachability::NoListener
@@ -1268,17 +944,13 @@ fn probe_remote_listener(url: &str) -> Reachability {
                     Reachability::Unreachable
                 }
             }
-            // Everything else — a completed handshake, a TLS failure, an
-            // auth refusal — means something answered, which is the only
-            // question this check is asking.
             Ok(_) | Err(_) => Reachability::Answered,
         }
     };
     runtime.block_on(probe)
 }
 
-/// The pure half of [`check_remote_reachable`], so every verdict is testable
-/// without a tailnet, a listener, or a firewall.
+/// The pure half of [`check_remote_reachable`].
 fn remote_reachable_check(
     url: &str,
     reachability: Reachability,
@@ -1330,15 +1002,9 @@ fn remote_reachable_check(
     }
 }
 
-/// What to do about a listener that is bound but unreachable.
-///
-/// macOS gets named specifically because it is the case operators cannot
-/// guess (phux-9lj9): Application Firewall stealth-drops inbound packets to
-/// an adhoc-signed binary while UDS and loopback stay healthy. An allowlist
-/// entry is keyed to the exact binary path — Homebrew's Cellar path changes
-/// on every version bump — so upgrading silently breaks remote access even
-/// for someone who allowlisted it once. Signed/notarized releases are the
-/// durable fix; they are out of scope here.
+/// What to do about a listener that is bound but unreachable. On macOS the
+/// Application Firewall drops packets to the adhoc-signed binary, and its
+/// allowlist is keyed to a path that changes on every Homebrew upgrade.
 #[cfg(target_os = "macos")]
 const FIREWALL_REMEDY: &str = "macOS: Application Firewall stealth-drops inbound packets to \
      unrecognized binaries, and phux is adhoc-signed. Allowlisting is per exact path \
@@ -1360,9 +1026,7 @@ fn check_remote_cert() -> Check {
     );
     let key = std::env::var_os("PHUX_WS_TLS_KEY")
         .map_or_else(phux_server::transport::tls::default_key_path, PathBuf::from);
-    // Same source of truth `phux pair` and the auto-listener use (ADR-0037).
-    // Doctor is an interactive diagnostic, so paying for the detection
-    // shell-out here is fine — it is the startup path that must not.
+    // Same overlay detection `phux pair` uses (ADR-0037).
     let advertised: Vec<String> = phux_config::overlay::detect()
         .into_iter()
         .map(phux_server::transport::tls::san_name)
@@ -1370,8 +1034,9 @@ fn check_remote_cert() -> Check {
     remote_cert_check(&cert, &key, &advertised, operator_cert)
 }
 
-/// The pure half of [`check_remote_cert`], so every branch is testable against
-/// a temp dir without a tailnet or a mutated environment.
+/// Does the remote certificate name the advertised overlay address? SANs are
+/// fixed at generation, and regenerating rotates the pinned fingerprint
+/// (ADR-0091). Warn, never fail: phux consumers pin the fingerprint.
 fn remote_cert_check(
     cert: &std::path::Path,
     key: &std::path::Path,
@@ -1440,8 +1105,7 @@ fn remote_cert_check(
     }
 }
 
-/// [`check_logs`] against explicit paths, so tests can drive it against a
-/// temp dir instead of the real environment.
+/// [`check_logs`] against explicit paths.
 fn check_logs_at(state_dir: &std::path::Path, server_log: &std::path::Path) -> Check {
     let clients = crate::commands::logs::client_log_paths(state_dir).map_or(0, |paths| paths.len());
     let server = if server_log.exists() {
@@ -1454,11 +1118,7 @@ fn check_logs_at(state_dir: &std::path::Path, server_log: &std::path::Path) -> C
         state_dir.display()
     );
 
-    // `readonly()` is a read-only stat: true when no write bit is set at
-    // all. The state dir lives under $HOME and is owned by the user, so
-    // this catches the realistic case (a stray chmod) without an euid-aware
-    // access(2) probe. A dir that does not exist yet is normal — the first
-    // writer creates it.
+    // `readonly()` is a plain stat (no write bits); a missing dir is normal.
     let unwritable =
         std::fs::metadata(state_dir).is_ok_and(|metadata| metadata.permissions().readonly());
     if unwritable {
@@ -1536,9 +1196,6 @@ fn report_json(checks: &[Check]) -> ExitCode {
                 ExitCode::FAILURE
             }
         }
-        // A `--json` path, so even this last-resort failure is the shared
-        // contract line, never prose — `doctor --json` keeps stderr free of
-        // unstructured text on every failure exit (phux-i0e8.8.3).
         Err(err) => crate::commands::json_err::emit(
             true,
             &crate::commands::json_err::CliError::new(
@@ -1555,22 +1212,14 @@ fn report_json(checks: &[Check]) -> ExitCode {
 mod tests {
     use super::*;
 
-    /// A credential store that will not load takes every remote listener with
-    /// it, silently — the server stays up, UDS keeps working, and nothing else
-    /// in the report says the remote surface is gone. So this must fail, and
-    /// the legacy case must name the one command that resolves it.
+    /// An unloadable (pre-versioned) store fails and names the migration.
     #[test]
     fn an_unloadable_credential_store_fails_and_names_the_fix() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = dir.path().join("remote-tokens");
 
-        // A store that loads (or is simply absent) is not this check's problem.
         assert_eq!(token_store_check(&store, None).status, Status::Pass);
 
-        // A pre-versioned store is the case that stranded a server: every
-        // remote listener disabled at boot on servers before lenient loading,
-        // and no device admitted even on servers that bind and refuse. A bare
-        // hex line is that format, and the store must refuse to guess.
         std::fs::write(&store, "deadbeef\n").expect("write legacy line");
         #[cfg(unix)]
         {
@@ -1603,11 +1252,8 @@ mod tests {
         );
     }
 
-    /// A bound-but-unreachable listener is the one failure every other check
-    /// here reports as healthy, so this check has to fail loudly and say what
-    /// to do. The silent case is the whole reason it exists: a host firewall
-    /// lets the kernel finish the TCP handshake and then eats the bytes, so
-    /// the server looks perfect from the inside while no client can reach it.
+    /// A bound-but-silent listener fails with a firewall remedy; benign states
+    /// warn; a server-reported disable points at restart, not pairing.
     #[test]
     fn a_bound_but_silent_listener_fails_with_an_actionable_remedy() {
         let url = "wss://100.64.0.2:8787";
@@ -1642,15 +1288,11 @@ mod tests {
             );
         }
 
-        // An answer of any kind proves packets land, which is all this asks —
-        // an auth refusal counts, so a probe that sends no token still passes.
         assert_eq!(
             remote_reachable_check(url, Reachability::Answered, None).status,
             Status::Pass
         );
 
-        // Not having paired, and having no overlay, are ordinary states.
-        // Neither may fail the run and strand someone with exit 1.
         for benign in [Reachability::NoListener, Reachability::Unreachable] {
             assert_eq!(
                 remote_reachable_check(url, benign, None).status,
@@ -1659,8 +1301,6 @@ mod tests {
             );
         }
 
-        // When the server itself says wss is disabled, do not send the
-        // operator to `phux pair` — that cannot revive a boot-time disable.
         let check = remote_reachable_check(
             url,
             Reachability::NoListener,
@@ -1677,10 +1317,7 @@ mod tests {
         );
     }
 
-    /// Bound-address classification is the whole remaining gap: overlay
-    /// detect used to be the only probe host, so a concrete `--listen` on a
-    /// LAN IP with no Tailscale passed, and a loopback bind could dial some
-    /// other process on the overlay :8787 (phux-vlv1).
+    /// Bound-address classification, without dialing.
     #[test]
     fn off_loopback_target_classifies_bound_addresses_without_dialing() {
         let overlay = [IpAddr::V4(std::net::Ipv4Addr::new(100, 64, 0, 2))];
@@ -1746,8 +1383,8 @@ mod tests {
         assert!(silent.detail.contains("UDS"));
     }
 
-    /// The running server's listener table is what closes the gap between a
-    /// fixed-on-disk store and a process that still has no remote surface.
+    /// Server-reported disabled listeners fail with a restart hint when the
+    /// store now loads.
     #[test]
     fn server_reported_disabled_listeners_fail_with_a_restart_hint_when_the_store_is_fine() {
         use phux_protocol::wire::{
@@ -1835,9 +1472,8 @@ mod tests {
         );
     }
 
-    /// The `remote-cert` check is the durable surface for a certificate that
-    /// cannot be corrected in place (phux-q9a0, ADR-0091), so every branch
-    /// has to say something a user can act on.
+    /// Every `remote-cert` branch says something actionable, and doctor never
+    /// touches the certificate.
     #[test]
     fn remote_cert_reports_coverage_without_ever_repairing_it() {
         use phux_server::transport::tls::{cert_fingerprint, ensure_self_signed};
@@ -1847,8 +1483,6 @@ mod tests {
         let key = dir.path().join("remote-key.pem");
         let overlay = ["100.64.0.2".to_owned()];
 
-        // Nothing provisioned yet: a warning that names the one command that
-        // fixes it, never a failure (not having paired is a normal state).
         let check = remote_cert_check(&cert, &key, &overlay, false);
         assert_eq!(check.status, Status::Warn);
         assert!(check.hint.expect("hint").contains("phux pair"));
@@ -1856,8 +1490,6 @@ mod tests {
         ensure_self_signed(&cert, &key).expect("provision");
         let fingerprint = cert_fingerprint(&cert).expect("fingerprint");
 
-        // A narrow certificate warns and hands over the exact remediation,
-        // including the fact that it un-pairs devices.
         let check = remote_cert_check(&cert, &key, &overlay, false);
         assert_eq!(
             check.status,
@@ -1870,21 +1502,17 @@ mod tests {
         assert!(hint.contains(&cert.display().to_string()), "{hint}");
         assert!(hint.contains(&key.display().to_string()), "{hint}");
 
-        // An operator-supplied certificate gets a remedy aimed at their CA,
-        // not an `rm` of a file phux does not own.
         let hint = remote_cert_check(&cert, &key, &overlay, true)
             .hint
             .expect("hint");
         assert!(hint.contains("subjectAltName"), "{hint}");
         assert!(!hint.contains("rm "), "{hint}");
 
-        // Nothing detected: not checkable, therefore not a pass.
         assert_eq!(
             remote_cert_check(&cert, &key, &[], false).status,
             Status::Warn
         );
 
-        // A certificate that does name the address passes.
         let wide_cert = dir.path().join("wide-cert.pem");
         let wide_key = dir.path().join("wide-key.pem");
         phux_server::transport::tls::ensure_self_signed_for(&wide_cert, &wide_key, &overlay)
@@ -1893,14 +1521,10 @@ mod tests {
         assert_eq!(check.status, Status::Pass);
         assert!(check.hint.is_none(), "a pass has nothing to remedy");
 
-        // Doctor mutates nothing: the narrow certificate is byte-identical,
-        // and so is the fingerprint every paired device pinned.
         assert_eq!(cert_fingerprint(&cert).expect("fingerprint"), fingerprint);
     }
 
-    /// An over-long socket path is the failure this check exists for: the
-    /// symptom is an unexplained connect timeout, and nobody guesses
-    /// `sockaddr_un` on their own.
+    /// An over-long socket path fails with a hint.
     #[test]
     fn an_over_long_socket_path_fails_with_a_hint() {
         let long = PathBuf::from(format!("/tmp/{}/phux.sock", "x".repeat(200)));
@@ -1912,18 +1536,7 @@ mod tests {
         );
     }
 
-    /// A workable path passes and echoes the path, so the report says which
-    /// socket it actually checked.
-    #[test]
-    fn a_short_socket_path_passes_and_names_itself() {
-        let check = check_socket_path(std::path::Path::new("/tmp/phux-doctor-test.sock"));
-        assert_eq!(check.status, Status::Pass);
-        assert!(check.detail.contains("phux-doctor-test.sock"));
-    }
-
-    /// A stopped server must not read as broken. Someone running `doctor`
-    /// before starting phux is doing a normal thing, and a red line there
-    /// teaches people to ignore red lines.
+    /// A stopped server warns rather than fails.
     #[test]
     fn a_missing_server_warns_rather_than_fails() {
         let check = check_server(std::path::Path::new("/tmp/phux-doctor-absent-server.sock"));
@@ -1951,19 +1564,7 @@ mod tests {
         assert_eq!(report_human(&checks), ExitCode::FAILURE);
     }
 
-    /// Every non-pass carries a hint. A diagnosis that names a problem
-    /// without naming a next step is half a diagnosis.
-    #[test]
-    fn every_non_pass_constructor_carries_a_hint() {
-        assert!(Check::warn("n", "d", "h").hint.is_some());
-        assert!(Check::fail("n", "d", "h").hint.is_some());
-        assert!(Check::pass("n", "d").hint.is_none());
-    }
-
-    /// phux-w7z2.46, the case this check was added for: the binary moved on
-    /// and the shim on disk did not. The line must say both numbers and name
-    /// the exact command that fixes it — the user has no way to guess that
-    /// re-running the installer is what closes a gap nothing else reports.
+    /// A stale shim warns with both schema numbers and the reinstall command.
     #[test]
     fn a_stale_claude_shim_warns_and_names_the_reinstall_command() {
         let path = std::path::Path::new("/data/phux/shims/claude");
@@ -1979,8 +1580,6 @@ mod tests {
             hint.contains("phux agent install-claude"),
             "the remedy must be the literal command: {hint}"
         );
-        // Each stale schema fails in its own recognizable way, and the hint
-        // says which one the user is living with.
         assert!(hint.contains("detector"), "{hint}");
         assert!(
             shim_check(Some(2), 3, path)
@@ -1991,49 +1590,26 @@ mod tests {
         );
     }
 
-    /// A machine that is already current gets no warning — the whole point of
-    /// a staleness check is that it stays quiet when nothing is stale.
-    #[test]
-    fn a_current_claude_shim_does_not_warn() {
-        let check = shim_check(Some(3), 3, std::path::Path::new("/data/phux/shims/claude"));
-        assert_eq!(check.status, Status::Pass);
-        assert!(check.hint.is_none());
-    }
-
-    /// `install-claude` is opt-in, so "never installed" is a normal state and
-    /// must not read as a problem on the many machines that never run it.
-    #[test]
-    fn an_absent_claude_shim_is_not_a_problem() {
-        let check = shim_check(None, 3, std::path::Path::new("/data/phux/shims/claude"));
-        assert_eq!(check.status, Status::Pass);
-        assert!(check.detail.contains("no claude-in-phux shim installed"));
-    }
-
-    /// The mismatch runs both ways: an older binary against a newer shim is
-    /// still a mismatch, and its remedy is the opposite one.
+    /// A newer shim warns with the opposite remedy; absent or current passes.
     #[test]
     fn a_shim_newer_than_the_binary_warns_with_the_other_remedy() {
         let check = shim_check(Some(4), 3, std::path::Path::new("/data/phux/shims/claude"));
         assert_eq!(check.status, Status::Warn);
         let hint = check.hint.expect("hint");
         assert!(hint.contains("phux update"), "{hint}");
+
+        for installed in [None, Some(3)] {
+            let check = shim_check(
+                installed,
+                3,
+                std::path::Path::new("/data/phux/shims/claude"),
+            );
+            assert_eq!(check.status, Status::Pass, "{installed:?}");
+            assert!(check.hint.is_none());
+        }
     }
 
-    /// A stale shim must never fail the run: phux itself works, and doctor's
-    /// exit code gates setup scripts that have nothing to do with Claude.
-    #[test]
-    fn a_stale_shim_never_fails_the_run() {
-        let checks = vec![shim_check(
-            Some(1),
-            3,
-            std::path::Path::new("/data/phux/shims/claude"),
-        )];
-        assert_eq!(report_human(&checks), ExitCode::SUCCESS);
-    }
-
-    /// The logs line on a machine where things have run: it names the
-    /// server log, counts the client logs, and names the state dir — the
-    /// three facts a crash investigation starts from.
+    /// The logs line names the server log, counts client logs, names the dir.
     #[test]
     #[allow(clippy::unwrap_used, reason = "test code")]
     fn logs_check_names_paths_and_counts_clients() {
@@ -2051,9 +1627,7 @@ mod tests {
         assert!(!check.detail.contains("not created yet"));
     }
 
-    /// A fresh machine — no server has ever run, the state dir may not
-    /// even exist — is a normal state, not a problem. The line still names
-    /// every path (existence-aware), and the check passes.
+    /// A fresh machine's absent logs are normal.
     #[test]
     #[allow(clippy::unwrap_used, reason = "test code")]
     fn logs_check_reports_absent_logs_as_normal() {
@@ -2068,9 +1642,7 @@ mod tests {
         assert!(check.detail.contains(&server_log.display().to_string()));
     }
 
-    /// The one thing this check warns about: a state dir that cannot be
-    /// written means the next crash leaves no evidence, silently. Warn —
-    /// not Fail, phux itself still works — with a hint naming the fix.
+    /// An unwritable state dir warns with a hint.
     #[cfg(unix)]
     #[test]
     #[allow(clippy::unwrap_used, reason = "test code")]
@@ -2082,7 +1654,6 @@ mod tests {
 
         let check = check_logs_at(dir.path(), &dir.path().join("server.log"));
 
-        // Restore write access so the tempdir cleanup can do its job.
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
 
         assert_eq!(check.status, Status::Warn);
@@ -2093,17 +1664,8 @@ mod tests {
         assert!(hint.contains(&dir.path().display().to_string()));
     }
 
-    // -----------------------------------------------------------------
-    // server-health: co-occurrence (phux-dsg1)
-    // -----------------------------------------------------------------
-
-    /// phux-dsg1's headline defect: crash-loop and a legacy supervisor unit
-    /// co-occur precisely when the old early-return version most needed to
-    /// report both — per phux-67wg, a legacy unit's unthrottled restarts are
-    /// exactly what produces a crash-loop. Breaking this back into "only the
-    /// first condition is reported" means a user with two problems hears
-    /// about one. The `recent_starts` closure panics if called, pinning that
-    /// the Pass-fallback count is never read once something else applies.
+    /// Co-occurring server-health conditions are all reported, and the pass
+    /// fallback count is not read.
     #[test]
     fn every_applicable_server_health_condition_is_reported() {
         let unit = std::path::Path::new("/home/u/.config/systemd/user/phux.service");
@@ -2133,8 +1695,7 @@ mod tests {
         assert!(checks[2].detail.contains("0.14.0"), "{}", checks[2].detail);
     }
 
-    /// A clean host still gets exactly one report — the pre-phux-dsg1 shape
-    /// when nothing applies must survive the rewrite unchanged.
+    /// A clean host gets exactly one pass line.
     #[test]
     fn server_health_passes_when_nothing_applies() {
         let checks = server_health_checks(None, None, None, None, || 2);
@@ -2143,13 +1704,7 @@ mod tests {
         assert!(checks[0].detail.contains("2 server start(s)"));
     }
 
-    /// phux-8514's adjacent gap: an armed-but-not-active supervision unit
-    /// (ADR-0088) was invisible to doctor, which reported all checks passing
-    /// while the running server was not restart-managed by anything — the
-    /// same invisible-supervision-state shape ADR-0080 made the crash-loop
-    /// reportable for. Informational: a Warn, not a Fail, because armed is
-    /// working as designed; it displaces the Pass line so the in-between
-    /// state is named rather than summarised away.
+    /// Armed supervision is a warning carrying the shared explanation verbatim.
     #[test]
     fn armed_supervision_is_surfaced_as_informational() {
         let unit = std::path::Path::new("/home/u/Library/LaunchAgents/com.phux.server.plist");
@@ -2181,33 +1736,14 @@ mod tests {
             hint.contains("service uninstall"),
             "the way out must be named: {hint}"
         );
-        // The explanation itself has one home (phux-8514 wrote it twice, in
-        // two crates' worth of wording that had already drifted). Doctor
-        // frames it; it does not restate it.
         assert!(
             hint.contains(super::super::service::ARMED_SUPERVISION_EXPLANATION),
             "the hint must carry the shared explanation verbatim, not a second copy: {hint}"
         );
     }
 
-    /// phux-nvi2: the legacy-unit hint must stay honest about what following
-    /// it actually does. A `Warn` exits 0 and reads as routine housekeeping,
-    /// which is exactly when an unannounced destructive step does the most
-    /// damage.
-    ///
-    /// The guard survives phux-l1yx, but its *premise* moved and the
-    /// assertions moved with it. The remedy used to be `phux service install`,
-    /// which reloads the unit and therefore ends every pane, so the hint had
-    /// to say so. It is now `phux service reconcile`, which rewrites the
-    /// policy keys in place and stops nothing — so the honest hint no longer
-    /// warns about pane loss, because there is none to warn about.
-    ///
-    /// What nvi2 actually guarantees is unchanged and is what is asserted
-    /// here: the hint names its remedy, that remedy is not the destructive
-    /// one, and any way in which following it falls short of a complete fix
-    /// is stated rather than left to be discovered. On macOS the corrected
-    /// policy cannot take effect without a `bootout`, so "not in force until
-    /// next login" is exactly that kind of shortfall.
+    /// The legacy-unit hint names the non-destructive `reconcile`, not
+    /// `install`, and says the macOS fix lands at next login.
     #[test]
     fn legacy_unit_hint_stays_honest_about_its_own_remedy() {
         let unit = std::path::Path::new("/home/u/Library/LaunchAgents/com.phux.server.plist");
@@ -2233,14 +1769,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
-    // supervisor_unit_is_legacy: values, not key presence (phux-dsg1)
-    // -----------------------------------------------------------------
-
-    /// A `ServicePlan` with every field populated, for feeding the real
-    /// `service` renderers. Ties the legacy-detection tests to what
-    /// `service install` actually writes today, rather than a hand-typed
-    /// fixture that could quietly drift from it.
+    /// A `ServicePlan` for feeding the real `service` renderers.
     fn service_plan_fixture() -> crate::commands::service::ServicePlan {
         crate::commands::service::ServicePlan {
             binary: PathBuf::from("/usr/local/bin/phux"),
@@ -2259,142 +1788,34 @@ mod tests {
         }
     }
 
-    /// Whatever `service install` writes today must never trip doctor's
-    /// legacy warning. This is the test the bug report says was missing
-    /// entirely: the detection logic is the half of ADR-0080 that runs on
-    /// users' machines, while the rendering it detects already had 17 tests.
-    #[test]
-    #[allow(clippy::unwrap_used, reason = "test code")]
-    fn a_freshly_generated_launchd_unit_is_never_flagged_legacy() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("com.phux.server.plist");
-        let plist = crate::commands::service::render_launchd_plist(&service_plan_fixture());
-        std::fs::write(&path, plist).unwrap();
-
-        assert!(!supervisor_unit_is_legacy(&path));
-    }
-
-    /// The systemd half of the same guarantee.
-    #[test]
-    #[allow(clippy::unwrap_used, reason = "test code")]
-    fn a_freshly_generated_systemd_unit_is_never_flagged_legacy() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("phux.service");
-        let unit = crate::commands::service::render_systemd_unit(&service_plan_fixture());
-        std::fs::write(&path, unit).unwrap();
-
-        assert!(!supervisor_unit_is_legacy(&path));
-    }
-
-    /// The actual pre-phux-zomb.4 shape: `KeepAlive` as a bare boolean, no
-    /// `SuccessfulExit` or `ThrottleInterval` keys at all. This is the unit
-    /// every host that has never re-run `phux service install` since is
-    /// still running.
-    #[test]
-    #[allow(clippy::unwrap_used, reason = "test code")]
-    fn a_pre_zomb4_launchd_unit_is_flagged_legacy() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("com.phux.server.plist");
-        std::fs::write(
-            &path,
-            "<?xml version=\"1.0\"?>\n<plist><dict>\n  \
-             <key>Label</key>\n  <string>com.phux.server</string>\n  \
-             <key>KeepAlive</key>\n  <true/>\n</dict></plist>\n",
-        )
-        .unwrap();
-
-        assert!(supervisor_unit_is_legacy(&path));
-    }
-
-    /// phux-dsg1's cited false pass: a zero throttle wears the corrected key
-    /// but keeps the legacy (unthrottled) behavior. The old substring-only
-    /// check could not tell the difference between this and a real 30s
-    /// throttle.
-    #[test]
-    #[allow(clippy::unwrap_used, reason = "test code")]
-    fn a_zero_throttle_interval_is_still_legacy() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("com.phux.server.plist");
-        std::fs::write(
-            &path,
-            "<plist><dict>\n  <key>SuccessfulExit</key>\n    <false/>\n  \
-             <key>ThrottleInterval</key>\n  <integer>0</integer>\n</dict></plist>\n",
-        )
-        .unwrap();
-
-        assert!(
-            supervisor_unit_is_legacy(&path),
-            "a zero throttle is the legacy behavior wearing the corrected key"
-        );
-    }
-
-    /// phux-dsg1's other cited false pass: `Restart=always` beside a stray
-    /// mention of `SuccessfulExit` (e.g. in a comment) used to read as legacy
-    /// because the old check only asked whether each word appeared anywhere
-    /// in the file, never what value it carried.
-    #[test]
-    #[allow(clippy::unwrap_used, reason = "test code")]
-    fn restart_always_is_legacy_despite_a_stray_successfulexit_mention() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("phux.service");
-        std::fs::write(
-            &path,
-            "[Service]\n# SuccessfulExit is launchd's spelling, not used here\n\
-             Restart=always\nRestartSec=30s\n",
-        )
-        .unwrap();
-
-        assert!(
-            supervisor_unit_is_legacy(&path),
-            "`Restart=always` is the legacy policy regardless of what other tokens appear in the file"
-        );
-    }
-
-    /// A unit doctor cannot read (removed mid-check, permissions, etc.) must
-    /// not be guessed broken — `check_server_health` already filters to
-    /// existing paths, but this pins the function's own defensive behavior.
+    /// A unit doctor cannot read is not guessed legacy.
     #[test]
     fn an_unreadable_unit_is_not_flagged_legacy() {
         let path = std::path::Path::new("/nonexistent/phux-doctor-test/unit-file");
         assert!(!supervisor_unit_is_legacy(path));
     }
 
-    // -----------------------------------------------------------------
-    // supervisor_unit_is_legacy vs service::reconcile_unit (phux-x2k8)
-    // -----------------------------------------------------------------
-    //
-    // Two predicates now answer a related question about the same unit
-    // files (doctor's "should I warn" and service's "would reconciling
-    // change anything"). The design decision — keep both, because they
-    // answer genuinely different questions — is documented on
-    // `supervisor_unit_is_legacy` above. These two tests are what makes that
-    // decision durable instead of just prose: one pins where they must
-    // agree, the other pins the one place they are allowed not to.
-
-    /// Every case that has actually mattered in practice — a freshly
-    /// generated unit for both managers, the real pre-zomb.4 shape, and
-    /// dsg1's two specific false-pass fixtures (a zero throttle, and
-    /// `Restart=always` beside a stray `SuccessfulExit` mention) — must get
-    /// the same legacy verdict from `supervisor_unit_is_legacy` as from
-    /// `reconcile_unit`'s `Current`/not-`Current` split. If a future change
-    /// made these disagree on any of these cases, that is a real
-    /// regression, not the accepted divergence the next test pins.
+    /// The legacy verdict for fresh units, the pre-throttle shape, a zero
+    /// throttle, and `Restart=always` beside a stray `SuccessfulExit`, and its
+    /// agreement with `reconcile_unit` on each.
     #[test]
     #[allow(clippy::unwrap_used, reason = "test code")]
     fn supervisor_unit_is_legacy_and_reconcile_unit_agree_on_known_cases() {
         use crate::commands::service::{Manager, Reconcile, reconcile_unit};
 
         let dir = tempfile::tempdir().unwrap();
-        let cases: [(&str, Manager, String); 5] = [
+        let cases: [(&str, Manager, String, bool); 5] = [
             (
                 "fresh-launchd",
                 Manager::Launchd,
                 crate::commands::service::render_launchd_plist(&service_plan_fixture()),
+                false,
             ),
             (
                 "fresh-systemd",
                 Manager::Systemd,
                 crate::commands::service::render_systemd_unit(&service_plan_fixture()),
+                false,
             ),
             (
                 "pre-zomb4-launchd",
@@ -2403,6 +1824,7 @@ mod tests {
                  <key>Label</key>\n  <string>com.phux.server</string>\n  \
                  <key>KeepAlive</key>\n  <true/>\n</dict>\n</plist>\n"
                     .to_owned(),
+                true,
             ),
             (
                 "zero-throttle-launchd",
@@ -2410,6 +1832,7 @@ mod tests {
                 "<plist version=\"1.0\">\n<dict>\n  <key>SuccessfulExit</key>\n    <false/>\n  \
                  <key>ThrottleInterval</key>\n  <integer>0</integer>\n</dict>\n</plist>\n"
                     .to_owned(),
+                true,
             ),
             (
                 "restart-always-systemd",
@@ -2417,14 +1840,16 @@ mod tests {
                 "[Service]\n# SuccessfulExit is launchd's spelling, not used here\n\
                  Restart=always\nRestartSec=30s\n"
                     .to_owned(),
+                true,
             ),
         ];
 
-        for (name, manager, body) in cases {
+        for (name, manager, body, expected) in cases {
             let path = dir.path().join(name);
             std::fs::write(&path, &body).unwrap();
 
             let legacy = supervisor_unit_is_legacy(&path);
+            assert_eq!(legacy, expected, "{name}: legacy verdict");
             let would_change = !matches!(reconcile_unit(manager, &body), Reconcile::Current);
             assert_eq!(
                 legacy,
@@ -2436,14 +1861,8 @@ mod tests {
         }
     }
 
-    /// The accepted divergence: a throttle that is a real, positive number
-    /// but not *today's exact* number is not dangerous, so doctor does not
-    /// warn about it — while `reconcile_unit` still wants to rewrite it,
-    /// because its job is convergence onto the current canonical bytes, not
-    /// a judgment about safety. If `RESTART_THROTTLE_SECS` is ever retuned,
-    /// a unit installed by the previous release must not start producing a
-    /// doctor warning it did not produce before the upgrade — that is the
-    /// concrete reason the two predicates are not one.
+    /// The accepted divergence: a retuned positive throttle is not legacy, while
+    /// `reconcile_unit` still converges it.
     #[test]
     #[allow(clippy::unwrap_used, reason = "test code")]
     fn a_retuned_but_positive_throttle_is_not_legacy_though_reconcile_would_still_rewrite_it() {
@@ -2475,92 +1894,6 @@ mod tests {
             reconcile_unit(Manager::Launchd, &retuned),
             Reconcile::Current,
             "reconcile still wants to converge on the exact current throttle value"
-        );
-    }
-
-    // -----------------------------------------------------------------
-    // legacy_service_unit_path: profile scoping (phux-dsg1)
-    // -----------------------------------------------------------------
-
-    /// The default profile keeps the unscoped name, matching
-    /// `service::launchd_label_for`/`unit_path` for the default profile.
-    #[test]
-    fn legacy_unit_path_default_profile_launchd() {
-        let path = legacy_service_unit_path_for(
-            LegacyManager::Launchd,
-            Some(std::ffi::OsString::from("/Users/u")),
-            None,
-            None,
-        );
-        assert_eq!(
-            path,
-            Some(PathBuf::from(
-                "/Users/u/Library/LaunchAgents/com.phux.server.plist"
-            ))
-        );
-    }
-
-    /// phux-gyza / phux-dsg1: a non-default profile's unit is filed under a
-    /// suffixed label, not the bare one — `service.rs` profile-scopes every
-    /// unit but the default profile's, and this duplicate has to track that
-    /// scoping or doctor silently stops finding a legacy unit on any
-    /// non-default profile.
-    #[test]
-    fn legacy_unit_path_scopes_by_profile_launchd() {
-        let path = legacy_service_unit_path_for(
-            LegacyManager::Launchd,
-            Some(std::ffi::OsString::from("/Users/u")),
-            None,
-            Some("dev"),
-        );
-        assert_eq!(
-            path,
-            Some(PathBuf::from(
-                "/Users/u/Library/LaunchAgents/com.phux.server.dev.plist"
-            ))
-        );
-    }
-
-    /// The systemd half of the same profile-scoping guarantee.
-    #[test]
-    fn legacy_unit_path_scopes_by_profile_systemd() {
-        let path = legacy_service_unit_path_for(
-            LegacyManager::Systemd,
-            Some(std::ffi::OsString::from("/home/u")),
-            None,
-            Some("dev"),
-        );
-        assert_eq!(
-            path,
-            Some(PathBuf::from(
-                "/home/u/.config/systemd/user/phux-dev.service"
-            ))
-        );
-    }
-
-    /// `XDG_CONFIG_HOME` still overrides the default `~/.config` join on the
-    /// systemd side, same as `service::config_home`.
-    #[test]
-    fn legacy_unit_path_systemd_respects_xdg_config_home() {
-        let path = legacy_service_unit_path_for(
-            LegacyManager::Systemd,
-            Some(std::ffi::OsString::from("/home/u")),
-            Some(std::ffi::OsString::from("/custom/config")),
-            None,
-        );
-        assert_eq!(
-            path,
-            Some(PathBuf::from("/custom/config/systemd/user/phux.service"))
-        );
-    }
-
-    /// No `HOME` means no path — the naive join used to silently produce a
-    /// path relative to the current working directory instead.
-    #[test]
-    fn legacy_unit_path_none_without_home() {
-        assert_eq!(
-            legacy_service_unit_path_for(LegacyManager::Launchd, None, None, None),
-            None
         );
     }
 }

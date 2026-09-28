@@ -6,7 +6,7 @@ last-reviewed: 2026-09-12
 
 # Predictive local echo
 
-**TL;DR.** Predictive echo is implemented as an opt-in client feature. It
+**TL;DR.** Predictive echo is an experimental client feature. It
 renders a conservative set of likely keystroke results with an underline,
 keeps the libghostty mirror authoritative, and reconciles each prediction when
 real `RESOURCE_OUTPUT` arrives. Contradictions discard the suspect suffix and
@@ -18,31 +18,16 @@ display is confirmation-gated: nothing paints until the app proves it echoes
 
 ## Configuration
 
-Predictive echo ships in the attach client and is off by default. Enable it in
-the user config:
-
-```toml
-[experimental]
-predictive-echo = true
-```
-
-The config layer maps that key to `PredictiveConfig`, and the attach path
-constructs a `PredictionState` for the focused terminal. The feature is
-experimental: its key and policy may change before 1.0.
+`[experimental] predictive-echo` is unset by default, which enables
+prediction only for an attach that leaves the machine; `true` / `false`
+force it ([`../reference/config.md`](../reference/config.md)). The attach
+path builds a `PredictionState` for the focused terminal.
 
 ## Why it is client-side
 
-On a slow connection, waiting for the server to echo every keystroke makes the
-terminal feel delayed. phux can paint a conservative guess immediately, then
-replace it with authoritative output when the round trip completes.
-
-Prediction never changes the terminal mirror. The mirror remains a
-libghostty `Terminal` fed by server output; predictions live in a separate
-overlay painted after the normal renderer. The overlay uses underline so a
-user can distinguish speculation from confirmed terminal content.
-
-This keeps latency hiding independent of transport. The same predictor can run
-over a local socket, WebSocket, or QUIC connection without changing the wire.
+Prediction never changes the terminal mirror; guesses live in a separate
+underlined overlay painted after the normal renderer, so latency hiding is
+independent of transport and needs no wire change.
 
 ## What the client predicts
 
@@ -111,9 +96,7 @@ unconfirmed overlay on either screen.
 
 ## Status
 
-No remaining target-versus-shipped gaps in the prediction loop this
-document owns. The feature is experimental: its config key and policy may
-change before 1.0.
+No remaining target-versus-shipped gaps.
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|

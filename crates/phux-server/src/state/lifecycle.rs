@@ -1,24 +1,12 @@
 use super::ServerState;
 
 impl ServerState {
-    /// Record that a client connection was accepted (any transport).
-    ///
-    /// Disarms the idle clock: while a connection is open the server is by
-    /// definition not idle, however long that connection sits quiet. "Idle"
-    /// here means *unattended*, not *silent* — a human parked in an attached
-    /// pane reading a log for an hour must never be reaped.
+    /// Record an accepted connection (disarms the idle clock).
     pub fn note_connection_opened(&mut self) {
         self.lifecycle.note_connection_opened();
     }
 
-    /// Record that a client connection ended (clean EOF, error, or drop).
-    ///
-    /// Re-arms the idle clock when this was the last one. `saturating_sub`
-    /// rather than `-= 1`: a decrement without a matching increment is a
-    /// bookkeeping bug, and underflowing to `u32::MAX` would silently make
-    /// the server immortal — the exact failure this whole feature exists to
-    /// prevent. Saturating instead pins the count at zero, which fails
-    /// *toward* exiting and is therefore the safe direction.
+    /// Record a closed connection (re-arms the idle clock at zero).
     pub fn note_connection_closed(&mut self) {
         self.lifecycle.note_connection_closed();
     }

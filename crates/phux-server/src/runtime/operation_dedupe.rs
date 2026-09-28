@@ -1,26 +1,16 @@
-//! The shared operation dedupe record (ADR-0053, generalized by ADR-0126).
+//! The shared operation dedupe record (ADR-0053, ADR-0126).
 //!
-//! A client that loses a reply cannot tell whether its operation ran, so the
-//! operations that must be safe to repeat carry a client-drawn 16-byte id.
-//! This store binds each id to a digest of the request and, once known, to
-//! the outcome, so a repeat with the same id and payload answers the original
-//! outcome instead of running again, and a repeat with a different payload is
-//! refused.
+//! Operations that must be safe to repeat carry a client-drawn 16-byte id,
+//! bound here to a digest of the request and then to its outcome: a same-id,
+//! same-payload repeat answers the original outcome, and a different payload
+//! is refused. Bounds: ten minutes from admission, at most 65,536 live ids,
+//! scoped to this server incarnation. A full store refuses new ids rather
+//! than evicting live ones, so one verb's storm can never make another's
+//! retry run twice. Ids are namespaced per verb by `OperationDomain`.
 //!
-//! One store serves every such operation, with one set of bounds: a
-//! ten-minute horizon measured from admission, at most 65,536 live ids, and
-//! the server incarnation as scope (it lives in memory and dies with the
-//! process, which is what `HELLO_OK.server_id` tells a client). When the
-//! store is full it refuses new ids rather than evicting live ones, so a
-//! storm of one verb can never make another verb's retry run twice.
-//!
-//! Ids are namespaced by `OperationDomain`: the same 16 bytes used as an
-//! `APPLY_INPUT` operation id and as a spawn key name two operations, not one.
-//!
-//! The record is shared between the async runtime, the input lane thread,
-//! and the input completion waiter, so it is a `Mutex`, and a waiter is a
-//! callback: each verb joins a pending operation with its own reply type
-//! without the store knowing it.
+//! The store is shared across threads (runtime, input lane, completion
+//! waiter), and a waiter is a callback so each verb joins with its own reply
+//! type.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -213,33 +203,29 @@ impl DedupeStore {
         }
     }
 
-    fn set_final(&mut self, key: OperationKey, outcome: CachedOutcome) -> Vec<Waiter> {
+    /// Move `key` to `state`, returning the waiters of a pending operation.
+    fn resolve(&mut self, key: OperationKey, state: EntryState) -> Vec<Waiter> {
         let Some(entry) = self.entries.get_mut(&key) else {
             return Vec::new();
         };
-        match std::mem::replace(&mut entry.state, EntryState::Final(outcome)) {
+        match std::mem::replace(&mut entry.state, state) {
             EntryState::Pending(waiters) => waiters,
             EntryState::Retryable | EntryState::Final(_) => Vec::new(),
         }
     }
 
-    fn set_retryable(&mut self, key: OperationKey) -> Vec<Waiter> {
-        let Some(entry) = self.entries.get_mut(&key) else {
-            return Vec::new();
-        };
-        match std::mem::replace(&mut entry.state, EntryState::Retryable) {
-            EntryState::Pending(waiters) => waiters,
-            EntryState::Retryable | EntryState::Final(_) => Vec::new(),
-        }
+    fn set_final(&mut self, key: OperationKey, outcome: CachedOutcome) -> Vec<Waiter> {
+        self.resolve(key, EntryState::Final(outcome))
     }
 
     /// Forget an unresolved operation that bound nothing, returning its
     /// waiters. A finished one is kept.
     fn release(&mut self, key: OperationKey) -> Vec<Waiter> {
-        let Some(entry) = self.entries.get(&key) else {
-            return Vec::new();
-        };
-        if !matches!(entry.state, EntryState::Pending(_)) {
+        let pending = self
+            .entries
+            .get(&key)
+            .is_some_and(|entry| matches!(entry.state, EntryState::Pending(_)));
+        if !pending {
             return Vec::new();
         }
         let waiters = match self.entries.remove(&key).map(|entry| entry.state) {
@@ -312,7 +298,7 @@ impl OperationDedupe {
     /// Keep the id-to-digest binding but not `notice`, which only the
     /// current waiters receive.
     pub(crate) fn set_retryable(&self, key: OperationKey, notice: &CachedOutcome) {
-        let waiters = self.lock().set_retryable(key);
+        let waiters = self.lock().resolve(key, EntryState::Retryable);
         notify(waiters, notice);
     }
 
@@ -328,6 +314,61 @@ impl OperationDedupe {
     pub(crate) fn unbind(&self, key: OperationKey, outcome: &CachedOutcome) {
         self.lock().unbind(key, outcome);
     }
+
+    /// Admit `key` for an operation that may await: a repeat joins an
+    /// unresolved owner for up to `wait`, and admits itself again if the
+    /// owner releases the key having bound nothing.
+    pub(crate) async fn admit(
+        &self,
+        key: OperationKey,
+        digest: [u8; 32],
+        wait: Duration,
+    ) -> Admission {
+        loop {
+            let pending = match self.claim_at(key, digest, Instant::now(), join_outcome) {
+                Claim::Owner => return Admission::Owner(OperationClaim::new(self.clone(), key)),
+                Claim::Pending(pending) => pending,
+                Claim::Final(outcome) => return Admission::Final(outcome),
+                Claim::PendingUncertain => return Admission::InFlight,
+                Claim::Conflict => return Admission::Conflict,
+                Claim::Full => return Admission::Full,
+            };
+            match tokio::time::timeout(wait, pending).await {
+                Ok(Ok(outcome)) => return Admission::Final(outcome),
+                Ok(Err(_)) => {}
+                Err(_) => return Admission::InFlight,
+            }
+        }
+    }
+}
+
+/// The answer to [`OperationDedupe::admit`].
+#[derive(Debug)]
+pub(crate) enum Admission {
+    /// The caller runs the operation.
+    Owner(OperationClaim),
+    /// The operation already finished with this outcome.
+    Final(CachedOutcome),
+    /// The same operation is still unresolved.
+    InFlight,
+    /// The key is bound to a different payload.
+    Conflict,
+    /// The store is full.
+    Full,
+}
+
+/// A repeat that receives the outcome its operation resolves with.
+pub(crate) fn join_outcome() -> (Waiter, tokio::sync::oneshot::Receiver<CachedOutcome>) {
+    let (reply, outcome) = tokio::sync::oneshot::channel();
+    let waiter: Waiter = Box::new(move |bound: &CachedOutcome| {
+        let _ = reply.send(bound.clone());
+    });
+    (waiter, outcome)
+}
+
+/// A repeat that waits for nothing.
+pub(crate) fn join_nothing() -> (Waiter, ()) {
+    (Box::new(|_| {}), ())
 }
 
 fn notify(waiters: Vec<Waiter>, outcome: &CachedOutcome) {
@@ -373,19 +414,7 @@ mod tests {
         OperationKey::new(OperationDomain::Input, bytes)
     }
 
-    fn no_join() -> (Waiter, ()) {
-        (Box::new(|_| {}), ())
-    }
-
-    fn channel_join() -> (Waiter, tokio::sync::oneshot::Receiver<CachedOutcome>) {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        (
-            Box::new(move |outcome: &CachedOutcome| {
-                let _ = tx.send(outcome.clone());
-            }),
-            rx,
-        )
-    }
+    use super::{join_nothing as no_join, join_outcome as channel_join};
 
     fn spawned(id: u32) -> CachedOutcome {
         CachedOutcome::Spawn {

@@ -5,20 +5,16 @@
 //! copies a confirmed record into the versioned archive, and restore stamps the
 //! returned replacement Terminal after replaying the provider's native argv.
 //!
-//! The record type and its wire round trips ([`AgentSessionRecord`],
-//! [`fetch_record_index`]) live in `phux_client::agent_session_record` and
-//! are re-exported here so the rest of the CLI keeps its established
-//! `crate::commands::agent::{...}` import path. What stays here is
-//! launch-plan resolution ([`prepare`]/[`prepare_for_launch`]), which depends
-//! on `phux-plugin`'s `ResolvedLaunch` and so cannot live in the headless
-//! client library.
+//! The record and its wire round trips live in
+//! `phux_client::agent_session_record`; launch-plan resolution stays here
+//! because it depends on `phux-plugin`'s `ResolvedLaunch`.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use phux_plugin::ResolvedLaunch;
 
-pub(crate) use phux_client::agent_session_record::{AgentSessionRecord, fetch_record_index};
+use phux_client::agent_session_record::AgentSessionRecord;
 
 /// A launch carrying one established or resumed provider-native session.
 #[derive(Debug, Clone, PartialEq, Eq)]

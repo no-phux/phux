@@ -1,39 +1,15 @@
 #![allow(clippy::nursery)]
-//! Server-side state shared by the listener loop and per-client tasks
-//! (`phux-byc.4`).
+//! Server-side state shared by the listener loop and per-client tasks.
 //!
-//! This module owns:
+//! [`ServerState`] groups the session registry, attached clients, per-pane
+//! subscribers, the event journal, metadata, leases, and process-level
+//! bookkeeping into internal tables (each file below documents its own).
+//! Client input does not pass through here; it goes to the pane actors.
 //!
-//! * The [`Registry`](phux_core::registry::Registry) of sessions, windows,
-//!   and panes (the canonical domain state from
-//!   `phux-byc.1`/`phux-byc.2`), grouped with its per-session ledgers in
-//!   `state::session_table` and reached through [`ServerState::registry`].
-//! * The set of currently attached clients ([`AttachedClient`]) keyed by a
-//!   server-assigned monotonic [`ClientId`].
-//! * The list of subscribers per pane — used to fan diffs out to every client
-//!   that is currently observing a pane.
-//!
-//! Client input is not buffered here: [`TerminalInput`] events flow directly
-//! onto the per-pane [`crate::terminal_actor::TerminalActor`]'s input mailbox,
-//! which encodes them to PTY bytes (see `runtime::commands`).
-//!
-//! # Concurrency model
-//!
-//! The server runs on a `tokio::runtime::Builder::new_current_thread`
-//! executor (see `runtime.rs`, ADR-0003 "one server per user, one event
-//! loop"). Per-client tasks are spawned via `tokio::task::spawn_local`
-//! onto a [`tokio::task::LocalSet`] (per ADR-0014), so per-client
-//! futures are `!Send` and can hold `Rc<RefCell<_>>` if desired.
-//!
-//! [`ServerState`] itself stays behind `Arc<Mutex<_>>` because the
-//! [`crate::terminal_actor::TerminalHandle`] held inside `panes` is `Send` and
-//! the surrounding [`SharedState`] is used in a few sync contexts
-//! (pre-seed before `LocalSet` entry, test scaffolding). Critical sections
-//! are short (microseconds: a few `HashMap` ops), so atomic contention
-//! is not a concern in steady state. The `std::sync::Mutex` avoids
-//! `tokio::sync::Mutex`'s async-friendly futures-park machinery because
-//! every section in this module is sync and finite — we never `.await`
-//! while holding it.
+//! The server is one current-thread runtime with a `LocalSet` (ADR-0003,
+//! ADR-0014). `ServerState` sits behind `Arc<Mutex<_>>` because it holds
+//! `Send` handles and is used in a few sync contexts; critical sections are
+//! short and never `.await` with the lock held.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -93,10 +69,8 @@ pub use journal::EventRecord;
 pub(crate) use retained::Retention;
 pub use retained::{RetainPolicy, close_reason_name, process_exit};
 pub use roles::RoleEffects;
-// Facade: the mailbox payloads live at the crate root (`crate::mailbox`) so
-// `state` and `terminal_actor` can both depend on them without depending on
-// each other. Re-exported here because `crate::state::Outbound` is the spelling
-// the rest of the crate — and its consumers — already use.
+// The mailbox payloads live in `crate::mailbox` so `state` and the actor
+// share them without depending on each other.
 pub use crate::mailbox::{DEFAULT_CLIENT_MAILBOX, Outbound, TerminalInput};
 use lease_table::LeaseTable;
 pub(crate) use lease_table::SatelliteLease;
@@ -109,25 +83,16 @@ use resource_table::ResourceTable;
 use session_table::SessionTable;
 pub use upgrade_blob::RebuildError;
 
-/// Default Group identifier exposed by v0.1 servers.
-///
-/// The grouping tier is not a wire lifecycle (SPEC §7.3); the server
-/// exposes a single static Group that every L3 metadata operation
-/// targeting `Scope::Group` lands in. This is load-bearing for the
-/// reference TUI's `phux.tui.layout/v1` key — ADR-0019 ties layout
-/// persistence to a Group scope and the TUI needs a Group to write into.
+/// The single static Group every `Scope::Group` metadata op lands in; the
+/// TUI's layout key needs one (ADR-0019).
 pub const DEFAULT_GROUP_ID: GroupId = GroupId::new(1);
 
-/// Usable Terminal geometry when no attached view contributes a viewport.
-///
-/// Session seeds start here, and automatic window-size policies return here
-/// after the final usable view detaches. `Manual` deliberately opts out.
+/// Terminal size when no attached view contributes a viewport (seeds, and
+/// automatic size policies after the last view leaves).
 pub(crate) const HEADLESS_TERMINAL_DIMS: (u16, u16) = (80, 24);
 
-/// Opaque process-incarnation identifier advertised during `HELLO_OK`.
-///
-/// Debug output is redacted so traces cannot accidentally expose a stable
-/// cross-connection correlation token.
+/// Opaque process-incarnation id advertised in `HELLO_OK`; `Debug` is
+/// redacted so traces do not leak a stable correlation token.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ServerIncarnation([u8; 16]);
 
@@ -165,162 +130,66 @@ pub struct CloseAttribution {
     pub operation_id: Option<phux_protocol::ids::IdempotencyKey>,
 }
 
-/// Single owner of all server-side state.
-///
-/// See the module-level doc for the concurrency model. Wrap this in
-/// [`SharedState`] before sharing with per-client tasks.
+/// Single owner of all server-side state; share it as [`SharedState`].
 #[derive(Debug)]
 pub struct ServerState {
-    /// The canonical session/window/pane
-    /// [`Registry`](phux_core::registry::Registry) plus the per-session
-    /// and per-window ledgers keyed on it: last-touch ordering
-    /// (`AttachTarget::Last`), frozen session roots, and per-window last
-    /// CWDs (the two halves of `defaults.cwd-inheritance`, phux-nyx).
-    ///
-    /// Accessors stay on this type (see `state::sessions`, `state::cwd`);
-    /// the table is an internal grouping, so nothing outside `state` names
-    /// it. The registry alone is reachable from outside, through
-    /// [`Self::registry`] / [`Self::registry_mut`]. See [`session_table`]
-    /// for the per-field documentation.
+    /// The session/window/pane registry plus per-session ledgers (last
+    /// touch, frozen roots, per-window cwd); see [`session_table`].
     sessions: SessionTable,
-    /// Everything keyed on a connected client's identity: the attached-client
-    /// records, the monotonic [`ClientId`] allocator, per-client negotiated
-    /// layers, agent-event subscriptions, peer identities, and the unread
-    /// one-shot session-create results.
-    ///
-    /// Accessors stay on this type (see `state::client`, `state::events`,
-    /// `state::policy`, `state::metadata`); the table is an internal
-    /// grouping, so nothing outside `state` names it. The attached-client
-    /// map alone is readable from outside, through [`Self::attached`]. See
-    /// [`client_table`] for the per-field documentation.
+    /// Everything keyed on a connected client; see [`client_table`].
     clients: ClientTable,
-    /// The server-wide event journal (ADR-0123): the one `seq` every event
-    /// is stamped with, and the bounded ring a cursor subscription replays
-    /// from. Written only by [`Self::record_and_fanout`] (and the hub's
-    /// relay re-stamp), under this lock, so an event's order and any
-    /// snapshot cut in the same lock agree. See [`journal`] and
-    /// `state::events`.
+    /// The event journal (ADR-0123): one `seq` for every event and the
+    /// replay ring, written only under this lock so order and snapshot cuts
+    /// agree.
     journal: journal::Journal,
-    /// Everything keyed on a live pane's identity: actor handles, shutdown
-    /// tokens, the pane-actor `JoinSet`, per-pane client subscriptions, and
-    /// the `ATTACH_RESOURCE` output pumps.
-    ///
-    /// Accessors stay on this type (see `state::terminals`); the table is
-    /// an internal grouping, so nothing outside `state` names it. See
-    /// [`resource_table`] for the per-field documentation, including the
-    /// ADR-0014 drop-safety contract on the `JoinSet`.
+    /// Everything keyed on a live pane (handles, tokens, actor `JoinSet`,
+    /// subscriptions, output pumps); see [`resource_table`].
     resources: ResourceTable,
-    /// Both input-lease ledgers (ADR-0033, "take the wheel"): the local
-    /// per-pane leases and, on a federation hub, the per-satellite-pane
-    /// leases that tell hub consumers apart behind the link's single client
-    /// identity (phux-v45.7, L1 §9.1).
-    ///
-    /// Accessors stay on this type (see `state::leases`); the table is an
-    /// internal grouping, so nothing outside `state` names it. Both ledgers
-    /// are released together for a departing client by
-    /// `LeaseTable::release_all_for`, called from [`Self::detach`]. See
-    /// [`lease_table`] for the per-field documentation.
+    /// Local and satellite input-lease ledgers (ADR-0033, L1 §9.1),
+    /// released together on detach; see [`lease_table`].
     leases: LeaseTable,
-    /// On a federation hub, which consumer asked for each satellite
-    /// resource this hub spawned, and whether another consumer has attached
-    /// it through the hub since (ADR-0109). Empty off-hub. See
-    /// [`satellite_spawns`].
+    /// On a hub, who spawned each satellite resource and whether another
+    /// consumer attached it since (ADR-0109).
     satellite_spawns: satellite_spawns::SatelliteSpawnLedger,
-    /// Every core-id ↔ wire-id mapping the server owns (sessions,
-    /// terminals, windows) plus the allocators that mint fresh wire ids.
-    /// Lives in this crate (and only this crate) because `phux-core` and
-    /// `phux-protocol` must not depend on each other — see [`IdSpace`] and
-    /// [`crate::id_bridge`] for the allocation contract.
+    /// Every core-id ↔ wire-id mapping and the wire-id allocators (see
+    /// [`IdSpace`]).
     pub idspace: IdSpace,
-    /// Per-scope K/V store backing SPEC §7.4 / §11.L3 metadata.
-    ///
-    /// Three independently-keyed maps mirror the three `Scope` variants
-    /// on the wire. Values are opaque `Vec<u8>`; the server enforces
-    /// nothing beyond per-key size limits (currently un-enforced; the
-    /// SPEC §11.L3 recommended 256 KiB cap is a follow-up).
+    /// Per-scope L3 metadata store (SPEC §7.4); values are opaque.
     metadata: MetadataStore,
-    /// What the server knows about the agents running inside its panes: the
-    /// pending-question detector (`phux.agent.asked/v1`, ADR-0046 §D) and
-    /// the `phux.agent/v1` record arbiter (ADR-0046 §E).
-    ///
-    /// Accessors stay on this type (see `state::agent`); the grouping is
-    /// internal, so nothing outside `state` names it. Both ledgers are
-    /// keyed on a pane and both are cleared in `state::reap`'s cascade. See
-    /// [`agent_tracking`] for the per-field documentation.
+    /// Agent tracking: the asked detector (ADR-0046 §D) and the record
+    /// arbiter (§E); see [`agent_tracking`].
     agent: AgentState,
-    /// Boot-time configuration mirrored from [`crate::runtime::ServerConfig`]
-    /// (scrollback cap, cwd-inheritance policy, `TERM`, default shell,
-    /// socket path, window-size policy, policy bundle).
-    ///
-    /// Every field is written once by [`ServerConfig::default`] and once by
-    /// the matching `set_*` method during `ServerRuntime::run_async`, before
-    /// the accept loops start; none of them changes while the server is
-    /// serving. See [`config`] for the per-field documentation.
+    /// Boot-time configuration, set before the accept loops start and never
+    /// changed; see [`config`].
     config: ServerConfig,
-    /// The federation-hub handles this server holds while acting as a hub
-    /// (phux-v45, ADR-0007): the validated satellite table, the
-    /// per-satellite link statuses, and the per-satellite frame relays.
-    ///
-    /// Accessors stay on this type (see `state::hub`); the grouping is
-    /// internal, so nothing outside `state` names it. All three handles are
-    /// `None` on a non-hub server — that is the mode gate, not a
-    /// not-yet-initialized marker. See [`hub_state`] for the per-field
-    /// documentation.
+    /// Hub handles (ADR-0007); all `None` on a non-hub server. See
+    /// [`hub_state`].
     hub: HubState,
-    /// Server-side event-hook dispatcher handle (`docs/consumers/tui.md`
-    /// §9, phux-r82.1). `None` until the runtime spawns the dispatcher
-    /// (it does so only when the hook catalog is non-empty), which is
-    /// also the default for every test that never configures hooks —
-    /// firing an event is then a no-op. Set once at startup via
-    /// [`Self::set_hook_dispatcher`].
+    /// Event-hook dispatcher; `None` when no hooks are configured (firing
+    /// is then a no-op).
     hook_dispatcher: Option<crate::hooks::HookDispatcher>,
-    /// Everything scoped to this server *process* rather than to anything
-    /// it serves: its [`ServerIncarnation`], the open-connection count and
-    /// idle clock that drive `--exit-after-idle` (ADR-0063), the
-    /// last-session self-exit arming (phux-60s), the monotonic viewport
-    /// stamp source, and the graceful-upgrade context (ADR-0032).
-    ///
-    /// Accessors stay on this type (see `state::lifecycle`,
-    /// `state::upgrade_blob`, and [`Self::server_incarnation`]); the
-    /// grouping is internal, so nothing outside `state` names it. See
-    /// [`lifecycle_state`] for the per-field documentation, including why
-    /// the connection count and the idle clock may only be written
-    /// together.
+    /// Process-scoped state: incarnation, connection count and idle clock
+    /// (ADR-0063), self-exit arming, viewport stamps, upgrade context. See
+    /// [`lifecycle_state`].
     lifecycle: Lifecycle,
-    /// Why each closing resource is closing (ADR-0104 §4).
-    ///
-    /// Written by whoever decides a resource must go — a `KILL_RESOURCE`, a
-    /// parent cascade, a shutdown — and read once by that resource's exit
-    /// watcher, which stamps it on the `RESOURCE_CLOSED` frame. An entry
-    /// exists only between the decision and the frame, and the reap drops
-    /// any that outlived it, so the map is bounded by the resources
-    /// currently in the act of closing. See [`bindings`] for the claim rule
-    /// that keeps exactly one closer per resource.
+    /// Why each closing resource is closing (ADR-0104 §4), from the
+    /// decision to its `RESOURCE_CLOSED`; see [`bindings`] for the
+    /// one-closer rule.
     close_reasons: std::collections::HashMap<
         phux_core::ids::ResourceId,
         phux_protocol::wire::frame::CloseReason,
     >,
-    /// Who and which keyed operation closed a resource a kill named, for its
-    /// `pane_closed` stamp (`docs/spec/L1.md` §7.3). Bounded like
-    /// [`Self::close_reasons`]: an entry lives from the kill to the reap.
+    /// Who and which keyed operation closed a resource, for `pane_closed`
+    /// (`docs/spec/L1.md` §7.3); lives from kill to reap.
     close_attributions: std::collections::HashMap<phux_core::ids::ResourceId, CloseAttribution>,
-    /// Retain-on-exit bookkeeping (ADR-0124): each pane's requested
-    /// retention and the exit facet of every pane retained after its
-    /// process exited. See [`retained`].
+    /// Retain-on-exit bookkeeping (ADR-0124); see [`retained`].
     retained: retained::RetainedTable,
-    /// Remote listener bind outcomes for `GET_STATE` / `phux doctor` (phux-kyna).
-    ///
-    /// Written as each configured or auto-bound transport finishes its bind
-    /// attempt; read by [`Self::build_session_snapshot`]. Absent from the
-    /// wire until at least one slot has been recorded.
+    /// Remote listener bind outcomes for `GET_STATE` and `phux doctor`.
     remote_listeners: phux_protocol::wire::RemoteListenersReport,
-    /// The shared operation dedupe record (ADR-0053, ADR-0126): input
-    /// operation ids, spawn keys, and session-create tokens, with one set of
-    /// bounds. It holds its own lock, so the input lane reaches it without
-    /// this one.
+    /// The operation dedupe record (ADR-0053, ADR-0126), with its own lock
+    /// so the input lane need not take this one.
     operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe,
-    /// Held `SIGNAL` actions awaiting a decision (ADR-0128): the pending
-    /// table and its bounds. See [`approvals`].
+    /// Held `SIGNAL` actions awaiting a decision (ADR-0128).
     approvals: approvals::ApprovalTable,
 }
 
@@ -345,15 +214,8 @@ impl ServerState {
     }
 }
 
-/// Convenience newtype: `Arc<Mutex<ServerState>>`. This is the type
-/// per-client tasks clone and hold.
-///
-/// Usage rules:
-/// * Lock for as short as possible — never `.await` while the guard is
-///   held. Every section in this crate is sync and finite.
-/// * Use [`Self::with`] / [`Self::with_mut`] for scoped access; they
-///   panic if the mutex is poisoned (i.e. a previous holder panicked),
-///   which is the bug-finding behavior we want at this stage.
+/// `Arc<Mutex<ServerState>>`, cloned by per-client tasks. Never `.await`
+/// while holding the guard; a poisoned lock panics by design.
 #[derive(Debug, Clone, Default)]
 pub struct SharedState(Arc<Mutex<ServerState>>);
 
@@ -369,16 +231,12 @@ impl SharedState {
         Self(state)
     }
 
-    /// Lock the state. Prefer [`Self::with`] / [`Self::with_mut`] when
-    /// possible.
+    /// Lock the state (prefer [`Self::with`] / [`Self::with_mut`]).
     ///
     /// # Panics
     ///
-    /// Panics if the mutex was poisoned (a previous holder panicked while
-    /// holding the lock). In a current-thread tokio server that means a
-    /// per-client task crashed mid-mutation; the conservative response is
-    /// to crash the server rather than continue with potentially
-    /// inconsistent state.
+    /// If a previous holder panicked mid-mutation; continuing with
+    /// possibly inconsistent state is worse.
     #[allow(clippy::expect_used, reason = "poison panic is the intended behavior")]
     pub fn lock(&self) -> MutexGuard<'_, ServerState> {
         self.0.lock().expect("ServerState mutex poisoned")
@@ -535,10 +393,8 @@ mod tests {
 
     #[test]
     fn attach_subscribes_to_every_pane_not_just_the_active_one() {
-        // phux-fysb.2: a multi-pane client must be subscribed to ALL its panes
-        // or the input gate drops keystrokes to non-active panes — the
-        // "can't type after re-attach" bug. Before the fix only the active
-        // pane was subscribed.
+        // A multi-pane client is subscribed to all its panes, not just the
+        // active one (else input to other panes is dropped).
         let mut s = ServerState::new();
         let (sid, _wid, pid1) = s.seed_session("default");
         let pid2 = s
@@ -559,13 +415,8 @@ mod tests {
 
     #[test]
     fn terminal_fanout_reaches_attach_terminal_only_subscribers_exactly_once() {
-        // phux-w7z2.56: L1 §3.1 requires RESOURCE_CLOSED for "every client
-        // subscribed to the Terminal", and L1 §5.1 says ATTACH_RESOURCE
-        // needs no session-scoped ATTACH. The fanout used to resolve
-        // mailboxes through `attached()` alone, so a consumer that only
-        // sent ATTACH_RESOURCE was in the subscriber list and filtered out
-        // of the fanout — it stopped receiving output and never learned
-        // why. Both kinds must resolve, and each to exactly one mailbox.
+        // ATTACH_RESOURCE-only consumers resolve to their mailbox too
+        // (L1 §3.1, §5.1), each exactly once.
         let mut s = ServerState::new();
         let (_sid, _wid, pid) = s.seed_session("default");
 
@@ -585,9 +436,8 @@ mod tests {
              watcher must resolve to a mailbox",
         );
 
-        // The session-attached client is ALSO reachable per-Terminal on the
-        // upgrade path (it re-issues ATTACH_RESOURCE on a pane it already
-        // observes). It must still resolve to one mailbox, not two.
+        // A session-attached client re-attaching a pane per-Terminal still
+        // resolves to one mailbox.
         let (upgrade_tx, _upgrade_rx) = mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
         s.subscribe_terminal(attached, pid, Some(upgrade_tx));
         assert_eq!(
@@ -686,9 +536,8 @@ mod tests {
 
     #[test]
     fn same_client_may_rebootstrap_same_session_but_not_switch_sessions() {
-        // A second ATTACH naming the SAME session is a re-bootstrap, not an
-        // error: the client is renegotiating its profile or recovering. Only
-        // switching sessions on one connection is refused.
+        // Re-ATTACHing the same session is a re-bootstrap; only switching
+        // sessions on one connection is refused.
         let mut s = ServerState::new();
         let (default, window, original) = s.seed_session("default");
         let _ = s.seed_session("other");
@@ -773,8 +622,7 @@ mod tests {
         s.set_window_size(WindowSize::Largest);
         assert_eq!(s.resolve_terminal_geometry(pid, None), Some((120, 48)));
 
-        // latest: the resizing client's viewport (the `latest` hint), not a
-        // min/max across subscribers.
+        // latest: the resizing client's viewport.
         s.set_window_size(WindowSize::Latest);
         assert_eq!(
             s.resolve_terminal_geometry(pid, Some(ViewportInfo::new(100, 30))),
@@ -886,9 +734,7 @@ mod tests {
         );
         assert_eq!(s.resolve_terminal_cell_px(pid), Some((8, 16)));
 
-        // ...but a later report WITHOUT usable pixels does not erase the
-        // best available truth: degenerate (sub-pixel cell) and absent
-        // metrics are both skipped, falling back to the retina report.
+        // A later report without usable pixels keeps the best known size.
         s.set_client_viewport(
             lodpi,
             ViewportInfo::new(80, 24).with_pixels(Some(79), Some(23)),
@@ -929,10 +775,8 @@ mod tests {
 
     #[test]
     fn move_that_empties_source_window_reaps_it_and_its_session() {
-        // ADR-0056: the registry re-parent plus the shared empty-window
-        // cascade — a cross-session move of a solo pane must reap the
-        // emptied source window AND its now-window-less session, exactly
-        // as pane death would, while the moved pane survives untouched.
+        // ADR-0056: moving a solo pane across sessions reaps the emptied
+        // window and session; the pane survives.
         let mut s = ServerState::new();
         let (sid_a, wid_a, pid_a) = s.seed_session("a");
         let (sid_b, wid_b, _pid_b) = s.seed_session("b");
@@ -1008,8 +852,6 @@ mod tests {
     fn reap_pane_in_multipane_window_keeps_session() {
         let mut s = ServerState::new();
         let (sid, wid, pid1) = s.seed_session("default");
-        // Add a second pane to the same window so reaping one does not
-        // empty the window.
         let pid2 = s.registry_mut().new_terminal(wid).unwrap();
 
         let server_empty = s.reap_terminal(pid1);
@@ -1035,8 +877,7 @@ mod tests {
         let (_sid, _wid, pid) = s.seed_session("default");
 
         assert!(s.reap_terminal(pid), "first reap empties the server");
-        // Second reap of the now-unknown pane must not panic and must
-        // report the server is (still) empty.
+        // A repeat reap is harmless.
         assert!(s.reap_terminal(pid));
         assert_eq!(s.registry().session_count(), 0);
     }
@@ -1083,9 +924,7 @@ mod tests {
 
     #[test]
     fn attached_client_color_support_defaults_to_truecolor() {
-        // `attach_default_caps` keeps the most-permissive tier — used by
-        // tests and any call site that doesn't have HELLO-derived caps
-        // in hand.
+        // `attach_default_caps` keeps the most permissive tier.
         let mut s = ServerState::new();
         let _ = s.seed_session("default");
         let cid = s.new_client_id();
@@ -1115,9 +954,7 @@ mod tests {
 
     #[test]
     fn set_client_color_support_updates_live_attached_client() {
-        // Out-of-order HELLO after ATTACH (out of spec, but tolerated):
-        // the setter patches the live record so downsample picks up the
-        // newer tier.
+        // HELLO after ATTACH (tolerated) patches the live record.
         let mut s = ServerState::new();
         let _ = s.seed_session("default");
         let cid = s.new_client_id();
@@ -1198,17 +1035,9 @@ mod tests {
         assert_eq!(count, 0);
     }
 
-    // -------------------------------------------------------------------------
-    // L3 metadata tests — SPEC §7.4 / §11.L3 (phux-4li.2).
-    //
-    // Cover: SUBSCRIBE → SET → broadcast fanout, scope isolation (Terminal
-    // vs Group vs Global), non-L3 consumer filtering (§16.4), DELETE
-    // tombstone semantics, and the `Unchanged` SET shortcut.
-    // -------------------------------------------------------------------------
+    // --- L3 metadata (SPEC §7.4) ---
 
-    /// The mailbox is returned alongside the receiver because
-    /// `metadata_subscribe` now captures it (a subscriber need not be
-    /// attached for `METADATA_CHANGED` fanout to reach it).
+    /// An attached L3 client and its mailbox (subscriptions capture it).
     fn attach_l3_client(
         s: &mut ServerState,
     ) -> (ClientId, mpsc::Sender<Outbound>, mpsc::Receiver<Outbound>) {
@@ -1230,10 +1059,8 @@ mod tests {
         (cid, tx, rx)
     }
 
-    /// The headless-consumer shape: a connection that subscribes and
-    /// streams without ever attaching (`phux watch`). No HELLO either —
-    /// `client_layers` defaults to `LayerSet::all` for a client the server
-    /// never saw one from, so this client speaks L3.
+    /// A headless consumer: subscribes without attaching or HELLO
+    /// (defaults to all layers).
     fn unattached_l3_client(
         s: &mut ServerState,
     ) -> (ClientId, mpsc::Sender<Outbound>, mpsc::Receiver<Outbound>) {
@@ -1281,10 +1108,7 @@ mod tests {
         }
     }
 
-    /// The bug this fixes: `phux watch` subscribes without attaching, so
-    /// fanout resolved through `attached` alone reached nobody and every
-    /// `phux.agent/v1` record the ADR-0046 detector published was computed,
-    /// broadcast, and dropped on the floor.
+    /// An unattached subscriber (`phux watch`) still receives fanout.
     #[test]
     fn metadata_broadcast_reaches_a_subscriber_that_never_attached() {
         let mut s = ServerState::new();
@@ -1318,9 +1142,7 @@ mod tests {
         }
     }
 
-    /// The tombstone half: a DELETE must reach the same un-attached
-    /// subscriber, because a consumer waiting on an agent has to learn the
-    /// record went away.
+    /// ...including DELETE tombstones.
     #[test]
     fn metadata_tombstone_reaches_a_subscriber_that_never_attached() {
         let mut s = ServerState::new();
@@ -1342,9 +1164,7 @@ mod tests {
         ));
     }
 
-    /// Detach forgets the captured mailbox too, so the map stays bounded
-    /// across connection churn (the twin of `detach_drops_metadata_subscriptions`
-    /// for a client that never attached).
+    /// Detach forgets the captured mailbox, bounding the map.
     #[test]
     fn detach_forgets_the_captured_metadata_mailbox() {
         let mut s = ServerState::new();
@@ -1457,17 +1277,14 @@ mod tests {
 
     #[test]
     fn non_l3_consumer_does_not_receive_metadata_changed() {
-        // SPEC §16.4: a non-L3 client (agent / recorder) MUST NOT see any
-        // L3 frames. The fanout layer filters by `client_speaks_l3`.
+        // SPEC §16.4: non-L3 clients see no L3 frames.
         let mut s = ServerState::new();
         let (l3_cid, l3_tx, mut l3_rx) = attach_l3_client(&mut s);
         let (l1_cid, l1_tx, mut l1_rx) = attach_l1_only_client(&mut s);
         let scope = Scope::Global;
 
         s.metadata_subscribe(l3_cid, scope.clone(), "phux.k/v1".to_owned(), l3_tx);
-        // L1-only consumer might still TRY to subscribe via misbehaving
-        // client; the dispatch in runtime.rs refuses it. Simulate that by
-        // not subscribing through the gated path.
+        // The runtime refuses this subscribe; simulate a bypass.
         s.metadata_subscribe(l1_cid, scope.clone(), "phux.k/v1".to_owned(), l1_tx);
 
         let delivered = s.metadata_set(&scope, "phux.k/v1", b"v".to_vec());
@@ -1488,18 +1305,11 @@ mod tests {
 
         let delivered = s.metadata_set(&scope, "phux.k/v1", b"v".to_vec());
         assert!(delivered.is_empty());
-        // Channel returns Err(Disconnected) eventually; just confirm no
-        // frame arrived before detach cleanup.
         assert!(drain_frames(&mut rx).is_empty());
     }
 
-    /// phux-w7z2.55: `detach` is attachment teardown. The negotiated layer
-    /// set and the transport-authenticated peer identity are properties of
-    /// the *connection*, which a mid-connection `DETACH` does not end, and
-    /// neither can be re-established afterwards (a second HELLO is a
-    /// protocol error). Note the direction of the layer failure: because
-    /// `client_layers` defaults to `LayerSet::all`, forgetting the record
-    /// promoted an L1-only peer instead of restricting it.
+    /// `detach` keeps connection-scoped state (negotiated layers, peer
+    /// identity), which a DETACH does not end and HELLO cannot restore.
     #[test]
     fn detach_keeps_negotiated_layers_and_peer_identity() {
         let mut s = ServerState::new();
@@ -1564,8 +1374,7 @@ mod tests {
         );
     }
 
-    /// The transport-close superset does forget both, so neither map grows
-    /// across connection churn.
+    /// Transport close forgets both.
     #[test]
     fn forget_connection_drops_negotiated_layers_and_peer_identity() {
         let mut s = ServerState::new();
@@ -1585,8 +1394,6 @@ mod tests {
         s.forget_connection(cid);
 
         assert!(s.peer_identity(cid).is_none());
-        // Back to the permissive no-record default, which is what makes
-        // clearing it early unsafe on a live connection.
         assert_eq!(s.client_layers(cid), LayerSet::all());
         assert!(!s.attached().contains_key(&cid));
         // Idempotent, like `detach` — the accept loop runs it unconditionally.

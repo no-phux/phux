@@ -16,13 +16,8 @@ pub mod auth;
 pub mod connector;
 pub mod cwd_query;
 pub mod downsample;
-pub mod extract;
 pub mod grid;
 pub mod health; // phux-zomb.6 (server start history: crash-loop is reportable)
-// Pure viewport-alignment core for the ADR-0078 alternate-screen history
-// harvest. Deliberately not wired to the terminal actor: that ADR is still
-// Proposed and nothing may scroll a live pane before it is accepted.
-pub(crate) mod history_merge;
 pub mod hooks;
 pub mod hub;
 pub mod id_bridge;
@@ -35,13 +30,10 @@ pub mod policy;
 pub(crate) mod proc_query;
 pub mod resource;
 pub mod runtime;
-pub mod search;
 pub mod state;
 pub mod stream_diagnostics;
 pub mod telemetry;
-/// The Terminal engine, at the path it has always been reachable from.
-/// [`resource::terminal`] is the module; this alias keeps every
-/// `terminal_actor::` path in tests, examples, and the CLI valid.
+/// Alias for [`resource::terminal`], used by tests, examples, and the CLI.
 pub use resource::terminal as terminal_actor;
 pub mod transport;
 pub mod upgrade;

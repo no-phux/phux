@@ -9,8 +9,8 @@ last-reviewed: 2026-09-09
 **TL;DR.** The demo uses restrained dark terminal chrome, a host-grouped session
 switcher, a compact command palette and a reusable directory picker. Local and
 remote contexts keep the same layout and actions. This document separates
-observed flows from proposed state handling and gives editable, legible mockups
-for the major surfaces without claiming pixel-perfect source fidelity.
+observed flows from proposed state handling for the major surfaces without
+claiming pixel-perfect source fidelity.
 
 ## Information architecture
 
@@ -129,7 +129,7 @@ y=8–343. Desktop wallpaper remains visible at the edges.
 | Component | Observed visual structure | Reconstruction guidance (I) |
 |---|---|---|
 | Window | Rounded dark translucent blue-green surface, fine outline | Large app canvas with subdued border and 12px CSS radius |
-| Top chrome | About 20 encoded px tall, small traffic lights, session then tabs | 38–42px CSS header for legible reference mockups |
+| Top chrome | About 20 encoded px tall, small traffic lights, session then tabs | 38–42px CSS header |
 | Tab | Rounded pill with terminal icon and path/title | Single-line ellipsis; active fill distinguishable from inactive |
 | Pane header | Roughly 12 encoded px, shell label left, icons right | 28px CSS header; controls require real labels/tooltips in implementation |
 | Split | Near 50/50 vertical division, thin border | Independent focus and content; preserve layout across tab switch |
@@ -143,7 +143,7 @@ and selection bright turquoise. The shell prompt can include purple accents.
 The UI uses small proportional text; terminal content uses a monospace face.
 **U:** exact font family, font size, transparency, theme name and native scale.
 
-### Proposed mockup tokens
+### Proposed tokens
 
 These are editable approximations, not extracted official tokens:
 
@@ -161,44 +161,9 @@ These are editable approximations, not extracted official tokens:
 ```
 
 Use system sans-serif for chrome and a system monospace stack for the terminal.
-The mockup increases type and hit-target sizes, uses representative CLI output,
-and replaces ambiguous tiny icons with descriptive buttons. The video inset,
+Increase type and hit-target sizes and replace ambiguous tiny icons with
+descriptive buttons. The video inset,
 wallpaper and keystroke overlay are recording context rather than product UI.
-
-## Mockup surfaces and behavior
-
-The [interactive viewer](index.html#mockups) contains eight selectable scenes:
-
-| Scene | Reference | What can be exercised |
-|---|---|---|
-| Local terminal | S01/S03 | Switch to remote context or open palette |
-| Remote split | S07/S20/S22 | Two-pane composition and host/session context |
-| Session switcher | S09/S12/S17 | Select local, Demo or empty crisp-sierra |
-| Command palette | S04/S10 | Filter actions and open Add Host, Rename, directory or empty session |
-| Add host | S05 | Edit hostname; simulated connection opens remote shell context |
-| Rename | S11 | Change Demo display name in mockup state |
-| Empty session | S18 | New Tab produces a shell |
-| Directory picker | S25–S31 | Change local/remote example paths; open destination as a new tab |
-
-All interactions are **I simulations** grounded in these observations. These are
-editable HTML/CSS mocks, not captured screenshots of the original application.
-They intentionally do not implement a terminal emulator, CLI protocol or remote
-filesystem. The gallery preserves the source evidence next to the reconstruction.
-
-### Exported mockups
-
-The same scenes are available as PNGs, with a reconstruction label baked into
-each image. See the [overview contact sheet](mockups/contact-sheet.jpg), or open
-individual frames:
-
-- [Local terminal](mockups/01-local.png)
-- [Remote split](mockups/02-remote.png)
-- [Session switcher](mockups/03-sessions.png)
-- [Command palette](mockups/04-commands.png)
-- [Add host](mockups/05-host.png)
-- [Rename session](mockups/06-rename.png)
-- [Empty session](mockups/07-empty.png)
-- [Directory picker](mockups/08-directory.png)
 
 ## Implied design completions
 
@@ -219,7 +184,6 @@ claims that Superlogical already implements them:
 | Screen-reader use | Label host/session context, actions, selected row and connection status |
 | Small window | Bound popovers to viewport; truncate paths with access to full text |
 
-These proposed failure cases are not additional mocked source screens. The
-interactive artifact focuses on the demonstrated happy paths. Richer flows need
+These proposed failure cases go beyond the demonstrated happy paths. Richer flows need
 product decisions, especially active-session deletion, close-vs-kill semantics,
 reconnect editing behavior and how a tab inherits host/user/CWD context.

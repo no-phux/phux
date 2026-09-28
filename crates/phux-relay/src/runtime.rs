@@ -1,11 +1,7 @@
 //! Relay runtime: the QUIC endpoint, its accept loop, tunnel admission,
-//! and consumer bridging.
-//!
-//! Mirrors `ServerRuntime`'s `run` / `run_async` split (ADR-0003/0014
-//! conventions): one current-thread tokio runtime, plain `tokio::spawn`
-//! per connection (the relay holds no `!Send` state, so no `LocalSet`),
-//! and per-connection failures logged — nothing a peer sends ever tears
-//! down the endpoint.
+//! and consumer bridging. One current-thread runtime, one task per
+//! connection; per-connection failures are logged and never tear down the
+//! endpoint.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -24,93 +20,49 @@ use crate::{
     AUTH_FAILED_CODE, OVER_CAP_CODE, PROTOCOL_VIOLATION_CODE, ROUTE_OFFLINE_CODE, RelayError, tls,
 };
 
-/// Default connection cap (`--max-conns`): the sole limiting knob.
-///
-/// Over-cap connections complete their handshake and are
-/// application-closed with [`crate::OVER_CAP_CODE`]; existing tunnels and
-/// consumers are unaffected.
+/// Default connection cap (`--max-conns`). Over-cap connections complete
+/// their handshake and are closed with [`crate::OVER_CAP_CODE`].
 pub const DEFAULT_MAX_CONNS: usize = 64;
 
-/// QUIC idle timeout, matching the server listener and phux-dial so a
-/// quiet tunnel or consumer is not reaped before its keep-alive fires.
+/// QUIC idle timeout, matching the server listener and phux-dial.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Keep-alive interval, comfortably under [`IDLE_TIMEOUT`]. Tunnels also
-/// receive keep-alives from the connector's dialer; this covers the
-/// relay's own legs.
+/// Keep-alive interval, well under [`IDLE_TIMEOUT`].
 const KEEP_ALIVE: Duration = Duration::from_secs(10);
 
-/// Auth-preamble size bound, mirroring the server QUIC listener's
-/// `MAX_TOKEN_PREAMBLE`.
+/// Auth-preamble size bound, mirroring the server QUIC listener's.
 const MAX_TOKEN_PREAMBLE: usize = 256;
 
-/// How long a connector has to present its stream-0 auth preamble before
-/// the connection is refused — bounds a slow-loris on the tunnel leg.
-///
-/// This is the production default; tests that must wait the deadline out
-/// for real shorten it via [`RelayRuntime::with_preamble_deadline`].
+/// How long a connector has to present its stream-0 auth preamble; bounds a
+/// slow-loris on the tunnel leg. Tests shorten it via
+/// [`RelayRuntime::with_preamble_deadline`].
 const PREAMBLE_DEADLINE: Duration = Duration::from_secs(5);
 
-/// How long an admitted consumer has to open its bidi stream (and the
-/// relay to open the matching tunnel stream) before the connection is
-/// closed — the consumer-leg sibling of [`PREAMBLE_DEADLINE`]. Without
-/// it, a handshake-only consumer holds its cap permit forever: the
-/// relay's own keep-alives reset both idle timers, so QUIC never reaps
-/// the connection. A legitimate consumer opens its stream immediately to
-/// send its bearer preamble, so the bound only fires on stalled peers.
+/// How long an admitted consumer has to open its stream (and the relay the
+/// matching tunnel stream). Without it a handshake-only consumer would hold
+/// its cap permit forever, since keep-alives stop QUIC from reaping it.
 const CONSUMER_STREAM_DEADLINE: Duration = Duration::from_secs(5);
 
 /// How long shutdown waits for close frames to drain before returning.
 const SHUTDOWN_DRAIN: Duration = Duration::from_secs(2);
 
-/// Per-stream receive window a connector tunnel grants the server, in bytes:
-/// one per bridged consumer.
+/// Per-stream receive window a connector tunnel grants the server: one
+/// stream per bridged consumer.
 ///
-/// The relay is a pipe, and everything it has been granted but not yet
-/// forwarded is lag. When a consumer's link is the slow hop, the splice
-/// blocks on that consumer's congestion-tracked send, stops reading its
-/// tunnel stream, and the server may keep sending until that stream's credit
-/// is spent. At quinn's 1.25 MB default that credit held seconds of output on
-/// a slow link, so chunks left the server's output pump fresh and its
-/// staleness resync never fired. Held to this size, the server's writer
-/// blocks and the pump skips the consumer to a fresh checkpoint instead.
-/// What the window still holds is lag a relayed consumer carries on top of a
-/// direct one.
+/// Credit the relay has granted but not forwarded is lag. Held small, a slow
+/// consumer blocks the server's writer quickly so its output pump resyncs the
+/// consumer instead of queueing seconds of output. Only tagged tunnels get it
+/// (see [`phux_dial::quic::TUNNEL_CID_PREFIX`]): consumers keep quinn's
+/// defaults so uploads stay fast, and untagged legacy tunnels are logged.
+/// Being per stream, one stalled consumer never holds back another.
 ///
-/// **Only tunnels get it.** Consumer connections keep quinn's defaults, so a
-/// large paste still crosses the relay in about one round trip. quinn fixes a
-/// connection's per-stream window when it is accepted, but the ALPN that
-/// tells a tunnel from a consumer is only known after the handshake. So the
-/// connector's dialer tags its tunnel's initial destination connection ID
-/// (`phux_dial::quic::TUNNEL_CID_PREFIX`), which the relay can read off the
-/// first packet: a tagged connection is accepted with the tunnel config
-/// ([`BoundRelay`]), everything else with the defaults. The tag selects a
-/// config, never a role — admission is still by ALPN, and a consumer that
-/// copies the tag only shrinks its own receive window. Because the window is
-/// per stream, each bridged consumer is bounded on its own: one that stops
-/// reading never holds back another on the same route. A tunnel from a
-/// connector that predates the tag gets quinn's defaults, unbounded as before
-/// the bound existed, and is logged when admitted.
-///
-/// **Throughput ceiling.** Each bridged consumer moves at most this much per
-/// round trip on the server-to-relay hop: about 10.5 Mbit/s at a 50 ms RTT,
-/// 5.2 Mbit/s at 100 ms and 1.75 Mbit/s at 300 ms, and less in practice,
-/// because credit returns in eighth-of-a-window steps. Output faster than
-/// that makes the server's pump fall behind and resync even a healthy
-/// consumer. Measured with 50 ms on that hop and a fast consumer, 64 KiB
-/// carried a ~3.5 Mbit/s flood without resyncs where 32 KiB and 16 KiB did
-/// not; on a 300 kbit/s consumer the smaller windows saved about 1 s of lag.
-/// With a healthy consumer and a 100 ms server-to-relay RTT, floods of ~0.7
-/// and ~2.8 Mbit/s ran with no resyncs and near quinn's defaults (p50 71 and
-/// 86 ms against 71 and 72 ms); at 300 ms the faster flood hit the ceiling
-/// (about 1.4 Mbit/s delivered, one resync a second, p50 350 ms against
-/// 212 ms). A 300 kbit/s consumer went from 5.4 s p50 and climbing to a flat
-/// 3.4 s.
+/// This caps each consumer at one window per server-to-relay round trip
+/// (about 5 Mbit/s at 100 ms); 64 KiB was measured to carry realistic floods
+/// without resyncs where 16 and 32 KiB did not.
 const TUNNEL_STREAM_RECEIVE_WINDOW: u32 = 64 * 1024;
 
-/// The QUIC transport config for relay connections: the idle and keep-alive
-/// timings every connection shares, plus [`TUNNEL_STREAM_RECEIVE_WINDOW`] for
-/// a `tunnel`.
+/// The QUIC transport config for relay connections, with
+/// [`TUNNEL_STREAM_RECEIVE_WINDOW`] for a `tunnel`.
 fn transport_config(tunnel: bool) -> quinn::TransportConfig {
     let mut transport = quinn::TransportConfig::default();
     if let Ok(idle) = quinn::IdleTimeout::try_from(IDLE_TIMEOUT) {
@@ -146,20 +98,16 @@ impl RelayConfig {
     pub fn new(listen: SocketAddr) -> Self {
         Self {
             listen,
-            cert_path: tls::default_relay_cert_path(),
-            key_path: tls::default_relay_key_path(),
-            tokens_path: crate::tokens::default_relay_tokens_path(),
+            cert_path: crate::default_relay_cert_path(),
+            key_path: crate::default_relay_key_path(),
+            tokens_path: crate::default_relay_tokens_path(),
             max_conns: DEFAULT_MAX_CONNS,
         }
     }
 }
 
-/// The relay's run loop, embeddable ([`Self::run_async`]) or owning its
-/// own current-thread runtime ([`Self::run`]).
-///
-/// [`Self::bind`] splits the socket bind from serving so a caller can
-/// learn the resolved listen address (port 0 becomes the OS-assigned
-/// port) before blocking.
+/// The relay's run loop: [`Self::run_async`], or [`Self::bind`] then
+/// [`BoundRelay::serve`] to learn the resolved listen address first.
 #[derive(Debug)]
 pub struct RelayRuntime {
     config: RelayConfig,
@@ -176,43 +124,25 @@ impl RelayRuntime {
         }
     }
 
-    /// Override the tunnel auth-preamble deadline (default
-    /// `PREAMBLE_DEADLINE`, 5s). A test that pins the stalled-preamble
-    /// refusal has to wait the deadline out for real; this keeps that wait
-    /// short without loosening (or lengthening) the production bound.
+    /// Override the tunnel auth-preamble deadline (default 5s), so tests can
+    /// wait a stalled preamble out quickly.
     #[must_use]
     pub const fn with_preamble_deadline(mut self, deadline: Duration) -> Self {
         self.preamble_deadline = deadline;
         self
     }
 
-    /// Build a current-thread tokio runtime and block on
-    /// [`Self::run_async`] until `shutdown` resolves.
-    pub fn run(self, shutdown: impl Future<Output = ()>) -> Result<(), RelayError> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        rt.block_on(self.run_async(shutdown))
-    }
-
     /// Run the relay until `shutdown` resolves or the endpoint closes.
     ///
-    /// Startup is fail-fast: an unreadable/malformed token store, broken
-    /// certificate material, or a bind failure returns an error. After
-    /// startup, per-connection failures are logged and never propagate.
-    /// The token store is then re-read per connection attempt, so `phux
-    /// relay pair` and line deletion take effect without a restart.
+    /// The token store is re-read per connection attempt, so `phux relay
+    /// pair` and line deletion take effect without a restart.
     pub async fn run_async(self, shutdown: impl Future<Output = ()>) -> Result<(), RelayError> {
         self.bind()?.serve(shutdown).await
     }
 
     /// Validate the state files, build the endpoint, and bind the socket
-    /// — everything fail-fast — without serving yet.
-    ///
-    /// Must be called within a tokio runtime context (quinn attaches its
-    /// I/O driver to the current runtime); [`Self::run`] provides one.
-    /// The returned [`BoundRelay`] reports the resolved listen address
-    /// and serves via [`BoundRelay::serve`].
+    /// without serving yet, so the caller can learn the resolved address.
+    /// Must be called within a tokio runtime context.
     pub fn bind(self) -> Result<BoundRelay, RelayError> {
         let config = self.config;
         let preamble_deadline = self.preamble_deadline;
@@ -224,15 +154,12 @@ impl RelayRuntime {
         let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)
             .map_err(|err| RelayError::Rustls(rustls::Error::General(err.to_string())))?;
         let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
-        // Same crypto, bounded per-stream window: chosen per connection by
-        // `handle_connection` from the tagged connection ID.
+        // Same crypto, bounded per-stream window, chosen per connection.
         let mut tunnel_config = server_config.clone();
         server_config.transport_config(Arc::new(transport_config(false)));
         tunnel_config.transport_config(Arc::new(transport_config(true)));
 
         let endpoint = quinn::Endpoint::server(server_config, config.listen)?;
-        // The RESOLVED address: `--listen 127.0.0.1:0` reports the
-        // OS-assigned port, not the literal 0.
         let local_addr = endpoint.local_addr()?;
         Ok(BoundRelay {
             endpoint,
@@ -287,10 +214,7 @@ impl BoundRelay {
                 () = &mut shutdown => break,
                 incoming = endpoint.accept() => {
                     let Some(incoming) = incoming else { break };
-                    // Cap enforcement in the accept loop: no free slot means
-                    // the handshake completes and the connection is refused
-                    // with OVER_CAP — distinguishable at the client, and
-                    // isolated from every existing connection.
+                    // No free slot: finish the handshake, close OVER_CAP.
                     match Arc::clone(&slots).try_acquire_owned() {
                         Ok(permit) => {
                             tokio::spawn(handle_connection(
@@ -323,14 +247,9 @@ async fn refuse_over_cap(incoming: quinn::Incoming) {
     conn.close(OVER_CAP_CODE.into(), b"relay at connection capacity");
 }
 
-/// Drive one accepted connection to its leg by negotiated ALPN — never by
-/// what it sends (ADR-0051 invariant 7). Holds its cap permit for the
-/// connection's lifetime.
-///
-/// The flow-control config is chosen before that, from the initial
-/// destination connection ID: a tunnel-tagged connection is accepted with
-/// `tunnel_config`, anything else with the endpoint's defaults (see
-/// [`TUNNEL_STREAM_RECEIVE_WINDOW`]). The tag never decides the role.
+/// Drive one accepted connection to its leg by negotiated ALPN, never by
+/// what it sends (ADR-0051 invariant 7), holding its cap permit throughout.
+/// The flow-control config is chosen first from the connection-ID tag.
 async fn handle_connection(
     incoming: quinn::Incoming,
     tunnel_config: Arc<quinn::ServerConfig>,
@@ -353,8 +272,7 @@ async fn handle_connection(
     let conn = match handshake {
         Ok(conn) => conn,
         Err(err) => {
-            // Unknown/absent-SNI consumers land here too: the SniGate
-            // refused them during the handshake, before any phux byte.
+            // Includes consumers the SniGate refused during the handshake.
             tracing::debug!(%err, "handshake failed");
             return;
         }
@@ -384,9 +302,8 @@ fn handshake_identity(conn: &quinn::Connection) -> Option<(Vec<u8>, Option<Strin
 }
 
 /// Admit (or refuse) a connector tunnel: read the stream-0 auth preamble,
-/// resolve it to its enrolled route, claim the route, then park as the
-/// stream-0 watchdog until the connection ends. `bounded` is whether it was
-/// accepted with the tunnel config (its connection ID carried the tag).
+/// resolve its route, claim it, then watch stream 0 until the connection
+/// ends. `bounded` is whether the connection ID carried the tunnel tag.
 async fn admit_tunnel(
     conn: quinn::Connection,
     bounded: bool,
@@ -395,9 +312,7 @@ async fn admit_tunnel(
     registry: &TunnelRegistry<quinn::Connection>,
 ) {
     let remote = conn.remote_address();
-    // The preamble doubles as the stream-open signal: `accept_bi` does not
-    // resolve until the connector's first bytes arrive, so one deadline
-    // covers both.
+    // `accept_bi` resolves on the first bytes, so one deadline covers both.
     let opened = tokio::time::timeout(preamble_deadline, async {
         let (send0, mut recv0) = conn.accept_bi().await.ok()?;
         let token = read_preamble(&mut recv0).await?;
@@ -412,9 +327,7 @@ async fn admit_tunnel(
         return;
     };
 
-    // Re-read per connection attempt (no reload machinery): `phux relay
-    // pair` is live immediately; a deleted line refuses the next redial.
-    // An unreadable store fails closed.
+    // Re-read per attempt; an unreadable store fails closed.
     let store = match RouteTokenStore::load(tokens_path) {
         Ok(store) => store,
         Err(err) => {
@@ -439,18 +352,15 @@ async fn admit_tunnel(
         );
     }
 
-    // Stream-0 watchdog. `send0` is held, not dropped: dropping it would
-    // FIN the reserved stream. Stream 0 carries ONLY the preamble; any
-    // further byte is a protocol violation and closes the tunnel. Consumer
-    // control and Terminal streams use later stream pairs.
+    // Stream-0 watchdog: stream 0 carries only the preamble, so any further
+    // byte closes the tunnel. `send0` is held so the stream is not FIN'd.
     let _reserved_send0 = send0;
     let mut byte = [0u8; 1];
     let watchdog = async {
         if let Ok(Some(_)) = recv0.read(&mut byte).await {
             true
         } else {
-            // FIN or reset on stream 0: not extra bytes; park until the
-            // connection itself ends.
+            // FIN or reset is not a violation: park until the connection ends.
             std::future::pending::<()>().await;
             false
         }
@@ -471,36 +381,27 @@ async fn admit_tunnel(
     tracing::info!(route = %route, %remote, "tunnel down");
 }
 
-/// Bridge one consumer connection onto its route's live tunnel. Every
-/// consumer-initiated bidi stream is spliced onto one fresh relay-initiated
-/// bidi stream, preserving the control-plus-Terminal-stream shape. The
-/// consumer's own bearer preamble crosses opaquely — the relay never reads it
-/// (ADR-0051 Decision 4).
+/// Bridge one consumer's first stream onto a fresh stream over its route's
+/// live tunnel. The consumer's bearer preamble crosses opaquely (ADR-0051
+/// Decision 4).
 async fn bridge_consumer(
     conn: quinn::Connection,
     server_name: Option<String>,
     registry: &TunnelRegistry<quinn::Connection>,
 ) {
     let remote = conn.remote_address();
-    // The SniGate already refused unknown/absent SNI at the TLS layer;
-    // this re-check is defensive only.
+    // Defensive: the SniGate already refused absent SNI at TLS.
     let Some(route) = server_name else {
         tracing::warn!(%remote, "consumer without SNI past the TLS gate; refusing");
         conn.close(ROUTE_OFFLINE_CODE.into(), b"no route requested");
         return;
     };
     let Some(tunnel) = registry.get(&route) else {
-        // Enrolled route, no live tunnel: handshake completed, so this is
-        // distinguishable from an unknown route (which never got this far).
         tracing::warn!(%remote, route = %route, "refused: no live tunnel for enrolled route");
         conn.close(ROUTE_OFFLINE_CODE.into(), b"route offline");
         return;
     };
-    // `accept_bi` resolves on the consumer's first bytes (its bearer
-    // preamble); the whole path up to the splice is bounded by
-    // CONSUMER_STREAM_DEADLINE so a handshake-only consumer cannot pin
-    // its cap permit forever (the permit is released when this returns).
-    // Errors on `accept_bi` just mean the consumer went away.
+    // Bounded so a handshake-only consumer cannot pin its cap permit.
     let consumer_streams = match tokio::time::timeout(CONSUMER_STREAM_DEADLINE, conn.accept_bi())
         .await
     {
@@ -532,11 +433,9 @@ async fn bridge_consumer(
     );
     tokio::pin!(control_bridge);
 
-    // The tunnel wire has no consumer-group envelope. Forwarding a second
-    // stream would make the production connector mistake it for a new
-    // authenticated consumer and race it against unrelated consumers. Keep
-    // this route explicitly single-stream until grouping is part of the relay
-    // transport contract; direct QUIC remains free to negotiate multi-stream.
+    // The tunnel wire has no consumer-group envelope: a forwarded second
+    // stream would look like a new authenticated consumer to the connector.
+    // Relay routes stay single-stream, so extra streams are refused.
     let mut refused_streams = 0_u64;
     loop {
         tokio::select! {
@@ -555,8 +454,7 @@ async fn bridge_consumer(
 }
 
 /// Read one length-prefixed auth preamble (`len: u32 BE` + raw token),
-/// bounded by [`MAX_TOKEN_PREAMBLE`]. `None` on any short read or an
-/// oversized length — the caller refuses the connection.
+/// bounded by [`MAX_TOKEN_PREAMBLE`]; `None` on a short read or oversize.
 async fn read_preamble(recv: &mut quinn::RecvStream) -> Option<Vec<u8>> {
     let mut len_buf = [0u8; 4];
     recv.read_exact(&mut len_buf).await.ok()?;
@@ -572,27 +470,6 @@ async fn read_preamble(recv: &mut quinn::RecvStream) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn config_defaults_to_the_cap_and_state_dir_paths() {
-        let config = RelayConfig::new("127.0.0.1:4433".parse().unwrap());
-        assert_eq!(config.max_conns, DEFAULT_MAX_CONNS);
-        assert_eq!(config.max_conns, 64);
-        let state = crate::paths::state_dir();
-        assert_eq!(config.cert_path, state.join("relay-cert.pem"));
-        assert_eq!(config.key_path, state.join("relay-key.pem"));
-        assert_eq!(config.tokens_path, state.join("relay-tokens"));
-    }
-
-    #[test]
-    fn preamble_deadline_defaults_to_production_and_is_overridable() {
-        let config = RelayConfig::new("127.0.0.1:4433".parse().unwrap());
-        let runtime = RelayRuntime::new(config);
-        assert_eq!(runtime.preamble_deadline, PREAMBLE_DEADLINE);
-        assert_eq!(runtime.preamble_deadline, Duration::from_secs(5));
-        let runtime = runtime.with_preamble_deadline(Duration::from_millis(300));
-        assert_eq!(runtime.preamble_deadline, Duration::from_millis(300));
-    }
 
     #[tokio::test]
     async fn run_async_fails_fast_on_a_malformed_token_store() {

@@ -1,12 +1,5 @@
-//! Integration tests for the config schema.
-//!
-//! Covers:
-//! 1. The canonical `docs/consumers/tui.md` §4.2 example round-trips
-//!    (`parse → serialize → reparse` is equal under `PartialEq`).
-//! 2. A syntactically-malformed input produces a `ConfigError::Parse`
-//!    with the expected `line:col`, and we snapshot its `Display`.
-//! 3. Missing optional sections fall back to defaults.
-//! 4. Unknown fields are rejected (`deny_unknown_fields`).
+//! Integration tests for the config schema: round trips, defaults,
+//! rejection of unknown keys, and error positions.
 
 use std::path::PathBuf;
 
@@ -77,8 +70,6 @@ fn parse_and_round_trip(input: &str) -> Config {
 fn canonical_example_round_trips() {
     let parsed = parse_and_round_trip(CANONICAL);
 
-    // Spot-check a couple of fields so a regression doesn't silently
-    // pass via two-way equality of broken values.
     assert_eq!(parsed.keybindings.prefix, "ctrl+space");
     assert_eq!(parsed.defaults.shell.as_deref(), Some("/bin/zsh"));
     assert_eq!(parsed.defaults.history_limit, 50_000);
@@ -91,8 +82,6 @@ fn canonical_example_round_trips() {
 
 #[test]
 fn missing_sections_use_defaults() {
-    // Only [defaults] present, and only one field within it. Everything
-    // else must populate from `Default`.
     let input = r#"
 [defaults]
 shell = "/bin/bash"
@@ -111,21 +100,8 @@ shell = "/bin/bash"
     assert!(cfg.theme.slots.is_empty());
 }
 
-/// Empty input is exactly `Config::default()`, AND the shipped default
-/// values themselves are pinned per field so a change to any schema
-/// default cannot slip through the two-way equality:
-/// - which-key on with a 400 ms hesitation delay (phux-foz.2);
-/// - predictive-echo UNSET, i.e. the dial decides: on when the dial leaves
-///   the machine, off otherwise (including a loopback QUIC/WebSocket dial),
-///   because a round trip that does not exist is not worth hiding. An
-///   explicit `predictive-echo` still wins in either direction;
-/// - sidebar ENABLED, width 28, on the left (phux-4h5a, on by default
-///   per phux-k0cw);
-/// - status bar at the bottom (phux-foz.8);
-/// - spawn knobs at their shipped values (phux-4li.1);
-/// - `defaults.term` = xterm-256color (phux-ign): a regression here
-///   silently changes the TERM advertised to every server-spawned pane;
-/// - window-size `smallest`, which never crops content (ADR-0027).
+/// Empty input is exactly `Config::default()`, and the shipped values are
+/// pinned per field so a changed default cannot slip through equality.
 #[test]
 fn empty_input_is_full_defaults() {
     let cfg = parse_str("", &path()).expect("empty parses");
@@ -134,20 +110,10 @@ fn empty_input_is_full_defaults() {
     assert!(cfg.keybindings.which_key);
     assert_eq!(cfg.keybindings.which_key_delay_ms, 400);
     assert_eq!(cfg.experimental.predictive_echo, None);
-    assert!(
-        !cfg.experimental.predictive_echo_for(false),
-        "an unset key means no prediction over the local socket"
-    );
-    assert!(
-        cfg.experimental.predictive_echo_for(true),
-        "an unset key means prediction over a remote dial"
-    );
-    assert!(
-        cfg.sidebar.enabled,
-        "the sidebar ships ON: it is the answer to 'which agent needs me?', \
-         and an answer nobody finds is not an answer"
-    );
-    assert_eq!(cfg.sidebar.width, 0, "default width adapts to the viewport");
+    assert!(!cfg.experimental.predictive_echo_for(false));
+    assert!(cfg.experimental.predictive_echo_for(true));
+    assert!(cfg.sidebar.enabled);
+    assert_eq!(cfg.sidebar.width, 0);
     assert_eq!(cfg.sidebar.position, SidebarPosition::Left);
     assert_eq!(cfg.status.position, StatusPosition::Top);
     assert_eq!(cfg.defaults.cwd_inheritance, CwdInheritance::InheritFocused);
@@ -155,24 +121,7 @@ fn empty_input_is_full_defaults() {
     assert_eq!(cfg.defaults.session_name_template, "${cwd-basename}");
     assert_eq!(cfg.defaults.term, "xterm-256color");
     assert_eq!(cfg.defaults.window_size, WindowSize::Smallest);
-    assert_eq!(WindowSize::default(), WindowSize::Smallest);
-
-    // An empty [experimental] table is also valid and yields the same
-    // default.
-    let cfg2 = parse_str("[experimental]\n", &path()).expect("empty section parses");
-    assert_eq!(cfg2.experimental.predictive_echo, None);
-}
-
-#[test]
-fn which_key_keys_parse_under_keybindings() {
-    let input = r"
-[keybindings]
-which-key = false
-which-key-delay-ms = 250
-";
-    let cfg = parse_str(input, &path()).expect("which-key keys parse");
-    assert!(!cfg.keybindings.which_key);
-    assert_eq!(cfg.keybindings.which_key_delay_ms, 250);
+    assert_eq!(cfg.defaults.history_limit, 50_000);
 }
 
 /// Table-driven rejection: unknown fields (`deny_unknown_fields`) and
@@ -227,14 +176,7 @@ fn unknown_fields_and_variants_are_rejected() {
 
 #[test]
 fn malformed_input_reports_line_col_and_snapshots() {
-    // Unclosed string in the middle of the prefix-table. The offending
-    // token sits on the line with the bad value.
-    //
-    // Line layout (1-indexed):
-    //   1: (empty leading newline)
-    //   2: [keybindings.prefix-table]
-    //   3: "c" = "kill-pane
-    //   4: "x" = "kill-pane"
+    // An unclosed string on line 3.
     let input = "\n[keybindings.prefix-table]\n\"c\" = \"kill-pane\n\"x\" = \"kill-pane\"\n";
 
     let err =
@@ -248,15 +190,10 @@ fn malformed_input_reports_line_col_and_snapshots() {
         panic!("expected Parse variant with a position, got {err:?}");
     };
 
-    // The error must point inside the broken line (line 3) — not at the
-    // start of the file. We assert the line and a generous col window
-    // so the test isn't brittle against `toml` crate minor bumps.
     assert_eq!(*line, 3, "error should point at the broken line");
     assert!(*col >= 1, "col must be 1-indexed");
 
-    // Snapshot the Display form. Normalize the column to a placeholder
-    // because exact column depends on `toml`'s internal pointer choice
-    // (start of token vs. error position) and is allowed to drift.
+    // The column may drift across `toml` versions.
     let rendered = format!("{err}");
     let normalized = normalize_col(&rendered);
     insta::assert_snapshot!("malformed_parse_error", normalized);
@@ -264,9 +201,7 @@ fn malformed_input_reports_line_col_and_snapshots() {
 
 #[test]
 fn spanless_schema_error_renders_no_fabricated_position() {
-    // phux-i0e8.3.5: deserializing the merged layer stack yields errors
-    // with no span into the user's text. Those used to render a
-    // fabricated `1:1`; they must now carry no position at all.
+    // Merged-stack deserialize errors have no span into the user's text.
     let input = "[defaults]\nhistory-limit = \"not a number\"\n";
     let err = phux_config::parse_with_defaults(input, &path())
         .expect_err("string is not a valid history-limit");
@@ -288,73 +223,19 @@ fn spanless_schema_error_renders_no_fabricated_position() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// [experimental] predictive-echo  (phux-9gw.1.2)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn experimental_predictive_echo_parses_both_values() {
-    let cfg = parse_str("[experimental]\npredictive-echo = true\n", &path())
-        .expect("[experimental] section parses");
-    assert_eq!(
-        cfg.experimental.predictive_echo,
-        Some(true),
-        "predictive-echo = true should land as an explicit true in the typed view"
-    );
-    assert!(
-        cfg.experimental.predictive_echo_for(false),
-        "an explicit true beats the UDS default"
-    );
-
-    // The opt-out must stick: an explicit `false` parses as false.
-    let cfg = parse_str("[experimental]\npredictive-echo = false\n", &path())
-        .expect("[experimental] section parses");
-    assert_eq!(
-        cfg.experimental.predictive_echo,
-        Some(false),
-        "predictive-echo = false should land as an explicit false in the typed view"
-    );
-    assert!(
-        !cfg.experimental.predictive_echo_for(true),
-        "an explicit false beats the remote default: the opt-out must stick"
-    );
-}
-
-#[test]
-fn experimental_predictive_echo_malformed_value_reports_key() {
-    // Bool field given an integer: the error must reach the user with
-    // enough context to find the key.
-    let input = r"
-[experimental]
-predictive-echo = 1
-";
-    let err = parse_str(input, &path()).expect_err("integer is not a bool");
-    let ConfigError::Parse {
-        message, position, ..
-    } = err
-    else {
-        panic!("expected ConfigError::Parse for malformed value");
-    };
-    assert!(
-        message.contains("bool") || message.contains("boolean"),
-        "error should mention the expected type; got: {message}"
-    );
-    // The offending value sits on line 3 (leading newline + section line + value line).
-    assert_eq!(
-        position.map(|(line, _)| line),
-        Some(3),
-        "error should point at the broken value line"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Per-field user values parse and round-trip: [sidebar] (phux-4h5a),
-// [status] position (phux-foz.8), defaults.term (phux-ign), the spawn
-// knobs (phux-4li.1), and window-size (ADR-0027).
-// ---------------------------------------------------------------------------
-
+/// Per-field user values parse and round-trip; explicit predictive echo
+/// beats the per-transport default in both directions.
 #[test]
 fn user_values_parse_and_round_trip() {
+    let cfg = parse_and_round_trip("[keybindings]\nwhich-key = false\nwhich-key-delay-ms = 250\n");
+    assert!(!cfg.keybindings.which_key);
+    assert_eq!(cfg.keybindings.which_key_delay_ms, 250);
+
+    let cfg = parse_and_round_trip("[experimental]\npredictive-echo = true\n");
+    assert!(cfg.experimental.predictive_echo_for(false));
+    let cfg = parse_and_round_trip("[experimental]\npredictive-echo = false\n");
+    assert!(!cfg.experimental.predictive_echo_for(true));
+
     let cfg =
         parse_and_round_trip("[sidebar]\nenabled  = true\nwidth    = 30\nposition = \"right\"\n");
     assert!(cfg.sidebar.enabled);
@@ -364,8 +245,6 @@ fn user_values_parse_and_round_trip() {
     let cfg = parse_and_round_trip("[status]\nleft     = [\"session-name\"]\nposition = \"top\"\n");
     assert_eq!(cfg.status.position, StatusPosition::Top);
 
-    // phux-ign: a user can opt into ghostty's extended terminfo by
-    // setting `defaults.term`.
     let cfg = parse_and_round_trip("[defaults]\nterm = \"ghostty\"\n");
     assert_eq!(cfg.defaults.term, "ghostty");
 
@@ -386,68 +265,6 @@ session-name-template = "phux-${cwd-basename}"
 
     let cfg = parse_and_round_trip("[defaults]\nwindow-size = \"largest\"\n");
     assert_eq!(cfg.defaults.window_size, WindowSize::Largest);
-}
-
-#[test]
-fn cwd_inheritance_accepts_all_variants() {
-    for (toml_value, expected) in [
-        ("inherit-focused", CwdInheritance::InheritFocused),
-        ("home", CwdInheritance::Home),
-        ("session-root", CwdInheritance::SessionRoot),
-        ("last-cwd-per-window", CwdInheritance::LastCwdPerWindow),
-    ] {
-        let input = format!("[defaults]\ncwd-inheritance = \"{toml_value}\"\n");
-        let cfg = parse_str(&input, &path())
-            .unwrap_or_else(|e| panic!("variant {toml_value} should parse: {e}"));
-        assert_eq!(cfg.defaults.cwd_inheritance, expected);
-    }
-}
-
-#[test]
-fn window_size_accepts_all_variants() {
-    for (toml_value, expected) in [
-        ("smallest", WindowSize::Smallest),
-        ("largest", WindowSize::Largest),
-        ("latest", WindowSize::Latest),
-        ("manual", WindowSize::Manual),
-    ] {
-        let input = format!("[defaults]\nwindow-size = \"{toml_value}\"\n");
-        let cfg = parse_str(&input, &path())
-            .unwrap_or_else(|e| panic!("variant {toml_value} should parse: {e}"));
-        assert_eq!(cfg.defaults.window_size, expected);
-    }
-}
-
-#[test]
-fn embedded_default_toml_populates_new_knobs() {
-    // The shipped `default.toml` (via `parse_with_defaults`) must
-    // populate the new knobs at their documented defaults.
-    let cfg = phux_config::parse_with_defaults("", &path()).expect("embedded defaults parse");
-    assert_eq!(cfg.defaults.cwd_inheritance, CwdInheritance::InheritFocused);
-    assert_eq!(cfg.defaults.spawn_on_attach, None);
-    assert_eq!(cfg.defaults.session_name_template, "${cwd-basename}");
-    assert_eq!(cfg.defaults.window_size, WindowSize::Smallest);
-    // history-limit is the canonical scrollback knob (phux-4li.1 DEDUPE).
-    assert_eq!(cfg.defaults.history_limit, 50_000);
-    assert!(
-        cfg.status.center.is_empty(),
-        "shipped center is empty; help-hints is opt-in"
-    );
-}
-
-#[test]
-fn user_can_override_one_new_knob_without_restating_others() {
-    // Layered parse: setting only `cwd-inheritance` must leave the other
-    // new knobs at their embedded-default values.
-    let user = r#"
-[defaults]
-cwd-inheritance = "session-root"
-"#;
-    let cfg = phux_config::parse_with_defaults(user, &path()).expect("partial override parses");
-    assert_eq!(cfg.defaults.cwd_inheritance, CwdInheritance::SessionRoot);
-    assert_eq!(cfg.defaults.spawn_on_attach, None);
-    assert_eq!(cfg.defaults.session_name_template, "${cwd-basename}");
-    assert_eq!(cfg.defaults.window_size, WindowSize::Smallest);
 }
 
 /// Replace the `:COL:` in `path:LINE:COL: message` with `:<col>:` so

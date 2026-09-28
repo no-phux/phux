@@ -1,45 +1,23 @@
-//! Shared scaffolding for phux-server's wire integration tests.
-//!
-//! This was `crates/phux-server/tests/common/`, included with `mod common;`
-//! from each `tests/*.rs`. Cargo compiles every one of those files as its
-//! own crate, so the module was compiled from scratch once per test binary —
-//! 46 times. Each phux-server test binary measured ~19s of CPU, and ~86% of
-//! what it compiled was this shared code rather than the test. As a real
-//! crate it is compiled once and linked as an rlib.
-//!
-//! The helpers intentionally avoid touching `phux-server`'s internals —
-//! every interaction goes through the public `ServerRuntime` API plus the
-//! wire-frame surface from `phux_protocol`. That is what made this
-//! extractable, and it is what keeps the tests honest: a regression that
-//! only shows up over the wire will show up here, even if `ServerState`
-//! unit tests keep passing.
-//!
-//! All `recv` paths in these helpers are wrapped in `tokio::time::timeout`
-//! (`WIRE_RECV_TIMEOUT`). A hang is a failure, not a wait-for-Godot.
+//! Shared scaffolding for phux-server's wire integration tests. A separate
+//! crate so it compiles once instead of once per test binary. Helpers drive
+//! the server only through the public `ServerRuntime` API and the wire, and
+//! every `recv` is bounded by [`WIRE_RECV_TIMEOUT`].
 
-// Test scaffolding: the assertion helpers panic by contract, and a caller
-// that misuses a fixture should fail loudly rather than thread a Result.
-#![allow(clippy::expect_used, reason = "test scaffolding")]
-#![allow(clippy::unwrap_used, reason = "test scaffolding")]
-#![allow(clippy::panic, reason = "test scaffolding")]
-#![allow(clippy::missing_panics_doc, reason = "test scaffolding")]
-// These fixtures were private `tests/common/` types, so the workspace's
-// `missing_debug_implementations` never applied to them; as a real crate's
-// public surface it does. Several wrap foreign guards that are not Debug
-// (`tracing`'s `DefaultGuard`, PTY handles), and no test formats a fixture
-// with `{:?}` — a hand-written Debug per fixture would be pure ceremony.
-#![allow(missing_debug_implementations, reason = "test scaffolding")]
-// Same cause: these are public-API style lints, and this code only became a
-// public API by being extracted. The crate is `publish = false` with exactly
-// one consumer (phux-server's tests), so a rustdoc-listing summary convention
-// and `#[must_use]` on fixture accessors buy nothing here — and reflowing 13
-// doc comments to satisfy them would bury the change this commit is actually
-// making. The prose itself is unchanged from when it lived in tests/common/.
-#![allow(clippy::too_long_first_doc_paragraph, reason = "test scaffolding")]
-#![allow(clippy::must_use_candidate, reason = "test scaffolding")]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "test scaffolding"
+)]
+#![allow(
+    clippy::missing_panics_doc,
+    missing_debug_implementations,
+    clippy::too_long_first_doc_paragraph,
+    clippy::must_use_candidate,
+    reason = "test scaffolding with one consumer; fixtures wrap non-Debug guards"
+)]
 
 pub mod builder;
-pub mod fault;
 pub mod relay;
 pub mod screen;
 pub mod tracing_capture;
@@ -51,11 +29,11 @@ use std::time::{Duration, Instant};
 use bytes::BytesMut;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
-use phux_protocol::ids::ResourceId;
+use phux_protocol::ids::{GroupId, ResourceId, SatelliteHost};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    AttachTarget, Command, CommandResult, CommandValue, DetachReason, FrameKind,
-    TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
+    AttachTarget, Command, CommandResult, CommandValue, DetachReason, FrameKind, SpawnResource,
+    SpawnResult, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
 };
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
 use tempfile::TempDir;
@@ -65,75 +43,32 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
-/// Deadline applied to every wire `recv` in the integration tests. The
-/// margin is generous because these tests drive real PTYs and assert on
-/// rendered screen content; under full-parallel nextest many PTY-backed
-/// tests contend for CPU, so a tight deadline turns scheduler latency into
-/// spurious failures. A genuinely hung server still fails the run, just
-/// later. The recv resolves in milliseconds on the happy path, so the
-/// deadline only elapses on an actual fault.
+/// Deadline for every wire `recv`. Generous because PTY-backed tests contend
+/// for CPU; the happy path resolves in milliseconds, so only a real hang
+/// reaches it.
 pub const WIRE_RECV_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Deadline for the per-test socket-connect bootstrap. The margin is
-/// generous on purpose, mirroring [`WIRE_RECV_TIMEOUT`]'s philosophy: under
-/// full-parallel `just e2e` the server's `bind() + LocalSet::run_until` ramp
-/// contends with every other PTY-backed test for CPU, so a tight deadline
-/// turns scheduler latency into a spurious "socket never became connectable"
-/// panic. The happy path connects in milliseconds, so this ceiling only
-/// elapses on an actual fault (a server that genuinely never bound).
+/// Deadline for the per-test socket-connect bootstrap (same rationale).
 pub const SOCKET_CONNECT_DEADLINE: Duration = Duration::from_secs(10);
 
-/// Deadline for joining a `ServerRuntime` that has already been told to shut
-/// down.
-///
-/// Same philosophy as [`WIRE_RECV_TIMEOUT`], and for the same reason
-/// (phux-br1f). This is the single most-repeated deadline in the suite — one
-/// per test, at teardown, after `shutdown_tx.send(())` — and it asserts
-/// nothing but "the server stops". It used to be a hand-written
-/// `Duration::from_secs(5)` at every site: fine on an idle laptop, and on a
-/// saturated one a measurement of the scheduler rather than of the server.
-/// The happy path joins in milliseconds, so this ceiling only elapses on a
-/// runtime that genuinely will not stop — which still fails the run, 30s
-/// later, with the same message.
+/// Deadline for joining a `ServerRuntime` that was told to shut down.
 pub const SERVER_JOIN_DEADLINE: Duration = Duration::from_secs(30);
 
-/// Spawn a [`ServerRuntime`] on the current `LocalSet`, optionally pre-
-/// seeding a session by name. Returns the shutdown sender and the join
-/// handle so each test can drive a clean shutdown.
-///
-/// Per ADR-0014 the server runs on a `LocalSet` because per-pane
-/// `TerminalActor`s own `!Send` `libghostty_vt::Terminal`s — callers MUST
-/// invoke this from inside a `LocalSet::run_until` (see [`run_local`]).
-pub fn spawn_server(
-    socket_path: PathBuf,
-    pre_seeded: Option<&str>,
-) -> (oneshot::Sender<()>, JoinHandle<Result<(), ServerError>>) {
-    let (tx, rx) = oneshot::channel::<()>();
-    let cfg = ServerConfig {
-        socket_path,
-        pre_seeded_session: pre_seeded.map(str::to_owned),
-        seed_with_pty: false,
-        seed_command: None,
-        ..ServerConfig::with_default_socket()
-    };
-    let handle = tokio::task::spawn_local(async move {
-        let server = ServerRuntime::new(cfg);
-        server
-            .run_async(async move {
-                let _ = rx.await;
-            })
-            .await
-    });
-    (tx, handle)
+pub type ServerHandles = (oneshot::Sender<()>, JoinHandle<Result<(), ServerError>>);
+
+/// Spawn a [`ServerRuntime`] on the current `LocalSet` (ADR-0014: pane actors
+/// are `!Send`, so call from inside [`run_local`]), optionally pre-seeding a
+/// session without a PTY. Returns the shutdown sender and join handle.
+pub fn spawn_server(socket_path: PathBuf, pre_seeded: Option<&str>) -> ServerHandles {
+    spawn_server_with(socket_path, pre_seeded, |_| {})
 }
 
-/// Like [`spawn_server`] but lets the caller edit the [`ServerConfig`] before
-/// the runtime binds it: a `[voice]` transcriber, a seed command, a policy.
+/// Like [`spawn_server`] but lets the caller edit the [`ServerConfig`] first.
 pub fn spawn_server_with(
     socket_path: PathBuf,
     pre_seeded: Option<&str>,
     configure: impl FnOnce(&mut ServerConfig),
-) -> (oneshot::Sender<()>, JoinHandle<Result<(), ServerError>>) {
+) -> ServerHandles {
     let (tx, rx) = oneshot::channel::<()>();
     let mut cfg = ServerConfig {
         socket_path,
@@ -144,8 +79,7 @@ pub fn spawn_server_with(
     };
     configure(&mut cfg);
     let handle = tokio::task::spawn_local(async move {
-        let server = ServerRuntime::new(cfg);
-        server
+        ServerRuntime::new(cfg)
             .run_async(async move {
                 let _ = rx.await;
             })
@@ -154,128 +88,31 @@ pub fn spawn_server_with(
     (tx, handle)
 }
 
-/// Like [`spawn_server`] but pre-seeds a PTY-backed pane running `cmd`.
-/// Used by the `input_dispatch` test to drive a deterministic echo
-/// fixture (`cat`) for wire→PTY round-trip assertions.
+/// Pre-seed `pre_seeded` with a PTY-backed pane running `cmd`.
 pub fn spawn_server_with_seed_cmd(
     socket_path: PathBuf,
     pre_seeded: &str,
     cmd: portable_pty::CommandBuilder,
-) -> (oneshot::Sender<()>, JoinHandle<Result<(), ServerError>>) {
-    let (tx, rx) = oneshot::channel::<()>();
-    let cfg = ServerConfig {
-        socket_path,
-        pre_seeded_session: Some(pre_seeded.to_owned()),
-        seed_with_pty: true,
-        seed_command: Some(cmd),
-        ..ServerConfig::with_default_socket()
-    };
-    let handle = tokio::task::spawn_local(async move {
-        let server = ServerRuntime::new(cfg);
-        server
-            .run_async(async move {
-                let _ = rx.await;
-            })
-            .await
-    });
-    (tx, handle)
+) -> ServerHandles {
+    spawn_server_with(socket_path, Some(pre_seeded), |cfg| seed_pty(cfg, cmd))
 }
 
-/// Like [`spawn_server_with_seed_cmd`] but also sets the server-wide
-/// `defaults.term` (phux-ign). The runtime applies `ServerConfig::term`
-/// over the seed command's baseline via `terminal_actor::apply_term`, so
-/// setting `TERM` on `cmd` directly would be silently overwritten — this
-/// helper is the honest way to spawn a seed pane under a specific `TERM`
-/// (e.g. `ghostty` for the phux-0o8 kitty-keyboard round-trip harness).
-pub fn spawn_server_with_seed_cmd_and_term(
-    socket_path: PathBuf,
-    pre_seeded: &str,
-    cmd: portable_pty::CommandBuilder,
-    term: &str,
-) -> (oneshot::Sender<()>, JoinHandle<Result<(), ServerError>>) {
-    let (tx, rx) = oneshot::channel::<()>();
-    let cfg = ServerConfig {
-        socket_path,
-        pre_seeded_session: Some(pre_seeded.to_owned()),
-        seed_with_pty: true,
-        seed_command: Some(cmd),
-        term: term.to_owned(),
-        ..ServerConfig::with_default_socket()
-    };
-    let handle = tokio::task::spawn_local(async move {
-        let server = ServerRuntime::new(cfg);
-        server
-            .run_async(async move {
-                let _ = rx.await;
-            })
-            .await
-    });
-    (tx, handle)
+/// Configure `cfg` to seed panes with a real PTY running `cmd`.
+pub fn seed_pty(cfg: &mut ServerConfig, cmd: portable_pty::CommandBuilder) {
+    cfg.seed_with_pty = true;
+    cfg.seed_command = Some(cmd);
 }
 
-/// Like [`spawn_server_with_seed_cmd`] but also sets the
-/// `defaults.cwd-inheritance` policy. Used by the phux-nyx tests to
-/// exercise the `session-root` and `last-cwd-per-window` modes against a
-/// deterministic seed-pane fixture.
-pub fn spawn_server_with_seed_cmd_and_cwd_mode(
-    socket_path: PathBuf,
-    pre_seeded: &str,
-    cmd: portable_pty::CommandBuilder,
-    cwd_inheritance: phux_config::CwdInheritance,
-) -> (oneshot::Sender<()>, JoinHandle<Result<(), ServerError>>) {
-    let (tx, rx) = oneshot::channel::<()>();
-    let cfg = ServerConfig {
-        socket_path,
-        pre_seeded_session: Some(pre_seeded.to_owned()),
-        seed_with_pty: true,
-        seed_command: Some(cmd),
-        cwd_inheritance,
-        ..ServerConfig::with_default_socket()
-    };
-    let handle = tokio::task::spawn_local(async move {
-        let server = ServerRuntime::new(cfg);
-        server
-            .run_async(async move {
-                let _ = rx.await;
-            })
-            .await
-    });
-    (tx, handle)
-}
-
-/// Spawn a [`ServerRuntime`] that seeds panes with a *real PTY* but no
-/// server-wide override command (`seed_with_pty = true`, `seed_command =
-/// None`). Under this config a `CREATE_SESSION` carrying a non-empty wire
-/// `command` runs that command in the seed pane — the override that wins in
-/// [`spawn_server_with_seed_cmd`] is absent, so the wire command takes
-/// effect. Used to verify the `CREATE_SESSION { command }` path end-to-end
-/// against a deterministic PTY fixture (`phux-rhh`).
+/// Seed panes with a real PTY but no override command, so a wire
+/// `CREATE_SESSION { command }` decides what runs.
 pub fn spawn_server_seed_pty_no_cmd(
     socket_path: PathBuf,
     pre_seeded: Option<&str>,
-) -> (oneshot::Sender<()>, JoinHandle<Result<(), ServerError>>) {
-    let (tx, rx) = oneshot::channel::<()>();
-    let cfg = ServerConfig {
-        socket_path,
-        pre_seeded_session: pre_seeded.map(str::to_owned),
-        seed_with_pty: true,
-        seed_command: None,
-        ..ServerConfig::with_default_socket()
-    };
-    let handle = tokio::task::spawn_local(async move {
-        let server = ServerRuntime::new(cfg);
-        server
-            .run_async(async move {
-                let _ = rx.await;
-            })
-            .await
-    });
-    (tx, handle)
+) -> ServerHandles {
+    spawn_server_with(socket_path, pre_seeded, |cfg| cfg.seed_with_pty = true)
 }
 
 /// Block on `fut` inside a fresh `current_thread` runtime + `LocalSet`.
-/// Mirrors the byc.8 `attach_lifecycle` helper exactly so the wire
-/// surface stays identical across tests.
 pub fn run_local<F>(fut: F)
 where
     F: Future<Output = ()>,
@@ -288,10 +125,8 @@ where
     local.block_on(&rt, fut);
 }
 
-/// Poll for a connection and complete the mandatory protocol-0.7 handshake.
-///
-/// Most wire integration tests exercise post-negotiation behavior. Tests that
-/// target HELLO or pre-HELLO rejection must use [`wait_for_raw_socket`].
+/// Poll for a connection and complete the HELLO handshake. Tests of HELLO
+/// itself use [`wait_for_raw_socket`].
 pub async fn wait_for_socket(path: &Path, deadline: Duration) -> UnixStream {
     let mut stream = wait_for_raw_socket(path, deadline).await;
     send_frame(
@@ -313,8 +148,7 @@ pub async fn wait_for_socket(path: &Path, deadline: Duration) -> UnixStream {
     stream
 }
 
-/// Owning handles for [`spawn_server_connected`]. Keep this alive: dropping it
-/// drops the shutdown sender, which is what tells `run_async` to exit.
+/// Owning handles for [`spawn_server_connected`]; dropping it stops the server.
 #[must_use = "dropping the shutdown sender stops the server"]
 pub struct SpawnedServer {
     _tmp: TempDir,
@@ -330,11 +164,8 @@ impl SpawnedServer {
     }
 }
 
-/// Spawn a [`ServerRuntime`] (optionally pre-seeded) and wait until a HELLO'd
-/// client is connected.
-///
-/// Replaces the four-line `TempDir` + [`spawn_server`] + [`wait_for_socket`]
-/// preamble (phux-n0du Pass 3 item 2). Extra clients use [`SpawnedServer::connect`].
+/// Spawn a [`ServerRuntime`] (optionally pre-seeded) in a temp dir and return
+/// a HELLO'd client. Extra clients use [`SpawnedServer::connect`].
 #[must_use = "dropping the shutdown sender stops the server"]
 pub async fn spawn_server_connected(pre_seeded: Option<&str>) -> (SpawnedServer, UnixStream) {
     let tmp = TempDir::new().unwrap();
@@ -370,14 +201,8 @@ pub async fn wait_for_raw_socket(path: &Path, deadline: Duration) -> UnixStream 
     );
 }
 
-/// Non-panicking sibling of [`wait_for_socket`]: poll
-/// `UnixStream::connect(path)` until success and return `Some(stream)`, or
-/// return `None` once `deadline` elapses without a connect. Unlike
-/// [`wait_for_socket`], a never-connectable socket is a *valid outcome* here,
-/// not a panic — use this when the test is racing a server that may have
-/// already reaped itself and torn the socket down (so "couldn't connect" is
-/// indistinguishable from, and as acceptable as, "server gone"). The retry
-/// cadence and connect semantics are identical to [`wait_for_socket`].
+/// Like [`wait_for_raw_socket`] but returns `None` at the deadline, for tests
+/// racing a server that may already have exited.
 pub async fn try_connect_socket(path: &Path, deadline: Duration) -> Option<UnixStream> {
     let start = Instant::now();
     while start.elapsed() < deadline {
@@ -389,49 +214,50 @@ pub async fn try_connect_socket(path: &Path, deadline: Duration) -> Option<UnixS
     None
 }
 
-/// Read exactly one length-prefixed wire frame and return the full
-/// framed bytes (4-byte BE header + body). Wrapped in
-/// [`WIRE_RECV_TIMEOUT`]; panics on either timeout or I/O error so the
-/// test fails loudly.
-pub async fn recv_framed(stream: &mut UnixStream) -> Vec<u8> {
+/// Read one length-prefixed frame (header + body), or `None` on a clean EOF
+/// before the header. Panics on timeout, I/O error, or a truncated frame.
+async fn read_framed(stream: &mut UnixStream) -> Option<Vec<u8>> {
     timeout(WIRE_RECV_TIMEOUT, async {
         let mut header = [0u8; 4];
-        stream.read_exact(&mut header).await.unwrap();
+        match stream.read_exact(&mut header).await {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return None,
+            Err(e) => panic!("recv header io error: {e}"),
+        }
         let body_len = u32::from_be_bytes(header) as usize;
-        let mut body = vec![0u8; body_len];
-        stream.read_exact(&mut body).await.unwrap();
-        let mut framed = Vec::with_capacity(4 + body_len);
-        framed.extend_from_slice(&header);
-        framed.extend_from_slice(&body);
-        framed
+        let mut framed = vec![0u8; 4 + body_len];
+        framed[..4].copy_from_slice(&header);
+        stream.read_exact(&mut framed[4..]).await.unwrap();
+        Some(framed)
     })
     .await
     .expect("timed out waiting for frame")
 }
 
-/// Decode one wire frame and return both the type byte (for type-level
-/// assertions that don't want to match the full enum) and the decoded
-/// [`FrameKind`].
-pub async fn recv_typed(stream: &mut UnixStream) -> (u8, FrameKind) {
-    let framed = recv_framed(stream).await;
-    let type_byte = framed[4];
-    let (frame, rest) = FrameKind::decode(&framed).expect("decode frame");
+fn decode_framed(framed: &[u8]) -> (u8, FrameKind) {
+    let (frame, rest) = FrameKind::decode(framed).expect("decode frame");
     assert!(rest.is_empty(), "decoder did not consume entire frame");
-    (type_byte, frame)
+    (framed[4], frame)
 }
 
-/// Drain frames until `pred` returns `Some`.
-///
-/// Each read uses [`recv_typed`]'s per-frame [`WIRE_RECV_TIMEOUT`]. Unrelated
-/// frames are skipped. This is the shared form of the
-/// `loop { let (type_byte, frame) = recv_typed(...); if ... continue; }`
-/// skeleton that was hand-rolled across the protocol/attach/metadata tests
-/// (phux-n0du Pass 3 item 3).
-///
-/// The specialized siblings [`recv_until_detached`] and [`recv_command_result`]
-/// stay as named wrappers for the two most common predicates. For a wait that
-/// must fail once an overall deadline elapses — even if frames keep arriving —
-/// use [`recv_until_deadline`].
+/// Read one length-prefixed frame (header + body); panics on EOF or timeout.
+pub async fn recv_framed(stream: &mut UnixStream) -> Vec<u8> {
+    read_framed(stream).await.expect("connection closed")
+}
+
+/// Decode one wire frame, returning its type byte and [`FrameKind`].
+pub async fn recv_typed(stream: &mut UnixStream) -> (u8, FrameKind) {
+    decode_framed(&recv_framed(stream).await)
+}
+
+/// Like [`recv_typed`] but returns `None` on a clean EOF at a frame boundary
+/// (the server exits when its last session is reaped).
+pub async fn try_recv_typed(stream: &mut UnixStream) -> Option<(u8, FrameKind)> {
+    read_framed(stream).await.as_deref().map(decode_framed)
+}
+
+/// Drain frames until `pred` returns `Some`. Each read is bounded by
+/// [`WIRE_RECV_TIMEOUT`]; for an overall deadline use [`recv_until_deadline`].
 pub async fn recv_until<T>(
     stream: &mut UnixStream,
     mut pred: impl FnMut(u8, FrameKind) -> Option<T>,
@@ -444,12 +270,7 @@ pub async fn recv_until<T>(
     }
 }
 
-/// Like [`recv_until`], but the whole wait is bounded by `deadline`.
-///
-/// Returns `None` if the deadline elapses before `pred` matches. Each read
-/// is also bounded by the remaining time, matching [`await_command_result`].
-/// A hung server still fails the run; a missing frame is a `None` the caller
-/// panics on with its own wording.
+/// Like [`recv_until`], but returns `None` once `deadline` passes.
 pub async fn recv_until_deadline<T>(
     stream: &mut UnixStream,
     deadline: tokio::time::Instant,
@@ -470,10 +291,7 @@ pub async fn recv_until_deadline<T>(
     None
 }
 
-/// Drain queued attach/bootstrap traffic until the server acknowledges DETACH.
-///
-/// Progressive bootstrap frames can already be in flight when a client sends
-/// DETACH; tests must not assume the acknowledgement is the next wire frame.
+/// Drain in-flight traffic until the server acknowledges DETACH.
 pub async fn recv_until_detached(stream: &mut UnixStream) -> FrameKind {
     recv_until(stream, |_, frame| {
         matches!(frame, FrameKind::Detached { .. }).then_some(frame)
@@ -481,46 +299,9 @@ pub async fn recv_until_detached(stream: &mut UnixStream) -> FrameKind {
     .await
 }
 
-/// Like [`recv_typed`] but returns `None` on a clean connection close
-/// (`UnexpectedEof` on the length prefix) instead of panicking. Use this
-/// in read loops that may outlive the server: with the tmux server-exit
-/// model (phux-60s) the server drops every client connection when its
-/// last session is reaped, so a graceful EOF mid-loop is expected, not a
-/// failure. Still panics on the [`WIRE_RECV_TIMEOUT`] (a hung server is a
-/// loud failure) and on a partial/garbled frame.
-pub async fn try_recv_typed(stream: &mut UnixStream) -> Option<(u8, FrameKind)> {
-    let framed = timeout(WIRE_RECV_TIMEOUT, async {
-        let mut header = [0u8; 4];
-        match stream.read_exact(&mut header).await {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return None,
-            Err(e) => panic!("recv header io error: {e}"),
-        }
-        let body_len = u32::from_be_bytes(header) as usize;
-        let mut body = vec![0u8; body_len];
-        stream.read_exact(&mut body).await.unwrap();
-        let mut framed = Vec::with_capacity(4 + body_len);
-        framed.extend_from_slice(&header);
-        framed.extend_from_slice(&body);
-        Some(framed)
-    })
-    .await
-    .expect("timed out waiting for frame")?;
-    let type_byte = framed[4];
-    let (frame, rest) = FrameKind::decode(&framed).expect("decode frame");
-    assert!(rest.is_empty(), "decoder did not consume entire frame");
-    Some((type_byte, frame))
-}
-
-/// Poll `GET_SCREEN` for `terminal_id` on `stream` until the server's own
-/// grid shows `needle`, or panic once `deadline` elapses.
-///
-/// This reads the pane actor's canonical `Terminal`, not any consumer's
-/// mirror, so it answers "has the pane *produced* this yet?" without reading
-/// from, or unblocking, a connection the test is deliberately stalling. Use a
-/// connection that carries no subscription, so no unsolicited output
-/// interleaves with the replies. `deadline` is a hang guard, not a timing
-/// assertion.
+/// Poll `GET_SCREEN` until the server's own grid for `terminal_id` shows
+/// `needle`. Use a connection with no subscription so output does not
+/// interleave with the replies.
 pub async fn wait_for_server_screen_text(
     stream: &mut UnixStream,
     terminal_id: &ResourceId,
@@ -562,15 +343,8 @@ pub fn encode_frame(frame: &FrameKind) -> BytesMut {
     buf
 }
 
-/// Read frames until the `COMMAND_RESULT` for `request_id` arrives, bounded by
-/// [`WIRE_RECV_TIMEOUT`] overall. Unrelated frames in between are skipped.
-///
-/// Pass 2 moved the six named copies here (four byte-identical, two
-/// differing only in panic wording). Leftover skip-until drain loops that
-/// still spelled the same wait by hand now call this too.
-///
-/// The unbounded sibling is [`recv_command_result`]: use this one when a
-/// missing reply should fail the test rather than hang it.
+/// Skip frames until the `COMMAND_RESULT` for `request_id`, bounded by
+/// [`WIRE_RECV_TIMEOUT`] overall.
 pub async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
     recv_until_deadline(stream, deadline, |type_byte, frame| {
@@ -589,19 +363,21 @@ pub async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> C
     .unwrap_or_else(|| panic!("no COMMAND_RESULT with request_id={request_id} within deadline"))
 }
 
-/// Read frames until the `COMMAND_RESULT` for `request_id` arrives, skipping
-/// anything else, with no overall deadline of its own.
-///
-/// Pass 2 moved four byte-identical copies here; leftover skip-until drains
-/// that leaned on [`recv_typed`]'s per-read timeout now call this too. Prefer
-/// [`await_command_result`] in new tests.
-///
-/// Call sites left alone on purpose, not duplication: `end_to_end.rs`
-/// asserts the id rather than skipping a mismatch; `stress_spawn_kill.rs`
-/// takes the first result regardless of request id; `open_listener.rs` reads
-/// over QUIC, not a `UnixStream`; loops that collect interleaved frames
-/// (events, output, errors) stay local because discarding those frames
-/// would change the test.
+/// Send `COMMAND { request_id, command }` and [`await_command_result`] its reply.
+pub async fn command(stream: &mut UnixStream, request_id: u32, command: Command) -> CommandResult {
+    send_frame(
+        stream,
+        &FrameKind::Command {
+            request_id,
+            command,
+        },
+    )
+    .await;
+    await_command_result(stream, request_id).await
+}
+
+/// Skip frames until the `COMMAND_RESULT` for `request_id` (per-read timeout
+/// only). Prefer [`await_command_result`].
 pub async fn recv_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
     recv_until(stream, |_, frame| match frame {
         FrameKind::CommandResult {
@@ -613,11 +389,7 @@ pub async fn recv_command_result(stream: &mut UnixStream, request_id: u32) -> Co
     .await
 }
 
-/// Bind an ephemeral loopback port, read it back, and drop the listener.
-///
-/// Inherently racy — the port is free when returned, not reserved — which is
-/// why it belongs in one place with the caveat written down rather than in
-/// each transport test that wants a port.
+/// An ephemeral loopback port that was free a moment ago (inherently racy).
 #[must_use]
 pub fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
@@ -627,34 +399,14 @@ pub fn free_port() -> u16 {
         .port()
 }
 
-/// [`encode_frame`] as an owned `Vec<u8>`, for the socket helpers that want
-/// bytes rather than a `BytesMut`.
-///
-/// `wt_attach.rs` keeps a private copy on purpose: it documents that it takes
-/// no testkit dependency at all, so that its handshake deadline is visibly its
-/// own rather than borrowed. Do not "finish the job" by wiring it up here.
+/// [`encode_frame`] as an owned `Vec<u8>`.
 #[must_use]
 pub fn encode_frame_vec(frame: &FrameKind) -> Vec<u8> {
     encode_frame(frame).to_vec()
 }
 
-/// Signal shutdown and assert the server task joined cleanly.
-///
-/// Pairs with every `spawn_server*` in this module, which hand back exactly
-/// this `(Sender, JoinHandle)`. Promoted from forty-nine hand-written copies
-/// across nineteen files; leftover asserting teardowns that still spelled
-/// send-then-join by hand (the two-line `await.unwrap().unwrap()` form and
-/// the timeout+expect form) now call this too.
-///
-/// Deliberately does NOT assert the socket was unlinked: most of those call
-/// sites had no socket path in scope, and the ones that care about unlinking
-/// say so themselves. `end_to_end.rs` wraps this with that extra assertion.
-///
-/// Drop your own client stream before calling this — the call sites that need
-/// it keep their `drop(stream)` because the variable is theirs, not ours.
-///
-/// Call sites that swallow the join (`await.ok()`, `let _ = handle.await`)
-/// stay inline: that is a different contract, not this helper.
+/// Signal shutdown and assert the server task joined cleanly. Drop client
+/// streams first.
 pub async fn join_after_shutdown(
     shutdown: oneshot::Sender<()>,
     server: JoinHandle<Result<(), ServerError>>,
@@ -667,12 +419,7 @@ pub async fn join_after_shutdown(
         .expect("server run_async ok");
 }
 
-/// Build a `KeyEvent` for an ASCII printable, matching what a real client
-/// sends: the text and unshifted codepoint both carry the character, and no
-/// modifiers are set or consumed.
-///
-/// Eleven test files each had a byte-identical private copy of this before it
-/// was promoted here.
+/// An unmodified press `KeyEvent` for an ASCII printable.
 #[must_use]
 pub fn ascii_key(c: char, key: PhysicalKey) -> KeyEvent {
     KeyEvent {
@@ -686,9 +433,67 @@ pub fn ascii_key(c: char, key: PhysicalKey) -> KeyEvent {
     }
 }
 
-/// Build the canonical `ATTACH { ByName(name) }` used by the byc.6 tests.
-/// 80x24 viewport, no scrollback requested — matches the byc.8 fixture so
-/// the snapshot dimensions line up.
+/// The optional fields of a `SPAWN_RESOURCE` in group 1. `Default` is a
+/// plain default-shell Terminal spawn on the receiving server.
+#[derive(Debug, Clone, Default)]
+pub struct Spawn {
+    pub command: Option<Vec<String>>,
+    pub cwd: Option<String>,
+    pub env: Option<Vec<(String, String)>>,
+    pub term: Option<String>,
+    pub satellite: Option<SatelliteHost>,
+    pub owner_terminal: Option<ResourceId>,
+    pub agent_session: Option<Vec<u8>>,
+    pub initial_size: Option<(u16, u16)>,
+    pub resource: Option<Box<SpawnResource>>,
+}
+
+impl Spawn {
+    /// Spawn `argv` instead of the default shell.
+    #[must_use]
+    pub fn command(argv: &[&str]) -> Self {
+        Self {
+            command: Some(argv.iter().map(|arg| (*arg).to_owned()).collect()),
+            ..Self::default()
+        }
+    }
+
+    /// The wire frame.
+    #[must_use]
+    pub fn frame(self, request_id: u32) -> FrameKind {
+        FrameKind::SpawnResource {
+            request_id,
+            group: GroupId::new(1),
+            command: self.command,
+            cwd: self.cwd,
+            env: self.env,
+            term: self.term,
+            satellite: self.satellite,
+            owner_terminal: self.owner_terminal,
+            agent_session: self.agent_session,
+            initial_size: self.initial_size,
+            resource: self.resource,
+        }
+    }
+}
+
+/// Send `spawn` and return the correlated `RESOURCE_SPAWNED` result, skipping
+/// other frames, bounded by [`WIRE_RECV_TIMEOUT`] overall.
+pub async fn spawn_resource(stream: &mut UnixStream, request_id: u32, spawn: Spawn) -> SpawnResult {
+    send_frame(stream, &spawn.frame(request_id)).await;
+    let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
+    recv_until_deadline(stream, deadline, |_, frame| match frame {
+        FrameKind::ResourceSpawned {
+            request_id: got,
+            result,
+        } if got == request_id => Some(result),
+        _ => None,
+    })
+    .await
+    .unwrap_or_else(|| panic!("no RESOURCE_SPAWNED with request_id={request_id} within deadline"))
+}
+
+/// `ATTACH { ByName(name) }` at 80x24 with no scrollback.
 #[must_use]
 pub fn attach_by_name(name: &str) -> FrameKind {
     attach_by_name_with_id(name, 1)
@@ -707,20 +512,15 @@ pub fn attach_by_name_with_id(name: &str, attach_id: u32) -> FrameKind {
     }
 }
 
-/// Write a frame to the stream and flush. Convenience wrapper so each
-/// test reads as a sequence of named protocol steps instead of a
-/// `write_all` + `flush` pair.
+/// Write a frame to the stream and flush.
 pub async fn send_frame(stream: &mut UnixStream, frame: &FrameKind) {
     let buf = encode_frame(frame);
     stream.write_all(&buf).await.unwrap();
     stream.flush().await.unwrap();
 }
 
-/// Read with [`WIRE_RECV_TIMEOUT`] but expect EOF: returns `Ok(())` if
-/// the next `read` yields `0` bytes (clean half-close), `Err` otherwise.
-/// Used by the detach test to assert that the server has fully torn the
-/// connection down once the client closes its write side.
-pub async fn expect_eof_within(stream: &mut UnixStream, deadline: Duration) -> Result<(), String> {
+/// `Ok(())` if the next read within `deadline` is a clean EOF.
+async fn expect_eof_within(stream: &mut UnixStream, deadline: Duration) -> Result<(), String> {
     let mut buf = [0u8; 16];
     match timeout(deadline, stream.read(&mut buf)).await {
         Ok(Ok(0)) => Ok(()),
@@ -735,14 +535,8 @@ pub async fn expect_eof_within(stream: &mut UnixStream, deadline: Duration) -> R
     }
 }
 
-/// Assert the SPEC §14 fatal-close shape on a UDS connection: the peer that
-/// broke the protocol is sent `DETACHED { reason: PROTOCOL_ERROR }`, and the
-/// server then closes the transport.
-///
-/// The `ERROR` frame that precedes it stays with the caller — its code and
-/// message name the *specific* violation and differ per test. What every
-/// fatal-close path owes identically is this tail, so it is asserted once
-/// here rather than re-derived per test binary.
+/// Assert the SPEC §14 fatal-close tail: `DETACHED { PROTOCOL_ERROR }`, then
+/// EOF. The preceding `ERROR` frame is the caller's to check.
 pub async fn expect_protocol_error_close(stream: &mut UnixStream, deadline: Duration) {
     let (type_byte, detached) = recv_typed(stream).await;
     assert_eq!(
@@ -755,9 +549,7 @@ pub async fn expect_protocol_error_close(stream: &mut UnixStream, deadline: Dura
         .expect("server must close the transport after ERROR + DETACHED");
 }
 
-/// The frame half of [`expect_protocol_error_close`], for transports whose
-/// close is not a byte-stream EOF — a WebSocket peer is closed with a Close
-/// message, so that test supplies its own ending and shares this assertion.
+/// The frame half of [`expect_protocol_error_close`], for non-UDS transports.
 pub fn assert_protocol_error_detach(frame: &FrameKind) {
     assert!(
         matches!(

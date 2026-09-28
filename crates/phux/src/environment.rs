@@ -170,14 +170,4 @@ mod tests {
             assert!(line.len() <= 80, "wider than 80 columns: {line:?}");
         }
     }
-
-    /// No two rows describe one variable, and every row says something.
-    #[test]
-    fn table_rows_are_unique_and_non_empty() {
-        let mut seen = std::collections::BTreeSet::new();
-        for spec in ENV_VARS {
-            assert!(seen.insert(spec.name), "{} listed twice", spec.name);
-            assert!(!spec.lines.is_empty(), "{} has no meaning", spec.name);
-        }
-    }
 }

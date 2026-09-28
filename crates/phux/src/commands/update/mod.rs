@@ -1,43 +1,21 @@
 //! `phux update` — the one-command path from the release phux is running to
-//! the release phux publishes.
+//! the release phux publishes. The compatibility unit is the release
+//! (ADR-0071: the wire keeps its own `0.x` line), so moving a fleet between
+//! releases has to be one command.
 //!
-//! ## Why this is release-candidate scope and not a convenience
+//! Trust boundary:
 //!
-//! [ADR-0071](../../../../../docs/adr/0071-what-phux-1-0-commits-to.md) freezes the
-//! consumer surface at 1.0 and deliberately does **not** freeze the wire,
-//! which keeps its own `0.x` line under ADR-0061 — where a minor bump is a
-//! fleet-wide break with no grace window and mismatched peers refuse each
-//! other at HELLO. The compatibility unit is therefore the *release*, not the
-//! frame: a deployment's server, local clients, satellites, and relays must
-//! all run the same one. A fleet that cannot be moved between releases in one
-//! step is a fleet that will sit on a mismatch, so "upgrade everything" has to
-//! be a command rather than a runbook.
+//! * The `.sha256` sidecar is compared against a locally computed digest of
+//!   the download before anything is unpacked; a mismatch installs nothing.
+//! * Nothing downloaded is executed to decide whether to install it; the
+//!   archive is data, validated before and after unpacking.
+//! * Replacement is atomic and permission-preserving (see [`apply`]).
+//! * An install phux does not own (Homebrew, Cargo, Nix) gets its native
+//!   command instead, and an unrecognized install is refused.
 //!
-//! ## The trust boundary
-//!
-//! * The **checksum is the trust anchor**. The `.sha256` sidecar published
-//!   beside the tarball is compared against a digest computed locally, over
-//!   the downloaded file, *before* anything is unpacked. A mismatch refuses
-//!   loudly and installs nothing.
-//! * **Nothing downloaded is executed to decide whether to install it.** The
-//!   archive is treated as data throughout: member list validated, unpacked,
-//!   extracted tree validated. The only place a freshly installed binary is
-//!   run is the server's own pre-commit `--version` check inside the graceful
-//!   upgrade, which happens after installation and where a failure is
-//!   harmless — the old image keeps serving.
-//! * **Replacement is atomic and permission-preserving** — see
-//!   [`apply`] for the staging/rename discipline.
-//! * **An install phux does not own is never mutated.** Homebrew, Cargo, and
-//!   Nix each get the exact native command instead. An install phux cannot
-//!   even recognize is refused outright rather than overwritten on a guess.
-//!
-//! ## Relationship to `phux upgrade`
-//!
-//! `phux upgrade` stays exactly what it was: the low-level primitive that
-//! asks a running server to re-exec whatever binary is already on disk. It
-//! discovers nothing and downloads nothing. `phux update` is the user-facing
-//! verb built on top — it puts a new binary on disk and then calls that
-//! primitive so live panes survive the swap.
+//! `phux upgrade` remains the low-level primitive that asks a running server to
+//! re-exec the binary on disk; `phux update` puts a new binary there and then
+//! calls it so live panes survive.
 
 pub(crate) mod apply;
 pub(crate) mod channel;
@@ -322,12 +300,8 @@ impl Refusal {
     }
 }
 
-/// The side effects `phux update` performs, gathered behind one value so
-/// tests can substitute every one of them.
-///
-/// This is the same injection discipline the rest of the crate uses for
-/// side-effecting verbs: the decision logic is pure and the effects are
-/// values. Nothing in the test suite performs a real download.
+/// The side effects `phux update` performs, gathered behind one value so tests
+/// substitute every one of them (no test performs a real download).
 pub(crate) struct UpdateEnv<'a> {
     /// Where release metadata and artifacts come from.
     pub(crate) releases: &'a dyn ReleaseSource,
@@ -550,10 +524,8 @@ fn checked_lines(install: &Install, plan: &Plan) -> Vec<String> {
     } else {
         "already on the latest release".to_owned()
     }];
-    // The install source is always spoken to, update available or not:
-    // "phux will not maintain this install" is exactly the fact a user
-    // checking for updates needs, and learning it only at the moment of
-    // failure is what this verb exists to avoid.
+    // The install source is always reported, so an unmaintainable install is
+    // learned at check time, not at failure time.
     if let Some(refusal) = Refusal::of(install.source) {
         lines.push(refusal.message(install));
         lines.extend(
@@ -570,12 +542,8 @@ fn checked_lines(install: &Install, plan: &Plan) -> Vec<String> {
     lines
 }
 
-/// The check report is where a reader decides which rail to follow, so name
-/// both switches there rather than making them open `--help`.
-///
-/// A legend, not a per-rail hint on purpose: `--check --channel next` runs on
-/// a stable install and reports `channel: next`, where naming only the *other*
-/// rail would point the wrong way.
+/// The check report names both rail switches (a legend, not a per-rail hint,
+/// because `--check --channel next` can run on a stable install).
 fn switch_line() -> String {
     "switch:   `phux channel next` follows green main; \
      `phux channel latest` returns to numbered releases"
@@ -675,11 +643,8 @@ fn plan_next(
     }
 }
 
-/// Run one `phux update` against injected effects.
-///
-/// Split out from [`run_update`] so the whole flow — resolve, download,
-/// verify, stage, replace, hand off — is reachable from a test with a fake
-/// [`ReleaseSource`] and a scratch bin directory.
+/// Run one `phux update` against injected effects, so the whole flow is
+/// testable with a fake [`ReleaseSource`] and a scratch bin directory.
 pub(crate) fn execute(opts: &UpdateOpts, env: &UpdateEnv<'_>) -> Result<Outcome, UpdateError> {
     let install = env.install.clone();
     let current = Version::current().ok_or_else(|| {
@@ -694,9 +659,7 @@ pub(crate) fn execute(opts: &UpdateOpts, env: &UpdateEnv<'_>) -> Result<Outcome,
     }
 
     let host_target = release::host_target()?;
-    // A caller-supplied tag is validated before anything reaches the network:
-    // a typo should cost a millisecond and one clear message, not a round
-    // trip, and `--check --version <typo>` must be diagnosable offline.
+    // Validate a caller-supplied tag before any network traffic.
     if let Some(tag) = opts.tag.as_deref() {
         release::validate_tag(tag)?;
     }
@@ -792,8 +755,7 @@ fn install_release(
     };
     let staging = apply::Staging::create(&bin_dir)?;
 
-    // Both downloads land in the staging directory, which is removed on every
-    // exit path including a failure.
+    // Both downloads land in staging, removed on every exit path.
     let archive_path = staging.path().join(&artifact.archive);
     let sidecar_path = staging.path().join(format!("{}.sha256", artifact.archive));
     env.releases
@@ -805,8 +767,7 @@ fn install_release(
         UpdateError::Checksum(format!("could not read the .sha256 sidecar: {err}"))
     })?;
 
-    // THE GATE. Nothing below this line runs unless the published digest and
-    // the downloaded bytes agree.
+    // The gate: nothing below runs unless the published digest matches.
     let digest = apply::verify_archive(&archive_path, &sidecar, &artifact.archive)?;
 
     let staged = apply::unpack_verified(&archive_path, &artifact.stage, staging.path())?;
@@ -847,12 +808,9 @@ fn install_release(
     })
 }
 
-/// Restore the binaries saved by the previous update.
-///
-/// The handoff runs here too, and for the same reason it runs after an
-/// install: the point of a rollback is that the *running* server goes back to
-/// the previous image, not just the file on disk. `--no-restart` suppresses
-/// it exactly as it does on the way forward.
+/// Restore the binaries saved by the previous update. The handoff runs here
+/// too, so the running server goes back to the previous image;
+/// `--no-restart` suppresses it as on the way forward.
 fn rollback(
     opts: &UpdateOpts,
     install: Install,
@@ -919,9 +877,8 @@ pub(crate) fn run_update(opts: &UpdateOpts, socket: Option<PathBuf>) -> ExitCode
     let install = source::detect(&probe);
     let socket_path = socket.unwrap_or_else(phux_server::runtime::default_socket_path);
 
-    // A mutation is refused before any network traffic when the install is
-    // one phux does not own. `--check` is exempt: reporting is always
-    // allowed, and naming the native command is the whole point of it.
+    // Refuse a mutation of an install phux does not own before any network
+    // traffic; `--check` may always report.
     if !opts.check
         && let Some(refusal) = Refusal::of(install.source)
     {
@@ -1084,9 +1041,11 @@ mod tests {
     use super::release::{Artifact, NextHead, ReleaseSource, Version, host_target};
     use super::source::{Install, InstallSource};
     use super::{
-        Action, Handoff, Refusal, UpdateEnv, UpdateError, UpdateOpts, execute, plan_next,
+        Action, Handoff, Outcome, Refusal, UpdateEnv, UpdateError, UpdateOpts, execute, plan_next,
         plan_stable, reconcile_installed,
     };
+
+    const NEXT_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 
     #[test]
     fn installed_updates_reconcile_in_human_and_json_modes() {
@@ -1098,20 +1057,13 @@ mod tests {
         assert_eq!(calls, [true, false]);
     }
 
-    /// The triple these tests publish artifacts under.
-    ///
-    /// It MUST be resolved the same way the code under test resolves it.
-    /// Hardcoding a triple here passes on whichever platform happens to
-    /// match and fails everywhere else: `aarch64-apple-darwin` was baked in
-    /// during development on macOS, and the four tests that publish an
-    /// archive then 404'd against their own fake on Linux CI, because
-    /// `execute` asked for `aarch64-unknown-linux-gnu`.
+    /// The triple these tests publish artifacts under, resolved exactly as
+    /// the code under test resolves it (a hardcoded triple 404s elsewhere).
     fn target() -> &'static str {
         host_target().expect("tests run on a platform with a published artifact")
     }
 
-    /// A [`ReleaseSource`] backed by a map of URL to bytes. Nothing in this
-    /// module's tests touches the network.
+    /// A [`ReleaseSource`] backed by a map of URL to bytes; no network.
     #[derive(Debug)]
     struct FakeReleases {
         latest: String,
@@ -1158,35 +1110,6 @@ mod tests {
         }
     }
 
-    /// A scratch directory removed on drop.
-    #[derive(Debug)]
-    struct Scratch(PathBuf);
-
-    impl Scratch {
-        fn new(tag: &str) -> Self {
-            let nonce = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default();
-            let path = std::env::temp_dir().join(format!(
-                "phux-update-flow-{tag}-{}-{nonce}",
-                std::process::id()
-            ));
-            fs::create_dir_all(&path).unwrap();
-            Self(path)
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
     fn opts() -> UpdateOpts {
         UpdateOpts {
             check: false,
@@ -1199,6 +1122,13 @@ mod tests {
         }
     }
 
+    fn check() -> UpdateOpts {
+        UpdateOpts {
+            check: true,
+            ..opts()
+        }
+    }
+
     fn install_at(path: &Path, source: InstallSource) -> Install {
         Install {
             source,
@@ -1206,6 +1136,26 @@ mod tests {
             nixos: false,
             unknown_reason: None,
         }
+    }
+
+    fn direct(path: &Path) -> Install {
+        install_at(path, InstallSource::DirectRelease)
+    }
+
+    /// Run `execute` against `fake` with a fixed handoff answer.
+    fn run(
+        fake: &FakeReleases,
+        install: Install,
+        handoff: Handoff,
+        opts: &UpdateOpts,
+    ) -> Result<Outcome, UpdateError> {
+        let handoff = move || handoff.clone();
+        let env = UpdateEnv {
+            releases: fake,
+            handoff: &handoff,
+            install,
+        };
+        execute(opts, &env)
     }
 
     fn version(text: &str) -> Version {
@@ -1234,14 +1184,13 @@ mod tests {
     ) -> Artifact {
         let build = workdir.join("build").join(&artifact.stage);
         fs::create_dir_all(&build).unwrap();
-        fs::write(build.join("phux"), format!("phux {label}")).unwrap();
-        fs::set_permissions(build.join("phux"), fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(build.join("phux-mcp"), format!("phux-mcp {label}")).unwrap();
-        fs::set_permissions(build.join("phux-mcp"), fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(build.join("README.md"), b"readme").unwrap();
-        fs::write(build.join("LICENSE"), b"apache").unwrap();
-        fs::write(build.join("NOTICE"), b"notice").unwrap();
-        fs::write(build.join("THIRD-PARTY-NOTICES.md"), b"notices").unwrap();
+        for name in ["phux", "phux-mcp"] {
+            fs::write(build.join(name), format!("{name} {label}")).unwrap();
+            fs::set_permissions(build.join(name), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        for name in ["README.md", "LICENSE", "NOTICE", "THIRD-PARTY-NOTICES.md"] {
+            fs::write(build.join(name), b"text").unwrap();
+        }
 
         let archive = workdir.join(&artifact.archive);
         let status = std::process::Command::new("tar")
@@ -1255,8 +1204,7 @@ mod tests {
         assert!(status.success());
 
         let digest = super::apply::sha256_file(&archive).unwrap();
-        let bytes = fs::read(&archive).unwrap();
-        fake.serve(&artifact.archive_url, bytes);
+        fake.serve(&artifact.archive_url, fs::read(&archive).unwrap());
         fake.serve(
             &artifact.checksum_url,
             format!("{digest}  {}\n", artifact.archive).into_bytes(),
@@ -1265,74 +1213,39 @@ mod tests {
     }
 
     /// A bin directory holding a "current" install.
-    fn seed_bin(scratch: &Scratch) -> PathBuf {
-        let bin = scratch.path().join("bin");
+    fn seed_bin(scratch: &Path) -> PathBuf {
+        let bin = scratch.join("bin");
         fs::create_dir_all(&bin).unwrap();
-        fs::write(bin.join("phux"), b"old phux").unwrap();
-        fs::set_permissions(bin.join("phux"), fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(bin.join("phux-mcp"), b"old phux-mcp").unwrap();
-        fs::set_permissions(bin.join("phux-mcp"), fs::Permissions::from_mode(0o755)).unwrap();
+        for name in ["phux", "phux-mcp"] {
+            fs::write(bin.join(name), format!("old {name}")).unwrap();
+            fs::set_permissions(bin.join(name), fs::Permissions::from_mode(0o755)).unwrap();
+        }
         bin
     }
 
     #[test]
-    fn plan_reports_an_available_update_and_names_the_source() {
-        let install = install_at(
-            Path::new("/home/ada/.local/bin/phux"),
-            InstallSource::DirectRelease,
-        );
-        let plan = plan_stable(
-            install,
-            version("0.12.1"),
-            Channel::Stable,
-            None,
-            "v0.13.0",
-            None,
-            target(),
-        )
-        .unwrap();
-        assert!(plan.update_available);
-        assert!(plan.changes_version);
-        assert_eq!(plan.target_tag, "v0.13.0");
-    }
+    fn plan_stable_classifies_updates_downgrades_and_bad_tags() {
+        let plan = |requested| {
+            plan_stable(
+                direct(Path::new("/home/ada/.local/bin/phux")),
+                version("0.12.1"),
+                Channel::Stable,
+                None,
+                "v0.13.0",
+                requested,
+                target(),
+            )
+        };
+        let newer = plan(None).unwrap();
+        assert!(newer.update_available && newer.changes_version);
+        assert_eq!(newer.target_tag, "v0.13.0");
 
-    #[test]
-    fn plan_treats_an_explicit_older_tag_as_a_change_but_not_an_update() {
-        let install = install_at(
-            Path::new("/home/ada/.local/bin/phux"),
-            InstallSource::DirectRelease,
-        );
-        let plan = plan_stable(
-            install,
-            version("0.12.1"),
-            Channel::Stable,
-            None,
-            "v0.13.0",
-            Some("v0.11.0"),
-            target(),
-        )
-        .unwrap();
-        assert!(!plan.update_available);
-        assert!(plan.changes_version);
-        assert_eq!(plan.target_tag, "v0.11.0");
-    }
+        // An explicit older tag is a change, not an update.
+        let older = plan(Some("v0.11.0")).unwrap();
+        assert!(!older.update_available && older.changes_version);
+        assert_eq!(older.target_tag, "v0.11.0");
 
-    #[test]
-    fn plan_refuses_a_tag_that_is_not_a_release_tag() {
-        let install = install_at(
-            Path::new("/home/ada/.local/bin/phux"),
-            InstallSource::DirectRelease,
-        );
-        let err = plan_stable(
-            install,
-            version("0.12.1"),
-            Channel::Stable,
-            None,
-            "v0.13.0",
-            Some("nightly"),
-            target(),
-        )
-        .unwrap_err();
+        let err = plan(Some("nightly")).unwrap_err();
         assert!(matches!(err, UpdateError::InvalidTag(_)), "{err:?}");
     }
 
@@ -1353,25 +1266,17 @@ mod tests {
         assert!(Refusal::of(InstallSource::DirectRelease).is_none());
     }
 
+    /// `--check` downloads nothing, names both rail switches for an install
+    /// phux owns, and gives a package-managed install its native command
+    /// instead of a switch.
     #[test]
     fn check_reports_without_downloading_anything() {
         let fake = FakeReleases::new("v0.13.0");
-        let install = install_at(
-            Path::new("/home/ada/.local/bin/phux"),
-            InstallSource::DirectRelease,
-        );
-        let handoff = || Handoff::Skipped;
-        let env = UpdateEnv {
-            releases: &fake,
-            handoff: &handoff,
-            install,
-        };
-        let outcome = execute(
-            &UpdateOpts {
-                check: true,
-                ..opts()
-            },
-            &env,
+        let outcome = run(
+            &fake,
+            direct(Path::new("/home/ada/.local/bin/phux")),
+            Handoff::Skipped,
+            &check(),
         )
         .unwrap();
         assert_eq!(outcome.action, Action::Checked);
@@ -1390,68 +1295,6 @@ mod tests {
         assert_eq!(doc["latest_version"], "v0.13.0");
         assert_eq!(doc["artifact"], serde_json::Value::Null);
         assert_eq!(doc["server_handoff"], serde_json::Value::Null);
-    }
-
-    #[test]
-    fn check_on_a_package_managed_install_names_the_native_command() {
-        let fake = FakeReleases::new("v0.13.0");
-        let install = install_at(
-            Path::new("/opt/homebrew/Cellar/phux/0.12.1/bin/phux"),
-            InstallSource::Homebrew,
-        );
-        let handoff = || Handoff::Skipped;
-        let env = UpdateEnv {
-            releases: &fake,
-            handoff: &handoff,
-            install,
-        };
-        let outcome = execute(
-            &UpdateOpts {
-                check: true,
-                ..opts()
-            },
-            &env,
-        )
-        .unwrap();
-        let doc = outcome.document();
-        assert_eq!(doc["install"]["mutable"], false);
-        assert_eq!(
-            doc["install"]["native_command"],
-            "brew upgrade no-phux/tap/phux"
-        );
-        assert!(
-            outcome
-                .lines()
-                .iter()
-                .any(|line| line.contains("brew upgrade no-phux/tap/phux")),
-            "the prose view must print the command too: {:?}",
-            outcome.lines()
-        );
-    }
-
-    /// The check report is where someone decides to change rails, so it names
-    /// both switches; `--help` must not be the only door to them.
-    #[test]
-    fn check_names_both_rail_switches() {
-        let fake = FakeReleases::new("v0.13.0");
-        let install = install_at(
-            Path::new("/home/u/.local/bin/phux"),
-            InstallSource::DirectRelease,
-        );
-        let handoff = || Handoff::Skipped;
-        let env = UpdateEnv {
-            releases: &fake,
-            handoff: &handoff,
-            install,
-        };
-        let outcome = execute(
-            &UpdateOpts {
-                check: true,
-                ..opts()
-            },
-            &env,
-        )
-        .unwrap();
 
         let switch = outcome
             .lines()
@@ -1460,62 +1303,51 @@ mod tests {
             .expect("the check report must name the rail switches");
         assert!(switch.contains("phux channel next"), "{switch}");
         assert!(switch.contains("phux channel latest"), "{switch}");
-    }
 
-    /// A refused install is not phux's to move, so it is offered the native
-    /// command instead of a switch that would be rejected.
-    #[test]
-    fn a_refused_install_is_not_offered_a_switch() {
-        let fake = FakeReleases::new("v0.13.0");
-        let install = install_at(
-            Path::new("/opt/homebrew/Cellar/phux/0.12.1/bin/phux"),
-            InstallSource::Homebrew,
-        );
-        let handoff = || Handoff::Skipped;
-        let env = UpdateEnv {
-            releases: &fake,
-            handoff: &handoff,
-            install,
-        };
-        let outcome = execute(
-            &UpdateOpts {
-                check: true,
-                ..opts()
-            },
-            &env,
+        let brew = run(
+            &fake,
+            install_at(
+                Path::new("/opt/homebrew/Cellar/phux/0.12.1/bin/phux"),
+                InstallSource::Homebrew,
+            ),
+            Handoff::Skipped,
+            &check(),
         )
         .unwrap();
-
+        let doc = brew.document();
+        assert_eq!(doc["install"]["mutable"], false);
+        assert_eq!(
+            doc["install"]["native_command"],
+            "brew upgrade no-phux/tap/phux"
+        );
+        let lines = brew.lines();
         assert!(
-            outcome
-                .lines()
+            lines
                 .iter()
-                .all(|line| !line.starts_with("switch:")),
-            "a refused install must not be told to switch: {:?}",
-            outcome.lines()
+                .any(|line| line.contains("brew upgrade no-phux/tap/phux")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().all(|line| !line.starts_with("switch:")),
+            "a refused install must not be told to switch: {lines:?}"
         );
     }
 
     #[test]
     fn dry_run_downloads_and_verifies_but_installs_nothing() {
-        let scratch = Scratch::new("dry-run");
-        let bin = seed_bin(&scratch);
+        let scratch = tempfile::tempdir().unwrap();
+        let bin = seed_bin(scratch.path());
         let mut fake = FakeReleases::new("v9.9.9");
         publish(&mut fake, scratch.path(), "v9.9.9");
 
-        let install = install_at(&bin.join("phux"), InstallSource::DirectRelease);
-        let handoff = || Handoff::Skipped;
-        let env = UpdateEnv {
-            releases: &fake,
-            handoff: &handoff,
-            install,
-        };
-        let outcome = execute(
+        let outcome = run(
+            &fake,
+            direct(&bin.join("phux")),
+            Handoff::Skipped,
             &UpdateOpts {
                 dry_run: true,
                 ..opts()
             },
-            &env,
         )
         .unwrap();
 
@@ -1524,7 +1356,6 @@ mod tests {
         assert_eq!(outcome.binaries, vec!["phux-mcp", "phux"]);
         assert_eq!(fs::read(bin.join("phux")).unwrap(), b"old phux");
         assert!(!bin.join(BACKUP_DIR).exists());
-        // The staging directory is gone even though nothing was installed.
         let leftovers: Vec<_> = fs::read_dir(&bin)
             .unwrap()
             .filter_map(Result::ok)
@@ -1536,24 +1367,19 @@ mod tests {
 
     #[test]
     fn a_full_update_installs_verifies_and_hands_off() {
-        let scratch = Scratch::new("full");
-        let bin = seed_bin(&scratch);
+        let scratch = tempfile::tempdir().unwrap();
+        let bin = seed_bin(scratch.path());
         let mut fake = FakeReleases::new("v9.9.9");
         let artifact = publish(&mut fake, scratch.path(), "v9.9.9");
 
-        let install = install_at(&bin.join("phux"), InstallSource::DirectRelease);
-        let handoff = || Handoff::Upgrading;
-        let env = UpdateEnv {
-            releases: &fake,
-            handoff: &handoff,
-            install,
-        };
-        let outcome = execute(
+        let outcome = run(
+            &fake,
+            direct(&bin.join("phux")),
+            Handoff::Upgrading,
             &UpdateOpts {
                 no_restart: false,
                 ..opts()
             },
-            &env,
         )
         .unwrap();
 
@@ -1570,29 +1396,23 @@ mod tests {
         assert!(doc["artifact"]["sha256"].is_string());
         assert!(doc["backup"].is_string());
 
-        // Both artifact URLs were fetched, checksum included.
         let fetched = fake.downloads.borrow().clone();
         assert!(fetched.contains(&artifact.archive_url));
         assert!(fetched.contains(&artifact.checksum_url));
     }
 
+    /// A tampered archive and a missing artifact both fail without touching
+    /// the install.
     #[test]
-    fn a_tampered_archive_is_refused_and_nothing_is_replaced() {
-        let scratch = Scratch::new("tamper");
-        let bin = seed_bin(&scratch);
+    fn a_tampered_or_missing_archive_is_refused_and_nothing_is_replaced() {
+        let scratch = tempfile::tempdir().unwrap();
+        let bin = seed_bin(scratch.path());
         let mut fake = FakeReleases::new("v9.9.9");
         let artifact = publish(&mut fake, scratch.path(), "v9.9.9");
         // Swap the archive after the sidecar was published.
         fake.serve(&artifact.archive_url, b"totally different bytes".to_vec());
 
-        let install = install_at(&bin.join("phux"), InstallSource::DirectRelease);
-        let handoff = || Handoff::Skipped;
-        let env = UpdateEnv {
-            releases: &fake,
-            handoff: &handoff,
-            install,
-        };
-        let err = execute(&opts(), &env).unwrap_err();
+        let err = run(&fake, direct(&bin.join("phux")), Handoff::Skipped, &opts()).unwrap_err();
         assert!(
             matches!(err, UpdateError::ChecksumMismatch { .. }),
             "{err:?}"
@@ -1600,44 +1420,22 @@ mod tests {
         assert_eq!(err.exit_code(), 1);
         assert_eq!(err.code(), "update_checksum_mismatch");
         assert!(err.to_string().contains("checksum mismatch"));
-        // The install is untouched.
         assert_eq!(fs::read(bin.join("phux")).unwrap(), b"old phux");
         assert!(!bin.join(BACKUP_DIR).exists());
-    }
 
-    #[test]
-    fn a_missing_artifact_fails_without_touching_the_install() {
-        let scratch = Scratch::new("missing");
-        let bin = seed_bin(&scratch);
-        let fake = FakeReleases::new("v9.9.9");
-
-        let install = install_at(&bin.join("phux"), InstallSource::DirectRelease);
-        let handoff = || Handoff::Skipped;
-        let env = UpdateEnv {
-            releases: &fake,
-            handoff: &handoff,
-            install,
-        };
-        let err = execute(&opts(), &env).unwrap_err();
+        let empty = FakeReleases::new("v9.9.9");
+        let err = run(&empty, direct(&bin.join("phux")), Handoff::Skipped, &opts()).unwrap_err();
         assert!(matches!(err, UpdateError::Fetch(_)), "{err:?}");
         assert_eq!(fs::read(bin.join("phux")).unwrap(), b"old phux");
     }
 
     #[test]
     fn an_install_already_on_the_target_release_does_nothing() {
-        let scratch = Scratch::new("current");
-        let bin = seed_bin(&scratch);
-        let current = format!("v{}", Version::current().unwrap());
-        let fake = FakeReleases::new(&current);
+        let scratch = tempfile::tempdir().unwrap();
+        let bin = seed_bin(scratch.path());
+        let fake = FakeReleases::new(&format!("v{}", Version::current().unwrap()));
 
-        let install = install_at(&bin.join("phux"), InstallSource::DirectRelease);
-        let handoff = || Handoff::Skipped;
-        let env = UpdateEnv {
-            releases: &fake,
-            handoff: &handoff,
-            install,
-        };
-        let outcome = execute(&opts(), &env).unwrap();
+        let outcome = run(&fake, direct(&bin.join("phux")), Handoff::Skipped, &opts()).unwrap();
         assert_eq!(outcome.action, Action::UpToDate);
         assert!(!outcome.plan.update_available);
         assert!(fake.downloads.borrow().is_empty());
@@ -1646,88 +1444,68 @@ mod tests {
 
     #[test]
     fn rollback_restores_the_previous_release_and_hands_off_again() {
-        let scratch = Scratch::new("rollback");
-        let bin = seed_bin(&scratch);
+        let scratch = tempfile::tempdir().unwrap();
+        let bin = seed_bin(scratch.path());
         let mut fake = FakeReleases::new("v9.9.9");
         publish(&mut fake, scratch.path(), "v9.9.9");
-
-        let install = install_at(&bin.join("phux"), InstallSource::DirectRelease);
-        let handoff = || Handoff::Upgrading;
-        let env = UpdateEnv {
-            releases: &fake,
-            handoff: &handoff,
-            install,
+        let install = direct(&bin.join("phux"));
+        let rollback = UpdateOpts {
+            rollback: true,
+            ..opts()
         };
-        execute(&opts(), &env).unwrap();
+
+        run(&fake, install.clone(), Handoff::Upgrading, &opts()).unwrap();
         assert_eq!(fs::read(bin.join("phux")).unwrap(), b"phux v9.9.9");
 
-        let outcome = execute(
-            &UpdateOpts {
-                rollback: true,
-                ..opts()
-            },
-            &env,
-        )
-        .unwrap();
+        let outcome = run(&fake, install.clone(), Handoff::Upgrading, &rollback).unwrap();
         assert_eq!(outcome.action, Action::RolledBack);
         assert_eq!(fs::read(bin.join("phux")).unwrap(), b"old phux");
         assert_eq!(fs::read(bin.join("phux-mcp")).unwrap(), b"old phux-mcp");
         assert_eq!(outcome.document()["action"], "rolled-back");
-        // `opts()` sets --no-restart, so the running server is left alone on
-        // the way back exactly as it is on the way forward.
+        // `--no-restart` leaves the server alone on the way back too.
         assert_eq!(outcome.handoff, Some(Handoff::Skipped));
         assert_eq!(outcome.document()["server_handoff"]["result"], "skipped");
 
-        // Without --no-restart the rollback hands the live server back to the
-        // restored image, which is the whole point of rolling back.
-        execute(&opts(), &env).unwrap();
-        let outcome = execute(
+        // Without it, the rollback hands the live server back.
+        run(&fake, install.clone(), Handoff::Upgrading, &opts()).unwrap();
+        let outcome = run(
+            &fake,
+            install.clone(),
+            Handoff::Upgrading,
             &UpdateOpts {
-                rollback: true,
                 no_restart: false,
-                ..opts()
+                ..rollback
             },
-            &env,
         )
         .unwrap();
         assert_eq!(outcome.handoff, Some(Handoff::Upgrading));
 
-        // A second rollback has nothing left to restore and says so.
-        let err = execute(
+        // Nothing left to restore.
+        let err = run(
+            &fake,
+            install,
+            Handoff::Upgrading,
             &UpdateOpts {
                 rollback: true,
                 ..opts()
             },
-            &env,
         )
         .unwrap_err();
         assert!(matches!(err, UpdateError::NoBackup(_)), "{err:?}");
         assert_eq!(err.code(), "update_no_backup");
     }
 
-    const NEXT_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
-
     #[test]
     fn next_channel_and_a_stable_tag_are_refused_together() {
-        let fake = FakeReleases::new("v0.13.0");
-        let install = install_at(
-            Path::new("/home/ada/.local/bin/phux"),
-            InstallSource::DirectRelease,
-        );
-        let handoff = || Handoff::Skipped;
-        let env = UpdateEnv {
-            releases: &fake,
-            handoff: &handoff,
-            install,
-        };
-        let err = execute(
+        let err = run(
+            &FakeReleases::new("v0.13.0"),
+            direct(Path::new("/home/ada/.local/bin/phux")),
+            Handoff::Skipped,
             &UpdateOpts {
-                check: true,
                 channel: Some(Channel::Next),
                 tag: Some("v0.13.0".to_owned()),
-                ..opts()
+                ..check()
             },
-            &env,
         )
         .unwrap_err();
         assert!(matches!(err, UpdateError::InvalidTag(_)), "{err:?}");
@@ -1740,23 +1518,14 @@ mod tests {
             sha: NEXT_SHA.to_owned(),
             version: Some("0.13.0".to_owned()),
         });
-        let install = install_at(
-            Path::new("/home/ada/.local/bin/phux"),
-            InstallSource::DirectRelease,
-        );
-        let handoff = || Handoff::Skipped;
-        let env = UpdateEnv {
-            releases: &fake,
-            handoff: &handoff,
-            install,
-        };
-        let outcome = execute(
+        let outcome = run(
+            &fake,
+            direct(Path::new("/home/ada/.local/bin/phux")),
+            Handoff::Skipped,
             &UpdateOpts {
-                check: true,
                 channel: Some(Channel::Next),
-                ..opts()
+                ..check()
             },
-            &env,
         )
         .unwrap();
         assert_eq!(outcome.action, Action::Checked);
@@ -1770,23 +1539,18 @@ mod tests {
 
     #[test]
     fn a_next_update_installs_and_persists_the_channel() {
-        let scratch = Scratch::new("next");
-        let bin = seed_bin(&scratch);
+        let scratch = tempfile::tempdir().unwrap();
+        let bin = seed_bin(scratch.path());
         let mut fake = FakeReleases::new("v0.13.0");
         let artifact = publish_next(&mut fake, scratch.path(), NEXT_SHA);
-        let install = install_at(&bin.join("phux"), InstallSource::DirectRelease);
-        let handoff = || Handoff::Skipped;
-        let env = UpdateEnv {
-            releases: &fake,
-            handoff: &handoff,
-            install,
-        };
-        let outcome = execute(
+        let outcome = run(
+            &fake,
+            direct(&bin.join("phux")),
+            Handoff::Skipped,
             &UpdateOpts {
                 channel: Some(Channel::Next),
                 ..opts()
             },
-            &env,
         )
         .unwrap();
         assert_eq!(outcome.action, Action::Installed);
@@ -1803,33 +1567,23 @@ mod tests {
 
     #[test]
     fn plan_next_is_up_to_date_only_on_the_same_sha() {
-        let install = install_at(
-            Path::new("/home/ada/.local/bin/phux"),
-            InstallSource::DirectRelease,
-        );
         let head = NextHead {
             sha: NEXT_SHA.to_owned(),
             version: Some("0.13.0".to_owned()),
         };
-        let current = plan_next(
-            install.clone(),
-            version("0.13.0"),
-            Channel::Next,
-            Some(NEXT_SHA),
-            &head,
-            target(),
-        );
-        assert!(!current.update_available);
-        assert!(!current.changes_version);
-        let other = plan_next(
-            install,
-            version("0.13.0"),
-            Channel::Next,
-            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            &head,
-            target(),
-        );
-        assert!(other.update_available);
+        let plan = |sha| {
+            plan_next(
+                direct(Path::new("/home/ada/.local/bin/phux")),
+                version("0.13.0"),
+                Channel::Next,
+                Some(sha),
+                &head,
+                target(),
+            )
+        };
+        let current = plan(NEXT_SHA);
+        assert!(!current.update_available && !current.changes_version);
+        assert!(plan("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").update_available);
     }
 
     /// Every failure carries a code from the closed vocabulary, a non-empty
@@ -1883,7 +1637,7 @@ mod tests {
             fs::write(dir.join("phux"), "#!/bin/sh\n").unwrap();
             fs::set_permissions(dir.join("phux"), fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let install = install_at(&ours.join("phux"), InstallSource::DirectRelease);
+        let install = direct(&ours.join("phux"));
         let path = std::env::join_paths([&stale, &ours]).unwrap();
         assert_eq!(
             super::shadowing_phux(&install, &path),

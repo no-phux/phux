@@ -1,19 +1,11 @@
-//! Provider-native agent-session provenance and the wire work behind `phux
-//! spawn` / `phux launch`'s optional native-session restore.
+//! `phux.agent-session/v1` provenance and the spawn-with-provenance wire work.
 //!
-//! `phux.agent-session/v1` is live, terminal-scoped L3 metadata: inert
-//! provenance (`plugin_id`, `integration_id`, `native_id`) that
-//! `workspace save` copies into the durable archive, and `workspace
-//! restore` replays by re-resolving the current integration's argv.
-//! Executable paths and arguments are deliberately absent from the record
-//! itself.
+//! The record is inert, terminal-scoped provenance (`plugin_id`,
+//! `integration_id`, `native_id`) that `workspace save` archives and
+//! `workspace restore` replays by re-resolving the integration's argv.
 //!
-//! Distinct from two similarly named things: `phux.agent/v1`
-//! ([`crate::agent_record`], ADR-0040) is a human/wrapper-declared identity
-//! plus lifecycle. The `AgentSession` *resource* kind
-//! ([`crate::agent_session`], ADR-0103) is a server-tracked resource with
-//! its own open/close/emit/log verbs. This module is metadata on an
-//! ordinary Terminal.
+//! Not `phux.agent/v1` ([`crate::agent_record`]) and not the `AgentSession`
+//! resource kind ([`crate::agent_session`]).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -31,11 +23,8 @@ use crate::attach::connection::{Answer, Connection};
 
 const MAX_PROVENANCE_ID_BYTES: usize = 120;
 
-/// Inert provenance persisted for one exact provider-native agent session.
-///
-/// Executable paths and arguments are deliberately absent. Restore
-/// re-resolves the current enabled integration and uses its current
-/// structured argv policy.
+/// Inert provenance for one provider-native agent session; executable paths
+/// and arguments are deliberately absent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[allow(
@@ -75,9 +64,7 @@ impl AgentSessionRecord {
     ///
     /// # Errors
     ///
-    /// JSON encoding is not expected to fail for this shape; the `Result`
-    /// exists so a caller composing this into a larger fallible pipeline
-    /// need not `unwrap`.
+    /// Not expected for this shape; surfaced rather than unwrapped.
     pub fn encode(&self) -> Result<Vec<u8>, String> {
         serde_json::to_vec(self)
             .map_err(|err| format!("could not encode agent session record: {err}"))
@@ -116,6 +103,37 @@ fn validate_provenance(field: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Print interleaved degradation notices inline, in encounter order.
+#[allow(
+    clippy::print_stderr,
+    reason = "callers (`phux spawn`/`launch`, `workspace restore`) rely on these \
+              notices printing inline, in order with the spawn's own"
+)]
+fn warn_partial<'a>(notices: impl IntoIterator<Item = &'a String>) {
+    for message in notices {
+        eprintln!("phux: warning: partial results — {message}");
+    }
+}
+
+/// One `GET_METADATA` of `terminal`'s agent-session record.
+async fn read_stored(
+    conn: &mut Connection,
+    terminal: &ResourceId,
+    request_id: u32,
+) -> Result<Answer<Option<Vec<u8>>>, String> {
+    let (answer, interleaved) = conn
+        .request_metadata(
+            request_id,
+            Scope::Resource(terminal.clone()),
+            RESOURCE_AGENT_SESSION_KEY.to_owned(),
+        )
+        .await
+        .map_err(|err| err.to_string())?
+        .into_parts();
+    warn_partial(&crate::state::degradation_notices(&interleaved));
+    Ok(answer)
+}
+
 /// GET-confirm an atomically installed record, falling back to SET for an
 /// older server that ignored the additive spawn field.
 ///
@@ -123,13 +141,6 @@ fn validate_provenance(field: &str, value: &str) -> Result<(), String> {
 ///
 /// A malformed encode, a transport failure, a refused write, or a
 /// server-returned record that does not match `record`.
-#[allow(
-    clippy::print_stderr,
-    reason = "moved verbatim from crates/phux/src/commands/agent/session.rs (pre-L21b): \
-              the direct eprintln keeps this function's signature and behavior byte-identical \
-              for its other caller, workspace/archive.rs (owned by a concurrent lane), rather \
-              than threading a Degradation return through a call site this pass does not own"
-)]
 pub async fn persist_record(
     conn: &mut Connection,
     terminal: &ResourceId,
@@ -140,29 +151,15 @@ pub async fn persist_record(
         return Err("agent session records are local-terminal only".to_owned());
     }
     let value = record.encode()?;
-    let (existing, interleaved) = conn
-        .request_metadata(
-            request_id,
-            Scope::Resource(terminal.clone()),
-            RESOURCE_AGENT_SESSION_KEY.to_owned(),
-        )
-        .await
-        .map_err(|err| err.to_string())?
-        .into_parts();
-    for message in crate::state::degradation_notices(&interleaved) {
-        eprintln!("phux: warning: partial results — {message}");
+    let confirm = |answer: Answer<Option<Vec<u8>>>| match answer {
+        Answer::Ok(Some(stored)) if stored == value => Ok(true),
+        Answer::Ok(Some(_)) => Err("server returned a different agent session record".to_owned()),
+        Answer::Ok(None) => Ok(false),
+        Answer::Err(refusal) => Err(format!("agent session record was refused: {refusal}")),
+    };
+    if confirm(read_stored(conn, terminal, request_id).await?)? {
+        return Ok(());
     }
-    match existing {
-        Answer::Ok(Some(stored)) if stored == value => return Ok(()),
-        Answer::Ok(Some(_)) => {
-            return Err("server returned a different agent session record".to_owned());
-        }
-        Answer::Err(refusal) => {
-            return Err(format!("agent session record was refused: {refusal}"));
-        }
-        Answer::Ok(None) => {}
-    }
-
     conn.send(&FrameKind::SetMetadata {
         request_id: request_id.wrapping_add(1),
         scope: Scope::Resource(terminal.clone()),
@@ -171,41 +168,21 @@ pub async fn persist_record(
     })
     .await
     .map_err(|err| err.to_string())?;
-    let (answer, interleaved) = conn
-        .request_metadata(
-            request_id.wrapping_add(2),
-            Scope::Resource(terminal.clone()),
-            RESOURCE_AGENT_SESSION_KEY.to_owned(),
-        )
-        .await
-        .map_err(|err| err.to_string())?
-        .into_parts();
-    for message in crate::state::degradation_notices(&interleaved) {
-        eprintln!("phux: warning: partial results — {message}");
-    }
-    match answer {
-        Answer::Ok(Some(stored)) if stored == value => Ok(()),
-        Answer::Ok(Some(_)) => Err("server returned a different agent session record".to_owned()),
-        Answer::Ok(None) => Err("agent session record did not persist".to_owned()),
-        Answer::Err(refusal) => Err(format!("agent session record was refused: {refusal}")),
+    if confirm(read_stored(conn, terminal, request_id.wrapping_add(2)).await?)? {
+        Ok(())
+    } else {
+        Err("agent session record did not persist".to_owned())
     }
 }
 
 /// Fetch every valid live resume record by its exact local Terminal id.
-///
-/// Unlike display-only agent metadata, this is not best effort: silently
-/// dropping one record would make a later restore start a blank shell
-/// instead of the saved conversation.
+/// Not best effort: a dropped record would restore a blank shell instead of
+/// the saved conversation.
 ///
 /// # Errors
 ///
-/// A connect failure, a transport failure reading any pane's record, or a
-/// stored record that fails [`AgentSessionRecord::parse`].
-#[allow(
-    clippy::print_stderr,
-    reason = "moved verbatim from crates/phux/src/commands/agent/session.rs (pre-L21b); see \
-              persist_record's reason"
-)]
+/// A connect or transport failure, a refused read, or a stored record that
+/// fails [`AgentSessionRecord::parse`].
 pub async fn fetch_record_index(
     socket_path: &Path,
     snapshot: &SessionSnapshot,
@@ -220,19 +197,7 @@ pub async fn fetch_record_index(
         .map_err(|err| err.to_string())?;
     for (offset, pane) in local.enumerate() {
         let request_id = u32::try_from(offset).unwrap_or(u32::MAX).saturating_add(1);
-        let (answer, interleaved) = conn
-            .request_metadata(
-                request_id,
-                Scope::Resource(pane.id.clone()),
-                RESOURCE_AGENT_SESSION_KEY.to_owned(),
-            )
-            .await
-            .map_err(|err| err.to_string())?
-            .into_parts();
-        for message in crate::state::degradation_notices(&interleaved) {
-            eprintln!("phux: warning: partial results — {message}");
-        }
-        match answer {
+        match read_stored(&mut conn, &pane.id, request_id).await? {
             Answer::Ok(Some(bytes)) => {
                 index.insert(pane.id.clone(), AgentSessionRecord::parse(&bytes)?);
             }
@@ -249,68 +214,56 @@ pub async fn fetch_record_index(
     Ok(index)
 }
 
-/// [`crate::spawn::spawn`] plus the optional agent-session provenance write
-/// (and its same-connection `KILL_RESOURCE` rollback on failure) shared by
-/// `phux spawn` and `phux launch`.
+/// Kill `terminal` after a failed provenance write and describe the outcome.
+async fn roll_back(
+    conn: &mut Connection,
+    terminal: &ResourceId,
+    request_id: u32,
+    removed: &str,
+) -> String {
+    let command = Command::KillResource {
+        terminal_id: terminal.clone(),
+        operation_id: None,
+    };
+    match conn.request(request_id, command).await {
+        Ok(reply) => match reply.into_parts().0 {
+            CommandResult::Ok => removed.to_owned(),
+            other => format!("cleanup returned {other:?}"),
+        },
+        Err(cleanup_err) => format!("cleanup failed: {cleanup_err}"),
+    }
+}
+
+/// [`crate::spawn::spawn`] plus the optional agent-session provenance write.
 ///
-/// On a successful spawn with a requested `agent_session`, the record is
-/// persisted via [`persist_record`]; if that fails, the spawned Terminal is
-/// killed and the overall result becomes
-/// `SpawnResult::Err(SpawnError::SpawnFailed(..))` naming both the
-/// persistence failure and how the rollback went — never a spawned pane the
-/// caller does not know about.
-///
-/// Prints the spawn's own interleaved degradation notices itself (the
-/// historical `dispatch_spawn_async` ordering: the spawn's notices, then
-/// [`persist_record`]'s own inline notices from its GET/SET/GET) rather
-/// than returning a [`crate::state::Degradation`] for the caller to print
-/// afterward — [`persist_record`] already prints inline for the same
-/// reason (see its doc comment), and printing here first is what keeps the
-/// two interleaved prints in encounter order.
+/// Shared by `phux spawn` and `phux launch`. A failed write kills the new
+/// Terminal and turns the result into `SpawnFailed`, so a caller never gets
+/// a pane it does not know about. The spawn's degradation notices print
+/// first, keeping them in order with [`persist_record`]'s inline notices.
 ///
 /// # Errors
 ///
 /// Transport and decode failures from [`crate::spawn::spawn`].
-#[allow(
-    clippy::print_stderr,
-    reason = "prints the spawn's own degradation notices before calling \
-              persist_record (L21b review): persist_record already prints \
-              inline for its own GET/SET/GET, so printing this function's \
-              notices here, before that call, is what preserves the \
-              historical dispatch_spawn_async ordering (spawn notices, then \
-              persist_record's) instead of the two interleaving out of order"
-)]
 pub async fn spawn_with_agent_session(
     conn: &mut Connection,
     frame: &FrameKind,
     agent_session: Option<&AgentSessionRecord>,
 ) -> Result<SpawnResult, AttachError> {
     let (mut result, degradation) = crate::spawn::spawn(conn, frame).await?;
-    for message in degradation.notices() {
-        eprintln!("phux: warning: partial results — {message}");
-    }
+    warn_partial(degradation.notices());
     if let (Some(record), SpawnResult::Ok(terminal)) = (agent_session, &result) {
         let request_id = match frame {
             FrameKind::SpawnResource { request_id, .. } => *request_id,
             _ => 1,
         };
         if let Err(err) = persist_record(conn, terminal, record, request_id.wrapping_add(1)).await {
-            let cleanup = conn
-                .request(
-                    request_id.wrapping_add(4),
-                    Command::KillResource {
-                        terminal_id: terminal.clone(),
-                        operation_id: None,
-                    },
-                )
-                .await;
-            let cleanup_note = match cleanup {
-                Ok(reply) => match reply.into_parts().0 {
-                    CommandResult::Ok => "spawned terminal removed".to_owned(),
-                    other => format!("cleanup returned {other:?}"),
-                },
-                Err(cleanup_err) => format!("cleanup failed: {cleanup_err}"),
-            };
+            let cleanup_note = roll_back(
+                conn,
+                terminal,
+                request_id.wrapping_add(4),
+                "spawned terminal removed",
+            )
+            .await;
             result = SpawnResult::Err(SpawnError::SpawnFailed(format!(
                 "agent session record could not be confirmed: {err}; {cleanup_note}"
             )));
@@ -336,18 +289,13 @@ pub async fn spawn_with_agent_session_on(
     Ok(outcome)
 }
 
-/// [`persist_record`] over a fresh connection, with the rollback dance from
-/// [`spawn_with_agent_session`].
-///
-/// Used by `phux workspace restore` to confirm a resumed native agent
-/// session's provenance write for a terminal whose spawn has already
-/// completed (unlike [`spawn_with_agent_session`], this is a follow-up write
-/// on an already-existing pane, not part of the spawn itself).
+/// [`persist_record`] for an already-spawned pane (`phux workspace
+/// restore`), over a fresh connection, with the same rollback on failure.
 ///
 /// # Errors
 ///
-/// A connect failure, or [`persist_record`]'s own failure, with the
-/// rollback kill's own outcome folded into the message.
+/// A connect failure, or [`persist_record`]'s failure with the rollback's
+/// outcome folded in.
 pub async fn confirm_agent_session_record_on(
     socket_path: &Path,
     terminal: &ResourceId,
@@ -357,35 +305,26 @@ pub async fn confirm_agent_session_record_on(
     let mut conn = Connection::connect(socket_path)
         .await
         .map_err(|err| format!("could not confirm restored agent session: {err}"))?;
-    if let Err(err) = persist_record(&mut conn, terminal, record, request_id).await {
-        let cleanup = conn
-            .request(
-                request_id.wrapping_add(3),
-                Command::KillResource {
-                    terminal_id: terminal.clone(),
-                    operation_id: None,
-                },
-            )
-            .await;
-        drop(conn);
-        let cleanup_note = match cleanup {
-            Ok(reply) => match reply.into_parts().0 {
-                CommandResult::Ok => "restored terminal removed".to_owned(),
-                other => format!("cleanup returned {other:?}"),
-            },
-            Err(cleanup_err) => format!("cleanup failed: {cleanup_err}"),
-        };
-        return Err(format!(
-            "restored agent session record could not be confirmed: {err}; {cleanup_note}"
-        ));
-    }
+    let Err(err) = persist_record(&mut conn, terminal, record, request_id).await else {
+        return Ok(());
+    };
+    let cleanup_note = roll_back(
+        &mut conn,
+        terminal,
+        request_id.wrapping_add(3),
+        "restored terminal removed",
+    )
+    .await;
     drop(conn);
-    Ok(())
+    Err(format!(
+        "restored agent session record could not be confirmed: {err}; {cleanup_note}"
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testkit::{ScriptSpec, serve_one};
     use phux_protocol::ids::GroupId;
 
     #[test]
@@ -428,17 +367,12 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn spawn_with_agent_session_persists_and_confirms_the_record() {
-        use crate::testkit::{ScriptSpec, ScriptedServer};
-
+    /// Run [`spawn_with_agent_session`] against `spec`; the result and the
+    /// frames the server saw.
+    async fn spawn_against(spec: ScriptSpec) -> (SpawnResult, Vec<FrameKind>) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir.path().join("phux.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-        listener.set_nonblocking(true).expect("nonblocking");
-        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
-        let spec = ScriptSpec::new().spawn_result(SpawnResult::Ok(ResourceId::local(9)));
-        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        let spec = spec.spawn_result(SpawnResult::Ok(ResourceId::local(9)));
+        let (socket, server) = serve_one(dir.path(), spec);
 
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let record = AgentSessionRecord::new("com.phux.agents", "codex", "thread-1").unwrap();
@@ -446,8 +380,12 @@ mod tests {
             .await
             .expect("scripted server answers");
         drop(conn);
-        let seen = server.await.expect("scripted server task");
+        (result, server.await.expect("scripted server task"))
+    }
 
+    #[tokio::test]
+    async fn spawn_with_agent_session_persists_and_confirms_the_record() {
+        let (result, seen) = spawn_against(ScriptSpec::new()).await;
         assert_eq!(result, SpawnResult::Ok(ResourceId::local(9)));
         assert!(
             seen.iter().any(|frame| matches!(
@@ -461,27 +399,10 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_with_agent_session_rolls_back_on_a_refused_write() {
-        use crate::testkit::{ScriptSpec, ScriptedServer};
         use phux_protocol::wire::frame::ErrorCode;
 
-        let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir.path().join("phux.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-        listener.set_nonblocking(true).expect("nonblocking");
-        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
-        let spec = ScriptSpec::new()
-            .spawn_result(SpawnResult::Ok(ResourceId::local(9)))
-            .refuse_metadata(ErrorCode::PermissionDenied, "no");
-        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
-
-        let mut conn = Connection::connect(&socket).await.expect("connect");
-        let record = AgentSessionRecord::new("com.phux.agents", "codex", "thread-1").unwrap();
-        let result = spawn_with_agent_session(&mut conn, &spawn_frame(), Some(&record))
-            .await
-            .expect("scripted server answers");
-        drop(conn);
-        let seen = server.await.expect("scripted server task");
-
+        let spec = ScriptSpec::new().refuse_metadata(ErrorCode::PermissionDenied, "no");
+        let (result, seen) = spawn_against(spec).await;
         assert!(matches!(
             result,
             SpawnResult::Err(SpawnError::SpawnFailed(_))

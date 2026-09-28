@@ -8,6 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use bytes::BytesMut;
+use phux_core::ids::ResourceId as CoreResourceId;
+use phux_core::process::ExitOutcome;
 use phux_dial::window::SendWindow;
 use phux_protocol::PROTOCOL_VERSION;
 #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
@@ -18,13 +20,14 @@ use phux_protocol::caps::{
 };
 use phux_protocol::ids::{ResourceId as WireResourceId, StreamId};
 use phux_protocol::policy::TransportType;
+use phux_protocol::wire::frame::Scope;
 use phux_protocol::wire::frame::{
     AgentEvent, CloseReason, Command, CommandResult, DetachReason, ErrorCode, FrameKind,
     RESOURCE_AGENT_KEY,
 };
 use phux_protocol::wire::framing::FramingError;
 use tokio::net::UnixStream;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
@@ -32,11 +35,12 @@ use tracing::{debug, error, info, trace, warn};
 use super::input_lane::{InputLaneHandle, RoutedInput};
 use super::{
     STALE_PROBE_TIMEOUT, ServerError, SpawnRequest, bootstrap_attach_terminal, handle_attach,
-    handle_command, handle_detach_terminal, handle_frame_ack, handle_move_terminal,
-    handle_terminal_input, handle_terminal_reply, handle_terminal_resize, handle_viewport_resize,
+    handle_detach_terminal, handle_frame_ack, handle_move_terminal, handle_terminal_input,
+    handle_terminal_reply, handle_terminal_resize, handle_viewport_resize,
     subscribe_attach_terminal,
 };
 use crate::auth::Standing;
+use crate::hooks::HookEvent;
 use crate::policy::{Goodbye, Revocation};
 use crate::state::{
     ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, ServerInterceptedKey, ServerState, SharedState,
@@ -56,7 +60,7 @@ const MAX_PENDING_INPUT_RECEIPTS: usize = 128;
 fn spawn_input_receipt(
     receipts: &mut JoinSet<()>,
     slot: tokio::sync::OwnedSemaphorePermit,
-    out_tx: tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: mpsc::Sender<Outbound>,
     request_id: u32,
     receipt: super::input_lane::InputReceipt,
 ) {
@@ -93,11 +97,8 @@ fn validate_dispatch_frame(
     client_id: ClientId,
 ) -> Result<FrameKind, ConnectionClose> {
     let frame = decode_client_frame(framed, negotiated)?;
-    if negotiated.is_some_and(|selection| {
-        selection
-            .server_features
-            .contains(ServerFeature::QuicStreams)
-    }) && origin == FrameOrigin::Control
+    if negotiated.is_some_and(|selection| selection.quic_streams())
+        && origin == FrameOrigin::Control
         && requires_terminal_stream(&frame)
     {
         return Err(ConnectionClose {
@@ -140,7 +141,7 @@ pub(super) fn route(command: &Command, has_input_lane: bool) -> Route {
 struct CommandDispatch<'a> {
     state: &'a SharedState,
     client_id: ClientId,
-    out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &'a mpsc::Sender<Outbound>,
     input_lane: Option<&'a InputLaneHandle>,
     token: &'a CancellationToken,
     root_token: &'a CancellationToken,
@@ -190,10 +191,7 @@ impl CommandDispatch<'_> {
                 return None;
             }
         }
-        let defer_subscription = self
-            .selection
-            .server_features
-            .contains(ServerFeature::QuicStreams);
+        let defer_subscription = self.selection.quic_streams();
         let detached_stream = defer_subscription
             .then(|| match &command {
                 Command::DetachResource { terminal_id } => Some(terminal_id.clone()),
@@ -208,41 +206,20 @@ impl CommandDispatch<'_> {
                 return None;
             }
             (Route::Bulk(retained), _) => {
-                self.submit_bulk(
-                    request_id,
-                    command,
-                    retained,
-                    command_started,
-                    defer_subscription,
-                )
-                .await;
+                self.submit_bulk(request_id, command, retained, command_started)
+                    .await;
                 return None;
             }
             _ => {}
         }
-        handle_command(
-            self.state,
-            self.client_id,
-            request_id,
-            command,
-            self.out_tx,
-            self.selection.client_caps,
-            self.selection.profile,
-            self.selection.limits,
-            self.input_lane,
-            self.token,
-            self.root_token,
-            defer_subscription,
-        )
-        .await;
-        crate::perf::CMD_HANDLE.record_elapsed(command_started);
+        run_handler(&self.context(), request_id, command, command_started).await;
         detached_stream
     }
 
-    /// Hold a command the guard held (ADR-0128). Its waiter runs it later
-    /// in this connection's context, exactly as this dispatch would have.
-    async fn hold(&mut self, request_id: u32, command: Command) {
-        let ctx = super::approvals::HeldContext {
+    /// This connection's dispatch context, owned, for work that outlives
+    /// the dispatch.
+    fn context(&self) -> super::approvals::HeldContext {
+        super::approvals::HeldContext {
             state: self.state.clone(),
             client_id: self.client_id,
             out_tx: self.out_tx.clone(),
@@ -252,12 +229,15 @@ impl CommandDispatch<'_> {
             input_lane: self.input_lane.cloned(),
             token: self.token.clone(),
             root_token: self.root_token.clone(),
-            defer_subscription: self
-                .selection
-                .server_features
-                .contains(ServerFeature::QuicStreams),
-        };
-        super::approvals::hold_command(ctx, self.held_commands, request_id, command).await;
+            defer_subscription: self.selection.quic_streams(),
+        }
+    }
+
+    /// Hold a command the guard held (ADR-0128). Its waiter runs it later
+    /// in this connection's context, exactly as this dispatch would have.
+    async fn hold(&mut self, request_id: u32, command: Command) {
+        super::approvals::hold_command(self.context(), self.held_commands, request_id, command)
+            .await;
     }
 
     async fn submit_input(&mut self, lane: &InputLaneHandle, request_id: u32, command: Command) {
@@ -300,33 +280,9 @@ impl CommandDispatch<'_> {
         command: Command,
         retained: usize,
         command_started: std::time::Instant,
-        defer_subscription: bool,
     ) {
-        let task_state = self.state.clone();
-        let task_out = self.out_tx.clone();
-        let task_input_lane = self.input_lane.cloned();
-        let task_token = self.token.clone();
-        let task_root_token = self.root_token.clone();
-        let selection = self.selection;
-        let client_id = self.client_id;
-        let task = async move {
-            handle_command(
-                &task_state,
-                client_id,
-                request_id,
-                command,
-                &task_out,
-                selection.client_caps,
-                selection.profile,
-                selection.limits,
-                task_input_lane.as_ref(),
-                &task_token,
-                &task_root_token,
-                defer_subscription,
-            )
-            .await;
-            crate::perf::CMD_HANDLE.record_elapsed(command_started);
-        };
+        let ctx = self.context();
+        let task = async move { run_handler(&ctx, request_id, command, command_started).await };
         if let Err(result) = self.command_tasks.try_submit(retained, task) {
             let _ = self
                 .out_tx
@@ -337,6 +293,17 @@ impl CommandDispatch<'_> {
                 .await;
         }
     }
+}
+
+/// Run one admitted command through the handler.
+async fn run_handler(
+    ctx: &super::approvals::HeldContext,
+    request_id: u32,
+    command: Command,
+    started: std::time::Instant,
+) {
+    ctx.run(request_id, command).await;
+    crate::perf::CMD_HANDLE.record_elapsed(started);
 }
 
 #[cfg(test)]
@@ -519,6 +486,12 @@ struct NegotiatedConnection {
 }
 
 impl NegotiatedConnection {
+    /// QUIC multi-stream: Terminal content rides per-Terminal streams, and
+    /// subscriptions start at `STREAM_BIND`.
+    const fn quic_streams(self) -> bool {
+        self.server_features.contains(ServerFeature::QuicStreams)
+    }
+
     const fn accepts_terminal_reply(self) -> bool {
         self.server_features.contains(ServerFeature::TerminalReply)
     }
@@ -545,68 +518,40 @@ mod negotiated_feature_tests {
 
     #[test]
     fn negotiated_resize_uses_the_terminal_stream() {
-        let state = SharedState::new();
-        let client_id = state.with_mut(crate::state::ServerState::new_client_id);
-        let frame = FrameKind::ResizeTerminal {
+        let client_id = ClientId(1);
+        let mut bytes = BytesMut::new();
+        FrameKind::ResizeTerminal {
             terminal_id: WireResourceId::local(1),
             cols: 80,
             rows: 24,
-        };
-        let mut bytes = BytesMut::new();
-        frame.encode(&mut bytes);
+        }
+        .encode(&mut bytes);
         let multistream = connection(ServerFeatureSet::with(&[ServerFeature::QuicStreams]));
-        assert!(
-            validate_dispatch_frame(&bytes, Some(&multistream), FrameOrigin::Control, client_id)
-                .is_err()
-        );
-        assert!(
-            validate_dispatch_frame(&bytes, Some(&multistream), FrameOrigin::Terminal, client_id)
-                .is_ok()
-        );
         let legacy = connection(ServerFeatureSet::new());
-        assert!(
-            validate_dispatch_frame(&bytes, Some(&legacy), FrameOrigin::Control, client_id).is_ok()
-        );
+        let validate = |selection, origin| {
+            validate_dispatch_frame(&bytes, Some(selection), origin, client_id).is_ok()
+        };
+        assert!(!validate(&multistream, FrameOrigin::Control));
+        assert!(validate(&multistream, FrameOrigin::Terminal));
+        assert!(validate(&legacy, FrameOrigin::Control));
     }
 
-    #[test]
-    fn old_07_without_terminal_reply_bit_discards_reply_without_routing() {
-        assert!(!connection(ServerFeatureSet::new()).accepts_terminal_reply());
-    }
-
-    #[test]
-    fn current_07_advertisement_enables_installed_terminal_reply_route() {
-        let advertised = runtime_server_features();
-        assert!(advertised.contains(ServerFeature::TerminalReply));
-        assert!(connection(advertised).accepts_terminal_reply());
-    }
-
+    /// Every known bit but `QUIC_STREAMS` is advertised; an old peer without
+    /// the `TERMINAL_REPLY` bit gets its replies refused.
     #[test]
     fn runtime_advertises_every_known_bit_except_quic_streams() {
         let advertised = runtime_server_features();
-        assert!(
-            !advertised.contains(ServerFeature::QuicStreams),
-            "QUIC_STREAMS stays transport-gated at HELLO"
-        );
-        assert_eq!(
-            advertised.as_wire(),
-            ServerFeatureSet::all()
-                .without(ServerFeature::QuicStreams)
-                .as_wire()
-        );
+        assert!(!advertised.contains(ServerFeature::QuicStreams));
         assert_eq!(advertised.iter().count(), ServerFeature::ALL.len() - 1);
+        assert!(connection(advertised).accepts_terminal_reply());
+        assert!(!connection(ServerFeatureSet::new()).accepts_terminal_reply());
     }
 
-    /// QUIC multi-stream is transport-gated at the HELLO advertisement, not
-    /// merely at stream-accept time: a client that sees the bit knows a
-    /// second stream will be accepted, and every other transport never sees
-    /// it (ADR-0115).
+    /// ADR-0115: `QUIC_STREAMS` is advertised only on QUIC, and only to a
+    /// client that opted in.
     #[tokio::test]
     async fn quic_streams_bit_advertised_on_quic_only() {
-        async fn negotiate_with_caps(
-            transport: TransportType,
-            client_caps: ClientCapabilities,
-        ) -> NegotiatedConnection {
+        async fn negotiate(transport: TransportType, quic_streams: bool) -> bool {
             let state = SharedState::new();
             let client_id = state.with_mut(crate::state::ServerState::new_client_id);
             state.with_mut(|s| {
@@ -638,7 +583,7 @@ mod negotiated_feature_tests {
                     protocol_major: PROTOCOL_VERSION.major,
                     protocol_minor: PROTOCOL_VERSION.minor,
                     protocol_patch: PROTOCOL_VERSION.patch,
-                    client_caps,
+                    client_caps: ClientCapabilities::default().with_quic_streams(quic_streams),
                 },
                 &mut negotiated,
                 transport,
@@ -647,42 +592,21 @@ mod negotiated_feature_tests {
             .await
             .map_err(|close| close.message)
             .expect("compatible HELLO negotiates");
-            negotiated.expect("negotiation caches the selection")
-        }
-
-        async fn negotiate(transport: TransportType) -> NegotiatedConnection {
-            negotiate_with_caps(transport, ClientCapabilities::default()).await
-        }
-
-        let quic = negotiate_with_caps(
-            TransportType::Quic,
-            ClientCapabilities::default().with_quic_streams(true),
-        )
-        .await;
-        assert!(
-            quic.server_features.contains(ServerFeature::QuicStreams),
-            "QUIC connections advertise QUIC_STREAMS"
-        );
-        let legacy_quic = negotiate(TransportType::Quic).await;
-        assert!(
-            !legacy_quic
+            negotiated
+                .expect("negotiation caches the selection")
                 .server_features
-                .contains(ServerFeature::QuicStreams),
-            "QUIC without client opt-in must retain the single-stream shape"
-        );
+                .contains(ServerFeature::QuicStreams)
+        }
+
+        assert!(negotiate(TransportType::Quic, true).await);
+        assert!(!negotiate(TransportType::Quic, false).await);
         for transport in [
             TransportType::UnixSocket,
             TransportType::SshTunnel,
             TransportType::WebSocket,
             TransportType::WebTransport,
         ] {
-            let selection = negotiate(transport).await;
-            assert!(
-                !selection
-                    .server_features
-                    .contains(ServerFeature::QuicStreams),
-                "{transport:?} must not advertise QUIC_STREAMS"
-            );
+            assert!(!negotiate(transport, true).await, "{transport:?}");
         }
     }
 }
@@ -696,7 +620,7 @@ mod negotiated_feature_tests {
 /// full sink is a typed loss rather than silence.
 pub(crate) struct PaneEvents {
     /// The pane's wire id, interned at spawn.
-    pub(crate) wire: phux_protocol::ids::ResourceId,
+    pub(crate) wire: WireResourceId,
     /// The runtime end of the pane's event sink.
     pub(crate) source: crate::resource::event_sink::EventSource,
 }
@@ -741,9 +665,9 @@ fn spawn_pane_event_drain(state: SharedState, mut events: PaneEvents) {
 /// whose already-queued events the reap lock journals before the close.
 async fn journal_until_exit(
     state: &SharedState,
-    mut exit: oneshot::Receiver<phux_core::process::ExitOutcome>,
+    mut exit: oneshot::Receiver<ExitOutcome>,
     events: Option<PaneEvents>,
-) -> (phux_core::process::ExitOutcome, Option<PaneEvents>) {
+) -> (ExitOutcome, Option<PaneEvents>) {
     let Some(mut events) = events else {
         return (exit.await.unwrap_or_default(), None);
     };
@@ -796,7 +720,7 @@ pub(crate) fn ensure_event_pump(state: &SharedState, client_id: ClientId) {
 async fn pump_owed_frames(
     state: &SharedState,
     (client_id, epoch): (ClientId, u64),
-    tx: &tokio::sync::mpsc::Sender<Outbound>,
+    tx: &mpsc::Sender<Outbound>,
     cancel: &CancellationToken,
 ) -> bool {
     loop {
@@ -820,12 +744,9 @@ async fn pump_owed_frames(
 /// generation was lost): journal its `pane_closed` in the same lock, once
 /// (ADR-0123). The pane's exit watcher then finds it gone and journals
 /// nothing more, so every `pane_spawned` is followed by exactly one
-/// `pane_closed`. Returns what [`crate::state::ServerState::reap_terminal`]
+/// `pane_closed`. Returns what [`ServerState::reap_terminal`]
 /// returns; `false` without journaling when the pane is already gone.
-pub(crate) fn reap_pane_journaling_close(
-    s: &mut crate::state::ServerState,
-    pane: phux_core::ids::ResourceId,
-) -> bool {
+pub(crate) fn reap_pane_journaling_close(s: &mut ServerState, pane: CoreResourceId) -> bool {
     if s.registry().resource(pane).is_none() {
         return false;
     }
@@ -845,7 +766,7 @@ pub(crate) fn reap_pane_journaling_close(
 
 /// Journal every event a closing pane already queued, and any loss its
 /// sink counted, so all of them take a `seq` before its `pane_closed`.
-fn journal_pending_events(s: &mut crate::state::ServerState, events: &mut PaneEvents) {
+fn journal_pending_events(s: &mut ServerState, events: &mut PaneEvents) {
     while let Some(event) = events.source.try_recv() {
         journal_drained_event(s, &events.wire, event, 0);
     }
@@ -857,8 +778,8 @@ fn journal_pending_events(s: &mut crate::state::ServerState, events: &mut PaneEv
 /// reaped by a failed publication or its parent's cascade already has its
 /// `pane_closed`, and nothing about it may follow.
 fn journal_drained_event(
-    s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
+    s: &mut ServerState,
+    wire_terminal_id: &WireResourceId,
     emitted: crate::resource::event_sink::Emitted,
     dropped: u64,
 ) {
@@ -878,11 +799,7 @@ fn journal_drained_event(
 }
 
 /// Journal `source_gap { dropped }` for a pane, when anything was dropped.
-fn journal_source_gap(
-    s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    dropped: u64,
-) {
+fn journal_source_gap(s: &mut ServerState, wire_terminal_id: &WireResourceId, dropped: u64) {
     if dropped == 0 || !pane_is_live(s, wire_terminal_id) {
         return;
     }
@@ -895,20 +812,14 @@ fn journal_source_gap(
 
 /// Whether the pane `wire_terminal_id` names is still registered. A reap
 /// retires the wire id, so a reaped pane no longer resolves.
-fn pane_is_live(
-    s: &crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-) -> bool {
+fn pane_is_live(s: &ServerState, wire_terminal_id: &WireResourceId) -> bool {
     s.terminal_from_wire(wire_terminal_id)
         .is_some_and(|pane| s.registry().resource(pane).is_some())
 }
 
 /// Whether the pane `wire_terminal_id` names is retained after its process
 /// exited (ADR-0124).
-fn pane_exited(
-    s: &crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-) -> bool {
+fn pane_exited(s: &ServerState, wire_terminal_id: &WireResourceId) -> bool {
     s.terminal_from_wire(wire_terminal_id)
         .is_some_and(|pane| s.retained_exit(pane).is_some())
 }
@@ -925,53 +836,29 @@ fn control_actor(event: &AgentEvent) -> Option<ClientId> {
     }
 }
 
-/// Spawn the per-pane detector metadata drain (ADR-0046).
-///
-/// The `TerminalActor` derives the state — it owns the grid and the PTY — but
-/// it cannot write it: `ServerState` (and therefore the metadata store, the
-/// L3 subscriber set, and the arbiter) lives out here. So the actor emits an
-/// edge-filtered [`AgentDetectEvent`] and this task performs the authority
-/// check and the write.
-///
-/// Writes ride the shipped `SET_METADATA` / `METADATA_CHANGED` path for
-/// `phux.agent/v1` and `phux.pane-occupant/v1`. There is no new wire frame or
-/// `PROTOCOL_VERSION` bump: the detector is simply another metadata writer.
-///
-/// `metadata_set` suppresses a broadcast when the bytes are unchanged, which
-/// — together with the detector's own edge filter — is what makes a `working`
-/// agent that streams output for ten minutes cost zero writes and zero events.
+/// Spawn the per-pane detector metadata drain (ADR-0046): the actor emits
+/// edge-filtered [`AgentDetectEvent`]s and this task, which can reach
+/// `ServerState`, performs the authority check and the metadata write.
 pub(crate) fn spawn_agent_state_drain(
     state: SharedState,
-    wire_terminal_id: phux_protocol::ids::ResourceId,
+    wire_terminal_id: WireResourceId,
     mut rx: tokio::sync::mpsc::Receiver<crate::agent_detect::AgentDetectEvent>,
 ) {
     use crate::agent_detect::AgentDetectEvent;
-    use phux_protocol::wire::frame::Scope;
 
     tokio::task::spawn_local(async move {
         while let Some(event) = rx.recv().await {
-            // The ask the ladder accepted, broadcast outside the lock for the
-            // same reason the hook is: `broadcast_event` re-takes the state
-            // lock to resolve its targets. `None` means the arbiter had
-            // nothing new to say and no subscriber is owed an event.
+            // Both the ask broadcast and the hook re-take the state lock, so
+            // they are resolved under it and fired after it is released.
             let mut asked = None;
-            // Resolved under the lock, fired outside it: `fire_hook` re-takes
-            // the state lock to clone the dispatcher handle, so firing from
-            // inside `with_mut` would deadlock. `None` means nothing actually
-            // changed and no hook is owed.
             let hook = state.with_mut(|s| {
-                // ADR-0124: a retained pane's agent record was withdrawn at
-                // its exit; a report its detector queued before it stopped
-                // must not reassert a state for a process that is gone.
+                // ADR-0124: an exited pane's record was withdrawn; a report
+                // queued before the detector stopped must not reassert it.
                 if pane_exited(s, &wire_terminal_id) {
                     return None;
                 }
                 let scope = Scope::Resource(wire_terminal_id.clone());
-                // No dispatcher means no hook can run, so skip the work
-                // entirely: reading the prior record costs a metadata lookup
-                // and a JSON decode on every published transition, and a
-                // server with no `[[hooks.agent-state-changed]]` entry must
-                // not pay for a notification nobody asked for.
+                // Skip reading the prior record when no hook can run.
                 let hooks_live = s.hook_dispatcher().is_some();
                 match event {
                     AgentDetectEvent::Occupant(occupant) => {
@@ -1010,29 +897,16 @@ pub(crate) fn spawn_agent_state_drain(
 }
 
 /// The drain's `AskSentinel` arm: the pane's `phux-ask` title changed
-/// (ADR-0036 tier 2).
-///
-/// This is where the title sentinel joins the ladder. The actor sees the
-/// marker but cannot arbitrate it — `AskedDetector` lives in `ServerState`
-/// alongside the hook reports it has to be ranked against — so the actor
-/// reports the edge and this arm runs it through the same
-/// `report_agent_asked` seam `REPORT_ASKED` uses. Returns the payload to
-/// broadcast, which is `None` whenever the arbiter coalesced the report into
-/// silence: an unchanged question, or one a hook already owns.
-///
-/// A cleared marker retracts only a sentinel-owned ask (see
-/// [`crate::agent_asked::AskedDetector::retract`]) and broadcasts nothing —
-/// there is no wire event for a question going away, and inventing one here
-/// would be a protocol change, not a refactor.
+/// (ADR-0036 tier 2). Runs the edge through the same arbiter `REPORT_ASKED`
+/// uses and returns the payload to broadcast, if any. A cleared marker
+/// retracts only a sentinel-owned ask and broadcasts nothing.
 fn drain_ask_sentinel(
-    s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
+    s: &mut ServerState,
+    wire_terminal_id: &WireResourceId,
     ask: Option<crate::agent_asked::AskedPayload>,
 ) -> Option<crate::agent_asked::AskedPayload> {
     use crate::agent_asked::AskedSource;
 
-    // A pane reaped between the actor's send and this drain has no core id
-    // left to key the ledger by; its ask died with it.
     let terminal = s.terminal_from_wire(wire_terminal_id)?;
     let emitted = if let Some(payload) = ask {
         s.report_agent_asked(terminal, AskedSource::Sentinel, payload)
@@ -1041,8 +915,7 @@ fn drain_ask_sentinel(
         s.retract_agent_asked(terminal, AskedSource::Sentinel);
         None
     };
-    // The tombstone is how a consumer sees a clear: a retract broadcasts
-    // nothing (ADR-0036). ADR-0136 projects the ladder onto one metadata key.
+    // ADR-0136: the metadata flag is how a consumer sees a clear.
     crate::hub::metadata_mirror::publish_asked_flag(
         s,
         wire_terminal_id,
@@ -1051,175 +924,105 @@ fn drain_ask_sentinel(
     emitted
 }
 
-/// The drain's `Retract` arm: the pane's agent is confirmed gone.
-///
-/// Three buckets, in this order, and the order is the arbitration:
-///
-/// 1. **A declared record** — `docs/spec/L3.md` §3.7 forbids overwriting it
-///    with a DERIVED value and forbids `DELETE`ing a record the server did not
-///    author. A **withdrawal** is neither: `state` goes to `unknown` and the
-///    human's `name`, `kind` and `session` stay exactly as they wrote them. The
-///    server asserts nothing it derived and removes nothing. Without it a
-///    `kill -9` (no `EXIT` trap, no `phux agent clear`) pins the pane to
-///    `working` for the life of the session — the wedge the ADR exists to make
-///    impossible.
-/// 2. **A detector-authored record carrying a human's identity** — withdraw
-///    the one field the detector owns; `DELETE` would take their label with it.
-/// 3. **A record the detector wrote alone** — its to delete, or every pane that
-///    ever ran an agent keeps a tombstone forever.
-///
-/// Anything else: not ours, do nothing.
+/// The drain's `Retract` arm: the pane's agent is confirmed gone. A declared
+/// record (L3 §3.7), or a detector record carrying a human's identity, is
+/// withdrawn to `unknown` with its other fields kept; a record the detector
+/// wrote alone is deleted; anything else is not ours.
 fn drain_retract(
-    s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    scope: &phux_protocol::wire::frame::Scope,
+    s: &mut ServerState,
+    wire_terminal_id: &WireResourceId,
+    scope: &Scope,
     hooks_live: bool,
-) -> Option<crate::hooks::HookEvent> {
-    use phux_protocol::wire::frame::RESOURCE_AGENT_KEY;
-
+) -> Option<HookEvent> {
     let existing = s.metadata().get(scope, RESOURCE_AGENT_KEY);
-    let from = hooks_live
-        .then(|| crate::agent_state::stored_state(existing.as_deref()))
-        .flatten();
-
+    let prior = prior_state(hooks_live, existing.as_deref());
     if s.agent_records().is_declared(wire_terminal_id) {
-        let bytes = crate::agent_state::withdraw_state(existing.as_deref())?;
-        s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
-        s.agent_records_mut()
-            .note_declaration_withdrawn(wire_terminal_id);
-        return hooks_live
-            .then(|| retract_hook(wire_terminal_id, from.as_deref()))
-            .flatten();
+        withdraw_declared(s, wire_terminal_id, scope, existing.as_deref())?;
+        return retract_hook(wire_terminal_id, prior);
     }
     if !s.agent_records().detector_owns(wire_terminal_id) {
         return None;
     }
-    // "We authored it" is not the same as "all of it is ours". After
-    // `phux agent set --name reviewer` the detector keeps filling `state` in,
-    // and that write re-acquires ownership — of a record whose NAME the human
-    // chose.
-    if s.agent_records().has_explicit_identity(wire_terminal_id)
-        && let Some(bytes) = crate::agent_state::withdraw_state(existing.as_deref())
-    {
-        s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
-        s.agent_records_mut()
-            .note_detector_retract(wire_terminal_id);
-        return hooks_live
-            .then(|| retract_hook(wire_terminal_id, from.as_deref()))
-            .flatten();
+    let withdrawn = if s.agent_records().has_explicit_identity(wire_terminal_id) {
+        crate::agent_state::withdraw_state(existing.as_deref())
+    } else {
+        None
+    };
+    match withdrawn {
+        Some(bytes) => {
+            s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
+        }
+        None => {
+            s.metadata_delete(scope, RESOURCE_AGENT_KEY);
+        }
     }
-    s.metadata_delete(scope, RESOURCE_AGENT_KEY);
     s.agent_records_mut()
         .note_detector_retract(wire_terminal_id);
-    hooks_live
-        .then(|| retract_hook(wire_terminal_id, from.as_deref()))
-        .flatten()
+    retract_hook(wire_terminal_id, prior)
 }
 
-/// The drain's `Reidentified` arm: a DIFFERENT occupant now owns the pane.
-///
-/// One write, landing on `unknown` (invariant I2 in `crate::agent_state`). A
-/// live state beside the corrected kind would be this tick's screen read
-/// attributed to a process nothing has been derived from yet; a
-/// tombstone-then-rewrite would broadcast a hole that an in-flight
-/// `phux agent wait` exits on, mid-turn, for a pane that is still running an
-/// agent.
-///
-/// A DECLARED record is withdrawn rather than corrected: its `kind` may be the
-/// human's, and this write is not the place to find out. The detector's next
-/// `State` write corrects whatever the arbiter says it owns.
-///
-/// A latency optimization, not a correctness mechanism — see
-/// [`crate::agent_detect::AgentDetectEvent::Reidentified`]. A pane with no
-/// record has nothing to correct, and a correction must never CREATE one.
+/// Withdraw a declared record's state to `unknown`, keeping its writer's
+/// other fields. `None` when there is nothing to withdraw.
+fn withdraw_declared(
+    s: &mut ServerState,
+    wire_terminal_id: &WireResourceId,
+    scope: &Scope,
+    existing: Option<&[u8]>,
+) -> Option<()> {
+    let bytes = crate::agent_state::withdraw_state(existing)?;
+    s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
+    s.agent_records_mut()
+        .note_declaration_withdrawn(wire_terminal_id);
+    Some(())
+}
+
+/// The drain's `Reidentified` arm: a different occupant now owns the pane.
+/// One write landing on `unknown` (invariant I2 in `crate::agent_state`); a
+/// declared record is withdrawn rather than corrected, and a pane with no
+/// record is left without one.
 fn drain_reidentified(
-    s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    scope: &phux_protocol::wire::frame::Scope,
+    s: &mut ServerState,
+    wire_terminal_id: &WireResourceId,
+    scope: &Scope,
     hooks_live: bool,
     kind: &str,
     name: &str,
-) -> Option<crate::hooks::HookEvent> {
-    use phux_protocol::wire::frame::RESOURCE_AGENT_KEY;
+) -> Option<HookEvent> {
+    use crate::hooks::AGENT_STATE_UNKNOWN;
 
     let existing = s.metadata().get(scope, RESOURCE_AGENT_KEY)?;
-    let from = hooks_live
-        .then(|| crate::agent_state::stored_state(Some(&existing)))
-        .flatten();
-
+    let prior = prior_state(hooks_live, Some(&existing));
     if s.agent_records().is_declared(wire_terminal_id) {
-        let bytes = crate::agent_state::withdraw_state(Some(&existing))?;
-        s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
-        s.agent_records_mut()
-            .note_declaration_withdrawn(wire_terminal_id);
-        return hooks_live
-            .then(|| retract_hook(wire_terminal_id, from.as_deref()))
-            .flatten();
+        withdraw_declared(s, wire_terminal_id, scope, Some(&existing))?;
+        return retract_hook(wire_terminal_id, prior);
     }
-
     let owned = s.agent_records().identity_ownership(wire_terminal_id);
-    let bytes = crate::agent_state::compose(
-        Some(&existing),
-        kind,
-        name,
-        crate::hooks::AGENT_STATE_UNKNOWN,
-        owned,
-    );
+    let bytes =
+        crate::agent_state::compose(Some(&existing), kind, name, AGENT_STATE_UNKNOWN, owned);
     s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
     s.agent_records_mut().note_detector_write(wire_terminal_id);
-    hooks_live
-        .then(|| {
-            state_change_hook(
-                wire_terminal_id,
-                kind,
-                name,
-                from.as_deref(),
-                crate::hooks::AGENT_STATE_UNKNOWN,
-            )
-        })
-        .flatten()
+    state_change_hook(wire_terminal_id, kind, name, prior, AGENT_STATE_UNKNOWN)
 }
 
 /// The drain's `State` arm: the detector derived a state for this pane.
 ///
-/// ADR-0046 §E: an explicit `SET_METADATA` that supplied a `state` outranks the
-/// detector entirely, for as long as the pane is occupied by the agent it
-/// describes. ([`drain_retract`] is what ends that "as long as"; this
-/// short-circuit is untouched by it.)
-///
-/// `kind`, `name` and `state` are composed against ONE read of the store under
-/// ONE lock, from ONE report — invariant I1. That is what makes a dropped
-/// `Reidentified` harmless.
-///
-/// One further arbitration, and it is invariant I2 rather than an authority
-/// question (phux-w7z2.45): where an explicit writer owns a `kind` the detector
-/// positively contradicts — a shim pane declaring `kind: claude` that is now
-/// running codex — the `kind` is preserved (§3.7 requires it) and the DERIVED
-/// state is withheld, landing on `unknown` instead. The server may not correct
-/// their field, but it must not pair a state derived from one process with a
-/// `kind` naming another. See [`crate::agent_state::explicit_kind_is_contradicted`].
+/// A declared record outranks the detector (ADR-0046 §E). `kind`, `name` and
+/// `state` are composed from one read under one lock (invariant I1). Where an
+/// explicit writer's `kind` contradicts the detector, the `kind` is kept and
+/// the state is withdrawn to `unknown` (invariant I2).
 fn drain_state(
-    s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    scope: &phux_protocol::wire::frame::Scope,
+    s: &mut ServerState,
+    wire_terminal_id: &WireResourceId,
+    scope: &Scope,
     hooks_live: bool,
     report: &crate::agent_detect::AgentReport,
-) -> Option<crate::hooks::HookEvent> {
-    use phux_protocol::wire::frame::RESOURCE_AGENT_KEY;
-
+) -> Option<HookEvent> {
     if s.agent_records().is_declared(wire_terminal_id) {
         return None;
     }
     let existing = s.metadata().get(scope, RESOURCE_AGENT_KEY);
-    let from = hooks_live
-        .then(|| crate::agent_state::stored_state(existing.as_deref()))
-        .flatten();
+    let prior = prior_state(hooks_live, existing.as_deref());
     let owned = s.agent_records().identity_ownership(wire_terminal_id);
-    // I2: a state derived from THIS occupant must never be stored beside a
-    // `kind` naming a different one. Where the detector owns the `kind`,
-    // `compose` reasserts it and there is nothing to withhold; where an
-    // explicit writer owns it, preserving their field is the spec's
-    // requirement and withholding the state is the only honest pairing left.
     let contradicted = owned.kind
         && crate::agent_state::explicit_kind_is_contradicted(
             existing.as_deref(),
@@ -1227,12 +1030,6 @@ fn drain_state(
             &crate::agent_detect::rules::global(),
         );
     let (to, bytes) = if contradicted {
-        // The withdrawal §3.7 sanctions, and the same write `drain_retract`
-        // makes: `name`, `kind` and `session` are the writer's and survive;
-        // `attention` does not, because its basis was the state being
-        // withdrawn and a pane asserting nothing must not still wear a badge.
-        // `explicit_kind_is_contradicted` only answers `true` for a record it
-        // decoded, so there is always something here to rewrite.
         let bytes = crate::agent_state::withdraw_state(existing.as_deref())?;
         (crate::hooks::AGENT_STATE_UNKNOWN, bytes)
     } else {
@@ -1243,94 +1040,53 @@ fn drain_state(
     };
     s.metadata_set(scope, RESOURCE_AGENT_KEY, bytes);
     if !contradicted {
-        // Deliberately skipped on the withheld path: withdrawing a state is not
-        // authoring the record, and the detector must not acquire the right to
-        // `DELETE` an explicit writer's row by having declined to describe it.
-        // A detector that already owned the record keeps that ownership.
+        // Withdrawing is not authoring: the detector must not gain the right
+        // to delete an explicit writer's record.
         s.agent_records_mut().note_detector_write(wire_terminal_id);
     }
-    hooks_live
-        .then(|| {
-            state_change_hook(
-                wire_terminal_id,
-                &report.kind,
-                &report.name,
-                from.as_deref(),
-                to,
-            )
-        })
-        .flatten()
+    state_change_hook(wire_terminal_id, &report.kind, &report.name, prior, to)
 }
 
-/// The `agent-state-changed` event for a detector write, unless the store
-/// already held that state.
-///
-/// The detector's edge filter models its OWN emissions, not the store, so a
-/// republish after someone else wrote the record can land on the state that
-/// is already there. Comparing against the store keeps the hook a true edge —
-/// a notifier that fires on a non-change is a notifier the operator turns off.
+/// The stored state before a detector write, if any.
+struct Prior(Option<String>);
+
+/// The prior state, read only when a hook could fire: `None` means no hook
+/// is owed at all.
+fn prior_state(hooks_live: bool, existing: Option<&[u8]>) -> Option<Prior> {
+    hooks_live.then(|| Prior(crate::agent_state::stored_state(existing)))
+}
+
+/// The `agent-state-changed` event for a detector write, unless hooks are
+/// off or the store already held that state.
 fn state_change_hook(
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
+    wire_terminal_id: &WireResourceId,
     kind: &str,
     name: &str,
-    from: Option<&str>,
+    prior: Option<Prior>,
     to: &str,
-) -> Option<crate::hooks::HookEvent> {
-    if from == Some(to) {
-        return None;
-    }
-    Some(crate::hooks::HookEvent::agent_state_changed(
-        wire_terminal_id,
-        kind,
-        name,
-        from,
-        to,
-    ))
+) -> Option<HookEvent> {
+    let Prior(from) = prior?;
+    (from.as_deref() != Some(to))
+        .then(|| HookEvent::agent_state_changed(wire_terminal_id, kind, name, from.as_deref(), to))
 }
 
-/// The `agent-state-changed` event for a withdrawn record, unless the record
-/// was already `unknown` (a retract that changes nothing owes no hook).
-fn retract_hook(
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    from: Option<&str>,
-) -> Option<crate::hooks::HookEvent> {
-    if from == Some(crate::hooks::AGENT_STATE_UNKNOWN) {
-        return None;
-    }
-    Some(crate::hooks::HookEvent::agent_state_changed(
+/// The `agent-state-changed` event for a withdrawn record: a write to
+/// `unknown` with no identity.
+fn retract_hook(wire_terminal_id: &WireResourceId, prior: Option<Prior>) -> Option<HookEvent> {
+    state_change_hook(
         wire_terminal_id,
         "",
         "",
-        from,
+        prior,
         crate::hooks::AGENT_STATE_UNKNOWN,
-    ))
+    )
 }
 
-/// Re-arm the pane detector's edge filter after someone ELSE wrote its
-/// `phux.agent/v1` record (ADR-0046 §E).
-///
-/// `AgentDetector::published` is a model of the detector's own emissions, so
-/// an explicit `SET_METADATA` / `DELETE_METADATA` leaves it modelling a store
-/// that no longer exists. The detector then derives the same tuple, its edge
-/// filter suppresses it, and nothing is written — so a `DELETE` on an idle
-/// agent's record does not mean "the detector resumes", it means "the pane has
-/// no agent until the agent's state next changes", which for an agent waiting
-/// on a human is never. Same for the identity-only `SET` that is supposed to
-/// leave the detector filling `state` in.
-///
-/// So the store tells the detector. Resolved under the state lock, sent off
-/// it, on the same actor control mailbox the ADR-0033 lease broadcasts ride. A
-/// saturated or closed mailbox is benign: the actor is wedged or gone, and a
-/// gone actor has no detector to re-arm. A no-op for a non-agent key, a
-/// non-Terminal scope, and a Terminal with no local actor (a satellite pane's
-/// record is written where its actor lives).
-fn invalidate_agent_detector(
-    state: &SharedState,
-    scope: &phux_protocol::wire::frame::Scope,
-    key: &str,
-) {
-    use phux_protocol::wire::frame::Scope;
-
+/// Re-arm the pane detector's edge filter after someone else wrote its
+/// `phux.agent/v1` record (ADR-0046 §E); otherwise the filter keeps modelling
+/// a store that no longer exists and suppresses the next write. A full or
+/// closed control mailbox is benign (the actor is wedged or gone).
+fn invalidate_agent_detector(state: &SharedState, scope: &Scope, key: &str) {
     if key != RESOURCE_AGENT_KEY {
         return;
     }
@@ -1348,41 +1104,15 @@ fn invalidate_agent_detector(
     }
 }
 
-/// Spawn the per-pane EOF watcher task (phux-it8, reshaped by phux-4r1).
-///
-/// Awaits the `TerminalActor`'s `exit_notify` oneshot. When the actor
-/// observes PTY EOF (the child process has exited — typically the
-/// shell typed `exit`), this watcher broadcasts the L1 lifecycle event
-/// `FrameKind::ResourceClosed { terminal_id, exit_status }` to every
-/// client subscribed to the now-dead pane, then reaps the pane's
-/// server-side state.
-///
-/// The watcher does NOT decide whether any client should detach:
-/// "no Terminals left in my attached collection ⇒ detach" is a
-/// *consumer* policy (ADR-0015 L1: lifecycle events are facts, detach
-/// is interpretation), now owned by the TUI's `attach::driver`
-/// main loop, which folds the closed pane out of its layout and
-/// detaches itself when the last pane closes. The server stops
-/// sending `FrameKind::Detached` on EOF.
-///
-/// The watcher is `spawn_local` because `SharedState` is `Send` but
-/// we want the task to live on the same `LocalSet` that owns the
-/// pane actor — co-locating the lifecycle keeps the cancellation
-/// story tidy (root-token cascade still applies via `JoinSet` drop
-/// when the runtime exits).
-///
-/// No-op when `exit_notify` is `None` (the bundle's receiver was
-/// already taken) or when the actor exits without ever firing EOF
-/// (cancellation via the root token, for example). Errors on the
-/// oneshot recv side are treated identically to "EOF observed":
-/// they only happen if the sender was dropped without firing, which
-/// in current code means the actor was dropped without going through
-/// the EOF branch — i.e. the pane is going away too. Broadcasting
-/// `RESOURCE_CLOSED` is still the right response.
+/// Spawn the per-pane exit watcher: on PTY EOF it journals and broadcasts
+/// `RESOURCE_CLOSED` to every subscriber, then reaps the pane. Detaching is
+/// the consumer's decision (ADR-0015). A dropped `exit_notify` sender is
+/// treated as an exit with unknown status. The watcher is also the pane's
+/// event drain (ADR-0123), so every event is journaled before `pane_closed`.
 pub(crate) fn spawn_terminal_exit_watcher(
     state: SharedState,
-    pane: phux_core::ids::ResourceId,
-    exit_notify: Option<oneshot::Receiver<phux_core::process::ExitOutcome>>,
+    pane: CoreResourceId,
+    exit_notify: Option<oneshot::Receiver<ExitOutcome>>,
     root_token: CancellationToken,
     events: Option<PaneEvents>,
 ) {
@@ -1393,15 +1123,6 @@ pub(crate) fn spawn_terminal_exit_watcher(
         return;
     };
     tokio::task::spawn_local(async move {
-        // ADR-0123: this task is also the pane's event drain, so every
-        // event the pane emitted is journaled before its `pane_closed`:
-        // live until the exit fires, then whatever is still queued, in the
-        // reap lock below. A separate drain task could stamp a final
-        // `command_finished` after the close.
-        //
-        // Recv error (sender dropped without firing) is treated the
-        // same as a fired EOF with unknown exit status: in both cases
-        // the pane is dead and every subscribed client must be told.
         let (mut exit, mut events) = journal_until_exit(&state, rx, events).await;
         while let Some(next_rx) = replace_last_shell(&state, pane, &root_token).await {
             info!("last shell exited; respawning a default shell in place");
@@ -1409,10 +1130,8 @@ pub(crate) fn spawn_terminal_exit_watcher(
             exit = next.0;
             events = next.1;
         }
-        // ADR-0124: a retained pane's exit is a facet, not a close. It stays
-        // in the registry as `Exited`, readable, until a purge cancels its
-        // engine token or its retention expires; only then does it take the
-        // ordinary close path below, and that close is its `RESOURCE_CLOSED`.
+        // ADR-0124: a retained pane stays `Exited` until purged or expired,
+        // then takes the ordinary close path below.
         let retained = state.with_mut(|s| retain_exited_pane(s, pane, exit, events.as_mut()));
         let exit_hook_owed = retained.is_none();
         if let Some(RetainedExit {
@@ -1422,9 +1141,7 @@ pub(crate) fn spawn_terminal_exit_watcher(
             control,
         }) = retained
         {
-            // Off the lock and awaited: a full control mailbox delays the
-            // retire rather than dropping it, so the engine never goes on
-            // reporting `Running` for an exited pane or holding its PTY.
+            // Awaited so a full mailbox delays the retire instead of dropping it.
             if let Some(control) = control {
                 let _ = control.send(crate::resource::ControlRequest::Retire).await;
             }
@@ -1443,9 +1160,9 @@ pub(crate) fn spawn_terminal_exit_watcher(
 /// exit, replace the child in place and return the next EOF receiver.
 async fn replace_last_shell(
     state: &SharedState,
-    pane: phux_core::ids::ResourceId,
+    pane: CoreResourceId,
     root_token: &CancellationToken,
-) -> Option<oneshot::Receiver<phux_core::process::ExitOutcome>> {
+) -> Option<oneshot::Receiver<ExitOutcome>> {
     if root_token.is_cancelled() {
         return None;
     }
@@ -1469,7 +1186,7 @@ async fn replace_last_shell(
 
 fn replacement_shell_command(
     state: &SharedState,
-    pane: phux_core::ids::ResourceId,
+    pane: CoreResourceId,
 ) -> portable_pty::CommandBuilder {
     state.with_mut(|s| {
         let mut cmd = crate::terminal_actor::default_shell_command(s.shell(), s.login_shell());
@@ -1487,9 +1204,9 @@ struct RetainedExit {
     /// What a purge cancels, and when retention expires.
     retention: crate::state::Retention,
     /// The pane's wire id, for the `pane-exit` hook.
-    wire_terminal_id: phux_protocol::ids::ResourceId,
+    wire_terminal_id: WireResourceId,
     /// The `agent-state-changed` hook the withdrawn agent record owes.
-    agent_hook: Option<crate::hooks::HookEvent>,
+    agent_hook: Option<HookEvent>,
     /// The engine's control mailbox, for the `Retire` sent off the lock.
     control: Option<tokio::sync::mpsc::Sender<crate::resource::ControlRequest>>,
 }
@@ -1501,9 +1218,9 @@ struct RetainedExit {
 /// engine to stop the detector and refuse input. No `RESOURCE_CLOSED`: the
 /// resource is still here. `None` leaves the pane to the close path.
 fn retain_exited_pane(
-    s: &mut crate::state::ServerState,
-    pane: phux_core::ids::ResourceId,
-    exit: phux_core::process::ExitOutcome,
+    s: &mut ServerState,
+    pane: CoreResourceId,
+    exit: ExitOutcome,
     events: Option<&mut PaneEvents>,
 ) -> Option<RetainedExit> {
     let retention = s.retain_exited(pane, exit, unix_now_ms())?;
@@ -1511,9 +1228,7 @@ fn retain_exited_pane(
     if let Some(events) = events {
         journal_pending_events(s, events);
     }
-    let input_holder = s
-        .input_lease_holder(pane)
-        .map(|holder| phux_protocol::ClientId::new(u32::try_from(holder.0).unwrap_or(u32::MAX)));
+    let input_holder = s.input_lease_holder(pane).map(super::wire_client);
     let exited = AgentEvent::TerminalControl {
         lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Exited,
         exit_status: exit.status,
@@ -1526,7 +1241,7 @@ fn retain_exited_pane(
         exited,
     ));
     let control = s.resource_handle(pane).map(|handle| handle.control.clone());
-    let scope = phux_protocol::wire::frame::Scope::Resource(wire_terminal_id.clone());
+    let scope = Scope::Resource(wire_terminal_id.clone());
     let hooks_live = s.hook_dispatcher().is_some();
     let agent_hook = drain_retract(s, &wire_terminal_id, &scope, hooks_live);
     Some(RetainedExit {
@@ -1542,14 +1257,11 @@ fn retain_exited_pane(
 /// record's `agent-state-changed`.
 fn fire_retained_exit_hooks(
     state: &SharedState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    agent_hook: Option<crate::hooks::HookEvent>,
-    exit: phux_core::process::ExitOutcome,
+    wire_terminal_id: &WireResourceId,
+    agent_hook: Option<HookEvent>,
+    exit: ExitOutcome,
 ) {
-    crate::hooks::fire_hook(
-        state,
-        crate::hooks::HookEvent::pane_exit(wire_terminal_id, exit.status),
-    );
+    crate::hooks::fire_hook(state, HookEvent::pane_exit(wire_terminal_id, exit.status));
     if let Some(event) = agent_hook {
         crate::hooks::fire_hook(state, event);
     }
@@ -1616,41 +1328,21 @@ fn unix_now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Close a pane whose process exited (or whose retention ended), in ONE
-/// critical section that also gathers who must be told (phux-emdv).
-///
-/// This closes the TOCTOU window that left a late attacher frozen on a dead
-/// pane: previously subscribers were gathered in one lock, the sends were
-/// awaited, and the reap happened in a SECOND lock — a client whose ATTACH
-/// landed in the gap subscribed to a pane that had already hit EOF, was never
-/// in the broadcast set, and never learned the shell exited. Reaping up-front
-/// removes the pane (and, if last, its session) from the registry, so any
-/// ATTACH that interleaves now either subscribes to the surviving panes (the
-/// dead one is gone from `attach_snapshot_panes`) or gets `SessionNotFound` —
-/// never a silent subscription to a doomed pane.
-///
-/// `reap_terminal` clears `terminal_subscribers` for the pane (via
-/// `forget_terminal_bookkeeping`) and retires its wire id, so both MUST be
-/// captured in the same lock before the reap runs. `None` when another
-/// closer already reaped the pane.
+/// Close a pane whose process exited (or whose retention ended) in one
+/// critical section that also gathers who must be told, so no ATTACH can
+/// interleave between gathering subscribers and the reap. `None` when
+/// another closer already reaped the pane.
 fn reap_exited_pane(
-    s: &mut crate::state::ServerState,
-    pane: phux_core::ids::ResourceId,
-    exit: phux_core::process::ExitOutcome,
+    s: &mut ServerState,
+    pane: CoreResourceId,
+    exit: ExitOutcome,
     events: Option<&mut PaneEvents>,
 ) -> Option<ReapAndNotify> {
-    // ADR-0104 §2: claim this resource before touching anything. A
-    // cascading parent reaps its children inside its own lock, so a child's
-    // watcher can wake for a resource that is already gone; it must emit
-    // nothing rather than intern a fresh wire id for a corpse.
+    // ADR-0104 §2: a cascading parent may already have reaped this child.
     let reason = s.begin_resource_close(pane)?;
-    // ADR-0124: a retained pane's close reports how its process ended, the
-    // record it was kept with, even when the purge woke the watcher with no
-    // outcome of its own (a pane rebuilt by an upgrade has no process).
+    // ADR-0124: a retained pane's close reports the exit it was kept with.
     let exit = s.retained_outcome(pane).unwrap_or(exit);
-    // Interned before the cascade so each child's close can name the parent
-    // it is leaving with, and before the reap because a retired resource has
-    // no wire id left to intern.
+    // Interned before the cascade and the reap, which retires the wire id.
     let wire_terminal_id = s.intern_terminal_wire(pane);
     if let Some(events) = events {
         journal_pending_events(s, events);
@@ -1659,19 +1351,9 @@ fn reap_exited_pane(
         .resource_parent(pane)
         .map(|parent| s.intern_terminal_wire(parent));
     let cascaded = cascade_children(s, pane, &wire_terminal_id);
-    // phux-w7z2.56: resolve every subscriber's mailbox, not just the
-    // session-attached ones. This used to filter through `attached()`, which
-    // an `ATTACH_RESOURCE`-only consumer never enters (L1 §5.1: "a
-    // session-scoped `ATTACH` is not required"), so an agent watching a
-    // single pane — and a federation hub's proxy subscription, which is
-    // exactly that shape — was silently dropped from the fanout L1 §3.1
-    // requires. It kept streaming nothing, indistinguishable from an idle
-    // pane, and the hub retained dead proxy state.
-    let targets: Vec<tokio::sync::mpsc::Sender<Outbound>> = s.terminal_fanout_targets(pane);
-    // ADR-0123: the `pane_closed` event takes its `seq` in the same lock that
-    // removes the pane, so "absent from a snapshot" and "its close was
-    // journaled" can never disagree. A `watch`-only client that never
-    // attached learns of the close here too.
+    // Every subscriber, including `ATTACH_RESOURCE`-only ones (L1 §3.1).
+    let targets: Vec<mpsc::Sender<Outbound>> = s.terminal_fanout_targets(pane);
+    // ADR-0123: `pane_closed` is journaled in the lock that removes the pane.
     let attribution = s.take_close_attribution(pane);
     journal_pane_closed(
         s,
@@ -1680,15 +1362,9 @@ fn reap_exited_pane(
         exit.status,
         attribution,
     );
-    // phux-60s: reap the dead pane, cascading to its window and session when
-    // they empty. Done here (inside the same lock that gathered subscribers)
-    // so no ATTACH can interleave between "gather" and "reap".
     let (server_empty, actor_token) = s.reap_terminal_deferring_actor_cancel(pane);
     let served = s.has_served_client();
-    // ADR-0105: a session a group kill released is gone once its last pane
-    // is reaped. Its session-attached clients are gathered here, under the
-    // same lock, and detached below rather than left on a session that no
-    // longer exists.
+    // ADR-0105: clients of a session a group kill released are detached.
     let killed_clients: Vec<_> = s
         .take_killed_sessions()
         .into_iter()
@@ -1712,23 +1388,19 @@ fn reap_exited_pane(
 /// parent has left. Each descendant's frame is emitted by the parent's
 /// watcher; its own watcher later finds it already claimed.
 fn cascade_children(
-    s: &mut crate::state::ServerState,
-    pane: phux_core::ids::ResourceId,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
+    s: &mut ServerState,
+    pane: CoreResourceId,
+    wire_terminal_id: &WireResourceId,
 ) -> Vec<CascadedClose> {
-    // Deepest first: reaping a child via `remove_resource` would otherwise
-    // drop its children out of the registry before they are journaled
-    // (phux-v4tv). Reverse BFS is generation-deepest and keeps the
-    // existing one-child order a reversal of one element.
+    // Deepest first, so no descendant leaves the registry unjournaled.
     let descendants = s.resource_descendants(pane);
     let mut cascaded = Vec::new();
     for child in descendants.into_iter().rev() {
         let Some(recorded) = s.begin_resource_close(child) else {
             continue;
         };
-        // A child nobody marked is leaving because its parent is; one an
-        // operator named in the same `KILL_RESOURCES` keeps the reason that
-        // kill recorded.
+        // An unmarked child leaves because its parent is; one named in the
+        // same kill keeps that kill's reason.
         let child_reason = if recorded == CloseReason::Exited {
             CloseReason::ParentClosed
         } else {
@@ -1736,14 +1408,7 @@ fn cascade_children(
         };
         let wire_child_id = s.intern_terminal_wire(child);
         let child_targets = s.terminal_fanout_targets(child);
-        // A child has no process to report, unless it is a retained pane
-        // whose process already ended (ADR-0124).
-        let child_exit = s
-            .retained_outcome(child)
-            .unwrap_or(phux_core::process::ExitOutcome::UNKNOWN);
-        // ADR-0123: journaled in the lock that reaps it, children first, so
-        // a snapshot cut after this lock never shows a resource whose close a
-        // subscriber has not been sent.
+        let child_exit = s.retained_outcome(child).unwrap_or(ExitOutcome::UNKNOWN);
         let attribution = s.take_close_attribution(child);
         journal_pane_closed(
             s,
@@ -1845,30 +1510,12 @@ async fn announce_close(
         killed_clients,
         actor_token,
     } = reap;
-    // docs/consumers/tui.md §9 (phux-r82.1): the inner process exited — the
-    // `pane-exit` hook point. Fired off-lock (the hook helper re-takes the
-    // state lock briefly to clone the dispatcher handle); `fire` itself is a
-    // non-blocking try_send. A retained pane fired it when its process
-    // exited, not now.
+    // A retained pane already fired `pane-exit` when its process exited.
     if exit_hook_owed {
-        crate::hooks::fire_hook(
-            state,
-            crate::hooks::HookEvent::pane_exit(&wire_terminal_id, exit.status),
-        );
+        crate::hooks::fire_hook(state, HookEvent::pane_exit(&wire_terminal_id, exit.status));
     }
 
-    // phux-4li.11 / phux-4r1: broadcast the L1 lifecycle event
-    // RESOURCE_CLOSED to every client that was subscribed to the dying pane
-    // at reap time. The server's job ends here — it reports the fact. The
-    // detach policy ("no Terminals left in my collection ⇒ detach") is the
-    // consumer's (the TUI driver folds the pane out of its layout and
-    // detaches itself when the last pane closes); the server no longer sends
-    // `Detached` on EOF (ADR-0015 L1). The sends are awaited off-lock —
-    // `with_mut` is synchronous and must not hold the state borrow across an
-    // await. Children first: a subscriber watching both sees the session end
-    // before the pane it lived in, which is the order the tree actually came
-    // apart in. A child's exit status is `None` — a session has no process
-    // to report one.
+    // Children first: the order the tree came apart in.
     for child in &cascaded {
         broadcast_terminal_closed(
             &child.wire_terminal_id,
@@ -1887,27 +1534,12 @@ async fn announce_close(
     // the session that held it.
     detach_clients_of_killed_session(state, killed_clients);
 
-    // phux-60s: when the last session is gone the server has nothing left to
-    // serve, so fire the root token — the tmux server-exit model. Without
-    // this the server lingers forever after every shell exits.
-    //
-    // Two guards keep this from misfiring:
-    //   * `has_served_client`: a freshly auto-spawned server whose seed pane
-    //     dies before anyone attaches must NOT vanish — the launching `phux`
-    //     is still racing to connect and will repopulate it via
-    //     `CreateIfMissing`. Only self-exit once we've actually served
-    //     someone.
-    //   * `!root_token.is_cancelled()`: a Ctrl-C shutdown cancels the pane
-    //     actor too, routing through here; don't log a spurious "self-exit"
-    //     or double-cancel during normal teardown.
+    // Self-exit once the last session is gone, but only after serving a
+    // client (a fresh auto-spawned server's launcher is still connecting)
+    // and not during an ordinary shutdown.
     if server_empty && served && !root_token.is_cancelled() {
-        // `send` only queues on the client mailbox. Cancelling in the same
-        // turn lets `handle_client`'s cancel arm win the biased select and
-        // close the transport before the writer flushes `RESOURCE_CLOSED`,
-        // so the TUI sees "lost the server" instead of the last-pane
-        // explanation (phux-fpgl.28). Wait until those writers have taken
-        // the close — then a few more turns for write+flush — before
-        // unlinking.
+        // Let writers flush `RESOURCE_CLOSED` before the root cancel closes
+        // their transports.
         yield_until_close_frames_taken(&targets).await;
         for child in &cascaded {
             yield_until_close_frames_taken(&child.targets).await;
@@ -1919,10 +1551,7 @@ async fn announce_close(
 
 /// Yield until each client writer has taken the just-queued close frames,
 /// or a small turn budget expires.
-///
-/// Last-session self-exit must not cancel the root token while
-/// `RESOURCE_CLOSED` is still sitting in the mailbox (phux-fpgl.28).
-async fn yield_until_close_frames_taken(targets: &[tokio::sync::mpsc::Sender<Outbound>]) {
+async fn yield_until_close_frames_taken(targets: &[mpsc::Sender<Outbound>]) {
     for _ in 0..256 {
         if targets
             .iter()
@@ -1932,96 +1561,51 @@ async fn yield_until_close_frames_taken(targets: &[tokio::sync::mpsc::Sender<Out
         }
         tokio::task::yield_now().await;
     }
-    // Mailbox empty (or budget expired): the writer has the frames, or
-    // never will. Extra turns so `write_frames` + `flush` can complete
-    // before root cancel unlinks the socket.
+    // A few more turns for the write and flush.
     for _ in 0..8 {
         tokio::task::yield_now().await;
     }
 }
 
-/// Everything the EOF watcher captures under one state lock before it
-/// performs the off-lock, awaited `RESOURCE_CLOSED` fanout (phux-emdv).
-///
-/// Gathering the subscriber mailboxes, interning the wire id, and reaping
-/// the pane in a single critical section is what closes the TOCTOU race:
-/// no ATTACH can observe a "still alive in the registry but already
-/// EOF'd" pane between the gather and the reap.
+/// Everything the exit watcher captures under the reap lock for the
+/// off-lock `RESOURCE_CLOSED` fanout.
 struct ReapAndNotify {
-    /// The pane's wire id, interned before the reap retired it. Reused
-    /// for both the L1 `RESOURCE_CLOSED` fanout and the `ResourceClosed`
-    /// agent event so they carry the id the client saw on spawn/snapshot.
-    wire_terminal_id: phux_protocol::ids::ResourceId,
-    /// Why this pane is closing, claimed from the close ledger in the same
-    /// lock (ADR-0104 §4).
+    /// The pane's wire id, interned before the reap retired it.
+    wire_terminal_id: WireResourceId,
+    /// Why this pane is closing (ADR-0104 §4).
     reason: CloseReason,
-    /// How the pane's process ended: the watcher's outcome, or a retained
-    /// pane's recorded exit (ADR-0124).
-    exit: phux_core::process::ExitOutcome,
-    /// The children this pane took with it, already reaped, each waiting
-    /// only for its off-lock frame.
+    exit: ExitOutcome,
+    /// Children already reaped, waiting only for their frames.
     cascaded: Vec<CascadedClose>,
-    /// Outbound mailboxes of every client subscribed to the pane at reap
-    /// time. The L1 `RESOURCE_CLOSED` fanout targets exactly this set.
-    targets: Vec<tokio::sync::mpsc::Sender<Outbound>>,
-    /// `true` iff the reap emptied the last session — the server self-exit
-    /// signal (phux-60s).
+    /// Every client subscribed to the pane at reap time.
+    targets: Vec<mpsc::Sender<Outbound>>,
+    /// The reap emptied the last session.
     server_empty: bool,
-    /// ADR-0105: the session-attached clients of a released keep-empty
-    /// session this reap removed, to be detached with `SESSION_KILLED`.
-    killed_clients: Vec<(ClientId, tokio::sync::mpsc::Sender<Outbound>)>,
-    ///Whether any client has ever attached (arms the phux-60s self-exit).
+    /// ADR-0105: clients of a released session, detached with `SESSION_KILLED`.
+    killed_clients: Vec<(ClientId, mpsc::Sender<Outbound>)>,
+    /// Whether any client has ever attached.
     served: bool,
-    /// Actor token to cancel after `RESOURCE_CLOSED` is queued, so a fenced
-    /// pump can publish the last screen while the broadcast is still open
-    /// (phux-fpgl.28).
-    actor_token: Option<tokio_util::sync::CancellationToken>,
+    /// Cancelled after `RESOURCE_CLOSED` is queued so a fenced pump can
+    /// publish the last screen first.
+    actor_token: Option<CancellationToken>,
 }
 
 /// One resource closed because its parent did (ADR-0104 §2), captured
 /// under the parent's lock and broadcast off it.
 struct CascadedClose {
-    /// The child's wire id, interned before its reap retired it.
-    wire_terminal_id: phux_protocol::ids::ResourceId,
-    /// Mailboxes subscribed to the child at reap time.
-    targets: Vec<tokio::sync::mpsc::Sender<Outbound>>,
-    /// The reason its `RESOURCE_CLOSED` carries.
+    wire_terminal_id: WireResourceId,
+    targets: Vec<mpsc::Sender<Outbound>>,
     reason: CloseReason,
-    /// The exit its `RESOURCE_CLOSED` carries: unknown for a session.
-    exit: phux_core::process::ExitOutcome,
+    /// Unknown unless the child is a retained exited pane.
+    exit: ExitOutcome,
 }
 
-/// Emit `RESOURCE_CLOSED { terminal_id, exit_status }` to every client
-/// in `targets` (phux-4li.11, SPEC §7.2 / §10.1).
-///
-/// The subscriber set and `wire_terminal_id` are gathered by the caller
-/// ([`spawn_terminal_exit_watcher`]) in the SAME state lock that reaps the
-/// pane, so they reflect exactly the clients subscribed at reap time. This
-/// function only performs the off-lock work: the awaited L1 fanout, done
-/// off-lock because `with_mut` is synchronous and the borrow must not be
-/// held across an await (phux-emdv). The `pane_closed` agent event is not
-/// sent here: it is journaled in the reap lock itself (ADR-0123).
-///
-/// The `wire_terminal_id` is the one the client saw on `RESOURCE_SPAWNED`
-/// / `TERMINAL_SNAPSHOT`; the caller interned it before the reap retired
-/// it. The send is best-effort: a client whose mailbox has closed (it
-/// dropped the socket) is silently skipped — `reap_terminal` (already run
-/// by the caller) handled server-side state cleanup.
-///
-/// `exit` is the child's full outcome: the frame's `exit_status` carries
-/// its code and the additive `signal` field (4) its terminating signal, so
-/// a signal death reads `exit_status: None, signal: Some(n)`.
-///
-/// `reason` is the one the closer recorded in the close ledger
-/// (ADR-0104 §4), claimed by the caller in that same lock: `Killed` for a
-/// `KILL_RESOURCE`, `ParentClosed` for a cascade, `ServerShutdown` for a
-/// shutdown, and `Exited` when nothing decided otherwise and the inner
-/// process simply left. A consumer tells a cascade from a kill by reading
-/// it, without correlating frames.
+/// Send `RESOURCE_CLOSED` to every mailbox in `targets`, gathered by the
+/// caller under the reap lock. Best-effort: closed mailboxes are skipped.
 pub(crate) async fn broadcast_terminal_closed(
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    targets: &[tokio::sync::mpsc::Sender<Outbound>],
-    exit: phux_core::process::ExitOutcome,
+    wire_terminal_id: &WireResourceId,
+    targets: &[mpsc::Sender<Outbound>],
+    exit: ExitOutcome,
     reason: phux_protocol::wire::frame::CloseReason,
 ) {
     if targets.is_empty() {
@@ -2032,10 +1616,7 @@ pub(crate) async fn broadcast_terminal_closed(
             ?exit,
             "RESOURCE_CLOSED: broadcasting to subscribed clients",
         );
-        // Concurrent: sequential await let a stalled owner starve every
-        // other subscriber, so a lagged watcher never saw RESOURCE_CLOSED
-        // (phux-fpgl.28). The EOF snapshot is already parking on `send` in
-        // the addressed pump; do not delay close for occupancy.
+        // Concurrent, so one stalled subscriber cannot starve the rest.
         let sends = targets.iter().map(|tx| {
             let tx = tx.clone();
             let frame = Outbound::Frame(FrameKind::ResourceClosed {
@@ -2052,25 +1633,17 @@ pub(crate) async fn broadcast_terminal_closed(
     }
 }
 
-/// Journal a resource's `pane_closed` (phux-y2t, ADR-0123) under the lock
-/// that reaps it.
-///
-/// A child's close also reaches its parent's watchers (ADR-0104 §2): a
-/// consumer following a pane is following the sessions inside it, and it
-/// learned of them from a `pane_spawned` addressed the same way. Its
-/// `exit_status` is `None`, since a session has no process to report one.
+/// Journal a resource's `pane_closed` (ADR-0123) under the lock that reaps
+/// it. A child's close names its parent (ADR-0104 §2).
 pub(super) fn journal_pane_closed(
-    s: &mut crate::state::ServerState,
-    wire_terminal_id: &phux_protocol::ids::ResourceId,
-    parent: Option<&phux_protocol::ids::ResourceId>,
+    s: &mut ServerState,
+    wire_terminal_id: &WireResourceId,
+    parent: Option<&WireResourceId>,
     exit_status: Option<i32>,
     attribution: crate::state::CloseAttribution,
 ) {
-    // Nothing follows a close (L1 §7): a held action naming this Terminal
-    // is withdrawn, and journaled, first (ADR-0128).
+    // Nothing follows a close (L1 §7): withdraw held actions first (ADR-0128).
     s.withdraw_approvals_naming(wire_terminal_id);
-    // A kill names the connection that sent it and, when keyed, its
-    // `operation_id` (L1 §5.1.1, §7.3); a natural exit names neither.
     let record = crate::state::EventRecord::new(
         Some(wire_terminal_id.clone()),
         AgentEvent::ResourceClosed { exit_status },
@@ -2081,53 +1654,25 @@ pub(super) fn journal_pane_closed(
     let _ = s.record_and_fanout(record);
 }
 
-/// Free the per-consumer state-sync entries (ADR-0018, phux-0q8) this
-/// client holds across every pane it subscribes to, then remove the
-/// client from `ServerState`.
-///
-/// Counterpart to the `consumer_attach` registration the ATTACH path
-/// performs per pane. Run at every client-teardown site (explicit
-/// DETACH, transport disconnect, PTY EOF) so the per-consumer
-/// `RenderState` cache the actor allocated at attach is dropped rather
-/// than leaked until pane teardown.
-///
-/// **Attachment teardown only.** Most call sites — the `DETACH` arm, the
-/// `DETACH_CLIENTS` force-detach, the session-reaped fanout — run against a
-/// connection that stays open, so this must not disturb anything HELLO
-/// negotiated for the connection. [`release_connection_state`] is the
-/// transport-close superset, and the accept loop runs it exactly once per
-/// connection no matter which path ended the client task.
-///
-/// Handles are gathered under-lock (`subscribed_resource_handles`); the
-/// `consumer_detach` sends happen off-lock to avoid awaiting inside
-/// `with_mut`. `try_send` is non-blocking and best-effort: a full or
-/// closed mailbox just means the actor is gone or saturated. A dropped
-/// detach on a *live* actor is no longer a leak — `state.detach` below
-/// drops the client's outbound receiver, so the actor's `tick_emit`
-/// observes the mailbox as `Closed` on its next tick and reaps the
-/// orphaned per-consumer entry itself (phux-ddg, the self-healing path).
+/// Attachment teardown: free the per-consumer state every subscribed pane
+/// holds for this client (ADR-0018), release its leases and relay state,
+/// and detach it. The connection itself stays open; HELLO-negotiated state
+/// is left to [`release_connection_state`]. A dropped `consumer_detach`
+/// is self-healing: the actor reaps the entry once the mailbox closes.
 pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: ClientId) {
-    // docs/consumers/tui.md §9 (phux-r82.1): capture whether this client
-    // was actually attached (and to which session, if it still exists)
-    // BEFORE tearing anything down. Runs for every connection teardown,
-    // but the `client-detached` hook fires only for attached clients —
-    // a connection that never attached never "detaches".
+    // Captured before teardown, for the `client-detached` hook.
     let attached_session = state.with(|s| attached_session_name(s, client_id));
     state.with(|s| release_actor_consumers(s, client_id));
     // The `Released` transitions name this client as their actor.
-    state.with(|s| announce_lease_releases(s, client_id, Some(wire_client(client_id))));
+    state.with(|s| announce_lease_releases(s, client_id, Some(super::wire_client(client_id))));
     state.with(|s| release_relay_state(s, client_id));
     state.with_mut(|s| s.detach(client_id));
     fire_client_detached(state, client_id, attached_session);
 }
 
-/// `workload-auth.md` §7 step 2, inside the caller's state lock: the teardown
-/// [`detach_and_release_consumer_state`] performs, in one critical section,
-/// so nothing the connection held outlives the revocation that withdrew it.
-/// The lease releases name no actor, because the server released them.
-///
-/// Returns the attached session for [`fire_client_detached`], which the
-/// caller runs off-lock.
+/// `workload-auth.md` §7 step 2: [`detach_and_release_consumer_state`] in
+/// the caller's lock, so nothing outlives the revocation. Returns the
+/// attached session for [`fire_client_detached`], run off-lock.
 pub(crate) fn release_revoked_consumer_state(
     s: &mut ServerState,
     client_id: ClientId,
@@ -2143,9 +1688,7 @@ pub(crate) fn release_revoked_consumer_state(
     attached_session
 }
 
-/// docs/consumers/tui.md §9 (phux-r82.1): the client is fully detached — the
-/// `client-detached` hook point (any reason: explicit DETACH, transport
-/// drop, EOF, revocation). Skipped for connections that never attached.
+/// Fire the `client-detached` hook for a client that was attached.
 pub(crate) fn fire_client_detached(
     state: &SharedState,
     client_id: ClientId,
@@ -2154,7 +1697,7 @@ pub(crate) fn fire_client_detached(
     if let Some(from) = detached_from {
         crate::hooks::fire_hook(
             state,
-            crate::hooks::HookEvent::client_detached(client_id, from.session_name.as_deref()),
+            HookEvent::client_detached(client_id, from.session_name.as_deref()),
         );
     }
 }
@@ -2176,19 +1719,12 @@ fn attached_session_name(s: &ServerState, client_id: ClientId) -> Option<Detache
     })
 }
 
-/// The wire form of a server-local client id.
-fn wire_client(client_id: ClientId) -> phux_protocol::ids::ClientId {
-    phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX))
-}
-
 /// Free the per-consumer state-sync entries every pane this client
 /// subscribes to allocated for it. `try_send` is non-blocking and
 /// best-effort, so this is safe under the state lock.
 fn release_actor_consumers(s: &ServerState, client_id: ClientId) {
-    let wire_client_id = wire_client(client_id);
+    let wire_client_id = super::wire_client(client_id);
     for handle in s.subscribed_resource_handles(client_id) {
-        // Native history cuts are a Terminal facet lease; a resource of
-        // another kind never held one.
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         if let Ok(terminal) = handle.terminal() {
             let _ = terminal
@@ -2217,12 +1753,9 @@ fn release_actor_consumers(s: &ServerState, client_id: ClientId) {
     }
 }
 
-/// Broadcast the `Released` transition for every input lease this client
-/// holds (ADR-0033), so other clients stop showing it as the holder; each
-/// pane's actor journals it (ADR-0123). `actor` is the client when it gave
-/// the lease up, `None` when the server took it back. `detach` clears the
-/// lease state regardless, so this is purely the observable-event half — a
-/// saturated or closed mailbox is benign.
+/// Announce the `Released` transition for every input lease this client
+/// holds (ADR-0033). `actor` is `None` when the server took it back.
+/// Event-only: `detach` clears the lease state regardless.
 fn announce_lease_releases(
     s: &ServerState,
     client_id: ClientId,
@@ -2245,47 +1778,24 @@ fn announce_lease_releases(
 /// Drop this client's federation relay state. Empty (no-op) on a non-hub
 /// server.
 fn release_relay_state(s: &ServerState, client_id: ClientId) {
-    // Federation relay (phux-v45.4): drop every hub-side proxy
-    // subscription this client holds on any satellite link — the
-    // counterpart to the registrations the satellite-scoped
-    // SUBSCRIBE_EVENTS / SUBSCRIBE_RESOURCE_EVENTS / ATTACH_RESOURCE
-    // paths performed. Undroppable (phux-v45.11 finding 1): rides the
-    // unbounded unsubscribe channel, so a saturated relay mailbox can never
-    // leave a stale subscriber that outlives its consumer.
+    // Rides an unbounded channel, so a saturated relay cannot keep a stale
+    // subscriber alive.
     for relay in s.hub_relays_all() {
         relay.unsubscribe_client(client_id);
     }
-    // Release any hub-side satellite input leases this client held
-    // (phux-v45.7, the federation mirror of the ADR-0033 release): relay a
-    // detached RELEASE_INPUT per lease so the satellite-side lease (held by
-    // the link identity) follows the hub-side ledger, which `detach` clears
-    // regardless.
+    // Relay a RELEASE_INPUT per satellite lease this client held.
     for (host, terminal) in s.satellite_leases_held_by(client_id) {
         if let Some(relay) = s.hub_relay(&host) {
             relay.command_detached(phux_protocol::wire::frame::Command::ReleaseInput {
-                terminal_id: phux_protocol::ids::ResourceId::local(terminal),
+                terminal_id: WireResourceId::local(terminal),
             });
         }
     }
 }
 
 /// Transport-close teardown: [`detach_and_release_consumer_state`] plus the
-/// connection-scoped state HELLO negotiated (phux-w7z2.55).
-///
-/// The distinction this draws is the whole point. `DETACH` (proto.md §7.2)
-/// ends an *attachment*; the reference server answers `DETACHED` and keeps
-/// reading, because the same connection may serve a later `ATTACH`. The peer
-/// on the far side is still the peer the transport authenticated, and it is
-/// still speaking the layer set it advertised — neither can be renegotiated,
-/// since a second HELLO is a protocol error (proto.md §6.1). Dropping either
-/// at `DETACH` therefore changed what a live connection could do with no
-/// handshake in between: `client_layers` fell back to the permissive
-/// `LayerSet::all` (an L1-only peer began passing the §11.5 L3 gate) and the
-/// `SHUTDOWN` local-transport check lost the identity it keys on.
-///
-/// Called from the accept loop, which is the one place every connection on
-/// every transport funnels through on its way out — the in-loop teardown
-/// sites all `return` into it.
+/// connection-scoped state HELLO negotiated. Only the accept loop calls it:
+/// a `DETACH` keeps the connection, its layers, and its peer identity.
 pub(crate) fn release_connection_state(state: &SharedState, client_id: ClientId) {
     // A closing connection withdraws the actions it holds (ADR-0128).
     super::approvals::withdraw(state, client_id);
@@ -2293,30 +1803,13 @@ pub(crate) fn release_connection_state(state: &SharedState, client_id: ClientId)
     state.with_mut(|s| s.forget_connection(client_id));
 }
 
-/// Prepare and validate the parent directory of `socket_path`.
+/// Prepare and validate the parent directory of `socket_path`, so no other
+/// user can plant or swap the socket.
 ///
-/// The threat this closes is another user planting or swapping the socket
-/// before we bind. What actually prevents that is the parent not being
-/// writable by anyone else — either because we own it and it is `0o700`, or
-/// because it is a sticky world-writable directory, where the sticky bit stops
-/// non-owners from unlinking our entry. `/tmp` is the second kind, and it is a
-/// perfectly ordinary place to put a socket.
-///
-/// So the rule depends on who made the directory:
-///
-///   * **We create it** (the usual case — phux's own runtime dir): create it
-///     `0o700`, then verify owner and mode. We own it, so we may be strict.
-///   * **It already exists** (`--socket` pointing somewhere established):
-///     validate, never mutate. An earlier version unconditionally
-///     `chmod 0o700`-ed this directory, which for `--socket /tmp/x.sock` meant
-///     chmod-ing `/tmp` — and it rejected any parent it did not own, which is
-///     every shared temp dir on every machine (`/tmp` is root-owned on Linux
-///     and a symlink to `/private/tmp` on macOS). Both made a legitimate
-///     invocation fail to bind at all.
-///
-/// Symlinks are resolved rather than refused, for the same reason: `/tmp` is a
-/// symlink on macOS. What matters is the permissions of the directory the path
-/// actually lands on, so the checks run against the canonical target.
+/// A directory we create is made `0o700` and verified. An existing one is
+/// validated, never mutated: it must be ours and not writable by others, or
+/// sticky (like `/tmp`). Symlinks are resolved (macOS `/tmp` is one) and
+/// the checks run against the canonical target.
 pub(crate) fn prepare_socket_dir(socket_path: &Path) -> Result<(), ServerError> {
     let Some(parent) = socket_path.parent() else {
         return Ok(());
@@ -2337,8 +1830,6 @@ pub(crate) fn prepare_socket_dir(socket_path: &Path) -> Result<(), ServerError> 
         builder.create(parent).map_err(fail)?;
     }
 
-    // Follow symlinks deliberately: the permissions that matter belong to the
-    // directory the path resolves to, not to a link pointing at it.
     let real = std::fs::canonicalize(parent).map_err(fail)?;
     let metadata = std::fs::metadata(&real).map_err(fail)?;
     if !metadata.is_dir() {
@@ -2402,93 +1893,51 @@ pub(crate) fn secure_socket_file(socket_path: &Path) -> Result<(), ServerError> 
 mod socket_security_tests {
     use super::*;
 
+    /// A directory phux creates is private; an existing one is validated and
+    /// never chmod-ed: ours-and-private or sticky (like `/tmp`) is accepted,
+    /// anything writable by others is refused. Symlinks are judged by their
+    /// target (macOS `/tmp` is one).
     #[test]
-    fn a_directory_we_create_is_private() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let parent = root.path().join("runtime");
-
-        prepare_socket_dir(&parent.join("phux.sock")).expect("create runtime dir");
-
-        let mode = std::fs::symlink_metadata(&parent)
-            .expect("created metadata")
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o700, "a directory phux creates is its own and 0700");
-    }
-
-    #[test]
-    fn existing_world_writable_socket_directory_is_refused_not_seized() {
-        // The earlier contract chmod-ed this directory to 0700. For
-        // `--socket /tmp/x.sock` that meant chmod-ing /tmp. Refusing is both
-        // safer and honest: phux does not own a directory it did not create.
-        let root = tempfile::tempdir().expect("tempdir");
-        let parent = root.path().join("runtime");
-        std::fs::create_dir(&parent).expect("runtime dir");
-        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o777))
-            .expect("permissive mode");
-
-        assert!(matches!(
-            prepare_socket_dir(&parent.join("phux.sock")),
-            Err(ServerError::PrepareDir { source, .. })
-                if source.kind() == io::ErrorKind::PermissionDenied
-        ));
-
-        let mode = std::fs::symlink_metadata(&parent).expect("metadata").mode() & 0o777;
-        assert_eq!(mode, 0o777, "a refused directory must be left untouched");
-    }
-
-    #[test]
-    fn existing_sticky_world_writable_directory_is_accepted() {
-        // This is /tmp. The sticky bit is what makes it safe: other users can
-        // create entries but cannot unlink ours, so nobody can swap the socket.
-        let root = tempfile::tempdir().expect("tempdir");
-        let parent = root.path().join("shared-tmp");
-        std::fs::create_dir(&parent).expect("shared dir");
-        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o1777))
-            .expect("sticky permissive mode");
-
-        prepare_socket_dir(&parent.join("phux.sock")).expect("sticky temp dir is usable");
-    }
-
-    #[test]
-    fn socket_parent_symlink_resolves_to_its_target() {
-        // /tmp is a symlink to /private/tmp on macOS, so refusing symlinks
-        // outright made every `--socket /tmp/...` fail to bind there. What
-        // matters is the permissions of the directory it resolves to.
+    fn socket_parent_directory_rules() {
         use std::os::unix::fs::symlink;
 
-        let root = tempfile::tempdir().expect("tempdir");
-        let target = root.path().join("target");
-        std::fs::create_dir(&target).expect("target");
-        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700))
-            .expect("private target");
-        let parent = root.path().join("runtime-link");
-        symlink(&target, &parent).expect("symlink");
-
-        prepare_socket_dir(&parent.join("phux.sock"))
-            .expect("a symlink to a directory we own is fine");
-    }
-
-    #[test]
-    fn socket_parent_symlink_to_an_unsafe_directory_is_still_refused() {
-        use std::os::unix::fs::symlink;
-
-        let root = tempfile::tempdir().expect("tempdir");
-        let target = root.path().join("target");
-        std::fs::create_dir(&target).expect("target");
-        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o777))
-            .expect("permissive target");
-        let parent = root.path().join("runtime-link");
-        symlink(&target, &parent).expect("symlink");
-
-        assert!(
-            matches!(
-                prepare_socket_dir(&parent.join("phux.sock")),
-                Err(ServerError::PrepareDir { source, .. })
-                    if source.kind() == io::ErrorKind::PermissionDenied
-            ),
-            "following the link must not lose the permission check"
-        );
+        // (existing mode, reached through a symlink, accepted)
+        let cases = [
+            (None, false, true),
+            (Some(0o777), false, false),
+            (Some(0o1777), false, true),
+            (Some(0o700), true, true),
+            (Some(0o777), true, false),
+        ];
+        for (mode, via_symlink, accepted) in cases {
+            let root = tempfile::tempdir().expect("tempdir");
+            let target = root.path().join("runtime");
+            if let Some(mode) = mode {
+                std::fs::create_dir(&target).expect("dir");
+                std::fs::set_permissions(&target, std::fs::Permissions::from_mode(mode))
+                    .expect("mode");
+            }
+            let parent = if via_symlink {
+                let link = root.path().join("runtime-link");
+                symlink(&target, &link).expect("symlink");
+                link
+            } else {
+                target.clone()
+            };
+            let result = prepare_socket_dir(&parent.join("phux.sock"));
+            let case = (mode, via_symlink);
+            if accepted {
+                result.unwrap_or_else(|err| panic!("{case:?} refused: {err}"));
+            } else {
+                assert!(
+                    matches!(&result, Err(ServerError::PrepareDir { source, .. })
+                        if source.kind() == io::ErrorKind::PermissionDenied),
+                    "{case:?} accepted",
+                );
+            }
+            let actual = std::fs::metadata(&target).expect("metadata").mode() & 0o7777;
+            assert_eq!(actual, mode.unwrap_or(0o700), "{case:?} mode changed");
+        }
     }
 }
 
@@ -2516,16 +1965,9 @@ pub(crate) async fn handle_existing_socket(socket_path: &Path) -> Result<(), Ser
     Ok(())
 }
 
-/// Core accept loop. Pulled out to keep `run_async` flat.
-///
-/// Per ADR-0014, every per-client task spawns via
-/// [`tokio::task::JoinSet::spawn_local`]; the futures we hand it are
-/// `!Send` because they call into pane actors that own `!Send`
-/// `Terminal`s.
-///
-/// `root_token` is the per-server root cancellation token. Cancellation stops
-/// admission, then waits for every child client task to flush its shutdown
-/// `DETACHED` before returning.
+/// Accept connections and spawn a local client task for each (ADR-0014).
+/// Root cancellation stops admission, then waits (bounded) for every client
+/// task to flush its shutdown `DETACHED`.
 #[allow(
     clippy::future_not_send,
     reason = "ADR-0014: the server runs on a LocalSet; per-connection transports (L::Reader/Writer) are !Send by design"
@@ -2534,16 +1976,9 @@ pub(crate) async fn accept_loop<L: Incoming>(
     listener: &L,
     state: SharedState,
     root_token: CancellationToken,
-    // Dedicated input lane (phux-51n6.2, ADR-0044). `Some` in production so
-    // each client task routes `INPUT_*` off the main runtime; `None` in the
-    // direct-drive tests that never spawn the lane, which fall back to inline
-    // routing (identical behavior, on-thread).
+    // ADR-0044 input lane; `None` routes input inline.
     input_lane: Option<InputLaneHandle>,
 ) -> Result<(), ServerError> {
-    // JoinSet of per-client tasks. Dropping this set on loop exit
-    // aborts every still-running client task in one step — much
-    // shorter than waiting for each task's own `select!` to observe
-    // its child token's cancellation.
     let mut clients: JoinSet<()> = JoinSet::new();
     loop {
         tokio::select! {
@@ -2564,17 +1999,10 @@ pub(crate) async fn accept_loop<L: Incoming>(
                 match accept {
                     Ok((reader, writer, connection_identity)) => {
                         debug!(transport = listener.kind(), "client connected");
-                        // phux-n6rv: count the live connection before the task
-                        // exists, so the idle-exit watchdog can never observe a
-                        // window where the server looks unattended between
-                        // `accept` returning and the client task being polled.
-                        // Paired with `note_connection_closed` at the end of
-                        // that task; every transport funnels through here, so
-                        // this is the one place the pair has to hold.
-                        state.with_mut(crate::state::ServerState::note_connection_opened);
-                        // Allocate the per-client routing id up-front so the
-                        // task can detach itself cleanly on EOF.
-                        let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+                        // Counted before the task exists so the idle watchdog
+                        // never sees an unattended gap.
+                        state.with_mut(ServerState::note_connection_opened);
+                        let client_id = state.with_mut(ServerState::new_client_id);
                         state.with_mut(|s| s.set_connection_identity(client_id, connection_identity));
                         let task_state = state.clone();
                         let client_token = root_token.child_token();
@@ -2586,21 +2014,9 @@ pub(crate) async fn accept_loop<L: Incoming>(
                             if let Err(err) = handle_client(reader, writer, task_state.clone(), client_id, client_token, task_root_token, task_input_lane, task_transport, task_supports_quic_streams).await {
                                 warn!(error = %err, "client task ended with error");
                             }
-                            // Implicit detach on EOF / error path, plus the
-                            // connection-scoped HELLO state (phux-w7z2.55).
-                            // Every transport and every in-loop teardown path
-                            // funnels through here, so this is the one site
-                            // that may forget the negotiated layers and the
-                            // transport-authenticated peer identity.
+                            // The one site that forgets connection state.
                             release_connection_state(&task_state, client_id);
-                            // phux-n6rv: re-arm the idle clock if this was the
-                            // last connection. Runs after the detach above so
-                            // "unattended" and "detached" become true in the
-                            // same tick. A task ABORTED by shutdown never gets
-                            // here, which is harmless: the only reader of the
-                            // clock is the watchdog, and shutdown is already
-                            // underway.
-                            task_state.with_mut(crate::state::ServerState::note_connection_closed);
+                            task_state.with_mut(ServerState::note_connection_closed);
                         });
                     }
                     Err(err) => {
@@ -2609,9 +2025,7 @@ pub(crate) async fn accept_loop<L: Incoming>(
                         }
                         match listener.accept_error_disposition(&err) {
                             AcceptErrorDisposition::Default => {
-                                // Listener and resource errors are typically
-                                // transient (EMFILE, ECONNABORTED). Preserve
-                                // their default-visible diagnosis and continue.
+                                // Typically transient (EMFILE, ECONNABORTED).
                                 error!(error = %err, "accept failed");
                             }
                             AcceptErrorDisposition::PeerRejected {
@@ -2619,10 +2033,7 @@ pub(crate) async fn accept_loop<L: Incoming>(
                                 source_ip,
                                 warn_suppressed,
                             } => {
-                                // Every peer-caused rejection remains available
-                                // to an operator who opts into DEBUG. The WARN
-                                // summary is listener-rate-limited, so an
-                                // unauthenticated peer cannot flood defaults.
+                                // WARN is rate-limited so a peer cannot flood logs.
                                 debug!(
                                     transport = listener.kind(),
                                     stage,
@@ -2683,13 +2094,11 @@ const WRITER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 const CLIENT_SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 async fn close_client_writer(
-    out_tx: tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: mpsc::Sender<Outbound>,
     writer_close: &tokio::sync::watch::Sender<bool>,
     sibling_tasks: &mut JoinSet<()>,
 ) {
-    // The close command is independent of sender liveness. The writer closes
-    // its receiver, drains every frame already ordered before this command,
-    // then calls FrameWriter::close.
+    // The writer drains every frame ordered before this, then closes.
     let _ = writer_close.send(true);
     drop(out_tx);
     if tokio::time::timeout(WRITER_DRAIN_TIMEOUT, async {
@@ -2703,45 +2112,16 @@ async fn close_client_writer(
     }
 }
 
-/// The typed SPEC §5 framing violation inside a transport read error, if any.
-///
-/// Every transport reader (`UdsReader`, `WsReader`, `QuicReader`, `WtReader`)
-/// defers framing to [`phux_protocol::wire::framing`], whose errors convert to
-/// [`io::ErrorKind::InvalidData`] with the [`FramingError`] retained as the
-/// source — so this downcast is the single, transport-agnostic detection
-/// point for "the peer broke §5" as distinct from "the transport died".
+/// The typed SPEC §5 framing violation inside a transport read error, if
+/// any: every reader keeps the [`FramingError`] as the `io::Error` source.
 fn framing_violation(err: &io::Error) -> Option<FramingError> {
     err.get_ref()
         .and_then(|source| source.downcast_ref::<FramingError>())
         .copied()
 }
 
-/// End one connection for a protocol violation in the order required by §9.
-async fn close_for_protocol_error(
-    out_tx: tokio::sync::mpsc::Sender<Outbound>,
-    writer_close: &tokio::sync::watch::Sender<bool>,
-    sibling_tasks: &mut JoinSet<()>,
-    code: ErrorCode,
-    message: String,
-) {
-    let _ = out_tx
-        .send(Outbound::Frame(FrameKind::Error {
-            request_id: None,
-            code,
-            message: message.clone(),
-        }))
-        .await;
-    let _ = out_tx
-        .send(Outbound::Frame(FrameKind::Detached {
-            reason: Some(DetachReason::ProtocolError),
-            message,
-        }))
-        .await;
-    close_client_writer(out_tx, writer_close, sibling_tasks).await;
-}
-
 /// SPEC §7.4: echo the nonce in PONG.
-async fn reply_pong(out_tx: &tokio::sync::mpsc::Sender<Outbound>, client_id: ClientId, nonce: u64) {
+async fn reply_pong(out_tx: &mpsc::Sender<Outbound>, client_id: ClientId, nonce: u64) {
     debug!(nonce, "PING -> PONG");
     if out_tx
         .send(Outbound::Frame(FrameKind::Pong { nonce }))
@@ -2752,23 +2132,14 @@ async fn reply_pong(out_tx: &tokio::sync::mpsc::Sender<Outbound>, client_id: Cli
     }
 }
 
-/// SPEC §7.3: server responds with DETACHED, then closes. For byc.8 we emit
-/// DETACHED and let the read loop continue — actual transport close lands
-/// when the client drops, which is the path the existing socket-lifecycle
-/// tests exercise.
-///
-/// Intentionally silent on send failure: this client is detached on the next
-/// line, so the writer being gone is the next thing to happen anyway. Logging
-/// here would be pure noise.
+/// SPEC §7.3: answer DETACH with DETACHED and keep reading; the same
+/// connection may attach again.
 async fn detach_on_request(
     state: &SharedState,
     client_id: ClientId,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
     output_pumps: &mut JoinSet<()>,
 ) {
-    // Lifecycle event at info so it shows under the default capture filter —
-    // DETACH is a per-client lifecycle edge a trace reader wants to see
-    // without enabling debug.
     info!(?client_id, "DETACH");
     abort_output_pumps(output_pumps, client_id, "DETACH").await;
     let _ = out_tx
@@ -2790,10 +2161,9 @@ enum AttachIdVerdict {
     Reserved,
 }
 
-/// Classify an ATTACH's `attach_id`. An attach id names one immutable
-/// aggregate generation for the life of this connection. Reuse would collide
-/// with a completed stream/bootstrap key even when the replacement otherwise
-/// followed the right barriers.
+/// Classify an ATTACH's `attach_id`: each names one aggregate generation for
+/// the life of the connection, so reuse would collide with a completed
+/// stream/bootstrap key.
 fn classify_attach_id(
     attach_id: u32,
     used_attach_ids: &mut HashSet<u32>,
@@ -2810,27 +2180,22 @@ fn classify_attach_id(
     }
 }
 
-/// Hand one `INPUT_TERMINAL_REPLY` to the pane, if the connection advertised
-/// the frame at all.
-///
-/// The frame is additive within protocol 0.7: report the unadvertised type
-/// without killing an otherwise valid connection, and never pass its bytes to
-/// the PTY.
+/// Hand one `INPUT_TERMINAL_REPLY` to the pane if the connection advertised
+/// it; otherwise report the type without ending the connection.
 async fn dispatch_terminal_reply(
     client_id: ClientId,
     selection: NegotiatedConnection,
-    terminal_id: &phux_protocol::ids::ResourceId,
+    terminal_id: &WireResourceId,
     bytes: bytes::Bytes,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
 ) {
     if !selection.accepts_terminal_reply() {
-        let _ = out_tx
-            .send(Outbound::Frame(FrameKind::Error {
-                request_id: None,
-                code: ErrorCode::UnknownMessageType,
-                message: "INPUT_TERMINAL_REPLY was not advertised for this connection".to_owned(),
-            }))
-            .await;
+        super::send_error(
+            out_tx,
+            ErrorCode::UnknownMessageType,
+            "INPUT_TERMINAL_REPLY was not advertised for this connection",
+        )
+        .await;
         return;
     }
     handle_terminal_reply(client_id, terminal_id, &bytes);
@@ -2839,26 +2204,18 @@ async fn dispatch_terminal_reply(
 /// Why one connection must end, and what the peer is owed on the way out
 /// (SPEC §9: `ERROR`, then `DETACHED`, then close).
 struct ConnectionClose {
-    /// `Some(reason)` once the connection may already be attached: the
-    /// per-attach output pumps and the consumer's registry state are torn down
-    /// first, so no mailbox sender outlives the connection. `None` is the
-    /// handshake phase, where nothing is attached yet and only the goodbye is
-    /// owed.
+    /// `Some(reason)` when the connection may be attached, so its pumps and
+    /// consumer state are torn down first; `None` in the handshake phase.
     attached_reason: Option<&'static str>,
     code: ErrorCode,
     message: String,
 }
 
-/// One bound Terminal stream's outbound half (proto.md §4.2).
-///
-/// The mailbox is what that Terminal's actor, pump, and bootstrap write
-/// through; the writer task drains it into the stream's `QuicWriter` with
-/// the same [`writer_task`] all transports share, so per-stream batching,
-/// compression, and the generation fence are identical — only the
-/// destination differs. Retirement closes admission, then drains with a bound;
-/// a stopped receiver cannot leave a superseded stream task alive indefinitely.
+/// One bound Terminal stream's outbound half (proto.md §4.2): a mailbox
+/// drained by the same writer task every transport uses. Retirement closes
+/// admission, then drains with a bound.
 struct StreamBinding {
-    tx: tokio::sync::mpsc::Sender<Outbound>,
+    tx: mpsc::Sender<Outbound>,
     stream_id: StreamId,
     writer: JoinSet<()>,
     writer_close: tokio::sync::watch::Sender<bool>,
@@ -2897,13 +2254,11 @@ impl Drop for StreamBinding {
     }
 }
 
-/// One connection's outbound plumbing: the mailbox every stage sends through,
-/// the writer task's close signal, and the two task sets whose separation
-/// matters — DETACH/session switch must abort the per-attach pane output pumps
-/// without killing the writer, because the writer still needs to emit DETACHED
-/// and may serve a later ATTACH on the same connection.
+/// One connection's outbound plumbing. The output pumps are separate from
+/// the writer so DETACH can abort them while the writer still emits
+/// DETACHED and serves a later ATTACH.
 struct ClientPlumbing {
-    out_tx: tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: mpsc::Sender<Outbound>,
     writer_close: tokio::sync::watch::Sender<bool>,
     /// Sibling tasks (today: just the writer).
     sibling_tasks: JoinSet<()>,
@@ -2913,20 +2268,15 @@ struct ClientPlumbing {
     /// Empty on every other transport, where all frames share `out_tx`.
     stream_bindings: HashMap<WireResourceId, StreamBinding>,
     retired_streams: JoinSet<()>,
-    /// The frame compression the writer applies, published by HELLO.
-    ///
-    /// A shared cell rather than a constructor argument because the writer
-    /// task is spawned when the connection is accepted, which is strictly
-    /// before the HELLO that selects the compression has been read.
+    /// The frame compression the writer applies, published by HELLO after
+    /// the writer is already running.
     compression: Arc<AtomicU8>,
     /// The connection's revocation signal, handed to every writer it spawns.
     revocation: tokio::sync::watch::Receiver<Option<Goodbye>>,
 }
 
 impl ClientPlumbing {
-    /// Allocate the per-client outbound mailbox and spawn the writer task that
-    /// drains it. The writer drains one `Outbound` channel; closure of that one
-    /// channel is the unambiguous signal for the writer to exit.
+    /// Allocate the per-client outbound mailbox and spawn its writer task.
     fn spawn<W: FrameWriter + 'static>(
         writer: W,
         client_id: ClientId,
@@ -2936,7 +2286,7 @@ impl ClientPlumbing {
         let (writer_close, writer_close_rx) = tokio::sync::watch::channel(false);
         let mut sibling_tasks: JoinSet<()> = JoinSet::new();
         let compression = Arc::new(AtomicU8::new(Compression::None.as_u8()));
-        sibling_tasks.spawn_local(revocable_writer_task(
+        sibling_tasks.spawn_local(writer_task(
             writer,
             out_rx,
             writer_close_rx,
@@ -2956,13 +2306,8 @@ impl ClientPlumbing {
         }
     }
 
-    /// Publish the compression HELLO selected to the writer task.
-    ///
-    /// Called after `HELLO_OK` is already queued, so the acknowledgement of
-    /// the selection is never itself compressed — a client that offered
-    /// compression could decode it either way, but keeping the frame that
-    /// *announces* the transform outside the transform is the cheaper thing to
-    /// reason about.
+    /// Publish the compression HELLO selected to the writer task. Called
+    /// after `HELLO_OK` is queued, so that frame is never compressed.
     fn set_compression(&self, compression: Compression) {
         self.compression
             .store(compression.as_u8(), Ordering::Relaxed);
@@ -2970,13 +2315,7 @@ impl ClientPlumbing {
 
     /// The mailbox for Terminal-addressed outbound: the bound stream's sender
     /// when this connection bound the Terminal, else the control mailbox.
-    ///
-    /// The fallback covers single-stream connections trivially (no bindings
-    /// ever exist) and multi-stream races (a frame produced between attach
-    /// and bind). Terminal-content frames produced pre-bind on a
-    /// multi-stream connection are dropped by the caller, never silently
-    /// sunk to control — this helper only resolves the mailbox.
-    fn sender_for(&self, terminal_id: &WireResourceId) -> tokio::sync::mpsc::Sender<Outbound> {
+    fn sender_for(&self, terminal_id: &WireResourceId) -> mpsc::Sender<Outbound> {
         self.stream_bindings
             .get(terminal_id)
             .map_or_else(|| self.out_tx.clone(), |binding| binding.tx.clone())
@@ -2992,7 +2331,7 @@ impl ClientPlumbing {
         stream_id: StreamId,
         writer: QuicWriter,
     ) -> (
-        tokio::sync::mpsc::Sender<Outbound>,
+        mpsc::Sender<Outbound>,
         Arc<std::sync::atomic::AtomicBool>,
         CancellationToken,
     ) {
@@ -3000,7 +2339,7 @@ impl ClientPlumbing {
         let (writer_close, writer_close_rx) = tokio::sync::watch::channel(false);
         let mut writer_tasks: JoinSet<()> = JoinSet::new();
         let diagnostics = Some(writer.diagnostic_tracker());
-        writer_tasks.spawn_local(revocable_writer_task(
+        writer_tasks.spawn_local(writer_task(
             writer,
             rx,
             writer_close_rx,
@@ -3028,19 +2367,22 @@ impl ClientPlumbing {
         (sender, ingress_active, ingress_cancel)
     }
 
-    /// Drop one stream binding, returning its generation for staleness
-    /// checks. Retirement stays owned without blocking unrelated streams.
-    async fn drop_stream_binding(&mut self, terminal_id: &WireResourceId) -> Option<StreamId> {
-        let binding = self.stream_bindings.remove(terminal_id)?;
-        let stream_id = binding.stream_id;
-        self.retire_stream(binding).await;
-        Some(stream_id)
+    /// Whether `stream_id` is the Terminal's live binding, not a stale one.
+    fn is_current_stream(&self, terminal_id: &WireResourceId, stream_id: StreamId) -> bool {
+        self.stream_bindings
+            .get(terminal_id)
+            .is_some_and(|binding| binding.stream_id == stream_id)
+    }
+
+    /// Drop one stream binding; its retirement runs without blocking others.
+    async fn drop_stream_binding(&mut self, terminal_id: &WireResourceId) {
+        if let Some(binding) = self.stream_bindings.remove(terminal_id) {
+            self.retire_stream(binding).await;
+        }
     }
 
     async fn retire_stream(&mut self, mut binding: StreamBinding) {
-        // Churn cannot retain an unbounded number of draining writers. At the
-        // connection stream cap, reset/reap the old retirements before admitting
-        // another. Normal retirement never parks the connection reader.
+        // Bound the draining writers churn can retain.
         binding.begin_retirement();
         while self.retired_streams.try_join_next().is_some() {}
         if self.retired_streams.len() >= 127 {
@@ -3058,36 +2400,32 @@ impl ClientPlumbing {
         }
     }
 
-    /// End one connection for a protocol violation, in the order §9 requires.
+    /// End one connection for a protocol violation, in the order §9
+    /// requires: tear down what may be attached, then `ERROR`, `DETACHED`,
+    /// and close.
     async fn close(mut self, close: ConnectionClose, state: &SharedState, client_id: ClientId) {
         self.drop_all_stream_bindings().await;
         while self.retired_streams.join_next().await.is_some() {}
-        self.close_protocol_violation(state, client_id, close).await;
-    }
-
-    /// Abort pumps, release consumer state, then [`close_for_protocol_error`].
-    ///
-    /// Handshake-phase closes (`attached_reason` is `None`) skip abort/release:
-    /// nothing is attached yet. The accept-loop `release_connection_state` still
-    /// runs after return.
-    async fn close_protocol_violation(
-        mut self,
-        state: &SharedState,
-        client_id: ClientId,
-        close: ConnectionClose,
-    ) {
         if let Some(reason) = close.attached_reason {
             abort_output_pumps(&mut self.output_pumps, client_id, reason).await;
             detach_and_release_consumer_state(state, client_id);
         }
-        close_for_protocol_error(
-            self.out_tx,
-            &self.writer_close,
-            &mut self.sibling_tasks,
-            close.code,
-            close.message,
-        )
-        .await;
+        let ConnectionClose { code, message, .. } = close;
+        let goodbye = [
+            FrameKind::Error {
+                request_id: None,
+                code,
+                message: message.clone(),
+            },
+            FrameKind::Detached {
+                reason: Some(DetachReason::ProtocolError),
+                message,
+            },
+        ];
+        for frame in goodbye {
+            let _ = self.out_tx.send(Outbound::Frame(frame)).await;
+        }
+        close_client_writer(self.out_tx, &self.writer_close, &mut self.sibling_tasks).await;
     }
 
     /// End one connection because it was cancelled rather than because the
@@ -3116,25 +2454,14 @@ impl ClientPlumbing {
     }
 }
 
-/// SPEC §5: a framing violation obliges this peer to send
-/// `ERROR { code: FRAME_TOO_LARGE }` before closing. Every transport reader
-/// funnels the violation here as an `InvalidData` error with the typed
-/// `FramingError` as its source, so the emission lives in one place instead of
-/// one per transport. The send is best-effort by construction:
-/// `close_for_protocol_error` ignores a dead writer, so a peer that already
-/// vanished cannot error out this close path.
-///
-/// `None` for every other read error: the transport simply died, and there is
-/// nobody left to tell.
+/// SPEC §5: a framing violation is answered with `FRAME_TOO_LARGE` before
+/// closing. `None` for every other read error: the transport died.
 fn framing_violation_close(err: &io::Error, client_id: ClientId) -> Option<ConnectionClose> {
     let framing = framing_violation(err)?;
     warn!(?client_id, error = %framing, "client framing violation; closing");
     Some(ConnectionClose {
         attached_reason: Some("framing violation"),
         code: ErrorCode::FrameTooLarge,
-        // One definition of the peer-visible text, next to the type that
-        // describes the violation: the hub's link supervisor owes the same §5
-        // goodbye on its satellite links and builds it from the same place.
         message: framing.wire_message(),
     })
 }
@@ -3146,9 +2473,8 @@ fn decode_client_frame(
     framed: &BytesMut,
     negotiated: Option<&NegotiatedConnection>,
 ) -> Result<FrameKind, ConnectionClose> {
-    // FRAME_COMPRESSED is server-to-client only (proto.md §6.4). The decoder
-    // would inflate it and classify the inner frame, so the envelope is
-    // refused before decode: the type byte follows the u32 length header.
+    // FRAME_COMPRESSED is server-to-client only (proto.md §6.4); refuse the
+    // envelope before decode. The type byte follows the u32 length header.
     if framed.get(4) == Some(&phux_protocol::wire::frame::TYPE_FRAME_COMPRESSED) {
         warn!("client sent FRAME_COMPRESSED; closing");
         return Err(ConnectionClose {
@@ -3174,11 +2500,7 @@ fn decode_client_frame(
     }
 }
 
-/// Nothing stateful may precede HELLO.
-///
-/// PING is exempt: a stateless, version-insensitive liveness probe (the
-/// connector's consumer health check is exactly that), and the spec's
-/// close-before-processing clause targets "ATTACH or other stateful frames".
+/// Nothing stateful may precede HELLO; PING is a stateless liveness probe.
 fn reject_frame_before_hello(
     frame: &FrameKind,
     negotiated: bool,
@@ -3195,8 +2517,7 @@ fn reject_frame_before_hello(
     })
 }
 
-/// The HELLO frame's payload, carried as one value so the negotiation stage
-/// takes the frame rather than five loose fields.
+/// The HELLO frame's payload.
 struct HelloRequest {
     client_name: String,
     protocol_major: u16,
@@ -3212,7 +2533,7 @@ struct HelloRequest {
 async fn negotiate_hello(
     state: &SharedState,
     client_id: ClientId,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
     hello: HelloRequest,
     negotiated: &mut Option<NegotiatedConnection>,
     transport: TransportType,
@@ -3227,9 +2548,6 @@ async fn negotiate_hello(
     } = hello;
     if negotiated.is_some() {
         warn!(?client_id, "duplicate HELLO; closing");
-        // Never patch a live client's capabilities. Tear down any
-        // attached profile so its mailbox sender cannot keep the
-        // writer alive, flush the protocol-order error, then close.
         return Err(ConnectionClose {
             attached_reason: Some("duplicate HELLO"),
             code: ErrorCode::InvalidCommand,
@@ -3255,8 +2573,7 @@ async fn negotiate_hello(
         });
     }
     authorize_hello(state, client_id).await?;
-    // After authorization, so the announcement can never take part in it: it
-    // only relabels the whoami route of a same-uid Unix-socket peer.
+    // After authorization, so the announcement cannot influence it.
     state.with_mut(|s| super::whoami::admit_ssh_origin(s, client_id, client_caps.ssh_origin));
     let (selected_profile, bootstrap_limits) = select_hello_profile(&client_caps, client_id)?;
 
@@ -3265,33 +2582,20 @@ async fn negotiate_hello(
         if matches!(selected_profile, BootstrapProfile::SynthesizedVtStateSync) {
             phux_protocol::caps::OutputMode::StateSync
         } else {
-            // NativeState and SynthesizedVtRaw both carry raw live PTY
-            // output regardless of the client's compatibility
-            // preference field.
             phux_protocol::caps::OutputMode::Raw
         };
     let mut server_features = runtime_server_features();
-    // QUIC multi-stream is transport-gated, not merely negotiated: the bit
-    // is advertised only where streams exist to back it (ADR-0115). UDS,
-    // ssh-stdio, WebSocket, and WebTransport keep the single-stream shape
-    // permanently, so a client that sees the bit knows a second stream will
-    // be accepted. Unknown transport variants fail closed (no bit).
+    // ADR-0115: advertised only where streams exist to back it.
     if matches!(transport, TransportType::Quic)
         && route_supports_quic_streams
         && client_caps.quic_streams
     {
         server_features = ServerFeatureSet::from_wire(server_features.as_wire() | QUIC_STREAMS);
     }
-    // The client's offer is the whole input: a server never compresses toward
-    // a consumer that did not say it can inflate. The reference TUI offers
-    // only on a remote dial, so a UDS connection stays byte-for-byte what it
-    // was before this existed and pays no compressor.
+    // Never compress toward a consumer that did not offer to inflate.
     let compression = client_caps.compression.select();
 
-    // Cache all negotiated state exactly once before any stateful
-    // frame can be processed. Subsequent decoding immediately uses
-    // these bounds, rejecting oversized borrowed payloads before
-    // the protocol decoder copies them into owned storage.
+    // Cached once, before any stateful frame; decoding uses these limits.
     *negotiated = Some(NegotiatedConnection {
         client_caps: effective_client_caps,
         profile: selected_profile,
@@ -3300,12 +2604,9 @@ async fn negotiate_hello(
         compression,
     });
     state.with_mut(|s| {
-        // SPEC §6.2: cache the negotiated layer set. The L3
-        // dispatch arms gate METADATA_CHANGED on this value.
+        // SPEC §6.2: the L3 arms gate on the negotiated layer set.
         s.set_client_layers(client_id, client_caps.layers);
-        // ADR-0123: the announced name labels this connection's actor on
-        // every event and metadata change it causes. A label, not an
-        // authenticated fact.
+        // ADR-0123: an actor label, not an authenticated fact.
         s.set_client_name(client_id, client_name);
     });
     let hello_ok = FrameKind::HelloOk {
@@ -3345,10 +2646,8 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
             message: "authenticated peer identity missing".to_owned(),
         });
     };
-    // A bearer revoked or expired since its upgrade mints nothing: a new
-    // grant fails closed, even against a store that gives the live watcher
-    // no verdict (workload-auth §7). A workload credential is re-read from
-    // the live registry by the engine itself.
+    // A bearer revoked or expired since its upgrade mints nothing
+    // (workload-auth §7).
     let bearer = state.with(|s| s.bearer_admission(client_id).cloned());
     if bearer.is_some_and(|bearer| !matches!(bearer.standing(), Some(Standing::Active { .. }))) {
         warn!(
@@ -3362,9 +2661,7 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
         });
     }
     let engine = state.with(|s| s.policy_engine().clone());
-    // HELLO carries no scope request (workload-auth §5): the engine mints
-    // the connection's grant from its verified identity alone, and the
-    // grant is retained for the dispatch guard.
+    // workload-auth §5: the grant comes from the verified identity alone.
     match engine.authorize_hello(&peer, credential.as_ref()).await {
         Ok(grant) => {
             state.with_mut(|s| s.set_connection_grant(client_id, grant));
@@ -3412,11 +2709,10 @@ fn select_hello_profile(
     Ok(selection)
 }
 
-/// The `HISTORY_REQUEST` frame's payload, carried as one value so the handler
-/// takes the request rather than six loose fields.
+/// The `HISTORY_REQUEST` frame's payload.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 struct HistoryPageRequest {
-    terminal_id: phux_protocol::ids::ResourceId,
+    terminal_id: WireResourceId,
     stream_id: phux_protocol::ids::StreamId,
     bootstrap_id: phux_protocol::ids::BootstrapId,
     cursor: bytes::Bytes,
@@ -3424,20 +2720,12 @@ struct HistoryPageRequest {
     max_rows: u32,
 }
 
-/// Answer one `HISTORY_REQUEST` from the pane's replica.
-///
-/// SPEC L1 s4.5: a history failure names one replica, so it is answered with a
-/// cursor-scoped status frame. An `ERROR` here is uncorrelated and carries no
-/// terminal identity, so a consumer cannot attribute it to a pane and today
-/// takes the whole attach down (phux-ijuj). Every exit below tombstones the
-/// cursor instead.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 /// The Terminal facet a `HISTORY_REQUEST` pages against: `None` for an
-/// unknown terminal or a resource of another kind. Only a Terminal retains
-/// native history cuts, so either way the cursor's lease cannot exist.
+/// unknown terminal or a resource of another kind.
 fn history_terminal(
     state: &SharedState,
-    terminal_id: &phux_protocol::ids::ResourceId,
+    terminal_id: &WireResourceId,
 ) -> Option<crate::terminal_actor::TerminalHandle> {
     let handle = state.with(|server| {
         server
@@ -3457,14 +2745,18 @@ fn history_terminal(
     }
 }
 
+/// Answer one `HISTORY_REQUEST` from the pane's replica. SPEC L1 §4.5: every
+/// failure tombstones the cursor rather than sending an uncorrelated `ERROR`.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 async fn serve_history_request(
     state: &SharedState,
     client_id: ClientId,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
     selection: NegotiatedConnection,
     request: HistoryPageRequest,
 ) {
+    use phux_protocol::wire::frame::HistoryTombstoneReason;
+
     let HistoryPageRequest {
         terminal_id,
         stream_id,
@@ -3473,12 +2765,14 @@ async fn serve_history_request(
         max_bytes,
         max_rows,
     } = request;
-    let tombstone = |reason| FrameKind::HistoryTombstone {
-        terminal_id: terminal_id.clone(),
-        stream_id,
-        bootstrap_id,
-        cursor: cursor.clone(),
-        reason,
+    let tombstone = |reason| {
+        Outbound::Frame(FrameKind::HistoryTombstone {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            cursor: cursor.clone(),
+            reason,
+        })
     };
     if !matches!(
         selection.profile,
@@ -3492,19 +2786,13 @@ async fn serve_history_request(
             "HISTORY_REQUEST requires negotiated native snapshot v1"
         );
         let _ = out_tx
-            .send(Outbound::Frame(tombstone(
-                phux_protocol::wire::frame::HistoryTombstoneReason::CodecFailure,
-            )))
+            .send(tombstone(HistoryTombstoneReason::CodecFailure))
             .await;
         return;
     }
     let Some(terminal) = history_terminal(state, &terminal_id) else {
-        // The terminal is gone, or the resource never was one, so no history
-        // lease can exist for the cursor.
         let _ = out_tx
-            .send(Outbound::Frame(tombstone(
-                phux_protocol::wire::frame::HistoryTombstoneReason::Released,
-            )))
+            .send(tombstone(HistoryTombstoneReason::Released))
             .await;
         return;
     };
@@ -3517,8 +2805,6 @@ async fn serve_history_request(
         .send(crate::terminal_actor::NativeHistoryRequest {
             permit,
             owner: client_id.0,
-            // Cloned, not moved: the tombstone fallback below still
-            // needs the identity if the actor answers with an error.
             terminal_id: terminal_id.clone(),
             stream_id,
             bootstrap_id,
@@ -3541,60 +2827,35 @@ async fn serve_history_request(
             reply.permit.send(Outbound::Frame(frame));
         }
         Err(error) => {
-            // Mirrors the actor's own mapping for the errors it
-            // already answers in-band (`handle_native_history`);
-            // these are the residual ones that escaped it.
+            // Mirrors the actor's own in-band mapping.
             let reason = match error {
                 crate::native_state::NativeStateError::OutOfMemory
                 | crate::native_state::NativeStateError::OutOfSpace { .. }
                 | crate::native_state::NativeStateError::LimitExceeded => {
-                    phux_protocol::wire::frame::HistoryTombstoneReason::Limit
+                    HistoryTombstoneReason::Limit
                 }
-                _ => phux_protocol::wire::frame::HistoryTombstoneReason::CodecFailure,
+                _ => HistoryTombstoneReason::CodecFailure,
             };
             warn!(
                 %error,
                 ?terminal_id,
                 "native history request failed; tombstoning the cursor"
             );
-            reply.permit.send(Outbound::Frame(tombstone(reason)));
+            reply.permit.send(tombstone(reason));
         }
     }
 }
 
-/// Per-client task. Reads frames in a loop and dispatches each one.
-///
-/// Outbound messages are routed through a per-client `mpsc` channel
-/// drained by a sibling writer task (also `spawn_local`'d). This gives
-/// us one place to back-pressure on slow clients without entangling
-/// the read side, and matches the `tx: mpsc::Sender<Outbound>` shape
-///
-/// `ServerState::attach` already wants. The channel carries
-/// [`Outbound`] so every typed [`FrameKind`] send shares one ordering
-/// domain.
-///
-/// `phux-byc.8`: implements the ATTACH path. Resolves the target,
-/// builds a [`SessionSnapshot`](phux_protocol::wire::info::SessionSnapshot)
-/// from the registry, requests a snapshot from each pane's
-/// [`TerminalActor`](crate::terminal_actor::TerminalActor), and emits
-/// `ATTACHED` + `TERMINAL_SNAPSHOT` frames per SPEC §13. On unknown
-/// session, emits an `ERROR` frame with `SessionNotFound` (SPEC §14).
+/// Per-client task: reads frames in a loop and dispatches each one.
+/// Outbound frames go through one per-client mailbox drained by a sibling
+/// writer task, so every send shares one ordering domain.
 #[allow(
     clippy::too_many_lines,
-    reason = "read, decode, handshake gating and every stateful arm body are extracted; what is left is one dispatch arm per wire frame variant, and the catalog grows linearly. Splitting on the arm boundary fragments the wire→state seam without simplifying it."
-)]
-#[allow(
     clippy::cognitive_complexity,
-    reason = "what remains is `loop { read; decode; gate; dispatch }` — the residual score is the dispatch match sitting inside the read loop, which is the shape of a per-connection frame loop, not accidental nesting."
-)]
-#[allow(
     clippy::too_many_arguments,
-    reason = "the connection context (state, ids, tokens, lane, transport) threaded verbatim from the accept loop; the transport selects QUIC-only advertisement"
-)]
-#[allow(
     clippy::significant_drop_tightening,
     clippy::single_match_else,
-    reason = "the optional stream event receiver intentionally lives for the full connection loop and its closed-channel branch documents starvation prevention"
+    reason = "one read loop with one dispatch arm per wire frame; arm bodies are extracted, and the connection context comes verbatim from the accept loop"
 )]
 pub(crate) async fn handle_client<R, W>(
     mut reader: R,
@@ -3612,136 +2873,72 @@ where
     W: FrameWriter + 'static,
 {
     debug!(?client_id, "client task started");
-    // The revocation signal is set under the state lock when the
-    // connection's authority is withdrawn while it is live; its writers
-    // watch it (workload-auth §7).
+    // Set when the connection's authority is withdrawn (workload-auth §7).
     let (revocation_tx, revocation_rx) = tokio::sync::watch::channel(None);
     state.with_mut(|server| {
         server.set_client_connection_cancellation(client_id, token.clone());
         server.set_revocation_signal(client_id, revocation_tx);
     });
-    // However this task ends (EOF included, not only cancellation), the
-    // connection token fires, so no per-connection task (an event pump, a
-    // relay proxy subscription) outlives the connection.
+    // However this task ends, no per-connection task outlives it.
     let _cancel_on_exit = token.clone().drop_guard();
 
-    // Held in this scope so it drops with `handle_client`: the writer aborts
-    // if it hasn't already exited via its own close-on-EOF path, and the
-    // per-attach pumps go with it. Keeps lifecycle plumbing local.
     let mut plumbing = ClientPlumbing::spawn(writer, client_id, revocation_rx);
     let mut command_tasks = super::command_tasks::CommandTasks::new(token.clone());
     let mut input_receipts = JoinSet::new();
     let mut held_commands = JoinSet::new();
     let input_receipt_slots =
         std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_INPUT_RECEIPTS));
-    // An attach id names one immutable aggregate generation for the life of
-    // this connection. Reuse would collide with a completed stream/bootstrap
-    // key even when the replacement otherwise followed the right barriers.
     let mut used_attach_ids = HashSet::new();
-
-    // Exact per-connection bootstrap state selected by HELLO. `None` is the
-    // pre-negotiation state; successful selection writes it exactly once and
-    // duplicate HELLO is fatal, so an attached connection can never mutate it.
+    // Written once by HELLO; a duplicate HELLO is fatal.
     let mut negotiated: Option<NegotiatedConnection> = None;
-
-    // Terminal-stream events, taken from the transport once HELLO negotiates
-    // QUIC multi-stream. `None` on every other transport (and before HELLO).
+    // QUIC multi-stream only, taken once HELLO negotiates it.
     let mut stream_events: Option<tokio::sync::mpsc::Receiver<QuicStreamEvent>> = None;
-    // Absolute from runtime admission, not from the most recent frame: PING is
-    // permitted before HELLO for health probes but must not keep a silent or
-    // evasive peer alive forever after transport establishment.
+    // Absolute from admission: pre-HELLO PINGs must not keep a peer alive.
     let hello_deadline = tokio::time::sleep(crate::transport::HANDSHAKE_DEADLINE);
     tokio::pin!(hello_deadline);
+    let route_input = |terminal_id, input| {
+        route_client_input(&state, input_lane.as_ref(), client_id, terminal_id, input);
+    };
 
-    loop {
-        // Pull the next complete frame from the transport — length-prefixed on
-        // UDS, one binary message on WebSocket (see `transport.rs`). EOF ends
-        // the session cleanly; cancellation preempts a slow read via the biased
-        // select so a server-wide shutdown isn't blocked behind it.
-        //
-        // Terminal-stream binds/ends arrive on their own channel (QUIC
-        // multi-stream only); they are connection events, not frames, so
-        // they bypass decode and dispatch straight to subscription handling.
-        // The frame arm deliberately precedes the event arm: a stream pump
-        // queues every complete frame before its `Ended`, so draining a ready
-        // frame first preserves input-before-FIN causality.
+    let ending = 'conn: loop {
+        // Cancellation preempts a slow read. The frame arm precedes the
+        // stream-event arm: a stream pump queues every complete frame before
+        // its `Ended`, so this preserves input-before-FIN causality.
         let (framed, frame_origin) = tokio::select! {
             biased;
             () = token.cancelled() => {
                 debug!(?client_id, "client task cancelled");
-                // A closing connection withdraws its holds before any await
-                // (ADR-0128): no decision can land in the teardown window.
-                super::approvals::withdraw(&state, client_id);
-                held_commands.shutdown().await;
-                input_receipts.shutdown().await;
-                command_tasks.shutdown().await;
-                plumbing
-                    .close_for_cancellation(&state, client_id, &root_token)
-                    .await;
-                return Ok(());
+                break 'conn ConnectionEnding::Cancelled;
             }
             () = wait_initial_hello(hello_deadline.as_mut(), negotiated.is_none()) => {
                 warn!(?client_id, "client did not complete HELLO before deadline; closing");
-                // A closing connection withdraws its holds before any await
-                // (ADR-0128): no decision can land in the teardown window.
-                super::approvals::withdraw(&state, client_id);
-                held_commands.shutdown().await;
-                input_receipts.shutdown().await;
-                command_tasks.shutdown().await;
-                plumbing.close(ConnectionClose {
+                break 'conn ConnectionEnding::Violation(ConnectionClose {
                     attached_reason: None,
                     code: ErrorCode::VersionIncompatible,
                     message: "HELLO deadline elapsed".to_owned(),
-                }, &state, client_id).await;
-                return Ok(());
+                });
             }
             res = reader.read_frame() => match res {
                 Ok(Some(framed)) => (framed, reader.frame_origin()),
                 Ok(None) => {
                     debug!("client disconnected (eof)");
-                    // A closing connection withdraws its holds before any await
-                    // (ADR-0128): no decision can land in the teardown window.
-                    super::approvals::withdraw(&state, client_id);
-                    held_commands.shutdown().await;
-                    input_receipts.shutdown().await;
-                    command_tasks.shutdown().await;
-                    return Ok(());
+                    break 'conn ConnectionEnding::TransportGone;
                 }
                 Err(err) => {
                     let Some(close) = framing_violation_close(&err, client_id) else {
                         debug!(error = %err, "client read error; closing");
-                        // A closing connection withdraws its holds before any await
-                        // (ADR-0128): no decision can land in the teardown window.
-                        super::approvals::withdraw(&state, client_id);
-                        held_commands.shutdown().await;
-                        input_receipts.shutdown().await;
-                        command_tasks.shutdown().await;
-                        return Ok(());
+                        break 'conn ConnectionEnding::TransportGone;
                     };
-                    // A closing connection withdraws its holds before any await
-                    // (ADR-0128): no decision can land in the teardown window.
-                    super::approvals::withdraw(&state, client_id);
-                    held_commands.shutdown().await;
-                    input_receipts.shutdown().await;
-                    command_tasks.shutdown().await;
-                    plumbing.close(close, &state, client_id).await;
-                    return Ok(());
+                    break 'conn ConnectionEnding::Violation(close);
                 }
             },
             () = command_tasks.stopped() => {
                 warn!(?client_id, "bulk command worker stopped unexpectedly; closing");
-                // A closing connection withdraws its holds before any await
-                // (ADR-0128): no decision can land in the teardown window.
-                super::approvals::withdraw(&state, client_id);
-                held_commands.shutdown().await;
-                input_receipts.shutdown().await;
-                command_tasks.shutdown().await;
-                plumbing.close(ConnectionClose {
+                break 'conn ConnectionEnding::Violation(ConnectionClose {
                     attached_reason: Some("bulk command worker stopped"),
                     code: ErrorCode::InternalError,
                     message: "bulk command worker stopped unexpectedly".to_owned(),
-                }, &state, client_id).await;
-                return Ok(());
+                });
             }
             Some(_) = input_receipts.join_next(), if !input_receipts.is_empty() => continue,
             Some(_) = held_commands.join_next(), if !held_commands.is_empty() => continue,
@@ -3767,16 +2964,7 @@ where
         let frame =
             match validate_dispatch_frame(&framed, negotiated.as_ref(), frame_origin, client_id) {
                 Ok(frame) => frame,
-                Err(close) => {
-                    // A closing connection withdraws its holds before any await
-                    // (ADR-0128): no decision can land in the teardown window.
-                    super::approvals::withdraw(&state, client_id);
-                    held_commands.shutdown().await;
-                    input_receipts.shutdown().await;
-                    command_tasks.shutdown().await;
-                    plumbing.close(close, &state, client_id).await;
-                    return Ok(());
-                }
+                Err(close) => break 'conn ConnectionEnding::Violation(close),
             };
 
         // workload-auth §6: the frame guard, before any routing or handler.
@@ -3818,27 +3006,13 @@ where
                 )
                 .await
                 {
-                    // A closing connection withdraws its holds before any await
-                    // (ADR-0128): no decision can land in the teardown window.
-                    super::approvals::withdraw(&state, client_id);
-                    held_commands.shutdown().await;
-                    input_receipts.shutdown().await;
-                    command_tasks.shutdown().await;
-                    plumbing.close(close, &state, client_id).await;
-                    return Ok(());
+                    break 'conn ConnectionEnding::Violation(close);
                 }
                 if let Some(selection) = negotiated.as_ref() {
                     plumbing.set_compression(selection.compression);
-                    // QUIC multi-stream upgrades the transport once, right
-                    // after HELLO selects it: the mux starts accepting
-                    // Terminal streams and the frame loop starts polling
-                    // bind/end events. Before this point the client cannot
-                    // have opened a second stream (it learns the bit from
-                    // HELLO_OK), so nothing is missed.
-                    if selection
-                        .server_features
-                        .contains(ServerFeature::QuicStreams)
-                    {
+                    // The client learns the bit from HELLO_OK, so no Terminal
+                    // stream can have opened before this.
+                    if selection.quic_streams() {
                         stream_events = reader.take_stream_events();
                     }
                 }
@@ -3855,31 +3029,22 @@ where
                 match classify_attach_id(attach_id, &mut used_attach_ids, client_id) {
                     AttachIdVerdict::Fresh => {}
                     AttachIdVerdict::Reused => {
-                        let _ = plumbing.out_tx
-                            .send(Outbound::Frame(FrameKind::Error {
-                                request_id: None,
-                                code: ErrorCode::MalformedMessage,
-                                message: format!(
-                                    "ATTACH attach_id {attach_id} was already used on this connection"
-                                ),
-                            }))
-                            .await;
+                        super::send_error(
+                            &plumbing.out_tx,
+                            ErrorCode::MalformedMessage,
+                            &format!(
+                                "ATTACH attach_id {attach_id} was already used on this connection"
+                            ),
+                        )
+                        .await;
                         continue;
                     }
                     AttachIdVerdict::Reserved => {
-                        let close = ConnectionClose {
+                        break 'conn ConnectionEnding::Violation(ConnectionClose {
                             attached_reason: Some("zero ATTACH id"),
                             code: ErrorCode::MalformedMessage,
                             message: "ATTACH attach_id must be nonzero".to_owned(),
-                        };
-                        // A closing connection withdraws its holds before any await
-                        // (ADR-0128): no decision can land in the teardown window.
-                        super::approvals::withdraw(&state, client_id);
-                        held_commands.shutdown().await;
-                        input_receipts.shutdown().await;
-                        command_tasks.shutdown().await;
-                        plumbing.close(close, &state, client_id).await;
-                        return Ok(());
+                        });
                     }
                 }
                 let Some(selection) = negotiated.as_ref() else {
@@ -3894,12 +3059,8 @@ where
                     "ATTACH with immutable bootstrap selection",
                 );
                 let attach_started = std::time::Instant::now();
-                // QUIC multi-stream defers per-pane subscription to
-                // STREAM_BIND (proto.md §4.2): the snapshot publishes here,
-                // content streams start at bind.
-                let defer_subscription = selection
-                    .server_features
-                    .contains(ServerFeature::QuicStreams);
+                // QUIC multi-stream: content streams start at STREAM_BIND.
+                let defer_subscription = selection.quic_streams();
                 handle_attach(
                     &state,
                     client_id,
@@ -3929,10 +3090,7 @@ where
                     &mut plumbing.output_pumps,
                 )
                 .await;
-                // Session DETACH ends every Terminal stream too: pumps and
-                // subscriptions are already gone via the detach path above,
-                // so retirement closes admission and boundedly drains each
-                // QUIC stream in a connection-owned task.
+                // Session DETACH ends every Terminal stream too.
                 plumbing.drop_all_stream_bindings().await;
             }
             FrameKind::ViewportResize { viewport } => {
@@ -3945,49 +3103,16 @@ where
                 handle_viewport_resize(&state, client_id, &viewport);
             }
             FrameKind::InputKey { terminal_id, event } => {
-                route_client_input(
-                    &state,
-                    input_lane.as_ref(),
-                    client_id,
-                    terminal_id,
-                    TerminalInput::Key(event),
-                    "INPUT_KEY",
-                );
+                route_input(terminal_id, TerminalInput::Key(event));
             }
             FrameKind::InputMouse { terminal_id, event } => {
-                route_client_input(
-                    &state,
-                    input_lane.as_ref(),
-                    client_id,
-                    terminal_id,
-                    TerminalInput::Mouse(event),
-                    "INPUT_MOUSE",
-                );
+                route_input(terminal_id, TerminalInput::Mouse(event));
             }
             FrameKind::InputFocus { terminal_id, event } => {
-                route_client_input(
-                    &state,
-                    input_lane.as_ref(),
-                    client_id,
-                    terminal_id,
-                    TerminalInput::Focus(event),
-                    "INPUT_FOCUS",
-                );
+                route_input(terminal_id, TerminalInput::Focus(event));
             }
             FrameKind::InputPaste { terminal_id, event } => {
-                // Same dispatch as the sibling INPUT_* frames; the terminal
-                // actor's per-pane paste encoder applies the trust policy and
-                // DEC 2004 bracketing (SPEC §9.4). Until this arm existed the
-                // frame fell into the unhandled-type debug arm and pastes
-                // from projection clients silently vanished.
-                route_client_input(
-                    &state,
-                    input_lane.as_ref(),
-                    client_id,
-                    terminal_id,
-                    TerminalInput::Paste(event),
-                    "INPUT_PASTE",
-                );
+                route_input(terminal_id, TerminalInput::Paste(event));
             }
             FrameKind::InputTerminalReply { terminal_id, bytes } => {
                 let Some(selection) = negotiated.as_ref() else {
@@ -4002,37 +3127,27 @@ where
                 )
                 .await;
             }
-            // ADR-0103 §4: an agent-session stream is raw-profile. There is
-            // no `StateSync` reference for a `FRAME_ACK` to advance, and no
-            // page older than the retained ring for a `HISTORY_REQUEST` to
-            // ask for — the bootstrap already replayed all of it. Both are
-            // refused uncorrelated (neither frame carries a request id) and
-            // neither ends the connection: a consumer that misjudged the
-            // profile has a live stream to keep reading.
+            // ADR-0103 §4: an agent-session stream is raw-profile with no
+            // history beyond its bootstrap. Both refusals keep the connection.
             FrameKind::FrameAck {
                 ref terminal_id, ..
             } if is_agent_session(&state, terminal_id) => {
-                let _ = plumbing
-                    .out_tx
-                    .send(Outbound::Frame(FrameKind::Error {
-                        request_id: None,
-                        code: ErrorCode::MalformedMessage,
-                        message: "FRAME_ACK is not valid on an agent-session stream".to_owned(),
-                    }))
-                    .await;
+                super::send_error(
+                    &plumbing.out_tx,
+                    ErrorCode::MalformedMessage,
+                    "FRAME_ACK is not valid on an agent-session stream",
+                )
+                .await;
             }
             FrameKind::HistoryRequest {
                 ref terminal_id, ..
             } if is_agent_session(&state, terminal_id) => {
-                let _ = plumbing
-                    .out_tx
-                    .send(Outbound::Frame(FrameKind::Error {
-                        request_id: None,
-                        code: ErrorCode::WrongResourceKind,
-                        message: "an agent-session stream retains no history beyond its bootstrap"
-                            .to_owned(),
-                    }))
-                    .await;
+                super::send_error(
+                    &plumbing.out_tx,
+                    ErrorCode::WrongResourceKind,
+                    "an agent-session stream retains no history beyond its bootstrap",
+                )
+                .await;
             }
             FrameKind::FrameAck {
                 terminal_id,
@@ -4200,11 +3315,8 @@ where
                     &root_token,
                     &token,
                     &mut plumbing.output_pumps,
-                    // QUIC multi-stream: the pane's content starts at the
-                    // client's STREAM_BIND, never on control (L1 §4.9).
-                    selection
-                        .server_features
-                        .contains(ServerFeature::QuicStreams),
+                    // QUIC multi-stream: content starts at STREAM_BIND (L1 §4.9).
+                    selection.quic_streams(),
                 )
                 .await;
             }
@@ -4254,57 +3366,56 @@ where
                 .await;
                 match command_outcome {
                     CommandDispatchOutcome::Completed(Some(terminal_id)) => {
-                        // The command above already unsubscribed, stopped the
-                        // pump, and detached the actor consumer; dropping the
-                        // binding starts its owned, bounded writer drain.
+                        // Already unsubscribed; drop the stream binding too.
                         plumbing.drop_stream_binding(&terminal_id).await;
                     }
                     CommandDispatchOutcome::Completed(None) => {}
-                    CommandDispatchOutcome::Cancelled => {
-                        // A closing connection withdraws its holds before any await
-                        // (ADR-0128): no decision can land in the teardown window.
-                        super::approvals::withdraw(&state, client_id);
-                        held_commands.shutdown().await;
-                        input_receipts.shutdown().await;
-                        command_tasks.shutdown().await;
-                        plumbing
-                            .close_for_cancellation(&state, client_id, &root_token)
-                            .await;
-                        return Ok(());
-                    }
+                    CommandDispatchOutcome::Cancelled => break 'conn ConnectionEnding::Cancelled,
                 }
             }
             other => {
                 warn!(?client_id, kind = ?other, "direction-invalid client frame; closing");
-                let close = ConnectionClose {
+                break 'conn ConnectionEnding::Violation(ConnectionClose {
                     attached_reason: Some("direction-invalid frame"),
                     code: ErrorCode::InvalidCommand,
                     message: format!(
                         "frame is not valid from a client in the negotiated phase: {other:?}"
                     ),
-                };
-                // A closing connection withdraws its holds before any await
-                // (ADR-0128): no decision can land in the teardown window.
-                super::approvals::withdraw(&state, client_id);
-                held_commands.shutdown().await;
-                input_receipts.shutdown().await;
-                command_tasks.shutdown().await;
-                plumbing.close(close, &state, client_id).await;
-                return Ok(());
+                });
             }
         }
+    };
+    // A closing connection withdraws its holds before any await (ADR-0128):
+    // no decision can land in the teardown window.
+    super::approvals::withdraw(&state, client_id);
+    held_commands.shutdown().await;
+    input_receipts.shutdown().await;
+    command_tasks.shutdown().await;
+    match ending {
+        ConnectionEnding::TransportGone => {}
+        ConnectionEnding::Violation(close) => plumbing.close(close, &state, client_id).await,
+        ConnectionEnding::Cancelled => {
+            plumbing
+                .close_for_cancellation(&state, client_id, &root_token)
+                .await;
+        }
     }
+    Ok(())
 }
 
-/// Handle one QUIC Terminal-stream event (proto.md §4.2).
-///
-/// `Bound` authorizes the bind against the client's subscriptions, registers
-/// the stream (mailbox + writer task), subscribes with the control mailbox,
-/// and bootstraps with the stream's. Refusals carry an uncorrelated `ERROR`
-/// on control plus a stream reset — never silence, so a client that bound
-/// the wrong id learns immediately.
-/// `Ended` is the detach signal: unsubscribe exactly as for an explicit
-/// `DETACH_RESOURCE`, guarded by generation so a stale end is ignored.
+/// How one connection's frame loop ended.
+enum ConnectionEnding {
+    /// EOF or a transport error: nobody is left to tell.
+    TransportGone,
+    /// The peer broke the protocol; it is owed `ERROR` then `DETACHED`.
+    Violation(ConnectionClose),
+    /// The connection (or the server) was cancelled.
+    Cancelled,
+}
+
+/// Handle one QUIC Terminal-stream event (proto.md §4.2). `Bound` binds and
+/// bootstraps the stream; `Ended` detaches as `DETACH_RESOURCE` would,
+/// ignoring a stale generation.
 async fn handle_stream_event(
     state: &SharedState,
     client_id: ClientId,
@@ -4313,25 +3424,13 @@ async fn handle_stream_event(
     negotiated: Option<&NegotiatedConnection>,
     token: &CancellationToken,
 ) {
-    let Some(selection) = negotiated else {
-        // Pre-HELLO binds cannot happen (the client learns the bit from
-        // HELLO_OK), and a non-negotiating connection never opens a second
-        // stream: either way this is a transport-level surprise, reset.
+    // A bind before HELLO or without the negotiated shape is reset.
+    let Some(selection) = negotiated.filter(|selection| selection.quic_streams()) else {
         if let QuicStreamEvent::Bound { send, recv, .. } = event {
             refuse_terminal_stream(send, recv);
         }
         return;
     };
-    if !selection
-        .server_features
-        .contains(ServerFeature::QuicStreams)
-    {
-        // Negotiated without the shape: same surprise, same reset.
-        if let QuicStreamEvent::Bound { send, recv, .. } = event {
-            refuse_terminal_stream(send, recv);
-        }
-        return;
-    }
     match event {
         QuicStreamEvent::Bound {
             terminal_id,
@@ -4340,7 +3439,6 @@ async fn handle_stream_event(
             recv,
             window,
             frames,
-            events,
             frame_bytes,
             terminal_frame_bytes,
         } => {
@@ -4353,7 +3451,6 @@ async fn handle_stream_event(
                 recv,
                 window,
                 frames,
-                events,
                 frame_bytes,
                 terminal_frame_bytes,
                 plumbing,
@@ -4366,19 +3463,15 @@ async fn handle_stream_event(
             terminal_id,
             stream_id,
         } => {
-            let current = plumbing
-                .stream_bindings
-                .get(&terminal_id)
-                .map(|binding| binding.stream_id);
-            if current != Some(stream_id) {
+            if plumbing.is_current_stream(&terminal_id, stream_id) {
+                teardown_terminal_stream(state, client_id, plumbing, &terminal_id).await;
+            } else {
                 debug!(
                     ?client_id,
                     ?terminal_id,
                     "stale terminal-stream end ignored"
                 );
-                return;
             }
-            teardown_terminal_stream(state, client_id, plumbing, &terminal_id).await;
         }
         QuicStreamEvent::Failed {
             terminal_id,
@@ -4399,11 +3492,7 @@ async fn handle_stream_failure(
     stream_id: StreamId,
     failure: QuicStreamFailure,
 ) {
-    let current = plumbing
-        .stream_bindings
-        .get(&terminal_id)
-        .map(|binding| binding.stream_id);
-    if current != Some(stream_id) {
+    if !plumbing.is_current_stream(&terminal_id, stream_id) {
         debug!(
             ?client_id,
             ?terminal_id,
@@ -4422,26 +3511,19 @@ async fn handle_stream_failure(
             format!("Terminal QUIC stream failed: {message}"),
         ),
     };
-    let _ = plumbing
-        .out_tx
-        .send(Outbound::Frame(FrameKind::Error {
-            request_id: None,
-            code,
-            message: format!("{terminal_id:?} stream {stream_id:?}: {message}"),
-        }))
-        .await;
+    super::send_error(
+        &plumbing.out_tx,
+        code,
+        &format!("{terminal_id:?} stream {stream_id:?}: {message}"),
+    )
+    .await;
     teardown_terminal_stream(state, client_id, plumbing, &terminal_id).await;
 }
 
-/// Subscribe-and-bootstrap one bound Terminal stream.
-///
-/// The subscription registers against the *control* mailbox (lifecycle
-/// fanout, input gates, and this very authorization resolve through the
-/// remembered mailbox); the bootstrap — actor emission, pump, BEGIN /
-/// READY — runs against the *stream* mailbox. A failed bootstrap keeps the
-/// subscription (the client retries the bind) but finishes the stream: the
-/// uncorrelated `ERROR` on control is the refusal, and no partial
-/// generation is left live behind it.
+/// Subscribe-and-bootstrap one bound Terminal stream. The subscription
+/// registers the control mailbox; the bootstrap runs on the stream's. A
+/// failed bootstrap keeps the subscription (the client may re-bind) but
+/// finishes the stream and reports the refusal on control.
 #[allow(
     clippy::too_many_arguments,
     reason = "the negotiated connection context plus the split stream halves; same list as the attach path"
@@ -4455,7 +3537,6 @@ async fn bind_terminal_stream(
     recv: quinn::RecvStream,
     window: SendWindow,
     frames: tokio::sync::mpsc::Sender<crate::transport::quic::AdmittedFrame>,
-    events: tokio::sync::mpsc::Sender<QuicStreamEvent>,
     frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
     terminal_frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
     plumbing: &mut ClientPlumbing,
@@ -4470,10 +3551,7 @@ async fn bind_terminal_stream(
         refuse_terminal_stream(send, recv);
         return;
     }
-    // Authorization is subscription membership: the Terminal names a pane in
-    // the client's attached session or an ATTACH_RESOURCE registration.
-    // Session ATTACH registers membership without content (deferred), so
-    // this check passes for every pane in the snapshot.
+    // Authorization is subscription membership.
     let subscribed = state.with(|s| {
         let local = match s.resolve_resource(&terminal_id).into_owned() {
             crate::state::ResolvedOwned::Local(local) => local,
@@ -4485,14 +3563,12 @@ async fn bind_terminal_stream(
     });
     if !subscribed {
         refuse_terminal_stream(send, recv);
-        let _ = plumbing
-            .out_tx
-            .send(Outbound::Frame(FrameKind::Error {
-                request_id: None,
-                code: ErrorCode::TerminalNotFound,
-                message: format!("STREAM_BIND for unsubscribed terminal: {terminal_id:?}"),
-            }))
-            .await;
+        super::send_error(
+            &plumbing.out_tx,
+            ErrorCode::TerminalNotFound,
+            &format!("STREAM_BIND for unsubscribed terminal: {terminal_id:?}"),
+        )
+        .await;
         return;
     }
     let writer = QuicWriter::from_terminal_stream(send, window);
@@ -4502,25 +3578,21 @@ async fn bind_terminal_stream(
     let (stream_tx, ingress_active, ingress_cancel) = plumbing
         .bind_stream(client_id, terminal_id.clone(), stream_id, writer)
         .await;
-    // Remember the subscription against control BEFORE bootstrapping with
-    // the stream: lifecycle fanout must resolve to control even if the
-    // Terminal dies mid-bootstrap.
-    // `None`: the bind carries no role; the `ATTACH_RESOURCE` that opened
-    // this Terminal already declared it (ADR-0127).
+    // Subscribe against control before bootstrapping, so lifecycle fanout
+    // resolves there even if the Terminal dies mid-bootstrap. The role was
+    // declared by the `ATTACH_RESOURCE` (ADR-0127).
     let subscription =
         subscribe_attach_terminal(state, client_id, &terminal_id, &plumbing.out_tx, None);
     let Ok(super::commands::AttachSubscription { core, handle, .. }) = subscription else {
         let mut recv = recv;
         let _ = recv.stop(0x10_u32.into());
         plumbing.drop_stream_binding(&terminal_id).await;
-        let _ = plumbing
-            .out_tx
-            .send(Outbound::Frame(FrameKind::Error {
-                request_id: None,
-                code: ErrorCode::TerminalNotFound,
-                message: format!("STREAM_BIND raced terminal death: {terminal_id:?}"),
-            }))
-            .await;
+        super::send_error(
+            &plumbing.out_tx,
+            ErrorCode::TerminalNotFound,
+            &format!("STREAM_BIND raced terminal death: {terminal_id:?}"),
+        )
+        .await;
         return;
     };
     tokio::spawn(pump_terminal_stream(
@@ -4528,7 +3600,6 @@ async fn bind_terminal_stream(
         terminal_id.clone(),
         stream_id,
         frames,
-        events,
         frame_bytes,
         terminal_frame_bytes,
         ingress_active,
@@ -4550,17 +3621,8 @@ async fn bind_terminal_stream(
     )
     .await
     {
-        // Keep the subscription (retry re-binds); close writer admission and
-        // boundedly drain its queue, resetting if it cannot finish.
         plumbing.drop_stream_binding(&terminal_id).await;
-        let _ = plumbing
-            .out_tx
-            .send(Outbound::Frame(FrameKind::Error {
-                request_id: None,
-                code: failure.code,
-                message: failure.message,
-            }))
-            .await;
+        super::send_error(&plumbing.out_tx, failure.code, &failure.message).await;
     } else {
         diagnostics.record_ready_latency(
             crate::stream_diagnostics::ReadyKind::Initial,
@@ -4569,10 +3631,8 @@ async fn bind_terminal_stream(
     }
 }
 
-/// Tear one Terminal stream down: unsubscribe (stops the pump, detaches the
-/// actor consumer) then drop the binding so its writer drains and finishes
-/// the QUIC stream. Shared by explicit `DETACH_RESOURCE`, stream ends, and
-/// session teardown.
+/// Tear one Terminal stream down: unsubscribe, then drop the binding so its
+/// writer drains and finishes the QUIC stream.
 async fn teardown_terminal_stream(
     state: &SharedState,
     client_id: ClientId,
@@ -4583,24 +3643,22 @@ async fn teardown_terminal_stream(
     plumbing.drop_stream_binding(terminal_id).await;
 }
 
-/// Route one decoded `INPUT_*` event, preferring the dedicated input lane
-/// (phux-51n6.2, ADR-0044).
-///
-/// A **local** pane id with a live lane is handed to the lane thread, which
-/// runs lease/subscription gating, snapshot-driven encode, and bounded
-/// encoded-byte delivery off the main runtime. Everything else falls back to the inline
-/// [`handle_terminal_input`]: satellite-tagged ids (their delivery is a
-/// hub-link relay, not a mailbox `try_send`, so it stays on the main thread)
-/// and the no-lane path used by direct-drive tests. Both share the same
-/// destination-resolution gates, so lease and subscription semantics match.
+/// Route one decoded `INPUT_*` event: a local pane id goes to the input lane
+/// (ADR-0044) when there is one; satellite ids and the no-lane path use the
+/// inline [`handle_terminal_input`] with the same gates.
 fn route_client_input(
     state: &SharedState,
     input_lane: Option<&InputLaneHandle>,
     client_id: ClientId,
-    terminal_id: phux_protocol::ids::ResourceId,
+    terminal_id: WireResourceId,
     input: TerminalInput,
-    frame_label: &'static str,
 ) {
+    let frame_label = match &input {
+        TerminalInput::Key(_) => "INPUT_KEY",
+        TerminalInput::Mouse(_) => "INPUT_MOUSE",
+        TerminalInput::Focus(_) => "INPUT_FOCUS",
+        TerminalInput::Paste(_) => "INPUT_PASTE",
+    };
     if let Some(lane) = input_lane
         && terminal_id.is_local()
     {
@@ -4633,25 +3691,18 @@ pub(crate) async fn abort_output_pumps(
     while output_pumps.join_next().await.is_some() {}
 }
 
-// -----------------------------------------------------------------------------
-// L3 metadata dispatch — SPEC §7.4 / §11.L3 (phux-4li.2 / phux-4li.8).
-//
-// GET / LIST replies ride dedicated `METADATA_VALUE` / `METADATA_KEYS`
-// S→C frames (allocated by phux-4li.8) correlated to the originating
-// request by `request_id`. Reply emission, like `METADATA_CHANGED`
-// fan-out, is gated on `client_speaks_l3` (SPEC §16.4): a non-L3
-// consumer that nevertheless ships an L3 request gets silence.
-// -----------------------------------------------------------------------------
+// L3 metadata dispatch (SPEC §7.4 / §11.L3). Replies are gated on
+// `client_speaks_l3` (SPEC §16.4): a non-L3 consumer gets silence.
 
 pub(crate) async fn handle_get_metadata(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     key: &str,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
 ) {
-    kick_satellite_metadata_mirror(state, scope, key);
+    state.with(|s| kick_satellite_metadata_mirror(s, scope, key));
     let nonce_result = is_reserved_session_create_result(scope, key);
     let (value, speaks_l3) = state.with(|s| {
         (
@@ -4670,10 +3721,6 @@ pub(crate) async fn handle_get_metadata(
         "GET_METADATA",
     );
     if !speaks_l3 {
-        // SPEC §16.4: out-of-tier traffic from a non-L3 consumer is
-        // dropped silently, matching the SUBSCRIBE_METADATA arm above.
-        // A future ticket may switch to ERROR { OUT_OF_TIER } once the
-        // error code lands.
         return;
     }
     if out_tx
@@ -4697,9 +3744,9 @@ pub(crate) async fn handle_get_metadata(
 /// `phux.whoami/v1` record (never stored), a nonce-bearing create result only
 /// its owner may read, or whatever the store holds.
 fn read_metadata_value(
-    s: &crate::state::ServerState,
+    s: &ServerState,
     client_id: ClientId,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     key: &str,
     nonce_result: bool,
 ) -> Option<Vec<u8>> {
@@ -4712,11 +3759,21 @@ fn read_metadata_value(
     s.metadata().get(scope, key)
 }
 
-/// Keys only the server writes. A client `SET_METADATA` or `DELETE_METADATA`
-/// of one is a logged no-op in any scope: the pane-occupant record is the
-/// server's observation of a pane, the whoami record is computed per
-/// connection and never stored, and an approval record is the server's
-/// account of a held action (ADR-0128).
+/// Why a client write or delete of `(scope, key)` is ignored, if it is.
+fn protected_key_refusal(scope: &Scope, key: &str) -> Option<&'static str> {
+    if is_reserved_session_create_result(scope, key) {
+        return Some("reserved session-create result key");
+    }
+    if is_satellite_terminal_scope(scope) {
+        return Some("satellite terminal metadata is read-only");
+    }
+    if is_server_owned_key(key) {
+        return Some("server-owned key");
+    }
+    None
+}
+
+/// Keys only the server writes, in any scope.
 fn is_server_owned_key(key: &str) -> bool {
     use phux_protocol::wire::frame::{
         APPROVAL_KEY_PREFIX, RESOURCE_ASKED_KEY, RESOURCE_PANE_OCCUPANT_KEY, WHOAMI_KEY,
@@ -4748,11 +3805,6 @@ struct SessionCreateRequest {
     empty: bool,
 }
 
-/// Parse the typed JSON body of a `SESSION_CREATE_KEY` write.
-fn parse_session_create_request(value: &[u8]) -> Option<SessionCreateRequest> {
-    serde_json::from_slice(value).ok()
-}
-
 /// Run the create a `SESSION_CREATE_KEY` request asked for: an empty,
 /// keep-empty session (ADR-0105), or a seeded one that is optionally marked
 /// keep-empty afterwards in the same single-threaded turn. Returns the seed
@@ -4761,14 +3813,13 @@ fn run_session_create(
     state: &SharedState,
     writer: ClientId,
     request: SessionCreateRequest,
-    root_token: &tokio_util::sync::CancellationToken,
-) -> Result<Option<phux_protocol::ids::ResourceId>, String> {
+    root_token: &CancellationToken,
+) -> Result<Option<WireResourceId>, String> {
     if request.empty {
         return crate::runtime::commands::create_empty_session(state, &request.name).map(|()| None);
     }
-    // The seed pane's `pane_spawned` names the connection whose create
-    // write made it (ADR-0123), and the create's token as its operation
-    // (ADR-0126).
+    // The seed pane's `pane_spawned` names this writer and the create's
+    // token (ADR-0123, ADR-0126).
     let origin = crate::runtime::commands::SeedOrigin {
         agent_session: request.agent_session,
         attribution: crate::runtime::commands::SpawnAttribution {
@@ -4803,13 +3854,13 @@ fn run_session_create(
 fn session_create_payload(
     name: &str,
     session_id: Option<u32>,
-    wire: Option<&phux_protocol::ids::ResourceId>,
+    wire: Option<&WireResourceId>,
     request_token: Option<&str>,
 ) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "name": name,
         "session_id": session_id,
-        "terminal_id": wire.map(phux_protocol::ids::ResourceId::local_id),
+        "terminal_id": wire.map(WireResourceId::local_id),
         "request_token": request_token,
     });
     if wire.is_none() {
@@ -4818,32 +3869,21 @@ fn session_create_payload(
     payload
 }
 
-/// Parse a `phux.session.keep_empty/v1` value, `name\0true` or
-/// `name\0false`.
-fn parse_keep_empty_value(value: &[u8]) -> Option<(String, bool)> {
-    phux_protocol::wire::frame::decode_session_keep_empty(value)
-        .map(|(name, keep)| (name.to_owned(), keep))
-}
-
-/// Apply a `phux.session.keep_empty/v1` write (ADR-0105). The server owns
-/// the mark, so the write is applied to the registry rather than stored.
-///
-/// A write that changed the mark, or cleared it on an empty session and so
-/// removed that session, is broadcast to subscribers of the written key with
-/// the applied value. A removal detaches clients attached to the session
-/// (`SESSION_KILLED`) and, when it leaves the server with no sessions after
-/// serving a client, self-exits exactly as the reap cascade does.
+/// Apply a `phux.session.keep_empty/v1` write (ADR-0105) to the registry.
+/// A change is broadcast to the key's subscribers; clearing the mark on an
+/// empty session removes it, detaching its clients and possibly self-exiting
+/// as the reap cascade does.
 fn apply_session_keep_empty(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     value: &[u8],
-    root_token: &tokio_util::sync::CancellationToken,
+    root_token: &CancellationToken,
 ) {
     use crate::state::KeepEmptyOutcome;
 
-    let Some((name, keep)) = parse_keep_empty_value(value) else {
+    let Some((name, keep)) = phux_protocol::wire::frame::decode_session_keep_empty(value) else {
         warn!(
             ?client_id,
             request_id,
@@ -4852,8 +3892,8 @@ fn apply_session_keep_empty(
         return;
     };
     let (outcome, clients, server_drained) = state.with_mut(|s| {
-        let session = s.find_session_by_name(&name);
-        let outcome = s.set_session_keep_empty(&name, keep);
+        let session = s.find_session_by_name(name);
+        let outcome = s.set_session_keep_empty(name, keep);
         if matches!(
             outcome,
             KeepEmptyOutcome::Changed | KeepEmptyOutcome::Removed
@@ -4893,7 +3933,7 @@ fn apply_session_keep_empty(
 /// wedged client's full mailbox cannot block the write that killed it.
 fn detach_clients_of_killed_session(
     state: &SharedState,
-    clients: Vec<(ClientId, tokio::sync::mpsc::Sender<Outbound>)>,
+    clients: Vec<(ClientId, mpsc::Sender<Outbound>)>,
 ) {
     for (detached_client, tx) in clients {
         let detached_state = state.clone();
@@ -4915,8 +3955,7 @@ fn detach_clients_of_killed_session(
 fn session_create_refusal(request: &SessionCreateRequest) -> Option<&'static str> {
     use phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES;
 
-    // ADR-0105: an empty session has no seed terminal to run a command in or
-    // to bind an agent-session record to.
+    // ADR-0105: an empty session has no seed terminal.
     if request.empty && (request.command.is_some() || request.agent_session.is_some()) {
         return Some("`empty` cannot carry a command or agent session");
     }
@@ -4961,11 +4000,7 @@ fn publish_session_create_result(
         return;
     };
     state.with_mut(|s| {
-        let _ = s.metadata_set(
-            &phux_protocol::wire::frame::Scope::Global,
-            &result_key,
-            bytes,
-        );
+        let _ = s.metadata_set(&Scope::Global, &result_key, bytes);
         if one_shot {
             s.track_session_create_result(client_id, result_key);
         }
@@ -4989,19 +4024,6 @@ fn session_create_digest(request: &SessionCreateRequest) -> [u8; 32] {
     sha2::Sha256::digest(canonical.to_string().as_bytes()).into()
 }
 
-/// Answer a repeated create with the original result, published again for
-/// the repeating connection, which becomes its only owner: the connection
-/// that sent the original may be the one whose loss caused the repeat.
-fn replay_session_create_result(
-    state: &SharedState,
-    client_id: ClientId,
-    result_key: String,
-    payload: &serde_json::Value,
-) {
-    state.with_mut(|s| s.disown_session_create_result(&result_key));
-    publish_session_create_result(state, client_id, result_key, payload, true);
-}
-
 fn valid_session_create_token(token: &str) -> bool {
     token.len() == 36
         && token.bytes().enumerate().all(|(index, byte)| {
@@ -5013,8 +4035,8 @@ fn valid_session_create_token(token: &str) -> bool {
         })
 }
 
-fn is_reserved_session_create_result(scope: &phux_protocol::wire::frame::Scope, key: &str) -> bool {
-    matches!(scope, phux_protocol::wire::frame::Scope::Global)
+fn is_reserved_session_create_result(scope: &Scope, key: &str) -> bool {
+    matches!(scope, Scope::Global)
         && key.starts_with(phux_protocol::wire::frame::SESSION_CREATE_RESULT_KEY_PREFIX)
 }
 
@@ -5023,11 +4045,11 @@ fn handle_session_create_metadata(
     client_id: ClientId,
     request_id: u32,
     value: &[u8],
-    root_token: &tokio_util::sync::CancellationToken,
+    root_token: &CancellationToken,
 ) {
     use crate::runtime::idempotent_create::SessionCreateAdmission;
 
-    let Some(request) = parse_session_create_request(value) else {
+    let Ok(request) = serde_json::from_slice::<SessionCreateRequest>(value) else {
         warn!(
             ?client_id,
             request_id,
@@ -5055,11 +4077,13 @@ fn handle_session_create_metadata(
         SessionCreateAdmission::Unkeyed => None,
         SessionCreateAdmission::Owner(claim) => Some(claim),
         SessionCreateAdmission::Replay(mut payload) => {
-            // Dedupe is case-insensitive, but each connection reads its own
-            // spelling of the token: the repeat is answered in its spelling.
+            // Dedupe is case-insensitive; answer in the repeat's spelling.
             payload["request_token"] = serde_json::Value::from(request.request_token.clone());
+            // The repeating connection becomes the result's only owner: the
+            // original sender may be the connection whose loss caused it.
             let result_key = session_create_result_key(request.request_token.as_deref());
-            replay_session_create_result(state, client_id, result_key, &payload);
+            state.with_mut(|s| s.disown_session_create_result(&result_key));
+            publish_session_create_result(state, client_id, result_key, &payload, true);
             debug!(
                 ?client_id,
                 request_id, "SET_METADATA(session-create): repeat replayed the original result"
@@ -5082,8 +4106,7 @@ fn handle_session_create_metadata(
         claim.as_ref(),
         root_token,
     );
-    // Dropping an unbound claim releases the token: a failed create binds
-    // nothing, and its repeat creates again.
+    // An unbound claim releases the token, so a failed create can repeat.
     drop(claim);
 }
 
@@ -5095,7 +4118,7 @@ fn run_and_publish_session_create(
     request_id: u32,
     request: SessionCreateRequest,
     claim: Option<&crate::runtime::operation_dedupe::OperationClaim>,
-    root_token: &tokio_util::sync::CancellationToken,
+    root_token: &CancellationToken,
 ) {
     let name = request.name.clone();
     let request_token = request.request_token.clone();
@@ -5139,19 +4162,14 @@ fn run_and_publish_session_create(
     );
 }
 /// Reject writes into a local Terminal namespace after its owner is gone.
-///
-/// Satellite scopes stay hub-owned metadata until that pre-existing routing
-/// contract is migrated.
 fn reject_unknown_local_terminal_scope(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     key: &str,
 ) -> bool {
-    use phux_protocol::wire::frame::Scope;
-
-    let Scope::Resource(terminal @ phux_protocol::ids::ResourceId::Local { .. }) = scope else {
+    let Scope::Resource(terminal @ WireResourceId::Local { .. }) = scope else {
         return false;
     };
     if state.with(|s| s.terminal_from_wire(terminal)).is_some() {
@@ -5167,15 +4185,13 @@ fn reject_unknown_local_terminal_scope(
     true
 }
 
-/// The writes `SET_METADATA` refuses outright: server-owned keys, a Terminal
-/// scope that names no live pane, and an agent-session record that is not a
-/// 1..=4096-byte value under a local Terminal scope. Every rejection is a
-/// logged no-op — `SET_METADATA` has no reply frame to carry an error.
+/// The writes `SET_METADATA` refuses outright. Every rejection is a logged
+/// no-op: `SET_METADATA` has no reply frame.
 fn reject_set_metadata(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     key: &str,
     value: &[u8],
 ) -> bool {
@@ -5183,33 +4199,12 @@ fn reject_set_metadata(
         MAX_AGENT_SESSION_RECORD_BYTES, RESOURCE_AGENT_SESSION_KEY, Scope,
     };
 
-    if is_reserved_session_create_result(scope, key) {
-        warn!(
-            ?client_id,
-            request_id, "SET_METADATA: reserved session-create result key; ignoring"
-        );
+    if let Some(reason) = protected_key_refusal(scope, key) {
+        warn!(?client_id, request_id, %key, reason, "SET_METADATA: ignoring");
         return true;
     }
-    if is_satellite_terminal_scope(scope) {
-        warn!(
-            ?client_id,
-            request_id,
-            %key,
-            "SET_METADATA: satellite terminal metadata is read-only; ignoring"
-        );
-        return true;
-    }
-    if is_server_owned_key(key) {
-        warn!(
-            ?client_id,
-            request_id, %key, "SET_METADATA: server-owned key; ignoring"
-        );
-        return true;
-    }
-    // ADR-0129 / docs/spec/L3.md §2: the cap check happens before anything
-    // is stored — a value over `limits.metadata-value-bytes` is refused
-    // whole, never truncated or partially written.
-    let cap = state.with(crate::state::ServerState::metadata_value_bytes) as usize;
+    // ADR-0129 / L3 §2: an oversized value is refused whole.
+    let cap = state.with(ServerState::metadata_value_bytes) as usize;
     if value.len() > cap {
         warn!(
             ?client_id,
@@ -5221,9 +4216,7 @@ fn reject_set_metadata(
         );
         return true;
     }
-    // ADR-0129 resurrection guard: a layout key naming a session that has
-    // already reaped must not be recreated by a late write (the TUI's own
-    // post-close republish can lose the race with the pane's reap).
+    // ADR-0129: a late write must not resurrect a reaped session's layout.
     if state.with(|s| s.layout_key_names_a_dead_session(scope, key)) == Some(true) {
         warn!(
             ?client_id,
@@ -5233,15 +4226,12 @@ fn reject_set_metadata(
         );
         return true;
     }
-    // Terminal scope is an ownership address, not an arbitrary namespace.
     if reject_unknown_local_terminal_scope(state, client_id, request_id, scope, key) {
         return true;
     }
     if key == RESOURCE_AGENT_SESSION_KEY
-        && (!matches!(
-            scope,
-            Scope::Resource(phux_protocol::ids::ResourceId::Local { .. })
-        ) || value.is_empty()
+        && (!matches!(scope, Scope::Resource(WireResourceId::Local { .. }))
+            || value.is_empty()
             || value.len() > MAX_AGENT_SESSION_RECORD_BYTES)
     {
         warn!(
@@ -5256,20 +4246,14 @@ fn reject_set_metadata(
     false
 }
 
-/// Apply a session rename written as `current_name\0new_name`. The server is
-/// authoritative for session names (they drive `ls` / `attach`), so it applies
-/// the registry rename rather than storing the write as an opaque blob. A
-/// malformed value or unknown session is a silent no-op.
-///
-/// An APPLIED rename still fans out like one: subscribers of the written
-/// `(scope, key)` receive a `METADATA_CHANGED` carrying the `current\0new`
-/// transition (phux-q7ks — before this, a rename notified nobody and the
-/// ADR-0089 roster kept painting the dead name).
+/// Apply a session rename written as `current_name\0new_name` to the
+/// registry. An applied change fans out the `current\0new` value to the
+/// key's subscribers; a malformed value or unknown session is a no-op.
 fn apply_session_rename(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     value: &[u8],
 ) {
     let parsed = std::str::from_utf8(value).ok().and_then(|s| {
@@ -5286,14 +4270,8 @@ fn apply_session_rename(
     };
     let (outcome, delivered) = state.with_mut(|s| {
         let outcome = s.rename_session(&current, &new_name);
-        // Broadcast only an *applied name change* to subscribers
-        // of the written key: `Renamed` also covers the no-op
-        // rename to the session's existing name, which no
-        // subscriber can act on (mirroring `metadata_set`'s
-        // equal-bytes suppression). The `current\0new` payload
-        // is forwarded as-is so a subscriber can both find the
-        // stale entry and learn its replacement; it is not
-        // stored (see `metadata_broadcast`).
+        // `Renamed` also covers a rename to the same name; broadcast only a
+        // real change.
         let delivered =
             if matches!(outcome, crate::state::RenameOutcome::Renamed) && current != new_name {
                 s.metadata_broadcast_by(
@@ -5318,31 +4296,22 @@ fn apply_session_rename(
     );
 }
 
-/// Store an ordinary metadata write and fan it out to subscribers.
-///
-/// ADR-0046 §E. This is the ONLY entry point an *explicit* agent-record
-/// write passes through — the detector's own drain calls `metadata_set`
-/// directly — which is precisely what makes the arbiter's bookkeeping
-/// honest. It cannot be reconstructed from the stored bytes: the client's
-/// `AgentMetaState` decodes an absent `state` and an unrecognized one both
-/// to `Unknown`, and the detector's writes carry a `state` too, so "was
-/// this declared by a human?" is not a question the value can answer.
+/// Store an ordinary metadata write and fan it out to subscribers. The only
+/// path an explicit agent-record write takes, so it records the declaration
+/// for the arbiter (ADR-0046 §E); the bytes alone cannot say who wrote them.
 fn store_metadata_value(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     key: &str,
     value: Vec<u8>,
 ) {
-    let declared_agent_record = matches!(scope, phux_protocol::wire::frame::Scope::Resource(_))
-        && key == RESOURCE_AGENT_KEY;
+    let declared_agent_record = matches!(scope, Scope::Resource(_)) && key == RESOURCE_AGENT_KEY;
     let agent_value = declared_agent_record.then(|| value.clone());
 
     let delivered = state.with_mut(|s| {
-        if let (Some(bytes), phux_protocol::wire::frame::Scope::Resource(terminal)) =
-            (agent_value.as_deref(), scope)
-        {
+        if let (Some(bytes), Scope::Resource(terminal)) = (agent_value.as_deref(), scope) {
             s.agent_records_mut().note_explicit_set(terminal, bytes);
         }
         s.metadata_set_by(scope, key, value, Some(client_id))
@@ -5361,10 +4330,10 @@ pub(crate) fn handle_set_metadata(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     key: &str,
     value: Vec<u8>,
-    root_token: &tokio_util::sync::CancellationToken,
+    root_token: &CancellationToken,
 ) {
     use phux_protocol::wire::frame::{SESSION_CREATE_KEY, Scope};
 
@@ -5372,28 +4341,16 @@ pub(crate) fn handle_set_metadata(
     if reject_set_metadata(state, client_id, request_id, scope, key, &value) {
         return;
     }
-    // v0.3.0 "Option B" re-tier (ADR-0019 / ADR-0027): a create-without-
-    // attach is a `SET_METADATA` write of the conventional
-    // `SESSION_CREATE_KEY` under `Scope::Global`, replacing the removed
-    // `CREATE_SESSION` verb. Its UTF-8 JSON object may carry
-    // `{ name, command?, cwd?, env?, request_token?, agent_session? }`.
-    // The server seeds the session + pane; a nonce-bearing caller reads its exact
-    // key because SET_METADATA has no reply frame. A malformed value or a
-    // duplicate name is a silent no-op (logged), matching the fire-and-forget
-    // shape of metadata writes.
+    // ADR-0019 / ADR-0027: session create, rename, and keep-empty are
+    // global-scope writes the server applies rather than stores.
     if key == SESSION_CREATE_KEY && matches!(scope, Scope::Global) {
         handle_session_create_metadata(state, client_id, request_id, &value, root_token);
         return;
     }
-    // v0.3.0 "Option B" re-tier (ADR-0019 / ADR-0027): a session rename is a
-    // `SET_METADATA` write of the conventional `SESSION_NAME_KEY` under
-    // `Scope::Global`, replacing the removed `RENAME_SESSION` verb.
     if key == phux_protocol::wire::frame::SESSION_NAME_KEY && matches!(scope, Scope::Global) {
         apply_session_rename(state, client_id, request_id, scope, &value);
         return;
     }
-    // ADR-0105: the keep-empty mark is server-owned session state, applied
-    // like a rename and never stored as an opaque blob.
     if key == phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY && matches!(scope, Scope::Global) {
         apply_session_keep_empty(state, client_id, request_id, scope, &value, root_token);
         return;
@@ -5405,46 +4362,24 @@ pub(crate) fn handle_delete_metadata(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     key: &str,
 ) {
     debug!(?client_id, request_id, ?scope, %key, "DELETE_METADATA");
-    if is_satellite_terminal_scope(scope) {
-        warn!(
-            ?client_id,
-            request_id,
-            %key,
-            "DELETE_METADATA: satellite terminal metadata is read-only; ignoring"
-        );
-        return;
-    }
-    if is_reserved_session_create_result(scope, key) {
-        warn!(
-            ?client_id,
-            request_id, "DELETE_METADATA: reserved session-create result key; ignoring"
-        );
-        return;
-    }
-    if is_server_owned_key(key) {
-        warn!(
-            ?client_id,
-            request_id, %key, "DELETE_METADATA: server-owned key; ignoring"
-        );
+    if let Some(reason) = protected_key_refusal(scope, key) {
+        warn!(?client_id, request_id, %key, reason, "DELETE_METADATA: ignoring");
         return;
     }
     let delivered = state.with_mut(|s| {
         // ADR-0046 §E: deleting the record withdraws any human declaration,
         // so the detector resumes ownership of this Terminal.
-        if let phux_protocol::wire::frame::Scope::Resource(terminal) = scope
+        if let Scope::Resource(terminal) = scope
             && key == RESOURCE_AGENT_KEY
         {
             s.agent_records_mut().note_explicit_delete(terminal);
         }
         s.metadata_delete_by(scope, key, Some(client_id))
     });
-    // ADR-0046 §E's "the detector resumes" is only true if the detector is
-    // told: its edge filter still holds the state it derived before the
-    // delete, and would silently suppress the republish.
     invalidate_agent_detector(state, scope, key);
     trace!(
         ?client_id,
@@ -5458,12 +4393,12 @@ pub(crate) async fn handle_list_metadata(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
-    scope: &phux_protocol::wire::frame::Scope,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    scope: &Scope,
+    out_tx: &mpsc::Sender<Outbound>,
 ) {
     let (mut keys, speaks_l3) =
         state.with(|s| (s.metadata().list(scope), s.client_speaks_l3(client_id)));
-    if matches!(scope, phux_protocol::wire::frame::Scope::Global) {
+    if matches!(scope, Scope::Global) {
         keys.retain(|key| {
             !key.starts_with(phux_protocol::wire::frame::SESSION_CREATE_RESULT_KEY_PREFIX)
         });
@@ -5477,7 +4412,6 @@ pub(crate) async fn handle_list_metadata(
         "LIST_METADATA",
     );
     if !speaks_l3 {
-        // SPEC §16.4: same out-of-tier gating as `handle_get_metadata`.
         return;
     }
     if out_tx
@@ -5497,31 +4431,14 @@ pub(crate) async fn handle_list_metadata(
 
 /// A satellite Terminal scope. Client writes of one are ignored (ADR-0136):
 /// the mirror is read-only, and every other key stays on the satellite.
-const fn is_satellite_terminal_scope(scope: &phux_protocol::wire::frame::Scope) -> bool {
-    matches!(
-        scope,
-        phux_protocol::wire::frame::Scope::Resource(
-            phux_protocol::ids::ResourceId::Satellite { .. }
-        )
-    )
+const fn is_satellite_terminal_scope(scope: &Scope) -> bool {
+    matches!(scope, Scope::Resource(WireResourceId::Satellite { .. }))
 }
 
 /// Start the read-only agent-metadata mirror when `scope` names a satellite
 /// this hub routes and `key` is allowlisted. `false` otherwise.
-fn kick_satellite_metadata_mirror(
-    state: &SharedState,
-    scope: &phux_protocol::wire::frame::Scope,
-    key: &str,
-) -> bool {
-    state.with(|s| kick_satellite_metadata_mirror_locked(s, scope, key))
-}
-
-fn kick_satellite_metadata_mirror_locked(
-    state: &crate::state::ServerState,
-    scope: &phux_protocol::wire::frame::Scope,
-    key: &str,
-) -> bool {
-    let phux_protocol::wire::frame::Scope::Resource(terminal) = scope else {
+fn kick_satellite_metadata_mirror(state: &ServerState, scope: &Scope, key: &str) -> bool {
+    let Scope::Resource(terminal) = scope else {
         return false;
     };
     if !crate::hub::metadata_mirror::is_mirrored_key(key) {
@@ -5538,42 +4455,17 @@ fn kick_satellite_metadata_mirror_locked(
 }
 
 /// Refuse an L3 metadata subscription whose `Terminal` scope names a
-/// satellite pane, pushing the typed `ERROR` that says so (phux-w7z2.57).
-///
-/// Returns `true` when the caller must abandon the subscription.
-///
-/// The two agent keys in [`crate::hub::metadata_mirror`] are the exception
-/// on a hub that routes the host (ADR-0136): [`kick_satellite_metadata_mirror`]
-/// starts the read-only copy and the caller installs a local subscription
-/// against the retagged scope. Every other key, and those two keys on a
-/// server that does not route the host, still refuse. Accepting them
-/// silently is the outcome a consumer cannot recover from: with no reply
-/// frame, it blocks on a `METADATA_CHANGED` no code path can emit.
-///
-/// # Why this code, and why it is not a wire change
-///
-/// [`ErrorCode::UnsupportedSatelliteRoute`] already means "this frame
-/// carried a `ResourceId::Satellite` and there is no route for it"
-/// ([`phux_protocol::ids::ResourceId::Satellite`] makes the non-hub case a
-/// MUST). "This *command* has no satellite route on any server" is the same
-/// fact about a different axis, and reusing the code keeps the change
-/// decode-safe: a new `ErrorCode` value is a hard decode error on a peer
-/// that predates it (`ErrorCode::from_wire` → `None` →
-/// `DecodeError::UnknownEnumValue`), whereas `106` has shipped since 0.7.0.
-/// `PROTOCOL_VERSION` is untouched.
-///
-/// The push is uncorrelated (`request_id: None`) because
-/// `SUBSCRIBE_METADATA` carries no `request_id` to correlate to — the same
-/// shape [`handle_subscribe_events`] already uses for its missing-route
-/// refusal, and the reason that arm exists: a command with no reply frame
-/// still owes the consumer a signal when it is refused.
+/// satellite pane with an uncorrelated `UNSUPPORTED_SATELLITE_ROUTE` push,
+/// so the consumer does not wait on a change that can never come. Mirrored
+/// agent keys on a routing hub are handled before this (ADR-0136). Returns
+/// `true` when the caller must abandon the subscription.
 fn refuse_satellite_metadata_scope(
     client_id: ClientId,
-    scope: &phux_protocol::wire::frame::Scope,
+    scope: &Scope,
     key: &str,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
 ) -> bool {
-    let phux_protocol::wire::frame::Scope::Resource(terminal) = scope else {
+    let Scope::Resource(terminal) = scope else {
         return false;
     };
     let Some((host, id)) = crate::hub::relay::satellite_route(terminal) else {
@@ -5585,34 +4477,28 @@ fn refuse_satellite_metadata_scope(
         %key,
         "SUBSCRIBE_METADATA refused: L3 metadata has no satellite route"
     );
-    let _ = out_tx.try_send(Outbound::Frame(FrameKind::Error {
-        request_id: None,
-        code: ErrorCode::UnsupportedSatelliteRoute,
-        message: format!(
+    push_error(
+        out_tx,
+        ErrorCode::UnsupportedSatelliteRoute,
+        format!(
             "L3 metadata does not federate: no subscription to key '{key}' on \
              {host}/@{id}. The record lives on that satellite's own server; run \
              the command there.",
             host = host.as_str(),
         ),
-    }));
+    );
     true
 }
 
-/// Record an L3 metadata subscription for `client_id` (SPEC §7.4).
-///
-/// `out_tx` is the connection's outbound mailbox, captured in the
-/// subscription so `METADATA_CHANGED` fanout reaches a consumer that never
-/// attached — `phux watch` subscribes and streams without an ATTACH, the
-/// same shape [`handle_subscribe_events`] already accounts for.
-///
-/// A `Terminal` scope naming a satellite pane is **refused**, not recorded
-/// (phux-w7z2.57): see [`refuse_satellite_metadata_scope`].
+/// Record an L3 metadata subscription for `client_id` (SPEC §7.4). The
+/// mailbox is captured so a consumer that never attached still receives
+/// `METADATA_CHANGED`.
 pub(crate) fn handle_subscribe_metadata(
     state: &SharedState,
     client_id: ClientId,
-    scope: phux_protocol::wire::frame::Scope,
+    scope: Scope,
     key: String,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
 ) {
     if is_reserved_session_create_result(&scope, &key) {
         warn!(
@@ -5623,37 +4509,20 @@ pub(crate) fn handle_subscribe_metadata(
     }
     state.with_mut(|s| {
         if !s.client_speaks_l3(client_id) {
-            // SPEC §16.4: out-of-tier traffic from a non-L3 consumer.
-            // The L3 dispatch is best-effort: we drop the subscribe
-            // rather than tear the connection down, on the theory that
-            // a misbehaving client should learn from silence faster
-            // than from a protocol error. A future ticket may swap
-            // this for an explicit `ERROR { OUT_OF_TIER }` once the
-            // error code lands.
             debug!(?client_id, ?scope, %key, "SUBSCRIBE_METADATA refused (non-L3)");
             return;
         }
-        if kick_satellite_metadata_mirror_locked(s, &scope, &key) {
+        if kick_satellite_metadata_mirror(s, &scope, &key) {
             // Fall through: the subscription is on the hub's retagged scope.
         } else if refuse_satellite_metadata_scope(client_id, &scope, &key, out_tx) {
             return;
         }
-        // Cloned only for the post-call log line below; `scope` and `key`
-        // themselves are moved into `metadata_subscribe`, the real owner of
-        // this data on acceptance.
         let log_scope = scope.clone();
         let log_key = key.clone();
         if s.metadata_subscribe(client_id, scope, key, out_tx.clone()) {
             debug!(?client_id, ?log_scope, %log_key, "SUBSCRIBE_METADATA");
         } else {
-            // Per-connection cap (phux-w7z2.59, state::metadata::MAX_SUBSCRIPTIONS_PER_CLIENT).
-            // SUBSCRIBE_METADATA has no reply frame on the wire (SPEC L3.md
-            // §1.2), so — exactly like the non-L3 arm above — a log line is
-            // the only signal available. Refuse rather than evict an
-            // existing subscription: eviction would silently break a
-            // subscription that was working fine just to make room for one
-            // that was never established, which is a worse failure than
-            // declining the new one.
+            // Per-connection cap; refuse rather than evict a working one.
             warn!(
                 ?client_id,
                 ?log_scope,
@@ -5665,22 +4534,15 @@ pub(crate) fn handle_subscribe_metadata(
 }
 
 /// Record an agent-event subscription for `client_id` (SPEC §7.5,
-/// phux-y2t; ADR-0123). `terminal = None` subscribes server-wide;
-/// `Some(id)` subscribes per-pane. Connection-scoped (cleared on detach).
-/// Unlike the L3 metadata path this is not tier-gated — the event stream is
-/// part of L1 and any consumer may opt in.
-///
-/// Without `after_seq` this is the live-only subscription an older client
-/// sends. With it, the subscription is replayed from the journal before it
-/// goes live (L1 §7.3), in the same lock that installs it and without
-/// waiting: whatever the mailbox cannot take is owed as a `journal_gap`, so
-/// a client that stops reading can never pin this connection's frame loop.
+/// ADR-0123): server-wide or per-pane, not tier-gated. With `after_seq` it
+/// replays from the journal first (L1 §7.3); what the mailbox cannot take
+/// is owed as a `journal_gap` and delivered by the event pump.
 pub(crate) fn handle_subscribe_events(
     state: &SharedState,
     client_id: ClientId,
-    terminal: Option<phux_protocol::ids::ResourceId>,
+    terminal: Option<WireResourceId>,
     after_seq: Option<u64>,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
 ) {
     debug!(?client_id, ?terminal, ?after_seq, "SUBSCRIBE_EVENTS");
     if let Some(wire_id) = &terminal
@@ -5689,9 +4551,6 @@ pub(crate) fn handle_subscribe_events(
         subscribe_via_hub(state, client_id, wire_id, route, after_seq, out_tx);
         return;
     }
-    // Capture the client's mailbox in the subscription so event fanout
-    // reaches it even without an ATTACH (a pure `watch` client never
-    // attaches).
     state.with_mut(|s| match after_seq {
         None => s.subscribe_events(client_id, terminal, out_tx.clone()),
         Some(after_seq) => s.subscribe_events_after(client_id, terminal, after_seq, out_tx.clone()),
@@ -5699,26 +4558,17 @@ pub(crate) fn handle_subscribe_events(
     ensure_event_pump(state, client_id);
 }
 
-/// Satellite-scoped `SUBSCRIBE_EVENTS` (phux-v45.4): register the caller
-/// as a hub-side proxy subscriber on the owning link and forward the
-/// frame (id rewritten satellite-local) so the satellite starts pushing
-/// `EVENT` frames back over the link. `SUBSCRIBE_EVENTS` has no reply
-/// frame, so a missing route (non-hub server / unknown host) surfaces as a
-/// typed `ERROR` push rather than silence.
-///
-/// The relay re-tags each returned event `Local -> Satellite { host, .. }`
-/// and delivers it through this hub's event registry with this hub's `seq`
-/// (ADR-0123), so the scope is installed there first. The hub does not
-/// retain relayed events, so a cursor on a satellite scope cannot be
-/// replayed: it is owed a `journal_gap` and the consumer re-reads level
-/// state. The satellite's own cursor space never crosses the hub.
+/// Satellite-scoped `SUBSCRIBE_EVENTS`: register a hub-side proxy subscriber
+/// and forward the frame over the owning link. A missing route is a typed
+/// `ERROR` push. Relayed events take this hub's `seq` and are not retained,
+/// so a cursor on a satellite scope is owed a `journal_gap`.
 fn subscribe_via_hub(
     state: &SharedState,
     client_id: ClientId,
-    wire_id: &phux_protocol::ids::ResourceId,
+    wire_id: &WireResourceId,
     (host, id): (phux_protocol::ids::SatelliteHost, u32),
     after_seq: Option<u64>,
-    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    out_tx: &mpsc::Sender<Outbound>,
 ) {
     let Some(relay) = state.with(|s| s.hub_relay(&host)) else {
         warn!(
@@ -5726,21 +4576,21 @@ fn subscribe_via_hub(
             satellite = %host,
             "SUBSCRIBE_EVENTS: no route to satellite; refusing subscription"
         );
-        let _ = out_tx.try_send(Outbound::Frame(FrameKind::Error {
-            request_id: None,
-            code: ErrorCode::UnsupportedSatelliteRoute,
-            message: format!(
+        push_error(
+            out_tx,
+            ErrorCode::UnsupportedSatelliteRoute,
+            format!(
                 "no satellite route to {host:?}: this server is not a federation hub for that host"
             ),
-        }));
+        );
         return;
     };
     let Some(consumer_cancel) = state.with(|s| s.client_connection_cancellation(client_id)) else {
-        let _ = out_tx.try_send(Outbound::Frame(FrameKind::Error {
-            request_id: None,
-            code: ErrorCode::InternalError,
-            message: "client connection cancellation is unavailable".to_owned(),
-        }));
+        push_error(
+            out_tx,
+            ErrorCode::InternalError,
+            "client connection cancellation is unavailable",
+        );
         return;
     };
     let change = state.with_mut(|s| {
@@ -5752,45 +4602,44 @@ fn subscribe_via_hub(
             out_tx.clone(),
         )
     });
-    // Atomic register-and-forward (phux-v45.11 finding 2): the hub-side
-    // registration and the satellite-side SUBSCRIBE_EVENTS either both
-    // happen or the consumer gets a typed error push. The relay forwards
-    // the journal-semantics cursor when the satellite speaks it.
+    // Either both registrations happen or the consumer gets an error push.
     let forwarded = relay.subscribe(
         crate::hub::relay::ProxySubscription {
             terminal: id,
             client: client_id,
             out_tx: out_tx.clone(),
             consumer_cancel,
-            // Stamped with the issue-order token by `subscribe` at enqueue.
+            // Stamped by `subscribe` at enqueue.
             seq: 0,
-            // An event subscription carries no snapshot; its EVENT deltas
-            // must flow immediately, so it is not gated (phux-v45.14).
             awaits_snapshot: false,
             bootstrap_profile: None,
             bootstrap_limits: None,
         },
         FrameKind::SubscribeEvents {
-            terminal: Some(phux_protocol::ids::ResourceId::local(id)),
+            terminal: Some(WireResourceId::local(id)),
             after_seq: None,
         },
     );
     if !forwarded {
-        // The link never took it, and the consumer has the typed error:
-        // put the registry scope back as it was, so a stream that never
-        // started leaves nothing behind and an established one is kept.
+        // Put the registry scope back as it was.
         state.with_mut(|s| s.restore_satellite_scope(client_id, change));
         return;
     }
     ensure_event_pump(state, client_id);
 }
 
-/// Whether `terminal_id` resolves, on this server, to an agent session.
-///
-/// The guard the two raw-profile refusals above share. `false` for an
-/// unknown or satellite-tagged id: those are the existing handlers' to
-/// answer, and a kind check must not swallow a routing question.
-fn is_agent_session(state: &SharedState, terminal_id: &phux_protocol::ids::ResourceId) -> bool {
+/// Push an uncorrelated `ERROR` without waiting; a full mailbox drops it.
+fn push_error(out_tx: &mpsc::Sender<Outbound>, code: ErrorCode, message: impl Into<String>) {
+    let _ = out_tx.try_send(Outbound::Frame(FrameKind::Error {
+        request_id: None,
+        code,
+        message: message.into(),
+    }));
+}
+
+/// Whether `terminal_id` resolves, on this server, to an agent session;
+/// `false` for unknown or satellite ids, which other handlers answer.
+fn is_agent_session(state: &SharedState, terminal_id: &WireResourceId) -> bool {
     state.with(|s| {
         s.terminal_from_wire(terminal_id)
             .and_then(|core| s.resource_handle(core))
@@ -5798,15 +4647,11 @@ fn is_agent_session(state: &SharedState, terminal_id: &phux_protocol::ids::Resou
     })
 }
 
-/// Journal a server-driven [`AgentEvent`] about `terminal` and fan it out
-/// (SPEC §7.5, phux-y2t; ADR-0123).
-///
-/// `terminal` is the wire id the event concerns, or `None` for a
-/// server-scoped event with no owning Terminal. A thin wrapper over
-/// [`journal_event`] for the call sites that attribute nothing.
+/// Journal an unattributed server-driven [`AgentEvent`] about `terminal`
+/// (`None` for server-scoped) and fan it out (ADR-0123).
 pub(crate) fn broadcast_event(
     state: &SharedState,
-    terminal: Option<&phux_protocol::ids::ResourceId>,
+    terminal: Option<&WireResourceId>,
     event: &AgentEvent,
 ) {
     journal_event(
@@ -5815,36 +4660,23 @@ pub(crate) fn broadcast_event(
     );
 }
 
-/// Journal `record` and offer it to every subscription: the one emission
-/// path (ADR-0123), taken in its own short lock. Emitters that already hold
-/// the lock call [`crate::state::ServerState::record_and_fanout`] directly.
-///
-/// Synchronous: delivery is non-blocking, and a subscription whose mailbox
-/// is full is owed a `journal_gap` rather than dropped silently.
+/// Journal `record` and offer it to every subscription (ADR-0123) in its
+/// own short lock. A full mailbox is owed a `journal_gap`.
 pub(crate) fn journal_event(state: &SharedState, record: crate::state::EventRecord) {
     trace!(terminal = ?record.terminal, event = ?record.event, "EVENT: journaling");
     let _ = state.with_mut(|s| s.record_and_fanout(record));
 }
 
-/// Upper bound on outbound messages coalesced into one transport write.
-///
-/// The drain is non-blocking, so this only caps how much of an *already
-/// queued* backlog one turn absorbs; the cap exists so a saturated mailbox
-/// cannot hold the writer inside a single encode loop long enough to starve
-/// the close-control arm. It is comfortably above
-/// [`crate::mailbox::DEFAULT_CLIENT_MAILBOX`], which is the real ceiling in
-/// practice.
+/// Upper bound on queued outbound messages coalesced into one transport
+/// write, so a saturated mailbox cannot starve the close-control arm.
 const MAX_WRITE_COALESCE: usize = 32;
 
 /// The one generation a client-side terminal may currently receive.
 ///
-/// Producers share the outbound mailbox but do not all enqueue from the same
-/// task: live/tombstone frames come through an output pump while native history
-/// replies return through the request task. A reserved mpsc permit guarantees
-/// capacity, not insertion order, so a history reply can otherwise land behind
-/// the tombstone that retired it. The writer is the final common ordering
-/// boundary and suppresses any generation-bound frame that no longer names the
-/// terminal's current live generation.
+/// Producers enqueue from different tasks, and a reserved permit guarantees
+/// capacity, not order, so a history reply can land behind the tombstone that
+/// retired it. The writer is the last common ordering point and drops any
+/// generation-bound frame that no longer names the live generation.
 #[derive(Clone, Copy, Debug)]
 struct OutboundGeneration {
     stream_id: phux_protocol::ids::StreamId,
@@ -5870,7 +4702,7 @@ enum OutboundTerminalState {
 
 #[derive(Debug, Default)]
 struct OutboundGenerationFence {
-    terminals: HashMap<phux_protocol::ids::ResourceId, OutboundTerminalState>,
+    terminals: HashMap<WireResourceId, OutboundTerminalState>,
     diagnostics: Option<crate::stream_diagnostics::StreamTracker>,
 }
 
@@ -5922,7 +4754,7 @@ impl OutboundGenerationFence {
 
     fn admit_begin(
         &mut self,
-        terminal_id: &phux_protocol::ids::ResourceId,
+        terminal_id: &WireResourceId,
         stream_id: phux_protocol::ids::StreamId,
         bootstrap_id: phux_protocol::ids::BootstrapId,
     ) -> bool {
@@ -5946,7 +4778,7 @@ impl OutboundGenerationFence {
 
     fn admit_tombstone(
         &mut self,
-        terminal_id: &phux_protocol::ids::ResourceId,
+        terminal_id: &WireResourceId,
         stream_id: phux_protocol::ids::StreamId,
         bootstrap_id: phux_protocol::ids::BootstrapId,
     ) -> bool {
@@ -5970,7 +4802,7 @@ impl OutboundGenerationFence {
 
     fn admit_data(
         &self,
-        terminal_id: &phux_protocol::ids::ResourceId,
+        terminal_id: &WireResourceId,
         stream_id: phux_protocol::ids::StreamId,
         bootstrap_id: phux_protocol::ids::BootstrapId,
     ) -> bool {
@@ -5980,14 +4812,14 @@ impl OutboundGenerationFence {
             })
     }
 
-    fn current(&self, terminal_id: &phux_protocol::ids::ResourceId) -> Option<OutboundGeneration> {
+    fn current(&self, terminal_id: &WireResourceId) -> Option<OutboundGeneration> {
         match self.terminals.get(terminal_id) {
             Some(OutboundTerminalState::Generation(generation)) => Some(*generation),
             Some(OutboundTerminalState::Closed) | None => None,
         }
     }
 
-    fn is_closed(&self, terminal_id: &phux_protocol::ids::ResourceId) -> bool {
+    fn is_closed(&self, terminal_id: &WireResourceId) -> bool {
         matches!(
             self.terminals.get(terminal_id),
             Some(OutboundTerminalState::Closed)
@@ -5995,15 +4827,13 @@ impl OutboundGenerationFence {
     }
 }
 
-/// Return the generation identity carried by a server-to-client data frame.
-///
-/// BEGIN and the bootstrap tombstone are transitions handled separately by
-/// [`OutboundGenerationFence::admits`]. ACK is client-to-server and therefore
-/// never reaches this writer.
+/// The generation identity carried by a server-to-client data frame. BEGIN
+/// and the bootstrap tombstone are transitions [`OutboundGenerationFence::admits`]
+/// handles itself.
 const fn generation_of_outbound_frame(
     frame: &FrameKind,
 ) -> Option<(
-    &phux_protocol::ids::ResourceId,
+    &WireResourceId,
     phux_protocol::ids::StreamId,
     phux_protocol::ids::BootstrapId,
 )> {
@@ -6081,6 +4911,16 @@ mod outbound_generation_fence_tests {
         })
     }
 
+    fn tombstone(bootstrap_id: BootstrapId, reason: TombstoneReason) -> Outbound {
+        Outbound::Frame(FrameKind::BootstrapTombstone {
+            terminal_id: terminal(),
+            stream_id: stream(),
+            bootstrap_id,
+            reason,
+            last_valid_seq: 1,
+        })
+    }
+
     fn output(bootstrap_id: BootstrapId) -> Outbound {
         Outbound::Frame(FrameKind::ResourceOutput {
             terminal_id: terminal(),
@@ -6110,15 +4950,7 @@ mod outbound_generation_fence_tests {
         };
         assert!(fence.admits(&begin(initial)));
         assert!(fence.admits(&output(initial)));
-        assert!(
-            fence.admits(&Outbound::Frame(FrameKind::BootstrapTombstone {
-                terminal_id: terminal(),
-                stream_id: stream(),
-                bootstrap_id: initial,
-                reason: TombstoneReason::Resize,
-                last_valid_seq: 1,
-            },))
-        );
+        assert!(fence.admits(&tombstone(initial, TombstoneReason::Resize)));
 
         assert!(!fence.admits(&Outbound::Frame(FrameKind::HistoryPage {
             terminal_id: terminal(),
@@ -6140,15 +4972,7 @@ mod outbound_generation_fence_tests {
         assert!(!fence.admits(&output(initial)));
         assert!(!fence.admits(&begin(initial)));
 
-        assert!(
-            fence.admits(&Outbound::Frame(FrameKind::BootstrapTombstone {
-                terminal_id: terminal(),
-                stream_id: stream(),
-                bootstrap_id: initial,
-                reason: TombstoneReason::OutboundGap,
-                last_valid_seq: 1,
-            }))
-        );
+        assert!(fence.admits(&tombstone(initial, TombstoneReason::OutboundGap)));
         assert_eq!(
             diagnostics.snapshot().streams[0].resync_reason,
             Some(ResyncReason::Resize)
@@ -6157,15 +4981,7 @@ mod outbound_generation_fence_tests {
         assert!(fence.admits(&begin(replacement)));
         assert!(fence.admits(&output(replacement)));
         assert!(!fence.admits(&output(initial)));
-        assert!(
-            !fence.admits(&Outbound::Frame(FrameKind::BootstrapTombstone {
-                terminal_id: terminal(),
-                stream_id: stream(),
-                bootstrap_id: initial,
-                reason: TombstoneReason::OutboundGap,
-                last_valid_seq: 1,
-            }))
-        );
+        assert!(!fence.admits(&tombstone(initial, TombstoneReason::OutboundGap)));
         assert_eq!(
             diagnostics.snapshot().streams[0].resync_reason,
             Some(ResyncReason::Resize)
@@ -6174,11 +4990,8 @@ mod outbound_generation_fence_tests {
 }
 
 /// Encode one outbound message onto the end of `batch`, recording its frame
-/// boundary in `ends`.
-///
-/// Returns the terminal-sentinel message when this was an
-/// [`Outbound::TerminalError`]: the caller must stop draining there, because
-/// everything after the sentinel is discarded by contract.
+/// boundary in `ends`. Returns the message of an [`Outbound::TerminalError`],
+/// after which the caller must stop draining.
 fn encode_into_batch(
     message: Outbound,
     compression: Compression,
@@ -6206,27 +5019,9 @@ fn encode_into_batch(
     terminal_message
 }
 
-/// Which frames are worth wrapping, given what the connection negotiated.
-///
-/// The spec makes wrapping a per-frame choice by the sender (proto.md §6.4),
-/// and the choice here is **bootstrap and history payloads only**.
-///
-/// Those are the frames the feature exists for: a few large, structural
-/// records that a remote client must receive in full before it can paint
-/// anything, where 14x fewer bytes is 14x less time staring at a blank
-/// screen. Measured over a 60 ms-RTT link, restricting to them still cut a
-/// warm attach from 438 ms to 248 ms.
-///
-/// Live `RESOURCE_OUTPUT` is the opposite shape and measured worse: thousands
-/// of modest frames, each of which would cost the receiver one inflate plus
-/// one fresh allocation sized to the inflated frame, on the path where
-/// per-frame cost is exactly what matters. A `seq 1 300000` burst over a
-/// simulated 60 ms link ran slower with those frames wrapped than without,
-/// while the bytes it saved bought nothing a user can see — the burst is
-/// already scrolling past faster than it can be read. Compressing them may
-/// well pay on a genuinely narrow link; it is left out because this lane
-/// could not measure a link narrow enough to show it, and an unmeasured
-/// default is not a default.
+/// Which frames are worth wrapping (proto.md §6.4): bootstrap and history
+/// payloads only. Those are large and gate first paint; live
+/// `RESOURCE_OUTPUT` measured slower when compressed.
 const fn compress_policy(frame: &FrameKind, negotiated: Compression) -> Compression {
     match frame {
         FrameKind::BootstrapChunk { .. } | FrameKind::HistoryPage { .. } => negotiated,
@@ -6460,11 +5255,7 @@ async fn next_outbound(
 }
 
 /// Write the `DETACHED` that follows an ordered terminal `ERROR`, then flush
-/// and close.
-///
-/// The flush matters on a buffering transport: the `ERROR` is already inside
-/// the batch this call follows, and without it both frames could sit in
-/// tungstenite's write buffer while the close tears the connection down.
+/// (a buffering transport could otherwise lose both) and close.
 async fn finish_with_terminal_error<W: FrameWriter>(
     writer: &mut W,
     buf: &mut BytesMut,
@@ -6484,36 +5275,11 @@ async fn finish_with_terminal_error<W: FrameWriter>(
     let _ = writer.close().await;
 }
 
-/// Writer task: drain the per-client outbound channel and write each
-/// message to the socket. Encodes [`Outbound::Frame`] via
-/// `FrameKind::encode`.
-///
-/// Exits when the channel closes — i.e. the client task drops its
-/// sender.
-#[cfg(test)]
-pub(crate) async fn writer_task<W: FrameWriter>(
-    writer: W,
-    rx: tokio::sync::mpsc::Receiver<Outbound>,
-    close: tokio::sync::watch::Receiver<bool>,
-    compression: Arc<AtomicU8>,
-    client_id: ClientId,
-) {
-    revocable_writer_task(
-        writer,
-        rx,
-        close,
-        compression,
-        client_id,
-        RevocationWatch::default(),
-    )
-    .await;
-}
-
-/// [`writer_task`] for a live connection, which also watches `revocation`:
-/// once the connection's authority is withdrawn, nothing still queued is
-/// written, the goodbye is, and the transport closes
+/// Writer task: drain the outbound mailbox into the transport, batching what
+/// is already queued, until the mailbox closes. Once `revocation` fires,
+/// nothing still queued is written; the goodbye is, and the transport closes
 /// (`docs/spec/workload-auth.md` §7).
-async fn revocable_writer_task<W: FrameWriter>(
+async fn writer_task<W: FrameWriter>(
     mut writer: W,
     mut rx: tokio::sync::mpsc::Receiver<Outbound>,
     mut close: tokio::sync::watch::Receiver<bool>,
@@ -6522,11 +5288,9 @@ async fn revocable_writer_task<W: FrameWriter>(
     mut revocation: RevocationWatch,
 ) {
     let mut buf = BytesMut::with_capacity(1024);
-    // Staging buffer for the uncompressed image of a frame being wrapped.
-    // Reused across turns, like `buf`, so the envelope costs no allocation.
+    // Uncompressed image of a frame being wrapped.
     let mut scratch = BytesMut::new();
-    // Exclusive end offset of each frame encoded into `buf` this turn, so a
-    // message-oriented transport can still write them one message at a time.
+    // End offset of each frame in `buf`, for message-oriented transports.
     let mut ends: Vec<usize> = Vec::new();
     let mut close_control_open = true;
     let mut generation_fence = OutboundGenerationFence {
@@ -6557,22 +5321,11 @@ async fn revocable_writer_task<W: FrameWriter>(
                 return;
             }
         };
-        // Encode this message plus everything already queued behind it into
-        // one buffer, then hand the whole batch to the transport. A PTY burst
-        // fans out as many small `RESOURCE_OUTPUT` frames that arrive faster
-        // than the socket drains, and writing each one separately paid a
-        // syscall per frame for bytes that were going down the same stream
-        // anyway. Nothing waits: the drain is `try_recv`, so a lone keystroke
-        // echo still leaves on its own write with no added latency, and no
-        // linger timer is introduced.
+        // One write per batch of already-queued messages; the drain never
+        // waits, so a lone keystroke echo adds no latency.
         buf.clear();
         ends.clear();
-        // Read once per turn, not per frame: the value is written exactly
-        // once, by the HELLO that selected it, and every frame in one batch
-        // therefore agrees on it. `Relaxed` is sufficient because the frames
-        // themselves are already ordered by the mailbox, and a turn that
-        // happened to read the pre-HELLO `None` would simply write that batch
-        // uncompressed — which is always legal.
+        // An uncompressed batch is always legal, so `Relaxed` suffices.
         let compression = Compression::from_u8(compression.load(Ordering::Relaxed));
         let mut terminal_message =
             encode_into_batch(message, compression, &mut scratch, &mut buf, &mut ends);
@@ -6586,8 +5339,7 @@ async fn revocable_writer_task<W: FrameWriter>(
                 &mut ends,
             );
         }
-        // Revoked while this batch was being gathered: none of it is owed to
-        // a peer whose authority is gone.
+        // Revoked while gathering: none of the batch is owed.
         if let Some(goodbye) = revocation.current() {
             say_goodbye(
                 &mut writer,
@@ -6611,10 +5363,7 @@ async fn revocable_writer_task<W: FrameWriter>(
             finish_with_terminal_error(&mut writer, &mut buf, message, client_id).await;
             return;
         }
-        // phux-l96p.10: `write_frames` is allowed to only buffer — the
-        // WebSocket transport does, because one frame must still be one
-        // binary message — so the batch leaves here, once, rather than
-        // paying a flush per 4 KiB `RESOURCE_OUTPUT`.
+        // `write_frames` may only buffer (WebSocket does); flush once per batch.
         let flushed = revocation.unless_revoked(writer.flush()).await;
         if !step_succeeded(&mut writer, flushed, client_id, "flush").await {
             return;
@@ -6637,18 +5386,26 @@ mod writer_close_tests {
     use std::rc::Rc;
 
     use bytes::BytesMut;
-    use phux_protocol::PROTOCOL_VERSION;
-    use phux_protocol::caps::ClientCapabilities;
-    use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
+    use phux_protocol::ids::StreamId;
+    use phux_protocol::policy::TransportType;
     use phux_protocol::wire::frame::{DetachReason, ErrorCode, FrameKind};
+    use tokio::sync::mpsc;
     use tokio::task::LocalSet;
     use tokio_util::sync::CancellationToken;
 
-    use super::{handle_client, writer_task};
+    use super::{RevocationWatch, handle_client};
     use crate::state::{ClientId, Outbound, SharedState};
-    use crate::transport::{FrameOrigin, FrameReader, FrameWriter};
-    use phux_protocol::policy::TransportType;
+    use crate::transport::{FrameReader, FrameWriter};
 
+    /// What a test transport was asked to do, in order.
+    #[derive(Debug)]
+    enum Wrote {
+        Frame(Vec<u8>),
+        Flush,
+        Close,
+    }
+
+    /// The frames and lifecycle a writer produced, coarsened for asserting.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum WriterEvent {
         Frame,
@@ -6657,49 +5414,155 @@ mod writer_close_tests {
         Close,
     }
 
-    struct RecordingWriter(Rc<RefCell<Vec<WriterEvent>>>);
+    /// A transport that records everything, using the default per-frame
+    /// `write_frames` slicing a message-oriented transport relies on.
+    #[derive(Clone, Default)]
+    struct Recorder(Rc<RefCell<Vec<Wrote>>>);
+
+    impl Recorder {
+        fn slices(&self) -> Vec<Vec<u8>> {
+            self.0
+                .borrow()
+                .iter()
+                .filter_map(|wrote| match wrote {
+                    Wrote::Frame(bytes) => Some(bytes.clone()),
+                    Wrote::Flush | Wrote::Close => None,
+                })
+                .collect()
+        }
+
+        fn events(&self) -> Vec<WriterEvent> {
+            self.0
+                .borrow()
+                .iter()
+                .filter_map(|wrote| match wrote {
+                    Wrote::Frame(bytes) => Some(match FrameKind::decode(bytes).expect("frame").0 {
+                        FrameKind::Error { .. } => WriterEvent::Error,
+                        FrameKind::Detached { reason, .. } => WriterEvent::Detached(reason),
+                        _ => WriterEvent::Frame,
+                    }),
+                    Wrote::Flush => None,
+                    Wrote::Close => Some(WriterEvent::Close),
+                })
+                .collect()
+        }
+
+        /// How many frames each flushed batch carried.
+        fn batches(&self) -> Vec<usize> {
+            let mut batches = Vec::new();
+            let mut pending = 0;
+            for wrote in self.0.borrow().iter() {
+                match wrote {
+                    Wrote::Frame(_) => pending += 1,
+                    Wrote::Flush => batches.push(std::mem::take(&mut pending)),
+                    Wrote::Close => {}
+                }
+            }
+            batches
+        }
+    }
 
     #[allow(
         clippy::unused_async_trait_impl,
         reason = "the recording test writer implements the production async transport trait without I/O"
     )]
-    impl FrameWriter for RecordingWriter {
+    impl FrameWriter for Recorder {
         async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
-            let event = match FrameKind::decode(frame).expect("encoded frame").0 {
-                FrameKind::Error { .. } => WriterEvent::Error,
-                FrameKind::Detached { reason, .. } => WriterEvent::Detached(reason),
-                _ => WriterEvent::Frame,
-            };
-            self.0.borrow_mut().push(event);
+            self.0.borrow_mut().push(Wrote::Frame(frame.to_vec()));
+            Ok(())
+        }
+
+        async fn flush(&mut self) -> io::Result<()> {
+            self.0.borrow_mut().push(Wrote::Flush);
             Ok(())
         }
 
         async fn close(&mut self) -> io::Result<()> {
-            self.0.borrow_mut().push(WriterEvent::Close);
+            self.0.borrow_mut().push(Wrote::Close);
             Ok(())
         }
     }
 
-    /// The pre-HELLO cell: these tests drive the writer directly, with no
-    /// handshake to select a compression.
-    fn uncompressed() -> std::sync::Arc<std::sync::atomic::AtomicU8> {
-        std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
-            phux_protocol::caps::Compression::None.as_u8(),
-        ))
+    /// Scripted client frames, then pending forever (or EOF when `eof`).
+    pub(super) struct Script {
+        frames: VecDeque<BytesMut>,
+        eof: bool,
     }
 
-    struct StalledStreamWriter {
+    impl Script {
+        pub(super) fn new(frames: impl IntoIterator<Item = FrameKind>) -> Self {
+            Self {
+                frames: frames
+                    .into_iter()
+                    .map(|frame| {
+                        let mut encoded = BytesMut::new();
+                        frame.encode(&mut encoded);
+                        encoded
+                    })
+                    .collect(),
+                eof: false,
+            }
+        }
+    }
+
+    impl FrameReader for Script {
+        async fn read_frame(&mut self) -> io::Result<Option<BytesMut>> {
+            if let Some(frame) = self.frames.pop_front() {
+                return Ok(Some(frame));
+            }
+            if self.eof {
+                return Ok(None);
+            }
+            std::future::pending().await
+        }
+    }
+
+    /// Run the writer over `frames` already queued and a closed mailbox.
+    async fn write_all(frames: impl IntoIterator<Item = Outbound>) -> Recorder {
+        let recorder = Recorder::default();
+        let (tx, rx) = mpsc::channel(64);
+        for frame in frames {
+            tx.try_send(frame).expect("queue frame");
+        }
+        drop(tx);
+        let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
+        writer(recorder.clone(), rx, close_rx).await;
+        recorder
+    }
+
+    fn writer<W: FrameWriter>(
+        transport: W,
+        rx: mpsc::Receiver<Outbound>,
+        close: tokio::sync::watch::Receiver<bool>,
+    ) -> impl std::future::Future<Output = ()> {
+        super::writer_task(
+            transport,
+            rx,
+            close,
+            std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+                phux_protocol::caps::Compression::None.as_u8(),
+            )),
+            ClientId(1),
+            RevocationWatch::default(),
+        )
+    }
+
+    fn pong(nonce: u64) -> Outbound {
+        Outbound::Frame(FrameKind::Pong { nonce })
+    }
+
+    struct StalledWriter {
         entered: std::sync::Arc<tokio::sync::Notify>,
         dropped: Rc<std::cell::Cell<bool>>,
     }
 
-    impl Drop for StalledStreamWriter {
+    impl Drop for StalledWriter {
         fn drop(&mut self) {
             self.dropped.set(true);
         }
     }
 
-    impl FrameWriter for StalledStreamWriter {
+    impl FrameWriter for StalledWriter {
         async fn write_frame(&mut self, _frame: &[u8]) -> io::Result<()> {
             self.entered.notify_one();
             std::future::pending().await
@@ -6710,50 +5573,53 @@ mod writer_close_tests {
         }
     }
 
+    fn binding(
+        tx: mpsc::Sender<Outbound>,
+        writer: tokio::task::JoinSet<()>,
+        writer_close: tokio::sync::watch::Sender<bool>,
+    ) -> super::StreamBinding {
+        super::StreamBinding {
+            tx,
+            stream_id: StreamId::new(1).expect("stream id"),
+            writer,
+            writer_close,
+            diagnostics: None,
+            ingress_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ingress_cancel: CancellationToken::new(),
+        }
+    }
+
+    /// Retirement is bounded: a writer stalled on a peer that stopped
+    /// reading is reaped even while another sender keeps the mailbox open.
     #[tokio::test(flavor = "current_thread")]
     async fn retired_stream_reaps_stalled_writer_with_extra_sender() {
         LocalSet::new()
             .run_until(async {
                 let entered = std::sync::Arc::new(tokio::sync::Notify::new());
                 let dropped = Rc::new(std::cell::Cell::new(false));
-                let (tx, rx) = tokio::sync::mpsc::channel(1);
+                let (tx, rx) = mpsc::channel(1);
                 let extra_sender = tx.clone();
                 let (close_tx, close_rx) = tokio::sync::watch::channel(false);
                 let mut tasks = tokio::task::JoinSet::new();
-                tasks.spawn_local(writer_task(
-                    StalledStreamWriter {
-                        entered: entered.clone(),
-                        dropped: dropped.clone(),
-                    },
-                    rx,
-                    close_rx,
-                    uncompressed(),
-                    ClientId(1),
-                ));
-                tx.send(Outbound::Frame(FrameKind::Pong { nonce: 1 }))
-                    .await
-                    .unwrap();
+                let stalled = StalledWriter {
+                    entered: entered.clone(),
+                    dropped: dropped.clone(),
+                };
+                tasks.spawn_local(writer(stalled, rx, close_rx));
+                tx.send(pong(1)).await.expect("queue");
                 tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
                     .await
-                    .unwrap();
-                let active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-                let token = CancellationToken::new();
-                let mut binding = super::StreamBinding {
-                    tx,
-                    stream_id: StreamId::new(1).unwrap(),
-                    writer: tasks,
-                    writer_close: close_tx,
-                    diagnostics: None,
-                    ingress_active: active.clone(),
-                    ingress_cancel: token.clone(),
-                };
+                    .expect("writer entered");
+                let mut binding = binding(tx, tasks, close_tx);
+                let ingress_active = binding.ingress_active.clone();
+                let ingress_cancel = binding.ingress_cancel.clone();
                 tokio::time::timeout(std::time::Duration::from_secs(2), binding.retire())
                     .await
-                    .unwrap();
+                    .expect("bounded retirement");
                 assert!(dropped.get(), "retirement must reap the transport writer");
                 assert!(binding.writer.is_empty());
-                assert!(!active.load(std::sync::atomic::Ordering::Acquire));
-                assert!(token.is_cancelled());
+                assert!(!ingress_active.load(std::sync::atomic::Ordering::Acquire));
+                assert!(ingress_cancel.is_cancelled());
                 assert!(extra_sender.is_closed());
             })
             .await;
@@ -6763,35 +5629,19 @@ mod writer_close_tests {
     async fn retired_stream_drains_queued_frames_before_close() {
         LocalSet::new()
             .run_until(async {
-                let events = Rc::new(RefCell::new(Vec::new()));
-                let (tx, rx) = tokio::sync::mpsc::channel(2);
+                let recorder = Recorder::default();
+                let (tx, rx) = mpsc::channel(2);
                 let (writer_close, close_rx) = tokio::sync::watch::channel(false);
-                tx.try_send(Outbound::Frame(FrameKind::Pong { nonce: 1 }))
-                    .unwrap();
-                tx.try_send(Outbound::Frame(FrameKind::Pong { nonce: 2 }))
-                    .unwrap();
+                tx.try_send(pong(1)).expect("queue");
+                tx.try_send(pong(2)).expect("queue");
                 let extra_sender = tx.clone();
-                let mut writer = tokio::task::JoinSet::new();
-                writer.spawn_local(writer_task(
-                    RecordingWriter(events.clone()),
-                    rx,
-                    close_rx,
-                    uncompressed(),
-                    ClientId(1),
-                ));
-                let mut binding = super::StreamBinding {
-                    tx,
-                    stream_id: StreamId::new(1).unwrap(),
-                    writer,
-                    writer_close,
-                    diagnostics: None,
-                    ingress_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-                    ingress_cancel: CancellationToken::new(),
-                };
+                let mut tasks = tokio::task::JoinSet::new();
+                tasks.spawn_local(writer(recorder.clone(), rx, close_rx));
+                let mut binding = binding(tx, tasks, writer_close);
                 binding.retire().await;
                 assert_eq!(
-                    *events.borrow(),
-                    vec![WriterEvent::Frame, WriterEvent::Frame, WriterEvent::Close]
+                    recorder.events(),
+                    [WriterEvent::Frame, WriterEvent::Frame, WriterEvent::Close]
                 );
                 assert!(extra_sender.is_closed());
                 assert!(binding.writer.is_empty());
@@ -6799,371 +5649,117 @@ mod writer_close_tests {
             .await;
     }
 
-    /// A transport that records batches instead of frames, so a test can see
-    /// how many transport writes a queue of frames actually costs.
-    struct BatchRecordingWriter {
-        /// One entry per `write_frames` call: how many frames it carried.
-        batches: Rc<RefCell<Vec<usize>>>,
-    }
-
-    #[allow(
-        clippy::unused_async_trait_impl,
-        reason = "the batch recording test writer implements the production async transport trait without I/O"
-    )]
-    impl FrameWriter for BatchRecordingWriter {
-        async fn write_frame(&mut self, _frame: &[u8]) -> io::Result<()> {
-            self.batches.borrow_mut().push(1);
-            Ok(())
-        }
-
-        async fn write_frames(&mut self, _batch: &[u8], ends: &[usize]) -> io::Result<()> {
-            self.batches.borrow_mut().push(ends.len());
-            Ok(())
-        }
-
-        async fn close(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    /// A burst that lands in the mailbox faster than the socket drains must
-    /// cost ONE transport write, not one per frame. The drain is `try_recv`,
-    /// so this is pure backlog absorption with no added latency.
+    /// An already-queued burst costs one transport write and flush.
     #[tokio::test(flavor = "current_thread")]
     async fn a_queued_burst_costs_one_transport_write() {
-        let batches = Rc::new(RefCell::new(Vec::new()));
-        let writer = BatchRecordingWriter {
-            batches: Rc::clone(&batches),
-        };
-        let (tx, rx) = tokio::sync::mpsc::channel(8);
-        for nonce in 0..8_u64 {
-            tx.send(Outbound::Frame(FrameKind::Pong { nonce }))
-                .await
-                .expect("queue frame");
-        }
-        drop(tx);
-
-        let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
-        writer_task(writer, rx, close_rx, uncompressed(), ClientId(11)).await;
-        assert_eq!(
-            batches.borrow().as_slice(),
-            [8],
-            "eight already-queued frames must leave as one batched write",
-        );
+        let recorder = write_all((0..8).map(pong)).await;
+        assert_eq!(recorder.batches(), [8]);
     }
 
-    /// A transport that keeps the bytes it was handed, so a test can check
-    /// what the batch boundaries actually carve out of them.
-    struct SlicingWriter {
-        /// One entry per frame, as the transport would put it on the wire.
-        frames: Rc<RefCell<Vec<Vec<u8>>>>,
-    }
-
-    #[allow(
-        clippy::unused_async_trait_impl,
-        reason = "the slicing test writer implements the production async transport trait without I/O"
-    )]
-    impl FrameWriter for SlicingWriter {
-        async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
-            self.frames.borrow_mut().push(frame.to_vec());
-            Ok(())
-        }
-
-        async fn close(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    /// Batching coalesces *writes*, never frames.
-    ///
-    /// The default `write_frames` slices the batch on the recorded boundaries,
-    /// which is what a message-oriented transport (WebSocket, WebTransport)
-    /// depends on: one binary message must be exactly one phux frame, and the
-    /// peer enforces that with `framing::check_frame`. So every slice must be
-    /// a complete, self-consistent frame — never a split one, never two run
-    /// together, and never one whose declared length disagrees with the bytes
-    /// handed over. Frames of deliberately mixed sizes, because a uniform
-    /// payload would hide an off-by-one in the boundary arithmetic.
+    /// Batching coalesces writes, never frames: each slice a message-oriented
+    /// transport sends is exactly one well-formed frame, including one near
+    /// a megabyte beside tiny ones.
     #[tokio::test(flavor = "current_thread")]
     async fn a_batch_slices_back_into_exactly_the_frames_that_went_in() {
-        let frames = Rc::new(RefCell::new(Vec::new()));
-        let writer = SlicingWriter {
-            frames: Rc::clone(&frames),
-        };
-        let (tx, rx) = tokio::sync::mpsc::channel(16);
-        let sent: Vec<FrameKind> = (0..8_u64)
-            .map(|i| FrameKind::Error {
+        let sent: Vec<FrameKind> = (0..8)
+            .chain([20])
+            .map(|shift| FrameKind::Error {
                 request_id: None,
                 code: ErrorCode::InternalError,
-                // Lengths from 1 to ~4 KiB, so no two frames are alike.
-                message: "x".repeat(1 << i),
+                message: "x".repeat(1 << shift),
             })
             .collect();
-        for frame in sent.clone() {
-            tx.send(Outbound::Frame(frame)).await.expect("queue frame");
-        }
-        drop(tx);
-
-        let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
-        writer_task(writer, rx, close_rx, uncompressed(), ClientId(13)).await;
-
-        let written = frames.borrow();
-        assert_eq!(written.len(), sent.len(), "one slice per queued frame");
-        for (slice, original) in written.iter().zip(&sent) {
-            // The peer's own check: size must agree with the declared length.
-            phux_protocol::wire::framing::check_frame(slice)
-                .expect("each slice must be one well-formed frame");
+        let recorder = write_all(sent.iter().cloned().map(Outbound::Frame)).await;
+        let slices = recorder.slices();
+        assert_eq!(slices.len(), sent.len());
+        for (slice, original) in slices.iter().zip(&sent) {
+            phux_protocol::wire::framing::check_frame(slice).expect("one well-formed frame");
             let (decoded, rest) = FrameKind::decode(slice).expect("slice decodes");
             assert!(rest.is_empty(), "a slice must not carry a second frame");
-            assert_eq!(
-                format!("{decoded:?}"),
-                format!("{original:?}"),
-                "a slice must be the frame that went in, unaltered",
-            );
+            assert_eq!(format!("{decoded:?}"), format!("{original:?}"));
         }
     }
 
-    /// A frame near the wire ceiling still rides the batch intact.
-    ///
-    /// `MAX_FRAME_LEN` bounds one *frame*, not one write, so batching a large
-    /// frame with small ones must neither split it nor push it over: the
-    /// length prefix each frame carries is written by `FrameKind::encode`
-    /// before batching and is untouched by it.
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_near_maximum_frame_survives_batching_beside_small_ones() {
-        let frames = Rc::new(RefCell::new(Vec::new()));
-        let writer = SlicingWriter {
-            frames: Rc::clone(&frames),
-        };
-        let (tx, rx) = tokio::sync::mpsc::channel(8);
-        // Comfortably the largest thing a real pane emits, and far past any
-        // single socket write.
-        let big = "y".repeat(1 << 20);
-        tx.send(Outbound::Frame(FrameKind::Pong { nonce: 1 }))
-            .await
-            .expect("queue frame");
-        tx.send(Outbound::Frame(FrameKind::Error {
-            request_id: None,
-            code: ErrorCode::InternalError,
-            message: big.clone(),
-        }))
-        .await
-        .expect("queue frame");
-        tx.send(Outbound::Frame(FrameKind::Pong { nonce: 2 }))
-            .await
-            .expect("queue frame");
-        drop(tx);
-
-        let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
-        writer_task(writer, rx, close_rx, uncompressed(), ClientId(14)).await;
-
-        let written = frames.borrow();
-        assert_eq!(written.len(), 3);
-        for slice in written.iter() {
-            phux_protocol::wire::framing::check_frame(slice)
-                .expect("a large frame beside small ones stays well-formed");
-            let length = u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]);
-            assert!(
-                (1..=phux_protocol::wire::frame::MAX_FRAME_LEN).contains(&length),
-                "batching must not produce a frame outside the wire bound",
-            );
-        }
-        let (decoded, _) = FrameKind::decode(&written[1]).expect("decode the big frame");
-        let FrameKind::Error { message, .. } = decoded else {
-            panic!("expected the ERROR frame in the middle slot");
-        };
-        assert_eq!(message, big, "a megabyte payload crossed the batch intact");
-    }
-
-    /// The other half of the contract: a lone frame still leaves immediately,
-    /// on its own write. Nothing lingers waiting for a second frame.
+    /// A lone frame leaves on its own write; nothing lingers for company.
     #[tokio::test(flavor = "current_thread")]
     async fn a_lone_frame_is_written_without_waiting_for_company() {
-        let batches = Rc::new(RefCell::new(Vec::new()));
-        let writer = BatchRecordingWriter {
-            batches: Rc::clone(&batches),
-        };
-        let (tx, rx) = tokio::sync::mpsc::channel(8);
-        let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async move {
-                let task = tokio::task::spawn_local(writer_task(
-                    writer,
-                    rx,
-                    close_rx,
-                    uncompressed(),
-                    ClientId(12),
-                ));
-                tx.send(Outbound::Frame(FrameKind::Pong { nonce: 1 }))
-                    .await
-                    .expect("queue frame");
-                // Yield until the writer has drained it. The frame lands with
-                // the channel still open and no timer pending, because no
-                // linger exists to wait on.
+        LocalSet::new()
+            .run_until(async {
+                let recorder = Recorder::default();
+                let (tx, rx) = mpsc::channel(8);
+                let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
+                let task = tokio::task::spawn_local(writer(recorder.clone(), rx, close_rx));
+                tx.send(pong(1)).await.expect("queue frame");
                 for _ in 0..16 {
-                    if !batches.borrow().is_empty() {
+                    if !recorder.batches().is_empty() {
                         break;
                     }
                     tokio::task::yield_now().await;
                 }
-                assert_eq!(
-                    batches.borrow().as_slice(),
-                    [1],
-                    "one queued frame leaves on its own write",
-                );
+                assert_eq!(recorder.batches(), [1]);
                 drop(tx);
                 task.await.expect("writer task");
             })
             .await;
     }
 
+    /// Nothing queued behind a terminal error is written; the ERROR and its
+    /// DETACHED precede the close.
     #[tokio::test(flavor = "current_thread")]
     async fn terminal_error_is_written_before_transport_close() {
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let writer = RecordingWriter(Rc::clone(&events));
-        let (tx, rx) = tokio::sync::mpsc::channel(3);
-        tx.send(Outbound::Frame(FrameKind::Pong { nonce: 1 }))
-            .await
-            .expect("queue earlier frame");
-        tx.send(Outbound::TerminalError {
-            request_id: None,
-            code: ErrorCode::CodecUnavailable,
-            message: "fatal native stream failure".to_owned(),
-        })
-        .await
-        .expect("queue terminal error");
-        tx.send(Outbound::Frame(FrameKind::Pong { nonce: 2 }))
-            .await
-            .expect("racing producer queues after sentinel");
-
-        let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
-        writer_task(writer, rx, close_rx, uncompressed(), ClientId(7)).await;
+        let recorder = write_all([
+            pong(1),
+            Outbound::TerminalError {
+                request_id: None,
+                code: ErrorCode::CodecUnavailable,
+                message: "fatal native stream failure".to_owned(),
+            },
+            pong(2),
+        ])
+        .await;
         assert_eq!(
-            events.borrow().as_slice(),
+            recorder.events(),
             [
                 WriterEvent::Frame,
                 WriterEvent::Error,
                 WriterEvent::Detached(Some(DetachReason::ProtocolError)),
                 WriterEvent::Close
             ],
-            "the terminal ERROR and DETACHED precede transport close",
         );
     }
 
-    struct PendingReader;
-
-    impl FrameReader for PendingReader {
-        async fn read_frame(&mut self) -> io::Result<Option<BytesMut>> {
-            std::future::pending().await
-        }
+    async fn client(
+        reader: impl FrameReader + 'static,
+        token: CancellationToken,
+        root_token: CancellationToken,
+    ) -> Recorder {
+        let recorder = Recorder::default();
+        handle_client(
+            reader,
+            recorder.clone(),
+            SharedState::new(),
+            ClientId(9),
+            token,
+            root_token,
+            None,
+            TransportType::UnixSocket,
+            false,
+        )
+        .await
+        .expect("clean close");
+        recorder
     }
 
-    struct ControlScriptReader(VecDeque<BytesMut>);
-
-    impl ControlScriptReader {
-        fn new(frames: impl IntoIterator<Item = FrameKind>) -> Self {
-            Self(
-                frames
-                    .into_iter()
-                    .map(|frame| {
-                        let mut encoded = BytesMut::new();
-                        frame.encode(&mut encoded);
-                        encoded
-                    })
-                    .collect(),
-            )
-        }
-    }
-
-    impl FrameReader for ControlScriptReader {
-        async fn read_frame(&mut self) -> io::Result<Option<BytesMut>> {
-            if let Some(frame) = self.0.pop_front() {
-                return Ok(Some(frame));
-            }
-            std::future::pending().await
-        }
-
-        fn frame_origin(&self) -> FrameOrigin {
-            FrameOrigin::Control
-        }
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn negotiated_quic_rejects_terminal_frames_on_control() {
-        LocalSet::new()
-            .run_until(async {
-                let terminal_id = ResourceId::local(7);
-                let reader = ControlScriptReader::new([
-                    FrameKind::Hello {
-                        client_name: "origin-test".to_owned(),
-                        protocol_major: PROTOCOL_VERSION.major,
-                        protocol_minor: PROTOCOL_VERSION.minor,
-                        protocol_patch: PROTOCOL_VERSION.patch,
-                        client_caps: ClientCapabilities::default().with_quic_streams(true),
-                    },
-                    FrameKind::FrameAck {
-                        terminal_id,
-                        stream_id: StreamId::new(1).expect("stream"),
-                        bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
-                        seq: 1,
-                    },
-                ]);
-                let events = Rc::new(RefCell::new(Vec::new()));
-                handle_client(
-                    reader,
-                    RecordingWriter(Rc::clone(&events)),
-                    SharedState::new(),
-                    ClientId(11),
-                    CancellationToken::new(),
-                    CancellationToken::new(),
-                    None,
-                    TransportType::Quic,
-                    true,
-                )
-                .await
-                .expect("protocol close");
-                assert_eq!(
-                    events.borrow().as_slice(),
-                    [
-                        WriterEvent::Error,
-                        WriterEvent::Detached(Some(DetachReason::ProtocolError)),
-                        WriterEvent::Close,
-                    ]
-                );
-            })
-            .await;
-    }
-
-    struct EofReader;
-
-    impl FrameReader for EofReader {
-        fn read_frame(&mut self) -> impl Future<Output = io::Result<Option<BytesMut>>> {
-            std::future::ready(Ok(None))
-        }
-    }
-
-    /// A connection that ends at EOF cancels its token, so no task keyed to
-    /// the connection (an event pump, a relay proxy subscription) outlives
-    /// it.
+    /// However a connection ends, its token fires, so no per-connection task
+    /// outlives it.
     #[tokio::test(flavor = "current_thread")]
     async fn eof_cancels_the_connection_token() {
         LocalSet::new()
             .run_until(async {
                 let token = CancellationToken::new();
-                handle_client(
-                    EofReader,
-                    RecordingWriter(Rc::new(RefCell::new(Vec::new()))),
-                    SharedState::new(),
-                    ClientId(12),
-                    token.clone(),
-                    CancellationToken::new(),
-                    None,
-                    TransportType::UnixSocket,
-                    false,
-                )
-                .await
-                .expect("clean eof");
+                let mut eof = Script::new([]);
+                eof.eof = true;
+                client(eof, token.clone(), CancellationToken::new()).await;
                 assert!(token.is_cancelled());
             })
             .await;
@@ -7189,35 +5785,27 @@ mod writer_close_tests {
         }
     }
 
+    /// Pre-HELLO PINGs get PONGs but cannot extend the absolute deadline,
+    /// which ends in ERROR, DETACHED, close.
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn pre_hello_ping_cannot_reset_absolute_handshake_deadline() {
         LocalSet::new()
             .run_until(async {
-                let events = Rc::new(RefCell::new(Vec::new()));
-                let task = tokio::task::spawn_local(handle_client(
+                let task = tokio::task::spawn_local(client(
                     PingBeforeHelloReader { remaining: 8 },
-                    RecordingWriter(Rc::clone(&events)),
-                    SharedState::new(),
-                    ClientId(10),
                     CancellationToken::new(),
                     CancellationToken::new(),
-                    None,
-                    TransportType::WebTransport,
-                    false,
                 ));
                 tokio::time::advance(crate::transport::HANDSHAKE_DEADLINE).await;
-                task.await
-                    .expect("client task")
-                    .expect("deadline is a clean protocol close");
-                let events = events.borrow();
-                assert!(events.iter().any(|event| matches!(event, WriterEvent::Frame)));
+                let events = task.await.expect("client task").events();
+                assert!(events.contains(&WriterEvent::Frame));
                 assert!(
                     events.ends_with(&[
                         WriterEvent::Error,
                         WriterEvent::Detached(Some(DetachReason::ProtocolError)),
                         WriterEvent::Close,
                     ]),
-                    "PINGs may receive PONGs but cannot extend the absolute HELLO deadline: {events:?}",
+                    "{events:?}",
                 );
             })
             .await;
@@ -7227,26 +5815,16 @@ mod writer_close_tests {
     async fn root_cancellation_flushes_server_shutdown_before_transport_close() {
         LocalSet::new()
             .run_until(async {
-                let events = Rc::new(RefCell::new(Vec::new()));
                 let root_token = CancellationToken::new();
-                let task = tokio::task::spawn_local(handle_client(
-                    PendingReader,
-                    RecordingWriter(Rc::clone(&events)),
-                    SharedState::new(),
-                    ClientId(9),
+                let task = tokio::task::spawn_local(client(
+                    Script::new([]),
                     root_token.child_token(),
                     root_token.clone(),
-                    None,
-                    TransportType::UnixSocket,
-                    false,
                 ));
                 tokio::task::yield_now().await;
                 root_token.cancel();
-                task.await
-                    .expect("client task")
-                    .expect("clean shutdown path");
                 assert_eq!(
-                    events.borrow().as_slice(),
+                    task.await.expect("client task").events(),
                     [
                         WriterEvent::Detached(Some(DetachReason::ServerShutdown)),
                         WriterEvent::Close
@@ -7256,13 +5834,16 @@ mod writer_close_tests {
             .await;
     }
 }
-#[cfg(test)]
 #[cfg(all(test, feature = "native-engine", not(target_arch = "wasm32")))]
+#[allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::too_many_lines,
+    reason = "tests"
+)]
 mod fatal_preflight_close_tests {
-    use std::collections::VecDeque;
     use std::io;
 
-    use bytes::BytesMut;
     use phux_protocol::PROTOCOL_VERSION;
     use phux_protocol::caps::{
         BootstrapCapabilities, ClientCapabilities, EngineCodec, EngineFeatureSet,
@@ -7277,37 +5858,10 @@ mod fatal_preflight_close_tests {
     use tokio_util::sync::CancellationToken;
 
     use super::handle_client;
+    use super::writer_close_tests::Script;
     use crate::state::SharedState;
     use crate::terminal_actor::{ConsumerAttachOutcome, PaneOutput};
-    use crate::transport::{FrameReader, FrameWriter};
-
-    struct ScriptReader {
-        frames: VecDeque<BytesMut>,
-    }
-
-    impl ScriptReader {
-        fn new(frames: impl IntoIterator<Item = FrameKind>) -> Self {
-            Self {
-                frames: frames
-                    .into_iter()
-                    .map(|frame| {
-                        let mut encoded = BytesMut::new();
-                        frame.encode(&mut encoded);
-                        encoded
-                    })
-                    .collect(),
-            }
-        }
-    }
-
-    impl FrameReader for ScriptReader {
-        async fn read_frame(&mut self) -> io::Result<Option<BytesMut>> {
-            if let Some(frame) = self.frames.pop_front() {
-                return Ok(Some(frame));
-            }
-            std::future::pending().await
-        }
-    }
+    use crate::transport::FrameWriter;
 
     struct DuplexWriter(tokio::io::WriteHalf<tokio::io::DuplexStream>);
 
@@ -7321,22 +5875,26 @@ mod fatal_preflight_close_tests {
         }
     }
 
-    async fn read_frame(
+    /// The next frame the peer reads, or `None` at EOF; one second at most.
+    async fn next_frame(
         reader: &mut tokio::io::ReadHalf<tokio::io::DuplexStream>,
-    ) -> io::Result<Option<FrameKind>> {
-        let mut header = [0_u8; 4];
-        match reader.read_exact(&mut header).await {
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-            Err(error) => return Err(error),
-        }
-        let mut framed = phux_protocol::wire::framing::frame_buffer(header)?;
-        reader
-            .read_exact(&mut framed[phux_protocol::wire::framing::LENGTH_PREFIX_LEN..])
-            .await?;
-        FrameKind::decode(&framed)
-            .map(|(frame, _)| Some(frame))
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}")))
+    ) -> Option<FrameKind> {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            let mut header = [0_u8; 4];
+            match reader.read_exact(&mut header).await {
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return None,
+                Err(error) => panic!("read: {error}"),
+            }
+            let mut framed = phux_protocol::wire::framing::frame_buffer(header).expect("frame");
+            reader
+                .read_exact(&mut framed[phux_protocol::wire::framing::LENGTH_PREFIX_LEN..])
+                .await
+                .expect("frame body");
+            Some(FrameKind::decode(&framed).expect("decode").0)
+        })
+        .await
+        .expect("peer read timed out")
     }
 
     fn native_failure_handle() -> (
@@ -7347,38 +5905,20 @@ mod fatal_preflight_close_tests {
         let (output, _output_seed) = broadcast::channel::<PaneOutput>(8);
         let (consumer_attach, consumer_attach_rx) = mpsc::channel(8);
         let (native_bootstrap, native_bootstrap_rx) = mpsc::channel(8);
-        let (native_release, _native_release_rx) = mpsc::channel(8);
-        let (consumer_detach, _consumer_detach_rx) = mpsc::channel(8);
         (
             crate::resource::ResourceHandle {
                 kind: crate::resource::ResourceKind::Terminal,
                 parent: None,
                 output,
                 consumer_attach,
-                consumer_detach,
+                consumer_detach: mpsc::channel(8).0,
                 consumer_ack: mpsc::channel(8).0,
                 upgrade: mpsc::channel(8).0,
                 control: mpsc::channel(8).0,
                 facet: crate::resource::ResourceFacetHandle::Terminal(
                     crate::terminal_actor::TerminalHandle {
-                        input: mpsc::channel(8).0,
-                        encoded_input: mpsc::channel(8).0,
-                        input_snapshot: tokio::sync::watch::channel(
-                            crate::input::InputEncoderSnapshot::default(),
-                        )
-                        .1,
-                        snapshot: mpsc::channel(8).0,
                         native_bootstrap,
-                        native_publication: mpsc::channel(8).0,
-                        native_history: mpsc::channel(8).0,
-                        native_release,
-                        set_default_colors: mpsc::channel(8).0,
-                        screen: mpsc::channel(8).0,
-                        pwd: mpsc::channel(8).0,
-                        process: mpsc::channel(8).0,
-                        resize: mpsc::channel(8).0,
-                        cols: 80,
-                        rows: 24,
+                        ..crate::terminal_actor::TerminalHandle::detached_for_test(80, 24)
                     },
                 ),
             },
@@ -7387,23 +5927,21 @@ mod fatal_preflight_close_tests {
         )
     }
 
-    #[allow(clippy::too_many_lines)]
+    /// A native bootstrap preflight failure is a terminal error: the peer
+    /// reads `HELLO_OK`, ERROR, DETACHED, and only then EOF.
     #[tokio::test(flavor = "current_thread")]
     async fn native_preflight_failure_flushes_error_then_duplex_eof() {
-        let local = LocalSet::new();
-        local
+        LocalSet::new()
             .run_until(async {
                 let state = SharedState::new();
                 let (_session, _window, terminal) =
                     state.with_mut(|server| server.seed_session("fatal-duplex"));
                 let (handle, mut consumer_attach_rx, mut native_bootstrap_rx) =
                     native_failure_handle();
-                state.with_mut(|server| {
+                let client_id = state.with_mut(|server| {
                     let _ =
                         server.register_resource_handle(terminal, handle, CancellationToken::new());
-                });
-                let client_id = state.with_mut(crate::state::ServerState::new_client_id);
-                state.with_mut(|server| {
+                    let client_id = server.new_client_id();
                     server.set_peer_identity(
                         client_id,
                         PeerIdentity {
@@ -7415,13 +5953,14 @@ mod fatal_preflight_close_tests {
                             source_addr: None,
                         },
                     );
+                    client_id
                 });
 
                 let native = BootstrapCapabilities::new().with_native(
                     EngineCodec::LibghosttySnapshotV1,
                     EngineFeatureSet::required_native(),
                 );
-                let reader = ScriptReader::new([
+                let reader = Script::new([
                     FrameKind::Hello {
                         client_name: "fatal-duplex-test".to_owned(),
                         protocol_major: PROTOCOL_VERSION.major,
@@ -7439,27 +5978,21 @@ mod fatal_preflight_close_tests {
                     },
                 ]);
                 let (server_io, peer_io) = tokio::io::duplex(64 * 1024);
-                let (server_read, server_write) = tokio::io::split(server_io);
-                drop(server_read);
-                let (mut client_read, client_write) = tokio::io::split(peer_io);
-                drop(client_write);
-                let connection_token = CancellationToken::new();
+                let (_server_read, server_write) = tokio::io::split(server_io);
+                let (mut client_read, _client_write) = tokio::io::split(peer_io);
                 let task = tokio::task::spawn_local(handle_client(
                     reader,
                     DuplexWriter(server_write),
                     state,
                     client_id,
-                    connection_token,
+                    CancellationToken::new(),
                     CancellationToken::new(),
                     None,
                     TransportType::UnixSocket,
                     false,
                 ));
                 let actor = tokio::task::spawn_local(async move {
-                    let registration = consumer_attach_rx
-                        .recv()
-                        .await
-                        .expect("consumer registration");
+                    let registration = consumer_attach_rx.recv().await.expect("registration");
                     registration
                         .reply
                         .send(Ok(ConsumerAttachOutcome {
@@ -7476,84 +6009,64 @@ mod fatal_preflight_close_tests {
                         .expect("native failure reply");
                 });
 
-                let hello = tokio::time::timeout(
-                    std::time::Duration::from_secs(1),
-                    read_frame(&mut client_read),
-                )
-                .await
-                .expect("HELLO_OK timed out")
-                .expect("read HELLO_OK")
-                .expect("HELLO_OK frame");
                 assert!(matches!(
-                    hello,
-                    FrameKind::HelloOk {
+                    next_frame(&mut client_read).await,
+                    Some(FrameKind::HelloOk {
                         selected_profile: phux_protocol::caps::BootstrapProfile::NativeState {
                             codec: EngineCodec::LibghosttySnapshotV1,
                             ..
                         },
                         ..
-                    }
+                    })
                 ));
-                let error = tokio::time::timeout(
-                    std::time::Duration::from_secs(1),
-                    read_frame(&mut client_read),
-                )
-                .await
-                .expect("terminal ERROR timed out")
-                .expect("read terminal ERROR")
-                .expect("terminal ERROR frame");
                 assert!(matches!(
-                    error,
-                    FrameKind::Error {
+                    next_frame(&mut client_read).await,
+                    Some(FrameKind::Error {
                         code: ErrorCode::CodecUnavailable,
                         ..
-                    }
+                    })
                 ));
-                let detached = tokio::time::timeout(
-                    std::time::Duration::from_secs(1),
-                    read_frame(&mut client_read),
-                )
-                .await
-                .expect("terminal DETACHED timed out")
-                .expect("read terminal DETACHED")
-                .expect("terminal DETACHED frame");
                 assert!(matches!(
-                    detached,
-                    FrameKind::Detached {
+                    next_frame(&mut client_read).await,
+                    Some(FrameKind::Detached {
                         reason: Some(DetachReason::ProtocolError),
                         ..
-                    }
+                    })
                 ));
-                assert!(
-                    tokio::time::timeout(
-                        std::time::Duration::from_secs(1),
-                        read_frame(&mut client_read),
-                    )
-                    .await
-                    .expect("duplex EOF timed out")
-                    .expect("read duplex EOF")
-                    .is_none(),
-                    "transport closes only after flushing terminal ERROR and DETACHED"
-                );
+                assert!(next_frame(&mut client_read).await.is_none());
                 actor.await.expect("actor task");
-                task.await
-                    .expect("client task")
-                    .expect("client task result");
+                task.await.expect("client task").expect("client result");
             })
             .await;
     }
 }
-/// phux-w7z2.57: a `SUBSCRIBE_METADATA` naming a satellite pane is refused,
-/// not recorded.
+
 #[cfg(test)]
-mod satellite_metadata_subscription_tests {
+mod metadata_tests {
     use phux_protocol::ids::{ResourceId as WireResourceId, SatelliteHost};
     use phux_protocol::wire::frame::{ErrorCode, FrameKind, Scope};
+    use tokio_util::sync::CancellationToken;
 
     use super::{handle_delete_metadata, handle_set_metadata, handle_subscribe_metadata};
     use crate::state::{ClientId, Outbound, SharedState};
 
     const AGENT_KEY: &str = "phux.agent/v1";
+
+    fn set(state: &SharedState, scope: &Scope, key: &str, value: &[u8]) {
+        handle_set_metadata(
+            state,
+            ClientId(1),
+            1,
+            scope,
+            key,
+            value.to_vec(),
+            &CancellationToken::new(),
+        );
+    }
+
+    fn get(state: &SharedState, scope: &Scope, key: &str) -> Option<Vec<u8>> {
+        state.with(|s| s.metadata().get(scope, key))
+    }
 
     fn satellite_scope() -> Scope {
         Scope::Resource(WireResourceId::Satellite {
@@ -7562,53 +6075,65 @@ mod satellite_metadata_subscription_tests {
         })
     }
 
-    /// The refusal has to do both halves. Pushing the `ERROR` while still
-    /// recording the subscription would leave the consumer told "no" by one
-    /// frame and holding a live-looking registration that can never fire; not
-    /// pushing it while declining to record is the silent acceptance this
-    /// ticket exists to remove.
+    fn expect_satellite_refusal(rx: &mut tokio::sync::mpsc::Receiver<Outbound>, needle: &str) {
+        match rx.try_recv() {
+            Ok(Outbound::Frame(FrameKind::Error {
+                request_id: None,
+                code: ErrorCode::UnsupportedSatelliteRoute,
+                message,
+            })) => {
+                assert!(message.contains("does not federate"), "{message}");
+                assert!(message.contains(needle), "{message}");
+            }
+            other => panic!("expected an uncorrelated satellite refusal, got {other:?}"),
+        }
+    }
+
+    /// phux-w7z2.57: a `SUBSCRIBE_METADATA` naming a satellite pane is
+    /// refused with a typed error and records nothing, while local and
+    /// unscoped subscriptions are untouched.
     #[test]
-    fn a_satellite_scope_is_refused_with_a_typed_error_and_installs_nothing() {
+    fn satellite_subscriptions_are_refused_and_local_ones_recorded() {
         let state = SharedState::new();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Outbound>(4);
         let client = ClientId(1);
         let scope = satellite_scope();
-
         handle_subscribe_metadata(&state, client, scope.clone(), AGENT_KEY.to_owned(), &tx);
-
         assert!(
             state
                 .with(|s| s.metadata().subscribers_for(&scope, AGENT_KEY))
-                .is_empty(),
-            "a refused subscription must not be recorded",
+                .is_empty()
         );
-        match rx.try_recv() {
-            Ok(Outbound::Frame(FrameKind::Error {
-                request_id,
-                code,
-                message,
-            })) => {
-                assert_eq!(
-                    request_id, None,
-                    "SUBSCRIBE_METADATA carries no request_id to correlate to"
-                );
-                assert_eq!(code, ErrorCode::UnsupportedSatelliteRoute);
-                assert!(
-                    message.contains("does not federate"),
-                    "the diagnostic must name the limitation, not just the code: {message}",
-                );
-                assert!(
-                    message.contains("gpubox"),
-                    "the diagnostic must name the satellite: {message}",
-                );
-            }
-            other => panic!("expected a typed ERROR push, got {other:?}"),
-        }
+        expect_satellite_refusal(&mut rx, "gpubox");
+
+        let local = Scope::Resource(WireResourceId::local(1));
+        handle_subscribe_metadata(&state, client, local.clone(), AGENT_KEY.to_owned(), &tx);
+        handle_subscribe_metadata(
+            &state,
+            client,
+            Scope::Global,
+            "phux.tui.focus/v1".to_owned(),
+            &tx,
+        );
+        assert_eq!(
+            state.with(|s| s.metadata().subscribers_for(&local, AGENT_KEY)),
+            vec![client]
+        );
+        assert_eq!(
+            state.with(|s| s
+                .metadata()
+                .subscribers_for(&Scope::Global, "phux.tui.focus/v1")),
+            vec![client]
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "an accepted subscription pushes nothing"
+        );
     }
 
-    /// ADR-0136: on a hub that routes the host, the two agent keys install
-    /// a subscription and queue the mirror. A non-allowlisted key still
-    /// refuses, and a client cannot write the satellite scope.
+    /// ADR-0136: on a hub that routes the host, the two agent keys install a
+    /// subscription and queue the mirror; any other key still refuses, and a
+    /// client cannot write the satellite scope.
     #[test]
     fn a_hub_mirrors_the_agent_allowlist_and_refuses_the_rest() {
         use phux_protocol::wire::frame::RESOURCE_ASKED_KEY;
@@ -7620,44 +6145,24 @@ mod satellite_metadata_subscription_tests {
         let relays = HubRelays::default();
         relays.insert(handle);
         state.with_mut(|s| s.set_hub_relays(relays));
-
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Outbound>(4);
         let client = ClientId(3);
         let scope = satellite_scope();
 
-        handle_subscribe_metadata(&state, client, scope.clone(), AGENT_KEY.to_owned(), &tx);
-        handle_subscribe_metadata(
-            &state,
-            client,
-            scope.clone(),
-            RESOURCE_ASKED_KEY.to_owned(),
-            &tx,
-        );
-        assert!(
-            rx.try_recv().is_err(),
-            "an allowlisted subscribe on a routed host is not an error"
-        );
-        assert_eq!(
-            state
-                .with(|s| s.metadata().subscribers_for(&scope, AGENT_KEY))
-                .len(),
-            1
-        );
-        assert_eq!(
-            state
-                .with(|s| s.metadata().subscribers_for(&scope, RESOURCE_ASKED_KEY))
-                .len(),
-            1
-        );
-        assert!(matches!(
-            mailbox.requests.try_recv(),
-            Ok(RelayRequest::MirrorTerminal { terminal: 7 })
-        ));
-        // The second subscribe queues a second mirror; the session dedups.
-        assert!(matches!(
-            mailbox.requests.try_recv(),
-            Ok(RelayRequest::MirrorTerminal { terminal: 7 })
-        ));
+        for key in [AGENT_KEY, RESOURCE_ASKED_KEY] {
+            handle_subscribe_metadata(&state, client, scope.clone(), key.to_owned(), &tx);
+            assert_eq!(
+                state
+                    .with(|s| s.metadata().subscribers_for(&scope, key))
+                    .len(),
+                1
+            );
+            assert!(matches!(
+                mailbox.requests.try_recv(),
+                Ok(RelayRequest::MirrorTerminal { terminal: 7 })
+            ));
+        }
+        assert!(rx.try_recv().is_err());
 
         handle_subscribe_metadata(
             &state,
@@ -7666,363 +6171,142 @@ mod satellite_metadata_subscription_tests {
             "phux.tags/v1".to_owned(),
             &tx,
         );
-        match rx.try_recv() {
-            Ok(Outbound::Frame(FrameKind::Error { code, message, .. })) => {
-                assert_eq!(code, ErrorCode::UnsupportedSatelliteRoute);
-                assert!(message.contains("does not federate"), "{message}");
-                assert!(message.contains("phux.tags/v1"), "{message}");
-            }
-            other => panic!("expected a refusal of the non-allowlisted key, got {other:?}"),
-        }
-        assert!(
-            state
-                .with(|s| s.metadata().subscribers_for(&scope, "phux.tags/v1"))
-                .is_empty()
-        );
+        expect_satellite_refusal(&mut rx, "phux.tags/v1");
 
-        state.with_mut(|s| {
-            s.metadata_set(&scope, AGENT_KEY, br#"{"name":"reviewer"}"#.to_vec());
-        });
-        handle_set_metadata(
-            &state,
-            client,
-            1,
-            &scope,
-            AGENT_KEY,
-            b"overwrite".to_vec(),
-            &tokio_util::sync::CancellationToken::new(),
-        );
+        let mirrored = br#"{"name":"reviewer"}"#;
+        state.with_mut(|s| s.metadata_set(&scope, AGENT_KEY, mirrored.to_vec()));
+        set(&state, &scope, AGENT_KEY, b"overwrite");
         handle_delete_metadata(&state, client, 2, &scope, AGENT_KEY);
         assert_eq!(
-            state
-                .with(|s| s.metadata().get(&scope, AGENT_KEY))
-                .as_deref(),
-            Some(&br#"{"name":"reviewer"}"#[..]),
-            "a client cannot write or delete a satellite terminal's metadata"
+            get(&state, &scope, AGENT_KEY).as_deref(),
+            Some(&mirrored[..])
         );
     }
-
-    /// The refusal is scoped to satellite `Terminal` scopes only. A local
-    /// pane's record is the whole reason this subscription exists, and
-    /// `Global` / `Group` keys (the TUI's layout coordination) never carry a
-    /// `ResourceId` at all.
-    #[test]
-    fn local_and_unscoped_subscriptions_are_untouched() {
-        let state = SharedState::new();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<Outbound>(4);
-        let client = ClientId(2);
-        let local = Scope::Resource(WireResourceId::local(1));
-
-        handle_subscribe_metadata(&state, client, local.clone(), AGENT_KEY.to_owned(), &tx);
-        handle_subscribe_metadata(
-            &state,
-            client,
-            Scope::Global,
-            "phux.tui.focus/v1".to_owned(),
-            &tx,
-        );
-
-        assert_eq!(
-            state.with(|s| s.metadata().subscribers_for(&local, AGENT_KEY)),
-            vec![client],
-        );
-        assert_eq!(
-            state.with(|s| s
-                .metadata()
-                .subscribers_for(&Scope::Global, "phux.tui.focus/v1")),
-            vec![client],
-        );
-        assert!(
-            rx.try_recv().is_err(),
-            "an accepted subscription pushes nothing",
-        );
-    }
-}
-
-#[cfg(test)]
-mod terminal_metadata_scope_tests {
-    use phux_protocol::ids::ResourceId as WireResourceId;
-    use phux_protocol::wire::frame::Scope;
-    use tokio_util::sync::CancellationToken;
-
-    use super::{handle_delete_metadata, handle_set_metadata};
-    use crate::state::{ClientId, SharedState};
 
     #[test]
     fn terminal_metadata_cannot_outlive_or_target_a_missing_terminal() {
+        use phux_protocol::wire::frame::RESOURCE_AGENT_SESSION_KEY;
+
         let state = SharedState::new();
         let (_session, _window, pane) = state.with_mut(|s| s.seed_session("scope-test"));
-        let wire = state.with_mut(|s| s.intern_terminal_wire(pane));
-        let scope = Scope::Resource(wire);
-        let token = CancellationToken::new();
+        let scope = Scope::Resource(state.with_mut(|s| s.intern_terminal_wire(pane)));
+        set(&state, &scope, "phux.test/v1", b"live");
+        assert_eq!(get(&state, &scope, "phux.test/v1"), Some(b"live".to_vec()));
 
-        handle_set_metadata(
-            &state,
-            ClientId(1),
-            1,
-            &scope,
-            "phux.test/v1",
-            b"live".to_vec(),
-            &token,
-        );
-        assert_eq!(
-            state.with(|s| s.metadata().get(&scope, "phux.test/v1")),
-            Some(b"live".to_vec())
-        );
-
-        for (request_id, invalid) in [(10, Vec::new()), (11, vec![b'x'; 4097])] {
-            handle_set_metadata(
-                &state,
-                ClientId(1),
-                request_id,
-                &scope,
-                phux_protocol::wire::frame::RESOURCE_AGENT_SESSION_KEY,
-                invalid,
-                &token,
-            );
-            assert!(
-                state
-                    .with(|s| {
-                        s.metadata().get(
-                            &scope,
-                            phux_protocol::wire::frame::RESOURCE_AGENT_SESSION_KEY,
-                        )
-                    })
-                    .is_none(),
-                "invalid reserved agent-session metadata must not be stored",
-            );
+        for invalid in [Vec::new(), vec![b'x'; 4097]] {
+            set(&state, &scope, RESOURCE_AGENT_SESSION_KEY, &invalid);
+            assert!(get(&state, &scope, RESOURCE_AGENT_SESSION_KEY).is_none());
         }
 
         state.with_mut(|s| s.reap_terminal(pane));
-        handle_set_metadata(
-            &state,
-            ClientId(1),
-            2,
-            &scope,
-            "phux.test/v1",
-            b"orphan".to_vec(),
-            &token,
-        );
-        assert!(
-            state
-                .with(|s| s.metadata().get(&scope, "phux.test/v1"))
-                .is_none(),
-            "reaped Terminal metadata is deleted and a stale id cannot recreate it"
-        );
+        set(&state, &scope, "phux.test/v1", b"orphan");
+        assert!(get(&state, &scope, "phux.test/v1").is_none());
 
         let missing = Scope::Resource(WireResourceId::local(u32::MAX));
-        handle_set_metadata(
-            &state,
-            ClientId(1),
-            3,
-            &missing,
-            "phux.test/v1",
-            b"missing".to_vec(),
-            &token,
-        );
-        assert!(
-            state
-                .with(|s| s.metadata().get(&missing, "phux.test/v1"))
-                .is_none()
-        );
+        set(&state, &missing, "phux.test/v1", b"missing");
+        assert!(get(&state, &missing, "phux.test/v1").is_none());
     }
 
-    /// ADR-0129 / docs/spec/L3.md §2: a value over `limits.metadata-value-bytes`
-    /// (256 KiB by default) is refused whole; nothing is stored, and a
-    /// within-cap write to the same key still succeeds afterward.
+    /// ADR-0129 / L3 §2: an over-cap value is refused whole; a value exactly
+    /// at the cap is stored.
     #[test]
     fn a_metadata_value_over_the_cap_is_refused_and_nothing_is_stored() {
         let state = SharedState::new();
-        let token = CancellationToken::new();
         let cap = state.with(crate::state::ServerState::metadata_value_bytes) as usize;
-        let too_big = vec![b'x'; cap + 1];
-
-        handle_set_metadata(
+        set(
             &state,
-            ClientId(1),
-            1,
             &Scope::Global,
             "phux.test.cap/v1",
-            too_big,
-            &token,
+            &vec![b'x'; cap + 1],
         );
-        assert!(
-            state
-                .with(|s| s.metadata().get(&Scope::Global, "phux.test.cap/v1"))
-                .is_none(),
-            "an over-cap write must store nothing"
-        );
-
+        assert!(get(&state, &Scope::Global, "phux.test.cap/v1").is_none());
         let at_cap = vec![b'x'; cap];
-        handle_set_metadata(
-            &state,
-            ClientId(1),
-            2,
-            &Scope::Global,
-            "phux.test.cap/v1",
-            at_cap.clone(),
-            &token,
-        );
+        set(&state, &Scope::Global, "phux.test.cap/v1", &at_cap);
         assert_eq!(
-            state.with(|s| s.metadata().get(&Scope::Global, "phux.test.cap/v1")),
-            Some(at_cap),
-            "a value exactly at the cap is stored"
+            get(&state, &Scope::Global, "phux.test.cap/v1"),
+            Some(at_cap)
         );
     }
 
-    /// ADR-0129 resurrection guard: `phux-tui`'s post-close layout
-    /// republish (`loop_state.rs`'s `broadcast_layout` on
-    /// `RESOURCE_CLOSED`) can land after the pane's reap has already
-    /// removed the session. That late `SET_METADATA` must not recreate the
-    /// dead session's `*.layout/v1/<id>` key — there is no reap left to
-    /// ever clean it up again.
+    /// ADR-0129: the TUI's post-close layout republish can land after the
+    /// reap; it must not resurrect the dead session's layout key.
     #[test]
     fn a_late_layout_write_for_a_reaped_session_is_not_stored() {
         let state = SharedState::new();
-        let token = CancellationToken::new();
         let (session, _window, pane) = state.with_mut(|s| s.seed_session("resurrect-test"));
         let wire = state.with_mut(|s| s.idspace.intern_session(session));
         let key = format!("phux.tui.layout/v1/{}", wire.get());
         let scope = Scope::Group(crate::state::DEFAULT_GROUP_ID);
-
-        // Confirm a live write to the same key works today, before reaping.
-        handle_set_metadata(
-            &state,
-            ClientId(1),
-            1,
-            &scope,
-            &key,
-            b"live".to_vec(),
-            &token,
-        );
-        assert_eq!(
-            state.with(|s| s.metadata().get(&scope, &key)),
-            Some(b"live".to_vec())
-        );
-
-        // Reap the session to zero windows (its only pane closes).
+        set(&state, &scope, &key, b"live");
+        assert_eq!(get(&state, &scope, &key), Some(b"live".to_vec()));
         state.with_mut(|s| s.reap_terminal(pane));
-        assert!(
-            state.with(|s| s.registry().session(session).is_none()),
-            "the session must actually be gone for this test to mean anything"
-        );
-
-        // The late write — same key, same bytes a naive republish would
-        // send — must not resurrect it.
-        handle_set_metadata(
-            &state,
-            ClientId(1),
-            2,
-            &scope,
-            &key,
-            b"late republish".to_vec(),
-            &token,
-        );
-        assert!(
-            state.with(|s| s.metadata().get(&scope, &key)).is_none(),
-            "a layout write naming a reaped session must not be stored"
-        );
+        assert!(state.with(|s| s.registry().session(session).is_none()));
+        set(&state, &scope, &key, b"late republish");
+        assert!(get(&state, &scope, &key).is_none());
     }
 
+    /// Server-owned records and the owner-only create-result namespace refuse
+    /// client writes and deletes.
     #[test]
-    fn ordinary_metadata_cannot_write_the_owner_only_create_result_namespace() {
+    fn clients_cannot_forge_server_owned_or_reserved_keys() {
         let state = SharedState::new();
-        let token = CancellationToken::new();
         let reserved_key = format!(
             "{}11111111-1111-4111-8111-111111111111",
             phux_protocol::wire::frame::SESSION_CREATE_RESULT_KEY_PREFIX,
         );
-        handle_set_metadata(
-            &state,
-            ClientId(2),
-            4,
-            &Scope::Global,
-            &reserved_key,
-            b"forged".to_vec(),
-            &token,
-        );
-        assert!(
-            state
-                .with(|s| s.metadata().get(&Scope::Global, &reserved_key))
-                .is_none(),
-            "the owner-only result namespace must reject ordinary metadata writes",
-        );
-    }
+        set(&state, &Scope::Global, &reserved_key, b"forged");
+        assert!(get(&state, &Scope::Global, &reserved_key).is_none());
 
-    #[test]
-    fn pane_occupant_record_is_server_owned() {
-        let state = SharedState::new();
         let (_session, _window, pane) = state.with_mut(|s| s.seed_session("occupant-owner"));
-        let wire = state.with_mut(|s| s.intern_terminal_wire(pane));
-        let scope = Scope::Resource(wire);
+        let scope = Scope::Resource(state.with_mut(|s| s.intern_terminal_wire(pane)));
         let key = phux_protocol::wire::frame::RESOURCE_PANE_OCCUPANT_KEY;
         let authoritative = br#"{"foreground":"zsh","is_pane_shell":true}"#.to_vec();
         state.with_mut(|s| s.metadata_set(&scope, key, authoritative.clone()));
-
-        handle_set_metadata(
+        set(
             &state,
-            ClientId(2),
-            5,
             &scope,
             key,
-            br#"{"foreground":"vim","is_pane_shell":true}"#.to_vec(),
-            &CancellationToken::new(),
+            br#"{"foreground":"vim","is_pane_shell":true}"#,
         );
         handle_delete_metadata(&state, ClientId(2), 6, &scope, key);
-
-        assert_eq!(
-            state.with(|s| s.metadata().get(&scope, key)),
-            Some(authoritative),
-            "ordinary clients must neither forge nor delete the safety record",
-        );
+        assert_eq!(get(&state, &scope, key), Some(authoritative));
     }
 
+    /// A create receipt binds the created identity, so it survives a rename
+    /// and the reuse of the original name.
     #[tokio::test(flavor = "current_thread")]
     async fn empty_create_receipt_keeps_original_identity_after_name_reuse() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let state = SharedState::new();
-                let root_token = CancellationToken::new();
                 let nonce = "11111111-1111-4111-8111-111111111111";
                 let value = serde_json::to_vec(&serde_json::json!({
                     "name": "original", "request_token": nonce, "empty": true, "keep_empty": true,
                 }))
                 .expect("request JSON");
-                handle_set_metadata(
+                set(
                     &state,
-                    ClientId(1),
-                    1,
                     &Scope::Global,
                     phux_protocol::wire::frame::SESSION_CREATE_KEY,
-                    value,
-                    &root_token,
+                    &value,
                 );
                 let key = super::session_create_result_key(Some(nonce));
-                let bytes = state
-                    .with(|s| s.metadata().get(&Scope::Global, &key))
-                    .expect("receipt");
+                let bytes = get(&state, &Scope::Global, &key).expect("receipt");
                 let receipt: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
-                let original_id = state.with(|s| {
-                    s.idspace
-                        .session_wire(s.find_session_by_name("original").expect("created"))
-                        .expect("wire ID")
-                        .get()
-                });
+                let session_id = |state: &SharedState| {
+                    state.with_mut(|s| {
+                        s.idspace
+                            .intern_session(s.find_session_by_name("original").expect("session"))
+                            .get()
+                    })
+                };
+                let original_id = session_id(&state);
                 assert_eq!(receipt["session_id"], original_id);
                 state.with_mut(|s| s.rename_session("original", "renamed"));
                 crate::runtime::commands::create_empty_session(&state, "original")
                     .expect("replacement");
-                let replacement_id = state.with_mut(|s| {
-                    s.idspace
-                        .intern_session(s.find_session_by_name("original").expect("replacement"))
-                        .get()
-                });
-                assert_ne!(original_id, replacement_id);
-                assert_eq!(
-                    state.with(|s| s.metadata().get(&Scope::Global, &key)),
-                    Some(bytes)
-                );
-                root_token.cancel();
+                assert_ne!(original_id, session_id(&state));
+                assert_eq!(get(&state, &Scope::Global, &key), Some(bytes));
             })
             .await;
     }
@@ -8033,31 +6317,24 @@ mod terminal_metadata_scope_tests {
             .run_until(async {
                 let state = SharedState::new();
                 let root_token = CancellationToken::new();
-                let request_token = "11111111-1111-4111-8111-111111111111";
-                for (client_id, request_id, name) in
-                    [(ClientId(1), 1, "first"), (ClientId(2), 2, "collision")]
-                {
+                for (client_id, name) in [(ClientId(1), "first"), (ClientId(2), "collision")] {
                     let value = serde_json::to_vec(&serde_json::json!({
                         "name": name,
-                        "request_token": request_token,
+                        "request_token": "11111111-1111-4111-8111-111111111111",
                     }))
                     .expect("request JSON");
                     handle_set_metadata(
                         &state,
                         client_id,
-                        request_id,
+                        1,
                         &Scope::Global,
                         phux_protocol::wire::frame::SESSION_CREATE_KEY,
                         value,
                         &root_token,
                     );
                 }
-
                 assert!(state.with(|s| s.session_by_name("first").is_some()));
-                assert!(
-                    state.with(|s| s.session_by_name("collision").is_none()),
-                    "a duplicate pending nonce must not create a session whose result cannot be correlated",
-                );
+                assert!(state.with(|s| s.session_by_name("collision").is_none()));
                 root_token.cancel();
             })
             .await;
@@ -8070,1044 +6347,359 @@ mod agent_drain_tests {
     use phux_protocol::ids::ResourceId as WireResourceId;
     use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, Scope};
 
-    use super::{retract_hook, spawn_agent_state_drain, state_change_hook};
+    use super::{Prior, retract_hook, spawn_agent_state_drain, state_change_hook};
     use crate::agent_asked::AskedPayload;
     use crate::agent_detect::record::AgentRecordJson;
     use crate::agent_detect::{AgentDetectEvent, AgentReport, DetectedState};
+    use crate::hooks::AGENT_STATE_UNKNOWN;
     use crate::state::SharedState;
 
-    fn report(state: DetectedState) -> AgentReport {
-        AgentReport {
-            kind: "claude".to_owned(),
-            name: "claude".to_owned(),
+    fn report_of(kind: &str, state: DetectedState) -> AgentDetectEvent {
+        AgentDetectEvent::State(AgentReport {
+            kind: kind.to_owned(),
+            name: kind.to_owned(),
             state,
+        })
+    }
+
+    fn claude(state: DetectedState) -> AgentDetectEvent {
+        report_of("claude", state)
+    }
+
+    fn reidentified(kind: &str) -> AgentDetectEvent {
+        AgentDetectEvent::Reidentified {
+            kind: kind.to_owned(),
+            name: kind.to_owned(),
         }
     }
 
-    // --- agent-state-changed hook (the notification seam) -------------------
-
-    fn terminal() -> WireResourceId {
-        WireResourceId::local(1)
+    /// A pane at wire id 1, optionally carrying a record its human wrote.
+    fn pane(declared: Option<&[u8]>) -> (SharedState, WireResourceId) {
+        let state = SharedState::new();
+        let terminal = WireResourceId::new(1);
+        if let Some(bytes) = declared {
+            state.with_mut(|s| {
+                s.agent_records_mut().note_explicit_set(&terminal, bytes);
+                s.metadata_set(
+                    &Scope::Resource(terminal.clone()),
+                    RESOURCE_AGENT_KEY,
+                    bytes.to_vec(),
+                );
+            });
+        }
+        (state, terminal)
     }
 
-    fn ctx(event: &crate::hooks::HookEvent, key: &str) -> Option<String> {
-        event.context.get(key).cloned()
-    }
-
-    /// A first sighting has no `from`: "we have never seen this pane" is a
-    /// different fact from "it was idle", and a notifier that conflates them
-    /// announces every agent launch as a transition.
-    #[test]
-    fn first_sighting_reports_no_prior_state() {
-        let event = state_change_hook(&terminal(), "claude", "claude", None, "working")
-            .expect("a first sighting is an edge");
-        assert_eq!(event.name, crate::hooks::AGENT_STATE_CHANGED);
-        assert_eq!(ctx(&event, "from"), None);
-        assert_eq!(ctx(&event, "to").as_deref(), Some("working"));
-        assert_eq!(ctx(&event, "agent-kind").as_deref(), Some("claude"));
-    }
-
-    /// The transition the whole feature exists for: an agent that stopped and
-    /// wants a human. The hook must carry both ends so a `when` clause can
-    /// fire on `blocked` alone.
-    #[test]
-    fn working_to_blocked_carries_both_ends() {
-        let event = state_change_hook(&terminal(), "claude", "rev", Some("working"), "blocked")
-            .expect("working -> blocked is an edge");
-        assert_eq!(ctx(&event, "from").as_deref(), Some("working"));
-        assert_eq!(ctx(&event, "to").as_deref(), Some("blocked"));
-        assert_eq!(ctx(&event, "agent-name").as_deref(), Some("rev"));
-    }
-
-    /// The detector's edge filter models its own emissions, not the store, so
-    /// a republish can land on the state already recorded. That is not an
-    /// edge, and firing there is how a notifier earns being turned off.
-    #[test]
-    fn republishing_the_stored_state_fires_nothing() {
-        assert!(
-            state_change_hook(&terminal(), "claude", "claude", Some("idle"), "idle").is_none(),
-            "idle -> idle is not a transition"
-        );
-    }
-
-    /// An anonymous record must not export an empty `agent-name`: a hook
-    /// child reading `PHUX_AGENT_NAME=""` cannot tell "unnamed" from "unset".
-    #[test]
-    fn empty_agent_name_is_omitted_rather_than_blank() {
-        let event = state_change_hook(&terminal(), "codex", "", None, "working")
-            .expect("a first sighting is an edge");
-        assert_eq!(ctx(&event, "agent-name"), None);
-    }
-
-    /// A withdrawn record is an edge too — the agent exited, and a fleet view
-    /// that never hears about it keeps showing a dead pane as working.
-    #[test]
-    fn retract_reports_the_unknown_landing_state() {
-        let event = retract_hook(&terminal(), Some("working")).expect("a retract is an edge");
-        assert_eq!(ctx(&event, "from").as_deref(), Some("working"));
-        assert_eq!(
-            ctx(&event, "to").as_deref(),
-            Some(crate::hooks::AGENT_STATE_UNKNOWN)
-        );
-    }
-
-    /// Retracting an already-withdrawn record changes nothing and owes no
-    /// hook, or a flapping detector becomes a stream of duplicate alerts.
-    #[test]
-    fn retracting_an_already_unknown_record_fires_nothing() {
-        assert!(
-            retract_hook(&terminal(), Some(crate::hooks::AGENT_STATE_UNKNOWN)).is_none(),
-            "unknown -> unknown is not a transition"
-        );
-    }
-
-    /// Drive the real drain task to quiescence over `events`, and hand back the
-    /// stored `phux.agent/v1` bytes.
+    /// Drive the real drain task to quiescence over `events`.
     async fn drain(state: &SharedState, terminal: &WireResourceId, events: Vec<AgentDetectEvent>) {
-        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
         spawn_agent_state_drain(state.clone(), terminal.clone(), rx);
         for event in events {
             tx.send(event).await.expect("drain is alive");
         }
         drop(tx);
-        // The drain is a `spawn_local` task; yield until it has consumed the
-        // channel and closed.
         for _ in 0..64 {
             tokio::task::yield_now().await;
         }
     }
 
-    fn stored(state: &SharedState, terminal: &WireResourceId) -> Option<AgentRecordJson> {
+    fn raw(state: &SharedState, terminal: &WireResourceId) -> Option<Vec<u8>> {
         let scope = Scope::Resource(terminal.clone());
-        state
-            .with(|s| s.metadata().get(&scope, RESOURCE_AGENT_KEY))
-            .and_then(|bytes| AgentRecordJson::decode(&bytes))
+        state.with(|s| s.metadata().get(&scope, RESOURCE_AGENT_KEY))
     }
 
-    /// THE label-eater, end to end through the real drain.
+    fn stored(state: &SharedState, terminal: &WireResourceId) -> Option<AgentRecordJson> {
+        raw(state, terminal).and_then(|bytes| AgentRecordJson::decode(&bytes))
+    }
+
+    async fn local(test: impl std::future::Future<Output = ()>) {
+        tokio::task::LocalSet::new().run_until(test).await;
+    }
+
+    #[test]
+    fn hooks_fire_only_on_real_edges() {
+        let terminal = WireResourceId::local(1);
+        let ctx = |event: &crate::hooks::HookEvent, key: &str| event.context.get(key).cloned();
+        let was = |state: &str| Some(Prior(Some(state.to_owned())));
+
+        assert!(
+            state_change_hook(&terminal, "claude", "", None, "working").is_none(),
+            "no hook is owed while hooks are off"
+        );
+        let first =
+            state_change_hook(&terminal, "claude", "", Some(Prior(None)), "working").expect("edge");
+        assert_eq!(first.name, crate::hooks::AGENT_STATE_CHANGED);
+        assert_eq!(
+            ctx(&first, "from"),
+            None,
+            "a first sighting has no prior state"
+        );
+        assert_eq!(ctx(&first, "agent-name"), None, "an empty name is omitted");
+        let blocked =
+            state_change_hook(&terminal, "claude", "rev", was("working"), "blocked").expect("edge");
+        assert_eq!(ctx(&blocked, "from").as_deref(), Some("working"));
+        assert_eq!(ctx(&blocked, "to").as_deref(), Some("blocked"));
+        assert!(state_change_hook(&terminal, "claude", "claude", was("idle"), "idle").is_none());
+
+        let retract = retract_hook(&terminal, was("working")).expect("a retract is an edge");
+        assert_eq!(ctx(&retract, "to").as_deref(), Some(AGENT_STATE_UNKNOWN));
+        assert!(retract_hook(&terminal, was(AGENT_STATE_UNKNOWN)).is_none());
+    }
+
+    /// One drain run per row over a pane that may carry a human's record:
+    /// the resulting `(kind, name, state, session)`, or `None` when no record
+    /// remains.
     ///
-    /// A human runs `phux agent set --name reviewer --session fleet-7`. That is
-    /// identity only, so it is NOT a declaration: the detector keeps running and
-    /// fills `state` in around them — and that write re-acquires `detector_owned`.
-    /// When the agent exits back to the shell, the retract used to `DELETE` the
-    /// whole key on the strength of that bit alone, destroying the name and the
-    /// session the human chose.
+    /// - An identity-only record is not a declaration: the detector fills in
+    ///   `state`, and a retract withdraws it without deleting the name.
+    /// - A record the detector wrote alone is deleted by a retract.
+    /// - I2: a new occupant lands on `unknown` in one write; a declaration is
+    ///   withdrawn rather than corrected; no record means nothing is written.
+    /// - I1: a dropped `Reidentified` is healed by the next `State` write.
+    /// - A custom kind the detector cannot derive still gets its state, and
+    ///   reasserting a kind never drags a human's name with it.
     #[tokio::test(flavor = "current_thread")]
-    async fn a_retract_does_not_delete_a_humans_name_from_the_record() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-                let scope = Scope::Resource(terminal.clone());
-
-                // The human names the pane.
-                let declared = br#"{"name":"reviewer","kind":"claude","session":"fleet-7"}"#;
-                state.with_mut(|s| {
-                    s.agent_records_mut().note_explicit_set(&terminal, declared);
-                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, declared.to_vec());
-                });
-
-                // The agent works, then exits back to the shell.
-                drain(
-                    &state,
-                    &terminal,
-                    vec![
-                        AgentDetectEvent::State(report(DetectedState::Working)),
-                        AgentDetectEvent::Retract,
-                    ],
-                )
-                .await;
-
-                let record = stored(&state, &terminal).expect(
-                    "the record must SURVIVE the agent's exit: the human authored its identity, \
-                     and the detector only ever owned `state`",
-                );
-                assert_eq!(record.name, "reviewer", "the human's name survives");
-                assert_eq!(
-                    record.session.as_deref(),
+    async fn detector_writes_respect_human_records() {
+        type Expect<'a> = Option<(Option<&'a str>, &'a str, &'a str, Option<&'a str>)>;
+        type Case<'a> = (Option<&'a [u8]>, Vec<AgentDetectEvent>, Expect<'a>);
+        let identity = br#"{"name":"reviewer","kind":"claude","session":"fleet-7"}"#.as_slice();
+        let declared = br#"{"name":"me","kind":"claude","state":"working"}"#.as_slice();
+        let custom = br#"{"name":"reviewer","kind":"my-agent","session":"fleet-7"}"#.as_slice();
+        let nameless = br#"{"name":"reviewer","session":"fleet-7"}"#.as_slice();
+        let cases: Vec<Case<'_>> = vec![
+            (
+                Some(identity),
+                vec![claude(DetectedState::Working), AgentDetectEvent::Retract],
+                Some((
+                    Some("claude"),
+                    "reviewer",
+                    AGENT_STATE_UNKNOWN,
                     Some("fleet-7"),
-                    "and their label"
-                );
-                assert_eq!(
-                    record.state, "unknown",
-                    "but a dead agent must not leave a `working` badge spinning",
-                );
-            })
-            .await;
-    }
-
-    /// The other half: a record the detector authored ENTIRELY is its to delete.
-    /// Otherwise every pane that ever ran an agent keeps a tombstone record
-    /// forever.
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_retract_deletes_a_record_the_detector_wrote_alone() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-
-                drain(
-                    &state,
-                    &terminal,
-                    vec![
-                        AgentDetectEvent::State(report(DetectedState::Working)),
-                        AgentDetectEvent::Retract,
-                    ],
-                )
-                .await;
-
-                assert!(
-                    stored(&state, &terminal).is_none(),
-                    "a purely detector-authored record is deleted on retract",
-                );
-            })
-            .await;
-    }
-
-    /// A human who DECLARED a state stands the detector down — for as long as
-    /// the pane is occupied by the agent they described. The detector's
-    /// *derivations* never reach the record (`docs/spec/L3.md` §3.7: a
-    /// declaration outranks any derivation), but a confirmed departure
-    /// **withdraws** the declaration to `unknown`.
-    ///
-    /// This test previously asserted the opposite — that a retract touches
-    /// nothing — and it was phux-w7z2.13 passing. A `kill -9` runs no `EXIT`
-    /// trap and issues no `agent clear`, and `declared` is cleared by exactly
-    /// two things, neither of which fires: an explicit `DELETE_METADATA`, and
-    /// pane reap. So the pane sat at `working` for the life of the session
-    /// with no path back to truth — the exact wedge ADR-0046's level-triggering
-    /// exists to make impossible, encoded here as intended behavior. Renamed
-    /// and inverted against the amended §3.7 bullet, which permits a
-    /// withdrawal (never a derived value, never a `DELETE`) on positive
-    /// evidence that the declared occupant is gone.
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_retract_withdraws_a_declared_state_but_never_deletes_it() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-                let scope = Scope::Resource(terminal.clone());
-
-                let declared =
-                    br#"{"name":"me","kind":"claude","state":"working","attention":"high"}"#;
-                state.with_mut(|s| {
-                    s.agent_records_mut().note_explicit_set(&terminal, declared);
-                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, declared.to_vec());
+                )),
+            ),
+            (
+                None,
+                vec![claude(DetectedState::Working), AgentDetectEvent::Retract],
+                None,
+            ),
+            (
+                None,
+                vec![claude(DetectedState::Working), reidentified("codex")],
+                Some((Some("codex"), "codex", AGENT_STATE_UNKNOWN, None)),
+            ),
+            (
+                None,
+                vec![
+                    claude(DetectedState::Working),
+                    report_of("codex", DetectedState::Blocked),
+                ],
+                Some((Some("codex"), "codex", "blocked", None)),
+            ),
+            (
+                Some(declared),
+                vec![reidentified("codex")],
+                Some((Some("claude"), "me", AGENT_STATE_UNKNOWN, None)),
+            ),
+            (None, vec![reidentified("codex")], None),
+            (
+                Some(custom),
+                vec![claude(DetectedState::Blocked)],
+                Some((Some("my-agent"), "reviewer", "blocked", Some("fleet-7"))),
+            ),
+            (
+                Some(nameless),
+                vec![
+                    claude(DetectedState::Working),
+                    report_of("codex", DetectedState::Idle),
+                ],
+                Some((Some("codex"), "reviewer", "idle", Some("fleet-7"))),
+            ),
+        ];
+        for (row, (record, events, expect)) in cases.into_iter().enumerate() {
+            local(async {
+                let (state, terminal) = pane(record);
+                drain(&state, &terminal, events).await;
+                let got = stored(&state, &terminal);
+                let got = got.as_ref().map(|r| {
+                    (
+                        r.kind.as_deref(),
+                        r.name.as_str(),
+                        r.state.as_str(),
+                        r.session.as_deref(),
+                    )
                 });
-
-                // The detector derives all it likes; none of it lands.
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::State(report(DetectedState::Idle))],
-                )
-                .await;
-                assert_eq!(
-                    stored(&state, &terminal).expect("still declared").state,
-                    "working",
-                    "a derivation never overwrites a declaration",
-                );
-
-                // Then the process dies.
-                drain(&state, &terminal, vec![AgentDetectEvent::Retract]).await;
-
-                let record = stored(&state, &terminal).expect(
-                    "the record must SURVIVE: withdrawing is not deleting, and the key is not \
-                     the server's to remove",
-                );
-                assert_eq!(
-                    record.state, "unknown",
-                    "a dead process must not keep a live badge, whoever wrote it",
-                );
-                assert_eq!(record.name, "me", "the human's name is untouched");
-                assert_eq!(record.kind.as_deref(), Some("claude"), "and their kind");
-                assert_eq!(
-                    record.attention, None,
-                    "and an unknown pane does not keep demanding attention",
-                );
-
-                // The declaration no longer outranks the derivation, so the
-                // detector may write again — and its writes now land.
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::State(report(DetectedState::Working))],
-                )
-                .await;
-                let after = stored(&state, &terminal).expect("still there");
-                assert_eq!(after.state, "working", "the detector resumed");
-                assert_eq!(after.name, "me", "still without eating the human's name");
+                assert_eq!(got, expect, "row {row}");
             })
             .await;
-    }
-
-    /// The write-rate guard for the withdrawal. A retract that repeated — the
-    /// detector is level-triggered and a dead pane stays dead — must not
-    /// broadcast twice. The second withdrawal writes byte-identical bytes and
-    /// `metadata_set` suppresses it; in fact the arbiter no longer routes it
-    /// here at all, since the record is no longer declared and was never the
-    /// detector's to own.
-    #[tokio::test(flavor = "current_thread")]
-    async fn withdrawing_a_declaration_twice_broadcasts_once() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-                let scope = Scope::Resource(terminal.clone());
-
-                let declared = br#"{"name":"me","kind":"claude","state":"working"}"#;
-                state.with_mut(|s| {
-                    s.agent_records_mut().note_explicit_set(&terminal, declared);
-                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, declared.to_vec());
-                });
-
-                drain(&state, &terminal, vec![AgentDetectEvent::Retract]).await;
-                let first = state
-                    .with(|s| s.metadata().get(&scope, RESOURCE_AGENT_KEY))
-                    .expect("withdrawn");
-
-                drain(
-                    &state,
-                    &terminal,
-                    (0..9).map(|_| AgentDetectEvent::Retract).collect(),
-                )
-                .await;
-                let after = state
-                    .with(|s| s.metadata().get(&scope, RESOURCE_AGENT_KEY))
-                    .expect("still there");
-
-                assert_eq!(
-                    first, after,
-                    "byte-identical: a repeated withdrawal is not a broadcast",
-                );
-            })
-            .await;
-    }
-
-    /// A declaration is withdrawn on *evidence*, and an identity-only
-    /// declaration is not one at all. Both halves matter: the pane that
-    /// declared `--state working` heals, and the pane whose human only chose a
-    /// name keeps being tracked normally.
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_withdrawal_does_not_disturb_an_identity_only_declaration() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-                let scope = Scope::Resource(terminal.clone());
-
-                let declared = br#"{"name":"reviewer","kind":"my-agent","session":"fleet-7"}"#;
-                state.with_mut(|s| {
-                    s.agent_records_mut().note_explicit_set(&terminal, declared);
-                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, declared.to_vec());
-                });
-
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::State(report(DetectedState::Working))],
-                )
-                .await;
-
-                let record = stored(&state, &terminal).expect("still there");
-                assert_eq!(record.state, "working", "the detector fills state in");
-                assert_eq!(record.name, "reviewer", "around the human's name");
-                assert_eq!(
-                    record.kind.as_deref(),
-                    Some("my-agent"),
-                    "and their kind, which L3 §3.7 also requires preserved",
-                );
-                assert_eq!(record.session.as_deref(), Some("fleet-7"));
-            })
-            .await;
-    }
-
-    // --- the occupant changed (phux-w7z2.27) --------------------------------
-
-    /// THE transient-consistency invariant (I2). A pane hosting claude is
-    /// killed and codex is started in it. No subscriber may ever observe one
-    /// record whose `kind` and `state` describe two different processes — not
-    /// even for one tick — so the correction lands on `unknown`, which
-    /// describes no process and therefore cannot describe the wrong one.
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_kind_change_corrects_the_record_in_one_write_landing_on_unknown() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::State(report(DetectedState::Working))],
-                )
-                .await;
-                assert_eq!(
-                    stored(&state, &terminal).expect("written").kind.as_deref(),
-                    Some("claude"),
-                );
-
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::Reidentified {
-                        kind: "codex".to_owned(),
-                        name: "codex".to_owned(),
-                    }],
-                )
-                .await;
-
-                let record = stored(&state, &terminal).expect("the record is corrected, not gone");
-                assert_eq!(record.kind.as_deref(), Some("codex"), "the new occupant");
-                assert_eq!(record.name, "codex");
-                assert_eq!(
-                    record.state, "unknown",
-                    "nothing has been derived from the new occupant's screen yet, and \
-                     claude's last verdict is not codex's",
-                );
-            })
-            .await;
-    }
-
-    /// A correction is never a delete. A `Retract` here would broadcast a
-    /// tombstone for a pane that is very much still running an agent, and kill
-    /// an in-flight `phux agent wait` with exit 1 mid-turn.
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_kind_change_never_removes_the_record() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-
-                drain(
-                    &state,
-                    &terminal,
-                    vec![
-                        AgentDetectEvent::State(report(DetectedState::Working)),
-                        AgentDetectEvent::Reidentified {
-                            kind: "codex".to_owned(),
-                            name: "codex".to_owned(),
-                        },
-                    ],
-                )
-                .await;
-
-                assert!(
-                    stored(&state, &terminal).is_some(),
-                    "the pane is occupied; there is nothing to tombstone",
-                );
-            })
-            .await;
-    }
-
-    /// THE thing that makes the correction safe to lose. `emit_agent_state` is
-    /// `try_send` and drops on a full sink, so a `Reidentified` may simply
-    /// never arrive. The next `State` write must carry the corrected `kind`
-    /// anyway — level-triggered reassertion (I1), not an edge.
-    ///
-    /// If a future refactor makes `Reidentified` the only path that corrects
-    /// `kind`, this test is what fails.
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_dropped_correction_is_healed_by_the_next_state_write() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::State(report(DetectedState::Working))],
-                )
-                .await;
-
-                // The `Reidentified` for the new occupant is DROPPED on the
-                // way here. All the drain ever sees is codex's state.
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::State(AgentReport {
-                        kind: "codex".to_owned(),
-                        name: "codex".to_owned(),
-                        state: DetectedState::Blocked,
-                    })],
-                )
-                .await;
-
-                let record = stored(&state, &terminal).expect("written");
-                assert_eq!(
-                    record.kind.as_deref(),
-                    Some("codex"),
-                    "a state derived from codex's screen must never be stored beside \
-                     `kind: claude`",
-                );
-                assert_eq!(record.name, "codex");
-                assert_eq!(record.state, "blocked");
-            })
-            .await;
-    }
-
-    /// The correction path is subject to the same arbitration as every other
-    /// write: a DECLARED record is withdrawn, never rewritten with a kind the
-    /// detector derived. The human's `kind` may be theirs, and this write is
-    /// not the place to find out.
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_kind_change_withdraws_a_declaration_rather_than_correcting_it() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-                let scope = Scope::Resource(terminal.clone());
-
-                let declared = br#"{"name":"me","kind":"claude","state":"working"}"#;
-                state.with_mut(|s| {
-                    s.agent_records_mut().note_explicit_set(&terminal, declared);
-                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, declared.to_vec());
-                });
-
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::Reidentified {
-                        kind: "codex".to_owned(),
-                        name: "codex".to_owned(),
-                    }],
-                )
-                .await;
-
-                let record = stored(&state, &terminal).expect("still there");
-                assert_eq!(record.state, "unknown", "the declaration is withdrawn");
-                assert_eq!(record.name, "me", "the human's fields are untouched");
-                assert_eq!(
-                    record.kind.as_deref(),
-                    Some("claude"),
-                    "including a kind that may be theirs: the next State write, which \
-                     the arbiter governs, is what corrects it",
-                );
-            })
-            .await;
-    }
-
-    /// A pane with no record at all has nothing to correct, and a correction
-    /// must never CREATE one: an `unknown` record for a pane nobody has
-    /// derived anything about is a row in every sidebar for no reason.
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_kind_change_on_a_pane_with_no_record_writes_nothing() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::Reidentified {
-                        kind: "codex".to_owned(),
-                        name: "codex".to_owned(),
-                    }],
-                )
-                .await;
-
-                assert!(stored(&state, &terminal).is_none());
-            })
-            .await;
-    }
-
-    // --- a contradicted explicit kind (phux-w7z2.45) ------------------------
-
-    /// A report for an arbitrary kind, for the handover cases.
-    fn report_of(kind: &str, state: DetectedState) -> AgentReport {
-        AgentReport {
-            kind: kind.to_owned(),
-            name: kind.to_owned(),
-            state,
         }
     }
 
-    /// THE .45 bug, end to end through the real drain.
-    ///
-    /// The Claude hook shim writes `--name claude --kind claude` at
-    /// `SessionStart`, so every shim pane is `explicit_kind` for its whole
-    /// life — and `docs/spec/L3.md` §3.7 requires the server to preserve that
-    /// `kind`. So the .27 correction, which works by REASSERTING the kind the
-    /// detector authored, cannot run on the largest population of panes: after
-    /// a `claude` -> `codex` handover the record kept `kind: claude` and then
-    /// took codex's derived state beside it. Nothing looked stale. The state
-    /// was fresh, the name was present, and the kind was a lie.
-    ///
-    /// The server may not overwrite their field, so it withholds the state
-    /// instead: the record lands on the WITHDRAWN shape (`kind` present,
-    /// `state: unknown`) that ADR-0075 point 6's `%name` write gate refuses,
-    /// which is the outcome .27 was protecting.
+    /// A declared state outranks derivations (L3 §3.7), but a confirmed
+    /// departure withdraws it to `unknown`, never deletes it; afterwards the
+    /// detector's writes land again (phux-w7z2.13: a `kill -9` must not pin
+    /// the pane at `working`).
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_retract_withdraws_a_declared_state_but_never_deletes_it() {
+        local(async {
+            let (state, terminal) = pane(Some(
+                br#"{"name":"me","kind":"claude","state":"working","attention":"high"}"#,
+            ));
+            drain(&state, &terminal, vec![claude(DetectedState::Idle)]).await;
+            assert_eq!(
+                stored(&state, &terminal).expect("declared").state,
+                "working"
+            );
+
+            drain(&state, &terminal, vec![AgentDetectEvent::Retract]).await;
+            let record = stored(&state, &terminal).expect("withdrawing is not deleting");
+            assert_eq!(record.state, AGENT_STATE_UNKNOWN);
+            assert_eq!(record.name, "me");
+            assert_eq!(record.kind.as_deref(), Some("claude"));
+            assert_eq!(record.attention, None);
+
+            drain(&state, &terminal, vec![claude(DetectedState::Working)]).await;
+            let after = stored(&state, &terminal).expect("still there");
+            assert_eq!(after.state, "working", "the detector resumed");
+            assert_eq!(after.name, "me");
+        })
+        .await;
+    }
+
+    /// phux-w7z2.45: a shim pane declared `kind: claude` now running codex
+    /// keeps the declared kind (L3 §3.7) and withholds codex's state, and
+    /// every later contradicted tick writes nothing.
     #[tokio::test(flavor = "current_thread")]
     async fn a_shim_pane_never_takes_a_state_from_an_occupant_its_kind_denies() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-                let scope = Scope::Resource(terminal.clone());
-
-                // The shim's one identity write, at SessionStart.
-                let shim = br#"{"name":"claude","kind":"claude"}"#;
-                state.with_mut(|s| {
-                    s.agent_records_mut().note_explicit_set(&terminal, shim);
-                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, shim.to_vec());
-                });
-
-                // Claude runs, then the human kills it and starts codex. The
-                // correction lands first, then codex's own screen is derived.
-                drain(
-                    &state,
-                    &terminal,
-                    vec![
-                        AgentDetectEvent::State(report(DetectedState::Working)),
-                        AgentDetectEvent::Reidentified {
-                            kind: "codex".to_owned(),
-                            name: "codex".to_owned(),
-                        },
-                        AgentDetectEvent::State(report_of("codex", DetectedState::Working)),
-                    ],
-                )
-                .await;
-
-                let record = stored(&state, &terminal).expect("the record is still there");
-                assert_eq!(
-                    record.kind.as_deref(),
-                    Some("claude"),
-                    "their field is preserved: §3.7 is not ours to overrule",
-                );
-                assert_eq!(record.name, "claude", "and their name with it");
-                assert_eq!(
-                    record.state, "unknown",
-                    "but codex's state must NEVER be stored beside `kind: claude` — a \
-                     consumer reading that is told, with full confidence, that a claude \
-                     agent is working",
-                );
-            })
+        local(async {
+            let (state, terminal) = pane(Some(br#"{"name":"claude","kind":"claude"}"#));
+            drain(
+                &state,
+                &terminal,
+                vec![
+                    claude(DetectedState::Working),
+                    reidentified("codex"),
+                    report_of("codex", DetectedState::Working),
+                ],
+            )
             .await;
+            let record = stored(&state, &terminal).expect("still there");
+            assert_eq!(record.kind.as_deref(), Some("claude"));
+            assert_eq!(record.name, "claude");
+            assert_eq!(record.state, AGENT_STATE_UNKNOWN);
+
+            let first = raw(&state, &terminal);
+            let churn = [
+                DetectedState::Blocked,
+                DetectedState::Idle,
+                DetectedState::Working,
+                DetectedState::Done,
+            ];
+            let ticks = (0..20)
+                .map(|i| report_of("codex", churn[i % churn.len()]))
+                .collect();
+            drain(&state, &terminal, ticks).await;
+            assert_eq!(raw(&state, &terminal), first, "withholding is free");
+        })
+        .await;
     }
 
-    /// ADR-0046 decision 7, on the new path. A contradicted pane is not a
-    /// write per tick: the withheld state composes to bytes identical to what
-    /// is already stored, so `metadata_set` suppresses it and an idle fleet
-    /// with a stale shim declaration still costs zero broadcasts.
+    /// Level-triggered: the state resumes once the pane runs the declared
+    /// kind again, and clearing the declaration hands the kind back.
     #[tokio::test(flavor = "current_thread")]
-    async fn a_contradicted_pane_writes_nothing_on_every_subsequent_tick() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-                let scope = Scope::Resource(terminal.clone());
-
-                let shim = br#"{"name":"claude","kind":"claude"}"#;
-                state.with_mut(|s| {
-                    s.agent_records_mut().note_explicit_set(&terminal, shim);
-                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, shim.to_vec());
-                });
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::State(report_of(
-                        "codex",
-                        DetectedState::Working,
-                    ))],
-                )
-                .await;
-                let first = state
-                    .with(|s| s.metadata().get(&scope, RESOURCE_AGENT_KEY))
-                    .expect("written");
-
-                // Twenty more ticks, each deriving something different from
-                // codex's screen. Not one of them may move a byte.
-                let churn = [
-                    DetectedState::Blocked,
-                    DetectedState::Idle,
-                    DetectedState::Working,
-                    DetectedState::Done,
-                ];
-                let repeats = (0..20)
-                    .map(|i| AgentDetectEvent::State(report_of("codex", churn[i % churn.len()])))
-                    .collect();
-                drain(&state, &terminal, repeats).await;
-
-                let after = state
-                    .with(|s| s.metadata().get(&scope, RESOURCE_AGENT_KEY))
-                    .expect("still there");
-                assert_eq!(
-                    first, after,
-                    "byte-identical: withholding a state is level-triggered and free",
-                );
-            })
+    async fn a_contradiction_heals_on_the_declared_kind_or_a_cleared_declaration() {
+        local(async {
+            let (state, terminal) = pane(Some(br#"{"name":"claude","kind":"claude"}"#));
+            drain(
+                &state,
+                &terminal,
+                vec![report_of("codex", DetectedState::Working)],
+            )
             .await;
+            assert_eq!(
+                stored(&state, &terminal).expect("written").state,
+                AGENT_STATE_UNKNOWN
+            );
+            drain(&state, &terminal, vec![claude(DetectedState::Blocked)]).await;
+            assert_eq!(stored(&state, &terminal).expect("written").state, "blocked");
+
+            drain(
+                &state,
+                &terminal,
+                vec![report_of("codex", DetectedState::Working)],
+            )
+            .await;
+            let scope = Scope::Resource(terminal.clone());
+            state.with_mut(|s| {
+                s.agent_records_mut().note_explicit_delete(&terminal);
+                s.metadata_delete(&scope, RESOURCE_AGENT_KEY);
+            });
+            drain(
+                &state,
+                &terminal,
+                vec![report_of("codex", DetectedState::Working)],
+            )
+            .await;
+            let record = stored(&state, &terminal).expect("rewritten");
+            assert_eq!(record.kind.as_deref(), Some("codex"));
+            assert_eq!(record.state, "working");
+        })
+        .await;
     }
 
-    /// The half that must NOT change, and the reason the predicate is
-    /// "contradicted" rather than "different". `phux agent set --name reviewer
-    /// --kind my-agent` is the documented useful half: a human labels the pane
-    /// and the detector keeps tracking its lifecycle. `my-agent` differs from
-    /// the detector's `claude` on every single tick and is not a claim the
-    /// detector can falsify, so the state must keep flowing.
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_custom_kind_the_detector_cannot_derive_still_gets_its_state_filled_in() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-                let scope = Scope::Resource(terminal.clone());
-
-                let labelled = br#"{"name":"reviewer","kind":"my-agent","session":"fleet-7"}"#;
-                state.with_mut(|s| {
-                    s.agent_records_mut().note_explicit_set(&terminal, labelled);
-                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, labelled.to_vec());
-                });
-
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::State(report(DetectedState::Blocked))],
-                )
-                .await;
-
-                let record = stored(&state, &terminal).expect("written");
-                assert_eq!(record.kind.as_deref(), Some("my-agent"), "their label");
-                assert_eq!(record.name, "reviewer");
-                assert_eq!(record.session.as_deref(), Some("fleet-7"));
-                assert_eq!(
-                    record.state, "blocked",
-                    "the detector must keep tracking the lifecycle around a name and a \
-                     kind it could never have derived",
-                );
-            })
-            .await;
-    }
-
-    /// Level-triggered, so it heals itself. Nothing is remembered about the
-    /// contradiction: the moment the pane runs the declared kind again, the
-    /// state resumes on the very next write, with no clear and no restart.
-    #[tokio::test(flavor = "current_thread")]
-    async fn the_state_resumes_the_moment_the_pane_runs_the_declared_kind_again() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-                let scope = Scope::Resource(terminal.clone());
-
-                let shim = br#"{"name":"claude","kind":"claude"}"#;
-                state.with_mut(|s| {
-                    s.agent_records_mut().note_explicit_set(&terminal, shim);
-                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, shim.to_vec());
-                });
-
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::State(report_of(
-                        "codex",
-                        DetectedState::Working,
-                    ))],
-                )
-                .await;
-                assert_eq!(stored(&state, &terminal).expect("written").state, "unknown");
-
-                // The human quits codex and starts claude again.
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::State(report(DetectedState::Blocked))],
-                )
-                .await;
-
-                let record = stored(&state, &terminal).expect("written");
-                assert_eq!(record.kind.as_deref(), Some("claude"));
-                assert_eq!(
-                    record.state, "blocked",
-                    "no memory of the contradiction: the level is the whole state",
-                );
-            })
-            .await;
-    }
-
-    /// The other exit: `phux agent clear` drops the declaration, and with it
-    /// the `kind` that was blocking the derivation. The detector then owns
-    /// every field again and the .27 reassertion does the rest.
-    #[tokio::test(flavor = "current_thread")]
-    async fn clearing_the_declaration_hands_the_kind_back_to_the_detector() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-                let scope = Scope::Resource(terminal.clone());
-
-                let shim = br#"{"name":"claude","kind":"claude"}"#;
-                state.with_mut(|s| {
-                    s.agent_records_mut().note_explicit_set(&terminal, shim);
-                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, shim.to_vec());
-                });
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::State(report_of(
-                        "codex",
-                        DetectedState::Working,
-                    ))],
-                )
-                .await;
-                assert_eq!(stored(&state, &terminal).expect("written").state, "unknown");
-
-                state.with_mut(|s| {
-                    s.agent_records_mut().note_explicit_delete(&terminal);
-                    s.metadata_delete(&scope, RESOURCE_AGENT_KEY);
-                });
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::State(report_of(
-                        "codex",
-                        DetectedState::Working,
-                    ))],
-                )
-                .await;
-
-                let record = stored(&state, &terminal).expect("rewritten from scratch");
-                assert_eq!(record.kind.as_deref(), Some("codex"), "the truth, at last");
-                assert_eq!(record.state, "working");
-            })
-            .await;
-    }
-
-    // --- per-pane naming (phux-w7z2.25, as ruled) ---------------------------
-
-    /// The detector NEVER synthesizes a per-pane name. `name` is the manifest
-    /// constant, so twelve claude panes all read `claude`, disambiguated by the
-    /// pane id — which is the record's key and is already in every consumer's
-    /// hand.
-    ///
-    /// Not an oversight, a decision. Any per-pane name (`claude-7`) breaks
-    /// every shipped `phux agent send-keys --expect-agent claude`, which is an
-    /// exact whole-string match on `record.name`; and it launders the pane id
-    /// into the label field of a record that is already keyed by pane. The
-    /// user-facing route to a per-pane name is
-    /// `phux agent set @7 --name reviewer` — an explicit writer, whose name the
-    /// ownership bits then protect from every subsequent detector write.
-    #[tokio::test(flavor = "current_thread")]
-    async fn the_detector_writes_the_manifest_name_and_never_invents_one() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let (first, second) = (WireResourceId::new(1), WireResourceId::new(2));
-
-                for terminal in [&first, &second] {
-                    drain(
-                        &state,
-                        terminal,
-                        vec![AgentDetectEvent::State(report(DetectedState::Working))],
-                    )
-                    .await;
-                }
-
-                assert_eq!(stored(&state, &first).expect("written").name, "claude");
-                assert_eq!(
-                    stored(&state, &second).expect("written").name,
-                    "claude",
-                    "two panes of the same kind carry the same name; the pane id is what \
-                     tells them apart, and it is the record's key",
-                );
-            })
-            .await;
-    }
-
-    /// The other half of the naming ruling: a name a human DID choose survives
-    /// every detector write — including now that `kind` is reasserted on each
-    /// one. Reasserting the kind must not drag the name along with it.
-    #[tokio::test(flavor = "current_thread")]
-    async fn reasserting_kind_does_not_overwrite_a_humans_name() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-                let scope = Scope::Resource(terminal.clone());
-
-                let named = br#"{"name":"reviewer","session":"fleet-7"}"#;
-                state.with_mut(|s| {
-                    s.agent_records_mut().note_explicit_set(&terminal, named);
-                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, named.to_vec());
-                });
-
-                drain(
-                    &state,
-                    &terminal,
-                    vec![
-                        AgentDetectEvent::State(report(DetectedState::Working)),
-                        AgentDetectEvent::State(AgentReport {
-                            kind: "codex".to_owned(),
-                            name: "codex".to_owned(),
-                            state: DetectedState::Idle,
-                        }),
-                    ],
-                )
-                .await;
-
-                let record = stored(&state, &terminal).expect("written");
-                assert_eq!(record.name, "reviewer", "their label, through both writes");
-                assert_eq!(record.session.as_deref(), Some("fleet-7"));
-                assert_eq!(
-                    record.kind.as_deref(),
-                    Some("codex"),
-                    "while the kind — which they never supplied — tracks the pane",
-                );
-                assert_eq!(record.state, "idle");
-            })
-            .await;
-    }
-
-    /// phux-uaon: a human identity-only SET after the detector has already
-    /// published, then a subsequent detector write. The name must survive
-    /// even when the arbiter bit is missing — the store already holds the
-    /// identity-only bytes, and that is enough to merge.
+    /// phux-uaon: an identity-only SET that reached the store but not the
+    /// arbiter still survives the next detector write.
     #[tokio::test(flavor = "current_thread")]
     async fn a_subsequent_detector_write_merges_over_an_identity_only_set() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-                let scope = Scope::Resource(terminal.clone());
-
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::State(report(DetectedState::Blocked))],
-                )
-                .await;
-                assert_eq!(
-                    stored(&state, &terminal).expect("detector published").name,
-                    "claude"
+        local(async {
+            let (state, terminal) = pane(None);
+            drain(&state, &terminal, vec![claude(DetectedState::Blocked)]).await;
+            let scope = Scope::Resource(terminal.clone());
+            state.with_mut(|s| {
+                s.metadata_set(
+                    &scope,
+                    RESOURCE_AGENT_KEY,
+                    br#"{"name":"reviewer","session":"fleet-7"}"#.to_vec(),
                 );
-
-                // Store-ahead of the arbiter: the SET landed, `note_explicit_set`
-                // has not. This is the race the integration test lost once.
-                let named = br#"{"name":"reviewer","session":"fleet-7"}"#;
-                state.with_mut(|s| {
-                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, named.to_vec());
-                });
-
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::State(report(DetectedState::Blocked))],
-                )
-                .await;
-
-                let record = stored(&state, &terminal).expect("merged");
-                assert_eq!(
-                    record.name, "reviewer",
-                    "human name survives the detector write"
-                );
-                assert_eq!(record.session.as_deref(), Some("fleet-7"));
-                assert_eq!(record.state, "blocked", "detector fills state");
-                assert_eq!(record.kind.as_deref(), Some("claude"));
-            })
-            .await;
+            });
+            drain(&state, &terminal, vec![claude(DetectedState::Blocked)]).await;
+            let record = stored(&state, &terminal).expect("merged");
+            assert_eq!(record.name, "reviewer");
+            assert_eq!(record.session.as_deref(), Some("fleet-7"));
+            assert_eq!(record.state, "blocked");
+            assert_eq!(record.kind.as_deref(), Some("claude"));
+        })
+        .await;
     }
 
-    /// The efficiency contract at the store: a `working` agent whose detector
-    /// re-emits the same tuple produces ZERO broadcasts after the first. The
-    /// detector's edge filter normally means the drain never even sees these —
-    /// this pins the store-side backstop that makes the invariant hold anyway.
-    #[tokio::test(flavor = "current_thread")]
-    async fn re_emitting_an_unchanged_state_writes_nothing() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let terminal = WireResourceId::new(1);
-                let scope = Scope::Resource(terminal.clone());
-
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::State(report(DetectedState::Working))],
-                )
-                .await;
-                let first = state
-                    .with(|s| s.metadata().get(&scope, RESOURCE_AGENT_KEY))
-                    .expect("written once");
-
-                // Nine more identical emissions.
-                let repeats = (0..9)
-                    .map(|_| AgentDetectEvent::State(report(DetectedState::Working)))
-                    .collect();
-                drain(&state, &terminal, repeats).await;
-
-                let after = state
-                    .with(|s| s.metadata().get(&scope, RESOURCE_AGENT_KEY))
-                    .expect("still there");
-                assert_eq!(
-                    first, after,
-                    "byte-identical: metadata_set dedups the write"
-                );
-            })
-            .await;
-    }
-
-    /// Tier 2 of the ADR-0036 ladder, through the real drain: a `phux-ask`
-    /// marker the actor observed lands in the SAME ledger a `REPORT_ASKED`
-    /// hook writes to — which is the whole point, since two ledgers cannot
-    /// arbitrate — and the marker clearing takes it back out.
+    /// ADR-0036 tier 2: a `phux-ask` marker lands in the same ledger a
+    /// `REPORT_ASKED` hook writes to, and clearing it retracts the ask.
     #[tokio::test(flavor = "current_thread")]
     async fn an_ask_sentinel_lands_in_the_ledger_the_hook_shares() {
-        let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let state = SharedState::new();
-                let (pane, terminal) = state.with_mut(|s| {
-                    let (_session, _window, pane) = s.seed_session("demo");
-                    let wire = s.intern_terminal_wire(pane);
-                    (pane, wire)
-                });
-                let ask = AskedPayload {
-                    id: "q1".to_owned(),
-                    question: "Deploy to prod?".to_owned(),
-                    suggestions: vec!["Yes".to_owned(), "No".to_owned()],
-                    elapsed_seconds: None,
-                };
-
-                drain(
-                    &state,
-                    &terminal,
-                    vec![AgentDetectEvent::AskSentinel(Some(ask))],
-                )
-                .await;
-                assert_eq!(
-                    state.with(|s| s.current_agent_asked(pane).map(|p| p.id.clone())),
-                    Some("q1".to_owned()),
-                    "the sentinel must reach the arbiter, not bypass it",
-                );
-
-                drain(&state, &terminal, vec![AgentDetectEvent::AskSentinel(None)]).await;
-                assert!(
-                    state.with(|s| s.current_agent_asked(pane).is_none()),
-                    "retitling away from the marker retracts the sentinel's ask, \
-                     so the same question asked again is a new ask",
-                );
-            })
+        local(async {
+            let state = SharedState::new();
+            let (pane, terminal) = state.with_mut(|s| {
+                let (_session, _window, pane) = s.seed_session("demo");
+                (pane, s.intern_terminal_wire(pane))
+            });
+            let ask = AskedPayload {
+                id: "q1".to_owned(),
+                question: "Deploy to prod?".to_owned(),
+                suggestions: vec!["Yes".to_owned(), "No".to_owned()],
+                elapsed_seconds: None,
+            };
+            drain(
+                &state,
+                &terminal,
+                vec![AgentDetectEvent::AskSentinel(Some(ask))],
+            )
             .await;
+            assert_eq!(
+                state.with(|s| s.current_agent_asked(pane).map(|p| p.id.clone())),
+                Some("q1".to_owned()),
+            );
+            drain(&state, &terminal, vec![AgentDetectEvent::AskSentinel(None)]).await;
+            assert!(state.with(|s| s.current_agent_asked(pane).is_none()));
+        })
+        .await;
     }
 }

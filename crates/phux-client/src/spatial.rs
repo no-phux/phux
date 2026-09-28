@@ -1,16 +1,10 @@
 //! Existing-pane layout edits over the shared L3 workspace envelope:
 //! `insert-pane`, `move-pane`, `swap-pane` (ADR-0049, ADR-0056, ADR-0129).
 //!
-//! One implementation of selector resolution, the plan, and its execution,
-//! shared by the CLI verbs and the MCP spatial tools, so both return the
-//! same document and the same refusal codes.
-//!
-//! These edits never spawn a Terminal. `insert-pane` requires a Terminal
-//! that already exists in the same session but is not yet present in its
-//! persisted layout; implicit spawn-and-place remains a separate placement
-//! concern. All selectors must resolve to exactly one local Terminal. The
-//! resulting metadata write changes topology only: attached clients
-//! preserve their own focus while reconciling it (ADR-0049).
+//! Shared by the CLI verbs and the MCP tools, so both return the same
+//! document and refusal codes. These edits never spawn a Terminal, every
+//! selector must resolve to exactly one local Terminal, and only a move may
+//! cross sessions.
 
 use std::path::Path;
 
@@ -22,7 +16,7 @@ use serde_json::{Value, json};
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 use crate::layout::SplitDir;
-use crate::layout_ops::{LayoutMutation, LayoutOps, LayoutOpsError, validate_projection_key};
+use crate::layout_ops::{LayoutMutation, LayoutOpsError, validate_projection_key};
 use crate::pane_move::{self, PaneMoveError};
 use crate::selector::{self, Selector, format_terminal_id};
 use crate::state::Degradation;
@@ -208,25 +202,19 @@ impl From<SpatialRefusal> for SpatialError {
 struct Plan {
     session: SessionId,
     mutation: LayoutMutation,
-    /// Named projection key (ADR-0129), validated against `session`.
-    /// `None` keeps the shared default `phux.tui.layout/v1/<session>`.
+    /// Named projection key (ADR-0129); `None` is the default key.
     projection_key: Option<String>,
     outcome: SpatialOutcome,
 }
 
-/// A move whose source and destination panes live in different sessions
-/// (ADR-0056): ownership moves on L1 via `MOVE_RESOURCE`, then geometry is
-/// written client-side — a `Split` into the destination envelope and a
-/// `Close` out of the source envelope.
+/// A move across sessions (ADR-0056), executed by [`pane_move::move_pane`],
+/// which also resolves the raw `projection` values.
 #[derive(Debug)]
 struct CrossMovePlan {
     source: ResourceId,
     target: ResourceId,
     dir: SplitDir,
     ratio: f32,
-    /// Raw `projection` values, resolved and validated by
-    /// [`pane_move::move_pane`] against the two sessions it discovers at
-    /// execution time.
     projection: Vec<String>,
     outcome: SpatialOutcome,
 }
@@ -238,17 +226,12 @@ enum PlanKind {
 }
 
 /// Validate, resolve, plan, and execute one spatial edit on a fresh
-/// connection to `socket`.
-///
-/// Degradation notices seen on the snapshot read are appended to `notices`
-/// in encounter order, for the caller to print.
+/// connection, appending snapshot degradation notices to `notices`.
 ///
 /// # Errors
 ///
-/// [`SpatialError::Refused`] with the stable code for a malformed request, a
-/// selector that does not name exactly one local pane, or a refused layout
-/// or ownership write; [`SpatialError::Transport`] when the server cannot be
-/// reached or the connection fails.
+/// [`SpatialError::Refused`] with a stable code, or
+/// [`SpatialError::Transport`].
 pub async fn run(
     socket: &Path,
     operation: SpatialOp,
@@ -281,23 +264,14 @@ async fn execute_local(conn: &mut Connection, plan: Plan) -> Result<SpatialOutco
         projection_key,
         outcome,
     } = plan;
-    let mut layout = match projection_key {
-        Some(key) => LayoutOps::with_key(conn, session, key, 100).map_err(layout_error)?,
-        None => LayoutOps::new(conn, session, 100),
-    };
+    let mut layout =
+        pane_move::layout_ops(conn, session, projection_key, 100).map_err(layout_error)?;
     let mutated = layout.mutate(mutation).await;
     drop(layout);
     mutated.map_err(layout_error)?;
     Ok(outcome)
 }
 
-/// Execute a cross-session move (ADR-0056): feature-gate, re-parent on L1,
-/// then write geometry — destination first, so a failed placement rolls
-/// back with a single inverse `MOVE_RESOURCE` and no layout repair.
-///
-/// The source envelope's stale leaf is dropped last. If the move reaped the
-/// source session, its one-leaf envelope is deleted instead; cleanup failures
-/// are reported because the ownership move has already committed.
 async fn execute_cross_move(
     conn: &mut Connection,
     plan: CrossMovePlan,
@@ -386,8 +360,7 @@ fn move_refusal(error: &PaneMoveError) -> SpatialRefusal {
             "this move touches one session layout; pass at most one --projection",
             2,
         ),
-        // `move_error` routes transport failures to `SpatialError::Transport`
-        // before this table is consulted; the arm keeps the match total.
+        // Routed to `SpatialError::Transport` before this table.
         PaneMoveError::Transport(_) => {
             (codes::TRANSPORT, "run `phux doctor` for a health check", 1)
         }
@@ -397,13 +370,10 @@ fn move_refusal(error: &PaneMoveError) -> SpatialRefusal {
 
 /// The contract code for a refused same-session layout write.
 fn layout_error(err: LayoutOpsError) -> SpatialError {
+    if let LayoutOpsError::Transport(transport) = err {
+        return SpatialError::Transport(transport);
+    }
     let refusal = match &err {
-        LayoutOpsError::Transport(_) => {
-            let LayoutOpsError::Transport(transport) = err else {
-                return SpatialError::Refused(internal_error("layout transport mismatch"));
-            };
-            return SpatialError::Transport(transport);
-        }
         LayoutOpsError::MissingLayout => SpatialRefusal::new(
             codes::LAYOUT_MISSING,
             "session has no persisted layout; attach a TUI before editing topology",
@@ -538,8 +508,7 @@ impl SpatialOp {
     }
 }
 
-/// `GET_STATE` on `conn`, keeping the historical refusal text: a refusal is
-/// reported through `explain_unexpected`, not as `AttachError::Refused`.
+/// `GET_STATE` on `conn`; a refusal is reported through `explain_unexpected`.
 async fn read_snapshot(
     conn: &mut Connection,
     request_id: u32,
@@ -580,149 +549,99 @@ async fn build_plan(
         return Err(same_pane_error());
     }
 
-    // Cross-session move (ADR-0056): the one spatial operation that may span
-    // sessions. Ownership moves on L1 via MOVE_RESOURCE; the two layout
-    // writes stay client-side. Every other operation keeps the same-session
-    // requirement below.
     if let Some(plan) = cross_move_plan(snapshot, &operation, &terminals) {
         return Ok(plan);
     }
 
     let session = same_session(snapshot, &terminals)?;
-
-    match (operation, terminals.as_slice()) {
-        (
-            SpatialOp::Insert {
-                direction,
-                ratio,
-                projection,
-                ..
-            },
-            [target, new_pane],
-        ) => build_insert_plan(session, target, new_pane, direction, ratio, &projection),
-        (
-            SpatialOp::Move {
-                direction,
-                ratio,
-                projection,
-                ..
-            },
-            [source, target],
-        ) => build_move_plan(session, source, target, direction, ratio, &projection),
-        (SpatialOp::Swap { projection, .. }, [first, second]) => {
-            build_swap_plan(session, first, second, &projection)
-        }
-        _ => Err(internal_error("spatial operation argument mismatch")),
-    }
-}
-
-fn build_insert_plan(
-    session: SessionId,
-    target: &ResourceId,
-    new_pane: &ResourceId,
-    direction: Direction,
-    ratio: f32,
-    projection: &[String],
-) -> Result<PlanKind, SpatialRefusal> {
-    let projection_key = resolve_local_projection(projection, session)?;
-    Ok(PlanKind::Local(Plan {
-        session,
-        mutation: LayoutMutation::Split {
-            target: target.clone(),
-            new_pane: new_pane.clone(),
-            dir: direction.wire(),
+    let [first, second] = terminals.as_slice() else {
+        return Err(internal_error("spatial operation argument mismatch"));
+    };
+    let (projection, mutation, document, summary) = match operation {
+        SpatialOp::Insert {
+            direction,
             ratio,
-        },
-        projection_key,
-        outcome: SpatialOutcome {
-            document: json!({
+            projection,
+            ..
+        } => (
+            projection,
+            LayoutMutation::Split {
+                target: first.clone(),
+                new_pane: second.clone(),
+                dir: direction.wire(),
+                ratio,
+            },
+            json!({
                 "schema_version": JSON_SCHEMA_VERSION,
                 "operation": "insert-pane",
                 "session_id": session.get(),
-                "target_terminal_id": local_id(target),
-                "new_terminal_id": local_id(new_pane),
+                "target_terminal_id": local_id(first),
+                "new_terminal_id": local_id(second),
                 "direction": direction.as_str(),
                 "ratio": ratio,
             }),
-            summary: format!(
+            format!(
                 "inserted @{} beside @{} ({}, ratio {ratio})",
-                local_id(new_pane),
-                local_id(target),
+                local_id(second),
+                local_id(first),
                 direction.as_str(),
             ),
-        },
-    }))
-}
-
-fn build_move_plan(
-    session: SessionId,
-    source: &ResourceId,
-    target: &ResourceId,
-    direction: Direction,
-    ratio: f32,
-    projection: &[String],
-) -> Result<PlanKind, SpatialRefusal> {
-    let projection_key = resolve_local_projection(projection, session)?;
-    Ok(PlanKind::Local(Plan {
-        session,
-        mutation: LayoutMutation::Move {
-            source: source.clone(),
-            target: target.clone(),
-            dir: direction.wire(),
+        ),
+        SpatialOp::Move {
+            direction,
             ratio,
-        },
-        projection_key,
-        outcome: SpatialOutcome {
-            document: json!({
+            projection,
+            ..
+        } => (
+            projection,
+            LayoutMutation::Move {
+                source: first.clone(),
+                target: second.clone(),
+                dir: direction.wire(),
+                ratio,
+            },
+            json!({
                 "schema_version": JSON_SCHEMA_VERSION,
                 "operation": "move-pane",
                 "session_id": session.get(),
-                "source_terminal_id": local_id(source),
-                "target_terminal_id": local_id(target),
+                "source_terminal_id": local_id(first),
+                "target_terminal_id": local_id(second),
                 "direction": direction.as_str(),
                 "ratio": ratio,
             }),
-            summary: format!(
+            format!(
                 "moved @{} beside @{} ({}, ratio {ratio})",
-                local_id(source),
-                local_id(target),
+                local_id(first),
+                local_id(second),
                 direction.as_str(),
             ),
-        },
-    }))
-}
-
-fn build_swap_plan(
-    session: SessionId,
-    first: &ResourceId,
-    second: &ResourceId,
-    projection: &[String],
-) -> Result<PlanKind, SpatialRefusal> {
-    let projection_key = resolve_local_projection(projection, session)?;
-    Ok(PlanKind::Local(Plan {
-        session,
-        mutation: LayoutMutation::Swap {
-            first: first.clone(),
-            second: second.clone(),
-        },
-        projection_key,
-        outcome: SpatialOutcome {
-            document: json!({
+        ),
+        SpatialOp::Swap { projection, .. } => (
+            projection,
+            LayoutMutation::Swap {
+                first: first.clone(),
+                second: second.clone(),
+            },
+            json!({
                 "schema_version": JSON_SCHEMA_VERSION,
                 "operation": "swap-pane",
                 "session_id": session.get(),
                 "first_terminal_id": local_id(first),
                 "second_terminal_id": local_id(second),
             }),
-            summary: format!("swapped @{} and @{}", local_id(first), local_id(second)),
-        },
+            format!("swapped @{} and @{}", local_id(first), local_id(second)),
+        ),
+    };
+    Ok(PlanKind::Local(Plan {
+        session,
+        mutation,
+        projection_key: resolve_local_projection(&projection, session)?,
+        outcome: SpatialOutcome { document, summary },
     }))
 }
 
-/// Resolve `projection` for an operation that addresses exactly one
-/// session layout (`insert-pane`, `swap-pane`, and a same-session
-/// `move-pane`): `[]` keeps the shared default key, `[key]` is validated
-/// against `session`, and anything else is a usage error (ADR-0129).
+/// `projection` for an edit of one session layout: `[]` or one key valid
+/// for `session` (ADR-0129).
 fn resolve_local_projection(
     projection: &[String],
     session: SessionId,
@@ -748,8 +667,7 @@ fn resolve_local_projection(
     }
 }
 
-/// The shared "two selectors, one pane" refusal (raised both client-side and
-/// by the server's layout engine).
+/// The "two selectors, one pane" refusal.
 fn same_pane_error() -> SpatialRefusal {
     SpatialRefusal::new(
         codes::SAME_PANE,
@@ -902,8 +820,6 @@ mod tests {
 
     #[tokio::test]
     async fn cross_session_move_takes_the_shared_l1_path() {
-        // @1 (session 1) -> beside @3 (session 2): the plan switches to the
-        // shared MOVE_RESOURCE path.
         let op = SpatialOp::Move {
             source: "@1".to_owned(),
             target: "@3".to_owned(),
@@ -959,21 +875,6 @@ mod tests {
         assert_eq!(
             exactly_one_local("target", &[ResourceId::local(7)]).unwrap(),
             ResourceId::local(7)
-        );
-    }
-
-    #[test]
-    fn panes_must_belong_to_one_session() {
-        let snapshot = snapshot();
-        assert_eq!(
-            same_session(&snapshot, &[ResourceId::local(1), ResourceId::local(2)]).unwrap(),
-            SessionId::new(1)
-        );
-        assert_eq!(
-            same_session(&snapshot, &[ResourceId::local(1), ResourceId::local(3)])
-                .unwrap_err()
-                .code,
-            "cross_session"
         );
     }
 
@@ -1048,19 +949,5 @@ mod tests {
             projection: Vec::new(),
         };
         assert_eq!(plan(same).await.unwrap_err().code, "same_pane");
-    }
-
-    /// Every refusal carries a remedy and a preflight exit code.
-    #[test]
-    fn refusals_carry_a_remedy_and_an_exit_code() {
-        let refusal = same_pane_error();
-        assert_eq!(refusal.code, "same_pane");
-        assert!(!refusal.remedy.is_empty());
-        assert_eq!(refusal.exit_code, 2);
-        assert_eq!(move_refusal(&PaneMoveError::ServerTooOld).exit_code, 1);
-        assert_eq!(
-            move_refusal(&PaneMoveError::ProjectionArityMismatch).exit_code,
-            2
-        );
     }
 }

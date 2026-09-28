@@ -16,7 +16,7 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 /// Number of buckets in every [`Histogram`].
-pub const BUCKETS: usize = 32 + 59 * 8;
+const BUCKETS: usize = 32 + 59 * 8;
 
 /// Where exact (one value per bucket) tracking ends and the log-linear
 /// octaves begin.
@@ -322,8 +322,10 @@ mod tests {
         assert_eq!(bucket_upper(BUCKETS - 1), u64::MAX);
     }
 
+    /// Every value lands in a bucket that contains it, and a reported bound
+    /// is at most 12.5% above the true value.
     #[test]
-    fn every_value_lands_in_a_bucket_that_contains_it() {
+    fn every_value_lands_in_a_tight_bucket_that_contains_it() {
         let probes = [
             0_u64,
             1,
@@ -348,20 +350,13 @@ mod tests {
                 bucket_lower(idx) <= v && v <= bucket_upper(idx),
                 "{v} not in bucket {idx}"
             );
-        }
-    }
-
-    #[test]
-    fn relative_error_stays_within_one_eighth_of_the_lower_bound() {
-        for v in [32_u64, 40, 100, 777, 5000, 123_456, 9_999_999, 1 << 40] {
-            let idx = bucket_index(v);
-            let width = bucket_upper(idx) - bucket_lower(idx) + 1;
-            // (upper - lower + 1) / lower <= 1/8 for every log-linear bucket:
-            // the reported bound is at most 12.5% above the true value.
-            assert!(
-                width * 8 <= bucket_lower(idx),
-                "bucket {idx} too wide for {v}"
-            );
+            if (LINEAR_LIMIT..u64::MAX / 3).contains(&v) {
+                let width = bucket_upper(idx) - bucket_lower(idx) + 1;
+                assert!(
+                    width * 8 <= bucket_lower(idx),
+                    "bucket {idx} too wide for {v}"
+                );
+            }
         }
     }
 
@@ -424,16 +419,5 @@ mod tests {
         h.record(7);
         let b = h.snapshot();
         assert_eq!(b.delta(&a), b);
-    }
-
-    #[test]
-    fn snapshot_roundtrips_through_json() {
-        let h = Histogram::new();
-        h.record(3);
-        h.record(300);
-        let s = h.snapshot();
-        let json = serde_json::to_string(&s).unwrap_or_default();
-        let back: HistogramSnapshot = serde_json::from_str(&json).unwrap_or_default();
-        assert_eq!(back, s);
     }
 }

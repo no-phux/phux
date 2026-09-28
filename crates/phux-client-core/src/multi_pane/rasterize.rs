@@ -11,32 +11,13 @@ pub struct DividerCell {
     pub x: u16,
     /// Row in outer-viewport coordinates.
     pub y: u16,
-    /// The pre-resolved box-drawing character.
-    ///
-    /// Always from the LIGHT box-drawing set. This layer resolves SHAPE
-    /// only; emphasis (which rules bound the focused pane) belongs to
-    /// the chrome layer, which holds the client's authoritative focus.
-    ///
-    /// Focus used to be encoded here as a HEAVY glyph. That was wrong
-    /// twice over: it read the layout tree's remembered focus rather
-    /// than the client's, and mixing weights forces the mixed-junction
-    /// pictographs (`\u{2545}` `\u{2546}` `\u{2548}` `\u{2549}` `\u{2542}` `\u{253f}` ...), which most
-    /// terminal fonts either lack outright or draw with strokes that do
-    /// not meet their light neighbours — a grid that looks broken rather
-    /// than emphasised.
+    /// The box-drawing character, always from the light set: mixed-weight
+    /// junctions are missing or misdrawn in most terminal fonts.
     pub ch: char,
 }
 
-/// A grab target: the divider cells of one interior split, plus the
-/// identity of the [`LayoutNode::Split`] they control.
-///
-/// Surfaced out of the layout walk so a press on a divider cell resolves
-/// to the split whose `ratio` a drag should adjust. The `axis` is the
-/// split's `dir`: a `Horizontal` split paints a *vertical* line whose
-/// cells move left/right under a drag, a `Vertical` split a *horizontal*
-/// line whose cells move up/down. `cells` are the outer-viewport cell
-/// coordinates the line occupies (the same cells the rasterizer paints a
-/// glyph into), so the hit-test is an exact set-membership check.
+/// A grab target: the cells of one split's divider line, its node path,
+/// and its axis (`Horizontal` paints a vertical line).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DividerHit {
     /// Path from the layout root to the controlling [`LayoutNode::Split`].
@@ -47,10 +28,6 @@ pub struct DividerHit {
     /// Outer-viewport cells the divider line occupies, in long-axis order.
     pub cells: Vec<(u16, u16)>,
 }
-
-// -----------------------------------------------------------------------------
-// Internals — segment collection, divider counting, rasterization
-// -----------------------------------------------------------------------------
 
 /// One divider segment: either a vertical line (from a Horizontal
 /// split) or a horizontal line (from a Vertical split), in
@@ -67,17 +44,11 @@ pub(super) struct DividerSegment {
     a1: u16,
     /// Cell index on the perpendicular (cross) axis.
     cross: u16,
-    /// Path from the layout root to the [`LayoutNode::Split`] this
-    /// segment is the divider for. Carried so the divider→split identity
-    /// survives into [`DividerHit`] (a press on this line resolves to
-    /// this split).
+    /// Path to the split this segment divides.
     node_path: NodePath,
 }
 
-/// Wildcard handler for `#[non_exhaustive]` matches over [`LayoutNode`] /
-/// [`SplitDir`]. v0.1 only knows the documented variants; a newer-server
-/// forward-compat decode reaching this module is a protocol violation
-/// already caught upstream.
+/// Wildcard arm for future `#[non_exhaustive]` variants, rejected upstream.
 #[cold]
 #[inline(never)]
 #[allow(clippy::panic)]
@@ -85,31 +56,14 @@ fn unknown_variant() -> ! {
     panic!("multi_pane: unknown wire-protocol variant (newer than this client)")
 }
 
-/// Recursively split `bounds` according to the tree, recording one
-/// `DividerSegment` per interior node and the outer-viewport `Rect` of
-/// every leaf. Bounds are in outer-viewport cell coordinates; the
-/// divider cell is subtracted from the split axis before the ratio is
-/// applied.
+/// Recursively split `bounds` by the tree, recording one divider segment
+/// per split and a rect for every leaf (possibly empty), in viewport
+/// coordinates.
 ///
-/// Exact-tiling invariant: for *any* `bounds`, the leaf rects plus the
-/// divider cells these segments rasterize to cover `bounds` with zero
-/// gap and zero overlap. Every leaf in the tree receives a rect — a
-/// sub-viable split yields zero-size leaf rects rather than dropping
-/// leaves, so the rect a pane is painted into always equals the rect
-/// [`crate::multi_pane::pane_rects`] tells the server to size the PTY to.
-/// The divider column/row is only reserved when the split axis has at
-/// least one cell to spare; at zero width/height the subtree is invisible
-/// and emits no divider.
-///
-/// Min-size freezing (phux-foz.3, TUI doc §6.2): each split's ratio cut
-/// is clamped so both subtrees keep their aggregate minimums
-/// ([`MIN_LEAF_COLS`] x [`MIN_LEAF_ROWS`] per leaf plus interior
-/// dividers). A leaf squeezed to its floor freezes there and the deficit
-/// redistributes to the other side — tmux's shrink behavior. When
-/// `bounds` cannot fit even the aggregate minimums, the clamp disengages
-/// for that split and pure proportional tiling resumes (zero-size
-/// sub-viable rects, never a tiling hole), so the exact-tiling invariant
-/// holds at every viewport.
+/// Leaf rects plus divider cells tile `bounds` exactly. Each cut is
+/// clamped so both sides keep their aggregate minimums ([`MIN_LEAF_COLS`]
+/// x [`MIN_LEAF_ROWS`] per leaf); when `bounds` cannot fit them the clamp
+/// disengages and proportional tiling resumes.
 pub(super) fn walk_layout(
     node: &LayoutNode,
     bounds: Rect,
@@ -119,16 +73,7 @@ pub(super) fn walk_layout(
     walk_layout_at(node, bounds, &mut NodePath::root(), segments, rects, true);
 }
 
-/// [`walk_layout`] without min-size freezing: the raw proportional
-/// tiling of the tree's ratios.
-///
-/// This is what the ratios *ask for*, before §6.2 freezing redistributes
-/// space. The ADR-0019 decision 5 resize gate
-/// (`phux_tui::attach::actions`) checks candidate ratios against this
-/// view — gating on the frozen rects would never trip on the frozen axis
-/// (the floor holds the rect at minimum while the ratio drifts
-/// unboundedly past it), so a `resize-pane` could silently bank
-/// arbitrary ratio the pane would snap to on the next viewport grow.
+/// [`walk_layout`] without min-size freezing (see [`crate::multi_pane::pane_rects_proportional_in`]).
 pub(super) fn walk_layout_proportional(
     node: &LayoutNode,
     bounds: Rect,
@@ -138,11 +83,8 @@ pub(super) fn walk_layout_proportional(
     walk_layout_at(node, bounds, &mut NodePath::root(), segments, rects, false);
 }
 
-/// [`walk_layout`] with an explicit `path` accumulator (the steps from
-/// the root to `node`). `path` is pushed before recursing into each child
-/// and popped after, so it always names the node currently under `bounds`.
-/// `freeze` selects §6.2 min-size freezing ([`walk_layout`]) or raw
-/// proportional tiling ([`walk_layout_proportional`]).
+/// [`walk_layout`] with the root-to-`node` `path`; `freeze` selects
+/// min-size freezing.
 #[allow(
     clippy::too_many_lines,
     reason = "the Horizontal and Vertical arms are near-mirror child-bounds math; splitting them loses the side-by-side readability that makes the divider-reservation symmetry auditable."
@@ -398,13 +340,8 @@ fn lay_down_segment(
     }
 }
 
-/// Post-pass: T-piece junctions where one segment terminates at
-/// another. A cell whose neighbour is itself a divider cell gets an
-/// edge pointing toward that neighbour (inheriting the neighbour's
-/// weight on the touching edge). Without this pass an inner segment
-/// ending against an outer segment paints as a straight line + a
-/// straight perpendicular at the same coordinates, with no junction
-/// glyph — visually a "broken cross."
+/// Post-pass: give a cell an edge toward each neighbouring divider cell,
+/// so a segment ending against another paints a T-junction.
 fn inherit_junction_edges(grid: &mut HashMap<(u16, u16), DividerEdges>) {
     let cell_coords: Vec<(u16, u16)> = grid.keys().copied().collect();
     for (x, y) in cell_coords {
@@ -433,13 +370,7 @@ fn into_divider_cells(grid: &HashMap<(u16, u16), DividerEdges>) -> Vec<DividerCe
         .collect()
 }
 
-/// Final pass: convert `DividerSegment`s into the per-cell
-/// `DividerCell`s the painter consumes: pick the junction character
-/// wherever segments cross or terminate against each other.
-///
-/// SHAPE only. Which rules bound the focused pane is decided by the
-/// chrome layer, which holds the client's authoritative focus; this
-/// walk only knows the layout tree.
+/// Convert segments into per-cell divider glyphs, resolving junctions.
 pub(super) fn rasterize(segments: &[DividerSegment], viewport: (u16, u16)) -> Vec<DividerCell> {
     let mut grid: HashMap<(u16, u16), DividerEdges> = HashMap::new();
     for seg in segments {
@@ -449,16 +380,8 @@ pub(super) fn rasterize(segments: &[DividerSegment], viewport: (u16, u16)) -> Ve
     into_divider_cells(&grid)
 }
 
-/// Build the per-split grab map from the same segments [`rasterize`]
-/// paints. Each [`DividerSegment`] becomes one [`DividerHit`] carrying
-/// the controlling split's path + axis and the exact cells the divider
-/// line occupies, clamped to `viewport` identically to [`rasterize`] so
-/// the hit set and the painted glyph cells are the same cells.
-///
-/// Cells of an off-screen segment (its `cross` axis past the viewport,
-/// per the same guards [`rasterize`] uses) are dropped; a segment that
-/// clamps to zero on-screen cells still yields a `DividerHit` with an
-/// empty `cells` vec, which the hit-test simply never matches.
+/// Build the per-split grab map from the same segments and viewport clamp
+/// as [`rasterize`], so hit cells are exactly painted cells.
 pub(super) fn divider_hits(segments: &[DividerSegment], viewport: (u16, u16)) -> Vec<DividerHit> {
     let (vcols, vrows) = viewport;
     segments
@@ -495,11 +418,7 @@ pub(super) fn divider_hits(segments: &[DividerSegment], viewport: (u16, u16)) ->
         .collect()
 }
 
-/// Pick the box-drawing character for a cell from which of its four
-/// edges are present.
-///
-/// The LIGHT set only, so every junction has a glyph that terminal
-/// fonts actually ship and whose strokes meet its neighbours'.
+/// Pick the light box-drawing character for a cell's present edges.
 const fn pick_box_char(edges: DividerEdges) -> char {
     match (edges.north, edges.east, edges.south, edges.west) {
         // No incident edge: nothing to draw.
@@ -546,12 +465,7 @@ pub(super) const MIN_LEAF_COLS: u16 = 2;
 /// Minimum inner-content height of a leaf pane, in cells (TUI doc §6.2).
 pub(super) const MIN_LEAF_ROWS: u16 = 1;
 
-/// The smallest `(cols, rows)` bounds under which every leaf of `node`
-/// keeps its §6.2 floor ([`MIN_LEAF_COLS`] x [`MIN_LEAF_ROWS`]).
-///
-/// A split adds its one-cell divider along its own axis and takes the
-/// max across the perpendicular axis, so the aggregate is exactly what
-/// the divider-reservation walk needs to hand every leaf its minimum.
+/// The smallest `(cols, rows)` giving every leaf of `node` its minimum.
 pub(super) fn min_dims(node: &LayoutNode) -> (u16, u16) {
     match node {
         LayoutNode::Leaf(_) => (MIN_LEAF_COLS, MIN_LEAF_ROWS),
@@ -570,14 +484,8 @@ pub(super) fn min_dims(node: &LayoutNode) -> (u16, u16) {
     }
 }
 
-/// [`split_dim`] with §6.2 min-size freezing: the low side's share of
-/// `content`, clamped so the low subtree keeps `min_low` cells and the
-/// high subtree keeps `min_high` (their [`min_dims`] aggregates along
-/// the split axis).
-///
-/// When `content` cannot cover both minimums the clamp disengages and
-/// the raw proportional cut is returned — the degenerate-viewport
-/// fallback that preserves exact tiling (see [`walk_layout`]).
+/// [`split_dim`] clamped so each side keeps its minimum; unclamped when
+/// `content` cannot cover both.
 pub(super) fn freeze_split_dim(content: u16, ratio: f32, min_low: u16, min_high: u16) -> u16 {
     let low = split_dim(content, ratio);
     match min_low.checked_add(min_high) {

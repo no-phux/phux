@@ -43,73 +43,39 @@ bun install --frozen-lockfile
 bun run check:tooling
 ```
 
-`check:tooling` runs formatting, strict native TS7, type-aware warning-free
-Oxlint, the vendored rule suites and adversarial CLI/JSX fixtures. Individual
-commands are `bun run format:check`, `bun run typecheck`, `bun run lint`,
-`bun run test:rules` and `bun run test:tooling`. For fixes, run `bun run format`
-and `bun run lint --fix`, then repeat the full check. No global JS tool install
-or `bunx` download is involved.
+`check:tooling` runs formatting, strict TS7 typecheck, type-aware
+warning-free Oxlint, the vendored rule suites and adversarial CLI/JSX fixtures.
+Fix with `bun run format` and `bun run lint --fix`. Exact tool and framework
+versions are pinned in `package.json` and `bun.lock`; no global JS tool install
+or `bunx` download is involved. A tooling pass is not native/GPU evidence; see
+[native/README.md](native/README.md) for that.
 
-### Verified dependency contract
+Notes on the pinned toolchain:
 
-| Purpose                     | Exact package                                 |
-| --------------------------- | --------------------------------------------- |
-| Native TypeScript compiler  | `typescript@7.0.2` (binary: `tsc`)            |
-| Type-aware lint             | `oxlint@1.85.0`, `oxlint-tsgolint@7.0.2002`   |
-| JS rule API                 | `@oxlint/plugins@1.85.0`                      |
-| Formatting                  | `oxfmt@0.70.0`                                |
-| Reactive correctness        | `eslint-plugin-solid@0.18.0`                  |
-| Solid runtime               | `solid-js@1.9.15`                             |
-| Native renderer / JSX types | `@gpuix/solid@0.10.0`, `@gpuix/native@0.10.0` |
-| Bun types                   | `@types/bun@1.4.2`                            |
-
-All versions were verified against the registry on 2026-09-23. GPUIX Solid and
-native 0.10.0 were published that day, after earlier research found Solid
-unpublished and native at 0.9.0. The lockfile pins the published matching pair;
-the native toolchain lane must independently prove its custom native build and
-generated declarations against the pinned GPUIX source. A tooling pass is not
-that native/GPU evidence.
-
-TS7's `tsc` launcher executes the native platform compiler, not the historical
-JavaScript compiler or the older `tsgo` preview. `skipLibCheck` skips checking
-third-party declaration implementations, not application uses of those types:
-the negative native-event fixture must produce TS2339. Native host JSX uses
-`@gpuix/solid`; no ambient substitute types or DOM tag augmentation is present.
-TS7 preserves JSX and emits nothing. The smoke test separately calls GPUIX's
-Solid universal Bun/Babel plugin to prove JSX compilation.
-
-Oxlint's config is explicitly selected with `-c oxlint.config.ts`; its
-`--type-aware` flag requires the installed `oxlint-tsgolint` executable. The
-Solid JS plugin recognizes `@gpuix/solid` through `moduleSources`, with selected
-reactivity rules rather than a DOM preset. Native JSX component functions use
-an explicit `JSX.Element` return type: the pinned type-aware linter otherwise
-reports an inferred JSX return as an error type even when TS7 accepts it.
-
-The Solid plugin pulls in ESLint/TypeScript-ESLint support packages whose peer
-ranges do not yet include TS7; Bun reports that peer mismatch. The exercised
-Oxlint JS-plugin path and Node RuleTester suites pass with these exact versions;
-there is no separate ESLint parser or JS `tsc` gate. RuleTester runs under Node
-24 because its native raw-transfer parser rejects Bun; the integration suite
-and JSX build run under Bun 1.4.2.
+- TS7's `tsc` is the native compiler. `skipLibCheck` skips third-party
+  declaration bodies, not application uses of them; the negative native-event
+  fixture must still produce TS2339. TS7 preserves JSX and emits nothing; the
+  tooling test compiles JSX through GPUIX's Solid Bun plugin.
+- Oxlint's `--type-aware` needs `oxlint-tsgolint`. The Solid plugin recognizes
+  `@gpuix/solid` through `moduleSources`. Native JSX components declare an
+  explicit `JSX.Element` return type because the pinned linter otherwise
+  reports the inferred type as an error type.
+- The Solid plugin's ESLint peers do not yet list TS7, so Bun reports a peer
+  mismatch. RuleTester suites run under Node 24 because its raw-transfer parser
+  rejects Bun.
 
 ### Boundaries enforced by the gate
 
 - Type-aware unsafe operations, floating and misused promises fail.
 - Chained casts, unjustified assertions and Jest/Vitest module mocks fail via
   the [selected anti-slop rules](tools/oxlint/anti-slop/README.md).
-- Bun mock imports, DOM renderer imports and sibling-client implementation
-  imports fail. UI source cannot import Node builtins. The bridge/service
-  boundary allows only `node:path`, `node:module`, and `node:fs/promises` for
-  native loading and local file operations; direct network imports still fail.
-  Transport and reconnect authority belongs to Rust.
+- Bun mock imports, DOM renderer imports and sibling-client imports fail. UI
+  source cannot import Node builtins; the bridge/service boundary may use only
+  `node:path`, `node:module` and `node:fs/promises`. Transport and reconnect
+  authority belongs to Rust.
 - Lost Solid reactivity, destructured props and unused/invalid suppressions fail.
-- Native host tags/events, Bun file types and honest `unknown` parsing pass.
-- Negative fixtures are excluded from ordinary lint/typecheck and executed
-  explicitly by the adversarial suite; expected rule diagnostics are asserted,
-  so an unloaded plugin or skipped type-aware check cannot appear green.
+- Negative fixtures are excluded from ordinary lint/typecheck and run explicitly
+  with asserted diagnostics, so an unloaded plugin cannot appear green.
 
-Solid owns reactive views. Introduce Effect only when a real non-Solid JS async
-service, scoped resource or schema boundary needs it, exact-pinning **Effect v4**
-and matching ecosystem packages then. Verify API/runtime/cancellation behavior
-on that installed release. This tooling slice contains no such service and adds
-no speculative Effect module or unused runtime dependency.
+Solid owns reactive views. Add Effect (exact-pinned v4) only when a real
+non-Solid async service, scoped resource or schema boundary needs it.

@@ -1,54 +1,12 @@
-//! Failure-UX dogfood: the epic's audited silent failures, replayed end to
-//! end against the real binary (phux-i0e8.13.5).
+//! Failure UX end to end against the real binary: each once-silent failure
+//! must stay loud.
 //!
-//! The 2026-08-01 UX audit (epic phux-i0e8) found that errors, dead keys,
-//! typos, and pane death all no-op'd invisibly. The never-silent wave fixed
-//! each surface; this file pins the FIXED behavior with the real `phux`
-//! binary on a private UDS (run_wait_e2e-style harness: real server,
-//! `ServerGuard` drop-kill, `--exit-after-idle` backstop), so the failure
-//! path stays CI-enforced product behavior rather than a release ritual.
-//! Original audit evidence (`file:line` as audited on 2026-08-01), per
-//! scenario:
-//!
-//! 1. Broken config, loud server start — audited: the server swallowed a
-//!    broken `config.toml` with zero output (`server.rs:113-148`). Fixed:
-//!    `phux server` refuses to start, naming the config path and
-//!    `phux config check` (phux-i0e8.1.1).
-//! 2. Typo'd action named at check — audited: a typo'd action name logged
-//!    at debug and the key died silently (`input_dispatch.rs:2560`).
-//!    Fixed: `phux config check` exits 1 naming the binding, the
-//!    `unknown name` fault, and a did-you-mean suggestion (phux-i0e8.3.2).
-//! 3. Malformed chord does not kill keybindings — audited: one malformed
-//!    chord disabled ALL keybindings including detach (`driver.rs:3709`).
-//!    Fixed: the attach path builds a lenient resolver, so only the
-//!    offending binding dies and `<prefix> d` still detaches
-//!    (phux-i0e8.3.4).
-//! 4. Pane death surfaces exit status — audited: a dying pane discarded
-//!    its exit status (`server_frame.rs:1169-1216`). Fixed:
-//!    `RESOURCE_CLOSED` carries it and the client prints
-//!    "session ended: the last pane ..." on teardown (phux-i0e8.2.2).
-//!    Natural last-shell `exit` now respawns in place (ADR-0131); this
-//!    scenario kills the last pane so the close still happens.
-//! 5. Server SIGKILL shows the reconnect indicator — audited: a server
-//!    crash was ~10s of blank screen (`attach.rs:272-341`). Fixed: the
-//!    client drops to the cooked screen and announces the loss with a live
-//!    countdown ("lost the server connection; waiting up to Ns...")
-//!    (phux-i0e8.2.3).
-//! 6. Dead-socket `--json` parses as the contract — audited: ~32 `--json`
-//!    verbs had no error-path contract (epic pattern 3, INCONSISTENCY).
-//!    Fixed: one JSON line on stderr — `schema_version` /
-//!    `error{code,message}` / `remedy` / `exit_code` — with stdout empty
-//!    (ADR-0065 section 4, phux-i0e8.8.2).
-//! 7. status/logs/doctor speak with real paths — audited: three log files
-//!    existed and no command or doc ever printed any path (epic pattern 2,
-//!    INVISIBILITY). Fixed: `phux status`, `phux logs`, and `phux doctor`
-//!    each name the canonical server-log path resolved through
-//!    `phux_server::telemetry`, so the printed path and the written path
-//!    can never disagree (phux-i0e8.7).
-//!
-//! Scenario 5 rides the lane's retry budget (`just e2e` runs serially with
-//! `--retries=2`); if it still proves flaky there, demote ONLY that test to
-//! the `stress` lane with a comment — the other six are deterministic.
+//! A broken config refuses the server start naming its path; one malformed
+//! chord leaves the other bindings alive; a killed last pane explains the
+//! ending; a `SIGKILL`ed server shows the reconnect indicator; and `status`,
+//! `logs`, and `doctor` print the real server-log path. (The `config check`
+//! and `--json` no-server contracts live in the configuration and workspace
+//! suites.)
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -82,13 +40,7 @@ const POLL: Duration = Duration::from_millis(50);
 /// output marker) before the test declares the scenario broken.
 const CLIENT_DEADLINE: Duration = Duration::from_secs(20);
 
-// ---------------------------------------------------------------------------
-// harness
-// ---------------------------------------------------------------------------
-
-/// Per-scenario isolation: a private `HOME` plus XDG dirs so no test
-/// reads the developer's config, host registry, or log paths, and so
-/// `phux doctor` cannot inherit `PHUX_*` from a live pane (phux-vlv1).
+/// Per-scenario isolation: a private `HOME` plus XDG dirs.
 struct Isolation {
     home: tempfile::TempDir,
     config: tempfile::TempDir,
@@ -114,70 +66,46 @@ impl Isolation {
         path
     }
 
-    /// Point `cmd` at this isolated environment.
-    ///
-    /// `PHUX_PROFILE=default` pins the *released* on-disk layout
-    /// (`<state>/phux`, not `<state>/phux-dev`). These tests drive a debug
-    /// build, which resolves the `dev` profile (ADR-0080), so without this
-    /// the paths asserted below would describe a layout no user ever sees.
-    fn apply(&self, cmd: &mut Command) {
-        // `env_clear` drops inherited `PHUX_SOCKET` / `PHUX_WS_*` /
-        // `PHUX_SERVICE_MANAGED` from a maintainer running the suite
-        // inside a live pane (phux-lru0). Re-arm only the isolation
-        // table, matching `first_five_minutes_e2e` / `whoami_e2e`.
-        cmd.env_clear();
-        if let Some(path) = std::env::var_os("PATH") {
-            cmd.env("PATH", path);
-        }
-        if let Some(tmp) = std::env::var_os("TMPDIR") {
-            cmd.env("TMPDIR", tmp);
-        }
-        cmd.env("HOME", self.home.path())
-            .env("XDG_CONFIG_HOME", self.config.path())
-            .env("XDG_STATE_HOME", self.state.path())
-            .env("XDG_CACHE_HOME", self.home.path())
-            .env("XDG_DATA_HOME", self.home.path())
-            .env("XDG_RUNTIME_DIR", self.home.path())
-            .env("PHUX_PROFILE", "default")
-            // Default profile would auto-bind overlay WSS/QUIC (ADR-0081).
-            // That races the host's real server for 8787/8788 and leaves
-            // bind_failed slots that doctor (phux-kyna) correctly fails on.
-            .env("PHUX_NO_AUTO_LISTEN", "1")
-            // Overlay detect shells out to `tailscale` and then dials
-            // :8787. Point the seam at a missing binary so a host with
-            // tailscale on PATH cannot leak the operator's tailnet into
-            // this file (phux-vlv1).
-            .env(
+    /// The isolation table: private HOME/XDG dirs, the released `default`
+    /// profile layout (a debug build would resolve `dev`), no overlay
+    /// auto-listen (it would race the host's real server), and a missing
+    /// `tailscale` so detection never reaches the operator's tailnet. Applied
+    /// after `env_clear`, so no ambient `PHUX_*` from a live pane leaks in.
+    fn env(&self) -> Vec<(&'static str, std::ffi::OsString)> {
+        let mut env: Vec<(&'static str, std::ffi::OsString)> = ["PATH", "TMPDIR"]
+            .into_iter()
+            .filter_map(|key| std::env::var_os(key).map(|value| (key, value)))
+            .collect();
+        let home = self.home.path().as_os_str().to_owned();
+        env.extend([
+            ("HOME", home.clone()),
+            ("XDG_CONFIG_HOME", self.config.path().as_os_str().to_owned()),
+            ("XDG_STATE_HOME", self.state.path().as_os_str().to_owned()),
+            ("XDG_CACHE_HOME", home.clone()),
+            ("XDG_DATA_HOME", home.clone()),
+            ("XDG_RUNTIME_DIR", home),
+            ("PHUX_PROFILE", "default".into()),
+            ("PHUX_NO_AUTO_LISTEN", "1".into()),
+            (
                 "PHUX_TAILSCALE",
-                self.home.path().join("no-such-tailscale"),
-            );
+                self.home.path().join("no-such-tailscale").into_os_string(),
+            ),
+        ]);
+        env
     }
 
-    /// [`Self::apply`] for the PTY spawn path, which builds its command with
-    /// `portable_pty` rather than `std::process`. The Command and PTY tables
-    /// must not drift: an attach client that skipped `PHUX_TAILSCALE` would
-    /// still dial the operator's overlay (phux-vlv1).
+    fn apply(&self, cmd: &mut Command) {
+        cmd.env_clear().envs(self.env());
+    }
+
     fn apply_pty(&self, cmd: &mut CommandBuilder) {
         cmd.env_clear();
-        if let Some(path) = std::env::var_os("PATH") {
-            cmd.env("PATH", path);
+        for (key, value) in self.env() {
+            cmd.env(key, value);
         }
-        if let Some(tmp) = std::env::var_os("TMPDIR") {
-            cmd.env("TMPDIR", tmp);
-        }
-        cmd.env("HOME", self.home.path());
-        cmd.env("XDG_CONFIG_HOME", self.config.path());
-        cmd.env("XDG_STATE_HOME", self.state.path());
-        cmd.env("XDG_CACHE_HOME", self.home.path());
-        cmd.env("XDG_DATA_HOME", self.home.path());
-        cmd.env("XDG_RUNTIME_DIR", self.home.path());
-        cmd.env("PHUX_PROFILE", "default");
-        cmd.env("PHUX_NO_AUTO_LISTEN", "1");
-        cmd.env("PHUX_TAILSCALE", self.home.path().join("no-such-tailscale"));
     }
 
-    /// The canonical server-log path `phux_server::telemetry` resolves
-    /// under this environment — asserted against status/logs/doctor output.
+    /// The canonical server-log path under this environment.
     fn server_log(&self) -> PathBuf {
         self.state.path().join("phux").join("server.log")
     }
@@ -200,12 +128,8 @@ impl std::ops::DerefMut for ServerGuard {
 }
 
 impl ServerGuard {
-    /// Spawn `phux server --session work --socket <unique>` inside `iso`
-    /// and block until the socket file appears. `SHELL=/bin/sh` keeps the
-    /// seed pane deterministic (no user rc noise in scenario output).
-    ///
-    /// Socket paths live at the root of `/tmp`: `sun_path` caps UDS paths at
-    /// ~104 bytes.
+    /// Spawn the server inside `iso`; `SHELL=/bin/sh` keeps the seed pane
+    /// free of user rc noise.
     fn start(iso: &Isolation) -> Self {
         Self(
             common::ServerGuard::builder("fx")
@@ -214,9 +138,7 @@ impl ServerGuard {
         )
     }
 
-    /// `phux <verb> --socket <sock> <rest...>` inside `iso`. `--socket`
-    /// is injected right after the verb, NOT appended, because
-    /// `run`/`wait`/`send-keys` use `trailing_var_arg` (see `run_wait_e2e`).
+    /// `phux <verb> --socket <sock> <rest...>` inside `iso`.
     fn cmd(&self, iso: &Isolation, args: &[&str]) -> Command {
         let (verb, rest) = args.split_first().expect("at least a verb");
         let mut cmd = Command::new(PHUX);
@@ -230,9 +152,8 @@ impl ServerGuard {
     }
 }
 
-/// Does this `phux ls --json` session entry say a client is attached to the
-/// scenario session? The counter is the server's own view, incremented when
-/// it processes `ATTACH` (see `AttachedClient::wait_until_painting`).
+/// Whether this `ls --json` session entry is the scenario session with a
+/// client attached (the server's own count, bumped on `ATTACH`).
 fn is_attached_work_session(session: &serde_json::Value) -> bool {
     session["name"] == SESSION
         && session["attached_clients"]
@@ -298,10 +219,8 @@ impl AttachedClient {
             .expect("spawn attached TUI");
         drop(pair.slave);
 
-        // Capture (rather than discard) every byte the client emits: the
-        // cooked-terminal teardown lines the scenarios assert on arrive on
-        // this same stream. Continuous draining also keeps the PTY from
-        // backpressuring the client.
+        // Capture everything: the teardown lines arrive on this stream, and
+        // draining keeps the PTY from backpressuring the client.
         let output = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&output);
         let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
@@ -324,28 +243,8 @@ impl AttachedClient {
         }
     }
 
-    /// Block until this client is a registered observer of `SESSION`.
-    ///
-    /// This used to be "wait for one painted byte, then sleep 500ms", and the
-    /// sleep was the load-dependent seam (phux-hhn2). A painted byte proves
-    /// only that `phux attach` reached its terminal setup — it is emitted
-    /// before the socket is even dialled — so the 500ms was the entire barrier,
-    /// and it is a bet rather than a fact. When it lost, the scenario's
-    /// stimulus (a kill of the last pane) landed on a server this client had
-    /// not attached to yet, and the failure said nothing at all about the
-    /// behavior under test.
-    ///
-    /// The replacement is a real barrier, on the server's side of the wire:
-    /// `phux ls --json` reports `attached_clients`, and that counter only
-    /// increments once the server has processed this connection's `ATTACH`.
-    /// `ls` is a command that carries a reply, so its exit is proof of
-    /// delivery, not merely of sending — the distinction the phux-5wxp
-    /// taxonomy is built around. Once it reads non-zero, every later frame
-    /// this session emits has somewhere to go.
-    ///
-    /// Polling by connecting is safe here (it is not the shape-4 hazard):
-    /// nothing in these scenarios measures an idle lifetime, and the harness
-    /// server's `--exit-after-idle` is ten minutes.
+    /// Block until the server reports this client attached to `SESSION`
+    /// (`ls --json` `attached_clients`), a real barrier rather than a sleep.
     fn wait_until_attached(&mut self, server: &ServerGuard, iso: &Isolation) {
         let deadline = Instant::now() + CLIENT_DEADLINE;
         while Instant::now() < deadline {
@@ -372,20 +271,9 @@ impl AttachedClient {
         );
     }
 
-    /// The residual pause the two keystroke-injecting scenarios still need,
-    /// kept separate from [`Self::wait_until_attached`] so it is obvious what
-    /// it does and does not cover.
-    ///
-    /// [`Self::wait_until_attached`] proves the SERVER has this client
-    /// registered. It says nothing about the client's own stdin reader, and a
-    /// keystroke written into the attach PTY before that reader exists is
-    /// simply dropped. There is no observable barrier for a client-local
-    /// install — nothing crosses the wire — so this stays a pause, and it is
-    /// named for what it is rather than hidden inside a wait helper.
-    ///
-    /// Scenarios that drive the pane through the SERVER (`phux send-keys`) do
-    /// not need this and must not call it: their stimulus is ordered behind a
-    /// command the server replies to.
+    /// A pause for the client's own stdin reader: a keystroke written before
+    /// it exists is dropped, and nothing crosses the wire to wait on. Only
+    /// for scenarios that type into the attach PTY.
     fn settle_for_local_keystrokes() {
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -395,9 +283,7 @@ impl AttachedClient {
         self.writer.flush().expect("flush attach PTY");
     }
 
-    /// Everything captured so far, lossily decoded (the stream carries VT
-    /// escapes; the asserted teardown lines are printed on the cooked
-    /// screen as plain contiguous text).
+    /// Everything captured so far, lossily decoded.
     fn output_text(&self) -> String {
         String::from_utf8_lossy(&self.output.lock().expect("output lock")).into_owned()
     }
@@ -433,10 +319,6 @@ impl AttachedClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 1. broken config -> loud server start (audited: server.rs:113-148)
-// ---------------------------------------------------------------------------
-
 #[test]
 #[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
 fn broken_config_makes_server_start_loud() {
@@ -453,19 +335,11 @@ fn broken_config_makes_server_start_loud() {
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     iso.apply(&mut cmd);
-    // Owned by a guard, not a bare `Child` (phux-whhd). The assertion below
-    // says "killing it" on the regression path, and nothing was: this test
-    // held a plain `std::process::Child`, whose `Drop` does NOT kill. If the
-    // audited regression ever came back — a server that starts normally on a
-    // broken config — the very run that caught it would have leaked the daemon
-    // it caught. `ServerProcess::drop` SIGKILLs a survivor and unlinks the
-    // socket, so the failing path cleans up after itself.
+    // A guard, so a regressed server that starts anyway is still killed.
     let mut server =
         common::ServerProcess::from_child(cmd.spawn().expect("spawn phux server"), socket);
 
-    // Poll rather than block on `.output()`: the audited regression is a
-    // server that starts NORMALLY on a broken config, and that regression
-    // would hang a blocking wait for the whole idle backstop.
+    // Poll: a regressed server would otherwise hang a blocking wait.
     let deadline = Instant::now() + SOCKET_DEADLINE;
     let status = loop {
         if let Some(status) = server.child_mut().try_wait().expect("server try_wait") {
@@ -506,48 +380,11 @@ fn broken_config_makes_server_start_loud() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 2. typo'd action named at check (audited: input_dispatch.rs:2560)
-// ---------------------------------------------------------------------------
-
-#[test]
-#[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
-fn config_check_names_the_typoed_action() {
-    let iso = Isolation::new();
-    let config_path = iso.write_config("[keybindings.prefix-table]\nq = \"kill-pain\"\n");
-
-    let mut cmd = Command::new(PHUX);
-    cmd.args(["config", "check"])
-        .arg(&config_path)
-        .stdin(Stdio::null());
-    iso.apply(&mut cmd);
-    let (code, stdout, _stderr) = run_captured(&mut cmd);
-
-    assert_eq!(code, 1, "a semantic finding must exit 1; stdout:\n{stdout}");
-    assert!(
-        stdout.contains("keybindings.prefix-table.q"),
-        "check must name the offending binding:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("unknown name"),
-        "check must carry the fault label:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("did you mean `kill-pane`?"),
-        "check must suggest the intended action:\n{stdout}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// 3. malformed chord does not kill keybindings/detach (audited: driver.rs:3709)
-// ---------------------------------------------------------------------------
-
 #[test]
 #[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
 fn malformed_chord_keeps_detach_alive() {
-    // Valid TOML, one malformed chord key ("q-": trailing dash). Before
-    // phux-i0e8.3.4 this made the resolver build fail closed: EVERY
-    // binding died, including detach, and the only way out was kill -9.
+    // One malformed chord ("q-") must not take every binding (detach
+    // included) down with it.
     let iso = Isolation::new();
     iso.write_config("[keybindings.prefix-table]\n\"q-\" = \"kill-pane\"\nd = \"detach\"\n");
     let server = ServerGuard::start(&iso);
@@ -566,10 +403,6 @@ fn malformed_chord_keeps_detach_alive() {
         client.output_text(),
     );
 }
-
-// ---------------------------------------------------------------------------
-// 4. pane death surfaces exit status (audited: server_frame.rs:1169-1216)
-// ---------------------------------------------------------------------------
 
 #[test]
 #[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
@@ -595,91 +428,20 @@ fn last_pane_death_surfaces_its_exit_status() {
     client.wait_for_output("the last pane");
 }
 
-// ---------------------------------------------------------------------------
-// 5. server SIGKILL shows the reconnect indicator (audited: attach.rs:272-341)
-// ---------------------------------------------------------------------------
-
 #[test]
 #[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
 fn server_sigkill_shows_the_reconnect_indicator() {
-    // Retry-tolerant by lane design: `just e2e` runs this serially with
-    // --retries=2. If it flakes anyway, demote ONLY this test to the
-    // `stress` lane (see the module doc).
     let iso = Isolation::new();
     let mut server = ServerGuard::start(&iso);
 
     let mut client = AttachedClient::start(&server, &iso);
     client.wait_until_attached(&server, &iso);
 
-    // Crash the server for real. SIGKILL runs no shutdown handler and
-    // leaves the socket file behind — the audited case that used to be
-    // ~10s of blank screen.
     server.sigkill();
 
-    // The client must drop to the cooked screen and SAY what happened,
-    // starting its visible countdown. Asserting the first line (not the
-    // countdown repaints or the timeout report) keeps this independent of
-    // the 10s reconnect window's outcome.
+    // The first line only, independent of the reconnect window's outcome.
     client.wait_for_output("lost the server connection");
 }
-
-// ---------------------------------------------------------------------------
-// 6. dead-socket --json parses as the contract (ADR-0065 section 4)
-// ---------------------------------------------------------------------------
-
-#[test]
-#[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
-fn dead_socket_json_error_is_the_contract() {
-    let iso = Isolation::new();
-    let dir = tempfile::tempdir().expect("socket tempdir");
-    let socket = dir.path().join("fx-absent.sock");
-
-    let mut cmd = Command::new(PHUX);
-    cmd.arg("ls")
-        .arg("--socket")
-        .arg(&socket)
-        .arg("--json")
-        .stdin(Stdio::null());
-    iso.apply(&mut cmd);
-    let (code, stdout, stderr) = run_captured(&mut cmd);
-
-    assert_eq!(code, 1, "no server is exit 1; stderr:\n{stderr}");
-    assert!(
-        stdout.is_empty(),
-        "stdout is the document and stays empty on failure:\n{stdout}"
-    );
-    let line = stderr.trim();
-    assert!(
-        !line.contains('\n'),
-        "the error is ONE line of JSON on stderr:\n{stderr}"
-    );
-    let doc: serde_json::Value =
-        serde_json::from_str(line).expect("dead-socket --json stderr parses as JSON");
-    assert_eq!(doc["schema_version"], 1, "contract schema version:\n{doc}");
-    assert_eq!(
-        doc["error"]["code"], "no_server",
-        "closed vocabulary:\n{doc}"
-    );
-    assert!(
-        doc["error"]["message"]
-            .as_str()
-            .expect("message is a string")
-            .contains(&socket.display().to_string()),
-        "the message names the socket:\n{doc}"
-    );
-    assert!(
-        !doc["remedy"]
-            .as_str()
-            .expect("remedy is a string")
-            .is_empty(),
-        "every failure names its remedy:\n{doc}"
-    );
-    assert_eq!(doc["exit_code"], 1, "embedded exit code matches:\n{doc}");
-}
-
-// ---------------------------------------------------------------------------
-// 7. status/logs/doctor speak with real paths (audit pattern 2: INVISIBILITY)
-// ---------------------------------------------------------------------------
 
 #[test]
 #[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
@@ -710,15 +472,8 @@ fn status_logs_doctor_name_real_paths() {
         "logs must name the server log {server_log}:\n{stdout}"
     );
 
-    // `phux doctor` composes the checks and names the same paths; warnings
-    // (for example a log not created yet) are normal states, not failures.
-    //
-    // This is the assertion the file's environment scrub exists for: doctor
-    // is the one verb here that reads every ambient seam at once (credential
-    // store, TLS cert, overlay address) and the only one that leaves the
-    // machine. Unisolated it graded the operator's real install and dialed
-    // their live server, so its exit code answered a question about their
-    // network rather than about the code under test.
+    // Doctor reads every ambient seam at once; the isolation keeps its exit
+    // code about this setup, not the operator's install.
     let (code, stdout, stderr) = run_captured(&mut server.cmd(&iso, &["doctor"]));
     assert_eq!(
         code, 0,

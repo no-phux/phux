@@ -4,46 +4,21 @@
 #   ./scripts/host-raster-compare.sh <ref-before> [ref-after]
 # measures: host raster pixels at two SDK commits that both shipped
 #
-# `ref-before` and `ref-after` are commits of the pinned SDK fork. `ref-after`
-# defaults to the commit build.zig.zon pins, so the common call is
+# `ref-after` defaults to the commit build.zig.zon pins:
 #
 #   ./scripts/host-raster-compare.sh e8bd84886      # shipped-then vs pinned-now
 #
-# To separate an old installed app from a current dev app before comparing
-# raster output, use `scripts/glyph-visibility-diagnose.sh`.
-#
-# WHY THIS EXISTS
-# ---------------
-# scripts/host-raster-check.sh measures ONE rasterizer. That is enough to catch
-# a regression against a pinned floor, and not enough to answer the question
-# that actually matters when a render fix is proposed: does the shipping build
-# change?
-#
-# phux-cockpit-aht is the worked example, and it cost four rounds. The
-# historical diagnosis said the SDK was missing `CGContextSetShouldSmoothFonts`.
-# Someone added it, measured the fixed SDK against a copy with the calls set
-# explicitly to `false`, saw solid 4179 vs 3081 - a real 26.3% - and shipped it
-# as the faint-text fix.
-#
-# But no build was ever in the `false` state. The state before the fix was the
-# calls being ABSENT, and absent is not false: on this CGBitmapContext the
-# default is smoothing ENABLED. Measured against the commit the shipping app
-# was actually built from, the fix moves nothing:
-#
-#   e8bd84886 (no calls, shipped)   cell_grid solid=4179  mean_luma=45.7978
-#   f3678832f (calls = true, pin)   cell_grid solid=4179  mean_luma=45.7978
-#   f3678832f with calls = false    cell_grid solid=3081  mean_luma=37.1124
-#
-# The control was synthetic. A synthetic control can only tell you the knob is
-# wired up; it cannot tell you the knob was ever in the other position. This
-# script compares two REAL commits, so the before side is a state that shipped.
+# Compare two real commits, never a synthetic "before": a hand-set control
+# only proves a knob is wired, not that shipping builds were ever in that
+# state. To tell an old installed app from a dev app first, use
+# `scripts/glyph-visibility-diagnose.sh`.
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PIN_CACHE="${PHUX_COCKPIT_SDK_CACHE:-${ROOT}/.zig-cache/pinned-sdk}"
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
-    sed -n '2,10p' "$0"
+    sed -n '2,/^set -euo pipefail/{ /^set -euo pipefail/!p; }' "$0"
     exit 2
 fi
 

@@ -1,24 +1,15 @@
 //! `windows` widget — the tmux-style tab bar.
-//!
-//! Renders one styled segment per window from [`WidgetContext::windows`],
-//! the active one in the `active` style and the rest in `inactive`,
-//! joined by `separator`. Each segment's text comes from `format` with
-//! `{index}` (0-based position, the `select-window` selector) and
-//! `{name}` (the editable label) substituted. The index can carry its own
-//! `index` ink, and a window's agent badge precedes its name.
 
 use std::collections::BTreeMap;
 
 use crate::widget::{
     Cell, CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError,
-    WidgetKindSpec, WidgetOptSpec, WindowInfo, display_width, reject_unknown_opts, style_opt,
+    WidgetKindSpec, WidgetOptSpec, WindowInfo, display_width, reject_unknown_opts, string_opt,
+    style_opt,
 };
 
-/// Widget kind, used in error messages.
 const KIND: &str = "windows";
 
-/// Doc spec — the factory validates against this same const, so the
-/// documented option surface is the enforced one (phux-i0e8.11.3).
 pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
     kind: KIND,
     summary: "The tmux-style tab bar: one segment per window, the active \
@@ -87,8 +78,6 @@ pub struct WindowsWidget {
 impl Default for WindowsWidget {
     fn default() -> Self {
         Self {
-            // Theme-agnostic, eye-catching default: the active tab is
-            // bold reverse-video; inactive tabs are dimmed.
             active: CellStyle {
                 bold: true,
                 reverse: true,
@@ -107,11 +96,8 @@ impl Default for WindowsWidget {
 
 impl WindowsWidget {
     /// The cells of window `i`'s tab, markers and hit stamps included.
-    ///
-    /// `format` is walked part by part rather than substituted into one
-    /// string, so `{index}` can take its own ink and the badge its own
-    /// colour while every cell keeps the segment's background: a tab is one
-    /// bed with several inks on it, not several beds.
+    /// `format` is walked part by part so `{index}` and the badge can take
+    /// their own ink on the segment's background.
     fn segment(&self, i: usize, w: &WindowInfo) -> Vec<Cell> {
         let base = if w.active {
             self.active.clone()
@@ -140,10 +126,7 @@ impl WindowsWidget {
                 rest = after;
             }
         }
-        // phux-foz.12: stamp every cell of the segment (markers
-        // included) as a hit target for window `i`, so a click on the
-        // tab commits `select-window { index = i }`. Separator cells
-        // stay inert.
+        // Every segment cell selects window `i`; separators stay inert.
         for cell in &mut segment {
             cell.hit = Some(CellHit::Window(i));
         }
@@ -158,26 +141,19 @@ fn push_name(segment: &mut Vec<Cell>, w: &WindowInfo, base: &CellStyle) {
         push_text(segment, " ", base);
     }
     let mut text = w.name.clone();
-    // phux-x2hm: a zoomed active window gets tmux's `Z` marker.
     if w.zoomed {
         text.push_str(" Z");
     }
-    // phux-foz.1: a window holding a pane that asked for a human
-    // answer (ADR-0035) gets a `!` marker so it is findable from
-    // any window. Plain ASCII, matching the `Z` marker convention.
     if w.attention {
         text.push_str(" !");
     }
-    // ADR-0124 / phux-fpgl.33: a window holding a retained (exited)
-    // pane gets a compact `x` marker plus the exit status, so it is
-    // findable without focusing that pane.
     if let Some(marker) = w.exited_marker() {
         text.push_str(&marker);
     }
     push_text(segment, &text, base);
 }
 
-/// Append `text` to `cells` in `style` (`None` for an all-default style).
+/// Append `text` to `cells` in `style`.
 fn push_text(cells: &mut Vec<Cell>, text: &str, style: &CellStyle) {
     if text.is_empty() {
         return;
@@ -187,39 +163,24 @@ fn push_text(cells: &mut Vec<Cell>, text: &str, style: &CellStyle) {
 }
 
 impl WindowsWidget {
-    /// The separator cells placed between two tabs (empty when the
-    /// configured separator is).
     fn separator_cells(&self) -> Vec<Cell> {
-        if self.separator.is_empty() {
-            Vec::new()
-        } else {
-            WidgetCells::from_styled(&self.separator, None).cells
-        }
+        WidgetCells::from_text(&self.separator).cells
     }
 
     /// A one-cell navigation target for the nearest hidden tab.
     fn overflow_mark(&self, glyph: char, target: usize) -> Vec<Cell> {
-        let style = self.inactive.clone();
-        let style = if style.is_plain() { None } else { Some(style) };
-        let mut cells = WidgetCells::from_styled(&glyph.to_string(), style).cells;
+        let mut cells = Vec::new();
+        push_text(&mut cells, &glyph.to_string(), &self.inactive);
         for cell in &mut cells {
             cell.hit = Some(CellHit::Window(target));
         }
         cells
     }
 
-    /// Width of the strip that shows tabs `lo..=hi` out of `total`,
-    /// including separators and whichever overflow marks that range
-    /// implies.
+    /// Cells of the strip showing tabs `lo..=hi`, separators and overflow
+    /// marks included. Measured in columns, like `separator_cells`: a
+    /// separator can be double-width.
     fn windowed_width(&self, seg_widths: &[usize], lo: usize, hi: usize) -> usize {
-        // CELLS, not chars, and for the same reason `separator_cells`
-        // goes through `WidgetCells::from_styled`: the separator is
-        // user-configurable text. `separator = "\u{ff5c}"` is one char and
-        // two columns, so counting chars under-reported every gap by a
-        // column, `render_within` handed back more cells than its budget,
-        // and the `debug_assert` below fired in debug and test builds.
-        // The two measurements have to be the same function or they will
-        // drift again.
         let sep = display_width(&self.separator);
         let tabs: usize = seg_widths[lo..=hi].iter().sum();
         let seps = sep.saturating_mul(hi - lo);
@@ -301,21 +262,10 @@ impl StatusWidget for WindowsWidget {
         WidgetCells { cells }
     }
 
-    /// Drop whole tabs, never parts of one.
-    ///
-    /// A tab bar clipped mid-label (`0:alpha 1:`) is actively misleading:
-    /// it reads as a window named `1:`, hides that windows 2 and 3 exist,
-    /// and leaves a click target pointing at a window whose name you
-    /// cannot see. So instead of cutting the strip we choose *which tabs
-    /// to show*: the active one always, then its neighbours outward while
-    /// they fit, with a `‹` / `›` mark standing in for whatever is hidden
-    /// on that side. The active tab is the anchor because it is the one
-    /// piece of information the bar exists to convey — where you are.
-    ///
-    /// Below the width of even the active tab plus its marks, the tab's
-    /// own label is clipped (with the shared ellipsis): the leading
-    /// `{index}` survives longest, which is exactly the part you need to
-    /// type `prefix <n>` and get somewhere.
+    /// Drop whole tabs, never parts of one (`0:alpha 1:` would read as a
+    /// window named `1:`): show the active tab, then its neighbours outward
+    /// while they fit, with `‹` / `›` standing in for the hidden ones. Below
+    /// the active tab's own width its label clips, keeping the index.
     fn render_within(&self, ctx: &WidgetContext<'_>, budget: usize) -> WidgetCells {
         if budget == 0 || ctx.windows.is_empty() {
             return WidgetCells { cells: Vec::new() };
@@ -330,47 +280,23 @@ impl StatusWidget for WindowsWidget {
         let widths: Vec<usize> = segments.iter().map(Vec::len).collect();
         let last = segments.len() - 1;
 
-        // Fits whole? Nothing to decide.
         if self.windowed_width(&widths, 0, last) <= budget {
             return self.render_range(segments, 0, last);
         }
 
         let active = ctx.windows.iter().position(|w| w.active).unwrap_or(0);
 
-        // Not even the anchor fits: clip the active tab itself, keeping
-        // its leading index legible for as long as possible.
         if self.windowed_width(&widths, active, active) > budget {
             return self.clipped_anchor(segments, active, budget);
         }
 
-        // Grow outward from the anchor, alternating sides so the visible
-        // run stays centred on where you are. Preferring `hi` on ties
-        // means the *next* window — the one `prefix n` moves to — is the
-        // first neighbour you get back as the terminal widens.
         let (lo, hi) = self.visible_range(&widths, active, budget);
         let result = self.render_range(segments, lo, hi);
         debug_assert!(result.len() <= budget, "windows widget overran its budget");
         result
     }
-
-    // No `poll_interval` — the tab bar repaints when the layout changes,
-    // which the client drives via the status-bar repaint path.
 }
 
-/// Factory: builds a [`WindowsWidget`] from a TOML `opts` map.
-///
-/// Accepted keys (all optional; omitted keys keep the default preset):
-/// - `active` / `inactive` / `index` (inline table) — a [`CellStyle`]:
-///   `fg`/`bg` (color strings), `bold`/`dim`/`italic`/`underline`/`reverse`
-///   (bools).
-/// - `separator` (string) — text between segments (default `" "`).
-/// - `format` (string) — segment template with `{index}`/`{name}`
-///   (default `"{index}:{name}"`).
-///
-/// # Errors
-///
-/// Returns [`WidgetError::InvalidOption`] on an unknown option, a value
-/// of the wrong type, or a style table with an unknown field.
 pub(in crate::widget) fn factory(
     opts: &BTreeMap<String, toml::Value>,
 ) -> Result<Box<dyn StatusWidget>, WidgetError> {
@@ -379,8 +305,8 @@ pub(in crate::widget) fn factory(
     let active = style_opt(KIND, opts, "active")?.unwrap_or(defaults.active);
     let inactive = style_opt(KIND, opts, "inactive")?.unwrap_or(defaults.inactive);
     let index = style_opt(KIND, opts, "index")?.unwrap_or(defaults.index);
-    let separator = string_opt(opts, "separator")?.unwrap_or(defaults.separator);
-    let format = string_opt(opts, "format")?.unwrap_or(defaults.format);
+    let separator = string_opt(KIND, opts, "separator")?.unwrap_or(defaults.separator);
+    let format = string_opt(KIND, opts, "format")?.unwrap_or(defaults.format);
     Ok(Box::new(WindowsWidget {
         active,
         inactive,
@@ -388,19 +314,4 @@ pub(in crate::widget) fn factory(
         separator,
         format,
     }))
-}
-
-/// Parse an optional string option.
-fn string_opt(
-    opts: &BTreeMap<String, toml::Value>,
-    key: &str,
-) -> Result<Option<String>, WidgetError> {
-    match opts.get(key) {
-        None => Ok(None),
-        Some(toml::Value::String(s)) => Ok(Some(s.clone())),
-        Some(other) => Err(WidgetError::InvalidOption {
-            kind: KIND.to_owned(),
-            message: format!("`{key}` must be a string, got {}", other.type_str()),
-        }),
-    }
 }

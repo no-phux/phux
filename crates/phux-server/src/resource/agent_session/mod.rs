@@ -1,25 +1,10 @@
 //! The `AgentSession` engine: a producer-fed record stream (ADR-0103).
 //!
-//! The second [`ResourceKind`]. Where the Terminal engine reads its output
-//! from a PTY, this one is *fed*: a harness shim appends
-//! `AgentEventsJsonlV1` records through `APPEND_RESOURCE_OUTPUT` and the
-//! engine validates them, stamps the sequence and time it owns, retains a
-//! bounded ring, and fans the stamped records out to subscribers. There is
-//! no process, no grid, and no input channel.
-//!
-//! The engine is deliberately thin. It owns the ring, the sequence, and the
-//! `session_end` latch, and it computes each append's
-//! [`StreamEvidence`] — but publishing that evidence
-//! is the runtime's job (`runtime::resource_commands`), because the arbiter
-//! that ranks it and the parent Terminal whose `phux.agent/v1` record it
-//! lands on both live outside any one engine.
-//!
-//! Lifecycle is the shared one: cancelling the resource's token ends the
-//! run loop, which fires the core's exit notification, which the per-resource
-//! exit watcher turns into `RESOURCE_CLOSED` and a reap. A session therefore
-//! closes through exactly the path a Terminal does, with the
-//! [`CloseReason`](phux_protocol::wire::frame::CloseReason) the closer
-//! recorded.
+//! A harness shim appends `AgentEventsJsonlV1` records via
+//! `APPEND_RESOURCE_OUTPUT`; the engine validates, stamps sequence and time,
+//! keeps a bounded ring, and fans records out. No process, grid, or input.
+//! It computes each append's [`StreamEvidence`], but publishing it is the
+//! runtime's job. Lifecycle and close follow the same path as a Terminal.
 
 use std::sync::Arc;
 
@@ -38,12 +23,8 @@ pub mod ring;
 pub use record::{RecordError, StreamAsk, StreamEvidence, ValidRecord};
 pub use ring::RecordRing;
 
-/// Depth of the engine's append and bootstrap mailboxes.
-///
-/// Producers are short-lived hook processes issuing one append apiece, so a
-/// backlog this deep means the engine is not draining; refusing further
-/// appends with `OVERFLOW` is the honest answer, and it is exactly what
-/// ADR-0103 §3 names a full outbound queue.
+/// Depth of the append and bootstrap mailboxes; a full one refuses appends
+/// with `OVERFLOW` (ADR-0103 §3).
 const AGENT_SESSION_MAILBOX: usize = 64;
 
 /// One `APPEND_RESOURCE_OUTPUT` payload handed to the engine.
@@ -59,10 +40,7 @@ pub struct AppendRequest {
 /// What the server stamped onto an accepted append.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppendAccepted {
-    /// Sequence of the append's FIRST record. A batch's later records
-    /// follow contiguously, so a producer that emitted one record learns
-    /// its sequence and one that emitted several learns where its run
-    /// begins.
+    /// Sequence of the append's first record; the rest follow contiguously.
     pub first_seq: u64,
     /// Sequence of the append's last record; also the sequence carried by
     /// the live output frame the records shipped in.
@@ -72,9 +50,8 @@ pub struct AppendAccepted {
     /// What the append's records say about the session's state, if
     /// anything. The last state-bearing record in the batch wins.
     pub evidence: Option<StreamEvidence>,
-    /// The pending question the append's last question-bearing record
-    /// carried, for the ask ladder (ADR-0036). Independent of
-    /// [`Self::evidence`]: the two ledgers retract on different rules.
+    /// The last question-bearing record's question, for the ask ladder
+    /// (ADR-0036).
     pub ask: Option<StreamAsk>,
 }
 
@@ -104,17 +81,13 @@ pub struct AgentSessionBootstrap {
     pub base_seq: u64,
     /// Retained records, oldest first, each a complete stamped JSONL line.
     pub records: Vec<Bytes>,
-    /// How many records retention has evicted over the session's life. A
-    /// non-zero count means the replay starts mid-session, which a reader
-    /// cannot otherwise tell from a session that started there.
+    /// Records retention has evicted; non-zero means the replay starts
+    /// mid-session.
     pub dropped: u64,
 }
 
-/// The `AgentSession` facet: the channels only this engine serves.
-///
-/// `provider` and `native_id` are immutable for the resource's lifetime, so
-/// they are carried on the handle rather than fetched: the inventory path
-/// reads them under the state lock without a round trip to the engine.
+/// The `AgentSession` facet. `provider` and `native_id` are immutable, so
+/// the handle carries them for lock-held inventory reads.
 #[derive(Debug, Clone)]
 pub struct AgentSessionHandle {
     /// Harness that produces the session's records, e.g. `claude`.
@@ -195,13 +168,8 @@ impl AgentSessionActor {
             append: append_tx,
             bootstrap: bootstrap_tx,
         };
-        // The consumer-lifecycle, ack, and upgrade channels exist for every
-        // kind but are served only by the Terminal engine: per-consumer
-        // `StateSync` bookkeeping is a grid concern, `FRAME_ACK` is refused
-        // on this stream's raw profile, and a session has no PTY for a
-        // re-exec'd image to re-adopt. Their receivers are dropped here, so
-        // a send that should never happen fails immediately instead of
-        // queueing against a mailbox nobody reads.
+        // Consumer, ack, and upgrade channels are Terminal-only; drop their
+        // receivers so a stray send fails at once.
         let handle = ResourceHandle {
             kind: ResourceKind::AgentSession,
             parent: Some(parent),
@@ -226,12 +194,8 @@ impl AgentSessionActor {
         }
     }
 
-    /// Drive the engine until its token is cancelled or every producer and
-    /// observer has gone away.
-    ///
-    /// The exit notification fires on the way out however the loop ended,
-    /// so the per-resource exit watcher closes and reaps the session on the
-    /// same path a Terminal takes.
+    /// Drive the engine until cancelled or every producer and observer is
+    /// gone; the exit notification fires either way.
     pub async fn run(mut self) {
         let token = self.core.token.clone();
         loop {
@@ -268,14 +232,9 @@ impl AgentSessionActor {
         }
     }
 
-    /// Validate, stamp, retain, and broadcast one append.
-    ///
-    /// All-or-nothing: a batch whose third record is malformed appends none
-    /// of the first two, so a producer never has to reason about a partial
-    /// commit. Every record in one append shares that append's timestamp
-    /// and takes its own sequence, and the whole run ships in a single
-    /// [`PaneOutput::Live`] carrying complete records, sequenced by the last
-    /// one — which is what the bootstrap's `base_seq` is measured against.
+    /// Validate, stamp, retain, and broadcast one append, all-or-nothing.
+    /// Records share the append's timestamp and ship in one
+    /// [`PaneOutput::Live`] sequenced by the last record.
     fn handle_append(&mut self, request: AppendRequest) {
         let AppendRequest { bytes, reply } = request;
         let records = match record::validate(&bytes, self.ended) {
@@ -332,14 +291,8 @@ impl AgentSessionActor {
         }));
     }
 
-    /// Answer a supervisory request that belongs to another kind.
-    ///
-    /// Lease changes and record invalidation are about a Terminal's input
-    /// gate and detector; a signal needs a process group. None of the three
-    /// exists here, so the two that carry a reply get a typed refusal and
-    /// the rest are dropped. The runtime refuses these at dispatch with
-    /// `WRONG_RESOURCE_KIND`; this arm is the engine holding the same line
-    /// for any path that reaches it anyway.
+    /// Refuse Terminal-only supervisory requests (the runtime already
+    /// refuses them with `WRONG_RESOURCE_KIND`).
     fn refuse_control(request: ControlRequest) {
         match request {
             ControlRequest::ReportAgentState { reply, .. }

@@ -1,24 +1,9 @@
-//! Overlay layer — modals, action finder, and pickers.
+//! Overlay layer: modals, the action finder, and pickers.
 //!
-//! An overlay is a chrome-layer widget that takes over the outer terminal
-//! while it's active: input is captured (no keystrokes reach the focused
-//! pane's stdin) and pane stdout flushing is paused (per ADR-0020 §Decision
-//! invariant 5). Pane libghostty mirrors keep consuming server VT bytes —
-//! we only pause the *outbound* flush so the modal doesn't get trampled by
-//! a `RESOURCE_OUTPUT` repaint. On dismiss, the driver triggers a full
-//! repaint to restore pane content.
-//!
-//! [`OverlayState`] carries a *stack* of overlays. The top of the stack
-//! captures input ([`RenderOverlay::handle_key`]); rendering walks the
-//! stack bottom-up so stacked overlays compose. A single active overlay is the
-//! one-element case — the common path is unchanged from a UX standpoint.
-//!
-//! Submodules:
-//! - [`prompt`] — single-line text-input modal (phux-ahv.1)
-//! - [`widgets`] — reusable themed primitives ([`Modal`], [`KeyChordTable`])
-//!
-//! [`Modal`]: widgets::Modal
-//! [`KeyChordTable`]: widgets::KeyChordTable
+//! An active overlay captures input and pauses pane stdout flushes (ADR-0020)
+//! while the pane mirrors keep ingesting; dismiss triggers a full repaint.
+//! [`OverlayState`] is a stack: the top captures input, rendering walks it
+//! bottom-up.
 
 use std::io::{self, Write};
 
@@ -36,7 +21,7 @@ pub mod pending;
 pub mod prompt;
 pub mod select_list;
 pub mod selection;
-// phux-u1tq.4: the settings page (ADR-0101).
+// The settings page (ADR-0101).
 pub mod settings;
 pub mod toast;
 pub mod which_key;
@@ -48,32 +33,15 @@ pub use pending::PendingOverlay;
 pub use prompt::PromptOverlay;
 pub use select_list::{SelectItem, SelectList};
 pub use settings::SettingsOverlay;
-// The shared copy-mode selection contract (ADR-0045). This module is the single
-// owner; both the selection UX (`copy_mode`) and the renderer (`attach::render`)
-// import these types from here, so the highlight geometry and the copy path
-// cannot disagree about what a selection covers.
+// The shared copy-mode selection contract (ADR-0045): the selection UX and
+// the renderer import these from one owner so they cannot disagree.
 pub use selection::{
     CopyRequest, ScreenSelectionPoint, SelectionGrab, SelectionMode, SelectionRect,
 };
 pub use toast::ToastOverlay;
 pub use which_key::WhichKeyOverlay;
 
-/// One driver-owned, non-rebindable interaction kept beside its handler so
-/// adjacency tests can prevent discovery text from drifting from behavior.
-#[derive(Debug, Clone, Copy)]
-pub struct HardcodedBinding {
-    /// Literal key, mouse gesture, or clickable label.
-    pub chord: &'static str,
-    /// What the gesture does.
-    pub action: &'static str,
-}
-
-/// Test double: a [`RenderOverlay`] that records every key handed to it and
-/// never dismisses, so a test can assert exactly which keystrokes reached
-/// the overlay. Lives here (not in `attach/`) because implementing
-/// `RenderOverlay::render` names ratatui types, which the boundary guard
-/// confines to `render/`. Used by the `attach::input_dispatch` overlay-input
-/// routing regression test.
+/// Test double: records every key handed to it and never dismisses.
 #[cfg(test)]
 pub(crate) struct RecordingOverlay {
     pub(crate) keys: std::rc::Rc<std::cell::RefCell<Vec<KeyEvent>>>,
@@ -90,161 +58,84 @@ impl RenderOverlay for RecordingOverlay {
 
 /// A chrome-layer overlay rendered above pane interiors.
 ///
-/// Implementors paint into a ratatui [`Buffer`] sized to the outer
-/// viewport. [`handle_key`] receives structured [`KeyEvent`]s from the
-/// driver — phux uses libghostty/protocol input atoms per ADR-0006 and
-/// ADR-0008, NOT crossterm's event types, even though the rendering
-/// toolkit (ratatui) is crossterm-adjacent. The overlay is responsible
-/// for deciding when it's done; the driver inspects the returned
-/// [`OverlayCommand`].
-///
-/// [`handle_key`]: RenderOverlay::handle_key
+/// It paints into a ratatui [`Buffer`] over the viewport and takes protocol input atoms
+/// (ADR-0006/0008), deciding when it is done via [`OverlayCommand`].
 pub trait RenderOverlay {
-    /// Paint into `buf` covering `area` (typically the full outer
-    /// viewport). Cells the overlay does not write to are left as the
-    /// `Buffer`'s default (blank black-on-default).
+    /// Paint into `buf` covering `area` (usually the full viewport).
     fn render(&self, area: Rect, buf: &mut Buffer);
 
-    /// React to a key event. Return [`OverlayCommand::Dismiss`] to close
-    /// the overlay; [`OverlayCommand::Stay`] to keep it open and consume
-    /// the key.
+    /// React to a key: [`OverlayCommand::Dismiss`] closes, `Stay` consumes.
     fn handle_key(&mut self, key: &KeyEvent) -> OverlayCommand;
 
-    /// Insert clipboard text literally, without submitting or dismissing the
-    /// overlay. [`OverlayState::handle_paste`] removes control characters before
-    /// dispatch; overlays without a text field consume the paste without action.
+    /// Insert clipboard text literally (control characters already removed);
+    /// overlays without a text field ignore it.
     fn handle_paste(&mut self, _text: &str) {}
 
-    /// React to a mouse event while this overlay is active. Most modal
-    /// overlays ignore pointer input; copy-mode consumes wheel events to
-    /// scroll the focused pane's client-local viewport.
+    /// React to a mouse event (most modals ignore pointer input).
     fn handle_mouse(&mut self, _mouse: &MouseEvent) -> OverlayCommand {
         OverlayCommand::Stay
     }
 
-    /// The painted region of this overlay inside `area`, or `None` if it
-    /// paints the whole viewport.
-    ///
-    /// A bounded overlay (every modal: help, prompt, command palette,
-    /// pickers) returns the centered `Rect` it draws into. The driver uses
-    /// it to **float** the modal: it repaints the live panes as the base
-    /// frame and then emits only this region on top, so the panes stay
-    /// visible around the box instead of vanishing behind a full-screen
-    /// clear (the "overlay overflows the whole screen" bug). Default `None`
-    /// keeps the legacy full-screen behaviour for any overlay that genuinely
-    /// owns the entire viewport.
+    /// The painted region inside `area`, or `None` for a full-viewport
+    /// overlay. A bounded overlay floats: the driver repaints the live panes
+    /// and emits only this region on top.
     fn bounds(&self, _area: Rect) -> Option<Rect> {
         None
     }
 
-    /// The active copy-mode selection (pane-local cells), or `None`.
-    ///
-    /// `None` for every modal overlay (the default) — they paint their own
-    /// surface and the driver clears the screen for them. Copy-mode returns
-    /// `Some`: it is *not* a modal overlay but a selection highlight over the
-    /// live pane, so the driver repaints the focused pane with these cells
-    /// reverse-videoed (via [`crate::attach::render::TerminalRenderer::set_selection`])
-    /// instead of clearing the screen. Nothing on screen swaps; only the
-    /// selected cells invert.
+    /// The active copy-mode selection (pane-local cells), or `None`. Copy
+    /// mode is a highlight over the live pane, not a modal: the driver
+    /// repaints the pane with these cells inverted.
     fn copy_selection(&self) -> Option<SelectionRect> {
         None
     }
 
-    /// `true` for a display-only overlay that must never capture input
-    /// (phux-foz.2: the which-key popup). The dispatcher checks this
-    /// BEFORE overlay routing: instead of feeding keys to the overlay it
-    /// dismisses it and processes the event exactly as if the overlay
-    /// were not there, so a passthrough overlay can never eat or delay a
-    /// chord. Default `false` — every modal overlay captures input.
+    /// A display-only overlay (which-key) that never captures input: the
+    /// dispatcher dismisses it and processes the event as if it were absent.
     fn is_input_passthrough(&self) -> bool {
         false
     }
 
-    /// Whether Escape has special prefix-cancellation meaning for this
-    /// passthrough overlay. Only which-key needs this; ordinary notices pass
-    /// Escape through like every other intended input.
+    /// Whether Escape cancels the pending prefix for this passthrough overlay
+    /// (which-key only).
     fn passthrough_escape_cancels_prefix(&self) -> bool {
         false
     }
 
-    /// phux-huhi: adopt the attach-wide `[chrome]` breakpoints.
-    ///
-    /// [`OverlayState::push`] calls this on every overlay as it is stacked,
-    /// so a modal picks the thresholds up from the one place that read the
-    /// config instead of each construction site threading them. Overlays
-    /// that lay themselves out with [`centered_panel`] store the value and
-    /// hand it back to `centered_panel`; every other overlay ignores it,
-    /// which is why this defaults to a no-op rather than being required.
-    ///
-    /// [`centered_panel`]: widgets::centered_panel
+    /// Adopt the attach-wide `[chrome]` breakpoints (stamped by
+    /// [`OverlayState::push`]); overlays not using `centered_panel` ignore it.
     fn set_breakpoints(&mut self, _bp: ChromeBreakpoints) {}
 
-    /// Adopt a freshly reloaded [`Theme`].
-    ///
-    /// Every overlay copies its colors at construction so it stays
-    /// `'static`; a config reload while one is open would otherwise leave
-    /// it painted in the previous palette. [`OverlayState::set_theme`]
-    /// calls this on the whole stack after a successful reload. The default
-    /// is a no-op: a modal that closes on the next keystroke need not care,
-    /// while the settings page -- which may have just edited a theme slot
-    /// and stays open to show it -- stores the value.
+    /// Adopt a reloaded [`Theme`] (overlays copy their colors at
+    /// construction; the settings page shows theme edits live).
     fn set_theme(&mut self, _theme: &Theme) {}
 
-    /// phux-wrnm: `true` for an overlay that hover-tracks the pointer with
-    /// no button held (the context menu). The driver upgrades the outer
-    /// terminal's mouse reporting from button-event (`?1002h`) to
-    /// any-motion (`?1003h`) while such an overlay is on the stack, and
-    /// drops back the moment it closes — hover traffic is worth the bytes
-    /// only while something on screen consumes it (ADR-0048's rationale
-    /// for not enabling `?1003h` by default stands otherwise).
+    /// Hover-tracks the pointer with no button held (the context menu): the
+    /// driver raises any-motion reporting (`?1003h`) only while one is up.
     fn wants_pointer_hover(&self) -> bool {
         false
     }
 
-    /// phux-fsb: whether this overlay's geometry stays valid across a
-    /// viewport resize.
-    ///
-    /// Every centered overlay lays itself out from the `area` handed to
-    /// [`RenderOverlay::render`] and [`RenderOverlay::bounds`] on each
-    /// paint, so it reflows into the new viewport for free — `true`, the
-    /// default. The context menu is the exception: it pins its box to the
-    /// pointer cell at construction, against the content rect that existed
-    /// *then*. After a resize that box can be off screen entirely while the
-    /// overlay stays active, capturing every keystroke and committing its
-    /// selected row on Enter with nothing painted to show what it is. Such
-    /// an overlay returns `false` and the driver drops it on SIGWINCH
-    /// ([`OverlayState::dismiss_stale_on_resize`]).
+    /// Whether this overlay's geometry survives a viewport resize. Centered
+    /// overlays reflow from `area` every paint; the context menu pins its box
+    /// to the pointer, so it returns `false` and is dropped on SIGWINCH
+    /// ([`OverlayState::dismiss_stale_on_resize`]) rather than capture keys
+    /// off screen.
     fn survives_resize(&self) -> bool {
         true
     }
 
-    /// phux-d26y: re-derive geometry from the focused pane's new size after
-    /// a viewport resize. `pane_cols` / `pane_rows` are the focused pane's
-    /// dimensions in the *new* layout.
-    ///
-    /// The companion to [`RenderOverlay::survives_resize`]: an overlay that
-    /// survives a resize still has to be *told* about it if it cached
-    /// anything derived from the old size. Copy-mode is the one that does —
-    /// it clamps its cursor, quantizes mouse positions, sizes a page scroll,
-    /// and picks Line mode's right edge from pane dimensions captured at
-    /// construction. Everything else recomputes from the render `area` and
-    /// ignores this (the default no-op).
+    /// Re-derive cached geometry from the focused pane's new size after a
+    /// resize (copy-mode clamps its cursor and edges); default no-op.
     fn on_viewport_resize(&mut self, _pane_cols: u16, _pane_rows: u16) {}
 
-    /// phux-foz.7: offer this overlay a freshly rebuilt row set tagged
-    /// `key`. A *live* overlay whose data projects shared client state —
-    /// the agent-fleet dashboard — replaces its rows in place (preserving
-    /// query/selection) and returns `true` so the driver repaints it; every
-    /// other overlay ignores the offer (default `false`). This is push, not
-    /// poll: the driver calls it only when a server frame actually changed
-    /// the projected state.
+    /// Offer a rebuilt row set tagged `key`; a live overlay (the fleet
+    /// dashboard) replaces its rows and returns `true`. Push, not poll.
     fn refresh_items(&mut self, _key: &str, _items: &[SelectItem]) -> bool {
         false
     }
 
-    /// The request id this overlay is a placeholder for, if it stands in
-    /// for data still on its way from the server ([`PendingOverlay`]).
-    /// Every other overlay answers `None` (the default).
+    /// The request id this placeholder overlay ([`PendingOverlay`]) awaits.
     fn pending_request(&self) -> Option<u32> {
         None
     }
@@ -255,30 +146,18 @@ pub trait RenderOverlay {
 pub enum OverlayCommand {
     /// Keep the overlay active; the key was consumed.
     Stay,
-    /// Close the overlay. The driver triggers a full repaint to restore
-    /// pane content on the next loop iteration.
+    /// Close the overlay; the driver repaints the panes.
     Dismiss,
-    /// Close the overlay and run this action in the dispatcher — e.g. a
-    /// committed rename prompt returning `rename-window { name }`. The
-    /// dispatcher feeds it through the normal `run_action` path.
+    /// Close the overlay and run this action through `run_action`.
     Commit(phux_config::keybind::ResolvedAction),
-    /// Close the overlay and copy the current selection to the host clipboard
-    /// (copy-mode Enter).
-    ///
-    /// Selection is a client-local projection over the focused pane's own
-    /// engine ([ADR-0030]); the dispatcher resolves the [`CopyRequest`]
-    /// against that engine and emits OSC 52 — nothing goes on the wire.
-    ///
-    /// [ADR-0030]: ../../../../docs/adr/0030-engine-delegated-wire-and-projection-consumers.md
+    /// Close the overlay and copy the selection to the host clipboard via
+    /// OSC 52, resolved client-side (ADR-0030).
     Copy(CopyRequest),
     /// Keep the overlay active and scroll the focused pane's client-local
     /// viewport by `delta` rows (negative means up into scrollback).
     ScrollViewport(isize),
-    /// Keep the overlay active and ask the driver to re-read the config
-    /// file and swap the reloadable settings in place (ADR-0101: the
-    /// settings page just wrote the file). The same atomic reload the
-    /// `reload-config` action performs; the driver repaints, then
-    /// re-stamps the stack's theme through [`OverlayState::set_theme`].
+    /// Keep the overlay and reload the config in place (the settings page
+    /// wrote the file, ADR-0101).
     ReloadConfig,
 }
 
@@ -300,20 +179,13 @@ pub enum OverlayOutcome {
     ReloadConfig,
 }
 
-/// Stacked overlay state.
-///
-/// The top of the stack captures input; rendering walks the stack
-/// bottom-up so stacked overlays compose (palette painted on top of
-/// help). A single active overlay is the one-element case.
+/// Stacked overlay state: the top captures input; rendering walks the stack
+/// bottom-up.
 #[derive(Default)]
 pub struct OverlayState {
-    /// Bottom-to-top overlay stack. The last element is the top — it
-    /// receives input and is painted last (on top of the others).
+    /// Bottom-to-top stack; the last element is the input target.
     stack: Vec<Box<dyn RenderOverlay>>,
-    /// phux-huhi: the attach's `[chrome]` breakpoints, stamped onto every
-    /// overlay as it is pushed. One seam rather than a parameter on every
-    /// overlay constructor — the driver sets it once
-    /// ([`Self::set_breakpoints`]) and pushes stay unchanged everywhere.
+    /// The attach's `[chrome]` breakpoints, stamped onto every pushed overlay.
     breakpoints: ChromeBreakpoints,
 }
 
@@ -336,12 +208,8 @@ impl OverlayState {
         }
     }
 
-    /// phux-huhi: adopt the attach's `[chrome]` breakpoints.
-    ///
-    /// Called by the driver once the config is loaded, before any overlay
-    /// can be pushed. Already-stacked overlays are re-stamped too, so a
-    /// `phux config reload` that moves a threshold reaches an open modal on
-    /// its next paint rather than only the next one opened.
+    /// Adopt the attach's `[chrome]` breakpoints, re-stamping stacked
+    /// overlays so a reload reaches an open modal.
     pub fn set_breakpoints(&mut self, bp: ChromeBreakpoints) {
         self.breakpoints = bp;
         for overlay in &mut self.stack {
@@ -357,36 +225,26 @@ impl OverlayState {
         }
     }
 
-    /// `true` when at least one overlay is active (capturing input +
-    /// pausing pane stdout). The driver loop reads this *only* via this
-    /// accessor — it must not see ratatui types directly (CI grep guard
-    /// enforces).
+    /// `true` when at least one overlay is active.
     #[must_use]
     pub const fn is_active(&self) -> bool {
         !self.stack.is_empty()
     }
 
-    /// The active (top) overlay's copy-mode selection, if it is copy-mode.
-    ///
-    /// `Some` only when copy-mode is the top overlay; the driver uses it to
-    /// repaint the focused pane with the selection reverse-videoed rather than
-    /// clearing the screen for a modal overlay. `None` for modal overlays or
-    /// no overlay.
+    /// The top overlay's copy-mode selection, when copy-mode is on top.
     #[must_use]
     pub fn copy_selection(&self) -> Option<SelectionRect> {
         self.stack.last().and_then(|o| o.copy_selection())
     }
 
     /// Number of overlays currently stacked (0 when inactive).
+    #[cfg(test)]
     #[must_use]
     pub fn depth(&self) -> usize {
         self.stack.len()
     }
 
-    /// `true` when the top overlay is input-passthrough (phux-foz.2:
-    /// the which-key popup). The dispatcher consults this before overlay
-    /// routing so a passthrough overlay is dismissed by — and never
-    /// consumes — the next input event.
+    /// `true` when the top overlay is input-passthrough (which-key).
     #[must_use]
     pub fn top_is_passthrough(&self) -> bool {
         self.stack.last().is_some_and(|o| o.is_input_passthrough())
@@ -401,53 +259,30 @@ impl OverlayState {
             .is_some_and(|o| o.passthrough_escape_cancels_prefix())
     }
 
-    /// phux-wrnm: `true` when any stacked overlay hover-tracks the pointer
-    /// (see [`RenderOverlay::wants_pointer_hover`]). The driver reconciles
-    /// the outer terminal's motion reporting against this each loop
-    /// iteration, exactly the way it reconciles capture against focus.
+    /// `true` when any stacked overlay hover-tracks the pointer.
     #[must_use]
     pub fn wants_pointer_hover(&self) -> bool {
         self.stack.iter().any(|o| o.wants_pointer_hover())
     }
 
-    /// phux-fsb: drop every overlay whose geometry a viewport resize
-    /// invalidated ([`RenderOverlay::survives_resize`]), returning `true`
-    /// when the stack changed so the caller repaints.
-    ///
-    /// Called from the driver's SIGWINCH arm before it repaints. Dropping
-    /// rather than reflowing is the honest move for a pinned overlay: its
-    /// box was anchored to a pointer position on a screen that no longer
-    /// exists, and re-placing it would put a menu somewhere the user never
-    /// clicked. Native menus close on resize for the same reason.
-    ///
-    /// The whole stack is swept, not just the top, so a pinned overlay can
-    /// never be stranded underneath a survivor.
+    /// Drop every overlay a resize invalidated
+    /// ([`RenderOverlay::survives_resize`]) anywhere in the stack, like native
+    /// menus close on resize. `true` when the stack changed.
     pub fn dismiss_stale_on_resize(&mut self) -> bool {
         let before = self.stack.len();
         self.stack.retain(|overlay| overlay.survives_resize());
         self.stack.len() != before
     }
 
-    /// phux-d26y: hand every surviving overlay the focused pane's new size
-    /// ([`RenderOverlay::on_viewport_resize`]).
-    ///
-    /// Runs *after* [`Self::dismiss_stale_on_resize`] on the same SIGWINCH
-    /// edge, so the overlays that are about to be dropped are never asked to
-    /// re-derive geometry they will not use. Most overlays ignore it; the
-    /// one that does not is copy-mode, whose clamp is otherwise still
-    /// talking about the pane size that existed when it opened.
+    /// Hand every surviving overlay the focused pane's new size; runs after
+    /// [`Self::dismiss_stale_on_resize`].
     pub fn on_viewport_resize(&mut self, pane_cols: u16, pane_rows: u16) {
         for overlay in &mut self.stack {
             overlay.on_viewport_resize(pane_cols, pane_rows);
         }
     }
 
-    /// Push `overlay` onto the top of the stack. It becomes the input
-    /// target and is painted last (above any overlays beneath it).
-    ///
-    /// The overlay is stamped with the attach's `[chrome]` breakpoints on
-    /// the way in (phux-huhi), so every construction site gets the
-    /// configured thresholds without naming them.
+    /// Push `overlay` on top, stamped with the attach's breakpoints.
     pub fn push(&mut self, mut overlay: Box<dyn RenderOverlay>) {
         overlay.set_breakpoints(self.breakpoints);
         self.stack.push(overlay);
@@ -459,9 +294,7 @@ impl OverlayState {
         self.stack.last()?.pending_request()
     }
 
-    /// `true` while some stacked placeholder still stands in for
-    /// `request_id`. `false` once it was dismissed, so the caller can
-    /// abandon the request.
+    /// `true` while some stacked placeholder awaits `request_id`.
     #[must_use]
     pub fn awaits(&self, request_id: u32) -> bool {
         self.stack
@@ -469,12 +302,9 @@ impl OverlayState {
             .any(|overlay| overlay.pending_request() == Some(request_id))
     }
 
-    /// Replace the top overlay with `overlay` only when the top is the
-    /// placeholder for `request_id`; returns whether it did.
-    ///
-    /// A reply whose placeholder was dismissed, or is covered by another
-    /// overlay, opens nothing: the user moved on, and a picker appearing
-    /// over whatever they are doing now would steal their next keystroke.
+    /// Replace the top overlay only when it is the placeholder for
+    /// `request_id`: a reply for a dismissed or covered placeholder opens
+    /// nothing (it would steal the user's next keystroke).
     pub fn replace_pending(&mut self, request_id: u32, overlay: Box<dyn RenderOverlay>) -> bool {
         if self.top_pending_request() != Some(request_id) {
             return false;
@@ -484,22 +314,24 @@ impl OverlayState {
         true
     }
 
-    /// Dismiss (pop) the top overlay, revealing whatever was beneath it.
-    /// No-op when the stack is empty.
+    /// Pop the top overlay (no-op when empty).
     pub fn dismiss(&mut self) {
         self.stack.pop();
     }
 
-    /// Dispatch a key event to the top overlay. Auto-dismisses (pops) on
-    /// [`OverlayCommand::Dismiss`], [`OverlayCommand::Commit`], and
-    /// [`OverlayCommand::Copy`]; `Commit` also returns the action and `Copy`
-    /// the selection for the dispatcher to handle. No-op (returns
-    /// [`OverlayOutcome::None`]) when no overlay is active.
+    /// Dispatch a key to the top overlay (see `settle`).
     pub fn handle_key(&mut self, key: &KeyEvent) -> OverlayOutcome {
         let Some(top) = self.stack.last_mut() else {
             return OverlayOutcome::None;
         };
-        match top.handle_key(key) {
+        let command = top.handle_key(key);
+        self.settle(command)
+    }
+
+    /// Turn the top overlay's command into the dispatcher's outcome, popping
+    /// it on `Dismiss`, `Commit`, and `Copy` (tmux-style copy-and-exit).
+    fn settle(&mut self, command: OverlayCommand) -> OverlayOutcome {
+        match command {
             OverlayCommand::Stay => OverlayOutcome::None,
             OverlayCommand::Dismiss => {
                 self.dismiss();
@@ -510,8 +342,6 @@ impl OverlayState {
                 OverlayOutcome::RunAction(action)
             }
             OverlayCommand::Copy(req) => {
-                // Copy-mode Enter: dismiss the overlay (tmux-style copy-and-exit)
-                // and hand the dispatcher the selection to resolve locally.
                 self.dismiss();
                 OverlayOutcome::Copy(req)
             }
@@ -520,9 +350,8 @@ impl OverlayState {
         }
     }
 
-    /// Insert a paste into only the top overlay. Single-line fields ignore
-    /// control characters, just as they do for typed text; pasted Enter, Escape,
-    /// and navigation keys must never become overlay commands.
+    /// Insert a paste into the top overlay, control characters removed so a
+    /// pasted Enter or Escape never becomes a command.
     pub fn handle_paste(&mut self, text: &str) {
         if let Some(top) = self.stack.last_mut() {
             let text: String = text.chars().filter(|ch| !ch.is_control()).collect();
@@ -530,12 +359,8 @@ impl OverlayState {
         }
     }
 
-    /// phux-foz.7: hand a freshly rebuilt row set tagged `key` to the
-    /// stacked overlays, top-down. The first overlay that accepts it (a
-    /// live [`SelectList`] carrying the matching key — the agent-fleet
-    /// dashboard) replaces its rows and stops the walk; `true` means some
-    /// overlay refreshed and the caller should repaint the overlay layer.
-    /// `false` (no live overlay in the stack) costs nothing downstream.
+    /// Hand a rebuilt row set to the stack top-down; `true` when a live
+    /// overlay accepted it.
     pub fn refresh_items(&mut self, key: &str, items: &[SelectItem]) -> bool {
         self.stack
             .iter_mut()
@@ -543,46 +368,19 @@ impl OverlayState {
             .any(|overlay| overlay.refresh_items(key, items))
     }
 
-    /// Dispatch a mouse event to the top overlay. The overlay stays active;
-    /// scroll requests are handed back to the dispatcher for local terminal
-    /// viewport mutation.
+    /// Dispatch a mouse event to the top overlay (see `settle`).
     pub fn handle_mouse(&mut self, mouse: &MouseEvent) -> OverlayOutcome {
         let Some(top) = self.stack.last_mut() else {
             return OverlayOutcome::None;
         };
-        match top.handle_mouse(mouse) {
-            OverlayCommand::ScrollViewport(delta) => OverlayOutcome::ScrollViewport(delta),
-            OverlayCommand::Dismiss => {
-                self.dismiss();
-                OverlayOutcome::None
-            }
-            OverlayCommand::Commit(action) => {
-                self.dismiss();
-                OverlayOutcome::RunAction(action)
-            }
-            OverlayCommand::Copy(req) => {
-                self.dismiss();
-                OverlayOutcome::Copy(req)
-            }
-            OverlayCommand::ReloadConfig => OverlayOutcome::ReloadConfig,
-            OverlayCommand::Stay => OverlayOutcome::None,
-        }
+        let command = top.handle_mouse(mouse);
+        self.settle(command)
     }
 
-    /// The bounding `Rect` to float the active overlay stack within, or
-    /// `None` if any stacked overlay paints the whole viewport.
-    ///
-    /// Returns the union of every stacked overlay's [`RenderOverlay::bounds`],
-    /// each centered inside `content` — the pane content rect (the viewport
-    /// minus the sidebar strip and status-bar row), NOT the raw viewport
-    /// (phux-foz.14). Centering against `content` keeps a modal's box off the
-    /// sidebar columns, so it never occludes the chrome the floating-modal
-    /// base-frame repaint (phux-foz.10) works to preserve.
-    ///
-    /// When `Some`, the driver paints the live panes as a base frame and
-    /// emits only this region on top (a true floating modal); when `None`,
-    /// it falls back to the full-screen clear+paint. Copy-mode is handled
-    /// earlier (via [`Self::copy_selection`]) and never reaches here.
+    /// The union of the stacked overlays' bounds, centered inside `content`
+    /// (the pane content rect, so a modal never covers the sidebar), or
+    /// `None` when any overlay is full-screen (the driver then clears and
+    /// paints the whole viewport).
     #[must_use]
     pub fn active_bounds(&self, content: Rect) -> Option<Rect> {
         if self.stack.is_empty() {
@@ -597,14 +395,8 @@ impl OverlayState {
         union
     }
 
-    /// Paint the overlay stack into a fresh full-viewport buffer and emit
-    /// it to `out` as VT bytes. No-op when no overlay is active.
-    ///
-    /// Overlays paint bottom-up into one shared buffer (top last), so a
-    /// stacked overlay composes over the ones beneath it. The paint is a
-    /// from-scratch render, not a diff: callers should clear-screen
-    /// before invoking so leftover pane content doesn't bleed through the
-    /// overlays' blank cells.
+    /// Paint the stack bottom-up into a full-viewport buffer and emit it.
+    /// Not a diff: callers clear the screen first.
     pub fn paint(&self, out: &mut impl Write, viewport_dims: (u16, u16)) -> io::Result<()> {
         if self.stack.is_empty() {
             return Ok(());
@@ -617,21 +409,9 @@ impl OverlayState {
         emit_buffer(out, &buf)
     }
 
-    /// Paint the overlay stack but emit **only** the cells inside `clip`
-    /// (plus a one-cell drop shadow below + right of it).
-    ///
-    /// This is the floating-modal path: the caller has already painted the
-    /// live panes as the base frame, so emitting only the modal's bounded
-    /// region leaves the panes visible around it. Cells outside `clip` (and
-    /// the shadow) are never written, so nothing erases the panes. The
-    /// `shadow` color gives the box depth over the panes; pass `Color::Reset`
-    /// to disable it. No-op when inactive.
-    ///
-    /// Overlays render against `content` — the pane content rect (viewport
-    /// minus the sidebar strip and status-bar row), so a centered modal lands
-    /// inside the pane region rather than over the chrome (phux-foz.14). The
-    /// buffer stays full-viewport sized (`viewport_dims`) so `clip` and the
-    /// drop shadow keep absolute screen coordinates.
+    /// Paint the stack against `content` but emit only the cells inside
+    /// `clip` plus a one-cell `shadow` below and right (`Color::Reset`
+    /// disables it): the floating-modal path over already-painted panes.
     pub fn paint_clipped(
         &self,
         out: &mut impl Write,
@@ -652,10 +432,18 @@ impl OverlayState {
     }
 }
 
-/// Emit a ratatui [`Buffer`] to `out` as VT cursor + SGR + glyph bytes.
-///
-/// Full-screen and clipped overlays share the same width-aware row walk and
-/// style-run coalescing, so a wide label cannot push either path off its grid.
+/// A pointer position as a viewport cell: negative or NaN is 0, beyond
+/// `u16::MAX` saturates (a malformed report never breaks routing).
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to 0..=u16::MAX first"
+)]
+fn pointer_cell(p: f64) -> u16 {
+    p.max(0.0).min(f64::from(u16::MAX)) as u16
+}
+
+/// Emit a buffer as VT bytes (width-aware rows, coalesced style runs).
 fn emit_buffer(out: &mut impl Write, buf: &Buffer) -> io::Result<()> {
     let area = buf.area;
     // Hide cursor for the duration of the modal paint.
@@ -663,24 +451,14 @@ fn emit_buffer(out: &mut impl Write, buf: &Buffer) -> io::Result<()> {
     for row in 0..area.height {
         emit_row_span(out, buf, area.y + row, area.x, area.right())?;
     }
-    // Park the cursor at (1,1) — overlay-active state implies no pane
-    // cursor visible. Stays hidden until the overlay dismisses and the
-    // pane re-paint emits its own DECTCEM.
+    // Park the (hidden) cursor; the pane repaint on dismiss re-shows it.
     out.write_all(b"\x1b[1;1H")?;
     out.flush()
 }
 
-/// Emit only the cells of `buf` that fall inside `clip` (a floating modal's
-/// bounded region), plus a one-cell drop shadow below + right of it, leaving
-/// everything else on screen untouched.
-///
-/// The caller paints the live panes first; this writes the modal box on top
-/// without erasing the panes around it. Each row CUPs to its own left edge so
-/// only the box (and shadow band) cells are written. The shadow band is
-/// painted into `buf` as `shadow`-bg spaces; the two outer corners (top-right
-/// of the box, bottom-left of the shadow) are deliberately skipped so the L
-/// reads as a shadow rather than a full rectangle. Pass `Color::Reset` to
-/// disable the shadow.
+/// Emit only the cells of `buf` inside `clip`, plus the drop shadow, each
+/// row `CUP`-positioned at its own left edge. The shadow's two outer corners are
+/// skipped so it reads as an L.
 fn emit_buffer_clipped(
     out: &mut impl Write,
     buf: &mut Buffer,
@@ -776,9 +554,8 @@ fn emit_clipped_rows(
     Ok(())
 }
 
-/// Emit cells `[start_col, end_col)` of `row` from `buf` with a leading CUP to
-/// the row's start column and a per-cell SGR delta. Shared by the box rows and
-/// the shadow band in [`emit_buffer_clipped`].
+/// Emit cells `[start_col, end_col)` of `row`, `CUP`-positioned at the start, with
+/// per-cell SGR deltas.
 fn emit_row_span(
     out: &mut impl Write,
     buf: &Buffer,
@@ -829,345 +606,214 @@ mod tests {
         }
     }
 
-    struct EscDismiss;
-    impl RenderOverlay for EscDismiss {
-        fn render(&self, _area: Rect, _buf: &mut Buffer) {}
+    fn action(name: &str) -> phux_config::keybind::ResolvedAction {
+        phux_config::keybind::ResolvedAction {
+            action: name.to_owned(),
+            args: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// A test overlay: optionally Esc-dismissable, optionally bounded, and
+    /// painting `text` at `rect`'s origin plus an `OUTSIDE` sentinel at the
+    /// viewport origin when bounded.
+    #[derive(Default)]
+    struct Probe {
+        esc_dismisses: bool,
+        rect: Option<Rect>,
+        text: &'static str,
+    }
+
+    impl Probe {
+        fn esc() -> Self {
+            Self {
+                esc_dismisses: true,
+                ..Self::default()
+            }
+        }
+
+        fn bounded(rect: Rect) -> Self {
+            Self {
+                rect: Some(rect),
+                text: "INSIDE",
+                ..Self::default()
+            }
+        }
+    }
+
+    impl RenderOverlay for Probe {
+        fn render(&self, area: Rect, buf: &mut Buffer) {
+            let style = ratatui::style::Style::default();
+            match self.rect {
+                Some(rect) => {
+                    buf.set_string(0, 0, "OUTSIDE", style);
+                    buf.set_string(rect.x, rect.y, self.text, style);
+                }
+                None => {
+                    buf.set_string(area.x, area.y, self.text, style);
+                }
+            }
+        }
         fn handle_key(&mut self, key: &KeyEvent) -> OverlayCommand {
-            if key.key == PhysicalKey::Escape {
+            if self.esc_dismisses && key.key == PhysicalKey::Escape {
                 OverlayCommand::Dismiss
             } else {
                 OverlayCommand::Stay
             }
         }
-    }
-
-    #[test]
-    fn state_starts_inactive() {
-        let s = OverlayState::new();
-        assert!(!s.is_active());
-    }
-
-    #[test]
-    fn push_then_dismiss_round_trip() {
-        let mut s = OverlayState::new();
-        s.push(Box::new(EscDismiss));
-        assert!(s.is_active());
-        s.dismiss();
-        assert!(!s.is_active());
-    }
-
-    #[test]
-    fn handle_key_auto_dismisses_on_esc() {
-        let mut s = OverlayState::new();
-        s.push(Box::new(EscDismiss));
-        s.handle_key(&key(PhysicalKey::Escape));
-        assert!(!s.is_active(), "Esc should dismiss");
-    }
-
-    #[test]
-    fn handle_key_stays_on_other_keys() {
-        let mut s = OverlayState::new();
-        s.push(Box::new(EscDismiss));
-        s.handle_key(&key(PhysicalKey::A));
-        assert!(s.is_active(), "non-Esc should not dismiss");
-    }
-
-    #[test]
-    fn dismiss_pops_only_the_top() {
-        let mut s = OverlayState::new();
-        s.push(Box::new(EscDismiss));
-        s.push(Box::new(EscDismiss));
-        assert_eq!(s.depth(), 2);
-        s.dismiss();
-        assert_eq!(s.depth(), 1, "dismiss pops one, not clear-all");
-        assert!(s.is_active());
-        s.dismiss();
-        assert!(!s.is_active());
-    }
-
-    #[test]
-    fn handle_key_targets_only_the_top_overlay() {
-        // A stay-forever overlay on top must shield the Esc-dismiss
-        // overlay beneath it: keys go to the top only.
-        struct StayForever;
-        impl RenderOverlay for StayForever {
-            fn render(&self, _area: Rect, _buf: &mut Buffer) {}
-            fn handle_key(&mut self, _key: &KeyEvent) -> OverlayCommand {
-                OverlayCommand::Stay
-            }
+        fn bounds(&self, _area: Rect) -> Option<Rect> {
+            self.rect
         }
-        let mut s = OverlayState::new();
-        s.push(Box::new(EscDismiss));
-        s.push(Box::new(StayForever));
-        s.handle_key(&key(PhysicalKey::Escape));
-        assert_eq!(
-            s.depth(),
-            2,
-            "Esc reached the StayForever top, not the EscDismiss beneath"
-        );
-        // Pop the top; now Esc reaches the EscDismiss overlay.
-        s.dismiss();
-        s.handle_key(&key(PhysicalKey::Escape));
-        assert!(!s.is_active());
     }
-
-    // ---------- phux-foz.7: live row refresh routing ----------
 
     fn live_fleet_list() -> SelectList {
-        let items = vec![SelectItem::new(
-            "stale-row",
-            phux_config::keybind::ResolvedAction {
-                action: "focus-pane".to_owned(),
-                args: std::collections::BTreeMap::new(),
-            },
-        )];
-        SelectList::new("agent fleet", items, &crate::render::Theme::default())
-            .with_live_key("agent-fleet")
-    }
-
-    fn fresh_rows() -> Vec<SelectItem> {
-        vec![SelectItem::new(
-            "fresh-row",
-            phux_config::keybind::ResolvedAction {
-                action: "focus-pane".to_owned(),
-                args: std::collections::BTreeMap::new(),
-            },
-        )]
+        SelectList::new(
+            "agent fleet",
+            vec![SelectItem::new("stale-row", action("focus-pane"))],
+            &Theme::default(),
+        )
+        .with_live_key("agent-fleet")
     }
 
     #[test]
-    fn refresh_items_reaches_a_live_overlay() {
+    fn keys_reach_only_the_top_and_dismiss_pops_one() {
         let mut s = OverlayState::new();
+        assert!(!s.is_active());
+        s.push(Box::new(Probe::esc()));
+        s.handle_key(&key(PhysicalKey::A));
+        assert!(s.is_active(), "non-Esc stays");
+        // A stay-forever top shields the Esc-dismiss overlay beneath it.
+        s.push(Box::new(Probe::default()));
+        s.handle_key(&key(PhysicalKey::Escape));
+        assert_eq!(s.depth(), 2);
+        s.dismiss();
+        assert_eq!(s.depth(), 1, "dismiss pops one");
+        s.handle_key(&key(PhysicalKey::Escape));
+        assert!(!s.is_active());
+    }
+
+    /// The refresh walks the whole stack, so a modal on top cannot shield a
+    /// live list beneath it; without one it reports no change.
+    #[test]
+    fn refresh_items_reaches_a_live_overlay_anywhere_in_the_stack() {
+        let fresh = vec![SelectItem::new("fresh-row", action("focus-pane"))];
+        let mut s = OverlayState::new();
+        assert!(!s.refresh_items("agent-fleet", &fresh));
         s.push(Box::new(live_fleet_list()));
-        assert!(s.refresh_items("agent-fleet", &fresh_rows()));
+        s.push(Box::new(Probe::esc()));
+        assert!(s.refresh_items("agent-fleet", &fresh));
+        let mut s = OverlayState::new();
+        s.push(Box::new(Probe::esc()));
+        assert!(!s.refresh_items("agent-fleet", &fresh));
     }
 
     #[test]
-    fn refresh_items_reaches_a_live_overlay_under_the_top() {
-        // A modal stacked on top of the fleet (e.g. help) must not shield
-        // it from data refreshes — the walk descends the stack.
+    fn paint_composes_the_stack_bottom_up() {
         let mut s = OverlayState::new();
-        s.push(Box::new(live_fleet_list()));
-        s.push(Box::new(EscDismiss));
-        assert!(s.refresh_items("agent-fleet", &fresh_rows()));
-    }
-
-    #[test]
-    fn refresh_items_false_without_a_live_overlay() {
-        let mut s = OverlayState::new();
-        s.push(Box::new(EscDismiss));
-        assert!(!s.refresh_items("agent-fleet", &fresh_rows()));
-        // Empty stack: also false.
-        let mut s = OverlayState::new();
-        assert!(!s.refresh_items("agent-fleet", &fresh_rows()));
-    }
-
-    #[test]
-    fn paint_composes_stack_bottom_up() {
-        // Two overlays writing to distinct cells: both appear. The top
-        // overlay overwrites the bottom on any shared cell because it
-        // paints last.
-        struct WriteAt(u16, &'static str);
-        impl RenderOverlay for WriteAt {
-            fn render(&self, area: Rect, buf: &mut Buffer) {
-                buf.set_string(
-                    area.x,
-                    area.y + self.0,
-                    self.1,
-                    ratatui::style::Style::default(),
-                );
-            }
-            fn handle_key(&mut self, _key: &KeyEvent) -> OverlayCommand {
-                OverlayCommand::Stay
-            }
-        }
-        let mut s = OverlayState::new();
-        s.push(Box::new(WriteAt(0, "bottom")));
-        s.push(Box::new(WriteAt(1, "topp")));
+        let mut buf = Vec::new();
+        s.paint(&mut buf, (80, 24)).expect("paint");
+        assert!(buf.is_empty(), "inactive paints nothing");
+        s.push(Box::new(Probe {
+            text: "bottom",
+            ..Probe::default()
+        }));
+        s.push(Box::new(Probe {
+            rect: None,
+            text: "to",
+            ..Probe::default()
+        }));
         let mut out = Vec::new();
         s.paint(&mut out, (20, 5)).expect("paint");
         let txt = String::from_utf8_lossy(&out);
-        assert!(
-            txt.contains("bottom"),
-            "bottom overlay should be painted:\n{txt}"
-        );
-        assert!(
-            txt.contains("topp"),
-            "top overlay should be painted:\n{txt}"
-        );
+        assert!(out.starts_with(b"\x1b[?25l"), "cursor hidden first");
+        assert!(txt.contains("tottom"), "top paints over bottom: {txt:?}");
     }
 
-    #[test]
-    fn paint_inactive_is_noop() {
-        let s = OverlayState::new();
-        let mut buf = Vec::new();
-        s.paint(&mut buf, (80, 24)).expect("paint");
-        assert!(buf.is_empty());
-    }
-
-    /// phux-huhi: an overlay that records the breakpoints handed to it, so
-    /// the stamping seam can be asserted without a real modal.
+    /// Records the breakpoints it is stamped with, exposed through `bounds`.
     #[derive(Default)]
-    struct BreakpointProbe {
-        seen: Option<ChromeBreakpoints>,
-    }
+    struct BreakpointProbe(Option<ChromeBreakpoints>);
+
     impl RenderOverlay for BreakpointProbe {
         fn render(&self, _area: Rect, _buf: &mut Buffer) {}
         fn handle_key(&mut self, _key: &KeyEvent) -> OverlayCommand {
             OverlayCommand::Stay
         }
         fn set_breakpoints(&mut self, bp: ChromeBreakpoints) {
-            self.seen = Some(bp);
+            self.0 = Some(bp);
         }
         fn bounds(&self, _area: Rect) -> Option<Rect> {
-            // Encode the seen thresholds so the test can read them back
-            // through the `&dyn` the stack stores.
-            self.seen
+            self.0
                 .map(|bp| Rect::new(0, 0, bp.compact_cols, bp.compact_rows))
         }
     }
 
-    /// `push` stamps the state's breakpoints onto the overlay: that is the
-    /// one seam that spares every construction site from naming them.
+    /// `push` stamps the configured breakpoints on the way in, and a reload
+    /// re-stamps overlays already open.
     #[test]
-    fn push_stamps_the_configured_breakpoints() {
-        let mut s = OverlayState::new();
-        s.set_breakpoints(ChromeBreakpoints {
-            compact_cols: 100,
-            compact_rows: 40,
-            min_pane_cols: 30,
-        });
-        s.push(Box::new(BreakpointProbe::default()));
-        assert_eq!(
-            s.active_bounds(Rect::new(0, 0, 200, 60)),
-            Some(Rect::new(0, 0, 100, 40)),
-        );
-    }
-
-    /// A reload re-stamps overlays that are ALREADY open, so a modal on
-    /// screen when the config changes reflows on its next paint instead of
-    /// holding the thresholds it was born with.
-    #[test]
-    fn set_breakpoints_reaches_an_already_stacked_overlay() {
+    fn breakpoints_reach_pushed_and_already_stacked_overlays() {
+        let viewport = Rect::new(0, 0, 200, 60);
         let mut s = OverlayState::new();
         s.push(Box::new(BreakpointProbe::default()));
         assert_eq!(
-            s.active_bounds(Rect::new(0, 0, 200, 60)),
+            s.active_bounds(viewport),
             Some(Rect::new(0, 0, 64, 18)),
-            "the shipped defaults until told otherwise",
+            "shipped"
         );
         s.set_breakpoints(ChromeBreakpoints {
             compact_cols: 100,
             compact_rows: 40,
             min_pane_cols: 30,
         });
+        assert_eq!(s.active_bounds(viewport), Some(Rect::new(0, 0, 100, 40)));
+        s.dismiss();
+        s.push(Box::new(BreakpointProbe::default()));
+        assert_eq!(s.active_bounds(viewport), Some(Rect::new(0, 0, 100, 40)));
+    }
+
+    #[test]
+    fn active_bounds_unions_bounded_overlays_and_yields_to_full_screen() {
+        let mut s = OverlayState::new();
+        let viewport = Rect::new(0, 0, 40, 20);
+        s.push(Box::new(Probe::bounded(Rect::new(2, 2, 4, 4))));
+        assert_eq!(s.active_bounds(viewport), Some(Rect::new(2, 2, 4, 4)));
+        s.push(Box::new(Probe::bounded(Rect::new(10, 8, 4, 4))));
+        assert_eq!(s.active_bounds(viewport), Some(Rect::new(2, 2, 12, 10)));
+        s.push(Box::new(Probe::esc()));
         assert_eq!(
-            s.active_bounds(Rect::new(0, 0, 200, 60)),
-            Some(Rect::new(0, 0, 100, 40)),
+            s.active_bounds(viewport),
+            None,
+            "any full-screen overlay wins"
         );
     }
 
-    /// A bounded overlay that paints a sentinel OUTSIDE its bounds (at the
-    /// viewport origin) and content INSIDE — so a clipped emit can be proven
-    /// to drop the outside sentinel.
-    struct Bounded {
-        rect: Rect,
-    }
-    impl RenderOverlay for Bounded {
-        fn render(&self, _area: Rect, buf: &mut Buffer) {
-            buf.set_string(0, 0, "OUTSIDE", ratatui::style::Style::default());
-            buf.set_string(
-                self.rect.x,
-                self.rect.y,
-                "INSIDE",
-                ratatui::style::Style::default(),
-            );
-        }
-        fn handle_key(&mut self, _key: &KeyEvent) -> OverlayCommand {
-            OverlayCommand::Stay
-        }
-        fn bounds(&self, _area: Rect) -> Option<Rect> {
-            Some(self.rect)
-        }
-    }
-
+    /// The floating-modal invariant: only cells inside the clip (and its
+    /// shadow) are emitted, so the panes around the box stay untouched.
     #[test]
-    fn active_bounds_none_for_full_screen_overlay() {
-        // EscDismiss uses the default `bounds` (None) ⇒ full-screen path.
-        let mut s = OverlayState::new();
-        s.push(Box::new(EscDismiss));
-        assert_eq!(s.active_bounds(Rect::new(0, 0, 80, 24)), None);
-    }
-
-    #[test]
-    fn active_bounds_returns_overlay_rect() {
-        let mut s = OverlayState::new();
+    fn paint_clipped_emits_only_the_box_and_its_shadow() {
         let rect = Rect::new(5, 3, 10, 4);
-        s.push(Box::new(Bounded { rect }));
-        assert_eq!(s.active_bounds(Rect::new(0, 0, 40, 12)), Some(rect));
-    }
-
-    #[test]
-    fn active_bounds_unions_the_stack() {
         let mut s = OverlayState::new();
-        s.push(Box::new(Bounded {
-            rect: Rect::new(2, 2, 4, 4),
-        }));
-        s.push(Box::new(Bounded {
-            rect: Rect::new(10, 8, 4, 4),
-        }));
-        // Union bounding box spans x∈[2,14), y∈[2,12).
-        assert_eq!(
-            s.active_bounds(Rect::new(0, 0, 40, 20)),
-            Some(Rect::new(2, 2, 12, 10))
+        s.push(Box::new(Probe::bounded(rect)));
+        let paint = |shadow| {
+            let mut out = Vec::new();
+            s.paint_clipped(&mut out, (40, 12), Rect::new(0, 0, 40, 12), rect, shadow)
+                .expect("paint");
+            String::from_utf8_lossy(&out).into_owned()
+        };
+        let plain = paint(Color::Reset);
+        assert!(
+            plain.contains("INSIDE") && !plain.contains("OUTSIDE"),
+            "{plain:?}"
         );
-    }
+        assert!(plain.contains("\x1b[4;6H"), "clip-origin CUP: {plain:?}");
+        assert!(
+            !plain.contains("\x1b[1;") && !plain.contains("\x1b[8;"),
+            "{plain:?}"
+        );
 
-    #[test]
-    fn active_bounds_none_if_any_overlay_full_screen() {
-        let mut s = OverlayState::new();
-        s.push(Box::new(Bounded {
-            rect: Rect::new(2, 2, 4, 4),
-        }));
-        s.push(Box::new(EscDismiss)); // default bounds = None
-        assert_eq!(s.active_bounds(Rect::new(0, 0, 40, 20)), None);
-    }
-
-    #[test]
-    fn paint_clipped_emits_only_within_the_clip() {
-        let mut s = OverlayState::new();
-        let rect = Rect::new(5, 3, 10, 4);
-        s.push(Box::new(Bounded { rect }));
-        let mut out = Vec::new();
-        // Color::Reset disables the drop shadow ⇒ only the box rows emit.
-        s.paint_clipped(
-            &mut out,
-            (40, 12),
-            Rect::new(0, 0, 40, 12),
-            rect,
-            Color::Reset,
-        )
-        .expect("paint");
-        let txt = String::from_utf8_lossy(&out);
-        // Content inside the clip is emitted...
-        assert!(txt.contains("INSIDE"), "modal content must paint: {txt:?}");
-        // ...but the sentinel at (0,0) — outside the clip — is NOT, so the
-        // panes there are left untouched (the floating-modal invariant).
-        assert!(
-            !txt.contains("OUTSIDE"),
-            "cells outside the clip must never be emitted: {txt:?}"
-        );
-        // The first row CUP targets the clip origin (row 4, col 6, 1-based).
-        assert!(
-            txt.contains("\x1b[4;6H"),
-            "clip-origin CUP missing: {txt:?}"
-        );
-        // No CUP lands above the clip (row 1) or below it — with the shadow
-        // disabled the box bottom (row 7, 0-based) emits no row-8 CUP.
-        assert!(
-            !txt.contains("\x1b[1;") && !txt.contains("\x1b[8;"),
-            "no CUP may target a row outside the clip: {txt:?}"
-        );
+        // The shadow row sits below the box, one cell in, in the shadow bg.
+        let shadowed = paint(Color::Rgb(20, 20, 30));
+        assert!(shadowed.contains("\x1b[8;7H"), "{shadowed:?}");
+        assert!(shadowed.contains("48;2;20;20;30"), "{shadowed:?}");
+        assert!(!shadowed.contains("OUTSIDE"), "{shadowed:?}");
     }
 
     #[test]
@@ -1188,13 +834,10 @@ mod tests {
             } else {
                 emit_buffer(&mut out, &buf).expect("full paint");
             }
-            let mut terminal = {
-                let mut terminal = Terminal::new(24, 4).expect("terminal");
-                terminal
-                    .set_scrollback_max_lines(Some(0))
-                    .expect("terminal");
-                terminal
-            };
+            let mut terminal = Terminal::new(24, 4).expect("terminal");
+            terminal
+                .set_scrollback_max_lines(Some(0))
+                .expect("terminal");
             terminal.vt_write(&out);
             let mut renderer = TerminalRenderer::new().expect("renderer");
             for (col, ch) in [
@@ -1216,66 +859,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn paint_clipped_draws_a_drop_shadow_below_and_right() {
-        let mut s = OverlayState::new();
-        let rect = Rect::new(5, 3, 10, 4);
-        s.push(Box::new(Bounded { rect }));
-        let mut out = Vec::new();
-        s.paint_clipped(
-            &mut out,
-            (40, 12),
-            Rect::new(0, 0, 40, 12),
-            rect,
-            Color::Rgb(20, 20, 30),
-        )
-        .expect("paint");
-        let txt = String::from_utf8_lossy(&out);
-        // A shadow row emits just below the box: box bottom row is 6 (0-based)
-        // so the shadow row is 7 ⇒ 1-based CUP row 8, started one cell in
-        // (x = 6 ⇒ col 7) to skip the bottom-left corner.
-        assert!(txt.contains("\x1b[8;7H"), "shadow row CUP missing: {txt:?}");
-        // The shadow paints as a truecolor background.
-        assert!(
-            txt.contains("48;2;20;20;30"),
-            "shadow bg SGR missing: {txt:?}"
-        );
-        // The modal content is still painted over the panes.
-        assert!(txt.contains("INSIDE"), "modal content missing: {txt:?}");
-        // Still nothing leaks to the viewport origin.
-        assert!(!txt.contains("OUTSIDE"), "outside-clip leak: {txt:?}");
-    }
-
-    #[test]
-    fn paint_active_emits_some_bytes() {
-        struct Filled;
-        impl RenderOverlay for Filled {
-            fn render(&self, area: Rect, buf: &mut Buffer) {
-                buf.set_string(area.x, area.y, "hello", ratatui::style::Style::default());
-            }
-            fn handle_key(&mut self, _key: &KeyEvent) -> OverlayCommand {
-                OverlayCommand::Stay
-            }
-        }
-        let mut s = OverlayState::new();
-        s.push(Box::new(Filled));
-        let mut out = Vec::new();
-        s.paint(&mut out, (20, 5)).expect("paint");
-        let txt = String::from_utf8_lossy(&out);
-        assert!(txt.contains("hello"));
-        // Cursor hide at the top.
-        assert!(out.starts_with(b"\x1b[?25l"));
-    }
-
-    // ---------- phux-fsb: pinned overlays do not outlive a resize ----------
-
-    /// A context menu pinned somewhere in an 80x24 viewport, holding a
-    /// destructive row.
+    /// A context menu pinned in an 80x24 viewport, holding a destructive row.
     fn pinned_menu() -> ContextMenu {
-        let action = |name: &str| phux_config::keybind::ResolvedAction {
-            action: name.to_owned(),
-            args: std::collections::BTreeMap::new(),
-        };
         ContextMenu::new(
             "pane",
             vec![
@@ -1289,107 +874,35 @@ mod tests {
                 w: 80,
                 h: 24,
             },
-            &crate::render::Theme::default(),
+            &Theme::default(),
         )
     }
 
-    /// The reported failure (phux-fsb), stated as the invariant it broke:
-    /// after a resize clips a pinned menu away, it must not still be
-    /// sitting on the stack turning Enter into `kill-pane`.
+    /// A resize drops a pointer-pinned menu (it could otherwise commit
+    /// `kill-pane` invisibly on Enter) anywhere in the stack, keeps reflowing
+    /// overlays, and then hands survivors the new pane size.
     #[test]
-    fn a_resize_drops_a_pinned_menu_before_it_can_commit_invisibly() {
+    fn a_resize_drops_pinned_overlays_and_resizes_survivors() {
         let mut s = OverlayState::new();
+        assert!(!s.dismiss_stale_on_resize(), "empty: no change");
         s.push(Box::new(pinned_menu()));
-        assert!(s.is_active());
-
-        assert!(
-            s.dismiss_stale_on_resize(),
-            "the sweep must report a change"
-        );
-        assert!(!s.is_active(), "the menu is gone, not merely unpainted");
-
-        // The dangerous key is now inert: nothing left to commit it.
-        assert_eq!(s.handle_key(&key(PhysicalKey::Enter)), OverlayOutcome::None);
-        // And the driver stops paying for hover reporting.
-        assert!(!s.wants_pointer_hover());
-    }
-
-    /// Reflowing overlays are untouched — they lay out from the render
-    /// `area` every paint, so a resize is already handled for them. A sweep
-    /// that dropped them would close the palette on every window resize.
-    #[test]
-    fn a_resize_keeps_overlays_that_reflow() {
-        let mut s = OverlayState::new();
         s.push(Box::new(SelectList::new(
             "command palette",
-            vec![SelectItem::new(
-                "Close pane",
-                phux_config::keybind::ResolvedAction {
-                    action: "kill-pane".to_owned(),
-                    args: std::collections::BTreeMap::new(),
-                },
-            )],
-            &crate::render::Theme::default(),
+            vec![SelectItem::new("Close pane", action("kill-pane"))],
+            &Theme::default(),
         )));
-        assert!(!s.dismiss_stale_on_resize(), "nothing stale ⇒ no change");
-        assert!(s.is_active(), "the palette survives a resize");
-    }
-
-    /// The sweep walks the whole stack, so a pinned overlay cannot be
-    /// stranded (invisible, input-capturing) beneath a survivor.
-    #[test]
-    fn a_resize_sweeps_the_whole_stack_not_just_the_top() {
-        let mut s = OverlayState::new();
-        s.push(Box::new(pinned_menu()));
-        s.push(Box::new(EscDismiss));
-        assert_eq!(s.depth(), 2);
         assert!(s.dismiss_stale_on_resize());
-        assert_eq!(s.depth(), 1, "only the pinned overlay is dropped");
-        assert!(s.is_active());
-    }
+        assert_eq!(s.depth(), 1, "only the pinned menu is dropped");
+        assert!(!s.wants_pointer_hover());
+        assert!(!s.dismiss_stale_on_resize(), "nothing stale left");
+        s.dismiss();
+        assert_eq!(s.handle_key(&key(PhysicalKey::Enter)), OverlayOutcome::None);
 
-    /// An empty stack is a no-op: SIGWINCH fires constantly during a drag
-    /// resize and must not report a change with nothing to drop.
-    #[test]
-    fn a_resize_with_no_overlays_reports_no_change() {
-        let mut s = OverlayState::new();
-        assert!(!s.dismiss_stale_on_resize());
-        assert!(!s.is_active());
-    }
-
-    // ---------- phux-d26y: survivors adopt the new pane size ----------
-
-    /// The fan-out reaches copy-mode through the stack, which is what the
-    /// driver relies on — the overlay is behind a `Box<dyn RenderOverlay>`
-    /// there, so a method that only existed on the concrete type would
-    /// never be called.
-    #[test]
-    fn a_resize_hands_the_new_pane_size_to_a_surviving_overlay() {
-        let mut s = OverlayState::new();
-        s.push(Box::new(CopyModeOverlay::new(20, 70, 80, 24)));
-        // Selection cursor sits at the old bottom-right region.
-        s.on_viewport_resize(60, 18);
-        let sel = s.copy_selection().expect("copy-mode has a selection");
-        assert!(
-            sel.end_row < 18 && sel.end_col < 60,
-            "the surviving overlay clamped into the new pane: {sel:?}",
-        );
-    }
-
-    /// Ordering: the sweep runs first, so an overlay that is about to be
-    /// dropped is never handed geometry it will not use. Both calls are
-    /// safe in either order, but the driver's sequence is the contract.
-    #[test]
-    fn the_sweep_runs_before_the_resize_fan_out() {
-        let mut s = OverlayState::new();
         s.push(Box::new(pinned_menu()));
         s.push(Box::new(CopyModeOverlay::new(20, 70, 80, 24)));
-
-        assert!(s.dismiss_stale_on_resize(), "the menu is dropped");
+        assert!(s.dismiss_stale_on_resize());
         s.on_viewport_resize(60, 18);
-
-        assert_eq!(s.depth(), 1, "only copy-mode survives");
         let sel = s.copy_selection().expect("copy-mode survived");
-        assert!(sel.end_row < 18 && sel.end_col < 60);
+        assert!(sel.end_row < 18 && sel.end_col < 60, "{sel:?}");
     }
 }

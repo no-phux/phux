@@ -1,63 +1,23 @@
-//! `Screen` — a libghostty-backed oracle for asserting on the bytes the
-//! server emits over `RESOURCE_OUTPUT` (or any other VT byte stream).
-//!
-//! Background: end-to-end tests for `phux attach` collect the rendered VT
-//! bytes that the server fans out to attached clients. Asserting on those
-//! bytes directly is miserable — SGR escapes, CUP positioning and partial
-//! redraws make naive byte/regex matching fragile and easy to false-pass
-//! (e.g. "blank screen" vs "rendered text but my regex ate it" look
-//! identical to a regex on stripped output).
-//!
-//! Instead, this helper feeds the bytes into a *fresh* `libghostty_vt::Terminal`
-//! and walks the resulting grid through `phux_protocol::render_pool::RenderPool`,
-//! the same trio the production client uses. The result is a
-//! row-major plain-text snapshot you can assert on directly:
-//!
-//! ```ignore
-//! let mut screen = Screen::new(80, 24).unwrap();
-//! screen.write(&pane_output_bytes);
-//! assert!(screen.row(0).contains("hi"));
-//! ```
-//!
-//! Implementation notes:
-//!
-//! * The oracle deliberately ignores `Snapshot::dirty()` and walks the
-//!   grid unconditionally on every `row()` call — the harness contract is
-//!   "what does the grid look like right now," not "what changed since
-//!   the last read."
-//! * Wide-cell tails (`CellWide::SpacerTail`) must be skipped so we do not
-//!   double-count the half of a wide grapheme. Mirrors the existing fix in
-//!   `crates/phux-server/src/grid.rs`.
-//! * `cursor_viewport()` is best-effort: we treat its `Err` and
-//!   `Ok(None)` cases as "(0, 0)" so the harness degrades to a safe
-//!   default rather than panicking inside an assertion helper.
+//! `Screen`: feed server-emitted VT bytes into a fresh libghostty `Terminal`
+//! and read the grid back as right-trimmed plain-text rows, walked through
+//! the same `RenderPool` the production client uses. Walk failures degrade
+//! to empty rows rather than panicking inside an assertion helper.
 
 use libghostty_vt::Terminal as GhosttyTerminal;
 use libghostty_vt::screen::CellWide;
 use phux_protocol::render_pool::{RenderPool, RenderWalk};
 
-/// `Screen` owns one terminal for its whole life, so the pool's identity
-/// token never changes. A resize still rebuilds the trio on the next walk.
+/// One terminal per `Screen`, so the pool identity never changes.
 const POOL_GENERATION: u128 = 0;
 
-/// Errors the harness can surface during construction. Runtime walk
-/// failures are absorbed into best-effort defaults so tests can keep
-/// reading without forcing every assertion into a `Result`.
+/// Construction errors from libghostty.
 #[derive(Debug, thiserror::Error)]
 pub enum ScreenError {
-    /// libghostty surfaced an error from `GhosttyTerminal::new` or one of the
-    /// render iterator constructors.
     #[error("libghostty: {0}")]
     Ghostty(#[from] libghostty_vt::Error),
 }
 
-/// A self-contained VT oracle: owns a libghostty `Terminal` plus a
-/// [`RenderPool`] that walks its
-/// grid into plain strings.
-///
-/// `Screen` is `!Send` (the inner `Terminal` is `!Send`); construct it
-/// on the thread that will use it. Tests typically construct one per
-/// scenario inside `run_local`.
+/// A self-contained VT oracle (`!Send`: owns a libghostty `Terminal`).
 pub struct Screen {
     terminal: GhosttyTerminal<'static, 'static>,
     pool: RenderPool<'static>,
@@ -66,10 +26,7 @@ pub struct Screen {
 }
 
 impl Screen {
-    /// Create a fresh screen sized to `cols x rows`. The internal
-    /// scrollback budget matches the default the client uses for live
-    /// attach (`render.rs` uses `100`; we match it so behaviour is
-    /// representative).
+    /// A fresh `cols x rows` screen with the client's live scrollback budget.
     pub fn new(cols: u16, rows: u16) -> Result<Self, ScreenError> {
         let terminal = {
             let mut terminal = GhosttyTerminal::new(cols, rows)?;
@@ -84,25 +41,12 @@ impl Screen {
         })
     }
 
-    /// Resize the owned terminal. The pooled trio rebuilds on the next read,
-    /// when the walked geometry no longer matches the last walk.
-    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), ScreenError> {
-        self.terminal.resize(cols, rows, 0, 0)?;
-        self.cols = cols;
-        self.n_rows = rows;
-        Ok(())
-    }
-
-    /// Feed VT bytes into the underlying terminal. Bytes may be split
-    /// across calls — the parser is stateful, so partial escape
-    /// sequences are buffered exactly like the real client.
+    /// Feed VT bytes; partial escape sequences carry across calls.
     pub fn write(&mut self, bytes: &[u8]) {
         self.terminal.vt_write(bytes);
     }
 
-    /// Return the contents of `idx` (0-based) as a single string,
-    /// trimmed of trailing whitespace. Empty cells become spaces;
-    /// rows past the configured viewport return the empty string.
+    /// Row `idx` (0-based), right-trimmed; empty past the viewport.
     pub fn row(&mut self, idx: u16) -> String {
         if idx >= self.n_rows {
             return String::new();
@@ -111,27 +55,9 @@ impl Screen {
         rows.get(usize::from(idx)).cloned().unwrap_or_default()
     }
 
-    /// Return every viewport row as a `Vec<String>`. Rows are padded
-    /// to the configured width with spaces, then right-trimmed; this
-    /// matches the contract of [`Screen::row`].
+    /// Every viewport row, right-trimmed.
     pub fn rows(&mut self) -> Vec<String> {
         self.rows_internal()
-    }
-
-    /// Best-effort cursor position as `(col, row)`, 0-based. Returns
-    /// `(0, 0)` when libghostty can't surface a viewport-resident
-    /// cursor (e.g. because it lives in the scrollback, or because the
-    /// FFI returned an error).
-    pub fn cursor(&mut self) -> (u16, u16) {
-        let Ok(RenderWalk { snapshot, .. }) = self.pool.begin(&self.terminal, POOL_GENERATION)
-        else {
-            return (0, 0);
-        };
-        if let Ok(Some(c)) = snapshot.cursor_viewport() {
-            (c.x, c.y)
-        } else {
-            (0, 0)
-        }
     }
 
     /// True if any row's trimmed text contains `needle`.
@@ -139,19 +65,12 @@ impl Screen {
         self.rows_internal().iter().any(|r| r.contains(needle))
     }
 
-    /// All rows joined with `\n`. Useful for printing on assertion
-    /// failure (`assert!(..., "screen was:\n{}", screen.snapshot_text())`).
+    /// All rows joined with `\n`.
     pub fn snapshot_text(&mut self) -> String {
         self.rows_internal().join("\n")
     }
 
-    /// The grid walk. Centralised so `row()`, `rows()`, `contains()`
-    /// and `snapshot_text()` all share one implementation — and one
-    /// place to update if libghostty's FFI shape changes.
     fn rows_internal(&mut self) -> Vec<String> {
-        // Empty grid is a reasonable degradation: assertions like
-        // `contains("foo")` cleanly return false, the caller can
-        // print `snapshot_text()` and see "" rather than panic.
         let Ok(RenderWalk {
             snapshot,
             rows,
@@ -161,8 +80,6 @@ impl Screen {
             return vec![String::new(); usize::from(self.n_rows)];
         };
 
-        // Oracle contract: always walk the full grid; we do not consult
-        // `snapshot.dirty()` (this is a state read, not a delta read).
         let total_rows = snapshot.rows().unwrap_or(self.n_rows);
         let mut out: Vec<String> = Vec::with_capacity(usize::from(total_rows));
 
@@ -182,9 +99,7 @@ impl Screen {
                 continue;
             };
             while let Some(cell) = cell_iter.next() {
-                // Skip wide-cell tails so a double-width glyph doesn't
-                // show up as itself-plus-a-space. Mirrors the same fix
-                // in `crates/phux-server/src/grid.rs`.
+                // Skip wide-cell tails so a wide glyph is not glyph-plus-space.
                 let wide = cell
                     .raw_cell()
                     .and_then(libghostty_vt::screen::Cell::wide)
@@ -202,16 +117,10 @@ impl Screen {
                     }
                 }
             }
-            // Right-trim so trailing blanks don't break naive equality
-            // checks; the harness's job is to expose *content*, not
-            // padding. Callers that want raw width can call
-            // `Screen::cursor()` / iterate `rows()` for length.
             let trimmed = buf.trim_end().to_owned();
             out.push(trimmed);
             row_index += 1;
         }
-        // If libghostty produced fewer rows than the configured
-        // viewport (it shouldn't, but be defensive), pad with empties.
         while out.len() < usize::from(self.n_rows) {
             out.push(String::new());
         }
@@ -227,9 +136,3 @@ impl std::fmt::Debug for Screen {
             .finish_non_exhaustive()
     }
 }
-
-// This helper's unit tests live in `tests/screen_harness_demo.rs`
-// (`mod screen_oracle_tests`), not here: a `#[cfg(test)] mod tests` in this
-// file compiles and re-runs in every integration binary that declares
-// `mod common` (~50 of them), each execution occupying the serialized
-// pty-serial slot.

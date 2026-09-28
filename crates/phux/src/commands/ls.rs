@@ -11,20 +11,10 @@ use crate::commands::partial;
 use crate::commands::server_target::{ServerSpec, ServerTarget};
 use phux_core::host_list::{HostJson, HostKind, HostListJson};
 
-/// `phux ls` — list sessions via `GET_STATE`. Does not auto-start a
-/// server. With `json`, emits the stable [`SessionListJson`] contract
-/// (ADR-0022); otherwise the human text from [`print_sessions`].
-///
-/// **A partial listing still succeeds.** A federation hub that could not
-/// reach a satellite answers with everything else (ADR-0007; see
-/// [`partial`]), and an enumeration is true about every row it contains, so
-/// the exit status stays 0 and the incompleteness is reported alongside: on
-/// stderr for a human, in the payload's `unreachable` list for `--json`.
-/// Making a dead satellite fail the listing would take the panes on this
-/// laptop down with it.
-///
-/// `server` is the local socket or a `--remote` host; the listing is the
-/// same either way (see `server_target`).
+/// `phux ls` — list sessions via `GET_STATE`; never auto-starts a server.
+/// `--json` emits the stable [`SessionListJson`] (ADR-0022). A partial listing
+/// from a degraded hub still exits 0, reporting the gap on stderr or in the
+/// `unreachable` list (see [`partial`]).
 pub(crate) fn run_ls(json: bool, server: ServerSpec) -> ExitCode {
     let (rt, target) = match server.prepare("ls", json) {
         Ok(prepared) => prepared,
@@ -269,20 +259,10 @@ pub(crate) fn print_sessions(snapshot: &SessionSnapshot) {
     }
 }
 
-/// The human `phux ls` body as pure data: name-sorted session lines, each
-/// followed by the panes of that session that carry agent sessions (the
-/// sessions nested under their pane), then satellite Terminals. Empty
-/// exactly when the server has nothing to list — the trigger for
-/// [`EMPTY_STATE`]. Split from [`print_sessions`] so the rendering is
-/// unit-testable without capturing stdout.
-///
-/// A pane with no agent session prints nothing under its session line, so a
-/// server that serves only Terminals renders exactly the pre-resource-model
-/// listing.
-///
-/// A federation hub that reports its host-session inventory (`hosts` is
-/// non-empty) renders grouped by host instead — see [`host_grouped_lines`].
-/// Every other server keeps the flat listing byte for byte.
+/// The human `phux ls` body: name-sorted session lines, each followed by its
+/// panes' agent sessions, then satellite Terminals. Empty exactly when there is
+/// nothing to list ([`EMPTY_STATE`]). A hub reporting a host inventory renders
+/// grouped by host ([`host_grouped_lines`]).
 fn session_lines(snapshot: &SessionSnapshot) -> Vec<String> {
     if snapshot.hosts().is_empty() {
         return flat_session_lines(snapshot);
@@ -358,7 +338,7 @@ fn satellite_terminal_lines(
         .map(|pane| {
             format!(
                 "  {}: satellite terminal",
-                crate::selector::format_terminal_id(&pane.id)
+                phux_client::selector::format_terminal_id(&pane.id)
             )
         })
         .collect()
@@ -392,7 +372,7 @@ fn flat_session_lines(snapshot: &SessionSnapshot) -> Vec<String> {
         if pane.id.host().is_some() {
             lines.push(format!(
                 "{}: satellite terminal",
-                crate::selector::format_terminal_id(&pane.id)
+                phux_client::selector::format_terminal_id(&pane.id)
             ));
         }
     }
@@ -416,7 +396,7 @@ fn agent_session_lines(snapshot: &SessionSnapshot, session: &SessionInfo) -> Vec
             }
             lines.push(format!(
                 "  {}",
-                crate::selector::format_terminal_id(&pane.id)
+                phux_client::selector::format_terminal_id(&pane.id)
             ));
             for child in children {
                 let facet = child.agent.as_ref();
@@ -424,7 +404,7 @@ fn agent_session_lines(snapshot: &SessionSnapshot, session: &SessionInfo) -> Vec
                 let state = facet.map_or("unknown", |facet| facet.state.as_str());
                 lines.push(format!(
                     "    {}: agent session {provider} ({state})",
-                    crate::selector::format_terminal_id(&child.id)
+                    phux_client::selector::format_terminal_id(&child.id)
                 ));
             }
         }
@@ -432,15 +412,9 @@ fn agent_session_lines(snapshot: &SessionSnapshot, session: &SessionInfo) -> Vec
     lines
 }
 
-/// One session's `ls` line, rendering the real attached-client count the
-/// wire already carries (`(2 clients attached)`) rather than collapsing it
-/// to a boolean `(attached)`. Zero clients says nothing.
-///
-/// A session with no windows (ADR-0105) is marked `(empty)`, so a server
-/// that stays up with zero processes says why.
-///
-/// `pub(crate)` so `phux status` renders its per-session lines through the
-/// same formatter and the two views cannot drift.
+/// One session's `ls` line, with the real attached-client count (zero says
+/// nothing) and `(empty)` for a windowless session (ADR-0105). Shared with
+/// `phux status`.
 pub(crate) fn format_session_line(s: &SessionInfo) -> String {
     let windows = if s.window_count == 1 {
         "window"
@@ -476,16 +450,7 @@ pub(crate) fn print_sessions_json(
 ) -> ExitCode {
     let list: SessionListJson =
         phux_client::session_list::document(snapshot, degradation, hosts_complete);
-    match serde_json::to_string_pretty(&list) {
-        Ok(s) => {
-            outln!("{s}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            eprintln!("phux: failed to serialize session list as JSON: {err}");
-            ExitCode::FAILURE
-        }
-    }
+    crate::output::json(&list)
 }
 
 #[cfg(test)]
@@ -637,51 +602,6 @@ mod tests {
                 "work: 1 window",
                 "  @7",
                 "    @9: agent session claude (working)",
-            ]
-        );
-    }
-
-    /// `--json`: `terminals` lists Terminal-kind ids only; `resources` lists
-    /// every resource with its kind and parent.
-    #[test]
-    fn json_splits_terminals_from_resources() {
-        use phux_protocol::ids::ResourceKind;
-        use phux_protocol::wire::info::ResourceInfo;
-
-        let window = WindowId::new(10);
-        let snapshot = SessionSnapshot::new(SessionId::new(1), window, ResourceId::local(7))
-            .with_resources(vec![
-                ResourceInfo::new(ResourceId::local(7), window, 80, 24),
-                ResourceInfo::new(ResourceId::local(9), window, 0, 0)
-                    .with_kind(ResourceKind::AgentSession)
-                    .with_parent(Some(ResourceId::local(7))),
-            ]);
-        let terminals: Vec<String> = phux_client::resource::terminals(&snapshot)
-            .map(|pane| crate::selector::format_terminal_id(&pane.id))
-            .collect();
-        assert_eq!(terminals, ["@7"]);
-        let resources: Vec<(String, String, Option<String>)> = snapshot
-            .resources
-            .iter()
-            .map(|pane| {
-                (
-                    crate::selector::format_terminal_id(&pane.id),
-                    phux_client::resource::kind_name(pane.kind).to_owned(),
-                    pane.parent
-                        .as_ref()
-                        .map(crate::selector::format_terminal_id),
-                )
-            })
-            .collect();
-        assert_eq!(
-            resources,
-            [
-                ("@7".to_owned(), "terminal".to_owned(), None),
-                (
-                    "@9".to_owned(),
-                    "agent_session".to_owned(),
-                    Some("@7".to_owned())
-                ),
             ]
         );
     }

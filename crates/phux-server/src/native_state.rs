@@ -1,11 +1,9 @@
-//! Native checkpoint hosts over libghostty's official GHOSTSNP snapshot codec.
+//! Native checkpoint hosts over libghostty's GHOSTSNP snapshot codec.
 //!
-//! Prefix capture advances one bounded engine record at a time through READY.
-//! Detaching READY is O(1): the engine registers a history cut and encodes
-//! nothing. Each later `HISTORY_REQUEST` borrows the live terminal for one
-//! bounded scan or record step, so live PTY bytes continue between client
-//! pulls. Phux forwards exact engine records and typed metadata without
-//! decoding terminal contents.
+//! Prefix capture advances one bounded record at a time through READY;
+//! detaching READY registers a history cut in O(1), and each later
+//! `HISTORY_REQUEST` borrows the live terminal for one bounded step, so PTY
+//! output continues between pulls. Records are forwarded without decoding.
 
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
@@ -20,9 +18,7 @@ use std::{
 
 use libghostty_vt::{
     Error as GhosttyError, Terminal as GhosttyTerminal,
-    snapshot::{
-        Capture, CaptureEvent, CaptureInvalidation, CaptureOptions, HistoryCapture, OwnedCapture,
-    },
+    snapshot::{CaptureEvent, CaptureInvalidation, CaptureOptions, HistoryCapture, OwnedCapture},
 };
 use phux_protocol::caps::{BootstrapCapabilities, BootstrapLimits, EngineCodec, EngineFeatureSet};
 use thiserror::Error;
@@ -38,10 +34,7 @@ pub(crate) const MAX_NATIVE_PREFIX_CHUNKS: usize = 4_096;
 /// Greatest aggregate opaque codec payload retained before READY publication.
 pub(crate) const MAX_NATIVE_PREFIX_BYTES: usize = 64 * 1024 * 1024;
 
-/// Typed failures from native capture, history, and generation management.
-///
-/// Variant names match the previous incremental-wrapper surface so actor and
-/// runtime matches stay stable.
+/// Failures from native capture, history, and generation management.
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum NativeStateError {
     /// The linked engine cannot encode an official snapshot.
@@ -187,271 +180,6 @@ pub struct NativeCheckpointChunk<'buffer> {
     pub bytes: &'buffer [u8],
 }
 
-fn cursor_for(bytes: &[u8]) -> OpaqueHistoryCursor {
-    Sha256::digest(bytes).into()
-}
-
-fn frozen_capture_options(limits: BootstrapLimits) -> Result<CaptureOptions, NativeStateError> {
-    let max_record_bytes = usize::try_from(limits.max_history_page_bytes())
-        .map_err(|_| NativeStateError::LimitExceeded)?
-        .max(1);
-    Ok(CaptureOptions {
-        max_record_bytes,
-        max_pages: MAX_NATIVE_PREFIX_CHUNKS,
-    })
-}
-
-/// RAII host for the bounded checkpoint prefix ending at READY.
-///
-/// The engine emits one record per step. History is not traversed; aborting
-/// drops the capture without encoding a suffix.
-#[derive(Debug)]
-pub struct NativeCheckpointCapture<'terminal> {
-    capture: Capture<'static, 'static, 'terminal>,
-    max_record_bytes: usize,
-    ready: bool,
-}
-
-impl NativeCheckpointCapture<'_> {
-    /// Freeze the terminal and prepare record-at-a-time prefix capture.
-    pub fn new<'terminal>(
-        terminal: &'terminal mut GhosttyTerminal<'static, 'static>,
-        limits: BootstrapLimits,
-    ) -> Result<NativeCheckpointCapture<'terminal>, NativeStateError> {
-        let options = frozen_capture_options(limits)?;
-        let max_record_bytes = options.max_record_bytes;
-        let capture = terminal.capture_snapshot(options)?;
-        Ok(NativeCheckpointCapture {
-            capture,
-            max_record_bytes,
-            ready: false,
-        })
-    }
-
-    /// Emit one prefix record into `buffer`. The last record is READY.
-    pub fn step<'buffer>(
-        &mut self,
-        buffer: &'buffer mut [u8],
-    ) -> Result<NativeCheckpointChunk<'buffer>, NativeStateError> {
-        if self.ready {
-            return Err(NativeStateError::InvalidState);
-        }
-        if buffer.len() < self.max_record_bytes {
-            return Err(NativeStateError::OutOfSpace {
-                required_bytes: self.max_record_bytes,
-                required_rows: 0,
-            });
-        }
-        let event = self.capture.next(buffer)?;
-        let kind = match event {
-            CaptureEvent::Ready { .. } => {
-                self.ready = true;
-                NativeCheckpointChunkKind::Ready
-            }
-            CaptureEvent::Record { .. } => NativeCheckpointChunkKind::Record,
-            _ => return Err(NativeStateError::InvalidState),
-        };
-        Ok(NativeCheckpointChunk {
-            kind,
-            codec_version: PROGRESSIVE_CHECKPOINT_VERSION,
-            bytes: &buffer[..event.written()],
-        })
-    }
-
-    /// Maximum bytes required for one complete opaque native record.
-    #[must_use]
-    pub const fn max_record_bytes(&self) -> usize {
-        self.max_record_bytes
-    }
-
-    /// Whether this host has emitted its final READY record.
-    #[must_use]
-    pub const fn is_ready(&self) -> bool {
-        self.ready
-    }
-
-    /// Release without installing history. The frozen cut is dropped.
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "callers match Result with other capture APIs"
-    )]
-    pub fn abort(self) -> Result<(), NativeStateError> {
-        drop(self);
-        Ok(())
-    }
-}
-
-/// One bounded result from a retained-history cursor.
-#[derive(Debug)]
-pub enum NativeHistoryEvent<'buffer> {
-    /// One complete authenticated engine history unit.
-    Page {
-        /// Opaque unit bytes written directly into the caller's buffer.
-        bytes: &'buffer [u8],
-        /// Number of terminal rows represented by this unit.
-        rows: usize,
-        /// Whether this unit completes its native source page.
-        page_complete: bool,
-        /// Same-generation opaque capability for the next request.
-        next_cursor: OpaqueHistoryCursor,
-    },
-    /// No older units remain; the protocol history stream is finished.
-    End,
-}
-
-/// Owned canonical terminal plus a frozen history cut from its READY prefix.
-#[derive(Debug)]
-pub struct NativeHistoryCursor<'terminal_alloc, 'cb> {
-    terminal: GhosttyTerminal<'terminal_alloc, 'cb>,
-    history: HistoryCapture<'terminal_alloc>,
-    cursor: OpaqueHistoryCursor,
-    max_unit_bytes: usize,
-    finished: bool,
-    invalidated: Option<NativeStateError>,
-}
-
-impl<'terminal_alloc, 'cb> NativeHistoryCursor<'terminal_alloc, 'cb> {
-    /// Consume the canonical terminal, emit READY, and freeze the history cut.
-    pub fn new(
-        terminal: GhosttyTerminal<'terminal_alloc, 'cb>,
-        limits: BootstrapLimits,
-    ) -> Result<Self, NativeStateError> {
-        let options = frozen_capture_options(limits)?;
-        let max_unit_bytes = options.max_record_bytes;
-        let mut capture = terminal
-            .into_snapshot_capture(options)
-            .map_err(|failure| failure.error)?;
-        let mut buffer = vec![0; max_unit_bytes];
-        let mut digest = Sha256::new();
-        loop {
-            match capture.next(&mut buffer)? {
-                CaptureEvent::Ready { written } => {
-                    digest.update(&buffer[..written]);
-                    break;
-                }
-                CaptureEvent::Record { written } => digest.update(&buffer[..written]),
-                _ => return Err(NativeStateError::InvalidState),
-            }
-        }
-        let (terminal, history) = capture.detach().map_err(|failure| failure.error)?;
-        Ok(Self {
-            terminal,
-            history,
-            cursor: cursor_for(&digest.finalize()),
-            max_unit_bytes,
-            finished: false,
-            invalidated: None,
-        })
-    }
-
-    /// Opaque checkpoint authenticating this cursor's exact terminal cut.
-    #[must_use]
-    pub const fn checkpoint(&self) -> &OpaqueHistoryCursor {
-        &self.cursor
-    }
-
-    /// Opaque capability advertised as `BOOTSTRAP_READY.history_cursor`.
-    #[must_use]
-    pub const fn cursor(&self) -> &OpaqueHistoryCursor {
-        &self.cursor
-    }
-
-    /// Borrow the live canonical terminal for read-only engine queries.
-    #[must_use]
-    pub const fn terminal(&self) -> &GhosttyTerminal<'terminal_alloc, 'cb> {
-        &self.terminal
-    }
-
-    /// Feed serialized raw PTY bytes to the live canonical terminal.
-    pub fn vt_write(&mut self, data: &[u8]) {
-        self.terminal.vt_write(data);
-    }
-
-    /// Reset the live terminal and invalidate this retained-history generation.
-    pub fn reset(&mut self) {
-        self.terminal.reset();
-        self.invalidated = Some(NativeStateError::Reset);
-    }
-
-    /// Resize the live terminal and invalidate this retained-history generation.
-    pub fn resize(
-        &mut self,
-        cols: u16,
-        rows: u16,
-        cell_width_px: u32,
-        cell_height_px: u32,
-    ) -> libghostty_vt::error::Result<()> {
-        let result = self
-            .terminal
-            .resize(cols, rows, cell_width_px, cell_height_px);
-        if result.is_ok() {
-            self.invalidated = Some(NativeStateError::Resize);
-        }
-        result
-    }
-
-    /// Emit one authenticated history unit within both negotiated bounds.
-    pub fn next<'buffer>(
-        &mut self,
-        max_bytes: u32,
-        buffer: &'buffer mut [u8],
-    ) -> Result<NativeHistoryEvent<'buffer>, NativeStateError> {
-        if let Some(error) = self.invalidated {
-            return Err(error);
-        }
-        if self.finished {
-            return Ok(NativeHistoryEvent::End);
-        }
-        let requested = usize::try_from(max_bytes).map_err(|_| NativeStateError::LimitExceeded)?;
-        if requested == 0 {
-            return Err(NativeStateError::LimitExceeded);
-        }
-        let want = self.max_unit_bytes.min(requested);
-        if buffer.len() < want {
-            return Err(NativeStateError::OutOfSpace {
-                required_bytes: want,
-                required_rows: 0,
-            });
-        }
-        loop {
-            let event = self.history.next(&mut self.terminal, buffer)?;
-            match event {
-                CaptureEvent::Scan => {}
-                CaptureEvent::Record { written } | CaptureEvent::HistoryPage { written, .. } => {
-                    return Ok(NativeHistoryEvent::Page {
-                        bytes: &buffer[..written],
-                        rows: match event {
-                            CaptureEvent::HistoryPage { rows, .. } => rows,
-                            _ => 0,
-                        },
-                        page_complete: matches!(event, CaptureEvent::HistoryPage { .. }),
-                        next_cursor: self.cursor,
-                    });
-                }
-                CaptureEvent::Finish { written } => {
-                    self.finished = true;
-                    return Ok(NativeHistoryEvent::Page {
-                        bytes: &buffer[..written],
-                        rows: 0,
-                        page_complete: true,
-                        next_cursor: self.cursor,
-                    });
-                }
-                CaptureEvent::Invalidated(reason) => {
-                    return Err(invalidation_error(reason));
-                }
-                CaptureEvent::Ready { .. } => return Err(NativeStateError::InvalidState),
-            }
-        }
-    }
-
-    /// Release cursor state before returning the live terminal.
-    #[must_use]
-    pub fn into_terminal(self) -> GhosttyTerminal<'terminal_alloc, 'cb> {
-        self.terminal
-    }
-}
-
 /// Failure from [`NativeTerminalManager::new`] that returns the terminal.
 #[derive(Debug)]
 pub(crate) struct NativeManagerInitFailure {
@@ -485,12 +213,8 @@ impl NativeGenerationBounds {
     }
 }
 
-/// The one native continuation produced by a capture that reached READY.
-///
-/// The continuation is leased, not encoded: [`OwnedCapture::detach`]
-/// registers engine lease state (tracked pins and the history generation at
-/// READY) and copies no page. It must be installed back into the actor-local
-/// manager rather than sent to another thread.
+/// The continuation of a capture that reached READY: a leased engine cut
+/// (no pages copied), installed back into the actor-local manager.
 #[derive(Debug)]
 pub(crate) struct NativeGenerationSeed {
     capture: HistoryCapture<'static>,
@@ -588,9 +312,7 @@ impl NativeRecordTable {
 struct NativeCheckpointGeneration {
     records: NativeRecordTable,
     capture: Option<HistoryCapture<'static>>,
-    /// Why the cut was spent before FINISH, when it was. A prune, mutation,
-    /// reset, or engine failure at the frontier is kept so every later
-    /// request from any owner gets that reason instead of `InvalidHandle`.
+    /// Why the cut was spent before FINISH, reported to every later request.
     failure: Option<NativeStateError>,
     scratch: Vec<u8>,
     pending: Vec<u8>,
@@ -614,11 +336,8 @@ impl NativeCheckpointGeneration {
     }
 }
 
-/// Actor-owned terminal and bounded concurrent native history cuts.
-///
-/// Generations hold detached engine cuts whose pins live in `terminal`'s
-/// page list. [`Drop`] releases those cuts first so a live lease cannot
-/// outlive the terminal it tracks.
+/// Actor-owned terminal and bounded concurrent history cuts. `Drop` releases
+/// the cuts first, since their pins live in the terminal's page list.
 #[derive(Debug)]
 pub(crate) struct NativeTerminalManager {
     terminal: Option<GhosttyTerminal<'static, 'static>>,
@@ -681,33 +400,16 @@ impl NativeTerminalManager {
         })
     }
 
-    /// The canonical terminal, or `None` while a snapshot capture holds it.
-    ///
-    /// A native bootstrap capture MOVES the terminal out of this manager for
-    /// the length of the cut (up to `NATIVE_CAPTURE_LIFETIME`), so there is a
-    /// real window in which no reader can have it. This used to be an
-    /// `unreachable!`, which made that window a SIGABRT: release builds are
-    /// `panic = "abort"` with one current-thread runtime and no
-    /// `catch_unwind` on any task boundary, and the process holds every
-    /// session the user has with nothing persisted. Two callers reached it in
-    /// production before the routes were closed one at a time.
-    ///
-    /// Returning `Option` is the durable answer: a reader that cannot have
-    /// the terminal now degrades — skips a paint, refuses a read — instead of
-    /// destroying the workspace, and the type makes that unavoidable for
-    /// future callers rather than depending on every `select!` guard staying
-    /// correct.
+    /// The canonical terminal, or `None` while a capture holds it. Readers
+    /// degrade (skip a paint, refuse a read) rather than abort the server
+    /// holding every session.
     pub(crate) const fn try_terminal(&self) -> Option<&GhosttyTerminal<'static, 'static>> {
         self.terminal.as_ref()
     }
 
-    /// Apply VT bytes to the canonical screen.
-    ///
-    /// The actor defers live output into the capture's replay queue
-    /// (`buffer_native_live_output`) rather than calling this while a cut is
-    /// out, so the `None` arm should not be reachable. It must still not
-    /// abort: this process owns every session the user has, and dropping one
-    /// write that a later resync repairs is not worth losing all of them.
+    /// Apply VT bytes. The actor queues live output during a capture, so the
+    /// `None` arm should be unreachable; it drops the write rather than
+    /// abort (a resync repairs it).
     pub(crate) fn vt_write(&mut self, bytes: &[u8]) {
         if let Some(terminal) = self.terminal.as_mut() {
             terminal.vt_write(bytes);
@@ -730,11 +432,8 @@ impl NativeTerminalManager {
         self.retire_all_generations();
         self.terminal.as_mut().map_or_else(
             || {
-                // Same contract as `reset`: the resize arms are gated on
-                // `!bootstrap_pending`, so this is a caller bug rather than
-                // an expected state — but aborting would take every session
-                // on this server with it. Refuse the resize instead; the
-                // gated arm re-applies the queued request once the cut lands.
+                // Resize arms are gated during captures, so this is a caller
+                // bug; refuse rather than abort (the request is re-applied).
                 tracing::error!(
                     "resize while the canonical terminal is out on a prefix capture; refusing it"
                 );
@@ -744,14 +443,9 @@ impl NativeTerminalManager {
         )
     }
 
-    /// Clear the canonical screen for a replacement child.
-    ///
-    /// Callers are expected to land any in-flight capture first (the actor's
-    /// `reset_for_replacement` does), but this must never abort the process
-    /// if one slips through: a panic here kills the server and every session
-    /// on it. When the terminal is on loan to a capture the reset is recorded
-    /// and applied the moment the capture hands it back. Every generation is
-    /// retired either way, so no cursor outlives the screen it described.
+    /// Clear the screen for a replacement child. Callers land captures
+    /// first; if one slips through, the reset is applied when the terminal
+    /// returns. Every generation is retired either way.
     pub(crate) fn reset(&mut self) {
         self.retire_all_generations();
         if let Some(terminal) = self.terminal.as_mut() {
@@ -1183,9 +877,7 @@ impl NativeTerminalManager {
 
 impl Drop for NativeTerminalManager {
     fn drop(&mut self) {
-        // Detached cuts untrack pins from the terminal's page list when
-        // released, so they must go first. Cached payloads that already
-        // escaped through `Bytes` own their own allocations.
+        // Release cuts before the terminal (they untrack its pins).
         self.generations.clear();
     }
 }
@@ -1413,9 +1105,7 @@ mod tests {
         .unwrap_or_else(|error| panic!("history record: {error:?}"))
     }
 
-    /// A 200x50 terminal pruned to `history_bytes` of retained scrollback,
-    /// filled with styled full-width rows so a row's cost is representative
-    /// rather than the best case an all-blank grid would give.
+    /// A 200x50 terminal of styled full rows, pruned to `history_bytes`.
     fn deep_terminal(history_bytes: usize) -> GhosttyTerminal<'static, 'static> {
         let mut terminal = GhosttyTerminal::new(200, 50).expect("deep terminal");
         terminal
@@ -1438,9 +1128,8 @@ mod tests {
         terminal
     }
 
-    /// The wall time one attach spends inside the terminal's mutation
-    /// exclusion, taken as the best of `samples` runs so a loaded build host
-    /// cannot turn a constant-time operation into a false regression.
+    /// Best-of-`samples` wall time one attach spends in the mutation
+    /// exclusion.
     fn best_detach_cost(
         manager: &mut NativeTerminalManager,
         limits: BootstrapLimits,
@@ -1583,47 +1272,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn capture_then_live_write_then_history() {
-        let limits = BootstrapLimits::new(phux_protocol::DEFAULT_BOOTSTRAP_CHUNK_BYTES, 64 * 1024)
-            .expect("test limits");
-        let mut source = history_terminal();
-        let mut capture = NativeCheckpointCapture::new(&mut source, limits).expect("capture");
-        loop {
-            let required = match capture.step(&mut []) {
-                Err(NativeStateError::OutOfSpace { required_bytes, .. }) => required_bytes,
-                other => panic!("probe: {other:?}"),
-            };
-            let mut exact = vec![0; required];
-            if matches!(
-                capture.step(&mut exact).expect("record").kind,
-                NativeCheckpointChunkKind::Ready
-            ) {
-                break;
-            }
-        }
-        capture.abort().expect("abort");
-        let mut history = NativeHistoryCursor::new(source, limits).expect("cursor");
-        history.vt_write(b"live after READY\r\n");
-        let mut pages = 0usize;
-        loop {
-            match history.next(limits.max_history_page_bytes(), &mut []) {
-                Ok(NativeHistoryEvent::End) => break,
-                Err(NativeStateError::OutOfSpace { required_bytes, .. }) => {
-                    let mut exact = vec![0; required_bytes];
-                    let _ = history
-                        .next(limits.max_history_page_bytes(), &mut exact)
-                        .expect("page");
-                    pages += 1;
-                }
-                other => panic!("{other:?}"),
-            }
-        }
-        let _ = pages;
-        let mut source = history.into_terminal();
-        NativeCheckpointCapture::new(&mut source, limits).expect("still capturable");
-    }
-
     /// READY records are the active area. Extra scrollback must not enlarge
     /// the prefix; it is pulled later as frozen history.
     #[test]
@@ -1670,28 +1318,6 @@ mod tests {
             deep <= shallow.saturating_mul(2).saturating_add(4096),
             "READY prefix grew with scrollback: 80 lines {shallow} bytes, \
              2000 lines {deep} bytes"
-        );
-    }
-
-    #[test]
-    fn reset_and_resize_invalidate_cursor() {
-        let limits = BootstrapLimits::default();
-        let mut buffer = vec![0; 64];
-        let mut reset = NativeHistoryCursor::new(history_terminal(), limits).expect("reset");
-        reset.reset();
-        assert_eq!(
-            reset
-                .next(limits.max_history_page_bytes(), &mut buffer)
-                .unwrap_err(),
-            NativeStateError::Reset
-        );
-        let mut resized = NativeHistoryCursor::new(history_terminal(), limits).expect("resize");
-        resized.resize(21, 4, 8, 16).expect("resize");
-        assert_eq!(
-            resized
-                .next(limits.max_history_page_bytes(), &mut buffer)
-                .unwrap_err(),
-            NativeStateError::Resize
         );
     }
 
@@ -1836,13 +1462,8 @@ mod tests {
         assert!(manager.has_generation(&cursor));
     }
 
-    /// The attach critical path must not scale with `defaults.history-bytes`.
-    ///
-    /// Releasing a READY capture registers an engine lease and encodes
-    /// nothing, so the exclusion is held for the same time whatever the
-    /// scrollback depth. The bound is relative: 16 MiB may cost at most
-    /// three times what 2 MiB does, plus 2 ms for timer and scheduling noise
-    /// that best-of-seven sampling does not absorb.
+    /// Attach cost does not scale with `defaults.history-bytes` (16 MiB costs
+    /// at most 3x 2 MiB plus 2 ms of noise).
     #[test]
     fn attach_detach_cost_is_flat_in_retained_history() {
         let limits = BootstrapLimits::default();
@@ -1991,13 +1612,8 @@ mod tests {
         drop(manager);
     }
 
-    /// Output under a scroll region between READY and the first request.
-    ///
-    /// The incremental lease reported `Stale` here: a fixed status line
-    /// (`DECSTBM`) rewrites the page holding the newest pin. The official
-    /// GHOSTSNP cut does not: both plain output and scroll-region output
-    /// leave the retained pages deliverable. Pin that so a later engine
-    /// change cannot silently start dropping the cut.
+    /// Scroll-region output between READY and the first request leaves the
+    /// cut deliverable.
     #[test]
     fn scroll_region_output_after_ready_is_reported_not_misread() {
         fn lease_unrequested_through(mutation: &[u8]) -> Result<usize, NativeStateError> {

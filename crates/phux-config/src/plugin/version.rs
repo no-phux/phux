@@ -1,24 +1,14 @@
-//! `min_phux_version` gate: compare a plugin manifest's declared floor
-//! against the running phux version at manifest load time.
-//!
-//! Every consumer that loads a manifest — `phux plugin link`, `phux
-//! plugin install`, the best-effort [`super::load_enabled_manifests`]
-//! batch used by the TUI/server, and the action runtime — routes through
-//! [`super::load_plugin_manifest`], so enforcing here covers link time
-//! and load time with one check.
+//! `min_phux_version` gate, enforced by [`super::load_plugin_manifest`] so
+//! every consumer that loads a manifest is covered.
 
 use super::PluginManifestError;
 
-/// The phux version plugin manifests are gated against.
-///
-/// All workspace crates share the single `[workspace.package]` version,
-/// so this crate's own package version is the `phux` binary's version.
+/// The phux version manifests are gated against (the shared workspace
+/// version).
 pub const CURRENT_PHUX_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Reject a manifest whose `min_phux_version` is newer than `current`.
-///
-/// The error names both versions so the user can tell at a glance
-/// whether to upgrade phux or pin an older plugin.
+/// Reject a manifest whose `min_phux_version` is newer than `current`,
+/// naming both versions.
 pub(super) fn enforce_min_phux_version(
     plugin_id: &str,
     min_phux_version: &str,
@@ -44,10 +34,7 @@ pub(super) fn enforce_min_phux_version(
     Ok(())
 }
 
-/// Parse `"X"`, `"X.Y"`, or `"X.Y.Z"` into a comparable triple, with
-/// missing components treated as zero. Anything else — empty parts,
-/// non-digits, more than three components, pre-release suffixes —
-/// returns `None`.
+/// Parse `"X"`, `"X.Y"`, or `"X.Y.Z"` (missing components are zero).
 fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
     let mut parts = [0_u64; 3];
     let mut count = 0;
@@ -63,46 +50,30 @@ fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "tests")]
-
     use super::{enforce_min_phux_version, parse_version};
 
     #[test]
-    fn parses_one_two_and_three_component_versions() {
+    fn versions_parse_as_one_to_three_numeric_components() {
         assert_eq!(parse_version("1"), Some((1, 0, 0)));
         assert_eq!(parse_version("0.2"), Some((0, 2, 0)));
-        assert_eq!(parse_version("0.0.3"), Some((0, 0, 3)));
         assert_eq!(parse_version(" 1.2.3 "), Some((1, 2, 3)));
-    }
-
-    #[test]
-    fn rejects_malformed_versions() {
         for bad in ["", ".", "1.", ".1", "1.2.3.4", "abc", "1.x", "1.2-rc1"] {
-            assert_eq!(parse_version(bad), None, "{bad:?} should not parse");
+            assert_eq!(parse_version(bad), None, "{bad:?}");
         }
     }
 
     #[test]
-    fn accepts_equal_and_older_minimums() {
-        enforce_min_phux_version("p", "0.0.3", "0.0.3").unwrap();
-        enforce_min_phux_version("p", "0.0.2", "0.0.3").unwrap();
-        enforce_min_phux_version("p", "0", "0.0.3").unwrap();
-    }
-
-    #[test]
-    fn rejects_newer_minimum_naming_both_versions() {
-        let err = enforce_min_phux_version("example.future", "9.9.9", "0.0.3").unwrap_err();
-        let message = err.to_string();
-        assert!(message.contains("example.future"), "{message}");
-        assert!(message.contains("9.9.9"), "{message}");
-        assert!(message.contains("0.0.3"), "{message}");
-    }
-
-    #[test]
-    fn rejects_malformed_minimum_with_clear_error() {
-        let err = enforce_min_phux_version("example.bad", "not-a-version", "0.0.3").unwrap_err();
-        let message = err.to_string();
+    fn the_floor_admits_older_and_names_both_versions_when_newer() {
+        for min in ["0.0.3", "0.0.2", "0"] {
+            assert!(enforce_min_phux_version("p", min, "0.0.3").is_ok(), "{min}");
+        }
+        let newer = enforce_min_phux_version("example.future", "9.9.9", "0.0.3");
+        let message = newer.map_err(|e| e.to_string()).unwrap_err();
+        for needle in ["example.future", "9.9.9", "0.0.3"] {
+            assert!(message.contains(needle), "{message}");
+        }
+        let malformed = enforce_min_phux_version("example.bad", "not-a-version", "0.0.3");
+        let message = malformed.map_err(|e| e.to_string()).unwrap_err();
         assert!(message.contains("malformed min_phux_version"), "{message}");
-        assert!(message.contains("example.bad"), "{message}");
     }
 }

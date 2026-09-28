@@ -32,21 +32,13 @@ phux-protocol.workspace = true
 # Kernel-side performance telemetry (`perf` module); wasm-safe, no clock on
 # wasm32, always on.
 phux-perf.workspace = true
-# phux-9gw.1.4: width-aware UTF-8 prediction. The predict layer must know
-# how many terminal cells a Unicode scalar consumes before queueing a
-# prediction. `unicode-width` is the canonical zero-dep crate (Unicode 16).
+# Cell widths for predictive echo.
 unicode-width = { workspace = true }
-# phux-9gw.1.6: multi-codepoint grapheme prediction. Splits a key event's
-# `text` into grapheme clusters so the predict layer queues one Insert per
-# visual cell. Complementary to `unicode-width`.
+# Grapheme clusters for predictive echo.
 unicode-segmentation = { workspace = true }
-# phux-4li.3: the client-side layout mirror persists itself server-side via
-# the L3 metadata key `phux.tui.layout/v1` (ADR-0019 decision 1). CBOR
-# envelope encode/decode for the `{version, root, focus}` layout shape.
+# The CBOR layout envelope under L3 key `phux.tui.layout/v1` (ADR-0019).
 ciborium = "0.2"
-# phux-4li.3: serde-derive shims for the CBOR envelope; the wire-side
-# `LayoutNode`/`ResourceId` don't derive serde (phux-protocol stays a
-# near-empty shell per ADR-0011), so this crate mirrors the shapes locally.
+# Serde shims for that envelope; the wire types derive no serde.
 serde = { workspace = true }
 # AgentSession resources stream `AgentEventsJsonlV1` records (one JSON object
 # per line). The kernel decodes every line before a frontend sees it, so the

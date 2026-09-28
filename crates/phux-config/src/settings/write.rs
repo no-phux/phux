@@ -1,19 +1,10 @@
 //! Set or unset one dotted key in the user's `config.toml`, keeping every
-//! other byte (phux-u1tq.3).
+//! other byte (ADR-0023: the file is the source of truth).
 //!
-//! ADR-0023 makes the file the whole source of truth, so a settings page
-//! has to round-trip through it — and a settings page that flattens a
-//! hand-commented file into a generated one would be worse than no page.
-//! The edit therefore goes through `toml_edit`: a value that already
-//! exists is replaced in place on its own line (its trailing comment and
-//! position survive), a missing key is appended to its table, and a
-//! missing table is appended to the document. Nothing else is touched.
-//!
-//! Every edit is validated before it is returned: the result must load
-//! through [`crate::parse_with_defaults`] and `phux config check` must
-//! report nothing at the edited key. A rejected edit returns the error and
-//! *not* the mutated text, so [`write_edit`] leaves the file exactly as it
-//! found it.
+//! Edits go through `toml_edit`: an existing value is replaced in place
+//! (trailing comment intact), a missing key or table is appended. Every edit
+//! is validated (it must load, and `phux config check` must report nothing at
+//! the key) before [`write_edit`] touches disk.
 
 use std::io::Write as _;
 use std::path::Path;
@@ -46,24 +37,16 @@ pub struct EditOutcome {
     pub line: Option<String>,
 }
 
-/// Apply `edit` to `key` in `user_toml` and validate the result.
-///
-/// `path` is the file the text came from: it names the file in errors and
-/// anchors relative `extends` entries when the result is validated. No
-/// file is written; see [`write_edit`] for that.
-///
-/// `key` must be a dotted path of at least two bare segments
-/// (`table.leaf`); the schema has no top-level scalar settings.
+/// Apply `edit` to `key` (`table.leaf`, bare segments) in `user_toml` and
+/// validate the result, without writing. `path` names the file in errors and
+/// anchors relative `extends` entries.
 ///
 /// # Errors
 ///
-/// [`ConfigError::Parse`] when `user_toml` is not valid TOML, or when the
-/// edited result no longer loads. [`ConfigError::Edit`] when the key has
-/// no table, when the path runs through a non-table value, when the key
-/// holds a table rather than a scalar, when the value is a date-time (no
-/// setting takes one), or when `phux config check` reports a finding at
-/// the edited key (a bad chord, a value over its cap, a wrong type). On
-/// any error the caller's text is unchanged and *not* returned.
+/// [`ConfigError::Parse`] when the input or the edited result does not load;
+/// [`ConfigError::Edit`] for a malformed key, a path through a non-table, a
+/// table leaf, a date-time value, or a `phux config check` finding at the
+/// key.
 pub fn apply_edit(
     user_toml: &str,
     key: &str,
@@ -109,22 +92,17 @@ pub fn apply_edit(
     })
 }
 
-/// Read `path`, apply `edit`, and replace the file atomically.
+/// Read `path` (missing is empty), apply `edit`, and replace the file.
 ///
-/// A missing file is an empty document. The replacement goes through a
-/// temp file beside the target, fsynced, then renamed over it; the parent
-/// directory is created when missing.
-///
-/// A symlinked config is followed to its target so the edit lands in the
-/// file the link points at (a dotfiles checkout, typically) and the link
-/// itself survives. The target's permissions are preserved. When the edit
-/// changes nothing (an `Unset` of an absent key) the file is not touched.
+/// The write goes through an fsynced sibling temp file and a rename. A
+/// symlink is followed so the link survives, the target's permissions are
+/// kept, and a no-op edit does not touch the file.
 ///
 /// # Errors
 ///
-/// Everything [`apply_edit`] returns, in which case the file is untouched;
-/// [`ConfigError::Io`] when the file exists but cannot be read; and
-/// [`ConfigError::Write`] when the temp file or the rename fails.
+/// Everything [`apply_edit`] returns (the file is untouched);
+/// [`ConfigError::Io`] when the file cannot be read; [`ConfigError::Write`]
+/// when the temp file or rename fails.
 pub fn write_edit(path: &Path, key: &str, edit: Edit) -> Result<EditOutcome, ConfigError> {
     let current = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -133,7 +111,12 @@ pub fn write_edit(path: &Path, key: &str, edit: Edit) -> Result<EditOutcome, Con
     };
     let outcome = apply_edit(&current, key, edit, path)?;
     if outcome.text != current {
-        write_atomically(path, &outcome.text)?;
+        replace_atomically(path, &outcome.text, || Ok(())).map_err(|source| {
+            ConfigError::Write {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
     }
     Ok(outcome)
 }
@@ -150,40 +133,22 @@ fn edit_error(key: &str, message: impl Into<String>) -> ConfigError {
 fn parse_document(user_toml: &str, path: &Path) -> Result<DocumentMut, ConfigError> {
     user_toml
         .parse::<DocumentMut>()
-        .map_err(|err| ConfigError::Parse {
-            path: path.to_path_buf(),
-            position: err
-                .span()
-                .map(|span| crate::byte_offset_to_line_col(user_toml, span.start)),
-            message: err.message().to_owned(),
-        })
+        .map_err(|err| ConfigError::parse(path, user_toml, err.span(), err.message()))
 }
 
-/// What the user's file holds at `key` before the edit.
-///
-/// Read through the plain `toml` parser rather than converted out of the
-/// `toml_edit` tree: the two crates pin different `toml_datetime` versions,
-/// and a parse of text this function already knows to be valid is simpler
-/// than a lossy conversion.
+/// What the user's file holds at `key` before the edit, read through the
+/// plain `toml` parser (the two crates' date-time types do not convert).
 fn previous_value(
     user_toml: &str,
     key: &str,
     path: &Path,
 ) -> Result<Option<toml::Value>, ConfigError> {
-    let table: toml::Table = toml::from_str(user_toml).map_err(|err| ConfigError::Parse {
-        path: path.to_path_buf(),
-        position: err
-            .span()
-            .map(|span| crate::byte_offset_to_line_col(user_toml, span.start)),
-        message: err.message().to_owned(),
-    })?;
+    let table = crate::layer::parse_table(user_toml, path)?;
     Ok(super::value_at(&table, key).cloned())
 }
 
-/// Convert a `toml::Value` into a `toml_edit::Value` for insertion.
-///
-/// Date-times are refused: no setting takes one, and the two crates'
-/// date-time types are not interchangeable.
+/// Convert a `toml::Value` into a `toml_edit::Value`; date-times are refused
+/// (no setting takes one).
 fn to_edit_value(value: &toml::Value, key: &str) -> Result<toml_edit::Value, ConfigError> {
     Ok(match value {
         toml::Value::String(s) => toml_edit::Value::from(s.as_str()),
@@ -210,24 +175,17 @@ fn to_edit_value(value: &toml::Value, key: &str) -> Result<toml_edit::Value, Con
     })
 }
 
-/// Walk `table_path` from the document root, creating standard tables as
-/// needed, and return the table the leaf belongs in.
-///
-/// A table created at the top level of a non-empty document gets a blank
-/// line before its header so it reads as a new block rather than gluing
-/// onto the previous one.
+/// Walk `table_path`, creating tables as needed; a new top-level table in a
+/// non-empty document gets a blank line before its header.
 fn table_for_set<'d>(
     doc: &'d mut DocumentMut,
     table_path: &str,
     key: &str,
     document_was_empty: bool,
 ) -> Result<&'d mut dyn TableLike, ConfigError> {
-    // A document with no items but with text -- a `phux config init`
-    // scaffold is exactly that: every line a comment -- keeps that text as
-    // the root's trailing decor, which the encoder emits AFTER any table
-    // appended to the root. Carry it onto the new table's prefix instead, so
-    // the commented scaffold stays above the first real assignment rather
-    // than sliding beneath it.
+    // A comment-only document (a `phux config init` scaffold) holds its text
+    // as trailing decor, emitted after any appended table: move it onto the
+    // new table's prefix so the scaffold stays above the first assignment.
     let mut carried_prefix = if document_was_empty {
         let trailing = doc.trailing().as_str().unwrap_or("").to_owned();
         if trailing.trim().is_empty() {
@@ -256,8 +214,6 @@ fn table_for_set<'d>(
             }
             Item::Table(table)
         });
-        // A key that exists but is not a table (or is a dotted alias for one)
-        // cannot hold a setting beneath it.
         current = item.as_table_like_mut().ok_or_else(|| {
             edit_error(
                 key,
@@ -268,14 +224,8 @@ fn table_for_set<'d>(
     Ok(current)
 }
 
-/// The assignment line as the file now shows it, minus the key's prefix
-/// (indentation and any comment lines above it) and the newline.
-///
-/// The `Display` impls of `Key` and `Value` print only the decor that was
-/// parsed, while the table encoder fills a missing decor with one space on
-/// each side of `=`. A parsed line therefore renders as written (its
-/// spacing and trailing comment intact), and a freshly inserted key gets
-/// the same `key = value` the encoder wrote into the file.
+/// The assignment line as the file now shows it, trimmed. Missing decor is
+/// filled the way the table encoder fills it (one space each side of `=`).
 fn render_line(key: &toml_edit::Key, item: &Item) -> String {
     let key_suffix = key
         .leaf_decor()
@@ -293,10 +243,7 @@ fn render_line(key: &toml_edit::Key, item: &Item) -> String {
         .to_owned()
 }
 
-/// Assign `value` to `leaf` in `table`, in place when the key exists.
-///
-/// Replacing the existing `Value` and copying its decor across keeps the
-/// line where it was, with its indentation and its trailing comment.
+/// Assign `value` to `leaf`, in place (keeping decor) when the key exists.
 fn set_leaf(
     table: &mut dyn TableLike,
     leaf: &str,
@@ -318,10 +265,8 @@ fn set_leaf(
     Ok(())
 }
 
-/// Remove `leaf` from the table at `table_path`, if both exist.
-///
-/// The emptied table is left in place: it is harmless to the loader and it
-/// keeps whatever comments the user wrote around it.
+/// Remove `leaf` from the table at `table_path`, if both exist. An emptied
+/// table is left in place with its comments.
 fn unset_leaf(
     doc: &mut DocumentMut,
     table_path: &str,
@@ -350,20 +295,9 @@ fn unset_leaf(
     Ok(())
 }
 
-/// The gate every edit passes before it is returned.
-///
-/// `phux config check` runs first because its findings are located: a bad
-/// chord, a value over its cap, or a wrong type comes back as a finding
-/// whose `path` is the dotted key exactly as this module spells it
-/// (schema findings are `serde_path_to_error` paths joined with `.`;
-/// semantic findings are literal `defaults.history-bytes` /
-/// `keybindings.prefix` strings; both are bare-segment dotted paths for
-/// every catalogue key, so plain string equality is the right comparison).
-/// A semantic finding elsewhere in the file (a bad chord in some other
-/// binding, say) does not block an unrelated edit. A file that does not
-/// load at all does: the full load runs last, because the text handed back
-/// must be one the client will accept, and the schema rejects unknown keys
-/// wherever they are.
+/// The gate every edit passes: a `phux config check` finding at the key
+/// blocks it (findings elsewhere do not), and the whole file must still
+/// load.
 fn validate(text: &str, key: &str, path: &Path) -> Result<(), ConfigError> {
     let report = crate::check::check(text, path)?;
     if let Some(finding) = report.findings.iter().find(|f| f.path == key) {
@@ -376,66 +310,64 @@ fn validate(text: &str, key: &str, path: &Path) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// Replace `path` with `text` via a sibling temp file and a rename,
-/// following a symlink to its target and preserving the target's
-/// permissions.
-fn write_atomically(path: &Path, text: &str) -> Result<(), ConfigError> {
-    let write_error = |source: std::io::Error| ConfigError::Write {
-        path: path.to_path_buf(),
-        source,
-    };
+/// Replace `path` with `text` via an exclusive, fsynced sibling temp file
+/// and a rename, so an interrupted write never truncates the config.
+///
+/// A symlink is followed (the link survives) and the target's permissions
+/// are copied. `before_rename` runs after the fsync and may veto the
+/// publication; the temp file is removed on any failure. Shared with the
+/// machine registries.
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "private module helper; pub would trip unreachable_pub"
+)]
+pub(crate) fn replace_atomically(
+    path: &Path,
+    text: &str,
+    before_rename: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let parent = target
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .map_or_else(|| Path::new("."), Path::new);
-    std::fs::create_dir_all(parent).map_err(write_error)?;
+    std::fs::create_dir_all(parent)?;
     let file_name = target
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| {
-            write_error(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "path has no file name",
-            ))
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
         })?;
     let tmp = parent.join(format!(
         ".{file_name}.tmp-{}-{}",
         std::process::id(),
         temp_nonce()
     ));
-    if let Err(err) = write_temp_then_rename(&tmp, &target, text) {
+    let publish = || -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        if let Ok(metadata) = std::fs::metadata(&target) {
+            file.set_permissions(metadata.permissions())?;
+        }
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        before_rename()?;
+        std::fs::rename(&tmp, &target)
+    };
+    publish().inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
-        return Err(write_error(err));
-    }
-    Ok(())
+    })
 }
 
-/// Create `tmp` exclusively, copy `target`'s permissions onto it when the
-/// target exists, write and fsync, then rename over `target`.
-fn write_temp_then_rename(tmp: &Path, target: &Path, text: &str) -> std::io::Result<()> {
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(tmp)?;
-    if let Ok(metadata) = std::fs::metadata(target) {
-        file.set_permissions(metadata.permissions())?;
-    }
-    file.write_all(text.as_bytes())?;
-    file.sync_all()?;
-    std::fs::rename(tmp, target)
-}
-
-/// A monotonic-enough suffix so two concurrent writers do not collide on
-/// the same temp path.
+/// A temp-path suffix so concurrent writers do not collide.
 fn temp_nonce() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos())
 }
 
-/// The temp-file naming lives here so a test can assert none is left
-/// behind.
 #[cfg(test)]
 fn temp_files_in(dir: &Path) -> Vec<std::path::PathBuf> {
     std::fs::read_dir(dir)

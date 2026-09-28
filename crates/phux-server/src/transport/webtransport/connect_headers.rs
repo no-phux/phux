@@ -131,43 +131,30 @@ mod tests {
     use wtransport_proto::qpack::Encoder;
 
     #[test]
-    fn one_authorization_is_not_duplicate() {
-        let payload = Encoder::encode([("authorization", "Bearer abc")]);
-        assert!(!has_duplicate_authorization(&payload).unwrap());
+    fn detects_a_second_authorization_field() {
+        let bearer = ("authorization", "Bearer abc");
+        for (fields, duplicate) in [
+            (vec![bearer], false),
+            (vec![(":path", "/session"), (":method", "CONNECT")], false),
+            (vec![bearer, bearer], true),
+            (vec![("Authorization", "Bearer abc"), bearer], true),
+        ] {
+            let payload = Encoder::encode(fields.clone());
+            assert_eq!(
+                has_duplicate_authorization(&payload).unwrap(),
+                duplicate,
+                "{fields:?}"
+            );
+        }
     }
 
-    #[test]
-    fn repeated_lowercase_authorization_is_duplicate() {
-        let payload = Encoder::encode([
-            ("authorization", "Bearer abc"),
-            ("authorization", "Bearer abc"),
-        ]);
-        assert!(has_duplicate_authorization(&payload).unwrap());
-    }
-
-    #[test]
-    fn case_distinct_authorization_is_duplicate() {
-        let payload = Encoder::encode([
-            ("Authorization", "Bearer abc"),
-            ("authorization", "Bearer abc"),
-        ]);
-        assert!(has_duplicate_authorization(&payload).unwrap());
-    }
-
-    #[test]
-    fn missing_authorization_is_not_duplicate() {
-        let payload = Encoder::encode([(":path", "/session"), (":method", "CONNECT")]);
-        assert!(!has_duplicate_authorization(&payload).unwrap());
-    }
-
+    /// The dependency's decoded map collapses identical names, which is why
+    /// the raw scan exists.
     #[test]
     fn collapsed_hashmap_cannot_see_the_duplicate() {
-        let payload = Encoder::encode([
-            ("authorization", "Bearer abc"),
-            ("authorization", "Bearer abc"),
-        ]);
+        let bearer = ("authorization", "Bearer abc");
+        let payload = Encoder::encode([bearer, bearer]);
         let decoded = wtransport_proto::qpack::Decoder::decode(&payload).unwrap();
-        assert_eq!(decoded.len(), 1, "dependency map collapses identical names");
-        assert!(has_duplicate_authorization(&payload).unwrap());
+        assert_eq!(decoded.len(), 1);
     }
 }

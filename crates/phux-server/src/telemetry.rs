@@ -1,72 +1,23 @@
-//! Process-global telemetry bootstrap.
+//! Process-global `tracing` setup.
 //!
-//! Wires up `tracing` so that the existing `tracing::{info,debug,warn}!`
-//! call sites across the workspace actually emit. Without this, every
-//! tracing macro is a silent no-op (no subscriber installed).
+//! * [`init`]: server and one-shot CLI. Logs to stderr (stdout carries
+//!   protocol/PTY bytes), plus a non-blocking tee to `PHUX_LOG` when set,
+//!   plus `tokio-console` when built for it. The returned [`WorkerGuard`]
+//!   must live for the process.
+//! * [`init_client`]: TUI. Never stderr (the alt screen owns it); a
+//!   synchronous file writer at `PHUX_LOG` or a per-pid default, because
+//!   the client exits via `std::process::exit` and would lose a buffered
+//!   tail.
 //!
-//! Two entry points share one layer builder:
-//!
-//! * [`init`] — the **server / foreground** path. Keeps the long-standing
-//!   human-text fmt layer writing to **stderr** (the binary's stdout is
-//!   reserved for protocol/PTY traffic — `phux stdio-bridge` splices it
-//!   into the wire; never pollute it with log lines). Optionally *also*
-//!   tees to a file when
-//!   `PHUX_LOG` is set, and installs the `tokio-console` layer when built
-//!   for it.
-//! * [`init_client`] — the **client / TUI** path. NEVER writes to stderr:
-//!   the attach loop owns the alt screen, so a stray log line corrupts the
-//!   display. It logs to a file only — `PHUX_LOG` when set, else a
-//!   per-pid default under `$XDG_STATE_HOME/phux/` — so a client crash or
-//!   warning is always recoverable from disk.
-//!
-//! Shared environment knobs (read once, at init):
-//!
-//! * `RUST_LOG` — the filter. Defaults to `phux=info,warn`. Same
-//!   precedence for both entry points.
-//! * `PHUX_LOG=<path>` — write logs to this file (via a [`tracing_appender`]
-//!   writer — non-blocking for the server, synchronous for the client). For
-//!   the server this is *in addition to* stderr; for the client it overrides
-//!   the per-pid default path.
-//! * `PHUX_LOG_FORMAT=text|json` — choose the human fmt layer (`text`,
-//!   the default) or a structured JSON fmt layer (one JSON object per
-//!   line, `jq`/`grep`-able).
-//!
-//! Both fmt layers emit span-close timing (`FmtSpan::CLOSE`) so any
-//! `#[instrument]` span reports its duration on close — the substrate the
-//! lag/crash flywheel reads to find hot paths.
-//!
-//! [`init`] (server) uses a NON-blocking file writer and returns a
-//! [`WorkerGuard`] that `main` must keep alive for the process lifetime;
-//! dropping it flushes and stops the background writer thread. [`init_client`]
-//! instead uses a SYNCHRONOUS writer and returns no guard: the client exits
-//! via `std::process::exit` (which skips guard Drop), so a buffered tail
-//! would be lost — synchronous writes have none to lose.
-//!
-//! Each entry point is **idempotent at the type level only** — call at
-//! most once per process. Subsequent calls return `Err` via `try_init`'s
-//! error path; callers should not call them from tests.
-//!
-//! The canonical server log is also **rotated while the server runs**, not
-//! only at startup: [`run_log_rotation_task`] is a background task the
-//! server binary spawns on its own tokio runtime, which periodically bounds
-//! `server.log` at `LOG_ROTATE_THRESHOLD_BYTES` the same way startup
-//! rotation already bounds it across many short-lived server generations
-//! (phux-j1zj).
-//!
-//! ## Why factor this out
-//!
-//! A follow-up agent will add a `dhat-heap` feature that swaps the global
-//! allocator. Allocator setup happens *outside* this module (it requires a
-//! `#[global_allocator]` static + a `dhat::Profiler` guard owned by
-//! `main`), so this module deliberately stays allocator-agnostic and
-//! additive.
+//! `RUST_LOG` filters (default `phux=info,warn`); `PHUX_LOG_FORMAT` picks
+//! `text` or `json`. Both layers report span-close timing. Call either at
+//! most once per process. The canonical server log is also rotated while
+//! the server runs ([`run_log_rotation_task`]).
 
 use std::path::{Path, PathBuf};
 
-/// Re-export so binary crates can name the guard's type (to bind it for
-/// the process lifetime) without a direct `tracing-appender` dependency.
-/// The guard must outlive the process: dropping it flushes and stops the
-/// non-blocking file writer's background thread.
+/// Re-exported so binaries can hold the guard without depending on
+/// `tracing-appender`; dropping it stops the non-blocking writer.
 pub use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::Layer;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -75,20 +26,14 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::{EnvFilter, fmt};
 
-/// Default tracing filter applied when `RUST_LOG` is unset.
-///
-/// `phux=info` keeps server-side `info!` lines visible without drowning
-/// the operator in `tokio`/`hyper`/etc. The trailing `warn` fallback
-/// ensures genuinely surprising events from any crate still surface.
+/// Default filter when `RUST_LOG` is unset.
 const DEFAULT_FILTER: &str = "phux=info,warn";
 
-/// Environment variable naming an explicit log file path. When set, the
-/// server tees logs to it (in addition to stderr) and the client writes
-/// to it instead of the per-pid default.
+/// Explicit log file path: a server tee, or the client's file instead of
+/// the per-pid default.
 const ENV_LOG_PATH: &str = "PHUX_LOG";
 
-/// Environment variable selecting the on-disk / on-stderr log format:
-/// `text` (default, human) or `json` (one JSON object per line).
+/// Log format: `text` (default) or `json`.
 const ENV_LOG_FORMAT: &str = "PHUX_LOG_FORMAT";
 
 /// Output encoding for a fmt layer.
@@ -101,9 +46,8 @@ enum LogFormat {
 }
 
 impl LogFormat {
-    /// Resolve the format from `PHUX_LOG_FORMAT`. Unset or unrecognized
-    /// values fall back to [`LogFormat::Text`] — logging must never fail
-    /// to start over a typo'd env var.
+    /// From `PHUX_LOG_FORMAT`; anything unrecognized is text, so a typo never
+    /// stops logging.
     fn from_env() -> Self {
         match std::env::var(ENV_LOG_FORMAT) {
             Ok(v) if v.eq_ignore_ascii_case("json") => Self::Json,
@@ -117,14 +61,7 @@ fn env_filter() -> EnvFilter {
     EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER))
 }
 
-/// Build a fmt layer over an arbitrary writer, honoring the requested
-/// format and emitting span-close timing.
-///
-/// Generic over the subscriber `S` (so it composes into any registry) and
-/// the writer factory `W` (stderr, a non-blocking file appender, …). Both
-/// the text and JSON branches set [`FmtSpan::CLOSE`] so a span reports its
-/// elapsed time when it closes — the timing signal the next wave's
-/// `#[instrument]` spans rely on.
+/// A fmt layer over `writer` in `format`, with span-close timing.
 fn fmt_layer<S, W>(format: LogFormat, writer: W, ansi: bool) -> Box<dyn Layer<S> + Send + Sync>
 where
     S: tracing::Subscriber + for<'a> LookupSpan<'a>,
@@ -144,43 +81,16 @@ where
     }
 }
 
-/// Size at which the log is rolled aside (phux-zomb.5, phux-j1zj).
-///
-/// Deliberately generous: the log has to be long enough to cover a real
-/// debugging session, and the failure this bounds is unbounded growth
-/// across *generations* (many short-lived servers appending to one file)
-/// as well as within a single very long-lived, chatty run.
+/// Size at which a log is rolled aside, bounding growth within one run and
+/// across many short-lived servers.
 const LOG_ROTATE_THRESHOLD_BYTES: u64 = 8 * 1024 * 1024;
 
-/// How many previous generations of a rotated log are kept
-/// (`<path>.1` .. `<path>.{LOG_ROTATE_MAX_GENERATIONS}`).
-///
-/// Bounds total retained history to roughly `LOG_ROTATE_MAX_GENERATIONS *
-/// LOG_ROTATE_THRESHOLD_BYTES` on top of the live file, instead of letting
-/// `.1`, `.2`, … accumulate without limit — the total is capped, not merely
-/// chunked into more, equally-unbounded pieces.
-///
-/// A constant rather than a config knob: the config schema is inside the
-/// ADR-0071 1.0 freeze, and nothing about this number has proven worth
-/// exposing yet.
+/// Rotated generations kept (`<path>.1` ..), capping total history. A
+/// constant because the config schema is frozen (ADR-0071).
 const LOG_ROTATE_MAX_GENERATIONS: usize = 4;
 
-/// How often [`run_log_rotation_task`] re-checks the canonical server log's
-/// size while the server is live (phux-j1zj).
-///
-/// Five minutes keeps the check itself cheap (one `stat`, almost always a
-/// no-op) while staying well under the time it would take a single
-/// long-lived, chatty server to cross [`LOG_ROTATE_THRESHOLD_BYTES`]
-/// unnoticed.
+/// How often [`run_log_rotation_task`] checks the server log's size.
 const LOG_ROTATE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
-
-/// Whether `size` bytes warrants rotating the log.
-///
-/// Pure and filesystem-free so the rotation *trigger* is testable with
-/// synthetic sizes rather than real files or a wall clock.
-const fn needs_rotation(size: u64, threshold: u64) -> bool {
-    size >= threshold
-}
 
 /// The path of the `n`th rotated generation of `base`: `base.1`, `base.2`, …
 fn generation_path(base: &Path, n: usize) -> PathBuf {
@@ -189,20 +99,9 @@ fn generation_path(base: &Path, n: usize) -> PathBuf {
     PathBuf::from(path)
 }
 
-/// The renames needed to shift existing rotated generations up one slot
-/// before a fresh `.1` is written, in the order they must be applied
-/// (highest generation first, so no rename clobbers a file that hasn't
-/// moved yet).
-///
-/// The final rename in the plan (`.{max-1}` -> `.{max}`) overwrites
-/// whatever already sits at `.{max}` — `std::fs::rename` replaces an
-/// existing destination atomically — which is how the oldest generation is
-/// dropped: by that overwrite, not a separate delete. With
-/// `max_generations <= 1` there is nothing to shift, so the plan is empty.
-///
-/// Pure and filesystem-free: the plan depends only on `base` and
-/// `max_generations`, so the retention *cap* is testable without touching
-/// disk.
+/// Renames that shift rotated generations up one slot, highest first so
+/// nothing is clobbered early. The last rename overwrites `.{max}`, which
+/// is how the oldest generation is dropped. Empty for `max_generations <= 1`.
 fn shift_plan(base: &Path, max_generations: usize) -> Vec<(PathBuf, PathBuf)> {
     (1..max_generations)
         .rev()
@@ -210,36 +109,16 @@ fn shift_plan(base: &Path, max_generations: usize) -> Vec<(PathBuf, PathBuf)> {
         .collect()
 }
 
-/// Roll `path` aside if it has grown past `threshold`, keeping up to
-/// `max_generations` previous generations at `path.1` .. `path.{max_generations}`.
-///
-/// Copies the live file's content into `path.1` (after shifting any
-/// existing `.1` .. `.{max_generations - 1}` up one slot, oldest dropped),
-/// then **truncates `path` in place** — it never renames or recreates the
-/// live path itself. That distinction matters because `path` is a shared,
-/// fixed location: a service-managed server's stdio redirect and any
-/// reader already following it by name (`tail -f`, `phux logs --server
-/// -f`) have it open *before* this runs. An in-place truncate leaves their
-/// file descriptor pointing at the same inode, so an `O_APPEND` writer
-/// keeps landing at the (now-zero) end of the file and a `tail -f` reader
-/// sees the truncation and keeps following — neither has to reopen
-/// anything. A rename-based rotation would instead orphan every existing
-/// reader or writer on the old inode, silently.
-///
-/// Called both once at startup (via [`file_writer`], for the optional
-/// `PHUX_LOG` tee) and periodically for as long as the server runs (via
-/// [`run_log_rotation_task`], for the canonical `server.log`), so a single
-/// very long-lived, very chatty server is bounded the same way many
-/// short-lived ones already were (phux-j1zj).
-///
-/// Returns `Ok(true)` if a rotation happened. Callers swallow every `Err`:
-/// logging must never be the reason a server refuses to start or stumbles
-/// while running.
+/// Roll `path` aside past `threshold`, keeping up to `max_generations`
+/// generations: shift, copy the live file to `.1`, then truncate `path` in
+/// place. Truncating (not renaming) keeps existing writers and `tail -f`
+/// readers on the same inode. Returns whether it rotated; callers ignore
+/// errors, since logging must never stop the server.
 fn rotate_log(path: &Path, threshold: u64, max_generations: usize) -> std::io::Result<bool> {
     let Ok(meta) = std::fs::metadata(path) else {
         return Ok(false);
     };
-    if !needs_rotation(meta.len(), threshold) {
+    if meta.len() < threshold {
         return Ok(false);
     }
     for (from, to) in shift_plan(path, max_generations) {
@@ -250,14 +129,10 @@ fn rotate_log(path: &Path, threshold: u64, max_generations: usize) -> std::io::R
     if max_generations > 0 {
         let gen1 = generation_path(path, 1);
         std::fs::copy(path, &gen1)?;
-        // `fs::copy` carries the source's permission bits on Unix, but
-        // re-harden explicitly (ADR-0028) rather than lean on that being
-        // true on every platform forever.
+        // Re-harden explicitly (ADR-0028) rather than rely on `fs::copy`.
         harden_log_sink(&gen1)?;
     }
-    // In-place truncate (not a rename+recreate) — see the doc comment above
-    // for why that is load-bearing for readers and writers already holding
-    // `path` open by name.
+    // In place, not rename + recreate (see above).
     std::fs::OpenOptions::new()
         .write(true)
         .truncate(true)
@@ -265,14 +140,8 @@ fn rotate_log(path: &Path, threshold: u64, max_generations: usize) -> std::io::R
     Ok(true)
 }
 
-/// One rotation check against the canonical server log, with production's
-/// threshold and retention cap.
-///
-/// Synchronous and tokio-free by design: it is the entire body of one
-/// [`run_log_rotation_task`] tick, factored out so the "does the canonical
-/// path get rotated with the right numbers" wiring is unit-testable
-/// directly — set `XDG_STATE_HOME`, seed a file, call this, assert — with
-/// no runtime, no background task, and no timing involved.
+/// One rotation check of the canonical server log with production limits
+/// (the synchronous body of each [`run_log_rotation_task`] tick).
 fn rotate_server_log_if_needed() -> std::io::Result<bool> {
     rotate_log(
         &server_log_path(),
@@ -281,27 +150,12 @@ fn rotate_server_log_if_needed() -> std::io::Result<bool> {
     )
 }
 
-/// Periodically rotate the canonical `server.log` for as long as the
-/// server is live (phux-j1zj).
+/// Periodically rotate the canonical `server.log` while the server runs; spawn
+/// once on the server runtime.
 ///
-/// Startup-only rotation (the check inside `file_writer`) bounds growth
-/// across many short-lived server generations, but a single very
-/// long-lived, chatty server could still cross `LOG_ROTATE_THRESHOLD_BYTES`
-/// within one run and never get rolled aside. This task closes that gap:
-/// spawn it once, on the server's own tokio runtime, and let it run until
-/// the runtime is dropped at shutdown.
-///
-/// `tokio::time::interval` fires its first tick immediately, so a log that
-/// was already oversized when this server started gets bounded right away
-/// rather than after a full `LOG_ROTATE_CHECK_INTERVAL` — on top of,
-/// not instead of, whatever startup-time rotation an explicit `PHUX_LOG`
-/// path already received from [`init`].
-///
-/// The actual check runs via `spawn_blocking`: almost every tick it is one
-/// cheap `stat`, but on the rare oversized tick it becomes a multi-MiB file
-/// copy, which must not run inline on a current-thread runtime's single
-/// reactor thread (ADR-0003) — that would stall every pane's PTY I/O and
-/// every socket accept for the duration of the copy.
+/// The first tick is immediate. Each check runs in `spawn_blocking`, since a
+/// rotation copies megabytes and must not stall the current-thread reactor
+/// (ADR-0003).
 pub async fn run_log_rotation_task() {
     let mut ticker = tokio::time::interval(LOG_ROTATE_CHECK_INTERVAL);
     loop {
@@ -310,22 +164,12 @@ pub async fn run_log_rotation_task() {
         if let Ok(Err(err)) = outcome {
             tracing::debug!(error = %err, "server log rotation check failed");
         }
-        // A panicked join (`Err` from `spawn_blocking`) is swallowed the
-        // same as an `Err` from the rotation itself: a broken rotation
-        // check is never a reason to bring the server down.
+        // A panicked or failed check is ignored.
     }
 }
 
-/// Open a non-blocking file appender at `path`, creating the parent
-/// directory if needed.
-///
-/// Returns the [`WorkerGuard`] (which must outlive the process to keep the
-/// background writer alive) alongside a `MakeWriter` factory. We use a
-/// fixed file name rather than a daily-rolling one so a `PHUX_LOG` path the
-/// operator names points at exactly that file; size-based rotation happens
-/// here at startup ([`rotate_log`]), and — for the canonical server log —
-/// again periodically for as long as the server runs
-/// ([`run_log_rotation_task`]).
+/// A non-blocking appender at `path` (parent created), plus its
+/// [`WorkerGuard`]. Rotates at open.
 fn file_writer(
     path: &Path,
 ) -> std::io::Result<(tracing_appender::non_blocking::NonBlocking, WorkerGuard)> {
@@ -340,16 +184,9 @@ fn file_writer(
             path.display()
         ))
     })?;
-    // Create the sink at mode 0o600 BEFORE the appender opens it (ADR-0028):
-    // logs carry self-narrating input atoms and timing detail, so the file
-    // must not be world- or group-readable. `rolling::never` appends with
-    // `OpenOptions::create(true).append(true)`, whose default mode is 0o644 —
-    // pre-creating (or re-chmod-ing) the file makes the append a no-op on perms
-    // and leaves the sink user-only.
+    // Pre-create owner-only (ADR-0028); the appender's default is 0o644.
     harden_log_sink(path)?;
-    // `tracing_appender::rolling::never` is the non-rotating file sink: it
-    // appends to exactly `dir/file_name`. A bare path (no directory) logs
-    // into the current directory.
+    // `rolling::never` appends to exactly this file.
     let appender = tracing_appender::rolling::never(
         dir.map_or_else(|| PathBuf::from("."), Path::to_path_buf),
         file_name,
@@ -357,28 +194,19 @@ fn file_writer(
     Ok(tracing_appender::non_blocking(appender))
 }
 
-/// Ensure the log sink at `path` exists and is owner-only (mode `0o600`)
-/// before any appender writes to it (ADR-0028).
-///
-/// Log files capture redaction-safe-but-still-sensitive operational detail
-/// (input-atom narration, span timing, panics); on a shared multi-user box
-/// they must not be readable by other users. The default file-creation mode
-/// (`0o644`) is group/world-readable, so we create the file ourselves with the
-/// tight mode and re-tighten an existing file's perms. No-op on non-Unix
-/// targets, where file modes don't apply.
+/// Ensure the sink exists with mode `0o600` before any write (ADR-0028):
+/// logs carry sensitive operational detail. No-op off Unix.
 fn harden_log_sink(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-        // Create (if absent) with 0o600 in one atomic step, so the file is
-        // never briefly group/world-readable.
+        // Create at 0o600 atomically, never briefly readable.
         std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
             .open(path)?;
-        // If it already existed with looser perms (e.g. created before this
-        // hardening, or by another tool), tighten it now.
+        // Tighten a pre-existing looser file.
         let perms = std::fs::Permissions::from_mode(0o600);
         std::fs::set_permissions(path, perms)?;
     }
@@ -389,14 +217,7 @@ fn harden_log_sink(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Per-pid default client log path: `$XDG_STATE_HOME/phux/client-<pid>.log`
-/// (falling back to `$HOME/.local/state/phux/` when `XDG_STATE_HOME` is
-/// unset, matching the XDG base-directory default).
-///
-/// Pid-scoping keeps concurrent clients from interleaving into one file
-/// and makes "which log is this crash in" answerable from the client's
-/// own pid. Public so a future `phux` subcommand (or a test) can report
-/// the path it would use.
+/// Per-pid client log path, `<state dir>/client-<pid>.log`.
 #[must_use]
 pub fn default_client_log_path() -> PathBuf {
     let mut dir = client_state_dir();
@@ -404,35 +225,17 @@ pub fn default_client_log_path() -> PathBuf {
     dir
 }
 
-/// Canonical server log path: `$XDG_STATE_HOME/phux/server.log` (falling
-/// back to `$HOME/.local/state/phux/` when `XDG_STATE_HOME` is unset,
-/// matching the XDG base-directory default).
-///
-/// The ONE server log, regardless of how the server was started: the
-/// auto-spawn path redirects the daemon's stderr here, and the
-/// service-install unit points its log capture at the same file. Every
-/// consumer that names or tails "the server log" (`phux service logs`,
-/// doctor/log-inventory verbs) must resolve it through this helper so the
-/// writers and the readers can never disagree about the path
-/// (phux-i0e8.5.1).
+/// The canonical server log, `<state dir>/server.log`, used by every writer
+/// and reader of "the server log".
 #[must_use]
 pub fn server_log_path() -> PathBuf {
     state_dir().join("server.log")
 }
 
-/// phux's per-user, per-profile state directory.
-///
-/// `$XDG_STATE_HOME/phux` (or `$HOME/.local/state/phux` when `XDG_STATE_HOME`
-/// is unset/empty), suffixed with the active profile when it is not the
-/// default one.
-///
-/// The home for state that should survive across runs but isn't config: the
-/// canonical server log ([`server_log_path`]), client logs (per-pid), and the
-/// auto-provisioned remote-consumer TLS cert + token store (ADR-0031).
-///
-/// Profile-scoped via [`phux_config::instance::state_dir`] so a development
-/// build's logs and provisioned credentials cannot be confused with — or
-/// written over — those of the installed build (phux-zomb.2).
+/// phux's per-user, per-profile state directory
+/// (`$XDG_STATE_HOME/phux`, else `~/.local/state/phux`), holding logs and
+/// provisioned credentials; profile-scoped via
+/// [`phux_config::instance::state_dir`].
 #[must_use]
 pub fn state_dir() -> PathBuf {
     phux_config::instance::state_dir()
@@ -443,39 +246,24 @@ fn client_state_dir() -> PathBuf {
     state_dir()
 }
 
-/// Install the process-global `tracing` subscriber for a **server /
-/// foreground** process.
+/// Install the subscriber for a server or one-shot CLI process, before the
+/// runtime is built.
 ///
-/// Call this from the binary entry point **before** building the tokio
-/// runtime. Calling it (or [`init_client`]) more than once will return
-/// `Err`.
+/// Logs to stderr, and also to `PHUX_LOG` when set (hold the returned
+/// [`WorkerGuard`] for the process). Installs no panic hook: daemons call
+/// [`install_server_panic_hook`] themselves, so a CLI panic is never
+/// reported as a server panic.
 ///
-/// Always installs the historical human-or-JSON fmt layer to **stderr**.
-/// When `PHUX_LOG` is set it *also* tees the same-format stream to that
-/// file via a non-blocking writer; the returned [`WorkerGuard`] (when
-/// present) must be held for the process lifetime so the file writer keeps
-/// flushing.
+/// # Errors
 ///
-/// Installs **no panic hook**. This is the subscriber for every
-/// non-TUI process — a foreground server, yes, but also every one-shot CLI
-/// verb — and [`install_server_panic_hook`] labels its event `server panic`.
-/// A CLI that died writing to a closed pipe used to log exactly that,
-/// pointing triage at a server that was fine (phux-h5hj.8, phux-ngq2). The
-/// hook belongs to the long-running daemons, so they arm it themselves:
-/// `phux server` and `phux relay run` both call
-/// [`install_server_panic_hook`] on entry.
-///
-/// Returns `Err` if a subscriber was already installed (e.g. by a test
-/// harness or a buggy second call); callers in `main` can treat this as
-/// fatal and exit non-zero, or simply log and continue.
+/// A subscriber is already installed, or the log file cannot be opened.
 pub fn init() -> Result<Option<WorkerGuard>, Box<dyn std::error::Error + Send + Sync>> {
     let format = LogFormat::from_env();
 
     // Always-on stderr layer (ANSI for an interactive operator).
     let stderr_layer = fmt_layer(format, std::io::stderr as fn() -> std::io::Stderr, true);
 
-    // Optional file tee. ANSI is off for files (escape codes would
-    // pollute a log a human greps / a tool parses).
+    // Optional file tee, without ANSI codes.
     let (file_layer, guard) = match std::env::var_os(ENV_LOG_PATH) {
         Some(path) if !path.is_empty() => {
             let path = PathBuf::from(path);
@@ -490,14 +278,8 @@ pub fn init() -> Result<Option<WorkerGuard>, Box<dyn std::error::Error + Send + 
         .with(stderr_layer)
         .with(file_layer);
 
-    // The `tokio-console` integration is purely additive: it adds a
-    // second layer that publishes runtime task instrumentation to a gRPC
-    // server (default 127.0.0.1:6669) that the `tokio-console` CLI
-    // connects to. `console_subscriber::spawn()` PANICS unless Tokio was
-    // built with `--cfg tokio_unstable`, so we gate on the cfg too (not
-    // the feature alone) — otherwise a `--all-features` build would
-    // produce a binary that aborts on startup. The `tokio_unstable` cfg
-    // name is declared expected in this crate's build.rs.
+    // `console_subscriber::spawn()` panics without `--cfg tokio_unstable`,
+    // so gate on the cfg as well as the feature.
     #[cfg(all(feature = "tokio-console", tokio_unstable))]
     {
         let console_layer = console_subscriber::ConsoleLayer::builder()
@@ -514,37 +296,22 @@ pub fn init() -> Result<Option<WorkerGuard>, Box<dyn std::error::Error + Send + 
     Ok(guard)
 }
 
-/// Install the process-global `tracing` subscriber for a **client / TUI**
-/// process.
+/// Install the subscriber for a client/TUI process, before raw mode.
 ///
-/// Logs to a **file only** — never stdout/stderr — because the attach loop
-/// owns the alt screen and any stray write corrupts the display. The sink
-/// is `PHUX_LOG` when set, else [`default_client_log_path`]
-/// (`$XDG_STATE_HOME/phux/client-<pid>.log`). Honors `PHUX_LOG_FORMAT` and
-/// `RUST_LOG` exactly like [`init`].
+/// File only (`PHUX_LOG` or [`default_client_log_path`]); honors the same
+/// format and filter as [`init`]. The client's own panic hook logs before
+/// restoring the terminal.
 ///
-/// Call this from the client/attach entry **before** raw mode is entered.
-/// The returned [`WorkerGuard`] must be held for the process lifetime
-/// (bind it in `main`); dropping it flushes and stops the writer thread.
+/// # Errors
 ///
-/// Does NOT install a panic hook — the client's terminal-restoring panic
-/// hook in `attach::driver` chains the panic-to-log behavior itself, so
-/// that the log write happens before the terminal is restored.
-///
-/// Returns `Err` if a subscriber was already installed or the log file
-/// could not be opened.
+/// A subscriber is already installed, or the log file cannot be opened.
 pub fn init_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let format = LogFormat::from_env();
     let path = std::env::var_os(ENV_LOG_PATH)
         .filter(|v| !v.is_empty())
         .map_or_else(default_client_log_path, PathBuf::from);
 
-    // BLOCKING (synchronous) writer, NOT the server's non-blocking appender.
-    // The client leaves its detach/signal paths via `std::process::exit`,
-    // which skips a `WorkerGuard`'s flush-on-Drop and would silently drop the
-    // buffered trace tail — exactly when you detach right after reproducing a
-    // lag/crash. A synchronous appender has no buffered tail to lose, so no
-    // guard is needed; the client log path is not latency-critical.
+    // Synchronous writer: `std::process::exit` skips guard flushes.
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -555,8 +322,6 @@ pub fn init_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             path.display()
         ))
     })?;
-    // Create the client log at mode 0o600 before the appender opens it
-    // (ADR-0028); see `harden_log_sink`.
     harden_log_sink(&path)?;
     let appender = tracing_appender::rolling::never(
         dir.map_or_else(|| PathBuf::from("."), Path::to_path_buf),
@@ -572,31 +337,15 @@ pub fn init_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-/// Whether the server panic hook has already been installed. The hook is
-/// process-global; a re-entrant install would chain it indefinitely.
+/// Whether the server panic hook is installed (re-install would chain).
 static SERVER_PANIC_HOOK_INSTALLED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// Install a global panic hook that logs the panic message + a captured
-/// backtrace through `tracing` (so a daemonized server's crash is durable
-/// in the log file), then chains the previous hook.
+/// Install a panic hook that logs the message and backtrace through `tracing`
+/// (and synchronously to `PHUX_LOG`), then chains the previous hook.
 ///
-/// Idempotent — repeated calls after the first are no-ops.
-///
-/// Call this from a **long-running daemon's** entry point only, after
-/// [`init`] — `phux server` and `phux relay run` do. It is deliberately NOT
-/// armed by [`init`]: that would also arm it for every one-shot CLI verb,
-/// whose panics would then be reported as `server panic` from a process
-/// that is not a server (phux-h5hj.8). A CLI verb's panic still reaches the
-/// user through the default hook on stderr; nothing in a one-shot verb
-/// needs a durable crash record, because the operator is standing right
-/// there reading it.
-///
-/// The backtrace honors `RUST_BACKTRACE` like the default hook: an
-/// unforced [`std::backtrace::Backtrace::capture`] is `Disabled` (and
-/// renders as a hint to set `RUST_BACKTRACE=1`) unless the env var is set,
-/// so we don't pay the symbolication cost in the common no-crash-config
-/// case while still capturing a full trace when the operator asks for one.
+/// Idempotent. For long-running daemons only, after [`init`]. The backtrace
+/// honors `RUST_BACKTRACE`.
 pub fn install_server_panic_hook() {
     use std::sync::atomic::Ordering;
     if SERVER_PANIC_HOOK_INSTALLED.swap(true, Ordering::SeqCst) {
@@ -614,32 +363,17 @@ pub fn install_server_panic_hook() {
             panic.backtrace = %backtrace,
             "server panic",
         );
-        // The event above went into the non-blocking appender's queue, and
-        // under `panic = "abort"` nothing will ever drain it (phux-rah). Write
-        // the same facts synchronously before we leave the hook.
+        // Under `panic = "abort"` the queued event is never flushed; write it
+        // synchronously too.
         append_panic_record_synchronously(&location, &info.to_string(), &backtrace);
         previous(info);
     }));
 }
 
-/// Append a panic record straight to the `PHUX_LOG` sink, bypassing the
-/// non-blocking appender.
-///
-/// The server's file layer is a `tracing_appender::non_blocking` writer whose
-/// [`WorkerGuard`] flushes on Drop. The release profile is `panic = "abort"`
-/// (`Cargo.toml`), so there is no unwind, that Drop never runs, and the record
-/// the panic hook just queued dies in the worker's buffer: the crash that most
-/// needs a log entry is the one that produces none. This is the same reasoning
-/// that makes [`init_client`] use a synchronous writer, applied to the one code
-/// path that must not depend on a background thread outliving it.
-///
-/// Only writes when `PHUX_LOG` is set, since that is the only case where the
-/// queued record had a file to land in. Under unwind (a dev build) the async
-/// record may also be flushed, so the panic can appear twice; a duplicate is
-/// strictly better than silence.
-///
-/// Every failure is swallowed deliberately — a panic raised inside the panic
-/// hook aborts the process immediately, with no record at all.
+/// Append a panic record straight to `PHUX_LOG`, bypassing the non-blocking
+/// appender whose guard never flushes under `panic = "abort"`. A duplicate
+/// under unwind beats silence. Every failure is swallowed: a panic here
+/// would abort with no record.
 fn append_panic_record_synchronously(
     location: &str,
     message: &str,
@@ -653,8 +387,7 @@ fn append_panic_record_synchronously(
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        // 0o600, matching `harden_log_sink` (ADR-0028): this file carries the
-        // same sensitive operational detail as the rest of the log.
+        // 0o600, like `harden_log_sink` (ADR-0028).
         options.mode(0o600);
     }
     if let Ok(mut file) = options.open(PathBuf::from(path)) {
@@ -672,16 +405,11 @@ fn append_panic_record_synchronously(
 mod tests {
     use super::*;
 
-    /// `PHUX_LOG_FORMAT=json` (any case) selects JSON; anything else —
-    /// including unset — is text.
+    /// `PHUX_LOG_FORMAT=json` (any case) is JSON; anything else is text.
     #[test]
     fn log_format_from_env_parses_json_case_insensitively() {
-        // SAFETY-NOTE: env mutation is process-global; this test runs
-        // serially within the module and restores the var.
+        // Process-global env; nextest isolates tests, and the var is restored.
         let prev = std::env::var_os(ENV_LOG_FORMAT);
-        // Safe in test context: single-threaded within this unit and we
-        // restore below. `set_var`/`remove_var` are unsafe in edition
-        // 2024; the harness owns the process here.
         unsafe { std::env::set_var(ENV_LOG_FORMAT, "JSON") };
         assert_eq!(LogFormat::from_env(), LogFormat::Json);
         unsafe { std::env::set_var(ENV_LOG_FORMAT, "text") };
@@ -694,14 +422,8 @@ mod tests {
         }
     }
 
-    /// `server_log_path` honors `XDG_STATE_HOME` and always names
-    /// `<profile-dir>/server.log` under it — the single path both spawn
-    /// paths write and every reader tails (phux-i0e8.5.1).
-    ///
-    /// The directory carries the active profile (ADR-0080), which this
-    /// debug-built test binary resolves to `dev`; it is read from
-    /// `instance::state_dir` rather than hardcoded so the assertion stays
-    /// true under any profile.
+    /// `server_log_path` honors `XDG_STATE_HOME` and names
+    /// `<profile-dir>/server.log`.
     #[test]
     fn server_log_path_honors_xdg_state_home() {
         let prev = std::env::var_os("XDG_STATE_HOME");
@@ -710,17 +432,13 @@ mod tests {
             .expect("the state dir always has a final component")
             .to_string_lossy()
             .into_owned();
-        // SAFETY-NOTE: env mutation is process-global; nextest runs each
-        // test in its own process, and we restore the var below anyway.
-        // `set_var`/`remove_var` are unsafe in edition 2024; the harness
-        // owns the process here.
+        // Process-global env; nextest isolates tests, and the var is restored.
         unsafe { std::env::set_var("XDG_STATE_HOME", "/custom/state") };
         assert_eq!(
             server_log_path(),
             PathBuf::from(format!("/custom/state/{leaf}/server.log"))
         );
-        // Unset (and empty, which must behave as unset) falls back to
-        // `$HOME/.local/state`.
+        // Empty behaves as unset.
         unsafe { std::env::set_var("XDG_STATE_HOME", "") };
         let fallback = server_log_path();
         assert!(
@@ -733,8 +451,7 @@ mod tests {
         }
     }
 
-    /// The per-pid default client path lives under the phux state dir and
-    /// names a `client-<pid>.log` file.
+    /// The client path is `<state dir>/client-<pid>.log`.
     #[test]
     fn default_client_log_path_is_pid_scoped_under_state_dir() {
         let path = default_client_log_path();
@@ -752,15 +469,10 @@ mod tests {
         assert!(path.to_string_lossy().contains("phux"), "got {path:?}");
     }
 
-    /// The panic hook's synchronous crash record lands on disk with no
-    /// appender, no guard, and no flush-on-Drop — the whole point being that
-    /// `panic = "abort"` never runs Drop (phux-rah). Also pins the `0o600`
-    /// mode required by ADR-0028, since this path opens the sink itself
-    /// rather than going through `harden_log_sink`.
+    /// The panic hook's synchronous record lands on disk without a guard,
+    /// at mode 0o600.
     #[test]
     fn panic_record_is_written_synchronously_at_owner_only_mode() {
-        // SAFETY-NOTE: env mutation is process-global; this test restores the
-        // var and the module's tests run serially.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("panic-sync.log");
         let prev = std::env::var_os(ENV_LOG_PATH);
@@ -792,8 +504,7 @@ mod tests {
         }
     }
 
-    /// With `PHUX_LOG` unset there is no file sink, so there is no queued
-    /// record to rescue and the hook must not invent a file.
+    /// Without `PHUX_LOG` the hook writes no file.
     #[test]
     fn panic_record_is_skipped_when_no_log_sink_is_configured() {
         let prev = std::env::var_os(ENV_LOG_PATH);
@@ -805,10 +516,7 @@ mod tests {
         }
     }
 
-    /// The file writer creates the parent directory and the sink file,
-    /// and a line written through it is flushed to disk once the guard is
-    /// dropped. Exercises the `PHUX_LOG`-points-at-a-file contract from a
-    /// unit (no global subscriber install needed).
+    /// The file writer creates parent and file, and flushes on guard drop.
     #[test]
     fn file_writer_creates_dir_and_writes_a_parseable_line() {
         use std::io::Write as _;
@@ -830,10 +538,7 @@ mod tests {
         assert_eq!(parsed["hello"], "world");
     }
 
-    /// The file sink is created owner-only (mode `0o600`) — logs carry
-    /// operational detail that must not be group/world-readable on a shared
-    /// box (ADR-0028). Also verifies an already-existing looser file is
-    /// re-tightened.
+    /// The sink is created, or re-tightened, to mode 0o600 (ADR-0028).
     #[cfg(unix)]
     #[test]
     fn file_writer_creates_sink_with_0o600_perms() {
@@ -865,27 +570,7 @@ mod tests {
         assert_eq!(mode, 0o600, "re-hardened sink mode was {mode:o}");
     }
 
-    // -----------------------------------------------------------------
-    // live rotation (phux-j1zj)
-    // -----------------------------------------------------------------
-
-    /// The rotation trigger is a pure `>=` comparison against the
-    /// threshold, exercised with synthetic sizes — no real file and no
-    /// wall clock involved.
-    #[test]
-    fn needs_rotation_triggers_at_and_above_threshold_only() {
-        assert!(!needs_rotation(7, 8));
-        assert!(needs_rotation(8, 8));
-        assert!(needs_rotation(9, 8));
-    }
-
-    /// The shift plan orders the highest existing generation first (so an
-    /// applied rename never clobbers a file that hasn't moved yet) and
-    /// stops one short of `max_generations` — the final rename in the
-    /// plan is the one whose *destination* is the cap, so applying the
-    /// plan in order both shifts every kept generation up and drops the
-    /// oldest one (by overwrite) in a single pass. Pure path arithmetic,
-    /// no filesystem.
+    /// The shift plan runs highest generation first and stops at the cap.
     #[test]
     fn shift_plan_orders_highest_generation_first_within_the_cap() {
         let base = Path::new("/state/phux/server.log");
@@ -900,8 +585,7 @@ mod tests {
         );
     }
 
-    /// Keeping at most one generation (or zero) means there is nothing to
-    /// shift — `.1` is always written fresh by `rotate_log` itself.
+    /// Keeping at most one generation needs no shift.
     #[test]
     fn shift_plan_is_empty_when_at_most_one_generation_is_kept() {
         let base = Path::new("/state/phux/server.log");
@@ -923,10 +607,8 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).expect("read"), "small\n");
     }
 
-    /// Over the threshold, `rotate_log` copies the live content into `.1`
-    /// and truncates the live path to empty — the size-based trigger and
-    /// the actual rotation, driven end to end (not just the pure
-    /// decision function above).
+    /// Over the threshold, `.1` gets the content and the live path is
+    /// truncated.
     #[test]
     fn rotate_log_rotates_an_oversized_file_into_generation_one() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -947,13 +629,8 @@ mod tests {
         );
     }
 
-    /// Rotation truncates the live path IN PLACE rather than renaming it
-    /// aside — a reader that already has `path` open by name (`tail -f`,
-    /// or a service-managed server's OS-redirected stdio, both of which
-    /// open it before this ever runs) must keep working through a
-    /// rotation without reopening anything. Proven here by asserting the
-    /// path's inode is unchanged across the call, and that a handle
-    /// opened before rotation observes the truncation directly.
+    /// Rotation truncates in place: the inode is unchanged and an
+    /// already-open handle sees the truncation.
     #[cfg(unix)]
     #[test]
     fn rotate_log_truncates_in_place_so_open_readers_keep_the_same_inode() {
@@ -963,9 +640,7 @@ mod tests {
         let path = dir.path().join("server.log");
         std::fs::write(&path, b"a line of pre-rotation content\n").expect("seed");
 
-        // Stand-in for a `tail -f` reader (or the OS-redirected stdio fd a
-        // service-managed server writes through): already open by name
-        // before rotation happens.
+        // Stand-in for a `tail -f` reader opened before rotation.
         let reader = std::fs::File::open(&path).expect("open before rotation");
         let ino_before = reader.metadata().expect("metadata").ino();
 
@@ -979,8 +654,6 @@ mod tests {
             ino_before, ino_after,
             "rotation must truncate the live path in place, not replace its inode"
         );
-        // The already-open handle observes the truncation without
-        // reopening — it is the same file.
         let via_old_handle = std::fs::read_to_string(&path).expect("read via live path");
         assert_eq!(
             via_old_handle, "",
@@ -989,9 +662,7 @@ mod tests {
         drop(reader);
     }
 
-    /// Existing generations shift up one slot on each rotation, and the
-    /// oldest is dropped once `max_generations` is reached — the total is
-    /// capped, not merely chunked into more, equally unbounded pieces.
+    /// Generations shift each rotation and the oldest drops at the cap.
     #[test]
     fn rotate_log_caps_retained_generations_dropping_the_oldest() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1021,9 +692,7 @@ mod tests {
         );
     }
 
-    /// The rotated-aside generation is created owner-only (mode `0o600`),
-    /// same as the live file it was copied from (ADR-0028) — rotation must
-    /// not loosen a log's permissions.
+    /// The rotated generation is created at mode 0o600.
     #[cfg(unix)]
     #[test]
     fn rotate_log_preserves_0o600_on_the_live_file_and_the_rotated_generation() {
@@ -1050,20 +719,13 @@ mod tests {
         assert_eq!(gen1_mode, 0o600, ".1 mode was {gen1_mode:o}");
     }
 
-    /// The wiring `run_log_rotation_task` calls on every tick —
-    /// `rotate_server_log_if_needed` — resolves the *real* canonical path
-    /// (via `XDG_STATE_HOME`) and rotates it with production's threshold
-    /// and retention cap. Entirely synchronous: no tokio runtime, no
-    /// background task, and nothing timing-dependent — the async task
-    /// itself is a thin, untested wrapper around this (interval scheduling
-    /// is tokio's contract, not this crate's logic to re-test).
+    /// `rotate_server_log_if_needed` rotates the real canonical path with
+    /// production limits.
     #[test]
     fn rotate_server_log_if_needed_rotates_the_canonical_path_when_oversized() {
         let dir = tempfile::tempdir().expect("tempdir");
         let prev = std::env::var_os("XDG_STATE_HOME");
-        // SAFETY-NOTE: env mutation is process-global; nextest runs each
-        // test in its own process, and we restore the var below. `set_var`
-        // is unsafe in edition 2024; the harness owns the process here.
+        // Process-global env; nextest isolates tests, and the var is restored.
         unsafe { std::env::set_var("XDG_STATE_HOME", dir.path()) };
 
         let path = server_log_path();
@@ -1085,63 +747,5 @@ mod tests {
             Some(v) => unsafe { std::env::set_var("XDG_STATE_HOME", v) },
             None => unsafe { std::env::remove_var("XDG_STATE_HOME") },
         }
-    }
-
-    /// A panic routed through the hook's tracing call writes the panic
-    /// message AND a backtrace field to the configured file sink.
-    ///
-    /// We exercise the durable-capture mechanism that both the server hook
-    /// ([`install_server_panic_hook`]) and the client hook
-    /// (`attach::driver::install_panic_hook_once`) share — capture a
-    /// `Backtrace`, then `tracing::error!` the message + backtrace BEFORE
-    /// any terminal restore — without mutating the process-global panic
-    /// hook (which would race other tests). A scoped subscriber points at
-    /// a temp file; we emit the same event the hook emits and assert it
-    /// lands on disk, forcing `RUST_BACKTRACE` on so the trace is real.
-    #[test]
-    fn panic_capture_writes_message_and_backtrace_to_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("client-panic.log");
-        {
-            let (writer, _guard) = file_writer(&path).expect("file writer");
-            let layer = fmt_layer(LogFormat::Json, writer, false);
-            let subscriber = tracing_subscriber::registry()
-                .with(EnvFilter::new("phux=error"))
-                .with(layer);
-            tracing::subscriber::with_default(subscriber, || {
-                // Force a captured (not Disabled) backtrace for the test.
-                // Use quoted field keys (rather than dotted bare keys) to
-                // avoid a macro-parse ambiguity; the field names match the
-                // hook's so the assertion below mirrors production output.
-                let backtrace = std::backtrace::Backtrace::force_capture();
-                tracing::error!(
-                    "panic.location" = "telemetry.rs:1",
-                    "panic.message" = "forced test panic",
-                    "panic.backtrace" = %backtrace,
-                    "client panic",
-                );
-            });
-            // _guard drops here, flushing the background writer.
-        }
-        let contents = std::fs::read_to_string(&path).expect("read back log");
-        assert!(
-            contents.contains("forced test panic"),
-            "panic message missing: {contents}"
-        );
-        assert!(
-            contents.contains("client panic"),
-            "panic event message missing: {contents}"
-        );
-        // A valid JSON line carrying the backtrace field.
-        let line = contents
-            .lines()
-            .find(|l| l.contains("forced test panic"))
-            .expect("panic line");
-        let parsed: serde_json::Value = serde_json::from_str(line).expect("valid JSON line");
-        let fields = &parsed["fields"];
-        assert!(
-            fields["panic.backtrace"].is_string(),
-            "backtrace field missing: {parsed}"
-        );
     }
 }

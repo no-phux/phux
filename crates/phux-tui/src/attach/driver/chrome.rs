@@ -15,11 +15,8 @@ use crate::render::chrome::sidebar::{AgentEntry, SidebarPainter};
 use crate::render::chrome::status_bar::StatusBarPainter;
 use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
 
-/// ADR-0033: compose the status-bar supervisory badge for the focused pane,
-/// or `None` when it is running and un-leased (so no badge paints). Reads the
-/// per-pane lifecycle + input-lease holder tracked from `TerminalControl`
-/// events; the holder renders as "you" when it matches this client's own id,
-/// else as the other client's numeric id. No emojis (plain ASCII chrome).
+/// ADR-0033: the focused pane's supervisory badge (lifecycle + lease
+/// holder, "you" for this client), or `None` when running and un-leased.
 fn supervisory_badge(
     panes: &HashMap<ResourceId, PaneSlot>,
     focused_resource: Option<&ResourceId>,
@@ -32,7 +29,7 @@ fn supervisory_badge(
     if let Some(mark) = slot.exited {
         return Some(format!("[ {} ]", mark.label()));
     }
-    // phux-lxov.1: a down satellite is the whole story until it returns.
+    // A down satellite is the whole story until it returns.
     if slot.satellite_down {
         let name = id
             .host()
@@ -48,9 +45,7 @@ fn supervisory_badge(
     )
 }
 
-/// Pure badge formatter (split out from [`supervisory_badge`] so the
-/// state→string mapping is testable without a libghostty-backed `PaneSlot`).
-/// `None` ⇒ no badge (running and un-leased).
+/// Pure formatter behind [`supervisory_badge`].
 fn format_supervisory_badge(
     frozen: bool,
     input_holder: Option<ClientId>,
@@ -80,18 +75,13 @@ fn format_supervisory_badge(
     }
 }
 
-/// phux-foz.1: compose the status-bar attention hint, or `None` when no pane
-/// is waiting on a human answer. Counts every pane with the ADR-0035 asked
-/// flag set (across ALL windows, not just the active one — the hint's job is
-/// to surface a question the user cannot currently see).
+/// The attention hint, counting asking panes across ALL windows (the point is
+/// a question the user cannot see), or `None` when nothing asks.
 fn attention_hint(panes: &HashMap<ResourceId, PaneSlot>) -> Option<String> {
     format_attention_hint(panes.values().filter(|slot| slot.attention).count())
 }
 
-/// Pure hint formatter (split out from [`attention_hint`] so the count→string
-/// mapping is testable without a libghostty-backed `PaneSlot`). `None` ⇒ no
-/// hint (nothing is asking). Quiet lowercase chrome; the paint path still
-/// applies the attention color.
+/// Pure formatter behind [`attention_hint`].
 fn format_attention_hint(asking: usize) -> Option<String> {
     match asking {
         0 => None,
@@ -147,20 +137,16 @@ pub(super) fn refresh_window_chrome(
     focused_resource: Option<&ResourceId>,
     zoomed: Option<&ResourceId>,
     own_client_id: Option<ClientId>,
-    // ADR-0040: structured `phux.agent/v1` records; a window whose focused
-    // leaf carries one is labelled from it instead of the OSC title. The whole
-    // index (not just `records`) is shared with agent-entry projection.
+    // ADR-0040 records: a window whose focused leaf declares one is labelled
+    // from it instead of the OSC title.
     agent_meta: &AgentMetaIndex,
-    // phux-p4vp: pane cwd + branch memo; each window's branch line derives
+    // Pane cwd + branch memo; each window's branch line derives
     // from its focused leaf's working directory.
     vcs: &mut VcsIndex,
     // AgentSession resources under each pane, projected from the kernel's
     // record streams. A pane with one outranks its metadata record for state.
     agent_sessions: &AgentSessionRows,
-    // phux-k0cw: the peer-wide state zones 1 and 3 are projected from. One
-    // struct rather than five more positional parameters — this function
-    // already carried a `too_many_arguments` allow, and growing that list is
-    // how a 22-argument function happens (phux-jx39).
+    // The peer-wide state the sidebar zones project from.
     peers: crate::attach::sidebar_zones::PeerInputs<'_>,
 ) -> bool {
     let mut windows = window_infos(workspace, panes, zoomed, &agent_meta.records, vcs);
@@ -171,11 +157,7 @@ pub(super) fn refresh_window_chrome(
         changed |= sb.set_windows(windows.clone());
         changed |= sb.set_supervisory(supervisory_badge(panes, focused_resource, own_client_id));
         changed |= sb.set_attention(attention_hint(panes));
-        // phux-foz.4: project the focused pane's data feeds into the bar so
-        // the `cwd` / `exit` widgets track focus changes and inbound
-        // `cwd_changed` / `command_finished` events through this same
-        // chokepoint. Unfocused (or unknown) folds to None => the widgets
-        // render nothing.
+        // The focused pane's cwd / exit feed the bar widgets.
         let focused = focused_resource.and_then(|id| panes.get(id));
         changed |= sb.set_focused_cwd(focused.and_then(|slot| slot.cwd.clone()));
         changed |= sb.set_last_exit(focused.and_then(|slot| slot.last_exit));
@@ -199,12 +181,9 @@ pub(super) fn refresh_window_chrome(
     changed
 }
 
-/// Give each window the badge of the agent in its focused pane.
-///
-/// Projected from the same [`agent_entries`] rows the sidebar paints, through
-/// the same [`agent_badge`](crate::render::chrome::agent_badge) vocabulary, so
-/// a tab, its sidebar row, and the pane's own title cannot disagree about
-/// state. The badge replaces the `(working)` text the label used to carry.
+/// Give each window the badge of the agent in its focused pane, from the
+/// same [`agent_entries`] rows the sidebar paints, so tab, row, and title
+/// agree.
 pub(super) fn badge_windows(
     windows: &mut [phux_config::widget::WindowInfo],
     workspace: &Workspace,
@@ -239,23 +218,17 @@ pub(super) fn badge_windows(
     }
 }
 
-/// Snapshot the current workspace as the window widget's input.
-///
-/// Labels prefer a name the user gave the window, then the structured agent
-/// name, then the focused pane's cached OSC 0/2 title, then the focused
-/// pane's working directory, then the auto-numbered stored name. Agent state
-/// is not part of the label: [`badge_windows`] carries it as a glyph.
+/// The window widget's input. Labels prefer a user-given name, then the
+/// agent name, the OSC title, the cwd, and finally the auto-numbered name.
 pub(super) fn window_infos(
     workspace: &Workspace,
     panes: &HashMap<ResourceId, PaneSlot>,
-    // phux-x2hm: the driver's pane-zoom state. The active window's tab gets a
-    // `Z` marker (`WindowInfo.zoomed`) when a pane is zoomed; non-active tabs
-    // never show it (zoom is per the active window).
+    // Only the active window's tab shows the zoom marker.
     zoomed: Option<&ResourceId>,
     // ADR-0040: Terminal → decoded `phux.agent/v1` record, kept live by the
     // driver's per-pane metadata subscriptions.
     agent_meta: &HashMap<ResourceId, AgentRecord>,
-    // phux-p4vp: pane-cwd index + branch memo. The window's branch line is
+    // Pane-cwd index + branch memo. The window's branch line is
     // its focused leaf's VCS branch (mut only for the memo).
     vcs: &mut VcsIndex,
 ) -> Vec<phux_config::widget::WindowInfo> {
@@ -280,22 +253,17 @@ pub(super) fn window_infos(
                 .as_ref()
                 .map(crate::layout::leaves)
                 .unwrap_or_default();
-            // phux-foz.1: a window carries attention when ANY of its leaves
-            // has the ADR-0035 asked flag set — not just the focused leaf —
-            // so a question in a background split still marks the tab.
+            // ANY asking leaf marks the tab, not just the focused one.
             let attention = leaves
                 .iter()
                 .any(|id| panes.get(id).is_some_and(|slot| slot.attention));
-            // phux-p4vp: the branch line under the label — the focused
+            // The branch line under the label — the focused
             // leaf's cwd resolved to its VCS branch (cached file read).
             let branch = focus.and_then(|fid| vcs.branch_for_pane(fid));
             let place = focus
                 .and_then(|fid| panes.get(fid))
                 .and_then(|slot| slot.cwd.as_deref())
                 .and_then(cwd_basename);
-            // A name the user gave wins: it is the one label they chose.
-            // An auto-numbered window has not been named, so it takes the
-            // agent it runs, then the program's title, then where it is.
             let explicit = (!auto_named(&w.name)).then(|| w.name.clone());
             phux_config::widget::WindowInfo {
                 name: explicit
@@ -314,18 +282,14 @@ pub(super) fn window_infos(
         .collect()
 }
 
-/// `true` for a name [`Workspace::default_window_name`] handed out: a bare
-/// positive integer. It carries no information, and beside the 0-based
-/// selector it reads as a second, disagreeing index (`4 3`), so the tab
-/// prefers where the window is working.
+/// A name [`Workspace::default_window_name`] handed out (a bare integer):
+/// it would read as a second, disagreeing index, so the tab prefers context.
 fn auto_named(name: &str) -> bool {
     !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// Where an agent row says the agent is: the window's name when the user
-/// gave it one, otherwise the agent pane's working directory, otherwise the
-/// auto-numbered name. The row's right column already names the agent, so
-/// the locator must not repeat it.
+/// Where an agent row says the agent is: a user-given window name, else the
+/// pane's cwd, else the auto-numbered name.
 fn agent_locator(window_name: &str, slot: Option<&PaneSlot>) -> String {
     if !auto_named(window_name) {
         return window_name.to_owned();
@@ -352,9 +316,8 @@ fn cwd_basename(cwd: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-/// ADR-0124 / phux-fpgl.33: compact exit status for chrome when any leaf is
-/// retained after its process exited. Prefer the focused pane's mark so the
-/// tab agrees with the focused-pane badge; otherwise the first exited leaf.
+/// ADR-0124: compact exit mark for a window with a retained exited leaf,
+/// preferring the focused pane's.
 fn window_exited_mark(
     leaves: &[ResourceId],
     focus: Option<&ResourceId>,
@@ -367,29 +330,11 @@ fn window_exited_mark(
         .map(ExitMark::compact)
 }
 
-/// phux-foz.9: build the sidebar's agents-section entries — one per
-/// agent-running pane, every window's leaves in display order.
-///
-/// Identity + state per pane come from the server-owned sources:
-///
-/// 1. **An `AgentSession` resource bound to the pane** (the record stream the
-///    server serves for it): one row per session, its state folded from the
-///    stream, its name from the `phux.agent/v1` record when one is declared
-///    and the stream's provider otherwise. The stream is the server-enforced
-///    source, so it outranks the advisory record for state.
-/// 2. **The structured `phux.agent/v1` record** (ADR-0040), when the pane
-///    declares one: name and state come straight from the record, and the row
-///    carries attention when the record's effective attention is high or the
-///    pane's ADR-0035 asked flag is up.
-///
-/// A pane matching neither source produces no row: the agents section lists
-/// agents, not shells. There is intentionally no title-based compatibility
-/// path; agent identity is forward-only through the manifest-backed server
-/// detector and structured metadata.
-///
-/// Rows retain window/leaf order. Lifecycle and review changes update badges
-/// in place; they must never move a navigation target under the pointer.
-///
+/// The sidebar's agent rows, one per agent-running pane in window/leaf order.
+/// Identity and state come from an `AgentSession` stream bound to the pane
+/// (server-enforced, so it wins on state) or the pane's ADR-0040 record;
+/// a pane with neither is a shell and gets no row. Rows never reorder on
+/// lifecycle changes, so navigation targets stay put.
 pub(super) fn agent_entries(
     workspace: &Workspace,
     panes: &HashMap<ResourceId, PaneSlot>,
@@ -453,20 +398,9 @@ fn advisory_agent_entry(base: AgentEntry, record: Option<&AgentRecord>) -> Optio
     })
 }
 
-/// Mark the focused pane as reviewed — the `seen` half of the attention ladder.
-///
-/// Returns `true` only on the FLIP (`false` -> `true`), so the caller can
-/// schedule a chrome repaint on a real transition and nothing at all in the
-/// steady state (the same shape as [`clear_attention_on_input`]).
-///
-/// The flip MUST be a repaint trigger. `seen` feeds both the sidebar's glyph
-/// (the filled `◆` of "finished, unread" vs the quiet `○` of a reviewed row)
-/// and the
-/// focus action that made this pane focused recomputed the chrome one iteration
-/// EARLIER — while the bit was still `false`. Left as a silent side effect, the
-/// strip goes on claiming "finished, unreviewed" about the very pane the user
-/// is looking at, until some unrelated
-/// chrome event happens to recompute [`agent_entries`].
+/// Mark the focused pane seen. Returns `true` only on the flip, which the
+/// caller must treat as a chrome repaint trigger (the chrome was computed
+/// before the bit changed).
 pub(super) fn mark_focused_seen(
     panes: &mut HashMap<ResourceId, PaneSlot>,
     review: &mut ReviewIndex,
@@ -488,9 +422,8 @@ mod tests {
     use super::*;
     use crate::attach::pane_state::{clear_attention_on_input, published_test_state};
 
-    /// ADR-0124: a retained pane keeps its published replica (the last grid
-    /// the server sent) after its process exits, the focused-pane badge says
-    /// how it ended, and the input gate the dispatcher consults refuses it.
+    /// ADR-0124: a retained exited pane keeps its replica, gets an exit
+    /// badge, and refuses input.
     #[test]
     fn a_retained_pane_renders_its_last_grid_with_an_exit_mark_and_refuses_input() {
         use crate::attach::pane_state::{ExitMark, pane_exited, published_terminal};
@@ -527,9 +460,6 @@ mod tests {
 
     #[test]
     fn supervisory_badge_formats_every_state() {
-        // ADR-0033: the focused-pane supervisory badge. Running + un-leased
-        // shows nothing; frozen and lease-holder render distinct chips, and the
-        // holder is "you" only when it matches this client's own id.
         let me = ClientId::new(7);
         let other = ClientId::new(9);
         assert_eq!(format_supervisory_badge(false, None, Some(me), None), None);
@@ -554,7 +484,7 @@ mod tests {
             format_supervisory_badge(false, Some(me), None, None).as_deref(),
             Some(" wheel:c7 ")
         );
-        // phux-lxov.1: a satellite pane badges its host on the status bar,
+        // A satellite pane badges its host on the status bar,
         // beside any lease or brake already shown.
         assert_eq!(
             format_supervisory_badge(false, None, Some(me), Some("devbox")).as_deref(),
@@ -566,7 +496,7 @@ mod tests {
         );
     }
 
-    /// phux-lxov.1: the status bar names a down satellite, and the layout
+    /// The status bar names a down satellite, and the layout
     /// leaf that owns the slot is not this function's to remove.
     #[test]
     fn a_down_satellite_pane_badges_its_host_on_the_status_bar() {
@@ -580,9 +510,6 @@ mod tests {
         );
     }
 
-    /// phux-foz.1: the status-bar attention hint. Nothing asking shows
-    /// nothing; one asking pane shows the plain chip; several asking panes
-    /// carry the count.
     #[test]
     fn attention_hint_formats_every_count() {
         assert_eq!(format_attention_hint(0), None);
@@ -590,7 +517,7 @@ mod tests {
         assert_eq!(format_attention_hint(3).as_deref(), Some(" ask·3 "));
     }
 
-    /// phux-foz.1: `window_infos` marks a window when ANY of its leaves has
+    /// `window_infos` marks a window when ANY of its leaves has
     /// the asked flag — including a non-focused leaf — and only that window.
     #[test]
     fn window_infos_flags_attention_on_the_asking_window() {
@@ -633,7 +560,7 @@ mod tests {
         assert!(!infos[1].attention);
     }
 
-    /// phux-fpgl.33: `window_infos` marks a window when ANY of its leaves is
+    /// `window_infos` marks a window when ANY of its leaves is
     /// retained after exit — including a non-focused leaf — and only that window.
     #[test]
     fn window_infos_flags_exited_on_the_retained_window() {
@@ -670,7 +597,7 @@ mod tests {
         );
     }
 
-    /// phux-fpgl.33: a split whose unfocused leaf is retained still marks
+    /// A split whose unfocused leaf is retained still marks
     /// the window, so the tab/sidebar show it without focusing that pane.
     #[test]
     fn window_infos_marks_a_split_when_the_unfocused_leaf_exited() {
@@ -710,111 +637,32 @@ mod tests {
         );
     }
 
+    /// Tab labels: the focused leaf's OSC title beats the stored name, a
+    /// declared agent record beats the title, and no (or a blank) title falls
+    /// back to the stored name.
     #[test]
-    fn window_infos_prefers_osc_title_over_stored_name() {
-        // A program in the focused leaf sets an OSC 2 window title; the tab
-        // strip must show it (tmux automatic-rename / Warp tab titling).
+    fn window_infos_label_precedence() {
         let id = ResourceId::local(1);
         let workspace = Workspace::single(id.clone());
-        let (_, _, panes) = published_test_state(&[(&id, 80, 24, b"\x1b]2;~/src/phux\x07")]);
-
-        let infos = window_infos(
-            &workspace,
-            &panes,
-            None,
-            &HashMap::new(),
-            &mut VcsIndex::default(),
-        );
-        assert_eq!(infos.len(), 1);
-        assert_eq!(
-            infos[0].name, "~/src/phux",
-            "the OSC title should label the tab, overriding the stored name"
-        );
-        assert!(infos[0].active);
-    }
-
-    #[test]
-    fn window_infos_falls_back_to_stored_name_without_title() {
-        // No OSC title set ⇒ the window's stored name ("1" for the first).
-        let id = ResourceId::local(1);
-        let workspace = Workspace::single(id.clone());
-        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
-        panes.insert(id, PaneSlot::new_with_size(80, 24).expect("slot"));
-
-        let infos = window_infos(
-            &workspace,
-            &panes,
-            None,
-            &HashMap::new(),
-            &mut VcsIndex::default(),
-        );
-        assert_eq!(infos[0].name, "1");
-    }
-
-    #[test]
-    fn window_infos_ignores_a_whitespace_only_title() {
-        // A title of only spaces is not a useful label; fall back to the name.
-        let id = ResourceId::local(1);
-        let workspace = Workspace::single(id.clone());
-        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
-        let mut slot = PaneSlot::new_with_size(80, 24).expect("slot");
-        slot.terminal.vt_write(b"\x1b]2;   \x07");
-        panes.insert(id, slot);
-
-        let infos = window_infos(
-            &workspace,
-            &panes,
-            None,
-            &HashMap::new(),
-            &mut VcsIndex::default(),
-        );
-        assert_eq!(infos[0].name, "1");
-    }
-
-    #[test]
-    fn window_infos_prefers_agent_record_over_osc_title() {
-        // ADR-0040: a declared `phux.agent/v1` record labels the window from
-        // structured data — the OSC title (set here to an unrelated string)
-        // must NOT leak through, and no substring parsing is involved.
-        let id = ResourceId::local(1);
-        let workspace = Workspace::single(id.clone());
-        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
-        let mut slot = PaneSlot::new_with_size(80, 24).expect("slot");
-        slot.terminal.vt_write(b"\x1b]2;~/src/phux\x07");
-        panes.insert(id.clone(), slot);
-        let mut records: HashMap<ResourceId, AgentRecord> = HashMap::new();
-        records.insert(
-            id,
-            AgentRecord {
-                name: "reviewer".to_owned(),
-                state: phux_client::agent_meta::AgentMetaState::Blocked,
-                ..AgentRecord::default()
-            },
-        );
-
-        let infos = window_infos(&workspace, &panes, None, &records, &mut VcsIndex::default());
-        assert_eq!(
-            infos[0].name, "reviewer",
-            "structured record must beat the OSC title; state rides the badge, not the label"
-        );
-    }
-
-    #[test]
-    fn window_infos_falls_back_to_title_when_record_cleared() {
-        // ADR-0040 compatibility path: no record ⇒ the OSC title labels the
-        // tab exactly as before.
-        let id = ResourceId::local(1);
-        let workspace = Workspace::single(id.clone());
-        let (_, _, panes) = published_test_state(&[(&id, 80, 24, b"\x1b]2;claude task\x07")]);
-
-        let infos = window_infos(
-            &workspace,
-            &panes,
-            None,
-            &HashMap::new(),
-            &mut VcsIndex::default(),
-        );
-        assert_eq!(infos[0].name, "claude task");
+        let reviewer = AgentRecord {
+            name: "reviewer".to_owned(),
+            state: phux_client::agent_meta::AgentMetaState::Blocked,
+            ..AgentRecord::default()
+        };
+        for (title, record, label) in [
+            (&b"\x1b]2;~/src/phux\x07"[..], None, "~/src/phux"),
+            (b"", None, "1"),
+            (b"\x1b]2;   \x07", None, "1"),
+            (b"\x1b]2;~/src/phux\x07", Some(reviewer), "reviewer"),
+            (b"\x1b]2;claude task\x07", None, "claude task"),
+        ] {
+            let (_, _, panes) = published_test_state(&[(&id, 80, 24, title)]);
+            let records: HashMap<ResourceId, AgentRecord> =
+                record.into_iter().map(|r| (id.clone(), r)).collect();
+            let infos = window_infos(&workspace, &panes, None, &records, &mut VcsIndex::default());
+            assert_eq!(infos[0].name, label, "{title:?}");
+            assert!(infos[0].active);
+        }
     }
 
     /// An `AgentMetaIndex` holding `records` and nothing else — the shape
@@ -884,18 +732,9 @@ mod tests {
         assert_eq!(names, vec!["w", "d", "b"], "review does not move the row");
     }
 
-    /// The TRIGGER half of the ladder's central promise: focusing a pane must
-    /// not just flip `seen`, it must be OBSERVABLE, so the driver can recompute
-    /// the chrome and repaint. The flip used to be a silent side effect at the
-    /// top of the loop, one iteration AFTER the focus action already recomputed
-    /// (and painted) the chrome with the stale bit — so the strip went on
-    /// showing `◆ done` bold, pinned above every working agent, about the pane
-    /// the user was staring at, until an unrelated chrome event fired.
-    ///
-    /// The contract: the flip reports `true` exactly once, that flip makes
-    /// `refresh_window_chrome` report a real change (a demoted row + a new
-    /// glyph), and the steady state — re-marking an already-seen pane — reports
-    /// `false`, so an idle loop pass costs one hash lookup and nothing else.
+    /// Focusing a pane flips `seen` exactly once, and that flip makes
+    /// `refresh_window_chrome` report a real change; re-marking reports
+    /// `false`.
     #[test]
     fn focusing_an_unreviewed_done_pane_flips_seen_and_dirties_the_chrome() {
         let working = ResourceId::local(1);
@@ -1033,9 +872,7 @@ mod tests {
         assert_eq!(names, vec!["old", "fresh", "never"]);
     }
 
-    /// phux-foz.9: a declared `phux.agent/v1` record produces an agents-row
-    /// entry with the record's name + state; the pane's OSC title (set to a
-    /// conflicting agent name here) is never consulted when a record exists.
+    /// A declared record names the agent row; the OSC title is not consulted.
     #[test]
     fn agent_entries_prefer_the_declared_record() {
         let id = ResourceId::local(1);
@@ -1072,9 +909,7 @@ mod tests {
         assert!(!entries[0].attention);
     }
 
-    /// phux-foz.9: agent rows require server-owned structured identity.
-    /// Titles and attention flags alone must never turn a shell into an
-    /// agent; the manifest-backed detector supplies the record.
+    /// Titles and attention flags alone never make a shell an agent row.
     #[test]
     fn agent_entries_require_structured_identity() {
         let claude = ResourceId::local(1);
@@ -1099,7 +934,7 @@ mod tests {
         );
     }
 
-    /// phux-foz.9: a record declaring (or deriving) high attention marks
+    /// A record declaring (or deriving) high attention marks
     /// the entry even without the asked flag.
     #[test]
     fn agent_entries_carry_record_attention() {
@@ -1128,9 +963,8 @@ mod tests {
         assert!(entries[0].attention);
     }
 
-    /// An `AgentSession` stream bound to a pane is the server-enforced state
-    /// source: its state outranks the advisory `phux.agent/v1` record, while
-    /// the record still names the row when it exists.
+    /// A bound `AgentSession` stream's state outranks the record, which still
+    /// names the row.
     #[test]
     fn agent_entries_take_state_from_the_stream_and_name_from_the_record() {
         use crate::attach::agent_rows::AgentSessionRow;
@@ -1226,7 +1060,7 @@ mod tests {
 
     #[test]
     fn window_infos_flags_zoom_only_on_the_active_window() {
-        // phux-x2hm: the active window's `zoomed` reflects the zoom state;
+        // The active window's `zoomed` reflects the zoom state;
         // a non-active window is never marked zoomed.
         let active = ResourceId::local(1);
         let mut workspace = Workspace::single(active.clone());

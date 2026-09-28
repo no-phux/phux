@@ -1,18 +1,10 @@
-//! The `agent.asked` ladder (ADR-0036): who gets to say a pane is waiting on
-//! a human, and what a subscriber sees when several sources say it at once.
+//! The `agent.asked` ladder (ADR-0036): which source may say a pane waits on
+//! a human, and what subscribers see.
 //!
-//! Every source — an explicit hook report, the `phux-ask` title sentinel, a
-//! future passive screen scrape — funnels through one [`AskedDetector`] per
-//! server. The detector is the **single owner of what surfaces**: it ranks
-//! sources ([`AskedSource::priority`]), coalesces a re-asserted question into
-//! silence, and hands back an [`AskedTransition`] the caller broadcasts. A
-//! producer's own edge filtering (the actor's title mirror, say) is a
-//! transport optimization that keeps a channel quiet; it never decides
-//! whether a client sees `AgentEvent::Asked`.
-//!
-//! Retraction is per-source ([`AskedDetector::retract`]): a source may take
-//! back only what it asserted, so a sentinel that disappears cannot clear an
-//! ask a hook is still standing behind.
+//! Every source funnels through one [`AskedDetector`], which ranks sources
+//! ([`AskedSource::priority`]), coalesces repeats, and returns the
+//! [`AskedTransition`] to broadcast. Retraction is per-source: a source
+//! takes back only what it asserted.
 
 #![allow(
     clippy::redundant_pub_crate,
@@ -36,27 +28,15 @@ pub(crate) enum AskedSource {
         reason = "passive scrape source lands after the detector core"
     )]
     Scrape,
-    /// The `phux-ask` terminal-title sentinel — the interoperable v1 trigger
-    /// any process that can emit OSC 0 / OSC 2 can drive. Explicit, so it
-    /// outranks a scrape; unauthenticated and stateless, so it yields to a
-    /// hook that owns the question's identity and lifecycle.
+    /// The `phux-ask` title sentinel: explicit, so it outranks a scrape, but
+    /// yields to a hook that owns the question's lifecycle.
     Sentinel,
     /// An opt-in agent integration reporting through `REPORT_ASKED`. It owns
     /// identity and lifecycle, so it is authoritative.
     Hook,
-    /// An `ask` record - or a `notification` record whose kind is
-    /// `permission` or `elicitation` - on a live `AgentSession` child's
-    /// stream (ADR-0103 decision 5).
-    ///
-    /// Top of the ladder for the same reason
-    /// [`crate::agent_state::EvidenceSource::Stream`] is top of the state
-    /// ladder: it is the agent describing itself over a sequenced channel it
-    /// owns, so it carries the question's identity and lifecycle exactly as a
-    /// hook does, and it cannot be silently lost the way an edge-triggered
-    /// hook call can. Entered through
-    /// [`crate::state::ServerState::report_stream_ask`]; retraction is
-    /// per-source and unchanged, so a stream that goes quiet clears only what
-    /// the stream itself asserted.
+    /// A live `AgentSession` child's `ask` (or permission/elicitation
+    /// notification) record (ADR-0103 §5): top of the ladder, like
+    /// [`crate::agent_state::EvidenceSource::Stream`].
     #[allow(
         dead_code,
         reason = "the AgentSession stream producer lands with the engine; the rung is defined here so the ladder is complete and ordered when it does"
@@ -124,20 +104,11 @@ pub(crate) struct AskedDetector {
 }
 
 impl AskedDetector {
-    /// Record that `source` sees `terminal` waiting on a human, and say what
-    /// that did to the pane's pending question.
+    /// Record that `source` sees `terminal` waiting on a human.
     ///
-    /// Three outcomes, and the order of the checks is the ladder:
-    ///
-    /// 1. A **lower-ranked** source cannot displace a higher-ranked one:
-    ///    ignored, and the incumbent keeps the pane.
-    /// 2. **The same question**, whoever is reporting it, is not a new event:
-    ///    ignored. When the reporter outranks the incumbent the ownership
-    ///    still transfers — an agent that drives both the title sentinel and
-    ///    the hook is describing one ask, so the subscriber sees one event
-    ///    and the hook (which can retract it) ends up owning it.
-    /// 3. Anything else is a **different question** from a source entitled to
-    ///    say so: it replaces the incumbent and is emitted.
+    /// A lower-ranked source cannot displace a higher one; the same question
+    /// is not a new event (but ownership moves to a higher-ranked reporter,
+    /// so a hook can later retract it); anything else replaces and emits.
     pub(crate) fn report(
         &mut self,
         terminal: ResourceId,
@@ -167,16 +138,8 @@ impl AskedDetector {
         }
     }
 
-    /// Take back the pending question `source` asserted, returning it when
-    /// there was one to take back.
-    ///
-    /// Per-source by design: a source may retract only a report it owns. A
-    /// `phux-ask` title that disappears therefore clears a sentinel-owned ask
-    /// but leaves a hook-owned one standing, which is what "the hook owns
-    /// lifecycle" means in ADR-0036. Retraction emits nothing — there is no
-    /// wire event for "the question went away" — it just stops the ledger
-    /// from claiming a pane is blocked after its marker cleared, so the same
-    /// question asked again is a new ask rather than a coalesced no-op.
+    /// Take back `source`'s own question, if any. Emits nothing, but a
+    /// re-asked identical question is then a new ask.
     pub(crate) fn retract(
         &mut self,
         terminal: ResourceId,
@@ -192,11 +155,8 @@ impl AskedDetector {
         self.states.remove(&terminal).map(|state| state.payload)
     }
 
-    /// Whether any source still holds a question on `terminal`.
-    ///
-    /// The projection of the ladder onto `phux.agent.asked/v1` (ADR-0136).
-    /// The payload itself stays test-only: a consumer of the flag only
-    /// needs to know that an ask is pending.
+    /// Whether any source holds a question on `terminal` (the
+    /// `phux.agent.asked/v1` flag, ADR-0136).
     pub(crate) fn is_pending(&self, terminal: ResourceId) -> bool {
         self.states.contains_key(&terminal)
     }
@@ -259,9 +219,7 @@ mod tests {
         assert_eq!(detector.current(terminal).unwrap().id, "h");
     }
 
-    /// The sentinel's own dedupe lives here, not in its producer: a title the
-    /// actor re-observes is the same ask and must not re-fire, while a title
-    /// that changes is a new ask and must.
+    /// A re-observed title does not re-fire; a changed one does.
     #[test]
     fn a_re_asserted_sentinel_is_silent_and_a_changed_one_is_not() {
         let terminal = ResourceId::default();
@@ -282,10 +240,7 @@ mod tests {
         assert_eq!(detector.current(terminal).unwrap().id, "q2");
     }
 
-    /// The double-up this whole change exists to prevent: an agent that
-    /// drives BOTH the title sentinel and the hook for one question. The
-    /// subscriber must see that ask once — and the hook must end up owning
-    /// it, because only the hook can retract it.
+    /// Sentinel and hook for one question: one event, owned by the hook.
     #[test]
     fn the_same_ask_from_sentinel_then_hook_fires_once() {
         let terminal = ResourceId::default();
@@ -312,10 +267,7 @@ mod tests {
         );
     }
 
-    /// A sentinel that clears and comes back with the identical question is a
-    /// second ask, not an echo of the first. Without the retract the
-    /// detector's equality coalescing would swallow it and the pane would
-    /// wait on a human nobody was told about.
+    /// A sentinel that clears and returns with the same question fires again.
     #[test]
     fn a_sentinel_that_clears_and_returns_fires_again() {
         let terminal = ResourceId::default();
@@ -388,9 +340,7 @@ mod tests {
         assert!(detector.current(terminal).is_none());
     }
 
-    /// The `Stream` rung (ADR-0103 decision 5) sits above `Hook`, and
-    /// retraction stays per-source: a hook that takes its own question back
-    /// cannot clear one the stream is standing behind.
+    /// `Stream` outranks `Hook`; a hook cannot retract the stream's question.
     #[test]
     fn a_stream_ask_outranks_a_hook_ask() {
         let terminal = ResourceId::default();

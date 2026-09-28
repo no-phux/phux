@@ -1,24 +1,28 @@
-//! Attach, bootstrap, reconnect, and consumer convergence integration tests.
-//! Submodules retain their original suite names in nextest test paths.
+//! Attach, bootstrap, reconnect, transport, and consumer convergence integration tests.
 
-mod attach_create_if_missing;
-mod attach_cwd_snapshot;
-mod attach_last;
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "tests"
+)]
+#![allow(clippy::future_not_send, reason = "LocalSet-driven tests")]
+
+mod attach_snapshot;
+mod attach_targets;
 mod attach_terminal_closed;
-mod attach_viewport_resize;
 mod bootstrap_compression;
-mod byc_6_1_attach_snapshot;
-mod byc_6_6_attach_unknown_session_error;
+mod common;
 mod concurrent_attach_l2;
 mod detach_terminal;
-mod eof_detach;
+mod end_to_end;
 mod hello_survives_detach;
 mod lagged_attach_terminal_resync;
-mod multi_client_scenario;
-mod native_progressive_kernel;
-mod phux_eb0_in_process_reattach;
+mod native_kernel;
 mod reattach_multipane_input;
+mod reattach_other_session;
 mod reconnect_scenario;
 mod release_bootstrap_milestones;
-mod retry_generation;
 mod statesync_convergence;
+mod ws_attach;
+mod wt_attach;

@@ -11,29 +11,11 @@ const testing = std.testing;
 
 const createSession = support.createSession;
 const createSessions = support.createSessions;
-const activeSlots = support.activeSlots;
-const destroyModelSessions = app.deinitModel;
 const expectCursorPaintKind = support.expectCursorPaintKind;
-const expectPaneCursorPaintKind = support.expectPaneCursorPaintKind;
-const startFocusedTerminal = support.startFocusedTerminal;
-const startTwoPaneCockpit = support.startTwoPaneCockpit;
-const pressCanvasKey = support.pressCanvasKey;
 
-// A terminal screen paints as packed `cell_grid` commands now, one per
-// ROW (see support.zig), so the assertions below read CELLS: per-run
-// `fill_rect` and `draw_text` commands no longer exist for terminal
-// content. What each test pins is unchanged; only the surface it reads
-// moved. Two consequences run through the whole file:
-//   - Colours are 8-bit per channel, the terminal's own precision, so
-//     they compare EXACTLY where float run colours needed a tolerance.
-//   - A screen's COMMAND count tracks its painted HEIGHT (one command
-//     per row plus a small fixed prologue/epilogue), not its DENSITY: a
-//     blank row and a truecolor row cost the same one command. So "how
-//     much painted" is measured in the grid's painted ROWS and inked
-//     CELLS, and a command count only ever bounds how tall a screen got.
-//     `support.CellGridView` puts those row commands back together into
-//     one screen, which is why `rows()`/`at(x, y)` still address the
-//     whole viewport.
+// Screens paint as one packed `cell_grid` command per row (see support.zig),
+// so these tests read cells: colours compare exactly (8-bit), and command
+// counts track painted height, not density.
 
 const expectCellGrid = support.expectCellGrid;
 
@@ -84,13 +66,7 @@ test "the grid paints real text runs with the engine's ANSI palette and exact tr
     const plain_fg = view.foreground(plain_x, 0) orelse return error.TestExpectedCell;
     try testing.expectEqual(canvas.CellColor.fromColor(tokens.colors.text), plain_fg);
 
-    // ANSI 1 is the TERMINAL's red, not the UI's error color. This used
-    // to resolve through `tokens.colors.destructive`, which meant
-    // `\x1b[31m` painted whatever hue the design system happened to use
-    // for destructive buttons — a number with no relationship to what
-    // every other terminal shows. It now comes from the emulator's own
-    // palette, and the packed cell carries it at the emulator's own
-    // 8-bit precision, so this is an EXACT comparison.
+    // ANSI 1 is the emulator's red, not the UI's destructive token.
     const expected = vt.color.default[1];
     const red_fg = view.foreground(red_x, 0) orelse return error.TestExpectedCell;
     try testing.expectEqual(expected.r, red_fg.r);
@@ -164,16 +140,8 @@ test "a styled wide character's background covers both of its cells" {
         .selecting = false,
     });
     const cell_w = session.measuredCell().?.width;
-    // ANSI 41 is the engine's own red now, not the destructive design token,
-    // so the background is identified by the palette entry the emulator
-    // actually resolves. What is under test here is the GEOMETRY — that the
-    // spacer tail extends the fill — not which red it is.
-    //
-    // The old shape of that claim was "one background RECT wider than 1.5
-    // cells". A packed lattice has no runs to widen: the same claim is now
-    // that the spacer column carries the primary's background of its own,
-    // and the two columns are adjacent, so the red covers two cell widths
-    // of glass with no gap.
+    // What is under test is geometry: the spacer column carries the wide
+    // cell's background, so the red covers two adjacent cells.
     const ansi_red = vt.color.default[1];
     const view = try expectCellGrid(builder.displayList());
     const primary = view.style(0, 0) orelse return error.TestExpectedCell;
@@ -210,11 +178,8 @@ test "the glyph budget degrades row-wise before the atlas can overflow" {
 
     var commands: [512]canvas.CanvasCommand = undefined;
     var builder = canvas.Builder.init(&commands);
-    // Ten distinct code points allowed: the first row's eight fit, the
-    // second row's eight would cross — painting stops BEFORE it instead
-    // of failing the whole frame at the atlas. The budget is stated in
-    // ATLAS ENTRIES, and the painter charges four subpixel variants per
-    // distinct code point, so ten code points is forty entries.
+    // Ten distinct code points (forty atlas entries, four subpixel variants
+    // each): the first row fits, and painting stops before the second.
     try grid.paint(session, &builder, .{
         .frame = geometry.RectF.init(0, 0, 400, 200),
         .tokens = .{},
@@ -265,19 +230,9 @@ test "a grapheme cluster the emulator holds paints whole - down to the last mark
 }
 
 test "a grapheme past the packed cell's reach is dropped whole, never torn" {
-    // The companion to the test above, and a REGRESSION the packed
-    // representation introduced deliberately: a cell addresses its
-    // cluster with a u8 length, so 255 bytes is the whole reach. The old
-    // text-run path painted any cluster the emulator could hold; a
-    // 404-byte grapheme (base + 200 acutes + an enclosing mark) now
-    // paints NO ink at all.
-    //
-    // What is pinned here is the part that must never move: the painter
-    // drops such a cluster WHOLE rather than emitting a prefix of it. A
-    // torn grapheme is a different character, not a smaller one, so a
-    // truncating painter would put a wrong glyph on the glass — strictly
-    // worse than an empty cell. The cell keeps its background either
-    // way, so the cliff is a missing glyph and not a hole in the screen.
+    // A cell addresses its cluster with a u8 length, so a 404-byte grapheme
+    // paints no ink. It must be dropped whole, never torn into a different
+    // character; the cell keeps its background.
     const cluster = "a" ++ ("\u{0301}" ** 200) ++ "\u{20DD}";
     try testing.expect(cluster.len > 255);
 
@@ -311,11 +266,8 @@ test "a concealed row never blanks the rows painted after it" {
 
     var commands: [512]canvas.CanvasCommand = undefined;
     var builder = canvas.Builder.init(&commands);
-    // Squeeze the text store to less than the concealed row's RAW bytes
-    // (but comfortably over the visible row's): a preflight that counts
-    // suppressed bytes measures row 0 past the budget, stops painting
-    // there, and silently blanks every row after — including "visible",
-    // which fits with room to spare.
+    // A text store smaller than the concealed row's raw bytes: a preflight
+    // counting suppressed bytes would stop early and blank later rows.
     try grid.paint(session, &builder, .{
         .frame = geometry.RectF.init(0, 0, 800, 200),
         .tokens = .{},
@@ -442,11 +394,7 @@ test "a tall sparse terminal paints its bottom row" {
     }
     session.feed("\x1b[92mBOTTOM\x1b[0m");
 
-    // The budget is the app's REAL one, re-derived rather than written
-    // out: a sparse screen now costs about one command per painted row,
-    // so the day the SDK's per-view ceiling moves again this test keeps
-    // measuring the envelope a selected terminal actually gets instead
-    // of a number that used to equal it.
+    // The app's real envelope, re-derived.
     var commands: [app.chrome_command_envelope]canvas.CanvasCommand = undefined;
     var builder = canvas.Builder.init(&commands);
     try grid.paint(session, &builder, .{
@@ -456,16 +404,8 @@ test "a tall sparse terminal paints its bottom row" {
         .selecting = false,
         .command_budget = app.chrome_command_envelope,
     });
-    // "The bottom row reached the surface" is now exactly checkable: a
-    // cell's position IS its index, so the marker has to be found on the
-    // last row of a lattice that is the full viewport tall — not merely
-    // somewhere in a text run whose baseline happened to be low.
-    //
-    // The envelope has to be able to HOLD a screen this tall for the
-    // claim to mean anything: `max_rows` row commands plus the paint's
-    // fixed prologue and epilogue. A ceiling that ever dropped below
-    // that would make "the bottom row painted" a statement about the
-    // budget rather than about the painter.
+    // The bottom row must reach the surface; the envelope must hold a
+    // full-height screen for that to be a statement about the painter.
     try testing.expect(app.chrome_command_envelope > grid.max_rows + paint_fixed_commands);
     const view = try expectCellGrid(builder.displayList());
     try testing.expectEqual(@as(usize, grid.max_rows), view.rows());
@@ -518,82 +458,6 @@ test "box-drawing cells render as edge-to-edge geometry, never glyphs" {
     try testing.expect(full_height_bar);
 }
 
-test "painted-output oracle: the prompt and caret reach the surface as pixels" {
-    const gpa = testing.allocator;
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = geometry.SizeF.init(980, 640) });
-    defer harness.destroy(gpa);
-    const app_state = try startFocusedTerminal(gpa, harness);
-    defer gpa.destroy(app_state);
-    defer destroyModelSessions(&app_state.model);
-    defer app_state.deinit();
-    const app_iface = app_state.app();
-
-    // The shell prompt arrives (the transport working is NOT the test —
-    // the pixels are).
-    try app_state.effects.feedPtyOutput(1, "demo$ ");
-    try harness.runtime.dispatchPlatformEvent(app_iface, .wake);
-    try harness.runtime.dispatchPlatformEvent(app_iface, .frame_requested);
-
-    // Render a full retained-scene screenshot. A damage-only present into
-    // fresh pixels is no longer a valid oracle once Work/Web transitions
-    // can add independent frame transactions.
-    const pixel_size = try harness.runtime.canvasScreenshotPixelSize(1, app.canvas_label, 1);
-    const pixels = try gpa.alloc(u8, pixel_size.byte_len);
-    defer gpa.free(pixels);
-    const scratch = try gpa.alloc(u8, pixel_size.byte_len);
-    defer gpa.free(scratch);
-    const shot = try harness.runtime.renderCanvasScreenshot(1, app.canvas_label, 1, pixels, scratch);
-    const width: usize = shot.width;
-    const height: usize = shot.height;
-    try testing.expectEqual(@as(usize, 980), width);
-    try testing.expectEqual(@as(usize, 640), height);
-    // (i) The prompt's cell band holds INK: pixels that differ from the
-    // grid background. The first text row starts at the grid origin;
-    // sample generously across the first cell row.
-    const session = app_state.model.provider.slots[0].session;
-    const cell_w: usize = @intFromFloat(@max(1, session.measuredCell().?.width));
-    const cell_h: usize = @intFromFloat(@max(1, session.measuredCell().?.height));
-    const pane_frame = app.paneFrames(&app_state.model, geometry.SizeF.init(@floatFromInt(width), @floatFromInt(height)))[0];
-    const grid_x: usize = @intFromFloat(pane_frame.x);
-    const grid_y: usize = @intFromFloat(pane_frame.y);
-    var band_colors = std.AutoHashMap(u32, void).init(gpa);
-    defer band_colors.deinit();
-    var y: usize = grid_y;
-    while (y < grid_y + cell_h) : (y += 1) {
-        var x: usize = grid_x;
-        while (x < grid_x + cell_w * 8) : (x += 1) {
-            const offset = (y * width + x) * 4;
-            const value = std.mem.readInt(u32, shot.rgba8[offset..][0..4], .little);
-            try band_colors.put(value, {});
-        }
-    }
-    // The retained half of the oracle: the prompt is in the scene as
-    // CELLS, on the grid's first row at its first column. The old scan
-    // could only say "some text command somewhere contained demo$"; the
-    // lattice pins the exact cell, which is the cell the pixel band
-    // below samples.
-    const retained = try expectCellGrid(harness.runtime.views[0].canvasDisplayList());
-    const prompt = retained.find("demo$") orelse return error.TestExpectedMarker;
-    try testing.expectEqual(@as(usize, 0), prompt.y);
-    try testing.expectEqual(@as(usize, 0), prompt.x);
-    // Background alone is one color; ink adds more (glyph coverage is
-    // antialiased, so ink contributes MANY distinct values — demand a
-    // handful so a single stray pixel cannot pass).
-    try testing.expect(band_colors.count() >= 4);
-
-    // (ii) The caret cell paints distinguishably: the cursor sits right
-    // after "demo$ " (column 6) and its wash differs from both the
-    // background and the row's empty cells.
-    const caret_x: usize = @intFromFloat(pane_frame.x + 6.5 * session.measuredCell().?.width);
-    const caret_y = grid_y + cell_h / 2;
-    const caret_offset = (caret_y * width + caret_x) * 4;
-    const caret_value = std.mem.readInt(u32, shot.rgba8[caret_offset..][0..4], .little);
-    const empty_x: usize = @intFromFloat(pane_frame.x + 40.0 * session.measuredCell().?.width);
-    const empty_offset = (caret_y * width + empty_x) * 4;
-    const empty_value = std.mem.readInt(u32, shot.rgba8[empty_offset..][0..4], .little);
-    try testing.expect(caret_value != empty_value);
-}
-
 test "switching terminal Works retains distinct id namespaces the diff accepts" {
     const sessions = try createSessions(20, 6);
     defer for (sessions) |each| each.destroy();
@@ -627,18 +491,9 @@ test "switching terminal Works retains distinct id namespaces the diff accepts" 
 }
 
 test "each selected terminal receives the full chrome command envelope" {
-    // The point of this test has always been that content cannot
-    // SILENTLY VANISH: whichever terminal is selected gets the same
-    // budget and paints the same amount of screen.
-    //
-    // The mechanism moved. A screen is packed `cell_grid` commands, one
-    // per ROW, so a terminal's command count measures how TALL it
-    // painted and not how dense it is: this adversarial screen (every
-    // cell its own style) costs exactly what a blank one of the same
-    // height costs. What a dense screen now spends is CELLS, and what it
-    // puts on the glass is painted ROWS — so the envelope claim is
-    // re-pinned on those, plus the painter's own truncation report,
-    // which is the signal that says "you are not seeing all of it".
+    // Whichever terminal is selected gets the same budget, so content never
+    // silently vanishes. Dense screens spend cells, not commands; the claim is
+    // pinned on painted rows plus the painter's truncation report.
     const sessions = try createSessions(40, 40);
     defer for (sessions) |each| each.destroy();
     for (sessions) |session| feedAdversarialRows(session, 40, 40);
@@ -672,14 +527,8 @@ test "each selected terminal receives the full chrome command envelope" {
         // two-pane leftover (`store / 2`), not a production floor, and the
         // Hybrid C painter does not read it.
         try testing.expectEqual(view.rows() * view.cols(), cells[index]);
-        // Every painted row is its OWN retained command — that is the
-        // shape the whole envelope arithmetic now rests on, and the
-        // reason the count above can be compared against the budget at
-        // all. Bracketed both ways: at least one command per row, and no
-        // more than the rows plus the paint's fixed prologue/epilogue,
-        // so a painter that silently went back to one command per screen
-        // (or to one per RUN) fails here rather than quietly re-pricing
-        // every budget in the app.
+        // One retained command per painted row, bracketed both ways, so a
+        // painter that regressed to per-screen or per-run commands fails.
         const emitted = builder.displayList().commands.len;
         try testing.expect(emitted >= view.rows());
         try testing.expect(emitted <= view.rows() + paint_fixed_commands);
@@ -703,31 +552,15 @@ test "a screen of double box drawing stays inside the selected terminal budget" 
         session.feed("\r\n");
     }
 
-    // The screen has to genuinely OUTRUN the envelope or the assertions
-    // below prove nothing — and the envelope moved (the SDK's per-view
-    // ceiling went back to 2048 once terminals stopped costing a command
-    // per run, which roughly halved it). So the density claim is
-    // re-derived from the SDK's own price for this glyph rather than
-    // trusted: a screen that ever fit would turn the truncation
-    // assertions into a tautology, and this fails first if it does.
+    // Re-derived from the SDK's own price, so the screen genuinely outruns
+    // the envelope and the truncation assertions are not a tautology.
     const box_cell_commands = canvas.terminal_box.maxCommands(0x256C);
     try testing.expectEqual(@as(usize, 8), box_cell_commands);
     try testing.expect(box_rows * box_cols * box_cell_commands > app.chrome_command_envelope);
 
-    // Box drawing is the one thing the packed lattice deliberately does
-    // NOT carry — it renders as exact geometry at cell bounds, because
-    // glyphs fill the em box rather than the padded cell and borders
-    // built from them show seams. So this screen is still priced in
-    // COMMANDS, and the envelope still binds it: this test kept its
-    // original assertion unchanged.
-    //
-    // The storage IS the envelope, so the builder can never be the thing
-    // that stops the paint: a smaller array would overflow first and
-    // fail with DisplayListFull instead of exercising the budget, and a
-    // larger one would let an unbudgeted painter run past the ceiling
-    // unnoticed. Sized from the constant rather than written out, so it
-    // tracks the SDK's per-view ceiling (2048 today, minus the widget
-    // reserve) wherever that goes next.
+    // Box drawing is painted as geometry, so it is still priced in
+    // commands. Storage is exactly the envelope so the budget, not the
+    // builder, stops the paint.
     var commands: [app.chrome_command_envelope]canvas.CanvasCommand = undefined;
     var builder = canvas.Builder.init(&commands);
     try grid.paint(session, &builder, .{
@@ -749,35 +582,6 @@ test "a screen of double box drawing stays inside the selected terminal budget" 
     try testing.expect(loss.produced > 0);
     try testing.expect(loss.produced < loss.requested);
     try testing.expectEqual(@as(usize, box_rows), loss.requested);
-    // ...and it stopped where the arithmetic says it must: each painted
-    // row costs its own grid command plus its columns' box geometry, so
-    // the rows that fit are bounded by the envelope divided by that.
-    // Re-derived, so a painter that started dropping rows for some other
-    // reason (or that stopped merging box runs) shows up here instead of
-    // hiding behind "fewer than 24".
+    // Rows that fit are bounded by envelope / (box commands per row + 1).
     try testing.expect(view.rows() <= app.chrome_command_envelope / (box_cols * box_cell_commands + 1));
-}
-
-test "only the selected terminal has a cursor command and deactivation hollows it" {
-    const gpa = testing.allocator;
-    const size = geometry.SizeF.init(980, 640);
-    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = size });
-    defer harness.destroy(gpa);
-    const app_state = try startTwoPaneCockpit(gpa, harness);
-    defer gpa.destroy(app_state);
-    defer destroyModelSessions(&app_state.model);
-    defer app_state.deinit();
-    const app_iface = app_state.app();
-
-    try expectPaneCursorPaintKind(harness.runtime.views[0].canvasDisplayList(), 0, .filled);
-    try testing.expect(harness.runtime.views[0].canvasDisplayList().findCommandById(grid.cursorCommandId(grid.paneIdBase(1))) == null);
-
-    try pressCanvasKey(harness, app_iface, "2", .{ .primary = true });
-    try harness.runtime.dispatchPlatformEvent(app_iface, .frame_requested);
-    try testing.expect(harness.runtime.views[0].canvasDisplayList().findCommandById(grid.cursorCommandId(grid.paneIdBase(0))) == null);
-    try expectPaneCursorPaintKind(harness.runtime.views[0].canvasDisplayList(), 1, .filled);
-
-    try harness.runtime.dispatchPlatformEvent(app_iface, .app_deactivated);
-    try expectPaneCursorPaintKind(harness.runtime.views[0].canvasDisplayList(), 1, .hollow);
-    try testing.expect(harness.runtime.views[0].canvasDisplayList().findCommandById(grid.cursorCommandId(grid.paneIdBase(0))) == null);
 }

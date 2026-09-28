@@ -1,11 +1,6 @@
-//! Resource kinds as a client sees them in a `GET_STATE` snapshot (ADR-0102).
-//!
-//! A snapshot's `panes` list every resource the server serves, not only
-//! Terminals: an `AgentSession` rides there too, with its `kind`, its
-//! `parent`, and its agent facet. These helpers are the one place the
-//! client decides which entries are panes (Terminal-kind, the things a
-//! layout slot holds) and which are children bound to one, so the selector,
-//! `phux ls`, `phux agent list`, and the session verbs cannot disagree.
+//! Resource kinds as a client sees them in a `GET_STATE` snapshot (ADR-0102):
+//! the one place the client decides which entries are panes (Terminal-kind)
+//! and which are `AgentSession` children bound to one.
 
 use phux_protocol::ids::{ResourceId, ResourceKind};
 use phux_protocol::wire::frame::{CloseReason, ControlAction, ResourceLifecycle};
@@ -15,9 +10,7 @@ use crate::agent_session::AgentSessionError;
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 
-// The `phux resource` verbs (PHA-406): a cursor-resumable wait on a
-// resource's exit (D2), one resource's inspection record, and the kind
-// catalog intersected with what the server negotiated (D4).
+// The `phux resource` verbs: resumable exit wait, inspection, methods.
 pub mod cursor;
 pub mod methods;
 pub mod show;
@@ -29,9 +22,8 @@ pub enum LookupError {
     /// The connection or a request failed.
     #[error(transparent)]
     Attach(#[from] AttachError),
-    /// The resource is not in the server's inventory. `unreachable` is
-    /// non-empty when the view was partial (a federation satellite did not
-    /// answer), in which case the absence is not proof it is gone.
+    /// The resource is not in the server's inventory; with `unreachable`
+    /// notices, absence is not proof it is gone.
     #[error("no such resource: {}", crate::selector::format_terminal_id(.resource))]
     NotFound {
         /// The resource that was looked up.
@@ -168,11 +160,9 @@ pub fn children_of<'a>(
 ///
 /// # Errors
 ///
-/// [`AgentSessionError::NoSession`] when a Terminal has no live child,
-/// [`AgentSessionError::AmbiguousSession`] when it has several, and
-/// [`AgentSessionError::WrongKind`] for a resource of any other kind. A
-/// target absent from the snapshot is reported as a Terminal with no
-/// session — the caller has already established it resolved.
+/// [`AgentSessionError::NoSession`] / [`AgentSessionError::AmbiguousSession`]
+/// for a Terminal with no / several live children (an absent target counts
+/// as a Terminal), [`AgentSessionError::WrongKind`] for any other kind.
 pub fn session_of(
     snapshot: &SessionSnapshot,
     target: &ResourceId,
@@ -199,37 +189,6 @@ pub fn session_of(
                 }),
             }
         }
-    }
-}
-
-/// The Terminal a target resolves to for a Terminal-facet operation: a
-/// Terminal names itself; an `AgentSession` names its parent.
-///
-/// # Errors
-///
-/// [`AgentSessionError::WrongKind`] for a resource of any other kind, or an
-/// `AgentSession` whose parent is not in the snapshot.
-pub fn terminal_of(
-    snapshot: &SessionSnapshot,
-    target: &ResourceId,
-) -> Result<ResourceId, AgentSessionError> {
-    match find(snapshot, target) {
-        Some(info) if is_terminal(info) => Ok(target.clone()),
-        Some(info) if is_agent_session(info) => {
-            info.parent
-                .clone()
-                .ok_or_else(|| AgentSessionError::WrongKind {
-                    resource: target.clone(),
-                    expected: TERMINAL,
-                    actual: AGENT_SESSION.to_owned(),
-                })
-        }
-        Some(info) => Err(AgentSessionError::WrongKind {
-            resource: target.clone(),
-            expected: TERMINAL,
-            actual: kind_name(info.kind).to_owned(),
-        }),
-        None => Ok(target.clone()),
     }
 }
 
@@ -297,18 +256,5 @@ mod tests {
             session_of(&lone, &ResourceId::local(1)),
             Err(AgentSessionError::NoSession { .. })
         ));
-    }
-
-    #[test]
-    fn terminal_of_resolves_a_session_to_its_parent() {
-        let snap = snapshot();
-        assert_eq!(
-            terminal_of(&snap, &ResourceId::local(9)).unwrap(),
-            ResourceId::local(7)
-        );
-        assert_eq!(
-            terminal_of(&snap, &ResourceId::local(7)).unwrap(),
-            ResourceId::local(7)
-        );
     }
 }

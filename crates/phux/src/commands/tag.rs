@@ -1,10 +1,5 @@
-//! `phux tag` — read and write a Terminal's L3 tags (`phux-f8wi`, ADR-0027).
-//!
-//! Tags are freeform strings stored as L3 metadata under the conventional
-//! key `RESOURCE_TAGS_KEY` (`phux.tags/v1`), scoped to a `ResourceId`. Once a
-//! Terminal is tagged, the `#tag` selector ([`crate::selector`]) addresses
-//! every Terminal carrying that tag — the read side this command writes.
-//! The wire round trips and the list/add/rm orchestration live in
+//! `phux tag` — read and write a Terminal's L3 tags (`phux.tags/v1`,
+//! ADR-0027), which the `#tag` selector addresses. The round trips live in
 //! [`phux_client::tags`].
 
 use std::process::ExitCode;
@@ -88,21 +83,7 @@ pub(crate) fn run_tag(action: &TagAction, socket: Option<std::path::PathBuf>) ->
 /// [`tags_document`] pins.
 fn print_rows(json: bool, rows: &[(ResourceId, Vec<String>)]) -> ExitCode {
     if json {
-        return match serde_json::to_string_pretty(&tags_document(rows)) {
-            Ok(rendered) => {
-                outln!("{rendered}");
-                ExitCode::SUCCESS
-            }
-            Err(err) => json_err::emit(
-                true,
-                &CliError::new(
-                    codes::JSON_SERIALIZE,
-                    err.to_string(),
-                    "this is a phux bug; run `phux doctor` and report it",
-                ),
-                1,
-            ),
-        };
+        return crate::output::json(&tags_document(rows));
     }
     for (id, tags) in rows {
         outln!("{}", render_tags(id, tags));
@@ -110,14 +91,9 @@ fn print_rows(json: bool, rows: &[(ResourceId, Vec<String>)]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The `phux tag --json` document, shared by `ls` and the confirmed
-/// post-write state of `add` / `rm` (documented in
-/// `docs/consumers/agents.md` §4.17).
-///
-/// One row per resolved Terminal: `terminal` is the canonical, reusable
-/// selector (`@7`, or `host/@7` for a satellite pane) and `tags` is the
-/// Terminal's full tag list — for the edit verbs, as read back from the
-/// server after the write, never echoed from the request.
+/// The `phux tag --json` document (agents.md §4.17), shared by `ls` and the
+/// post-write state of `add` / `rm`: one row per Terminal with its canonical
+/// selector and its full tag list as read back from the server.
 fn tags_document(rows: &[(ResourceId, Vec<String>)]) -> serde_json::Value {
     let terminals: Vec<_> = rows
         .iter()
@@ -156,11 +132,8 @@ mod tests {
         );
     }
 
-    /// The `phux tag --json` document, pinned (phux-i0e8.8.3, documented in
-    /// agents.md §4.17): `schema_version` 1 and one row per Terminal with
-    /// the canonical selector under `terminal` and the full tag list under
-    /// `tags`. `ls` and the confirmed post-write state of `add`/`rm` share
-    /// this one shape, so a consumer parses one document for all three.
+    /// The `phux tag --json` shape is pinned: `schema_version` 1, `terminal`,
+    /// and the full `tags` list.
     #[test]
     fn tags_document_pins_the_shape() {
         let rows = vec![

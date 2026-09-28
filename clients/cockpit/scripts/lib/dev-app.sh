@@ -1,68 +1,22 @@
 # shellcheck shell=bash
 #
-# Shared machinery for running a LOCALLY BUILT Cockpit that macOS, your eyes,
-# and every name-based automation script can tell apart from the copy in
-# /Applications. Source it, do not run it:
+# Run a locally built Cockpit that macOS and name-based automation can tell
+# apart from the installed app. Source it:
 #
 #   ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 #   . "${ROOT}/scripts/lib/dev-app.sh"
 #
-# "Does not clash" is not one property. It is four, each with its own mechanism,
-# and getting three of them right still leaves a build you can mistake for the
-# installed app.
-#
-# 1. BUNDLE IDENTITY. `zig build package` stamps app.zon's `.id` into
-#    CFBundleIdentifier, so a local build carries the SAME identity as the
-#    shipped app -- dev.phux.cockpit, verbatim, verified by
-#    `plutil -p zig-out/package/phux-cockpit.app/Contents/Info.plist`.
-#    LaunchServices, the Dock, the app switcher and `open -b` all key off that
-#    string, so to macOS the two are one app wearing two paths. The SDK offers
-#    no build option for it (`grep 'b.option' build.zig` in the pinned SDK lists
-#    platform, trace, automation, web-engine, cef, signing -- no bundle id), so
-#    `dev_app_stage` rewrites the packaged bundle's plist afterwards: `<id>.dev`,
-#    and a bundle name the Dock tile and application menu show as
-#    "Phux Cockpit (dev)".
-#
-# 2. PROCESS NAME. This is the one that bites tooling rather than eyes, and it
-#    is invisible until it has already lied to you. `pgrep -x phux-cockpit` and
-#    `osascript -e 'tell application "System Events" to ... process
-#    "phux-cockpit"'` both target BY NAME, and that name is the executable
-#    file's name inside Contents/MacOS. Two live instances sharing it means
-#    activation, screenshots and key delivery land on an arbitrary one and
-#    nothing reports the substitution -- see phux-cockpit-2ml.10.
-#    `dev_app_stage` renames the executable to `phux-cockpit-dev` and points
-#    CFBundleExecutable at it, which moves both `pgrep -x` and System Events.
-#
-# 3. CONFIG AND STATE. `PHUX_COCKPIT_CONFIG` and `PHUX_COCKPIT_STATE` each name
-#    a FILE and win outright over every search path, for writes as well as reads
-#    (`cockpit/startup.zig` config and state resolution). Setting both is what
-#    keeps a dev build from restoring -- and then overwriting -- the workspace
-#    the installed app was about to open, and from writing a theme change back
-#    into the config file you actually use. Note that leaving them unset does
-#    NOT fall back to something harmless: the dotfile lookup reads
-#    $XDG_CONFIG_HOME first, which is set on this machine, so an "isolated by
-#    HOME" run still finds your real config.
-#
-# 4. THE AUTOMATION DROPBOX. It has no environment seam at all: the app opens
-#    `.zig-cache/native-sdk-automation` relative to its CURRENT WORKING
-#    DIRECTORY (pinned SDK, src/app_runner/root.zig, `automation.Server.init`),
-#    and the CLI resolves the same relative path from wherever you run it. The
-#    only way to give a run its own dropbox is to launch it from its own
-#    directory, which is why `dev_app_launch` chdirs rather than exporting.
-#
-# WHAT THIS IS NOT. Two paths stay shared with the installed app, because the
-# SDK keys them off the bundle id COMPILED IN from app.zon rather than the one
-# in the plist: `~/Library/Application Support/dev.phux.cockpit/State/windows.zon`
-# and `~/Library/Logs/dev.phux.cockpit/native-sdk.jsonl` (observed by running a
-# staged bundle under a scratch HOME and listing what appeared). Nothing reads
-# windows.zon back -- app.zon sets `restore_state = false` on the main window --
-# so the cost today is a shared log file and a window frame nobody restores.
-# Isolating them would take an app.zon change or an SDK option that does not
-# exist.
-#
-# RELATED: scripts/lib/measure.sh composes `dev_app_stage` and `dev_app_launch`
-# for driven measurements, so those runs inherit all four guarantees rather
-# than maintaining a second, weaker launcher.
+# Isolation has four parts:
+#   1. Bundle id: `dev_app_stage` rewrites CFBundleIdentifier to `<id>.dev`
+#      (the SDK has no option for it) and names it "Phux Cockpit (dev)".
+#   2. Process name: the executable becomes `phux-cockpit-dev`, so `pgrep -x`
+#      and System Events cannot hit the installed app.
+#   3. Config and state: PHUX_COCKPIT_CONFIG / PHUX_COCKPIT_STATE point at
+#      dev-owned files (unset still finds your real config via XDG).
+#   4. Automation dropbox: it is relative to the app's CWD, so
+#      `dev_app_launch` starts the app from the dev home.
+# Still shared: the SDK's Application Support state and log paths, keyed by
+# the compiled-in bundle id.
 
 # Suffixes applied to the packaged bundle's own values. One set, here, so a
 # script that ASSERTS the identity and the script that CREATES it cannot drift.
@@ -106,11 +60,8 @@ dev_app_identity() {
         "$(dev_app_plist_value "$bundle" CFBundleName)"
 }
 
-# Copy a packaged bundle to `dest_app` and give the copy its own identity.
-# Prints the path of the staged executable, which is what you launch.
-#
-# Idempotent by demolition: the destination is removed first, so a stale bundle
-# from an older build can never be the thing that starts.
+# Copy a packaged bundle to `dest_app` (replacing any stale copy) and give it
+# its own identity. Prints the staged executable's path.
 dev_app_stage() {
     local source_app="$1" dest_app="$2"
 
@@ -145,52 +96,13 @@ dev_app_stage() {
     /usr/bin/plutil -replace CFBundleDisplayName -string "${source_name}${DEV_APP_NAME_SUFFIX}" "$plist"
     /usr/bin/plutil -lint "$plist" >/dev/null
 
-    # That rewriting the plist and renaming the executable costs no signature
-    # validity, checked every time instead of trusted -- and checked
-    # DIFFERENTIALLY, because today the answer for both bundles is "invalid":
-    #
-    #   codesign --verify --deep --strict zig-out/package/phux-cockpit.app
-    #     -> exit 1, "code has no resources but signature indicates they must
-    #        be present"                                    (measured 2026-08-12)
-    #
-    # `zig build package` emits an adhoc LINKER-signed binary in a bundle with
-    # no _CodeSignature at all (`codesign -dv` says `Info.plist=not bound`,
-    # `Sealed Resources=none`); scripts/package-macos.sh is what signs a release
-    # properly, afterwards. An absolute --verify here would assert something
-    # that was never true and so could never fail for our reason. What must hold
-    # is that staging does not make it WORSE -- and the day the SDK starts
-    # sealing resources, source becomes valid, staged does not, and this fires
-    # with the fix named.
-    # RE-SIGN. This is not hygiene, it is the difference between an app you can
-    # type into and one you cannot.
-    #
-    # `zig build package` emits an adhoc LINKER-signed binary. Renaming that
-    # binary and rewriting the Info.plist around it breaks the signature that
-    # was computed over both, and macOS then declines to make the process a
-    # proper foreground app: the window appears and paints, `focused=true` shows
-    # on the window, the shell runs -- and NOT ONE KEYSTROKE arrives. Cockpit's
-    # own `handleKey` opens with `if (!model.focused) return;`, which drops every
-    # key with no counter, no log and no error, so the app looks healthy while
-    # being completely deaf.
-    #
-    # Measured 2026-08-14: identical build, plain bundle takes input (typed `ec`
-    # reached the shell and autosuggested from history); staged bundle took
-    # nothing -- five keystrokes, five chords, dispatch_errors=0, no error event.
-    # Re-signing is what closed the gap. See phux-cockpit-2ml.10 for why the
-    # silence made this expensive to find.
+    # Re-sign: renaming the binary and rewriting the plist breaks the adhoc
+    # signature, and macOS then never delivers a keystroke to the process.
     /usr/bin/codesign --force --deep --timestamp=none --sign - "$dest_app" 2>/dev/null \
         || dev_app_die "could not adhoc re-sign ${dest_app}; without a valid signature macOS will not give it key focus and it will accept no keyboard input" \
         || return 1
 
-    # Now that staging re-signs, the invariant is ABSOLUTE rather than
-    # differential: the staged bundle must verify cleanly, full stop. That is
-    # the property keyboard input actually depends on.
-    #
-    # It is deliberately NOT compared against the source any more. The source is
-    # `zig build package` output, which does not seal its resources and verifies
-    # 1; the staged bundle verifies 0. A differential check reads that
-    # improvement as a change and fails -- which it did, on the first run after
-    # the re-sign landed.
+    # The staged bundle must verify cleanly; keyboard input depends on it.
     local dest_verify=0
     /usr/bin/codesign --verify --deep --strict "$dest_app" 2>/dev/null || dest_verify=$?
     if [[ "$dest_verify" != 0 ]]; then
@@ -200,15 +112,8 @@ dev_app_stage() {
     printf '%s\n' "${dest_app}/Contents/MacOS/${dest_executable}"
 }
 
-# Create the dev home if it does not exist: a config file the dev build owns,
-# and the directory the workspace state and automation dropbox land in.
-#
-# The config is NOT seeded from yours. Copying it would make the first dev run
-# look right and every later one stale, and Cockpit WRITES to its config file
-# (the settings surface persists a theme choice through
-# `Model.writeConfigTheme`), so a dev build pointed at your real file is a dev
-# build that can edit it. Point `--config` at any file when you want a specific
-# one, including your own.
+# Create the dev home: its own config file (never seeded from yours, since
+# Cockpit writes theme choices back) and the state/dropbox directory.
 dev_app_home_init() {
     local home="$1"
     mkdir -p -- "$home" "${home}/${DEV_APP_RUNTIME_ID}"
@@ -224,14 +129,9 @@ CONFIG
     fi
 }
 
-# Launch a staged dev build against a dev home, from inside that home so the
-# automation dropbox is the dev home's own. Trailing arguments are extra
-# `KEY=value` environment entries. Prints nothing; sets DEV_APP_PID.
-#
-# `env -C` rather than a `cd` in the caller: the CWD has to move for the child
-# only. A script that chdirs into the dev home for the launch and forgets to
-# come back would resolve every later relative path -- its own log files, a
-# `zig build` -- against the dev home instead of the repo.
+# Launch a staged dev build from inside the dev home (`env -C`, so only the
+# child's CWD moves). Trailing args are extra KEY=value env entries. Sets
+# DEV_APP_PID.
 dev_app_launch() {
     local executable="$1" home="$2" config="$3" log="$4"
     shift 4
@@ -245,13 +145,8 @@ dev_app_launch() {
     DEV_APP_PID=$!
 }
 
-# Wait until `pgrep -x <name>` reports exactly the pid we launched.
-#
-# `-x` (exact process name) rather than `-f`, which self-matches the shell
-# running it and can never leave a wait loop. Returning the pid ALSO answers
-# "is anyone else's instance running under this name", which is the question
-# phux-cockpit-2ml.10 is about: a second candidate here means every later
-# name-based activation is a coin flip.
+# Wait until `pgrep -x <name>` reports exactly the pid we launched (`-x`
+# because `-f` self-matches the shell running it).
 dev_app_wait_named() {
     local name="$1" want_pid="$2" deadline=$((SECONDS + 20))
     while :; do

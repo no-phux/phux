@@ -23,17 +23,10 @@ use crate::layout_ops::LayoutMutation;
 use crate::state::Degradation;
 
 /// Send a `SPAWN_RESOURCE` frame over `conn` and return the matching
-/// `RESOURCE_SPAWNED` result, paired with whatever the server interleaved
-/// ahead of it.
+/// `RESOURCE_SPAWNED` result with any interleaved notices.
 ///
-/// A peer that answers a spawn with a correlated `ERROR` instead of
-/// `RESOURCE_SPAWNED` (permitted for a relayed spawn: `relay.rs`'s
-/// `handle_inbound` states a satellite MAY do this) is folded into
-/// [`SpawnResult::Err`] rather than left unanswered — a hand-rolled wait that
-/// only matched `RESOURCE_SPAWNED` used to wedge on exactly this reply.
-///
-/// The correlation id is read out of `frame`'s own `request_id` field, so
-/// the id sent and the id waited on cannot drift.
+/// A correlated `ERROR` (a satellite may answer a relayed spawn that way) is
+/// folded into [`SpawnResult::Err`].
 ///
 /// # Errors
 ///
@@ -69,11 +62,8 @@ pub async fn spawn_on(
 
 /// The additive feature `frame` relies on that `features` lacks.
 ///
-/// A spawn that asks for retention (`retain_secs`, ADR-0124) needs
-/// `RETAIN_ON_EXIT`; a keyed spawn (`idempotency_key`, ADR-0126) needs
-/// `SPAWN_IDEMPOTENCY`. A server without the bit skips the field by length
-/// and silently does something else (closes the pane at exit, spawns a
-/// second pane on a retry), so the caller refuses before sending.
+/// Retention needs `RETAIN_ON_EXIT` and a keyed spawn `SPAWN_IDEMPOTENCY`; a
+/// server without the bit silently skips the field, so callers refuse first.
 #[must_use]
 pub fn missing_spawn_feature(
     frame: &FrameKind,
@@ -238,30 +228,12 @@ pub enum RollbackOutcome {
 
 /// Verify explicit ownership after a spawn, then publish the layout.
 ///
-/// `placement.owner` and `placement.new_pane` must both still resolve to
-/// `(placement.owner_window, placement.owner_session)`; on success
-/// `new_pane` is spliced beside `owner` in that session's shared layout.
-/// Either failure rolls the spawn back with `KILL_RESOURCE`.
-///
-/// Field-tagged compatibility means an older server can legally ignore
-/// `owner_terminal`, so ownership is verified against a fresh `GET_STATE`
-/// before layout is published — otherwise L3 could reference a pane that
-/// belongs to another session/window.
-///
-/// Degradation notices observed along the way (the ownership-verify
-/// `GET_STATE`, and the rollback kill if one runs) are appended to
-/// `notices`, in encounter order, so a caller can print them in the order
-/// they were seen.
-///
-/// `projection`, when given, names the shared-layout metadata key
-/// (`--projection`, ADR-0129) the new pane is spliced into instead of the
-/// default `phux.tui.layout/v1/<session>` envelope; it is validated against
-/// `placement.owner_session` before anything is written.
-///
-/// A transport failure verifying ownership or rolling back is folded into
-/// the returned outcome's reason/cleanup text rather than propagated,
-/// matching the historical behavior of reporting placement failure rather
-/// than a bare connection error.
+/// An older server may ignore `owner_terminal`, so both panes must still
+/// resolve to the owner's window and session in a fresh `GET_STATE` before
+/// `new_pane` is spliced beside `owner` (into `projection`'s key when given,
+/// ADR-0129). Any failure, transport included, rolls the spawn back with
+/// `KILL_RESOURCE` and is reported in the outcome. Degradation notices are
+/// appended to `notices` in encounter order.
 pub async fn verify_and_publish_placement(
     socket_path: &Path,
     placement: &Placement,
@@ -311,17 +283,30 @@ async fn rollback_after_failure(
     }
 }
 
-/// Verify that `placement.owner` and `placement.new_pane` both still
-/// resolve to `(placement.owner_window, placement.owner_session)` after the
-/// spawn. A transport failure here is folded into the returned reason
-/// exactly like a semantic mismatch would be — the caller treats both as
-/// "placement could not be confirmed" and rolls back either way.
+/// Connect, send one command, and return its result with the interleaved
+/// degradation notices.
+async fn request_fresh(
+    socket_path: &Path,
+    command: Command,
+) -> Result<(CommandResult, Vec<String>), AttachError> {
+    let mut conn = Connection::connect(socket_path).await?;
+    let (result, interleaved) = conn.request(1, command).await?.into_parts();
+    drop(conn);
+    let notices = Degradation::from_interleaved(&interleaved)
+        .notices()
+        .to_vec();
+    Ok((result, notices))
+}
+
+/// Why both placed panes do not still resolve to the owner's window and
+/// session, if they do not; a transport failure counts as unconfirmed.
 async fn verify_ownership(
     socket_path: &Path,
     placement: &Placement,
 ) -> (Vec<String>, Option<String>) {
-    let mut conn = match Connection::connect(socket_path).await {
-        Ok(conn) => conn,
+    let scope = StateScope::Server;
+    let (result, notices) = match request_fresh(socket_path, Command::GetState { scope }).await {
+        Ok(reply) => reply,
         Err(err) => {
             return (
                 Vec::new(),
@@ -329,50 +314,27 @@ async fn verify_ownership(
             );
         }
     };
-    let request = conn
-        .request(
-            1,
-            Command::GetState {
-                scope: StateScope::Server,
-            },
-        )
-        .await;
-    drop(conn);
-    match request {
-        Ok(reply) => {
-            let (result, interleaved) = reply.into_parts();
-            let notices = Degradation::from_interleaved(&interleaved)
-                .notices()
-                .to_vec();
-            let expected = Some((placement.owner_window, placement.owner_session));
-            let reason = match result {
-                CommandResult::OkWith(CommandValue::State(state)) => {
-                    let owner_after = ownership_for_terminal(&state, &placement.owner);
-                    let spawned_after = ownership_for_terminal(&state, &placement.new_pane);
-                    (owner_after != expected || spawned_after != expected).then_some(
-                        "server did not honor explicit spawn ownership (unsupported or \
-                         ownership mismatch)"
-                            .to_owned(),
-                    )
-                }
-                other => Some(crate::explain::explain_unexpected(
-                    "ownership verification",
-                    &other,
-                )),
-            };
-            (notices, reason)
+    let expected = Some((placement.owner_window, placement.owner_session));
+    let reason = match result {
+        CommandResult::OkWith(CommandValue::State(state)) => {
+            let owner_after = ownership_for_terminal(&state, &placement.owner);
+            let spawned_after = ownership_for_terminal(&state, &placement.new_pane);
+            (owner_after != expected || spawned_after != expected).then_some(
+                "server did not honor explicit spawn ownership (unsupported or \
+                 ownership mismatch)"
+                    .to_owned(),
+            )
         }
-        Err(err) => (
-            Vec::new(),
-            Some(format!("ownership verification failed: {err}")),
-        ),
-    }
+        other => Some(crate::explain::explain_unexpected(
+            "ownership verification",
+            &other,
+        )),
+    };
+    (notices, reason)
 }
 
-/// Splice `placement.new_pane` beside `placement.owner` in
-/// `placement.owner_session`'s shared layout — the named `projection` key
-/// when given (validated against `placement.owner_session` first), the
-/// default `phux.tui.layout/v1/<session>` envelope otherwise.
+/// Splice `placement.new_pane` beside `placement.owner` in the owner
+/// session's shared layout, or the validated `projection` key.
 async fn publish_layout(
     socket_path: &Path,
     placement: &Placement,
@@ -427,38 +389,16 @@ enum CleanupOutcome {
 /// Kill `pane` (a rollback after a failed placement) and classify the
 /// outcome.
 async fn rollback(socket_path: &Path, pane: &ResourceId) -> (Vec<String>, CleanupOutcome) {
-    let mut conn = match Connection::connect(socket_path).await {
-        Ok(conn) => conn,
-        Err(err) => {
-            return (
-                Vec::new(),
-                CleanupOutcome::Unconfirmed(format!("cleanup failed: {err}")),
-            );
-        }
+    let kill = Command::KillResource {
+        terminal_id: pane.clone(),
+        operation_id: None,
     };
-    match conn
-        .request(
-            1,
-            Command::KillResource {
-                terminal_id: pane.clone(),
-                operation_id: None,
-            },
-        )
-        .await
-    {
-        Ok(reply) => {
-            let (result, interleaved) = reply.into_parts();
-            let notices = Degradation::from_interleaved(&interleaved)
-                .notices()
-                .to_vec();
-            let outcome = match result {
-                CommandResult::Ok => CleanupOutcome::Removed,
-                other => CleanupOutcome::Unconfirmed(crate::explain::explain_unexpected(
-                    "cleanup", &other,
-                )),
-            };
-            (notices, outcome)
-        }
+    match request_fresh(socket_path, kill).await {
+        Ok((CommandResult::Ok, notices)) => (notices, CleanupOutcome::Removed),
+        Ok((other, notices)) => (
+            notices,
+            CleanupOutcome::Unconfirmed(crate::explain::explain_unexpected("cleanup", &other)),
+        ),
         Err(err) => (
             Vec::new(),
             CleanupOutcome::Unconfirmed(format!("cleanup failed: {err}")),
@@ -488,43 +428,40 @@ mod tests {
         }
     }
 
-    /// Long enough that a loaded machine cannot trip it, short enough that a
-    /// genuine wedge fails this test instead of hanging the run.
-    const WEDGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
-
+    /// A spawn refused by a correlated `ERROR` (a satellite) or by its own
+    /// `SpawnFailed` reply (a scoped denial) ends with the refusal instead
+    /// of wedging.
     #[tokio::test]
-    async fn satellite_refusal_ends_the_spawn_instead_of_wedging_it() {
-        // phux-h5hj.12. A satellite MAY answer a relayed spawn with a
-        // generic correlated ERROR instead of RESOURCE_SPAWNED; a wait that
-        // only matched RESOURCE_SPAWNED wedged on exactly this reply.
-        let temp = tempfile::TempDir::new().expect("tempdir");
-        let socket = temp.path().join("refusing.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
-        let spec = crate::testkit::ScriptSpec::new().refuse_spawn(
+    async fn a_refused_spawn_ends_with_its_refusal() {
+        let refusing = crate::testkit::ScriptSpec::new().refuse_spawn(
             ErrorCode::UnsupportedSatelliteRoute,
             "no satellite route to build-box",
         );
-        let server =
-            tokio::spawn(
-                async move { crate::testkit::ScriptedServer::accept(&listener, spec).await },
+        let denying = crate::testkit::ScriptSpec::new().spawn_result(SpawnResult::Err(
+            SpawnError::SpawnFailed("permission denied".to_owned()),
+        ));
+        for (spec, expected) in [
+            (refusing, "no satellite route to build-box"),
+            (denying, "permission denied"),
+        ] {
+            let temp = tempfile::TempDir::new().expect("tempdir");
+            let (socket, server) = crate::testkit::serve_one(temp.path(), spec);
+            let (result, _degradation) = tokio::time::timeout(
+                std::time::Duration::from_secs(20),
+                spawn_on(&socket, &spawn_frame()),
+            )
+            .await
+            .expect("a refused spawn must return, not wedge")
+            .expect("transport");
+            assert!(
+                matches!(
+                    &result,
+                    SpawnResult::Err(SpawnError::SpawnFailed(reason)) if reason.contains(expected)
+                ),
+                "got {result:?}"
             );
-
-        let (result, _degradation) =
-            tokio::time::timeout(WEDGE_TIMEOUT, spawn_on(&socket, &spawn_frame()))
-                .await
-                .expect("a refused spawn must return; a timeout here is the wedge itself")
-                .expect("transport");
-
-        match result {
-            SpawnResult::Err(SpawnError::SpawnFailed(reason)) => {
-                assert!(
-                    reason.contains("no satellite route to build-box"),
-                    "the refusal must reach the operator, got {reason:?}"
-                );
-            }
-            other => panic!("a correlated ERROR is this spawn's answer, got {other:?}"),
+            server.await.expect("scripted server");
         }
-        server.await.expect("scripted server");
     }
 
     #[test]
@@ -546,37 +483,5 @@ mod tests {
             ownership_for_terminal(&snapshot, &ResourceId::local(99)),
             None
         );
-    }
-
-    #[tokio::test]
-    async fn a_scoped_denial_ends_the_spawn_with_its_own_refusal() {
-        // A paired server refuses an out-of-scope SPAWN_RESOURCE with the
-        // spawn's own reply, RESOURCE_SPAWNED carrying SpawnFailed
-        // ("permission denied", workload-auth §7). The wait must end on it.
-        let temp = tempfile::TempDir::new().expect("tempdir");
-        let socket = temp.path().join("scoped.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
-        let spec = crate::testkit::ScriptSpec::new().spawn_result(SpawnResult::Err(
-            SpawnError::SpawnFailed("permission denied".to_owned()),
-        ));
-        let server =
-            tokio::spawn(
-                async move { crate::testkit::ScriptedServer::accept(&listener, spec).await },
-            );
-
-        let (result, _degradation) =
-            tokio::time::timeout(WEDGE_TIMEOUT, spawn_on(&socket, &spawn_frame()))
-                .await
-                .expect("a denied spawn must return; a timeout here is the wedge itself")
-                .expect("transport");
-
-        assert!(
-            matches!(
-                &result,
-                SpawnResult::Err(SpawnError::SpawnFailed(reason)) if reason == "permission denied"
-            ),
-            "the denial must reach the operator, got {result:?}"
-        );
-        server.await.expect("scripted server");
     }
 }

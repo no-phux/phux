@@ -1,57 +1,26 @@
 #!/usr/bin/env bash
-# Build this checkout and run it, as a real app, in a way that cannot be
-# confused with the Phux Cockpit in /Applications.
+# Build this checkout and run it as a real app that cannot be confused with
+# the installed Phux Cockpit: "Phux Cockpit (dev)", process `phux-cockpit-dev`,
+# and config, layout and automation dropbox under `.dev-run/` (see
+# scripts/lib/dev-app.sh; scripts/dev-isolation-check.sh proves it).
 #
 #   ./scripts/dev-run.sh
 #
-# That is the whole command. Everything below is optional.
-#
-# WHY THIS EXISTS
-# ---------------
-# On 2026-08-12 it surfaced that three days of rendering bug reports had been
-# filed against /Applications/Phux Cockpit.app -- version 0.7.1, built
-# 2026-08-09 -- while `main` was 0.8.0. Nothing merged in those three days had
-# ever been in front of the person reporting the bugs. Both apps are called
-# "Phux Cockpit", both put the same icon in the same Dock, and until now the
-# only local run was a bare binary out of `zig-out/bin` that shared the
-# installed app's bundle identity, its process name, and its state file. There
-# was no cheap way to be SURE which one you were looking at, so the expensive
-# way -- three days -- happened instead.
-#
-# This command makes the answer obvious: the dev build's Dock tile and
-# application menu read "Phux Cockpit (dev)", its process is `phux-cockpit-dev`
-# rather than `phux-cockpit`, and its config, workspace layout and automation
-# dropbox live under `.dev-run/` in this repo. Run both at once if you like;
-# nothing they own is shared. scripts/lib/dev-app.sh explains the four separate
-# mechanisms that takes, and `./scripts/dev-isolation-check.sh` drives both apps
-# at once and proves it.
-#
 # OPTIONS
-#   --debug              Debug build instead of ReleaseSafe. Faster to compile,
-#                        but it is NOT what ships: scripts/package-macos.sh
-#                        builds ReleaseSafe, so timing-shaped questions (frame
-#                        pacing, input latency) need the default.
+#   --debug              Debug build instead of ReleaseSafe (not what ships).
 #   --automation         Build with -Dautomation=true and print how to drive it.
 #   --config PATH        Use this config file instead of .dev-run/config. The
-#                        app WRITES to whatever file it is given (a theme choice
-#                        from the settings surface), so naming your real config
-#                        here means a dev build can edit it.
-#   --fresh              Delete the dev home first: config, workspace layout,
-#                        dropbox. A clean first-launch.
+#                        app writes theme choices to it.
+#   --fresh              Delete the dev home first.
 #   --detach             Print the pid and exit instead of staying attached.
-#   --no-build           Restage the existing package. Skips zig entirely;
-#                        build configuration is unknown, flags cannot change it.
-#   --phux               -Dphux-enabled=true, with the FFI directories the build
-#                        already knows how to find.
+#   --no-build           Restage the existing package without zig.
+#   --phux               -Dphux-enabled=true.
 #   --ffi-profile NAME   Cargo FFI profile directory (default ffi-release).
-#                        Use ffi-dev after building it via just cockpit-ffi.
-#   --measure-first-frame Build with automation, enable the SDK's launch/GPU
-#                        phase stamps, bind the first nonblank snapshot to the
-#                        launched pid, and fail if its 150ms budget is missed.
+#   --measure-first-frame Build with automation and phase stamps, bind the
+#                        first nonblank snapshot to the launched pid, and fail
+#                        if its 150ms budget is missed.
 #
-# The foreground run is the default because it makes quitting unambiguous:
-# ctrl-c here ends the app, and closing the app ends this script. A dev build
-# you forgot was running is a dev build that will confuse the next launch.
+# Runs in the foreground by default: ctrl-c ends the app and vice versa.
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -318,16 +287,8 @@ if [[ "$MEASURE_FIRST_FRAME" == "1" ]] && ! measure_first_frame; then
     exit 1
 fi
 
-# Front it by name. This is the activation phux-cockpit-2ml.10 records as
-# unreliable-by-name with two instances up -- which is exactly what the renamed
-# executable fixes: "phux-cockpit-dev" cannot resolve to the installed app.
-#
-# Retried, because the process exists (pgrep sees it) several seconds before
-# System Events does, and a single attempt right after launch fails on a
-# perfectly healthy app -- it reported "needs Accessibility permission" on a
-# machine that had the grant. Each attempt runs in the background so a wedged
-# System Events request cannot prevent the deadline itself from firing. Failure
-# after the deadline is still not fatal: the app is already running.
+# Front it by (unique) name, retried in the background to a deadline since
+# System Events sees the process late. Failure is not fatal.
 front_timeout_seconds="${PHUX_COCKPIT_FRONT_TIMEOUT_SECONDS:-15}"
 if [[ ! "$front_timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
     printf 'error: PHUX_COCKPIT_FRONT_TIMEOUT_SECONDS must be a positive integer\n' >&2

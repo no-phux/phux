@@ -1,20 +1,9 @@
 //! The MCP tool table: one row per tool naming the CLI verb it mirrors (or
 //! why it has none), how it executes, and what it can touch on the wire.
 //!
-//! This file is the single source for three consumers and depends only on
-//! `phux-protocol`, so each can compile it without linking the others:
-//!
-//! - `crate::annotations` derives every tool's `readOnlyHint` and
-//!   `destructiveHint` from [`Row::touches`] (ADR-0125);
-//! - `crate::cli_adapter` refuses to spawn the CLI for a tool whose
-//!   [`Row::exec`] is not [`Exec::Cli`] — the residue, each with its reason;
-//! - the CLI/MCP parity gate (`crates/phux-mcp/tests/parity.rs`) and the
-//!   generated `docs/reference/parity.md` (`crates/phux/src/refdocs/parity.rs`)
-//!   include it with `#[path]` and check it against the live tool catalog
-//!   and the CLI grammar.
-//!
-//! A row exists for every catalog tool; the gate fails on a missing or stale
-//! one.
+//! Depends only on `phux-protocol` because it is compiled into three places:
+//! this adapter (annotations, the CLI residue gate), the parity test, and
+//! the `phux` binary's `docs/reference/parity.md` generator (via `#[path]`).
 
 #![allow(
     dead_code,

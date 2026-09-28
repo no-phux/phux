@@ -1,26 +1,13 @@
 //! Which hub consumer asked for each satellite resource this hub spawned
 //! (ADR-0109, `docs/spec/L1.md` §9.1).
 //!
-//! On a satellite, every hub consumer is one connection: the hub's link. So
-//! the satellite's own "unattached since spawn" check exempts every hub
-//! consumer's attach or use, not just the spawner's. This ledger restores
-//! the distinction on the hub: it records the consumer whose
-//! `SPAWN_RESOURCE` created a satellite resource and the satellite's
-//! instance token it came back bound to, and it notes when another consumer
-//! attaches or uses the resource through this hub. A conditional kill that
-//! asks for `UNATTACHED_SINCE_SPAWN` is relayed only when this ledger
-//! vouches for it under the kill's own instance token.
-//!
-//! The token matters because the key is only `(host, id)`: after a cold
-//! satellite restart the same id names a new pane, and a record from before
-//! it must not vouch for that pane. A record whose token differs from the
-//! kill's, or that holds none (an unbound spawn), vouches for nothing.
-//!
-//! It lives beside the link sessions rather than inside one, because a
-//! late kill is exactly the one sent after the link came back, over a
-//! fresh session. Bounded: the oldest record goes first, and a resource the
-//! ledger no longer knows is one it cannot vouch for, which refuses the
-//! kill. Refusing leaks a pane; vouching wrongly would kill someone's.
+//! A satellite sees all hub consumers as one connection, so it cannot tell
+//! the spawner's use from another consumer's. This hub-side ledger records
+//! the spawning consumer and the instance token the resource came back
+//! bound to, and notes other consumers' use; a conditional kill with
+//! `UNATTACHED_SINCE_SPAWN` is relayed only when it vouches under the
+//! kill's own token. Bounded (oldest first); an unknown resource refuses
+//! the kill, since vouching wrongly would kill someone's pane.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -59,9 +46,8 @@ pub(super) struct SatelliteSpawnLedger {
 }
 
 impl SatelliteSpawnLedger {
-    /// Remember that `spawner` asked for `host`'s resource `id`, bound to
-    /// `instance`. A reused id (the satellite restarted) replaces the old
-    /// record.
+    /// Record that `spawner` spawned `host`'s `id` bound to `instance`
+    /// (replacing a reused id's record).
     pub(super) fn record_spawn(
         &mut self,
         host: SatelliteHost,
@@ -112,9 +98,8 @@ impl SatelliteSpawnLedger {
         }
     }
 
-    /// `true` iff this hub spawned `host`'s resource `id` bound to
-    /// `instance`, and no consumer but its spawner has attached or used it
-    /// through this hub since.
+    /// Whether this hub spawned it under `instance` and only the spawner has
+    /// used it since.
     #[must_use]
     pub(super) fn vouches_unattached(
         &self,

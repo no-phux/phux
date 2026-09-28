@@ -248,14 +248,6 @@ export function presentationSurface(lifecycle: PresentationLifecycle): Presentat
   return { kind: "none" };
 }
 
-function intentKind(intent: PresentationIntent): number {
-  if (intent.kind === "navigator") return 1;
-  if (intent.kind === "settings") return 2;
-  if (intent.kind === "host") return 3;
-  if (intent.kind === "directory") return 4;
-  if (intent.kind === "rename") return 5;
-  return 0;
-}
 
 function intentPhase(intent: PresentationIntent): PresentationPhase {
   if (intent.kind === "navigator") return intent.phase;

@@ -6,38 +6,20 @@
 //! structure; [`Window::slots`] remains the insertion-ordered source of
 //! truth for which Terminal-kind resources are in the window.
 //!
-//! Spec ref: `docs/spec/L3.md` §3.2 Layout (binary subset; `TABBED` is reserved for
-//! a later version and is intentionally absent here).
-//!
-//! Pane-rect **tiling** deliberately does not live here (bead phux-nnjx).
-//! The canonical tiling walk is client-side, in `phux-client-core`'s
-//! `multi_pane` module (`pane_rects` / `walk_layout`): it reserves one
-//! divider cell per interior split, and it pairs with the client's
-//! min-cell gate (`phux_tui::attach::actions`). An earlier server-side
-//! `fill_rects` here was divider-unaware and had drifted from that walk
-//! with no runtime callers; it was removed rather than unified because
-//! the two crates operate on different `LayoutNode` types and sharing the
-//! math would force a new crate-graph edge in either direction. If the
-//! server ever needs pane geometry, reach the client-core walk (or move
-//! it somewhere both crates can depend on) — do not reintroduce a
-//! parallel implementation.
+//! Spec ref: `docs/spec/L3.md` §3.2 Layout (binary subset). Pane-rect
+//! tiling and directional focus live client-side in `phux-client-core`;
+//! do not reintroduce parallel implementations here.
 
 use thiserror::Error;
 
 use crate::ids::{ResourceId, SessionId, WindowId};
 
 /// A window: an ordered collection of layout slots belonging to a session.
-///
-/// `slots` is the insertion-ordered source of truth; only Terminal-kind
-/// resources occupy a slot. `layout` is a binary split tree over the same
-/// set of slots; the two are kept in sync by
-/// [`Window::split`] and [`Window::kill_pane`] (and by the
-/// [`Registry`](crate::registry::Registry) that owns the [`Window`]).
+/// `slots` is the source of truth; `layout` mirrors it and the
+/// [`Registry`](crate::registry::Registry) keeps the two in sync.
 #[derive(Debug, Clone)]
 pub struct Window {
-    /// The stable identifier issued by the [`Registry`].
-    ///
-    /// [`Registry`]: crate::registry::Registry
+    /// The stable identifier issued by the registry.
     pub id: WindowId,
     /// The session that owns this window.
     pub session: SessionId,
@@ -62,16 +44,9 @@ pub enum LayoutNode {
     Split {
         /// The axis the split is taken along.
         dir: SplitDir,
-        /// Fraction of the parent dim given to `left`, in the **open**
-        /// interval `(0.0, 1.0)` per ADR-0012 — a ratio of exactly `0.0` or
-        /// `1.0` would give a pane no space at all.
-        ///
-        /// The bound is enforced by [`Window::split`], not by the type: this
-        /// field is `pub`, so a directly-built node can hold a value `split`
-        /// would refuse. Callers that assemble a tree by hand own that check
-        /// themselves. The transports
-        /// deliberately admit a wider domain than this — see the map in
-        /// `crates/phux/tests/conformance/layout_conformance.rs`.
+        /// Fraction of the parent dim given to `left`, in the open interval
+        /// `(0.0, 1.0)` (ADR-0012). Enforced by [`Window::split`], not the
+        /// type: hand-built trees own that check.
         ratio: f32,
         /// Left (for [`SplitDir::Horizontal`]) or top (for [`SplitDir::Vertical`]) child.
         left: Box<Self>,
@@ -87,19 +62,6 @@ pub enum SplitDir {
     Horizontal,
     /// Split stacked (a horizontal bar between top and bottom).
     Vertical,
-}
-
-/// Cardinal direction for focus movement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
-    /// Move focus upward.
-    Up,
-    /// Move focus downward.
-    Down,
-    /// Move focus left.
-    Left,
-    /// Move focus right.
-    Right,
 }
 
 /// Errors returned by layout operations on a [`Window`].
@@ -271,47 +233,6 @@ impl Window {
             }
         }
     }
-
-    /// Return the neighbouring [`ResourceId`] in `dir` from `current`, if any.
-    ///
-    /// The algorithm:
-    /// 1. Record the root-to-leaf path of (Split, `ChildSide`) steps to
-    ///    `current`.
-    /// 2. Walk that path in reverse; the first Split whose axis matches
-    ///    `dir` and from which we came from the appropriate side identifies
-    ///    the boundary to cross.
-    /// 3. Descend into the sibling subtree, choosing children whose split
-    ///    axis is perpendicular to `dir` so as to preserve the source's
-    ///    position on that axis; when the axis is parallel we hug the
-    ///    shared edge.
-    ///
-    /// Returns `None` if `current` is not in the layout or if no neighbour
-    /// exists in that direction.
-    #[must_use]
-    pub fn focus_direction(&self, current: ResourceId, dir: Direction) -> Option<ResourceId> {
-        let layout = self.layout.as_ref()?;
-        let mut path: Vec<(SplitDir, ChildSide)> = Vec::new();
-        if !record_path(layout, current, &mut path) {
-            return None;
-        }
-        // Walk up the path. At each step we exit a node into its parent.
-        // The last entry corresponds to the deepest Split — the parent of
-        // the current leaf.
-        for i in (0..path.len()).rev() {
-            let (split_dir, came_from) = path[i];
-            if matches_to_sibling(split_dir, dir, came_from) {
-                // Locate the sibling subtree: re-traverse the layout to depth `i`,
-                // then take the *other* child.
-                let sibling = sibling_at_depth(layout, &path, i)?;
-                // The suffix below the boundary records perpendicular-axis
-                // choices that locate the source within the sibling's
-                // mirror. The prefix above the boundary is irrelevant for
-                // perpendicular-axis preservation here.
-                return Some(descend_to_leaf(sibling, dir, &path[i + 1..]));
-            }
-        }
-        None
-    }
 }
 
 /// Walk `node`, removing the leaf for `target`, collapsing the parent Split
@@ -361,147 +282,5 @@ fn collapse(node: LayoutNode, target: ResourceId) -> (LayoutNode, bool) {
                 found_r,
             )
         }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ChildSide {
-    Left,
-    Right,
-}
-
-/// Record the root-to-leaf path to `target`. Returns `true` iff found.
-fn record_path(
-    node: &LayoutNode,
-    target: ResourceId,
-    out: &mut Vec<(SplitDir, ChildSide)>,
-) -> bool {
-    match node {
-        LayoutNode::Leaf(p) => *p == target,
-        LayoutNode::Split {
-            dir: sd,
-            left,
-            right,
-            ..
-        } => {
-            out.push((*sd, ChildSide::Left));
-            if record_path(left, target, out) {
-                return true;
-            }
-            out.pop();
-            out.push((*sd, ChildSide::Right));
-            if record_path(right, target, out) {
-                return true;
-            }
-            out.pop();
-            false
-        }
-    }
-}
-
-/// Does a move in `dir` from `came_from` cross the [`SplitDir`] axis toward
-/// the sibling?
-const fn matches_to_sibling(split: SplitDir, dir: Direction, came_from: ChildSide) -> bool {
-    matches!(
-        (split, dir, came_from),
-        (SplitDir::Horizontal, Direction::Right, ChildSide::Left)
-            | (SplitDir::Horizontal, Direction::Left, ChildSide::Right)
-            | (SplitDir::Vertical, Direction::Down, ChildSide::Left)
-            | (SplitDir::Vertical, Direction::Up, ChildSide::Right)
-    )
-}
-
-/// Re-traverse `root` along `path[..depth]` then return the sibling of
-/// `path[depth].1`.
-fn sibling_at_depth<'a>(
-    root: &'a LayoutNode,
-    path: &[(SplitDir, ChildSide)],
-    depth: usize,
-) -> Option<&'a LayoutNode> {
-    let mut cur = root;
-    for (_, side) in &path[..depth] {
-        let LayoutNode::Split { left, right, .. } = cur else {
-            return None;
-        };
-        cur = match side {
-            ChildSide::Left => left,
-            ChildSide::Right => right,
-        };
-    }
-    let LayoutNode::Split { left, right, .. } = cur else {
-        return None;
-    };
-    let (_, came_from) = path[depth];
-    Some(match came_from {
-        ChildSide::Left => right,
-        ChildSide::Right => left,
-    })
-}
-
-/// Descend into `node`, preserving the source's perpendicular-axis position
-/// where possible. `suffix` is the source's path *below* the boundary
-/// split (closer to the source leaf); reading it from the shallow end
-/// gives the source's perpendicular-axis choice when the descent
-/// encounters a perpendicular split.
-///
-/// When the descent encounters a Split parallel to `dir`, hug the shared
-/// edge (leftmost/topmost for moves into a sibling rightward/downward;
-/// rightmost/bottommost for the reverse).
-fn descend_to_leaf(
-    node: &LayoutNode,
-    dir: Direction,
-    suffix: &[(SplitDir, ChildSide)],
-) -> ResourceId {
-    let perp = perpendicular_axis(dir);
-    // Hints in shallow→deep order — same order as we'll encounter them
-    // during descent.
-    let hints: Vec<ChildSide> = suffix
-        .iter()
-        .filter_map(|(sd, side)| if *sd == perp { Some(*side) } else { None })
-        .collect();
-    let mut hint_idx = 0;
-    let mut cur = node;
-    loop {
-        match cur {
-            LayoutNode::Leaf(p) => return *p,
-            LayoutNode::Split {
-                dir: sd,
-                left,
-                right,
-                ..
-            } => {
-                if axis_parallel(*sd, dir) {
-                    // Hug the shared edge.
-                    cur = match dir {
-                        Direction::Right | Direction::Down => left,
-                        Direction::Left | Direction::Up => right,
-                    };
-                } else {
-                    // Perpendicular: take the source's hint if available;
-                    // otherwise default to Left.
-                    let side = hints.get(hint_idx).copied().unwrap_or(ChildSide::Left);
-                    hint_idx += 1;
-                    cur = match side {
-                        ChildSide::Left => left,
-                        ChildSide::Right => right,
-                    };
-                }
-            }
-        }
-    }
-}
-
-const fn axis_parallel(split: SplitDir, dir: Direction) -> bool {
-    matches!(
-        (split, dir),
-        (SplitDir::Horizontal, Direction::Left | Direction::Right)
-            | (SplitDir::Vertical, Direction::Up | Direction::Down)
-    )
-}
-
-const fn perpendicular_axis(dir: Direction) -> SplitDir {
-    match dir {
-        Direction::Left | Direction::Right => SplitDir::Vertical,
-        Direction::Up | Direction::Down => SplitDir::Horizontal,
     }
 }

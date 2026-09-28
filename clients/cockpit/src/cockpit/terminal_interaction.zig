@@ -6,7 +6,8 @@ const contract = @import("provider_contract");
 const model_module = @import("model.zig");
 const local = @import("../providers/local/provider.zig");
 const runtime = @import("terminal_runtime.zig");
-const update = @import("update.zig");
+const support = @import("phux_support.zig");
+const vt = @import("ghostty-vt");
 const remote_commands = @import("native/remote_presentation_commands.zig");
 
 const Model = model_module.Model;
@@ -257,7 +258,7 @@ fn pasteLocal(model: *Model, pane: *local.Pane, fx: anytype, text: []const u8) v
         model.paste_failed = true;
         return;
     }
-    update.pasteClipboardText(model, pane, fx, text);
+    pasteClipboardText(model, pane, fx, text);
 }
 
 pub fn resize(model: *Model, fx: anytype, ref: TerminalRef, viewport: contract.Viewport) void {
@@ -293,7 +294,7 @@ pub fn remoteText(model: *Model, ref: TerminalRef, event: Event) void {
     }
     if (state.selecting) return;
     const remote = model.phuxForOwner(state.owner) orelse return;
-    update.remote_selection.clear(model, state);
+    remote_selection.clear(model, state);
     // A reconnecting terminal cannot scroll yet but still holds the text.
     remote.scrollViewport(state.owner, .{ .kind = .bottom }) catch {};
     remote.sendKey(state.owner, &.{
@@ -330,7 +331,7 @@ fn remoteKeyForOwner(model: *Model, owner: contract.ReplicaOwner, event: Event) 
 /// reconnect or terminal replacement invalidates that owner rather than
 /// delivering the old release to a new process.
 pub fn releaseKey(model: *Model, fx: anytype, event: Event) void {
-    const owner = switch (update.key_owners.take(model, event.key)) {
+    const owner = switch (takeHeldKeyOwner(model, event.key)) {
         .owner => |value| value,
         else => return,
     };
@@ -345,7 +346,7 @@ pub fn releaseKey(model: *Model, fx: anytype, event: Event) void {
 pub fn rememberKey(model: *Model, ref: TerminalRef, event: Event) void {
     if (!terminalAcceptsKeys(model, ref)) return;
     const owner = model.terminalOwner(ref) orelse return;
-    update.key_owners.remember(model, owner, event.key);
+    rememberHeldKey(model, owner, event.key);
 }
 
 fn terminalAcceptsKeys(model: *Model, ref: TerminalRef) bool {
@@ -355,4 +356,146 @@ fn terminalAcceptsKeys(model: *Model, ref: TerminalRef) bool {
     const state = model.remoteUi(ref) orelse return false;
     if (state.selecting or state.search.open) return false;
     return model.ownerIsCurrent(state.owner);
+}
+
+/// The Phux focus target: the focused pane, while the window has key and the
+/// Web surface is not selected.
+pub fn remoteFocusTarget(model: *const Model) ?TerminalRef {
+    if (!model.focused) return null;
+    if (model.wsConst().web_selected) return null;
+    const terminal_ref = model.focusedTerminalRef() orelse return null;
+    if (support.providerKind(terminal_ref) != .phux) return null;
+    return terminal_ref;
+}
+
+/// Bracket-encode a clipboard result for this terminal and admit it as one
+/// outbound payload, or refuse the whole paste.
+pub fn pasteClipboardText(model: *Model, pane: *local.Pane, fx: anytype, text: []const u8) void {
+    const fence_bytes = "\x1b[200~".len;
+    const staging = pane.session.gpa.alloc(u8, text.len + fence_bytes * 2) catch {
+        model.paste_failed = true;
+        return;
+    };
+    defer pane.session.gpa.free(staging);
+
+    const body = staging[fence_bytes .. fence_bytes + text.len];
+    @memcpy(body, text);
+    const parts = vt.input.encodePaste(body, .fromTerminal(&pane.session.term));
+    const start = fence_bytes - parts[0].len;
+    @memcpy(staging[start..fence_bytes], parts[0]);
+    @memcpy(staging[fence_bytes + text.len .. fence_bytes + text.len + parts[2].len], parts[2]);
+    const encoded = staging[start .. fence_bytes + text.len + parts[2].len];
+
+    pane.session.scrollToBottom();
+    // Retained terminal replies predate this input and must go first; if they
+    // cannot move, refusing the paste is the only ordering-safe outcome.
+    runtime.moveResponsesToOutbound(pane, fx);
+    if (pane.session.response_len > 0 or encoded.len > pane.outbound_buffer.len) {
+        pane.outbound_dropped += encoded.len;
+        model.paste_failed = true;
+        return;
+    }
+    if (!runtime.enqueueOutbound(pane, fx, encoded)) {
+        pane.outbound_dropped += encoded.len;
+        model.paste_failed = true;
+    }
+}
+
+/// Keyboard selection on a Phux pane, expressed as provider anchors.
+pub const remote_selection = struct {
+    pub fn begin(model: *Model, state: *model_module.RemoteUiState) void {
+        clear(model, state);
+        const presentation = presentationForOwner(model, state.owner) orelse return;
+        const cursor = presentation.grid.cursor orelse native_sdk.canvas.TerminalCursor{};
+        const remote = model.phuxForOwner(state.owner) orelse return;
+        const point: contract.DocumentPoint = .{ .space = .viewport, .row = @as(u32, cursor.y), .column = cursor.x };
+        const start = remote.createAnchor(state.owner, point) catch return;
+        const end = remote.createAnchor(state.owner, point) catch {
+            remote.releaseAnchor(state.owner, start);
+            return;
+        };
+        remote.setSelection(state.owner, start, end, false) catch {
+            remote.releaseAnchor(state.owner, start);
+            remote.releaseAnchor(state.owner, end);
+            return;
+        };
+        state.selecting = true;
+        state.rectangle = false;
+        state.start_anchor = start.opaque_id;
+        state.end_anchor = end.opaque_id;
+        state.head_x = cursor.x;
+        state.head_y = cursor.y;
+    }
+
+    pub fn apply(model: *Model, state: *model_module.RemoteUiState) void {
+        const remote = model.phuxForOwner(state.owner) orelse return;
+        const next = remote.createAnchor(state.owner, .{ .space = .viewport, .row = state.head_y, .column = state.head_x }) catch return;
+        remote.setSelection(state.owner, .{ .opaque_id = state.start_anchor }, next, state.rectangle) catch {
+            remote.releaseAnchor(state.owner, next);
+            return;
+        };
+        if (state.end_anchor != 0 and state.end_anchor != state.start_anchor)
+            remote.releaseAnchor(state.owner, .{ .opaque_id = state.end_anchor });
+        state.end_anchor = next.opaque_id;
+    }
+
+    pub fn move(model: *Model, state: *model_module.RemoteUiState, dx: i32, dy: i32) void {
+        const presentation = presentationForOwner(model, state.owner) orelse return;
+        const max_x: i32 = @max(0, @as(i32, presentation.cols) - 1);
+        const max_y: i64 = @max(0, @as(i64, presentation.rows) - 1);
+        state.head_x = @intCast(std.math.clamp(@as(i32, state.head_x) + dx, 0, max_x));
+        state.head_y = @intCast(std.math.clamp(@as(i64, state.head_y) + dy, 0, max_y));
+        apply(model, state);
+    }
+
+    pub fn clear(model: *Model, state: *model_module.RemoteUiState) void {
+        defer {
+            state.selecting = false;
+            state.rectangle = false;
+            state.start_anchor = 0;
+            state.end_anchor = 0;
+            state.gesture_handle = 0;
+        }
+        const remote = model.phuxForOwner(state.owner) orelse return;
+        remote.clearSelection(state.owner) catch {};
+        if (state.start_anchor != 0)
+            remote.releaseAnchor(state.owner, .{ .opaque_id = state.start_anchor });
+        if (state.end_anchor != 0 and state.end_anchor != state.start_anchor)
+            remote.releaseAnchor(state.owner, .{ .opaque_id = state.end_anchor });
+    }
+};
+
+fn heldKeyFingerprint(key: []const u8) u64 {
+    var fingerprint: u64 = 14695981039346656037;
+    for (key) |byte| {
+        fingerprint ^= std.ascii.toLower(byte);
+        fingerprint *%= 1099511628211;
+    }
+    return if (fingerprint == 0) 1 else fingerprint;
+}
+
+fn rememberHeldKey(model: *Model, owner: contract.ReplicaOwner, key: []const u8) void {
+    const fingerprint = heldKeyFingerprint(key);
+    var target: usize = @intCast(fingerprint % model_module.max_held_terminal_keys);
+    for (&model.held_terminal_keys, 0..) |*held, index| {
+        if (held.fingerprint == fingerprint) {
+            target = index;
+            break;
+        }
+        if (held.fingerprint == 0) target = index;
+    }
+    model.held_terminal_keys[target] = .{ .fingerprint = fingerprint, .owner = owner };
+}
+
+/// `.consume` means the press belonged to an owner that no longer exists.
+fn takeHeldKeyOwner(model: *Model, key: []const u8) union(enum) { none, consume, owner: contract.ReplicaOwner } {
+    const fingerprint = heldKeyFingerprint(key);
+    for (&model.held_terminal_keys) |*held| {
+        if (held.fingerprint != fingerprint) continue;
+        const owner = held.owner;
+        held.* = .{};
+        if (!model.ownerIsCurrent(owner)) return .consume;
+        return .{ .owner = owner };
+    }
+    return .none;
 }

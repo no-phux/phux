@@ -16,13 +16,9 @@ use crate::attach::outcome::{AttachEnd, AttachError};
 use crate::attach::record::{SessionRecorder, TeeSink};
 use crate::attach::render::write_reset;
 
-/// RAII handle that flips stdin into raw mode and stdout into the alt
-/// screen on construction, and restores both on drop.
-///
-/// Restoration runs in `Drop`, so a panic anywhere in the attach loop —
-/// including the renderer or the connection — leaves the user's outer
-/// terminal in a usable state.
-pub struct RawModeGuard {
+/// RAII handle: raw-mode stdin plus alt-screen stdout, restored on drop (so
+/// a panic anywhere in the attach loop still leaves a usable terminal).
+pub(super) struct RawModeGuard {
     original_termios: Termios,
 }
 
@@ -33,27 +29,13 @@ impl std::fmt::Debug for RawModeGuard {
 }
 
 impl RawModeGuard {
-    /// Install the guard, writing the alt-screen-enter + cursor-hide
-    /// sequence to real stdout. Convenience wrapper around
-    /// [`Self::install_with_stdout`] for the common path; tests use
-    /// the writer-injecting variant. Enables mouse capture by default
-    /// (ADR-0048).
-    pub fn install() -> Result<Self, AttachError> {
-        Self::install_with_stdout(&mut io::stdout(), true)
-    }
-
-    /// Install the guard. Errors if stdin is not a TTY or the termios
-    /// dance fails. The alt-screen + cursor-hide bytes are written to
-    /// `out` so tests can capture them and assert on the regression
-    /// guard for `phux-roz`.
-    ///
-    /// `mouse` gates the client's own outer-terminal mouse tracking
-    /// (ADR-0048): when `true` the entry sequence also emits DECSET
-    /// `?1002h?1006h` so divider drags work without an inner program
-    /// turning mouse mode on; when `false` the client emits no mouse DECSET
-    /// and only sees mouse when an inner program enables tracking (the host's
-    /// native selection is untouched).
-    pub fn install_with_stdout<W: Write>(out: &mut W, mouse: bool) -> Result<Self, AttachError> {
+    /// Install the guard; errors if stdin is not a TTY. The entry bytes go to
+    /// `out`. `mouse` (ADR-0048) also emits `?1002h?1006h` so divider drags
+    /// work without an inner mouse mode.
+    pub(super) fn install_with_stdout<W: Write>(
+        out: &mut W,
+        mouse: bool,
+    ) -> Result<Self, AttachError> {
         let stdin = io::stdin();
         if !stdin.is_terminal() {
             return Err(AttachError::NotATty);
@@ -84,41 +66,26 @@ impl RawModeGuard {
             .remove(rustix::termios::ControlModes::CSIZE | rustix::termios::ControlModes::PARENB);
         raw.control_modes.insert(rustix::termios::ControlModes::CS8);
 
-        // Make a read complete as soon as one byte is available, with no
-        // timeout. This is what makes the terminal readable-per-byte: the
-        // driver's reactor-driven handle (`crate::attach::tty_input`) wakes on
-        // the first byte, and the blocking-stdin fallback returns on it.
+        // Reads complete per byte, with no timeout.
         raw.special_codes[rustix::termios::SpecialCodeIndex::VMIN] = 1;
         raw.special_codes[rustix::termios::SpecialCodeIndex::VTIME] = 0;
 
         rustix::termios::tcsetattr(fd, OptionalActions::Now, &raw)
             .map_err(|err| AttachError::Terminal(format!("tcsetattr: {err}")))?;
 
-        // Enter the alt screen + hide the cursor up front so the first
-        // frame paint doesn't briefly show on the normal screen. With
-        // `mouse` on, also enable our own outer-terminal mouse tracking so
-        // divider drags work by default (ADR-0048).
+        // Enter the alt screen first so the first paint never lands on the
+        // normal screen.
         write_enter_alt_screen(out, mouse).map_err(AttachError::Io)?;
 
-        // Remember that we entered the alt screen so signal handlers
-        // know to emit the leave sequence. We deliberately set this
-        // AFTER the writes succeed so a half-completed entry doesn't
-        // confuse cleanup.
+        // Set only after the writes succeed, so signal cleanup knows to leave.
         ALT_SCREEN_ACTIVE.store(true, Ordering::SeqCst);
 
-        // Upgrade the fatal-signal handler to also emit the DECSET resets.
-        // Paired with the matching downgrade in `Drop`, so the escape codes
-        // are only ever written while there is genuinely an alt screen and
-        // mouse tracking to undo. No-op if the handler was never installed
-        // (the writer-injecting test path never reaches here — it returns
-        // `NotATty` above — but a future caller might).
+        // The fatal-signal handler also emits DECSET resets while the alt
+        // screen is up (downgraded again in Drop).
         phux_crash::enable_terminal_escape_restore();
 
-        // Park a clone of the original Termios in process-global storage
-        // so the signal-handler arms and the panic hook (which can't
-        // reach the instance field) can perform a true restore rather
-        // than a best-effort re-cook. The instance field remains the
-        // Drop-path source of truth; the global is a snapshot.
+        // A global snapshot for the signal arms and panic hook, which cannot
+        // reach this instance.
         save_termios_snapshot(original.clone());
 
         Ok(Self {
@@ -129,15 +96,8 @@ impl RawModeGuard {
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
-        // Best-effort restore. We deliberately swallow errors — the
-        // process is on its way out and a panic in Drop is worse than
-        // a slightly-wedged terminal.
-        //
-        // Clear the global snapshot before restoring from the instance
-        // field. Either source restores the same Termios (the global is
-        // a clone of `original_termios`); the clear prevents a later
-        // install from inheriting a stale snapshot if the next
-        // `install_with_stdout` errors out before reaching the save.
+        // Best effort: a panic in Drop is worse than a wedged terminal. Clear
+        // the global snapshot so a later failed install cannot inherit it.
         let _ = take_termios_snapshot();
         let stdin = io::stdin();
         crate::attach::terminal_probe::discard_pending(stdin.as_fd());
@@ -147,113 +107,46 @@ impl Drop for RawModeGuard {
         let _ = write_terminal_reset(&mut out);
         ALT_SCREEN_ACTIVE.store(false, Ordering::SeqCst);
 
-        // Downgrade the fatal-signal handler back to termios-only. The alt
-        // screen is gone; a crash from here on must not spray DECSET resets
-        // across the user's restored normal screen. Deliberately last, so a
-        // fault *during* the reset above is still covered by the full
-        // sequence.
+        // Back to termios-only restore, last, so a fault during the reset
+        // above is still covered.
         phux_crash::disable_terminal_escape_restore();
     }
 }
 
-/// Whether the alt-screen / cursor-hide sequence is currently active.
-///
-/// Set inside [`RawModeGuard::install_with_stdout`] after the entry
-/// sequence has been emitted, cleared by [`RawModeGuard::drop`] and the
-/// signal-handler cleanup. The signal path consults this so SIGINT
-/// during the pre-handshake stage (no alt-screen, no raw mode) does NOT
-/// emit a spurious leave sequence that the cooked terminal would print
-/// as garbage.
-///
-/// Kept deliberately separate from [`SAVED_TERMIOS`]: alt-screen ENTER
-/// and the termios flip happen at different points in
-/// [`RawModeGuard::install_with_stdout`] (termios first, then alt
-/// screen). Tying the two together via a single state variable would
-/// couple two independent concerns and risks leaving the alt screen
-/// when we should restore termios (or vice versa) on a half-failed
-/// install. Two cheap flags is the right factoring.
+/// Whether the alt-screen entry sequence is active, so a signal during the
+/// pre-handshake stage emits no stray leave sequence. Separate from the
+/// termios snapshot: the two flip at different points of install.
 static ALT_SCREEN_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// Whether the client enabled its OWN outer-terminal mouse tracking
-/// (DECSET `?1002h` button-motion + `?1006h` SGR) on attach (ADR-0048).
-///
-/// Set by [`write_enter_alt_screen`] when the `mouse` config is on, so the
-/// client receives pointer reports over a divider even when the inner
-/// program has no mouse mode (the common shell case) — that is what makes
-/// drag-to-resize work by default. Cleared by [`write_terminal_reset`],
-/// which emits the matching `?1006l?1002l` BEFORE the `?1049l` alt-screen
-/// leave so the host terminal's native click-drag selection comes back on
-/// detach. Kept separate from [`ALT_SCREEN_ACTIVE`] for the same reason
-/// that flag is separate from the termios snapshot: independent concerns,
-/// each restored exactly once.
+/// Whether the client enabled its own mouse tracking (ADR-0048); the reset
+/// emits `?1006l?1002l` before leaving the alt screen so the host's native
+/// selection returns.
 static MOUSE_CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// Snapshot of the outer terminal's pre-raw Termios, parked here so
-/// the signal-handler arms in `main_loop` and the panic hook installed
-/// by [`install_panic_hook_once`] can perform a true `tcsetattr`
-/// restore — rather than a best-effort "force ICANON|ECHO|ISIG re-cook"
-/// — when [`RawModeGuard::drop`] is unreachable (process exits via
-/// `std::process::exit`, which skips Drop).
-///
-/// Signal-safety: the signal arms in `main_loop` are tokio
-/// `signal::unix::Signal::recv()` futures, which deliver on the tokio
-/// runtime thread — NOT inside a POSIX async-signal-handler context.
-/// The panic hook runs on the panicking thread after unwind has begun,
-/// also normal Rust context. So acquiring this `Mutex` is safe in both
-/// callers; we are explicitly NOT in a context that would deadlock on
-/// re-entrant lock acquisition.
-///
-/// Written by [`RawModeGuard::install_with_stdout`] (clone of the
-/// instance's `original_termios`) and cleared by [`RawModeGuard::drop`]
-/// and the signal-restore path. The instance field on `RawModeGuard`
-/// remains the Drop-path source of truth; this global is a snapshot
-/// for the paths that can't reach the instance.
+/// The pre-raw termios, for a true `tcsetattr` restore from paths that
+/// skip Drop (`process::exit`). The signal arms are tokio futures and the
+/// panic hook runs in normal context, so the mutex is safe in both.
 static SAVED_TERMIOS: Mutex<Option<Termios>> = Mutex::new(None);
 
-/// Park a Termios snapshot in [`SAVED_TERMIOS`]. Errors on lock
-/// poisoning are swallowed: a poisoned lock means another thread
-/// panicked while holding it, in which case we still want subsequent
-/// installs to succeed and the most we lose is the signal-arm's true
-/// restore (fall-back path covers it).
+/// Park a termios snapshot (a poisoned lock is ignored).
 fn save_termios_snapshot(t: Termios) {
     if let Ok(mut slot) = SAVED_TERMIOS.lock() {
         *slot = Some(t);
     }
 }
 
-/// Take the Termios snapshot out of [`SAVED_TERMIOS`], leaving `None`.
-/// Returns `None` if the lock is poisoned (signal-arm falls back to
-/// the re-cook path; Drop falls back to the instance field).
+/// Take the termios snapshot (`None` if absent or poisoned).
 fn take_termios_snapshot() -> Option<Termios> {
     SAVED_TERMIOS.lock().ok().and_then(|mut slot| slot.take())
 }
 
-/// Whether [`install_panic_hook_once`] has already run. The panic hook
-/// is global to the process; we don't want a re-entrant install to
-/// chain hooks indefinitely.
+/// Whether [`install_panic_hook_once`] already ran.
 static PANIC_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-/// Write the alt-screen-enter + cursor-hide sequence, enable bracketed
-/// paste, and — when `mouse` is on — the client's own mouse-tracking DECSET
-/// (ADR-0048).
-/// Factored out so the install path and any future re-entry path share
-/// one byte definition.
-///
-/// `?2004h` asks the outer terminal to frame a clipboard paste with
-/// `CSI 200~` / `CSI 201~`. The stdin parser converts that complete frame
-/// into one `InputEvent::Paste`; without it, a terminal feeds the same paste
-/// as independent key bytes and the attach transport cannot preserve the
-/// paste's atomic boundary.
-///
-/// `?1004h` turns on focus reports (`CSI I` / `CSI O`). The client emits
-/// `INPUT_FOCUS` from them (docs/spec/input.md section 4), and a focus loss
-/// ends any chrome drag whose button release the client will never see.
-///
-/// `?1002h` is button-event tracking (motion only while a button is held,
-/// not `?1003h` any-motion which would flood the wire with hover traffic
-/// we discard); `?1006h` is SGR extended coordinates, mandatory to address
-/// columns past 223. Records [`MOUSE_CAPTURE_ACTIVE`] so the matching
-/// reset emits the leave sequence.
+/// Enter the alt screen, hide the cursor, and enable bracketed paste
+/// (`?2004h`, so a paste arrives as one `InputEvent::Paste`) and focus
+/// reports (`?1004h`). With `mouse`, also `?1002h` button-event tracking (not
+/// `?1003h`, which floods hover traffic) and `?1006h` SGR coordinates.
 fn write_enter_alt_screen<W: Write>(out: &mut W, mouse: bool) -> io::Result<()> {
     out.write_all(b"\x1b[?1049h")?;
     out.write_all(b"\x1b[?25l")?;
@@ -266,19 +159,8 @@ fn write_enter_alt_screen<W: Write>(out: &mut W, mouse: bool) -> io::Result<()> 
     out.flush()
 }
 
-/// Reconcile the client's outer-terminal mouse-tracking DECSET with
-/// `want` (phux-npb3: capture follows focus).
-///
-/// The current state lives in [`MOUSE_CAPTURE_ACTIVE`] — the same flag
-/// [`write_enter_alt_screen`] sets and [`write_terminal_reset`] consumes —
-/// so a detach or signal reset while an opted-out pane holds focus never
-/// emits a redundant leave sequence. No-op when the state already
-/// matches; otherwise emits the ADR-0048 enter pair (`?1002h?1006h`) or
-/// its reverse-order leave (`?1006l?1002l`).
-/// Whether the client's outer-terminal mouse capture should currently be
-/// on (phux-npb3): the global `mouse` config gate must be on AND the
-/// focused pane must not have opted out via `set-pane mouse off`. With no
-/// focused pane yet (pre-ATTACHED) the global gate alone decides.
+/// Whether mouse capture should be on: the global gate, unless the focused
+/// pane opted out (`set-pane mouse off`).
 pub(super) fn desired_mouse_capture(
     cfg_on: bool,
     focused: Option<&ResourceId>,
@@ -287,6 +169,8 @@ pub(super) fn desired_mouse_capture(
     cfg_on && !focused.is_some_and(|id| optout.contains(id))
 }
 
+/// Reconcile the client's mouse-tracking DECSET with `want` (a no-op when
+/// unchanged).
 pub(super) fn sync_mouse_capture<W: Write>(out: &mut W, want: bool) -> io::Result<()> {
     if MOUSE_CAPTURE_ACTIVE.swap(want, Ordering::SeqCst) == want {
         return Ok(());
@@ -294,9 +178,7 @@ pub(super) fn sync_mouse_capture<W: Write>(out: &mut W, want: bool) -> io::Resul
     if want {
         out.write_all(b"\x1b[?1002h\x1b[?1006h")?;
     } else {
-        // Any-motion is a strict superset of button-event tracking; drop it
-        // first so a capture-off transition while a menu is open cannot
-        // leave `?1003h` armed on the host terminal.
+        // Drop any-motion first so capture-off never leaves `?1003h` armed.
         if HOVER_TRACKING_ACTIVE.swap(false, Ordering::SeqCst) {
             out.write_all(b"\x1b[?1003l")?;
         }
@@ -305,26 +187,13 @@ pub(super) fn sync_mouse_capture<W: Write>(out: &mut W, want: bool) -> io::Resul
     out.flush()
 }
 
-/// Whether the client upgraded the outer terminal to any-motion reporting
-/// (`?1003h`) on top of its button-event capture (phux-wrnm).
-///
-/// ADR-0048 deliberately enables only `?1002h`: hover traffic the client
-/// discards is wasted bytes on every pointer move. A context menu is the
-/// one thing that *does* consume it — it hover-tracks the row under the
-/// pointer with no button held — so the mode is raised while such an
-/// overlay is on the stack and dropped the moment it closes. Kept as its
-/// own flag (not folded into [`MOUSE_CAPTURE_ACTIVE`]) so the capture
-/// reconcile and the reset path each restore exactly what they set.
+/// Whether any-motion reporting (`?1003h`) is raised on top of capture;
+/// only a hover-tracking context menu consumes it.
 static HOVER_TRACKING_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// Reconcile any-motion reporting with `want` (phux-wrnm).
-///
-/// A no-op unless the state changed, like [`sync_mouse_capture`]. Never
-/// raises `?1003h` while capture is off: with no capture the client has no
-/// business reporting motion at all, and the host terminal owns the mouse.
-/// Leaving hover mode re-asserts `?1002h` — some terminals treat the two
-/// DECSETs as one tracking mode and `?1003l` alone would drop button
-/// reporting with it, killing divider drags.
+/// Reconcile any-motion reporting with `want`; never raised without capture.
+/// Leaving re-asserts `?1002h`, since some terminals treat both DECSETs as
+/// one mode.
 pub(super) fn sync_hover_tracking<W: Write>(out: &mut W, want: bool) -> io::Result<()> {
     let want = want && MOUSE_CAPTURE_ACTIVE.load(Ordering::SeqCst);
     if HOVER_TRACKING_ACTIVE.swap(want, Ordering::SeqCst) == want {
@@ -338,32 +207,19 @@ pub(super) fn sync_hover_tracking<W: Write>(out: &mut W, want: bool) -> io::Resu
     out.flush()
 }
 
-/// Restore the outer terminal to a sane post-attach state: drop SGR,
-/// disable bracketed paste and mouse capture, show the cursor, and (if we
-/// ever entered the alt screen) leave it.
-///
-/// Used by both [`RawModeGuard::drop`] and the signal-handler arms in
-/// the private `main_loop` function. Safe to call multiple times — the
-/// second call sees
-/// `ALT_SCREEN_ACTIVE == false` and skips the leave sequence.
+/// Restore the outer terminal: drop SGR, bracketed paste, hover, and mouse
+/// capture, show the cursor, and leave the alt screen if entered.
+/// Idempotent.
 pub fn write_terminal_reset<W: Write>(out: &mut W) -> io::Result<()> {
     write_reset(out)?;
-    // The client owns outer-terminal DEC 2004 for the duration of attach.
-    // Drop it before returning to the caller's normal screen so a program
-    // that does not opt into bracketed paste never receives framing bytes.
     out.write_all(b"\x1b[?2004l")?;
     out.write_all(b"\x1b[?1004l")?;
     out.flush()?;
-    // phux-wrnm: a context menu open at detach (or at SIGINT) left the
-    // terminal in any-motion mode; drop that before the capture pair so the
-    // host is handed back exactly what it had.
     if HOVER_TRACKING_ACTIVE.swap(false, Ordering::SeqCst) {
         out.write_all(b"\x1b[?1003l")?;
         out.flush()?;
     }
-    // ADR-0048: drop our own mouse tracking BEFORE leaving the alt screen,
-    // so the host terminal's native click-drag selection is restored on
-    // detach. `?1006l` then `?1002l` undoes the entry pair in reverse.
+    // Before leaving the alt screen, so native selection returns on detach.
     if MOUSE_CAPTURE_ACTIVE.swap(false, Ordering::SeqCst) {
         out.write_all(b"\x1b[?1006l\x1b[?1002l")?;
         out.flush()?;
@@ -375,18 +231,8 @@ pub fn write_terminal_reset<W: Write>(out: &mut W) -> io::Result<()> {
     Ok(())
 }
 
-/// Best-effort termios restore shared by signal and clean-detach exits.
-/// Termios goes back to the saved state (recovered from [`SAVED_TERMIOS`]
-/// when populated; otherwise a re-cook fall-back). Errors are swallowed: the
-/// process is on its way out.
-///
-/// Behaviour change for phux-2r7 (was best-effort re-cook only,
-/// committed in 63dc6ff): when [`RawModeGuard`] has parked a snapshot,
-/// we now do a true `tcsetattr` restore to the user's pre-attach
-/// flags, preserving customisations like IUTF8 / VEOF that the re-cook
-/// would clobber. The manual SIGINT-during-attach repro that motivated
-/// the original fix still passes; verifying the precise-restore
-/// behaviour requires a live PTY and is not unit-testable from here.
+/// Best-effort termios restore for signal and clean-detach exits: the saved
+/// snapshot when present (keeping flags like IUTF8), else a re-cook.
 fn restore_terminal_termios() {
     let stdin = io::stdin();
     let fd = stdin.as_fd();
@@ -398,13 +244,7 @@ fn restore_terminal_termios() {
         // returned before we flipped into raw mode.
         let _ = rustix::termios::tcsetattr(fd, OptionalActions::Now, &saved);
     } else if let Ok(mut termios) = rustix::termios::tcgetattr(fd) {
-        // Fall-back re-cook for the (rare) case where the snapshot is
-        // missing — e.g. signal fired before `install_with_stdout`
-        // reached the save, or the lock was poisoned. We force the
-        // canonical-mode flags back on so the cooked shell at least
-        // shows what the user types; non-default flags are NOT
-        // preserved on this path and the user may want to run `reset`
-        // after.
+        // Re-cook fallback: canonical flags back on; custom flags are lost.
         termios.local_modes.insert(
             LocalModes::ECHO
                 | LocalModes::ECHONL
@@ -475,7 +315,7 @@ pub(super) fn restore_terminal_for_handoff() {
 /// closes that window: the restore mirrors the signal path, and
 /// `process::exit` skips the teardown that would otherwise hang.
 ///
-/// phux-i0e8.2.2: because this never returns, the CLI's own `Ok(end)`
+/// Because this never returns, the CLI's own `Ok(end)`
 /// handling can't run on this path — so the one-line explanation for a
 /// last-pane death (`AttachEnd::explanation`) is printed HERE, after the
 /// terminal reset (the screen is cooked again) and before the exit. A
@@ -509,36 +349,15 @@ pub(super) fn exit_after_detach(
     std::process::exit(0);
 }
 
-/// Install a global panic hook that first records the panic to the
-/// `tracing` file sink, then runs [`write_terminal_reset`], then chains
-/// the previous (default) hook. Idempotent — repeated calls after the
-/// first are no-ops.
-///
-/// Ordering matters and is deliberate:
-///
-/// 1. **Log first.** The client's `tracing` subscriber writes to a file
-///    (never stderr — the alt screen is up), so we emit the panic message
-///    plus a captured [`std::backtrace::Backtrace`] there BEFORE touching
-///    the terminal. This is the durable record: even though the next step
-///    restores the cooked terminal and the default hook's stderr backtrace
-///    lands on a screen the user may not be watching, the crash is fully
-///    recoverable from the log file.
-/// 2. **Restore the terminal.** Without this, a panic deep inside the
-///    renderer or libghostty would unwind through `main_loop` and the
-///    default hook would print into the alt screen we're about to leave —
-///    so the user would see nothing.
-/// 3. **Chain the previous hook** (the default backtrace printer).
+/// Install (once) a panic hook that logs the panic and a backtrace to the
+/// file sink, then restores the terminal, then chains the default hook.
 pub(super) fn install_panic_hook_once() {
     if PANIC_HOOK_INSTALLED.swap(true, Ordering::SeqCst) {
         return;
     }
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        // (1) Durable capture to the file sink before the terminal is
-        // touched. `Backtrace::capture` honors `RUST_BACKTRACE`: it is
-        // `Disabled` (rendered as a hint) unless the env var is set, so
-        // there's no symbolication cost in the common case while a full
-        // trace is available when the operator asks for one.
+        // `Backtrace::capture` honors `RUST_BACKTRACE`.
         let backtrace = std::backtrace::Backtrace::capture();
         let location = info
             .location()
@@ -564,11 +383,7 @@ mod tests {
 
     static TERMINAL_RESET_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    /// Borrow a real `Termios` from `/dev/tty` so tests that need to
-    /// exercise [`save_termios_snapshot`] / [`take_termios_snapshot`]
-    /// can run with a plausible value. Returns `None` when the test
-    /// process has no controlling TTY (e.g. some CI sandboxes); the
-    /// caller skips in that case.
+    /// A real `Termios` from `/dev/tty`, or `None` without a controlling TTY.
     fn try_borrow_real_termios() -> Option<Termios> {
         let tty = std::fs::OpenOptions::new()
             .read(true)
@@ -578,16 +393,7 @@ mod tests {
         rustix::termios::tcgetattr(tty.as_fd()).ok()
     }
 
-    /// The save/take helpers behind [`SAVED_TERMIOS`] round-trip a
-    /// snapshot exactly once: after a save, the next take returns
-    /// `Some(_)`; subsequent takes return `None`. This is the unit
-    /// surface that backs the signal-arm true-restore path
-    /// (phux-2r7). The signal arm itself is exercised by a manual
-    /// SIGINT during an attach session — see the comment on
-    /// [`terminal_reset_on_signal`].
-    ///
-    /// `SAVED_TERMIOS` is a process-global; we clear at both ends to
-    /// be hygienic across the in-test serial execution model.
+    /// The termios snapshot round-trips exactly once.
     #[test]
     fn saved_termios_round_trip() {
         let Some(t) = try_borrow_real_termios() else {
@@ -610,15 +416,8 @@ mod tests {
         );
     }
 
-    /// Documents the manual SIGINT repro that backs phux-2r7. The
-    /// signal-arm path can't be unit-tested without forking and
-    /// driving a real PTY; this `#[ignore]`-stub keeps the procedure
-    /// next to the code and surfaces in `cargo test -- --ignored` if
-    /// someone wires up an integration harness later.
-    /// Every attach enables outer-terminal bracketed paste (`?2004h`) so
-    /// the stdin parser receives a whole clipboard paste as one event. The
-    /// reset undoes it before leaving the alt screen; mouse capture follows
-    /// the same enter/leave discipline when it is configured.
+    /// Entry enables bracketed paste, focus reports, and (when configured)
+    /// mouse capture; the reset undoes them before leaving the alt screen.
     #[test]
     fn outer_terminal_modes_enable_and_disable_bytes() {
         let _guard = TERMINAL_RESET_TEST_LOCK
@@ -645,10 +444,7 @@ mod tests {
             entry.windows(8).any(|w| w == b"\x1b[?1006h"),
             "entry must enable SGR coordinates: {entry:?}"
         );
-        // `write_enter_alt_screen` records MOUSE_CAPTURE_ACTIVE; the
-        // alt-screen flag is set separately by `install_with_stdout` on a
-        // real attach. Set it here so reset exercises the full leave path
-        // (mouse-disable AND alt-screen-leave) the way a live detach does.
+        // Set by install on a real attach; needed for the full leave path.
         ALT_SCREEN_ACTIVE.store(true, Ordering::SeqCst);
         // Reset emits the leave pair before the ?1049l alt-screen leave.
         let mut reset = Vec::new();
@@ -718,9 +514,7 @@ mod tests {
         );
     }
 
-    /// `mouse = false` skips mouse DECSET, but bracketed paste stays enabled:
-    /// it is required to preserve the atomic boundary of every clipboard
-    /// paste, independently of pointer handling.
+    /// `mouse = false` skips mouse DECSET but keeps bracketed paste.
     #[test]
     fn mouse_capture_disabled_emits_no_decset() {
         let _guard = TERMINAL_RESET_TEST_LOCK
@@ -760,9 +554,8 @@ mod tests {
         );
     }
 
-    /// phux-npb3: `sync_mouse_capture` reconciles the outer DECSET with the
-    /// desired state — leave pair when dropping, enter pair when restoring,
-    /// and nothing at all when the state already matches.
+    /// Leave pair when dropping, enter pair when restoring, nothing when
+    /// unchanged.
     #[test]
     fn sync_mouse_capture_emits_transitions_only() {
         let _guard = TERMINAL_RESET_TEST_LOCK
@@ -793,9 +586,7 @@ mod tests {
         MOUSE_CAPTURE_ACTIVE.store(false, Ordering::SeqCst);
     }
 
-    /// phux-wrnm: hover reporting is raised only while something consumes
-    /// it, only on top of live capture, and always unwound — including when
-    /// capture itself drops while a menu is still open.
+    /// Hover is raised only on top of live capture and always unwound.
     #[test]
     fn sync_hover_tracking_rides_on_top_of_capture() {
         let _guard = TERMINAL_RESET_TEST_LOCK
@@ -836,7 +627,7 @@ mod tests {
         MOUSE_CAPTURE_ACTIVE.store(false, Ordering::SeqCst);
     }
 
-    /// phux-npb3: capture follows focus — wanted iff the global gate is on
+    /// Capture follows focus — wanted iff the global gate is on
     /// AND the focused pane has not opted out.
     #[test]
     fn desired_mouse_capture_follows_focused_pane_optout() {
@@ -853,19 +644,5 @@ mod tests {
         assert!(desired_mouse_capture(true, None, &optout));
         // Gate on but the focused pane opted out ⇒ capture drops.
         assert!(!desired_mouse_capture(true, Some(&t2), &optout));
-    }
-
-    #[test]
-    #[ignore = "manual: requires a live PTY and a SIGINT during attach"]
-    fn signal_arm_true_restore_manual_repro() {
-        // 1. `stty -a` in an outer shell; note `iutf8` / VEOF / etc.
-        // 2. `phux attach <session>` — driver enters raw mode + alt
-        //    screen; `RawModeGuard::install_with_stdout` parks the
-        //    pre-attach Termios in `SAVED_TERMIOS`.
-        // 3. In a sibling shell: `kill -INT <phux-pid>` (or hit Ctrl-C
-        //    if your outer shell forwards it without phux eating it).
-        // 4. `stty -a` again; ALL flags should match step (1). Before
-        //    phux-2r7, only ICANON|ECHO|ISIG round-tripped and custom
-        //    flags like `iutf8` were lost.
     }
 }

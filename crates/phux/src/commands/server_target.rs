@@ -1,27 +1,11 @@
-//! Which server a headless session verb talks to: the local socket, or a
-//! `--remote` host (phux-c2td.2).
+//! Which server a headless session verb (`ls`, `new`, `kill`, `rename`,
+//! `detach`) talks to: the local socket, or a `--remote` host resolved through
+//! the same ladder and dial as `phux attach --remote`.
 //!
-//! `phux attach --remote` owns the resolution ladder (`remote_target`): a
-//! registered host, a pasted code, a one-time ssh pairing, an honest refusal.
-//! This module lets the session-lifecycle verbs (`ls`, `new`, `kill`,
-//! `rename`, `detach`) walk that same ladder and dial the same QUIC/WSS
-//! endpoint, so a target means one thing on every verb. A verb resolves one
-//! [`ServerTarget`] and connects through it; it branches on local versus
-//! remote only where the difference is real (auto-spawning a server, and
-//! stopping one, are local acts).
-//!
-//! The headless verbs do not take `--code` or `--no-enroll`. Those modify the
-//! pairing rungs, and pairing is an operator-present act that `phux attach
-//! --remote` already covers. Without `--json` an unregistered host still
-//! pairs over ssh here, exactly as it would under attach. With `--json` the
-//! ssh rung is skipped and the host is refused with the ladder's remedies:
-//! pairing narrates on stderr and ssh may prompt, and a machine-readable call
-//! promises one JSON line on stderr and must never block on a prompt.
-//!
-//! Every refusal on the way to a dial is reported here, once, through
-//! `json_err::emit`: the dial planners return a typed
-//! [`DialRefusal`](attach::DialRefusal) instead of printing, and this module
-//! words it for the registry entry the endpoint came from rather than for
+//! The headless verbs take no `--code`/`--no-enroll`. Without `--json` an
+//! unregistered host still pairs over ssh; with `--json` the ssh rung is
+//! skipped, because a machine-readable call must not narrate or prompt. Every
+//! refusal is reported once, worded for the registry entry rather than for
 //! `phux attach`'s flags.
 
 use std::path::{Path, PathBuf};
@@ -128,9 +112,7 @@ fn resolve_remote(
     let target = RemoteTarget::parse(raw).map_err(|err| {
         json_err::emit(json, &CliError::new(codes::REMOTE_UNRESOLVED, err, ""), 2)
     })?;
-    // The function `phux attach --remote` resolves through, with attach's
-    // defaults (no pasted code, ssh pairing allowed) except under `--json`,
-    // which never pairs (see the module doc).
+    // Attach's own resolver; `--json` never pairs.
     let entry = remote_target::resolve(&target, None, bootstrap_for(json))
         .map_err(|report| emit_ladder_refusal(json, &report))?;
     dial_entry(rt, &entry, verb, json)
@@ -146,12 +128,9 @@ const fn bootstrap_for(json: bool) -> Bootstrap {
     }
 }
 
-/// Turn a registered entry into a dial, reporting any refusal on the
-/// `--json` contract with exit code 1.
-///
-/// `ssh://` entries are refused. They carry an interactive attach (`ssh -t
-/// HOST phux attach`) and nothing else, so there is no connection here for a
-/// headless verb to speak the protocol over.
+/// Turn a registered entry into a dial, reporting any refusal on the `--json`
+/// contract with exit code 1. `ssh://` entries carry only an interactive
+/// attach, so they are refused.
 fn dial_entry(
     rt: &tokio::runtime::Runtime,
     entry: &RemoteEntry,
@@ -190,12 +169,9 @@ pub(crate) fn plan_entry(
     })
 }
 
-/// The contract error for a registry entry the dial planner refused, worded
-/// for the entry rather than for `phux attach`'s flags. Pure for tests.
-///
-/// A name that did not resolve is a reachability failure (`transport`): the
-/// entry may be right and the network down. Every other refusal means the
-/// entry cannot be dialed as registered (`remote_unresolved`).
+/// The contract error for a registry entry the dial planner refused. A failed
+/// name lookup is `transport` (the network may be down); anything else means
+/// the entry cannot be dialed as registered.
 fn entry_refusal(entry: &RemoteEntry, refusal: &DialRefusal) -> CliError {
     let name = &entry.name;
     let endpoint = &entry.endpoint;
@@ -415,13 +391,11 @@ mod tests {
     use phux_client::attach::{AttachError, CertTrust, Dial};
 
     use super::{
-        ServerSpec, ServerTarget, bootstrap_for, dial_entry, entry_refusal, ladder_refusal_error,
-        ssh_only_refusal,
+        ServerSpec, ServerTarget, dial_entry, entry_refusal, ladder_refusal_error, ssh_only_refusal,
     };
     use crate::commands::attach::DialRefusal;
     use crate::commands::json_err::codes;
     use crate::commands::remote::RemoteEntry;
-    use crate::commands::remote_target::Bootstrap;
 
     fn runtime() -> tokio::runtime::Runtime {
         crate::commands::cli_runtime().expect("runtime")
@@ -438,13 +412,6 @@ mod tests {
             ssh: None,
             direct: None,
         }
-    }
-
-    /// The prose path walks attach's full ladder; `--json` never pairs.
-    #[test]
-    fn only_json_skips_the_ssh_pairing_rung() {
-        assert_eq!(bootstrap_for(false), Bootstrap::Auto);
-        assert_eq!(bootstrap_for(true), Bootstrap::Never);
     }
 
     /// No `--remote` means the local socket, exactly as before this module:

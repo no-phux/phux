@@ -2,10 +2,8 @@
 //! the CLI over the `AgentSession` resource (ADR-0103,
 //! `docs/consumers/agents.md` §2 and §4.19).
 //!
-//! Every verb here is a thin surface over [`phux_client::agent_session`]:
-//! resolve the target, gate on the server's `RESOURCE_KINDS` bit before any
-//! resource is touched, run the library call, render. The one piece of
-//! policy that lives here is *which resource a selector names*:
+//! Thin surfaces over [`phux_client::agent_session`], gated on the server's
+//! `RESOURCE_KINDS` bit. The policy here is which resource a selector names:
 //!
 //! - `open` takes the **parent pane**: a Terminal-kind resource, by `@N`, by
 //!   `%name` (the named Terminal), or by any pane form. An `AgentSession` id
@@ -127,12 +125,12 @@ pub(super) fn run_session_open(
         drop(scope);
         match outcome {
             Ok(opened) => {
-                let resource = crate::selector::format_terminal_id(&opened.resource);
+                let resource = phux_client::selector::format_terminal_id(&opened.resource);
                 if json {
                     let document = serde_json::json!({
                         "schema_version": SCHEMA_VERSION,
                         "resource": resource,
-                        "parent": crate::selector::format_terminal_id(&opened.parent),
+                        "parent": phux_client::selector::format_terminal_id(&opened.parent),
                         "provider": provider,
                         "native_id": native_id,
                     });
@@ -182,7 +180,10 @@ pub(super) fn run_session_close(target: &str, socket: Option<PathBuf>) -> ExitCo
         drop(scope);
         match outcome {
             Ok(()) => {
-                outln!("{}\tclosed", crate::selector::format_terminal_id(&session));
+                outln!(
+                    "{}\tclosed",
+                    phux_client::selector::format_terminal_id(&session)
+                );
                 ExitCode::SUCCESS
             }
             Err(err) => report_session_error(false, &err, &socket_path, verb),
@@ -239,7 +240,7 @@ pub(super) fn run_emit(
                 if json {
                     let document = serde_json::json!({
                         "schema_version": SCHEMA_VERSION,
-                        "resource": crate::selector::format_terminal_id(&session),
+                        "resource": phux_client::selector::format_terminal_id(&session),
                         "seq": emitted.seq,
                         "ts_ms": emitted.ts_ms,
                         "type": record.kind(),
@@ -333,11 +334,11 @@ pub(super) fn run_log(
             let facet = info.as_ref().and_then(|info| info.agent.as_ref());
             let document = serde_json::json!({
                 "schema_version": SCHEMA_VERSION,
-                "resource": crate::selector::format_terminal_id(&session),
+                "resource": phux_client::selector::format_terminal_id(&session),
                 "parent": info
                     .as_ref()
                     .and_then(|info| info.parent.as_ref())
-                    .map(crate::selector::format_terminal_id),
+                    .map(phux_client::selector::format_terminal_id),
                 "provider": facet.map(|facet| facet.provider.clone()),
                 "native_id": facet.and_then(|facet| facet.native_id.clone()),
                 "records": buffered,
@@ -395,7 +396,7 @@ impl Scope {
     async fn pick(&self, socket_path: &Path, selector: &Selector) -> Option<ResourceId> {
         let candidates =
             phux_client::state::resolve_targets(socket_path, selector, &self.snapshot).await;
-        crate::selector::pick_target_pane(&candidates, &self.snapshot.focused_resource)
+        phux_client::selector::pick_target_pane(&candidates, &self.snapshot.focused_resource)
     }
 
     /// The parent Terminal `open` binds to.
@@ -531,7 +532,7 @@ fn report_session_error(
             format!(
                 "open one with `phux agent session open {} --provider <P>`; `phux ls --json` \
                  lists every resource with its kind and parent",
-                crate::selector::format_terminal_id(terminal)
+                phux_client::selector::format_terminal_id(terminal)
             ),
         ),
         AgentSessionError::AmbiguousSession { .. } => (
@@ -591,8 +592,6 @@ fn report_session_error(
     )
 }
 
-/// Every server-side failure maps onto a distinct code; a transport failure
-/// keeps the shared no-server family.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -618,15 +617,8 @@ mod tests {
         ));
     }
 
-    /// `docs/consumers/agents.md` §2 promises a producer that a `--type`
-    /// outside the closed v1 set comes back as the `record_invalid` refusal
-    /// document — exit 2, nothing written, a `code` it can branch on. A clap
-    /// `value_parser` on `--type` answered first, with a usage error on
-    /// stderr and no document at all, so the one refusal of this verb a
-    /// harness is most likely to hit was the one shape it could not read.
-    ///
-    /// Two halves, and both are the fix: argv must ACCEPT the unknown word,
-    /// and the record validator must then refuse it.
+    /// A `--type` outside the closed set must reach the verb (not die at
+    /// argv) so it is refused as the machine-readable `record_invalid`.
     #[test]
     fn an_unknown_record_type_is_a_record_invalid_refusal_not_a_usage_error() {
         let cli = crate::parse_cli([
@@ -656,6 +648,8 @@ mod tests {
         );
     }
 
+    /// Every server-side failure maps onto its exit; a transport failure keeps
+    /// the shared no-server family.
     #[test]
     fn every_library_error_lands_on_its_registered_code_and_exit() {
         let socket = Path::new("/tmp/unused.sock");

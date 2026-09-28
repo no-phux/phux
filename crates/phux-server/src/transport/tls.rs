@@ -1,30 +1,11 @@
-//! TLS termination for the remote-consumer WebSocket listener (ADR-0031).
+//! TLS for the remote listeners (ADR-0031).
 //!
-//! Encryption for `wss://` remote consumers is TLS 1.3 (with 1.2 as a floor)
-//! via rustls, terminated here before the RFC 6455 upgrade. The operator
-//! supplies a PEM certificate chain and private key; this module turns them
-//! into a [`TlsAcceptor`] the listener wraps each accepted TCP stream in.
-//!
-//! The `ring` crypto provider is selected explicitly (`builder_with_provider`)
-//! rather than relying on a process-default install, both because only `ring`
-//! is compiled in and so the choice is visible at the call site.
-//!
-//! [`cert_fingerprint`] computes the SHA-256 of the leaf certificate for the
-//! out-of-band pin shown at pairing time (`phux pair`), closing the
-//! trust-on-first-use gap ADR-0031 names.
-//!
-//! [`ensure_self_signed_for`] names the *advertised* address in the SANs, and
-//! [`covers_name`] reports whether an already-persisted certificate does —
-//! never repairing it, because widening SANs means a new certificate and a new
-//! fingerprint (ADR-0091).
-//!
-//! Generation and PEM loading themselves are [`phux_dial::cert`]'s: `phux-relay`
-//! terminates TLS on identical terms and used to carry a near-verbatim copy of
-//! them, and ADR-0051 forbids it depending on this crate. What remains here is
-//! what is genuinely the server's — the acceptor and the three listener
-//! configs, plus the ADR-0091 *reporting* surface (`covers_name`,
-//! `uncovered_names`, `advertised_for_bind`), which has no counterpart in the
-//! relay and stays where its callers are.
+//! The `wss://` acceptor and the QUIC / WebTransport server configs, all on
+//! rustls with the `ring` provider selected explicitly. Certificate generation and PEM loading are
+//! [`phux_dial::cert`]'s (shared with `phux-relay`, ADR-0051); what stays here
+//! is the server's configs plus the ADR-0091 name-coverage *reporting*
+//! surface. An existing certificate is never widened: a new SAN means a new
+//! fingerprint, which un-pairs every device.
 
 use std::io;
 use std::net::IpAddr;
@@ -33,7 +14,7 @@ use std::sync::Arc;
 
 use phux_dial::cert;
 use rustls::ServerConfig;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+use rustls::pki_types::{CertificateDer, ServerName};
 use tokio_rustls::TlsAcceptor;
 
 /// Errors from loading TLS material or building the acceptor.
@@ -71,14 +52,8 @@ pub enum TlsError {
     },
 }
 
-/// Provisioning lives in [`phux_dial::cert`] so `phux-relay` can share it
-/// (ADR-0051), but this crate's error vocabulary is still this crate's.
-///
-/// Every arm maps onto a variant [`TlsError`] already had, carrying the same
-/// payload, so the message an operator reads is byte-for-byte what it was
-/// before the move — including `tls io:`, which `phux-relay` renders as
-/// `relay io:` off the identical shared error. Mapping rather than
-/// re-exporting is what keeps those two free to differ.
+/// Maps onto the variants [`TlsError`] already had, so operator-facing
+/// messages keep this crate's wording rather than the shared crate's.
 impl From<cert::CertError> for TlsError {
     fn from(err: cert::CertError) -> Self {
         match err {
@@ -93,52 +68,31 @@ impl From<cert::CertError> for TlsError {
     }
 }
 
-/// Default persisted path for the auto-generated remote-consumer certificate:
-/// `<state-dir>/remote-cert.pem`.
+/// Default persisted path for the auto-generated remote-consumer certificate.
 #[must_use]
 pub fn default_cert_path() -> PathBuf {
     crate::telemetry::state_dir().join("remote-cert.pem")
 }
 
-/// Default persisted path for the auto-generated remote-consumer private key:
-/// `<state-dir>/remote-key.pem`.
+/// Default persisted path for the auto-generated remote-consumer private key.
 #[must_use]
 pub fn default_key_path() -> PathBuf {
     crate::telemetry::state_dir().join("remote-key.pem")
 }
 
-/// Provision a self-signed certificate + key at the given paths if either is
-/// missing, naming only the loopback identities.
-///
-/// The address-agnostic form, for call sites with no advertised address to
-/// name (tests, and any provisioning that happens before an address is known).
-/// Prefer [`ensure_self_signed_for`] wherever the routable address *is* known:
-/// SANs can only be chosen when the certificate is minted.
+/// Provision a self-signed pair naming only the loopback identities, if
+/// either file is missing. Prefer [`ensure_self_signed_for`] when the
+/// routable address is known.
 pub fn ensure_self_signed(cert_path: &Path, key_path: &Path) -> Result<(), TlsError> {
     Ok(cert::ensure_self_signed(cert_path, key_path)?)
 }
 
-/// Provision a self-signed certificate + key at the given paths if either is
-/// missing, naming `advertised` in the SANs alongside the loopback identities.
+/// Provision a self-signed pair naming `advertised` alongside loopback.
 ///
-/// This is what lets a remote listener need no operator cert setup (ADR-0031
-/// "seamless"). A complete pair is left untouched, so the fingerprint stays
-/// stable across restarts once pinned on a device.
-///
-/// The certificate is public (world-readable); the private key is written
-/// owner-only (`0o600`). SANs always cover `localhost`/`127.0.0.1`/`::1`; `advertised`
-/// adds the addresses phux hands out — the listener's own routable bind and
-/// the overlay address `phux pair` embeds in its connect link. Each entry may
-/// be an IP literal or a DNS name; rcgen classifies it by whether it parses as
-/// an address. Duplicates and empties are dropped, and order is preserved so
-/// the SAN list is a stable function of its input.
-///
-/// **A certificate that already exists is never widened** (ADR-0091). Adding a
-/// SAN means minting a new certificate, which means a new fingerprint, which
-/// un-pairs every device that pinned the old one — a silent, total trust break
-/// traded for a handshake convenience. Coverage is therefore *reported* rather
-/// than repaired: see [`covers_name`], `phux doctor`'s `remote-cert` check, and
-/// the warning `phux pair` prints next to the link it is about to hand out.
+/// Entries may be IP literals or DNS names, and nothing happens unless a
+/// file is missing. The key is written owner-only. A complete pair is left untouched, so the
+/// pinned fingerprint is stable; coverage gaps are reported by
+/// [`covers_name`] instead of repaired (ADR-0091).
 pub fn ensure_self_signed_for(
     cert_path: &Path,
     key_path: &Path,
@@ -149,20 +103,10 @@ pub fn ensure_self_signed_for(
     )?)
 }
 
-/// The SANs a listener bound to `addr` advertises: its own address, when that
-/// is an address a remote consumer could actually dial.
+/// The SANs a listener bound to `addr` advertises.
 ///
-/// A loopback bind adds nothing (the always-present loopback SANs name it), and an
-/// unspecified bind (`0.0.0.0` / `[::]`) names no address at all — the kernel
-/// picks one per interface, so there is nothing here to put in a SAN. The
-/// routable address in that case is known only to `phux pair`, which detects
-/// the overlay (ADR-0037) and passes it in directly.
-///
-/// The auto-bound overlay listener (ADR-0081) always binds a *specific*
-/// detected address, so it is the common case that this covers — and it costs
-/// no detection call of its own, because the address is already in hand by the
-/// time the listener is built (phux-90j5 keeps detection off the startup path
-/// and this must not put it back).
+/// Its own address when a remote consumer could dial it. Loopback is always covered, and a wildcard
+/// bind names no address (`phux pair` passes the overlay in directly).
 #[must_use]
 pub fn advertised_for_bind(addr: std::net::SocketAddr) -> Vec<String> {
     let ip = addr.ip();
@@ -173,53 +117,32 @@ pub fn advertised_for_bind(addr: std::net::SocketAddr) -> Vec<String> {
     }
 }
 
-/// The SAN form of an advertised address: a bare IP literal, unbracketed.
-///
-/// A v6 address reaches this from a URL as `[fd7a::1]` but must go into a SAN
-/// (and into [`covers_name`]) as `fd7a::1` — `ServerName` and rcgen both take
-/// the address, never the URL-authority bracketing.
+/// The SAN form of an address: a bare, unbracketed IP literal.
 #[must_use]
 pub fn san_name(addr: IpAddr) -> String {
     addr.to_string()
 }
 
-/// Whether a conventionally-validating client would accept `name` for the
-/// certificate at `cert_path`.
+/// Whether a name-validating client would accept `name` for `cert_path`.
 ///
-/// This is not a SAN-list string comparison: it runs the certificate through
-/// rustls' own [`rustls::client::verify_server_name`] — the same webpki name
-/// check a rustls client performs mid-handshake — so a `true` here is the
-/// property that actually matters (the client accepts the name), not a proxy
-/// for it. IP literals are matched as `iPAddress` SANs and everything else as
-/// `dNSName`, exactly as on the wire.
-///
-/// Name validation is only *one* of the checks such a client makes; it must
-/// also trust the certificate, which for a self-signed leaf means the operator
-/// added it to a trust store or pinned it. phux's own consumers pin the
-/// SHA-256 fingerprint and ignore the name entirely, so this reports the
-/// third-party path, not the phux one.
-///
-/// `Err` means the certificate could not be read or parsed at all; a name that
-/// simply is not covered is `Ok(false)`.
+/// Runs rustls' own webpki name check. phux's
+/// consumers pin the fingerprint and ignore the name, so this reports the
+/// third-party path. `Err` means the certificate could not be read; an
+/// uncovered or unparseable name is `Ok(false)`.
 pub fn covers_name(cert_path: &Path, name: &str) -> Result<bool, TlsError> {
-    let certs = load_certs(cert_path)?;
+    let certs = cert::load_certs(cert_path)?;
     let leaf = certs
         .first()
         .ok_or_else(|| TlsError::NoCerts(cert_path.display().to_string()))?;
     let parsed = rustls::server::ParsedCertificate::try_from(leaf)?;
-    // An unparseable server name cannot be covered by any certificate, and is
-    // not a defect in the certificate — report it as uncovered.
     let Ok(server_name) = ServerName::try_from(name.to_owned()) else {
         return Ok(false);
     };
     Ok(rustls::client::verify_server_name(&parsed, &server_name).is_ok())
 }
 
-/// Which of `names` the certificate at `cert_path` does **not** cover, in the
-/// order given. Empty when every name verifies (the healthy case).
-///
-/// The reporting counterpart to [`ensure_self_signed_for`]: provisioning
-/// chooses SANs once, and every later caller can only ask what it got.
+/// Which of `names` the certificate at `cert_path` does **not** cover, in
+/// order. Empty when every name verifies.
 pub fn uncovered_names(cert_path: &Path, names: &[String]) -> Result<Vec<String>, TlsError> {
     let mut missing = Vec::new();
     for name in names {
@@ -230,9 +153,8 @@ pub fn uncovered_names(cert_path: &Path, names: &[String]) -> Result<Vec<String>
     Ok(missing)
 }
 
-/// ALPN protocol id advertised on the QUIC listener. Owned by `phux-protocol`
-/// (the wire crate) so the server listener and the client dialer cannot drift;
-/// re-exported here for the QUIC transport's call sites and tests.
+/// ALPN protocol id advertised on the QUIC listener, owned by the wire crate
+/// so listener and dialer cannot drift.
 pub(crate) use phux_protocol::policy::QUIC_ALPN;
 
 /// Build a [`TlsAcceptor`] for the WebSocket listener from a PEM cert + key.
@@ -240,68 +162,72 @@ pub fn acceptor_from_pem(cert_path: &Path, key_path: &Path) -> Result<TlsAccepto
     acceptor_from_pem_with_client_ca(cert_path, key_path, None)
 }
 
-/// Build a WebSocket TLS acceptor that verifies client certificates against
-/// the workload CA certificate `client_ca`. `None` retains the legacy
-/// server-only TLS mode for local and compatibility callers.
+/// A WebSocket TLS acceptor that, with `client_ca`, verifies client
+/// certificates against the workload CA.
 pub(crate) fn acceptor_from_pem_with_client_ca(
     cert_path: &Path,
     key_path: &Path,
     client_ca: Option<&CertificateDer<'static>>,
 ) -> Result<TlsAcceptor, TlsError> {
-    Ok(TlsAcceptor::from(Arc::new(
-        server_config_from_pem_with_client_ca(cert_path, key_path, client_ca)?,
-    )))
+    Ok(TlsAcceptor::from(Arc::new(server_config(
+        cert_path, key_path, client_ca, false, None,
+    )?)))
 }
 
-/// Build the QUIC server config with optional mTLS client verification
-/// against the workload CA certificate `client_ca`.
+/// The QUIC server config (TLS 1.3, phux ALPN), with optional workload-CA
+/// client verification.
 pub(crate) fn quic_server_config_with_client_ca(
     cert_path: &Path,
     key_path: &Path,
     client_ca: Option<&CertificateDer<'static>>,
 ) -> Result<ServerConfig, TlsError> {
-    let certs = load_certs(cert_path)?;
-    let key = load_key(key_path)?;
+    server_config(cert_path, key_path, client_ca, true, Some(QUIC_ALPN))
+}
 
+/// The WebTransport server config: TLS 1.3 with the standard `h3` ALPN,
+/// since browsers offer exactly `h3`.
+#[cfg(feature = "webtransport")]
+pub(crate) fn webtransport_server_config(
+    cert_path: &Path,
+    key_path: &Path,
+) -> Result<ServerConfig, TlsError> {
+    server_config(cert_path, key_path, None, true, Some(b"h3"))
+}
+
+/// One rustls server config over the shared cert material. QUIC forbids
+/// anything below TLS 1.3; the `wss://` acceptor takes rustls' safe defaults.
+fn server_config(
+    cert_path: &Path,
+    key_path: &Path,
+    client_ca: Option<&CertificateDer<'static>>,
+    tls13_only: bool,
+    alpn: Option<&[u8]>,
+) -> Result<ServerConfig, TlsError> {
+    let certs = cert::load_certs(cert_path)?;
+    let key = cert::load_key(key_path)?;
     let builder =
-        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .map_err(TlsError::Rustls)?;
+        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()));
+    let builder = if tls13_only {
+        builder.with_protocol_versions(&[&rustls::version::TLS13])
+    } else {
+        builder.with_safe_default_protocol_versions()
+    }
+    .map_err(TlsError::Rustls)?;
     let mut config = match client_ca {
         Some(ca) => builder
             .with_client_cert_verifier(client_verifier(ca)?)
             .with_single_cert(certs, key)?,
         None => builder.with_no_client_auth().with_single_cert(certs, key)?,
     };
-    config.alpn_protocols = vec![QUIC_ALPN.to_vec()];
+    if let Some(alpn) = alpn {
+        config.alpn_protocols = vec![alpn.to_vec()];
+    }
     Ok(config)
 }
 
-fn server_config_from_pem_with_client_ca(
-    cert_path: &Path,
-    key_path: &Path,
-    client_ca: Option<&CertificateDer<'static>>,
-) -> Result<ServerConfig, TlsError> {
-    let certs = load_certs(cert_path)?;
-    let key = load_key(key_path)?;
-    let builder =
-        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .map_err(TlsError::Rustls)?;
-    Ok(match client_ca {
-        Some(ca) => builder
-            .with_client_cert_verifier(client_verifier(ca)?)
-            .with_single_cert(certs, key)?,
-        None => builder.with_no_client_auth().with_single_cert(certs, key)?,
-    })
-}
-
-/// The client-certificate verifier the mTLS acceptors install for a workload
-/// CA. `phux workload add-key` checks a supplied certificate with this same
-/// verifier, so enrollment accepts exactly what the handshake accepts.
-///
-/// It is built from the CA certificate's DER as the workload store read it
-/// (owner, mode, and no-follow checked), never by re-reading a path.
+/// The client-certificate verifier for a workload CA, built from the DER the
+/// workload store already read. `phux workload add-key` uses the same one,
+/// so enrollment accepts exactly what the handshake accepts.
 pub(crate) fn client_verifier(
     ca: &CertificateDer<'static>,
 ) -> Result<Arc<dyn rustls::server::danger::ClientCertVerifier>, TlsError> {
@@ -312,51 +238,10 @@ pub(crate) fn client_verifier(
         .map_err(|error| TlsError::ClientVerifier(error.to_string()))
 }
 
-/// Build the rustls [`ServerConfig`] for the WebTransport listener from a PEM
-/// cert + key: TLS 1.3 only (QUIC forbids earlier versions) with the standard
-/// HTTP/3 ALPN.
-///
-/// Unlike the raw-QUIC listener (which advertises the phux-private
-/// [`QUIC_ALPN`]), WebTransport rides HTTP/3, and browsers offer exactly
-/// `h3` — a private ALPN would fail every browser handshake. Reuses the same
-/// cert material as the `wss://` and QUIC paths so one pinned fingerprint
-/// covers all three remote transports.
-#[cfg(feature = "webtransport")]
-pub(crate) fn webtransport_server_config(
-    cert_path: &Path,
-    key_path: &Path,
-) -> Result<ServerConfig, TlsError> {
-    let certs = load_certs(cert_path)?;
-    let key = load_key(key_path)?;
-
-    let mut config =
-        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .map_err(TlsError::Rustls)?
-            .with_no_client_auth()
-            .with_single_cert(certs, key)?;
-    // The IANA-registered HTTP/3 ALPN id. wtransport exports the same bytes
-    // (`wtransport::tls::WEBTRANSPORT_ALPN`); spelled literally here so this
-    // module stays wtransport-free apart from the cfg gate.
-    config.alpn_protocols = vec![b"h3".to_vec()];
-    Ok(config)
-}
-
-/// SHA-256 fingerprint of the leaf certificate, formatted as uppercase
-/// colon-separated hex (`AB:CD:…`) — the conventional shape for an
-/// out-of-band pin shown alongside a pairing token.
+/// SHA-256 fingerprint of the leaf certificate as uppercase colon-separated
+/// hex, the out-of-band pin `phux pair` shows.
 pub fn cert_fingerprint(cert_path: &Path) -> Result<String, TlsError> {
     Ok(cert::cert_fingerprint(cert_path)?)
-}
-
-/// Read the PEM certificate chain.
-fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsError> {
-    Ok(cert::load_certs(path)?)
-}
-
-/// Read the first PEM private key (PKCS#8, SEC1, or PKCS#1).
-fn load_key(path: &Path) -> Result<PrivateKeyDer<'static>, TlsError> {
-    Ok(cert::load_key(path)?)
 }
 
 #[cfg(test)]
@@ -365,26 +250,26 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn ensure_self_signed_refuses_a_partial_pair() {
+    fn fresh_pair() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let cert = dir.path().join("remote-cert.pem");
         let key = dir.path().join("remote-key.pem");
         ensure_self_signed(&cert, &key).unwrap();
+        (dir, cert, key)
+    }
+
+    #[test]
+    fn ensure_self_signed_refuses_a_partial_pair() {
+        let (_dir, cert, key) = fresh_pair();
         let fp = cert_fingerprint(&cert).unwrap();
 
-        // Key lost, cert survives: must refuse, not silently rotate the
-        // fingerprint every paired device pins.
+        // Key lost, cert survives: refuse rather than rotate the pinned
+        // fingerprint.
         fs::remove_file(&key).unwrap();
         let err = ensure_self_signed(&cert, &key).unwrap_err();
         assert!(matches!(err, TlsError::PartialTlsPair { .. }), "{err}");
-        assert_eq!(
-            cert_fingerprint(&cert).unwrap(),
-            fp,
-            "cert must be untouched"
-        );
+        assert_eq!(cert_fingerprint(&cert).unwrap(), fp);
 
-        // Cert lost, key survives: same refusal.
         fs::remove_file(&cert).unwrap();
         fs::write(&key, "not-a-real-key").unwrap();
         let err = ensure_self_signed(&cert, &key).unwrap_err();
@@ -393,114 +278,59 @@ mod tests {
 
     #[test]
     fn ensure_self_signed_provisions_then_is_idempotent_and_builds() {
-        let dir = tempfile::tempdir().unwrap();
-        let cert = dir.path().join("remote-cert.pem");
-        let key = dir.path().join("remote-key.pem");
-
-        ensure_self_signed(&cert, &key).unwrap();
-        assert!(cert.exists() && key.exists());
-
-        // Private key is owner-only; the certificate is public.
+        let (dir, cert, key) = fresh_pair();
         let key_mode = fs::metadata(&key).unwrap().permissions().mode() & 0o777;
         assert_eq!(key_mode, 0o600, "private key must be owner-only");
 
-        // Idempotent: a second call does not regenerate, so the pinned
-        // fingerprint stays stable across restarts.
         let fp1 = cert_fingerprint(&cert).unwrap();
         ensure_self_signed(&cert, &key).unwrap();
-        let fp2 = cert_fingerprint(&cert).unwrap();
-        assert_eq!(fp1, fp2);
-
-        // Fingerprint shape: 32 SHA-256 bytes as colon-separated hex pairs.
+        assert_eq!(fp1, cert_fingerprint(&cert).unwrap());
         assert_eq!(fp1.matches(':').count(), 31);
         assert!(fp1.bytes().all(|b| b.is_ascii_hexdigit() || b == b':'));
-
-        // The generated material builds a working acceptor.
         acceptor_from_pem(&cert, &key).unwrap();
+
+        let missing = dir.path().join("nope.pem");
+        assert!(acceptor_from_pem(&missing, &missing).is_err());
+        assert!(cert_fingerprint(&missing).is_err());
     }
 
     #[test]
     fn advertised_for_bind_names_only_a_dialable_address() {
-        use std::net::SocketAddr;
-
-        let advertised = |s: &str| advertised_for_bind(s.parse::<SocketAddr>().unwrap());
-
-        // A specific routable bind is the address a consumer dials.
+        let advertised = |s: &str| advertised_for_bind(s.parse().unwrap());
         assert_eq!(advertised("100.64.0.2:8787"), vec!["100.64.0.2"]);
-        // v6 goes in unbracketed: a SAN holds the address, not a URL authority.
         assert_eq!(
             advertised("[fd7a:115c:a1e0::1]:8787"),
             vec!["fd7a:115c:a1e0::1"]
         );
-        // Loopback adds nothing — LOOPBACK_SANS already names it.
-        assert!(advertised("127.0.0.1:8787").is_empty());
-        assert!(advertised("[::1]:8787").is_empty());
-        // A wildcard bind names no address at all, so there is nothing to put
-        // in a SAN. `phux pair` covers that case by detecting the overlay.
-        assert!(advertised("0.0.0.0:8787").is_empty());
-        assert!(advertised("[::]:8787").is_empty());
+        for bind in ["127.0.0.1:8787", "[::1]:8787", "0.0.0.0:8787", "[::]:8787"] {
+            assert!(advertised(bind).is_empty(), "{bind}");
+        }
     }
 
-    /// An already-provisioned certificate is never widened (ADR-0091):
-    /// regenerating rotates the fingerprint every paired device pins, so the
-    /// second call must be a no-op even when it asks for a new address.
+    /// ADR-0091: a wider request never reissues an existing certificate; the
+    /// gap is reported instead.
     #[test]
     fn an_existing_cert_is_never_widened() {
-        let dir = tempfile::tempdir().unwrap();
-        let cert = dir.path().join("remote-cert.pem");
-        let key = dir.path().join("remote-key.pem");
-
-        ensure_self_signed(&cert, &key).unwrap();
+        let (_dir, cert, key) = fresh_pair();
         let fp = cert_fingerprint(&cert).unwrap();
-        assert!(!covers_name(&cert, "100.64.0.2").unwrap());
 
         ensure_self_signed_for(&cert, &key, &["100.64.0.2".to_owned()]).unwrap();
-        assert_eq!(
-            cert_fingerprint(&cert).unwrap(),
-            fp,
-            "the pinned fingerprint must survive a wider request"
-        );
-        assert!(
-            !covers_name(&cert, "100.64.0.2").unwrap(),
-            "the certificate must not have been silently reissued"
-        );
+        assert_eq!(cert_fingerprint(&cert).unwrap(), fp);
+        assert!(!covers_name(&cert, "100.64.0.2").unwrap());
         assert_eq!(
             uncovered_names(&cert, &["100.64.0.2".to_owned(), "127.0.0.1".to_owned()]).unwrap(),
             vec!["100.64.0.2"],
-            "the gap is reported instead, which is what doctor and pair print"
         );
-    }
-
-    #[test]
-    fn covers_name_rejects_an_unparseable_name_without_erroring() {
-        let dir = tempfile::tempdir().unwrap();
-        let cert = dir.path().join("remote-cert.pem");
-        let key = dir.path().join("remote-key.pem");
-        ensure_self_signed(&cert, &key).unwrap();
-
-        // Not a certificate defect — no certificate can cover it — so this is
-        // `Ok(false)` rather than an error that would mask a real one.
+        // An unparseable name is uncovered, not a certificate error.
         assert!(!covers_name(&cert, "not a valid name").unwrap());
         assert!(!covers_name(&cert, "").unwrap());
     }
 
     #[test]
-    fn acceptor_and_fingerprint_error_on_missing_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let missing_cert = dir.path().join("nope.pem");
-        let missing_key = dir.path().join("nope.key");
-        assert!(acceptor_from_pem(&missing_cert, &missing_key).is_err());
-        assert!(cert_fingerprint(&missing_cert).is_err());
-    }
-
-    #[test]
     fn m_tls_acceptor_and_quic_config_accept_a_workload_ca() {
-        let dir = tempfile::tempdir().unwrap();
-        let cert = dir.path().join("remote-cert.pem");
-        let key = dir.path().join("remote-key.pem");
+        let (dir, cert, key) = fresh_pair();
         let ca = dir.path().join("workload-ca.pem");
         let ca_key = dir.path().join("workload-ca.key");
-        ensure_self_signed(&cert, &key).unwrap();
         crate::workload::ensure_ca(&ca, &ca_key).unwrap();
         let ca = crate::workload::authority_certificate(&ca).unwrap();
         acceptor_from_pem_with_client_ca(&cert, &key, Some(&ca)).unwrap();

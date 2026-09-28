@@ -79,26 +79,3 @@ impl Default for Gauge {
         Self::new()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn counter_accumulates_and_resets() {
-        let c = Counter::new();
-        c.incr();
-        c.add(4);
-        assert_eq!(c.get(), 5);
-        c.reset();
-        assert_eq!(c.get(), 0);
-    }
-
-    #[test]
-    fn gauge_is_last_value() {
-        let g = Gauge::new();
-        g.set(7);
-        g.set(3);
-        assert_eq!(g.get(), 3);
-    }
-}

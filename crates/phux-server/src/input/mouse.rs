@@ -1,12 +1,6 @@
-//! Wire `MouseEvent` → libghostty allocator-bound `mouse::Event` + per-pane encoder.
-//!
-//! Per ADR-0008, `MouseAction` and `MouseButton` are re-exports of
-//! libghostty's `mouse::{Action, Button}`. Composition is the only work
-//! here; no enum conversions.
-//!
-//! The wire form treats [`MouseButton::Unknown`] as the "no button"
-//! sentinel for naked motion. libghostty's encoder takes `Option<Button>`,
-//! so this module wraps each call site with `option_for_encoder`.
+//! Wire `MouseEvent` -> libghostty `mouse::Event` plus a per-pane encoder.
+//! The wire atoms are libghostty's own types (ADR-0008);
+//! [`MouseButton::Unknown`] is the wire's "no button" sentinel for motion.
 
 use libghostty_vt::{
     Error, Terminal as GhosttyTerminal,
@@ -16,27 +10,21 @@ use libghostty_vt::{
 };
 use phux_protocol::input::mouse::{MouseButton, MouseEvent};
 
-/// Treat [`MouseButton::Unknown`] as the wire sentinel for "no button" and
-/// hand libghostty `None` for it. Every other variant flows through
-/// verbatim (they're the same type).
-#[must_use]
-pub const fn option_for_encoder(button: MouseButton) -> Option<MouseButton> {
+/// libghostty takes `None` for the wire's `Unknown` "no button" sentinel.
+const fn option_for_encoder(button: MouseButton) -> Option<MouseButton> {
     match button {
         MouseButton::Unknown => None,
         other => Some(other),
     }
 }
 
-/// Build a libghostty `mouse::Event` from our wire `MouseEvent`.
-///
-/// Fallibility comes only from libghostty's FFI allocator. Wire positions
-/// are `f64`; libghostty's `MousePosition` is `f32` — downcast here. (That
-/// surface-pixel precision is ample for terminal cell geometry.)
+/// Build a libghostty `mouse::Event` from a wire `MouseEvent`, downcasting
+/// the `f64` surface position to libghostty's `f32`.
 #[allow(
     clippy::cast_possible_truncation,
-    reason = "f64 → f32 downcast is by design — libghostty's surface coords are f32"
+    reason = "libghostty's surface coords are f32"
 )]
-pub fn mouse_event_to_libghostty(ev: &MouseEvent) -> Result<LgMouseEvent<'static>, Error> {
+fn mouse_event_to_libghostty(ev: &MouseEvent) -> Result<LgMouseEvent<'static>, Error> {
     let mut out = LgMouseEvent::new()?;
     out.set_action(ev.action.into())
         .set_button(option_for_encoder(ev.button).map(Into::into))
@@ -48,11 +36,8 @@ pub fn mouse_event_to_libghostty(ev: &MouseEvent) -> Result<LgMouseEvent<'static
     Ok(out)
 }
 
-/// Per-pane mouse encoder.
-///
-/// Wraps one `libghostty_vt::mouse::Encoder` plus a reusable byte buffer.
-/// Per-pane: tracking mode, output format, and motion-deduplication state
-/// reflect a single pane's terminal modes.
+/// Per-pane mouse encoder: tracking mode, format, and motion-dedupe state
+/// reflect one pane's terminal.
 #[derive(Debug)]
 pub struct PerTerminalMouseEncoder {
     encoder: LgMouseEncoder<'static>,
@@ -68,18 +53,12 @@ impl PerTerminalMouseEncoder {
         })
     }
 
-    /// Encode a wire mouse event into PTY bytes.
+    /// Encode a wire mouse event into PTY bytes, with tracking mode and
+    /// format refreshed from `terminal`.
     ///
-    /// Refreshes tracking-mode and format from `terminal` before each call
-    /// so the encoded sequence matches whatever the inner program currently
-    /// has enabled, and rebuilds `EncoderSize` from the terminal's grid plus
-    /// `cell_px` (per-cell pixel size, SPEC input.md §3.2). The size is NOT
-    /// optional: libghostty's encoder converts surface-space pixel positions
-    /// to cells through it, and with zero cell geometry it encodes every
-    /// event — clicks and wheel alike — to zero bytes (phux-yyex).
-    ///
-    /// `cell_px` axes are clamped to a 1px minimum so a degenerate resize can
-    /// never regress to the encode-to-nothing state.
+    /// The encoder converts surface pixels to cells through the grid size
+    /// and `cell_px` (SPEC input.md §3.2); zero geometry would encode every
+    /// event to nothing, so each axis is clamped to at least 1px.
     pub fn encode(
         &mut self,
         event: &MouseEvent,
@@ -141,123 +120,83 @@ mod tests {
         let pos = lg.position();
         assert!((pos.x - 12.5_f32).abs() < f32::EPSILON);
         assert!((pos.y - 34.25_f32).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn unknown_button_maps_to_none() {
-        let ev = MouseEvent {
-            action: MouseAction::Motion,
+        let motion = MouseEvent {
             button: MouseButton::Unknown,
-            mods: ModSet::empty(),
-            x: 0.0,
-            y: 0.0,
+            ..ev
         };
-        let lg = mouse_event_to_libghostty(&ev).expect("convert");
-        assert_eq!(lg.button(), None);
+        assert_eq!(
+            mouse_event_to_libghostty(&motion)
+                .expect("convert")
+                .button(),
+            None
+        );
     }
 
-    use libghostty_vt::Terminal;
-
-    /// 80x24 terminal that has already applied `modes` (raw VT bytes).
-    fn terminal_with(modes: &[u8]) -> Terminal<'static, 'static> {
-        let mut t = {
-            let mut terminal = Terminal::new(80, 24).expect("Terminal::new");
-            terminal
-                .set_scrollback_max_lines(Some(0))
-                .expect("Terminal::new");
-            terminal
-        };
-        t.vt_write(modes);
-        t
-    }
-
-    /// Wire event at surface pixel (x, y). Cell-quantized clients emit
-    /// `cell_index x cell_size` per SPEC input.md §3.1.
-    fn event_at(action: MouseAction, button: MouseButton, x: f64, y: f64) -> MouseEvent {
-        MouseEvent {
-            action,
-            button,
-            mods: ModSet::empty(),
-            x,
-            y,
-        }
-    }
-
-    /// phux-yyex regression: without `EncoderSize` libghostty encodes every
-    /// mouse event to zero bytes, so the server silently dropped ALL mouse
-    /// input. A click against an SGR-tracking terminal must produce bytes.
-    #[test]
-    fn click_encodes_sgr_bytes_with_cell_geometry() {
-        // Claude Code's probed mode set: ?1000h ?1002h ?1003h ?1006h.
-        let t = terminal_with(b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
-        let mut enc = PerTerminalMouseEncoder::new().expect("encoder");
-        // Cell 10,5 emitted at 8x16px cells => surface position (80, 80).
-        let bytes = enc
-            .encode(
-                &event_at(MouseAction::Press, MouseButton::Left, 80.0, 80.0),
-                &t,
-                (8, 16),
-            )
-            .expect("encode");
-        // SGR press, button 0, 1-based cell coords: col 11, row 6.
-        assert_eq!(bytes, b"\x1b[<0;11;6M");
-    }
+    /// phux-yyex regression: without cell geometry libghostty encoded every
+    /// mouse event to nothing. Clicks and wheel encode as SGR, zero geometry
+    /// clamps to 1px, and an untracked terminal still encodes nothing.
+    /// `(modes, button, x, y, cell_px, expected bytes)`.
+    type Case = (
+        &'static [u8],
+        MouseButton,
+        f64,
+        f64,
+        (u16, u16),
+        &'static [u8],
+    );
 
     #[test]
-    fn wheel_encodes_sgr_scroll_buttons() {
-        let t = terminal_with(b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
-        let mut enc = PerTerminalMouseEncoder::new().expect("encoder");
-        let up = enc
-            .encode(
-                &event_at(MouseAction::Press, MouseButton::Four, 80.0, 80.0),
-                &t,
+    fn mouse_encoding_table() {
+        const SGR: &[u8] = b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
+        // Cell (10, 5) at 8x16px cells is surface (80, 80): 1-based (11, 6).
+        let cases: [Case; 5] = [
+            (
+                SGR,
+                MouseButton::Left,
+                80.0,
+                80.0,
                 (8, 16),
-            )
-            .expect("encode")
-            .to_vec();
-        assert_eq!(up, b"\x1b[<64;11;6M");
-        let down = enc
-            .encode(
-                &event_at(MouseAction::Press, MouseButton::Five, 80.0, 80.0),
-                &t,
+                b"\x1b[<0;11;6M",
+            ),
+            (
+                SGR,
+                MouseButton::Four,
+                80.0,
+                80.0,
                 (8, 16),
-            )
-            .expect("encode")
-            .to_vec();
-        assert_eq!(down, b"\x1b[<65;11;6M");
-    }
-
-    /// A terminal whose program never enabled mouse tracking still encodes
-    /// to nothing — the drop is the ENCODER's mode decision, not a geometry
-    /// accident.
-    #[test]
-    fn no_tracking_mode_encodes_to_nothing() {
-        let t = terminal_with(b"");
-        let mut enc = PerTerminalMouseEncoder::new().expect("encoder");
-        let bytes = enc
-            .encode(
-                &event_at(MouseAction::Press, MouseButton::Left, 80.0, 80.0),
-                &t,
+                b"\x1b[<64;11;6M",
+            ),
+            (
+                SGR,
+                MouseButton::Five,
+                80.0,
+                80.0,
                 (8, 16),
-            )
-            .expect("encode");
-        assert!(bytes.is_empty());
-    }
-
-    /// Degenerate zero cell geometry (a hostile or buggy resize) must not
-    /// regress to the encode-to-nothing state: axes clamp to 1px.
-    #[test]
-    fn zero_cell_geometry_clamps_and_still_encodes() {
-        let t = terminal_with(b"\x1b[?1000h\x1b[?1006h");
-        let mut enc = PerTerminalMouseEncoder::new().expect("encoder");
-        let bytes = enc
-            .encode(
-                &event_at(MouseAction::Press, MouseButton::Left, 10.0, 5.0),
-                &t,
+                b"\x1b[<65;11;6M",
+            ),
+            (
+                b"\x1b[?1000h\x1b[?1006h",
+                MouseButton::Left,
+                10.0,
+                5.0,
                 (0, 0),
-            )
-            .expect("encode");
-        // 1px cells: surface (10, 5) is cell (10, 5), 1-based (11, 6).
-        assert_eq!(bytes, b"\x1b[<0;11;6M");
+                b"\x1b[<0;11;6M",
+            ),
+            (b"", MouseButton::Left, 80.0, 80.0, (8, 16), b""),
+        ];
+        for (modes, button, x, y, cell_px, want) in cases {
+            let mut terminal = GhosttyTerminal::new(80, 24).expect("Terminal::new");
+            terminal.vt_write(modes);
+            let event = MouseEvent {
+                action: MouseAction::Press,
+                button,
+                mods: ModSet::empty(),
+                x,
+                y,
+            };
+            let mut enc = PerTerminalMouseEncoder::new().expect("encoder");
+            let got = enc.encode(&event, &terminal, cell_px).expect("encode");
+            assert_eq!(got, want, "{button:?} at ({x}, {y}) with {cell_px:?}");
+        }
     }
 }

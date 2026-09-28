@@ -11,7 +11,6 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -20,7 +19,6 @@ use phux_client::layout::{LayoutNode, SplitDir, Workspace};
 use phux_client::layout_ops::{LayoutOps, LayoutOpsError, layout_key};
 use phux_protocol::ids::{GroupId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{FrameKind, Scope};
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const SESSION: &str = "work";
@@ -361,18 +359,7 @@ impl ServerGuard {
     }
 }
 
-struct AttachedClient {
-    child: Box<dyn portable_pty::Child + Send + Sync>,
-    writer: Box<dyn Write + Send>,
-    _config: tempfile::TempDir,
-}
-
-impl Drop for AttachedClient {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
+struct AttachedClient(common::PtyAttach);
 
 impl AttachedClient {
     fn start(server: &ServerGuard) -> Self {
@@ -380,72 +367,30 @@ impl AttachedClient {
     }
 
     fn start_named_at_size(server: &ServerGuard, session: &str, cols: u16, rows: u16) -> Self {
-        let pty = native_pty_system();
-        let pair = pty
-            .openpty(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("open attach PTY");
-        let config = tempfile::tempdir().expect("isolated config dir");
-        let mut command = CommandBuilder::new(PHUX);
-        command.args([
-            "attach",
-            "--socket",
-            server.socket.to_str().expect("UTF-8 socket"),
-            session,
-        ]);
-        command.env("SHELL", "/bin/sh");
-        command.env("TERM", "xterm-256color");
-        command.env("RUST_LOG", "off");
-        command.env("HOME", server.dir.path().join("home"));
-        command.env("XDG_CONFIG_HOME", config.path());
-        command.env("XDG_STATE_HOME", server.dir.path().join("state"));
-        command.env("XDG_RUNTIME_DIR", server.dir.path().join("runtime"));
-        let child = pair
-            .slave
-            .spawn_command(command)
-            .expect("spawn attached TUI");
-        drop(pair.slave);
-
-        // Drain paint output continuously so the PTY cannot backpressure the
-        // real client while the test drives metadata and input concurrently.
-        let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
-        std::thread::spawn(move || {
-            let mut bytes = [0u8; 8192];
-            while let Ok(read) = reader.read(&mut bytes) {
-                if read == 0 {
-                    break;
-                }
-            }
-        });
-        let writer = pair.master.take_writer().expect("take PTY writer");
-        Self {
-            child,
-            writer,
-            _config: config,
-        }
+        let dir = server.dir.path();
+        Self(common::PtyAttach::start(
+            &server.socket,
+            &[session],
+            (cols, rows),
+            &[
+                ("HOME", dir.join("home").as_os_str()),
+                ("XDG_STATE_HOME", dir.join("state").as_os_str()),
+                ("XDG_RUNTIME_DIR", dir.join("runtime").as_os_str()),
+            ],
+        ))
     }
 
+    /// Applied in the same input turn as a following `type_marker`.
     fn next_pane(&mut self) {
-        // Applied in the same input turn as a following `type_marker` write.
-        // A settle sleep here is a load-dependent bet (phux-5wxp.1).
-        self.writer.write_all(b"\x01o").expect("send C-a o");
-        self.writer.flush().expect("flush focus chord");
+        self.0.send(b"\x01o");
     }
 
     fn type_marker(&mut self, marker: &str) {
-        self.writer
-            .write_all(format!("echo {marker}\r").as_bytes())
-            .expect("type marker through attached client");
-        self.writer.flush().expect("flush marker");
+        self.0.send(format!("echo {marker}\r").as_bytes());
     }
 
     fn detach(&mut self) {
-        self.writer.write_all(b"\x01d").expect("send C-a d");
-        self.writer.flush().expect("flush detach chord");
+        self.0.send(b"\x01d");
     }
 }
 

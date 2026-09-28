@@ -7,9 +7,8 @@ mod offline;
 mod prompt;
 mod record;
 mod report_state;
-// The AgentSession resource verbs: `session open|close`, `emit`, `log`
-// (ADR-0103). `session.rs` beside it is the older provider-native resume
-// record, which is unrelated: that one is L3 metadata, this one a resource.
+// AgentSession resource verbs (ADR-0103); unrelated to `session.rs`, the
+// provider-native resume record in L3 metadata.
 mod resource_session;
 mod send_keys;
 mod session;
@@ -31,17 +30,8 @@ use self::detect::infer_agent_state;
 use self::model::{AgentStateReport, PaneEvidence};
 use self::record::{run_agent_clear, run_agent_set};
 
-// Shared with the `phux config agents` live projection (phux-r82.10):
-// the pipelined per-pane `phux.agent/v1` index and the pane formatter.
-pub(crate) use self::model::format_terminal;
 pub(crate) use self::record::fetch_agent_index;
-pub(crate) use self::session::{
-    AgentSessionRecord, PreparedAgentSession, fetch_record_index, prepare, prepare_for_launch,
-};
-// `AgentSessionRecord`/`fetch_record_index` above are `session.rs`
-// re-exports of `phux_client::agent_session_record` (the wire round trips
-// now live there); `session.rs` keeps only the launch-plan
-// resolution that needs `phux-plugin`.
+pub(crate) use self::session::{PreparedAgentSession, prepare, prepare_for_launch};
 
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum AgentAction {
@@ -397,13 +387,8 @@ pub(crate) enum AgentAction {
         target: String,
         /// Record type, one of the closed `AgentEventsJsonlV1` set. A type
         /// outside it is refused as `record_invalid`, with nothing written.
-        // Deliberately an open string at the argv layer. The closed set is
-        // enforced one layer down, in `EmitRecord::new`, where the refusal
-        // is the `record_invalid` document the consumer guide promises a
-        // producer: exit 2, nothing written, a machine-readable `code`. A
-        // clap `value_parser` here beat it to the answer with a usage error
-        // on stderr, which is the one shape an agent harness cannot parse
-        // alongside the other four refusals of the same verb.
+        // An open string here so `EmitRecord::new` answers with the
+        // machine-readable `record_invalid` document, not a usage error.
         #[usage(long = "type", value_name = "T")]
         event_type: String,
         /// Record payload: a JSON object inline, or `-` to read it from
@@ -461,9 +446,7 @@ pub(crate) enum AgentAction {
 pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCode {
     match action {
         AgentAction::List { json } => run_agent_list(*json, socket),
-        // `--file` is the offline manifest debugger: no socket, no runtime,
-        // no server. Routed before the live path so a capture can be
-        // explained on a machine with no phux running at all.
+        // `--file` is the offline manifest debugger: no server needed.
         AgentAction::Explain {
             json,
             file: Some(path),
@@ -478,7 +461,12 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
             format.as_deref(),
             *json,
         ),
-        AgentAction::Show { .. } | AgentAction::Explain { .. } => run_agent_one(action, socket),
+        AgentAction::Show { target, json } => {
+            run_agent_one(target.as_deref(), *json, AgentView::Show, socket)
+        }
+        AgentAction::Explain { target, json, .. } => {
+            run_agent_one(target.as_deref(), *json, AgentView::Explain, socket)
+        }
         AgentAction::Set {
             target,
             name,
@@ -512,7 +500,30 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
             *json,
             socket,
         ),
-        AgentAction::Start { .. } => start::run_agent_start(action, socket),
+        AgentAction::Start {
+            name,
+            kind,
+            target,
+            integration,
+            timeout,
+            no_wait,
+            force,
+            json,
+            args,
+        } => start::start(
+            &start::StartRequest {
+                name,
+                kind,
+                target,
+                integration: integration.as_deref(),
+                timeout: *timeout,
+                no_wait: *no_wait,
+                force: *force,
+                json: *json,
+                args,
+            },
+            socket,
+        ),
         AgentAction::Clear { target } => run_agent_clear(target.as_deref(), socket),
         AgentAction::Session { action } => match action {
             resource_session::SessionAction::Open {
@@ -611,34 +622,18 @@ fn run_agent_list(json: bool, socket: Option<PathBuf>) -> ExitCode {
         };
         let plugins = configured_agents();
         let states = classify_snapshot(&socket_path, &snapshot, &plugins).await;
-        // An enumeration, like `phux ls`: every row printed is true, the list
-        // is just short. Warn and succeed rather than fail the whole roster
-        // over one unreachable satellite.
+        // An enumeration, like `phux ls`: warn about a partial view and succeed.
         partial::warn_partial_view("agent list", &degradation);
         print_agent_states(&states, json, AgentView::Show)
     })
 }
 
-fn run_agent_one(action: &AgentAction, socket: Option<PathBuf>) -> ExitCode {
-    let (target, json, view) = match action {
-        AgentAction::Show { target, json } => (target.as_deref(), *json, AgentView::Show),
-        AgentAction::Explain { target, json, .. } => (target.as_deref(), *json, AgentView::Explain),
-        AgentAction::Answer { .. }
-        | AgentAction::List { .. }
-        | AgentAction::Set { .. }
-        | AgentAction::ReportState { .. }
-        | AgentAction::Clear { .. }
-        | AgentAction::Wait { .. }
-        | AgentAction::Prompt { .. }
-        | AgentAction::SendKeys { .. }
-        | AgentAction::InstallClaude { .. }
-        | AgentAction::Start { .. }
-        | AgentAction::Session { .. }
-        | AgentAction::Emit { .. }
-        | AgentAction::Log { .. }
-        | AgentAction::UninstallClaude
-        | AgentAction::HookPayload => return ExitCode::FAILURE,
-    };
+fn run_agent_one(
+    target: Option<&str>,
+    json: bool,
+    view: AgentView,
+    socket: Option<PathBuf>,
+) -> ExitCode {
     let selector = match parse_selector(target) {
         Ok(selector) => selector,
         Err(code) => return code,
@@ -655,7 +650,7 @@ fn run_agent_one(action: &AgentAction, socket: Option<PathBuf>) -> ExitCode {
         };
         // `%name` is singular (ADR-0075 point 3): the agent's pane, or a
         // refusal that names why — never `pick_target_pane` over a set.
-        let target_id = if let crate::selector::Selector::Agent(name) = &selector {
+        let target_id = if let phux_client::selector::Selector::Agent(name) = &selector {
             match phux_client::state::resolve_agent_target(&socket_path, name, &snapshot, false)
                 .await
             {
@@ -664,11 +659,8 @@ fn run_agent_one(action: &AgentAction, socket: Option<PathBuf>) -> ExitCode {
             }
         } else {
             let candidates = resolve_targets(&socket_path, &selector, &snapshot).await;
-            // `show` / `explain` address one Terminal, and `panes` is the list
-            // a hub merges — so both misses below are the ambiguous kind
-            // whenever the fleet view is partial.
             let Some(target_id) =
-                crate::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
+                phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
             else {
                 return partial::report_target_miss(target, &degradation);
             };
@@ -678,7 +670,7 @@ fn run_agent_one(action: &AgentAction, socket: Option<PathBuf>) -> ExitCode {
         let states = classify_snapshot(&socket_path, &snapshot, &plugins).await;
         let Some(state) = states
             .into_iter()
-            .find(|state| state.terminal == format_terminal(&target_id))
+            .find(|state| state.terminal == phux_client::selector::format_terminal_id(&target_id))
         else {
             return partial::report_target_miss(target, &degradation);
         };
@@ -688,11 +680,6 @@ fn run_agent_one(action: &AgentAction, socket: Option<PathBuf>) -> ExitCode {
 }
 
 /// One `GET_STATE`, plus what it could not see.
-///
-/// Returned as a pair rather than a bare snapshot because the two `agent`
-/// readers disagree about what to do with the second half: `list` enumerates
-/// (warn, exit 0), `show`/`explain` resolve a Terminal (a miss under
-/// degradation is unresolved, not absent).
 async fn fetch_snapshot(
     socket_path: &Path,
     verb: &str,
@@ -708,8 +695,7 @@ async fn classify_snapshot(
     snapshot: &SessionSnapshot,
     plugins: &[model::PluginAgent],
 ) -> Vec<AgentStateReport> {
-    // ADR-0040: structured `phux.agent/v1` records outrank every heuristic
-    // source, so fetch them up front (one pipelined connection).
+    // Structured `phux.agent/v1` records outrank every heuristic (ADR-0040).
     let records = fetch_agent_index(socket_path, snapshot).await;
     let mut states = Vec::with_capacity(snapshot.resources.len());
     // Terminal-kind resources only: an `AgentSession` is reported under its
@@ -734,14 +720,12 @@ async fn pane_evidence(
             .ok();
     let window = snapshot.windows.iter().find(|w| w.id == pane.window_id);
     let session = window.and_then(|w| session_for_window(snapshot, w));
-    // ADR-0103: the pane's live agent session, when it has exactly one. Two
-    // children is a state this projection does not pick between — neither
-    // is "the" session — so it reports none and leaves the choice to `@N`.
+    // The pane's live agent session only when it has exactly one (ADR-0103).
     let agent_session = {
         let mut children = phux_client::resource::children_of(snapshot, &pane.id);
         match (children.next(), children.next()) {
             (Some(child), None) => child.agent.as_ref().map(|facet| model::SessionEvidence {
-                resource: format_terminal(&child.id),
+                resource: phux_client::selector::format_terminal_id(&child.id),
                 provider: facet.provider.clone(),
                 native_id: facet.native_id.clone(),
                 state: phux_client::agent_meta::AgentMetaState::from(facet.state.clone()),
@@ -750,7 +734,7 @@ async fn pane_evidence(
         }
     };
     PaneEvidence {
-        terminal: format_terminal(&pane.id),
+        terminal: phux_client::selector::format_terminal_id(&pane.id),
         session: session.map_or_else(|| "unknown".to_owned(), |s| s.name.clone()),
         window: window_label(window),
         title: pane.title.clone(),

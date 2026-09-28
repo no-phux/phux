@@ -1,34 +1,16 @@
 //! Route-bound enrollment tokens for connector tunnels (ADR-0052
-//! Decision 2).
+//! Decision 2): which route a presented tunnel token is enrolled for.
 //!
-//! The store answers the question the server's `auth::TokenStore` cannot:
-//! not just *whether* a presented tunnel token is valid, but *which route*
-//! it is enrolled for. The on-disk format rhymes with `remote-tokens` so
-//! operators recognize it — line-oriented text, one entry per line:
+//! On disk, one owner-only (`0o600`) line per entry, `#` comments and blank
+//! lines ignored:
 //!
 //! ```text
 //! <64-char lowercase hex token> <route-name>
 //! ```
 //!
-//! `#` comments and blank lines are ignored; the file is owner-only
-//! (`0o600`). Revocation is deleting a line; listing is reading the file.
-//! The relay re-reads the file per connection attempt, so both take effect
-//! at the next handshake without a restart.
-//!
-//! Token and route are bound one-to-one: [`mint_route_token`] on an
-//! existing route REPLACES that route's line (rotation), preserving the
-//! bijection ADR-0052 establishes at enrollment.
-//!
-//! # On the `lib` <-> `tokens` import cycle
-//!
-//! This module imports [`crate::RelayError`] and the crate root re-exports
-//! this module's surface, so a module-level graph reports a cycle. It is a
-//! parent-child pair, not a cross-subsystem knot: the crate root owns the
-//! one shared error type every submodule fails with, and re-exports the
-//! crate's public vocabulary. Breaking it would mean either a private
-//! per-module error type that the root has to translate, or an `error`
-//! module whose only job is to hold one enum. Both are worse than the
-//! cycle. Kept deliberately (phux-4fbs.5).
+//! Revocation is deleting a line; the relay re-reads the file per connection
+//! attempt. Token and route are one-to-one: re-minting a route replaces its
+//! line.
 
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
@@ -40,20 +22,11 @@ use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 use crate::RelayError;
 
-/// Length in bytes of a minted enrollment token. 32 bytes (256 bits) from
-/// the OS CSPRNG, matching the server's pairing-token class.
-pub const TOKEN_LEN: usize = 32;
+/// Length in bytes of a minted enrollment token (256 bits from the OS CSPRNG).
+pub(crate) const TOKEN_LEN: usize = 32;
 
-/// Maximum route-name length: a DNS label is at most 63 octets, and route
-/// names ride TLS SNI as one label.
-pub const MAX_ROUTE_NAME_LEN: usize = 63;
-
-/// Default persisted path for the route-token store:
-/// `<state-dir>/relay-tokens`, sibling of the server's `remote-tokens`.
-#[must_use]
-pub fn default_relay_tokens_path() -> PathBuf {
-    crate::paths::state_dir().join("relay-tokens")
-}
+/// Maximum route-name length: one DNS label, since route names ride SNI.
+const MAX_ROUTE_NAME_LEN: usize = 63;
 
 /// One parsed store entry: a token and the route it is enrolled for.
 struct Entry {
@@ -122,14 +95,9 @@ impl RouteTokenStore {
     }
 
     /// Look up which route a presented tunnel token is enrolled for, in
-    /// constant time.
-    ///
-    /// Every entry is visited and the match accumulated with no early
-    /// return (the matched index is carried via a constant-time select),
-    /// so timing reveals neither which entry matched nor how many leading
-    /// bytes were correct. A presented token of the wrong length cannot
-    /// match (length is not a secret); it short-circuits to `None` without
-    /// consulting the store.
+    /// constant time: every entry is compared with no early exit, so timing
+    /// reveals neither the matching entry nor matching prefix length. A
+    /// wrong-length token (length is not secret) returns `None` at once.
     #[must_use]
     pub fn lookup(&self, presented: &[u8]) -> Option<&str> {
         let Ok(candidate) = <[u8; TOKEN_LEN]>::try_from(presented) else {
@@ -152,12 +120,10 @@ impl RouteTokenStore {
     }
 }
 
-/// Validate a route name against the lowercase RFC 1123 DNS-label grammar:
-/// `[a-z0-9-]`, 1 to 63 characters, no leading or trailing hyphen.
+/// Validate a route name against the lowercase RFC 1123 label grammar.
 ///
-/// Route names ride TLS SNI and freeze into deployed consumer configs on
-/// first contact, so anything outside the grammar is rejected — never
-/// normalized.
+/// `[a-z0-9-]`, 1 to 63 characters, no leading or trailing hyphen. Route
+/// names ride SNI, so anything else is rejected, never normalized.
 pub fn validate_route_name(name: &str) -> Result<(), RelayError> {
     let invalid = |reason: &'static str| RelayError::InvalidRouteName {
         name: name.to_owned(),
@@ -183,17 +149,12 @@ pub fn validate_route_name(name: &str) -> Result<(), RelayError> {
     Ok(())
 }
 
-/// Mint a fresh 32-byte enrollment token for `route`, write it to the
-/// store at `path` (created `0o600`), and return it as lowercase hex for
-/// one-time display at pairing time.
+/// Mint a fresh enrollment token for `route` into the store at `path` and
+/// return it as lowercase hex for one-time display.
 ///
-/// Minting for a route that already has an entry REPLACES that entry
-/// (rotation): exactly one line per route afterwards, preserving the
-/// ADR-0052 token-route bijection. Other routes' lines, comments, and
-/// blank lines are preserved verbatim. A malformed existing file is an
-/// error — it is never rewritten. The rewrite is atomic (owner-only temp
-/// file + rename), so a concurrent reader sees either the old or the new
-/// complete store; concurrent mints are last-write-wins.
+/// An existing entry for the route is replaced (rotation); other lines are
+/// kept verbatim. A malformed store is never rewritten. The rewrite is atomic
+/// (owner-only temp file + rename); concurrent mints are last-write-wins.
 pub fn mint_route_token(path: &Path, route: &str) -> Result<String, RelayError> {
     validate_route_name(route)?;
     let existing = read_store_or_empty(path)?;
@@ -264,14 +225,9 @@ fn ensure_parent_dir(path: &Path) -> Result<(), RelayError> {
     Ok(())
 }
 
-/// Atomic replacement: write the rebuilt store to an exclusively
-/// created owner-only sibling in the same directory (same filesystem,
-/// so the rename is atomic), fsync, then rename over the store. The
-/// relay re-reads this file per handshake; with rename it observes
-/// either the complete old file or the complete new one — never empty
-/// or torn — and a crash mid-mint leaves the previous store intact.
-/// Concurrent mints remain read-modify-write with no lock: last write
-/// wins (single-writer constraint, documented in docs/operations.md).
+/// Atomic replacement: write an exclusive owner-only sibling, fsync, and
+/// rename over the store, so a per-handshake reader never sees a torn file
+/// and a crash mid-mint leaves the previous store intact.
 fn replace_store_atomically(path: &Path, contents: &str) -> Result<(), RelayError> {
     let (tmp_path, mut file) = create_exclusive_sibling(path)?;
     let written = file
@@ -289,11 +245,9 @@ fn replace_store_atomically(path: &Path, contents: &str) -> Result<(), RelayErro
 /// Create an exclusively named owner-only temp file next to `store`, for
 /// atomic replacement via `rename`.
 ///
-/// The randomized suffix comes from the OS CSPRNG (like the tokens), so a
-/// `create_new` collision means a leftover or concurrent temp file — a
-/// few retries cover it; any other error propagates. `mode(0o600)` is
-/// filtered through the umask, so owner-only is re-enforced explicitly
-/// before any secret byte is written.
+/// A `create_new` collision on the random suffix is retried. `mode(0o600)`
+/// is filtered through the umask, so owner-only is re-applied before any
+/// secret byte is written.
 fn create_exclusive_sibling(store: &Path) -> Result<(PathBuf, fs::File), RelayError> {
     const ATTEMPTS: usize = 16;
     let dir = match store.parent() {
@@ -362,47 +316,31 @@ mod tests {
         assert!(store.lookup(&[0u8; TOKEN_LEN]).is_none());
     }
 
+    /// Comments and blanks are skipped; every entry resolves wherever it
+    /// sits (the no-early-exit scan still lands on the right index); unknown
+    /// and wrong-length tokens never match.
     #[test]
-    fn loads_entries_skipping_comments_and_blanks() {
+    fn loads_entries_and_looks_up_in_constant_time() {
         let f = write_store(&format!(
-            "# a comment\n\n{} alpha\n  {} beta\n",
-            hex_token(0xaa),
-            hex_token(0xbb)
-        ));
-        let store = RouteTokenStore::load(f.path()).unwrap();
-        assert_eq!(store.len(), 2);
-        assert_eq!(store.lookup(&[0xaa; TOKEN_LEN]), Some("alpha"));
-        assert_eq!(store.lookup(&[0xbb; TOKEN_LEN]), Some("beta"));
-        assert_eq!(
-            store.routes().into_iter().collect::<Vec<_>>(),
-            vec!["alpha".to_owned(), "beta".to_owned()]
-        );
-    }
-
-    #[test]
-    fn lookup_rejects_unknown_and_wrong_length() {
-        let f = write_store(&format!("{} alpha\n", hex_token(0xaa)));
-        let store = RouteTokenStore::load(f.path()).unwrap();
-        assert!(store.lookup(&[0xcc; TOKEN_LEN]).is_none());
-        assert!(store.lookup(b"too-short").is_none());
-        assert!(store.lookup(&[0xaa; TOKEN_LEN + 1]).is_none());
-        assert!(store.lookup(&[]).is_none());
-    }
-
-    #[test]
-    fn lookup_returns_bound_route_at_any_position() {
-        // First, middle, and last entries all resolve — the accumulate-only
-        // scan (no early exit) still lands on the right index.
-        let f = write_store(&format!(
-            "{} first\n{} middle\n{} last\n",
+            "# a comment\n\n{} first\n  {} middle\n{} last\n",
             hex_token(0x01),
             hex_token(0x02),
             hex_token(0x03)
         ));
         let store = RouteTokenStore::load(f.path()).unwrap();
+        assert_eq!(store.len(), 3);
         assert_eq!(store.lookup(&[0x01; TOKEN_LEN]), Some("first"));
         assert_eq!(store.lookup(&[0x02; TOKEN_LEN]), Some("middle"));
         assert_eq!(store.lookup(&[0x03; TOKEN_LEN]), Some("last"));
+        assert_eq!(
+            store.routes().into_iter().collect::<Vec<_>>(),
+            ["first", "last", "middle"]
+        );
+
+        assert!(store.lookup(&[0xcc; TOKEN_LEN]).is_none());
+        assert!(store.lookup(b"too-short").is_none());
+        assert!(store.lookup(&[0x01; TOKEN_LEN + 1]).is_none());
+        assert!(store.lookup(&[]).is_none());
     }
 
     #[test]
@@ -420,10 +358,6 @@ mod tests {
                 other => panic!("expected MalformedTokenLine for {contents:?}, got {other:?}"),
             }
         }
-    }
-
-    #[test]
-    fn bad_route_name_in_file_is_a_load_error() {
         let f = write_store(&format!("{} Not-Valid\n", hex_token(0xaa)));
         assert!(matches!(
             RouteTokenStore::load(f.path()),
@@ -433,93 +367,47 @@ mod tests {
 
     #[test]
     fn route_name_grammar_boundaries() {
-        validate_route_name("a").unwrap();
-        validate_route_name("a-b0").unwrap();
-        validate_route_name("0").unwrap();
-        validate_route_name(&"a".repeat(63)).unwrap();
-
-        assert!(validate_route_name("").is_err());
-        assert!(validate_route_name(&"a".repeat(64)).is_err());
-        assert!(validate_route_name("-a").is_err());
-        assert!(validate_route_name("a-").is_err());
-        assert!(validate_route_name("A").is_err(), "uppercase is rejected");
-        assert!(validate_route_name("a_b").is_err());
-        assert!(validate_route_name("a.b").is_err());
-        assert!(validate_route_name("a b").is_err());
+        for ok in ["a", "a-b0", "0", &"a".repeat(63)] {
+            validate_route_name(ok).unwrap();
+        }
+        for bad in ["", &"a".repeat(64), "-a", "a-", "A", "a_b", "a.b", "a b"] {
+            assert!(validate_route_name(bad).is_err(), "{bad:?}");
+        }
     }
 
+    /// Mint appends, re-mint replaces (old token dead, one line per route),
+    /// comments survive, the file is byte-exact and owner-only, and the
+    /// atomic rename leaves no temp files.
     #[test]
-    fn mint_creates_owner_only_store_with_verifiable_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("relay-tokens");
-
-        let encoded = mint_route_token(&path, "alpha").unwrap();
-        assert_eq!(encoded.len(), TOKEN_LEN * 2);
-
-        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "token store must be owner-only");
-
-        let store = RouteTokenStore::load(&path).unwrap();
-        assert_eq!(store.len(), 1);
-        assert_eq!(
-            store.lookup(&hex::decode(&encoded).unwrap()),
-            Some("alpha"),
-            "minted token resolves to its route"
-        );
-    }
-
-    #[test]
-    fn mint_appends_new_routes_and_replaces_on_remint() {
+    fn mint_appends_replaces_and_renames_atomically() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("relay-tokens");
         fs::write(&path, "# operator comment\n").unwrap();
 
         let alpha_1 = mint_route_token(&path, "alpha").unwrap();
+        assert_eq!(alpha_1.len(), TOKEN_LEN * 2);
         let beta = mint_route_token(&path, "beta").unwrap();
         let alpha_2 = mint_route_token(&path, "alpha").unwrap();
-        assert_ne!(alpha_1, alpha_2, "each mint is unique");
+        assert_ne!(alpha_1, alpha_2);
 
-        // Re-mint REPLACED alpha's line: old token dead, new token live,
-        // beta untouched, comment preserved, exactly one line per route.
         let store = RouteTokenStore::load(&path).unwrap();
-        assert_eq!(store.len(), 2, "one entry per route (bijection)");
+        assert_eq!(store.len(), 2, "one entry per route");
         assert!(store.lookup(&hex::decode(&alpha_1).unwrap()).is_none());
         assert_eq!(store.lookup(&hex::decode(&alpha_2).unwrap()), Some("alpha"));
         assert_eq!(store.lookup(&hex::decode(&beta).unwrap()), Some("beta"));
-
-        let raw = fs::read_to_string(&path).unwrap();
-        assert!(raw.starts_with("# operator comment\n"));
         assert_eq!(
-            raw.lines().filter(|l| l.ends_with(" alpha")).count(),
-            1,
-            "exactly one line for the re-minted route"
+            fs::read_to_string(&path).unwrap(),
+            format!("# operator comment\n{beta} beta\n{alpha_2} alpha\n")
         );
-    }
 
-    #[test]
-    fn mint_replaces_the_store_via_rename_leaving_no_temp_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("relay-tokens");
-        fs::write(&path, "# kept comment\n").unwrap();
-
-        let alpha = mint_route_token(&path, "alpha").unwrap();
-        let beta = mint_route_token(&path, "beta").unwrap();
-
-        // The renamed-in store is byte-exact: kept lines verbatim, then
-        // the fresh entry — the whole file is one complete generation.
-        let raw = fs::read_to_string(&path).unwrap();
-        assert_eq!(raw, format!("# kept comment\n{alpha} alpha\n{beta} beta\n"));
-
-        // No `.tmp` siblings survive a successful mint.
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "token store must be owner-only");
         let leftovers: Vec<_> = fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .filter(|name| name != "relay-tokens")
             .collect();
         assert_eq!(leftovers, Vec::<String>::new(), "no temp files left over");
-
-        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "renamed store is owner-only");
     }
 
     #[test]
@@ -528,29 +416,20 @@ mod tests {
         let store_dir = dir.path().join("state");
         fs::create_dir(&store_dir).unwrap();
         let path = store_dir.join("relay-tokens");
-        let alpha = mint_route_token(&path, "alpha").unwrap();
+        mint_route_token(&path, "alpha").unwrap();
         let before = fs::read_to_string(&path).unwrap();
 
-        // An unwritable directory makes the exclusive temp-file create
-        // fail: the mint errors cleanly and the store — every route — is
-        // still the complete previous generation (no truncate-then-fail
-        // window exists).
+        // An unwritable directory fails the temp-file create; the store is
+        // untouched (there is no truncate-then-fail window).
         fs::set_permissions(&store_dir, fs::Permissions::from_mode(0o500)).unwrap();
         let result = mint_route_token(&path, "beta");
         fs::set_permissions(&store_dir, fs::Permissions::from_mode(0o700)).unwrap();
         assert!(matches!(result, Err(RelayError::Io(_))));
-
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            before,
-            "failed mint must not disturb the existing store"
-        );
-        let store = RouteTokenStore::load(&path).unwrap();
-        assert_eq!(store.lookup(&hex::decode(&alpha).unwrap()), Some("alpha"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
     }
 
     #[test]
-    fn mint_rejects_invalid_route_without_touching_the_file() {
+    fn mint_never_touches_the_file_on_bad_input() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("relay-tokens");
         assert!(matches!(
@@ -558,19 +437,10 @@ mod tests {
             Err(RelayError::InvalidRouteName { .. })
         ));
         assert!(!path.exists(), "no file mutation on a rejected name");
-    }
 
-    #[test]
-    fn mint_refuses_to_rewrite_a_malformed_store() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("relay-tokens");
         fs::write(&path, "broken line here\n").unwrap();
         assert!(mint_route_token(&path, "alpha").is_err());
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            "broken line here\n",
-            "a malformed store is never rewritten"
-        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "broken line here\n");
     }
 
     #[test]

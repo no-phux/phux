@@ -31,7 +31,6 @@ test {
 pub const AgentSession = agent_sessions.Session;
 pub const AgentIdentity = agent_sessions.Identity;
 pub const AgentState = agent_sessions.State;
-pub const AgentRecordsKind = agent_sessions.RecordsKind;
 
 pub const enabled = true;
 pub const max_terminals: usize = workspace.max_replicas;
@@ -447,12 +446,9 @@ pub const Host = struct {
         };
     }
 
-    /// Hand the socket to `phux-client-runtime` and switch this host to the
-    /// connected lane, replacing the embedded client it was created with.
-    ///
-    /// `wake` runs on the runtime's thread whenever there is something to
-    /// drain. It must do no more than post to the app's event loop: every
-    /// other call on this host is owning-thread-only.
+    /// Hand the socket to `phux-client-runtime` (the connected lane). `wake`
+    /// runs on the runtime's thread and must only post to the app's event
+    /// loop; every other call is owning-thread-only.
     pub fn connect(
         host: *Host,
         target: ConnectTarget,
@@ -463,14 +459,9 @@ pub const Host = struct {
         try host.adoptConnected(target, null, client_name, wake, wake_context);
     }
 
-    /// Connect to the exact dial a captured tunnel already resolved. The
-    /// tunnel is borrowed: nothing relays through it, only its retained
-    /// endpoint, pin and token provenance are read, so the caller still owns
-    /// and frees it.
-    /// `tunnel` is an opaque `*c.PhuxRemoteTunnel`. It crosses as
-    /// `*anyopaque` because this module and `remote_tunnel.zig` each have
-    /// their own `@cImport` of `phux/client.h`, which makes the same C type
-    /// two incompatible Zig types. The pointer is never dereferenced here.
+    /// Connect to the dial a captured tunnel resolved; the tunnel is borrowed
+    /// (only its endpoint, pin and token provenance are read). It crosses as
+    /// `*anyopaque` because each module's `@cImport` makes a distinct type.
     pub fn connectCaptured(
         host: *Host,
         tunnel: *anyopaque,
@@ -521,14 +512,9 @@ pub const Host = struct {
         try resultError(c.phux_client_follow_session_names(host.client));
     }
 
-    /// Give the socket back. Freeing the connected client joins the
-    /// runtime's driver, so no wake can land after this returns, and an
-    /// embedded placeholder takes its place so a later `connect` can start
-    /// a fresh session.
-    ///
-    /// A no-op on the embedded lane. Infallible by design: `stop` has no
-    /// way to report, and leaving a driver running would be worse than the
-    /// degraded path below.
+    /// Give the socket back: freeing the connected client joins the runtime's
+    /// driver (no wake lands after this) and an embedded placeholder takes
+    /// its place. Infallible; a no-op on the embedded lane.
     pub fn stopConnected(host: *Host) void {
         if (host.lane != .connected) return;
         const replacement = newClient() catch {
@@ -570,13 +556,9 @@ pub const Host = struct {
         _ = c.phux_client_resync(host.client);
     }
 
-    /// An explicit reconnect on the connected lane.
-    ///
-    /// The retirement happens now rather than when the redial lands, so the
-    /// presentation matches the embedded lane's: a consumer that asked for a
-    /// reconnect sees `reconnecting` immediately, not a live pane that is
-    /// really mid-redial. `retired_ahead` then stops the epoch change this
-    /// causes from retiring the same connection twice.
+    /// An explicit reconnect on the connected lane. Retires now, so consumers
+    /// see `reconnecting` immediately; `retired_ahead` stops the resulting
+    /// epoch change from retiring twice.
     pub fn reconnectConnected(host: *Host) !void {
         if (host.lane != .connected) return error.InvalidState;
         host.retirePreviousConnection(try host.nextGeneration());
@@ -588,11 +570,8 @@ pub const Host = struct {
         if (host.lane == .connected) return error.InvalidState;
         try outboundSize(client_name.len);
         try resultError(c.phux_client_queue_hello(host.client, bytes(client_name)));
-        // Renames any client makes reach this connection's session list from
-        // the start (the switcher rows and the header follow them), not only
-        // after this client's own first rename. The client subscribes right
-        // after HELLO_OK: a read-only SUBSCRIBE_METADATA, never an ATTACH, so
-        // a listing connection follows renames without holding a viewport.
+        // Follow session renames from HELLO_OK via a read-only
+        // SUBSCRIBE_METADATA (never an ATTACH).
         try resultError(c.phux_client_follow_session_names(host.client));
         try host.stageOutgoing();
     }
@@ -709,11 +688,9 @@ pub const Host = struct {
         return host.requestDirectoryOn(path, "");
     }
 
-    /// The listing on `satellite`, a satellite of the attached hub, or on
-    /// the serving host when empty. The client refuses a satellite unless
-    /// HELLO_OK advertised LIST_DIRECTORY_HOST, since an older hub would
-    /// list itself; nothing is queued then. Neither span may borrow client
-    /// storage.
+    /// List `path` on a satellite of the attached hub (or the serving host
+    /// when empty). Refused unless HELLO_OK advertised LIST_DIRECTORY_HOST.
+    /// Neither span may borrow client storage.
     pub fn requestDirectoryOn(host: *Host, path: []const u8, satellite: []const u8) !u32 {
         try host.requireAttached();
         const request_id = try host.operation_ledger.nextRequestId();
@@ -1063,13 +1040,9 @@ pub const Host = struct {
             error.GenerationExhausted;
     }
 
-    /// Retire everything the connection that just ended built, keeping
-    /// provider identity, terminal order and the last complete canvas.
-    ///
-    /// The embedded lane reaches this by replacing the C client, because
-    /// there a new client *is* a new connection. The connected lane reaches
-    /// it from a connection-epoch change, because there one client outlives
-    /// every socket. Both retire the same state.
+    /// Retire everything the ended connection built, keeping provider
+    /// identity, terminal order and the last complete canvas. Reached by a
+    /// client replacement (embedded lane) or an epoch change (connected).
     fn retirePreviousConnection(host: *Host, next_generation: u64) void {
         host.clearSearchResults(null);
         host.workspace_store.deinit(host.gpa);
@@ -1168,12 +1141,9 @@ pub const Host = struct {
             delta.removed_count += host.pruneRemoved(false);
             try host.publishDirty(&delta);
         }
-        // Always flush FFI outgoing. ATTACH_READY queues the workspace
-        // GET_METADATA/GET_STATE pair here; a live remote still delivering
-        // history bootstrap would otherwise keep incoming nonempty and starve
-        // that read, so the chrome never projects and New Window stays refused.
-        // Consume EOF only once the queue is idle, so already-received frames
-        // still drain before disconnect.
+        // Always flush outgoing: ATTACH_READY queues the workspace
+        // GET_METADATA/GET_STATE here, and a busy history bootstrap would
+        // otherwise starve it. Consume EOF only once the queue is idle.
         try host.stageOutgoing();
         delta.workspace_changed = host.workspace_changed;
         delta.metadata_changed = host.metadata_changed or host.workspace_changed;
@@ -1745,11 +1715,9 @@ pub const Host = struct {
         return status;
     }
 
-    /// Rename the session named `current` on this connection's server
-    /// (`phux.session.name/v1`). The client judges it against its own list
-    /// first, so a refusal may already be settled when this returns; read
-    /// `renameInfo`. Nothing here attaches or sizes anything: a listing
-    /// connection may rename as well as an attached one.
+    /// Rename session `current` (`phux.session.name/v1`); the outcome may
+    /// already be settled on return (read `renameInfo`). Listing connections
+    /// may rename too.
     pub fn requestRename(host: *Host, current: []const u8, new_name: []const u8) !u32 {
         if (host.disconnected) return error.InvalidState;
         const now = host.state();
@@ -1849,11 +1817,8 @@ pub const Host = struct {
         return sessionsDigest(host.sessions.items, host.sessions_generation) != before;
     }
 
-    /// Everything a switcher row shows of a session: its id and name, and
-    /// the window count and keep-empty flags its Empty session label is
-    /// derived from. A listing peer's session that gains or loses its
-    /// windows keeps its id and name, so without them its row would keep
-    /// the old label until an unrelated repaint.
+    /// A digest of what a switcher row shows (id, name, window count,
+    /// keep-empty), so a changed Empty-session label repaints.
     fn sessionsDigest(sessions: []const SessionSummary, generation: u64) u64 {
         var hasher = std.hash.Wyhash.init(generation);
         for (sessions) |session| {
@@ -1994,12 +1959,9 @@ pub const Host = struct {
         try host.captureOperations();
     }
 
-    /// Fold one AgentSession record batch into the roster.
-    ///
-    /// An unrecognized records kind is DROPPED, not refused: the header
-    /// declares new kinds additive, and a host that disconnected on one would
-    /// make an additive change breaking. An unrecognized effect kind is still
-    /// a protocol error, because the effect union is not additive that way.
+    /// Fold one AgentSession record batch into the roster. Unknown records
+    /// kinds are dropped (they are additive); unknown effect kinds are a
+    /// protocol error.
     fn captureAgentRecords(host: *Host, effect: *const c.PhuxClientEffect) !void {
         const reintroduced = effect.detail == c.PHUX_CLIENT_AGENT_RECORDS_CLOSED and
             try host.catalogContainsAgent(try remoteFromC(effect.terminal_id));
@@ -2045,16 +2007,9 @@ pub const Host = struct {
         if (changed) host.metadata_changed = true;
     }
 
-    /// Adopt the resource catalog the latest ATTACHED snapshot published.
-    ///
-    /// Only while attached. Before the first attach the catalog is empty by
-    /// definition, and during a reconnect an empty read is the absence of an
-    /// answer rather than the answer "no agents" — adopting it would blank
-    /// every row for the length of the outage. The last good roster stands
-    /// until a replacement snapshot exists, exactly as the canvases do.
-    ///
-    /// Spans are borrowed until the next mutable client call; `adopt` copies
-    /// everything it keeps before this function returns.
+    /// Adopt the latest ATTACHED snapshot's resource catalog, only while
+    /// attached: during a reconnect an empty read is no answer, so the last
+    /// good roster stands. Spans are borrowed; `adopt` copies what it keeps.
     fn refreshResources(host: *Host) !void {
         if (host.state() != .attached) return;
         const count = c.phux_client_resource_count(host.client);

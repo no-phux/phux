@@ -1,30 +1,13 @@
 //! Owner-only, no-follow, lock-and-rename persistence for workload authority
 //! files (`workload-auth.md` §2).
 //!
-//! Every read checks that the containing directory and the file are
-//! controlled by their owner alone, validates the path before and after
-//! opening it without following a symbolic link, and accepts a generation
-//! only when the stat before the read and after it agree. Every replacement
-//! runs under an exclusive `flock` on the owner-only containing directory
-//! and commits through a same-directory temporary file, a file sync, an
-//! atomic rename, and a directory sync, so a reader sees the old file or the
-//! new one and never half of either. A successful write also removes
-//! temporaries a crashed writer left behind, but only in a directory whose
-//! lock the writer holds.
-//!
-//! Only the immediate parent directory is checked, and files are opened by
-//! path: every directory above it must be controlled by its owner (or root)
-//! too, or a writable ancestor could substitute the whole directory.
-//!
-//! Buffers that held file bytes (the CA private key among them) are sized
-//! from the file's metadata and never read past its recorded length, so a
-//! file that grows mid-read cannot force a reallocation that leaves a copy
-//! behind; every buffer that does not become the answer is scrubbed. Copies a
-//! parsing library makes internally (rcgen decoding the key, for one) are
-//! outside this module's reach, so scrubbing is best effort.
-//!
-//! Diagnostics name a file by its role, never its path: the CA private-key
-//! location never reaches an error message or a log line through here.
+//! Reads check owner control of the file and its directory, re-validate
+//! across a no-follow open, and accept only a stat-stable read. Writes hold
+//! an exclusive `flock` on the directory and commit via temp file, fsync,
+//! rename, and directory fsync, sweeping stale temporaries only in the
+//! locked directory. Ancestors must also be owner (or root) controlled.
+//! File buffers are sized from metadata and scrubbed when not returned
+//! (best effort). Diagnostics name a file's role, never its path.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -39,9 +22,8 @@ const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 /// Attempts at reading one stable generation before calling it unstable.
 const STABLE_READ_ATTEMPTS: usize = 4;
 
-/// Default workload file names. A write removes stale temporaries for these
-/// and for the file it wrote; other temporaries in a shared directory (the
-/// pairing token store's, say) are left alone.
+/// Default workload file names; a write sweeps stale temporaries only for
+/// these and the file it wrote.
 const MANAGED_NAMES: [&str; 3] = ["workload-keys", "workload-ca.key", "workload-ca.pem"];
 
 /// The role a file plays: the only name a diagnostic gives it.
@@ -64,9 +46,8 @@ impl FileRole {
         }
     }
 
-    /// Permission bits this role may not carry. The CA certificate is
-    /// public, so only group/world write is refused; everything else is
-    /// owner-only.
+    /// Mode bits this role may not carry (the public CA cert only refuses
+    /// group/world write).
     const fn forbidden_mode_bits(self) -> u32 {
         match self {
             Self::CaCertificate => 0o022,
@@ -140,10 +121,8 @@ fn validate_owner_file(meta: &fs::Metadata, role: FileRole) -> Result<(), Worklo
     Ok(())
 }
 
-/// Stat `path` without following a link and check that its owner alone
-/// controls both the file and the directory that holds it, so a file in a
-/// shared directory cannot be swapped under a reader. `Ok(None)` when it
-/// does not exist.
+/// Stat `path` without following links and require owner-only control of it
+/// and its directory. `Ok(None)` if absent.
 pub(super) fn probe(path: &Path, role: FileRole) -> Result<Option<Stamp>, WorkloadError> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
@@ -155,11 +134,9 @@ pub(super) fn probe(path: &Path, role: FileRole) -> Result<Option<Stamp>, Worklo
     Ok(Some(Stamp::of(&meta)))
 }
 
-/// Open and read `path` once: validated by `lstat`, opened with
-/// `O_NOFOLLOW`, re-validated by `fstat` against the same inode, and read
-/// into a buffer sized from the recorded length. At most one byte past that
-/// length is read; any difference (the file grew or shrank) is an unstable
-/// read, and the partial buffer is scrubbed.
+/// Read `path` once: `lstat`, `O_NOFOLLOW` open, `fstat` of the same inode,
+/// a buffer sized from the recorded length. Any size change is unstable and
+/// the buffer is scrubbed.
 fn read_owner_file(path: &Path, role: FileRole) -> Result<Option<(Stamp, Vec<u8>)>, WorkloadError> {
     let Some(before) = probe(path, role)? else {
         return Ok(None);
@@ -200,9 +177,8 @@ fn read_owner_file(path: &Path, role: FileRole) -> Result<Option<(Stamp, Vec<u8>
     Ok(Some((stamp, raw)))
 }
 
-/// Read one stable generation of `path`: the file's stat must not change
-/// across the read, retried a bounded number of times, so a concurrent
-/// replacement is never half-observed. `Ok(None)` when it does not exist.
+/// Read one stat-stable generation of `path`, retrying a bounded number of
+/// times. `Ok(None)` if absent.
 pub(super) fn read_stable(
     path: &Path,
     role: FileRole,
@@ -290,9 +266,8 @@ impl Drop for DirLock {
     }
 }
 
-/// Proof, handed to a [`with_lock`] operation, that its caller holds the
-/// lock on one directory. A write sweeps stale temporaries only in that
-/// directory: a temporary anywhere else may belong to a live writer.
+/// Proof that the caller holds one directory's lock (stale temporaries are
+/// swept only there).
 pub(super) struct HeldLock<'a> {
     dir: &'a Path,
 }
@@ -304,9 +279,7 @@ impl HeldLock<'_> {
     }
 }
 
-/// Run `operation` holding an exclusive lock on the owner-only directory
-/// that holds `path`. Every writer of a workload authority file in that
-/// directory takes this lock, so read-modify-write cycles never interleave.
+/// Run `operation` under an exclusive lock on `path`'s directory.
 pub(super) fn with_lock<T>(
     path: &Path,
     operation: impl FnOnce(&HeldLock<'_>) -> Result<T, WorkloadError>,
@@ -348,10 +321,8 @@ fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), WorkloadError> {
     Ok(())
 }
 
-/// Replace `path` with `bytes` at mode 0600: a same-directory temporary
-/// file, a file sync, an atomic rename, then a directory sync. `held` is the
-/// caller's [`with_lock`]; stale temporaries are swept only when `path` sits
-/// in the directory it locks.
+/// Atomically replace `path` with `bytes` at mode 0600 (temp, fsync,
+/// rename, directory fsync).
 pub(super) fn atomic_replace(
     path: &Path,
     bytes: &[u8],
@@ -374,11 +345,8 @@ pub(super) fn atomic_replace(
     Ok(())
 }
 
-/// Best effort: remove temporaries a crashed writer left beside `path`
-/// (`.<name>.<16 hex>.tmp` for `path`'s own name or a default workload file
-/// name). The caller holds that directory's lock, so no live writer owns
-/// one; only regular files owned by the effective user are unlinked, and
-/// unlinking never follows a link.
+/// Best effort: remove a crashed writer's temporaries beside `path` (only
+/// the effective user's regular files, never following links).
 fn remove_stale_temps(path: &Path) {
     let own = path.file_name().and_then(|name| name.to_str());
     let Ok(entries) = fs::read_dir(parent_of(path)) else {
@@ -544,9 +512,7 @@ mod tests {
         }
     }
 
-    /// A write into a directory whose lock the caller does not hold (the CA
-    /// certificate beside a CA key locked elsewhere, say) leaves that
-    /// directory's temporaries alone: one may belong to a live writer.
+    /// Temporaries in a directory the caller did not lock are left alone.
     #[test]
     fn a_write_sweeps_only_the_directory_whose_lock_it_holds() {
         let locked = tempfile::tempdir().unwrap();

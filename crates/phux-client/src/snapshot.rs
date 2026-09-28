@@ -1,33 +1,9 @@
-//! Structured, side-effect-free screen capture — the floor of the agent
-//! surface (ADR-0022 §5, `phux-oki`).
+//! Structured, side-effect-free screen capture (ADR-0022 §5).
 //!
-//! Sends the `GET_SCREEN` control command and parses the
-//! `phux_core::ScreenState` the server returns. The server walks its *own*
-//! `Terminal` grid, so — unlike the attach path — this neither resizes the
-//! pane nor disturbs the live session. That is what makes it safe to poll
-//! (the `phux wait`/`run` floor) against a pane a human or another agent
-//! is actively using.
-//!
-//! The read shape ([`ScreenState`]) lives in `phux-core` so the server
-//! (producer) and this client (consumer) share one definition; we
-//! re-export it here for callers that only depend on `phux-client`.
-//!
-//! # Reading rows as written (ADR-0077 §2)
-//!
-//! The server reports libghostty's per-row soft-wrap bit in
-//! [`ScreenState::soft_wrap`], and joining stays consumer-side.
-//! **Every match path in this crate must match against
-//! [`ScreenState::unwrapped_rows`], not against `ScreenState::lines`** — a
-//! substring that straddles a soft wrap is absent from the rows as painted,
-//! so matching raw rows fails silently and only for long lines, which is
-//! the worst shape a bug can have. [`ScreenState::has_soft_wrap_info`]
-//! reports whether the server said anything at all, so "nothing wraps" is
-//! distinguishable from "older server, cannot know".
-//!
-//! [`row_window`] is the matching row-count clamp: the most recent `n`
-//! rendered rows, `0` for all, capped at [`ROW_WINDOW_MAX`], returning
-//! whether older rows were dropped (which is what
-//! [`ScreenState::truncated`] carries).
+//! `GET_SCREEN` reads the server's own grid, so it never resizes or disturbs
+//! the pane: safe to poll against a pane someone is using. Every match path
+//! must match [`ScreenState::unwrapped_rows`], not raw `lines`, or a
+//! substring straddling a soft wrap is silently missed (ADR-0077 §2).
 
 use std::path::{Path, PathBuf};
 
@@ -43,10 +19,7 @@ pub use phux_core::screen::{
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 
-/// Read `terminal_id`'s current screen as structured data, viewport only.
-///
-/// Convenience wrapper over [`get_screen_scrollback`] with no scrollback
-/// requested — the poll floor used by `phux wait`/`run`.
+/// Read `terminal_id`'s current screen, viewport only.
 ///
 /// # Errors
 ///
@@ -58,8 +31,7 @@ pub async fn get_screen(
     get_screen_scrollback(socket, terminal_id, None, false).await
 }
 
-/// `GET_SCREEN`'s wire byte for "no rendering requested" — today's default
-/// (D9). See [`get_screen_scrollback_format`].
+/// `GET_SCREEN`'s wire byte for "no rendering requested" (D9).
 pub const SCREEN_FORMAT_NONE: u8 = 0;
 
 /// `GET_SCREEN`'s wire byte (low bits) for a libghostty-vt HTML rendering
@@ -70,35 +42,21 @@ pub const SCREEN_FORMAT_HTML: u8 = 1;
 /// (D9).
 pub const SCREEN_FORMAT_VT: u8 = 2;
 
-/// `GET_SCREEN`'s wire byte high bit.
-///
-/// Join soft-wrapped capture rows via the engine Formatter's own unwrap
-/// (`phux snapshot --format html|vt --unwrap`, D9). Combine with
-/// [`SCREEN_FORMAT_HTML`]/[`SCREEN_FORMAT_VT`] (`format |
-/// SCREEN_FORMAT_UNWRAP`); ignored when combined with
-/// [`SCREEN_FORMAT_NONE`].
+/// `GET_SCREEN`'s wire byte high bit: join soft-wrapped rows in the rendered
+/// capture (combine with HTML/VT; ignored with NONE).
 pub const SCREEN_FORMAT_UNWRAP: u8 = 0x80;
 
-/// Read `terminal_id`'s current screen as structured data, optionally
-/// including scrollback history.
+/// Read `terminal_id`'s current screen over a fresh connection, optionally
+/// with scrollback.
 ///
-/// Opens a fresh connection, negotiates generic L1, issues `GET_SCREEN`, and
-/// deserializes the JSON reply. It never sends `ATTACH`, so the read remains
-/// side-effect-free.
-///
-/// `request_scrollback` (`phux-o1v`): `None` for viewport only, `Some(0)`
-/// for all retained history, `Some(n)` for the most-recent `n` history
-/// rows. The history lands in [`ScreenState::scrollback`].
-///
-/// `cells` (`phux-8yl`): when `true`, the reply's [`ScreenState::cells`]
-/// field carries per-cell OSC-133 semantic marks + styles; when `false`
-/// it is `None`.
+/// `request_scrollback`: `None` viewport only, `Some(0)` all history,
+/// `Some(n)` the last `n` rows. `cells` adds per-cell OSC-133 marks and
+/// styles.
 ///
 /// # Errors
 ///
-/// Returns [`AttachError`] on connect/transport failure, when the server
-/// refuses the command (e.g. unknown terminal), or when the reply is not
-/// the expected `OK_WITH(JSON(..))` carrying a valid [`ScreenState`].
+/// Transport failure, a refusal (e.g. unknown terminal), or a malformed
+/// reply.
 pub async fn get_screen_scrollback(
     socket: &Path,
     terminal_id: ResourceId,
@@ -115,29 +73,16 @@ pub async fn get_screen_scrollback(
     .await
 }
 
-/// Like [`get_screen_scrollback`], additionally requesting a Formatter rendering.
+/// Like [`get_screen_scrollback`], additionally requesting a Formatter
+/// rendering (`format`, D9) into [`ScreenState::rendered`].
 ///
-/// `phux snapshot --format html|vt`, D9: `format` is `GET_SCREEN`'s wire
-/// byte ([`SCREEN_FORMAT_NONE`], [`SCREEN_FORMAT_HTML`] /
-/// [`SCREEN_FORMAT_VT`] optionally combined with [`SCREEN_FORMAT_UNWRAP`]);
-/// when it requests a rendering, the reply's [`ScreenState::rendered`]
-/// carries it.
-///
-/// No feature bit gates `format` (bits are scarce, and a peer that
-/// predates this byte cannot advertise its absence). Instead this detects
-/// the gap client-side: an `Ok` reply to a non-`SCREEN_FORMAT_NONE`
-/// request with no `rendered` field is either a pre-D9 peer that silently
-/// dropped the byte, or a D9-or-later peer whose render failed on its own
-/// engine (non-fatal there — the plain projection still ships). Either
-/// way this returns [`AttachError::FormatUnsupported`] rather than
-/// success with a capture that never arrived; when the server named a
-/// reason (`ScreenState::rendered_error`), the message carries it
-/// verbatim.
+/// No feature bit gates `format`, so a reply with no `rendered` (an old peer
+/// dropped the byte, or the render failed) is [`AttachError::FormatUnsupported`],
+/// carrying the server's `rendered_error` when it gave one.
 ///
 /// # Errors
 ///
-/// See [`get_screen_scrollback`]; additionally
-/// [`AttachError::FormatUnsupported`] per the above.
+/// See [`get_screen_scrollback`], plus [`AttachError::FormatUnsupported`].
 pub async fn get_screen_scrollback_format(
     socket: &Path,
     terminal_id: ResourceId,
@@ -156,10 +101,8 @@ pub async fn get_screen_scrollback_format(
     Ok(screen)
 }
 
-/// The [`AttachError::FormatUnsupported`] message: the server's own
-/// explanation when it gave one, otherwise the generic "either an old
-/// peer or a failed render" statement — the two are indistinguishable
-/// from the reply alone (see [`get_screen_scrollback_format`]).
+/// The [`AttachError::FormatUnsupported`] message: the server's reason, or
+/// the generic "old peer or failed render".
 fn format_unsupported_message(rendered_error: Option<&str>) -> String {
     rendered_error.map_or_else(
         || {
@@ -171,11 +114,8 @@ fn format_unsupported_message(rendered_error: Option<&str>) -> String {
     )
 }
 
-/// One persistent control connection for a bounded screen-polling operation.
-///
-/// Kept crate-private so the public snapshot functions remain fresh one-shot
-/// reads. A wait loop owns one of these, reuses its negotiated UDS connection,
-/// and reconnects only after transport loss.
+/// One persistent control connection for a screen-polling loop, reconnecting
+/// once after a transport loss.
 pub(crate) struct ScreenPollConnection {
     socket: PathBuf,
     conn: Option<Connection>,
@@ -249,11 +189,7 @@ const fn is_transport_loss(error: &AttachError) -> bool {
 }
 
 fn decode_screen_reply(result: CommandResult) -> Result<ScreenState, AttachError> {
-    // Safe to ignore the interleave: this control-only connection never
-    // subscribes (no ATTACH, no ATTACH_RESOURCE, no SUBSCRIBE_EVENTS),
-    // so nothing fans out onto its mailbox, and the server's
-    // `handle_get_screen` is a pure projection that emits no frame of its own
-    // before the ack — it does not even take the client's `out_tx`.
+    // The interleave was safely ignored: this connection never subscribes.
     match result {
         CommandResult::OkWith(CommandValue::Json(json)) => serde_json::from_str(&json)
             .map_err(|err| AttachError::Protocol(format!("malformed GET_SCREEN JSON: {err}"))),
@@ -265,14 +201,9 @@ fn decode_screen_reply(result: CommandResult) -> Result<ScreenState, AttachError
     }
 }
 
-/// The history window a read asks the server for (ADR-0077).
-///
-/// An explicit `scrollback` wins when both are given: it is the explicit
-/// statement about history, and `tail` then clamps whatever came back.
-/// Otherwise `tail N` asks for `N` history rows — a superset of what the
-/// window keeps, since the viewport also counts toward `N` — and `tail 0`
-/// asks for all retained history, which [`project`] then clamps to
-/// [`ROW_WINDOW_MAX`].
+/// The history window a read asks the server for (ADR-0077): an explicit
+/// `scrollback` wins; otherwise `tail N` asks for `N` rows (a superset of
+/// the window) and [`project`] clamps.
 #[must_use]
 pub const fn history_request(scrollback: Option<u32>, tail: Option<u32>) -> Option<u32> {
     match scrollback {
@@ -281,23 +212,17 @@ pub const fn history_request(scrollback: Option<u32>, tail: Option<u32>) -> Opti
     }
 }
 
-/// Apply the client-side ADR-0077 read modifiers to a `GET_SCREEN` reply.
+/// Apply the ADR-0077 read modifiers (`--unwrap`, then `--tail`) to a
+/// `GET_SCREEN` reply, for both the CLI and MCP.
 ///
-/// One implementation for `phux snapshot --tail/--unwrap` and the MCP
-/// `phux_snapshot` tool, so the two surfaces return the same document.
-///
-/// Order is deliberate: unwrapping first, then the row window. Unwrapping
-/// changes how many rows there are, so a window applied before it would
-/// count painted rows and report a different number than it returned.
+/// Unwrap first: it changes the row count the window counts.
 #[must_use]
 pub fn project(mut screen: ScreenState, unwrap: bool, tail: Option<u32>) -> ScreenState {
     if unwrap {
         let (history, viewport) = screen.unwrapped_split();
         screen.scrollback = history;
         screen.lines = viewport;
-        // Nothing in the returned projection continues onto the next row
-        // any more. Keep it `Some` — present-and-empty is "reported, none",
-        // and dropping to `None` would read as "server said nothing".
+        // Present-and-empty is "reported, none"; `None` would be "unknown".
         screen.soft_wrap = Some(SoftWrap::default());
     }
     match tail {
@@ -306,14 +231,9 @@ pub fn project(mut screen: ScreenState, unwrap: bool, tail: Option<u32>) -> Scre
     }
 }
 
-/// Clip `screen`'s history to a `want`-row window over the rendered rows.
-///
-/// The window counts rendered rows, history and viewport together, but a
-/// `ScreenState` describes a grid and a grid is never returned in part:
-/// `rows`, `cursor`, and `cells` are all grid coordinates. So the viewport
-/// is a floor and only history is clipped. A window narrower than the
-/// viewport therefore returns more rows than asked for, never fewer, and
-/// truncation still reports what it dropped.
+/// Clip `screen`'s history to a `want`-row window over history plus
+/// viewport. The viewport (a grid) is never returned in part, so it is a
+/// floor.
 fn window_history(mut screen: ScreenState, want: u32) -> ScreenState {
     let ceiling = usize::try_from(ROW_WINDOW_MAX).unwrap_or(usize::MAX);
     let want = if want == ROW_WINDOW_ALL {
@@ -335,11 +255,7 @@ fn window_history(mut screen: ScreenState, want: u32) -> ScreenState {
         clipped
     };
 
-    // History indices in `soft_wrap.scrollback` are relative to the
-    // returned array, so dropping D rows off the front shifts them by D. A
-    // wrap that pointed into a dropped row simply goes away: the surviving
-    // first row may be a continuation of something no longer present, which
-    // is exactly what `truncated` is telling the caller.
+    // History wrap indices are relative to the returned array: shift them.
     let dropped = u32::try_from(before - screen.scrollback.len()).unwrap_or(u32::MAX);
     if dropped > 0
         && let Some(wrap) = screen.soft_wrap.as_mut()
@@ -359,10 +275,6 @@ fn window_history(mut screen: ScreenState, want: u32) -> ScreenState {
 }
 
 /// The ceiling on a projected snapshot document: 1 MiB of pretty JSON.
-///
-/// For a consumer with no streaming channel of its own; the bound the MCP
-/// adapter enforced on the `phux snapshot --json` subprocess's stdout before
-/// `phux_snapshot` read in-process.
 pub const PROJECTED_DOCUMENT_MAX_BYTES: usize = 1024 * 1024;
 
 /// Why [`bounded_document`] refused a screen.
@@ -386,9 +298,6 @@ pub enum SnapshotDocumentError {
 
 /// `screen` as a JSON document, refused when its pretty-printed form (plus
 /// the trailing newline a CLI prints) would exceed `limit` bytes.
-///
-/// The measure is the one the CLI's stdout had, so a caller that used to
-/// read `phux snapshot --json` under a byte cap keeps the same bound.
 ///
 /// # Errors
 ///
@@ -511,13 +420,6 @@ mod tests {
         );
     }
 
-    /// Nothing requested, nothing changed: the projection is the identity.
-    #[test]
-    fn no_modifiers_leaves_the_reply_untouched() {
-        let base = screen(&["h1"], &["v1"], &[0]);
-        assert_eq!(project(base.clone(), false, None), base);
-    }
-
     /// The document bound measures the pretty-printed bytes a CLI would have
     /// printed, and refuses over the ceiling instead of truncating.
     #[test]
@@ -540,73 +442,37 @@ mod tests {
     use crate::attach::AttachError;
     use crate::testkit::{self, ScriptSpec};
 
-    /// A pre-D9 peer's `GET_SCREEN` decoder never reads the trailing
-    /// `format` byte, so it answers `Ok` with no `rendered` key at all —
-    /// exactly `ScreenState::default()`'s shape. `format != 0` against
-    /// that reply must surface a typed refusal, not a silent "succeeded
-    /// but rendered nothing" (D9, review item 1: no feature bit gates a
-    /// byte an old peer cannot know exists).
+    /// An old peer answers `GET_SCREEN` with no `rendered` key: a format
+    /// request against it is refused, a plain read still succeeds.
     #[tokio::test]
-    async fn old_peer_silently_dropping_format_is_detected_client_side() {
+    async fn a_missing_rendered_capture_is_refused_only_when_one_was_asked_for() {
         let dir = tempfile::tempdir().expect("tempdir");
         let socket = dir.path().join("old-peer.sock");
         let listener = UnixListener::bind(&socket).expect("bind");
-        let screen = phux_core::screen::ScreenState {
+        let screen = ScreenState {
             lines: vec!["hi".to_owned()],
-            ..phux_core::screen::ScreenState::default()
+            ..ScreenState::default()
         };
         let peer = tokio::spawn(testkit::serve_every(listener, move || {
             ScriptSpec::new().screen(&screen)
         }));
+        let read = |format| {
+            get_screen_scrollback_format(&socket, ResourceId::local(1), None, false, format)
+        };
 
-        let err = get_screen_scrollback_format(
-            &socket,
-            ResourceId::local(1),
-            None,
-            false,
-            SCREEN_FORMAT_HTML,
-        )
-        .await
-        .expect_err("an old peer's silent rendered:None must be refused, not returned as success");
+        let err = read(SCREEN_FORMAT_HTML).await.expect_err("refused");
         assert!(
             matches!(err, AttachError::FormatUnsupported(_)),
             "expected FormatUnsupported, got {err:?}"
         );
+        let plain = read(SCREEN_FORMAT_NONE)
+            .await
+            .expect("a plain read succeeds");
+        assert!(plain.rendered.is_none());
         peer.abort();
     }
 
-    /// `format: 0` never checks for a `rendered` reply at all, so the same
-    /// old-peer-shaped reply is still an ordinary success.
-    #[tokio::test]
-    async fn format_none_does_not_require_a_rendered_reply() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let socket = dir.path().join("plain.sock");
-        let listener = UnixListener::bind(&socket).expect("bind");
-        let screen = phux_core::screen::ScreenState {
-            lines: vec!["hi".to_owned()],
-            ..phux_core::screen::ScreenState::default()
-        };
-        let peer = tokio::spawn(testkit::serve_every(listener, move || {
-            ScriptSpec::new().screen(&screen)
-        }));
-
-        let screen = get_screen_scrollback_format(
-            &socket,
-            ResourceId::local(1),
-            None,
-            false,
-            SCREEN_FORMAT_NONE,
-        )
-        .await
-        .expect("format: 0 must succeed even against a reply with no rendered field");
-        assert!(screen.rendered.is_none());
-        peer.abort();
-    }
-
-    /// A reply that named why the render failed (`rendered_error`, review
-    /// item 3) must reach the caller's message verbatim, distinguishing
-    /// "the server tried and failed" from "the server never saw the
-    /// request".
+    /// The server's own render failure reason reaches the message verbatim.
     #[test]
     fn format_unsupported_message_prefers_the_servers_own_reason() {
         let generic = format_unsupported_message(None);

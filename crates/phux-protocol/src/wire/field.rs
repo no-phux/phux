@@ -1,35 +1,10 @@
-//! TLV field-ID constants used inside message bodies.
+//! TLV field ids inside message bodies (`docs/spec/appendix-encoding.md`).
 //!
-//! Owned by phux-6yl.4. See `docs/spec/proto.md` §7 (message catalog) and
-//! `docs/spec/appendix-encoding.md` (field-tagged TLV encoding). Every message
-//! body is encoded field-tagged: each top-level field is written as
-//! `field_id: varint || wire_type: u8 || length-delimited value`, and decoders
-//! match fields by id, skipping any id they do not recognise by its length.
-//!
-//! # Field-id allocation discipline
-//!
-//! - Field ids are **per message**: each message's body has its own id space
-//!   starting at `1` and running **contiguously** for that message's fields,
-//!   in the order the fields are declared. (Two messages may both use id `1`;
-//!   ids are scoped to the message, the way the type byte already scopes the
-//!   body.)
-//! - Field ids are **stable within a major protocol version**: an additive
-//!   minor-version change MAY append a new id after the existing ones but MUST
-//!   NOT renumber or reuse an existing id. A removed field's id is retired,
-//!   not recycled.
-//! - An **optional or trailing** field is a simply-absent tagged field: the
-//!   encoder writes no field for `None` / an empty trailing value, and the
-//!   decoder applies the documented default when the id is absent. This is the
-//!   forward-compat mechanism — peers round-trip by id, not by position.
-//! - The constants below are grouped one `mod` per message so the per-message
-//!   `1, 2, 3, …` allocation is self-evident and a new field appends to the
-//!   end of its module.
-//!
-//! Nested tagged unions and sub-records (e.g. `ResourceId`, `ViewportInfo`,
-//! `Command`, `SessionSnapshot`) are encoded *positionally* inside a field's
-//! length-delimited value; only the message body itself is field-tagged. Their
-//! wire-tag bytes live alongside their definitions in `wire::frame` /
-//! `wire::info` / `crate::ids`.
+//! Each top-level field is `field_id: varint || wire_type: u8 || value`;
+//! decoders skip unknown ids by length. Ids are per message, start at `1`,
+//! and are stable within a major version: new fields append, removed ids are
+//! retired, never reused. An optional field is simply absent. Nested unions
+//! and sub-records stay positional inside a field's value.
 
 /// `HELLO` body fields (`docs/spec/proto.md` §6.1).
 pub mod hello {
@@ -43,26 +18,14 @@ pub mod hello {
     pub const PROTOCOL_PATCH: u32 = 4;
     /// `ClientCapabilities` blob (positional sub-record).
     pub const CLIENT_CAPS: u32 = 5;
-    /// Frame compressions the client accepts (`u8` bitset), additive.
-    ///
-    /// A top-level field rather than a member of the `CLIENT_CAPS`
-    /// sub-record because protocol 0.8 fixes that sub-record's byte order
-    /// exactly (`docs/spec/proto.md` §6.2): appending to it would be a
-    /// fleet-wide break, while an unknown top-level id is skipped by
-    /// declared length. Absent means "accepts nothing compressed".
+    /// Frame compressions the client accepts (`u8` bitset); absent = none.
+    /// Top-level because the `CLIENT_CAPS` byte order is fixed (§6.2).
     pub const COMPRESSION: u32 = 6;
-    // Ids 7 and 8 are retired-unshipped: the `phux-workload/v1` offer fields
-    // (`docs/spec/proto.md` §6.1.1, ADR-0116) were specified but never
-    // implemented. They stay reserved here: no sender emits them and a
-    // decoder skips them.
-    /// The ssh endpoints `phux stdio-bridge` stamps on a relayed HELLO.
-    ///
-    /// A positional `SshOrigin` sub-record, additive (`docs/spec/L3.md`
-    /// §3.9). The server honors it only from a same-uid Unix-socket peer, and
-    /// only to report the route.
+    // Ids 7 and 8 are retired-unshipped (ADR-0116) and stay reserved.
+    /// Positional `SshOrigin` stamped by `phux stdio-bridge`
+    /// (`docs/spec/L3.md` §3.9); honored only from a same-uid Unix peer.
     pub const SSH_ORIGIN: u32 = 9;
-    /// Whether this client can demultiplex the QUIC stream-per-Terminal shape.
-    /// Absent is false so single-stream adapters remain compatible.
+    /// Client can demultiplex QUIC stream-per-Terminal; absent = false.
     pub const QUIC_STREAMS: u32 = 10;
 }
 
@@ -84,8 +47,7 @@ pub mod hello_ok {
     pub const MAX_CHUNK_BYTES: u32 = 7;
     /// Negotiated maximum `HISTORY_PAGE.payload` bytes (`u32`).
     pub const MAX_HISTORY_PAGE_BYTES: u32 = 8;
-    /// Selected frame compression (`u8` enum tag), additive. Absent or `0`
-    /// means the server compresses nothing.
+    /// Selected frame compression (`u8` tag); absent or `0` = none.
     pub const COMPRESSION: u32 = 9;
 }
 
@@ -255,8 +217,7 @@ pub mod frame_compressed {
     pub const ALGORITHM: u32 = 1;
     /// Exact byte length of the inflated inner frame body (`u32`).
     pub const UNCOMPRESSED_LEN: u32 = 2;
-    /// Compressed image of one complete inner frame body: its type byte
-    /// followed by its payload, i.e. everything after the length prefix.
+    /// Compressed inner frame body (type byte + payload, no length prefix).
     pub const PAYLOAD: u32 = 3;
 }
 
@@ -338,11 +299,8 @@ pub mod history_rejected {
     pub const REQUIRED_ROWS: u32 = 7;
 }
 
-/// `DETACHED` body fields (`docs/spec/proto.md` §7.2).
-///
-/// Both ids are optional-absent: a server that predates `0.7.0-draft.7`
-/// encodes an empty `DETACHED` body, and a consumer applies the documented
-/// defaults (`reason` unstated, `message` empty) rather than failing.
+/// `DETACHED` body fields (`docs/spec/proto.md` §7.2); both optional, so an
+/// empty body is valid.
 pub mod detached {
     /// `DetachReason` tag (`u8`). Absent = the peer stated no reason.
     pub const REASON: u32 = 1;
@@ -439,9 +397,7 @@ pub mod list_directory {
     pub const REQUEST_ID: u32 = 1;
     /// Requested path (UTF-8). Empty or `~` = the serving user's home.
     pub const PATH: u32 = 2;
-    /// Optional satellite host name (UTF-8): list on that satellite through
-    /// the hub instead of on the serving host. Gated on
-    /// `ServerFeature::LIST_DIRECTORY_HOST`.
+    /// Optional satellite host to list on via the hub (`LIST_DIRECTORY_HOST`).
     pub const HOST: u32 = 3;
 }
 
@@ -477,46 +433,32 @@ pub mod spawn_terminal {
     pub const ENV: u32 = 5;
     /// Optional first-class `TERM` for the new Terminal (absent = `None`).
     pub const TERM: u32 = 6;
-    /// Optional satellite host to spawn on (absent = `None`, spawn locally).
-    /// Federation-hub addressing per `docs/spec/L1.md` §3.1 / §9.1
-    /// (phux-v45.6, ADR-0007).
+    /// Optional satellite host to spawn on (`docs/spec/L1.md` §3.1, ADR-0007).
     pub const SATELLITE: u32 = 7;
-    /// Optional existing Terminal whose owning window must host the spawn.
-    /// Absent preserves the server's legacy placement policy.
+    /// Optional Terminal whose owning window hosts the spawn.
     pub const OWNER_TERMINAL: u32 = 8;
-    /// Optional opaque `phux.agent-session/v1` record installed atomically on
-    /// the new local Terminal.
+    /// Optional opaque `phux.agent-session/v1` record installed atomically.
     pub const AGENT_SESSION: u32 = 9;
-    /// Optional initial grid the new Terminal is created at: `cols: u16`
-    /// followed by `rows: u16`, both big-endian. Absent (or zero on either
-    /// axis) leaves the server's default grid in force.
+    /// Optional initial grid, `cols: u16` then `rows: u16`; absent or zero
+    /// keeps the server default.
     pub const INITIAL_SIZE: u32 = 10;
     /// Optional `ResourceKind` tag (`u8`); absent = `Terminal`.
     ///
-    /// Every pre-kind body therefore decodes as a Terminal spawn. Decoders
-    /// validate the remaining fields per kind: an `AgentSession` spawn
-    /// requires `PARENT` and `PROVIDER` and carries none of `COMMAND`,
-    /// `CWD`, `ENV`, `TERM`, `OWNER_TERMINAL`, or `INITIAL_SIZE`; a
-    /// `Terminal` spawn carries none of fields 12-14.
+    /// `AgentSession` requires `PARENT` and `PROVIDER` and forbids fields 3-6,
+    /// 8, and 10; `Terminal` forbids fields 12-14.
     pub const KIND: u32 = 11;
-    /// Optional parent resource (positional tagged `ResourceId`). Required
-    /// for `AgentSession`, which is always bound to a Terminal parent.
+    /// Optional parent resource (positional `ResourceId`).
     pub const PARENT: u32 = 12;
-    /// Optional agent provider name (`str`, e.g. `claude`). Required for
-    /// `AgentSession`.
+    /// Optional agent provider name (`str`).
     pub const PROVIDER: u32 = 13;
     /// Optional opaque provider-native session id (`str`).
     pub const NATIVE_ID: u32 = 14;
-    /// Optional `u8` flag (`1` = bind): answer with the server's instance
-    /// token in `RESOURCE_SPAWNED.instance` (ADR-0109). Absent or `0` =
-    /// unbound.
+    /// Optional `u8` flag: answer with the instance token (ADR-0109).
     pub const BIND_INSTANCE: u32 = 15;
-    /// Optional `u32` retention in seconds after the process exits
-    /// (ADR-0124). Absent = not retained; `0` = the server's default.
-    /// Terminal only.
+    /// Optional `u32` post-exit retention seconds, `0` = server default
+    /// (ADR-0124). Terminal only.
     pub const RETAIN_SECS: u32 = 16;
-    /// Optional 16-byte non-zero idempotency key (ADR-0126). Valid for
-    /// every kind.
+    /// Optional 16-byte non-zero idempotency key (ADR-0126).
     pub const IDEMPOTENCY_KEY: u32 = 17;
 }
 
@@ -526,12 +468,10 @@ pub mod terminal_spawned {
     pub const REQUEST_ID: u32 = 1;
     /// `SpawnResult` tagged union (positional).
     pub const RESULT: u32 = 2;
-    /// Optional 16-byte instance token binding a successful result's id
-    /// (ADR-0109); written only in reply to a spawn that set
-    /// `BIND_INSTANCE`.
+    /// Optional 16-byte instance token, only when the spawn set
+    /// `BIND_INSTANCE` (ADR-0109).
     pub const INSTANCE: u32 = 3;
-    /// Optional `u8` flag (`1` = the reply repeats an earlier spawn with the
-    /// same idempotency key, ADR-0126). Written only beside an `Ok` result.
+    /// Optional `u8` replay flag, only beside `Ok` (ADR-0126).
     pub const REPLAYED: u32 = 4;
 }
 
@@ -541,9 +481,7 @@ pub mod move_terminal {
     pub const REQUEST_ID: u32 = 1;
     /// The Terminal to re-parent (positional tagged union).
     pub const TERMINAL: u32 = 2;
-    /// Existing Terminal whose owning window becomes the destination
-    /// (positional tagged union). Ownership address only, as in
-    /// `SPAWN_RESOURCE.owner_terminal`.
+    /// Terminal whose owning window becomes the destination (positional).
     pub const OWNER_TERMINAL: u32 = 3;
 }
 
@@ -561,12 +499,9 @@ pub mod terminal_closed {
     pub const TERMINAL_ID: u32 = 1;
     /// Optional exit status (absent field = signal / unknown).
     pub const EXIT_STATUS: u32 = 2;
-    /// Optional `CloseReason` tag (`u8`). Absent = the server stated no
-    /// reason (`CloseReason::Unknown`), which is what every pre-reason body
-    /// decodes as.
+    /// Optional `CloseReason` tag (`u8`); absent = `Unknown`.
     pub const REASON: u32 = 3;
-    /// Optional terminating signal number (`i32`, two's-complement `u32`).
-    /// Absent = the process was not killed by a signal, or it is unknown.
+    /// Optional terminating signal (`i32` as two's-complement `u32`).
     pub const SIGNAL: u32 = 4;
 }
 
@@ -600,17 +535,12 @@ pub mod command_result {
 pub mod subscribe_events {
     /// Optional `ResourceId` scope (absent field = server-scoped `None`).
     pub const TERMINAL: u32 = 1;
-    /// Optional `u64` journal cursor: replay retained events with a greater
-    /// `seq` before going live (ADR-0123).
+    /// Optional `u64` journal cursor to replay after (ADR-0123).
     pub const AFTER_SEQ: u32 = 2;
 }
 
-/// `EVENT` body fields (`docs/spec/L1.md` §7.5).
-///
-/// Fields 3-6 are the journal stamp (ADR-0123): a server that advertises
-/// `ServerFeature::EventJournal` writes `SEQ` and `TS_MS` on every journaled
-/// event, `ACTOR` when a connection caused it, and `OPERATION_ID` when a
-/// keyed operation did. An older decoder skips all four by length.
+/// `EVENT` body fields (`docs/spec/L1.md` §7.5); 3-6 are the journal stamp
+/// (ADR-0123).
 pub mod event {
     /// Optional `ResourceId` scope (absent field = server-scoped `None`).
     pub const TERMINAL: u32 = 1;
@@ -618,13 +548,11 @@ pub mod event {
     pub const EVENT: u32 = 2;
     /// Server-wide journal sequence (`u64`, starts at 1, never wraps).
     pub const SEQ: u32 = 3;
-    /// Server wall-clock time the event was journaled, Unix milliseconds
-    /// (`u64`).
+    /// Journal wall-clock time, Unix milliseconds (`u64`).
     pub const TS_MS: u32 = 4;
-    /// `ActorRef` of the connection that caused the event (positional).
+    /// `ActorRef` of the causing connection (positional).
     pub const ACTOR: u32 = 5;
-    /// The idempotency key of the operation that caused the event
-    /// (16 bytes).
+    /// Idempotency key of the causing operation (16 bytes).
     pub const OPERATION_ID: u32 = 6;
 }
 
@@ -638,86 +566,50 @@ pub mod event_journal_gap {
 
 /// `AgentEvent::SourceGap` body fields (`docs/spec/L1.md` §7.1).
 pub mod event_source_gap {
-    /// Number of events the scoped resource produced and the server dropped
-    /// before journaling them (`u64`).
+    /// Events dropped before journaling (`u64`).
     pub const DROPPED: u32 = 1;
 }
 
-/// Fields of the `SessionSnapshot` extension block (`docs/spec/L1.md` §9.1).
-///
-/// The block is the fifth trailing element, after the listeners report: one
-/// length-prefixed field-tagged TLV sequence, so later snapshot additions
-/// are new field ids here rather than new positional trailing lists.
+/// Fields of the field-tagged `SessionSnapshot` extension block
+/// (`docs/spec/L1.md` §9.1), the fifth trailing element.
 pub mod snapshot_extension {
-    /// One retained or held resource's state: positional `ResourceId`
-    /// followed by the field-tagged [`resource_state`](super::resource_state)
-    /// fields. Repeated, one per resource with non-default state.
+    /// One resource with non-default state: positional `ResourceId`, then
+    /// [`resource_state`](super::resource_state) fields. Repeated.
     pub const RESOURCE_STATE: u32 = 1;
-    /// The newest event-journal `seq` when the snapshot was cut (`u64`),
-    /// written once by a server that advertises `EVENT_JOURNAL`
-    /// (`docs/spec/L1.md` §7.3).
+    /// Newest event-journal `seq` at the cut (`u64`, `docs/spec/L1.md` §7.3).
     pub const JOURNAL_HEAD: u32 = 2;
 }
 
-/// Fields inside one `snapshot_extension::RESOURCE_STATE` value, after its
-/// positional `ResourceId`.
+/// Fields of one `RESOURCE_STATE` value, after its positional `ResourceId`.
 pub mod resource_state {
     /// `ResourceLifecycle` (`u8`); absent = `RUNNING`.
     pub const LIFECYCLE: u32 = 1;
-    /// `ExitFacet` (positional); present iff the resource exited and is
-    /// retained (ADR-0124).
+    /// `ExitFacet` (positional); present iff exited and retained (ADR-0124).
     pub const EXIT: u32 = 2;
     /// `ClientId` (`u32`) of the input-lease holder; absent = open.
     pub const INPUT_HOLDER: u32 = 3;
-    /// `ClientId` (`u32`) of one `VIEWER` subscriber (ADR-0127), repeated
-    /// once per viewer; absent = none.
+    /// `ClientId` (`u32`) of one `VIEWER` (ADR-0127); repeated.
     pub const VIEWER: u32 = 4;
 }
 
-/// `AgentEvent::Asked` body fields (`docs/spec/L1.md` §7.5).
-///
-/// Unlike the other `AgentEvent` bodies (positional), the `ASKED` body is
-/// field-tagged TLV: each field is `field_id || wire_type || length-delimited
-/// value`, read by `Decoder::read_field` which skips an unrecognised field by
-/// its length. This is what lets the optional `elapsed_seconds` and any future
-/// field be additive — a present field carries the value, an absent field is
-/// the default — while the whole event still skips cleanly to
-/// [`crate::wire::frame::AgentEvent::Unknown`] for an older decoder via the
-/// event's outer length prefix.
+/// `AgentEvent::Asked` body fields (`docs/spec/L1.md` §7.5); field-tagged,
+/// unlike the positional `AgentEvent` bodies, so fields stay additive.
 pub mod event_asked {
-    /// Stable question id (`str`) the answer correlates against.
+    /// Stable question id (`str`).
     pub const ID: u32 = 1;
-    /// The question text (`str`) presented to the human.
+    /// Question text (`str`).
     pub const QUESTION: u32 = 2;
-    /// One suggested answer (`str`). Repeated once per suggestion, in order;
-    /// absent when there are no suggestions.
+    /// One suggested answer (`str`), repeated in order.
     pub const SUGGESTION: u32 = 3;
-    /// Optional seconds the agent has been waiting (`u64`); an absent field is
-    /// `0` / unknown.
+    /// Optional seconds waiting (`u64`); absent = unknown.
     pub const ELAPSED_SECONDS: u32 = 4;
 }
 
-/// `AgentEvent::ResourceSpawned` body fields (`docs/spec/L1.md` §7.1).
-///
-/// Field-tagged TLV like [`event_asked`]: a body that predates the fields is
-/// empty and decodes as a root Terminal, and an older decoder ignores the
-/// body entirely, so both fields are additive.
+/// `AgentEvent::ResourceSpawned` body fields (`docs/spec/L1.md` §7.1);
+/// field-tagged, and an empty body is a root Terminal.
 pub mod event_pane_spawned {
-    /// `ResourceKind` tag (`u8`). Absent = `Terminal`; the encoder writes it
-    /// only for another kind.
+    /// `ResourceKind` tag (`u8`); absent = `Terminal`.
     pub const KIND: u32 = 1;
     /// Parent resource (positional tagged `ResourceId`). Absent = a root.
     pub const PARENT: u32 = 2;
 }
-
-// -----------------------------------------------------------------------------
-// `SessionId` tagged union — ADR-0007 §3
-// -----------------------------------------------------------------------------
-
-/// `SessionId::Local` tag.
-pub const SESSION_ID_TAG_LOCAL: u32 = 0;
-/// `SessionId::Satellite` tag (reserved for v0.2+; decoders MUST reject).
-pub const SESSION_ID_TAG_SATELLITE: u32 = 1;
-
-// The `ResourceId` wire-side tag bytes (`u8`) live in `crate::ids` alongside the
-// [`ResourceId`](crate::ids::ResourceId) definition — ADR-0016 §Decision.

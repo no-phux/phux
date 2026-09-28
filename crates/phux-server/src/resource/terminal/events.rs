@@ -11,21 +11,14 @@ use crate::agent_asked::AskedPayload;
 use crate::agent_detect::DetectedState;
 
 impl TerminalActor {
-    /// Wire an agent-event sink (SPEC §7.5, phux-y2t). The actor emits
-    /// every semantic event it sources — `bell` / `title_changed` /
-    /// `dirty` / `idle` / `command_*` / `cwd_changed` and the supervisory
-    /// `terminal_control` — to `sink`; the runtime drains it into the
-    /// server-wide event journal (ADR-0123), which is the only fan-out.
-    /// Called by the spawn path before the actor is handed to
-    /// `spawn_local`.
+    /// Wire the agent-event sink (SPEC §7.5); the runtime drains it into the
+    /// event journal (ADR-0123). Set before `spawn_local`.
     pub fn set_event_sink(&mut self, sink: impl Into<crate::resource::event_sink::EventSink>) {
         self.event_sink = Some(sink.into());
     }
 
-    /// Emit one agent event without blocking the actor. A full sink drops
-    /// the event and counts the drop, which the drain journals as a
-    /// `source_gap` for this pane (ADR-0123). No-op when no sink is wired
-    /// (the common test path).
+    /// Emit one agent event without blocking. A full sink drops and counts,
+    /// journaled as a `source_gap`.
     pub(super) fn emit_event(&self, event: AgentEvent) {
         if let Some(sink) = self.event_sink.as_ref() {
             sink.emit(event);
@@ -53,24 +46,15 @@ impl TerminalActor {
         }
     }
 
-    /// Wire the agent-state detector's sink (ADR-0046). The actor's detector
-    /// timer emits edge-filtered [`AgentDetectEvent`]s here; the runtime's
-    /// `spawn_agent_state_drain` owns `ServerState` and performs the
-    /// arbitration + `metadata_set`. Called by the spawn path before the
-    /// actor is handed to `spawn_local`, exactly like [`Self::set_event_sink`].
-    ///
-    /// `pub(crate)`, unlike `set_event_sink`: `AgentEvent` is a wire type, but
-    /// [`AgentDetectEvent`] is deliberately server-internal — the detector
-    /// introduces no wire surface.
+    /// Wire the detector's sink (ADR-0046), drained by
+    /// `spawn_agent_state_drain`. Crate-private: [`AgentDetectEvent`] is not
+    /// a wire type.
     pub(crate) fn set_agent_state_sink(&mut self, sink: mpsc::Sender<AgentDetectEvent>) {
         self.agent_state_sink = Some(sink);
     }
 
-    /// Wire the detector's live-`AgentSession`-child probe (ADR-0103 §5).
-    ///
-    /// Installed by the spawn path, for the same reason the two sinks are:
-    /// the answer depends on `ServerState`, which the pane engine never
-    /// holds, and the detector this feeds is not built until `run` starts.
+    /// Wire the live-`AgentSession`-child probe (ADR-0103 §5); it depends on
+    /// `ServerState`, which the pane never holds.
     pub(crate) fn set_live_session_probe(
         &mut self,
         probe: crate::agent_detect::live_session::LiveSessionProbe,
@@ -78,12 +62,8 @@ impl TerminalActor {
         self.live_session_probe = Some(probe);
     }
 
-    /// Bind the producer channel of the `AgentSession` child that just
-    /// spawned under this Terminal (ADR-0103 §6).
-    ///
-    /// One child at a time: a second session under the same pane replaces
-    /// the first as the destination for synthesized hook records, which is
-    /// the same "latest session wins" rule the record itself follows.
+    /// Bind the producer channel of the `AgentSession` child just spawned
+    /// under this Terminal (ADR-0103 §6). The latest session wins.
     pub(crate) fn bind_agent_session(
         &mut self,
         append: mpsc::Sender<crate::resource::agent_session::AppendRequest>,
@@ -91,9 +71,8 @@ impl TerminalActor {
         self.agent_session_append = Some(append);
     }
 
-    /// Best-effort detector emission. `try_send`: a full sink drops the
-    /// event rather than stalling the actor. Safe to drop — the detector is
-    /// level-triggered, so the next tick re-derives and re-publishes.
+    /// Best-effort detector emission; dropping is safe because the detector
+    /// re-derives every tick.
     pub(super) fn emit_agent_state(&self, event: AgentDetectEvent) {
         let _ = self.try_emit_agent_state(event);
     }
@@ -105,17 +84,11 @@ impl TerminalActor {
         false
     }
 
-    /// Sync `last_title` with libghostty's tracked OSC 0/2 title. Returns
-    /// `true` on a real change.
-    ///
-    /// The `RefCell` borrow of `self.terminal` MUST be released before
-    /// `self.last_title` is written, hence the two-step. No allocation on the
-    /// steady path: the common case compares and returns `false`.
+    /// Sync `last_title` with libghostty's OSC 0/2 title; `true` on change.
     pub(super) fn refresh_title(&mut self) -> bool {
         let next: Option<String> = {
             let canonical = self.terminal.borrow();
-            // On loan to a capture: the title cannot have changed under us
-            // without a `vt_write` we also deferred, so report "unchanged".
+            // On loan: the title cannot have changed without a deferred write.
             let current = canonical
                 .try_terminal()
                 .and_then(|terminal| terminal.title().ok())
@@ -131,15 +104,9 @@ impl TerminalActor {
         }
     }
 
-    /// Right-trimmed live-viewport rows, top to bottom. The detector's ONLY
-    /// grid read.
-    ///
-    /// Routes through the synthesizer's fresh-`RenderState` projection
-    /// (`scrollback = None`, so the LIVE screen and never history). That
-    /// projection deliberately allocates its own `RenderState` per call
-    /// rather than reusing the pooled one, precisely so a read like this does
-    /// not consume the shared libghostty dirty bits the per-consumer
-    /// state-sync tick needs (the phux-ia4 bug). Do not "optimize" it.
+    /// Right-trimmed live-viewport rows: the detector's only grid read.
+    /// Uses the fresh-render-state projection so it never consumes the
+    /// shared dirty bits the tick needs.
     pub(super) fn viewport_lines(&self) -> Option<Vec<String>> {
         let canonical = self.terminal.borrow();
         let terminal = canonical.try_terminal()?;
@@ -153,27 +120,16 @@ impl TerminalActor {
         }
     }
 
-    /// One agent-detector tick (ADR-0046). Returns the interval the caller
-    /// should re-arm the detector timer at.
-    ///
-    /// The detector is taken out of its `Option` for the duration: it needs
-    /// `&mut` while `viewport_lines` needs `&self`, and the borrow checker
-    /// will not have both. Put back before returning, always.
+    /// One detector tick (ADR-0046); returns the interval to re-arm at. The
+    /// detector is taken out of its `Option` for the borrow and always put
+    /// back.
     pub(super) fn detect_tick(&mut self) -> Option<std::time::Duration> {
         let mut detector = self.agent_detect.take()?;
         let now = std::time::Instant::now();
-        // The detector's OWN dirty flag, not `terminal_dirty_since_tick`:
-        // that one is cleared every ~30 ms by `tick_emit`, so a detector
-        // ticking at 100-500 ms would observe it as `false` almost always and
-        // skip every single scan.
-        //
-        // The flag is CONSUMED only by a scan that actually happened. A tick
-        // that skips the scan must not eat the evidence that a scan is owed:
-        // `wants_screen` is false for the whole of a pane's unidentified life,
-        // so consuming it unconditionally threw away every grid mutation an
-        // agent made before we noticed it existed — including the one that
-        // painted the permission dialog we were supposed to see. Likewise a
-        // failed projection leaves the flag set, so the next tick retries.
+        // The detector's own dirty flag (the tick's is cleared far more
+        // often). Consumed only by a scan that happened: an unidentified pane
+        // skips scans, and eating the flag then lost the mutation that
+        // painted the dialog. A failed projection keeps it set too.
         let dirty = self.agent_dirty_since_detect;
         let screen = if detector.wants_screen(dirty) {
             let lines = self.viewport_lines();
@@ -225,36 +181,12 @@ impl TerminalActor {
         Some(next)
     }
 
-    /// Source agent events from a freshly-applied PTY chunk (phux-y2t),
-    /// called right after `vt_write`. Sources, in order:
-    ///
-    /// - `bell` — a BEL (`0x07`) anywhere in the chunk. Emitted once per
-    ///   chunk even if several BELs arrive together (a burst of bells is
-    ///   one alert from the consumer's perspective).
-    /// - `title_changed` — the libghostty-tracked OSC 0 / OSC 2 title now
-    ///   differs from the last observed value.
-    /// - `dirty` — the chunk mutated the grid (a new output burst began).
-    ///   Coalesced: at most one `dirty` per burst; the settling `idle`
-    ///   fires from the tick arm.
-    ///
-    /// `command_started` / `command_finished` (phux-foz.4) — sourced from a
-    /// direct OSC-133 scan of the raw chunk (see [`osc133`]): `C` emits
-    /// `command_started`, `D` emits `command_finished` with the shell's
-    /// exit code when reported. The grid projection cannot yield the
-    /// `D`-mark exit code, so the byte stream is the honest source. Each
-    /// `D` mark is also a prompt boundary: the pane's kernel cwd is
-    /// re-queried there and a change emits `cwd_changed`.
+    /// Source agent events from a freshly written PTY chunk: `bell` (once per
+    /// chunk), `title_changed`, one `dirty` per output burst, and OSC 133
+    /// `command_started`/`command_finished` (with the `D` exit code the grid
+    /// drops). Each `D` is also a prompt boundary that re-checks the cwd.
     pub(super) fn source_events_from_chunk(&mut self, chunk: &[u8]) {
-        // UNCONDITIONAL, and deliberately ahead of the no-listener guard
-        // below (ADR-0046). The agent-state detector reads `last_title` on
-        // its own timer, and the OSC title is its highest-priority signal —
-        // but this function used to return early for a pane nobody was
-        // watching, which left `last_title` stale forever for exactly the
-        // panes the sidebar most wants to describe. Refreshing here keeps one
-        // title parser (libghostty's) and one mirror. Costs one FFI read plus
-        // one compare per chunk, and allocates only when the title changes;
-        // measured at under 0.01 ms/MB, which is why no attempt is made to
-        // skip it (see `ingest_pty_payload`).
+        // Unconditional, even with no listener: the detector reads the title.
         let title_changed = self.refresh_title();
         let marks = self.osc133.feed(chunk);
         self.observe_marks(&marks);
@@ -262,17 +194,13 @@ impl TerminalActor {
             return;
         }
         self.output_since_idle_tick = true;
-        // OSC-133 prompt marks (phux-foz.4). Scanned before the coalesced
-        // dirty/title sources below so a command boundary and its dirty
-        // burst arrive in stream order.
+        // OSC 133 marks first so a command boundary precedes its burst.
         for mark in marks {
             match mark {
                 osc133::OscMark::CommandStart => self.emit_event(AgentEvent::CommandStarted),
                 osc133::OscMark::CommandEnd { exit_code } => {
                     self.emit_event(AgentEvent::CommandFinished { exit_code });
-                    // The command just finished: the shell is back at a
-                    // prompt and any `cd` has landed. Re-query the kernel
-                    // cwd and announce a change.
+                    // Back at a prompt: any `cd` has landed.
                     self.check_cwd_changed();
                 }
                 osc133::OscMark::PromptStart
@@ -283,46 +211,27 @@ impl TerminalActor {
         if memchr::memchr(0x07, chunk).is_some() {
             self.emit_event(AgentEvent::Bell);
         }
-        // Title: `refresh_title` (above) already synced the mirror; emit on a
-        // real change.
         if title_changed {
             self.emit_event(AgentEvent::TitleChanged {
                 title: self.last_title.clone(),
             });
         }
-        // Asked: source a pending human-answerable question from a `phux-ask`
-        // title sentinel (phux-2sl6), tier 2 of the ADR-0036 ladder.
-        //
-        // The actor reports the marker; it does not decide what a subscriber
-        // sees. `AskedDetector` (out in `ServerState`, where the hook reports
-        // land too) ranks the sources and owns the coalescing, so an agent
-        // driving both this sentinel and the hook produces one `Asked`
-        // instead of two. `last_ask` survives as the TRANSPORT edge filter:
-        // its only job is to keep a pane whose title is a stable `phux-ask`
-        // from pushing a message per PTY chunk. Both edges travel — a marker
-        // appearing or changing as `Some`, retitling away as `None` — because
-        // the detector cannot infer a cleared marker, and without the clear
-        // the same question asked twice would coalesce into silence.
-        //
-        // The marker is a function of `last_title` alone, so it can only move
-        // when the title moved — or when a previous chunk's emission was
-        // refused and the retry is still owed (`ask_retry_owed`). Re-parsing
-        // on every chunk of a pane whose title has not changed in an hour
-        // re-derives an answer that provably cannot differ.
+        // `phux-ask` title sentinel (ADR-0036 tier 2). `AskedDetector` in
+        // `ServerState` ranks and coalesces; `last_ask` only keeps a stable
+        // title from reporting per chunk. Both edges ship (a clear matters).
+        // Re-parse only on a title change or an owed retry.
         if title_changed || self.ask_retry_owed {
             self.source_ask_marker();
         }
-        // Dirty: a chunk arrived, so the grid mutated. Coalesce to one
-        // `dirty` per burst; `idle` (from the tick arm) closes the burst.
+        // One `dirty` per burst; `idle` from the tick closes it.
         if !self.in_output_burst {
             self.in_output_burst = true;
             self.emit_event(AgentEvent::Dirty);
         }
     }
 
-    /// Fold a chunk's OSC marks into the state every pane keeps whether or
-    /// not anyone is listening: the OSC 9;4 progress mirror the detector
-    /// reads, and the prompt machine the `process` facet reports.
+    /// Fold OSC marks into state kept regardless of listeners: the OSC 9;4
+    /// progress mirror and the prompt machine.
     fn observe_marks(&mut self, marks: &[osc133::OscMark]) {
         for mark in marks {
             self.prompt.observe(mark);
@@ -332,12 +241,7 @@ impl TerminalActor {
         }
     }
 
-    /// Re-derive the in-pane ask marker from the current title and ship the
-    /// edge (phux-2sl6).
-    ///
-    /// Split out of [`Self::source_events_from_chunk`] so the caller can gate
-    /// it on the two conditions under which the answer can differ from last
-    /// time: the title changed, or a previous emission was refused.
+    /// Re-derive the ask marker from the title and ship the edge.
     fn source_ask_marker(&mut self) {
         let current_ask = AskMarker::parse(&self.last_title);
         if current_ask == self.last_ask {
@@ -348,15 +252,11 @@ impl TerminalActor {
             id: marker.id.clone(),
             question: marker.question.clone(),
             suggestions: marker.suggestions.clone(),
-            // Elapsed-since-ask is not tracked server-side in v1; the
-            // consumer renders a live waiting counter from receipt.
+            // Waiting time is rendered client-side from receipt.
             elapsed_seconds: None,
         });
-        // Advance the mirror only once the edge is actually in flight. An ask
-        // is edge-triggered — unlike the level-triggered detector, nothing
-        // re-derives it — so a full sink would otherwise swallow it outright;
-        // leaving the mirror stale re-attempts on the next chunk. With no
-        // sink wired at all there is nothing to deliver and nothing to retry.
+        // Advance the mirror only once the edge is in flight: asks are
+        // edge-triggered, so a refused one must be retried.
         if self.try_emit_agent_state(AgentDetectEvent::AskSentinel(ask))
             || self.agent_state_sink.is_none()
         {
@@ -367,32 +267,21 @@ impl TerminalActor {
         }
     }
 
-    /// Emit `idle` when an output burst has settled (phux-y2t), called from
-    /// the tick arm. A burst is "settled" when no PTY output chunk arrived
-    /// since the previous tick. Idempotent: only the first settled tick after
-    /// a `dirty` emits `idle`; subsequent idle ticks are silent until the next
-    /// burst.
+    /// Emit `idle` on the first tick after a burst with no new output.
     pub(super) fn maybe_emit_idle(&mut self) {
         let had_output = std::mem::take(&mut self.output_since_idle_tick);
         if self.in_output_burst && !had_output {
             self.in_output_burst = false;
             self.emit_event(AgentEvent::Idle);
-            // phux-foz.4: an output burst settling is the fallback prompt
-            // boundary for shells without OSC-133 integration — a `cd`
-            // echoes a prompt (burst), settles (idle), and the kernel cwd
-            // re-query below announces the change. One best-effort syscall
-            // per settled burst.
+            // Settling is the fallback prompt boundary for shells without
+            // OSC 133.
             self.check_cwd_changed();
         }
     }
 
-    /// phux-foz.4: re-query the PTY child's kernel cwd and emit
-    /// [`AgentEvent::CwdChanged`] when it differs from the last
-    /// observation. Best-effort and coalesced: no PTY / dead child /
-    /// denied query all yield silence, and an unchanged directory emits
-    /// nothing, except that a pane's first successful observation always
-    /// emits so its starting directory is announced once. Called at
-    /// OSC-133 `D` prompt boundaries and on output settle.
+    /// Re-query the child's kernel cwd and emit [`AgentEvent::CwdChanged`]
+    /// on a change. Best-effort; the first successful observation always
+    /// emits so the starting directory is announced.
     pub(super) fn check_cwd_changed(&self) {
         let Some(pid) = self.pty.as_ref().and_then(|p| p.child.process_id()) else {
             return;
@@ -401,10 +290,7 @@ impl TerminalActor {
             return;
         };
         let cwd = cwd.to_string_lossy().into_owned();
-        // The first successful observation always announces, even when it
-        // matches the spawn seed: a consumer that learned of this pane
-        // mid-session (a TUI split) has no other source for its starting
-        // directory. Later observations are deduplicated as usual.
+        // First observation always announces (late consumers need it).
         let first_observation = !self.cwd_announced.replace(true);
         if !first_observation && *self.last_known_cwd.borrow() == cwd {
             return;
@@ -413,10 +299,8 @@ impl TerminalActor {
         self.emit_event(AgentEvent::CwdChanged { cwd });
     }
 
-    /// Handle a supervisory [`ControlRequest`] (ADR-0033): a lease-change
-    /// broadcast or a process signal. The input lease lives in `ServerState`;
-    /// this actor is the emitter (it owns the lifecycle the event reports)
-    /// and the signal deliverer (it owns the PTY child pid).
+    /// Handle a supervisory [`ControlRequest`] (ADR-0033): lease broadcasts
+    /// and signals.
     pub(super) fn handle_control_request(&mut self, req: ControlRequest) {
         match req {
             ControlRequest::LeaseChanged {
@@ -453,9 +337,7 @@ impl TerminalActor {
                         if let Some(report) = report {
                             self.emit_agent_state(AgentDetectEvent::State(report));
                         }
-                        // A retraction hands the pane back to the fallback,
-                        // so the next tick must actually look rather than
-                        // reuse the stream's last conclusion.
+                        // A retraction hands the pane back to the screen.
                         self.agent_dirty_since_detect = true;
                         let _ = reply.send(Ok(()));
                     }
@@ -484,9 +366,8 @@ impl TerminalActor {
             } => {
                 let result = self.deliver_signal(signal);
                 if result.is_ok() {
-                    // Reflect the reversible brake in the lifecycle the next
-                    // broadcast reports. Terminating signals leave it
-                    // `Running` until the EOF path fires `ResourceClosed`.
+                    // Only the reversible brake changes the lifecycle;
+                    // terminal signals surface via EOF.
                     match signal {
                         TerminalSignal::Freeze => self.lifecycle = ResourceLifecycle::Frozen,
                         TerminalSignal::Resume => self.lifecycle = ResourceLifecycle::Running,
@@ -508,14 +389,9 @@ impl TerminalActor {
         }
     }
 
-    /// Deliver a POSIX signal to the pane's process group (ADR-0033).
-    ///
-    /// `portable_pty` spawns the child as a session/process-group leader (it
-    /// calls `setsid` + `TIOCSCTTY` to give the PTY a controlling terminal),
-    /// so the child's pid *is* its process-group id. Signaling the group
-    /// (`killpg`) reaches the child and every subprocess it spawned — the
-    /// agent and all its descendants — which is what "freeze/kill the agent"
-    /// must mean.
+    /// Deliver a POSIX signal to the pane's process group (ADR-0033). The
+    /// child is a session leader, so `killpg` reaches it and every
+    /// descendant.
     pub(super) fn deliver_signal(&self, signal: TerminalSignal) -> Result<(), String> {
         use nix::sys::signal::{Signal as NixSignal, killpg};
         use nix::unistd::Pid;
@@ -538,12 +414,9 @@ impl TerminalActor {
         killpg(Pid::from_raw(pid), nix_signal).map_err(|err| format!("killpg failed: {err}"))
     }
 
-    /// Feed hook-reported state straight into this pane's detector
-    /// (ADR-0085) — the `REPORT_AGENT_STATE` path taken whenever no live
-    /// `AgentSession` child exists, which today is always.
-    ///
-    /// The detector may swallow the edge (its own filter said the record is
-    /// already right), which is a success, not a no-op to report.
+    /// Feed hook-reported state into the detector (ADR-0085), the path
+    /// taken without a live `AgentSession` child. A swallowed edge is a
+    /// success.
     pub(super) fn apply_hook_state(&mut self, state: DetectedState) -> Result<(), String> {
         let report = self
             .agent_detect
@@ -553,32 +426,17 @@ impl TerminalActor {
         if let Some(report) = report {
             self.emit_agent_state(AgentDetectEvent::State(report));
         }
-        // Force one normal derivation after the edge so hook evidence never
-        // becomes a latch on a quiet screen.
+        // Force one derivation so the hook never latches on a quiet screen.
         self.agent_dirty_since_detect = true;
         Ok(())
     }
 
     /// Append a synthesized `{"type":"state","data":{"state":...,
-    /// "source":"hook"}}` record to this Terminal's live `AgentSession`
-    /// child, so the hook's evidence reaches the arbiter the same way every
-    /// other thing the agent says about itself does (ADR-0103 decision 6).
+    /// "source":"hook"}}` record to this Terminal's live `AgentSession` child
+    /// (ADR-0103 §6).
     ///
-    /// # The fallback, and why it stays
-    ///
-    /// The caller's live-child test and this actor's bound channel can
-    /// disagree for exactly as long as it takes a `session_end` to land, and
-    /// a hook that reports `blocked` must turn the pane red either way —
-    /// that is the whole user-visible contract of `REPORT_AGENT_STATE`. So a
-    /// missing or closed channel takes the ADR-0085 path rather than
-    /// failing: an error would make the shim's `report-state` call start
-    /// failing to signal an absence the caller cannot act on.
-    ///
-    /// The record and the pane's own record are written from the same edge
-    /// rather than one waiting on the other: the append's reply would have
-    /// to be awaited, and the control mailbox this runs on is synchronous.
-    /// The evidence is the same either way, and it enters the arbiter at the
-    /// rank the stream carries.
+    /// A missing or closed channel falls back to the ADR-0085 path rather
+    /// than failing: a `blocked` report must reach the pane either way.
     pub(super) fn synthesize_state_record(&mut self, state: DetectedState) -> Result<(), String> {
         let record = format!(
             "{{\"type\":\"state\",\"data\":{{\"state\":\"{}\",\"source\":\"hook\"}}}}\n",
@@ -606,28 +464,21 @@ impl TerminalActor {
         {
             self.emit_agent_state(AgentDetectEvent::State(report));
         }
-        // The stream's claim is level-triggered like every other, so one
-        // ordinary derivation still runs behind it.
+        // Still run one ordinary derivation behind it.
         self.agent_dirty_since_detect = true;
         Ok(())
     }
 
-    /// The pane's process exited and the pane is retained (ADR-0124). Later
-    /// `TerminalControl` broadcasts report `Exited`, the detector stops (its
-    /// foreground poll has no process to find), and the PTY is let go, so
-    /// input that reaches this actor anyway is reported as not written and a
-    /// retained pane holds no pseudoterminal. The grid, history, and every
-    /// consumer stay: inspection is the point.
+    /// The process exited and the pane is retained (ADR-0124): report
+    /// `Exited`, stop the detector, release the PTY. Grid and consumers stay.
     pub(super) fn retire_after_exit(&mut self) {
         self.lifecycle = ResourceLifecycle::Exited;
         self.agent_detect = None;
         self.release_pty_after_exit();
     }
 
-    /// Emit an [`AgentEvent::TerminalControl`] (ADR-0033) carrying this
-    /// actor's current lifecycle. It rides the same sink as every other
-    /// event, so it is journaled and reaches both subscribe verbs; the
-    /// drain attributes the stamp to `actor`.
+    /// Emit an [`AgentEvent::TerminalControl`] (ADR-0033) with the current
+    /// lifecycle, attributed to `actor`.
     pub(super) fn emit_terminal_control(
         &self,
         action: ControlAction,
@@ -645,10 +496,8 @@ impl TerminalActor {
     }
 }
 
-/// The detector's word for a wire-reported agent state.
-///
-/// `ReportedAgentState` has no `idle`: a hook reports what the agent is
-/// doing, and "not doing anything" is the detector's call to make (ADR-0085).
+/// Map a hook-reported state to the detector's. There is no `idle`: that is
+/// the detector's call (ADR-0085).
 const fn hook_state(state: phux_protocol::wire::frame::ReportedAgentState) -> DetectedState {
     use phux_protocol::wire::frame::ReportedAgentState;
     match state {

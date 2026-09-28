@@ -1,28 +1,12 @@
-//! In-process performance telemetry for phux, and the thread scheduling
-//! policy that keeps the measured path responsive ([`promote_current_thread`]).
+//! Always-on in-process performance telemetry, plus the thread scheduling
+//! policy for the interactive path ([`promote_current_thread`]).
 //!
-//! Every metric here is a plain `static`: a [`Histogram`], [`Counter`], or
-//! [`Gauge`] built from relaxed atomics, so recording a sample on the PTY
-//! read thread, the actor's `select!` arm, or the client's paint loop costs
-//! one `fetch_add` and never takes a lock, allocates, or formats anything.
-//! The telemetry is therefore always on; there is no "enable profiling"
-//! switch to remember, and the numbers a user reports from a laggy session
-//! are the numbers the binary was already keeping.
-//!
-//! Reading is the expensive side and happens only on demand: a crate lists
-//! its metrics as a `&'static [Metric]` table and [`snapshot`] walks it into
-//! a [`PerfReport`], which serialises to JSON for the `GET_PERF` wire
-//! command and for log lines. Two reports taken at different times fold
-//! into an interval with [`PerfReport::delta`], which is how `phux perf
-//! --watch` shows rates and per-interval percentiles rather than lifetime
-//! averages that hide a stall.
-//!
-//! The histogram is a fixed 504-bucket log-linear layout (exact below 32,
-//! then eight sub-buckets per octave up to `u64::MAX`), so a percentile is
-//! reported as a bucket bound at most 12.5% above the true value, which is
-//! more than enough to tell a 700 µs echo from a 17 ms one. See
-//! `docs/operations.md` §"Performance observability" for the metric catalog
-//! and what each number should look like on a healthy machine.
+//! Metrics are `static` [`Histogram`]s, [`Counter`]s, and [`Gauge`]s built
+//! from relaxed atomics: recording never locks, allocates, or formats. A
+//! crate lists them in a `&'static [Metric]` table; [`snapshot`] walks it
+//! into a [`PerfReport`] (JSON for `GET_PERF`), and [`PerfReport::delta`]
+//! folds two reports into an interval for `phux perf --watch`. See
+//! `docs/operations.md` §"Performance observability" for the catalog.
 
 // `deny`, not `forbid`: the one `unsafe` in this crate is the pthread QoS
 // call in `sched`, scoped by an `allow` with a `SAFETY` note.
@@ -37,7 +21,7 @@ mod sched;
 mod throttle;
 
 pub use counter::{Counter, Gauge};
-pub use histogram::{BUCKETS, Histogram, HistogramSnapshot, Timer};
+pub use histogram::{Histogram, HistogramSnapshot, Timer};
 pub use process::ProcessStats;
 pub use render::render_report;
 pub use report::{
@@ -58,9 +42,9 @@ pub fn snapshot(role: &str, table: &[Metric], uptime: std::time::Duration) -> Pe
 /// [`snapshot`] with the process section taken relative to `baseline`, the
 /// `getrusage` reading captured when `uptime` started counting.
 ///
-/// A server that re-execs itself in place (`phux upgrade`) keeps its pid and
-/// therefore its cumulative rusage while its uptime restarts at zero; without
-/// the baseline the header would divide six days of CPU by three seconds.
+/// A server that re-execs in place (`phux upgrade`) keeps its cumulative
+/// rusage while its uptime restarts, so CPU must be measured from the
+/// baseline.
 #[must_use]
 pub fn snapshot_since(
     role: &str,
@@ -92,18 +76,16 @@ pub fn reset(table: &[Metric]) {
     }
 }
 
-/// Wall-clock milliseconds since the Unix epoch; `0` if the clock is before
-/// it or the target has no wall clock (wasm).
+/// Wall-clock milliseconds since the Unix epoch; `0` without a wall clock
+/// (wasm).
 #[cfg(target_arch = "wasm32")]
-#[must_use]
-pub const fn unix_ms_now() -> u64 {
+const fn unix_ms_now() -> u64 {
     0
 }
 
 /// Wall-clock milliseconds since the Unix epoch; `0` if the clock is before it.
 #[cfg(not(target_arch = "wasm32"))]
-#[must_use]
-pub fn unix_ms_now() -> u64 {
+fn unix_ms_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, duration_ms)
@@ -115,9 +97,7 @@ pub fn duration_ms(d: std::time::Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// Saturating `Duration -> u64` microseconds, the unit every latency
-/// histogram in phux records.
-#[must_use]
-pub fn duration_us(d: std::time::Duration) -> u64 {
+/// Saturating `Duration -> u64` microseconds, the latency histogram unit.
+fn duration_us(d: std::time::Duration) -> u64 {
     u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
 }

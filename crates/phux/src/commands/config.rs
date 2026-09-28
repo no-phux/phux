@@ -16,13 +16,9 @@ use live_feed::{
     merge_agents,
 };
 
-/// `phux config <action>` (phux-ijp). Mostly client-local: inspects and
-/// scaffolds the on-disk config without contacting a server. The
-/// exceptions are `config agents`, which best-effort reads live
-/// `phux.agent/v1` state from a running server (phux-r82.10) and degrades
-/// to the declared manifest values when none answers, and `reload`
-/// (phux-foz.5), which rings
-/// the server-relayed reload doorbell for attached clients.
+/// `phux config <action>`: mostly client-local. `config agents` best-effort
+/// reads live `phux.agent/v1` state, and `reload` rings the server-relayed
+/// reload doorbell.
 pub(crate) fn run_config(action: &ConfigAction, socket: Option<std::path::PathBuf>) -> ExitCode {
     match action {
         ConfigAction::Path => {
@@ -49,20 +45,10 @@ pub(crate) fn run_config(action: &ConfigAction, socket: Option<std::path::PathBu
     }
 }
 
-/// `phux config check [PATH] [--json]` (phux-q9wj.3).
-///
-/// Reports every unknown key and wrong value in the resolved layer stack,
-/// each with its full dotted path and the layer file that introduced it.
-/// Once the stack deserializes, a semantic pass (phux-i0e8.3.2) also
-/// reports keybinding chords that do not parse, action names no dispatcher
-/// arm handles (with a did-you-mean suggestion), and bindings that shadow
-/// each other in the resolver — the mistakes that load fine and then
-/// silently do nothing.
-///
-/// Exit codes: 0 clean, 1 findings, 2 the check could not run (unreadable
-/// file, malformed TOML, cyclic `extends`). The three are distinct because a
-/// CI gate wants to fail differently on "your config has a typo" than on "I
-/// could not read your config at all".
+/// `phux config check [PATH] [--json]`: every unknown key and wrong value in
+/// the layer stack with its dotted path and layer, then a semantic pass for
+/// chords that do not parse, unknown actions (with a suggestion), and shadowed
+/// bindings. Exit 0 clean, 1 findings, 2 the check could not run.
 fn run_config_check(path: Option<&Path>, json: bool) -> ExitCode {
     let path = path.map_or_else(config_loader::config_path, Path::to_path_buf);
 
@@ -200,14 +186,9 @@ fn print_check_json(path: &Path, report: &phux_config::CheckReport, missing: boo
     }
 }
 
-/// `phux config show [--default | --layers [--json]]`.
-///
-/// `--default` echoes the embedded defaults verbatim, comments and all
-/// — the annotated source of truth. Plain `show` renders the effective
-/// merged document (defaults + `extends` layers + the user's overrides,
-/// ADR-0039) as canonical TOML. `--layers` renders provenance instead:
-/// which layer of the stack set each effective key, and for `-append`
-/// arrays, which layer contributed each element.
+/// `phux config show [--default | --layers [--json]]`: `--default` echoes the
+/// embedded defaults verbatim; plain `show` renders the merged document
+/// (ADR-0039); `--layers` renders which layer set each key and array element.
 fn run_config_show(default: bool, layers: bool, json: bool) -> ExitCode {
     if default {
         out!("{}", phux_config::DEFAULT_CONFIG_TOML);
@@ -305,13 +286,8 @@ fn layer_short_label(layer: &phux_config::LayerSource) -> String {
     }
 }
 
-/// `phux config init [--distro <name-or-path>]`: scaffold the starter
-/// config, plain or extending a starter distribution (phux-r82.9).
-///
-/// The distro flavor resolves the spec to an absolute layer path, then
-/// **validates the full merged stack before writing anything** — a
-/// broken or missing distro layer fails the command instead of leaving
-/// the user a config that errors on every subsequent invocation.
+/// `phux config init [--distro <name-or-path>]`: scaffold the starter config,
+/// validating the full merged stack before writing anything.
 fn run_config_init(force: bool, distro: Option<&str>) -> ExitCode {
     let path = config_loader::config_path();
     let contents = match distro {
@@ -354,19 +330,9 @@ fn run_config_init(force: bool, distro: Option<&str>) -> ExitCode {
     }
 }
 
-/// `phux config reload` (phux-foz.5): validate the layered config
-/// locally, then ring the `phux.config.reload/v1` doorbell so attached
-/// clients re-read their config in place.
-///
-/// The local validation is the config-iteration fast path: a broken file
-/// fails HERE, with the parse error on stderr, and nothing is signalled
-/// (running clients would have kept their old config anyway — the
-/// doorbell just becomes pointless noise). The signal is a `SET_METADATA`
-/// of the conventional Global key with a fresh nonce value; the config
-/// bytes never cross the wire — every client re-reads its own file. The
-/// trailing `GET_METADATA` round-trip is load-bearing: `SET_METADATA` has
-/// no reply frame, so without it this process could exit and close the
-/// socket before the server reads the SET (same pattern as `phux tag`).
+/// `phux config reload`: validate the config locally (a broken file fails
+/// here and signals nothing), then ring the `phux.config.reload/v1` doorbell
+/// with a fresh nonce; each client re-reads its own file.
 fn run_config_reload(socket: Option<PathBuf>) -> ExitCode {
     use phux_client::attach::connection::Connection;
     use phux_protocol::wire::frame::{CONFIG_RELOAD_KEY, FrameKind, Scope};
@@ -408,12 +374,8 @@ fn run_config_reload(socket: Option<PathBuf>) -> ExitCode {
         {
             return super::report_no_server(&err, &socket_path, "config reload");
         }
-        // The read-back is a flush barrier: SET_METADATA has no reply, so
-        // without it this process can exit and close the socket before the
-        // server reads the SET. It goes through `request_metadata` because the
-        // wait that used to be here matched METADATA_VALUE alone — a server
-        // that refused the read with a correlated ERROR (`proto.md` §9) left
-        // `phux config reload` hanging with no output at all.
+        // Read-back as a flush barrier (`SET_METADATA` has no reply), via
+        // `request_metadata` so a correlated ERROR cannot hang it.
         let reply = match conn
             .request_metadata(2, Scope::Global, CONFIG_RELOAD_KEY.to_owned())
             .await

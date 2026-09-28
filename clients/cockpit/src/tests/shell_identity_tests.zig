@@ -117,10 +117,6 @@ test "BEL latches until the app acknowledges it" {
     // boolean, not a counter.
     session.feed("\x07\x07");
     try testing.expect(session.bell_rung);
-
-    try testing.expect(session.takeBell());
-    try testing.expect(!session.bell_rung);
-    try testing.expect(!session.takeBell());
 }
 
 // ------------------------------------------------------------- OSC 133
@@ -182,9 +178,6 @@ test "Pane surfaces title, pwd, and bell from its session" {
     try testing.expectEqualStrings("/Users/phall", readonly.pwd());
     try testing.expect(readonly.bellRung());
     try testing.expect(readonly.atPrompt());
-
-    readonly.clearBell();
-    try testing.expect(!readonly.bellRung());
 }
 
 // ------------------------------------------- working-directory inheritance

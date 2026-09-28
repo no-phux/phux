@@ -1,34 +1,12 @@
 //! Parent bindings and the close ledger (ADR-0104).
 //!
-//! A resource may name one parent at spawn. The binding is immutable and it
-//! is *lifecycle*, not metadata: when a parent leaves for any reason its
-//! children leave with it, and the cascade runs in the same acquisition of
-//! the state lock that removes the parent, so no client can observe a child
-//! whose parent is gone. That is the guarantee `KILL_RESOURCES` already
-//! gives a batch, extended down the one edge this program creates.
-//!
-//! The graph itself is the registry's — [`Registry::children`] reads the
-//! `parent` each descriptor already carries, so there is no second map to
-//! keep in step with it. What lives here is the part the registry cannot
-//! know: *why* each resource is closing, and which closer owns emitting its
-//! `RESOURCE_CLOSED`.
-//!
-//! # The close ledger
-//!
-//! Every resource closes through one path: something cancels its engine
-//! token, the engine's run loop ends, its exit notification fires, and the
-//! per-resource exit watcher broadcasts `RESOURCE_CLOSED` and reaps. That
-//! path knows the resource died; it does not know whether a kill, a parent,
-//! or the shell's own `exit` did it. So a closer records the reason before
-//! it cancels, and the watcher claims it.
-//!
-//! The claim is what makes a cascade safe. A cascading closer reaps its
-//! children itself, inside the one lock — but each child's own watcher is
-//! still armed and will wake later. [`ServerState::begin_resource_close`]
-//! answers `None` for a resource the registry no longer holds, so exactly
-//! one closer ever emits a given resource's frame, and a late watcher for
-//! an already-reaped child does nothing rather than interning a fresh wire
-//! id for a corpse.
+//! A resource may name one immutable parent at spawn; when the parent
+//! leaves, its children leave in the same lock acquisition, so no client
+//! sees an orphan. The graph is the registry's ([`Registry::children`]);
+//! this module records why each resource is closing. A closer records the
+//! reason before cancelling, and the resource's exit watcher claims it:
+//! [`ServerState::begin_resource_close`] returns `None` for an already-reaped
+//! resource, so exactly one closer emits each `RESOURCE_CLOSED`.
 //!
 //! [`Registry::children`]: phux_core::registry::Registry::children
 
@@ -39,20 +17,14 @@ use phux_protocol::wire::frame::CloseReason;
 use super::ServerState;
 
 impl ServerState {
-    /// The resources bound to `parent`. Empty for a leaf.
-    ///
-    /// Spawn still refuses a second level (ADR-0104 §5); the cascade walks
-    /// whatever graph the registry holds so a grandchild cannot outlive its
-    /// ancestor (ADR-0104 §2).
+    /// The resources bound to `parent` (the cascade walks any depth, though
+    /// spawn refuses a second level).
     #[must_use]
     pub fn resource_children(&self, parent: ResourceId) -> Vec<ResourceId> {
         self.sessions.registry.children(parent)
     }
 
-    /// `parent`'s children, then theirs, breadth-first.
-    ///
-    /// The close/kill cascade uses this so a frozen `0..len()` range cannot
-    /// stop at one generation.
+    /// `parent`'s descendants, breadth-first.
     #[must_use]
     pub fn resource_descendants(&self, parent: ResourceId) -> Vec<ResourceId> {
         let mut descendants = self.sessions.registry.children(parent);
@@ -69,12 +41,8 @@ impl ServerState {
         descendants
     }
 
-    /// The resource `child` was parented to at spawn, if it named one.
-    ///
-    /// The inverse of [`Self::resource_children`], and it exists for the same
-    /// reason the cascade does: a child's lifecycle edges are addressed to
-    /// the child but concern the parent, so the close path has to resolve the
-    /// parent BEFORE the reap retires the binding.
+    /// The parent `child` named at spawn; the close path must resolve it
+    /// before the reap retires the binding.
     #[must_use]
     pub fn resource_parent(&self, child: ResourceId) -> Option<ResourceId> {
         self.sessions
@@ -83,13 +51,8 @@ impl ServerState {
             .and_then(|resource| resource.parent)
     }
 
-    /// `true` when `parent` has at least one live `AgentSession` child.
-    ///
-    /// The query ADR-0103 §5 gives the detector: while a session is
-    /// producing records, its stream is the ranking evidence about the
-    /// pane's agent and screen derivation is left to the questions no hook
-    /// can answer. This exposes the fact; what the detector does with it is
-    /// the detector's.
+    /// Whether `parent` has a live `AgentSession` child (the detector's
+    /// ADR-0103 §5 query).
     #[must_use]
     pub fn has_live_agent_session_child(&self, parent: ResourceId) -> bool {
         self.sessions
@@ -104,11 +67,7 @@ impl ServerState {
             })
     }
 
-    /// The live `AgentSession` children of `parent`, with their handles.
-    ///
-    /// The producer path's route from a Terminal to the sessions running
-    /// inside it — `REPORT_AGENT_STATE`'s fallback and the TUI's per-pane
-    /// session line both start here.
+    /// `parent`'s live `AgentSession` children and their handles.
     #[must_use]
     pub fn agent_session_children(
         &self,
@@ -128,24 +87,14 @@ impl ServerState {
             .collect()
     }
 
-    /// Record why `resource` is closing, for the watcher that will emit its
-    /// `RESOURCE_CLOSED`.
-    ///
-    /// First writer wins: a deliberate `Killed`, `ParentClosed`, or
-    /// `ServerShutdown` set before the engine stops is not overwritten by a
-    /// later, less specific closer, and a resource nobody marked closes as
-    /// `Exited` — the shell typed `exit`.
+    /// Record why `resource` is closing. First writer wins; an unmarked
+    /// resource closes as `Exited`.
     pub fn mark_resource_closing(&mut self, resource: ResourceId, reason: CloseReason) {
         self.close_reasons.entry(resource).or_insert(reason);
     }
 
-    /// Claim the right to close `resource`, taking the reason recorded for
-    /// it.
-    ///
-    /// `None` when the registry no longer holds `resource`: another closer
-    /// already reaped it (a parent cascading, or a racing kill), and this
-    /// caller must emit nothing. `Some(CloseReason::Exited)` when it is
-    /// live and nobody recorded a reason.
+    /// Claim the close of `resource` and its recorded reason. `None` when
+    /// already reaped (emit nothing); `Exited` when nobody recorded one.
     pub fn begin_resource_close(&mut self, resource: ResourceId) -> Option<CloseReason> {
         self.sessions.registry.resource(resource)?;
         Some(
@@ -169,18 +118,10 @@ impl ServerState {
             .unwrap_or_default()
     }
 
-    /// Close `targets` and every descendant bound to one of them, in a
-    /// single borrow of the state (ADR-0104 §2).
-    ///
-    /// Targets close with `reason`; cascaded descendants close with
-    /// `ParentClosed`, unless the caller also named the descendant as a
-    /// target, in which case its own reason stands and it is cancelled
-    /// exactly once. Returns how many distinct resources were closed.
-    ///
-    /// Only cancellation happens here. Each closed resource's own exit
-    /// watcher performs the reap and the `RESOURCE_CLOSED` fanout with the
-    /// reason this recorded, which keeps one teardown path for kills,
-    /// cascades, and a shell's own exit.
+    /// Close `targets` and every descendant in one borrow (ADR-0104 §2).
+    /// Targets get `reason`, descendants `ParentClosed` unless also targeted.
+    /// Only cancels; each exit watcher reaps and emits. Returns how many
+    /// closed.
     pub fn close_resources(&mut self, targets: &[ResourceId], reason: CloseReason) -> u32 {
         self.close_resources_attributed(targets, reason, super::CloseAttribution::default())
     }
@@ -241,9 +182,8 @@ mod tests {
         }
     }
 
-    /// Terminal → child → grandchild. Spawn still refuses a second level,
-    /// so the grandchild is re-parented after insert — the graph the
-    /// cascade must walk when a deeper tree exists.
+    /// Terminal → child → grandchild (re-parented after insert, since spawn
+    /// refuses a second level).
     fn three_level_tree(state: &mut ServerState) -> (ResourceId, ResourceId, ResourceId) {
         let (_session, _window, grandparent) = state.seed_session("main");
         let child = state

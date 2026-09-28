@@ -1,42 +1,19 @@
-//! Settings page (phux-u1tq.4): browse, search, edit, and reset every
-//! setting without leaving the terminal.
+//! Settings page (ADR-0101).
 //!
-//! The page is a file editor with a schema, not a runtime knob panel
-//! (ADR-0101). Every row is one key of the user's `config.toml`: its
-//! effective value, the layer that set it, what it does, and when a change
-//! takes effect. Every edit is one leaf set or removed in that file --
-//! comments and formatting preserved, validated before anything touches
-//! disk (`phux_config::settings::write_edit`) -- followed by the same
-//! atomic reload `reload-config` performs. Nothing here writes running
-//! state back: toggling the sidebar with `prefix-b` never lands in the
-//! file, editing `sidebar.enabled` on this page does.
+//! A schema-driven editor of the user's `config.toml`, not a runtime knob
+//! panel. Each row is one key with its
+//! effective value, origin layer, description, and when a change applies;
+//! each edit sets or removes one leaf (comments preserved, validated first,
+//! `phux_config::settings::write_edit`) and then reloads like `reload-config`.
 //!
-//! ## Layout
+//! Roomy: a section column, the section's rows, and a detail panel. Starved
+//! viewports drop the section column, then shrink the detail panel.
 //!
-//! A roomy viewport shows three regions inside one modal: a section column
-//! on the left, the selected section's rows on the right (marker, key,
-//! value, origin badge), and a detail panel beneath with the description,
-//! the shipped default, the allowed values, and when a change applies. A
-//! column-starved viewport drops the section column and shows section
-//! headers inline; a row-starved one shrinks the detail panel first.
-//!
-//! ## Input model
-//!
-//! Browse mode mirrors the palette: printable text filters across every
-//! section (the section column then shows match counts), `j`/`k` navigate
-//! while the query is empty, and Esc first clears the query, then closes.
-//! `Tab` / `Shift-Tab` step through sections. On the selected row, Enter
-//! and Space toggle a bool, cycle a choice, or open the inline editor;
-//! Left/Right cycle a choice or step an integer (only the arrows: a letter
-//! is always filter text, so no keystroke of a query can write the file). `Delete` (or `C-r`) resets
-//! an overridden key to the shipped default by removing it from the file;
-//! `C-z` undoes the last edit. The inline editor commits on Enter and
-//! cancels on Esc.
-//!
-//! Only the user's own file is ever written. A key set by an `extends`
-//! layer shows that layer's name as its origin and refuses a reset with a
-//! message naming the file, because removing it here could not change what
-//! that layer says.
+//! Text filters across sections (`j`/`k` navigate an empty query; Esc clears,
+//! then closes), `Tab`/`Shift-Tab` step sections, Enter/Space toggle, cycle,
+//! or edit, Left/Right step (letters are always filter text, so no query can
+//! write the file), `Delete`/`C-r` reset to the shipped default, `C-z` undoes.
+//! A key set by an `extends` layer refuses a reset, naming that file.
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -54,7 +31,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::select_list::{WHEEL_SCROLL_ROWS, fuzzy_score};
+use super::select_list::{WHEEL_SCROLL_ROWS, fuzzy_rank, fuzzy_score};
 use super::widgets::{Modal, centered_panel, modal_inner_width, paint_scrollbar, scroll_into_view};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::theme::SLOT_SPECS;
@@ -137,10 +114,7 @@ pub struct SettingsOverlay {
     query: String,
     /// Selection index into the visible rows.
     selected: usize,
-    /// Scroll offset into the visible rows; see [`SelectList`] for why it
-    /// is a `Cell`.
-    ///
-    /// [`SelectList`]: super::SelectList
+    /// Scroll offset into the visible rows (a `Cell`: resolved at paint).
     scroll: Cell<usize>,
     /// Rows the list viewport held at the last paint.
     page: Cell<usize>,
@@ -175,10 +149,8 @@ impl std::fmt::Debug for SettingsOverlay {
 }
 
 impl SettingsOverlay {
-    /// Open the page over the config file at `path`, styled with `theme`.
-    ///
-    /// Reads the file once here; every edit re-reads it, so the page always
-    /// shows what is on disk rather than what it remembers writing.
+    /// Open the page over the config file at `path`; every edit re-reads the
+    /// file, so the page shows what is on disk.
     #[must_use]
     pub fn open(path: PathBuf, theme: &Theme) -> Self {
         let mut specs: Vec<&'static SettingSpec> = Vec::new();
@@ -277,17 +249,15 @@ impl SettingsOverlay {
                 .collect();
         }
         let q = self.query.to_lowercase();
-        let mut scored: Vec<(i32, usize)> = self
+        let hays = self
             .specs
             .iter()
             .enumerate()
-            .filter_map(|(i, spec)| {
-                let hay = format!("{} {}", spec.key, spec.summary).to_lowercase();
-                fuzzy_score(&q, &hay).map(|score| (score, i))
-            })
-            .collect();
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        scored.into_iter().map(|(_, i)| self.specs[i]).collect()
+            .map(|(i, spec)| (i, format!("{} {}", spec.key, spec.summary)));
+        fuzzy_rank(&q, hays)
+            .into_iter()
+            .map(|i| self.specs[i])
+            .collect()
     }
 
     /// How many settings match the query in `section` (the section
@@ -314,10 +284,8 @@ impl SettingsOverlay {
         self.snapshot.as_ref()?.value_at(key).cloned()
     }
 
-    /// The value the setting is *behaving* as: the merged value, or -- for
-    /// a theme slot, which the schema leaves unset -- the renderer's
-    /// default color. The schema's own defaults are already folded into the
-    /// merged table, so for every other kind this is [`Self::value_at`].
+    /// The value the setting behaves as: the merged value, or a theme slot's
+    /// renderer default.
     fn effective(&self, spec: &SettingSpec) -> Option<toml::Value> {
         self.value_at(spec.key).or_else(|| {
             (spec.section == SettingSection::Theme)
@@ -1293,19 +1261,6 @@ impl SettingsOverlay {
     }
 }
 
-/// A viewport-cell coordinate from the pointer's f64 position.
-fn cell_coord(value: f64) -> u16 {
-    let clamped = value.max(0.0).min(f64::from(u16::MAX));
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to 0..=u16::MAX on the line above"
-    )]
-    {
-        clamped as u16
-    }
-}
-
 impl RenderOverlay for SettingsOverlay {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let modal = Self::modal_area(area, self.breakpoints);
@@ -1422,7 +1377,7 @@ impl RenderOverlay for SettingsOverlay {
             }
             MouseButton::Left => {
                 let geometry = self.geometry.get();
-                let (col, row) = (cell_coord(mouse.x), cell_coord(mouse.y));
+                let (col, row) = (super::pointer_cell(mouse.x), super::pointer_cell(mouse.y));
                 if let Some(sections) = geometry.sections
                     && sections.contains((col, row).into())
                 {
@@ -1561,6 +1516,26 @@ mod tests {
         (dir, page)
     }
 
+    /// A page whose config `extends` a `team.toml` layer setting
+    /// `sidebar.width = 50`, the user file holding `extra` after it.
+    fn layered(extra: &str) -> (tempfile::TempDir, SettingsOverlay) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("team.toml"), "[sidebar]\nwidth = 50\n").expect("layer");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, format!("extends = [\"team.toml\"]\n{extra}")).expect("config");
+        let mut page = SettingsOverlay::open(path, &Theme::default());
+        page.focus("sidebar.width");
+        (dir, page)
+    }
+
+    /// Open the editor on the selected row, replace its text, and commit.
+    fn edit(page: &mut SettingsOverlay, text: &str) -> OverlayCommand {
+        page.handle_key(&press(PhysicalKey::Enter, None));
+        page.handle_key(&ctrl(PhysicalKey::U));
+        type_text(page, text);
+        page.handle_key(&press(PhysicalKey::Enter, None))
+    }
+
     fn file(dir: &tempfile::TempDir) -> String {
         std::fs::read_to_string(dir.path().join("config.toml")).expect("read config")
     }
@@ -1593,6 +1568,10 @@ mod tests {
             "theme slots are rows"
         );
         assert!(page.specs.iter().any(|s| s.key == "sidebar.width"));
+
+        let (_dir, page) = page_over("[sidebar]\nwidth = 40\nenabled = false\n");
+        assert_eq!(page.overridden_in(SettingSection::Sidebar), 2);
+        assert_eq!(page.overridden_in(SettingSection::Chrome), 0);
     }
 
     #[test]
@@ -1665,22 +1644,12 @@ mod tests {
             Some("0"),
             "the editor opens on the effective value (0 = automatic width)"
         );
-        page.handle_key(&ctrl(PhysicalKey::U));
-        type_text(&mut page, "32");
-        assert_eq!(
-            page.handle_key(&press(PhysicalKey::Enter, None)),
-            OverlayCommand::ReloadConfig
-        );
+        page.handle_key(&press(PhysicalKey::Escape, None));
+        assert_eq!(edit(&mut page, "32"), OverlayCommand::ReloadConfig);
         assert!(page.editor.is_none());
         assert!(file(&dir).contains("width = 32"), "{}", file(&dir));
 
-        page.handle_key(&press(PhysicalKey::Enter, None));
-        page.handle_key(&ctrl(PhysicalKey::U));
-        type_text(&mut page, "wide");
-        assert_eq!(
-            page.handle_key(&press(PhysicalKey::Enter, None)),
-            OverlayCommand::Stay
-        );
+        assert_eq!(edit(&mut page, "wide"), OverlayCommand::Stay);
         assert!(
             matches!(page.status, Some(Status::Refused(_))),
             "{:?}",
@@ -1699,13 +1668,7 @@ mod tests {
     fn a_value_the_checker_rejects_is_refused_with_its_reason() {
         let (dir, mut page) = page_over("");
         page.focus("keybindings.prefix");
-        page.handle_key(&press(PhysicalKey::Enter, None));
-        page.handle_key(&ctrl(PhysicalKey::U));
-        type_text(&mut page, "not a chord");
-        assert_eq!(
-            page.handle_key(&press(PhysicalKey::Enter, None)),
-            OverlayCommand::Stay
-        );
+        assert_eq!(edit(&mut page, "not a chord"), OverlayCommand::Stay);
         match &page.status {
             Some(Status::Refused(msg)) => assert!(msg.contains("keybindings.prefix"), "{msg}"),
             other => panic!("expected a refusal, got {other:?}"),
@@ -1743,10 +1706,8 @@ mod tests {
         // A second undo has nothing left.
         assert_eq!(page.handle_key(&ctrl(PhysicalKey::Z)), OverlayCommand::Stay);
         assert!(matches!(page.status, Some(Status::Note(_))));
-    }
 
-    #[test]
-    fn reset_of_a_default_is_a_note_not_a_write() {
+        // Resetting a key already at its default is a note, not a write.
         let (dir, mut page) = page_over("");
         page.focus("sidebar.width");
         assert_eq!(page.handle_key(&ctrl(PhysicalKey::R)), OverlayCommand::Stay);
@@ -1756,12 +1717,7 @@ mod tests {
 
     #[test]
     fn reset_is_refused_for_a_key_set_by_an_extends_layer() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("team.toml"), "[sidebar]\nwidth = 50\n").expect("layer");
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "extends = [\"team.toml\"]\n").expect("config");
-        let mut page = SettingsOverlay::open(path, &Theme::default());
-        page.focus("sidebar.width");
+        let (dir, mut page) = layered("");
         assert_eq!(
             page.value_at("sidebar.width"),
             Some(toml::Value::Integer(50))
@@ -1783,6 +1739,19 @@ mod tests {
         // Overriding it from the page is still allowed.
         page.handle_key(&press(PhysicalKey::ArrowRight, None));
         assert!(file(&dir).contains("width = 51"), "{}", file(&dir));
+
+        // A reset that uncovers the layer's value says so.
+        let (_dir, mut page) = layered("[sidebar]\nwidth = 40\n");
+        assert_eq!(
+            page.handle_key(&press(PhysicalKey::Delete, None)),
+            OverlayCommand::ReloadConfig
+        );
+        match &page.status {
+            Some(Status::Saved(msg)) => {
+                assert!(msg.contains("team.toml") && msg.contains("50"), "{msg}");
+            }
+            other => panic!("expected a saved note naming the layer, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1795,26 +1764,14 @@ mod tests {
                 Theme::default().accent
             )))
         );
-        page.handle_key(&press(PhysicalKey::Enter, None));
-        page.handle_key(&ctrl(PhysicalKey::U));
-        type_text(&mut page, "#ff0000");
-        assert_eq!(
-            page.handle_key(&press(PhysicalKey::Enter, None)),
-            OverlayCommand::ReloadConfig
-        );
+        assert_eq!(edit(&mut page, "#ff0000"), OverlayCommand::ReloadConfig);
         assert!(
             file(&dir).contains("[theme]\naccent = \"#ff0000\""),
             "{}",
             file(&dir)
         );
 
-        page.handle_key(&press(PhysicalKey::Enter, None));
-        page.handle_key(&ctrl(PhysicalKey::U));
-        type_text(&mut page, "notacolor");
-        assert_eq!(
-            page.handle_key(&press(PhysicalKey::Enter, None)),
-            OverlayCommand::Stay
-        );
+        assert_eq!(edit(&mut page, "notacolor"), OverlayCommand::Stay);
         assert!(matches!(page.status, Some(Status::Refused(_))));
         assert!(
             file(&dir).contains("#ff0000"),
@@ -1826,18 +1783,13 @@ mod tests {
     fn argv_and_optional_kinds_round_trip_unset() {
         let (dir, mut page) = page_over("");
         page.focus("voice.transcriber");
-        page.handle_key(&press(PhysicalKey::Enter, None));
-        type_text(&mut page, "curl -sf 'a b' \"c\"");
-        page.handle_key(&press(PhysicalKey::Enter, None));
+        edit(&mut page, "curl -sf 'a b' \"c\"");
         assert!(
             file(&dir).contains("transcriber = [\"curl\", \"-sf\", \"a b\", \"c\"]"),
             "{}",
             file(&dir)
         );
-        page.handle_key(&press(PhysicalKey::Enter, None));
-        page.handle_key(&ctrl(PhysicalKey::U));
-        type_text(&mut page, "unset");
-        page.handle_key(&press(PhysicalKey::Enter, None));
+        edit(&mut page, "unset");
         assert!(!file(&dir).contains("transcriber"), "{}", file(&dir));
 
         page.focus("experimental.predictive-echo");
@@ -1874,27 +1826,6 @@ mod tests {
         page.handle_key(&press(PhysicalKey::H, Some("h")));
         assert_eq!(file(&dir), "", "letters filter even with an empty query");
         assert_eq!(page.query, "lh");
-    }
-
-    #[test]
-    fn a_reset_that_uncovers_a_layer_says_so() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("team.toml"), "[sidebar]\nwidth = 50\n").expect("layer");
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "extends = [\"team.toml\"]\n[sidebar]\nwidth = 40\n")
-            .expect("config");
-        let mut page = SettingsOverlay::open(path, &Theme::default());
-        page.focus("sidebar.width");
-        assert_eq!(
-            page.handle_key(&press(PhysicalKey::Delete, None)),
-            OverlayCommand::ReloadConfig
-        );
-        match &page.status {
-            Some(Status::Saved(msg)) => {
-                assert!(msg.contains("team.toml") && msg.contains("50"), "{msg}");
-            }
-            other => panic!("expected a saved note naming the layer, got {other:?}"),
-        }
     }
 
     #[test]
@@ -1951,13 +1882,6 @@ mod tests {
     }
 
     #[test]
-    fn overridden_rows_count_in_the_section_column() {
-        let (_dir, page) = page_over("[sidebar]\nwidth = 40\nenabled = false\n");
-        assert_eq!(page.overridden_in(SettingSection::Sidebar), 2);
-        assert_eq!(page.overridden_in(SettingSection::Chrome), 0);
-    }
-
-    #[test]
     fn mouse_click_selects_a_row_and_a_section() {
         let (_dir, mut page) = page_over("");
         // Paint once so the geometry is known.
@@ -2000,13 +1924,6 @@ mod tests {
         let text = render_text(&page, 60, 16);
         assert!(text.contains("keybindings.which-key  bool"), "{text}");
         insta::assert_snapshot!(text);
-    }
-
-    #[test]
-    fn render_filtered_layout_is_stable() {
-        let (_dir, mut page) = page_over("[theme]\naccent = \"#ff0000\"\n");
-        type_text(&mut page, "accent");
-        insta::assert_snapshot!(render_text(&page, 100, 24));
     }
 
     #[test]

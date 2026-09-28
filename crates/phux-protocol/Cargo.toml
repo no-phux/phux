@@ -31,7 +31,6 @@ server = ["render-pool", "dep:png", "libghostty-vt/kitty-graphics", "libghostty-
 thiserror.workspace = true
 bytes.workspace = true
 bitflags = "2"
-chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 serde = { workspace = true }
 # Trailing additive JSON on `SessionSnapshot` (remote listener bind report,
 # phux-kyna) and any future open-shaped diagnostic field on the state reply.

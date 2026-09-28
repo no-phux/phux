@@ -58,7 +58,7 @@ e2e:
       -E 'binary_id(phux::automation_e2e) + binary_id(phux::terminal_e2e) + binary_id(phux::recording_e2e) + binary_id(phux::lifecycle_e2e) + binary_id(phux::first_five_minutes_e2e)'
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --workspace --run-ignored ignored-only \
       --test-threads=1 --retries=2 \
-      -E 'binary_id(phux-server::perf_latency) + binary_id(phux-server::perf_colored_output)'
+      -E 'binary_id(phux-server::perf)'
 
 
 # Heavy stress storms — off the PR path (post-merge + nightly stress.yml).
@@ -69,7 +69,7 @@ e2e:
 stress:
     cargo nextest run --workspace --run-ignored ignored-only \
       --test-threads=1 --retries=2 \
-      -E 'binary_id(phux-server::stress_resize_storm) + binary_id(phux-server::stress_resize_extremes) + binary_id(phux-server::stress_attach_churn) + binary_id(phux-server::stress_lifecycle_churn) + binary_id(phux-server::stress_output_extremes) + binary_id(phux-server::stress_spawn_kill) + binary_id(phux-server::perf_bursty_output)'
+      -E 'binary_id(phux-server::stress)'
 
 
 # Spins a real `phux` server + session, drives a scripted scenario (heavy

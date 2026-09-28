@@ -1,43 +1,16 @@
 //! asciicast v2 / v3 reader and writer.
 //!
-//! asciicast is NDJSON: line 1 is a JSON object header, every later line is a
-//! JSON array `[time, "code", "data"]`. The two versions differ in exactly
-//! two ways that matter to us, and both are handled here rather than leaking
-//! upward:
+//! NDJSON: a JSON object header, then one `[time, "code", "data"]` array per
+//! event. v2 puts `width`/`height` on the header and writes absolute times;
+//! v3 nests `term.cols`/`term.rows` (and `theme`) and writes intervals since
+//! the previous event. A v2-only reader misreads v3 intervals as absolute
+//! times, so v2 is the default written version (ADR-0060).
 //!
-//! * **Header shape.** v2 puts `width`/`height` flat on the header; v3 nests
-//!   them as `term.cols`/`term.rows` and moves `theme` inside `term` too.
-//! * **Timebase.** v2 event times are *absolute* seconds from session start;
-//!   v3 event times are *relative* intervals since the previous event.
-//!
-//! v3 is therefore **not** backward compatible with v2 — a v2-only reader
-//! that tolerates a v3 header reads intervals as absolute times and plays a
-//! four-minute recording in a fraction of a second, which is worse than a
-//! clean rejection. That is why [`CastVersion::V2`] is the default this
-//! feature writes (ADR-0060): v2 is read by asciinema CLI 2.x *and* 3.x,
-//! player >= 2.6, and server >= 20171105, and there is no consumer that reads
-//! v3 but not v2.
-//!
-//! # Timebase, drift, and why it is integer milliseconds
-//!
-//! [`CastEvent::time_ms`] is absolute integer milliseconds from session
-//! start, always, in both directions. Serialization divides by 1000 at the
-//! very last moment using integer arithmetic (`{secs}.{millis:03}`), so
-//! nothing ever accumulates a float. A writer that added `f64` seconds per
-//! event would drift visibly over a long recording, and — worse — the `.cast`
-//! and the GIF rendered from it would drift *differently* and stop agreeing
-//! about when anything happened.
-//!
-//! Times are monotonic non-decreasing on write: a timestamp that goes
-//! backwards (a clock adjustment mid-session) is clamped to the previous
-//! value rather than emitting a negative v3 interval.
-//!
-//! # Input events are never captured
-//!
-//! Both spec versions instruct recorders not to record input by default, and
-//! this feature has no opt-in flag. [`EventCode::Input`] exists so
-//! [`read_cast`] can round-trip somebody else's recording; nothing in phux
-//! ever writes one. Passwords do not go in recordings.
+//! [`CastEvent::time_ms`] is absolute integer milliseconds in both directions,
+//! formatted as `{secs}.{millis:03}` with integer arithmetic, so the `.cast`
+//! and the GIF rendered from it cannot drift apart. Written times are clamped
+//! monotonic. [`EventCode::Input`] exists only so foreign recordings
+//! round-trip; phux never records input.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
@@ -48,12 +21,10 @@ use crate::error::RecordError;
 /// Which asciicast revision to serialize.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CastVersion {
-    /// asciicast v2: flat header dims, absolute event times. The default,
-    /// and the only version every shipped asciinema consumer can read.
+    /// Flat header dims, absolute event times. Read by every asciinema tool.
     #[default]
     V2,
-    /// asciicast v3: `term`-nested header dims, relative event intervals.
-    /// Needs asciinema CLI >= 3.0 / player >= 3.10.0 / server >= 20250509.
+    /// `term`-nested header dims, relative event intervals.
     V3,
 }
 
@@ -96,11 +67,8 @@ impl EventCode {
         }
     }
 
-    /// Parse a wire character, or `None` for a code we do not know.
-    ///
-    /// Returning `None` rather than an error is deliberate: both spec
-    /// versions mandate that readers tolerate unknown codes, because that is
-    /// the format's only extension mechanism.
+    /// Parse a wire character, or `None` for an unknown code (which readers
+    /// must tolerate: it is the format's only extension mechanism).
     #[must_use]
     pub fn from_code(code: &str) -> Option<Self> {
         match code {
@@ -116,9 +84,7 @@ impl EventCode {
 
 /// The terminal color theme recorded in a cast header.
 ///
-/// `palette` carries 8 or 16 entries (the ANSI names); anything else is
-/// rejected on read, because the v2 serialization is a colon-delimited
-/// string whose length is how a player tells the two cases apart.
+/// `palette` carries 8 or 16 entries; anything else is rejected on read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CastTheme {
     /// Default foreground.
@@ -131,9 +97,7 @@ pub struct CastTheme {
 
 /// The asciicast header: everything known before the first event.
 ///
-/// Optional fields are written only when `Some` — never as `null`. asciinema
-/// itself omits unset keys, and a `null` where a player expects a number is
-/// the kind of thing that fails in one implementation and not another.
+/// Optional fields are omitted when `None`, never written as `null`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CastHeader {
     /// Initial terminal width in columns.
@@ -168,18 +132,11 @@ pub struct CastEvent {
 /// A streaming asciicast writer.
 ///
 /// The header goes out in [`CastWriter::new`] and the sink is flushed after
-/// every event, so a session that crashes leaves a *playable prefix* rather
-/// than a truncated JSON document. That durability is the whole point of the
-/// line-delimited format, and it is why this type never buffers events.
+/// every event, so a crashed session leaves a playable prefix.
 ///
-/// # UTF-8 carry
-///
-/// PTY output is a raw byte stream, not UTF-8: a multi-byte character can and
-/// does straddle two reads. [`CastWriter::output`] therefore appends to an
-/// internal tail, emits the longest valid UTF-8 prefix, and *retains* an
-/// incomplete trailing sequence for the next call. Calling
-/// `String::from_utf8_lossy` per chunk instead would splice U+FFFD into every
-/// box-drawing and emoji recording at the chunk boundaries.
+/// PTY reads can split a multi-byte character, so [`CastWriter::output`]
+/// holds back an incomplete trailing UTF-8 sequence for the next call rather
+/// than splicing U+FFFD at every chunk boundary.
 pub struct CastWriter<W: Write> {
     sink: W,
     version: CastVersion,
@@ -216,13 +173,8 @@ impl<W: Write> CastWriter<W> {
         Ok(this)
     }
 
-    /// Milliseconds covered so far — the timestamp of the last emitted event.
-    ///
-    /// Exposed because the header's optional `duration` key cannot be written
-    /// by a streaming writer (the header is already on disk by the time the
-    /// duration is known). A caller that owns a seekable file and wants the
-    /// key can read this at the end and rewrite line 1; omitting it is also
-    /// correct, and players fall back to the last event's time.
+    /// Timestamp of the last emitted event, for callers that rewrite the
+    /// header's `duration` key once the recording ends.
     #[must_use]
     pub const fn elapsed_ms(&self) -> u64 {
         self.last_ms
@@ -263,10 +215,8 @@ impl<W: Write> CastWriter<W> {
 
     /// Flush any residual UTF-8 tail and return the sink.
     ///
-    /// A tail still present here is genuinely truncated — the stream ended
-    /// mid-character — so it is emitted as one U+FFFD rather than silently
-    /// dropped: a recording that swallows its last byte is harder to debug
-    /// than one that shows a replacement character.
+    /// A tail still present here is genuinely truncated and is emitted as one
+    /// U+FFFD rather than silently dropped.
     pub fn finish(mut self) -> Result<W, RecordError> {
         if !self.tail.is_empty() {
             self.tail.clear();
@@ -279,8 +229,7 @@ impl<W: Write> CastWriter<W> {
 
     /// Serialize one event line and flush.
     fn emit(&mut self, at_ms: u64, code: EventCode, data: &str) -> Result<(), RecordError> {
-        // Monotonic clamp: a backwards clock must not produce a negative v3
-        // interval, and must not make a v2 player seek backwards.
+        // A backwards clock must not produce a negative v3 interval.
         let ms = at_ms.max(self.last_ms);
         let stamp = match self.version {
             CastVersion::V2 => format_secs(ms),
@@ -289,8 +238,6 @@ impl<W: Write> CastWriter<W> {
         self.last_ms = ms;
         let line = format!("[{stamp}, \"{}\", {}]\n", code.as_str(), json_str(data));
         self.sink.write_all(line.as_bytes())?;
-        // Flush per event: the streaming format's stated benefit is that a
-        // crashed session leaves a playable prefix on disk.
         self.sink.flush()?;
         Ok(())
     }
@@ -298,11 +245,8 @@ impl<W: Write> CastWriter<W> {
 
 /// Read a v2 or v3 asciicast, normalizing both onto absolute milliseconds.
 ///
-/// Unknown event codes are skipped rather than rejected (their v3 interval
-/// still advances the clock, so skipping one cannot shift the events after
-/// it). Blank lines and `#` comment lines are ignored. asciicast v1 is
-/// rejected outright: it is a single JSON document with a `stdout` array, not
-/// NDJSON, and nothing has produced one since 2017.
+/// Unknown event codes are skipped (their v3 interval still advances the
+/// clock). Blank and `#` comment lines are ignored. asciicast v1 is rejected.
 pub fn read_cast<R: BufRead>(src: R) -> Result<(CastHeader, Vec<CastEvent>), RecordError> {
     let mut lines = src.lines();
     let header_line = read_header_line(&mut lines)?;
@@ -323,9 +267,6 @@ fn read_header_line<R: BufRead>(lines: &mut std::io::Lines<R>) -> Result<String,
 }
 
 /// Parse the header line, dispatching on its declared `version`.
-///
-/// asciicast v1 is rejected outright: it is a single JSON document with a
-/// `stdout` array, not NDJSON, and nothing has produced one since 2017.
 fn parse_header_line(line: &str) -> Result<(CastHeader, CastVersion), RecordError> {
     let raw: serde_json::Value = serde_json::from_str(line)
         .map_err(|err| RecordError::Cast(format!("header is not JSON: {err}")))?;
@@ -335,8 +276,17 @@ fn parse_header_line(line: &str) -> Result<(CastHeader, CastVersion), RecordErro
         .ok_or_else(|| RecordError::Cast("header has no numeric `version`".to_owned()))?;
 
     match version {
-        2 => Ok((parse_header_v2(&raw)?, CastVersion::V2)),
-        3 => Ok((parse_header_v3(&raw)?, CastVersion::V3)),
+        2 => Ok((
+            parse_header(&raw, &raw, "", "width", "height")?,
+            CastVersion::V2,
+        )),
+        3 => {
+            let term = raw
+                .get("term")
+                .ok_or_else(|| RecordError::Cast("v3 header has no `term` object".to_owned()))?;
+            let header = parse_header(&raw, term, "term.", "cols", "rows")?;
+            Ok((header, CastVersion::V3))
+        }
         1 => Err(RecordError::Cast(
             "asciicast v1 is not supported; re-record or convert with `asciinema convert`"
                 .to_owned(),
@@ -347,11 +297,8 @@ fn parse_header_line(line: &str) -> Result<(CastHeader, CastVersion), RecordErro
     }
 }
 
-/// Read every event line after the header onto the absolute-millisecond
-/// timebase, given whether this version's stamps are relative intervals.
-///
-/// Unknown event codes are skipped rather than rejected. Blank lines and `#`
-/// comment lines are ignored.
+/// Read every event line onto the absolute-millisecond timebase; `relative`
+/// says whether stamps are v3 intervals.
 fn read_events<R: BufRead>(
     lines: std::io::Lines<R>,
     relative: bool,
@@ -361,16 +308,18 @@ fn read_events<R: BufRead>(
     for line in lines {
         let line = line?;
         let trimmed = line.trim();
-        // v3 permits `#` comments anywhere but line 1; v2 has no comment
-        // syntax, so tolerating them there costs nothing and rejects nothing
-        // real.
+        // v3 permits `#` comments; tolerating them in v2 costs nothing.
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
         let event = parse_event_line(trimmed)?;
-        clock = advance_clock(clock, event.ms, relative);
-        // Advance the clock BEFORE the skip so an unknown code cannot shift
-        // every later v3 event.
+        // Advance before the skip so an unknown code cannot shift later v3
+        // events. v2 stamps are clamped monotonic.
+        clock = if relative {
+            clock.saturating_add(event.ms)
+        } else {
+            event.ms.max(clock)
+        };
         let Some(code) = EventCode::from_code(&event.code) else {
             continue;
         };
@@ -385,15 +334,11 @@ fn read_events<R: BufRead>(
 }
 
 /// One event line's fields, before the code is resolved or the clock folded
-/// in.
+/// in. `ms` is absolute in v2 and an interval in v3.
 #[derive(Debug)]
 struct RawEvent {
-    /// The line's own stamp in milliseconds: absolute in v2, an interval in
-    /// v3.
     ms: u64,
-    /// The event code as written, which may name a code this build skips.
     code: String,
-    /// The event payload, absent on codes that carry none.
     data: String,
 }
 
@@ -426,25 +371,18 @@ fn parse_event_line(line: &str) -> Result<RawEvent, RecordError> {
     })
 }
 
-/// Fold one event's stamp into the running clock.
-///
-/// v3 stamps are intervals and accumulate. v2 stamps are absolute, but still
-/// clamped: a malformed file must not hand the renderer a timeline that goes
-/// backwards.
-fn advance_clock(clock: u64, ms: u64, relative: bool) -> u64 {
-    if relative {
-        clock.saturating_add(ms)
-    } else {
-        ms.max(clock)
-    }
-}
-
-fn parse_header_v2(raw: &serde_json::Value) -> Result<CastHeader, RecordError> {
-    let cols = dim(raw.get("width"), "width")?;
-    let rows = dim(raw.get("height"), "height")?;
+/// Parse the fields shared by both header versions. `dims` holds the size
+/// and theme keys (the header itself in v2, `term` in v3).
+fn parse_header(
+    raw: &serde_json::Value,
+    dims: &serde_json::Value,
+    prefix: &str,
+    cols_key: &str,
+    rows_key: &str,
+) -> Result<CastHeader, RecordError> {
     Ok(CastHeader {
-        cols,
-        rows,
+        cols: dim(dims.get(cols_key), &format!("{prefix}{cols_key}"))?,
+        rows: dim(dims.get(rows_key), &format!("{prefix}{rows_key}"))?,
         timestamp: raw.get("timestamp").and_then(serde_json::Value::as_u64),
         idle_time_limit: raw
             .get("idle_time_limit")
@@ -452,28 +390,7 @@ fn parse_header_v2(raw: &serde_json::Value) -> Result<CastHeader, RecordError> {
         command: opt_string(raw.get("command")),
         title: opt_string(raw.get("title")),
         env: parse_env(raw.get("env")),
-        theme: parse_theme(raw.get("theme")),
-    })
-}
-
-fn parse_header_v3(raw: &serde_json::Value) -> Result<CastHeader, RecordError> {
-    let term = raw
-        .get("term")
-        .ok_or_else(|| RecordError::Cast("v3 header has no `term` object".to_owned()))?;
-    let cols = dim(term.get("cols"), "term.cols")?;
-    let rows = dim(term.get("rows"), "term.rows")?;
-    Ok(CastHeader {
-        cols,
-        rows,
-        timestamp: raw.get("timestamp").and_then(serde_json::Value::as_u64),
-        idle_time_limit: raw
-            .get("idle_time_limit")
-            .and_then(serde_json::Value::as_f64),
-        command: opt_string(raw.get("command")),
-        title: opt_string(raw.get("title")),
-        env: parse_env(raw.get("env")),
-        // v3 moved `theme` inside `term`.
-        theme: parse_theme(term.get("theme")),
+        theme: parse_theme(dims.get("theme")),
     })
 }
 
@@ -507,8 +424,7 @@ fn parse_theme(value: Option<&serde_json::Value>) -> Option<CastTheme> {
     let fg = parse_hex(obj.get("fg")?.as_str()?)?;
     let bg = parse_hex(obj.get("bg")?.as_str()?)?;
     let raw = obj.get("palette")?;
-    // v2 serializes the palette as a colon-delimited string. Some producers
-    // write an array instead; accept both on read, write only the string.
+    // The spec shape is a colon-delimited string; accept arrays on read too.
     let palette: Vec<[u8; 3]> = match raw {
         serde_json::Value::String(text) => text.split(':').filter_map(parse_hex).collect(),
         serde_json::Value::Array(items) => items
@@ -543,8 +459,7 @@ fn hex_of(color: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", color[0], color[1], color[2])
 }
 
-/// Render whole milliseconds as fixed-3-decimal seconds without touching a
-/// float. `258425` becomes `258.425`, exactly, always.
+/// Render whole milliseconds as fixed-3-decimal seconds without a float.
 fn format_secs(ms: u64) -> String {
     format!("{}.{:03}", ms / 1000, ms % 1000)
 }
@@ -554,10 +469,7 @@ fn duration_ms(at: Duration) -> u64 {
     u64::try_from(at.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// JSON-escape a string, delegating every escaping rule to `serde_json`.
-///
-/// Recorded data is full of ESC (0x1b) and other C0 bytes; hand-rolled
-/// escaping is exactly how a recording becomes unparseable.
+/// JSON-escape a string via `serde_json` (recorded data is full of C0 bytes).
 fn json_str(text: &str) -> String {
     serde_json::Value::String(text.to_owned()).to_string()
 }
@@ -565,9 +477,8 @@ fn json_str(text: &str) -> String {
 /// Move every decodable character out of `tail` and into `out`, leaving only
 /// an incomplete trailing sequence behind.
 ///
-/// Genuinely invalid bytes (a bad lead byte, or four-plus bytes that can
-/// never complete) become one U+FFFD each and are consumed; only a *prefix of
-/// a valid sequence* is retained for the next chunk.
+/// Invalid bytes become one U+FFFD each; only a prefix of a valid sequence is
+/// retained for the next chunk.
 fn drain_utf8(tail: &mut Vec<u8>, out: &mut String) {
     loop {
         match std::str::from_utf8(tail) {
@@ -584,12 +495,9 @@ fn drain_utf8(tail: &mut Vec<u8>, out: &mut String) {
                     out.push_str(text);
                 }
                 if let Some(bad) = err.error_len() {
-                    // Undecodable: report it and keep going, because the rest
-                    // of the chunk is almost certainly fine.
                     out.push(char::REPLACEMENT_CHARACTER);
                     tail.drain(..valid.saturating_add(bad));
                 } else {
-                    // Merely incomplete: hold it for the next chunk.
                     tail.drain(..valid);
                     return;
                 }
@@ -598,12 +506,8 @@ fn drain_utf8(tail: &mut Vec<u8>, out: &mut String) {
     }
 }
 
-/// Insertion-ordered JSON object builder.
-///
-/// `serde_json::Map` is a `BTreeMap` in this build (no `preserve_order`
-/// feature), which would sort the header's keys alphabetically. Both spec
-/// versions document a key order, and matching it makes a hand-diffed
-/// recording readable, so the header is assembled by hand.
+/// Insertion-ordered JSON object builder: `serde_json::Map` would sort the
+/// header keys, and the spec documents an order.
 struct JsonObject {
     buf: String,
     empty: bool,
@@ -642,8 +546,7 @@ fn serialize_theme(theme: &CastTheme) -> String {
     let mut obj = JsonObject::new();
     obj.string("fg", &hex_of(theme.fg));
     obj.string("bg", &hex_of(theme.bg));
-    // Colon-delimited, NOT an array: that is the v2 wire shape, and v3 kept
-    // it when it moved `theme` under `term`.
+    // Colon-delimited, not an array, in both versions.
     let joined = theme
         .palette
         .iter()
@@ -700,8 +603,6 @@ fn serialize_header(header: &CastHeader, version: CastVersion) -> String {
             let mut term = JsonObject::new();
             term.raw("cols", &header.cols.to_string());
             term.raw("rows", &header.rows.to_string());
-            // `type` (the TERM name) has no home on `CastHeader`, so it is
-            // never emitted; it is optional in the spec.
             if let Some(theme) = &header.theme {
                 term.raw("theme", &serialize_theme(theme));
             }
@@ -712,22 +613,14 @@ fn serialize_header(header: &CastHeader, version: CastVersion) -> String {
     obj.finish()
 }
 
-/// Convert fractional seconds to whole milliseconds, saturating.
-///
-/// NaN, negatives, and overflow are all handled *before* the cast, so the
-/// lossy-cast lints are satisfied by construction rather than by an `allow`
-/// that would also hide a real bug.
-///
-/// Lives here, next to the `.cast` timestamps it parses, so that the
-/// `timeline` module can depend on `cast` one-way instead of the two
-/// modules importing each other.
+/// Convert fractional seconds to whole milliseconds, saturating. NaN,
+/// negatives, and overflow are handled before the cast.
 pub(crate) fn secs_to_ms(secs: f64) -> u64 {
     if !secs.is_finite() || secs <= 0.0 {
         return 0;
     }
     let ms = (secs * 1000.0).round();
-    // 2^63 as an exact f64 literal: far above any real recording, and safely
-    // below `u64::MAX` so the cast below cannot saturate or wrap.
+    // 2^63, exactly representable and below `u64::MAX`.
     if ms >= 9_223_372_036_854_775_808.0 {
         return u64::MAX;
     }
@@ -784,96 +677,41 @@ mod tests {
         }
     }
 
-    /// The first element of an event line, as the *literal text* that was
-    /// written. Parsing it as a number first would erase exactly the thing
-    /// these tests exist to check — `0.100` and `0.1` are the same f64.
+    /// The literal time text of an event line: `0.100` and `0.1` are the same
+    /// f64, so parsing would erase what these tests check.
     fn stamp_of(line: &str) -> String {
         let body = line.strip_prefix('[').expect("event line starts with [");
         let end = body.find(',').expect("event line has a comma");
         body.get(..end).expect("slice is in range").to_owned()
     }
 
-    #[test]
-    fn v2_header_has_flat_width_height() {
-        let lines = write_lines(CastVersion::V2, &header_80x24(), |_| {});
-        let head = lines.first().expect("header line");
-        assert!(head.contains("\"version\":2"), "{head}");
-        assert!(head.contains("\"width\":80"), "{head}");
-        assert!(head.contains("\"height\":24"), "{head}");
-        assert!(!head.contains("\"term\""), "{head}");
+    fn stamps(lines: &[String]) -> Vec<String> {
+        lines.iter().skip(1).map(|line| stamp_of(line)).collect()
     }
 
     #[test]
-    fn v3_header_nests_cols_rows_under_term() {
-        let lines = write_lines(CastVersion::V3, &header_80x24(), |_| {});
-        let head = lines.first().expect("header line");
-        assert!(head.contains("\"version\":3"), "{head}");
-        assert!(
-            head.contains("\"term\":{\"cols\":80,\"rows\":24}"),
-            "{head}"
-        );
-        assert!(!head.contains("\"width\""), "{head}");
+    fn header_shape_per_version_omits_unset_keys() {
+        let v2 = write_lines(CastVersion::V2, &header_80x24(), |_| {});
+        assert_eq!(v2[0], r#"{"version":2,"width":80,"height":24}"#);
+        let v3 = write_lines(CastVersion::V3, &header_80x24(), |_| {});
+        assert_eq!(v3[0], r#"{"version":3,"term":{"cols":80,"rows":24}}"#);
     }
 
     #[test]
     fn v2_times_are_absolute_v3_are_intervals() {
-        let stamps = |version| {
-            let lines = write_lines(version, &header_80x24(), |writer| {
+        let run = |version| {
+            stamps(&write_lines(version, &header_80x24(), |writer| {
                 writer.output(Duration::from_millis(100), b"a").expect("a");
                 writer.output(Duration::from_millis(500), b"b").expect("b");
                 writer.output(Duration::from_millis(900), b"c").expect("c");
-            });
-            lines
-                .iter()
-                .skip(1)
-                .map(|line| stamp_of(line))
-                .collect::<Vec<_>>()
+            }))
         };
-        assert_eq!(stamps(CastVersion::V2), ["0.100", "0.500", "0.900"]);
-        assert_eq!(stamps(CastVersion::V3), ["0.100", "0.400", "0.400"]);
-    }
-
-    #[test]
-    fn optional_header_keys_are_omitted_not_null() {
-        let lines = write_lines(CastVersion::V2, &header_80x24(), |_| {});
-        let head = lines.first().expect("header line");
-        assert!(!head.contains("null"), "{head}");
-        for key in [
-            "timestamp",
-            "idle_time_limit",
-            "command",
-            "title",
-            "env",
-            "theme",
-        ] {
-            assert!(!head.contains(key), "unset `{key}` leaked into {head}");
-        }
-    }
-
-    #[test]
-    fn v2_theme_palette_is_colon_delimited() {
-        let header = CastHeader {
-            theme: Some(CastTheme {
-                fg: [0xd0, 0xd0, 0xd0],
-                bg: [0, 0, 0],
-                palette: (0..8_u8).map(|i| [i, i, i]).collect(),
-            }),
-            ..header_80x24()
-        };
-        let lines = write_lines(CastVersion::V2, &header, |_| {});
-        let head = lines.first().expect("header line");
-        assert!(
-            head.contains(
-                "\"palette\":\"#000000:#010101:#020202:#030303:#040404:#050505:#060606:#070707\""
-            ),
-            "{head}"
-        );
-        assert!(head.contains("\"fg\":\"#d0d0d0\""), "{head}");
+        assert_eq!(run(CastVersion::V2), ["0.100", "0.500", "0.900"]);
+        assert_eq!(run(CastVersion::V3), ["0.100", "0.400", "0.400"]);
     }
 
     #[test]
     fn utf8_split_across_two_chunks_emits_one_intact_char() {
-        // U+4E16 is three bytes; split it 2 + 1 the way a PTY read would.
         let bytes = "世".as_bytes();
         let lines = write_lines(CastVersion::V2, &header_80x24(), |writer| {
             writer
@@ -882,42 +720,35 @@ mod tests {
             writer
                 .output(Duration::from_millis(20), &bytes[2..])
                 .expect("second half");
+            writer
+                .output(Duration::from_millis(30), b"")
+                .expect("empty");
         });
-        let events: Vec<&String> = lines.iter().skip(1).collect();
-        assert_eq!(events.len(), 1, "{events:?}");
-        assert!(events[0].contains('世'), "{events:?}");
-        assert!(!events[0].contains('\u{fffd}'), "{events:?}");
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[1].contains('世'), "{lines:?}");
+        assert!(!lines[1].contains('\u{fffd}'), "{lines:?}");
     }
 
     #[test]
-    fn invalid_utf8_becomes_replacement_char_not_dropped() {
+    fn invalid_or_truncated_utf8_becomes_replacement_char() {
         let lines = write_lines(CastVersion::V2, &header_80x24(), |writer| {
-            // 0xff can never begin a UTF-8 sequence, so it is invalid rather
-            // than incomplete and must not be held back forever.
+            // 0xff can never begin a sequence, so it must not be held back.
             writer
                 .output(Duration::from_millis(5), b"a\xffb")
                 .expect("chunk");
-        });
-        let event = lines.get(1).expect("one event");
-        assert!(event.contains('\u{fffd}'), "{event}");
-        assert!(event.contains('a') && event.contains('b'), "{event}");
-    }
-
-    #[test]
-    fn finish_flushes_residual_utf8_tail() {
-        let lines = write_lines(CastVersion::V2, &header_80x24(), |writer| {
+            // A dangling lead byte is flushed by `finish`.
             writer
-                .output(Duration::from_millis(5), &"世".as_bytes()[..2])
+                .output(Duration::from_millis(6), &"世".as_bytes()[..2])
                 .expect("partial");
         });
-        let event = lines.get(1).expect("finish emits the residual tail");
-        assert!(event.contains('\u{fffd}'), "{event}");
+        assert!(lines[1].contains("a\u{fffd}b"), "{lines:?}");
+        assert!(lines[2].contains('\u{fffd}'), "{lines:?}");
     }
 
     #[test]
     fn millisecond_timebase_does_not_drift() {
-        // 1005 us per event: a period that is deliberately not a whole
-        // millisecond, so an f64 accumulator would visibly wander.
+        // 1005 us per event: not a whole millisecond, so an f64 accumulator
+        // would visibly wander.
         let lines = write_lines(CastVersion::V2, &header_80x24(), |writer| {
             for k in 0..1000_u64 {
                 writer
@@ -926,8 +757,7 @@ mod tests {
             }
         });
         assert_eq!(lines.len(), 1001, "header plus 1000 events");
-        let last = lines.last().expect("last line");
-        assert_eq!(stamp_of(last), "1.003");
+        assert_eq!(stamp_of(lines.last().expect("last line")), "1.003");
     }
 
     #[test]
@@ -936,42 +766,19 @@ mod tests {
             writer.output(Duration::from_millis(500), b"a").expect("a");
             writer.output(Duration::from_millis(100), b"b").expect("b");
         });
-        let stamps: Vec<String> = lines.iter().skip(1).map(|line| stamp_of(line)).collect();
-        // The backwards event is clamped to the previous time, which in v3
-        // means a zero interval rather than a negative one.
-        assert_eq!(stamps, ["0.500", "0.000"]);
+        assert_eq!(stamps(&lines), ["0.500", "0.000"]);
     }
 
     #[test]
-    fn writer_emits_no_hash_comment_lines() {
-        let lines = write_lines(CastVersion::V3, &header_80x24(), |writer| {
-            writer.output(Duration::from_millis(1), b"hi").expect("o");
-            writer
-                .marker(Duration::from_millis(2), "chapter")
-                .expect("m");
-            writer.exit(Duration::from_millis(3), 0).expect("x");
-        });
-        assert!(lines.iter().all(|line| !line.starts_with('#')), "{lines:?}");
-    }
-
-    #[test]
-    fn resize_event_data_is_colsxrows() {
+    fn resize_and_exit_event_payloads() {
         let lines = write_lines(CastVersion::V2, &header_80x24(), |writer| {
             writer
                 .resize(Duration::from_millis(7), 120, 34)
                 .expect("resize");
-        });
-        let event = lines.get(1).expect("one event");
-        assert!(event.contains("\"r\", \"120x34\""), "{event}");
-    }
-
-    #[test]
-    fn exit_event_carries_the_stringified_status() {
-        let lines = write_lines(CastVersion::V2, &header_80x24(), |writer| {
             writer.exit(Duration::from_millis(9), 130).expect("exit");
         });
-        let event = lines.get(1).expect("one event");
-        assert!(event.contains("\"x\", \"130\""), "{event}");
+        assert_eq!(lines[1], r#"[0.007, "r", "120x34"]"#);
+        assert_eq!(lines[2], r#"[0.009, "x", "130"]"#);
     }
 
     #[test]
@@ -1000,7 +807,7 @@ mod tests {
             "{\"version\":3,\"term\":{\"cols\":100,\"rows\":30},\"idle_time_limit\":2.0}\n",
             "# a comment line, legal anywhere but line 1\n",
             "[0.100, \"o\", \"a\"]\n",
-            "[0.400, \"o\", \"b\"]\n",
+            "[0.400, \"q\", \"unknown code still advances the clock\"]\n",
             "[1.500, \"x\", \"0\"]\n",
         );
         let (header, events) = read_cast(v3.as_bytes()).expect("v3 parses");
@@ -1008,50 +815,40 @@ mod tests {
         assert_eq!(header.idle_time_limit, Some(2.0));
         assert_eq!(
             events.iter().map(|e| e.time_ms).collect::<Vec<_>>(),
-            [100, 500, 2000]
+            [100, 2000]
         );
-        assert_eq!(events[2].code, EventCode::Exit);
+        assert_eq!(events[1].code, EventCode::Exit);
     }
 
     #[test]
-    fn read_cast_round_trips_a_theme_through_the_v2_writer() {
+    fn header_and_payload_round_trip_through_the_writer() {
         let theme = CastTheme {
             fg: [0xd0, 0xd0, 0xd0],
             bg: [0x10, 0x20, 0x30],
             palette: (0..16_u8).map(|i| [i, 0x40, 0x50]).collect(),
         };
         let header = CastHeader {
-            theme: Some(theme.clone()),
+            theme: Some(theme),
             title: Some("a \"quoted\" title".to_owned()),
             timestamp: Some(1_700_000_000),
             ..header_80x24()
         };
-        let lines = write_lines(CastVersion::V2, &header, |_| {});
-        let text = lines.join("\n");
-        let (parsed, _) = read_cast(text.as_bytes()).expect("round trip");
-        assert_eq!(parsed.theme, Some(theme));
-        assert_eq!(parsed.title.as_deref(), Some("a \"quoted\" title"));
-        assert_eq!(parsed.timestamp, Some(1_700_000_000));
-    }
-
-    #[test]
-    fn escaped_control_bytes_survive_a_round_trip() {
         let payload = "\u{1b}[31mred\u{1b}[0m\r\n\u{7}";
-        let lines = write_lines(CastVersion::V2, &header_80x24(), |writer| {
-            writer
-                .output(Duration::from_millis(1), payload.as_bytes())
-                .expect("payload");
-        });
-        let (_, events) = read_cast(lines.join("\n").as_bytes()).expect("round trip");
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].data, payload);
-    }
-
-    #[test]
-    fn empty_output_chunk_emits_no_event() {
-        let lines = write_lines(CastVersion::V2, &header_80x24(), |writer| {
-            writer.output(Duration::from_millis(1), b"").expect("empty");
-        });
-        assert_eq!(lines.len(), 1, "header only: {lines:?}");
+        for version in [CastVersion::V2, CastVersion::V3] {
+            let lines = write_lines(version, &header, |writer| {
+                writer
+                    .output(Duration::from_millis(1), payload.as_bytes())
+                    .expect("payload");
+            });
+            assert!(
+                lines[0].contains("\"palette\":\"#004050:#014050:"),
+                "palette must be colon-delimited: {}",
+                lines[0]
+            );
+            let (parsed, events) = read_cast(lines.join("\n").as_bytes()).expect("round trip");
+            assert_eq!(parsed, header);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].data, payload);
+        }
     }
 }

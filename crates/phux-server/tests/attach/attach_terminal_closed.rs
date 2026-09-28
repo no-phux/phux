@@ -1,88 +1,34 @@
-//! Wire-level integration test for `RESOURCE_CLOSED` delivery to an
-//! `ATTACH_RESOURCE`-only consumer (`phux-w7z2.56`).
-//!
-//! [L1 §5.1](../../../docs/spec/L1.md) says `ATTACH_RESOURCE` "registers the
-//! caller as an output subscriber" and that "a session-scoped `ATTACH` is not
-//! required". [L1 §3.1](../../../docs/spec/L1.md) says the server "MUST emit
-//! [`RESOURCE_CLOSED`] to every client subscribed to the Terminal". Together
-//! those two sentences already required what this test asserts; the server
-//! did not do it.
-//!
-//! The pane-EOF watcher resolved subscriber mailboxes through
-//! `ClientTable::attached`, which only a session-scoped `ATTACH` ever
-//! populates. A consumer that reached one pane through `ATTACH_RESOURCE` was
-//! therefore on the pane's subscriber list and filtered straight back out of
-//! the fanout: when the pane died it received nothing at all. Not an error,
-//! not a close — the output simply stopped, which from the consumer's side is
-//! indistinguishable from a pane that has gone quiet. That is the shape an
-//! agent orchestrating panes is most exposed to (it watches one pane, it does
-//! not attach to a session), and it is the same shape a federation hub's
-//! proxy subscription takes, so a satellite pane's death never reached the
-//! hub and left dead proxy state behind.
-//!
-//! Two consumers, one pane, one death:
-//!
-//! * `watcher` — connects, `HELLO`s, and sends **only** `ATTACH_RESOURCE`.
-//!   This is the connection the bug silenced.
-//! * `owner` — session-attached, and auto-subscribed to the pane it spawned.
-//!   This one always worked; it is here to prove the fix delivers to it
-//!   exactly once rather than twice (it is reachable both ways).
-//!
-//! No sleeps anywhere. The victim pane is killed on request rather than
-//! timed out, and every ordering the test depends on is anchored on a
-//! `CommandResult` — the per-connection frame loop processes in order, so a
-//! reply proves everything sent ahead of it is already applied server-side.
+//! phux-w7z2.56: a consumer subscribed through `ATTACH_RESOURCE` alone (no
+//! session `ATTACH`, the shape of agents and federation proxies) receives
+//! `RESOURCE_CLOSED` when the pane dies (L1 §3.1), and the session-attached
+//! consumer still receives it exactly once. No sleeps: the pane is killed on
+//! request, and "exactly once" is anchored on a `GET_STATE` barrier reply,
+//! which the in-order frame loop queues behind any duplicate.
 
-#![allow(clippy::expect_used, reason = "tests")]
-#![allow(clippy::unwrap_used, reason = "tests")]
-#![allow(clippy::panic, reason = "tests")]
-
-use std::time::Duration;
-
-use phux_protocol::ids::{GroupId, ResourceId};
-use phux_protocol::wire::frame::{
-    Command, CommandResult, FrameKind, SpawnResult, StateScope, TYPE_ATTACHED,
-};
-use portable_pty::CommandBuilder;
+use phux_protocol::ids::ResourceId;
+use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnResult, StateScope};
 use tempfile::TempDir;
 use tokio::net::UnixStream;
-use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown,
-    recv_command_result, recv_typed, recv_until, recv_until_deadline, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, Spawn, WIRE_RECV_TIMEOUT, attach_by_name, command, recv_until,
+    recv_until_deadline, run_local, send_frame, spawn_resource, spawn_server_with_seed_cmd,
+    wait_for_socket,
 };
 
-/// A shell that never exits on its own.
-///
-/// Both the seed pane and the victim pane run this. Nothing in this test is
-/// timed: the victim dies from an explicit `KILL_RESOURCE` at the point the
-/// test chooses, and the seed pane outliving everything keeps the session
-/// populated so the last-pane server self-exit (phux-60s) never races the
-/// assertions. A pane that exits on a timer is the phux-w266 flake class —
-/// under load it dies before the collection window and the failure surfaces
-/// as "early eof" rather than as anything about the contract.
-fn immortal_shell() -> CommandBuilder {
-    let mut cmd = CommandBuilder::new("/bin/sh");
-    cmd.arg("-c");
-    cmd.arg("while :; do sleep 3600; done");
-    cmd
-}
+use super::common::{attached, sh};
 
-/// Drain frames until a `RESOURCE_CLOSED` naming `victim` arrives, or
-/// `deadline` elapses. Returns its `exit_status` on arrival.
-///
-/// The bound is the shared `WIRE_RECV_TIMEOUT`, and it is not load-bearing:
-/// what is asserted is arrival, never latency. A server that never emits the
-/// frame — the phux-w7z2.56 regression — still fails, at the ceiling.
-async fn await_terminal_closed(
+const IMMORTAL: &str = "while :; do sleep 3600; done";
+
+/// Wait for `RESOURCE_CLOSED` for `victim`, then count further ones up to a
+/// `GET_STATE` barrier. Returns the exit status.
+async fn closed_exactly_once(
     stream: &mut UnixStream,
     victim: &ResourceId,
-    deadline: Duration,
-) -> Option<Option<i32>> {
-    let end = tokio::time::Instant::now() + deadline;
-    recv_until_deadline(stream, end, |_, frame| match frame {
+    barrier: u32,
+) -> Option<i32> {
+    let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
+    let status = recv_until_deadline(stream, deadline, |_, frame| match frame {
         FrameKind::ResourceClosed {
             terminal_id,
             exit_status,
@@ -91,230 +37,66 @@ async fn await_terminal_closed(
         _ => None,
     })
     .await
-}
-
-/// Count further `RESOURCE_CLOSED` frames for `victim` up to the
-/// `CommandResult` for `barrier_request_id`. Returns
-/// `(extra_closed, barrier_seen)`.
-///
-/// This is what makes "exactly once" assertable without a sleep. A duplicate
-/// would be written into this connection's mailbox inside the *same*
-/// broadcast loop as the first frame — strictly before the server dequeues a
-/// command sent afterwards — so a barrier reply with nothing behind it proves
-/// there was no second frame. "Wait a bit and see" would only have proved the
-/// wait was long enough on this machine.
-async fn count_extra_closed(
-    stream: &mut UnixStream,
-    victim: &ResourceId,
-    barrier_request_id: u32,
-    deadline: Duration,
-) -> (u32, bool) {
-    let end = tokio::time::Instant::now() + deadline;
-    let mut extra = 0u32;
-    loop {
-        let remaining = end.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return (extra, false);
-        }
-        let Ok((_type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            return (extra, false);
-        };
-        match frame {
-            FrameKind::ResourceClosed { terminal_id, .. } if terminal_id == *victim => {
-                extra = extra.saturating_add(1);
-            }
-            FrameKind::CommandResult { request_id, .. } if request_id == barrier_request_id => {
-                return (extra, true);
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Ask for a server-scoped state snapshot. Read-only, needs no subscription
-/// and no session-scoped `ATTACH`, and always answers — which is what makes
-/// it usable as an ordering barrier on the `ATTACH_RESOURCE`-only
-/// connection, where every terminal-scoped command would be gated on a
-/// subscription to a pane that is by then dead.
-const fn state_barrier(request_id: u32) -> FrameKind {
-    FrameKind::Command {
-        request_id,
+    .expect("RESOURCE_CLOSED never arrived");
+    let get_state = FrameKind::Command {
+        request_id: barrier,
         command: Command::GetState {
             scope: StateScope::Server,
         },
-    }
-}
-
-/// Spawn the pane this test kills, on the `owner` connection.
-///
-/// A second pane rather than the seed pane, so its death cannot empty the
-/// server and trip the last-pane self-exit (phux-60s) while the test is
-/// still reading. It runs the same never-exiting shell: nothing here is
-/// allowed to die on a timer.
-async fn spawn_victim_pane(owner: &mut UnixStream) -> ResourceId {
-    send_frame(
-        owner,
-        &FrameKind::SpawnResource {
-            request_id: 1,
-            group: GroupId::new(1),
-            command: Some(vec![
-                "/bin/sh".to_owned(),
-                "-c".to_owned(),
-                "while :; do sleep 3600; done".to_owned(),
-            ]),
-            cwd: None,
-            env: None,
-            term: None,
-            satellite: None,
-            owner_terminal: None,
-            agent_session: None,
-            initial_size: None,
-            resource: None,
-        },
-    )
-    .await;
-    recv_until(owner, |_, frame| match frame {
-        FrameKind::ResourceSpawned {
-            request_id: 1,
-            result,
-        } => match result {
-            SpawnResult::Ok(id) => Some(id),
-            other => panic!("SPAWN_RESOURCE failed: {other:?}"),
-        },
+    };
+    send_frame(stream, &get_state).await;
+    let mut extra = 0;
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::ResourceClosed { terminal_id, .. } if terminal_id == *victim => {
+            extra += 1;
+            None
+        }
+        FrameKind::CommandResult { request_id, .. } if request_id == barrier => Some(()),
         _ => None,
     })
-    .await
-}
-
-/// Subscribe `watcher` to `victim` with `ATTACH_RESOURCE` and nothing else,
-/// returning once the server has answered.
-///
-/// No `ATTACH` is sent on this connection, ever. It therefore never acquires
-/// a session-attach record — precisely the state the old fanout could not
-/// address.
-async fn attach_terminal_only(watcher: &mut UnixStream, victim: &ResourceId) {
-    send_frame(
-        watcher,
-        &FrameKind::Command {
-            request_id: 100,
-            command: Command::AttachResource {
-                terminal_id: victim.clone(),
-                role_policy: None,
-            },
-        },
-    )
     .await;
-    let result = timeout(WIRE_RECV_TIMEOUT, recv_command_result(watcher, 100))
-        .await
-        .expect("the server must answer ATTACH_RESOURCE");
-    assert!(
-        matches!(result, CommandResult::Ok),
-        "ATTACH_RESOURCE must succeed, got {result:?}",
-    );
+    assert_eq!(extra, 0, "RESOURCE_CLOSED must arrive exactly once");
+    status
 }
 
-/// A consumer that reached a Terminal through `ATTACH_RESOURCE` alone —
-/// never a session-scoped `ATTACH` — receives `RESOURCE_CLOSED` when that
-/// Terminal dies, and the session-attached consumer receives it exactly once
-/// (L1 §3.1, phux-w7z2.56).
-///
-/// Before the fix the `watcher` assertion below timed out at
-/// `WIRE_RECV_TIMEOUT` having seen zero `RESOURCE_CLOSED` frames: the pane's
-/// output just stopped.
 #[test]
 fn attach_terminal_only_consumer_receives_terminal_closed() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
-        let socket_path = tmp.path().join("phux.sock");
-        let (shutdown_tx, server_handle) =
-            spawn_server_with_seed_cmd(socket_path.clone(), "demo", immortal_shell());
+        let socket = tmp.path().join("phux.sock");
+        let (_shutdown, _server) = spawn_server_with_seed_cmd(socket.clone(), "demo", sh(IMMORTAL));
 
-        // ---- owner: HELLO + ATTACH, then spawn the victim pane ----
-        let mut owner = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        let mut owner = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
         send_frame(&mut owner, &attach_by_name("demo")).await;
-        let (type_byte, _attached) = recv_typed(&mut owner).await;
+        attached(&mut owner).await;
+        // A second pane, so its death cannot trip last-pane self-exit.
+        let SpawnResult::Ok(victim) =
+            spawn_resource(&mut owner, 1, Spawn::command(&["/bin/sh", "-c", IMMORTAL])).await
+        else {
+            panic!("victim spawn failed");
+        };
+
+        let mut watcher = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let subscribe = Command::AttachResource {
+            terminal_id: victim.clone(),
+            role_policy: None,
+        };
+        // The reply proves the subscription is installed before the kill.
         assert_eq!(
-            type_byte, TYPE_ATTACHED,
-            "first server-to-client frame must be ATTACHED",
+            command(&mut watcher, 100, subscribe).await,
+            CommandResult::Ok
         );
-        let victim = spawn_victim_pane(&mut owner).await;
-
-        // ---- watcher: HELLO, then ATTACH_RESOURCE and nothing else ----
-        let mut watcher = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        attach_terminal_only(&mut watcher, &victim).await;
-
-        // `attach_terminal_only` returned on the `CommandResult`, which is
-        // the registration barrier: the server processes one connection's
-        // frames in order, so that reply proves the subscription is
-        // installed. Only now may the pane die — the third shape of the
-        // phux-w266 flake class is "the event fired before the observer was
-        // registered", and a barrier anchored on `send_frame` returning
-        // would not have closed it (that only proves the bytes left this
-        // end).
-        send_frame(
-            &mut owner,
-            &FrameKind::Command {
-                request_id: 2,
-                command: Command::KillResource {
-                    terminal_id: victim.clone(),
-                    operation_id: None,
-                },
+        let kill = FrameKind::Command {
+            request_id: 2,
+            command: Command::KillResource {
+                terminal_id: victim.clone(),
+                operation_id: None,
             },
-        )
-        .await;
+        };
+        send_frame(&mut owner, &kill).await;
 
-        // ---- the contract under test ----
-        //
-        // The kill is asynchronous with respect to this connection (the
-        // actor is cancelled, its EOF watcher fires, and only then does the
-        // fanout run), so the wait is on the frame itself rather than on a
-        // barrier: no barrier on THIS connection can order against work
-        // driven from another one.
-        let watcher_status = await_terminal_closed(&mut watcher, &victim, WIRE_RECV_TIMEOUT)
-            .await
-            .expect(
-                "an ATTACH_RESOURCE-only consumer must receive RESOURCE_CLOSED for the pane \
-                 it subscribed to (L1 §3.1); never receiving it is the phux-w7z2.56 regression",
-            );
-
-        // Now that the fanout has provably run, a barrier is meaningful:
-        // anything it emitted for this pane is already queued ahead of the
-        // reply.
-        send_frame(&mut watcher, &state_barrier(101)).await;
-        let (extra, barrier_seen) =
-            count_extra_closed(&mut watcher, &victim, 101, WIRE_RECV_TIMEOUT).await;
-        assert!(
-            barrier_seen,
-            "the server must answer the watcher's GET_STATE barrier",
-        );
-        assert_eq!(
-            extra, 0,
-            "the ATTACH_RESOURCE-only consumer must receive RESOURCE_CLOSED exactly once",
-        );
-
-        // ---- and the session-attached consumer, exactly once ----
-        let owner_status = await_terminal_closed(&mut owner, &victim, WIRE_RECV_TIMEOUT)
-            .await
-            .expect("the session-attached consumer must still receive RESOURCE_CLOSED");
-        assert_eq!(
-            owner_status, watcher_status,
-            "both consumers must observe the same lifecycle fact",
-        );
-        send_frame(&mut owner, &state_barrier(102)).await;
-        let (owner_extra, owner_barrier_seen) =
-            count_extra_closed(&mut owner, &victim, 102, WIRE_RECV_TIMEOUT).await;
-        assert!(
-            owner_barrier_seen,
-            "the server must answer the owner's GET_STATE barrier",
-        );
-        assert_eq!(
-            owner_extra, 0,
-            "the session-attached consumer must still receive exactly one \
-             RESOURCE_CLOSED, not two",
-        );
-
-        drop(watcher);
-        drop(owner);
-        join_after_shutdown(shutdown_tx, server_handle).await;
+        let watcher_status = closed_exactly_once(&mut watcher, &victim, 101).await;
+        let owner_status = closed_exactly_once(&mut owner, &victim, 102).await;
+        assert_eq!(owner_status, watcher_status, "same lifecycle fact for both");
     });
 }

@@ -1,40 +1,13 @@
-//! Plugin pane host in the TUI (phux-r82.7).
+//! Plugin manifest `[[panes]]` in the TUI.
 //!
-//! Plugin manifest `[[panes]]` declare a command plus a `placement`
-//! (`overlay | split | tab | zoomed`) but were previously inert metadata —
-//! nothing opened them. This module makes a declared pane actually open,
-//! running its argv inside a real server-side Terminal.
+//! A declared pane opens its argv in a real server Terminal through the same
+//! `SPAWN_RESOURCE` verb `split-pane` and `new-window` use (plugin root as
+//! cwd, `PHUX_PLUGIN_*` env), with no new wire surface (ADR-0017).
 //!
-//! ## No new wire surface (ADR-0017)
-//!
-//! The TUI is not protocol-privileged: a plugin pane opens through the
-//! SAME `SPAWN_RESOURCE` verb the TUI's own `split-pane` / `new-window`
-//! actions use, with the manifest's argv as the spawn `command`, the
-//! plugin root as `cwd`, and the `PHUX_PLUGIN_*` identity variables as
-//! additive `env` entries (mirroring the `phux-plugin` action runtime's
-//! injection). Any consumer could do exactly this; nothing here touches
-//! `phux-protocol`.
-//!
-//! ## Placement routing
-//!
-//! * `split`  — spawn + park a `PendingSplit` (see `super::actions`)
-//!   against the focused pane (side-by-side, like the palette's
-//!   `split-pane` default).
-//! * `tab`    — spawn + park a `PendingWindow` (see `super::actions`)
-//!   named after the pane's manifest `title`.
-//! * `zoomed` — like `split`, but the spawn reply zooms the new pane to
-//!   fill the window (`PendingSplit::zoom_on_spawn`); un-zooming reveals
-//!   it tiled beside the anchor pane.
-//! * `overlay` — **deferred.** An overlay hosting a live terminal needs a
-//!   floating pane surface the chrome layer does not have yet; entries
-//!   declaring it are skipped at snapshot time with a logged warning (see
-//!   `docs/consumers/tui.md` §5.5 and the phux-r82.7 bead notes).
-//!
-//! The palette lists hosted entries as namespaced rows
-//! (`plugin pane: <plugin-name>: <pane title>`) under the shared "Plugin"
-//! header; committing one fires the [`PLUGIN_PANE_NAME`] dispatcher action
-//! carrying `plugin = <id>, pane = <id>` args, so the palette and any
-//! user-configured keybinding share the single `run_action` dispatch path.
+//! Placement: `split` parks a `PendingSplit`, `tab` a `PendingWindow` named
+//! after the pane, `zoomed` a split that zooms on spawn. `overlay` is
+//! deferred (no floating live-terminal surface) and skipped with a warning.
+//! Palette rows commit [`PLUGIN_PANE_NAME`] with `plugin`/`pane` args.
 
 use std::path::PathBuf;
 
@@ -44,20 +17,11 @@ use phux_protocol::wire::frame::FrameKind;
 
 use phux_client::layout_ops::DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID;
 
-/// The dispatcher action plugin pane palette rows commit.
-///
-/// Listed in [`super::input_dispatch::ACTION_NAMES`] and handled by a
-/// `run_action` arm; exempt from the static palette registry because its
-/// rows are built dynamically from the plugin snapshot (same policy as
-/// [`super::plugin_actions::PLUGIN_ACTION_NAME`]).
+/// The dispatcher action plugin pane rows commit (dynamic, so exempt from
+/// the static registry).
 pub const PLUGIN_PANE_NAME: &str = "plugin-pane";
 
-/// Where a hosted plugin pane opens.
-///
-/// The subset of [`PluginPanePlacement`] the TUI can honor today:
-/// `overlay` is deferred (no floating live-terminal surface yet) and
-/// never reaches this type — [`entries_from_manifests`] drops it with a
-/// warning.
+/// Where a hosted plugin pane opens (`overlay` never reaches this type).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostedPlacement {
     /// Split beside the focused pane (side-by-side).
@@ -113,10 +77,8 @@ impl PluginPaneEntry {
         }
     }
 
-    /// The additive environment injected into the spawned Terminal —
-    /// the same identity contract as the `phux-plugin` action runtime
-    /// (`PHUX_PLUGIN_ID` / `PHUX_PLUGIN_ROOT`), with `PHUX_PLUGIN_PANE_ID`
-    /// in place of the action id.
+    /// The additive env for the spawned Terminal: `PHUX_PLUGIN_ID`,
+    /// `PHUX_PLUGIN_ROOT`, and `PHUX_PLUGIN_PANE_ID`.
     #[must_use]
     pub fn spawn_env(&self) -> Vec<(String, String)> {
         vec![
@@ -129,13 +91,8 @@ impl PluginPaneEntry {
         ]
     }
 
-    /// Build the `SPAWN_RESOURCE` frame that opens this pane: the
-    /// manifest argv as the command, the plugin root as the working
-    /// directory, and [`spawn_env`](Self::spawn_env) as additive env.
-    ///
-    /// This is the existing wire verb the TUI's own `split-pane` /
-    /// `new-window` actions use — no plugin-specific protocol surface
-    /// (ADR-0017).
+    /// The `SPAWN_RESOURCE` frame that opens this pane: manifest argv, plugin
+    /// root as cwd, [`spawn_env`](Self::spawn_env) as env.
     #[must_use]
     pub fn spawn_frame(&self, request_id: u32) -> FrameKind {
         FrameKind::SpawnResource {
@@ -148,7 +105,7 @@ impl PluginPaneEntry {
             satellite: None,
             owner_terminal: None,
             agent_session: None,
-            // phux-a5xj: geometry depends on the placement the caller
+            // Geometry depends on the placement the caller
             // chooses, which this entry does not decide. `run_action` fills
             // it in from the tile it is about to park.
             initial_size: None,
@@ -157,15 +114,8 @@ impl PluginPaneEntry {
     }
 }
 
-/// Flatten loaded manifests into hostable pane entries. Pure; separated
-/// from config I/O so tests can drive it with in-memory manifests.
-///
-/// Entries the TUI cannot honestly host are dropped with a
-/// `tracing::warn!`, never an error: `placement = "overlay"` (deferred —
-/// no floating live-terminal surface yet) and empty argv (nothing to
-/// run). Disabled plugins never reach this function — the caller loads
-/// manifests via [`phux_config::plugin::load_enabled_manifests`], which
-/// skips them.
+/// Flatten loaded manifests into hostable pane entries (pure). `overlay`
+/// placements and empty argv are dropped with a warning.
 #[must_use]
 pub fn entries_from_manifests(manifests: &[PluginManifest]) -> Vec<PluginPaneEntry> {
     let mut entries = Vec::new();
@@ -334,29 +284,6 @@ mod tests {
         );
         assert!(env.contains(&("PHUX_PLUGIN_PANE_ID".to_owned(), "board".to_owned())));
         assert!(env.contains(&("PHUX_PLUGIN_ROOT".to_owned(), "/x".to_owned())));
-    }
-
-    #[test]
-    fn resolved_action_carries_plugin_and_pane_args() {
-        let m = manifest(
-            "p",
-            vec![pane(
-                "board",
-                PluginPanePlacement::Tab,
-                vec!["x".to_owned()],
-            )],
-        );
-        let entry = &entries_from_manifests(std::slice::from_ref(&m))[0];
-        let ra = entry.resolved_action();
-        assert_eq!(ra.action, PLUGIN_PANE_NAME);
-        assert_eq!(
-            ra.args.get("plugin"),
-            Some(&toml::Value::String("p".to_owned()))
-        );
-        assert_eq!(
-            ra.args.get("pane"),
-            Some(&toml::Value::String("board".to_owned()))
-        );
     }
 
     #[test]

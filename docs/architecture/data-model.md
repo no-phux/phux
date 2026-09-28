@@ -27,9 +27,8 @@ because:
 - Deletion is `O(1)` and slotmap's generational keys catch use-after-free in
   tests.
 
-The shape splits in two: the *domain* (pure data, in `phux-core`) and the
-*attached-client + I/O* state (in `phux-server`). The split is deliberate;
-see ADR-0008 and the crate-graph note above.
+The domain (pure data) lives in `phux-core`; attached-client and I/O
+state live in `phux-server`.
 
 ## Resources and kinds
 
@@ -51,9 +50,7 @@ metadata plus client logic over the [L3 metadata model](../spec/L3.md),
 keyed by an opaque grouping identity. `GroupId` is retained only as that
 opaque key, not as a lifecycle entity the server creates, names, or tears
 down. The lone irreducible group operation — atomic multi-resource teardown —
-is a single L1 op (`KILL_RESOURCES`) rather than a tier. `GroupId`'s
-retention as an opaque grouping key is settled, not a remnant awaiting
-removal (bead phux-0bmc closed as resolved-by-rename).
+is a single L1 op (`KILL_RESOURCES`) rather than a tier.
 
 The `Registry`'s `Session` and `Window` types are the in-process carriers of
 that grouping metadata. They are domain bookkeeping, not a wire tier: under
@@ -150,16 +147,9 @@ pub struct AttachedClient {
 the current-thread runtime and how `KILL_RESOURCES` applies atomically under
 one acquisition.
 
-The engine side of a resource is `ResourceCore`: kind, parent, wire id, the
-checked output sequence, the output broadcast sender, the event-subscriber
-registry and fan-out, the cancel token and exit notification, and the
-control mailbox. Each engine (`resource::terminal::TerminalActor`,
-`resource::agent_session`) embeds one, keeps its own kind-specific state
-beside it, and builds the `ResourceHandle` in its constructor. Runtime code
-never holds a `TerminalHandle` on its own: it holds a `ResourceHandle` and
-calls `ResourceHandle::terminal()` where a grid, PTY, or input operation is
-needed — the one place a request aimed at a resource of another kind becomes
-a `WrongResourceKind` error.
+Each engine embeds a `ResourceCore` (output sequence and broadcast, event
+fan-out, cancel token, control mailbox) and builds the `ResourceHandle`;
+the facet rule is in [module-structure.md](./module-structure.md#phux-server).
 
 Teardown runs under one lock acquisition. `KILL_RESOURCES` resolves every
 wire id and cancels every engine inside a single `with_mut`, so no other
@@ -177,10 +167,7 @@ have to be kept consistent across cascading deletes.
 
 ## Status
 
-No remaining target-versus-shipped gaps in the in-process types this
-document owns. Parent cascade announces `CloseReason::ParentClosed`, the
-runtime calls `Registry::new_agent_session` and writes `AgentFacet.state`,
-and `ResourceId` is the key name on both sides of `IdBridge`.
+No remaining target-versus-shipped gaps.
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|

@@ -1,18 +1,5 @@
-//! Provenance recording for the layered merge (phux-r82.4).
-//!
-//! `merged_config_with_provenance` attributes every effective leaf key
-//! to the layer that set it, and every array element to the layer that
-//! contributed it. These tests drive a three-layer fixture stack —
-//! embedded defaults <- base.toml <- distro.toml <- user config — and
-//! check:
-//! 1. The layer stack is reported in merge order with the right kinds.
-//! 2. Scalar attribution: untouched defaults stay on layer 0; each
-//!    override lands on the overriding layer; the user file wins last.
-//! 3. Array attribution: `-append` elements carry their contributing
-//!    layer, in order, across defaults + multiple layers.
-//! 4. The table half equals `merged_config_table` (same merge).
-//! 5. Every leaf of the merged table has a provenance entry.
-//! 6. Non-bare key segments are quoted TOML-address style.
+//! Provenance recording for the layered merge: every leaf and array
+//! element attributed to the layer that set it.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
@@ -81,11 +68,12 @@ fn origin<'a>(provenance: &'a ConfigProvenance, key: &str) -> &'a KeyOrigin {
         .unwrap_or_else(|| panic!("provenance entry for `{key}`"))
 }
 
+/// The stack is reported in merge order, and each scalar belongs to the
+/// last layer that set it (tables merge per key).
 #[test]
-fn layer_stack_is_reported_in_merge_order() {
+fn scalars_attribute_to_the_last_layer_that_set_them() {
     let tmp = TempDir::new().expect("tempdir");
     let (_, provenance, config_path) = three_layer_stack(&tmp);
-
     assert_eq!(
         provenance.layers,
         vec![
@@ -95,28 +83,17 @@ fn layer_stack_is_reported_in_merge_order() {
             LayerSource::User(config_path),
         ]
     );
-    assert_eq!(provenance.layers[0].path(), None);
-    assert!(provenance.layers[1].path().is_some());
-}
 
-#[test]
-fn scalars_attribute_to_the_last_layer_that_set_them() {
-    let tmp = TempDir::new().expect("tempdir");
-    let (_, provenance, _) = three_layer_stack(&tmp);
-
-    // Untouched shipped default.
-    assert_eq!(origin(&provenance, "defaults.term").layer, 0);
-    // Set by base, never overridden above it.
-    assert_eq!(origin(&provenance, "defaults.mouse").layer, 1);
-    // Base sets it, distro overrides: distro owns it.
-    assert_eq!(origin(&provenance, "defaults.history-limit").layer, 2);
-    // User leaf wins over everything.
-    assert_eq!(origin(&provenance, "keybindings.prefix").layer, 3);
-    // Tables merge per key: base's rebind of one chord owns only that
-    // chord; sibling shipped bindings stay on the defaults layer.
-    assert_eq!(origin(&provenance, "keybindings.prefix-table.b").layer, 1);
-    assert_eq!(origin(&provenance, "keybindings.prefix-table.x").layer, 0);
-    // Scalars carry no element attribution.
+    for (key, layer) in [
+        ("defaults.term", 0),
+        ("defaults.mouse", 1),
+        ("defaults.history-limit", 2),
+        ("keybindings.prefix", 3),
+        ("keybindings.prefix-table.b", 1),
+        ("keybindings.prefix-table.x", 0),
+    ] {
+        assert_eq!(origin(&provenance, key).layer, layer, "{key}");
+    }
     assert_eq!(origin(&provenance, "keybindings.prefix").elements, None);
 }
 
@@ -177,14 +154,6 @@ right-append = ["session-name"]
     assert_eq!(right.layer, 2);
 }
 
-#[test]
-fn merged_table_half_matches_merged_config_table() {
-    let tmp = TempDir::new().expect("tempdir");
-    let (merged, _, config_path) = three_layer_stack(&tmp);
-    let table = phux_config::merged_config_table(USER_INPUT, &config_path).expect("merge");
-    assert_eq!(merged, table);
-}
-
 /// Mirror the library's path grammar: bare segments join with `.`,
 /// anything else is double-quoted with `\` / `"` escaped.
 fn child_path(prefix: &str, key: &str) -> String {
@@ -227,11 +196,15 @@ fn assert_leaves_attributed(table: &toml::Table, prefix: &str, provenance: &Conf
     }
 }
 
+/// Every merged leaf is attributed, and the table half is exactly
+/// `merged_config_table`.
 #[test]
 fn every_merged_leaf_has_a_provenance_entry() {
     let tmp = TempDir::new().expect("tempdir");
-    let (merged, provenance, _) = three_layer_stack(&tmp);
+    let (merged, provenance, config_path) = three_layer_stack(&tmp);
     assert_leaves_attributed(&merged, "", &provenance);
+    let table = phux_config::merged_config_table(USER_INPUT, &config_path).expect("merge");
+    assert_eq!(merged, table);
 }
 
 #[test]

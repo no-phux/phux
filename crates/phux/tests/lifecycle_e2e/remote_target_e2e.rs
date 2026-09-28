@@ -1,21 +1,10 @@
-//! The `--remote` resolution ladder, driven through the real binary on a
-//! real PTY (ADR-0093).
-//!
-//! `--remote` is an attach, so every rung sits behind the interactive TTY
-//! preflight — which is why these tests open a PTY rather than piping. What
-//! they pin is the *pairing* half of each rung, because that is the half
-//! with side effects: which registry entry gets written, where the bearer
-//! token lands and with what mode, and what the operator is told. The dial
-//! that follows is the pre-existing `run_attach_remote` path and is not
-//! re-tested here; each test stops as soon as the pairing it cares about is
-//! observable, and kills the child.
-//!
-//! Network-free throughout. The ssh rung runs against a fake `ssh` via
-//! `$PHUX_SSH` — the same seam `phux host add` is tested through — and
-//! the `--code` rung contacts nothing at all. The direct-route probe dials
-//! a TEST-NET address under a short `PHUX_DIRECT_PROBE_TIMEOUT_MS`, so
-//! every ssh pairing here ends on the `ssh://` route with the candidate
-//! kept as `direct`; the answering case lives in `host_add_e2e.rs`.
+//! The `--remote` resolution ladder (ADR-0093) through the real binary on a
+//! PTY (attach sits behind the TTY preflight). Pins the pairing half of each
+//! rung: which entry is written, where the token lands, what the operator is
+//! told; the dial afterwards is not re-tested. Network-free: fake `ssh` via
+//! `$PHUX_SSH`, and the direct probe dials TEST-NET under a short timeout.
+//! The shared ssh middle (step order, fallbacks) is pinned in
+//! `tests/fleet/host_enroll.rs`.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -42,12 +31,8 @@ const FINGERPRINT: &str = "ababababababababababababababababababababababababababa
 /// How long to wait for the pairing line before declaring the run stuck.
 const DEADLINE: Duration = Duration::from_secs(20);
 
-/// How long to keep draining after the needle appears, so the lines that
-/// follow it are captured too.
-///
-/// The needle marks "the run has reached the point I care about", not "the
-/// run has finished saying it" — a multi-line report arrives across several
-/// PTY reads, and stopping on the first would assert against half a message.
+/// How long to keep draining after the needle, so a multi-line report that
+/// spans several PTY reads is captured whole.
 const SETTLE: Duration = Duration::from_millis(750);
 
 /// One scratch home per run: private config, private state, and a fake ssh.
@@ -62,21 +47,12 @@ impl RemoteHome {
         }
     }
 
-    /// A fake `ssh` answering the three commands `--remote`'s bootstrap rung
-    /// issues. `overlay` empty means the host advertises nothing dialable,
-    /// which is what drives the `ssh://` fallback. Every invocation is logged
-    /// so tests can prove the remote service starts before pairing.
+    /// A fake `ssh` answering the bootstrap rung's commands and logging every
+    /// call; `overlay` is the address `phux pair` advertises.
     fn install_fake_ssh(&self, overlay: &str) -> PathBuf {
-        self.install_fake_ssh_with_service(overlay, "echo \"service installed\"")
-    }
-
-    fn install_fake_ssh_with_service(&self, overlay: &str, service: &str) -> PathBuf {
+        let service = "echo \"service installed\"";
         let path = self.dir.path().join("fake-ssh");
-        let overlay_json = if overlay.is_empty() {
-            "[]".to_owned()
-        } else {
-            format!("[\"{overlay}\"]")
-        };
+        let overlay_json = format!("[\"{overlay}\"]");
         let script = format!(
             "#!/bin/sh\n\
              printf '%s\\n' \"$*\" >> \"$PHUX_TEST_SSH_CALLS\"\n\
@@ -101,16 +77,9 @@ impl RemoteHome {
     }
 
     /// Run `phux <args...>` on a PTY and collect output until `needle`
-    /// appears or [`DEADLINE`] elapses, then kill the child.
-    ///
-    /// Returns everything read. The attach that follows a successful pairing
-    /// would block on a server that does not exist, so waiting for the child
-    /// to exit is not an option — the needle IS the assertion point.
-    ///
-    /// The read runs on its own thread feeding a channel, and the deadline is
-    /// enforced with `recv_timeout`. Reading inline would not work: a PTY read
-    /// blocks until bytes arrive, so a child that goes quiet without exiting
-    /// would park the test forever and the deadline would never be consulted.
+    /// appears (plus [`SETTLE`]) or [`DEADLINE`] elapses, then kill the child:
+    /// the attach after pairing would block forever. Reads happen on a thread
+    /// so a quiet child cannot park the deadline.
     fn run_until(&self, args: &[&str], ssh: &Path, needle: &str) -> String {
         let pty = native_pty_system()
             .openpty(PtySize {
@@ -123,8 +92,7 @@ impl RemoteHome {
 
         let mut cmd = CommandBuilder::new(PHUX);
         cmd.args(args);
-        // Drop inherited `PHUX_SOCKET` / `PHUX_WS_*` from a live pane
-        // (phux-lru0). CommandBuilder has no env_remove; rebuild the table.
+        // No ambient `PHUX_*` from a live pane: rebuild the table.
         cmd.env_clear();
         if let Some(path) = std::env::var_os("PATH") {
             cmd.env("PATH", path);
@@ -135,8 +103,7 @@ impl RemoteHome {
         cmd.env("HOME", self.dir.path());
         cmd.env("XDG_CONFIG_HOME", self.dir.path().join("config"));
         cmd.env("XDG_STATE_HOME", self.dir.path().join("state"));
-        // Pin the RELEASED on-disk layout (`state/phux`, not `state/phux-dev`)
-        // so the path assertions describe what a user actually sees (ADR-0080).
+        // The released layout (`state/phux`), not the debug `dev` profile.
         cmd.env("PHUX_PROFILE", "default");
         cmd.env("PHUX_SSH", ssh);
         cmd.env("PHUX_TAILSCALE", self.dir.path().join("no-such-tailscale"));
@@ -144,17 +111,8 @@ impl RemoteHome {
         // The probe dials a TEST-NET address: fail it fast.
         cmd.env("PHUX_DIRECT_PROBE_TIMEOUT_MS", "300");
         cmd.env("TERM", "xterm-256color");
-        // Everything below closes a door `PHUX_PROFILE=default` opens
-        // (phux-vlv1). The released profile is not just a path layout: it is
-        // also the local socket the operator's own server is on, and the
-        // gate that makes a server auto-bind the host's overlay port.
-        //
-        // * `PHUX_SOCKET` moves the local instance inside this scratch home.
-        // * `PHUX_NO_AUTO_LISTEN` is the documented opt-out from the
-        //   auto-overlay bind (ADR-0081).
-        // * `PHUX_TAILSCALE` above, pointed at a program that cannot exist,
-        //   turns overlay detection off; setting it also suppresses the
-        //   CGNAT route heuristic.
+        // The default profile would otherwise use the operator's socket and
+        // auto-bind the overlay port (ADR-0081).
         cmd.env("PHUX_SOCKET", self.dir.path().join("phux.sock"));
         cmd.env("PHUX_NO_AUTO_LISTEN", "1");
 
@@ -163,8 +121,6 @@ impl RemoteHome {
         let mut reader = pty.master.try_clone_reader().expect("clone reader");
 
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        // Detached on purpose: it exits when the PTY closes after the kill
-        // below, and nothing downstream needs to join it.
         std::thread::spawn(move || {
             let mut buf = [0_u8; 4096];
             loop {
@@ -183,8 +139,6 @@ impl RemoteHome {
         let mut seen = String::new();
         let mut settle_until = None;
         loop {
-            // `saturating_duration_since` is already zero once the instant
-            // has passed, which is the "stop now" signal the loop below reads.
             let budget = settle_until.map_or_else(
                 || DEADLINE.saturating_sub(start.elapsed()),
                 |until: Instant| until.saturating_duration_since(Instant::now()),
@@ -199,8 +153,6 @@ impl RemoteHome {
                         settle_until = Some(Instant::now() + SETTLE);
                     }
                 }
-                // Timeout during the settle window, or a disconnect (the child
-                // closed the PTY): either way nothing more is coming.
                 Err(_) => break,
             }
         }
@@ -366,92 +318,6 @@ fn no_enroll_does_not_repair_an_unreachable_registered_host() {
         home.ssh_calls(),
         "",
         "--no-enroll must not invoke ssh for repair"
-    );
-}
-
-/// A first interactive remote attach provisions the same per-user service as
-/// `phux host add`, before it mints credentials. That order matters: the
-/// endpoint written locally must describe a server that is already running.
-#[test]
-#[ignore = "spawns a PTY-backed binary; runs in the e2e lane"]
-fn ssh_rung_starts_the_remote_service_before_pairing() {
-    let home = RemoteHome::new();
-    let ssh = home.install_fake_ssh(OVERLAY);
-
-    let seen = home.run_until(&["--remote", "me@mini"], &ssh, "registered me@mini");
-    let calls = home.ssh_calls();
-    let version = calls.find("phux --version").expect("version probe");
-    let service = calls
-        .find("phux service install --quic 0.0.0.0:8788")
-        .expect("service install");
-    let pair = calls.find("phux pair --json").expect("pairing");
-    assert!(
-        version < service && service < pair,
-        "expected version probe, service start, then pairing; calls={calls:?}"
-    );
-    assert!(
-        seen.contains("server running, supervised by its service unit"),
-        "the side effect must be visible as it happens; got: {seen}"
-    );
-}
-
-/// A host with nothing directly dialable uses an `ssh://` entry rather than
-/// registering an endpoint that would fail at dial, and says which routes
-/// it tried. The host ssh connects to is still worth one dial, so it is the
-/// candidate kept.
-#[test]
-#[ignore = "spawns a PTY-backed binary; runs in the e2e lane"]
-fn ssh_rung_uses_ssh_when_no_direct_route_answers() {
-    let home = RemoteHome::new();
-    let ssh = home.install_fake_ssh("");
-
-    let seen = home.run_until(&["--remote", "me@mini"], &ssh, "registered me@mini");
-    let config = home.config();
-    // The user survives into the endpoint: the entry is dialed by re-execing
-    // `ssh -t me@mini`, which needs the destination the operator typed.
-    assert!(
-        config.contains("endpoint = \"ssh://me@mini\""),
-        "no answering listener means an ssh:// entry naming the ssh destination; config={config}"
-    );
-    assert!(
-        config.contains(&format!("direct = \"quic://{OVERLAY}:8788\"")),
-        "the host ssh -G named is kept as the candidate; config={config}"
-    );
-    assert!(
-        seen.contains("no direct route answered")
-            && seen.contains(&format!("tried quic://{OVERLAY}:8788"))
-            && seen.contains("every attach tries the direct route first"),
-        "the ssh route must explain itself; got: {seen}"
-    );
-}
-
-/// A service-manager refusal still gets the host a server — unsupervised,
-/// through `phux server --ensure` — and the operator is told it will not
-/// survive a reboot. Pairing still completes.
-#[test]
-#[ignore = "spawns a PTY-backed binary; runs in the e2e lane"]
-fn service_install_failure_falls_back_to_an_unsupervised_server() {
-    let home = RemoteHome::new();
-    let ssh = home
-        .install_fake_ssh_with_service(OVERLAY, "echo 'service manager unavailable' >&2; exit 97");
-
-    let seen = home.run_until(&["--remote", "me@mini"], &ssh, "registered me@mini");
-    assert!(
-        seen.contains(
-            "server running unsupervised (service install failed: service manager unavailable)"
-        ) && seen.contains("will not come back by itself after a reboot"),
-        "the fallback and its durability limit must be explicit; got: {seen}"
-    );
-    let calls = home.ssh_calls();
-    let ensure = calls
-        .find("phux server --ensure")
-        .expect("an unsupervised start");
-    let pair = calls
-        .find("phux pair --json")
-        .expect("pairing still completes");
-    assert!(
-        ensure < pair,
-        "the server is up before pairing; calls={calls:?}"
     );
 }
 

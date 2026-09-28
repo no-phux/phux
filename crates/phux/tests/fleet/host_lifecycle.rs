@@ -1,6 +1,5 @@
 //! Satellite-registry lifecycle through the visible `phux host` verbs
-//! (ADR-0066). Formerly `satellite_lifecycle.rs`, driving the now-removed
-//! `phux satellite` spellings (phux-dpjf).
+//! (ADR-0066).
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -9,8 +8,7 @@ use tempfile::TempDir;
 
 use crate::common::run_with_xdg;
 
-/// The stderr build banner, now a plain `phux <version>` line, matched in
-/// full so the absence assertions below stay meaningful.
+/// The stderr build banner, which no one-shot verb may print.
 const BANNER_FRAGMENT: &str = concat!("phux ", env!("CARGO_PKG_VERSION"));
 
 #[test]
@@ -180,56 +178,40 @@ fn auth_material_is_stored_by_reference_and_cleared_on_bare_update() {
     );
 }
 
+/// Invalid registry input fails with an empty stdout and a named reason: a
+/// relative token file, a malformed fingerprint, a non-URI endpoint.
 #[test]
-fn relative_token_file_is_rejected() {
+fn invalid_satellite_entries_are_rejected() {
     let tmp = TempDir::new().expect("tempdir");
-
-    let (code, stdout, stderr) = run_with_xdg(
-        &[
-            "host",
-            "add",
-            "--role",
-            "satellite",
-            "lab",
-            "quic://lab.example:8788",
-            "--token-file",
-            "relative/lab.token",
-            "--json",
-        ],
-        tmp.path(),
-    );
-
-    assert_ne!(code, 0, "relative token-file should fail");
-    assert!(stdout.is_empty());
-    assert!(stderr.contains("token-file must be an absolute path"));
-}
-
-#[test]
-fn malformed_cert_fingerprint_is_rejected() {
-    let tmp = TempDir::new().expect("tempdir");
-
-    for bad in ["AB:CD", "not-a-fingerprint", ""] {
-        let (code, stdout, stderr) = run_with_xdg(
-            &[
-                "host",
-                "add",
-                "--role",
-                "satellite",
-                "lab",
-                "quic://lab.example:8788",
-                "--cert-fingerprint",
-                bad,
-                "--json",
-            ],
-            tmp.path(),
-        );
-
-        assert_ne!(code, 0, "fingerprint {bad:?} should fail");
-        assert!(stdout.is_empty());
-        assert!(
-            stderr.contains("cert-fingerprint must be a SHA-256 fingerprint"),
-            "unexpected stderr for {bad:?}: {stderr}"
-        );
+    let add = ["host", "add", "--role", "satellite", "lab"];
+    let quic = "quic://lab.example:8788";
+    let cases: &[(&[&str], &str)] = &[
+        (
+            &[quic, "--token-file", "relative/lab.token"],
+            "token-file must be an absolute path",
+        ),
+        (
+            &[quic, "--cert-fingerprint", "AB:CD"],
+            "cert-fingerprint must be a SHA-256 fingerprint",
+        ),
+        (
+            &[quic, "--cert-fingerprint", "not-a-fingerprint"],
+            "cert-fingerprint must be a SHA-256 fingerprint",
+        ),
+        (
+            &[quic, "--cert-fingerprint", ""],
+            "cert-fingerprint must be a SHA-256 fingerprint",
+        ),
+        (&["lab"], "endpoint must be a URI"),
+    ];
+    for (extra, reason) in cases {
+        let mut args = add.to_vec();
+        args.extend_from_slice(extra);
+        args.push("--json");
+        let (code, stdout, stderr) = run_with_xdg(&args, tmp.path());
+        assert_ne!(code, 0, "{args:?} should fail");
+        assert!(stdout.is_empty(), "{args:?}");
+        assert!(stderr.contains(reason), "{args:?}: {stderr}");
     }
 }
 
@@ -258,9 +240,7 @@ endpoint = "ssh://devbox-b"
 
     assert_ne!(code, 0, "duplicate satellite names should be refused");
     assert!(stdout.is_empty());
-    // Under `--json` the failure is one line of the shared error contract
-    // (phux-i0e8.8.3): code `registry`, with the duplicate named in the
-    // message (JSON-escaped, so the assertion parses rather than greps).
+    // One contract line, code `registry`, naming the duplicate.
     let doc: serde_json::Value =
         serde_json::from_str(stderr.trim()).expect("`--json` failure stderr parses as JSON");
     assert_eq!(doc["error"]["code"], "registry");
@@ -271,34 +251,10 @@ endpoint = "ssh://devbox-b"
         "the message names the duplicate; got {doc}"
     );
 
-    // The same refusal without `--json` keeps the prose spelling scripts
-    // already grep for.
     let (code, stdout, stderr) = run_with_xdg(&["host", "ls", "--role", "satellite"], &xdg);
     assert_ne!(code, 0, "duplicate satellite names should be refused");
     assert!(stdout.is_empty());
     assert!(stderr.contains(r#"duplicate satellite name "devbox""#));
-}
-
-#[test]
-fn invalid_endpoint_fails_without_stdout() {
-    let tmp = TempDir::new().expect("tempdir");
-
-    let (code, stdout, stderr) = run_with_xdg(
-        &[
-            "host",
-            "add",
-            "--role",
-            "satellite",
-            "devbox",
-            "devbox",
-            "--json",
-        ],
-        tmp.path(),
-    );
-
-    assert_ne!(code, 0, "invalid endpoint should fail");
-    assert!(stdout.is_empty());
-    assert!(stderr.contains("endpoint must be a URI"));
 }
 
 #[test]

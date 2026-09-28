@@ -1,18 +1,10 @@
-//! Focus event handling with DEC 1004 gating.
-//!
-//! Per ADR-0008, `FocusEvent` is a direct re-export of libghostty's
-//! `focus::Event`. There is no conversion layer; this module exists to
-//! gate emission on the pane's DEC mode 1004 state and to own a reusable
-//! encode buffer for `Event::encode`.
+//! Focus reports, gated on the pane's DEC 1004 mode. `FocusEvent` is
+//! libghostty's own type (ADR-0008).
 
 use libghostty_vt::{Error, Terminal as GhosttyTerminal, terminal::Mode};
 use phux_protocol::input::focus::FocusEvent;
 
-/// Per-pane focus encoder.
-///
-/// Holds a reusable byte buffer. Focus encoding itself is a stateless
-/// libghostty free function (`Event::encode`); the type exists for API
-/// symmetry with the other per-pane encoders and to own the byte buffer.
+/// Per-pane focus encoder; owns the reusable output buffer.
 #[derive(Debug, Default)]
 pub struct PerTerminalFocusEncoder {
     buf: Vec<u8>,
@@ -27,11 +19,8 @@ impl PerTerminalFocusEncoder {
         }
     }
 
-    /// Encode a focus event into PTY bytes — but only if the pane has DEC
-    /// mode 1004 enabled.
-    ///
-    /// Returns `Ok(None)` if focus reporting is off (the event is silently
-    /// dropped per SPEC §9.3), `Ok(Some(&[u8]))` with the report otherwise.
+    /// Encode a focus event into PTY bytes; `Ok(None)` when DEC 1004 is off
+    /// (dropped per SPEC §9.3).
     pub fn encode(
         &mut self,
         event: FocusEvent,
@@ -72,53 +61,24 @@ impl PerTerminalFocusEncoder {
 mod tests {
     use super::*;
 
-    fn make_terminal() -> GhosttyTerminal<'static, 'static> {
-        {
-            let mut terminal = GhosttyTerminal::new(80, 24).expect("Terminal::new");
-            terminal
-                .set_scrollback_max_lines(Some(1000))
-                .expect("Terminal::new");
-            terminal
-        }
-    }
-
     #[test]
-    fn encode_drops_when_mode_1004_off() {
-        let terminal = make_terminal();
+    fn focus_reports_only_under_mode_1004() {
+        let mut terminal = GhosttyTerminal::new(80, 24).expect("Terminal::new");
         let mut enc = PerTerminalFocusEncoder::new();
-        let out = enc.encode(FocusEvent::Gained, &terminal).expect("encode");
-        assert!(out.is_none(), "expected drop, got {out:?}");
-    }
-
-    #[test]
-    fn encode_emits_csi_i_when_mode_1004_on() {
-        let mut terminal = make_terminal();
-        terminal
-            .set_mode(Mode::FOCUS_EVENT, true)
-            .expect("enable 1004");
-        let mut enc = PerTerminalFocusEncoder::new();
-        let bytes = enc
-            .encode(FocusEvent::Gained, &terminal)
-            .expect("encode")
-            .expect("encoded payload");
-        // CSI I = ESC [ I
-        assert_eq!(
-            bytes, b"\x1b[I",
-            "unexpected focus-gained report: {bytes:?}"
+        assert!(
+            enc.encode(FocusEvent::Gained, &terminal)
+                .expect("encode")
+                .is_none()
         );
-    }
-
-    #[test]
-    fn encode_emits_csi_o_for_lost_when_mode_on() {
-        let mut terminal = make_terminal();
         terminal
             .set_mode(Mode::FOCUS_EVENT, true)
             .expect("enable 1004");
-        let mut enc = PerTerminalFocusEncoder::new();
-        let bytes = enc
-            .encode(FocusEvent::Lost, &terminal)
-            .expect("encode")
-            .expect("encoded payload");
-        assert_eq!(bytes, b"\x1b[O", "unexpected focus-lost report: {bytes:?}");
+        for (event, want) in [
+            (FocusEvent::Gained, b"\x1b[I"),
+            (FocusEvent::Lost, b"\x1b[O"),
+        ] {
+            let bytes = enc.encode(event, &terminal).expect("encode");
+            assert_eq!(bytes, Some(want.as_slice()));
+        }
     }
 }

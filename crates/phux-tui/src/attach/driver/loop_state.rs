@@ -98,20 +98,15 @@ use super::viewport::{
 #[path = "loop_state_tests.rs"]
 mod tests;
 
-/// phux-c2td.3: how long a host-inventory `GET_STATE` may stay unanswered
-/// before the notices held for it surface anyway. The hub bounds each
-/// satellite query by its relay deadline (30 s); the margin covers the
-/// aggregate's own work and the transport.
+/// How long a host-inventory `GET_STATE` may stay unanswered before the
+/// notices held for it surface anyway (hub relay deadline 30 s + margin).
 const HOST_INVENTORY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(35);
 
-/// phux-lxov.1: how long a grey satellite pane waits before the driver asks
-/// the hub which hosts are back. Armed only while a pane is down, and
-/// anchored so a busy output stream cannot postpone the replay forever.
+/// How long a grey satellite pane waits before asking the hub which hosts
+/// are back. Anchored so busy output cannot postpone it.
 const SATELLITE_PROBE_INTERVAL: Duration = Duration::from_secs(5);
 
-/// phux-8n4w: how many 1 s bar ticks to keep reading the background update
-/// check's cache before giving up for this attach. The check usually answers
-/// within a second or two; past this, the next attach picks it up.
+/// Bar ticks (1 s each) to keep polling the background update check's cache.
 const UPDATE_POLL_TICKS: u8 = 8;
 
 /// Rename the matching cached session in place. Identity (`SessionId`) is
@@ -126,14 +121,8 @@ fn apply_graph_rename(
     }
 }
 
-/// phux-c2td.3: of the `SatelliteUnreachable` notices held while a host
-/// inventory was in flight, the ones its reply does not explain.
-///
-/// A notice is explained when the inventory lists its satellite as
-/// unreachable — the row carries that exact diagnostic, or the notice names
-/// the row's host in the hub's `satellite {host} is unreachable: ...` form.
-/// Everything else, such as a link drop for a satellite the inventory still
-/// lists as reachable, is news the user must still see.
+/// The held `SatelliteUnreachable` notices the inventory reply does not
+/// explain (by exact diagnostic or by naming the row's host); those are news.
 fn unexplained_unreachable_notices(
     held: Vec<String>,
     hosts: &[phux_protocol::wire::info::HostInventory],
@@ -154,8 +143,7 @@ fn unreachable_row_explains(row: &phux_protocol::wire::info::HostInventory, noti
     diagnostic == notice || notice.starts_with(&format!("satellite {} is unreachable", row.host))
 }
 
-/// phux-c2td.3: held `SatelliteUnreachable` diagnostics as status notices,
-/// in the wording the frame handler gives a live one.
+/// Held `SatelliteUnreachable` diagnostics as status notices.
 fn federation_notices(messages: Vec<String>) -> Vec<Notice> {
     messages
         .into_iter()
@@ -163,7 +151,7 @@ fn federation_notices(messages: Vec<String>) -> Vec<Notice> {
         .collect()
 }
 
-/// phux-c2td.23: what one host inventory said about each satellite.
+/// What one host inventory said about each satellite.
 #[derive(Debug, Default)]
 struct HostAnswers {
     /// Satellites the inventory reached.
@@ -172,7 +160,6 @@ struct HostAnswers {
     unreachable: Vec<SatelliteHost>,
 }
 
-/// phux-c2td.23: sort an inventory's rows into [`HostAnswers`].
 fn host_answers(rows: &[phux_protocol::wire::info::HostInventory]) -> HostAnswers {
     let (reachable, unreachable): (Vec<_>, Vec<_>) =
         rows.iter().partition(|row| row.is_reachable());
@@ -185,8 +172,8 @@ fn host_answers(rows: &[phux_protocol::wire::info::HostInventory]) -> HostAnswer
     }
 }
 
-/// phux-c2td.23: the satellite panes a frame's parked windows and splits
-/// were just spawned as. Each proves its satellite answered a relayed spawn.
+/// The satellite panes a frame's parked windows and splits were spawned as;
+/// each proves its satellite answered a relayed spawn.
 fn spawned_satellite_panes(parked: &[ParkedAdopt]) -> Vec<ResourceId> {
     parked
         .iter()
@@ -195,8 +182,7 @@ fn spawned_satellite_panes(parked: &[ParkedAdopt]) -> Vec<ResourceId> {
         .collect()
 }
 
-/// phux-c2td.23: the panes this client spawned for windows and splits still
-/// waiting on their attach.
+/// The panes this client spawned for windows/splits still awaiting attach.
 fn parked_spawned_panes(
     windows: &HashMap<u32, PendingWindow>,
     splits: &HashMap<u32, PendingSplit>,
@@ -206,8 +192,7 @@ fn parked_spawned_panes(
     windows.chain(splits).cloned().collect()
 }
 
-/// phux-c2td.23: the request ids of windows and splits whose spawn has not
-/// answered yet.
+/// Request ids of windows and splits whose spawn has not answered yet.
 fn unanswered_spawns(
     windows: &HashMap<u32, PendingWindow>,
     splits: &HashMap<u32, PendingSplit>,
@@ -223,22 +208,15 @@ fn unanswered_spawns(
     windows.chain(splits).collect()
 }
 
-/// phux-c2td.3: whether a host-inventory request sent at `since` has waited
-/// past [`HOST_INVENTORY_DEADLINE`]. `None` (nothing in flight) never is.
+/// Whether a host-inventory request sent at `since` is past the deadline.
 fn host_inventory_overdue(since: Option<std::time::Instant>, now: std::time::Instant) -> bool {
     since.is_some_and(|sent| now.saturating_duration_since(sent) > HOST_INVENTORY_DEADLINE)
 }
 
-/// Window before a parser-pending bare ESC is interpreted as the Escape
-/// key, anchored to when the ESC became pending (see
-/// [`SessionLoop::esc_deadline`]). The client reads stdin from the *outer*
-/// terminal, which writes a key's full `ESC [`/`ESC O` sequence in one burst
-/// — a split only happens at a read-buffer boundary — so a short window
-/// suffices to disambiguate. It must stay short: a modal-editor user pays
-/// this window on EVERY bare Escape, and the inner application (vim's
-/// `ttimeoutlen`, readline's `keyseq-timeout`) then stacks its own on top.
-/// tmux installs ship `escape-time 0..10` for the same reason; 10ms keeps
-/// Escape under the perception floor while still absorbing split sequences.
+/// Window before a parser-pending bare ESC is taken as the Escape key. The
+/// outer terminal writes a key's full sequence in one burst, so a short window
+/// suffices; it must stay short because modal-editor users pay it on every
+/// Escape (tmux ships `escape-time 0..10` for the same reason).
 const ESC_FLUSH_IDLE: Duration = Duration::from_millis(10);
 
 /// Safety valve for an application that enters DEC synchronized output and
@@ -273,11 +251,8 @@ enum FrameStep {
 }
 
 /// The peer-session caches the roster, the window picker, and the
-/// agent-fleet dashboard project from.
-///
-/// One struct rather than ten parallel locals: every field here is written
-/// by the same peer sweep and read by the same sidebar projection, so they
-/// are refreshed, pruned, and reset together.
+/// The peer-session caches the roster, window picker, and fleet dashboard
+/// project from. Written by the same peer sweep, reset together.
 #[derive(Default)]
 struct PeerCaches {
     /// Identity of the serving machine, read once through the whoami key.
@@ -297,88 +272,57 @@ struct PeerCaches {
     /// this to list peer sessions; `focused_session` marks the row the
     /// client is currently attached to (excluded from the picker).
     sessions: Vec<phux_protocol::wire::info::SessionInfo>,
-    /// Windows from the same ATTACHED/`GET_STATE` graph, joined via
-    /// `WindowInfo::session_id`. The sidebar falls back to these when a
-    /// peer has no persisted TUI layout (phux-ah84).
+    /// Windows from the same graph; the sidebar falls back to these when a
+    /// peer has no persisted TUI layout.
     windows: Vec<phux_protocol::wire::info::WindowInfo>,
     /// Resources from the same graph, joined via `ResourceInfo::window_id`.
     resources: Vec<phux_protocol::wire::info::ResourceInfo>,
     /// The session this client is attached to, once ATTACHED has named it.
     focused_session: Option<SessionId>,
-    /// phux-foz.8: peer sessions' persisted layouts, fetched right after the
-    /// session graph lands (one `GET_METADATA` per peer, correlated through
-    /// `foreign_layout_pending`). The window picker reads the cache to render
-    /// one-step cross-session window rows; sessions with no entry fall back
-    /// to the plain "switch to this session" row. Attach-time snapshot only —
-    /// we do not subscribe to peers' layout keys.
+    /// Peer sessions' persisted layouts (one `GET_METADATA` per peer), for
+    /// one-step cross-session window rows in the picker.
     foreign_layouts: HashMap<SessionId, Workspace>,
     /// In-flight peer-layout GETs, by request id.
     foreign_layout_pending: HashMap<u32, SessionId>,
-    /// phux-jpqd / phux-ah84: the `phux.agent/v1` records of FOREIGN panes,
-    /// so the agent-fleet dashboard and Agents list show a peer session's
-    /// agent glyph/state without attaching there. Populated from persisted
-    /// TUI layouts when they exist, otherwise from the ATTACHED/`GET_STATE`
-    /// window/resource graph. Keyed by foreign terminal id; pruned to the
-    /// live foreign terminal set on each fold so it stays bounded.
+    /// `phux.agent/v1` records of foreign panes, so the fleet dashboard and
+    /// Agents list show peer agents without attaching. Pruned to the live
+    /// foreign terminal set on each fold.
     foreign_agents: HashMap<ResourceId, AgentRecord>,
     /// In-flight foreign agent-record GETs, by request id.
     foreign_agent_pending: HashMap<u32, ResourceId>,
-    /// In-flight `phux.agent.asked/v1` GETs for satellite terminals (ADR-0136).
-    /// Kept off [`Self::foreign_agent_pending`] so the byte `1` is not parsed
-    /// as an agent record.
+    /// In-flight `phux.agent.asked/v1` GETs for satellite terminals, kept
+    /// apart so the byte `1` is not parsed as an agent record.
     foreign_asked_pending: HashMap<u32, ResourceId>,
-    /// phux-k0cw: which peer keys this connection has already subscribed to.
-    /// Send-once bookkeeping, not teardown: L3 has no `UNSUBSCRIBE_METADATA`
-    /// verb, so a subscription lives as long as the connection and re-sending
-    /// one would just be noise on the wire.
+    /// Peer layout keys already subscribed. L3 has no unsubscribe, so a
+    /// subscription lives as long as the connection.
     foreign_layout_subscribed: HashSet<SessionId>,
     /// The per-pane half of the same send-once bookkeeping.
     foreign_agent_subscribed: HashSet<ResourceId>,
-    /// phux-c2td.3: the federation host inventory from the latest
-    /// `GET_STATE` — one row per satellite this server dials, with that
-    /// host's sessions or the reason it could not be listed. The session
-    /// picker groups its rows from this and `switch-session { name, host }`
-    /// resolves through it. Empty against a non-hub server, a hub with no
-    /// satellites, or a server without `ServerFeature::HostSessions`.
+    /// The federation host inventory from the latest `GET_STATE`: one row per
+    /// satellite, with its sessions or why it could not be listed. Empty
+    /// without `ServerFeature::HostSessions`.
     hosts: Vec<phux_protocol::wire::info::HostInventory>,
     /// The request id of the in-flight host-inventory `GET_STATE`, if any.
     hosts_pending: Option<u32>,
-    /// When that request was sent, so a reply that never comes cannot hold
-    /// notices past [`HOST_INVENTORY_DEADLINE`].
+    /// When that request was sent, bounding how long notices are held.
     hosts_pending_since: Option<std::time::Instant>,
-    /// Un-correlated `SatelliteUnreachable` notices that arrived while the
-    /// inventory request was in flight. The aggregate pushes one per
-    /// satellite it could not list, and the reply reports the same fact as
-    /// a degraded row — but a genuine link drop for *another* satellite can
-    /// land in the same window. So they are held, not dropped: the reply
-    /// discards only the ones its unreachable rows explain
-    /// ([`unexplained_unreachable_notices`]) and surfaces the rest; a
-    /// refusal or a missed deadline surfaces all of them.
+    /// `SatelliteUnreachable` notices that arrived while the inventory was in
+    /// flight. The reply drops only the ones it explains
+    /// ([`unexplained_unreachable_notices`]); a refusal or missed deadline
+    /// surfaces all of them.
     held_unreachable: Vec<String>,
-    /// phux-k0cw: peer panes whose agent has asked for a human (an ADR-0035
-    /// `Asked` for a Terminal outside this client's pane set). The local
-    /// equivalent is `PaneSlot::attention`, which a foreign pane has no slot
-    /// to carry, so the flag lives here and is pruned with the peer records.
+    /// Peer panes whose agent asked for a human; a foreign pane has no
+    /// `PaneSlot::attention` to carry the flag.
     foreign_attention: HashSet<ResourceId>,
-    /// phux-k0cw.10: the peer sweep owes the first paint its silence. Set at
-    /// construction and consumed at the ONE drain in the frame burst, so
-    /// bootstrap sends no peer traffic until this session has actually
-    /// painted.
-    ///
-    /// Why a flag rather than a call at bootstrap: a session switch re-enters
-    /// `main_loop` through the same bootstrap, and the server drops every
-    /// subscription with the old attach, so a switch rebuilds all of this from
-    /// empty. Sweeping before the loop therefore puts N peer GET/SUBSCRIBE
-    /// pairs — plus M per-pane pairs once the layouts land — ahead of the
-    /// `TERMINAL_SNAPSHOT` burst that produces the first paint, and the switch
-    /// pays for the roster's freshness in exactly the moment the roster exists
-    /// to make fast. One flag covers both entries because both run this code.
+    /// The peer sweep waits for the first paint: set at construction and
+    /// consumed at the first frame-burst drain, so a bootstrap (including a
+    /// session switch, which drops all subscriptions) does not queue peer
+    /// GET/SUBSCRIBE traffic ahead of the snapshot burst that paints.
     sweep_pending: bool,
 }
 
 impl PeerCaches {
-    /// The peer-wide projection zones 1 and 3 of the sidebar strip render
-    /// from.
+    /// The peer-wide projection the sidebar strip renders from.
     fn inputs<'a>(
         &'a self,
         review: &'a crate::attach::review::ReviewIndex,
@@ -400,10 +344,7 @@ impl PeerCaches {
     }
 }
 
-/// A `sleep_until` future for an armed deadline, or a never-resolving future
-/// when nothing is armed — this keeps the steady-state cost at one
-/// always-`Pending` future and avoids unused-`Option` branches inside
-/// `select!`.
+/// A `sleep_until` future for an armed deadline, or a never-resolving one.
 fn sleep_until_or_pending(
     deadline: Option<tokio::time::Instant>,
 ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
@@ -413,8 +354,7 @@ fn sleep_until_or_pending(
     }
 }
 
-/// The relative-delay twin of [`sleep_until_or_pending`], for a cadence
-/// rather than an anchored deadline.
+/// The relative-delay twin of [`sleep_until_or_pending`].
 fn sleep_for_or_pending(interval: Option<Duration>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
     match interval {
         Some(interval) => Box::pin(tokio::time::sleep(interval)),
@@ -430,11 +370,8 @@ fn exit_on_signal(code: i32) -> ! {
     std::process::exit(code);
 }
 
-/// phux-jhv8: drain every frame already queued so a back-to-back output burst
-/// (nvim startup, a full-screen redraw) applies all its `vt_write`s and paints
-/// ONCE — on the final frame — instead of a render + blocking flush per frame.
-/// The non-blocking `try_recv` stops the moment the socket would block, so a
-/// lone frame keeps the old one-frame-one-paint path.
+/// Drain every frame already queued so an output burst applies all its writes
+/// and paints once, on the final frame. Stops the moment the socket would block.
 fn drain_frame_batch(
     conn: &mut Connection,
     first: FrameKind,
@@ -452,54 +389,29 @@ fn drain_frame_batch(
     Ok(batch)
 }
 
-/// Whether an input event is the kind that expects output back, and so should
-/// arm the pacer's reply grace.
-///
-/// Pointer MOTION does not. The mouse is reported to the server under
-/// `?1002h` from attach (`driver::terminal`), so a divider drag, a selection
-/// sweep, or just crossing the window emits a continuous stream of ordinary
-/// `InputEvent`s — at well over 50 a second, each one refreshing a 20ms
-/// grace. That kept the grace permanently alive and pacing permanently off
-/// for the whole client. A drag's own feedback (the divider, the selection
-/// highlight) is chrome painted locally and never went through the pacer
-/// anyway; what motion does NOT do is make a pane echo something back.
-///
-/// Press and release do expect a reply — a click into a pane running a mouse
-/// aware program gets one — so only motion is excluded.
+/// Whether an input event expects output back, and so should arm the pacer's
+/// reply grace. Pointer motion does not: under `?1002h` a drag streams motion
+/// events fast enough to keep the grace alive and pacing off forever.
 pub(super) const fn input_expects_a_reply(event: &phux_protocol::input::InputEvent) -> bool {
     match event {
         phux_protocol::input::InputEvent::Mouse(mouse) => !matches!(
             mouse.action,
             phux_protocol::input::mouse::MouseAction::Motion
         ),
-        // Keys, focus changes and pastes all expect output back. So does any
-        // future atom: `InputEvent` is `non_exhaustive`, and a new one is far
-        // likelier to be something the user did that expects a reply than
-        // another continuous pointer stream — so the default favours latency,
-        // and an atom that behaves like motion should be named above.
+        // Keys, focus, pastes, and any future atom expect a reply.
         _ => true,
     }
 }
 
-/// Whether an inbound burst must discharge the pacer's withheld debt before
-/// it parks, rather than leaving it to the `paint_deadline` select arm.
-///
-/// Both inputs are cases the timer cannot be relied on for, and the FIRST is
-/// the one that was missing (phux-l96p.3 review): an admitted burst has just
-/// pushed `next_allowed` out to `now + interval`, so `deadline_passed` is
-/// false by construction on that pass — and the `paint_deadline` arm sits
-/// third in a `biased` select behind `conn.recv()`, which a saturating
-/// producer keeps permanently ready. Without the `paint_now` term a pane that
-/// emitted once during a refused window and then went quiet stayed unpainted
-/// for as long as any other pane kept talking.
+/// Whether an inbound burst must discharge the pacer's withheld debt before it
+/// parks. `paint_now` covers the case the timer cannot: an admitted burst just
+/// pushed the deadline out, and a saturating `conn.recv()` would starve the
+/// `paint_deadline` arm.
 pub(super) const fn burst_settles_debt(paint_now: bool, deadline_passed: bool) -> bool {
     paint_now || deadline_passed
 }
 
-/// phux-foz.7: did this frame change anything the agent-fleet dashboard
-/// projects (agent records, asked/lease state, layout/pane set, session
-/// graph)? Read before the move-y outcome fields are consumed, acted on after
-/// the per-frame handling.
+/// Did this frame change anything the fleet dashboard projects?
 const fn fleet_projection_dirty(outcome: &FrameOutcome) -> bool {
     outcome.chrome_dirty
         || outcome.agent_meta_changed
@@ -508,28 +420,22 @@ const fn fleet_projection_dirty(outcome: &FrameOutcome) -> bool {
         || outcome.sessions.is_some()
 }
 
-/// Send a replay batch in request order. The frame whose write fails remains
-/// uncertain; frames not yet handed to the transport return to their previous
-/// definite state.
-async fn send_replay_batch(
-    conn: &mut Connection,
-    journal: &std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>,
-    frames: &[FrameKind],
-) -> Result<(), AttachError> {
-    for (index, frame) in frames.iter().enumerate() {
-        if let Err(error) = conn.send(frame).await {
-            journal.borrow_mut().rollback_unsent(&frames[index + 1..]);
-            return Err(error);
-        }
-    }
-    Ok(())
+/// Warn notices for every replay report that did not end in delivery.
+fn undelivered_notices(
+    reports: impl IntoIterator<Item = crate::attach::input_replay::ReplayReport>,
+) -> impl Iterator<Item = Notice> {
+    reports
+        .into_iter()
+        .filter(|report| {
+            !matches!(
+                report.disposition,
+                crate::attach::input_replay::ReplayDisposition::Delivered
+            )
+        })
+        .map(|report| Notice::warn(report.notice_line()))
 }
 
 /// Every local the attach loop carries across `select!` iterations.
-///
-/// phux-4li.4: `panes` holds N client-side Terminals keyed by `ResourceId`,
-/// not the single Terminal of the wave-A driver. Each pane's metadata slot is
-/// allocated lazily from authoritative bootstrap geometry.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "parallel driver-local view/lifecycle flags; a bitset would obscure every read site"
@@ -539,28 +445,21 @@ pub(super) struct SessionLoop {
     control_dial: Option<Box<crate::attach::Dial>>,
     /// Does this server answer `TERMINAL_REPLY`? Fixed for the connection.
     terminal_reply_supported: bool,
-    /// phux-a5xj: does this server build a spawned pane at the geometry we
-    /// name, rather than at its own default? Fixed for the life of the
-    /// connection, like the reply bit above.
+    /// Whether the server builds a spawned pane at the geometry we name.
     spawn_initial_size_supported: bool,
-    /// What the `go-to-directory` picker can list on this server: nothing,
-    /// its own host, or a satellite through it too. Fixed for the connection.
+    /// What the `go-to-directory` picker can list on this server.
     directory_support: crate::attach::directory_picker::DirectorySupport,
-    /// Whether the server advertised `ACKNOWLEDGED_INPUT`, the bit the
-    /// ADR-0053 paste journal needs before it may route a batch.
+    /// Whether the server advertised `ACKNOWLEDGED_INPUT` (ADR-0053 journal).
     acknowledged_input_supported: bool,
-    /// ADR-0053: the acknowledged-input replay journal, shared with the CLI's
-    /// reconnect loop so an operation unresolved when a socket died is
-    /// replayed by the next attach under its original operation id. `None`
-    /// on UDS dials.
+    /// ADR-0053 replay journal, shared with the CLI reconnect loop so an
+    /// unresolved operation is replayed under its original id. `None` on UDS.
     input_replay:
         Option<std::rc::Rc<std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>>>,
     /// Authoritative output accepted while its pane was not actually painted.
     /// A fence clears only when the focused pane becomes visible or retires.
     delivery_fence_paint_pending: HashSet<ResourceId>,
-    /// Whether this connection negotiated `OutputMode::StateSync`. Gates the
-    /// per-frame `FRAME_ACK`: only a state-sync consumer's acks are tracked
-    /// server-side, so a raw consumer skips them (see `should_emit_frame_ack`).
+    /// Whether this connection negotiated `OutputMode::StateSync`, which
+    /// gates per-frame `FRAME_ACK`.
     wants_state_sync: bool,
     /// Control-stream `ATTACH_READY` held until all per-Terminal streams have
     /// delivered READY or CLOSED. QUIC has no cross-stream ordering.
@@ -575,99 +474,60 @@ pub(super) struct SessionLoop {
     kernel_effects: KernelEffectBuffer,
     /// The per-pane mirrors, keyed by `ResourceId`.
     panes: HashMap<ResourceId, PaneSlot>,
-    /// `Workspace` mirror (initialized as a single window holding one
-    /// pane when `ATTACHED` lands; see `handle_server_frame`) is the
-    /// source of truth for which leaves are live and where they sit in
-    /// the outer viewport. The renderer and layout helpers operate on the
-    /// active window (`workspace.active_window()`); the workspace
-    /// dimension is what gets persisted to L3.
+    /// Source of truth for which leaves are live and where they sit.
     workspace: Workspace,
     /// The pane keystrokes route to.
     focused_resource: Option<ResourceId>,
-    /// phux-oih5.4: one-entry focus MRU, local to this attached client. It is
-    /// deliberately outside Workspace so layout metadata never persists or
-    /// shares focus history (ADR-0019 decision 6).
+    /// One-entry focus MRU, deliberately outside Workspace so focus history
+    /// never persists (ADR-0019).
     focus_history: crate::attach::focus::FocusHistory,
-    /// ADR-0033: this client's own server-assigned `ClientId`, captured from
-    /// ATTACHED. Used to render "you hold the wheel" vs another client in the
-    /// supervisory badge. `None` until ATTACHED lands.
+    /// This client's `ClientId` from ATTACHED, for the supervisory badge.
     own_client_id: Option<ClientId>,
-    /// phux-x2hm: pane-zoom view state (driver-local, like focus). `Some(id)`
-    /// ⇒ pane `id` is zoomed to fill the window; render/reflow then run against
-    /// `workspace.render_window(zoomed)` (a synthetic single-leaf layout)
-    /// instead of the real tiled tree, which is left untouched for mutation.
+    /// Zoomed pane: render/reflow use `workspace.render_window(zoomed)`
+    /// while the real tree stays untouched.
     zoomed: Option<ResourceId>,
-    /// phux-4li.5: the in-flight layout GET's request id, for L3 correlation.
+    /// The in-flight layout GET's request id.
     layout_get_request_id: Option<u32>,
     /// Shared writes remain fenced until the initial correlated GET succeeds.
     layout_read_complete: bool,
     /// `Some(subscribe_layout)` until the first recv-arm drain. Bootstrap
-    /// `Subscribe*` / `GetMetadata` / `RESIZE_TERMINAL` wait so a last-pane
-    /// `RESOURCE_CLOSED` already in the decode buffer is applied first
-    /// (phux-501l). Writing them from `bootstrap` raced that close into
-    /// `Io(BrokenPipe)`.
+    /// outbound traffic waits so a last-pane `RESOURCE_CLOSED` already
+    /// buffered is applied first (writing earlier raced it into `BrokenPipe`).
     bootstrap_outbound: Option<bool>,
-    /// phux-4li.5: request-id allocator for L3 GET correlation.
+    /// Request-id allocator for L3 GET correlation.
     next_request_id: u32,
-    /// phux-4li.12: in-flight `split-pane` actions parked by request id.
-    /// Populated by `run_action` when it dispatches `SPAWN_RESOURCE`;
-    /// drained by `handle_server_frame`'s `ResourceSpawned` arm when the
-    /// reply arrives. The map is small (one entry per outstanding
-    /// user-triggered split) so a `HashMap` is overkill for cap but
-    /// matches the layout-key request-id pattern.
+    /// In-flight `split-pane` spawns parked by request id until
+    /// `ResourceSpawned` arrives.
     pending_splits: HashMap<u32, PendingSplit>,
-    /// phux-4li.15: in-flight `new-window` actions parked by request id,
-    /// same lifecycle as `pending_splits`. The `ResourceSpawned` arm checks
-    /// this map first; a hit opens a new window on the spawned pane.
+    /// In-flight `new-window` spawns, same lifecycle as `pending_splits`.
     pending_windows: HashMap<u32, PendingWindow>,
-    /// phux-c2td.20: kills in flight for satellite panes this client spawned
-    /// whose attach was refused; their replies are consumed and logged.
+    /// Kills in flight for spawned satellite panes whose attach was refused.
     orphan_kills: super::orphans::OrphanKills,
-    /// phux-deya: per-identity review status. Connection-lifetime; a
-    /// session switch rebuilds pane slots but not this index.
+    /// Per-identity review status; survives session switches.
     review: crate::attach::review::ReviewIndex,
-    /// phux-c2td.25: did the server advertise
-    /// [`ServerFeature::ConditionalKill`](phux_protocol::caps::ServerFeature::ConditionalKill)?
-    /// Set, a bound stray satellite pane is retried through
-    /// `KILL_RESOURCE_IF`, including one an unreachable satellite stranded.
-    /// Stamped onto every orphan record this entry holds.
+    /// Whether the server supports `KILL_RESOURCE_IF`, used to retry stray
+    /// satellite panes.
     conditional_kill_supported: bool,
     /// The `LIST_DIRECTORY` the directory picker is waiting on, with the host
     /// it reads; a reply with any other id is stale and dropped.
     pending_directory: Option<crate::attach::directory_picker::PendingDirectory>,
-    /// phux-i0e8.2.2: Terminals whose close THIS client requested
-    /// (kill-pane / kill-window). The action dispatcher parks ids here at
-    /// the kill seam; the `ResourceClosed` arm drains them to suppress the
-    /// pane-exit notice for a death the user themselves ordered.
+    /// Terminals whose close this client requested; their `ResourceClosed`
+    /// raises no pane-exit notice.
     expected_closes: HashSet<ResourceId>,
-    /// `request_id` -> the Terminal a command this client sent named, for the
-    /// commands whose refusal is authoritative about that Terminal's
-    /// existence (`KILL_RESOURCE` from kill-pane / kill-window,
-    /// `ATTACH_RESOURCE` for a layout leaf discovered at attach). A
-    /// `TERMINAL_NOT_FOUND` reply folds the leaf out: no `RESOURCE_CLOSED` is
-    /// ever broadcast for a resource the server does not have, so the refusal
-    /// is the only evidence a stale leaf is stale.
+    /// `request_id` -> Terminal for commands whose `TERMINAL_NOT_FOUND`
+    /// refusal is the only evidence a stale leaf should leave the layout.
     pending_resource_ops: HashMap<u32, ResourceId>,
-    /// ADR-0040 (phux-3ert): the structured agent-identity index. Each pane
-    /// gets a one-shot `GET_METADATA` + a live `SUBSCRIBE_METADATA` on
-    /// `phux.agent/v1` (see `sync_agent_meta_subscriptions`); decoded records
-    /// feed the window labels so the sidebar/tab strip renders agent
-    /// name/state from structured data, with the OSC title as the fallback.
+    /// ADR-0040 agent-identity index (`phux.agent/v1` per pane), feeding the
+    /// window labels; the OSC title is the fallback.
     agent_meta: AgentMetaIndex,
-    /// phux-p4vp: pane cwd + branch memo behind the sidebar's branch line.
-    /// Seeded from every ATTACHED snapshot; read at chrome-refresh time.
+    /// Pane cwd + branch memo behind the sidebar's branch line.
     vcs: VcsIndex,
-    /// phux-u1tq.2: everything derived from the on-disk config -- the
-    /// keybindings snapshot and resolver, theme, chrome breakpoints, status
-    /// bar, plugin rows, which-key knobs, sidebar geometry, mouse gate.
-    /// Built once by `TuiSettings::load_tolerant` before any input can reach
-    /// the loop; the reloadable subset is swapped whole by `reload_config`.
+    /// Everything derived from the config file; the reloadable subset is
+    /// swapped whole by `reload_config`.
     settings: TuiSettings,
-    /// The plugin-events channel's sender: spawned plugin-action tasks report
-    /// completion here. Lent to `DispatchCtx` each batch.
+    /// Plugin-action tasks report completion here.
     plugin_tx: tokio::sync::mpsc::UnboundedSender<PluginRunResult>,
-    /// The receiving half of the same channel; the `plugin_rx` select arm
-    /// toasts failures.
+    /// Receiving half; the `plugin_rx` arm toasts failures.
     plugin_rx: tokio::sync::mpsc::UnboundedReceiver<PluginRunResult>,
     /// A pane's QUIC stream bound after the bootstrap reflow skipped it
     /// (it had none yet); the next outcome drain sizes every restored leaf.
@@ -683,50 +543,27 @@ pub(super) struct SessionLoop {
     /// check that lands mid-session still reaches the user, without a second
     /// channel or a network call on the input loop.
     update_poll_ticks: u8,
-    /// The window-strip painter, themed like the status bar. Fed
-    /// `window_infos` from the same snapshot that drives the tab strip;
-    /// caches so an unchanged repaint emits nothing.
+    /// The window-strip painter; caches so an unchanged repaint emits nothing.
     sidebar_painter: SidebarPainter,
-    /// phux-5ke.4: overlay state — initially empty. Pushed onto by the
-    /// `show-help` action; drained by `OverlayState::handle_key` when
-    /// the active overlay returns `Dismiss`. While active, key events
-    /// route to the overlay (no pane forwarding) and pane stdout flushes
-    /// are suppressed (ADR-0020 §Decision invariant 5).
+    /// Overlay stack. While active, keys route to the overlay and pane
+    /// flushes are suppressed (ADR-0020).
     overlays: OverlayState,
-    /// phux-oih5.16: one client-local return point for attention navigation.
-    /// Cycling never overwrites it; return consumes it. It is deliberately
-    /// absent from Workspace/L3 metadata and resets on re-attach.
+    /// Client-local return point for attention navigation; resets on re-attach.
     attention_navigation: AttentionNavigation,
-    /// ADR-0048: the in-flight divider drag. `None` between drags; a press
-    /// on a divider records the grabbed split, motion re-tunes it, release
-    /// clears it. Lives across dispatch batches (press and release land in
-    /// different `select!` wakeups).
+    /// ADR-0048 in-flight divider drag (spans dispatch batches).
     drag: Option<DragGrab>,
-    /// phux-npb3 (ADR-0048 decision 3 follow-up): per-pane mouse opt-out.
-    /// `set-pane mouse off` puts the focused pane in this set; the dispatcher
-    /// then never synthesizes `INPUT_MOUSE` for it, and the sync at the top of
-    /// each loop iteration drops the outer-terminal mouse-tracking DECSET
-    /// whenever the focused pane is opted out — so the host's raw mouse
-    /// handling (native selection etc.) returns for that pane alone while
-    /// sibling panes keep drag-to-resize. Client-local; nothing on the wire.
+    /// Panes opted out of mouse (`set-pane mouse off`): no `INPUT_MOUSE`, and
+    /// outer mouse tracking drops while one is focused. Client-local.
     mouse_optout: HashSet<ResourceId>,
-    /// phux-4h5a: the window sidebar's runtime on/off state, flipped by
-    /// `toggle-sidebar`. Only the toggle is carried across a session switch:
-    /// the strip's width and edge stay pure config, re-derived per entry.
+    /// Runtime sidebar on/off (`toggle-sidebar`), carried across switches.
     sidebar_enabled: bool,
-    /// `[sidebar] width` as this entry's config load read it, before any
-    /// carried or dragged width. A switch carries the live width only when
-    /// it differs, so an untouched strip keeps following the config.
+    /// `[sidebar] width` as configured; a switch carries the live width only
+    /// when it differs.
     configured_sidebar_width: u16,
-    /// Track the current outer-terminal viewport so the painter knows
-    /// which row is "bottom". Initialized to a sensible default and
-    /// updated by SIGWINCH; the server doesn't drive client-side
-    /// viewport (clients own their chrome per DESIGN §8.5).
+    /// The outer-terminal viewport, updated on SIGWINCH.
     viewport_dims: (u16, u16),
-    /// Host per-cell pixel size for the `INPUT_MOUSE` cells→pixels scaling
-    /// (SPEC input.md §3.1). Tracked next to `viewport_dims` and refreshed
-    /// on the same SIGWINCH edge — a monitor change can move the window to
-    /// a display with a different cell size (phux-yyex).
+    /// Host per-cell pixel size for `INPUT_MOUSE` pixel scaling, refreshed
+    /// with `viewport_dims`.
     cell_px_dims: (u16, u16),
     /// The attached session's name, from ATTACHED and confirmed rename broadcasts.
     session_name: String,
@@ -740,43 +577,28 @@ pub(super) struct SessionLoop {
     keep_empty_session: bool,
     /// The peer-session caches the roster and window picker read.
     peers: PeerCaches,
-    /// phux-foz.8: the deferred window select of a one-step cross-session
-    /// pick, consumed on the first layout reconcile.
+    /// Deferred window select of a one-step cross-session pick.
     pending_window: Option<usize>,
-    /// phux-jpqd: the DFS leaf ordinal focused after the window select
-    /// resolves — the pane half of a one-step cross-session pick.
+    /// Leaf ordinal focused after that window select resolves.
     pending_pane: Option<usize>,
-    /// phux-ah84: authoritative pane identity focused after re-attach,
-    /// even when the destination has no persisted TUI layout yet.
+    /// Pane focused after re-attach, even without a persisted layout.
     pending_resource: Option<ResourceId>,
     /// The outer terminal's key/mouse decoder.
     parser: StdinParser,
-    /// Predictive local echo (phux-9gw.1). State is updated alongside
-    /// every keystroke and drained on every `RESOURCE_OUTPUT`; when
-    /// `predict_cfg.enabled == false` every `predict_key` returns
-    /// `Disabled` so the overlay never paints.
+    /// Predictive local echo; inert when disabled.
     predict: PredictionState,
     /// The predictive-echo overlay renderer.
     overlay: Overlay,
-    /// The outer terminal's stdin, read on reactor readiness when the
-    /// controlling tty can be opened privately (phux-l96p.4). See
-    /// [`crate::attach::tty_input`] for the fallback ladder.
+    /// The outer terminal's stdin (see [`crate::attach::tty_input`]).
     stdin: TtyInput,
     /// One read's worth of stdin bytes.
     stdin_buf: [u8; 4096],
-    /// One batch's worth of decoded input events (phux-l96p.4).
-    ///
-    /// Retained across reads so the keystroke path reuses one allocation
-    /// instead of building a fresh `Vec` per read. Always drained by
-    /// [`Self::dispatch_batch`]; a non-empty buffer between iterations would
-    /// be a bug, not held state.
+    /// Decoded input events, reused across reads; always drained by
+    /// [`Self::dispatch_batch`].
     input_events: Vec<phux_protocol::input::InputEvent>,
     /// Terminal resize notifications.
     sigwinch: Signal,
-    /// `phux-roz`: SIGINT/SIGTERM/SIGHUP handlers run terminal cleanup
-    /// before exiting non-zero. SIGKILL is uncatchable; deferring
-    /// alt-screen entry until after handshake covers most real failure
-    /// modes for that case.
+    /// SIGINT/SIGTERM/SIGHUP run terminal cleanup before exiting non-zero.
     sigint: Signal,
     /// `kill <pid>` from a sibling tool, supervisor, or wrapper.
     sigterm: Signal,
@@ -784,43 +606,18 @@ pub(super) struct SessionLoop {
     sighup: Signal,
     /// `true` once this client has asked the server to detach.
     detach_pending: bool,
-    /// Bare-ESC disambiguation deadline, anchored to the iteration where the
-    /// parser first went pending. Re-creating the sleep each loop pass (the
-    /// pre-anchor behavior) restarted the full window whenever ANY other arm
-    /// fired first — under a steady output stream (status-line clock, shell
-    /// highlight repaints) a lone Escape could be deferred far past the
-    /// intended window. `None` ⇔ nothing pending.
+    /// Bare-ESC deadline, anchored when the parser first went pending so
+    /// other arms firing cannot keep restarting it.
     esc_deadline: Option<tokio::time::Instant>,
-    /// phux-l96p.3: the frame-rate governor for pane output.
-    ///
-    /// A burst that lands inside the previous frame's window applies its bytes
-    /// to the mirrors but withholds the paint, recording the panes it touched;
-    /// the `paint_deadline` arm below settles all of them in one composited
-    /// frame when the window expires. See [`PaintPacer`] for why the coalescing
-    /// drain alone was not enough.
+    /// Frame-rate governor: bursts inside the previous frame's window apply
+    /// but withhold the paint until `paint_deadline` (see [`PaintPacer`]).
     pacer: PaintPacer,
-    /// phux-foz.2: which-key popup arming. When the resolver sits at the
-    /// pending-prefix state (`<prefix>` pressed, continuation awaited) for
-    /// `which_key_delay` without a follow-up chord, the loop pushes a
-    /// which-key overlay listing the prefix-table continuations. Config
-    /// comes from the same `[keybindings]` snapshot the action finder uses;
-    /// with no loaded config there is no resolver (and so no prefix to
-    /// hesitate on), so the popup is naturally inert. `None` ⇔ not armed.
-    /// Same anchored-deadline pattern as `esc_deadline`: the deadline is
-    /// set once when the pending state is first observed and survives
-    /// unrelated arms firing, so a busy output stream cannot starve it.
+    /// Which-key popup deadline, armed when the resolver sits in the
+    /// pending-prefix state; anchored like `esc_deadline`.
     which_key_deadline: Option<tokio::time::Instant>,
-    /// phux-eb0: set by `apply_action_effects` when the user commits a
-    /// `switch-session`. Checked after each input-dispatch batch; a value
-    /// here makes the loop return `LoopExit::SwitchTo` so the outer
-    /// loop re-attaches to the named session on the same connection.
+    /// A committed `switch-session`; the loop exits with `LoopExit::SwitchTo`.
     switch_request: Option<ReattachTarget>,
-    /// phux-foz.5: set by `apply_action_effects` when the user commits a
-    /// `reload-config` (palette or bound chord). Checked after each
-    /// input-dispatch batch; the driver then re-runs the layered config
-    /// loader and swaps its config-derived state in place — or keeps the
-    /// old state and toasts the error. The `phux config reload` CLI
-    /// doorbell reaches the same handler via `FrameOutcome::config_reload`.
+    /// A committed `reload-config` (also reached via the CLI doorbell).
     reload_request: bool,
     /// ADR-0140: a `switch-host` committed in the last batch, as
     /// `(host, session)`.
@@ -833,20 +630,13 @@ pub(super) struct SessionLoop {
     /// what else is out there".
     host_sessions_supported: bool,
     whoami_supported: bool,
-    /// phux-c2td.3: set by `apply_action_effects` when an action wants a
-    /// fresher host inventory (opening the session picker). Drained after
-    /// the dispatch batch into one `GET_STATE`.
+    /// An action wants a fresher host inventory; drained into one `GET_STATE`.
     host_refresh_request: bool,
-    /// phux-lxov.1: when to next ask which down satellites are back. `None`
-    /// while every satellite pane is up, or while a host inventory is
-    /// already in flight. Anchored like [`Self::esc_deadline`].
+    /// When to next ask which down satellites are back; anchored.
     satellite_probe_at: Option<tokio::time::Instant>,
-    /// phux-c2td.3: a fresh host inventory landed, so a session picker that
-    /// is open needs its rows rebuilt. Drained with the repaint, the same
-    /// shape as the fleet dashboard's live refresh.
+    /// A fresh host inventory landed; an open session picker needs rebuilding.
     session_picker_dirty: bool,
-    /// First-use moment consumed by this loop entry. Session switches receive
-    /// `None`, so they never repeat attach guidance.
+    /// First-use moment for this entry; `None` on session switches.
     onboarding_claim: Option<AttachClaim>,
 }
 
@@ -855,12 +645,34 @@ impl SessionLoop {
         self.control_dial = Some(Box::new(dial));
     }
 
+    /// Allocate the next L3/command correlation id.
+    const fn take_request_id(&mut self) -> u32 {
+        let id = self.next_request_id;
+        self.next_request_id = id.wrapping_add(1);
+        id
+    }
+
+    /// Put `notices` on the status bar, or trace them when there is no bar.
+    /// True when any was shown.
+    fn show_notices(&mut self, notices: impl IntoIterator<Item = Notice>) -> bool {
+        let now = std::time::Instant::now();
+        let mut shown = false;
+        for notice in notices {
+            if let Some(sb) = self.settings.status_bar.as_mut() {
+                shown |= sb.set_notice(notice, now);
+            } else {
+                tracing::info!(
+                    severity = ?notice.severity,
+                    text = %notice.text,
+                    "status-bar notice dropped: no status bar configured",
+                );
+            }
+        }
+        shown
+    }
+
     /// Build every session-scoped local for one attach entry.
-    ///
-    /// `carried_sidebar` is the window sidebar's on/off state and width
-    /// carried in from the previous entry when a `switch-session` drove this
-    /// one; `None` on the first attach — `[sidebar]` seeds both, and a
-    /// carried runtime value wins after that (see `seed_sidebar_enabled`).
+    /// `carried_sidebar` is the sidebar state carried by a `switch-session`.
     #[allow(
         clippy::too_many_lines,
         clippy::too_many_arguments,
@@ -1015,11 +827,7 @@ impl SessionLoop {
 
     // ---- small shared projections -------------------------------------
 
-    /// phux-4h5a: fold the driver-local sidebar render state into the
-    /// per-frame reservation threaded to every layout site. `toggle-sidebar`
-    /// flips `sidebar_enabled`; the change takes effect on the next
-    /// iteration. `None` (the default) keeps `content_rect` the full pane
-    /// viewport, so the whole path is byte-identical when the sidebar is off.
+    /// The per-frame sidebar reservation; `None` keeps the full viewport.
     const fn sidebar(&self) -> Option<SidebarReservation> {
         sidebar_reservation(
             self.viewport_dims.0,
@@ -1030,16 +838,17 @@ impl SessionLoop {
         )
     }
 
+    /// The row the status bar reserves, if any.
+    fn bar(&self) -> Option<crate::render::chrome::status_bar::Position> {
+        self.settings
+            .status_bar
+            .as_ref()
+            .map(StatusBarPainter::position)
+    }
+
     /// The residual rect panes tile into once the bar and strip are folded off.
     fn content(&self, sidebar: Option<SidebarReservation>) -> crate::layout::Rect {
-        content_rect(
-            self.viewport_dims,
-            self.settings
-                .status_bar
-                .as_ref()
-                .map(StatusBarPainter::position),
-            sidebar,
-        )
+        content_rect(self.viewport_dims, self.bar(), sidebar)
     }
 
     /// The single chrome-refresh chokepoint, with this driver's inputs bound.
@@ -1079,11 +888,8 @@ impl SessionLoop {
         );
     }
 
-    /// Paint the view at `level`, unless an overlay owns the screen.
-    ///
-    /// `Chrome` repaints the sidebar strip + status bar in place (no ED2, no
-    /// pane re-render); `Full` clears and recomposites because the pane rects
-    /// moved under us.
+    /// Paint the view at `level` (`Chrome` in place, `Full` recomposite),
+    /// unless an overlay owns the screen.
     fn repaint_view<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,
@@ -1142,9 +948,7 @@ impl SessionLoop {
         })
     }
 
-    /// ADR-0105: with no window to render, a keep-empty session paints its
-    /// empty state and the `new-window` hint; anything else has nothing to
-    /// paint.
+    /// ADR-0105: a keep-empty session with no window paints its empty state.
     fn paint_empty_state<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,
@@ -1200,8 +1004,7 @@ impl SessionLoop {
     }
 
     /// Open the directory picker on the listing the latest `go-to-directory`
-    /// asked for (`docs/spec/L3.md` §4). A reply to an older request is
-    /// stale — the user already navigated on — and is dropped.
+    /// asked for; a reply to an older request is dropped.
     fn open_directory_picker<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,
@@ -1272,12 +1075,9 @@ impl SessionLoop {
         .await
     }
 
-    /// phux-foz.8 / phux-k0cw: fetch each peer session's persisted layout so
-    /// the window picker can list foreign windows as one-step jump rows, and
-    /// SUBSCRIBE the same keys so the roster tracks peers live rather than
-    /// showing an attach-time snapshot that silently rots. Fire-and-forget:
-    /// replies drain through the recv arm, and a peer with nothing persisted
-    /// never replies with a value and simply keeps its fallback row.
+    /// Fetch and subscribe each peer session's persisted layout (for the
+    /// picker's one-step rows and the live roster), then the peer agent
+    /// records, serving host, and host inventory. Fire-and-forget.
     async fn sweep_peer_layouts(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
         sync_foreign_layout_subscriptions(
             conn,
@@ -1288,29 +1088,9 @@ impl SessionLoop {
             &mut self.peers.foreign_layout_subscribed,
         )
         .await?;
-        // phux-ah84: agent watches must not wait for a persisted TUI layout.
-        // CLI-created sessions already appear in the ATTACHED graph.
-        let live =
-            crate::attach::sidebar_zones::foreign_terminal_ids(&self.peers.inputs(&self.review));
-        prune_foreign_agents(
-            &mut self.peers.foreign_agents,
-            &mut self.peers.foreign_agent_subscribed,
-            &live,
-        );
-        self.peers.foreign_attention.retain(|id| live.contains(id));
-        self.peers
-            .foreign_asked_pending
-            .retain(|_, id| live.contains(id));
-        sync_foreign_agent_ids(
-            conn,
-            live.into_iter().collect(),
-            &mut self.next_request_id,
-            &mut self.peers.foreign_agent_pending,
-            &mut self.peers.foreign_agent_subscribed,
-            &mut self.peers.foreign_asked_pending,
-        )
-        .await?;
-        // phux-c2td.3: the fleet's other half. Rides the same deferred
+        // Agent watches must not wait for a persisted TUI layout.
+        self.reconcile_peer_agents(conn).await?;
+        // The fleet's other half. Rides the same deferred
         // sweep, so it costs the first paint nothing.
         self.request_serving_host(conn).await?;
         self.request_host_inventory(conn).await
@@ -1322,8 +1102,7 @@ impl SessionLoop {
             return Ok(());
         }
         self.peers.serving_host_attempted = true;
-        let request_id = self.next_request_id;
-        self.next_request_id = self.next_request_id.wrapping_add(1);
+        let request_id = self.take_request_id();
         self.peers.serving_host_pending = Some(request_id);
         super::session_io::send_unless_peer_gone(
             conn,
@@ -1347,21 +1126,13 @@ impl SessionLoop {
         self.peers.chrome_dirty = true;
     }
 
-    /// phux-c2td.3: ask this server for its federation host inventory — one
-    /// `GET_STATE`, whose `hosts` list names each satellite's sessions.
-    ///
-    /// Fire-and-forget: the reply drains through
-    /// [`Self::intercept_peer_reply`] into [`PeerCaches::hosts`]. Silent on
-    /// a server without the feature (an older one would answer with no
-    /// inventory, and the picker's ungrouped shape is already the honest
-    /// rendering), and skipped while one is already in flight so a held-down
-    /// picker key cannot queue a burst of snapshots.
+    /// Ask for the federation host inventory (one `GET_STATE`). Skipped
+    /// without the feature or while one is already in flight.
     async fn request_host_inventory(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
         if !self.host_sessions_supported || self.peers.hosts_pending.is_some() {
             return Ok(());
         }
-        let request_id = self.next_request_id;
-        self.next_request_id = self.next_request_id.wrapping_add(1);
+        let request_id = self.take_request_id();
         self.peers.hosts_pending = Some(request_id);
         self.peers.hosts_pending_since = Some(std::time::Instant::now());
         super::session_io::send_unless_peer_gone(
@@ -1376,18 +1147,9 @@ impl SessionLoop {
         .await
     }
 
-    /// Fold a host-inventory reply into the picker's cache. A refusal or an
-    /// unexpected value clears the pending slot and leaves the previous
-    /// inventory in place — a stale grouping beats a fleet that blinks out.
-    ///
-    /// The notices held while the request was in flight are settled here:
-    /// the ones the inventory reports as unreachable rows are dropped as
-    /// already shown, and the rest surface. A non-inventory answer explains
-    /// nothing, so all of them surface.
-    ///
-    /// Returns which satellites the inventory reached and which it could
-    /// not (neither, for a non-inventory answer), for the stray kills
-    /// (phux-c2td.23).
+    /// Fold a host-inventory reply. A refusal keeps the previous inventory.
+    /// Held unreachable notices the reply explains are dropped; the rest
+    /// surface. Returns which satellites it reached and which it could not.
     fn fold_host_inventory(
         &mut self,
         result: &phux_protocol::wire::frame::CommandResult,
@@ -1403,9 +1165,7 @@ impl SessionLoop {
                 if sessions_changed {
                     self.peers.sessions.clone_from(&snapshot.sessions);
                 }
-                // Satellite terminals arrive on this inventory even when the
-                // session list is unchanged. Sweep only when the graph the
-                // sweep reads actually moved, so an identical reply stops.
+                // Sweep only when the graph the sweep reads actually moved.
                 if sessions_changed || self.snapshot_graph_changed(snapshot) {
                     self.peers.sweep_pending = true;
                 }
@@ -1430,10 +1190,8 @@ impl SessionLoop {
         std::mem::take(&mut self.peers.held_unreachable)
     }
 
-    /// True when a snapshot carries windows or resources the sweep has not
-    /// already adopted. Empty lists are not a change: host-inventory replies
-    /// often omit the graph, and [`Self::adopt_snapshot_graph`] leaves the
-    /// previous one in place.
+    /// True when a snapshot carries windows or resources not yet adopted.
+    /// Empty lists are not a change (inventory replies often omit the graph).
     fn snapshot_graph_changed(
         &self,
         snapshot: &phux_protocol::wire::info::SessionSnapshot,
@@ -1443,8 +1201,6 @@ impl SessionLoop {
     }
 
     /// Cache windows/resources from a snapshot when it actually carries them.
-    /// Host-inventory tests often construct sessions-only snapshots; wiping
-    /// a previously folded ATTACHED graph would hide unvisited agents.
     fn adopt_snapshot_graph(&mut self, snapshot: &phux_protocol::wire::info::SessionSnapshot) {
         if !snapshot.windows.is_empty() {
             self.peers.windows.clone_from(&snapshot.windows);
@@ -1537,19 +1293,6 @@ impl SessionLoop {
         }
     }
 
-    /// Surface a pre-check refusal the input batch parked.
-    fn take_rename_notice(&mut self, now: std::time::Instant) -> bool {
-        let Some(line) = self.rename_notice.take() else {
-            return false;
-        };
-        if let Some(status) = self.settings.status_bar.as_mut() {
-            status.set_notice(Notice::warn(line), now)
-        } else {
-            tracing::warn!(line = %line, "session rename refused");
-            false
-        }
-    }
-
     /// A refused or unanswered rename barrier: keep the current name.
     fn fail_session_rename(&mut self, message: &str, repaint: &mut RepaintAccumulator) {
         let pending = self.rename_pending.take();
@@ -1565,27 +1308,15 @@ impl SessionLoop {
         self.apply_notices(vec![Notice::warn(text)], repaint);
     }
 
-    /// phux-c2td.3: once a host-inventory request has waited past
-    /// [`HOST_INVENTORY_DEADLINE`], free its slot and put every notice held
-    /// for it on the bar. Called from the status tick, which paints the bar
-    /// right after; with no bar the notice degrades to a tracing line, as
-    /// `apply_notices` does.
+    /// Past [`HOST_INVENTORY_DEADLINE`], free the inventory slot and surface
+    /// every notice held for it.
     fn expire_overdue_host_inventory(&mut self) {
         let now = std::time::Instant::now();
         if !host_inventory_overdue(self.peers.hosts_pending_since, now) {
             return;
         }
         let held = self.end_host_inventory_request();
-        for notice in federation_notices(held) {
-            if let Some(sb) = self.settings.status_bar.as_mut() {
-                let _ = sb.set_notice(notice, now);
-            } else {
-                tracing::info!(
-                    text = %notice.text,
-                    "status-bar notice dropped: no status bar configured",
-                );
-            }
-        }
+        self.show_notices(federation_notices(held));
     }
 
     /// Hand one inbound frame to the shared server-frame handler.
@@ -1649,17 +1380,7 @@ impl SessionLoop {
                 let reports = journal
                     .borrow_mut()
                     .retire_terminal(&terminal_id, "the terminal closed");
-                outcome.notices.extend(
-                    reports
-                        .into_iter()
-                        .filter(|report| {
-                            !matches!(
-                                report.disposition,
-                                crate::attach::input_replay::ReplayDisposition::Delivered
-                            )
-                        })
-                        .map(|report| Notice::warn(report.notice_line())),
-                );
+                outcome.notices.extend(undelivered_notices(reports));
             }
         }
         if outcome.layout_get_answered {
@@ -1671,13 +1392,8 @@ impl SessionLoop {
 
     // ---- bootstrap ----------------------------------------------------
 
-    /// Replay the `ATTACHED` frame and issue everything the first paint owes.
-    ///
-    /// `initial_attached` is the `FrameKind::Attached` frame that
-    /// `wait_for_attached` already pulled off the wire; we replay it through
-    /// `handle_server_frame` so the focused-pane bookkeeping lives in one
-    /// place. Subsequent bootstrap and `RESOURCE_OUTPUT` frames come off the
-    /// wire as usual. `Some(exit)` ⇒ the replayed frame ended the attach.
+    /// Replay the `ATTACHED` frame through `handle_server_frame` and set up
+    /// the first paint. `Some(exit)` ⇒ the replayed frame ended the attach.
     pub(super) async fn bootstrap<W: crate::attach::RenderSink>(
         &mut self,
         conn: &mut Connection,
@@ -1709,70 +1425,32 @@ impl SessionLoop {
                 .unwrap_or(AttachEnd::Detached { reason: None });
             return Ok(Some(detached_loop_exit(end, false)));
         }
-        // phux-501l: do not write yet. `wait_until_attached` only proves the
-        // server processed ATTACH; last-pane `exit 7` can already have posted
-        // RESOURCE_CLOSED. Those writes belong on the recv-arm drain, after
-        // that close has had a chance to fold the session (same deferral as
-        // `peers.sweep_pending`).
+        // Defer outbound writes to the recv-arm drain: a last-pane
+        // RESOURCE_CLOSED may already be queued and must fold first.
         self.bootstrap_outbound = Some(outcome.subscribe_layout);
         self.vcs.apply_snapshot(outcome.pane_cwds);
         if let Some((list, focused)) = outcome.sessions {
             self.peers.sessions = list;
             self.peers.focused_session = Some(focused);
         }
-        if let Some((windows, resources)) = outcome.inventory {
-            self.peers.windows = windows;
-            self.peers.resources = resources;
-        }
+        self.fold_inventory(outcome.inventory);
         self.resolve_cross_session_pick();
-        // phux-k0cw.10: the peer sweep belongs HERE in reading order — this is
-        // where the session graph it reads (`sessions` / `focused_session`) has
-        // just been folded from the ATTACHED replay above — but it is issued from
-        // the ONE drain in the recv arm instead, carried there by
-        // `peers.sweep_pending`, so the first paint never queues behind peer
-        // traffic. Both are loop state, so the deferred call sweeps the same graph
-        // a call here would have.
-        //
-        // ADR-0033: cache our own ClientId (for the "you hold the wheel" badge) and
-        // opt into the agent-event stream so `TerminalControl` broadcasts (lease +
-        // lifecycle) reach this client.
+        // The peer sweep is deferred to the first drain (`sweep_pending`) so
+        // the first paint never queues behind peer traffic.
         if outcome.own_client_id.is_some() {
             self.own_client_id = outcome.own_client_id;
         }
-        // phux-4li.17: seed the window/tab strip from the bootstrap layout so
-        // the first bootstrap-driven bar paint shows the window.
-        // phux-4h5a: the sidebar painter tracks the same window list so the strip's
-        // tab list stays current whenever the bar's does.
-        //
-        // phux-k0cw: the peer sweep has not answered yet at bootstrap, so
-        // zones 1 and 3 start empty and fill as the replies land. That is
-        // the intended shape: the queue holds at zero rows rather than
-        // animating to correctness in the user's peripheral vision on
-        // every attach.
+        // Seed the tab strip and sidebar from the bootstrap layout; peer zones
+        // start empty and fill as sweep replies land.
         self.refresh_chrome();
         self.seed_initial_notice(initial_notice, moment);
         self.show_intro(out, sidebar, moment);
         Ok(None)
     }
 
-    /// Size the initial bootstrap pane's PTY to the rectangle this client will
-    /// paint it into.
-    ///
-    /// The server sizes each pane from the ATTACH viewport
-    /// (`apply_attach_viewport`), which is the client's OUTER terminal —
-    /// chrome included. The client paints panes into `content_rect`, which is
-    /// one row shorter whenever a status bar is docked. Without this call the
-    /// mirror is a row taller than the rect it is clipped into, so the pane's
-    /// bottom line is never painted and the bar looks like it overwrote it.
-    /// The self-heal users notice — resize, split, toggle the sidebar — is
-    /// just the first reflow that DID emit `RESIZE_TERMINAL`.
-    ///
-    /// The server side already defers the off-by-one here in as many words
-    /// ("the client's concern via the post-attach `RESIZE_TERMINAL` reflow
-    /// path"); this is that path, and until now nothing called it. An empty
-    /// The persisted multi-window layout arrives later through its metadata
-    /// reply; that adoption path reflows every restored window before its
-    /// first full paint.
+    /// Size the bootstrap panes' PTYs to the content rect this client paints
+    /// them into. The server sized them from the outer viewport (chrome
+    /// included), so without this the bottom row hides under the status bar.
     async fn size_bootstrap_panes(
         &self,
         conn: &mut Connection,
@@ -1803,11 +1481,7 @@ impl SessionLoop {
             after_seq: None,
         })
         .await?;
-        // phux-foz.5: watch the config-reload doorbell so a `phux config
-        // reload` from any shell reaches this client as a METADATA_CHANGED
-        // broadcast (the config itself never crosses the wire — we re-read
-        // our own file). Torn down implicitly on detach like every metadata
-        // subscription.
+        // The `phux config reload` doorbell.
         conn.send(&FrameKind::SubscribeMetadata {
             scope: Scope::Global,
             key: CONFIG_RELOAD_KEY.to_owned(),
@@ -1820,26 +1494,18 @@ impl SessionLoop {
             key: phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY.to_owned(),
         })
         .await?;
-        // phux-4s6o: watch session renames so the roster and status name
-        // follow `phux.session.name/v1` without a re-attach. The same
-        // subscription is how a peer learns a rename another client applied.
+        // Session renames, so the roster and status name follow them.
         conn.send(&FrameKind::SubscribeMetadata {
             scope: Scope::Global,
             key: SESSION_NAME_KEY.to_owned(),
         })
         .await?;
         if subscribe_layout && let Some(session) = self.peers.focused_session {
-            // phux-4li.5: ask the server for any persisted layout, then
-            // subscribe to future mutations. Both frames are best-effort —
-            // if the server rejects them with an ERROR (we'd see one in a
-            // later loop iteration) we just stay in the single-pane
-            // bootstrap. phux-jy4t: keyed per session so we restore THIS
-            // session's layout, not whatever sibling wrote the key last.
+            // Fetch and watch this session's persisted layout (best effort).
             let key = layout_key(session);
-            let req_id = self.next_request_id;
+            let req_id = self.take_request_id();
             self.layout_get_request_id = Some(req_id);
             self.layout_read_complete = false;
-            self.next_request_id = self.next_request_id.wrapping_add(1);
             conn.send(&FrameKind::GetMetadata {
                 request_id: req_id,
                 scope: Scope::Group(DEFAULT_GROUP_ID),
@@ -1852,17 +1518,13 @@ impl SessionLoop {
             })
             .await?;
         }
-        // ADR-0040: read + watch every bootstrap pane's `phux.agent/v1` record
-        // so window labels can prefer structured agent identity from the first
-        // paint. The same sweep re-runs whenever the pane set changes.
+        // ADR-0040: read + watch every bootstrap pane's agent record.
         self.sync_agent_meta(conn).await?;
         self.adopt_input_replay(conn).await
     }
 
-    /// Size the bootstrap PTYs and open the attach-lifetime subscriptions.
-    ///
-    /// Called from the recv-arm drain, not from [`Self::bootstrap`]: a last-pane
-    /// `RESOURCE_CLOSED` that beat these writes must fold the session first.
+    /// Size the bootstrap PTYs and open the attach-lifetime subscriptions,
+    /// from the recv-arm drain (see `bootstrap_outbound`).
     pub(super) async fn emit_deferred_bootstrap_outbound(
         &mut self,
         conn: &mut Connection,
@@ -1886,13 +1548,8 @@ impl SessionLoop {
     }
 
     /// ADR-0053: adopt this connection into the acknowledged-input journal.
-    /// Every operation still queued from before the reconnect (or the
-    /// session-switch drain) is re-decided against this connection's server
-    /// incarnation: survivors are resent under their ORIGINAL operation ids —
-    /// the server's dedupe cache is what makes that honest — and everything
-    /// that cannot be replayed (expired, incarnation changed, feature gone)
-    /// resolves loudly as a status-bar notice instead of silently dropping
-    /// or doubling.
+    /// Survivors are resent under their original operation ids; anything that
+    /// cannot be replayed resolves as a status-bar notice.
     async fn adopt_input_replay(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
         let Some(journal) = self.input_replay.clone() else {
             return Ok(());
@@ -1902,27 +1559,13 @@ impl SessionLoop {
             .begin_connection(conn.server_id(), self.acknowledged_input_supported);
         let (more, replay_frames) = journal.borrow_mut().next_frames(&mut self.next_request_id);
         reports.extend(more);
-        let now = std::time::Instant::now();
-        for report in reports {
-            if matches!(
-                report.disposition,
-                crate::attach::input_replay::ReplayDisposition::Delivered
-            ) {
-                continue;
-            }
-            let line = report.notice_line();
-            if let Some(sb) = self.settings.status_bar.as_mut() {
-                let _ = sb.set_notice(crate::render::chrome::status_bar::Notice::warn(line), now);
-            } else {
-                tracing::warn!(line = %line, "acknowledged paste stranded");
-            }
-        }
-        send_replay_batch(conn, journal.as_ref(), &replay_frames).await
+        self.show_notices(undelivered_notices(reports));
+        crate::attach::input_dispatch::send_replay_frames(conn, journal.as_ref(), &replay_frames)
+            .await
     }
 
-    /// ADR-0053: the reply to one of the journal's own `APPLY_INPUT`
-    /// attempts. Delivery is silent; anything else raises a notice, and the
-    /// next queued operation (if any) goes on the wire behind the resolution.
+    /// ADR-0053: the reply to one of the journal's `APPLY_INPUT` attempts;
+    /// non-delivery raises a notice and the next queued operation is sent.
     async fn resolve_input_replay(
         &mut self,
         conn: &mut Connection,
@@ -1940,36 +1583,15 @@ impl SessionLoop {
             .collect();
         let (more, next_frames) = journal.borrow_mut().next_frames(&mut self.next_request_id);
         reports.extend(more);
-        let now = std::time::Instant::now();
-        for report in reports {
-            if matches!(
-                report.disposition,
-                crate::attach::input_replay::ReplayDisposition::Delivered
-            ) {
-                continue;
-            }
-            let line = report.notice_line();
-            let shown = self.settings.status_bar.as_mut().is_some_and(|sb| {
-                sb.set_notice(
-                    crate::render::chrome::status_bar::Notice::warn(line.clone()),
-                    now,
-                )
-            });
-            if shown {
-                repaint.raise_chrome();
-            } else {
-                tracing::warn!(line = %line, "acknowledged paste outcome");
-            }
+        if self.show_notices(undelivered_notices(reports)) {
+            repaint.raise_chrome();
         }
-        send_replay_batch(conn, journal.as_ref(), &next_frames).await
+        crate::attach::input_dispatch::send_replay_frames(conn, journal.as_ref(), &next_frames)
+            .await
     }
 
-    /// phux-i0e8.2.3: seed the post-reconnect notice now that the session is
-    /// attached and the bar painter exists. The first bar paint — driven by
-    /// the initial `TERMINAL_SNAPSHOT` burst that follows ATTACHED — picks it
-    /// up, and the ordinary 1 s `status_tick` expires it, so "re-attached
-    /// after server restart" is visible inside the live TUI instead of on
-    /// the cooked terminal the alt screen replaced.
+    /// Seed the post-reconnect (or return-onboarding) notice now that the bar
+    /// painter exists; the first bar paint shows it and the tick expires it.
     fn seed_initial_notice(&mut self, initial_notice: Option<Notice>, moment: AttachMoment) {
         let return_notice_available = initial_notice.is_none() && moment == AttachMoment::Return;
         let initial_notice = initial_notice.or_else(|| {
@@ -1982,9 +1604,8 @@ impl SessionLoop {
         }
     }
 
-    /// The introduction floats over the live pane after bootstrap. It is a
-    /// passthrough notice: the first key dismisses it and continues through the
-    /// normal resolver/pane route, so guidance never taxes the user's intent.
+    /// The introduction toast: passthrough, so the first key dismisses it and
+    /// still reaches the resolver/pane.
     fn show_intro<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,
@@ -2044,55 +1665,30 @@ impl SessionLoop {
         sidebar: Option<SidebarReservation>,
         needs_resync: Option<&AtomicBool>,
     ) -> Result<(), AttachError> {
-        // phux-npb3: capture follows focus. Closed panes are pruned so a
+        // Capture follows focus. Closed panes are pruned so a
         // recycled ResourceId can never inherit a stale opt-out.
         if !self.mouse_optout.is_empty() {
             self.mouse_optout.retain(|id| self.panes.contains_key(id));
         }
         self.settle_focus_seen(out, sidebar);
-        // Re-derive the outer-terminal mouse-tracking DECSET from the focused
-        // pane's opt-out state every iteration — one call site covers every
-        // way focus or the set can change (set-pane, click-to-focus, keybind
-        // navigation, spawn/close reflows). `sync_mouse_capture` is a no-op
-        // when nothing changed, so the steady-state cost is one bool compare.
+        // Re-derive outer mouse tracking from the focused pane's opt-out every
+        // iteration; a no-op when nothing changed.
         let want_capture = desired_mouse_capture(
             self.settings.mouse_capture,
             self.focused_resource.as_ref(),
             &self.mouse_optout,
         );
         sync_mouse_capture(out, want_capture).map_err(AttachError::Io)?;
-        // phux-wrnm: hover reporting follows the overlay stack the same way
-        // capture follows focus — raised while a context menu wants to track
-        // the pointer with no button held, dropped as soon as it closes.
+        // Hover reporting follows the overlay stack (context menus).
         sync_hover_tracking(out, self.overlays.wants_pointer_hover()).map_err(AttachError::Io)?;
         self.repaint_after_resync(out, sidebar, needs_resync);
         crate::attach::render_prof::tick();
         Ok(())
     }
 
-    /// The attention ladder's `seen` half: the pane the user is looking at
-    /// has, by definition, been looked at. One hash lookup per iteration —
-    /// and it covers EVERY way focus can move (click, keybind, split,
-    /// window switch, a peer's layout broadcast) without a call at each
-    /// site. A later agent-state change on an unfocused pane re-arms the
-    /// bit (see `server_frame::note_agent_change`), which is what lets a
-    /// background agent's `done` climb back above the working ones.
-    ///
-    /// The FLIP is a chrome trigger, not a silent side effect. The focus
-    /// action that made this pane focused ran in the PREVIOUS iteration, and
-    /// it recomputed the chrome while `seen` was still false — so the strip
-    /// it painted still carries the filled "look at me" diamond, bold,
-    /// pinned above every working agent, about the very pane the user is now
-    /// looking at. Nothing else recomputes `agent_entries` (the status tick
-    /// paints only the bar), so without this the row keeps lying until some
-    /// unrelated chrome event happens to fire — indefinitely, in a
-    /// single-agent session. That defeats the ladder's central promise:
-    /// visiting a pane demotes it.
-    ///
-    /// ADR-0029: demoting a ladder row touches no pane interior, so this
-    /// is an in-place CHROME paint, never a full-frame clear. Gated on
-    /// the painter's own change report, so a focus change that moves no
-    /// agent row costs zero bytes.
+    /// Mark the focused pane seen (demoting its attention-ladder row) and
+    /// repaint chrome in place when that changed a row. Checked every
+    /// iteration so every way focus moves is covered.
     fn settle_focus_seen<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,
@@ -2110,13 +1706,7 @@ impl SessionLoop {
         }
     }
 
-    /// phux-fysb: the off-loop stdout writer dropped a stale backlog under
-    /// a slow terminal. Repaint the latest state from scratch — a
-    /// self-contained full frame (or overlay) supersedes the dropped
-    /// diffs. `swap(false)` clears the flag, but any set re-armed by THIS
-    /// repaint's own flushes is preserved for the next iteration. Checked
-    /// before parking so a resync that landed during the prior arm is
-    /// serviced promptly.
+    /// The stdout writer dropped a stale backlog: repaint from scratch.
     fn repaint_after_resync<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,
@@ -2126,7 +1716,7 @@ impl SessionLoop {
         if !needs_resync.is_some_and(|flag| flag.swap(false, Ordering::AcqRel)) {
             return;
         }
-        // phux-esge: the writer dropped bytes the renderers believe landed,
+        // The writer dropped bytes the renderers believe landed,
         // so no front buffer describes the screen any more.
         crate::attach::pane_state::invalidate_all_fronts(&mut self.panes);
         if self.overlays.is_active() {
@@ -2136,25 +1726,16 @@ impl SessionLoop {
         }
     }
 
-    /// Arm this iteration's timers and park on every wake-up source.
-    ///
-    /// Stdin is polled before inbound frames so a local keystroke is
-    /// dispatched promptly rather than waiting behind an output burst. One
-    /// read is bounded by `stdin_buf`; the inbound arm is bounded by
-    /// `FRAME_COALESCE_CAP`, so neither starves the other.
+    /// Arm this iteration's timers and park on every wake-up source. Stdin is
+    /// polled before inbound frames; both arms are bounded, so neither starves.
     async fn select_next_event<W: crate::attach::RenderSink>(
         &mut self,
         conn: &mut Connection,
         out: &mut W,
         sidebar: Option<SidebarReservation>,
     ) -> Result<Step, AttachError> {
-        // Arm the bare-ESC idle timer only when a lone ESC is actually
-        // waiting to be disambiguated, anchored to the first iteration that
-        // saw it (the deadline survives other arms firing — see
-        // `esc_deadline`). phux-l96p.4: this used to arm for ANY in-progress
-        // sequence, but `flush` only emits from `State::Escape`; every other
-        // state's timer fired, produced nothing, and cost the loop a wake-up
-        // and an empty dispatch batch.
+        // Arm the bare-ESC timer only while a lone ESC is pending, anchored to
+        // the first iteration that saw it.
         if self.parser.esc_pending() {
             self.esc_deadline
                 .get_or_insert_with(|| tokio::time::Instant::now() + ESC_FLUSH_IDLE);
@@ -2162,11 +1743,7 @@ impl SessionLoop {
             self.esc_deadline = None;
         }
         let flush_sleep = sleep_until_or_pending(self.esc_deadline);
-        // phux-foz.2: (dis)arm the which-key deadline from the resolver's
-        // CURRENT pending state. An early continuation chord (dispatched
-        // in the stdin arm) leaves the resolver non-pending, so the next
-        // pass through here disarms the timer before it can fire — the
-        // popup is suppressed without any explicit cancellation call.
+        // (Dis)arm which-key from the resolver's current pending state.
         update_which_key_deadline(
             &mut self.which_key_deadline,
             self.settings
@@ -2179,22 +1756,14 @@ impl SessionLoop {
             self.settings.which_key.delay,
         );
         let which_key_sleep = sleep_until_or_pending(self.which_key_deadline);
-        // phux-nz4.5: per-bar repaint cadence. Driven by the slowest
-        // widget that wants periodic refresh (currently floor-1s via the
-        // `time` widget). Empty bar ⇒ `Pending` forever so this select!
-        // arm never fires.
+        // Status-bar repaint cadence; never fires for a bar with no polling widget.
         let status_tick = sleep_for_or_pending(
             self.settings
                 .status_bar
                 .as_ref()
                 .and_then(StatusBarPainter::min_poll_interval),
         );
-        // Synchronized-output transactions intentionally span arbitrary
-        // socket reads, so their deadline is pane state rather than a
-        // per-batch timer. A stuck producer gets one bounded recovery paint;
-        // later bytes re-arm suppression if mode 2026 is still set.
-        // phux-l96p.3: the frame pacer's settle deadline. Armed only while
-        // some pane's paint is owed, so an idle attach adds no timer at all.
+        // The pacer's settle deadline, armed only while a paint is owed.
         let paint_sleep = sleep_until_or_pending(self.pacer.deadline());
         let sync_output_sleep = sleep_until_or_pending(
             self.panes
@@ -2203,9 +1772,7 @@ impl SessionLoop {
                 .map(|since| since + SYNC_OUTPUT_WATCHDOG)
                 .min(),
         );
-        // phux-lxov.1: a down satellite pane probes host inventory on a
-        // fixed cadence. The deadline is set once and survives other arms,
-        // so pane output cannot starve the replay.
+        // Down satellite panes probe the host inventory on a fixed cadence.
         self.arm_satellite_probe(tokio::time::Instant::now());
         let satellite_probe = sleep_until_or_pending(self.satellite_probe_at);
 
@@ -2214,80 +1781,51 @@ impl SessionLoop {
 
             n = self.stdin.read(&mut self.stdin_buf) => self.on_stdin(conn, out, sidebar, n).await,
 
-            // Inbound frames are drained in a `FRAME_COALESCE_CAP`-bounded
-            // batch so a redraw burst paints once; bounded so it cannot
-            // starve the stdin arm polled above it.
+            // Inbound frames, drained in a bounded batch so a burst paints once.
             frame = conn.recv() => self.on_server_frame(conn, out, sidebar, frame).await,
 
-            // phux-l96p.3: the withheld frames' window expired. Settle every
-            // pane whose paint was held back, in ONE composited frame. Polled
-            // above the other timers (but below stdin and inbound frames) so a
-            // settle cannot be starved by a chatty widget tick.
+            // The pacer window expired: settle every withheld pane in one frame.
             () = paint_sleep => {
                 self.settle_withheld_panes(out, sidebar);
                 Ok(Step::Continue)
             }
 
-            // Bound the failure mode of an application that omits `?2026l`.
-            // Expose the latest complete mirror once, then let subsequent
-            // output re-arm the transaction watchdog.
+            // An application that never sent `?2026l`: expose the mirror once.
             () = sync_output_sleep => {
                 self.on_sync_output_timeout(out, sidebar);
                 Ok(Step::Continue)
             }
 
-            // Bare-ESC idle timeout. Only armed when the parser has
-            // pending state; resolves an ambiguous lone ESC into the
-            // Escape key (see input::StdinParser::flush docs).
+            // Bare-ESC idle timeout.
             () = flush_sleep => self.on_esc_flush(conn, out, sidebar).await,
 
-            // phux-foz.2: which-key idle timeout. Armed only while the
-            // resolver sits at the pending-prefix state (see the update
-            // above); fires once per hesitation. Pushing the popup does
-            // not touch the resolver — the pending prefix stays live, so
-            // the next chord executes exactly as if the popup never
-            // appeared (the dispatcher's passthrough branch dismisses it
-            // on the way through).
+            // Which-key idle timeout. The pending prefix stays live, so the
+            // next chord executes as if the popup never appeared.
             () = which_key_sleep => {
                 self.on_which_key_timeout(out, sidebar);
                 Ok(Step::Continue)
             }
 
-            // SIGWINCH — terminal was resized. Read the new viewport
-            // and ship a VIEWPORT_RESIZE upstream (SPEC §7.1 / §10.5).
-            // The server uses this to recompute layout and update the
-            // attached pane's dims. On query failure we fall back to a
-            // sane default (logged) rather than skip the frame — the
-            // server still benefits from knowing a resize happened.
+            // SIGWINCH.
             _ = self.sigwinch.recv() => {
                 self.on_resize(conn, out, sidebar).await?;
                 Ok(Step::Continue)
             }
 
-            // phux-nz4.5: periodic status-bar repaint (e.g. for the
-            // `time` widget). Only fires when at least one widget has a
-            // `poll_interval`. Paints in place — no pane re-render, no
-            // full-screen redraw.
+            // Periodic status-bar repaint.
             () = status_tick => {
                 self.on_status_tick(out, sidebar);
                 Ok(Step::Continue)
             }
 
-            // phux-lxov.1: ask which grey satellite panes can be reattached.
-            // `request_host_inventory` is a no-op while one is in flight;
-            // the reply replays snapshots for hosts that came back.
+            // Ask which grey satellite panes can be reattached.
             () = satellite_probe => {
                 self.satellite_probe_at = None;
                 self.request_host_inventory(conn).await?;
                 Ok(Step::Continue)
             }
 
-            // phux-r82.5: a spawned plugin action finished. Successes just
-            // log (no modal to dismiss on the happy path); failures push a
-            // dismissable toast carrying the captured output, so a broken
-            // plugin is *seen* without ever having blocked the input loop.
-            // The channel can't close while this loop holds `plugin_tx`,
-            // so the `Some` pattern always matches when the arm fires.
+            // A spawned plugin action finished; failures toast.
             Some(result) = self.plugin_rx.recv() => {
                 self.on_plugin_result(out, sidebar, &result);
                 Ok(Step::Continue)
@@ -2312,10 +1850,6 @@ impl SessionLoop {
             // the user's tmux/screen wrapping us. Same cleanup, exit 143.
             _ = self.sigterm.recv() => exit_on_signal(143),
 
-            // SIGHUP — controlling terminal went away. Restore and exit
-            // 129. There is no live outer terminal to clean up, but the
-            // termios restore is harmless on a dead tty and keeps the
-            // cleanup path uniform.
             _ = self.sighup.recv() => exit_on_signal(129),
         }
     }
@@ -2341,19 +1875,12 @@ impl SessionLoop {
             }
             return Ok(Step::Continue);
         }
-        // Decode into the retained buffer, then hand it to the dispatcher by
-        // move so the borrow checker sees one owner; `dispatch_batch` returns
-        // it drained-but-allocated.
         let mut events = std::mem::take(&mut self.input_events);
         self.parser.feed_into(&self.stdin_buf[..n], &mut events);
         self.dispatch_batch(conn, out, sidebar, events).await
     }
 
-    /// The bare-ESC flush runs the same batch handling as a stdin read: a
-    /// flushed event may complete `toggle-zoom` or `toggle-sidebar`
-    /// (phux-x2hm), can carry the final chord of a `<leader> a` selection
-    /// committed via Enter (phux-eb0), and can commit `reload-config` from a
-    /// palette selection (phux-foz.5).
+    /// The bare-ESC flush runs the same batch handling as a stdin read.
     async fn on_esc_flush<W: crate::attach::RenderSink>(
         &mut self,
         conn: &mut Connection,
@@ -2366,10 +1893,7 @@ impl SessionLoop {
     }
 
     /// Dispatch one batch of decoded input events, then reflow and repaint
-    /// whatever it moved.
-    ///
-    /// Takes the event buffer by move and hands it back drained, so the
-    /// keystroke path reuses one allocation (see `input_events`).
+    /// whatever it moved. The buffer comes back drained (see `input_events`).
     async fn dispatch_batch<W: crate::attach::RenderSink>(
         &mut self,
         conn: &mut Connection,
@@ -2377,25 +1901,15 @@ impl SessionLoop {
         sidebar: Option<SidebarReservation>,
         mut events: Vec<phux_protocol::input::InputEvent>,
     ) -> Result<Step, AttachError> {
-        // phux-l96p.4: an empty batch is common — a read that carries only the
-        // first bytes of a `CSI` sequence decodes to nothing, and so does an
-        // idle flush that finds no lone ESC. Nothing below can move any state
-        // without an event to move it, so everything below (a tiling diff, a
-        // `DispatchCtx` with its cloned focus history and sidebar targets, and
-        // an unconditional overlay repaint) was pure per-read waste.
+        // Common (a partial CSI, an idle flush); nothing below can change.
         if events.is_empty() {
             self.input_events = events;
             return Ok(Step::Continue);
         }
-        // phux-l96p.3: whether this batch is the kind of input that expects
-        // output back. Computed BEFORE dispatch (which drains `events`) and
-        // armed after it, so the pane it is keyed to is the one focus landed
-        // on — a click that moves focus marks the pane the user just picked,
-        // not the one they left.
+        // Computed before dispatch drains `events`; armed after, so it keys to
+        // the pane focus landed on.
         let expects_reply = events.iter().any(input_expects_a_reply);
-        // Capture the pre-dispatch view so zoom and sidebar toggles can
-        // diff against it and resize each changed pane's PTY. Taken
-        // before dispatch mutates either piece of view geometry.
+        // Pre-dispatch view, so zoom and sidebar toggles can reflow PTYs.
         let prev_zoomed = self.zoomed.clone();
         let prev_sidebar = sidebar;
         let prev_view_rects = view_rects(
@@ -2404,39 +1918,23 @@ impl SessionLoop {
             self.content(sidebar),
             self.viewport_dims,
         );
-        // phux-l96p.4: batch this batch's wire writes. One keystroke still
-        // costs one write; a read that decoded several events (auto-repeat,
-        // arrow spam, a mouse drag burst) now costs one write rather than one
-        // per event. The cork spans only the synchronous dispatch of bytes we
-        // have already read and is released before the loop parks, so it is a
-        // batching cork and never a linger.
+        // Batch this read's wire writes into one; released before parking.
         conn.cork();
         let dispatched = self.dispatch_input(conn, out, sidebar, &mut events).await;
-        // Uncork on BOTH paths: a dispatch that errored half way through must
-        // not strand the frames it did emit in the cork buffer, and the next
-        // `send` must not find the writer still corked.
+        // Uncork on both paths so an error never strands emitted frames.
         let shipped = conn.uncork().await;
         self.input_events = events;
         let layout_changed = dispatched?;
         shipped?;
-        // Arm the pacer's reply grace now that dispatch has settled focus.
-        // Keyed to the focused pane: the output that must not wait is the
-        // reply from the pane the user acted on, and lifting pacing for every
-        // OTHER pane would un-pace a flood elsewhere on the screen — which is
-        // the coalescing the pacer exists to do. Cleared by TIME, never by a
-        // paint: a reply is often several frames.
+        // Reply grace keyed to the focused pane only, so a flood elsewhere
+        // stays paced. Cleared by time, never by a paint.
         if expects_reply {
             self.pacer
                 .note_input(self.focused_resource.as_ref(), tokio::time::Instant::now());
         }
-        // phux-4h5a: a `toggle-sidebar` in this batch flipped
-        // `sidebar_enabled`. Re-fold it into the reservation so the
-        // reflow + repaint below tile into the NEW content rect this
-        // iteration rather than waiting a frame.
+        // A `toggle-sidebar` in this batch takes effect this iteration.
         let sidebar = self.sidebar();
-        // phux-eb0: a committed `switch-session` ends this loop so
-        // the outer driver re-attaches. Return BEFORE any repaint
-        // — the new session's ATTACHED + snapshot will repaint.
+        // A committed `switch-session` ends this loop before any repaint.
         if let Some(target) = self.switch_request.take() {
             return Ok(Step::Exit(LoopExit::SwitchTo {
                 target,
@@ -2449,10 +1947,7 @@ impl SessionLoop {
                 review: std::mem::take(&mut self.review),
             }));
         }
-        // Window changes still repaint to show the newly active window, but
-        // bootstrap has already seeded every known window's PTY geometry. A
-        // resize is needed here only when client-local geometry genuinely
-        // changes (zoom or sidebar).
+        // Resize PTYs only when client-local geometry (zoom, sidebar) changed.
         if self.zoomed != prev_zoomed || sidebar != prev_sidebar {
             emit_view_reflow(
                 conn,
@@ -2468,26 +1963,17 @@ impl SessionLoop {
             // keep the agent-metadata watches in step with the set.
             self.sync_agent_meta(conn).await?;
             self.refresh_chrome();
-            // phux-5ke.4: on overlay dismiss the dispatcher
-            // sets layout_changed=true; the full-frame repaint
-            // here restores pane content under the now-gone
-            // modal. When the overlay is still active (e.g.
-            // a push happened in the same batch) we skip the
-            // pane repaint and go straight to overlay paint.
+            // Restores pane content under a just-dismissed overlay.
             self.repaint_view(out, sidebar, RepaintLevel::Full);
         }
         if self.overlays.is_active() {
             self.paint_overlay(out, sidebar);
         }
-        // phux-c2td.3: an action asked for a fresher host inventory (the
-        // session picker opening). One GET_STATE per batch, whatever the
-        // batch contained.
+        // One `GET_STATE` per batch when an action wanted a fresher inventory.
         if std::mem::take(&mut self.host_refresh_request) {
             self.request_host_inventory(conn).await?;
         }
-        // phux-foz.5: a `reload-config` committed in this batch
-        // (palette row or bound chord). Runs LAST in the arm so
-        // its repaint reflects the new theme/bar.
+        // Last, so the repaint reflects the new theme/bar.
         if self.reload_request {
             self.reload_request = false;
             self.reload_config(out, sidebar);
@@ -2512,14 +1998,8 @@ impl SessionLoop {
         sidebar: Option<SidebarReservation>,
         events: &mut Vec<phux_protocol::input::InputEvent>,
     ) -> Result<bool, AttachError> {
-        // phux-foz.9: the agents-section row -> window mapping,
-        // snapshotted from the strip painter so a click on an
-        // agent row hit-tests against exactly what was painted.
-        //
-        // phux-l96p.4: `sidebar_targets` is read at exactly one site —
-        // `route_sidebar_click`, off a mouse event — and building it clones a
-        // String per roster row. A keyboard batch can never reach that site,
-        // so it gets the empty snapshot instead of paying for one.
+        // Only a mouse batch can hit-test the sidebar; skip cloning its
+        // targets otherwise.
         let sidebar_targets = if events
             .iter()
             .any(|ev| matches!(ev, phux_protocol::input::InputEvent::Mouse(_)))
@@ -2600,23 +2080,10 @@ impl SessionLoop {
             .input_replay
             .as_ref()
             .map_or_else(Vec::new, |journal| journal.borrow_mut().take_reports());
-        let now = std::time::Instant::now();
-        for report in reports {
-            if matches!(
-                report.disposition,
-                crate::attach::input_replay::ReplayDisposition::Delivered
-            ) {
-                continue;
-            }
-            let line = report.notice_line();
-            if let Some(status) = self.settings.status_bar.as_mut() {
-                layout_changed |=
-                    status.set_notice(crate::render::chrome::status_bar::Notice::warn(line), now);
-            } else {
-                tracing::warn!(line = %line, "acknowledged input outcome");
-            }
+        layout_changed |= self.show_notices(undelivered_notices(reports));
+        if let Some(line) = self.rename_notice.take() {
+            layout_changed |= self.show_notices([Notice::warn(line)]);
         }
-        layout_changed |= self.take_rename_notice(now);
         Ok(layout_changed)
     }
 
@@ -2633,11 +2100,7 @@ impl SessionLoop {
         match frame {
             Ok(first) => self.handle_frame_burst(conn, out, sidebar, first).await,
             Err(AttachError::Disconnected) if self.detach_pending => {
-                // Server closed the socket without a `DETACHED`
-                // frame — treat it as a clean shutdown because
-                // the user requested detach. Otherwise the loop
-                // bubbles the disconnect up unchanged. No frame
-                // arrived, so there is no stated reason to carry.
+                // The socket closed after we asked to detach: clean shutdown.
                 Ok(Step::Exit(detached_loop_exit(
                     AttachEnd::Detached { reason: None },
                     true,
@@ -2656,38 +2119,15 @@ impl SessionLoop {
         first: FrameKind,
     ) -> Result<Step, AttachError> {
         let batch = drain_frame_batch(conn, first)?;
-        // Per-pane last-wins: a frame defers its paint iff a
-        // LATER frame in the burst repaints the same pane, so
-        // every touched pane (focused or not) settles exactly
-        // once on its final frame. No pane is left stale, and
-        // the hot single-pane case collapses to one paint.
+        // Per-pane last-wins: a frame defers its paint iff a later frame in
+        // the burst repaints the same pane.
         let defer_flags = coalesce_defer_flags(&batch, frame_paint_target);
-        // ADR-0029 §2: the loop-level repaint triggers in this
-        // batch RAISE a level instead of painting inline, and
-        // the accumulator is drained ONCE below. A burst of
-        // twenty `MetadataChanged` frames (a live agent
-        // detector publishing state transitions across nine
-        // panes) therefore collapses into a single in-place
-        // sidebar paint rather than twenty full-screen clears.
-        // Declared HERE, inside the frame handler, deliberately:
-        // the stdin / ESC-flush path shadows `sidebar` with a
-        // freshly recomputed reservation so a same-iteration
-        // `toggle-sidebar` takes effect, and a drain hoisted
-        // outside the `select!` would capture the stale outer
-        // one. This path does not shadow it.
+        // ADR-0029: triggers raise a level and the accumulator drains once,
+        // so a burst of metadata changes costs one chrome paint.
         let mut repaint = RepaintAccumulator::default();
-        // phux-l96p.3: one pacing decision for the whole burst. Admitted, the
-        // burst behaves exactly as before (per-pane last-wins coalescing, then
-        // one paint). Refused, EVERY output frame in it defers: the bytes still
-        // reach the mirrors, the panes they touched are recorded, and the
-        // `paint_deadline` arm settles them together when the window expires.
-        // Deciding once per burst rather than once per frame is what makes the
-        // settle a single composited frame.
+        // One pacing decision per burst: refused, every output frame defers
+        // and the `paint_deadline` arm settles them in one composited frame.
         let now = tokio::time::Instant::now();
-        // One pass over the burst answers both questions the pacer needs: does
-        // this carry output for the pane the user last acted on (so it is a
-        // reply, not a flood), and how long did that reply take (the sample
-        // the grace is sized from).
         let is_reply = self
             .pacer
             .observe_reply(now, batch.iter().filter_map(frame_paint_target));
@@ -2727,28 +2167,12 @@ impl SessionLoop {
                 }
             }
         }
-        // Only a burst that did not end the attach may spend. Last-pane
-        // RESOURCE_CLOSED returns above, so these writes never run into a
-        // socket the server already closed for that reason.
+        // Only a burst that did not end the attach may spend.
         self.emit_deferred_bootstrap_outbound(conn).await?;
         self.drain_repaint(out, sidebar, &mut repaint);
-        // phux-l96p.3: settle whatever the pacer is still holding, rather
-        // than leaving it to the `paint_deadline` arm. Two ways to get here,
-        // and BOTH are cases the timer cannot be relied on for:
-        //
-        // * This burst was admitted. `admit` has just pushed `next_allowed`
-        //   out to `now + interval`, so the deadline check below can never
-        //   fire on this pass — and the `paint_deadline` arm sits third in a
-        //   `biased` select behind `conn.recv()`, which a saturating producer
-        //   keeps permanently ready. A pane that emitted one line during an
-        //   earlier refused window and then went quiet would stay unpainted
-        //   for as long as any other pane kept talking. The debt belongs in
-        //   this frame.
-        // * Handling the burst itself outran the window, same starvation
-        //   shape without the admitted-burst part.
-        //
-        // Placed after `drain_repaint` so a `RepaintLevel::Full` in this batch
-        // has already cleared the debt it just redrew.
+        // Settle the pacer's debt here when the timer cannot be trusted (see
+        // [`burst_settles_debt`]). After `drain_repaint`, so a full repaint
+        // has already cleared what it redrew.
         if burst_settles_debt(
             paint_now,
             self.pacer
@@ -2757,26 +2181,8 @@ impl SessionLoop {
         ) {
             self.settle_withheld_panes(out, sidebar);
         }
-        // phux-k0cw.10: the first paint is behind us, so the
-        // peer sweep can go out now. Placed after the drain,
-        // not before it, so the frames it sends never sit
-        // between a snapshot burst and the paint that burst
-        // produces.
-        //
-        // Conditioned on reaching the drain rather than on
-        // `drained.level`: a batch that paints nothing still
-        // means the burst is drained and the loop is idle
-        // enough to spend, and gating on a paint that a quiet
-        // attach may never produce would strand the roster
-        // empty for the whole session. The zones already
-        // tolerate this arriving late — zone 1 holds at zero
-        // rows until the first full fold and zone 3 renders
-        // nothing until a roster entry exists.
-        //
-        // The per-pane agent sweep needs no deferral of its
-        // own: it hangs off the layout replies this sweep
-        // asks for, so it lands strictly later by
-        // construction.
+        // The first paint is behind us: send the deferred peer sweep. Gated on
+        // reaching the drain, not on a paint, so a quiet attach still sweeps.
         if self.peers.sweep_pending {
             self.peers.sweep_pending = false;
             self.sweep_peer_layouts(conn).await?;
@@ -2794,9 +2200,8 @@ impl SessionLoop {
     ) -> Result<bool, AttachError> {
         if matches!(frame, FrameKind::Attached { .. }) {
             self.pending_attach_ready = None;
-            // ATTACHED establishes a new aggregate generation. Replies to
-            // AttachResource commands from the retired generation must not
-            // open streams into it.
+            // A new aggregate generation: retired replies must not bind
+            // streams or fold leaves.
             self.pending_stream_binds.clear();
             // Replies to the retired generation's commands can no longer be
             // attributed; a stale entry would fold a live leaf.
@@ -2833,11 +2238,8 @@ impl SessionLoop {
                     }
                 }
             }
-            // A local split or window this client spawned: the server
-            // subscribed us but publishes nothing on control (L1 §4.9), so
-            // open the pane's Terminal stream before the frame lands and
-            // its reflow resizes the new pane. Satellite spawns bind after
-            // their ATTACH_RESOURCE reply instead (`attach_spawned_panes`).
+            // A local spawn: bind its Terminal stream before the frame's
+            // reflow. Satellite spawns bind after their ATTACH_RESOURCE reply.
             FrameKind::ResourceSpawned { request_id, result }
                 if self.pending_splits.contains_key(request_id)
                     || self.pending_windows.contains_key(request_id) =>
@@ -2859,12 +2261,8 @@ impl SessionLoop {
         Ok(false)
     }
 
-    /// Fold a peer-scoped reply into the foreign caches, or hand the frame
-    /// on to the general handler.
-    ///
-    /// `None` ⇒ the frame was consumed here. The general handler's
-    /// `MetadataValue` arm would drop these unmatched request ids, so they
-    /// never reach it.
+    /// Fold a peer-scoped reply into the foreign caches (`None`), or hand the
+    /// frame on to the general handler.
     async fn intercept_peer_reply(
         &mut self,
         conn: &mut Connection,
@@ -2901,9 +2299,7 @@ impl SessionLoop {
                 self.peers.serving_host_pending = None;
                 Ok(None)
             }
-            // phux-foz.8: a peer session's persisted-layout GET reply.
-            // Picker/fleet display data only — decode into the cache and skip
-            // the general frame handler.
+            // A peer session's persisted-layout GET reply.
             FrameKind::MetadataValue { request_id, value }
                 if self.peers.foreign_layout_pending.contains_key(&request_id) =>
             {
@@ -2911,10 +2307,7 @@ impl SessionLoop {
                     .await?;
                 Ok(None)
             }
-            // phux-jpqd: a foreign pane's agent-record GET
-            // reply. Fold into the fleet cache and refresh a
-            // live fleet; same intercept shape as the layout
-            // reply (the general handler would drop it).
+            // A foreign pane's agent-record GET reply.
             FrameKind::MetadataValue { request_id, value }
                 if self.peers.foreign_agent_pending.contains_key(&request_id) =>
             {
@@ -2943,20 +2336,8 @@ impl SessionLoop {
                 }
                 Ok(None)
             }
-            // phux-h5hj.12: the same two lookups for the
-            // *refusal* shape. `proto.md` §9 lets a server
-            // answer a request it will not serve with a
-            // correlated ERROR instead of the reply frame,
-            // and a peer session's Group is exactly the kind
-            // of scope a policy refuses. Without this arm the
-            // pending entry is never removed: the row stays
-            // blank for the life of the attach, the map grows
-            // by one per refused read, and the ERROR falls
-            // through to `handle_server_frame` as if it were
-            // an unrelated notice. Dropping the entry is the
-            // whole fix — a refused read has no value to
-            // apply, and the fleet projection already renders
-            // a session it knows nothing about.
+            // A refused peer read (`proto.md` §9): drop the pending entry so
+            // the map does not grow and the ERROR does not reach the handler.
             FrameKind::Error {
                 request_id: Some(request_id),
                 ..
@@ -3002,13 +2383,11 @@ impl SessionLoop {
                 self.fail_session_rename(&message, repaint);
                 Ok(None)
             }
-            // phux-c2td.3: the reply to our own host-inventory GET_STATE.
-            // Picker display data only, same intercept shape as the peer
-            // replies above.
+            // The reply to our own host-inventory GET_STATE.
             FrameKind::CommandResult { request_id, result }
                 if self.peers.hosts_pending == Some(request_id) =>
             {
-                // phux-c2td.23: a satellite this inventory could not list
+                // A satellite this inventory could not list
                 // forgets its strays; one it reached gets their kills.
                 let asked_at = self.peers.hosts_pending_since;
                 let answers = self.fold_host_inventory(&result, repaint);
@@ -3016,9 +2395,8 @@ impl SessionLoop {
                 self.retry_after_inventory(conn, &answers, asked_at).await?;
                 Ok(None)
             }
-            // Its refusal shape: keep the inventory we already had, free the
-            // slot so the next open can ask again, and surface every notice
-            // held for it — no reply arrived to explain any of them.
+            // Its refusal: keep the old inventory, free the slot, surface every
+            // held notice.
             FrameKind::Error {
                 request_id: Some(request_id),
                 ..
@@ -3027,18 +2405,14 @@ impl SessionLoop {
                 self.apply_notices(federation_notices(held), repaint);
                 Ok(None)
             }
-            // The aggregate's own degradation notices, while our request is
-            // in flight: a hub pushes one un-correlated
-            // `SatelliteUnreachable` per satellite it could not list, ahead
-            // of the reply (L1 §9.1). Held, not dropped (see
-            // `PeerCaches::held_unreachable`): the reply decides which ones
-            // it already reports as unreachable rows.
+            // Un-correlated `SatelliteUnreachable` pushes while our inventory is
+            // in flight are held (see `PeerCaches::held_unreachable`).
             FrameKind::Error {
                 request_id: None,
                 code: phux_protocol::wire::frame::ErrorCode::SatelliteUnreachable,
                 message,
             } if self.peers.hosts_pending.is_some() => {
-                // phux-lxov.1: grey the panes now. The inventory reply still
+                // Grey the panes now. The inventory reply still
                 // decides the notice, but the layout slot is already down.
                 if crate::attach::pane_state::note_satellite_unreachable(&mut self.panes, &message)
                 {
@@ -3047,10 +2421,7 @@ impl SessionLoop {
                 self.peers.held_unreachable.push(message);
                 Ok(None)
             }
-            // ADR-0053: the reply to one of the journal's own APPLY_INPUT
-            // attempts, consumed here — the same intercept shape as the
-            // foreign-layout replies above — because the attached-phase frame
-            // handler has no COMMAND_RESULT arm.
+            // ADR-0053: the reply to a journal `APPLY_INPUT` attempt.
             FrameKind::CommandResult { request_id, result }
                 if self
                     .input_replay
@@ -3065,9 +2436,7 @@ impl SessionLoop {
         }
     }
 
-    /// phux-jpqd: once a peer's pane tree is known, fetch each pane's agent
-    /// record (prune stale first) so the fleet dashboard's foreign rows carry
-    /// agent state, then refresh a live fleet in place.
+    /// Fold a peer layout reply, then sync that peer's agent-record watches.
     async fn fold_peer_layout(
         &mut self,
         conn: &mut Connection,
@@ -3085,9 +2454,8 @@ impl SessionLoop {
         Ok(())
     }
 
-    /// GET and broadcast layouts discover agent watches through the same path.
-    /// Live terminals come from a persisted TUI layout when one exists,
-    /// otherwise from the server session/resource graph (phux-ah84).
+    /// Prune and re-sync the foreign agent watches against the live foreign
+    /// terminal set (from persisted layouts, or the server graph).
     async fn reconcile_peer_agents(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
         let live =
             crate::attach::sidebar_zones::foreign_terminal_ids(&self.peers.inputs(&self.review));
@@ -3122,17 +2490,8 @@ impl SessionLoop {
         defer_paint: bool,
         repaint: &mut RepaintAccumulator,
     ) -> Result<FrameStep, AttachError> {
-        // phux-tnh: snapshot the current per-leaf rects
-        // BEFORE the frame may fold (close) or split the
-        // layout, so a ResourceClosed/Spawned can diff
-        // against them and resize survivors whose dims
-        // changed. Only meaningful in multi-pane mode;
-        // skipped (no cost) on the single-pane hot path.
-        // phux-x2hm: snapshot the zoom-honoring rects so a
-        // close/spawn diffs against what is actually on screen;
-        // a ResourceSpawned-ok un-zooms (sets `zoomed = None`)
-        // inside `handle_server_frame`, so the post-frame view
-        // below correctly reflows every pane back to its tile.
+        // Pre-frame, zoom-honoring leaf rects, so a close/spawn can resize
+        // survivors whose dims changed.
         let prev_rects = self.leaf_rects(sidebar);
         let focused_before_frame = self.focused_resource.clone();
         let mut outcome = self.handle_frame(out, frame, sidebar, defer_paint)?;
@@ -3193,9 +2552,8 @@ impl SessionLoop {
         })
     }
 
-    /// The engine rejected a generation after emitting a typed resync status;
-    /// issue a fresh in-connection ATTACH while the frozen published replica
-    /// stays visible.
+    /// The engine rejected a generation: re-ATTACH in-connection while the
+    /// frozen replica stays visible.
     async fn request_rebootstrap(
         &mut self,
         conn: &mut Connection,
@@ -3230,49 +2588,52 @@ impl SessionLoop {
         Ok(())
     }
 
-    /// A peer headless placement can add a layout leaf without this attached
-    /// client being subscribed to the new Terminal. Attach each discovered
-    /// leaf so its snapshot creates a `PaneSlot` and renders in place.
+    /// Attach layout leaves this client is not subscribed to yet (a peer's
+    /// headless placement, a returned satellite).
     async fn attach_discovered_panes(
         &mut self,
         conn: &mut Connection,
         terminal_ids: &[ResourceId],
     ) -> Result<(), AttachError> {
         for terminal_id in terminal_ids {
-            let request_id = self.next_request_id;
-            self.next_request_id = self.next_request_id.wrapping_add(1);
-            // A leaf restored from persisted layout metadata can name a
-            // resource that died with a previous server. The refusal is the
-            // only way we ever learn that, so correlate it: otherwise the
-            // leaf paints a blank pane that no kill can remove.
+            let request_id = self.take_request_id();
+            // Correlate the refusal: it is the only evidence a restored leaf
+            // names a resource that died with a previous server.
             self.pending_resource_ops
                 .insert(request_id, terminal_id.clone());
-            if conn.multistream_enabled() {
-                self.track_pending_stream_bind(request_id, terminal_id.clone())?;
-            }
-            if let Err(error) = send_unless_peer_gone(
-                conn,
-                &FrameKind::Command {
-                    request_id,
-                    command: Command::AttachResource {
-                        terminal_id: terminal_id.clone(),
-                        role_policy: crate::attach::attach_role::pane_attach_role(),
-                    },
-                },
-            )
-            .await
-            {
-                self.pending_stream_binds.remove(&request_id);
-                return Err(error);
-            }
+            self.send_attach_resource(conn, request_id, terminal_id)
+                .await?;
         }
         Ok(())
     }
 
-    /// Park each window or split spawned on a satellite through the hub and
-    /// attach its pane under a tracked request id. The reply decides it
-    /// (`server_frame::handler::handle_adopt_reply`): the window opens or the
-    /// split applies on success, and a refusal bells and names the host.
+    /// `ATTACH_RESOURCE` one pane under `request_id`, tracking the QUIC
+    /// stream bind its affirmative reply opens.
+    async fn send_attach_resource(
+        &mut self,
+        conn: &mut Connection,
+        request_id: u32,
+        terminal_id: &ResourceId,
+    ) -> Result<(), AttachError> {
+        if conn.multistream_enabled() {
+            self.track_pending_stream_bind(request_id, terminal_id.clone())?;
+        }
+        let frame = FrameKind::Command {
+            request_id,
+            command: Command::AttachResource {
+                terminal_id: terminal_id.clone(),
+                role_policy: crate::attach::attach_role::pane_attach_role(),
+            },
+        };
+        if let Err(error) = send_unless_peer_gone(conn, &frame).await {
+            self.pending_stream_binds.remove(&request_id);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Park each window/split spawned on a satellite and attach its pane; the
+    /// reply opens it or bells with the host name.
     async fn attach_spawned_panes(
         &mut self,
         conn: &mut Connection,
@@ -3282,35 +2643,15 @@ impl SessionLoop {
             let Some(terminal_id) = adopt.pane().cloned() else {
                 continue;
             };
-            let request_id = self.next_request_id;
-            self.next_request_id = self.next_request_id.wrapping_add(1);
-            if conn.multistream_enabled() {
-                self.track_pending_stream_bind(request_id, terminal_id.clone())?;
-            }
+            let request_id = self.take_request_id();
             self.park_adopt(request_id, adopt);
-            if let Err(error) = send_unless_peer_gone(
-                conn,
-                &FrameKind::Command {
-                    request_id,
-                    command: Command::AttachResource {
-                        terminal_id: terminal_id.clone(),
-                        role_policy: crate::attach::attach_role::pane_attach_role(),
-                    },
-                },
-            )
-            .await
-            {
-                self.pending_stream_binds.remove(&request_id);
-                return Err(error);
-            }
+            self.send_attach_resource(conn, request_id, &terminal_id)
+                .await?;
         }
         Ok(())
     }
 
-    /// phux-c2td.20: kill each satellite pane this client spawned whose
-    /// attach was refused, best effort, through the hub. A write to a gone
-    /// peer is dropped at debug; the replies settle in
-    /// [`super::orphans::OrphanKills::settle`], also at debug.
+    /// Best-effort kill of spawned satellite panes whose attach was refused.
     async fn kill_orphaned_spawns(
         &mut self,
         conn: &mut Connection,
@@ -3325,13 +2666,9 @@ impl SessionLoop {
         Ok(())
     }
 
-    /// phux-c2td.20 / phux-c2td.23: act on the orphans one frame left. Kill
-    /// the ones a kill can reach now, remember the bound ones an unreachable
-    /// satellite stranded (phux-c2td.25), and kill the strays on each
-    /// satellite that just minted a pane for this client: its spawn
-    /// answered, so it is reachable. `answered` is those fresh panes; one
-    /// reusing a stray's id also shows its satellite restarted
-    /// ([`super::orphans::OrphanKills::forget_reissued`]).
+    /// Act on the orphans one frame left: kill what is reachable, remember
+    /// bound ones an unreachable satellite stranded, and kill strays on each
+    /// satellite that just answered a spawn (`answered`).
     async fn settle_orphans(
         &mut self,
         conn: &mut Connection,
@@ -3354,13 +2691,8 @@ impl SessionLoop {
             .await
     }
 
-    /// phux-c2td.23: a host inventory asked at `asked_at` could not list
-    /// `answers.unreachable`, whose strays are forgotten, and reached
-    /// `answers.reachable`, whose strays recorded before it asked are killed.
-    /// phux-lxov.1: an inventory reply is also the satellite-pane recovery
-    /// signal. Hosts it could not list stay grey in their layout slots.
-    /// Hosts it reached have their down flag cleared and are
-    /// `ATTACH_RESOURCE`d so the snapshot replays into the same leaf.
+    /// An inventory reply is the satellite recovery signal: unreachable hosts
+    /// stay grey; reached hosts are un-greyed and re-attached in place.
     async fn replay_returned_satellites(
         &mut self,
         conn: &mut Connection,
@@ -3384,7 +2716,7 @@ impl SessionLoop {
         self.attach_discovered_panes(conn, &replay).await
     }
 
-    /// phux-lxov.1: arm [`SATELLITE_PROBE_INTERVAL`] while any satellite pane
+    /// Arm [`SATELLITE_PROBE_INTERVAL`] while any satellite pane
     /// is down and no host inventory is already in flight.
     fn arm_satellite_probe(&mut self, now: tokio::time::Instant) {
         if self.host_sessions_supported
@@ -3412,11 +2744,8 @@ impl SessionLoop {
             .await
     }
 
-    /// phux-c2td.23: the kill of each stray on `hosts`, which were known to
-    /// answer at `answered_at`; its one attempt, conditional when the stray
-    /// was bound (phux-c2td.25). Sent through the same non-blocking write as
-    /// any orphan kill; a stray one of this client's windows or parked opens
-    /// now references is dropped instead ([`Self::unreferenced_strays`]).
+    /// Kill the strays on `hosts` (known to answer at `answered_at`), skipping
+    /// any this client now references.
     async fn retry_stray_kills(
         &mut self,
         conn: &mut Connection,
@@ -3439,11 +2768,8 @@ impl SessionLoop {
         Ok(())
     }
 
-    /// The strays nothing in this client references now. One the user has
-    /// since adopted (a window holds it, or an open waits on it) is no
-    /// longer a stray, and is forgotten rather than killed. The check stays
-    /// ahead of a conditional kill too: the satellite exempts the spawning
-    /// connection's own attaches, and through a hub that is this client.
+    /// The strays nothing in this client references now; an adopted one is
+    /// forgotten, not killed.
     fn unreferenced_strays(
         &self,
         strays: Vec<super::orphans::Stray>,
@@ -3466,24 +2792,21 @@ impl SessionLoop {
             .collect()
     }
 
-    /// phux-c2td.23: take over the orphan record an earlier entry on this
-    /// connection handed out at a session switch.
-    /// It is stamped with this entry's `CONDITIONAL_KILL` bit: the first
-    /// entry's record is created before any features are known.
+    /// Take over the orphan record from an earlier entry on this connection,
+    /// stamped with this entry's `CONDITIONAL_KILL` bit.
     pub(super) fn set_orphan_kills(&mut self, mut kills: super::orphans::OrphanKills) {
         kills.set_conditional_kill(self.conditional_kill_supported);
         self.orphan_kills = kills;
     }
 
-    /// phux-deya: take over the review index an earlier entry on this
+    /// Take over the review index an earlier entry on this
     /// connection handed out at a session switch.
     pub(super) fn set_review(&mut self, review: crate::attach::review::ReviewIndex) {
         self.review = review;
     }
 
-    /// Fold a foreign GET or broadcast into the fleet cache and the
-    /// connection-lifetime review index. Returns whether either actually
-    /// moved, so an identical read does not dirty chrome.
+    /// Fold a foreign agent record into the fleet cache and review index;
+    /// true when either moved.
     fn fold_foreign_agent(&mut self, id: &ResourceId, value: Option<&[u8]>) -> bool {
         let cache_changed =
             apply_foreign_agent_reply(&mut self.peers.foreign_agents, id.clone(), value);
@@ -3495,11 +2818,8 @@ impl SessionLoop {
         cache_changed || review_changed
     }
 
-    /// phux-c2td.23: hand the orphan record to the next loop entry. The
-    /// switch drops every window and split still opening, and sends no kill
-    /// on the way out (the hub would hold the re-attach behind it), so their
-    /// spawned panes, and the satellite panes still-unanswered spawns turn
-    /// out to be, are remembered as strays instead.
+    /// Hand the orphan record to the next loop entry; windows and splits
+    /// still opening become strays (no kill is sent on the way out).
     fn orphans_for_switch(&mut self) -> super::orphans::OrphanKills {
         let mut kills = std::mem::take(&mut self.orphan_kills);
         kills.park_for_switch(
@@ -3523,13 +2843,8 @@ impl SessionLoop {
         }
     }
 
-    /// phux-k0cw: fold anything the frame said about a session OTHER than
-    /// ours into the peer caches the roster and cross-session queue read.
-    ///
-    /// Both repaint kinds are raised, not just the fleet one: the peer state
-    /// now feeds the always-on strip, so raising `fleet` alone would leave a
-    /// peer's change invisible unless the fleet modal happened to be open
-    /// (`refresh_fleet_if_open` returns `NotPublished` when it is not).
+    /// Fold what the frame said about other sessions into the peer caches.
+    /// Raises both chrome and fleet: peer state feeds the always-on strip.
     async fn fold_peer_outcome(
         &mut self,
         conn: &mut Connection,
@@ -3579,42 +2894,23 @@ impl SessionLoop {
         conn: &mut Connection,
         outcome: &mut FrameOutcome,
     ) -> Result<(), AttachError> {
-        // ADR-0040: the frame may have added panes
-        // (ResourceSpawned, a peer's layout broadcast) or
-        // removed them (ResourceClosed). Re-sweep so every
-        // live pane has a `phux.agent/v1` watch; the len
-        // guard keeps the steady state zero-cost.
-        // subscribe_bootstrap will open these watches once the recv arm
-        // proves the session is still attached (phux-501l). Writing them
-        // from the first output frame raced last-pane RESOURCE_CLOSED in
-        // the same burst.
+        // Keep a `phux.agent/v1` watch per live pane, once bootstrap outbound
+        // has gone (see `bootstrap_outbound`).
         if self.bootstrap_outbound.is_none() && self.panes.len() != self.agent_meta.subscribed.len()
         {
             self.sync_agent_meta(conn).await?;
         }
-        // phux-p4vp: the ATTACHED snapshot refreshes the pane-cwd index
+        // The ATTACHED snapshot refreshes the pane-cwd index
         // behind the sidebar branch line.
         self.vcs
             .apply_snapshot(std::mem::take(&mut outcome.pane_cwds));
-        // phux-4li.20: refresh the cached session graph
-        // whenever an ATTACHED snapshot lands so the
-        // session picker lists the current peer set.
-        // phux-foz.8: re-request the peers' persisted
-        // layouts against the fresh graph so the window
-        // picker's one-step rows track it; replies
-        // overwrite stale cache entries.
+        // Refresh the cached session graph and re-sweep the peers against it.
         if let Some((list, focused)) = outcome.sessions.take() {
             self.peers.sessions = list;
             self.peers.focused_session = Some(focused);
             self.fold_inventory(std::mem::take(&mut outcome.inventory));
-            // phux-k0cw.10: a graph refresh in the SAME batch
-            // that satisfies the deferred bootstrap sweep does
-            // its whole job — same call, same arguments, and
-            // against a fresher graph. Clear the flag so the
-            // drain below does not re-send a GET per peer that
-            // this call already has in flight (the send-once
-            // `subscribed` set covers the SUBSCRIBE half, but
-            // nothing dedupes the GET).
+            // This sweep satisfies a pending deferred one; clearing the flag
+            // avoids a duplicate GET per peer.
             self.peers.sweep_pending = false;
             self.sweep_peer_layouts(conn).await?;
         } else {
@@ -3623,9 +2919,7 @@ impl SessionLoop {
         Ok(())
     }
 
-    /// Refresh the chrome and schedule an in-place paint when a painter input
-    /// actually changed, so an event that alters no visible state doesn't
-    /// force a repaint.
+    /// Refresh the chrome and raise an in-place paint only when it changed.
     fn note_chrome_change(&mut self, repaint: &mut RepaintAccumulator) {
         if self.refresh_chrome() && !self.overlays.is_active() {
             repaint.raise_chrome();
@@ -3638,15 +2932,7 @@ impl SessionLoop {
         outcome: &mut FrameOutcome,
         repaint: &mut RepaintAccumulator,
     ) {
-        // ADR-0033 / phux-foz.1: a `TerminalControl` or `Asked`
-        // event changed a pane's lease/lifecycle/attention. The
-        // event frame paints nothing, so refresh the chrome
-        // (supervisory badge, attention hint, window markers)
-        // and repaint here. ADR-0029: nothing about a title /
-        // lease / attention change touches a pane interior, so
-        // this is a CHROME raise, not a full-frame clear.
-        // (`own_client_id` is fixed for the life of this loop;
-        // it was captured at bootstrap.)
+        // A control/asked event changed chrome only (ADR-0029).
         if outcome.chrome_dirty {
             self.note_chrome_change(repaint);
         }
@@ -3655,28 +2941,10 @@ impl SessionLoop {
         }
     }
 
-    /// phux-i0e8.2.1: drain the frame's transient notices
-    /// into the painter's newest-wins slot; expiry rides
-    /// the 1 s `status_tick` arm. With no bar to paint
-    /// on (no painter, an empty bar, or the persistent
-    /// error line holding the row — the painter refuses
-    /// those itself) the notice degrades to a tracing
-    /// line rather than vanishing.
+    /// Drain the frame's transient notices into the bar (expiry rides the
+    /// status tick); with no bar they degrade to tracing.
     fn apply_notices(&mut self, notices: Vec<Notice>, repaint: &mut RepaintAccumulator) {
-        let now = std::time::Instant::now();
-        let mut notice_shown = false;
-        for notice in notices {
-            if let Some(sb) = self.settings.status_bar.as_mut() {
-                notice_shown |= sb.set_notice(notice, now);
-            } else {
-                tracing::info!(
-                    severity = ?notice.severity,
-                    text = %notice.text,
-                    "status-bar notice dropped: no status bar configured",
-                );
-            }
-        }
-        if notice_shown && !self.overlays.is_active() {
+        if self.show_notices(notices) && !self.overlays.is_active() {
             repaint.raise_chrome();
         }
     }
@@ -3719,11 +2987,7 @@ impl SessionLoop {
             )
             .await?;
         }
-        // phux-4li.12: a layout mutation triggered by a
-        // server frame (ResourceSpawned ok, ResourceClosed)
-        // requires the same `SET_METADATA` broadcast as
-        // a local action — see `ActionEffects.set_metadata`
-        // for the local-action path.
+        // A server-driven layout change broadcasts like a local action.
         if outcome.emit_set_metadata {
             self.broadcast_layout(conn).await?;
         }
@@ -3758,8 +3022,7 @@ impl SessionLoop {
         let Some(bytes) = encode_layout_or_log(&self.workspace) else {
             return Ok(());
         };
-        let request_id = self.next_request_id;
-        self.next_request_id = self.next_request_id.wrapping_add(1);
+        let request_id = self.take_request_id();
         send_unless_peer_gone(
             conn,
             &FrameKind::SetMetadata {
@@ -3772,15 +3035,13 @@ impl SessionLoop {
         .await
     }
 
-    /// ADR-0105: tombstone the session's stored layout once the last pane of
-    /// a keep-empty session closed, so the next attach does not adopt a tree
-    /// of dead panes. Sibling clients fold the tombstone to an empty workspace.
+    /// ADR-0105: tombstone the stored layout once a keep-empty session's last
+    /// pane closed.
     async fn clear_stored_layout(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
         let Some(session) = self.peers.focused_session else {
             return Ok(());
         };
-        let request_id = self.next_request_id;
-        self.next_request_id = self.next_request_id.wrapping_add(1);
+        let request_id = self.take_request_id();
         send_unless_peer_gone(
             conn,
             &FrameKind::DeleteMetadata {
@@ -3792,16 +3053,8 @@ impl SessionLoop {
         .await
     }
 
-    /// phux-tnh: a pane close/spawn changed surviving
-    /// panes' dimensions. Diff the folded/split layout
-    /// against the pre-frame rects and emit a
-    /// `RESIZE_TERMINAL` per changed leaf — same path the
-    /// SIGWINCH arm uses — so the server reflows each
-    /// PTY (TIOCSWINSZ) and the shell redraws to fill.
-    /// Without this the survivor of a close keeps its
-    /// old small winsize ("survivor stays small").
-    /// Sent BEFORE the repaint so the server's resync
-    /// snapshot lands after the local mirror has grown.
+    /// A close/spawn changed survivors' dimensions: resize each changed leaf's
+    /// PTY, before the repaint so the resync snapshot lands on the grown mirror.
     async fn emit_reflow_resizes(
         &self,
         conn: &mut Connection,
@@ -3844,30 +3097,12 @@ impl SessionLoop {
             self.on_layout_replaced(sidebar, repaint);
         } else if outcome.layout_get_answered {
             // No persisted layout: still resolve a resource-identity pick
-            // against the ATTACHED graph (phux-ah84).
+            // against the ATTACHED graph.
             self.resolve_cross_session_pick();
         }
-        // ADR-0040: a `phux.agent/v1` record changed (GET
-        // reply or subscribed broadcast). The window labels
-        // and the sidebar's agents section derive from it, so
-        // recompose the chrome and schedule an IN-PLACE chrome
-        // paint.
-        //
-        // This arm used to call `paint_full_frame`
-        // UNCONDITIONALLY — no gate on whether a painter input
-        // actually changed, unlike the `chrome_dirty` arm. That
-        // was invisible only because nothing ever wrote the
-        // record, so the arm never fired. With a server-side
-        // agent-state detector publishing transitions, an
-        // ungated `paint_full_frame` here is an `ESC[2J`
-        // full-screen clear per transition. Both halves of the
-        // fix are required: gate on `refresh_window_chrome`'s
-        // change report, AND route to the in-place chrome
-        // painter via the accumulator.
-        // ADR-0040 + phux-deya: fold the Terminal even when the stored
-        // record was identical, so a repeat GET after a switch cannot
-        // re-arm a reviewed completion. Chrome paints only when the
-        // cache or the review index actually moved.
+        // ADR-0040: an agent record changed. Fold it into the review index even
+        // when identical (so a repeat GET cannot re-arm a reviewed completion);
+        // repaint chrome in place only when something moved.
         let review_changed = outcome.agent_meta_terminal.as_ref().is_some_and(|id| {
             self.review.observe_record(
                 id,
@@ -3878,42 +3113,19 @@ impl SessionLoop {
         if outcome.agent_meta_changed || review_changed {
             self.note_chrome_change(repaint);
         }
-        // phux-foz.5: the `phux config reload` doorbell
-        // rang (a subscribed `phux.config.reload/v1`
-        // broadcast). Re-read our own config file and swap
-        // the config-derived state in place — same handler
-        // as the `reload-config` action; failures keep the
-        // previous config and toast.
+        // The `phux config reload` doorbell rang.
         if outcome.config_reload {
             self.reload_config(out, sidebar);
         }
-        // phux-foz.7: the agent-fleet dashboard is a live
-        // projection — while it is open, a frame that
-        // changed fleet-projected state (an agent record,
-        // an ADR-0035 Asked, a pane spawn/close, a layout
-        // or session-graph change) rebuilds its rows and
-        // repaints the overlay layer. Push, not poll:
-        // nothing runs when no such frame lands.
-        //
-        // RAISED, not called: `refresh_fleet_if_open` repaints
-        // the overlay over a `paint_full_frame` base, so a call
-        // per frame is an `ESC[2J` per frame. Nine panes
-        // publishing an agent-state transition coalesce into one
-        // batch, and this used to fire nine times inside it —
-        // nine full-screen clears in one iteration, in exactly
-        // the view that exists for watching agents. The
-        // accumulator collapses them into ONE refresh at the
-        // drain.
+        // Raised, not called: the fleet refresh repaints over a full frame, so
+        // the accumulator collapses a burst into one.
         if fleet_dirty {
             repaint.raise_fleet();
         }
     }
 
-    /// phux-4li.5: the layout changed under us (either the GET reply or a
-    /// peer's broadcast). Trigger a full repaint: clear screen + paint
-    /// dividers + re-render every pane. phux-5ke.4: while an overlay is up,
-    /// defer the repaint — the dismiss path always triggers
-    /// `paint_full_frame`, and the libghostty mirror is already updated.
+    /// The layout changed under us: raise a full repaint (deferred while an
+    /// overlay is up; dismiss repaints).
     fn on_layout_replaced(
         &mut self,
         sidebar: Option<SidebarReservation>,
@@ -3921,28 +3133,15 @@ impl SessionLoop {
     ) {
         self.resolve_cross_session_pick();
         self.refresh_chrome();
-        // phux-z6wt: this path fires for a peer's layout
-        // broadcast and for the ResourceSpawned/
-        // ResourceClosed reflow — neither goes through
-        // SIGWINCH, so the phux-d26y fan-out never ran
-        // for them. A surviving copy-mode overlay would
-        // keep clamping against the pane size it opened
-        // with, silently dropping or clipping a copy.
-        // Recompute the focused pane's rect the same way
-        // the SIGWINCH arm does and hand it to every
-        // surviving overlay before the repaint below.
+        // Overlays (copy mode) must adopt the focused pane's new rect.
         self.sync_overlays(sidebar);
-        // The pane rects moved: only a full-viewport
-        // repaint (ED2 + every pane + dividers) is a
-        // coherent base. ADR-0029: raise, drain once.
         if !self.overlays.is_active() {
             repaint.raise_full();
         }
     }
 
-    /// phux-foz.8 / phux-ah84: a one-step cross-session pick drove this
-    /// attach. Prefer a `ResourceId` from the server graph; otherwise apply
-    /// the layout-backed window/pane indices once a TUI workspace exists.
+    /// Apply a one-step cross-session pick: a `ResourceId` from the server
+    /// graph, else the layout-backed window/pane indices.
     fn resolve_cross_session_pick(&mut self) {
         if let Some(id) = self.pending_resource.take() {
             self.pending_window = None;
@@ -4060,10 +3259,8 @@ impl SessionLoop {
         true
     }
 
-    /// phux-jpqd: the pane half of a one-step cross-session pane pick — move
-    /// focus onto the target DFS leaf of the just-selected window.
-    /// Out-of-range (peer mutated the layout) keeps the window's restored
-    /// focus, logged.
+    /// Focus leaf `ord` of the just-selected window; out of range keeps the
+    /// restored focus.
     fn focus_picked_leaf(&mut self, idx: usize, ord: usize) {
         let picked = self
             .workspace
@@ -4098,39 +3295,24 @@ impl SessionLoop {
             self.note_chrome_change(repaint);
         }
         let drained = repaint.drain();
-        // The overlay half of the same drain. A no-op unless a
-        // live fleet list is actually in the overlay stack, so
-        // the raise costs nothing when the dashboard is closed.
         if drained.fleet_dirty {
             self.refresh_fleet(out, sidebar);
         }
-        // phux-c2td.3: the same in-place refresh for a session picker that
+        // The same in-place refresh for a session picker that
         // was opened before its host inventory landed.
         if std::mem::take(&mut self.session_picker_dirty) {
             self.refresh_session_picker(out, sidebar);
         }
-        // A full repaint force-redraws every pane, so it discharges every
-        // paint the pacer was still holding. Settling them afterwards would
-        // repaint rows that are already correct.
+        // A full repaint discharges every paint the pacer was holding.
         if matches!(drained.level, RepaintLevel::Full) {
             self.pacer.clear_pending();
         }
         self.repaint_view(out, sidebar, drained.level);
     }
 
-    /// phux-l96p.3: paint every pane whose paint the pacer withheld, as ONE
-    /// composited frame.
-    ///
-    /// Reached from the `paint_deadline` select arm when the window expires,
-    /// and from the end of an admitted burst — see `handle_frame_burst` for
-    /// why the timer alone cannot be trusted to get there.
-    ///
-    /// Suppression is re-evaluated here rather than inherited from the frames
-    /// that were withheld: an overlay may have opened, or a pane may have
-    /// entered a synchronized-output transaction, since. Both have their own
-    /// recovery (the overlay repaints the view on dismiss; the sync-output
-    /// watchdog exposes a stuck transaction), so a pane suppressed at settle
-    /// time is dropped rather than held indefinitely.
+    /// Paint every pane the pacer withheld, as one composited frame.
+    /// Suppression is re-evaluated here: a pane now under an overlay or a
+    /// sync-output transaction is dropped (both have their own recovery).
     fn settle_withheld_panes<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,
@@ -4213,7 +3395,7 @@ impl SessionLoop {
         }
     }
 
-    /// phux-c2td.3: rebuild and repaint the session picker, if it is open.
+    /// Rebuild and repaint the session picker, if it is open.
     fn refresh_session_picker<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,
@@ -4273,9 +3455,7 @@ impl SessionLoop {
 
     // ---- timers, signals, and the periodic paints -----------------------
 
-    /// Bound the failure mode of an application that omits `?2026l`: expose
-    /// the latest complete mirror once, then let subsequent output re-arm the
-    /// transaction watchdog.
+    /// An application that never sent `?2026l`: expose the mirror once.
     fn on_sync_output_timeout<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,
@@ -4328,10 +3508,7 @@ impl SessionLoop {
         let viewport = current_viewport_or_default();
         self.viewport_dims = (viewport.cols.max(1), viewport.rows.max(1));
         self.cell_px_dims = host_cell_px(&viewport);
-        // Bound predict to the FOCUSED pane's current grid, not the
-        // whole viewport — predictions are pane-local (phux-7ry0). The
-        // pane grids resize on the server's resize-ack snapshot, which
-        // re-syncs predict again; this just keeps the transient
+        // Predictions are pane-local: bound them to the focused pane's grid.
         let (predict_cols, predict_rows) = self
             .focused_resource
             .as_ref()
@@ -4340,42 +3517,18 @@ impl SessionLoop {
         self.predict.set_viewport(predict_cols, predict_rows);
         conn.send(&viewport_resize_frame(viewport)).await?;
         self.emit_resize_reflow(conn, prev_dims, sidebar).await?;
-        // phux-a7fz: do not repaint stale pre-resize mirrors into the
-        // new viewport. The server resize path sends an authoritative
-        // resync snapshot; painting the old grid first races with the
-        // shell's prompt redraw and leaves duplicated right prompts on
-        // resize-heavy shells. Clear immediately, then let the snapshot
-        // repopulate the viewport at the new dimensions.
+        // Clear rather than repaint stale pre-resize mirrors; the server's
+        // resync snapshot repopulates at the new size.
         let _ = out.write_all(b"\x1b[2J\x1b[H");
-        // phux-esge: the clear wiped every pane's cells, and until the
-        // snapshot's forced repaint lands, pane output paints incrementally
-        // onto the blank screen. No front buffer may claim those cells.
         crate::attach::pane_state::invalidate_all_fronts(&mut self.panes);
-        // phux-fsb: an overlay that pinned its box to a pointer cell
-        // (the context menu) is now addressing cells that may not
-        // exist. Drop it BEFORE the repaint below, so this frame is
-        // the one that erases it — leaving it up would keep an
-        // invisible overlay capturing every keystroke, with Enter
-        // committing its selected row (`Close pane`, if that is where
-        // the selection sat) against a pane the user cannot see it
-        // pointing at. Reflowing overlays are untouched.
+        // A pointer-pinned overlay (context menu) is stale now: drop it before
+        // the repaint so it cannot capture keys invisibly.
         if self.overlays.dismiss_stale_on_resize() {
             tracing::debug!("resize: dropped a pinned overlay whose geometry went stale");
         }
         if self.overlays.is_active() {
-            // phux-d26y / phux-z6wt: the survivors keep their state
-            // but must adopt the focused pane's NEW size before they
-            // are painted. Copy-mode is the one that cares: it
-            // clamps its cursor and picks Line mode's right edge
-            // from pane dimensions captured when it opened, so
-            // without this a copy after a resize either resolves to
-            // nothing (a stale-large corner the engine cannot
-            // address) or stops at the old edge (stale-small). Runs
-            // after the stale sweep above, so an overlay about to be
-            // dropped is never handed geometry it will not use.
-            // Same choke point the `layout_replaced` path uses for
-            // the non-SIGWINCH triggers (a peer's layout broadcast,
-            // ResourceSpawned/ResourceClosed reflow).
+            // Survivors adopt the focused pane's new size (copy mode clamps
+            // against it).
             self.sync_overlays(sidebar);
             self.paint_overlay(out, sidebar);
         } else {
@@ -4384,12 +3537,8 @@ impl SessionLoop {
         Ok(())
     }
 
-    /// Emit one `RESIZE_TERMINAL` per leaf whose (w, h) actually
-    /// changed so the server ioctls TIOCSWINSZ on each PTY. This
-    /// covers the single-pane case too — `Workspace::single` seeds
-    /// a one-leaf tree, so the `tree.is_some()` guard only skips a
-    /// workspace with no panes at all, and a lone pane still needs
-    /// sizing to the chrome-inset content rect.
+    /// Emit one `RESIZE_TERMINAL` per leaf whose size changed, sized to the
+    /// chrome-inset content rect.
     async fn emit_resize_reflow(
         &self,
         conn: &mut Connection,
@@ -4402,16 +3551,7 @@ impl SessionLoop {
         if ls.tree.is_none() {
             return Ok(());
         }
-        let bar = self
-            .settings
-            .status_bar
-            .as_ref()
-            .map(StatusBarPainter::position);
-        // phux-4h5a: size each PTY to the inset content rect (the
-        // pane area after the status bar + sidebar reservation),
-        // not the full viewport — otherwise an enabled sidebar
-        // resizes panes to the full width while they paint inset.
-        let prev_content = content_rect(prev_dims, bar, sidebar);
+        let prev_content = content_rect(prev_dims, self.bar(), sidebar);
         let new_content = self.content(sidebar);
         let prev_rects =
             crate::attach::multi_pane::compute_layout_in(ls.as_ref(), prev_content, prev_dims)
@@ -4437,16 +3577,14 @@ impl SessionLoop {
 
     /// Hand every surviving overlay the focused pane's current rect.
     fn sync_overlays(&mut self, sidebar: Option<SidebarReservation>) {
+        let bar = self.bar();
         sync_overlays_to_focused_pane(
             &mut self.overlays,
             &self.workspace,
             self.zoomed.as_ref(),
             self.focused_resource.as_ref(),
             self.viewport_dims,
-            self.settings
-                .status_bar
-                .as_ref()
-                .map(StatusBarPainter::position),
+            bar,
             sidebar,
         );
     }
@@ -4457,24 +3595,14 @@ impl SessionLoop {
         out: &mut W,
         sidebar: Option<SidebarReservation>,
     ) {
-        // phux-i0e8.2.1: expire the transient notice on the tick that
-        // carries the bar's repaint cadence. The clear invalidates the
-        // painter's cache, so the paint below restores the widget row.
-        // Runs even while an overlay is up (the bar repaints on
-        // overlay dismiss, and a stale notice must not resurface).
+        // Expire the transient notice (even under an overlay).
         if let Some(sb) = self.settings.status_bar.as_mut() {
             let _ = sb.clear_expired_notice(std::time::Instant::now());
         }
-        // phux-c2td.3: a host inventory that never answered must not hold
-        // its notices forever. Past the deadline, free the slot and surface
-        // everything held — nothing arrived to explain any of it. The bar
-        // paint below carries them.
         self.expire_overdue_host_inventory();
-        // phux-8n4w: surface a background update check once it lands.
+        // Surface a background update check once it lands.
         self.poll_update_notice(out, sidebar);
-        // phux-5ke.4: an overlay above the bar would get
-        // partially overwritten by the bar paint; skip ticks
-        // while a modal is up.
+        // An overlay would be partly overwritten by the bar paint.
         if self.overlays.is_active() {
             return;
         }
@@ -4491,13 +3619,8 @@ impl SessionLoop {
             "status_tick: repaint bar"
         );
         let fallback_origin = Some(self.bar_fallback_origin(sidebar));
-        // The tick used to end in an unconditional cursor placement and flush
-        // even when the composed row was byte-identical — every second, for
-        // the life of the attach, a wake of the stdout writer thread to say
-        // that nothing changed. Wrapping the tick in a frame block makes the
-        // no-change case emit literally nothing: the block only opens if the
-        // bar actually writes, and a block that never opened performs no
-        // cursor tail, no epilogue, and no flush.
+        // A frame block opens only if the bar writes, so an unchanged tick
+        // emits nothing.
         let painted = crate::attach::paint::close_frame_with_chrome(
             crate::attach::paint::FrameBlock::begin(out),
             self.settings.status_bar.as_mut(),
@@ -4506,19 +3629,14 @@ impl SessionLoop {
             &self.session_name,
             focused_cursor,
             fallback_origin,
-            // The tick exists precisely to refresh what the painter cannot
-            // observe (the clock, an `exec` widget's cache), so it always
-            // composes. Unchanged output still emits nothing: the row cache
-            // suppresses the write and the frame block never opens.
+            // The tick refreshes what the painter cannot observe (clock, exec).
             crate::render::chrome::status_bar::ComposePolicy::Always,
         );
         self.finish_paint(painted);
     }
 
-    /// phux-9xn / phux-gxy: ALWAYS provide a fallback origin. When
-    /// `focused_resource` is None (e.g. ATTACHED hasn't seeded yet) the old code
-    /// passed None → `paint_bar_after_pane` emitted no CUP → cursor stranded
-    /// at the bar's last cell every tick.
+    /// Where the cursor lands after a bar paint: the focused pane's origin,
+    /// else (0, 0), so it is never stranded in the bar.
     fn bar_fallback_origin(&self, sidebar: Option<SidebarReservation>) -> (u16, u16) {
         let content = self.content(sidebar);
         self.focused_resource
@@ -4527,9 +3645,6 @@ impl SessionLoop {
                 self.workspace
                     .render_window(self.zoomed.as_ref())
                     .and_then(|ls| {
-                        // Through the memoized tiling: this runs on every 1 s
-                        // status tick, and the layout it asks about is the
-                        // same one the last paint tiled.
                         crate::attach::paint::tiled_rect(
                             ls.as_ref(),
                             content,
@@ -4580,14 +3695,8 @@ impl SessionLoop {
         }
     }
 
-    /// phux-8n4w: show a background update check once, if it found one.
-    ///
-    /// The production attach entry kicks the check before this loop
-    /// ([`crate::attach::update_notice::spawn_background_refresh`]); this reads
-    /// its cache on the bar's own tick for [`UPDATE_POLL_TICKS`] ticks, so an
-    /// answer that lands mid-session is surfaced without a dedicated channel or
-    /// a network call on the input loop. A modal already on screen is left
-    /// alone and the poll resumes after it is dismissed.
+    /// Surface the background update check once it lands, polled on the bar
+    /// tick for [`UPDATE_POLL_TICKS`] ticks; waits while a modal is up.
     fn poll_update_notice<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,

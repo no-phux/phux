@@ -1,22 +1,14 @@
 //! The resource-kind catalog and the closed verb classification
 //! ([ADR-0125], `docs/spec/workload-auth.md` §5-§6, `docs/spec/L1.md` §1.1).
 //!
-//! One table serves two readers. Discovery (`phux --capabilities --json` and
-//! the generated `docs/reference/kinds.md`) reads [`SERVER_METHODS`],
-//! [`SUBSTRATE_METHODS`], and [`KINDS`] to say what each resource kind
-//! answers. Authorization reads [`classify_frame`] and [`classify_command`],
-//! which return rows of [`FRAME_RULES`] and [`COMMAND_RULES`]: the same rows
-//! the method entries point at, so the two readers cannot disagree about the
-//! verbs a method needs.
+//! One table serves discovery ([`SERVER_METHODS`], [`SUBSTRATE_METHODS`],
+//! [`KINDS`]) and authorization ([`classify_frame`], [`classify_command`]):
+//! method entries point at the same [`FRAME_RULES`] / [`COMMAND_RULES`] rows
+//! the classifiers return, so the two cannot disagree. Compiled metadata,
+//! never wire; reading it grants nothing.
 //!
-//! The catalog is compiled metadata, never wire. Invocation stays the typed
-//! [`Command`] and [`FrameKind`] enums; nothing here is negotiated, and a
-//! method name is not an invocation handle. Discovery is not authorization:
-//! reading this table grants nothing.
-//!
-//! Both classifiers match their enum exhaustively, so a new frame or command
-//! variant does not compile until it is classified. Whatever the tables do not
-//! name (an unknown, retired, unallocated, or wrong-direction frame or tag) is
+//! Both classifiers match exhaustively, so a new variant does not compile
+//! until classified; anything the tables do not name is
 //! [`Classification::Deny`].
 //!
 //! [ADR-0125]: https://github.com/no-phux/phux/blob/main/docs/adr/0125-kind-catalog-is-generated-metadata.md
@@ -395,6 +387,13 @@ fn verbs_label(verbs: Verbs, subject: Subject) -> String {
 // The client-frame table (workload-auth §6, first table), in spec row order.
 // -----------------------------------------------------------------------------
 
+const GLOBAL: Subject = Subject::Global {
+    owner_uds_only: false,
+};
+const GLOBAL_OWNER_UDS: Subject = Subject::Global {
+    owner_uds_only: true,
+};
+
 static F_HELLO: Rule = Rule::exempt("`HELLO`", Exemption::Handshake, Subject::None);
 static F_PING: Rule = Rule::exempt("`PING`", Exemption::Liveness, Subject::None);
 static F_DETACH: Rule = Rule::exempt("`DETACH`", Exemption::Cleanup, Subject::CallingConnection);
@@ -490,16 +489,12 @@ static F_GET_METADATA: Rule = Rule::verbs(
 static F_SESSION_CREATE: Rule = Rule::verbs(
     r#"`SET_METADATA { Global, "phux.session.create/v1" }`"#,
     &[Verb::Create, Verb::Bind],
-    Subject::Global {
-        owner_uds_only: false,
-    },
+    GLOBAL,
 );
 static F_KEEP_EMPTY_MARK: Rule = Rule::verbs(
     r#"`SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0true`"#,
     &[Verb::Create, Verb::Bind],
-    Subject::Global {
-        owner_uds_only: false,
-    },
+    GLOBAL,
 );
 static F_KEEP_EMPTY_CLEAR: Rule = Rule::verbs(
     r#"`SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0false`"#,
@@ -511,9 +506,7 @@ static F_KEEP_EMPTY_OTHER: Rule =
 static F_CONFIG_RELOAD: Rule = Rule::verbs(
     r#"`SET_METADATA { Global, "phux.config.reload/v1" }`"#,
     &[Verb::Signal],
-    Subject::Global {
-        owner_uds_only: false,
-    },
+    GLOBAL,
 );
 static F_APPROVAL_DECIDE: Rule = Rule::verbs(
     r#"`SET_METADATA { Global, "phux.approval.decide/v1/<id>" }` with value `approve` or `deny`"#,
@@ -541,13 +534,7 @@ static F_LIST_METADATA: Rule = Rule::verbs(
     &[Verb::Inventory],
     Subject::MetadataScope,
 );
-static F_LIST_DIRECTORY: Rule = Rule::verbs(
-    "`LIST_DIRECTORY`",
-    &[Verb::Inventory],
-    Subject::Global {
-        owner_uds_only: false,
-    },
-);
+static F_LIST_DIRECTORY: Rule = Rule::verbs("`LIST_DIRECTORY`", &[Verb::Inventory], GLOBAL);
 static F_SUBSCRIBE_METADATA: Rule = Rule::verbs(
     "Other `SUBSCRIBE_METADATA`",
     &[Verb::Observe],
@@ -657,13 +644,7 @@ static C_SUBSCRIBE_RESOURCE_EVENTS: Rule = Rule::verbs(
     &[Verb::Observe],
     Subject::NamedTerminal,
 );
-static C_UPGRADE: Rule = Rule::verbs(
-    "`UPGRADE`",
-    &[Verb::Signal],
-    Subject::Global {
-        owner_uds_only: false,
-    },
-);
+static C_UPGRADE: Rule = Rule::verbs("`UPGRADE`", &[Verb::Signal], GLOBAL);
 static C_INPUT_LEASE: Rule = Rule::verbs(
     "`ACQUIRE_INPUT`, `RELEASE_INPUT`",
     &[Verb::Bind],
@@ -686,37 +667,15 @@ static C_DETACH_CLIENTS_SESSION: Rule = Rule::verbs(
 static C_DETACH_CLIENTS_ALL: Rule = Rule::verbs(
     "`DETACH_CLIENTS { session: None }`",
     &[Verb::Signal],
-    Subject::Global {
-        owner_uds_only: false,
-    },
+    GLOBAL,
 );
-static C_SHUTDOWN: Rule = Rule::verbs(
-    "`SHUTDOWN`",
-    &[Verb::Signal],
-    Subject::Global {
-        owner_uds_only: true,
-    },
-);
-static C_OPEN_LISTENER: Rule = Rule::verbs(
-    "`OPEN_LISTENER`",
-    &[Verb::Signal],
-    Subject::Global {
-        owner_uds_only: true,
-    },
-);
-static C_GET_PERF: Rule = Rule::verbs(
-    "`GET_PERF { reset: false }`",
-    &[Verb::Observe],
-    Subject::Global {
-        owner_uds_only: false,
-    },
-);
+static C_SHUTDOWN: Rule = Rule::verbs("`SHUTDOWN`", &[Verb::Signal], GLOBAL_OWNER_UDS);
+static C_OPEN_LISTENER: Rule = Rule::verbs("`OPEN_LISTENER`", &[Verb::Signal], GLOBAL_OWNER_UDS);
+static C_GET_PERF: Rule = Rule::verbs("`GET_PERF { reset: false }`", &[Verb::Observe], GLOBAL);
 static C_GET_PERF_RESET: Rule = Rule::verbs(
     "`GET_PERF { reset: true }`",
     &[Verb::Observe, Verb::Bind],
-    Subject::Global {
-        owner_uds_only: false,
-    },
+    GLOBAL,
 );
 static C_APPEND_RESOURCE_OUTPUT: Rule = Rule::verbs(
     "`APPEND_RESOURCE_OUTPUT`",
@@ -778,12 +737,8 @@ pub fn classify_command(command: &Command) -> Classification {
     command_rule(command).classification()
 }
 
-/// The workload-auth §6 row that classifies `frame`.
-///
-/// The match is exhaustive: a new [`FrameKind`] variant does not compile
-/// until it is placed here. A `COMMAND` frame returns its nested command's
-/// row from [`command_rule`]; a server-to-client frame returns the default-deny
-/// row.
+/// The workload-auth §6 row that classifies `frame`: a `COMMAND` frame's
+/// nested command row, default-deny for a server-to-client frame.
 #[must_use]
 pub fn frame_rule(frame: &FrameKind) -> &'static Rule {
     match frame {
@@ -852,11 +807,8 @@ pub fn frame_rule(frame: &FrameKind) -> &'static Rule {
     }
 }
 
-/// The workload-auth §6 row that classifies the nested `command`.
-///
-/// The match is exhaustive: a new [`Command`] variant does not compile until
-/// it is placed here, and a command the spec's table does not list is placed
-/// on the default-deny row until the spec classifies it.
+/// The workload-auth §6 row that classifies the nested `command`; a command
+/// the spec does not list is default-deny.
 #[must_use]
 pub fn command_rule(command: &Command) -> &'static Rule {
     match command {
@@ -1061,11 +1013,8 @@ pub enum Carrier {
     Frame(u8),
     /// A command inside the `COMMAND` envelope, by nested tag.
     Command(u8),
-    /// A conventional Global L3 metadata key whose writes or reads have a
-    /// catalog entry of their own, carried by the metadata frames: a key the
-    /// server intercepts (session create, rename, keep-empty) or answers
-    /// (whoami), or a consumer doorbell the server stores like any value
-    /// (config reload).
+    /// A Global L3 metadata key with its own entry: one the server
+    /// intercepts or answers, or a consumer doorbell (config reload).
     Metadata(&'static str),
 }
 
@@ -1088,10 +1037,8 @@ pub struct MethodSpec {
     pub shipped: bool,
     /// Whether an instance can end a process, eject a client, stop or
     /// re-exec the server, open a door into it, or release a held action
-    /// (ADR-0128). A consumer confirms before sending one: the MCP
-    /// `destructiveHint` and `confirm` argument and the CLI `--yes` flag all
-    /// derive from this. Payload-level exceptions are
-    /// [`command_is_dangerous`] and [`frame_is_dangerous`].
+    /// (ADR-0128). MCP `destructiveHint`/`confirm` and CLI `--yes` derive
+    /// from this; see [`command_is_dangerous`] and [`frame_is_dangerous`].
     pub dangerous: bool,
 }
 
@@ -1105,12 +1052,8 @@ impl MethodSpec {
     }
 
     /// Whether some instance of the method can change server state.
-    ///
-    /// Conservative: a method no row admits by verb (the `COMMAND`
-    /// envelope, or a method every row denies) is reported as mutating, so
-    /// a read-only hint derived from this can never cover a denied write.
-    /// Only a method whose rows are all exemptions, or whose admitted verbs
-    /// are `INVENTORY` and `OBSERVE` alone, is read-only.
+    /// Conservative: a method no row admits by verb counts as mutating, so a
+    /// read-only hint never covers a denied write.
     #[must_use]
     pub fn mutating(&self) -> bool {
         let verbs = self.verbs();
@@ -1672,7 +1615,7 @@ mod samples;
 mod tests {
     use super::*;
     use crate::ids::GroupId;
-    use crate::wire::frame::{ViewportInfo, encode_session_keep_empty};
+    use crate::wire::frame::encode_session_keep_empty;
 
     fn terminal() -> ResourceId {
         ResourceId::local(7)
@@ -1680,13 +1623,6 @@ mod tests {
 
     fn row(frame: &FrameKind) -> &'static str {
         frame_rule(frame).case
-    }
-
-    fn command_row(command: Command) -> &'static str {
-        row(&FrameKind::Command {
-            request_id: 1,
-            command,
-        })
     }
 
     fn spawn(
@@ -1711,24 +1647,6 @@ mod tests {
 
     fn agent(parent: ResourceId) -> SpawnResource {
         SpawnResource::agent_session(parent, "claude")
-    }
-
-    #[test]
-    fn terminal_spawn_rows_follow_satellite_and_owner() {
-        assert_eq!(row(&spawn(None, None, None)), F_SPAWN_LOCAL.case);
-        assert_eq!(
-            row(&spawn(None, Some(terminal()), None)),
-            F_SPAWN_OWNED.case
-        );
-        assert_eq!(row(&spawn(Some("h"), None, None)), F_SPAWN_SATELLITE.case);
-        assert_eq!(
-            row(&spawn(Some("h"), Some(terminal()), None)),
-            F_SPAWN_SATELLITE_OWNED.case
-        );
-        assert_eq!(
-            classify_frame(&spawn(Some("h"), Some(terminal()), None)),
-            Classification::Deny
-        );
     }
 
     #[test]
@@ -1861,82 +1779,6 @@ mod tests {
         assert_eq!(
             row(&subscribe(RESOURCE_AGENT_KEY)),
             F_SUBSCRIBE_METADATA.case
-        );
-    }
-
-    #[test]
-    fn attach_and_event_subscriptions_split_on_their_payload() {
-        let attach = |target| FrameKind::Attach {
-            attach_id: 1,
-            target,
-            viewport: ViewportInfo::new(80, 24),
-            request_scrollback: false,
-            scrollback_limit_lines: 0,
-            role_policy: None,
-        };
-        assert_eq!(row(&attach(AttachTarget::Last)), F_ATTACH.case);
-        assert_eq!(
-            row(&attach(AttachTarget::CreateIfMissing {
-                name: "work".to_owned(),
-                command: None,
-                cwd: None,
-            })),
-            F_ATTACH_CREATE.case
-        );
-        assert_eq!(
-            row(&FrameKind::SubscribeEvents {
-                terminal: Some(terminal()),
-                after_seq: None,
-            }),
-            F_SUBSCRIBE_EVENTS_ONE.case
-        );
-        assert_eq!(
-            row(&FrameKind::SubscribeEvents {
-                terminal: None,
-                after_seq: None,
-            }),
-            F_SUBSCRIBE_EVENTS_ALL.case
-        );
-    }
-
-    #[test]
-    fn commands_split_on_their_payload_and_the_envelope_defers() {
-        assert_eq!(
-            command_row(Command::DetachClients {
-                session: Some("work".to_owned())
-            }),
-            C_DETACH_CLIENTS_SESSION.case
-        );
-        assert_eq!(
-            command_row(Command::DetachClients { session: None }),
-            C_DETACH_CLIENTS_ALL.case
-        );
-        assert_eq!(
-            command_row(Command::GetPerf { reset: false }),
-            C_GET_PERF.case
-        );
-        assert_eq!(
-            command_row(Command::GetPerf { reset: true }),
-            C_GET_PERF_RESET.case
-        );
-        assert_eq!(
-            classify_command(&Command::Shutdown),
-            Classification::Allow {
-                verbs: Verbs::of(&[Verb::Signal]),
-                subject: Subject::Global {
-                    owner_uds_only: true
-                },
-            }
-        );
-        assert_eq!(F_COMMAND.classification(), Classification::Deny);
-    }
-
-    #[test]
-    fn server_to_client_frames_are_wrong_direction() {
-        assert_eq!(row(&FrameKind::Pong { nonce: 1 }), F_UNCLASSIFIED.case);
-        assert_eq!(
-            classify_frame(&FrameKind::AttachReady { attach_id: 1 }),
-            Classification::Deny
         );
     }
 

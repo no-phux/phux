@@ -17,16 +17,13 @@ use wtransport_proto::settings::Settings;
 use wtransport_proto::stream_header::StreamHeader;
 use wtransport_proto::varint::VarInt;
 
-/// Streams that must stay open for the WebTransport session to remain live.
-#[allow(
-    dead_code,
-    reason = "held so dropping the phux stream does not reset CONNECT or SETTINGS"
-)]
+/// Streams held only so dropping the phux stream does not reset CONNECT or
+/// SETTINGS while the session lives.
 pub(super) struct SessionStreams {
-    pub(super) connection: quinn::Connection,
-    pub(super) connect_send: quinn::SendStream,
-    pub(super) connect_recv: quinn::RecvStream,
-    pub(super) settings_send: quinn::SendStream,
+    pub(super) _connection: quinn::Connection,
+    pub(super) _connect_send: quinn::SendStream,
+    pub(super) _connect_recv: quinn::RecvStream,
+    pub(super) _settings_send: quinn::SendStream,
 }
 
 pub(super) struct H3Recv<'a>(pub(super) &'a mut quinn::RecvStream);

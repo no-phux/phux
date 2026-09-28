@@ -1,50 +1,16 @@
-//! Saying, at the user's eye level, that an answer is partial.
+//! Saying at the user's eye level that an answer is partial.
 //!
-//! # The failure this closes
+//! A federation hub answers `GET_STATE` with a merged snapshot plus one
+//! `ERROR` per unreachable satellite ([`phux_client::state::StateView`] keeps
+//! them). Only terminals aggregate; session and window lists never do, so an
+//! unreachable satellite cannot add or hide a session. Hence two rules:
 //!
-//! A federation hub answers `GET_STATE` with a *merged* snapshot and pushes
-//! one uncorrelated `ERROR` per satellite it could not reach ahead of the ack
-//! (`handle_get_state_federated`, "observable degradation, not silence"). The
-//! client now keeps those notices —
-//! [`phux_client::state::StateView`] carries them next to the snapshot — but
-//! carrying is not showing. They were logged at `tracing::warn!`, and a CLI
-//! verb installs no subscriber by default, so `phux ls` against a
-//! half-reachable fleet printed a listing indistinguishable from a complete
-//! one. Every verb below it inherited the same confident silence.
-//!
-//! # The distinction this module exists to draw
-//!
-//! Only *terminals* aggregate across a federation. `handle_get_state_federated`
-//! discards a satellite's `sessions` and `windows` lists outright — their
-//! `u32` ids would collide with the hub's — so an unreachable satellite can
-//! neither add nor hide a session. That splits the verbs in two, and the split
-//! is what decides how loud each one has to be:
-//!
-//! - **Verbs that read.** `phux ls` enumerates. A partial enumeration is
-//!   still true about everything in it, so the answer stands: warn on stderr
-//!   (and, under `--json`, in the payload's `unreachable` list — stderr is not
-//!   a machine channel) and exit 0. Failing here would make a dead satellite
-//!   in some other datacenter break the listing of the panes on this laptop.
-//!
-//! - **Verbs that resolve a Terminal target.** `kill`, `tag`, `agent set` and
-//!   friends *search* `snapshot.resources` and act on what they find. Against a
-//!   degraded snapshot, finding nothing has two completely different causes
-//!   that the old code collapsed into one sentence:
-//!
-//!   1. the target does not exist — `no such target`, exit 1; or
-//!   2. the target may exist on the half of the fleet this server could not
-//!      look at.
-//!
-//!   Reporting (2) as (1) tells a user that a pane they can see in another
-//!   window is gone, and invites the scripted follow-up ("not there? recreate
-//!   it") that a transient satellite outage should never trigger. So a miss
-//!   against a partial view gets its own sentence and its own status,
-//!   [`EXIT_PARTIAL_VIEW`], and deliberately does *not* say "no such target".
-//!
-//! A resolution that *hits* under degradation still warns: a set-valued
-//! selector (`#tag`, a whole session) may have matched a strict subset of what
-//! it would have matched with the fleet whole, and the user is about to act on
-//! that subset.
+//! - Verbs that read (`phux ls`): the partial answer stands. Warn on stderr
+//!   (and in the `--json` `unreachable` list) and exit 0.
+//! - Verbs that resolve a Terminal target (`kill`, `tag`, `agent set`, ...): a
+//!   miss against a partial view may be a pane on the unseen side, so it gets
+//!   its own sentence and [`EXIT_PARTIAL_VIEW`], never "no such target". A hit
+//!   still warns, since a set-valued selector may have matched a subset.
 
 use std::process::ExitCode;
 
@@ -52,51 +18,28 @@ use phux_client::state::Degradation;
 
 use crate::commands::json_err::{self, CliError, codes};
 
-/// Exit status for "I could not answer, because I could not see all of the
-/// fleet".
-///
-/// Distinct from the established codes so a script can branch: `0` success,
-/// `1` a genuine miss or no server, `2` a server-side refusal, `3` an answer
-/// this client declines to give because the world it was resolved against was
-/// incomplete. A retry once the satellite link is back is the right response
-/// to `3` and the wrong response to `1`, which is the whole reason they are
-/// not the same number. The value lives in the canonical table
-/// (`crate::exit_codes`, phux-i0e8.11.4); this is the historical name the
-/// selector paths consume it under.
+/// Exit status 3: no answer, because the fleet view was incomplete. Retrying
+/// once the satellite is back is right for 3 and wrong for 1.
 pub(crate) use crate::exit_codes::EXIT_PARTIAL_VIEW;
 
-/// Warn on stderr, once per unreachable satellite, that `verb` acted on a
-/// partial view of the fleet.
-///
-/// A no-op when the view is complete, which is every non-federated server and
-/// every healthy hub — so call sites need no `if`.
+/// Warn once per unreachable satellite that `verb` acted on a partial view;
+/// a no-op for a complete view.
 pub(crate) fn warn_partial_view(verb: &str, degradation: &Degradation) {
     for notice in degradation.notices() {
         eprintln!("{}", phux_client::state::partial_view_warning(verb, notice));
     }
 }
 
-/// Report a selector that matched nothing, saying *which* of the two reasons
-/// it was, and return the matching exit status — [`EXIT_PARTIAL_VIEW`] when
-/// the view was partial, `1` when it was whole.
-///
-/// `target` is the user's own text when the verb has one; `None` is the
-/// focused-pane default, where there is no selector to quote back.
+/// Report a selector that matched nothing, distinguishing the two causes,
+/// and return [`EXIT_PARTIAL_VIEW`] or `1`. `target` is `None` for the
+/// focused-pane default.
 pub(crate) fn report_target_miss(target: Option<&str>, degradation: &Degradation) -> ExitCode {
     report_miss(target, degradation, ExitCode::from(EXIT_PARTIAL_VIEW))
 }
 
-/// The same message, but the established `1` in every case.
-///
-/// For verbs whose exit status is already spoken for by something else and
-/// cannot spare a third value: `phux run` mirrors *the child's* code into
-/// `0..=255`, so a `3` from here would be indistinguishable from a command
-/// that legitimately exited 3 — the exact collision `run` reserves `125` to
-/// avoid. `wait` has the same shape with `124`.
-///
-/// The distinction that matters most survives regardless: the sentence on
-/// stderr still refuses to say the target is absent. Only the machine-readable
-/// half is given up, and only where it was never free to take.
+/// As [`report_target_miss`] but always exiting `1`, for verbs whose exit
+/// space is taken (`run` mirrors the child's code, `wait` owns 124). The
+/// sentence still refuses to call the target absent.
 pub(crate) fn report_target_miss_keeping_status(
     target: Option<&str>,
     degradation: &Degradation,
@@ -104,13 +47,8 @@ pub(crate) fn report_target_miss_keeping_status(
     report_miss(target, degradation, ExitCode::FAILURE)
 }
 
-/// Json-aware sibling of [`report_target_miss`] (phux-i0e8.8.2).
-///
-/// Without `json`, identical to it. With `json`, the same two-way
-/// distinction lands in the machine channel: a miss against a whole fleet
-/// emits [`codes::NO_SUCH_TARGET`] with exit 1; a miss against a partial
-/// view emits [`codes::PARTIAL_VIEW`] with exit [`EXIT_PARTIAL_VIEW`], and
-/// the message still refuses to claim absence.
+/// Json-aware [`report_target_miss`]: `no_such_target`/1 for a whole fleet,
+/// `partial_view`/[`EXIT_PARTIAL_VIEW`] for a partial one.
 pub(crate) fn report_target_miss_for(
     json: bool,
     target: Option<&str>,
@@ -123,12 +61,8 @@ pub(crate) fn report_target_miss_for(
     json_err::emit(true, &err, exit_code)
 }
 
-/// Json-aware sibling of [`report_target_miss_keeping_status`]: the code in
-/// the document still says [`codes::PARTIAL_VIEW`] when the view was
-/// partial, but the process status stays `1` for the verbs whose exit space
-/// is already spoken for (`run` mirrors the child, `wait` owns 124). The
-/// machine reader gets the distinction from `error.code`; the number is
-/// deliberately not spent.
+/// Json-aware [`report_target_miss_keeping_status`]: the document still says
+/// `partial_view`, the status stays `1`.
 pub(crate) fn report_target_miss_keeping_status_for(
     json: bool,
     target: Option<&str>,
@@ -141,10 +75,8 @@ pub(crate) fn report_target_miss_keeping_status_for(
     json_err::emit(true, &err, exit_code)
 }
 
-/// The [`CliError`] (and exit code) for a selector miss, pure for tests.
-///
-/// `degraded_status` is what a partial-view miss exits with; a whole-fleet
-/// miss is always a plain `1`.
+/// The [`CliError`] and exit code for a selector miss; `degraded_status` is
+/// the partial-view status.
 fn miss_error(
     target: Option<&str>,
     degradation: &Degradation,
@@ -319,11 +251,7 @@ mod tests {
 
     #[test]
     fn the_shared_resolver_keeps_its_status_and_still_refuses_to_claim_absence() {
-        // `phux run` mirrors the child's exit code, so the shared single-pane
-        // resolver cannot start returning 3: a command that legitimately
-        // exits 3 would become indistinguishable from a resolve failure. The
-        // status stays 1; what must NOT survive that compromise is the
-        // sentence, and this pins the two apart.
+        // `run` keeps status 1; the sentence must still differ.
         let code = report_target_miss_keeping_status(Some("@9"), &degraded());
         assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::FAILURE));
         assert_ne!(

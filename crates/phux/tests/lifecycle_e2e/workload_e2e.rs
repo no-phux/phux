@@ -1,14 +1,7 @@
-//! `phux workload` against the real binary and a real server (ADR-0116,
-//! `docs/spec/workload-auth.md` §8).
-//!
-//! The CLI tests run hermetically against a private state directory and pin
-//! the secret-hygiene rules: the authority prints only its fingerprint, and
-//! no key bytes reach stdout or stderr however they are handed in. The
-//! server tests start a server whose loopback QUIC listener requires
-//! workload mTLS, dial it with a certificate `add-key` issued, revoke that
-//! credential, and see the next connection refused with no restart; and
-//! they pin that workload mode refuses to start beside an entry point that
-//! cannot carry a client certificate.
+//! `phux workload` (ADR-0116, `docs/spec/workload-auth.md` §8): the
+//! authority prints only its fingerprint and no key bytes reach stdout or
+//! stderr; a revoked credential's next connection is refused with no restart;
+//! workload mode refuses to start beside WebTransport.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -601,13 +594,9 @@ fn revoke_marks_the_record_and_a_new_connection_is_refused() {
     assert_eq!(listed["registry_generation"], 2);
 }
 
-/// `workload-auth.md` §8 and §9's secret sweep across a whole enrolled
-/// lifecycle, revocation included: the workload's private key never reaches
-/// the CLI's argv, environment, stdout, or stderr, nor the server's
-/// trace-level log. The mTLS profile carries no nonce or signature bytes of
-/// its own (§3), so the key is the one secret to look for. The trace filter
-/// covers phux's own crates; a dependency's trace output is not phux's
-/// diagnostic surface.
+/// `workload-auth.md` §8/§9 secret sweep across an enrolled lifecycle,
+/// revocation included: the private key never reaches argv, environment,
+/// stdout, stderr, or the server's trace log.
 #[test]
 #[ignore = "spawns a real server with a workload-mTLS QUIC listener; runs in the e2e lane"]
 fn no_key_nonce_or_signature_bytes_in_argv_env_stdout_stderr_or_trace() {
@@ -840,13 +829,10 @@ fn watched_event(watched: &Output, name: &str) -> serde_json::Value {
     found.expect("checked above")
 }
 
-/// ADR-0128 end to end. A workload whose grant holds `?signal` has its kill
-/// held by the server; the owner lists it with `phux approvals`, approves
-/// it, and the kill runs once, as the workload, whose `phux kill` then
-/// succeeds. `phux watch`, started before the hold and resuming from a
-/// cursor so it cannot miss either, renders `approval_requested` and
-/// `approval_decided`. On the way, a dangerous verb without `--yes` on a
-/// non-terminal stdin exits 2 and sends nothing.
+/// ADR-0128 end to end: a `?signal` grant's kill is held; `phux approvals`
+/// lists it, `approve` runs it once as the workload, and a resumed `phux watch`
+/// renders both approval events. A dangerous verb without `--yes` on a
+/// non-terminal exits 2 and sends nothing.
 #[test]
 #[ignore = "spawns a real server with a workload-mTLS QUIC listener; runs in the e2e lane"]
 fn approvals_list_approve_and_watch_render_both_events() {

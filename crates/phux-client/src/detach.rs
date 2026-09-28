@@ -40,12 +40,8 @@ impl DetachOutcome {
 }
 
 /// Send `DETACH_CLIENTS` for `session` (every attached client with `None`)
-/// over `conn` and classify the reply.
-///
-/// The paired [`Degradation`] is any uncorrelated `ERROR` the server
-/// interleaved ahead of the reply (a hub's per-satellite unreachability
-/// notice); print its notices exactly as `crate::commands::command_on` used
-/// to, via [`Degradation::notices`].
+/// over `conn` and classify the reply, with any interleaved per-satellite
+/// unreachability notices as the [`Degradation`].
 ///
 /// # Errors
 ///
@@ -94,20 +90,21 @@ mod tests {
         ));
     }
 
+    /// The session rides the frame verbatim, and an interleaved degradation
+    /// notice reaches the caller beside the classified count.
     #[tokio::test]
-    async fn detach_clients_sends_the_frame_and_classifies_the_count() {
-        use crate::attach::connection::Connection;
+    async fn detach_clients_sends_the_frame_and_keeps_degradation_notices() {
         use crate::testkit::{ScriptSpec, ScriptedServer};
         use phux_protocol::wire::frame::FrameKind;
 
+        const NOTICE: &str = "satellite build-box is unreachable: link is down";
         let dir = tempfile::tempdir().expect("temp dir");
         let socket = dir.path().join("phux.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-        listener.set_nonblocking(true).expect("nonblocking");
-        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
-        let server = tokio::spawn(async move {
-            ScriptedServer::accept(&listener, ScriptSpec::new().detach_result(3)).await
-        });
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
+        let spec = ScriptSpec::new()
+            .degradation_notice(NOTICE)
+            .detach_result(3);
+        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
 
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let (outcome, degradation) = detach_clients(&mut conn, 1, Some("work".to_owned()))
@@ -117,7 +114,7 @@ mod tests {
         let seen = server.await.expect("scripted server task");
 
         assert_eq!(outcome, DetachOutcome::Detached(3));
-        assert!(degradation.is_complete());
+        assert_eq!(degradation.notices(), [NOTICE.to_owned()]);
         assert!(
             seen.iter().any(|frame| matches!(
                 frame,
@@ -126,44 +123,7 @@ mod tests {
                     ..
                 } if s == "work"
             )),
-            "expected a DETACH_CLIENTS{{session: Some(\"work\")}} frame; sent {seen:?}"
+            "sent {seen:?}"
         );
-    }
-
-    /// An uncorrelated `ERROR` interleaved ahead of the reply must still
-    /// reach the caller through the returned `Degradation`, so the CLI can
-    /// print `phux: warning: partial results — {message}` exactly as
-    /// `command_on` used to.
-    #[tokio::test]
-    async fn an_interleaved_degradation_notice_survives_detach_clients() {
-        use crate::attach::connection::Connection;
-        use crate::testkit::{ScriptSpec, ScriptedServer};
-
-        const NOTICE: &str = "satellite build-box is unreachable: link is down";
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir.path().join("phux.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-        listener.set_nonblocking(true).expect("nonblocking");
-        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
-        let server = tokio::spawn(async move {
-            ScriptedServer::accept(
-                &listener,
-                ScriptSpec::new()
-                    .degradation_notice(NOTICE)
-                    .detach_result(0),
-            )
-            .await
-        });
-
-        let mut conn = Connection::connect(&socket).await.expect("connect");
-        let (outcome, degradation) = detach_clients(&mut conn, 1, None)
-            .await
-            .expect("scripted server answers");
-        drop(conn);
-        server.await.expect("scripted server task");
-
-        assert_eq!(outcome, DetachOutcome::Detached(0));
-        assert_eq!(degradation.notices(), [NOTICE.to_owned()]);
     }
 }

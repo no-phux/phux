@@ -1,19 +1,5 @@
-//! Integration tests for layered config resolution (ADR-0039).
-//!
-//! Covers:
-//! 1. A three-layer stack (defaults <- base layer <- distro layer <-
-//!    user) merges leaf-by-leaf with later layers winning.
-//! 2. Array semantics: plain keys replace wholesale; `-append` keys
-//!    append — for `[[plugins]]`, status widget slots, and
-//!    `[[hooks.<name>]]`.
-//! 3. A missing layer file is an error naming the layer AND the file
-//!    that referenced it.
-//! 4. An `extends` cycle is an error naming the offending edge.
-//! 5. Nesting past `MAX_EXTENDS_DEPTH` is an error.
-//! 6. Guard-rail errors: non-array `extends`, `x` + `x-append` in one
-//!    layer, `-append` with a non-array value.
-//! 7. Bare-name entries resolve to `layers/<name>.toml`; diamonds
-//!    merge once.
+//! Layered config resolution (ADR-0039): merge order, `-append`, layer
+//! errors, and manifest rewriting.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
@@ -284,49 +270,38 @@ fn layer_directive_guard_rails_error() {
     }
 }
 
+/// A bare name means `layers/<name>.toml`; a diamond layer merges once;
+/// without `extends` no layer I/O happens at all.
 #[test]
-fn bare_name_resolves_to_layers_subdirectory() {
+fn entries_resolve_bare_names_and_diamonds() {
     let tmp = TempDir::new().expect("tempdir");
     write(
         tmp.path(),
         "layers/minimal.toml",
-        r"
-[defaults]
-history-limit = 7777
-",
+        "[defaults]\nhistory-limit = 7777\n",
     );
-    let user = r#"extends = ["minimal"]"#;
-
-    let cfg = parse_with_defaults(user, &tmp.path().join("config.toml")).expect("bare name");
-    assert_eq!(cfg.defaults.history_limit, 7777);
-}
-
-#[test]
-fn diamond_layer_merges_once() {
-    let tmp = TempDir::new().expect("tempdir");
     write(
         tmp.path(),
         "shared.toml",
-        r#"
-[[plugins-append]]
-manifest = "/opt/shared/phux-plugin.toml"
-"#,
+        "[[plugins-append]]\nmanifest = \"/opt/shared/phux-plugin.toml\"\n",
     );
     write(tmp.path(), "a.toml", r#"extends = ["shared.toml"]"#);
     write(tmp.path(), "b.toml", r#"extends = ["shared.toml"]"#);
-    let user = r#"extends = ["a.toml", "b.toml"]"#;
+    let user = r#"extends = ["minimal", "a.toml", "b.toml"]"#;
+    let cfg = parse_with_defaults(user, &tmp.path().join("config.toml")).expect("stack");
+    assert_eq!(cfg.defaults.history_limit, 7777);
+    assert_eq!(cfg.plugins.len(), 1, "the shared layer applies once");
 
-    let cfg = parse_with_defaults(user, &tmp.path().join("config.toml")).expect("diamond");
-    // The shared layer's append applies exactly once, even though it
-    // is reachable through both branches.
-    assert_eq!(cfg.plugins.len(), 1);
+    let cfg = parse_with_defaults(
+        "[defaults]\nhistory-limit = 42\n",
+        Path::new("/nonexistent-dir/config.toml"),
+    )
+    .expect("plain config needs no filesystem");
+    assert_eq!(cfg.defaults.history_limit, 42);
 }
 
 #[test]
 fn extended_layer_manifests_resolve_relative_to_the_layer_file() {
-    // A distro layer wires plugins with paths relative to ITSELF; plugin
-    // loaders resolve relative manifests against the user config's
-    // directory, so layer resolution must absolutize them (phux-r82.9).
     let tmp = TempDir::new().expect("tempdir");
     write(
         tmp.path(),
@@ -340,8 +315,6 @@ manifest = "plugins/one/phux-plugin.toml"
 "#,
     );
     let user = r#"extends = ["distro/distro.toml"]"#;
-    // The user config lives at the tempdir root — NOT in distro/ — so a
-    // path that leaked through unrewritten would resolve wrongly.
     let cfg = parse_with_defaults(user, &tmp.path().join("config.toml")).expect("layered parse");
 
     assert_eq!(cfg.plugins.len(), 2);
@@ -357,17 +330,9 @@ manifest = "plugins/one/phux-plugin.toml"
             .join("plugins/one/phux-plugin.toml"),
         "relative manifests absolutize against the layer's directory"
     );
-}
 
-#[test]
-fn root_config_manifests_are_left_verbatim() {
-    // Only *extended* layers are rewritten: the root file's relative
-    // manifests keep the documented resolve-against-config-dir behavior
-    // (and `phux config show` keeps echoing what the user wrote).
-    let user = r#"
-[[plugins]]
-manifest = "plugins/mine/phux-plugin.toml"
-"#;
+    // The root file's own relative manifests stay as written.
+    let user = "[[plugins]]\nmanifest = \"plugins/mine/phux-plugin.toml\"\n";
     let cfg = parse_with_defaults(user, Path::new("/tmp/config.toml")).expect("parse");
     assert_eq!(
         cfg.plugins[0].manifest,

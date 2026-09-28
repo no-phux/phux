@@ -201,7 +201,6 @@ const SECTION_ROOTS: { dir: string; group: Group; urlPrefix: string }[] = [
 const DENYLIST = new Set<string>([
   "docs/demo.md",
   "docs/CONVENTIONS.md",
-  "docs/architecture/l2-server-design.md",
 ]);
 
 /** Stability values that mark a doc as internal / unpublishable. */

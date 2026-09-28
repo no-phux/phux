@@ -1,9 +1,8 @@
-use std::path::Path;
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::link::{RawPluginManifestLinkHandler, normalize_link_handler};
-use super::source::load_manifest_source;
 use super::validate::{
     non_empty, normalize_command, normalize_id, reject_duplicate_ids, trim_optional,
 };
@@ -11,8 +10,8 @@ use super::workspace::{RawPluginManifestWorkspace, WorkspaceSourceSlices, normal
 use super::{
     PluginAgentAttention, PluginAgentState, PluginManifest, PluginManifestAction,
     PluginManifestAgent, PluginManifestBuild, PluginManifestError, PluginManifestEvent,
-    PluginManifestLinkHandler, PluginManifestPane, PluginManifestWidget, PluginManifestWorkspace,
-    PluginPanePlacement, PluginPlatform, PluginWidgetSlot,
+    PluginManifestLinkHandler, PluginManifestPane, PluginManifestWidget, PluginPanePlacement,
+    PluginPlatform, PluginWidgetSlot,
 };
 
 #[derive(Debug, Deserialize)]
@@ -136,48 +135,12 @@ pub fn load_plugin_manifest(path: &Path) -> Result<PluginManifest, PluginManifes
         .parent()
         .ok_or_else(|| PluginManifestError::Invalid("manifest path has no parent".to_owned()))?
         .to_path_buf();
-    let mut raw: RawPluginManifest =
+    let raw: RawPluginManifest =
         toml::from_str(&source.input).map_err(|err| PluginManifestError::Parse {
             path: source.display_path,
             message: err.message().to_owned(),
         })?;
 
-    let platforms = raw.platforms.take();
-    let identity = normalize_identity(&raw)?;
-    let sections = normalize_sections(raw)?;
-
-    Ok(PluginManifest {
-        id: identity.id,
-        name: identity.name,
-        version: identity.version,
-        min_phux_version: identity.min_phux_version,
-        description: identity.description,
-        manifest_path,
-        plugin_root,
-        platforms,
-        build: sections.build,
-        agents: sections.agents,
-        actions: sections.actions,
-        events: sections.events,
-        panes: sections.panes,
-        links: sections.links,
-        workspaces: sections.workspaces,
-        widgets: sections.widgets,
-    })
-}
-
-/// The scalar identity fields of a manifest, validated.
-struct ManifestIdentity {
-    id: String,
-    name: String,
-    version: String,
-    min_phux_version: String,
-    description: Option<String>,
-}
-
-/// Validate the manifest's identity fields and enforce the phux version
-/// floor the manifest declares.
-fn normalize_identity(raw: &RawPluginManifest) -> Result<ManifestIdentity, PluginManifestError> {
     let id = normalize_id(&raw.id, true, "plugin id")?;
     let name = non_empty(&raw.name, "plugin name")?;
     let version = non_empty(&raw.version, "plugin version")?;
@@ -188,33 +151,7 @@ fn normalize_identity(raw: &RawPluginManifest) -> Result<ManifestIdentity, Plugi
         super::version::CURRENT_PHUX_VERSION,
     )?;
 
-    Ok(ManifestIdentity {
-        id,
-        name,
-        version,
-        min_phux_version,
-        description: raw.description.as_deref().and_then(trim_optional),
-    })
-}
-
-/// The repeated sections of a manifest, each normalized and checked for
-/// duplicate ids. Workspaces are last because they resolve references
-/// into the agent, action, event, and pane sections.
-struct ManifestSections {
-    build: Vec<PluginManifestBuild>,
-    agents: Vec<PluginManifestAgent>,
-    actions: Vec<PluginManifestAction>,
-    events: Vec<PluginManifestEvent>,
-    panes: Vec<PluginManifestPane>,
-    links: Vec<PluginManifestLinkHandler>,
-    workspaces: Vec<PluginManifestWorkspace>,
-    widgets: Vec<PluginManifestWidget>,
-}
-
-/// Normalize every repeated section, in the order their cross-references
-/// require: workspaces resolve against the already-normalized agents,
-/// actions, events, and panes.
-fn normalize_sections(raw: RawPluginManifest) -> Result<ManifestSections, PluginManifestError> {
+    // Workspaces resolve references into the sections before them.
     let build = raw
         .build
         .into_iter()
@@ -245,7 +182,15 @@ fn normalize_sections(raw: RawPluginManifest) -> Result<ManifestSections, Plugin
     let widgets =
         normalize_unique_section(raw.widgets, normalize_widget, id_of_widget, "plugin widget")?;
 
-    Ok(ManifestSections {
+    Ok(PluginManifest {
+        id,
+        name,
+        version,
+        min_phux_version,
+        description: raw.description.as_deref().and_then(trim_optional),
+        manifest_path,
+        plugin_root,
+        platforms: raw.platforms,
         build,
         agents,
         actions,
@@ -385,4 +330,112 @@ fn normalize_pane(raw: RawPluginManifestPane) -> Result<PluginManifestPane, Plug
         placement: raw.placement,
         command,
     })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPluginManifestLinkHandler {
+    id: String,
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    contexts: Vec<String>,
+    #[serde(default)]
+    schemes: Vec<String>,
+    #[serde(default)]
+    patterns: Vec<String>,
+    #[serde(default)]
+    platforms: Option<Vec<PluginPlatform>>,
+    command: Vec<String>,
+}
+
+fn normalize_link_handler(
+    raw: RawPluginManifestLinkHandler,
+) -> Result<PluginManifestLinkHandler, PluginManifestError> {
+    let contexts = raw
+        .contexts
+        .iter()
+        .map(|context| non_empty(context, "plugin link handler context"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let schemes = raw
+        .schemes
+        .iter()
+        .map(|scheme| non_empty(scheme, "plugin link handler scheme"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let patterns = raw
+        .patterns
+        .iter()
+        .map(|pattern| non_empty(pattern, "plugin link handler pattern"))
+        .collect::<Result<Vec<_>, _>>()?;
+    if schemes.is_empty() && patterns.is_empty() {
+        return Err(PluginManifestError::Invalid(
+            "plugin link handler requires at least one scheme or pattern".to_owned(),
+        ));
+    }
+    let command = normalize_command(&raw.command)?;
+
+    Ok(PluginManifestLinkHandler {
+        id: normalize_id(&raw.id, false, "plugin link handler id")?,
+        title: non_empty(&raw.title, "plugin link handler title")?,
+        description: raw.description.as_deref().and_then(trim_optional),
+        contexts,
+        schemes,
+        patterns,
+        platforms: raw.platforms,
+        command,
+    })
+}
+
+const MANIFEST_MAX_BYTES: u64 = 1024 * 1024;
+
+struct ManifestSource {
+    display_path: PathBuf,
+    canonical_path: PathBuf,
+    input: String,
+}
+
+fn load_manifest_source(path: &Path) -> Result<ManifestSource, PluginManifestError> {
+    let display_path = if path.is_dir() {
+        path.join("phux-plugin.toml")
+    } else {
+        path.to_path_buf()
+    };
+    let metadata = std::fs::metadata(&display_path)?;
+    if !metadata.is_file() {
+        return Err(PluginManifestError::Invalid(format!(
+            "{} is not a regular file",
+            display_path.display()
+        )));
+    }
+    reject_oversized(metadata.len())?;
+    let input = read_manifest_string(&display_path)?;
+    Ok(ManifestSource {
+        canonical_path: display_path.canonicalize()?,
+        display_path,
+        input,
+    })
+}
+
+fn read_manifest_string(path: &Path) -> Result<String, PluginManifestError> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = file.take(MANIFEST_MAX_BYTES + 1);
+    let mut input = String::new();
+    reader.read_to_string(&mut input)?;
+    let len = u64::try_from(input.len()).map_err(|_| oversized_error())?;
+    reject_oversized(len)?;
+    Ok(input)
+}
+
+fn reject_oversized(len: u64) -> Result<(), PluginManifestError> {
+    if len > MANIFEST_MAX_BYTES {
+        return Err(oversized_error());
+    }
+    Ok(())
+}
+
+fn oversized_error() -> PluginManifestError {
+    PluginManifestError::Invalid(format!(
+        "plugin manifest exceeds {MANIFEST_MAX_BYTES} byte limit"
+    ))
 }

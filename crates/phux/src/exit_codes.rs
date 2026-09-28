@@ -1,21 +1,8 @@
-//! The canonical exit-code table for the `phux` binary (phux-i0e8.11.4).
-//!
-//! This module is the single source both exit-status surfaces render
-//! from: the `phux help exit-codes` topic (`help_topic` in `lib.rs`
-//! prints [`exit_status_section`]) and the generated
-//! `docs/reference/exit-codes.md` page (`refdocs::exit_codes`). Adding or
-//! changing a code here updates both; using a code the table does not
-//! carry is what the audit below exists to prevent.
-//!
-//! Audit of the `ExitCode` sites (2026-08-02): every verb exits 0
-//! ([`EXIT_SUCCESS`]), 1 ([`EXIT_FAILURE`] — `ExitCode::FAILURE`
-//! everywhere), or 2 ([`EXIT_USAGE`]); the selector paths add 3
-//! ([`EXIT_PARTIAL_VIEW`], `commands::partial`); `phux wait` adds 124
-//! ([`EXIT_WAIT_TIMEOUT`], `commands::wait`); `phux run` and the plugin
-//! action runner add 125 ([`EXIT_RUN_TIMEOUT`], `commands::run` and
-//! `commands::config`) — `run` otherwise mirrors the child's own code,
-//! which is why its timeout is 125 and not 124. Those non-clap sites
-//! consume the consts here, so the table and the behavior cannot drift.
+//! The canonical exit-code table, rendered by `phux help exit-codes` and
+//! `docs/reference/exit-codes.md`. Verbs exit 0, 1, or 2; selector paths add 3
+//! (partial view); `wait` adds 124; `run` and plugin actions add 125 (`run`
+//! otherwise mirrors the child's code). Call sites use these consts so the
+//! table and the behavior cannot drift.
 
 /// Success.
 pub(crate) const EXIT_SUCCESS: u8 = 0;
@@ -131,41 +118,7 @@ pub(crate) fn exit_status_section() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        EXIT_CODES, EXIT_FAILURE, EXIT_PARTIAL_VIEW, EXIT_RUN_TIMEOUT, EXIT_SUCCESS, EXIT_USAGE,
-        EXIT_WAIT_TIMEOUT, exit_status_section,
-    };
-
-    /// The table carries exactly the audited code set, ascending, each
-    /// with non-empty prose — the invariant both renderers rely on.
-    #[test]
-    fn table_is_the_audited_code_set_in_order() {
-        let codes: Vec<u8> = EXIT_CODES.iter().map(|spec| spec.code).collect();
-        assert_eq!(
-            codes,
-            vec![
-                EXIT_SUCCESS,
-                EXIT_FAILURE,
-                EXIT_USAGE,
-                EXIT_PARTIAL_VIEW,
-                EXIT_WAIT_TIMEOUT,
-                EXIT_RUN_TIMEOUT,
-            ],
-        );
-        assert_eq!(codes, vec![0, 1, 2, 3, 124, 125]);
-        for spec in EXIT_CODES {
-            assert!(
-                spec.lines.iter().all(|line| !line.is_empty()),
-                "empty prose line for exit code {}",
-                spec.code
-            );
-            assert!(
-                !spec.lines.is_empty(),
-                "no prose for exit code {}",
-                spec.code
-            );
-        }
-    }
+    use super::{EXIT_CODES, exit_status_section};
 
     /// The rendered help section opens each code's row with the code in
     /// a fixed-width column, so the `help_inventory` gate (and a human

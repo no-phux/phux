@@ -1,22 +1,12 @@
-//! Shared per-cell SGR emission for the ratatui-backed chrome layers.
-//!
-//! Both the overlay painter ([`super::overlay`]) and the status bar
-//! ([`super::chrome::status_bar`]) walk a ratatui [`ratatui::buffer::Buffer`] and emit one
-//! cell at a time. This module owns the per-cell SGR delta so the two
-//! paths style identically. It lives under `render/` so the ratatui
-//! dependency stays within the ADR-0020 boundary.
+//! Shared per-cell SGR emission for the ratatui-backed chrome layers, so
+//! the overlay painter and the status bar style identically.
 
 use std::io::{self, Write};
 
 use ratatui::style::{Color, Modifier};
 
-/// Emit the SGR for one ratatui cell.
-///
-/// Emit only at style boundaries. Filled sidebar and modal rows are long
-/// runs of identical styles; resetting and resending truecolor for every
-/// cell costs far more bytes than the text itself. Callers start with `None`
-/// after a hard reset and reset again at the end of each independently
-/// positioned run. A transition to plain text still clears the old style.
+/// Emit the SGR for one cell, only at style boundaries (truecolor per cell
+/// costs more than the text). Callers start from `None` after a reset.
 pub(super) fn emit_cell_sgr(
     out: &mut impl Write,
     cell: &ratatui::buffer::Cell,
@@ -60,12 +50,8 @@ const MODIFIER_CODES: [(Modifier, &[u8]); 5] = [
     (Modifier::REVERSED, b"7"),
 ];
 
-/// Accumulator for one `\x1b[<params>m` sequence.
-///
-/// Writes the `\x1b[` introducer lazily with the first parameter and a `;`
-/// before every one after it, so a cell that contributes no parameter emits
-/// nothing at all. Borrows the sink instead of buffering: this runs per
-/// changed cell and has to stay allocation-free.
+/// Accumulator for one `\x1b[<params>m` sequence: the introducer is written
+/// lazily, so a cell with no parameters emits nothing. Allocation-free.
 struct SgrParams<'w, W: Write> {
     out: &'w mut W,
     wrote_any: bool,
@@ -121,13 +107,9 @@ impl<'w, W: Write> SgrParams<'w, W> {
     }
 }
 
-/// Emit a standalone foreground (`fg = true`) or background SGR for `color`.
-///
-/// For chrome painted outside the ratatui-buffer path (e.g. the copy-mode
-/// status strip the driver writes directly). Unlike `color_rgb`, indexed
-/// colors are preserved as `38;5;n` / `48;5;n` rather than flattened, so a
-/// theme's `Indexed(240)` renders as the terminal's palette entry 240.
-/// `Color::Reset` emits nothing (the caller's prior `\x1b[0m` stands).
+/// Emit a standalone foreground or background SGR for `color` (for chrome
+/// painted outside the buffer path). Indexed colors stay `38;5;n`/`48;5;n`;
+/// `Reset` emits nothing.
 pub fn write_sgr_color(out: &mut impl Write, color: Color, fg: bool) -> io::Result<()> {
     let kind = if fg { 38 } else { 48 };
     match color {
@@ -143,10 +125,8 @@ pub fn write_sgr_color(out: &mut impl Write, color: Color, fg: bool) -> io::Resu
     }
 }
 
-/// Convert a ratatui [`Color`] into a 24-bit SGR triple, plus the SGR
-/// kind prefix (`"38"` foreground / `"48"` background). Returns `None`
-/// for `Color::Reset` (no override). Indexed ANSI colors map to a small
-/// fixed palette so chrome renders consistently across terminal themes.
+/// A ratatui [`Color`] as an SGR kind prefix (`"38"`/`"48"`) and 24-bit
+/// triple; `None` for `Reset`. Indexed colors map to a fixed palette.
 const fn color_rgb(color: Color, fg: bool) -> Option<(&'static str, u8, u8, u8)> {
     let kind = if fg { "38" } else { "48" };
     let (r, g, b) = match color {

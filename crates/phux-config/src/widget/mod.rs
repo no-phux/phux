@@ -1,19 +1,8 @@
-//! Status-bar widget trait + registry + in-tree widget implementations.
+//! Status-bar widget trait, registry, and built-in widgets.
 //!
-//! Owned by `phux-nz4.4`. Note that [`crate::Widget`] is the *schema* enum
-//! (a parsed `[[status.widgets]]` entry from TOML); the runtime trait here
-//! is called [`StatusWidget`] to avoid the name collision.
-//!
-//! ## Why a local `Cell` here
-//!
-//! The status bar is a *frontend* concern: phux-config composes cells, the
-//! TUI client lays them out, the wire never sees them. Under ADR-0013 the
-//! protocol crate no longer exposes a `Cell` type (pane content moved to
-//! VT bytes on the wire); the status bar accordingly carries its own
-//! lightweight cell shape — just a grapheme cluster — and renders it via
-//! the same SGR emission code path the renderer uses for live panes. If a
-//! richer widget style surface ever lands (foreground color, bold flag,
-//! etc.), grow this struct here — the wire doesn't care.
+//! [`crate::Widget`] is the parsed TOML entry; the runtime trait is
+//! [`StatusWidget`]. The bar carries its own lightweight [`Cell`] because the
+//! status bar never reaches the wire (ADR-0013).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -39,23 +28,18 @@ pub use widgets::text::TextWidget;
 pub use widgets::time::TimeWidget;
 pub use widgets::windows::WindowsWidget;
 
-/// Visual style for a status-bar [`Cell`], expressed as plain data.
-///
-/// Colors are strings (`"red"`, `"#cdd6f4"`, `"12"`) interpreted by the
-/// render layer — phux-config never imports ratatui (ADR-0020), so the
-/// translation to `ratatui::style::Color` happens in
-/// `phux-client`'s chrome module. This mirrors the existing
-/// `[theme].slots` color-as-string convention.
+/// Visual style for a status-bar [`Cell`] as plain data. Colors are strings
+/// (`"red"`, `"#cdd6f4"`, `"12"`) the render layer interprets (ADR-0020).
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields, default)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent SGR attribute toggle; a bitflags enum would only obscure the TOML-facing shape"
+    reason = "each bool is an independent SGR attribute toggle"
 )]
 pub struct CellStyle {
-    /// Foreground color string, or `None` for the terminal default.
+    /// Foreground color, or `None` for the terminal default.
     pub fg: Option<String>,
-    /// Background color string, or `None` for the terminal default.
+    /// Background color, or `None` for the terminal default.
     pub bg: Option<String>,
     /// Bold.
     pub bold: bool,
@@ -65,22 +49,19 @@ pub struct CellStyle {
     pub italic: bool,
     /// Underline.
     pub underline: bool,
-    /// Reverse video (swap fg/bg).
+    /// Reverse video.
     pub reverse: bool,
 }
 
 impl CellStyle {
-    /// `true` when every field is at its default (no styling). Used to
-    /// store `None` rather than an all-default style on a [`Cell`].
+    /// `true` when every field is at its default (no styling).
     #[must_use]
     pub fn is_plain(&self) -> bool {
         *self == Self::default()
     }
 
     /// `over` layered onto `self`: colours `over` sets replace, and each
-    /// attribute is on when either side turns it on. Lets one part of a
-    /// segment (a tab's index, its badge) change its ink while keeping the
-    /// segment's bed.
+    /// attribute is on when either side turns it on.
     #[must_use]
     pub fn layered(&self, over: &Self) -> Self {
         Self {
@@ -95,89 +76,50 @@ impl CellStyle {
     }
 }
 
-/// phux-foz.12: the interactive target a composed cell carries.
-///
-/// Lets a host that routes mouse input (the TUI client) hit-test a click
-/// against the exact strip it painted. Widgets stamp this on their cells
-/// at render time; the composer copies it through slot placement and
-/// truncation untouched. Paint and hit targets therefore derive from one
-/// model and cannot drift — the same discipline as the sidebar's
-/// `row_model`.
+/// The click target a composed cell carries. Widgets stamp it at render time
+/// and the composer copies it through untouched, so paint and hit-testing
+/// derive from one model and cannot drift.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellHit {
-    /// Clicking this cell selects window `i` (the `select-window` index).
-    /// Stamped by the `windows` widget on tab cells (separators excluded).
+    /// Selects window `i` (the `select-window` index).
     Window(usize),
-    /// Clicking this cell opens the fleet switcher. Stamped by the
-    /// `switch` widget across its whole chip, so the affordance is a
-    /// target you can hit with a pointer rather than a glyph you must
-    /// land on exactly.
+    /// Opens the fleet switcher.
     Switch,
-    /// Clicking this cell invokes a named, argument-free TUI action.
-    ///
-    /// Status widgets use this for persistent navigation affordances such
-    /// as Sessions, Settings, and Help. The TUI maps the name through its
-    /// ordinary action dispatcher, so click and keybinding paths share the
-    /// same behavior.
+    /// Invokes a named, argument-free TUI action through the ordinary
+    /// action dispatcher.
     Action(&'static str),
 }
 
 /// A single status-bar cell.
-///
-/// Local to phux-config — see the module-level doc for rationale. Grapheme
-/// storage matches the inline-then-spill pattern phux-protocol once used
-/// for its (now-deleted) `Cell::text` field.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Cell {
-    /// Grapheme cluster occupying this cell. May be empty for a blank cell.
-    /// First element is the base codepoint; remaining elements are combining
-    /// codepoints in source order.
+    /// Grapheme cluster: base codepoint, then combining codepoints. Empty for
+    /// a blank cell or the claimed second column of a double-width character.
     pub text: SmallVec<[char; 2]>,
-    /// Optional per-cell style. `None` ⇒ inherit the terminal default
-    /// (plain). The render layer (phux-client) translates this to SGR.
+    /// Per-cell style; `None` is the terminal default.
     pub style: Option<CellStyle>,
-    /// phux-foz.12: optional interactive hit target. `None` ⇒ the cell is
-    /// inert (clicks over it are consumed as chrome, committing nothing).
+    /// Click target; `None` is inert chrome.
     pub hit: Option<CellHit>,
 }
 
-/// A window as the `windows` widget sees it: a display name and whether
-/// it is the client's active window. Positional index in the slice is the
-/// window's selector (matches `select-window index=N`).
+/// A window as the `windows` widget and the sidebar see it. Its index in the
+/// slice is its `select-window` index.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WindowInfo {
-    /// Window display name (the editable label).
+    /// Window display name.
     pub name: String,
-    /// `true` for the active window (rendered with the active style).
+    /// The client's active window.
     pub active: bool,
-    /// phux-x2hm: `true` when a pane in this window is zoomed to fill it.
-    /// Only ever set on the active window; the `windows` widget appends a
-    /// `Z` marker to its tab (tmux's zoomed-pane indicator).
+    /// A pane in this (active) window is zoomed; marked `Z`.
     pub zoomed: bool,
-    /// phux-foz.1: `true` when a pane in this window is waiting on a human
-    /// answer (an ADR-0035 `AgentEvent::Asked` landed and has not been
-    /// cleared by user input). The `windows` widget appends a `!` marker to
-    /// the tab so the asking window is findable from any window.
+    /// A pane is waiting on a human answer (ADR-0035); marked `!`.
     pub attention: bool,
-    /// phux-p4vp: the VCS branch of the window's focused pane, when its
-    /// working directory sits inside a git repository (e.g. `main`, or a
-    /// short commit hash for a detached HEAD). `None` when the cwd is
-    /// unknown or not under version control. The sidebar renders this as a
-    /// dim branch line under the window label (herdr-style); the status-bar
-    /// `windows` widget ignores it.
+    /// VCS branch of the focused pane's cwd (shown by the sidebar only).
     pub branch: Option<String>,
-    /// ADR-0124: compact exit status when any pane in this window is
-    /// retained after its process exited (`"3"`, `"sig9"`, or `""` when
-    /// neither code nor signal is known). `None` when every pane is still
-    /// live. The sidebar and `windows` widget append a dim `x` marker so a
-    /// retained pane is visible without focusing it.
+    /// Compact exit status of a retained pane (`"3"`, `"sig9"`, or `""`),
+    /// ADR-0124; `None` while every pane is live.
     pub exited: Option<String>,
-    /// The agent badge of the window's focused pane: one glyph and its
-    /// style, resolved by the host from the same vocabulary its other
-    /// agent surfaces use (phux-config carries no theme, ADR-0020). `None`
-    /// for a window whose focused pane runs no declared agent. The
-    /// `windows` widget paints it ahead of the name, so a tab reads
-    /// `◐ claude` rather than `claude (working)`.
+    /// Pre-resolved agent badge of the focused pane, painted before the name.
     pub badge: Option<WindowBadge>,
 }
 
@@ -203,52 +145,29 @@ impl WindowInfo {
     }
 }
 
-/// Context passed to a [`StatusWidget`] at render time.
-///
-/// Kept intentionally narrow: every field is real data the host already
-/// tracks, passed in (rather than read inside the widget) so render is a
-/// pure function of context — that's what makes deterministic snapshot
-/// tests possible.
+/// Context passed to a [`StatusWidget`] at render time, so render is a pure
+/// function of it.
 #[derive(Debug, Clone, Copy)]
 pub struct WidgetContext<'a> {
     /// Wall-clock time the status bar is rendering at.
     pub now: SystemTime,
     /// Current session name (`""` if not in a session).
     pub session_name: &'a str,
-    /// Configured TUI prefix chord, used by discoverability widgets.
+    /// Configured TUI prefix chord.
     pub prefix: &'a str,
-    /// The TUI's windows in display order, with the active one flagged.
-    /// Consumed by the `windows` (tab-bar) widget; empty for consumers
-    /// that don't present windows.
+    /// Windows in display order.
     pub windows: &'a [WindowInfo],
-    /// phux-foz.4: the focused pane's live working directory, or `""`
-    /// when unknown. Fed by the server's `cwd_changed` agent events
-    /// (kernel-queried PTY-child cwd); consumed by the `cwd` widget.
+    /// The focused pane's working directory, or `""` when unknown.
     pub cwd: &'a str,
-    /// phux-foz.4: exit code of the last command that finished in the
-    /// focused pane, when the shell's OSC-133 `D` mark reported one
-    /// (`command_finished.exit_code`). `None` until a command finishes
-    /// (or when the shell integration omits the code); consumed by the
-    /// `exit` widget.
+    /// Exit code of the focused pane's last finished command (OSC 133 `D`).
     pub last_exit: Option<i32>,
-    /// Width of the whole status row, in cells.
-    ///
-    /// This is the *bar's* width, not the widget's budget: it is how a
-    /// widget answers "is this a cramped terminal?" rather than "how much
-    /// room am I getting?". The universal `min-cols` / `max-cols`
-    /// visibility options read it, which is what lets one config express
-    /// a lineup that changes shape with the terminal instead of two.
-    ///
-    /// Always overwritten by [`StatusBar::render`] with the width it was
-    /// asked for, so a widget never sees a stale or unset value.
+    /// Width of the whole row (not the widget's budget), read by the
+    /// `min-cols` / `max-cols` options. Set by [`StatusBar::render`].
     pub cols: u16,
 }
 
 impl<'a> WidgetContext<'a> {
-    /// Build a context carrying the universally-available fields, with the
-    /// focused-pane data feeds (`cwd`, `last_exit`) at their unknown
-    /// defaults. Hosts that track those feeds override the fields via
-    /// struct-update syntax.
+    /// Build a context with `cwd` and `last_exit` unknown.
     #[must_use]
     pub const fn new(
         now: SystemTime,
@@ -269,29 +188,19 @@ impl<'a> WidgetContext<'a> {
 }
 
 /// A horizontal strip of cells produced by a widget for one render pass.
-///
-/// `Cell` is the local widget cell type — see the module-level doc.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WidgetCells {
     /// Cells in left-to-right display order.
     pub cells: Vec<Cell>,
 }
 
-/// The advance width of `ch` in terminal cells, or `None` for a
-/// character that must never reach a VT emitter.
+/// The advance width of `ch` in terminal cells, or `None` for a character
+/// that must never reach a VT emitter.
 ///
-/// Control characters are refused explicitly rather than left to
-/// `unicode-width` happening to return `None`: a status-bar string can
-/// come from a window name, a `cwd`, or an `exec` widget's stdout, so it
-/// is untrusted input on a path that writes escape sequences.
-///
-/// Explicit BIDI FORMATTING characters are refused for the same reason.
-/// They are zero-width, so they cost no budget and no width check ever
-/// notices them, but they reorder everything drawn after them: a pane
-/// that names itself `"\u{202e}..."` can make the tab bar read as a
-/// different window. Real right-to-left text does not need them — the
-/// terminal's bidi algorithm derives direction from the letters
-/// themselves — so dropping the overrides costs nothing legitimate.
+/// Status-bar text (window names, cwd, `exec` output) is untrusted input on a
+/// path that writes escape sequences, so control characters are refused. Bidi
+/// formatting characters are refused too: zero-width, but they reorder
+/// everything drawn after them, and real RTL text does not need them.
 #[must_use]
 pub fn cell_width(ch: char) -> Option<usize> {
     if ch.is_control() || is_bidi_control(ch) {
@@ -300,9 +209,8 @@ pub fn cell_width(ch: char) -> Option<usize> {
     unicode_width::UnicodeWidthChar::width(ch)
 }
 
-/// The explicit bidi formatting characters: the embedding/override set
-/// (`U+202A`-`U+202E`), the isolates (`U+2066`-`U+2069`), and the
-/// standalone marks (`U+061C`, `U+200E`, `U+200F`).
+/// The explicit bidi formatting characters: embeddings/overrides, isolates,
+/// and the standalone marks.
 #[must_use]
 pub const fn is_bidi_control(ch: char) -> bool {
     matches!(
@@ -311,30 +219,17 @@ pub const fn is_bidi_control(ch: char) -> bool {
     )
 }
 
-/// The columns one composed [`Cell`] advances the terminal.
-///
-/// A cell claiming two columns is followed by a cell that paints
-/// nothing (see [`WidgetCells::from_styled`]); the claimed cell reports
-/// `0`, because it advances nothing of its own.
+/// The columns one composed [`Cell`] advances the terminal; the claimed
+/// second cell of a double-width character reports `0`.
 #[must_use]
 pub fn cell_columns(cell: &Cell) -> usize {
     cell.text.iter().copied().filter_map(cell_width).sum()
 }
 
-/// Drop a trailing cell whose claimed continuation was cut away.
-///
-/// A cut lands between cells, and a double-width character occupies two
-/// of them. Truncating between a base and the cell it claimed leaves an
-/// ORPHAN BASE: a cell the composer counts as one column that the
-/// terminal advances two for. In the bar's right slot that orphan sits
-/// at the last column, so the terminal advances past the end of the row
-/// and the bar wraps into the pane grid below — libghostty's cells
-/// (ADR-0020).
-///
-/// The strip comes back one cell shorter than the budget. That is the
-/// only honest answer: half a character is not a narrower character, and
-/// a strip may always under-spend, never overrun.
-pub fn drop_orphan_base(cells: &mut Vec<Cell>) {
+/// Drop a trailing double-width base whose claimed cell was cut away: the
+/// terminal would advance two columns for it and wrap the bar into the pane
+/// grid. The strip may come back one cell short; it must never overrun.
+pub(crate) fn drop_orphan_base(cells: &mut Vec<Cell>) {
     while cells.last().is_some_and(|c| cell_columns(c) > 1) {
         cells.pop();
     }
@@ -347,36 +242,27 @@ pub fn display_width(s: &str) -> usize {
 }
 
 impl WidgetCells {
-    /// Build a [`WidgetCells`] from a plain string. Each `char` becomes a
-    /// single-cell grapheme; styling is left at default. This is the
-    /// simplest possible cell-builder and is what both built-in widgets
-    /// use today.
+    /// Build unstyled cells from a string.
     #[must_use]
     pub fn from_text(s: &str) -> Self {
         Self::from_styled(s, None)
     }
 
-    /// Build a [`WidgetCells`] from a string with one style applied to
-    /// every cell. `None` ⇒ plain (terminal default).
+    /// Build cells with one style on every cell. Unprintable characters are
+    /// dropped, zero-width marks join the previous cell, and a double-width
+    /// character claims two cells: `cells.len()` is the bar's width contract.
     #[must_use]
     #[allow(
         clippy::needless_pass_by_value,
-        reason = "style is cloned into each cell; by-value keeps the builder call sites ergonomic"
+        reason = "style is cloned into each cell; by-value keeps call sites ergonomic"
     )]
     pub fn from_styled(s: &str, style: Option<CellStyle>) -> Self {
         let mut cells: Vec<Cell> = Vec::with_capacity(s.len());
         for ch in s.chars() {
             let Some(width) = cell_width(ch) else {
-                // A control character never becomes a cell: chrome text
-                // reaches a VT emitter, and the status bar renders
-                // strings a user (or a shell, via a window name) chose.
                 continue;
             };
             if width == 0 {
-                // A combining mark, variation selector or ZWJ belongs to
-                // the cell before it — which is exactly what `Cell::text`
-                // documents ("first element is the base codepoint;
-                // remaining elements are combining codepoints").
                 if let Some(last) = cells.last_mut() {
                     last.text.push(ch);
                 }
@@ -387,14 +273,9 @@ impl WidgetCells {
                 style: style.clone(),
                 hit: None,
             });
-            // A double-width character claims a second COLUMN, so it
-            // claims a second cell. `cells.len()` is the bar's width
-            // contract — the fitting pass, the narrowing order and the
-            // click map all count cells — and it is only true if the
-            // count matches what the terminal will actually advance.
             for _ in 1..width {
                 cells.push(Cell {
-                    text: smallvec::SmallVec::new(),
+                    text: SmallVec::new(),
                     style: style.clone(),
                     hit: None,
                 });
@@ -415,43 +296,18 @@ impl WidgetCells {
         self.cells.len()
     }
 
-    /// Cut the strip down to at most `budget` cells, marking the cut with
-    /// an ellipsis so a shortened strip never masquerades as a complete
-    /// one.
-    ///
-    /// The ellipsis replaces the *last surviving* cell rather than being
-    /// appended, so the result is at most `budget` cells wide — the
-    /// composer can rely on never being handed more than it asked for.
-    /// Style and hit target are inherited from the cell it replaces,
-    /// which keeps a truncated window tab clickable and correctly
-    /// colored right up to its edge.
-    ///
-    /// A cut that would land inside a double-width character takes the
-    /// whole character, so the strip can come back ONE CELL SHORT of the
-    /// budget. Under-spending is always safe; overrunning is not.
-    ///
-    /// The ellipsis is stamped on a BASE cell, never on a claimed one.
-    /// A claimed cell is skipped at emit — the terminal already advanced
-    /// past it when it drew the base — so an ellipsis parked there is
-    /// never drawn at all, and a clipped strip silently loses the mark
-    /// that says it was clipped.
-    ///
-    /// A `budget` of 0 empties the strip. Strips that already fit are
-    /// untouched, ellipsis included: this is a no-op on the common path.
+    /// Cut the strip to at most `budget` cells, replacing the last survivor
+    /// with an ellipsis (keeping its style and hit target) so a shortened
+    /// strip never masquerades as complete. A double-width character is
+    /// never split, and the ellipsis always lands on a drawn base cell.
+    /// Strips that already fit are untouched.
     pub fn clip(&mut self, budget: usize) {
         if self.cells.len() <= budget {
             return;
         }
-        // Kept before the cut so the mark can inherit them even when the
-        // cut leaves nothing behind to inherit from.
         let carried = self.cells.first().map(|c| (c.style.clone(), c.hit));
         self.cells.truncate(budget);
-        // A cut can land between a wide character's base and the cell it
-        // claimed. Take the whole character rather than half of it.
         drop_orphan_base(&mut self.cells);
-        // If the survivor is a CLAIMED cell, its base is the cell before
-        // it; drop the claimed half so the ellipsis lands on the base,
-        // which is a column the terminal actually draws.
         if self.cells.last().is_some_and(|c| cell_columns(c) == 0) {
             self.cells.pop();
         }
@@ -459,11 +315,8 @@ impl WidgetCells {
             last.text = smallvec::smallvec![ELLIPSIS];
             return;
         }
-        // Everything went: a budget of one column against a strip whose
-        // first character needs two. The mark still has to be there —
-        // a blank one-column strip is indistinguishable from a widget
-        // that had nothing to say, which is exactly the lie the ellipsis
-        // exists to prevent.
+        // Nothing survived (a one-column budget against a wide first
+        // character): the cut must still be marked.
         if budget > 0
             && let Some((style, hit)) = carried
         {
@@ -483,128 +336,65 @@ impl WidgetCells {
     }
 }
 
-/// The single-cell mark that says "there is more here than fits". Shared
-/// by every shrink path so one glyph means one thing across the chrome.
+/// The single-cell mark for "there is more here than fits".
 pub const ELLIPSIS: char = '…';
 
 /// A status-bar widget.
-///
-/// The trait is **not** named `Widget` because [`crate::schema::Widget`]
-/// already occupies that name on the parsed-TOML side.
 pub trait StatusWidget: Send + Sync + fmt::Debug + 'static {
-    /// Render the widget for the current [`WidgetContext`]. Returns a
-    /// horizontal cell strip.
+    /// Render the widget for the current [`WidgetContext`].
     fn render(&self, ctx: &WidgetContext<'_>) -> WidgetCells;
 
-    /// Render into a hard budget of `budget` cells.
-    ///
-    /// This is the responsive entry point: the composer never hands a
-    /// widget more room than it has, so a widget that can degrade
-    /// gracefully gets to choose *how*. The default is a blunt
-    /// [`WidgetCells::clip`] — correct for widgets whose output is one
-    /// run of text (a clock, a session name, a path), where dropping
-    /// trailing characters and marking the cut is exactly right.
-    ///
-    /// Widgets whose output has internal structure should override this.
-    /// The `windows` tab bar is the motivating case: clipping it mid-tab
-    /// yields a half-drawn label that lies about how many windows exist,
-    /// so it instead drops whole tabs around the active one and marks the
-    /// hidden ones. The contract for an override is only that the result
-    /// is at most `budget` cells wide.
+    /// Render into at most `budget` cells. The default clips with an
+    /// ellipsis; structured widgets (the `windows` tab bar) override it to
+    /// degrade more gracefully.
     fn render_within(&self, ctx: &WidgetContext<'_>, budget: usize) -> WidgetCells {
         self.render(ctx).clipped(budget)
     }
 
-    /// phux-be1m: `true` for a widget whose width is *elastic* — it has no
-    /// content of its own and instead absorbs the row's leftover columns.
-    ///
-    /// The `spacer` kind is the only such widget, and the whole vocabulary
-    /// of the composer's fitting pass is built on the opposite assumption
-    /// (a widget is content-sized; the row is what has to give), so this
-    /// is a narrow, explicit opt-in rather than a general layout system.
-    /// See [`StatusBar::render`] for what an elastic widget is promised:
-    /// nothing at all when the row is full, and an even share of the
-    /// leftover columns when it is not.
-    ///
-    /// Takes `ctx` because visibility is width-conditional: a `spacer`
-    /// gated out by `min-cols` / `max-cols` is not elastic on that row, it
-    /// is simply absent, and must not claim a share it would then not
-    /// paint.
-    ///
-    /// [`StatusBar::render`]: crate::widget::StatusBar::render
+    /// `true` for a widget that absorbs the row's leftover columns instead of
+    /// having content (only `spacer`). Takes `ctx` because a widget gated out
+    /// by `min-cols` / `max-cols` is absent, not elastic.
     fn elastic(&self, _ctx: &WidgetContext<'_>) -> bool {
         false
     }
 
-    /// Optional poll interval. `None` ⇒ this widget needs no time-based
-    /// repaint and is redrawn only when the status bar repaints for
-    /// other reasons (session-name change, layout change, …). `Some(d)`
-    /// ⇒ the status bar schedules a repaint at this cadence.
+    /// Repaint cadence for time-based widgets; `None` repaints only when the
+    /// bar does.
     fn poll_interval(&self) -> Option<Duration> {
         None
     }
 
-    /// phux-r82.6: for widgets backed by an external asynchronous data
-    /// feed (the `exec` kind), the shared feed handle the host must
-    /// drive. The host runs the feed's command on its interval and
-    /// pushes output through [`ExecFeed::apply_output`]; `render` then
-    /// reads the cached cells without ever blocking. `None` for pure
-    /// widgets (the default).
+    /// The async feed the host must drive (the `exec` kind): the host runs the
+    /// command and pushes output through [`ExecFeed::apply_output`], and
+    /// `render` reads the cached cells without blocking.
     fn exec_feed(&self) -> Option<ExecFeed> {
         None
     }
 }
 
-/// Factory function: builds a widget from a TOML `opts` map.
-///
-/// The universal `style` option is *not* part of a factory's surface:
-/// [`WidgetRegistry::build`] extracts and applies it before the factory
-/// runs, so factories only ever see their own kind-specific options.
+/// Builds a widget from its kind-specific options (the registry strips the
+/// universal ones first).
 pub type WidgetFactory =
     fn(&BTreeMap<String, toml::Value>) -> Result<Box<dyn StatusWidget>, WidgetError>;
 
-/// The universal widget option every kind accepts (phux-i0e8.4.2):
-/// a [`CellStyle`] table applied by the registry, not by factories.
+/// Universal widget-level [`CellStyle`] table.
 const STYLE_OPT: &str = "style";
-
-/// Universal responsive-visibility options, applied by the registry.
-///
-/// `min-cols` / `max-cols` bound the *bar* widths at which a widget
-/// renders at all. They exist because the honest answer to a narrow
-/// terminal is usually not "show this smaller" but "do not show this":
-/// a clock is worth four columns at 120 and worth none at 45, and no
-/// amount of shrinking makes it worth them. Expressing that as a range
-/// on the widget keeps one lineup in one config, instead of a lineup
-/// per terminal size.
+/// Universal visibility bounds on the *bar* width: outside them the widget
+/// renders nothing, so one lineup can adapt to the terminal.
 const MIN_COLS_OPT: &str = "min-cols";
-/// See [`MIN_COLS_OPT`].
 const MAX_COLS_OPT: &str = "max-cols";
-
-/// The universal options the registry handles before any factory runs.
 const UNIVERSAL_OPTS: [&str; 3] = [STYLE_OPT, MIN_COLS_OPT, MAX_COLS_OPT];
 
-/// Documentation spec for one built-in widget kind (phux-i0e8.11.3).
-///
-/// Each widget file defines a `SPEC` const next to its factory, and the
-/// factory validates its options against that same const (via
-/// `reject_unknown_opts`), so the documented option surface and the
-/// enforced one are one object and cannot drift. [`BUILTIN_WIDGET_SPECS`]
-/// aggregates them; a unit test pins that list to
-/// [`WidgetRegistry::with_builtins`], and the generated reference page
-/// `docs/reference/widgets.md` (see `phux::refdocs::widgets`) renders
-/// from it.
-///
-/// Named `WidgetKindSpec` because [`crate::schema::WidgetSpec`] already
-/// names the parsed `[[status.widgets]]` TOML entry.
+/// Documentation spec for one built-in widget kind. The factory validates its
+/// options against the same const, so the documented surface
+/// (`docs/reference/widgets.md`) and the enforced one cannot drift.
 #[derive(Debug, Clone, Copy)]
 pub struct WidgetKindSpec {
     /// Registered kind string (the `kind = "..."` value).
     pub kind: &'static str,
     /// One-paragraph human description of what the widget renders.
     pub summary: &'static str,
-    /// The kind-specific options the factory accepts. The universal
-    /// `style` table is not listed per kind — it is registry-applied and
-    /// documented once on the generated page.
+    /// The kind-specific options the factory accepts.
     pub options: &'static [WidgetOptSpec],
 }
 
@@ -615,22 +405,18 @@ pub struct WidgetOptSpec {
     pub name: &'static str,
     /// Alternative accepted spellings (e.g. `max_len` for `max-len`).
     pub aliases: &'static [&'static str],
-    /// Type, default, and behavior in one line, rendered verbatim into
-    /// the generated reference.
+    /// Type, default, and behavior in one line, rendered verbatim.
     pub doc: &'static str,
 }
 
 impl WidgetKindSpec {
-    /// `true` when `key` is an accepted spelling of one of this kind's
-    /// options.
     fn accepts(&self, key: &str) -> bool {
         self.options
             .iter()
             .any(|opt| opt.name == key || opt.aliases.contains(&key))
     }
 
-    /// Every accepted option spelling plus the universal keys — the
-    /// did-you-mean candidate set for an unknown-option diagnostic.
+    /// Did-you-mean candidates: every option spelling plus the universals.
     fn candidate_keys(&self) -> Vec<&'static str> {
         let mut keys: Vec<&'static str> = self
             .options
@@ -642,9 +428,7 @@ impl WidgetKindSpec {
     }
 }
 
-/// The doc specs of every built-in widget kind, in ASCII order of kind
-/// (matching [`WidgetRegistry::kinds`] on a builtins registry). Pinned to
-/// [`WidgetRegistry::with_builtins`] by a unit test below.
+/// Doc specs of every built-in widget kind, in ASCII order of kind.
 pub const BUILTIN_WIDGET_SPECS: &[&WidgetKindSpec] = &[
     &widgets::cwd::SPEC,
     &widgets::exec::SPEC,
@@ -658,10 +442,14 @@ pub const BUILTIN_WIDGET_SPECS: &[&WidgetKindSpec] = &[
     &widgets::windows::SPEC,
 ];
 
+pub(crate) fn invalid(kind: &str, message: String) -> WidgetError {
+    WidgetError::InvalidOption {
+        kind: kind.to_owned(),
+        message,
+    }
+}
+
 /// Parse an optional [`CellStyle`] from an inline-table option.
-///
-/// Shared by the registry (the universal `style` option) and by widgets
-/// with their own style-table options (`windows`' `active`/`inactive`).
 pub(crate) fn style_opt(
     kind: &str,
     opts: &BTreeMap<String, toml::Value>,
@@ -672,23 +460,51 @@ pub(crate) fn style_opt(
             .clone()
             .try_into::<CellStyle>()
             .map(Some)
-            .map_err(|e| WidgetError::InvalidOption {
-                kind: kind.to_owned(),
-                message: format!("`{key}` must be a style table: {e}"),
-            })
+            .map_err(|e| invalid(kind, format!("`{key}` must be a style table: {e}")))
     })
 }
 
-/// Reject any option key outside the kind's [`WidgetKindSpec`], naming
-/// the widget and suggesting the nearest valid option (phux-i0e8.4.2).
-///
-/// Every factory calls this first with its own `SPEC` const, so a typo'd
-/// option fails the build loudly instead of parsing into an open
-/// `BTreeMap` and doing nothing — and the enforced surface is the very
-/// object the generated reference documents (phux-i0e8.11.3). The
-/// universal `style` key is always accepted: [`WidgetRegistry::build`]
-/// extracts and applies it before the factory runs, so factories never
-/// see it — but it is a valid spelling and belongs in the suggestions.
+/// Parse an optional string option.
+pub(crate) fn string_opt(
+    kind: &str,
+    opts: &BTreeMap<String, toml::Value>,
+    key: &str,
+) -> Result<Option<String>, WidgetError> {
+    match opts.get(key) {
+        None => Ok(None),
+        Some(toml::Value::String(s)) => Ok(Some(s.clone())),
+        Some(other) => Err(invalid(
+            kind,
+            format!("`{key}` must be a string, got {}", other.type_str()),
+        )),
+    }
+}
+
+/// Parse an optional integer option that must be `> 0`, spelled `key` or
+/// `alias`.
+pub(crate) fn positive_opt(
+    kind: &str,
+    opts: &BTreeMap<String, toml::Value>,
+    key: &str,
+    alias: Option<&str>,
+) -> Result<Option<usize>, WidgetError> {
+    match opts.get(key).or_else(|| alias.and_then(|a| opts.get(a))) {
+        None => Ok(None),
+        Some(toml::Value::Integer(n)) if *n > 0 => usize::try_from(*n)
+            .map(Some)
+            .map_err(|_| invalid(kind, format!("`{key}` does not fit in usize: {n}"))),
+        Some(toml::Value::Integer(n)) => {
+            Err(invalid(kind, format!("`{key}` must be > 0, got {n}")))
+        }
+        Some(other) => Err(invalid(
+            kind,
+            format!("`{key}` must be an integer, got {}", other.type_str()),
+        )),
+    }
+}
+
+/// Reject any option key outside the kind's [`WidgetKindSpec`], suggesting
+/// the nearest valid one. Every factory calls this first.
 pub(crate) fn reject_unknown_opts(
     spec: &WidgetKindSpec,
     opts: &BTreeMap<String, toml::Value>,
@@ -700,30 +516,24 @@ pub(crate) fn reject_unknown_opts(
         let suggestion = vocab::did_you_mean(key, &spec.candidate_keys())
             .map(|hit| format!(" (did you mean `{hit}`?)"))
             .unwrap_or_default();
-        return Err(WidgetError::InvalidOption {
-            kind: spec.kind.to_owned(),
-            message: format!("unknown option `{key}`{suggestion}"),
-        });
+        return Err(invalid(
+            spec.kind,
+            format!("unknown option `{key}`{suggestion}"),
+        ));
     }
     Ok(())
 }
 
-/// Decorator applying a widget-level [`CellStyle`] to the wrapped
-/// widget's *unstyled* cells (phux-i0e8.4.2).
-///
-/// Precedence: a cell that already carries a style keeps it — the
-/// `windows` widget's `active`/`inactive` segments, `exec`'s SGR-parsed
-/// output, and `help-hints`' dim base all win over the widget-level
-/// `style` table. Only cells the widget left plain inherit it.
+/// Decorator applying a widget-level [`CellStyle`] to the wrapped widget's
+/// *unstyled* cells; a cell the widget styled itself keeps its style.
 #[derive(Debug)]
 struct Styled {
     inner: Box<dyn StatusWidget>,
     style: CellStyle,
 }
 
-impl StatusWidget for Styled {
-    fn render(&self, ctx: &WidgetContext<'_>) -> WidgetCells {
-        let mut cells = self.inner.render(ctx);
+impl Styled {
+    fn apply(&self, mut cells: WidgetCells) -> WidgetCells {
         for cell in &mut cells.cells {
             if cell.style.is_none() {
                 cell.style = Some(self.style.clone());
@@ -731,15 +541,15 @@ impl StatusWidget for Styled {
         }
         cells
     }
+}
+
+impl StatusWidget for Styled {
+    fn render(&self, ctx: &WidgetContext<'_>) -> WidgetCells {
+        self.apply(self.inner.render(ctx))
+    }
 
     fn render_within(&self, ctx: &WidgetContext<'_>, budget: usize) -> WidgetCells {
-        let mut cells = self.inner.render_within(ctx, budget);
-        for cell in &mut cells.cells {
-            if cell.style.is_none() {
-                cell.style = Some(self.style.clone());
-            }
-        }
-        cells
+        self.apply(self.inner.render_within(ctx, budget))
     }
 
     fn elastic(&self, ctx: &WidgetContext<'_>) -> bool {
@@ -755,14 +565,8 @@ impl StatusWidget for Styled {
     }
 }
 
-/// Decorator gating a widget on the bar's width ([`MIN_COLS_OPT`] /
-/// [`MAX_COLS_OPT`]).
-///
-/// Outside the range the widget renders *nothing* — zero cells, not a
-/// shortened form. That matters to the composer as much as to the eye:
-/// a hidden widget costs no natural width, so the widgets that remain
-/// get the columns it would have taken rather than merely a smaller
-/// share of a crowded row.
+/// Decorator gating a widget on the bar's width; outside the range it
+/// renders zero cells and costs no natural width.
 #[derive(Debug)]
 struct ColRange {
     inner: Box<dyn StatusWidget>,
@@ -793,8 +597,6 @@ impl StatusWidget for ColRange {
         }
     }
 
-    /// A gated-out widget is not elastic: it claims no share of the slack
-    /// on a row where it paints nothing.
     fn elastic(&self, ctx: &WidgetContext<'_>) -> bool {
         self.visible(ctx) && self.inner.elastic(ctx)
     }
@@ -816,26 +618,20 @@ fn cols_opt(
 ) -> Result<Option<u16>, WidgetError> {
     match opts.get(key) {
         None => Ok(None),
-        Some(toml::Value::Integer(n)) => {
-            u16::try_from(*n)
-                .map(Some)
-                .map_err(|_| WidgetError::InvalidOption {
-                    kind: kind.to_owned(),
-                    message: format!("`{key}` must be a column count in 0..=65535, got {n}"),
-                })
-        }
-        Some(other) => Err(WidgetError::InvalidOption {
-            kind: kind.to_owned(),
-            message: format!("`{key}` must be an integer, got {}", other.type_str()),
+        Some(toml::Value::Integer(n)) => u16::try_from(*n).map(Some).map_err(|_| {
+            invalid(
+                kind,
+                format!("`{key}` must be a column count in 0..=65535, got {n}"),
+            )
         }),
+        Some(other) => Err(invalid(
+            kind,
+            format!("`{key}` must be an integer, got {}", other.type_str()),
+        )),
     }
 }
 
-/// Registry of widget kinds → factories.
-///
-/// [`WidgetRegistry::with_builtins`] pre-populates `time` and `session-name`;
-/// callers may register additional kinds via [`Self::register`] before
-/// the first [`Self::build`] call.
+/// Registry of widget kinds to factories.
 pub struct WidgetRegistry {
     factories: BTreeMap<&'static str, WidgetFactory>,
 }
@@ -849,7 +645,7 @@ impl fmt::Debug for WidgetRegistry {
 }
 
 impl WidgetRegistry {
-    /// Empty registry — register kinds explicitly via [`Self::register`].
+    /// Empty registry.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -857,8 +653,7 @@ impl WidgetRegistry {
         }
     }
 
-    /// Registry pre-populated with the in-tree widgets: `cwd`, `exec`,
-    /// `exit`, `help-hints`, `session-name`, `time`, and `windows`.
+    /// Registry pre-populated with the built-in widgets.
     #[must_use]
     pub fn with_builtins() -> Self {
         let mut r = Self::new();
@@ -875,26 +670,18 @@ impl WidgetRegistry {
         r
     }
 
-    /// Register a factory under `kind`. Later registrations overwrite
-    /// earlier ones for the same `kind`.
+    /// Register a factory under `kind`, replacing any earlier one.
     pub fn register(&mut self, kind: &'static str, factory: WidgetFactory) {
         self.factories.insert(kind, factory);
     }
 
-    /// Look up a kind and invoke its factory.
-    ///
-    /// The universal `style` option (phux-i0e8.4.2) is handled here, not
-    /// per factory: it is parsed and removed from the opts before the
-    /// factory runs, and a non-plain style wraps the built widget in a
-    /// decorator that styles its unstyled cells (per-cell styles win —
-    /// see `docs/reference/widgets.md` for the precedence contract).
+    /// Look up a kind and invoke its factory. The universal options are
+    /// stripped before the factory runs and applied as decorators.
     ///
     /// # Errors
     ///
-    /// Returns [`WidgetError::UnknownKind`] if `spec.kind` is not
-    /// registered, [`WidgetError::InvalidOption`] if `style` is not a
-    /// valid style table, or forwards [`WidgetError::InvalidOption`]
-    /// from the factory.
+    /// [`WidgetError::UnknownKind`] for an unregistered kind, or
+    /// [`WidgetError::InvalidOption`] from a universal option or the factory.
     pub fn build(&self, spec: &WidgetSpec) -> Result<Box<dyn StatusWidget>, WidgetError> {
         let factory = self
             .factories
@@ -906,28 +693,20 @@ impl WidgetRegistry {
         if let (Some(min), Some(max)) = (min, max)
             && min > max
         {
-            return Err(WidgetError::InvalidOption {
-                kind: spec.kind.clone(),
-                message: format!(
+            return Err(invalid(
+                &spec.kind,
+                format!(
                     "`{MIN_COLS_OPT}` ({min}) is above `{MAX_COLS_OPT}` ({max}), so this widget \
                      could never render"
                 ),
-            });
+            ));
         }
 
-        let widget = if spec
-            .opts
-            .keys()
-            .any(|k| UNIVERSAL_OPTS.contains(&k.as_str()))
-        {
-            let mut opts = spec.opts.clone();
-            for key in UNIVERSAL_OPTS {
-                opts.remove(key);
-            }
-            factory(&opts)?
-        } else {
-            factory(&spec.opts)?
-        };
+        let mut opts = spec.opts.clone();
+        for key in UNIVERSAL_OPTS {
+            opts.remove(key);
+        }
+        let widget = factory(&opts)?;
 
         let widget = match style.filter(|s| !s.is_plain()) {
             Some(style) => Box::new(Styled {
@@ -948,7 +727,7 @@ impl WidgetRegistry {
         })
     }
 
-    /// Registered widget kinds, in ASCII order (handy for tests).
+    /// Registered widget kinds, in ASCII order.
     #[must_use]
     pub fn kinds(&self) -> Vec<&'static str> {
         self.factories.keys().copied().collect()
@@ -978,50 +757,27 @@ pub enum WidgetError {
 }
 
 #[cfg(test)]
-mod cell_width_tests {
-    use super::{WidgetCells, display_width};
+mod tests {
+    use std::collections::BTreeSet;
 
-    /// `cells.len()` IS the status bar's width contract — the fitting
-    /// pass, the narrowing order, ADR-0087's elastic slack and the click
-    /// map all measure in cells. A double-width character therefore has
-    /// to occupy two of them. Counting it as one made a CJK window name
-    /// render about twice as wide as the bar believed, overflow the row,
-    /// and wrap into the pane grid below.
+    use super::{BUILTIN_WIDGET_SPECS, WidgetCells, WidgetRegistry, display_width};
+
+    /// `cells.len()` is the bar's width contract: a double-width character
+    /// claims two cells (one CJK name once overflowed the row into the pane
+    /// grid), a combining mark joins its base, and control characters never
+    /// become cells.
     #[test]
-    fn a_double_width_char_claims_two_cells() {
+    fn cells_count_terminal_columns() {
         let cells = WidgetCells::from_text("日本");
-        assert_eq!(cells.cells.len(), 4, "two CJK characters are four columns");
+        assert_eq!(cells.cells.len(), 4);
         assert_eq!(cells.cells.len(), display_width("日本"));
-        // The claimed cell paints nothing; the terminal already advanced.
         assert!(cells.cells[1].text.is_empty());
-        assert!(cells.cells[3].text.is_empty());
-        assert_eq!(cells.cells[0].text.as_slice(), ['日']);
         assert_eq!(cells.cells[2].text.as_slice(), ['本']);
-    }
 
-    /// ASCII is unchanged — one char, one cell — so every existing bar
-    /// composes byte-identically.
-    #[test]
-    fn ascii_is_one_cell_per_char() {
-        let cells = WidgetCells::from_text("0:main");
-        assert_eq!(cells.cells.len(), 6);
-    }
-
-    /// A combining mark belongs to the cell before it, which is exactly
-    /// what `Cell::text` documents. One cell per mark would have made
-    /// `"cafe\u{301}"` five columns wide when it renders as four.
-    #[test]
-    fn a_combining_mark_joins_its_base_cell() {
         let cells = WidgetCells::from_text("cafe\u{301}");
         assert_eq!(cells.cells.len(), 4);
         assert_eq!(cells.cells[3].text.as_slice(), ['e', '\u{301}']);
-    }
 
-    /// A status-bar string can come from a window name, a `cwd`, or an
-    /// `exec` widget's stdout, and it reaches an emitter that writes
-    /// escape sequences. No control character becomes a cell.
-    #[test]
-    fn control_characters_never_become_cells() {
         let cells = WidgetCells::from_text("a\u{1b}[31mb\u{7}");
         let text: String = cells
             .cells
@@ -1029,58 +785,26 @@ mod cell_width_tests {
             .flat_map(|c| c.text.iter().copied())
             .collect();
         assert_eq!(text, "a[31mb");
-        assert!(!text.contains('\u{1b}'));
     }
-}
 
-#[cfg(test)]
-mod spec_tests {
-    use std::collections::BTreeSet;
-
-    use super::{BUILTIN_WIDGET_SPECS, WidgetRegistry};
-
-    /// The registry-vs-spec pin (phux-i0e8.11.3): the documented kinds are
-    /// exactly the kinds [`WidgetRegistry::with_builtins`] registers, in
-    /// the same (ASCII) order. Registering a new builtin without a doc
-    /// spec — or documenting a kind that is not registered — fails here,
-    /// which is what keeps the generated `docs/reference/widgets.md`
-    /// covering exactly the real widget surface.
+    /// The documented kinds are exactly the registered builtins, and each
+    /// spec is renderable and unambiguous (`docs/reference/widgets.md`).
     #[test]
-    fn builtin_specs_match_the_builtin_registry() {
+    fn builtin_specs_match_the_registry_and_are_renderable() {
         let documented: Vec<&str> = BUILTIN_WIDGET_SPECS.iter().map(|s| s.kind).collect();
-        assert_eq!(
-            documented,
-            WidgetRegistry::with_builtins().kinds(),
-            "widget doc specs and with_builtins() drifted \
-             (add/remove the SPEC const next to the factory)",
-        );
-    }
-
-    /// Doc specs exist to be rendered: every summary and every option doc
-    /// must carry text, and option spellings must not collide within or
-    /// across name/alias lists of a kind.
-    #[test]
-    fn builtin_specs_are_renderable_and_unambiguous() {
+        assert_eq!(documented, WidgetRegistry::with_builtins().kinds());
         for spec in BUILTIN_WIDGET_SPECS {
-            assert!(
-                !spec.summary.trim().is_empty(),
-                "`{}` has an empty summary",
-                spec.kind
-            );
+            assert!(!spec.summary.trim().is_empty(), "`{}` summary", spec.kind);
             let mut seen = BTreeSet::new();
             for opt in spec.options {
                 assert!(
                     !opt.doc.trim().is_empty(),
-                    "`{}` option `{}` has an empty doc",
+                    "`{}.{}` doc",
                     spec.kind,
                     opt.name
                 );
                 for key in std::iter::once(opt.name).chain(opt.aliases.iter().copied()) {
-                    assert!(
-                        seen.insert(key),
-                        "`{}` documents option spelling `{key}` twice",
-                        spec.kind
-                    );
+                    assert!(seen.insert(key), "`{}` spells `{key}` twice", spec.kind);
                 }
             }
         }

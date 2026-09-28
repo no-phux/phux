@@ -61,18 +61,10 @@ pub enum RebuildError {
 }
 
 impl ServerState {
-    /// Assemble a [`StateBlob`] from the live session/window/pane tree for a
-    /// graceful upgrade.
-    ///
-    /// Walks sessions → windows → panes, keying everything by wire id, and
-    /// asks each pane's actor (over its `upgrade` mailbox) for the PTY
-    /// descriptors + replay snapshot. `listener_fd` is the inherited
-    /// `UnixListener` descriptor the orchestrator will pass to the new image.
-    ///
-    /// Must run inside the `LocalSet` that owns the pane actors (it awaits
-    /// their replies). A pane whose actor cannot be reached is recorded from
-    /// its descriptor with no handoff — the resume path then has nothing to
-    /// re-adopt for it.
+    /// Assemble a [`StateBlob`] from the live tree for a graceful upgrade,
+    /// asking each pane actor for its PTY descriptors and replay snapshot.
+    /// Runs inside the actors' `LocalSet`; an unreachable pane is recorded
+    /// without a handoff.
     pub async fn build_upgrade_blob(&self, listener_fd: RawFd) -> StateBlob {
         let mut handoffs = HashMap::new();
         let tids: Vec<ResourceId> = self.resources.resource_ids();
@@ -84,9 +76,7 @@ impl ServerState {
         self.assemble_upgrade_blob(listener_fd, &handoffs)
     }
 
-    /// Record the upgrade context — the listening socket's raw fd, path, and
-    /// the server's effective runtime flags (phux-v45.10) — at startup, for
-    /// `handle_upgrade` to read when building the handoff.
+    /// Record the upgrade context (listener fd, path, runtime flags).
     pub(crate) fn set_upgrade_context(
         &mut self,
         listener_fd: RawFd,
@@ -105,17 +95,13 @@ impl ServerState {
         self.lifecycle.upgrade_context()
     }
 
-    /// Clone every resource's [`ResourceHandle`] so the runtime can query
-    /// each engine's upgrade handoff *outside* the `ServerState` lock (it
-    /// can't hold the `Arc<Mutex<_>>` across the await; see
-    /// [`Self::assemble_upgrade_blob`]).
+    /// Every resource handle, for querying upgrade handoffs off the lock.
     pub(crate) fn upgrade_handles(&self) -> Vec<(ResourceId, ResourceHandle)> {
         self.all_resource_handles()
     }
 
-    /// Assemble the [`StateBlob`] from the live tree plus a pre-fetched map of
-    /// per-pane handoffs — synchronous, so the runtime can call it under the
-    /// state lock after gathering the handoffs out of lock.
+    /// Assemble the blob from the live tree plus pre-fetched handoffs,
+    /// under the lock.
     pub(crate) fn assemble_upgrade_blob(
         &self,
         listener_fd: RawFd,
@@ -173,10 +159,8 @@ impl ServerState {
                     ) else {
                         continue;
                     };
-                    // ADR-0124 §6: a retained pane has no process to
-                    // re-adopt, so its PTY does not cross and the new image
-                    // closes it with the exit it kept; a live pane's
-                    // retention request crosses with it.
+                    // ADR-0124 §6: a retained pane's PTY does not cross; a
+                    // live pane's retention request does.
                     let retained = self.retained_exit(tid).map(exit_blob);
                     panes.push(pane_blob(
                         pane_wire,
@@ -334,28 +318,19 @@ struct RebuiltPanes {
 }
 
 impl ServerState {
-    /// Rebuild the session/window/pane tree from a [`StateBlob`] in the
-    /// re-exec'd image (ADR-0032): recreate every entity under its recorded
-    /// wire id, restore the id allocators + cwd/last-touched metadata, and
-    /// spawn a pane actor that re-adopts the inherited PTY (or, for a pane with
-    /// no handoff, replays its snapshot into a fresh no-PTY actor). Returns each
-    /// rebuilt pane's exit receiver so the runtime can restore its lifecycle
-    /// watcher after releasing the state lock.
+    /// Rebuild the tree from a [`StateBlob`] in the re-exec'd image
+    /// (ADR-0032): recreate entities under their wire ids, restore
+    /// allocators and ledgers, and spawn actors that re-adopt PTYs (or
+    /// replay snapshots). Returns each pane's exit receiver.
     ///
-    /// Reconstruction is transactional: the blob is validated, the tree is
-    /// built on a fresh [`ServerState`], and only a complete success is
-    /// committed onto `self`. A validation, registry, or actor failure
-    /// leaves this state untouched so a resume cannot serve a partial tree.
-    ///
-    /// Linear reconstruction: create entities, bind wire ids, spawn actors,
-    /// re-link the tree, restore counters. The order of the passes is the
-    /// meaning — each one resolves references the previous one bound.
-    ///
-    /// Must run inside the `LocalSet` that owns pane actors (it spawns them).
+    /// Transactional: built on a fresh state and committed only on full
+    /// success. The pass order resolves each pass's references. Runs inside
+    /// the actors' `LocalSet`.
     ///
     /// # Errors
-    /// [`RebuildError`] on incomplete topology, a registry insertion
-    /// failure, an actor build failure, or a dangling wire-id reference.
+    ///
+    /// [`RebuildError`] for bad topology, registry or actor failures, or
+    /// dangling wire ids.
     #[allow(
         clippy::type_complexity,
         reason = "the runtime immediately consumes each rebuilt pane id and its one-shot exit receiver"
@@ -367,9 +342,7 @@ impl ServerState {
         validate_upgrade_blob(blob)?;
         let mut fresh = Self::new();
         fresh.config.scrollback = self.config.scrollback;
-        // ADR-0109: a blob from an image that predates the instance token
-        // leaves this process's token in place. Seed it onto the scratch
-        // state so commit cannot replace it with a second mint.
+        // ADR-0109: a pre-token blob keeps this process's token.
         if blob.counters.server_instance.is_none() {
             fresh.idspace.set_instance(self.idspace.instance());
         }
@@ -383,9 +356,7 @@ impl ServerState {
         Ok(panes.exit_watchers)
     }
 
-    /// Install a fully rebuilt tree, replacing only the tables reconstruction
-    /// owns. Startup gates already written on `self` (config, hub, policy,
-    /// upgrade context) stay put.
+    /// Install a rebuilt tree, replacing only what reconstruction owns.
     fn commit_rebuilt_tree(&mut self, mut fresh: Self) {
         std::mem::swap(&mut self.sessions, &mut fresh.sessions);
         std::mem::swap(&mut self.idspace, &mut fresh.idspace);
@@ -475,9 +446,7 @@ impl ServerState {
             }
 
             let bundle = pane_actor_bundle(p, scrollback)?;
-            // Pre-bind the wire id so `spawn_resource_actor`'s intern is a
-            // no-op (it returns the existing mapping instead of allocating a
-            // fresh one that would diverge from the blob).
+            // Pre-bind so the spawn's intern returns the blob's id.
             self.idspace
                 .bind_terminal(core, WireResourceId::local(p.wire_id));
             let crate::terminal_actor::TerminalActorBundle {
@@ -565,11 +534,8 @@ impl ServerState {
         Ok(())
     }
 
-    /// Close every pane the old image retained after its process exited
-    /// (ADR-0124 §6). Each was rebuilt without a PTY only so it closes
-    /// through its exit watcher like any other resource, with
-    /// `RESOURCE_CLOSED { SERVER_SHUTDOWN }` and its `pane_closed`. Returns
-    /// how many closed.
+    /// Close every pane the old image retained after exit (ADR-0124 §6),
+    /// through its exit watcher. Returns how many.
     pub fn close_upgrade_retained(&mut self, blob: &StateBlob) -> u32 {
         let retained: Vec<ResourceId> = blob
             .panes
@@ -602,10 +568,8 @@ impl ServerState {
     }
 }
 
-/// Build one pane's actor around its inherited PTY, or — for a pane the old
-/// image handed off no PTY for — around a fresh no-PTY actor its snapshot is
-/// replayed into. A pane carrying only one of the two PTY identities is a
-/// corrupt handoff, not a no-PTY pane.
+/// Build a pane actor around its inherited PTY, or a PTY-less actor that
+/// replays its snapshot. Only one of the two PTY ids is corruption.
 fn pane_actor_bundle(
     p: &PaneBlob,
     scrollback: phux_config::ScrollbackLimits,
@@ -774,9 +738,7 @@ mod tests {
     };
     use std::path::PathBuf;
 
-    /// Walk a one-session/one-window/one-pane state into a blob: the tree
-    /// links resolve by wire id and the pane carries the actor's replay
-    /// snapshot.
+    /// One pane's tree walks into a blob with resolved links and a snapshot.
     #[tokio::test(flavor = "current_thread")]
     async fn build_upgrade_blob_captures_tree_and_snapshot() {
         let local = tokio::task::LocalSet::new();
@@ -840,9 +802,7 @@ mod tests {
             .await;
     }
 
-    /// Build a state → blob → rebuild into a fresh state → blob again. The
-    /// tree, wire ids, and counters round-trip exactly, and the rebuilt pane
-    /// replays its seed.
+    /// state → blob → rebuild → blob round-trips tree, ids, and counters.
     #[tokio::test(flavor = "current_thread")]
     async fn rebuild_from_blob_round_trips_the_tree() {
         let local = tokio::task::LocalSet::new();
@@ -910,11 +870,7 @@ mod tests {
         .await;
     }
 
-    /// ADR-0109: the instance token changes exactly when pane ids can
-    /// repeat. A cold start mints a new one; an upgrade, which restores the
-    /// allocators, restores it too; a blob from an image that predates the
-    /// token leaves the new image's fresh one in place (ids still cannot
-    /// repeat, and no client can hold a token that image never issued).
+    /// ADR-0109: the instance token changes exactly when ids can repeat.
     #[tokio::test(flavor = "current_thread")]
     async fn the_instance_token_survives_an_upgrade_and_only_an_upgrade() {
         let local = tokio::task::LocalSet::new();
@@ -1026,9 +982,8 @@ mod tests {
         names
     }
 
-    /// A complete one-session/one-window/one-pane no-PTY blob rebuilds, and a
-    /// marker session already on the destination is replaced only after the
-    /// whole tree is ready.
+    /// A complete blob rebuilds; existing state is replaced only once the
+    /// tree is ready.
     #[tokio::test(flavor = "current_thread")]
     async fn rebuild_from_a_complete_blob_is_transactional() {
         let local = tokio::task::LocalSet::new();
@@ -1124,9 +1079,7 @@ mod tests {
         }
     }
 
-    /// A blob that passes topology checks but fails while building a pane
-    /// actor must not install the sessions that were rebuilt before the
-    /// failing pane.
+    /// A pane actor failure installs none of the rebuilt sessions.
     #[tokio::test(flavor = "current_thread")]
     async fn pane_actor_failure_does_not_install_a_partial_tree() {
         let local = tokio::task::LocalSet::new();

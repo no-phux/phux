@@ -12,52 +12,12 @@ use phux_protocol::wire::frame::{
     FrameKind, MAX_INPUT_TERMINAL_REPLY_BYTES, TYPE_HISTORY_REQUEST, TYPE_INPUT_TERMINAL_REPLY,
 };
 
-fn put_varint(out: &mut Vec<u8>, mut value: u64) {
-    loop {
-        let byte = (value & 0x7f) as u8;
-        value >>= 7;
-        if value == 0 {
-            out.push(byte);
-            return;
-        }
-        out.push(byte | 0x80);
-    }
-}
-
-fn tlv_field(out: &mut Vec<u8>, id: u32, value: &[u8]) {
-    put_varint(out, u64::from(id));
-    out.push(4);
-    put_varint(out, value.len() as u64);
-    out.extend_from_slice(value);
-}
+use crate::common::{
+    framed_tlv, local_id_bytes as local_terminal, put_varint, take_varint, tlv_field,
+};
 
 fn framed(fields: &[u8]) -> Vec<u8> {
-    let length = 1usize.checked_add(fields.len()).unwrap();
-    let mut out = Vec::with_capacity(length + 4);
-    out.extend_from_slice(&u32::try_from(length).unwrap().to_be_bytes());
-    out.push(TYPE_INPUT_TERMINAL_REPLY);
-    out.extend_from_slice(fields);
-    out
-}
-
-fn local_terminal(raw: u32) -> [u8; 5] {
-    let mut value = [0_u8; 5];
-    value[1..].copy_from_slice(&raw.to_be_bytes());
-    value
-}
-
-fn take_varint(input: &[u8], offset: &mut usize) -> u64 {
-    let mut value = 0_u64;
-    let mut shift = 0;
-    loop {
-        let byte = input[*offset];
-        *offset += 1;
-        value |= u64::from(byte & 0x7f) << shift;
-        if byte & 0x80 == 0 {
-            return value;
-        }
-        shift += 7;
-    }
+    framed_tlv(TYPE_INPUT_TERMINAL_REPLY, fields)
 }
 
 #[test]

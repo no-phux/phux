@@ -1,24 +1,12 @@
 //! Declarative, region-scoped detection rules (ADR-0046 §C).
 //!
-//! Rules are **data, not code**: an ordered list of
-//! `{id, state, priority, region, match, flags}` records shipped as TOML
-//! manifests, one per agent kind. Agent TUIs churn on their own cadence;
-//! keeping the rules in a manifest — a built-in compiled into the binary,
-//! overridable from a config directory — decouples that churn from phux's
-//! release cadence and lets an operator repair a broken detection without
-//! waiting for us.
-//!
-//! Predicates form a recursive combinator tree (`contains` / `regex` /
-//! `line-regex` / `all` / `any` / `not`), compiled **once at load** into
-//! `Predicate`. A manifest carrying an invalid regex, an unknown state
-//! word, an unparseable region, or more rules / matchers / nesting than the
-//! load-time bounds allow is logged at `warn` and **dropped whole** — a bad
-//! manifest must never wedge a pane, and a half-applied one is worse than
-//! none, because the `idle` fail-safe hides the seam.
-//!
-//! `region` accepts the two windowed regions with a line count —
-//! `bottom-lines(1)`, `top-non-empty-lines(3)` — and the bare spellings keep
-//! their historical defaults. See `regions::Region`.
+//! Rules are data: one TOML manifest per agent kind, built in and
+//! overridable from a config directory, so an operator can repair a detection
+//! without a release. Predicates (`contains` / `regex` / `line-regex` / `all`
+//! / `any` / `not`) compile once at load. A manifest with an invalid regex,
+//! unknown state, unparseable region, or anything over the load-time bounds
+//! is logged and dropped whole: a half-applied manifest is worse than none,
+//! because the `idle` fail-safe hides the seam.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -28,10 +16,10 @@ use serde::Deserialize;
 use tracing::{debug, warn};
 
 use super::DetectedState;
+use super::explain::{EvaluatedRule, PredicateEvidence};
 use super::regions::{Region, Screen, extract};
 
-/// Built-in manifests. Every predicate in these files is derived from the
-/// shipped CLI's observable output and pinned by captured-screen tests below.
+/// Built-in manifests, each pinned by captured-screen tests below.
 const BUILTIN_MANIFESTS: [(&str, &str); 8] = [
     ("claude", include_str!("../rules/claude.toml")),
     ("codex", include_str!("../rules/codex.toml")),
@@ -43,74 +31,38 @@ const BUILTIN_MANIFESTS: [(&str, &str); 8] = [
     ("cursor-agent", include_str!("../rules/cursor-agent.toml")),
 ];
 
-/// Env knob: `PHUX_AGENT_DETECT=0` disables the detector wholesale by
-/// yielding an empty rule set (the actor then never constructs a detector).
+/// `PHUX_AGENT_DETECT=0` disables the detector (an empty rule set).
 const ENV_DETECT: &str = "PHUX_AGENT_DETECT";
 
-/// Env knob: directory of `*.toml` manifests that override / extend the
-/// built-ins. Defaults to `$XDG_CONFIG_HOME/phux/agent-rules`.
+/// Directory of `*.toml` manifests overriding or extending the built-ins.
 const ENV_RULES_DIR: &str = "PHUX_AGENT_RULES_DIR";
 
-// ---------------------------------------------------------------------------
-// Load-time bounds
-// ---------------------------------------------------------------------------
-//
-// Evaluation is O(rules x region bytes) and runs per agent pane every
-// 100-500 ms on a current-thread runtime that every terminal actor shares
-// (ADR-0003). Nothing in the schema bounded how much work a manifest could ask
-// for, and the manifests are loadable from a config directory, so an operator
-// authoring a large one — or a plugin bundle that installs one — could turn the
-// detector into a sustained single-core burn that presents only as "phux got
-// slow". These caps are the bound, applied at COMPILE time so the cost is paid
-// once and a manifest that exceeds them never reaches a hot path at all.
-//
-// What this is NOT: it is not a ReDoS mitigation. `regex` is a
-// finite-automaton engine with no backtracking, so match time is linear in the
-// input whatever the pattern, and `Regex::new` applies its own ~10 MB NFA size
-// limit — one pathological pattern fails to compile rather than exhausting
-// memory. The exposure being closed is aggregate work and aggregate resident
-// NFA, not a single evil pattern.
-//
-// The numbers are herdr's (`src/detect/manifest.rs`), adopted roughly as-is.
-// They are deliberately far above anything real: the largest shipped phux
-// manifest has three rules, and herdr's largest has fourteen.
-//
-// An over-cap manifest is dropped WHOLE with a `warn`, exactly like a bad regex
-// or an unknown state word (ADR-0046 point 4). A half-applied manifest is worse
-// than none: it silently detects some states and not others, and the fail-safe
-// (`idle`) hides the difference.
+// Load-time bounds. Evaluation runs per agent pane every 100-500 ms on the
+// shared current-thread runtime, and manifests load from a config directory,
+// so these caps bound aggregate work and resident compiled-regex memory
+// (`regex` is linear-time, so this is not a ReDoS guard). They are far above
+// anything real and are enforced at compile time, dropping the manifest whole.
 
 /// Most rules one manifest may declare.
 const MAX_RULES_PER_MANIFEST: usize = 128;
 
-/// Deepest a predicate tree may nest (`all` / `any` / `not`), root at 1.
-///
-/// Belt to the TOML parser's braces: `toml` 1.1.2 already refuses to
-/// deserialize past ~128 levels of nested inline table, so `Predicate::compile`
-/// provably cannot recurse deep enough to overflow a stack through the only
-/// ingress it has. That is an accident of a dependency's internals, though,
-/// not a property of this schema. This counter states the bound where the
-/// schema lives, and a `toml` release that raises or removes its limit cannot
-/// quietly hand us an unbounded recursion.
+/// Deepest a predicate tree may nest, root at 1. The TOML parser also refuses
+/// deep nesting, but that is a dependency's internal limit, not the schema's.
 const MAX_PREDICATE_DEPTH: usize = 8;
 
 /// Most leaf matchers (`contains` / `regex` / `line-regex`) in one rule.
 const MAX_MATCHERS_PER_RULE: usize = 32;
 
-/// Most leaf matchers across a whole manifest. This is the one that bounds
-/// resident compiled-regex memory: a compiled `Regex` is retained for the
-/// process lifetime in the thread-local [`RULES`] cell.
+/// Most leaf matchers across a whole manifest (bounds resident regexes).
 const MAX_MATCHERS_PER_MANIFEST: usize = 1024;
 
 /// Longest pattern or needle a leaf matcher may carry, in characters.
 const MAX_MATCHER_CHARS: usize = 512;
 
-/// Largest override manifest that will be read, in bytes. Well past any
-/// hand-written manifest; the shipped ones are ~4 KB.
+/// Largest override manifest that will be read, in bytes.
 const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
 
-/// Most `*.toml` files the override directory contributes. Sorted order, so
-/// which ones survive an over-count directory is deterministic.
+/// Most `*.toml` files the override directory contributes (in sorted order).
 const MAX_OVERRIDE_MANIFESTS: usize = 64;
 
 // ---------------------------------------------------------------------------
@@ -135,15 +87,8 @@ pub(crate) enum PredicateSpec {
     Not(Box<Self>),
 }
 
-/// One rule, as written in TOML.
-///
-/// `rename_all` is load-bearing: the manifest spells these flags
-/// `visible-idle`, `skip-state-update`, and so on. `deny_unknown_fields` is
-/// load-bearing too — without it a typo'd or mis-cased flag is *silently
-/// ignored*, which is the worst possible failure for this struct: a
-/// `skip-state-update` that never freezes, or a `visible-idle` that never
-/// bypasses the hold, with nothing anywhere to say so. Now it drops the
-/// manifest with a `warn`.
+/// One rule, as written in TOML. `deny_unknown_fields` is load-bearing: a
+/// typo'd flag must drop the manifest, not be silently ignored.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 #[allow(
@@ -166,29 +111,13 @@ pub(crate) struct RuleSpec {
     /// The predicate tree.
     #[serde(rename = "match")]
     pub(crate) predicate: PredicateSpec,
-    /// The screen POSITIVELY shows the agent is idle. The only `visible-*`
-    /// flag the schema carries: it bypasses the working -> idle hold
-    /// (ADR-0046 point 6).
-    ///
-    /// `visible-blocker` and `visible-working` existed alongside this one and
-    /// were removed by phux-w7z2.18: across every shipped manifest each sat
-    /// on a rule that already declared the matching `state`, so they restated
-    /// `state` and reached no control flow of their own — parsed,
-    /// documented, and inert. `idle` is different in kind, not degree: it is
-    /// the detector's fail-safe (point 5), reached by *nothing matching*, so
-    /// a rule that positively asserts idleness makes a claim `state` alone
-    /// cannot express. Giving the removed pair real teeth would mean letting
-    /// fresh screen evidence override a declared state, which contradicts
-    /// ADR-0046 point 8 and needs the ADR amended first — a bigger change
-    /// than this schema cleanup.
-    ///
-    /// Claude's captured OSC 9;4 remove signal sets this flag. Screen-derived
-    /// idle remains fail-safe-only for every built-in agent.
+    /// The screen positively shows the agent is idle, bypassing the working
+    /// -> idle hold (ADR-0046 point 6). Distinct from `state`, because idle is
+    /// otherwise the fail-safe reached by nothing matching.
     #[serde(default)]
     pub(crate) visible_idle: bool,
-    /// The screen is a transcript viewer / model picker / pager and
-    /// therefore carries NO information about agent state. Freeze the last
-    /// derivation; do not guess.
+    /// The screen (a pager, a picker) carries no agent-state information:
+    /// freeze the last derivation.
     #[serde(default)]
     pub(crate) skip_state_update: bool,
 }
@@ -231,12 +160,7 @@ pub(crate) enum Predicate {
     Not(Box<Self>),
 }
 
-/// The load-time work budget one manifest is allowed to spend, carried down
-/// the predicate recursion so every leaf is counted exactly once.
-///
-/// Two counters rather than one: the per-rule cap keeps any single rule from
-/// dominating a tick, and the per-manifest cap bounds both aggregate tick cost
-/// and resident compiled-regex memory.
+/// The load-time matcher budget, per rule and per manifest.
 #[derive(Debug, Default)]
 struct Budget {
     /// Leaf matchers compiled for the rule currently being compiled.
@@ -264,9 +188,7 @@ impl Budget {
     }
 }
 
-/// Charge one leaf matcher against `budget`, rejecting an over-long pattern
-/// first. Length is counted in characters so a multi-byte pattern is not
-/// penalized for its encoding.
+/// Charge one leaf, rejecting an over-long pattern (counted in characters).
 fn charge_leaf(op: &str, pattern: &str, budget: &mut Budget) -> Result<(), String> {
     let len = pattern.chars().count();
     if len > MAX_MATCHER_CHARS {
@@ -278,10 +200,7 @@ fn charge_leaf(op: &str, pattern: &str, budget: &mut Budget) -> Result<(), Strin
 }
 
 impl Predicate {
-    /// Compile a spec, surfacing the offending pattern on a bad regex.
-    ///
-    /// `depth` is the node's own depth, root at 1, and is checked BEFORE any
-    /// work at this node — see [`MAX_PREDICATE_DEPTH`].
+    /// Compile a spec at `depth` (root 1), checked before any work.
     fn compile(spec: &PredicateSpec, depth: usize, budget: &mut Budget) -> Result<Self, String> {
         if depth > MAX_PREDICATE_DEPTH {
             return Err(format!(
@@ -331,12 +250,7 @@ impl Predicate {
         }
     }
 
-    /// The pattern a leaf node carries, for evidence output. `None` on a
-    /// combinator, whose evidence is its children.
-    ///
-    /// `Contains` returns the pre-lowercased needle rather than the manifest's
-    /// original casing: that is the string the matcher actually compares, and
-    /// the point of the evidence is to show what ran, not what was typed.
+    /// A leaf's pattern as compiled (a `contains` needle is lowercased).
     fn pattern(&self) -> Option<String> {
         match self {
             Self::Contains(needle) => Some(needle.clone()),
@@ -357,16 +271,10 @@ impl Predicate {
         }
     }
 
-    /// Evaluate and record every node, for the offline explainer.
-    ///
-    /// Deliberately does NOT short-circuit: `eval` stops an `all` at the
-    /// first false child, but the author debugging a manifest needs to know
-    /// which of the three conjuncts failed, not merely that one did. The
-    /// combinator results are computed from the fully-evaluated children, so
-    /// the root's `matched` equals `eval`'s answer — pinned by
-    /// `the_trace_agrees_with_the_production_evaluator`.
-    fn trace(&self, text: &RegionText<'_>) -> PredicateTrace {
-        let children: Vec<PredicateTrace> = match self {
+    /// Evaluate and record every node for the offline explainer, without
+    /// short-circuiting, so an author sees which conjunct failed.
+    fn trace(&self, text: &RegionText<'_>) -> PredicateEvidence {
+        let children: Vec<PredicateEvidence> = match self {
             Self::Contains(_) | Self::Regex(_) | Self::LineRegex(_) => Vec::new(),
             Self::All(kids) | Self::Any(kids) => kids.iter().map(|c| c.trace(text)).collect(),
             Self::Not(child) => vec![child.trace(text)],
@@ -377,8 +285,8 @@ impl Predicate {
             Self::Any(_) => children.iter().any(|c| c.matched),
             Self::Not(_) => !children.first().is_some_and(|c| c.matched),
         };
-        PredicateTrace {
-            op: self.op(),
+        PredicateEvidence {
+            op: self.op().to_owned(),
             pattern: self.pattern(),
             matched,
             children,
@@ -386,64 +294,18 @@ impl Predicate {
     }
 }
 
-/// One node of a predicate tree, with the result it produced on one screen.
-///
-/// Built only by [`Predicate::trace`], which the detector never calls: the
-/// production path is [`Predicate::eval`], and this exists so `phux agent
-/// explain` can say *which* leaf fired rather than only whether the rule did.
-#[derive(Debug, Clone)]
-pub(crate) struct PredicateTrace {
-    /// The manifest keyword (`contains`, `all`, ...).
-    pub(crate) op: &'static str,
-    /// The leaf's pattern, as compiled. `None` on a combinator.
-    pub(crate) pattern: Option<String>,
-    /// Whether this node matched.
-    pub(crate) matched: bool,
-    /// Child nodes, for a combinator.
-    pub(crate) children: Vec<Self>,
-}
-
-/// One rule's outcome on one screen, with its evidence.
-#[derive(Debug, Clone)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "reports RuleSpec's independent flags verbatim; see that struct"
-)]
-pub(crate) struct RuleTrace {
-    /// The rule's manifest id.
-    pub(crate) id: String,
-    /// The state it asserts, if any.
-    pub(crate) state: Option<DetectedState>,
-    /// Its priority.
-    pub(crate) priority: i32,
-    /// The region it read.
-    pub(crate) region: Region,
-    /// Whether its predicate matched.
-    pub(crate) matched: bool,
-    /// See [`RuleSpec::visible_idle`].
-    pub(crate) visible_idle: bool,
-    /// See [`RuleSpec::skip_state_update`].
-    pub(crate) skip_state_update: bool,
-    /// The predicate tree, annotated with what each node saw.
-    pub(crate) predicate: PredicateTrace,
-}
-
 /// A whole-manifest evaluation with its working shown.
 #[derive(Debug)]
 pub(crate) struct Explanation {
-    /// Exactly what [`CompiledManifest::evaluate`] returns for this screen.
-    /// Produced by the same code path, not a reimplementation.
+    /// Exactly what [`CompiledManifest::evaluate`] returns, from the same pass.
     pub(crate) evaluation: Evaluation,
     /// Every rule, in declaration order, matched or not.
-    pub(crate) rules: Vec<RuleTrace>,
-    /// The text every region resolved to on this screen, in
-    /// [`Region::ALL`] order — including the regions no rule names, because
-    /// "the region I scoped my rule to is empty" is the failure this is for.
+    pub(crate) rules: Vec<EvaluatedRule>,
+    /// The text every previewed region resolved to, empty ones included.
     pub(crate) regions: Vec<(Region, Vec<String>)>,
 }
 
-/// A region's text, materialized once per tick and shared by every rule
-/// that names that region.
+/// A region's text, materialized once per tick and shared by its rules.
 struct RegionText<'a> {
     lines: Vec<&'a str>,
     joined: String,
@@ -486,11 +348,7 @@ pub(crate) struct Rule {
     pub(crate) skip_state_update: bool,
 }
 
-/// A compiled manifest: one agent kind's identity plus its rules.
-///
-/// The `kind` slug is not repeated here — it is the key this manifest is
-/// stored under in [`RuleSet`], and the detector already carries it as the
-/// identity it resolved.
+/// A compiled manifest (keyed by kind in [`RuleSet`]).
 #[derive(Debug)]
 pub struct CompiledManifest {
     /// Human-facing name written into the `phux.agent/v1` record.
@@ -506,53 +364,31 @@ pub struct CompiledManifest {
     reason = "the union of the matching rules' independent flags; see RuleSpec"
 )]
 pub struct Evaluation {
-    /// The winning state, or `None` when no state-bearing rule matched
-    /// (the caller's fail-safe turns that into `idle`, never `blocked`).
+    /// The winning state, or `None` (the caller fails safe to `idle`).
     pub state: Option<DetectedState>,
-    /// A matching rule asserts the screen positively shows idleness. The one
-    /// `visible-*` flag the caller acts on: it bypasses the working -> idle
-    /// hold.
+    /// A matching rule positively asserts idleness.
     pub visible_idle: bool,
-    /// A matching rule says this screen carries no state information at
-    /// all. The caller MUST freeze rather than derive.
+    /// A matching rule says the screen carries no state: freeze.
     pub freeze: bool,
     /// The winning rule's id, for `trace` logs.
     pub matched: Option<String>,
 }
 
 impl CompiledManifest {
-    /// Evaluate every rule against `screen`.
-    ///
-    /// Ordering: **title-derived rules outrank screen-derived rules**, then
-    /// `priority` descending, then declaration order. The title is the
-    /// cheapest and most direct signal an agent CLI publishes about itself;
-    /// a screen rule is always an inference about pixels it happened to
-    /// paint.
+    /// Evaluate every rule against `screen`. Title rules outrank screen
+    /// rules (the title is the agent's own statement), then `priority`
+    /// descending, then declaration order.
     #[must_use]
     pub fn evaluate(&self, screen: &Screen<'_>) -> Evaluation {
         self.run(screen, None)
     }
 
-    /// [`Self::evaluate`], with the working shown: every rule's outcome, the
-    /// evidence behind it, and the text every region resolved to.
-    ///
-    /// The verdict is produced by the SAME pass as `evaluate` — `run` takes
-    /// the trace sink as an out-parameter rather than being reimplemented —
-    /// so an explanation can never disagree with what the detector would do.
-    /// A second, parallel matcher is exactly how a debugger starts lying.
+    /// [`Self::evaluate`] with the working shown, from the same pass so an
+    /// explanation can never disagree with the detector.
     pub(crate) fn explain(&self, screen: &Screen<'_>) -> Explanation {
         let mut rules = Vec::with_capacity(self.rules.len());
         let evaluation = self.run(screen, Some(&mut rules));
-        // Every region, not merely the referenced ones: an author picking a
-        // region for a NEW rule needs to see which one holds their text, and
-        // an author debugging an old one needs to see that theirs is empty.
-        //
-        // `Region::ALL` cannot cover the windowed regions — there is no
-        // enumerating `bottom-lines(N)` for every N — so the manifest's own
-        // regions are unioned in after it, in declaration order. Without that,
-        // a rule scoped to `bottom-lines(14)` would be previewed against the
-        // 6-row default and an author would debug a window their rule never
-        // read.
+        // The default regions, then any window the manifest itself names.
         let mut previewed: Vec<Region> = Region::ALL.to_vec();
         for rule in &self.rules {
             if !previewed.contains(&rule.region) {
@@ -574,10 +410,8 @@ impl CompiledManifest {
         }
     }
 
-    /// The one evaluation pass. `trace`, when supplied, collects a
-    /// [`RuleTrace`] per rule — including the rules that did not match, which
-    /// the production path discards.
-    fn run(&self, screen: &Screen<'_>, mut trace: Option<&mut Vec<RuleTrace>>) -> Evaluation {
+    /// The one evaluation pass; `trace` collects every rule's evidence.
+    fn run(&self, screen: &Screen<'_>, mut trace: Option<&mut Vec<EvaluatedRule>>) -> Evaluation {
         let mut texts: HashMap<Region, RegionText<'_>> = HashMap::new();
         let mut out = Evaluation::default();
         // (is_title, priority, declaration index) of the current winner.
@@ -589,15 +423,15 @@ impl CompiledManifest {
                 .or_insert_with(|| RegionText::new(rule.region, screen));
             let matched = rule.predicate.eval(text);
             if let Some(sink) = trace.as_deref_mut() {
-                sink.push(RuleTrace {
+                sink.push(EvaluatedRule {
                     id: rule.id.clone(),
-                    state: rule.state,
                     priority: rule.priority,
-                    region: rule.region,
+                    region: rule.region.as_str(),
+                    state: rule.state.map(|s| s.as_str().to_owned()),
                     matched,
                     visible_idle: rule.visible_idle,
                     skip_state_update: rule.skip_state_update,
-                    predicate: rule.predicate.trace(text),
+                    evidence: rule.predicate.trace(text),
                 });
             }
             if !matched {
@@ -630,8 +464,7 @@ pub struct RuleSet {
 }
 
 impl RuleSet {
-    /// `true` when nothing is loaded — the actor then never builds a
-    /// detector, so the whole feature costs exactly zero.
+    /// `true` when nothing is loaded (the actor then builds no detector).
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.manifests.is_empty()
@@ -649,24 +482,20 @@ impl RuleSet {
         self.manifests.get(kind)
     }
 
-    /// Every loaded kind slug, sorted. The roster `phux agent explain` names
-    /// when it is handed a kind it does not have a manifest for — an operator
-    /// whose override failed to compile sees its absence here rather than
-    /// guessing at a silent `warn` in the server log.
+    /// Every loaded kind slug, sorted.
     pub(crate) fn kinds(&self) -> Vec<String> {
         let mut kinds: Vec<String> = self.manifests.keys().cloned().collect();
         kinds.sort_unstable();
         kinds
     }
 
-    /// Compile `spec` and install it, replacing any manifest of the same
-    /// `kind`. Returns `Err` with a human-readable reason when the manifest
-    /// is unusable; the caller drops it whole.
+    /// Compile and install `spec`, replacing any manifest of the same kind.
     ///
-    /// Every load-time bound is enforced here, before anything is inserted:
-    /// `self` is not touched until the whole manifest has compiled, so a
-    /// rejection leaves no partial state behind. See the bounds section at
-    /// the top of this module for why they exist and what they do not claim.
+    /// # Errors
+    ///
+    /// A human-readable reason the manifest is unusable. Nothing is
+    /// inserted until the whole manifest compiles, so a rejection leaves no
+    /// partial state.
     pub fn install(&mut self, spec: ManifestSpec) -> Result<(), String> {
         if spec.kind.is_empty() {
             return Err("manifest has an empty `kind`".to_owned());
@@ -759,9 +588,7 @@ fn build() -> RuleSet {
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return set;
     };
-    // Sort for determinism: two overrides of the same kind must resolve the
-    // same way on every boot, and — with the cap below — so must which
-    // overrides survive an oversized directory.
+    // Sorted, so overrides and the cap resolve the same way on every boot.
     let mut paths: Vec<std::path::PathBuf> = entries
         .flatten()
         .map(|e| e.path())
@@ -779,8 +606,7 @@ fn build() -> RuleSet {
         paths.truncate(MAX_OVERRIDE_MANIFESTS);
     }
     for path in paths {
-        // Size-check before reading: the point of the bound is not to pull an
-        // arbitrarily large file into memory in the first place.
+        // Size-check before reading, so a huge file is never pulled in.
         match std::fs::metadata(&path) {
             Ok(meta) if meta.len() > MAX_MANIFEST_BYTES => {
                 warn!(
@@ -827,10 +653,7 @@ fn overrides_dir() -> Option<std::path::PathBuf> {
 }
 
 thread_local! {
-    /// Compiled once per runtime thread, on first use. The server is a
-    /// current-thread runtime (ADR-0003) with every actor on one
-    /// `LocalSet`, so this is effectively process-wide, and an `Rc` clone
-    /// per pane costs one refcount bump.
+    /// Compiled once per (in practice, the one) runtime thread on first use.
     static RULES: std::cell::OnceCell<Rc<RuleSet>> = const { std::cell::OnceCell::new() };
 }
 
@@ -841,10 +664,10 @@ pub fn global() -> Rc<RuleSet> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "tests")]
+#[allow(clippy::expect_used, clippy::panic, reason = "tests")]
 mod tests {
-    use super::{ManifestSpec, RuleSet, global};
-    use crate::DetectedState;
+    use super::{Evaluation, ManifestSpec, RuleSet, global};
+    use crate::DetectedState::{self, Blocked, Idle, Working};
     use crate::regions::Screen;
 
     fn compile(toml_text: &str) -> RuleSet {
@@ -863,6 +686,38 @@ mod tests {
 
     fn lines(raw: &[&str]) -> Vec<String> {
         raw.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// A committed golden viewport under `src/fixtures/`.
+    fn golden(rel: &str) -> Vec<String> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/fixtures")
+            .join(rel);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn eval(set: &RuleSet, kind: &str, title: &str, progress: &str, buf: &[String]) -> Evaluation {
+        set.manifest(kind).expect("manifest").evaluate(&Screen {
+            title,
+            progress,
+            lines: buf,
+        })
+    }
+
+    fn install(toml_text: &str) -> Result<RuleSet, String> {
+        let spec: ManifestSpec = toml::from_str(toml_text).map_err(|e| e.to_string())?;
+        let mut set = RuleSet::default();
+        set.install(spec)?;
+        Ok(set)
+    }
+
+    /// A one-rule manifest around `rule_body` (the lines after `[[rules]]`).
+    fn one_rule(rule_body: &str) -> String {
+        format!("kind = \"k\"\nbinaries = [\"k\"]\n[[rules]]\nid = \"r\"\n{rule_body}\n")
     }
 
     const SAMPLE: &str = r#"
@@ -900,207 +755,111 @@ skip-state-update = true
 match = { contains = "-- pager --" }
 "#;
 
+    /// `(title, screen, state, matched rule, visible_idle, freeze)`.
+    type SampleCase<'a> = (
+        &'a str,
+        &'a [&'a str],
+        Option<DetectedState>,
+        Option<&'a str>,
+        bool,
+        bool,
+    );
+
+    /// Title rules outrank screen rules regardless of priority, priority
+    /// orders within a class, `all` needs every child, flags union across
+    /// matching rules, and nothing matching yields no state (the caller's
+    /// fail-safe decides).
     #[test]
-    fn binary_index_is_case_insensitive_and_covers_every_alias() {
+    fn evaluation_orders_rules_and_unions_flags() {
         let set = compile(SAMPLE);
-        assert_eq!(set.kind_for_binary("sample"), Some("sample"));
         assert_eq!(set.kind_for_binary("SAMPLE-CLI"), Some("sample"));
         assert_eq!(set.kind_for_binary("nope"), None);
-    }
-
-    #[test]
-    fn title_rule_outranks_a_higher_priority_screen_rule() {
-        // The screen rule has priority 90 vs the title rule's 10, yet the
-        // title wins: it is the agent's own statement about itself.
-        let set = compile(SAMPLE);
-        let manifest = set.manifest("sample").expect("manifest");
-        let buf = lines(&["do you want to proceed?", " 1. Yes"]);
-        let got = manifest.evaluate(&Screen {
-            title: "W busy",
-            progress: "",
-            lines: &buf,
-        });
-        assert_eq!(got.state, Some(DetectedState::Working));
-        assert_eq!(got.matched.as_deref(), Some("title-working"));
-    }
-
-    #[test]
-    fn priority_orders_rules_within_the_screen_class() {
-        let set = compile(SAMPLE);
-        let manifest = set.manifest("sample").expect("manifest");
-        let buf = lines(&["ready", "do you want to proceed?", " 1. Yes"]);
-        let got = manifest.evaluate(&Screen {
-            title: "idle",
-            progress: "",
-            lines: &buf,
-        });
-        assert_eq!(got.state, Some(DetectedState::Blocked), "90 beats 40");
-        assert!(got.visible_idle, "the idle rule still matched, and says so");
-    }
-
-    #[test]
-    fn all_combinator_needs_both_children() {
-        let set = compile(SAMPLE);
-        let manifest = set.manifest("sample").expect("manifest");
-        // The question alone, with no numbered option line, is NOT blocked.
-        let buf = lines(&["do you want to proceed?"]);
-        let got = manifest.evaluate(&Screen {
-            title: "",
-            progress: "",
-            lines: &buf,
-        });
-        assert_eq!(got.state, None);
-    }
-
-    #[test]
-    fn no_match_yields_no_state_so_the_caller_can_fail_safe() {
-        let set = compile(SAMPLE);
-        let manifest = set.manifest("sample").expect("manifest");
-        let buf = lines(&["nothing interesting here"]);
-        let got = manifest.evaluate(&Screen {
-            title: "",
-            progress: "",
-            lines: &buf,
-        });
-        assert_eq!(got.state, None);
-        assert!(!got.freeze);
-    }
-
-    #[test]
-    fn skip_state_update_is_reported_even_when_other_rules_match() {
-        let set = compile(SAMPLE);
-        let manifest = set.manifest("sample").expect("manifest");
-        let buf = lines(&["do you want to proceed?", " 1. Yes", "-- pager --"]);
-        let got = manifest.evaluate(&Screen {
-            title: "",
-            progress: "",
-            lines: &buf,
-        });
-        assert!(
-            got.freeze,
-            "a pager screen carries no agent-state information"
-        );
-    }
-
-    #[test]
-    fn a_bad_regex_drops_the_manifest_whole() {
-        let spec: ManifestSpec = toml::from_str(
-            r#"
-kind = "broken"
-binaries = ["broken"]
-[[rules]]
-id = "bad"
-state = "idle"
-region = "title"
-match = { regex = "(unclosed" }
-"#,
-        )
-        .expect("parses as TOML");
-        let mut set = RuleSet::default();
-        assert!(set.install(spec).is_err());
-        assert!(set.is_empty(), "nothing partially applied");
-    }
-
-    #[test]
-    fn an_unknown_state_word_drops_the_manifest_whole() {
-        let spec: ManifestSpec = toml::from_str(
-            r#"
-kind = "broken"
-binaries = ["broken"]
-[[rules]]
-id = "bad"
-state = "confused"
-region = "title"
-match = { contains = "x" }
-"#,
-        )
-        .expect("parses as TOML");
-        let mut set = RuleSet::default();
-        assert!(set.install(spec).is_err());
-        assert!(set.is_empty());
-    }
-
-    /// REGRESSION. The manifest spells its flags in kebab-case. Without
-    /// `rename_all` on `RuleSpec` they parse as unknown fields and are
-    /// silently dropped — a `skip-state-update` that never freezes and a
-    /// `visible-idle` that never bypasses the hold, with no error anywhere.
-    /// `deny_unknown_fields` now turns that class of typo into a loud drop.
-    #[test]
-    fn kebab_case_flags_actually_bind() {
-        let set = compile(
-            r#"
-kind = "k"
-binaries = ["k"]
-[[rules]]
-id = "r"
-state = "idle"
-region = "title"
-visible-idle = true
-skip-state-update = true
-match = { contains = "x" }
-"#,
-        );
-        let rule = &set.manifest("k").expect("manifest").rules[0];
-        assert!(rule.visible_idle, "visible-idle must bind");
-        assert!(rule.skip_state_update, "skip-state-update must bind");
-    }
-
-    /// REGRESSION for phux-w7z2.18. `visible-blocker` and `visible-working`
-    /// were removed from the schema: they were parsed and reported but
-    /// reached no control flow, and across all five shipped manifests every
-    /// `visible-working` sat on a rule that already declared `state =
-    /// "working"` (same for `visible-blocker` / `"blocked"`), so they were
-    /// pure restatements. `deny_unknown_fields` on `RuleSpec` (see the doc
-    /// comment above) means a manifest that still writes either key now fails
-    /// to load — loud, not silently ignored — which is the right failure for
-    /// an accepted key that stops being accepted. Config-surface removal
-    /// before ADR-0071 point 1 freezes the manifest schema at 1.0 is cheap;
-    /// after that freeze it needs a deprecation cycle instead.
-    #[test]
-    fn removed_visible_flags_are_now_unknown_fields() {
-        for key in ["visible-blocker", "visible-working"] {
-            let toml_text = format!(
-                r#"
-kind = "k"
-binaries = ["k"]
-[[rules]]
-id = "r"
-state = "idle"
-region = "title"
-{key} = true
-match = {{ contains = "x" }}
-"#
+        let dialog = ["do you want to proceed?", " 1. Yes"];
+        let cases: &[SampleCase<'_>] = &[
+            (
+                "W busy",
+                &dialog,
+                Some(Working),
+                Some("title-working"),
+                false,
+                false,
+            ),
+            (
+                "idle",
+                &["ready", dialog[0], dialog[1]],
+                Some(Blocked),
+                Some("screen-blocked"),
+                true,
+                false,
+            ),
+            ("", &[dialog[0]], None, None, false, false),
+            ("", &["nothing interesting here"], None, None, false, false),
+            (
+                "",
+                &[dialog[0], dialog[1], "-- pager --"],
+                Some(Blocked),
+                Some("screen-blocked"),
+                false,
+                true,
+            ),
+        ];
+        for &(title, screen, state, matched, visible_idle, freeze) in cases {
+            let got = eval(&set, "sample", title, "", &lines(screen));
+            assert_eq!(got.state, state, "{title} {screen:?}");
+            assert_eq!(got.matched.as_deref(), matched, "{title} {screen:?}");
+            assert_eq!(
+                (got.visible_idle, got.freeze),
+                (visible_idle, freeze),
+                "{screen:?}"
             );
-            let parsed: Result<ManifestSpec, _> = toml::from_str(&toml_text);
-            assert!(parsed.is_err(), "`{key}` must be rejected, not ignored");
         }
     }
 
     #[test]
-    fn an_unknown_field_drops_the_manifest_rather_than_being_ignored() {
-        let parsed: Result<ManifestSpec, _> = toml::from_str(
-            r#"
-kind = "k"
-binaries = ["k"]
-[[rules]]
-id = "r"
-state = "idle"
-region = "title"
-visible_idle = true      # snake_case: NOT the manifest spelling
-match = { contains = "x" }
-"#,
+    fn not_combinator_negates() {
+        let set = compile(&one_rule(
+            "state = \"idle\"\nregion = \"viewport\"\n\
+             match = { all = [ { contains = \"prompt\" }, { not = { contains = \"pager\" } } ] }",
+        ));
+        assert_eq!(
+            eval(&set, "k", "", "", &lines(&["prompt", "pager"])).state,
+            None
         );
-        assert!(parsed.is_err(), "a mis-spelled flag must not pass silently");
+        assert_eq!(
+            eval(&set, "k", "", "", &lines(&["prompt"])).state,
+            Some(Idle)
+        );
     }
 
-    /// `visible-idle` is not redundant with `state` the way the removed
-    /// `visible-blocker` / `visible-working` were: `idle` is the fail-safe
-    /// reached by nothing matching (ADR-0046 point 5), so asserting it
-    /// positively is a real and distinct claim, and it is the one flag the
-    /// detector's control flow consumes (bypassing the working -> idle
-    /// hold). Claude's OSC 9;4 remove signal is the one shipped positive-idle
-    /// source; pinning that narrow exception keeps ordinary screen fallthrough
-    /// from silently becoming a completion claim.
+    /// Kebab-case flags bind (without `rename_all` they would be silently
+    /// ignored), and any unusable manifest is rejected whole: a bad regex,
+    /// an unknown state, a removed or mis-cased flag, a malformed region.
+    #[test]
+    fn manifests_bind_their_flags_or_are_rejected_whole() {
+        let set = compile(&one_rule(
+            "state = \"idle\"\nregion = \"title\"\nvisible-idle = true\n\
+             skip-state-update = true\nmatch = { contains = \"x\" }",
+        ));
+        let rule = &set.manifest("k").expect("manifest").rules[0];
+        assert!(rule.visible_idle && rule.skip_state_update);
+
+        for body in [
+            "state = \"idle\"\nregion = \"title\"\nmatch = { regex = \"(unclosed\" }",
+            "state = \"confused\"\nregion = \"title\"\nmatch = { contains = \"x\" }",
+            "state = \"idle\"\nregion = \"title\"\nvisible-blocker = true\nmatch = { contains = \"x\" }",
+            "state = \"idle\"\nregion = \"title\"\nvisible-working = true\nmatch = { contains = \"x\" }",
+            "state = \"idle\"\nregion = \"title\"\nvisible_idle = true\nmatch = { contains = \"x\" }",
+            "state = \"idle\"\nregion = \"bottom-lines(0)\"\nmatch = { contains = \"x\" }",
+            "state = \"idle\"\nregion = \"title(2)\"\nmatch = { contains = \"x\" }",
+            "state = \"idle\"\nregion = \"bottom_lines\"\nmatch = { contains = \"x\" }",
+            "state = \"idle\"\nregion = \"nonsense\"\nmatch = { contains = \"x\" }",
+        ] {
+            assert!(install(&one_rule(body)).is_err(), "{body}");
+        }
+    }
+
+    /// Claude's OSC 9;4 remove signal is the only shipped positive-idle
+    /// source; idle is otherwise the fail-safe reached by nothing matching.
     #[test]
     fn only_claudes_captured_progress_sets_visible_idle() {
         let visible_idle: Vec<(&str, String)> = super::BUILTIN_MANIFESTS
@@ -1114,30 +873,40 @@ match = { contains = "x" }
                     .collect::<Vec<_>>()
             })
             .collect();
-        assert_eq!(
-            visible_idle,
-            vec![("claude", "osc-progress-idle".to_owned())]
-        );
+        assert_eq!(visible_idle, [("claude", "osc-progress-idle".to_owned())]);
     }
 
-    /// `docs/spec/L3.md` §3.7 states the reference server's per-state rule
-    /// counts as fact. This test makes that statement falsifiable.
-    ///
-    /// The counts are load-bearing, not decorative: the spec's whole
-    /// level-versus-edge ruling rests on how few states the shipped manifests
-    /// positively assert, so a manifest gaining or losing a state-bearing rule
-    /// silently turns a normative rationale into a false one. That already
-    /// happened once — the paragraph claimed "five `working` ... and zero
-    /// `idle`" for some time after the manifests had moved to eight and one.
-    ///
-    /// If this fails, the fix is to update the sentence in `docs/spec/L3.md`
-    /// to match the manifests, and to re-read the surrounding paragraph: a new
-    /// `idle` or `done` rule may invalidate its reasoning, not just its
-    /// arithmetic.
+    /// `docs/spec/L3.md` §3.7 states the shipped per-state rule counts as the
+    /// basis of its level-versus-edge ruling. If this fails, update that
+    /// sentence and re-read its paragraph: a new `idle` or `done` rule may
+    /// invalidate the reasoning, not just the arithmetic.
     #[test]
     fn the_spec_paragraph_reports_the_real_manifest_rule_counts() {
-        fn count(state: &str) -> usize {
-            super::BUILTIN_MANIFESTS
+        const WORDS: [&str; 21] = [
+            "zero",
+            "one",
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+            "eleven",
+            "twelve",
+            "thirteen",
+            "fourteen",
+            "fifteen",
+            "sixteen",
+            "seventeen",
+            "eighteen",
+            "nineteen",
+            "twenty",
+        ];
+        let count = |state: &str| -> String {
+            let n: usize = super::BUILTIN_MANIFESTS
                 .iter()
                 .map(|(_, text)| {
                     let spec: ManifestSpec = toml::from_str(text).expect("builtin parses");
@@ -1146,260 +915,114 @@ match = { contains = "x" }
                         .filter(|rule| rule.state.as_deref() == Some(state))
                         .count()
                 })
-                .sum()
-        }
-        fn word(n: usize) -> String {
-            const WORDS: [&str; 21] = [
-                "zero",
-                "one",
-                "two",
-                "three",
-                "four",
-                "five",
-                "six",
-                "seven",
-                "eight",
-                "nine",
-                "ten",
-                "eleven",
-                "twelve",
-                "thirteen",
-                "fourteen",
-                "fifteen",
-                "sixteen",
-                "seventeen",
-                "eighteen",
-                "nineteen",
-                "twenty",
-            ];
+                .sum();
             WORDS
                 .get(n)
                 .map_or_else(|| n.to_string(), |w| (*w).to_owned())
-        }
-
+        };
         let expected = format!(
             "declare {} `working` rules, {} `blocked` rules, exactly {} `idle` rule and {} \
              `done` rules between them.",
-            word(count("working")),
-            word(count("blocked")),
-            word(count("idle")),
-            word(count("done")),
+            count("working"),
+            count("blocked"),
+            count("idle"),
+            count("done"),
         );
-
         let spec_path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/spec/L3.md");
-        let spec = std::fs::read_to_string(&spec_path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", spec_path.display()));
-        // The sentence wraps across lines in the source; compare on collapsed
-        // whitespace so re-flowing the paragraph is not a spurious failure.
+        let spec = std::fs::read_to_string(&spec_path).expect("read L3.md");
         let flattened = spec.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(
             flattened.contains(&expected),
-            "docs/spec/L3.md §3.7 no longer matches the shipped manifests.\n\
-             expected it to contain: {expected}",
+            "docs/spec/L3.md §3.7 no longer matches the shipped manifests; expected: {expected}",
         );
     }
 
-    // --- Parameterized regions (phux-w7z2.17) -------------------------------
-
-    /// A windowed region is a distinct `HashMap` key, so two rules naming
-    /// different N read genuinely different text within one evaluation. That
-    /// is the whole point: `bottom-lines(1)` anchors on the status row,
-    /// `bottom-lines(6)` reaches the footer block, and a manifest may need
-    /// both.
+    /// Windowed regions are distinct: two rules with different N read
+    /// different text, and a top-anchored window reads only the banner.
     #[test]
-    fn two_rules_with_different_windows_read_different_text() {
+    fn windowed_regions_read_their_own_text() {
         let set = compile(
             r#"
 kind = "w"
 binaries = ["w"]
-
 [[rules]]
 id = "last-row-only"
 state = "working"
 priority = 10
 region = "bottom-lines(1)"
 match = { contains = "spinner" }
-
 [[rules]]
 id = "footer-block"
 state = "blocked"
 priority = 20
 region = "bottom-lines(6)"
 match = { contains = "spinner" }
-"#,
-        );
-        let manifest = set.manifest("w").expect("manifest");
-
-        // "spinner" is six rows up: inside the 6-row window, outside the 1-row
-        // one. Only the wide rule may fire.
-        let buf = lines(&["spinner", "a", "b", "c", "d", "e"]);
-        let got = manifest.evaluate(&Screen {
-            title: "",
-            progress: "",
-            lines: &buf,
-        });
-        assert_eq!(got.state, Some(DetectedState::Blocked));
-        assert_eq!(got.matched.as_deref(), Some("footer-block"));
-
-        // On the last row, both windows see it, and priority decides.
-        let buf = lines(&["a", "spinner"]);
-        let got = manifest.evaluate(&Screen {
-            title: "",
-            progress: "",
-            lines: &buf,
-        });
-        assert_eq!(got.matched.as_deref(), Some("footer-block"), "20 beats 10");
-    }
-
-    #[test]
-    fn a_top_anchored_window_reads_the_header_banner() {
-        let set = compile(
-            r#"
-kind = "t"
-binaries = ["t"]
 [[rules]]
 id = "banner"
-state = "working"
+state = "idle"
+priority = 30
 region = "top-non-empty-lines"
 match = { contains = "thinking" }
 "#,
         );
-        let manifest = set.manifest("t").expect("manifest");
-
-        let banner = lines(&["", "  thinking...", "transcript", "prompt"]);
-        assert_eq!(
-            manifest
-                .evaluate(&Screen {
-                    title: "",
-                    progress: "",
-                    lines: &banner
-                })
-                .state,
-            Some(DetectedState::Working),
+        let got = eval(
+            &set,
+            "w",
+            "",
+            "",
+            &lines(&["spinner", "a", "b", "c", "d", "e"]),
         );
-
-        // The same word further down is NOT the banner. A bare
-        // `top-non-empty-lines` is one row, and that narrowness is the point.
-        let transcript = lines(&["  header", "  thinking...", "prompt"]);
-        assert_eq!(
-            manifest
-                .evaluate(&Screen {
-                    title: "",
-                    progress: "",
-                    lines: &transcript
-                })
-                .state,
-            None,
-        );
+        assert_eq!(got.matched.as_deref(), Some("footer-block"));
+        let got = eval(&set, "w", "", "", &lines(&["a", "spinner"]));
+        assert_eq!(got.matched.as_deref(), Some("footer-block"), "20 beats 10");
+        let got = eval(&set, "w", "", "", &lines(&["", "  thinking...", "x"]));
+        assert_eq!(got.matched.as_deref(), Some("banner"));
+        let got = eval(&set, "w", "", "", &lines(&["  header", "  thinking..."]));
+        assert_eq!(got.state, None, "a bare top window is one row");
     }
 
-    /// The explainer must preview the window a rule actually reads. Previewing
-    /// only `Region::ALL` would show a `bottom-lines(14)` author the 6-row
-    /// default and send them to debug text their rule never saw — the exact
-    /// blindness the offline explainer exists to remove.
+    /// The explainer previews the default regions plus every window the
+    /// manifest names, once each, in the spelling an operator types.
     #[test]
     fn the_explainer_previews_every_window_the_manifest_names() {
+        const DEFAULTS: [&str; 6] = [
+            "title",
+            "osc-progress",
+            "prompt-box",
+            "after-last-rule",
+            "bottom-lines",
+            "viewport",
+        ];
         let set = compile(
-            r#"
-kind = "w"
-binaries = ["w"]
-[[rules]]
-id = "wide"
-state = "idle"
-region = "bottom-lines(14)"
-match = { contains = "zzz" }
-[[rules]]
-id = "banner"
-state = "idle"
-region = "top-non-empty-lines(2)"
-match = { contains = "zzz" }
-"#,
+            "kind = \"w\"\nbinaries = [\"w\"]\n\
+             [[rules]]\nid = \"wide\"\nstate = \"idle\"\nregion = \"bottom-lines(14)\"\n\
+             match = { contains = \"zzz\" }\n\
+             [[rules]]\nid = \"banner\"\nstate = \"idle\"\nregion = \"top-non-empty-lines(2)\"\n\
+             match = { contains = \"zzz\" }\n",
         );
-        let manifest = set.manifest("w").expect("manifest");
         let buf = lines(&["a", "b", "c"]);
-        let explained = manifest.explain(&Screen {
+        let screen = Screen {
             title: "",
             progress: "",
             lines: &buf,
-        });
-        let names: Vec<String> = explained
-            .regions
-            .iter()
-            .map(|(region, _)| region.as_str())
-            .collect();
-        assert_eq!(
-            names,
-            vec![
-                "title",
-                "osc-progress",
-                "prompt-box",
-                "after-last-rule",
-                "bottom-lines",
-                "viewport",
-                "bottom-lines(14)",
-                "top-non-empty-lines(2)",
-            ],
-            "the default set first, then the windows this manifest reads",
-        );
-        // And each rule reports the spelling an operator would type back.
-        let regions: Vec<String> = explained.rules.iter().map(|r| r.region.as_str()).collect();
-        assert_eq!(regions, vec!["bottom-lines(14)", "top-non-empty-lines(2)"]);
-    }
+        };
+        let explained = set.manifest("w").expect("manifest").explain(&screen);
+        let names: Vec<String> = explained.regions.iter().map(|(r, _)| r.as_str()).collect();
+        let windows = ["bottom-lines(14)", "top-non-empty-lines(2)"];
+        assert_eq!(names, [&DEFAULTS[..], &windows[..]].concat());
+        let rules: Vec<&str> = explained.rules.iter().map(|r| r.region.as_str()).collect();
+        assert_eq!(rules, windows);
 
-    /// A bare `bottom-lines` must still mean six rows after the region grew a
-    /// parameter, or this change silently rewrote every shipped manifest.
-    #[test]
-    fn a_bare_windowed_region_is_previewed_once_not_twice() {
+        // A bare `bottom-lines` is the default window, already listed.
         let set = compile(SAMPLE);
-        let manifest = set.manifest("sample").expect("manifest");
-        let buf = lines(&["a"]);
-        let explained = manifest.explain(&Screen {
-            title: "",
-            progress: "",
-            lines: &buf,
-        });
-        let names: Vec<String> = explained
-            .regions
-            .iter()
-            .map(|(region, _)| region.as_str())
-            .collect();
-        assert_eq!(
-            names,
-            vec![
-                "title",
-                "osc-progress",
-                "prompt-box",
-                "after-last-rule",
-                "bottom-lines",
-                "viewport"
-            ],
-            "the manifest's bare `bottom-lines` is the default window, already listed",
-        );
+        let explained = set.manifest("sample").expect("manifest").explain(&screen);
+        let names: Vec<String> = explained.regions.iter().map(|(r, _)| r.as_str()).collect();
+        assert_eq!(names, DEFAULTS);
     }
 
-    /// A region spec the schema does not accept drops the manifest whole,
-    /// like every other manifest error. Silently reinterpreting it would give
-    /// the rule a region its author did not ask for.
-    #[test]
-    fn a_malformed_region_drops_the_manifest_whole() {
-        for spec in ["bottom-lines(0)", "title(2)", "bottom_lines", "nonsense"] {
-            let parsed: Result<ManifestSpec, _> = toml::from_str(&format!(
-                "kind = \"k\"\nbinaries = [\"k\"]\n[[rules]]\nid = \"r\"\nstate = \"idle\"\n\
-                 region = \"{spec}\"\nmatch = {{ contains = \"x\" }}\n"
-            ));
-            assert!(parsed.is_err(), "`{spec}` must not parse");
-        }
-    }
+    // --- Load-time bounds: an over-bound manifest is rejected whole --------
 
-    // --- Load-time bounds (phux-w7z2.14) -----------------------------------
-    //
-    // Every one of these asserts the SAME failure policy as a bad regex: the
-    // manifest is rejected whole and nothing is partially applied. A manifest
-    // that installed its first 128 rules and dropped the rest would detect some
-    // states and not others, and the `idle` fail-safe would hide the seam.
-
-    /// Build a manifest with `count` trivial rules.
     fn manifest_with_rules(count: usize) -> String {
         let body = (0..count)
             .map(|idx| {
@@ -1413,150 +1036,63 @@ match = { contains = "zzz" }
         format!("kind = \"big\"\nbinaries = [\"big\"]\n{body}\n")
     }
 
-    fn install(toml_text: &str) -> Result<RuleSet, String> {
-        let spec: ManifestSpec = toml::from_str(toml_text).expect("manifest parses as TOML");
-        let mut set = RuleSet::default();
-        set.install(spec)?;
-        Ok(set)
+    fn contains_rule(needle: &str) -> String {
+        one_rule(&format!(
+            "state = \"idle\"\nregion = \"title\"\nmatch = {{ contains = \"{needle}\" }}"
+        ))
     }
 
     #[test]
-    fn a_manifest_at_the_rule_cap_loads_and_one_over_it_is_dropped_whole() {
-        let set = install(&manifest_with_rules(super::MAX_RULES_PER_MANIFEST))
-            .expect("the cap itself is loadable");
-        assert_eq!(
-            set.manifest("big").expect("manifest").rules.len(),
-            super::MAX_RULES_PER_MANIFEST,
-        );
+    fn rule_count_and_pattern_length_are_capped_inclusively() {
+        let set = install(&manifest_with_rules(super::MAX_RULES_PER_MANIFEST)).expect("at cap");
+        assert_eq!(set.manifest("big").expect("manifest").rules.len(), 128);
 
-        let err = install(&manifest_with_rules(super::MAX_RULES_PER_MANIFEST + 1))
-            .expect_err("one rule over the cap must be rejected");
-        assert!(err.contains("over the"), "{err}");
-    }
-
-    /// Nothing is installed by a rejected manifest — not the rules that
-    /// compiled before the cap was hit, and not the binary index entries.
-    #[test]
-    fn an_over_cap_manifest_leaves_no_partial_state() {
         let spec: ManifestSpec =
             toml::from_str(&manifest_with_rules(super::MAX_RULES_PER_MANIFEST + 1))
                 .expect("parses");
         let mut set = RuleSet::default();
-        assert!(set.install(spec).is_err());
-        assert!(set.is_empty(), "no manifest installed");
-        assert_eq!(set.kind_for_binary("big"), None, "no binary index entry");
+        assert!(
+            set.install(spec)
+                .expect_err("over cap")
+                .contains("over the")
+        );
+        assert!(
+            set.is_empty() && set.kind_for_binary("big").is_none(),
+            "no partial state"
+        );
+
+        let cap = super::MAX_MATCHER_CHARS;
+        assert!(install(&contains_rule(&"a".repeat(cap))).is_ok());
+        let err = install(&contains_rule(&"a".repeat(cap + 1))).expect_err("too long");
+        assert!(err.contains("over the"), "{err}");
+        // Counted in characters, so multi-byte agent chrome is not penalized.
+        assert!(install(&contains_rule(&"\u{2500}".repeat(cap))).is_ok());
     }
 
-    /// THE UNVERIFIED QUESTION from the bead, answered by measurement rather
-    /// than assumption: does a deeply nested `not` overflow the stack in
-    /// `Predicate::compile`, or does the TOML parser refuse first?
-    ///
-    /// Measured against `toml` 1.1.2: the parser refuses. It rejects the
-    /// document at roughly 128 levels of nested inline table, so the recursion
-    /// in `compile` never runs deeper than that — nowhere near a stack
-    /// overflow — and the failure arrives as a `warn` and a dropped manifest.
-    ///
-    /// That is a dependency's internal limit, not a property of this schema,
-    /// which is why `MAX_PREDICATE_DEPTH` exists anyway. This test pins BOTH
-    /// halves: the schema's own bound rejects at 9, and the pathological
-    /// document is refused rather than crashing the process.
+    /// The schema bounds nesting itself (depth 8 loads, 9 does not), and a
+    /// pathological document is refused by the TOML parser, never
+    /// overflowing the stack.
     #[test]
-    fn deep_nesting_is_bounded_by_the_schema_and_never_overflows_the_stack() {
+    fn deep_nesting_is_bounded_and_never_overflows_the_stack() {
         let nested = |depth: usize| {
-            format!(
-                "kind = \"deep\"\nbinaries = [\"deep\"]\n[[rules]]\nid = \"deep\"\n\
-                 state = \"idle\"\nregion = \"title\"\nmatch = {}{{ contains = \"x\" }}{}\n",
+            one_rule(&format!(
+                "state = \"idle\"\nregion = \"title\"\nmatch = {}{{ contains = \"x\" }}{}",
                 "{ not = ".repeat(depth),
                 " }".repeat(depth),
-            )
+            ))
         };
-
-        // Root plus seven `not`s is depth 8: the cap, and it loads.
-        let at_cap = nested(super::MAX_PREDICATE_DEPTH - 1);
-        assert!(
-            install(&at_cap).is_ok(),
-            "depth {} must load",
-            super::MAX_PREDICATE_DEPTH,
-        );
-
-        // One deeper is rejected by OUR counter, with our message.
-        let over = nested(super::MAX_PREDICATE_DEPTH);
-        let err = install(&over).expect_err("one level over the cap must be rejected");
+        assert!(install(&nested(super::MAX_PREDICATE_DEPTH - 1)).is_ok());
+        let err = install(&nested(super::MAX_PREDICATE_DEPTH)).expect_err("too deep");
         assert!(err.contains("nests deeper than"), "{err}");
-
-        // And the pathological document does not reach us at all: the TOML
-        // parser refuses it. No panic, no overflow, just an error.
-        let parsed: Result<ManifestSpec, _> = toml::from_str(&nested(20_000));
-        assert!(
-            parsed.is_err(),
-            "a 20k-deep document must be refused, not parsed",
-        );
+        assert!(toml::from_str::<ManifestSpec>(&nested(20_000)).is_err());
     }
 
+    /// The matcher budget is per rule and also cumulative across the
+    /// manifest (otherwise the manifest cap would be unreachable).
     #[test]
-    fn an_over_long_pattern_drops_the_manifest_whole() {
-        let long = "a".repeat(super::MAX_MATCHER_CHARS + 1);
-        let err = install(&format!(
-            "kind = \"k\"\nbinaries = [\"k\"]\n[[rules]]\nid = \"r\"\nstate = \"idle\"\n\
-             region = \"title\"\nmatch = {{ contains = \"{long}\" }}\n"
-        ))
-        .expect_err("an over-long needle must be rejected");
-        assert!(err.contains("over the"), "{err}");
-
-        // At the cap it loads: the bound is inclusive, and a manifest author
-        // who counted correctly is not punished for it.
-        let exact = "a".repeat(super::MAX_MATCHER_CHARS);
-        assert!(
-            install(&format!(
-                "kind = \"k\"\nbinaries = [\"k\"]\n[[rules]]\nid = \"r\"\nstate = \"idle\"\n\
-                 region = \"title\"\nmatch = {{ contains = \"{exact}\" }}\n"
-            ))
-            .is_ok(),
-            "a pattern exactly at the cap must load",
-        );
-    }
-
-    /// Length is counted in CHARACTERS, so a manifest matching non-ASCII agent
-    /// chrome (every shipped one does — braille spinners, box glyphs) is not
-    /// silently held to a third of the budget.
-    #[test]
-    fn pattern_length_is_measured_in_characters_not_bytes() {
-        // Three bytes each, so this is 3x the cap in bytes and exactly the cap
-        // in characters.
-        let wide = "\u{2500}".repeat(super::MAX_MATCHER_CHARS);
-        assert!(wide.len() > super::MAX_MATCHER_CHARS, "premise: multi-byte");
-        assert!(
-            install(&format!(
-                "kind = \"k\"\nbinaries = [\"k\"]\n[[rules]]\nid = \"r\"\nstate = \"idle\"\n\
-                 region = \"title\"\nmatch = {{ contains = \"{wide}\" }}\n"
-            ))
-            .is_ok(),
-            "a multi-byte pattern at the character cap must load",
-        );
-    }
-
-    #[test]
-    fn too_many_matchers_in_one_rule_drops_the_manifest_whole() {
-        let children: Vec<String> = (0..=super::MAX_MATCHERS_PER_RULE)
-            .map(|idx| format!("{{ contains = \"x{idx}\" }}"))
-            .collect();
-        let err = install(&format!(
-            "kind = \"k\"\nbinaries = [\"k\"]\n[[rules]]\nid = \"r\"\nstate = \"idle\"\n\
-             region = \"title\"\nmatch = {{ any = [{}] }}\n",
-            children.join(", ")
-        ))
-        .expect_err("one matcher over the per-rule cap must be rejected");
-        assert!(err.contains("matchers in one rule"), "{err}");
-    }
-
-    /// The per-rule budget resets between rules; the per-manifest one does
-    /// not. Otherwise the manifest cap would be unreachable (any single rule
-    /// hits its own cap first) and the aggregate bound would not exist.
-    #[test]
-    fn the_matcher_budget_is_per_rule_and_also_cumulative() {
-        // Two rules of 32 matchers each: fine per rule, fine in aggregate.
-        let rule = |id: usize| {
-            let children: Vec<String> = (0..super::MAX_MATCHERS_PER_RULE)
+    fn the_matcher_budget_is_per_rule_and_cumulative() {
+        let rule = |id: usize, matchers: usize| {
+            let children: Vec<String> = (0..matchers)
                 .map(|idx| format!("{{ contains = \"x{idx}\" }}"))
                 .collect();
             format!(
@@ -1565,508 +1101,44 @@ match = { contains = "zzz" }
                 children.join(", ")
             )
         };
-        let mut ok = String::from("kind = \"k\"\nbinaries = [\"k\"]\n");
-        for id in 0..2 {
-            ok.push_str(&rule(id));
-        }
-        assert!(install(&ok).is_ok(), "32 matchers per rule, twice, is fine");
-
-        // Enough such rules to cross the manifest-wide cap.
-        let rules_needed = super::MAX_MATCHERS_PER_MANIFEST / super::MAX_MATCHERS_PER_RULE + 1;
-        let mut over = String::from("kind = \"k\"\nbinaries = [\"k\"]\n");
-        for id in 0..rules_needed {
-            over.push_str(&rule(id));
-        }
-        let err = install(&over).expect_err("the aggregate cap must bite");
+        let manifest = |rules: usize, matchers: usize| {
+            (0..rules).fold(
+                String::from("kind = \"k\"\nbinaries = [\"k\"]\n"),
+                |mut m, id| {
+                    m.push_str(&rule(id, matchers));
+                    m
+                },
+            )
+        };
+        let per_rule = super::MAX_MATCHERS_PER_RULE;
+        assert!(install(&manifest(2, per_rule)).is_ok());
+        let err = install(&manifest(1, per_rule + 1)).expect_err("per rule");
+        assert!(err.contains("matchers in one rule"), "{err}");
+        let rules_needed = super::MAX_MATCHERS_PER_MANIFEST / per_rule + 1;
+        let err = install(&manifest(rules_needed, per_rule)).expect_err("aggregate");
         assert!(err.contains("matchers in the manifest"), "{err}");
     }
 
-    /// The bounds must not have quietly rejected anything we ship. If a
-    /// built-in ever approaches a cap, this is where it surfaces — as a test
-    /// failure at authoring time rather than a `warn` in a production log.
-    #[test]
-    fn every_builtin_manifest_is_far_inside_the_load_time_bounds() {
-        for (kind, text) in super::BUILTIN_MANIFESTS {
-            let spec: ManifestSpec = toml::from_str(text).expect("builtin parses");
-            assert!(
-                spec.rules.len() <= super::MAX_RULES_PER_MANIFEST / 4,
-                "{kind}: {} rules is close enough to the cap to be worth a look",
-                spec.rules.len(),
-            );
-            let mut set = RuleSet::default();
-            set.install(spec).unwrap_or_else(|e| panic!("{kind}: {e}"));
-        }
-    }
-
-    #[test]
-    fn not_combinator_negates() {
-        let set = compile(
-            r#"
-kind = "n"
-binaries = ["n"]
-[[rules]]
-id = "not-pager"
-state = "idle"
-region = "viewport"
-match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
-"#,
-        );
-        let manifest = set.manifest("n").expect("manifest");
-        let with = lines(&["prompt", "pager"]);
-        let without = lines(&["prompt"]);
-        assert_eq!(
-            manifest
-                .evaluate(&Screen {
-                    title: "",
-                    progress: "",
-                    lines: &with
-                })
-                .state,
-            None
-        );
-        assert_eq!(
-            manifest
-                .evaluate(&Screen {
-                    title: "",
-                    progress: "",
-                    lines: &without
-                })
-                .state,
-            Some(DetectedState::Idle)
-        );
-    }
-
-    // --- The shipped Claude Code manifest -----------------------------------
-    //
-    // These pin `rules/claude.toml` against faithful reproductions of the
-    // screens Claude Code actually paints. They are the regression net for the
-    // one thing that can silently rot: the CLI changes its chrome and our
-    // manifest quietly stops matching (or, far worse, starts matching the
-    // wrong thing). Each fixture's provenance is recorded on the manifest rule
-    // it exercises.
-
-    // --- Golden screens ------------------------------------------------------
-    //
-    // These are REAL viewports captured from Claude Code 2.1.207 running in a
-    // phux pane (`phux snapshot --json`), not screens we imagined. That
-    // distinction is not pedantry: the first draft of this manifest was written
-    // against an invented TUI — a box-drawn dialog, a `? for shortcuts` idle
-    // hint, an interrupt hint — and every one of its screen rules passed its
-    // tests while matching NOTHING in the shipped CLI. Synthetic screens test
-    // the matcher against itself. Only a captured screen tests it against
-    // reality, so the goldens are the fixture of record. Re-capture them when
-    // Claude's TUI changes; do not hand-edit them.
-
-    /// Idle: an empty input box fenced by two horizontal rules, status below.
-    fn claude_idle_screen() -> Vec<String> {
-        lines(
-            include_str!("fixtures/claude/idle_prompt.txt")
-                .lines()
-                .collect::<Vec<_>>()
-                .as_slice(),
-        )
-    }
-
-    /// Blocked: a live Bash permission dialog. Note it REPLACES the input box
-    /// and is the only thing below the final rule.
-    fn claude_blocked_screen() -> Vec<String> {
-        lines(
-            include_str!("fixtures/claude/blocked_permission.txt")
-                .lines()
-                .collect::<Vec<_>>()
-                .as_slice(),
-        )
-    }
-
-    /// Working: the spinner line sits ABOVE the (empty) input box, so the box
-    /// alone cannot tell working from idle. The title is what distinguishes
-    /// them, which is why the manifest leans on it.
-    fn claude_working_screen() -> Vec<String> {
-        lines(
-            include_str!("fixtures/claude/working.txt")
-                .lines()
-                .collect::<Vec<_>>()
-                .as_slice(),
-        )
-    }
-
-    /// The title Claude Code writes while BUSY: an animated prefix glyph
-    /// ahead of the title text, alternating ~960 ms.
-    ///
-    /// The glyph PAIR is version-dependent, which is why there are four of
-    /// these and not two. 2.1.207 animates braille (U+2802 / U+2810); 2.1.228
-    /// animates half-filled circles (U+25D0 / U+25D1). The manifest matches
-    /// the union, so both versions read as `working`.
-    const CLAUDE_TITLE_BUSY_A: &str = "\u{2802} phux";
-    const CLAUDE_TITLE_BUSY_B: &str = "\u{2810} phux";
-    /// 2.1.228's busy pair, taken from the committed raw capture
-    /// `research/2026-08-12-osc-9-4-claude-code/claude-title-enabled.rawcap`.
-    const CLAUDE_TITLE_BUSY_C: &str = "\u{25D0} phux";
-    const CLAUDE_TITLE_BUSY_D: &str = "\u{25D1} phux";
-    /// The title it writes when NOT busy: a static U+2733. Note this covers
-    /// idle AND waiting-on-a-dialog alike, which is exactly why the manifest
-    /// gives it no rule.
-    const CLAUDE_TITLE_QUIET: &str = "\u{2733} phux";
-
-    fn claude_eval(title: &str, screen: &[String]) -> super::Evaluation {
-        claude_eval_with_progress(title, "", screen)
-    }
-
-    fn claude_eval_with_progress(
-        title: &str,
-        progress: &str,
-        screen: &[String],
-    ) -> super::Evaluation {
-        let set = compile(builtin("claude"));
-        let manifest = set.manifest("claude").expect("claude manifest");
-        manifest.evaluate(&Screen {
-            title,
-            progress,
-            lines: screen,
-        })
-    }
-
-    #[test]
-    fn claude_progress_is_title_independent_and_blocked_still_wins() {
-        let working = claude_eval_with_progress("", "4;3;", &claude_idle_screen());
-        assert_eq!(working.state, Some(DetectedState::Working));
-        assert_eq!(working.matched.as_deref(), Some("osc-progress-working"));
-
-        let idle = claude_eval_with_progress("", "4;0;", &claude_idle_screen());
-        assert_eq!(idle.state, Some(DetectedState::Idle));
-        assert!(idle.visible_idle);
-        assert_eq!(idle.matched.as_deref(), Some("osc-progress-idle"));
-
-        let blocked = claude_eval_with_progress("", "4;3;", &claude_blocked_screen());
-        assert_eq!(blocked.state, Some(DetectedState::Blocked));
-        assert_eq!(blocked.matched.as_deref(), Some("prompt-permission-dialog"));
-    }
-
-    /// Every animation frame of the busy title, ACROSS BOTH KNOWN GLYPH SETS,
-    /// reads as `working`.
-    ///
-    /// The 2.1.228 pair (C/D) is a regression pin, not a nicety. The rule
-    /// originally matched braille alone, verified against 2.1.207; by 2.1.228
-    /// Claude Code had switched to half-filled circles and the highest-
-    /// priority working rule matched nothing at all. Nothing failed: these
-    /// tests build titles from the same constants the rule was written for,
-    /// so they stayed green while the real CLI drifted out from under them.
-    /// Only a fresh capture caught it, and only the two lower-priority
-    /// backstops kept `working` detectable meanwhile.
-    #[test]
-    fn claude_busy_title_is_working() {
-        for title in [
-            CLAUDE_TITLE_BUSY_A,
-            CLAUDE_TITLE_BUSY_B,
-            CLAUDE_TITLE_BUSY_C,
-            CLAUDE_TITLE_BUSY_D,
-        ] {
-            let got = claude_eval(title, &claude_idle_screen());
-            assert_eq!(
-                got.state,
-                Some(DetectedState::Working),
-                "the animated title prefix is the primary working signal: {title:?}",
-            );
-            assert_eq!(got.matched.as_deref(), Some("title-busy-spinner"));
-        }
-    }
-
-    /// The busy-title rule is checked against REAL CAPTURED BYTES, not against
-    /// this module's own constants.
-    ///
-    /// Every other title test in this file builds its input from
-    /// `CLAUDE_TITLE_BUSY_*`, so it can only ever prove the rule agrees with
-    /// what phux believes Claude Code emits. That is precisely how the 2.1.228
-    /// glyph change went unnoticed: belief and rule matched each other while
-    /// both had drifted off the CLI. This test closes that loop by replaying
-    /// the OSC 0 titles out of a committed raw-byte capture, so the rule is
-    /// answerable to evidence the CLI actually produced.
-    ///
-    /// It asserts the capture's titles partition cleanly: a quiet prefix that
-    /// must assert nothing, and busy prefixes that must all read `working`.
-    #[test]
-    fn every_busy_title_in_the_committed_capture_reads_as_working() {
-        let capture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../research/2026-08-12-osc-9-4-claude-code/claude-title-enabled.rawcap");
-        let raw = std::fs::read_to_string(&capture).unwrap_or_else(|e| {
-            panic!(
-                "the busy-title rule's only real evidence is {}: {e}. If this \
-                 capture is being removed, re-verify `title-busy-spinner` \
-                 against a fresh one rather than deleting this test.",
-                capture.display(),
-            )
-        });
-
-        let mut titles: Vec<&str> = raw
-            .split("\u{1b}]0;")
-            .skip(1)
-            .filter_map(|rest| rest.split('\u{7}').next())
-            .filter(|t| !t.is_empty())
-            .collect();
-        titles.sort_unstable();
-        titles.dedup();
-        assert!(
-            titles.len() >= 3,
-            "expected the capture to hold a quiet title and both busy frames, got {titles:?}",
-        );
-
-        let mut busy = 0_usize;
-        let mut quiet = 0_usize;
-        for title in titles {
-            let got = claude_eval(title, &claude_idle_screen());
-            if title.starts_with('\u{2733}') {
-                quiet += 1;
-                assert_eq!(
-                    got.state, None,
-                    "the quiet title must assert nothing: {title:?}",
-                );
-            } else {
-                busy += 1;
-                assert_eq!(
-                    got.state,
-                    Some(DetectedState::Working),
-                    "a busy title from the real capture must read as working: {title:?}",
-                );
-                assert_eq!(got.matched.as_deref(), Some("title-busy-spinner"));
-            }
-        }
-        assert!(busy >= 2, "expected both busy animation frames, got {busy}");
-        assert!(quiet >= 1, "expected the quiet title, got {quiet}");
-    }
-
-    /// THE most important property of this manifest. The quiet title (U+2733)
-    /// covers BOTH idle and waiting-on-a-permission-dialog, so it must assert
-    /// nothing. If it ever asserted `idle`, it would outrank (title beats
-    /// screen) the prompt-box rule and mask EVERY permission prompt.
-    #[test]
-    fn claude_quiet_title_asserts_nothing_and_never_masks_a_dialog() {
-        let got = claude_eval(CLAUDE_TITLE_QUIET, &claude_blocked_screen());
-        assert_eq!(
-            got.state,
-            Some(DetectedState::Blocked),
-            "the quiet title must not outrank a live permission dialog",
-        );
-        assert_eq!(got.matched.as_deref(), Some("prompt-permission-dialog"));
-    }
-
-    /// The captured permission dialog reads as `blocked`.
-    ///
-    /// This is the test the first draft could not pass. It scoped the rule to
-    /// `prompt-box` — the bottom-most *box-drawn* run — but Claude 2.1.207
-    /// fences its chrome with horizontal rules and draws no box at all, so the
-    /// region came back empty, the rule never matched, and a pane sitting on a
-    /// live permission prompt reported `idle` forever.
-    #[test]
-    fn claude_permission_dialog_is_blocked() {
-        let got = claude_eval("", &claude_blocked_screen());
-        assert_eq!(got.state, Some(DetectedState::Blocked));
-        assert_eq!(got.matched.as_deref(), Some("prompt-permission-dialog"));
-    }
-
-    /// The idle screen matches NO state-bearing rule, and that is the design:
-    /// `idle` is the detector's fail-safe default (ADR-0046 §D, applied in
-    /// `agent_detect::mod`), so it is reached by nothing matching rather than
-    /// by a rule asserting it. A rule that asserted `idle` from the quiet title
-    /// or the empty box would outrank the dialog rule and mask every prompt.
-    #[test]
-    fn claude_idle_screen_asserts_no_state_and_leaves_the_fail_safe_to_decide() {
-        let got = claude_eval(CLAUDE_TITLE_QUIET, &claude_idle_screen());
-        assert_eq!(got.state, None, "no rule should claim the idle screen");
-        assert!(!got.freeze);
-    }
-
-    /// The working screen's PROMPT BOX is EMPTY — structurally identical to
-    /// the idle one's. The title is the primary discriminator; the elapsed-
-    /// status line is the screen-side backstop for when the title is not
-    /// available (`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`).
-    #[test]
-    fn claude_working_screen_is_working_by_title_or_by_the_screen_backstop() {
-        let by_title = claude_eval(CLAUDE_TITLE_BUSY_A, &claude_working_screen());
-        assert_eq!(by_title.state, Some(DetectedState::Working));
-        assert_eq!(by_title.matched.as_deref(), Some("title-busy-spinner"));
-
-        // Without a title, `screen-status-elapsed-backstop` still catches the
-        // captured "✻ Kneading… (1s · ...)" status line.
-        let titleless = claude_eval("", &claude_working_screen());
-        assert_eq!(
-            titleless.state,
-            Some(DetectedState::Working),
-            "the elapsed-status backstop must prove working even with no title at all",
-        );
-        assert_eq!(
-            titleless.matched.as_deref(),
-            Some("screen-status-elapsed-backstop"),
-        );
-    }
-
-    /// NEGATIVE case for the new backstop: neither the idle screen nor the
-    /// live permission dialog carries the elapsed-status shape, so the rule
-    /// must stay silent on both — a positive-idle or a masked-dialog result
-    /// would be exactly the failure ADR-0046 §D forbids.
-    #[test]
-    fn claude_screen_backstop_does_not_fire_on_idle_or_blocked_screens() {
-        let idle = claude_eval(CLAUDE_TITLE_QUIET, &claude_idle_screen());
-        assert_ne!(idle.state, Some(DetectedState::Working));
-
-        let blocked = claude_eval(CLAUDE_TITLE_QUIET, &claude_blocked_screen());
-        assert_eq!(
-            blocked.state,
-            Some(DetectedState::Blocked),
-            "the backstop must not outrank the live permission dialog",
-        );
-    }
-
-    /// THE regression the region design exists to prevent. A permission dialog
-    /// that Claude merely PRINTED into its transcript — not a live prompt —
-    /// must never read as `blocked`. Here the words sit in a quoted transcript
-    /// above the real, live, idle chrome.
-    #[test]
-    fn claude_dialog_text_quoted_in_the_transcript_is_not_blocked() {
-        let mut screen = lines(&[
-            "  Here is what that prompt looks like:",
-            "",
-            "  > Do you want to proceed?",
-            "  > \u{276f} 1. Yes",
-            "  > 2. No",
-            "",
-        ]);
-        // ... and the LIVE chrome below it is the captured idle screen.
-        screen.extend(claude_idle_screen());
-        let got = claude_eval(CLAUDE_TITLE_QUIET, &screen);
-        assert_ne!(
-            got.state,
-            Some(DetectedState::Blocked),
-            "text in the transcript is not a live prompt; a false `blocked` is the one \
-             failure that destroys trust in the feature",
-        );
-    }
-
-    /// A screen with no rules at all cannot be blocked, however dialog-shaped
-    /// its text. `after-last-rule` yields nothing when there is no rule, so the
-    /// region is empty and the predicate has nothing to see. Guards the case
-    /// where an agent prints a dialog transcript with the live chrome scrolled
-    /// off entirely.
-    #[test]
-    fn claude_dialog_shaped_text_with_no_live_chrome_is_not_blocked() {
-        let screen = lines(&["  Do you want to proceed?", "  \u{276f} 1. Yes", "  2. No"]);
-        let got = claude_eval(CLAUDE_TITLE_QUIET, &screen);
-        assert_ne!(got.state, Some(DetectedState::Blocked));
-    }
-
-    /// The transcript viewer (ctrl+o) is a pager over history: it carries no
-    /// information about the agent's live state, so it must freeze rather than
-    /// guess. Footer string verified against 2.1.207.
-    #[test]
-    fn claude_transcript_viewer_freezes() {
-        let screen = lines(&[
-            "  (scrolled-back history, possibly containing an old dialog)",
-            "  Do you want to proceed?",
-            "  1. Yes",
-            "  Showing detailed transcript \u{00b7} ctrl+o to toggle \u{00b7} \u{2191}\u{2193} scroll",
-        ]);
-        let got = claude_eval(CLAUDE_TITLE_QUIET, &screen);
-        assert!(got.freeze, "a pager carries no agent-state information");
-    }
-
-    fn captured(raw: &str) -> Vec<String> {
-        raw.lines().map(str::to_owned).collect()
-    }
-
-    /// Pi and OMP are pinned to idle, working, and blocked viewports captured
-    /// from the corresponding shipped CLI. This catches both silent signal
-    /// drift and the more dangerous false-blocked regression.
-    #[test]
-    fn captured_agent_screens_match_only_their_live_state() {
-        let fixtures = [
-            (
-                "pi",
-                include_str!("fixtures/pi/idle_prompt.txt"),
-                include_str!("fixtures/pi/working.txt"),
-                include_str!("fixtures/pi/blocked_trust.txt"),
-                "bottom-working-status",
-                "project-trust-dialog",
-            ),
-            (
-                "omp",
-                include_str!("fixtures/omp/idle_prompt.txt"),
-                include_str!("fixtures/omp/working.txt"),
-                include_str!("fixtures/omp/blocked_tool_approval.txt"),
-                "bottom-running-status",
-                "tool-approval-dialog",
-            ),
-        ];
-
-        for (kind, idle, working, blocked, working_rule, blocked_rule) in fixtures {
-            let set = compile(builtin(kind));
-            let manifest = set.manifest(kind).expect("manifest");
-
-            let idle = captured(idle);
-            let got = manifest.evaluate(&Screen {
-                title: "",
-                progress: "",
-                lines: &idle,
-            });
-            assert_eq!(got.state, None, "{kind}: idle is the fail-safe");
-
-            let working = captured(working);
-            let got = manifest.evaluate(&Screen {
-                title: "",
-                progress: "",
-                lines: &working,
-            });
-            assert_eq!(
-                got.state,
-                Some(DetectedState::Working),
-                "{kind}: captured working screen",
-            );
-            assert_eq!(got.matched.as_deref(), Some(working_rule));
-
-            let blocked = captured(blocked);
-            let got = manifest.evaluate(&Screen {
-                title: "",
-                progress: "",
-                lines: &blocked,
-            });
-            assert_eq!(
-                got.state,
-                Some(DetectedState::Blocked),
-                "{kind}: captured blocked screen",
-            );
-            assert_eq!(got.matched.as_deref(), Some(blocked_rule));
-
-            let mut transcript_then_idle = blocked;
-            transcript_then_idle.extend(idle);
-            let got = manifest.evaluate(&Screen {
-                title: "",
-                progress: "",
-                lines: &transcript_then_idle,
-            });
-            assert_ne!(
-                got.state,
-                Some(DetectedState::Blocked),
-                "{kind}: a historical dialog above live idle chrome must not block",
-            );
-        }
-    }
-
-    /// Every shipped built-in must compile and own each declared binary alias;
-    /// otherwise that agent kind silently disappears in production.
+    /// Every built-in compiles well inside the bounds and owns each declared
+    /// binary alias; otherwise that agent silently disappears in production.
     #[test]
     fn every_builtin_manifest_compiles_and_indexes_its_binaries() {
-        // `global()` is env-sensitive; compile each embedded manifest directly
-        // so this test is hermetic.
         let expected = [
             ("claude", &["claude", "claude-code"][..]),
             ("codex", &["codex"][..]),
-            ("opencode", &["opencode", "opencode2"][..]),
+            ("opencode", &["opencode", "opencode2", "@opencode-ai"][..]),
             ("pi", &["pi"][..]),
             ("omp", &["omp"][..]),
             ("grok", &["grok"][..]),
             ("amp", &["amp"][..]),
             ("cursor-agent", &["cursor-agent"][..]),
         ];
-
         for (kind, binaries) in expected {
+            let spec: ManifestSpec = toml::from_str(builtin(kind)).expect("builtin parses");
+            assert!(
+                spec.rules.len() <= super::MAX_RULES_PER_MANIFEST / 4,
+                "{kind}"
+            );
             let set = compile(builtin(kind));
             for binary in binaries {
                 assert_eq!(set.kind_for_binary(binary), Some(kind));
@@ -2075,549 +1147,301 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
             assert_eq!(manifest.name, kind);
             assert!(!manifest.rules.is_empty());
         }
-    }
-
-    // --- Codex goldens ------------------------------------------------------
-    //
-    // REAL viewports and REAL titles captured from Codex 0.145.0 running in a
-    // phux pane: the screens via `phux snapshot --json`, the titles by
-    // recording every `title_changed` event over one driven turn. Re-capture
-    // them when Codex's TUI changes; do not hand-edit them.
-
-    fn codex_screen(body: &str) -> Vec<String> {
-        lines(body.lines().collect::<Vec<_>>().as_slice())
-    }
-
-    fn codex_idle_screen() -> Vec<String> {
-        codex_screen(include_str!("fixtures/codex/idle_prompt.txt"))
-    }
-
-    fn codex_working_screen() -> Vec<String> {
-        codex_screen(include_str!("fixtures/codex/working.txt"))
-    }
-
-    fn codex_blocked_screen() -> Vec<String> {
-        codex_screen(include_str!("fixtures/codex/blocked_approval.txt"))
-    }
-
-    /// Two frames of the ten-frame braille spinner Codex animates in its OSC
-    /// title while a turn runs. Both observed ~15 times over one turn.
-    const CODEX_TITLE_BUSY_A: &str = "\u{280b} tmp";
-    const CODEX_TITLE_BUSY_B: &str = "\u{2834} tmp";
-    /// The title when no turn is running: the bare cwd basename, no prefix.
-    /// Covers idle AND waiting-on-approval alike, which is why it has no rule.
-    const CODEX_TITLE_QUIET: &str = "tmp";
-
-    fn codex_eval(title: &str, screen: &[String]) -> super::Evaluation {
-        let set = compile(builtin("codex"));
-        let manifest = set.manifest("codex").expect("codex manifest");
-        manifest.evaluate(&Screen {
-            title,
-            progress: "",
-            lines: screen,
-        })
-    }
-
-    /// The spinner proves `working`, on every frame of the animation.
-    #[test]
-    fn codex_spinner_title_is_working() {
-        for title in [CODEX_TITLE_BUSY_A, CODEX_TITLE_BUSY_B] {
-            let got = codex_eval(title, &codex_working_screen());
-            assert_eq!(
-                got.state,
-                Some(DetectedState::Working),
-                "spinner frame {title:?} must read as working"
-            );
-        }
-    }
-
-    /// The whole Braille block is matched, not ten enumerated codepoints, so a
-    /// Codex that reorders or extends its spinner keeps working.
-    #[test]
-    fn codex_matches_any_braille_spinner_frame() {
-        for cp in ['\u{2800}', '\u{280f}', '\u{283c}', '\u{28ff}'] {
-            let title = format!("{cp} tmp");
-            let got = codex_eval(&title, &codex_idle_screen());
-            assert_eq!(
-                got.state,
-                Some(DetectedState::Working),
-                "braille frame {title:?} must read as working"
-            );
-        }
-    }
-
-    /// The bare title asserts nothing. It means "not running a turn", which
-    /// covers idle AND waiting-on-approval; claiming `idle` here would outrank
-    /// the screen and mask every approval prompt.
-    #[test]
-    fn codex_bare_title_asserts_nothing() {
-        let got = codex_eval(CODEX_TITLE_QUIET, &codex_idle_screen());
-        assert_ne!(
-            got.state,
-            Some(DetectedState::Working),
-            "a bare title must not read as working"
-        );
-    }
-
-    /// The captured approval dialog reads as `blocked`, with the quiet title
-    /// that really accompanies it.
-    #[test]
-    fn codex_approval_prompt_is_blocked() {
-        let got = codex_eval(CODEX_TITLE_QUIET, &codex_blocked_screen());
-        assert_eq!(got.state, Some(DetectedState::Blocked));
-    }
-
-    /// The screen-side backstop: with the bare (non-spinner) title — the
-    /// only title a terminal that suppresses OSC titles would ever show —
-    /// the captured "• Working (0s • esc to interrupt)" footer alone must
-    /// still prove `working`.
-    #[test]
-    fn codex_screen_backstop_catches_working_without_a_spinner_title() {
-        let got = codex_eval(CODEX_TITLE_QUIET, &codex_working_screen());
-        assert_eq!(
-            got.state,
-            Some(DetectedState::Working),
-            "the elapsed-status footer must prove working even without the spinner title",
-        );
-        assert_eq!(
-            got.matched.as_deref(),
-            Some("screen-working-footer-backstop"),
-        );
-    }
-
-    /// NEGATIVE case: neither the idle composer nor the live approval dialog
-    /// carries the footer's elapsed-seconds-plus-interrupt shape, so the
-    /// backstop must stay silent on both.
-    #[test]
-    fn codex_screen_backstop_does_not_fire_on_idle_or_blocked_screens() {
-        let idle = codex_eval(CODEX_TITLE_QUIET, &codex_idle_screen());
-        assert_ne!(idle.state, Some(DetectedState::Working));
-
-        let blocked = codex_eval(CODEX_TITLE_QUIET, &codex_blocked_screen());
-        assert_eq!(
-            blocked.state,
-            Some(DetectedState::Blocked),
-            "the backstop must not outrank the live approval dialog",
-        );
-    }
-
-    /// The guard that matters: prose alone must not trip `blocked`. The
-    /// transcript can legitimately contain the question stem inside a quoted
-    /// session; without a numbered option line it is not a live dialog.
-    #[test]
-    fn codex_question_stem_without_an_option_list_is_not_blocked() {
-        let screen = lines(&[
-            "  I was going to ask: would you like to run the following command?",
-            "  ...but I decided against it.",
-        ]);
-        let got = codex_eval(CODEX_TITLE_QUIET, &screen);
-        assert_ne!(
-            got.state,
-            Some(DetectedState::Blocked),
-            "prose without an option list must not read as blocked"
-        );
-    }
-
-    /// A false `blocked` is the expensive failure (ADR-0046 D). The real idle
-    /// screen must not produce one.
-    #[test]
-    fn codex_idle_screen_is_not_blocked() {
-        let got = codex_eval(CODEX_TITLE_QUIET, &codex_idle_screen());
-        assert_ne!(got.state, Some(DetectedState::Blocked));
-    }
-
-    /// The shipped built-in must compile. If this fails, `rules/codex.toml`
-    /// is broken and the detector silently does nothing in production.
-    #[test]
-    fn builtin_codex_manifest_compiles_and_indexes_its_binaries() {
-        let set = compile(builtin("codex"));
-        assert_eq!(set.kind_for_binary("codex"), Some("codex"));
-        let manifest = set.manifest("codex").expect("codex manifest");
-        assert_eq!(manifest.name, "codex");
-        assert!(!manifest.rules.is_empty());
-    }
-
-    /// Both built-ins must coexist: registering a second manifest must not
-    /// displace the first, and neither kind may capture the other's binary.
-    #[test]
-    fn builtin_manifests_do_not_collide() {
         let set = global();
-        assert_eq!(set.kind_for_binary("claude"), Some("claude"));
+        assert!(std::rc::Rc::ptr_eq(&set, &global()), "memoized");
         assert_eq!(set.kind_for_binary("codex"), Some("codex"));
         assert_eq!(set.kind_for_binary("opencode2"), Some("opencode"));
     }
 
-    // --- OpenCode goldens ---------------------------------------------------
+    // --- Shipped manifests against captured screens ------------------------
     //
-    // REAL viewports captured from OpenCode 1.17.18 in a phux pane. Note the
-    // structural difference from Claude/Codex: `OpenCode`'s OSC title is the
-    // conversation title, not a spinner, so every rule here is a screen rule
-    // and the title argument is irrelevant to the outcome.
+    // The fixtures are REAL viewports (`phux snapshot --json`) and titles
+    // captured from each CLI. Synthetic screens only test the matcher against
+    // itself; re-capture when an agent's TUI changes, never hand-edit.
 
-    fn opencode_idle_screen() -> Vec<String> {
-        lines(
-            include_str!("fixtures/opencode/idle_prompt.txt")
-                .lines()
-                .collect::<Vec<_>>()
-                .as_slice(),
-        )
-    }
+    /// Claude titles: an animated prefix while busy (braille in 2.1.207,
+    /// half circles in 2.1.228), a static U+2733 otherwise. The quiet title
+    /// covers idle AND a permission dialog, so it must assert nothing.
+    const CLAUDE_BUSY: [&str; 4] = [
+        "\u{2802} phux",
+        "\u{2810} phux",
+        "\u{25D0} phux",
+        "\u{25D1} phux",
+    ];
+    const CLAUDE_QUIET: &str = "\u{2733} phux";
 
-    fn opencode_working_screen() -> Vec<String> {
-        lines(
-            include_str!("fixtures/opencode/working.txt")
-                .lines()
-                .collect::<Vec<_>>()
-                .as_slice(),
-        )
-    }
+    /// `kind | title | progress | screen | want`, one golden case per line.
+    /// `screen` is a fixture path or an `@name` from [`named_screen`]; `want`
+    /// is `<state> <rule>`, `nothing` (the fail-safe decides), `not-blocked`,
+    /// or `freeze`. A false `blocked` destroys trust in the feature, so
+    /// transcript-quoted dialogs are pinned `not-blocked`.
+    const GOLDEN: &str = "
+claude |  | 4;3; | claude/idle_prompt.txt | working osc-progress-working
+claude |  | 4;0; | claude/idle_prompt.txt | idle osc-progress-idle
+claude |  | 4;3; | claude/blocked_permission.txt | blocked prompt-permission-dialog
+claude | \u{2733} phux |  | claude/blocked_permission.txt | blocked prompt-permission-dialog
+claude |  |  | claude/blocked_permission.txt | blocked prompt-permission-dialog
+claude | \u{2733} phux |  | claude/idle_prompt.txt | nothing
+claude | \u{2802} phux |  | claude/working.txt | working title-busy-spinner
+claude |  |  | claude/working.txt | working screen-status-elapsed-backstop
+claude | \u{2733} phux |  | @claude-transcript-dialog | not-blocked
+claude | \u{2733} phux |  | @bare-dialog | not-blocked
+claude | \u{2733} phux |  | @claude-pager | freeze
+codex | tmp |  | codex/blocked_approval.txt | blocked prompt-command-approval
+codex | tmp |  | codex/working.txt | working screen-working-footer-backstop
+codex | tmp |  | codex/idle_prompt.txt | nothing
+codex | tmp |  | @codex-prose | not-blocked
+opencode | OC | whatever |  | opencode/working.txt | working footer-interrupt-affordance
+opencode | OC | whatever |  | opencode/blocked_permission.txt | blocked permission-required-dialog
+opencode | OpenCode |  | opencode/idle_prompt.txt | nothing
+opencode | OC | esc interrupt |  | opencode/idle_prompt.txt | nothing
+grok |  |  | grok/working.txt | working screen-status-elapsed-backstop
+grok | grok |  | grok/blocked_trust.txt | blocked folder-trust-dialog
+grok | grok |  | grok/idle_prompt.txt | nothing
+grok | grok |  | @grok-quoted-dialog | not-blocked
+amp | \u{280a} Terminal haiku - amp - /tmp/ws |  | @amp-idle | working title-busy-spinner
+amp |  |  | @amp-working | working prompt-box-activity-footer
+amp | Terminal haiku - amp - /tmp/ws |  | @amp-idle | nothing
+cursor-agent |  |  | @cursor-login | nothing
+pi |  |  | pi/idle_prompt.txt | nothing
+pi |  |  | pi/working.txt | working bottom-working-status
+pi |  |  | pi/blocked_trust.txt | blocked project-trust-dialog
+pi |  |  | @pi-dialog-above-idle | not-blocked
+omp |  |  | omp/idle_prompt.txt | nothing
+omp |  |  | omp/working.txt | working bottom-running-status
+omp |  |  | omp/blocked_tool_approval.txt | blocked tool-approval-dialog
+omp |  |  | @omp-dialog-above-idle | not-blocked
+";
 
-    fn opencode_blocked_screen() -> Vec<String> {
-        lines(
-            include_str!("fixtures/opencode/blocked_permission.txt")
-                .lines()
-                .collect::<Vec<_>>()
-                .as_slice(),
-        )
-    }
-
-    fn opencode_eval(title: &str, screen: &[String]) -> super::Evaluation {
-        let set = compile(builtin("opencode"));
-        let manifest = set.manifest("opencode").expect("opencode manifest");
-        manifest.evaluate(&Screen {
-            title,
-            progress: "",
-            lines: screen,
-        })
-    }
-
-    /// The footer's interrupt affordance is the working signal.
-    #[test]
-    fn opencode_footer_interrupt_is_working() {
-        let got = opencode_eval("OC | whatever", &opencode_working_screen());
-        assert_eq!(got.state, Some(DetectedState::Working));
-    }
-
-    /// The real idle screen must not read as working. Both screens paint the
-    /// same composer, so this is the discriminator doing its job.
-    #[test]
-    fn opencode_idle_screen_is_not_working() {
-        let got = opencode_eval("OpenCode", &opencode_idle_screen());
-        assert_ne!(got.state, Some(DetectedState::Working));
-    }
-
-    /// The title is the conversation title and must not influence the
-    /// verdict. A title that merely mentions the word must not flip state.
-    #[test]
-    fn opencode_title_does_not_decide_state() {
-        let idle_a = opencode_eval("OpenCode", &opencode_idle_screen()).state;
-        let idle_b = opencode_eval("OC | esc interrupt", &opencode_idle_screen()).state;
-        assert_eq!(idle_a, idle_b, "the title changed the verdict");
-    }
-
-    /// The captured external-directory permission dialog reads as `blocked`;
-    /// the idle and working goldens do not.
-    #[test]
-    fn opencode_permission_dialog_is_blocked_without_false_positives() {
-        let blocked = opencode_eval("OC | whatever", &opencode_blocked_screen());
-        assert_eq!(blocked.state, Some(DetectedState::Blocked));
-        assert_eq!(
-            blocked.matched.as_deref(),
-            Some("permission-required-dialog")
-        );
-
-        for screen in [opencode_idle_screen(), opencode_working_screen()] {
-            let got = opencode_eval("OpenCode", &screen);
-            assert_ne!(got.state, Some(DetectedState::Blocked));
+    /// Synthetic screens built from, or around, the captures.
+    fn named_screen(name: &str) -> Vec<String> {
+        match name {
+            "claude-transcript-dialog" => [
+                lines(&[
+                    "  Here is what that prompt looks like:",
+                    "  > Do you want to proceed?",
+                    "  > \u{276f} 1. Yes",
+                    "  > 2. No",
+                ]),
+                golden("claude/idle_prompt.txt"),
+            ]
+            .concat(),
+            "bare-dialog" => lines(&["  Do you want to proceed?", "  \u{276f} 1. Yes", "  2. No"]),
+            "claude-pager" => lines(&[
+                "  Do you want to proceed?",
+                "  1. Yes",
+                "  Showing detailed transcript \u{00b7} ctrl+o to toggle \u{00b7} \u{2191}\u{2193} scroll",
+            ]),
+            "codex-prose" => lines(&[
+                "  I was going to ask: would you like to run the following command?",
+                "  ...but I decided against it.",
+            ]),
+            "grok-quoted-dialog" => {
+                let mut screen = golden("grok/idle_prompt.txt");
+                screen.splice(
+                    4..4,
+                    lines(&[
+                        "Do you trust the contents of this directory?",
+                        "Yes, proceed                 y",
+                        "No, quit                     n",
+                    ]),
+                );
+                screen
+            }
+            "amp-idle" => lines(&["╰──────────────── /tmp/ws ─╯"]),
+            "amp-working" => lines(&["╰ ≈ Waiting ───── /tmp/ws ─╯"]),
+            "cursor-login" => lines(&["Press any key to log in", "Signing in with the browser"]),
+            "pi-dialog-above-idle" => {
+                [golden("pi/blocked_trust.txt"), golden("pi/idle_prompt.txt")].concat()
+            }
+            "omp-dialog-above-idle" => [
+                golden("omp/blocked_tool_approval.txt"),
+                golden("omp/idle_prompt.txt"),
+            ]
+            .concat(),
+            other => panic!("unknown screen @{other}"),
         }
     }
 
-    /// The shipped built-in must compile and index every observed process
-    /// name, including the npm-scope path component.
-    #[test]
-    fn builtin_opencode_manifest_compiles_and_indexes_its_binaries() {
-        let set = compile(builtin("opencode"));
-        for name in ["opencode", "opencode2", "@opencode-ai"] {
-            assert_eq!(set.kind_for_binary(name), Some("opencode"), "missed {name}");
-        }
-    }
-
-    // --- Grok Build TUI (1.0.30) --------------------------------------------
-
-    fn grok_eval(title: &str, screen: &[String]) -> super::Evaluation {
-        let set = compile(builtin("grok"));
-        let manifest = set.manifest("grok").expect("grok manifest");
-        manifest.evaluate(&Screen {
-            title,
-            progress: "",
-            lines: screen,
-        })
-    }
-
-    fn grok_idle_screen() -> Vec<String> {
-        lines(
-            include_str!("fixtures/grok/idle_prompt.txt")
-                .lines()
+    /// Every golden case as `(kind, title, progress, screen, want)`, plus
+    /// the title sweeps: every Claude busy frame, the whole Codex braille
+    /// block, and the captured Grok title lists.
+    fn golden_cases() -> Vec<(String, String, String, Vec<String>, String)> {
+        let mut cases: Vec<_> = GOLDEN
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                let fields: Vec<&str> = line.split(" | ").map(str::trim).collect();
+                let [kind, title @ .., progress, screen, want] = fields.as_slice() else {
+                    panic!("bad golden row: {line}");
+                };
+                let screen = screen
+                    .strip_prefix('@')
+                    .map_or_else(|| golden(screen), named_screen);
+                (
+                    (*kind).to_owned(),
+                    title.join(" | "),
+                    (*progress).to_owned(),
+                    screen,
+                    (*want).to_owned(),
+                )
+            })
+            .collect();
+        let sweep = |kind: &str, fixture: &str, titles: Vec<String>, want: &str| {
+            titles
+                .into_iter()
+                .map(|title| {
+                    (
+                        kind.to_owned(),
+                        title,
+                        String::new(),
+                        golden(fixture),
+                        want.to_owned(),
+                    )
+                })
                 .collect::<Vec<_>>()
-                .as_slice(),
-        )
+        };
+        let busy = "working title-busy-spinner";
+        cases.extend(sweep(
+            "claude",
+            "claude/idle_prompt.txt",
+            CLAUDE_BUSY.map(str::to_owned).to_vec(),
+            busy,
+        ));
+        cases.extend(sweep(
+            "codex",
+            "codex/idle_prompt.txt",
+            [
+                '\u{2800}', '\u{280b}', '\u{280f}', '\u{2834}', '\u{283c}', '\u{28ff}',
+            ]
+            .map(|cp| format!("{cp} tmp"))
+            .to_vec(),
+            busy,
+        ));
+        let grok_titles = |text: &str| text.lines().map(str::to_owned).collect();
+        cases.extend(sweep(
+            "grok",
+            "grok/idle_prompt.txt",
+            grok_titles(include_str!("fixtures/grok/titles_working.txt")),
+            busy,
+        ));
+        cases.extend(sweep(
+            "grok",
+            "grok/idle_prompt.txt",
+            grok_titles(include_str!("fixtures/grok/titles_idle.txt")),
+            "nothing",
+        ));
+        cases
     }
 
-    fn grok_working_screen() -> Vec<String> {
-        lines(
-            include_str!("fixtures/grok/working.txt")
-                .lines()
-                .collect::<Vec<_>>()
-                .as_slice(),
-        )
+    fn state_word(state: Option<DetectedState>) -> &'static str {
+        state.map_or("", DetectedState::as_str)
     }
 
-    fn grok_blocked_screen() -> Vec<String> {
-        lines(
-            include_str!("fixtures/grok/blocked_trust.txt")
-                .lines()
-                .collect::<Vec<_>>()
-                .as_slice(),
-        )
-    }
-
+    /// Each shipped manifest reads its captured screens as exactly their
+    /// live state.
     #[test]
-    fn grok_busy_title_is_working() {
-        for title in include_str!("fixtures/grok/titles_working.txt").lines() {
-            let got = grok_eval(title, &grok_idle_screen());
-            assert_eq!(got.state, Some(DetectedState::Working), "{title}");
-            assert_eq!(got.matched.as_deref(), Some("title-busy-spinner"));
-        }
-    }
-
-    #[test]
-    fn grok_quiet_title_asserts_nothing() {
-        for title in include_str!("fixtures/grok/titles_idle.txt").lines() {
-            let got = grok_eval(title, &grok_idle_screen());
-            assert_eq!(got.state, None, "idle title must not assert: {title}");
-        }
-    }
-
-    #[test]
-    fn grok_captured_working_screen_is_working_without_a_title() {
-        let got = grok_eval("", &grok_working_screen());
-        assert_eq!(got.state, Some(DetectedState::Working));
-        assert_eq!(
-            got.matched.as_deref(),
-            Some("screen-status-elapsed-backstop")
-        );
-    }
-
-    #[test]
-    fn grok_captured_idle_screen_is_not_working() {
-        let got = grok_eval("grok", &grok_idle_screen());
-        assert_ne!(got.state, Some(DetectedState::Working));
-        assert_ne!(got.state, Some(DetectedState::Blocked));
-    }
-
-    #[test]
-    fn grok_captured_folder_trust_dialog_is_blocked() {
-        let got = grok_eval("grok", &grok_blocked_screen());
-        assert_eq!(got.state, Some(DetectedState::Blocked));
-        assert_eq!(got.matched.as_deref(), Some("folder-trust-dialog"));
-
-        for screen in [grok_idle_screen(), grok_working_screen()] {
-            assert_ne!(
-                grok_eval("grok", &screen).state,
-                Some(DetectedState::Blocked)
+    fn shipped_manifests_read_captured_screens_correctly() {
+        let mut sets = std::collections::HashMap::new();
+        for (kind, title, progress, screen, want) in golden_cases() {
+            let set = sets
+                .entry(kind.clone())
+                .or_insert_with(|| compile(builtin(&kind)));
+            let got = eval(set, &kind, &title, &progress, &screen);
+            let ok = match want.as_str() {
+                "nothing" => got.state.is_none() && !got.freeze,
+                "not-blocked" => got.state != Some(Blocked),
+                "freeze" => got.freeze,
+                expected => {
+                    let actual = format!(
+                        "{} {}",
+                        state_word(got.state),
+                        got.matched.as_deref().unwrap_or("")
+                    );
+                    actual == expected
+                }
+            };
+            assert!(
+                ok,
+                "{kind} title={title:?} progress={progress:?}: want {want}, got {got:?}"
             );
         }
-
-        let mut quoted = grok_idle_screen();
-        quoted.splice(
-            4..4,
-            [
-                "Do you trust the contents of this directory?".to_owned(),
-                "Yes, proceed                 y".to_owned(),
-                "No, quit                     n".to_owned(),
-            ],
-        );
-        assert_ne!(
-            grok_eval("grok", &quoted).state,
-            Some(DetectedState::Blocked),
-            "quoted chooser text above a live composer is transcript, not a blocker"
-        );
     }
 
-    // --- Amp CLI ------------------------------------------------------------
-
-    fn amp_eval(title: &str, screen: &[String]) -> super::Evaluation {
-        let set = compile(builtin("amp"));
-        let manifest = set.manifest("amp").expect("amp manifest");
-        manifest.evaluate(&Screen {
-            title,
-            progress: "",
-            lines: screen,
-        })
-    }
-
-    const AMP_IDLE_CAPTURE: &str = "╰──────────────── /tmp/ws ─╯";
-    const AMP_WORKING_CAPTURE: &str = "╰ ≈ Waiting ───── /tmp/ws ─╯";
-
-    fn amp_idle_screen() -> Vec<String> {
-        captured(AMP_IDLE_CAPTURE)
-    }
-
-    fn amp_working_screen() -> Vec<String> {
-        captured(AMP_WORKING_CAPTURE)
-    }
-
+    /// Claude's busy-title rule answers to REAL captured OSC 0 bytes, not
+    /// this module's constants: the 2.1.228 glyph change went unnoticed
+    /// while tests and rule agreed with each other. The capture's titles must
+    /// partition into a quiet one (asserts nothing) and busy frames
+    /// (`working`).
     #[test]
-    fn amp_busy_title_is_working() {
-        let got = amp_eval("⠊ Terminal haiku - amp - /tmp/ws", &amp_idle_screen());
-        assert_eq!(got.state, Some(DetectedState::Working));
-        assert_eq!(got.matched.as_deref(), Some("title-busy-spinner"));
-    }
-
-    #[test]
-    fn amp_captured_working_screen_is_working_without_a_title() {
-        let got = amp_eval("", &amp_working_screen());
-        assert_eq!(got.state, Some(DetectedState::Working));
-        assert_eq!(got.matched.as_deref(), Some("prompt-box-activity-footer"));
-    }
-
-    #[test]
-    fn amp_captured_idle_screen_is_not_working() {
-        let got = amp_eval("Terminal haiku - amp - /tmp/ws", &amp_idle_screen());
-        assert_ne!(got.state, Some(DetectedState::Working));
-        assert_ne!(got.state, Some(DetectedState::Blocked));
-    }
-
-    // --- Cursor Agent CLI ---------------------------------------------------
-
-    const CURSOR_AGENT_LOGIN_CAPTURE: &str = "Press any key to log in\nSigning in with the browser";
-
-    #[test]
-    fn cursor_agent_login_splash_is_identity_only_idle() {
-        let set = compile(builtin("cursor-agent"));
-        let manifest = set.manifest("cursor-agent").expect("cursor-agent manifest");
-        let screen = captured(CURSOR_AGENT_LOGIN_CAPTURE);
-        let got = manifest.evaluate(&Screen {
-            title: "",
-            progress: "",
-            lines: &screen,
+    fn every_busy_title_in_the_committed_capture_reads_as_working() {
+        let capture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../research/2026-08-12-osc-9-4-claude-code/claude-title-enabled.rawcap");
+        let raw = std::fs::read_to_string(&capture).unwrap_or_else(|e| {
+            panic!(
+                "{}: {e}. If this capture is removed, re-verify `title-busy-spinner` against a \
+                 fresh one rather than deleting this test.",
+                capture.display(),
+            )
         });
-        assert_eq!(
-            got.state, None,
-            "the login splash must not assert working or blocked"
-        );
-        assert!(!got.freeze, "a missing login must still publish identity");
-        assert_eq!(set.kind_for_binary("cursor-agent"), Some("cursor-agent"));
+        let mut titles: Vec<&str> = raw
+            .split("\u{1b}]0;")
+            .skip(1)
+            .filter_map(|rest| rest.split('\u{7}').next())
+            .filter(|t| !t.is_empty())
+            .collect();
+        titles.sort_unstable();
+        titles.dedup();
+
+        let set = compile(builtin("claude"));
+        let idle = golden("claude/idle_prompt.txt");
+        let (mut busy, mut quiet) = (0, 0);
+        for title in titles {
+            let got = eval(&set, "claude", title, "", &idle);
+            if title.starts_with('\u{2733}') {
+                quiet += 1;
+                assert_eq!(got.state, None, "{title:?}");
+            } else {
+                busy += 1;
+                assert_eq!(
+                    got.matched.as_deref(),
+                    Some("title-busy-spinner"),
+                    "{title:?}"
+                );
+            }
+        }
+        assert!(busy >= 2 && quiet >= 1, "busy={busy} quiet={quiet}");
     }
 
-    /// The non-short-circuiting trace walker must agree with the
-    /// short-circuiting production matcher on every rule of every built-in,
-    /// against every committed golden capture. Two evaluators is how a
-    /// debugger starts lying about the thing it is debugging; this is the
-    /// only reason a second one is tolerable at all.
+    /// The non-short-circuiting trace walker must agree with the production
+    /// matcher on every rule of every golden, and must evaluate every child
+    /// of a combinator so an author can see which conjunct failed.
     #[test]
     fn the_trace_agrees_with_the_production_evaluator() {
-        let goldens: &[(&str, &[&str])] = &[
-            (
-                "claude",
-                &[
-                    include_str!("fixtures/claude/idle_prompt.txt"),
-                    include_str!("fixtures/claude/working.txt"),
-                    include_str!("fixtures/claude/blocked_permission.txt"),
-                ],
-            ),
-            (
-                "codex",
-                &[
-                    include_str!("fixtures/codex/idle_prompt.txt"),
-                    include_str!("fixtures/codex/working.txt"),
-                    include_str!("fixtures/codex/blocked_approval.txt"),
-                ],
-            ),
-            (
-                "opencode",
-                &[
-                    include_str!("fixtures/opencode/idle_prompt.txt"),
-                    include_str!("fixtures/opencode/working.txt"),
-                    include_str!("fixtures/opencode/blocked_permission.txt"),
-                ],
-            ),
-            (
-                "pi",
-                &[
-                    include_str!("fixtures/pi/idle_prompt.txt"),
-                    include_str!("fixtures/pi/working.txt"),
-                    include_str!("fixtures/pi/blocked_trust.txt"),
-                ],
-            ),
-            (
-                "omp",
-                &[
-                    include_str!("fixtures/omp/idle_prompt.txt"),
-                    include_str!("fixtures/omp/working.txt"),
-                    include_str!("fixtures/omp/blocked_tool_approval.txt"),
-                ],
-            ),
-            (
-                "grok",
-                &[
-                    include_str!("fixtures/grok/idle_prompt.txt"),
-                    include_str!("fixtures/grok/working.txt"),
-                    include_str!("fixtures/grok/blocked_trust.txt"),
-                ],
-            ),
-            ("amp", &[AMP_IDLE_CAPTURE, AMP_WORKING_CAPTURE]),
-            ("cursor-agent", &[CURSOR_AGENT_LOGIN_CAPTURE]),
-        ];
-
-        // Titles exercise both spinner and quiet arms; screen captures are
-        // compact rule-focused samples rather than full viewport snapshots.
-        let titles = ["", CLAUDE_TITLE_BUSY_A, CLAUDE_TITLE_QUIET, "\u{280b} tmp"];
-
-        for (kind, screens) in goldens {
-            let set = compile(builtin(kind));
-            let manifest = set.manifest(kind).expect("manifest");
-            for body in *screens {
-                let buf = captured(body);
-                for title in titles {
-                    let screen = Screen {
-                        title,
-                        progress: "",
-                        lines: &buf,
-                    };
-                    let direct = manifest.evaluate(&screen);
-                    let explained = manifest.explain(&screen);
-                    assert_eq!(
-                        direct, explained.evaluation,
-                        "{kind}: the traced pass changed the verdict",
-                    );
-                    assert_eq!(
-                        explained.rules.len(),
-                        manifest.rules.len(),
-                        "{kind}: every rule must be reported, misses included",
-                    );
-                    for trace in &explained.rules {
-                        assert_eq!(
-                            trace.matched, trace.predicate.matched,
-                            "{kind}/{}: the evidence tree's root disagrees with the matcher",
-                            trace.id,
-                        );
-                    }
+        let mut sets = std::collections::HashMap::new();
+        for (kind, _, _, screen, _) in golden_cases() {
+            let set = sets
+                .entry(kind.clone())
+                .or_insert_with(|| compile(builtin(&kind)));
+            let manifest = set.manifest(&kind).expect("manifest");
+            for title in ["", CLAUDE_BUSY[0], CLAUDE_QUIET, "\u{280b} tmp"] {
+                let screen = Screen {
+                    title,
+                    progress: "",
+                    lines: &screen,
+                };
+                let explained = manifest.explain(&screen);
+                assert_eq!(manifest.evaluate(&screen), explained.evaluation, "{kind}");
+                assert_eq!(explained.rules.len(), manifest.rules.len(), "{kind}");
+                for trace in &explained.rules {
+                    assert_eq!(trace.matched, trace.evidence.matched, "{kind}/{}", trace.id);
                 }
             }
         }
-    }
 
-    /// A combinator's children are ALL evaluated, so an author can see which
-    /// conjunct failed rather than only that the `all` did. The production
-    /// matcher short-circuits; the trace must not.
-    #[test]
-    fn the_trace_does_not_short_circuit_a_conjunction() {
         let set = compile(SAMPLE);
-        let manifest = set.manifest("sample").expect("manifest");
-        // Neither conjunct of `screen-blocked` holds.
         let buf = lines(&["nothing here at all"]);
-        let explained = manifest.explain(&Screen {
+        let explained = set.manifest("sample").expect("manifest").explain(&Screen {
             title: "",
             progress: "",
             lines: &buf,
@@ -2628,23 +1452,13 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
             .find(|r| r.id == "screen-blocked")
             .expect("rule reported");
         assert!(!rule.matched);
-        assert_eq!(rule.predicate.op, "all");
-        assert_eq!(
-            rule.predicate.children.len(),
-            2,
-            "both conjuncts must be evaluated and reported",
-        );
-        assert!(rule.predicate.children.iter().all(|c| !c.matched));
+        assert_eq!(rule.evidence.op, "all");
+        assert_eq!(rule.evidence.children.len(), 2);
         assert!(
-            rule.predicate.children.iter().all(|c| c.pattern.is_some()),
-            "every leaf names the pattern it ran",
+            rule.evidence
+                .children
+                .iter()
+                .all(|c| !c.matched && c.pattern.is_some())
         );
-    }
-
-    #[test]
-    fn global_is_memoized() {
-        let a = global();
-        let b = global();
-        assert!(std::rc::Rc::ptr_eq(&a, &b));
     }
 }

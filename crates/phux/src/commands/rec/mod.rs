@@ -1,26 +1,11 @@
-//! `phux rec` — capture a pane and export it as a cast, a GIF, or an APNG.
+//! `phux rec` — capture a pane and export it as a cast, a GIF, or an APNG
+//! (ADR-0060). [`run_rec`] is the headless verb (a pure observer via
+//! `phux_client::record`); [`finalize`] is the tail of the interactive `--rec`
+//! path, whose cast is already on disk. Both go through [`spec::plan`].
 //!
-//! This module is the CLI half of built-in session recording (ADR-0060).
-//! It owns two things:
-//!
-//! * [`run_rec`], the headless verb: resolve a selector, subscribe to the
-//!   pane as a pure observer via `phux_client::record`, write the asciicast,
-//!   and hand it to `phux_record::render` for the animation.
-//! * [`finalize`], the tail of the interactive `--rec` path: the attach
-//!   driver's tee has already streamed the cast to disk by the time the TUI
-//!   comes down, so all that is left is the export and the one-liner.
-//!
-//! Both go through [`spec::plan`], so `demo.png` means the same thing on
-//! either surface.
-//!
-//! # Output discipline
-//!
-//! stdout carries exactly one thing: the completion one-liner, or — under
-//! `--json` — one JSON object and nothing else. Progress and diagnostics go
-//! to stderr, and *only* on the headless path: the `--rec` attach path owns
-//! the alt screen, so a stray stderr byte while the session is up would
-//! corrupt the display. Everything the interactive path has to say it says
-//! after the raw-mode guard has dropped.
+//! stdout carries only the completion line (or one JSON object under
+//! `--json`); diagnostics go to stderr, and only on the headless path, since
+//! `--rec` attach owns the alt screen until it exits.
 
 pub(crate) mod spec;
 
@@ -44,10 +29,6 @@ pub(crate) use spec::RecordSpec;
 const PROGRESS_PERIOD: Duration = Duration::from_millis(250);
 
 /// Everything `phux rec` was asked to do.
-///
-/// A struct rather than eleven positional parameters: `clippy::too_many_
-/// arguments` is pedantic and warnings are denied, and a call site with
-/// eleven bare values is unreadable regardless of what the linter thinks.
 #[derive(Debug)]
 pub(crate) struct RecArgs<'a> {
     /// Pane selector; `None` means the focused pane.
@@ -75,17 +56,9 @@ pub(crate) struct RecArgs<'a> {
     pub(crate) socket: Option<PathBuf>,
 }
 
-/// Run `phux rec`.
-///
-/// Capture is a *pure observer*: the pane is subscribed to with
-/// `ATTACH_RESOURCE`, never attached to and never resized, so it is safe
-/// against a live session a human is using. See `phux_client::record` for the
-/// prohibition that makes that true and the regression guard that keeps it.
-///
-/// Ctrl-C during a capture is a **success**: the user asked the recording to
-/// stop, and what was captured up to that point is written and exported. That
-/// matches `phux watch`, and it is the only behaviour that makes an
-/// open-ended `phux rec -o demo.gif` usable.
+/// Run `phux rec`. Capture subscribes with `ATTACH_RESOURCE` and never
+/// attaches or resizes, so it is safe on a live session. Ctrl-C is success: what
+/// was captured is written and exported.
 pub(crate) fn run_rec(args: RecArgs<'_>) -> ExitCode {
     let spec = match spec::plan(args.out, args.format) {
         Ok(spec) => spec,
@@ -149,13 +122,8 @@ pub(crate) fn run_rec(args: RecArgs<'_>) -> ExitCode {
     }
 }
 
-/// Export the cast the interactive `--rec` tee already wrote, and report it.
-///
-/// Called by the attach path once the TUI is down — raw mode restored, alt
-/// screen dropped — because it prints to stdout. The interactive surface has
-/// no `--fps` / `--idle-limit` / `--max-bytes` knobs, so the render uses
-/// [`RenderOptions::default`]; a user who wants to re-render at a different
-/// rate keeps the `.cast` and runs `phux rec --from`.
+/// Export the cast the interactive `--rec` tee wrote, once the TUI is down.
+/// Uses [`RenderOptions::default`]; re-render with `phux rec --from`.
 pub(crate) fn finalize(spec: &RecordSpec) {
     let (header, events) = match read_cast_file(&spec.cast_path) {
         Ok(pair) => pair,
@@ -168,10 +136,8 @@ pub(crate) fn finalize(spec: &RecordSpec) {
         }
     };
     if events.is_empty() {
-        // A session that produced no bytes at all: an attach that never got
-        // past the handshake, or a client that exited before the first frame.
-        // "wrote demo.gif (0 frames)" would read as success, and a one-frame
-        // animation of a blank grid is not worth writing.
+        // No bytes at all (an attach that never got past the handshake): report,
+        // don't write an empty animation.
         eprintln!("phux: --rec captured no output; nothing was exported");
         if spec.cast_is_temp {
             let _ = std::fs::remove_file(&spec.cast_path);
@@ -184,11 +150,8 @@ pub(crate) fn finalize(spec: &RecordSpec) {
     }
 }
 
-/// Capture a live pane into an in-memory timeline.
-///
-/// Errors are reported here rather than propagated because each one has its
-/// own actionable phrasing: a missing server names the socket, an unresolvable
-/// selector names the target.
+/// Capture a live pane into an in-memory timeline, reporting each failure
+/// with its own remedy.
 fn capture(
     target: Option<&str>,
     socket: Option<PathBuf>,
@@ -244,14 +207,9 @@ fn capture(
     })
 }
 
-/// Project a completed capture onto a cast header and timeline.
-///
-/// Zero dimensions are refused rather than written. `HeadlessRecording` seeds
-/// `cols`/`rows` from the pane's priming `TERMINAL_SNAPSHOT`, so a zero means
-/// that snapshot never landed — which also means the recording is missing the
-/// screen state it opens on. Writing it anyway produces a `.cast` no player
-/// can lay out and a 0x0 animation that exits 0 and looks like success, which
-/// is strictly worse than a named failure.
+/// Project a capture onto a cast header and timeline. Zero dimensions mean
+/// the priming snapshot never landed, so they are refused rather than written as
+/// an unplayable 0x0 cast.
 fn into_timeline(
     recording: phux_client::record::HeadlessRecording,
     idle_limit: Option<f64>,
@@ -345,14 +303,10 @@ struct RecOutcome {
     truncated: bool,
 }
 
-/// Produce `spec.final_path` from the timeline, and clean up the intermediate.
-///
-/// For [`OutputFormat::Cast`] the cast written upstream *is* the artifact, so
-/// this only measures it. Otherwise the animation is rendered into memory and
-/// written in one shot: `render_cast` consumes its sink by value and never
-/// hands it back, so a `BufWriter` around the file would flush in `Drop` and
-/// lose the error. The buffer is bounded by `max_bytes` — it is the artifact
-/// the user is about to write, not a film of decoded frames.
+/// Produce `spec.final_path` and clean up the intermediate. A cast is
+/// already the artifact; an animation is rendered into a buffer bounded by
+/// `max_bytes` and written once (a `BufWriter` sink would lose the error in
+/// `Drop`).
 fn export(
     spec: &RecordSpec,
     header: &CastHeader,
@@ -486,10 +440,8 @@ const fn cast_version(version: u8) -> CastVersion {
     }
 }
 
-/// Map the `--idle-limit` seconds value onto the clamp's `Option`.
-///
-/// `0` (and anything non-positive or non-finite) disables the clamp, which is
-/// how a user asks for the timeline exactly as it happened.
+/// Map `--idle-limit` onto the clamp: `0` or less (or non-finite) disables
+/// it.
 fn idle_limit(secs: f64) -> Option<f64> {
     (secs.is_finite() && secs > 0.0).then_some(secs)
 }

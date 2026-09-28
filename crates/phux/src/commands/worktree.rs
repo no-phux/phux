@@ -1,19 +1,10 @@
 //! `phux worktree` — git worktrees bound to sessions by name (ADR-0054).
 //!
-//! This is a composition layer, not a subsystem. It shells out to `git
-//! worktree` and then reuses the shipped `new` / `ls` / `kill` verbs. The
-//! server learns nothing about git and no wire message changes.
-//!
-//! The binding between a checkout and a session is a **pure function of the
-//! worktree path** — [`session_name_for`] — so it can never be stale. There is
-//! no mapping table to invalidate when git deletes a worktree behind our back.
-//!
-//! Every verb carries `--json` (phux-w7z2.34). `new` and `open` return the
-//! seed pane's `terminal_id` alongside the branch, path, and session, because
-//! a worktree-per-agent fan-out calls `new` first and needs somewhere to send
-//! the first prompt. That the server stores no mapping is what makes this
-//! cheap: the verb returns what it just created rather than reading back a
-//! table it would first have had to write.
+//! A composition layer: it shells out to `git worktree` and reuses `new` / `ls`
+//! / `kill`; the server learns nothing about git. The binding is a pure
+//! function of the worktree path ([`session_name_for`]), so it is never stale.
+//! Every verb carries `--json`; `new` and `open` return the seed pane's
+//! `terminal_id` so a fan-out script can send its first prompt.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -25,20 +16,13 @@ use crate::commands::{WorktreeAction, cli_runtime};
 
 use super::workspace::{WorktreeInfo, git_bytes, git_text, parse_worktrees};
 
-/// Fallback session name when a worktree basename sanitizes to nothing.
-///
-/// Reachable for a checkout in a directory named entirely out of reserved or
-/// non-ASCII characters. A predictable fallback beats a failure: the operator
-/// can always override with `-s NAME`.
+/// Fallback session name when a worktree basename sanitizes to nothing;
+/// `-s NAME` overrides.
 const FALLBACK_NAME: &str = "worktree";
 
-/// Derive the session name bound to a worktree path (ADR-0054).
-///
-/// Total and deterministic: the same path always yields the same name, on any
-/// client, without consulting server state. Characters outside
-/// `[A-Za-z0-9._-]` collapse to `-` because the selector grammar reserves `:`
-/// and treats a leading `@`/`#` as an id/tag sigil, and a bare `.` is the
-/// focused-pane selector.
+/// Derive the session name bound to a worktree path (ADR-0054):
+/// deterministic, with characters outside `[A-Za-z0-9._-]` collapsed to `-`
+/// because the selector grammar reserves `:`, leading `@`/`#`, and a bare `.`.
 #[must_use]
 pub(crate) fn session_name_for(path: &Path) -> String {
     let base = path
@@ -123,25 +107,8 @@ pub(crate) fn run_worktree(action: &WorktreeAction, socket: Option<PathBuf>) -> 
     }
 }
 
-// ---------------------------------------------------------------------------
-// the machine surface (phux-w7z2.34)
-// ---------------------------------------------------------------------------
-
-/// The `worktree new --json` / `worktree open --json` result document.
-///
-/// Pure, so the shape a fan-out script actually depends on is unit-testable
-/// with no git and no server behind it.
-///
-/// `terminal_id` is the reason this document exists. A worktree-per-agent
-/// fleet is the shape this whole surface is for, and the orchestrator that
-/// creates a worktree needs the seed pane to send its first prompt to. Before
-/// this it had two options: shell-parse the prose line, or issue a second
-/// `phux ls --json` and guess which pane it had just made — and the guess is
-/// wrong under precisely the concurrency that makes fan-out worth doing.
-///
-/// Nothing here is looked up. The session name is a pure function of the path
-/// (ADR-0054) and the pane id comes back from the create itself, so this verb
-/// returns what it just made rather than storing a mapping and reading it back.
+/// The `worktree new --json` / `open --json` document. `terminal_id` is the
+/// point: the orchestrator needs the seed pane without a racy `ls` lookup.
 fn binding_json(
     branch: Option<&str>,
     path: &Path,
@@ -157,11 +124,8 @@ fn binding_json(
     })
 }
 
-/// The `worktree remove --json` result document.
-///
-/// `killed_session` is the fact a teardown script cannot otherwise recover:
-/// `remove` kills a bound session before handing over to git, and whether it
-/// had one to kill decides whether the caller still has an agent to reap.
+/// The `worktree remove --json` document. `killed_session` tells a teardown
+/// script whether there was an agent to reap.
 fn removal_json(
     branch: Option<&str>,
     path: &Path,
@@ -178,33 +142,8 @@ fn removal_json(
     })
 }
 
-/// Print `doc` on stdout, or report the (unreachable) serialization failure
-/// on the `--json` contract line.
-fn print_json(doc: &serde_json::Value) -> ExitCode {
-    match serde_json::to_string_pretty(doc) {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => crate::commands::json_err::emit(
-            true,
-            &crate::commands::json_err::CliError::new(
-                crate::commands::json_err::codes::JSON_SERIALIZE,
-                format!("could not render worktree JSON: {err}"),
-                "this is a phux bug; run `phux doctor` and report it",
-            ),
-            1,
-        ),
-    }
-}
-
-/// Report a failure on whichever channel the verb's `--json` flag selects.
-///
-/// Under `--json`, one contract line on stderr with stdout left empty
-/// (ADR-0065 §4). Without it, the prose these verbs have always printed,
-/// byte-for-byte — the messages already carry their own remedy, so nothing is
-/// lost by not repeating it. Exit stays `1` either way: a formatting flag must
-/// not change what a failure means.
+/// Report a failure: under `--json` one contract line on stderr with stdout
+/// empty (ADR-0065 §4), otherwise the historical prose. Exit is `1` either way.
 fn fail_json(json: bool, code: &'static str, message: &str, remedy: &str) -> ExitCode {
     if json {
         return crate::commands::json_err::emit(
@@ -215,10 +154,6 @@ fn fail_json(json: bool, code: &'static str, message: &str, remedy: &str) -> Exi
     }
     fail(message)
 }
-
-// ---------------------------------------------------------------------------
-// list
-// ---------------------------------------------------------------------------
 
 fn run_list(path: &Path, json: bool, socket: Option<&Path>) -> ExitCode {
     let entries = match collect(path) {
@@ -274,7 +209,7 @@ fn print_list_json(entries: &[BoundWorktree]) -> ExitCode {
             })
         })
         .collect();
-    print_json(&serde_json::json!({ "schema_version": 1, "worktrees": rows }))
+    crate::output::json(&serde_json::json!({ "schema_version": 1, "worktrees": rows }))
 }
 
 fn print_list_human(entries: &[BoundWorktree]) {
@@ -294,16 +229,7 @@ fn print_list_human(entries: &[BoundWorktree]) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// new
-// ---------------------------------------------------------------------------
-
 /// The resolved arguments of `phux worktree new`.
-///
-/// Bundled rather than passed loose: the fields are one cohesive request, and
-/// threading them individually through the call chain makes every future
-/// addition an edit at three sites instead of one — as `--json` would have
-/// been (phux-w7z2.34).
 struct NewRequest<'a> {
     branch: &'a str,
     path: Option<&'a Path>,
@@ -340,10 +266,9 @@ fn run_new(req: NewRequest<'_>) -> ExitCode {
         }
     };
 
-    // Default sibling layout: `<repo-parent>/<repo-name>-<branch>`. Chosen
-    // over a nested `.worktrees/` dir because a worktree inside the repo is
-    // one `rm -rf` away from taking the checkout with it, and because tools
-    // that walk upward from the worktree would find the parent's `.git`.
+    // Default sibling layout `<repo-parent>/<repo-name>-<branch>`: a nested
+    // worktree is one `rm -rf` from the checkout, and upward walks would find the
+    // parent's `.git`.
     let dest = path.map_or_else(|| default_worktree_path(&root, branch), Path::to_path_buf);
 
     if dest.exists() {
@@ -421,14 +346,8 @@ fn run_new(req: NewRequest<'_>) -> ExitCode {
     })
 }
 
-/// Create the session bound to `dest`, attaching only when asked.
-///
-/// Headless-by-default is the whole point: `worktree new` is called from
-/// scripts, keybindings, and agents far more often than from a prompt, and a
-/// create verb that tries to seize the terminal fails in every one of those
-/// callers. `--attach` opts into the interactive behavior.
-/// Everything [`bind_session`] needs. A struct rather than seven positional
-/// arguments, for the same reason [`NewRequest`] is one.
+/// Everything [`bind_session`] needs. Headless by default; `--attach` opts
+/// into the interactive path.
 struct Binding<'a> {
     name: &'a str,
     cwd: &'a Path,
@@ -530,7 +449,7 @@ fn emit_binding(
         );
         return ExitCode::SUCCESS;
     }
-    print_json(&binding_json(branch, path, session, terminal_id))
+    crate::output::json(&binding_json(branch, path, session, terminal_id))
 }
 
 fn default_worktree_path(root: &Path, branch: &str) -> PathBuf {
@@ -566,10 +485,6 @@ fn branch_exists(root: &Path, branch: &str) -> bool {
     .is_ok()
 }
 
-// ---------------------------------------------------------------------------
-// open
-// ---------------------------------------------------------------------------
-
 fn run_open(
     target: &str,
     repo: &Path,
@@ -591,10 +506,7 @@ fn run_open(
             return super::attach::run_attach(Some(name), socket);
         }
         if json {
-            // Idempotent has to mean idempotent for machines too: the second
-            // `open` must return the same document the first one did, seed
-            // pane included, or every caller grows an "already running"
-            // branch that goes and finds the pane by hand.
+            // A repeated `open` must return the same document, seed pane included.
             let Some(terminal_id) = seed_terminal_of(&name, socket.as_deref()) else {
                 return fail_json(
                     true,
@@ -626,19 +538,11 @@ fn run_open(
     })
 }
 
-/// The seed pane of the live session `name`, or `None` when there is not
-/// exactly one to name.
-///
-/// Lowest id wins, and "lowest" is "oldest": ids are handed out in creation
-/// order, so for a session `worktree new` made this is the pane it seeded,
-/// whatever has been split off it since. A machine caller wants the same
-/// answer on every `open` far more than it wants the focused one, which moves.
-///
-/// Satellite panes are skipped rather than guessed at: their ids are not
-/// wire-local `u32`s, and a worktree session is by construction local anyway.
+/// The seed pane of live session `name`: the lowest (oldest) local id, so
+/// every `open` answers the same. Satellite panes are skipped.
 fn seed_terminal_of(name: &str, socket: Option<&Path>) -> Option<u32> {
     let socket_path = socket.map_or_else(default_socket_path, Path::to_path_buf);
-    let selector = crate::selector::parse(name).ok()?;
+    let selector = phux_client::selector::parse(name).ok()?;
     let rt = cli_runtime().ok()?;
     rt.block_on(async {
         let snapshot = phux_client::state::get_state(&socket_path)
@@ -651,10 +555,6 @@ fn seed_terminal_of(name: &str, socket: Option<&Path>) -> Option<u32> {
             .min()
     })
 }
-
-// ---------------------------------------------------------------------------
-// remove
-// ---------------------------------------------------------------------------
 
 fn run_remove(
     target: &str,
@@ -688,7 +588,7 @@ fn run_remove(
     match git_bytes(&root, &args) {
         Ok(_) => {
             if json {
-                return print_json(&removal_json(
+                return crate::output::json(&removal_json(
                     entry.branch.as_deref(),
                     &entry.path,
                     &name,
@@ -714,12 +614,8 @@ fn run_remove(
     }
 }
 
-/// The removals git will refuse later no matter what, refused FIRST.
-///
-/// Order is the whole point: every check here runs before the session kill,
-/// so a command that ends up refusing to do its job has not destroyed a
-/// session on the way to refusing. Asking git for the same verdict up front
-/// keeps the failure path free of side effects.
+/// Refusals git would issue anyway, checked BEFORE the session kill so a
+/// refused remove has no side effects.
 fn refuse_doomed_removal(entry: &WorktreeInfo, force: bool) -> Option<Refusal> {
     if entry.current {
         return Some(Refusal::workspace(
@@ -754,12 +650,9 @@ fn refuse_doomed_removal(entry: &WorktreeInfo, force: bool) -> Option<Refusal> {
     None
 }
 
-/// Kill the session bound to this worktree, if one is live, and wait for it
-/// to actually be gone. Returns whether there was one to kill.
-///
-/// This happens BEFORE git, not after: git refuses to remove a worktree whose
-/// files are held open, and a shell sitting in that cwd holds it open. The
-/// reverse order is the failure users actually hit.
+/// Kill the session bound to this worktree and wait until it is gone;
+/// returns whether there was one. Runs before git, which refuses to remove a
+/// worktree a shell still holds open.
 fn kill_bound_session(
     name: &str,
     path: &Path,
@@ -789,11 +682,8 @@ fn kill_bound_session(
         ));
     }
 
-    // `kill` returns as soon as the server accepts it, not once the panes are
-    // gone — and a shell that still holds this cwd is exactly what makes `git
-    // worktree remove` fail. Wait for the session to actually leave the
-    // snapshot before handing over to git, so the ordering this command
-    // promises is real and not just nominal.
+    // `kill` returns once accepted, not once the panes are gone; wait so git
+    // does not find the cwd still held.
     if !wait_for_session_gone(name, socket) {
         return Err(Refusal::workspace(
             format!(
@@ -809,10 +699,6 @@ fn kill_bound_session(
     Ok(true)
 }
 
-// ---------------------------------------------------------------------------
-// shared
-// ---------------------------------------------------------------------------
-
 /// Every worktree of the repo containing `path`.
 fn collect(path: &Path) -> Result<Vec<WorktreeInfo>, String> {
     let root = repo_root(path)?;
@@ -827,11 +713,8 @@ fn repo_root(path: &Path) -> Result<PathBuf, String> {
         .map_err(|err| format!("could not canonicalize git worktree {}: {err}", root.trim()))
 }
 
-/// Resolve a `BRANCH | PATH | SESSION` argument to exactly one worktree.
-///
-/// Matching is tried most-specific first — path, then branch, then derived
-/// session name — so an unambiguous argument never needs a flag to
-/// disambiguate it.
+/// Resolve a `BRANCH | PATH | SESSION` argument to exactly one worktree,
+/// trying path, then branch, then derived session name.
 fn resolve_target(target: &str, repo: &Path) -> Result<(PathBuf, WorktreeInfo), Refusal> {
     // The two ways this fails are different failures and a machine caller
     // must be able to tell them apart: "you are not in a git repository" is
@@ -873,11 +756,8 @@ fn resolve_target(target: &str, repo: &Path) -> Result<(PathBuf, WorktreeInfo), 
     )
 }
 
-/// A failure or refusal, carrying the stable code the `--json` contract line
-/// needs alongside the prose the human path prints.
-///
-/// Kept together deliberately: the two output channels describing the same
-/// event must never be able to disagree about which event it was.
+/// A failure with its `--json` code and its prose, kept together so the two
+/// channels cannot disagree.
 struct Refusal {
     code: &'static str,
     message: String,
@@ -902,16 +782,9 @@ fn report(json: bool, err: &Refusal) -> ExitCode {
     fail_json(json, err.code, &err.message, &err.remedy)
 }
 
-/// Describe what makes `path` dirty, or `None` when it is clean.
-///
-/// Counts modified and untracked entries separately because they are
-/// different mistakes: modified files are work about to be lost, untracked
-/// ones are usually build output the operator does not care about.
-///
-/// A worktree git cannot stat (already deleted, permissions) reads as clean:
-/// `git worktree remove` is then the right thing to run and will produce the
-/// authoritative error itself. This function only ever *adds* a refusal, so
-/// failing open here cannot delete anything git would have protected.
+/// Describe what makes `path` dirty (modified and untracked counted
+/// separately), or `None` when clean. An unstattable worktree reads as clean:
+/// this only ever adds a refusal, and git reports the real error.
 fn dirty_summary(path: &Path) -> Option<String> {
     let output = git_bytes(path, &["status", "--porcelain"]).ok()?;
     let text = String::from_utf8(output).ok()?;
@@ -939,20 +812,14 @@ fn summarize_porcelain(text: &str) -> Option<String> {
 }
 
 /// How long `remove` waits for a killed session to leave the snapshot.
-///
-/// Generous enough for a shell to run its exit traps, short enough that a
-/// wedged pane reports rather than hangs a script.
 const WAIT_FOR_KILL_MS: u64 = 3000;
 
 /// Poll interval while waiting for teardown. Small relative to the budget so
 /// the common case (already gone) costs one round trip.
 const WAIT_POLL_MS: u64 = 50;
 
-/// Block until no session named `name` is on the server, or the budget runs
-/// out. Returns whether the session is gone.
-///
-/// A server that has become unreachable counts as gone: there is no session
-/// holding the worktree open if there is no server.
+/// Block until no session named `name` exists or the budget runs out. An
+/// unreachable server counts as gone.
 fn wait_for_session_gone(name: &str, socket: Option<&Path>) -> bool {
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(WAIT_FOR_KILL_MS);
     loop {
@@ -968,18 +835,13 @@ fn wait_for_session_gone(name: &str, socket: Option<&Path>) -> bool {
     }
 }
 
-/// Session names currently on the server, or `None` when none is running.
-///
-/// `None` is deliberately distinct from an empty set: "no server" and "a
-/// server with no sessions" are different facts, and the listing shows them
-/// differently (`?` versus `-`).
+/// Session names on the server, or `None` when no server runs (shown as `?`
+/// versus `-`).
 fn live_session_names(socket: Option<&Path>) -> Option<Vec<String>> {
     let socket_path = socket.map_or_else(default_socket_path, Path::to_path_buf);
     let rt = cli_runtime().ok()?;
-    // `into_snapshot_ignoring_degradation`: `sessions` never aggregates across
-    // a federation (`handle_get_state_federated` drops each satellite's list
-    // — the `u32` ids would collide with the hub's), so an unreachable
-    // satellite cannot change the set of names this returns.
+    // `sessions` never aggregates across a federation, so a degraded view is
+    // still exact here.
     let snapshot = rt
         .block_on(phux_client::state::get_state(&socket_path))
         .ok()?
@@ -1068,13 +930,8 @@ mod tests {
         );
     }
 
-    /// phux-w7z2.34, the reason the document exists: `worktree new --json`
-    /// hands back the seed pane's `terminal_id`, so the first call in a
-    /// fan-out script does not have to go find the pane it just created.
-    ///
-    /// The full key set is pinned because this is a frozen surface
-    /// (ADR-0071): a consumer reads these names, so losing or renaming one is
-    /// a breaking change, not a refactor.
+    /// `worktree new --json` returns the seed pane's `terminal_id`. The full key
+    /// set is pinned: it is a frozen surface (ADR-0071).
     #[test]
     fn the_new_document_carries_the_seed_terminal_id() {
         let doc = binding_json(
@@ -1111,10 +968,8 @@ mod tests {
         );
     }
 
-    /// The session in the document is the one ADR-0054 derives from the path,
-    /// so a caller can recompute it and a caller that does not have to trust
-    /// what it was handed. `-s NAME` is the only thing that breaks the tie,
-    /// and then the document reports the override, not the derivation.
+    /// The document's session is the ADR-0054 derivation, or the `-s`
+    /// override when given.
     #[test]
     fn the_document_reports_the_session_that_was_actually_bound() {
         let path = Path::new("/src/phux-feat-auth");

@@ -1,28 +1,13 @@
-//! Server-side JSON shape of the `phux.agent/v1` L3 record (ADR-0040,
-//! `docs/spec/L3.md` §3.7).
-//!
-//! **This is a deliberate duplicate** of `phux_client::agent_meta::AgentRecord`.
-//! The server MUST NOT depend on `phux-client`, so the shape is restated
-//! here — and pinned by a golden byte-equality test, because the coupling is
-//! not merely "the client can parse it".
-//!
-//! [`crate::state::ServerState::metadata_set`] suppresses a broadcast when
-//! the new bytes equal the stored bytes. That dedup is what makes an agent
-//! that stays `working` for ten minutes cost ZERO metadata writes and ZERO
-//! events. It compares raw bytes. So a field-order or `skip_serializing_if`
-//! drift against the client's encoder would still *parse* fine, while
-//! silently turning every detector tick into a fan-out to every L3
-//! subscriber. Hence: exact field order (`name`, `kind`, `state`,
-//! `attention`, `session`) and the exact skip set.
+//! The server's copy of the `phux.agent/v1` record shape (ADR-0040,
+//! `docs/spec/L3.md` §3.7), duplicated from `phux-client` (no dependency).
+//! `metadata_set` dedups on byte equality, so field order (`name`, `kind`,
+//! `state`, `attention`, `session`) and the skip set are pinned by a golden
+//! test.
 
 use serde::{Deserialize, Serialize};
 
-/// The `phux.agent/v1` record, in the server's own vocabulary.
-///
-/// `state` is a raw open-enum word rather than a typed enum: the server is
-/// a *writer* here, and the spec's open-enum vocabulary is the client's to
-/// interpret. It is always emitted (no skip) to match the client's
-/// `#[serde(default)]`-but-not-skipped `state` field.
+/// The `phux.agent/v1` record. `state` is an open-vocabulary word, always
+/// emitted.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct AgentRecordJson {
     /// Human-facing agent name. REQUIRED and non-empty per the spec.
@@ -33,11 +18,8 @@ pub(crate) struct AgentRecordJson {
     /// Lifecycle word: `unknown` | `idle` | `working` | `blocked` | `done`.
     #[serde(default)]
     pub(crate) state: String,
-    /// Attention priority. The detector NEVER sets this: §3.7 already says
-    /// an absent `attention` is derived from `state`, and the client's
-    /// `AgentRecord::effective_attention` does exactly that. Carrying it
-    /// would be more bytes and one more edge to churn. It is preserved
-    /// verbatim when a human declared it.
+    /// Never set by the detector (derived from `state` when absent);
+    /// preserved when a human declared it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) attention: Option<String>,
     /// Free-form association label (fleet / job name).
@@ -46,9 +28,7 @@ pub(crate) struct AgentRecordJson {
 }
 
 impl AgentRecordJson {
-    /// Decode a stored record. `None` for bytes that are not a JSON object
-    /// — the spec's "no declared agent" reading — so a malformed write can
-    /// never wedge the arbiter.
+    /// Decode a stored record; `None` for anything not a JSON object.
     pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
         let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
         if !value.is_object() {
@@ -68,9 +48,7 @@ impl AgentRecordJson {
 mod tests {
     use super::AgentRecordJson;
 
-    /// GOLDEN. The exact bytes the detector writes. If this changes, the
-    /// `metadata_set` equal-bytes dedup stops suppressing steady-state
-    /// rewrites and every tick becomes a broadcast. See the module docs.
+    /// GOLDEN: the exact bytes the detector writes (dedup depends on them).
     #[test]
     fn golden_encoding_is_byte_exact() {
         let record = AgentRecordJson {

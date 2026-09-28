@@ -1,31 +1,9 @@
-//! Synthesize a `TERMINAL_SNAPSHOT` `vt_replay_bytes` blob from a
-//! `libghostty_vt::Terminal`.
+//! Synthesize `TERMINAL_SNAPSHOT` replay bytes from a `libghostty_vt::Terminal`.
 //!
-//! Under [ADR-0013] the wire carries VT bytes, not structured grids.
-//! When a client attaches, the server owes it a `TERMINAL_SNAPSHOT`
-//! (SPEC §8.4) whose body is a self-contained VT byte sequence that —
-//! when `vt_write`-en into a fresh `Terminal` of the matching `cols × rows`
-//! — reproduces the current grid. This module owns that synthesis.
-//!
-//! The walk mirrors `research/2026-05-25-libghostty-renderstate.md` §7:
-//!
-//! 1. Reset (`DECSTR + ED 2 + CUP home`).
-//! 2. For each visible row, emit SGR deltas as cell styles change and
-//!    write the row's graphemes. Wide-cell tails (empty grapheme on a
-//!    `at_wide_tail` cell) are skipped — the base grapheme advanced the
-//!    cursor across both cells. Wrapped rows omit the trailing CRLF so
-//!    libghostty's parser preserves the soft wrap.
-//! 3. Re-establish cursor position (`CUP`).
-//! 4. Re-establish cursor visibility (`DECSET 25` / `DECRST 25`) and
-//!    visual style (`DECSCUSR`).
-//! 5. Re-establish a small set of mode bits queried from the canonical
-//!    `GhosttyTerminal` via [`libghostty_vt::Terminal::mode`].
-//!
-//! Out-of-band registries (OSC 8 hyperlinks, kitty graphics, etc.) are
-//! deferred — they need their own re-emission strategy and don't appear
-//! in `RenderState` directly.
-//!
-//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/docs/adr/0013-libghostty-bytes-on-wire.md
+//! The replay (ADR-0013, SPEC §8.4) is a self-contained VT sequence that
+//! reproduces the grid on a fresh terminal of the same size. Order: reset, rows with SGR
+//! deltas (wide-cell tails skipped, soft wraps preserved), then cursor and
+//! mode bits. OSC 8 hyperlinks are not re-emitted.
 
 use std::io::Write as _;
 
@@ -44,9 +22,7 @@ use phux_protocol::{
 use libghostty_vt::{
     RenderState, Terminal as GhosttyTerminal,
     fmt::{Format, Formatter, FormatterOptions},
-    render::{
-        CellIteration, CellIterator, CursorVisualStyle, Dirty, RowIteration, RowIterator, Snapshot,
-    },
+    render::{CellIteration, CellIterator, CursorVisualStyle, RowIteration, RowIterator, Snapshot},
     screen::{CellSemanticContent, CellWide, GridRef},
     selection::Selection,
     style::{RgbColor, Style, StyleColor},
@@ -55,30 +31,15 @@ use libghostty_vt::{
 
 use super::reference::{ConsumerReference, ReferenceCursorMode};
 
-/// "All retained history" sentinel for the scrollback request.
-///
-/// A `Some(0)` scrollback request to
-/// [`SnapshotSynthesizer::screen_state_with_scrollback`] means "all
-/// available history rows" — the bare `--scrollback` flag with no explicit
-/// count (`phux-o1v`). A request of literally zero rows is meaningless, so
-/// this reuse is unambiguous.
+/// `Some(0)` scrollback request sentinel: "all retained history".
 pub const SCROLLBACK_ALL: u32 = 0;
 
-/// Per-read byte budget for a `GET_SCREEN` rendered capture (D9, review
-/// item 2(b)): HTML/base64 inflate the source bytes, `GET_SCREEN` replies
-/// are uncompressed, and the render runs synchronously on the
-/// single-threaded runtime, so an unbounded capture is both a memory and
-/// a latency hazard. Measured via [`libghostty_vt::fmt::Formatter::format_len`]
-/// *before* allocating; exceeding it refuses the whole request with
-/// `RESOURCE_EXHAUSTED` rather than silently truncating a capture the
-/// caller would not know was cut.
+/// Per-read byte budget for a `GET_SCREEN` rendered capture. Measured before
+/// allocating; exceeding it refuses the request rather than truncating.
 const RENDER_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 
-/// One history read: the rows of the requested window, their soft-wrap
-/// bits, and whether older retained rows fell outside it (ADR-0077 §§2-3).
-///
-/// Internal to the projection — the three pieces are one read and travel
-/// together, rather than as a tuple nobody can keep straight.
+/// One history read: rows, their soft-wrap bits, and whether older retained
+/// rows fell outside the window (ADR-0077 §§2-3).
 #[derive(Debug, Default)]
 struct ScrollbackWindow {
     /// History rows in the window, oldest first, right-trimmed.
@@ -89,11 +50,7 @@ struct ScrollbackWindow {
     truncated: bool,
 }
 
-/// Inline grapheme-cluster buffer size for the scrollback walk.
-///
-/// Covers the overwhelming-common case (a base codepoint plus a few
-/// combining marks) without a heap allocation per cell; deeper clusters
-/// fall back to a heap retry on `OutOfSpace`.
+/// Inline grapheme-cluster buffer; deeper clusters retry on the heap.
 pub const GRAPHEME_INLINE: usize = 8;
 
 /// Errors that can occur while synthesising a snapshot.
@@ -102,9 +59,7 @@ pub enum SynthesisError {
     /// Surfaced from libghostty-vt.
     #[error("libghostty: {0}")]
     Ghostty(#[from] libghostty_vt::Error),
-    /// A `write!` into the snapshot buffer failed (the buffer is a
-    /// `Vec<u8>`, so this is structurally unreachable; we keep the
-    /// variant to satisfy the error-propagation contract).
+    /// A `write!` into the snapshot buffer failed.
     #[error("snapshot buffer write failed")]
     Buffer,
     /// Kitty graphics replay failed while projecting libghostty image state.
@@ -116,19 +71,12 @@ pub enum SynthesisError {
     /// Host allocation failed while reserving bounded synthesis storage.
     #[error("snapshot allocation failed")]
     OutOfMemory,
-    /// The canonical terminal is on loan to a snapshot capture, so there is
-    /// nothing to project right now. Transient and caller-retryable: the cut
-    /// returns the terminal, and the resync that follows repaints whatever
-    /// this read skipped.
+    /// The canonical terminal is on loan to a snapshot capture. Transient;
+    /// the resync after the capture repaints whatever this read skipped.
     #[error("canonical terminal is on loan to a snapshot capture")]
     TerminalUnavailable,
-    /// A requested `GET_SCREEN` rendered capture (`format != 0`) would
-    /// exceed the server's per-read byte budget, measured via the
-    /// engine Formatter's own `format_len` *before* any allocation (D9,
-    /// review item 2(b)). Distinguished from every other variant here:
-    /// callers must surface this as a typed command refusal
-    /// (`RESOURCE_EXHAUSTED`), not fall back to an empty/best-effort
-    /// reply the way an engine failure does.
+    /// A rendered `GET_SCREEN` capture would exceed the per-read budget.
+    /// Callers must surface this as `RESOURCE_EXHAUSTED`, not an empty reply.
     #[error("rendered capture would be {required} bytes, over the {budget}-byte budget")]
     RenderBudgetExceeded {
         /// The Formatter's own measured byte count for the requested
@@ -190,40 +138,23 @@ impl std::io::Write for BoundedSnapshotBytes {
     }
 }
 
-/// Pooled per-pane snapshot scaffolding.
+/// Pooled per-pane snapshot scaffolding over a [`RenderPool`].
 ///
-/// Owns a [`RenderPool`] — the libghostty render trio ([`RenderState`],
-/// [`RowIterator`], [`CellIterator`]) plus the geometry-change rebuild — so
-/// the synthesis path reuses them across attaches instead of reallocating
-/// each time. The free [`synthesize`] function is the one-shot wrapper.
-///
-/// The pool owns allocation and geometry only; every dirty-bit decision stays
-/// here, because this type alone holds three *different* policies
-/// ([`Self::mark_synced`] clears both levels, [`Self::synthesize_incremental`]
-/// deliberately clears neither, and the per-tick reference diff bypasses the
-/// bits entirely). See ADR-0086.
+/// The free [`synthesize`] function is the one-shot wrapper. Per-tick diffs compare
+/// rendered rows against per-consumer references rather than libghostty's
+/// shared dirty bits (ADR-0086).
 #[derive(Debug)]
 pub struct SnapshotSynthesizer<'alloc> {
     /// Pooled render state + row/cell iterators, rebuilt on a geometry
     /// change (`phux-5pyx`; the rebuild now lives in [`RenderPool::begin`]).
     pool: RenderPool<'alloc>,
-    /// phux-ahk.2: per-tick rendered row bodies, shared across all
-    /// consumers of this pane. [`Self::prepare_tick`] renders every row
-    /// ONCE into these buffers; each consumer's [`Self::diff_consumer`]
-    /// then compares them against its own [`ConsumerReference`]. Reused
-    /// across ticks (each row buffer is `clear()`-ed and refilled, so
-    /// steady state allocates nothing). Replaces the prior model where
-    /// every consumer re-rendered the whole grid (N full renders + 5N
-    /// mode-FFI calls for N consumers on one shared pane).
+    /// Per-tick rendered row bodies, rendered once by [`Self::prepare_tick`]
+    /// and shared by every consumer's diff.
     tick_rows: Vec<Vec<u8>>,
-    /// phux-ahk.2: the cursor/mode epilogue bytes for the current tick,
-    /// computed once in [`Self::prepare_tick`] (consumer-independent) and
-    /// appended by each consumer's non-empty diff.
+    /// Cursor/mode epilogue for the current tick (consumer-independent).
     tick_epilogue: Vec<u8>,
-    /// phux-ahk.2: the screen-buffer select bytes for the current tick
-    /// (enter/leave alt screen), computed once; emitted by a consumer's
-    /// diff only when that consumer's reference disagrees with the live
-    /// alt-screen state.
+    /// Alt-screen select bytes for the current tick; emitted only to a
+    /// consumer whose reference disagrees with the live screen.
     tick_screen_toggle: Vec<u8>,
 }
 
@@ -238,12 +169,8 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         })
     }
 
-    /// Walk `terminal`'s viewport and emit a VT byte sequence that
-    /// reproduces it on a fresh Terminal.
-    ///
-    /// Returns the synthesised bytes plus the queried `(cols, rows)`
-    /// dimensions, since `TERMINAL_SNAPSHOT` carries them alongside the
-    /// replay body (SPEC §8.4).
+    /// Emit a VT sequence that reproduces `terminal`'s viewport on a fresh
+    /// terminal, plus the queried `(cols, rows)`.
     #[allow(
         clippy::unused_self,
         reason = "a full snapshot is intentionally stateless — it builds a fresh \
@@ -262,9 +189,8 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         terminal: &GhosttyTerminal<'alloc, '_>,
         max_bytes: usize,
     ) -> Result<SnapshotBytes, SynthesisError> {
-        // phux-uow0: a full snapshot must observe the LIVE grid in its
-        // entirety, so it uses a FRESH `RenderState` + iterators rather than
-        // the synthesizer's reused state.
+        // A full snapshot must see the whole live grid, so it uses a fresh
+        // render state rather than the pooled one.
         let (mut render_state, mut rows, mut cells) = fresh_render_trio()?;
 
         let snapshot = render_state.update(terminal)?;
@@ -289,24 +215,13 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         })
     }
 
-    /// Like [`Self::synthesize`], but additionally primes the client's
-    /// scrollback with up to `scrollback` retained history rows (`phux-9q5f`).
+    /// Like [`Self::synthesize`], but also primes the client's scrollback with
+    /// up to `scrollback` history rows (`None` viewport only, [`SCROLLBACK_ALL`]
+    /// everything, `Some(n)` the most recent `n`).
     ///
-    /// `scrollback` follows the [`Self::screen_state_with_scrollback`]
-    /// convention: `None` ⇒ viewport only (identical to [`Self::synthesize`]);
-    /// [`SCROLLBACK_ALL`] (`0`) ⇒ every retained row; `Some(n)` ⇒ the most
-    /// recent `n` rows.
-    ///
-    /// The history rows are emitted into [`SnapshotBytes::scrollback`] as the
-    /// pane's plain text, one row per line, then a `CSI <k> S` (SU) scrolls
-    /// them off the top into the client's scrollback so the viewport replay
-    /// (`bytes`, which opens with `ED 2`) lands on a clean screen without
-    /// erasing the most-recent history rows. The client applies `scrollback`
-    /// then `bytes`. History styling is not reproduced in v1 (plain text only,
-    /// tracked as a follow-up); the live viewport keeps full SGR fidelity.
-    ///
-    /// Alt-screen panes retain no history (`scrollback_rows() == 0`), so this
-    /// degrades to a viewport-only snapshot there automatically.
+    /// History goes into [`SnapshotBytes::scrollback`], followed by an `SU`
+    /// that scrolls it off the top so the viewport replay's `ED 2` cannot
+    /// erase it. The client applies `scrollback` then `bytes`.
     pub fn synthesize_with_scrollback(
         &self,
         terminal: &GhosttyTerminal<'alloc, '_>,
@@ -338,14 +253,10 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         Ok(snap)
     }
 
-    /// Reproduce history rows `[start, total)` as a styled VT byte sequence:
-    /// per-cell SGR deltas (via [`write_reset_and_sgr_unresolved`]) plus
-    /// graphemes, rows joined by CRLF, terminated by an SGR reset and a
-    /// `min(rows, history)` `SU` so the still-visible remainder scrolls off the
-    /// top into the client's scrollback (leaving a blank viewport for the
-    /// `bytes` replay). Empty when the pane has no history (alt-screen panes
-    /// retain none). Side-effect-free: reads via `grid_ref(Point::History)`
-    /// which neither scrolls nor mutates the canonical Terminal (phux-q0x7).
+    /// History rows `[start, total)` as styled VT, rows joined by CRLF, then
+    /// an SGR reset and an `SU` that scrolls them into the client's
+    /// scrollback. Reads via `Point::History`, which never mutates the
+    /// terminal.
     fn scrollback_styled_bytes_bounded(
         terminal: &GhosttyTerminal<'alloc, '_>,
         want: u32,
@@ -378,15 +289,8 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         Ok(out.into_inner())
     }
 
-    /// Walk `terminal`'s viewport into a structured [`ScreenState`] — the
-    /// agent surface's read shape (ADR-0022 §2, `phux-oki`).
-    ///
-    /// Unlike [`Self::synthesize`], this does not emit VT bytes; it
-    /// projects the grid to plain text rows + cursor, exactly what a
-    /// reasoning agent (rather than a rendering terminal) wants. It runs
-    /// on the server's own `Terminal`, so the read is side-effect-free —
-    /// no attach, no resize. `pane` is the wire-local id stamped into the
-    /// result for the caller.
+    /// Project the viewport into a structured [`ScreenState`] (ADR-0022 §2)
+    /// for agents: text rows and cursor, no VT bytes, no side effects.
     pub fn screen_state(
         &self,
         terminal: &GhosttyTerminal<'alloc, '_>,
@@ -395,32 +299,13 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         self.screen_state_with_scrollback(terminal, pane, None, false)
     }
 
-    /// Like [`Self::screen_state`], but additionally projects up to
-    /// `scrollback` rows of history *above* the viewport into the
-    /// [`ScreenState::scrollback`] field (`phux-o1v`).
+    /// Like [`Self::screen_state`], plus up to `scrollback` history rows
+    /// (`None`, [`SCROLLBACK_ALL`], or `Some(n)` as in
+    /// [`Self::synthesize_with_scrollback`]). History is read via
+    /// `Point::History`, which neither scrolls nor mutates the terminal.
     ///
-    /// `scrollback` semantics:
-    /// - `None` — viewport only; `scrollback` is left empty (identical to
-    ///   [`Self::screen_state`]).
-    /// - `Some(0)` (the [`SCROLLBACK_ALL`] sentinel) — every retained
-    ///   history row (the bare `--scrollback` flag).
-    /// - `Some(n)` — the most-recent `n` history rows (those nearest the
-    ///   viewport); fewer if less history exists.
-    ///
-    /// History is read cell-by-cell via `Terminal::grid_ref` with
-    /// `Point::History` coordinates. That path is side-effect-free: it
-    /// neither scrolls the viewport nor mutates the canonical Terminal,
-    /// so the read stays safe to poll against a live pane. The viewport
-    /// walk is unchanged from [`Self::screen_state`] and still uses the
-    /// pooled render iterators.
-    ///
-    /// When `cells` is `true`, the viewport walk additionally collects a
-    /// sparse [`ScreenState::cells`] vec: per-cell OSC-133 semantic marks
-    /// (via `Cell::semantic_content`) and styles (via `CellIteration::style`
-    /// plus the resolved foreground/background). Only cells with a
-    /// non-default style or a semantic mark are emitted, in row-major order,
-    /// skipping wide-cell tails — see the private `collect_cell`. When `false`,
-    /// `cells` is left `None` and the walk pays nothing (`phux-8yl`).
+    /// With `cells`, also collects a sparse [`ScreenState::cells`] of
+    /// non-default-style or OSC-133-marked cells (see `collect_cell`).
     #[allow(
         clippy::unused_self,
         reason = "intentionally stateless — reads through a fresh RenderState \
@@ -435,10 +320,8 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         scrollback: Option<u32>,
         cells: bool,
     ) -> Result<ScreenState, SynthesisError> {
-        // Read history first, before borrowing `render_state` for the
-        // viewport snapshot: `grid_ref` borrows `terminal` immutably and
-        // its references are invalidated by the next terminal operation,
-        // so we read each row's text eagerly into owned `String`s here.
+        // Read history before borrowing the render state: `grid_ref`
+        // references die at the next terminal operation, so copy eagerly.
         let history = match scrollback {
             None => ScrollbackWindow::default(),
             Some(want) => Self::scrollback_window(terminal, want)?,
@@ -463,42 +346,22 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
             truncated: history.truncated,
             truncated_reason: history.truncated.then(|| TRUNCATED_ROW_WINDOW.to_owned()),
             title,
-            // Populated by the caller via `Self::render_screen` when the
-            // request's `format` byte asks for it (D9); this projection
-            // never renders on its own.
+            // Filled by `Self::render_screen` when the request asks for it.
             rendered: None,
             rendered_error: None,
         })
     }
 
-    /// Render the pane through libghostty-vt's own Formatter for
-    /// `GET_SCREEN`'s additive `rendered` field (D9, fallback rung three:
-    /// below typed commands and semantic streams, above synthetic input —
-    /// `docs/consumers/agents.md`). Never reimplemented: CONTRIBUTING
-    /// forbids a homegrown extraction path, so this calls the engine's
-    /// Formatter + Selection APIs only.
+    /// Render through libghostty's Formatter for `GET_SCREEN`'s `rendered`
+    /// field. `format`'s low bits select the output (`0` none, `1` HTML,
+    /// `2` VT; the caller has already refused others) and the high bit
+    /// joins soft-wrapped rows.
     ///
-    /// `format` is `GET_SCREEN`'s wire byte, decomposed by
-    /// `phux_protocol::wire::frame::{GET_SCREEN_FORMAT_SELECTOR_MASK,
-    /// GET_SCREEN_FORMAT_UNWRAP}`: the low bits select the rendering (`0`
-    /// requests none, `Ok(None)`;
-    /// `1` HTML with inline styles; `2` VT escape sequences — the caller,
-    /// `handle_get_screen`, has already refused any other selector with
-    /// `INVALID_COMMAND` before this runs) and the high bit asks the
-    /// Formatter to join soft-wrapped rows (`--unwrap`).
-    ///
-    /// A [`Selection`] is always built explicitly — the Formatter emits
-    /// the *whole* screen, scrollback included, when no selection is
-    /// given, which would silently ignore `scrollback` and blow the
-    /// bounded budget this read promises. `scrollback` follows
-    /// [`Self::screen_state_with_scrollback`]'s convention, clamped to
-    /// [`ROW_WINDOW_MAX`] rows regardless of what was asked.
-    ///
-    /// The Formatter's own [`Formatter::format_len`] measures the reply
-    /// before any allocation; a capture over the per-read byte budget
-    /// (`RENDER_BUDGET_BYTES`) is refused with
-    /// [`SynthesisError::RenderBudgetExceeded`] rather than silently
-    /// truncated.
+    /// A [`Selection`] is always built: without one the Formatter emits the
+    /// whole scrollback, ignoring `scrollback` and the budget. History is
+    /// clamped to [`ROW_WINDOW_MAX`] rows, and a capture over
+    /// `RENDER_BUDGET_BYTES` is refused with
+    /// [`SynthesisError::RenderBudgetExceeded`] rather than truncated.
     #[allow(
         clippy::unused_self,
         reason = "kept as a method on SnapshotSynthesizer for API symmetry \
@@ -514,11 +377,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         Self::render_screen_with_budget(terminal, scrollback, format, RENDER_BUDGET_BYTES)
     }
 
-    /// [`Self::render_screen`]'s body, parameterized on the byte budget so
-    /// tests can trigger [`SynthesisError::RenderBudgetExceeded`]
-    /// deterministically with trivial content instead of constructing a
-    /// multi-megabyte capture (review item 5). The public method always
-    /// passes `RENDER_BUDGET_BYTES`.
+    /// [`Self::render_screen`] with an explicit budget (a test seam).
     fn render_screen_with_budget(
         terminal: &GhosttyTerminal<'alloc, '_>,
         scrollback: Option<u32>,
@@ -563,12 +422,9 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         }))
     }
 
-    /// The explicit selection [`Self::render_screen`] always passes: the
-    /// viewport's bottom-right corner as the end, and a start that reaches
-    /// into history exactly as far as `scrollback` asks (same convention as
-    /// [`Self::screen_state_with_scrollback`]). Falls back to the
-    /// viewport's top-left corner when no history is requested or none is
-    /// retained.
+    /// The selection [`Self::render_screen`] passes: from as far into history
+    /// as `scrollback` asks (else the viewport's top-left) to the viewport's
+    /// bottom-right.
     fn render_selection<'t>(
         terminal: &'t GhosttyTerminal<'alloc, '_>,
         scrollback: Option<u32>,
@@ -583,17 +439,9 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         Ok(Selection::new(start, end, false))
     }
 
-    /// The start endpoint for [`Self::render_selection`].
-    ///
-    /// Bounds the history window to [`ROW_WINDOW_MAX`] rows regardless of
-    /// what `scrollback` asks for (D9, review item 2(a)): `Some(0)` — "all
-    /// retained history" — would otherwise hand the Formatter the entire
-    /// scrollback ring (bounded elsewhere at up to 64 MiB of history
-    /// bytes), synchronously, on the single-threaded runtime. This is the
-    /// same cap [`phux_core::screen::row_window`] applies to the plain
-    /// `lines`/`scrollback` projection client-side; a caller that wants
-    /// more of a capture than that retries narrower is out of luck either
-    /// way, since neither path was ever meant to hand back unbounded text.
+    /// The start endpoint for [`Self::render_selection`], clamped to
+    /// [`ROW_WINDOW_MAX`] history rows so `Some(0)` cannot hand the
+    /// Formatter the whole scrollback on the single-threaded runtime.
     fn render_selection_start<'t>(
         terminal: &'t GhosttyTerminal<'alloc, '_>,
         scrollback: Option<u32>,
@@ -618,22 +466,11 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         }))?)
     }
 
-    /// Walk the live viewport into the plain-text + cursor + optional
-    /// per-cell projection [`Self::screen_state_with_scrollback`] reports.
+    /// Walk the live viewport into the projection
+    /// [`Self::screen_state_with_scrollback`] reports.
     ///
-    /// Fresh render state + iterators per call, NOT the pooled
-    /// `self.pool`. The pooled state
-    /// can serve stale rows: after a `RESIZE_TERMINAL` raced an
-    /// attach/resync snapshot (which walks the grid through its own
-    /// fresh state), the pooled cache reported the new dims yet kept
-    /// returning the pre-write (empty) row bodies for every later
-    /// update — a `GET_SCREEN` poller then never saw content that a
-    /// fresh state read back correctly microseconds later (the
-    /// `route_input_no_resize` CI flake; same failure class as the
-    /// `attach_detach_churn` flakes fixed in `synthesize`, phux-uow0).
-    /// A fresh state has no prior cache, so its first `update`
-    /// observes every row as it is now. `GET_SCREEN` is an agent-paced
-    /// control call (a few Hz), so the extra FFI allocation is noise.
+    /// Uses a fresh render state, not the pool: after a resize raced a
+    /// snapshot, the pooled cache could keep serving pre-write rows.
     fn project_viewport(
         terminal: &GhosttyTerminal<'alloc, '_>,
         cells: bool,
@@ -653,10 +490,8 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         let mut cell_infos: Option<Vec<CellInfo>> = cells.then(Vec::new);
 
         let mut lines: Vec<String> = Vec::with_capacity(usize::from(rows_n));
-        // Soft-wrap bits for the viewport (ADR-0077 §2). One extra FFI read
-        // per row, unconditional: there is no wire flag to gate it on, and
-        // an `Option` that is always `Some` from this server is precisely
-        // what lets a consumer tell "nothing wraps" from "older server".
+        // Soft-wrap bits (ADR-0077 §2), always reported so a consumer can
+        // tell "nothing wraps" from "older server".
         let mut wrapped_lines: Vec<u32> = Vec::new();
         walk_viewport_rows(&mut rows_pool, &snapshot, rows_n, |row_index, row| {
             if viewport_row_is_wrapped(row)? {
@@ -682,27 +517,12 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         })
     }
 
-    /// Read the history (scrollback) rows above the active viewport into
-    /// owned, right-trimmed strings, oldest first, with their soft-wrap
-    /// bits and whether the request clipped older rows.
+    /// Read history rows above the viewport as right-trimmed strings, oldest
+    /// first, with soft-wrap bits. `want` follows [`SCROLLBACK_ALL`]
+    /// semantics. History `y = 0` is the oldest retained row.
     ///
-    /// `want` follows the [`Self::screen_state_with_scrollback`] convention:
-    /// [`SCROLLBACK_ALL`] (`0`) means every retained history row, any other
-    /// value caps the result to the most-recent `want` rows.
-    ///
-    /// Each cell is read via [`libghostty_vt::Terminal::grid_ref`] in the
-    /// [`Point::History`] coordinate space, mirroring the viewport walk's
-    /// wide-cell-tail handling (`SpacerTail` cells advance no column and
-    /// are skipped). History coordinates are local to the history region:
-    /// `y = 0` is the oldest retained row, `y = scrollback_rows - 1` is the
-    /// row just above the viewport. The read is side-effect-free: `grid_ref`
-    /// neither scrolls the live viewport nor mutates the Terminal.
-    ///
-    /// [`ScrollbackWindow::truncated`] is true exactly when `start > 0` —
-    /// retained history existed above the window the caller asked for. It
-    /// deliberately says nothing about rows libghostty already evicted from
-    /// its history ring; the server cannot see those, and claiming
-    /// otherwise would make the flag unfalsifiable.
+    /// `truncated` is true exactly when older retained rows fell outside the
+    /// window; it says nothing about rows libghostty already evicted.
     fn scrollback_window(
         terminal: &GhosttyTerminal<'alloc, '_>,
         want: u32,
@@ -717,13 +537,9 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         let mut out: Vec<String> = Vec::with_capacity(total - start);
         let mut wrapped: Vec<u32> = Vec::new();
         for y in start..total {
-            // History `y` is a `u32` in libghostty's coordinate space.
-            // `total` comes from `scrollback_rows()` (also originally a C
-            // count); clamp defensively rather than truncate.
+            // `total` came from a C count; clamp rather than truncate.
             let y = u32::try_from(y).unwrap_or(u32::MAX);
-            // Soft-wrap bit for this history row (ADR-0077 §2). The index is
-            // into the *returned window*, not into history:
-            // `soft_wrap.scrollback` indexes `ScreenState::scrollback`.
+            // Wrap indices are into the returned window, not into history.
             if cols > 0 && history_row_is_wrapped(terminal, y)? {
                 wrapped.push(u32::try_from(out.len()).unwrap_or(u32::MAX));
             }
@@ -736,139 +552,23 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         })
     }
 
-    /// Mark this consumer's `RenderState` as fully in sync with the
-    /// canonical Terminal — clears the snapshot-level dirty state and
-    /// every per-row dirty bit.
+    /// Synthesize one consumer's incremental diff against its own
+    /// [`ConsumerReference`] (phux-ia4).
     ///
-    /// Per ADR-0018 (Lazy state synchronization), this is the operation
-    /// the tick driver (phux-q0e.3) invokes when a `FRAME_ACK` for the
-    /// matching `seq` arrives from the consumer. It is deliberately
-    /// **not** called inside [`Self::synthesize_incremental`]: an unacked
-    /// diff must remain re-emittable so a lost packet causes the next
-    /// tick to re-diff against the same older reference rather than
-    /// returning a Clean-but-incorrect empty body.
+    /// libghostty's `RenderState::update` consumes the shared terminal's dirty
+    /// bits, so with N consumers on one pane only the first would see changes.
+    /// This compares rendered row bodies against the per-consumer reference
+    /// instead, so each consumer gets a correct diff regardless of the others.
     ///
-    /// After this returns successfully, the next `synthesize_incremental`
-    /// against an unchanged terminal will observe `Dirty::Clean` and emit
-    /// an empty body, saving wire bytes.
-    pub fn mark_synced(
-        &mut self,
-        terminal: &GhosttyTerminal<'alloc, '_>,
-    ) -> Result<(), SynthesisError> {
-        let RenderWalk { snapshot, rows, .. } = self.pool.begin(terminal, 0)?;
-        let rows_n = snapshot.rows()?;
-        // Walk rows and clear each dirty bit. The row-level clear is
-        // separate from the snapshot-level clear — see render.h's "Dirty
-        // Tracking" section: both must be reset to bring this consumer
-        // back to Clean on the next `update`.
-        walk_viewport_rows(rows, &snapshot, rows_n, |_, row| {
-            row.set_dirty(false)?;
-            Ok(())
-        })?;
-        snapshot.set_dirty(Dirty::Clean)?;
-        Ok(())
-    }
-
-    /// Synthesize the **incremental** VT diff: the bytes that, applied via
-    /// `vt_write` to a mirror that's in sync with the per-consumer
-    /// `RenderState`'s last-acked reference, advance the mirror to match
-    /// the canonical Terminal now.
-    ///
-    /// Per ADR-0018 (Lazy state synchronization) and its 2026-05-26
-    /// Addendum, this is the per-tick emission primitive. It follows the
-    /// 5-step algorithm from `research/archive/2026-05-26-state-sync-algorithm.md`
-    /// Dependencies §2:
-    ///
-    /// 1. `render_state.update(terminal)` to refresh dirty state.
-    /// 2. Consult [`Snapshot::dirty`]:
-    ///    - `Dirty::Clean` → empty `replay_bytes`.
-    ///    - `Dirty::Full` → identical output to [`Self::synthesize`] (fall
-    ///      back to the full reset + paint path).
-    ///    - `Dirty::Partial` → walk rows, skip those with
-    ///      `Row::dirty() == false`, CUP to each dirty row and emit the
-    ///      same per-cell loop the full path uses.
-    /// 3. Re-emit cursor position + visibility + visual style + mode bits.
-    /// 4. **Do not clear dirty bits.** The tick driver (phux-q0e.3)
-    ///    clears bits only when a `FRAME_ACK` arrives (phux-q0e.4). An
-    ///    unacked diff must remain re-emittable; that is the loss-tolerance
-    ///    invariant ADR-0018 rests on.
-    pub fn synthesize_incremental(
-        &mut self,
-        terminal: &GhosttyTerminal<'alloc, '_>,
-    ) -> Result<SnapshotBytes, SynthesisError> {
-        let RenderWalk {
-            snapshot,
-            rows,
-            cells,
-        } = self.pool.begin(terminal, 0)?;
-        let (cols, rows_n) = grid_dims(&snapshot)?;
-
-        let bytes = match snapshot.dirty()? {
-            Dirty::Clean => Vec::new(),
-            Dirty::Full => paint_full_reset(rows, cells, &snapshot, terminal, cols, rows_n)?,
-            Dirty::Partial => paint_dirty_rows(rows, cells, &snapshot, terminal, cols, rows_n)?,
-        };
-        Ok(SnapshotBytes {
-            cols,
-            rows: rows_n,
-            bytes,
-            scrollback: Vec::new(),
-        })
-    }
-
-    /// Synthesize the per-consumer incremental diff by comparing the live
-    /// `terminal` against a caller-owned [`ConsumerReference`] (phux-ia4).
-    ///
-    /// # Why this exists (the per-consumer dirty-isolation fix)
-    ///
-    /// libghostty's `RenderState::update` **consumes** the shared
-    /// `Terminal`'s dirty state: it clears `t.flags.dirty`, the active
-    /// screen's dirty flags, and the per-page / per-row dirty bits
-    /// (`render.zig` `update`, lines ~440-461 and ~647-648 of the pinned
-    /// `acc4b87` checkout). A `RenderState`'s own `Snapshot::dirty()` /
-    /// `Row::dirty()` are only *populated* from those shared bits during
-    /// `update`. So with N consumers sharing one pane, the FIRST
-    /// consumer's `update` in a tick consumes the shared dirty bits and
-    /// every OTHER consumer's `update` that tick observes `Dirty::Clean`
-    /// — starving all-but-one. [`Self::synthesize_incremental`] (which
-    /// reads `Snapshot::dirty()`) is therefore only correct for a single
-    /// consumer per tick.
-    ///
-    /// This method sidesteps the shared dirty bits entirely. It renders
-    /// each viewport row's cell body into bytes and compares it against
-    /// the per-consumer reference's stored row body. Rows whose rendered
-    /// body differs from the reference are re-emitted (CUP + cells);
-    /// unchanged rows are skipped. The reference is independent per
-    /// consumer, so consumers that have diverged (different ack/sync
-    /// points, dropped frames) each get their own correct diff regardless
-    /// of what any other consumer did to the shared `Terminal` this tick.
-    ///
-    /// # Emit-once semantics
-    ///
-    /// On a non-empty diff this advances `reference` to the just-rendered
-    /// state *before returning the bytes* (the caller commits by shipping
-    /// the frame). A given change is therefore emitted exactly once and
-    /// not re-emitted on subsequent ticks until the content changes again.
-    /// This matches the v0.1 reliable-transport emission model (the
-    /// broadcast pump ships each PTY byte once) and keeps a non-acking
-    /// consumer from re-receiving the same diff every tick. The
-    /// loss-tolerance "re-diff against an older reference" property
-    /// (ADR-0018) belongs to the future lossy-transport path and is not
-    /// v0.1 normative (proto.md §8); `FRAME_ACK` remains wired for
-    /// backpressure accounting and forward compatibility.
-    ///
-    /// Returns the synthesized bytes plus the queried `(cols, rows)`. An
+    /// A non-empty diff advances `reference` before returning (emit-once). An
     /// empty body means the viewport is byte-identical to the reference.
     pub fn synthesize_against_reference(
         &mut self,
         terminal: &GhosttyTerminal<'alloc, '_>,
         reference: &mut ConsumerReference,
     ) -> Result<SnapshotBytes, SynthesisError> {
-        // phux-ahk.2: render the tick once (consumer-independent), then diff
-        // this single consumer against it. `tick_emit` uses `prepare_tick` +
-        // `diff_consumer` directly so a pane with N consumers renders ONCE;
-        // this wrapper keeps the original one-call API for single-consumer
-        // callers and the unit tests.
+        // Single-consumer wrapper; `tick_emit` calls `prepare_tick` +
+        // `diff_consumer` directly so N consumers share one render.
         let (cols, rows_n, live_cm) = self.prepare_tick(terminal)?;
         Ok(self.diff_consumer(cols, rows_n, live_cm, reference))
     }
@@ -883,18 +583,10 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         Ok(self.pool.begin(terminal, 0)?.snapshot)
     }
 
-    /// phux-ahk.2: render the current grid ONCE per tick into the shared
-    /// `tick_*` buffers; returns the consumer-independent `(cols, rows,
-    /// live_cm)`. Each consumer's [`Self::diff_consumer`] then diffs against
-    /// these buffers, so a pane with N state-sync consumers renders the grid
-    /// once (not N times) and runs the cursor/mode FFI once (not 5N times).
-    ///
-    /// Hoisted here (all consumer-independent): the `RenderState::update`
-    /// snapshot, the full per-row cell render, the cursor/mode capture, and
-    /// the epilogue + screen-toggle byte precompute. Both the epilogue and the
-    /// screen-toggle reflect live state and are byte-identical for every
-    /// consumer; only *whether* to emit the screen toggle is per-consumer and
-    /// stays in [`Self::diff_consumer`].
+    /// Render the grid once per tick into the shared `tick_*` buffers and
+    /// return `(cols, rows, live_cm)`. Each consumer's
+    /// [`Self::diff_consumer`] then diffs against them, so N consumers cost
+    /// one render and one set of cursor/mode FFI reads.
     pub(crate) fn prepare_tick(
         &mut self,
         terminal: &GhosttyTerminal<'alloc, '_>,
@@ -907,9 +599,8 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         } = self.pool.begin(terminal, 0)?;
         let (cols, rows_n) = grid_dims(&snapshot)?;
 
-        // Size the shared row buffer to the grid and clear every in-range
-        // buffer (capacity retained) so a row the iterator does not yield
-        // can't leave stale content from a prior tick.
+        // Clear every in-range buffer so a row the iterator skips cannot
+        // leave stale content from a prior tick.
         let rows_usize = usize::from(rows_n);
         if self.tick_rows.len() < rows_usize {
             self.tick_rows.resize_with(rows_usize, Vec::new);
@@ -920,9 +611,8 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
             body.clear();
         }
 
-        // Render each row body into its shared buffer with a fresh SGR pen so
-        // the per-row byte sequence is self-contained and comparable across
-        // ticks regardless of neighbouring rows.
+        // Fresh pen per row keeps each row body self-contained and
+        // comparable across ticks.
         {
             let tick_rows = &mut self.tick_rows;
             walk_viewport_rows(rows, &snapshot, rows_n, |row_index, row| {
@@ -941,11 +631,9 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         Ok((cols, rows_n, live_cm))
     }
 
-    /// phux-ahk.2: diff one consumer against the shared `tick_*` buffers
-    /// produced by the preceding [`Self::prepare_tick`]. Advances the
-    /// consumer's reference (emit-once: the reference reflects the rendered
-    /// state before the frame ships) and returns the per-consumer delta. An
-    /// empty body means the consumer is byte-identical to the rendered tick.
+    /// Diff one consumer against the shared tick buffers from
+    /// [`Self::prepare_tick`], advancing its reference (emit-once). An empty
+    /// body means the consumer is already current.
     pub(crate) fn diff_consumer(
         &self,
         cols: u16,
@@ -959,19 +647,13 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
             out_bytes = tracing::field::Empty,
         )
         .entered();
-        // A dimension change clears the reference so every row repaints (a
-        // mid-resize diff falls back to a full repaint rather than a stale
-        // partial diff; the resize resync path emits a fresh snapshot anyway).
+        // A dimension change clears the reference so every row repaints.
         if reference.cols != cols || reference.rows != rows_n {
             reference.reset_geometry(cols, rows_n);
         }
 
-        // Diff each rendered row against the reference and commit changed rows
-        // into the reference. Unlike the prior single-consumer swap, this
-        // copies (clone) because `tick_rows` is shared and must survive for
-        // the other consumers in this tick. `tick_rows` and `rows_body` are
-        // both `rows_n` long (prepare_tick + reset_geometry), so the zip walks
-        // every row.
+        // Clone changed rows into the reference: `tick_rows` is shared with
+        // the other consumers this tick.
         {
             let ConsumerReference {
                 rows_body,
@@ -1004,9 +686,8 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         let changed_row_count = reference.changed_scratch.len();
 
         let mut out: Vec<u8> = Vec::new();
-        // Screen-buffer toggle FIRST, only on an actual alt-screen transition
-        // for THIS consumer (phux-99n ordering). The toggle bytes were
-        // precomputed in `prepare_tick`.
+        // Screen toggle first, and only on this consumer's alt-screen
+        // transition, so content lands on the right buffer.
         if reference.cursor_mode.alt_screen_set() != live_cm.alt_screen_set() {
             out.extend_from_slice(&self.tick_screen_toggle);
         }
@@ -1037,27 +718,12 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         }
     }
 
-    /// phux-v45.8 / ADR-0042: diff the current tick's rendered rows against
-    /// `base` **without advancing `base`**, emitting every row that differs
-    /// from it (an absolute, cumulative delta). This is the loss-tolerant
-    /// emission primitive: `base` is the consumer's last-*acked* reference, so
-    /// each tick re-diffs from the last state the consumer provably has, and a
-    /// dropped/un-acked frame self-heals because the next emission re-includes
-    /// its rows (they still differ from `base`).
-    ///
-    /// Requires a preceding [`Self::prepare_tick`] this tick (the shared
-    /// `tick_rows` / `tick_epilogue` / `tick_screen_toggle` buffers hold the
-    /// rendered grid). Unlike [`Self::diff_consumer`] it does not mutate the
-    /// reference — the caller advances the acked reference only when a
-    /// `FRAME_ACK` lands (via [`Self::snapshot_tick_reference`]). Each emitted
-    /// row is repainted in full (`CUP` + SGR reset + row body), so applying the
-    /// delta is idempotent regardless of which intermediate deltas the consumer
-    /// did or did not receive: the only requirement is that the consumer's
-    /// mirror is at some grid on the `base`→live path (guaranteed on the
-    /// reliable-delivery-with-drops model — the relay drops whole frames but
-    /// never reorders delivered ones; see ADR-0042 for the residual bound).
-    ///
-    /// Returns the delta bytes; empty when live is byte-identical to `base`.
+    /// Diff the current tick against `base` without advancing it (ADR-0042).
+    /// `base` is the consumer's last-acked reference, so a dropped frame
+    /// self-heals: its rows still differ from `base` next tick. Each changed
+    /// row is repainted in full, making the delta idempotent. Requires a
+    /// preceding [`Self::prepare_tick`]; the caller advances `base` via
+    /// [`Self::snapshot_tick_reference`] when a `FRAME_ACK` lands.
     pub(crate) fn diff_against_base(
         &self,
         cols: u16,
@@ -1075,9 +741,8 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         let screen_changed = base.cursor_mode.alt_screen_set() != live_cm.alt_screen_set();
         let cursor_mode_changed = base.cursor_mode != live_cm;
 
-        // Absolute changed-row set: any row whose freshly rendered body differs
-        // from the acked reference (or every row on a geometry mismatch — the
-        // acked reference is a different size, so the whole viewport repaints).
+        // Rows that differ from the acked reference, or all rows on a
+        // geometry mismatch.
         let mut changed: Vec<u16> = Vec::new();
         for (idx, rendered) in self.tick_rows.iter().enumerate() {
             let differs = geometry_mismatch
@@ -1111,14 +776,9 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         out
     }
 
-    /// phux-v45.8 / ADR-0042: snapshot the current tick's rendered grid into a
-    /// standalone [`ConsumerReference`] so a loss-tolerant consumer can advance
-    /// its *acked* reference to exactly the grid state a later `FRAME_ACK`
-    /// covers. Requires a preceding [`Self::prepare_tick`] this tick.
-    ///
-    /// The returned reference holds a clone of the rendered row bodies plus the
-    /// cursor/mode capture; it is the diff base a subsequent
-    /// [`Self::diff_against_base`] uses once the matching ack lands.
+    /// Snapshot the current tick's rendered grid as a standalone
+    /// [`ConsumerReference`], the diff base once the matching ack lands
+    /// (ADR-0042). Requires a preceding [`Self::prepare_tick`].
     pub(crate) fn snapshot_tick_reference(
         &self,
         cols: u16,
@@ -1134,10 +794,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     }
 
     /// Prime `reference` to the current `terminal` state without emitting
-    /// any bytes (phux-ia4). Used at consumer registration so the first
-    /// `synthesize_against_reference` only reports deltas that occur
-    /// *after* attach (the `TERMINAL_SNAPSHOT` already brought the
-    /// consumer's mirror to this same reference point).
+    /// bytes, so the first diff after attach reports only later changes.
     #[allow(
         clippy::needless_pass_by_ref_mut,
         clippy::unused_self,
@@ -1148,12 +805,9 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         terminal: &GhosttyTerminal<'alloc, '_>,
         reference: &mut ConsumerReference,
     ) -> Result<(), SynthesisError> {
-        // A full ATTACH snapshot immediately precedes this call and deliberately
-        // uses a fresh RenderState. That walk consumes libghostty's terminal-wide
-        // dirty bits, so the pooled RenderState can legally return its older
-        // cached rows here. Prime from another fresh walk: the bootstrap bytes
-        // and this reference then observe the same canonical actor cut even when
-        // a previous consumer populated the pool.
+        // The attach snapshot just walked with a fresh render state and
+        // consumed the terminal's dirty bits, so the pool may hold older
+        // rows. Prime from another fresh walk to match the snapshot's cut.
         let (mut render_state, mut rows, mut cells) = fresh_render_trio()?;
         let snapshot = render_state.update(terminal)?;
         let (cols, rows_n) = grid_dims(&snapshot)?;
@@ -1170,8 +824,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     }
 }
 
-/// Convenience wrapper: allocate a fresh [`SnapshotSynthesizer`] for a
-/// one-shot synthesis. Per-pane hot loops should reuse a
+/// One-shot synthesis; per-pane hot loops should reuse a
 /// [`SnapshotSynthesizer`].
 pub fn synthesize(terminal: &GhosttyTerminal<'_, '_>) -> Result<SnapshotBytes, SynthesisError> {
     SnapshotSynthesizer::new()?.synthesize(terminal)
@@ -1186,28 +839,16 @@ pub struct SnapshotBytes {
     pub rows: u16,
     /// VT byte sequence; opaque, mosh-style, fed to the client's `Terminal`.
     pub bytes: Vec<u8>,
-    /// Optional scrollback-priming VT bytes (`phux-9q5f`). When the ATTACH
-    /// requested scrollback, these reproduce the pane's retained history rows
-    /// on the client's fresh `Terminal` *before* `bytes` repaints the
-    /// viewport — the client `vt_write`s `scrollback` then `bytes`, per
-    /// SPEC §8.4. Empty when no scrollback was requested or none is retained.
+    /// Scrollback-priming VT bytes the client applies before `bytes`; empty
+    /// when no scrollback was requested or none is retained.
     pub scrollback: Vec<u8>,
 }
 
-/// The active SGR pen tracked across cells: the libghostty [`Style`] plus the
-/// resolved foreground/background.
-///
-/// Colors are part of the key (not just the style's attribute flags) because
-/// adjacent cells that differ *only* in color — multi-color `ls`, syntax
-/// highlighting, a p10k prompt — must re-emit an SGR delta, or the second
-/// color is lost. The live path forwards raw PTV bytes (byte-faithful), so a
-/// color-only gate miss surfaced only as a color glitch right after the
-/// attach/resize snapshot resync.
+/// The active SGR pen: style plus resolved fg/bg. Colors are part of the key
+/// so color-only changes between adjacent cells still emit an SGR delta.
 type Pen = (Style, Option<RgbColor>, Option<RgbColor>);
 
-/// The viewport half of a [`ScreenState`] projection: everything
-/// [`SnapshotSynthesizer::project_viewport`] reads off the live grid, before
-/// the history window and the pane title are folded in.
+/// The viewport half of a [`ScreenState`] projection.
 struct ViewportProjection {
     /// Grid width in cells at the moment of the walk.
     cols: u16,
@@ -1223,13 +864,8 @@ struct ViewportProjection {
     cells: Option<Vec<CellInfo>>,
 }
 
-/// Allocate a fresh, unpooled [`RenderState`] + [`RowIterator`] +
-/// [`CellIterator`] trio.
-///
-/// Every caller of this deliberately declines [`RenderPool`]: a pooled state
-/// caches what it last walked and can serve pre-resize rows, so a walk that
-/// must observe the live grid in its entirety allocates its own. Each call
-/// site documents why it is in that class.
+/// A fresh, unpooled render trio, for walks that must observe the whole
+/// live grid (a pooled state can serve pre-resize rows).
 fn fresh_render_trio<'alloc>() -> Result<
     (
         RenderState<'alloc>,
@@ -1250,13 +886,8 @@ fn grid_dims(snapshot: &Snapshot<'_, '_>) -> Result<(u16, u16), SynthesisError> 
     Ok((snapshot.cols()?, snapshot.rows()?))
 }
 
-/// Walk `snapshot`'s viewport rows top-down, calling `visit` with each row's
-/// zero-based index and the live row iteration.
-///
-/// The `row_index >= rows_n` stop is shared by every walk in this module: the
-/// row iterator is driven by libghostty and the snapshot's reported height is
-/// what the wire (and every consumer's mirror) is sized to, so a walk never
-/// emits past it.
+/// Walk viewport rows top-down, stopping at the snapshot's reported height
+/// (the size every consumer's mirror is built to).
 fn walk_viewport_rows<'alloc, F>(
     rows: &mut RowIterator<'alloc>,
     snapshot: &Snapshot<'alloc, '_>,
@@ -1296,101 +927,6 @@ fn render_row_body<'alloc>(
         emit_cell(cell, body, &mut prev_style)?;
     }
     Ok(())
-}
-
-/// Which rows a paint walk emits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RowSelection {
-    /// Every row in the viewport.
-    All,
-    /// Only rows whose `Row::dirty()` bit is set.
-    DirtyOnly,
-}
-
-/// Paint the selected rows into `out`: `CUP` to the row, then its cells.
-///
-/// The SGR pen carries across rows here (unlike [`render_row_body`]) because
-/// the emitted bytes are one continuous stream applied to the consumer's
-/// mirror, exactly as the pre-split full path emitted them.
-fn paint_rows<'alloc>(
-    rows: &mut RowIterator<'alloc>,
-    cells: &mut CellIterator<'alloc>,
-    snapshot: &Snapshot<'alloc, '_>,
-    rows_n: u16,
-    out: &mut Vec<u8>,
-    selection: RowSelection,
-) -> Result<(), SynthesisError> {
-    let mut prev_style: Option<Pen> = None;
-    walk_viewport_rows(rows, snapshot, rows_n, |row_index, row| {
-        if selection == RowSelection::DirtyOnly && !row.dirty()? {
-            return Ok(());
-        }
-        write_cup(out, row_index, 0);
-        let mut cell_iter = cells.update(row)?;
-        while let Some(cell) = cell_iter.next() {
-            emit_cell(cell, out, &mut prev_style)?;
-        }
-        Ok(())
-    })
-}
-
-/// Full reset + paint everything. Identical bytes to the
-/// [`SnapshotSynthesizer::synthesize`] path; the prologue is replicated here
-/// rather than re-entering `synthesize` so the caller keeps `render_state`
-/// borrowed by `snapshot` for the row walk.
-fn paint_full_reset<'alloc>(
-    rows: &mut RowIterator<'alloc>,
-    cells: &mut CellIterator<'alloc>,
-    snapshot: &Snapshot<'alloc, '_>,
-    terminal: &GhosttyTerminal<'alloc, '_>,
-    cols: u16,
-    rows_n: u16,
-) -> Result<Vec<u8>, SynthesisError> {
-    let mut out: Vec<u8> = Vec::with_capacity(usize::from(cols) * usize::from(rows_n) * 2);
-    out.extend_from_slice(b"\x1b[!p\x1b[2J\x1b[H");
-    // Select the screen buffer before painting (phux-99n).
-    emit_screen_mode(&mut out, terminal)?;
-    paint_rows(rows, cells, snapshot, rows_n, &mut out, RowSelection::All)?;
-    emit_epilogue(&mut out, snapshot, terminal)?;
-    Ok(out)
-}
-
-/// Walk rows; emit only those whose `Row::dirty() == true`. No reset preamble
-/// — the mirror's state outside the dirty rows is unchanged.
-fn paint_dirty_rows<'alloc>(
-    rows: &mut RowIterator<'alloc>,
-    cells: &mut CellIterator<'alloc>,
-    snapshot: &Snapshot<'alloc, '_>,
-    terminal: &GhosttyTerminal<'alloc, '_>,
-    cols: u16,
-    rows_n: u16,
-) -> Result<Vec<u8>, SynthesisError> {
-    let mut out: Vec<u8> = Vec::with_capacity(usize::from(cols) * usize::from(rows_n));
-    paint_rows(
-        rows,
-        cells,
-        snapshot,
-        rows_n,
-        &mut out,
-        RowSelection::DirtyOnly,
-    )?;
-
-    // Always re-emit the cursor + mode epilogue. Cursor
-    // position can change without any row being marked dirty
-    // (e.g. a bare CUP into a position whose cell is
-    // unchanged), and mode bits are diffed flat against the
-    // mirror's state, so we re-emit them on every non-empty
-    // tick to keep the algorithm simple. This matches the
-    // research note's step 3 + 4.
-    emit_epilogue(&mut out, snapshot, terminal)?;
-
-    // CRITICAL: do not call `snapshot.set_dirty(Clean)` or
-    // `row.set_dirty(false)` here. The tick driver clears
-    // bits only when FRAME_ACK arrives; an unacked diff must
-    // stay re-emittable so the next tick can re-diff against
-    // the same older reference if this packet is lost.
-
-    Ok(out)
 }
 
 /// Capacity hint for a full bounded paint: two bytes per cell, falling back to
@@ -1452,12 +988,7 @@ fn replay_kitty_graphics_bounded(
     Ok(())
 }
 
-/// The pane's OSC 0/2 title, or `None` when it never set one.
-///
-/// `title()` borrows from the terminal and is invalidated by the next
-/// `vt_write`, so copy it now. An empty title means the pane never set one —
-/// reported as absence rather than as an empty string, so a consumer never has
-/// to decide whether `""` is a title.
+/// The pane's OSC 0/2 title, or `None` when unset (never `Some("")`).
 fn pane_title(terminal: &GhosttyTerminal<'_, '_>) -> Option<String> {
     terminal
         .title()
@@ -1481,18 +1012,12 @@ fn project_row_text<'alloc>(
     while let Some(cell) = cell_iter.next() {
         let wide = cell.raw_cell()?.wide()?;
         if matches!(wide, CellWide::SpacerTail) {
-            // Wide-cell tail: the base glyph spans both columns and
-            // advances col_index by its display width below, so skip
-            // the tail for both the text and the cells projection
-            // (no column emitted).
+            // Wide-cell tail: the base glyph already covers this column.
             continue;
         }
         record_cell_info(cell_infos, cell, row_index, col_index)?;
         append_cell_text(&mut buf, cell)?;
-        // Advance by the cell's display width so a styled/marked cell
-        // to the right of a double-width (CJK/emoji) glyph reports the
-        // true grid column — the same space cursor.x lives in. A Wide
-        // base occupies two columns; its SpacerTail is skipped above.
+        // Advance by display width so columns match the grid (and cursor.x).
         col_index = col_index.saturating_add(if matches!(wide, CellWide::Wide) { 2 } else { 1 });
     }
     Ok(buf.trim_end().to_owned())
@@ -1526,10 +1051,7 @@ fn append_cell_text(buf: &mut String, cell: &CellIteration<'_, '_>) -> Result<()
     Ok(())
 }
 
-/// Resolve the `[start, total)` window of history rows to emit. For a
-/// bounded request we keep the rows nearest the viewport (the most
-/// recent history), which is what an agent reading "the last N lines
-/// of scrollback" expects.
+/// Start of the history window: the `want` rows nearest the viewport.
 fn history_window_start(total: usize, want: u32) -> usize {
     if want == SCROLLBACK_ALL {
         0
@@ -1566,10 +1088,8 @@ fn history_row_text(
     Ok(buf.trim_end().to_owned())
 }
 
-/// Read the grapheme cluster; an empty cluster is a blank
-/// cell, which advances one column with a space. A cluster
-/// longer than the inline buffer (deep combining sequence)
-/// surfaces as `OutOfSpace { required }`; retry on the heap.
+/// Append a history cell's grapheme cluster (a space for a blank cell),
+/// retrying on the heap for clusters deeper than the inline buffer.
 fn append_history_grapheme(buf: &mut String, grid_ref: &GridRef<'_>) -> Result<(), SynthesisError> {
     let mut inline = [char::from(0u8); GRAPHEME_INLINE];
     match grid_ref.graphemes(&mut inline) {
@@ -1585,10 +1105,7 @@ fn append_history_grapheme(buf: &mut String, grid_ref: &GridRef<'_>) -> Result<(
     Ok(())
 }
 
-/// Emit one history row as styled VT bytes: per-cell SGR deltas plus
-/// graphemes. Pen tracking restarts at every row, so the row's first
-/// non-blank cell always re-states its SGR rather than inheriting the pen
-/// across the CRLF.
+/// Emit one history row as styled VT. The pen restarts every row.
 fn emit_history_row_styled(
     terminal: &GhosttyTerminal<'_, '_>,
     cols: u16,
@@ -1616,13 +1133,8 @@ fn emit_history_row_styled(
     Ok(())
 }
 
-/// Write one history cell's grapheme cluster into the bounded buffer, or a
-/// space for a blank cell.
-///
-/// A cluster deeper than the inline buffer surfaces as
-/// `OutOfSpace { required }`; the heap retry is charged against the remaining
-/// budget first, so an over-budget cluster fails rather than allocating for a
-/// write that cannot land.
+/// Write a history cell's grapheme (or a space) into the bounded buffer.
+/// The heap retry is charged against the budget before allocating.
 fn write_history_grapheme_bounded(
     grid_ref: &GridRef<'_>,
     out: &mut BoundedSnapshotBytes,
@@ -1652,10 +1164,8 @@ fn write_history_grapheme_bounded(
     Ok(())
 }
 
-/// Terminate the scrollback prologue: reset SGR, then a
-/// `min(rows, history)` `SU` so the still-visible history scrolls off the top
-/// into the client's scrollback, leaving a blank viewport for the `bytes`
-/// replay.
+/// End the scrollback prologue: SGR reset, then an `SU` scrolling history
+/// into the client's scrollback.
 fn write_scrollback_scroll_off(
     out: &mut BoundedSnapshotBytes,
     row_count: usize,
@@ -1672,12 +1182,8 @@ fn write_scrollback_scroll_off(
     Ok(())
 }
 
-/// Per-cell emission shared by the full ([`SnapshotSynthesizer::synthesize`])
-/// and incremental ([`SnapshotSynthesizer::synthesize_incremental`]) paths.
-///
-/// Tracks the active SGR pen via `prev` (see [`Pen`]), skips wide-cell tails
-/// (`CellWide::SpacerTail`, see the comment in the body), and emits the
-/// cell's grapheme cluster (or a space for genuinely-blank cells).
+/// Emit one cell: SGR delta when the pen changes, then its grapheme (or a
+/// space); wide-cell tails emit nothing.
 fn emit_cell_bounded(
     cell: &CellIteration<'_, '_>,
     out: &mut BoundedSnapshotBytes,
@@ -1715,14 +1221,8 @@ fn apply_pen_bounded(
     Ok(())
 }
 
-/// Write the cell's `len`-codepoint grapheme cluster into `out`, reading it
-/// through the inline buffer when it fits and a bounded heap retry when it
-/// does not.
-///
-/// The cluster's worst-case `char` storage is charged against the remaining
-/// budget *before* it is read, so an over-budget cell fails as
-/// [`SynthesisError::LimitExceeded`] rather than allocating for a write that
-/// cannot land.
+/// Write a cell's grapheme cluster, via the inline buffer when it fits. The
+/// worst case is charged against the budget before reading.
 fn write_cell_graphemes_bounded(
     cell: &CellIteration<'_, '_>,
     out: &mut BoundedSnapshotBytes,
@@ -1765,12 +1265,8 @@ fn emit_cell(
     out: &mut Vec<u8>,
     prev: &mut Option<Pen>,
 ) -> Result<(), SynthesisError> {
-    // Discriminate wide-cell tails (the right half of a double-width
-    // glyph) from genuinely-blank cells. The base grapheme on the wide
-    // cell already advanced the cursor across both columns, so the tail
-    // must NOT emit a space (which would clobber the right half of the
-    // wide glyph). See libghostty's `CellWide`: `SpacerTail` is
-    // documented as "do not render".
+    // A wide glyph's tail must not emit a space: that would clobber the
+    // glyph's right half.
     let wide = cell.raw_cell()?.wide()?;
     if matches!(wide, CellWide::SpacerTail) {
         return Ok(());
@@ -1778,12 +1274,8 @@ fn emit_cell(
 
     let len = cell.graphemes_len()?;
 
-    // Reproduce the cell's pen (attributes + resolved fg/bg) whenever it
-    // differs from the previous cell. This runs for blank cells too: a
-    // colored-but-glyphless cell (a `colorcolumn` fill, a statusline tail, a
-    // p10k right-prompt pad) must carry its background, and emitting the space
-    // before reading the style — as this did previously — dropped that
-    // background on the synthesized snapshot.
+    // Pen before glyph, blank cells included: a colored blank cell must keep
+    // its background.
     let style = cell.style()?;
     let fg = cell.fg_color()?;
     let bg = cell.bg_color()?;
@@ -1800,13 +1292,7 @@ fn emit_cell(
         return Ok(());
     }
 
-    // Read the grapheme cluster into a stack buffer rather than the
-    // allocating [`CellIteration::graphemes`] (`vec!['\0'; len]` per cell).
-    // The emit path visits every cell of every changed row each tick under
-    // heavy output; a heap allocation per cell dominated the hot path
-    // (~50 allocations per row in the bursty-colored-output stress probe).
-    // `GRAPHEME_INLINE` covers the common base-codepoint-plus-a-few-marks
-    // case; deeper clusters fall back to a one-shot heap retry.
+    // Stack buffer: a heap allocation per cell dominated the hot path.
     let mut inline = [char::from(0u8); GRAPHEME_INLINE];
     if len <= GRAPHEME_INLINE {
         cell.graphemes_buf(&mut inline[..len])?;
@@ -1827,46 +1313,28 @@ fn encode_graphemes(out: &mut Vec<u8>, graphemes: &[char]) {
     }
 }
 
-/// Project one viewport cell into a [`CellInfo`], or `None` when the cell
-/// carries neither a non-default style nor an OSC-133 semantic mark
-/// (`phux-8yl`).
+/// Project a viewport cell into a [`CellInfo`], or `None` for a plain cell
+/// (no non-default style, no OSC-133 mark), keeping [`ScreenState::cells`]
+/// sparse. Wide-cell tails are skipped by the caller.
 ///
-/// Returning `None` for plain cells keeps the [`ScreenState::cells`] vec
-/// sparse: a mostly-blank grid emits almost nothing, so the JSON stays
-/// small while every styled or semantically-marked cell is still reported.
-/// `row`/`col` are the viewport-relative, zero-based coordinates of the
-/// cell's left edge (wide-cell tails are skipped by the caller).
-///
-/// This is one of three copies of the libghostty cell projection; the other
-/// two are `phux-client`'s `attach::render`'s `to_cell_style` and
-/// `phux-record`'s `replay::project_cell`. The duplication is deliberate —
-/// sharing would force `phux-core` to depend on `libghostty-vt` — and
-/// `crates/phux/tests/conformance/cell_projection_conformance.rs` is what keeps the three
-/// honest, running one VT corpus through all of them (`phux-h5hj.2`). That
-/// test also pins the two places this projection CANNOT match the dense ones:
-/// it emits no entry for a wide glyph's spacer tail, and it alone carries
-/// OSC-133 semantics.
+/// Two sibling projections live in the TUI render path and `phux-record`;
+/// `cell_projection_conformance.rs` keeps the three in agreement.
 fn collect_cell(
     cell: &CellIteration<'_, '_>,
     row: u16,
     col: u16,
 ) -> Result<Option<CellInfo>, SynthesisError> {
     let style = cell.style()?;
-    // libghostty defaults every cell's semantic content to `Output`,
-    // whether or not the shell emitted any OSC-133 marks — so `Output` is
-    // the *absence* of a meaningful mark, not a signal. Collapse it to
-    // `None` and surface only `Input` / `Prompt`, the marks an agent can
-    // actually act on; this also keeps the cells projection sparse (a grid
-    // with no shell integration emits no semantic field at all).
+    // libghostty defaults every cell to `Output`, so only `Input`/`Prompt`
+    // carry information.
     let semantic = match cell.raw_cell()?.semantic_content()? {
         CellSemanticContent::Output => None,
         CellSemanticContent::Input => Some(SemanticContent::Input),
         CellSemanticContent::Prompt => Some(SemanticContent::Prompt),
     };
 
-    // Resolve fg/bg via the iteration's color helpers (which apply the
-    // palette/default), falling back to the raw `StyleColor` so a palette
-    // index survives as a palette index in the projection.
+    // Resolved colors first; fall back to the raw color so a palette index
+    // survives as a palette index.
     let fg = cell_color(cell.fg_color()?, style.fg_color);
     let bg = cell_color(cell.bg_color()?, style.bg_color);
 
@@ -1913,14 +1381,8 @@ const DEFAULT_CELL_STYLE: CellStyle = CellStyle {
     bg: CellColor::Default,
 };
 
-/// Project a cell color to [`CellColor`].
-///
-/// Prefers the cell's explicit per-cell [`StyleColor`] so a palette index
-/// keeps its identity (`Palette { index }`) rather than collapsing to RGB.
-/// When the cell sets no explicit color (`StyleColor::None`) but the
-/// iteration still resolves a concrete RGB (`resolved` — e.g. a non-default
-/// background inherited from the terminal palette), that RGB is surfaced;
-/// otherwise the projection is [`CellColor::Default`].
+/// Prefer the cell's explicit color (palette indices keep their identity),
+/// then a resolved RGB, else [`CellColor::Default`].
 fn cell_color(resolved: Option<RgbColor>, raw: StyleColor) -> CellColor {
     match raw {
         StyleColor::Palette(index) => CellColor::Palette { index: index.0 },
@@ -1937,35 +1399,12 @@ fn cell_color(resolved: Option<RgbColor>, raw: StyleColor) -> CellColor {
     }
 }
 
-/// Post-row-walk epilogue shared by both synthesis paths: reset SGR,
-/// re-establish cursor position + visibility + visual style, and replay
-/// the load-bearing mode bits queried from the canonical
-/// [`libghostty_vt::Terminal`].
+/// Epilogue shared by snapshots and diffs: SGR reset, cursor position,
+/// visibility, style, and the load-bearing mode bits.
 ///
-/// Identical to the tail of `synthesize` from before the
-/// full/incremental split was introduced.
-///
-/// # Snapshot/resync fidelity is grid-content-authoritative by design (phux-e3mo)
-///
-/// This epilogue is the SHARED contract between the full-snapshot path and
-/// the per-consumer state-sync diff. Two known low-severity gaps are
-/// intentionally NOT corrected here:
-///
-/// * Post-snapshot SGR continuity: the snapshot epilogue resets SGR to 0
-///   and the live broadcast pump then resumes raw relative PTY deltas;
-///   there is no guarantee the client mirror's pen matches the server's at
-///   the snapshot boundary (a plausible narrow-window color glitch right
-///   after attach that self-heals on the next prompt redraw).
-/// * Off-viewport cursor: a snapshot whose cursor is not in the viewport
-///   homes to `ESC[H` (a possible top-left flash) rather than hiding it.
-///
-/// Both self-heal on the next live frame. Correcting them means changing
-/// this shared contract — which the state-sync path also depends on — and
-/// is deliberately deferred until there is a reproducing capture (e.g. a
-/// real p10k session) proving the mechanism, rather than churning a
-/// load-bearing path speculatively. Snapshot fidelity is grid-content
-/// authoritative; transient pen/cursor reconvergence is the live stream's
-/// job.
+/// Known, self-healing gaps kept on purpose: the client pen may differ from
+/// the server's right after the snapshot, and an off-viewport cursor homes
+/// to `ESC[H`. Both reconverge on the next live frame.
 fn emit_epilogue(
     out: &mut Vec<u8>,
     snapshot: &Snapshot<'_, '_>,
@@ -1995,37 +1434,18 @@ fn emit_epilogue(
         snapshot.cursor_blinking()?,
     );
 
-    // Remaining load-bearing mode bits. Bracketed paste and focus-event
-    // reporting are independent of the screen buffer, so their order
-    // relative to the cursor does not matter. The alt-screen modes are
-    // NOT emitted here — they must precede the row paint (see
-    // [`emit_screen_mode`]), or the content lands on the wrong buffer and
-    // a `?1049h` after it would clear what we just painted.
+    // Alt-screen modes are emitted before the row paint
+    // (see [`emit_screen_mode`]), not here.
     emit_mode(out, terminal, Mode::BRACKETED_PASTE, b"2004")?;
     emit_mode(out, terminal, Mode::FOCUS_EVENT, b"1004")?;
     emit_mouse_modes(out, terminal)?;
     Ok(())
 }
 
-/// Emit the mouse-reporting DEC modes: tracking level (9 / 1000 / 1002 /
-/// 1003), report encoding (1005 / 1006 / 1015 / 1016), and the wheel policy
-/// bit (1007, xterm "alternate scroll").
-///
-/// These are screen-independent, so they ride the epilogue next to bracketed
-/// paste and focus-event reporting.
-///
-/// Load-bearing, not cosmetic (phux-mlo5). The client keeps
-/// its own libghostty mirror and gates wheel handling on it: a pane whose
-/// program asked for the mouse gets the wheel forwarded as `INPUT_MOUSE`,
-/// and a pane that did not gets the local scrollback viewport scroll — or,
-/// on the alt screen with 1007 set, wheel-to-arrow-key translation. A
-/// snapshot that omits these bits leaves the mirror believing NO program
-/// ever wanted the mouse, so every attach and every resync silently
-/// downgraded scrolling in mouse-tracking TUIs (opencode, Claude Code,
-/// htop, vim) to arrow keys — which those apps route to their editor/list
-/// cursor rather than scrolling. The mode bytes are diffed flat against the
-/// mirror, so they re-emit unconditionally on every non-empty tick like the
-/// rest of the epilogue's mode bits.
+/// Emit the mouse-reporting DEC modes (tracking level, encoding, and 1007
+/// wheel policy). The client routes the wheel from its mirror's mode
+/// state, so omitting these after a snapshot turns wheel scrolling in
+/// mouse-tracking TUIs into arrow keys.
 fn emit_mouse_modes(
     out: &mut Vec<u8>,
     terminal: &GhosttyTerminal<'_, '_>,
@@ -2036,12 +1456,8 @@ fn emit_mouse_modes(
     Ok(())
 }
 
-/// The mouse-reporting DEC modes the epilogue replays, paired with their
-/// numeric codes.
-///
-/// [`ReferenceCursorMode`] captures this same list (by index) so the diff
-/// path re-emits the epilogue when any of them flips. Keep the two in step:
-/// the array length is the reference field's width.
+/// Mouse DEC modes the epilogue replays. [`ReferenceCursorMode`] captures
+/// the same list by index; keep them in step.
 pub(crate) const MOUSE_MODES: [(Mode, &[u8]); 9] = [
     // Tracking level: which events the program asked to receive.
     (Mode::X10_MOUSE, b"9"),
@@ -2053,28 +1469,14 @@ pub(crate) const MOUSE_MODES: [(Mode, &[u8]); 9] = [
     (Mode::SGR_MOUSE, b"1006"),
     (Mode::URXVT_MOUSE, b"1015"),
     (Mode::SGR_PIXELS_MOUSE, b"1016"),
-    // Wheel policy. libghostty defaults 1007 ON, so the interesting case is
-    // an app that opted OUT (`?1007l`) and must not receive synthesized
-    // arrow keys after a reattach.
+    // libghostty defaults 1007 on; an app that opted out must stay out.
     (Mode::ALT_SCROLL, b"1007"),
 ];
 
-/// Emit the alt-screen DEC mode toggles (47 / 1047 / 1049) that select
-/// which screen buffer subsequent content paints into.
+/// Emit the alt-screen modes (47 / 1047 / 1049), each queried separately.
 ///
-/// libghostty tracks 47 (`ALT_SCREEN_LEGACY`), 1047 (`ALT_SCREEN`), and
-/// 1049 (`ALT_SCREEN_SAVE`) as three independent bits; a full-screen
-/// program (vim/less/man/htop/tmux) typically sets 1049, which on entry
-/// saves the cursor and clears the alt buffer. Each is queried
-/// independently so the synthesis reproduces the terminal's exact
-/// alt-screen state rather than forcing the primary screen via a stale
-/// `?47l`.
-///
-/// CRITICAL ordering: this MUST be emitted BEFORE the row paint and the
-/// cursor re-establishment. `?1049h` clears the alt buffer and saves the
-/// cursor on entry, so emitting it after painting would wipe the content
-/// and clobber the restored cursor. Both the full-reset prologue and the
-/// per-row diff therefore call this ahead of any cell bytes.
+/// Must precede the row paint and cursor restore: `?1049h` clears the alt
+/// buffer and saves the cursor on entry.
 fn emit_screen_mode(
     out: &mut Vec<u8>,
     terminal: &GhosttyTerminal<'_, '_>,
@@ -2093,9 +1495,8 @@ fn write_cup(out: &mut Vec<u8>, row: u16, col: u16) {
 }
 
 fn emit_cursor_style(out: &mut Vec<u8>, style: CursorVisualStyle, blinking: bool) {
-    // DECSCUSR: `CSI <n> SP q`. Block/blink=1, Block/steady=2,
-    // Underline/blink=3, steady=4, Bar/blink=5, steady=6. BlockHollow has
-    // no DECSCUSR encoding; map to Block-steady.
+    // DECSCUSR `CSI <n> SP q`: 1/2 block, 3/4 underline, 5/6 bar
+    // (blinking/steady). BlockHollow has no encoding; use steady block.
     let code: u8 = match (style, blinking) {
         (CursorVisualStyle::Block, true) => 1,
         (CursorVisualStyle::Underline, true) => 3,
@@ -2175,16 +1576,8 @@ mod tests {
         );
     }
 
-    /// phux-5pyx: behavioural lock for the resize → pooled-tick path.
-    ///
-    /// Drives two `prepare_tick`s across a resize, with a fresh-state walk
-    /// (the `GET_SCREEN` path) interleaved, and asserts the second tick reports
-    /// the new dims and the post-resize content. NOTE: this is a forward-
-    /// looking correctness assertion, not a fail-without-the-fix guard — the
-    /// original staleness was a timing-dependent shared-dirty-bit race that
-    /// does not reproduce deterministically in a single-threaded unit test
-    /// (the bead notes "No repro today"). It pins the contract the
-    /// dims-change pool rebuild upholds for the `StateSync` consumers to come.
+    /// Resize between two pooled ticks, with a fresh-state walk interleaved:
+    /// the second tick must report the new dims and content.
     #[test]
     fn prepare_tick_serves_fresh_rows_after_resize() {
         let mut term = fresh(10, 2);
@@ -2222,10 +1615,8 @@ mod tests {
         );
     }
 
-    /// phux-9q5f: a scrollback-bearing snapshot, applied to a fresh client
-    /// `Terminal` exactly as the wire client does (`vt_write(scrollback)` then
-    /// `vt_write(bytes)`), reconstructs both the viewport and the retained
-    /// history — every history row, none lost to the viewport replay's `ED 2`.
+    /// A scrollback-bearing snapshot applied as the client does reconstructs
+    /// both the viewport and every history row.
     #[test]
     fn scrollback_snapshot_round_trips_history_and_viewport() {
         // 4-row grid; 10 numbered lines push 6 into history (10 - 4 visible).
@@ -2298,9 +1689,7 @@ mod tests {
         assert_eq!(render_grid(&client), render_grid(&source));
     }
 
-    /// Walk the viewport of `t` and collect each row as a string,
-    /// reproducing wide-cell tail handling so the comparison is grid-
-    /// equivalent rather than byte-equivalent.
+    /// Each viewport row as a string, skipping wide-cell tails.
     fn render_grid(t: &GhosttyTerminal<'_, '_>) -> Vec<String> {
         let mut rs = RenderState::new().expect("RenderState::new");
         let snap = rs.update(t).expect("update");
@@ -2336,9 +1725,7 @@ mod tests {
         grid
     }
 
-    /// A reconstructed cell's `(grapheme, fg, bg, underline, overline)` —
-    /// enough to assert *color* fidelity, which `render_grid` (graphemes only)
-    /// cannot.
+    /// `(grapheme, fg, bg, underline, overline)` of a reconstructed cell.
     type StyledCell = (char, Option<RgbColor>, Option<RgbColor>, bool, bool);
 
     /// Per-cell styled view of the first row, for color round-trip asserts.
@@ -2370,9 +1757,7 @@ mod tests {
         out
     }
 
-    /// Drive `source` with `vt`, synthesize a full snapshot, replay it into a
-    /// fresh client terminal exactly as the wire client does, and return the
-    /// reconstructed first row's styled cells.
+    /// Snapshot `vt`, replay it into a fresh terminal, return row 0's cells.
     fn round_trip_row0(vt: &[u8]) -> Vec<StyledCell> {
         let mut source = fresh(40, 4);
         source.vt_write(vt);
@@ -2382,10 +1767,7 @@ mod tests {
         row0_styled(&client)
     }
 
-    /// A pure color change between two same-attribute runs (red text then blue
-    /// text, as `ls --color` / syntax highlighting emit) must survive the
-    /// snapshot — the delta gate previously keyed on attribute flags only and
-    /// dropped the second color, so it reappeared in the first run's color.
+    /// A pure color change between same-attribute runs survives the snapshot.
     #[test]
     fn snapshot_preserves_adjacent_color_change() {
         let cells = round_trip_row0(b"\x1b[31mAB\x1b[34mCD\x1b[0m");
@@ -2400,10 +1782,7 @@ mod tests {
         assert!(fg('C').flatten().is_some(), "CD keeps a foreground");
     }
 
-    /// A colored-but-blank region (e.g. a `colorcolumn` fill or p10k prompt
-    /// pad: `\x1b[44m` then spaces) must keep its background through the
-    /// snapshot. `emit_cell` previously pushed the space before reading the
-    /// style, dropping the background of glyphless cells.
+    /// A colored blank region keeps its background through the snapshot.
     #[test]
     fn snapshot_preserves_blank_cell_background() {
         let cells = round_trip_row0(b"X\x1b[44m   \x1b[0mY");
@@ -2463,10 +1842,7 @@ mod tests {
 
     #[test]
     fn screen_state_cells_collects_styles_sparsely() {
-        // A bold-red "HI" followed by plain "ok": the styled cells must
-        // surface in the cells projection, the plain cells must NOT (the
-        // vec is sparse), and the styled cells must carry the right
-        // attributes + RGB-resolved color (phux-8yl).
+        // Bold-red "HI" then plain "ok": only the styled cells appear.
         let mut t = fresh(20, 2);
         // ESC[1;31m = bold + red fg; "HI"; ESC[0m reset; " ok".
         t.vt_write(b"\x1b[1;31mHI\x1b[0m ok");
@@ -2477,9 +1853,6 @@ mod tests {
             .expect("screen_state_with_scrollback");
         let cells = screen.cells.expect("cells = true populates Some(..)");
 
-        // Exactly the two styled cells (H, I) are emitted; the blank and
-        // the plain "ok" cells are dropped by the sparse filter (no style,
-        // no mark).
         assert_eq!(
             cells.len(),
             2,
@@ -2506,10 +1879,7 @@ mod tests {
 
     #[test]
     fn screen_state_cells_captures_osc133_semantic_marks() {
-        // OSC-133 shell-integration marks classify cells as prompt / input
-        // / output. Emit a prompt mark (`OSC 133 ; A`), prompt text, then a
-        // command-start mark (`OSC 133 ; B`) and typed input. The cells
-        // projection must surface the per-cell semantic content (phux-8yl).
+        // OSC 133 A (prompt) then B (input): cells carry the semantic mark.
         let mut t = fresh(40, 2);
         // OSC 133 ; A  -> prompt start. Then "$ " is prompt text.
         t.vt_write(b"\x1b]133;A\x07$ ");
@@ -2522,10 +1892,6 @@ mod tests {
             .expect("screen_state_with_scrollback");
         let cells = screen.cells.expect("cells = true populates Some(..)");
 
-        // The prompt glyph "$" must carry Prompt; the input glyph "l"/"s"
-        // must carry Input. We assert on the marks rather than exact cell
-        // counts so the test is robust to how libghostty attributes the
-        // trailing space.
         let prompt_marked = cells
             .iter()
             .any(|c| matches!(c.semantic, Some(SemanticContent::Prompt)));
@@ -2544,12 +1910,7 @@ mod tests {
 
     #[test]
     fn screen_state_cells_reports_true_column_after_wide_glyph() {
-        // A double-width CJK glyph occupies two grid columns; libghostty
-        // emits its second column as a SpacerTail. The cells projection must
-        // advance its column counter by the glyph's full display width so a
-        // styled cell to its right reports the true grid column — the same
-        // coordinate space cursor.x lives in. Regression: the phux-8yl walk
-        // advanced col_index by 1 per cell, under-counting after wide glyphs.
+        // Styled cell right of a wide glyph reports its true grid column.
         let mut t = fresh(20, 2);
         // Unstyled wide glyph (你, two columns) then a bold "X" at col 2.
         t.vt_write("你".as_bytes());
@@ -2576,22 +1937,9 @@ mod tests {
 
     #[test]
     fn screen_state_cells_accounts_for_spacer_head_at_soft_wrap() {
-        // A wide glyph that does not fit in the final column of a row
-        // soft-wraps to the next row; libghostty fills the vacated final
-        // column with a `CellWide::SpacerHead` (grid width 1, empty
-        // grapheme) and places the wide glyph at column 0 of the next row.
-        //
-        // The cells walk skips `SpacerTail` (a wide glyph's second column)
-        // but treats `SpacerHead` as a normal width-1 cell, advancing
-        // col_index by 1 — which matches libghostty's column model, where
-        // `Cell.gridWidth()` returns 1 for `spacer_head` and 2 only for
-        // `wide`. This test pins that accounting across the wrap boundary
-        // (phux-ja1).
-        //
-        // Layout on a 4-column grid for bold "abc你d":
+        // A wide glyph that does not fit wraps, leaving a width-1 SpacerHead:
         //   row 0:  a(0) b(1) c(2) SpacerHead(3)
         //   row 1:  你(0,wide) SpacerTail(1) d(2)
-        // Bold applies to every cell, so each surfaces in the projection.
         let mut t = fresh(4, 3);
         t.vt_write(b"\x1b[1m");
         t.vt_write("abc你d".as_bytes());
@@ -2602,10 +1950,6 @@ mod tests {
             .expect("screen_state_with_scrollback");
         let cells = screen.cells.expect("cells = true populates Some(..)");
 
-        // The (row, col) coordinates every bold cell reports. The SpacerHead
-        // occupies the soft-wrap row's final column (row 0, col 3): it is a
-        // real width-1 cell, not skipped like a SpacerTail, so it both
-        // surfaces here and advances col_index by exactly 1.
         let coords: Vec<(u16, u16)> = cells.iter().map(|c| (c.row, c.col)).collect();
         assert_eq!(
             coords,
@@ -2615,11 +1959,6 @@ mod tests {
              row and its SpacerTail (row 1, col 1) is skipped, got {cells:?}",
         );
 
-        // The wrap resets column accounting per row: the wide glyph that the
-        // SpacerHead displaced lands at col 0 of row 1, and the trailing "d"
-        // reports col 2 (the wide glyph advanced two columns, its SpacerTail
-        // contributing none). The SpacerHead did not leak a column into the
-        // next row.
         assert!(
             cells.iter().any(|c| (c.row, c.col) == (1, 0)),
             "wide glyph wrapped to row 1 must report col 0, got {cells:?}",
@@ -2632,9 +1971,7 @@ mod tests {
 
     #[test]
     fn screen_state_with_scrollback_collects_history() {
-        // A 3-row viewport with 5 written lines pushes the oldest two into
-        // scrollback. Requesting all history (Some(SCROLLBACK_ALL)) must
-        // surface them above an unchanged viewport (phux-o1v).
+        // Five lines on a 3-row grid: two land in scrollback.
         let mut t = fresh(20, 3);
         t.vt_write(b"line1\r\nline2\r\nline3\r\nline4\r\nline5");
         // Sanity: libghostty must actually be retaining the two scrolled rows.
@@ -2712,14 +2049,8 @@ mod tests {
         assert_eq!(screen.lines[0], "only one line");
     }
 
-    /// A line longer than the grid soft-wraps; the projection reports the
-    /// wrap on the row that continues, and unwrapping joins the two rows
-    /// back into the text that was written (ADR-0077 §2).
-    ///
-    /// This is the mechanism `phux wait --until TEXT` needs: the substring
-    /// "verylongword" straddles the wrap and is absent from every painted
-    /// row, so a match against `lines` fails and a match against
-    /// `unwrapped_rows()` succeeds.
+    /// A long line soft-wraps; unwrapping joins it back into the written
+    /// text, which no single painted row contains.
     #[test]
     fn screen_state_reports_soft_wrap_and_unwraps_to_the_written_line() {
         let mut t = fresh(10, 4);
@@ -2747,10 +2078,8 @@ mod tests {
         );
     }
 
-    /// A wide glyph that will not fit in the final column leaves a
-    /// `SpacerHead` there and moves to the next row. The wrap bit must
-    /// still be reported, and the join must not smuggle the spacer's blank
-    /// into the logical line (`phux-ja1`'s cells case, now for text).
+    /// A wide glyph wrapped past a `SpacerHead` still reports the wrap, and the
+    /// join does not include the spacer's blank.
     #[test]
     fn screen_state_unwraps_across_a_wide_glyph_at_the_wrap_boundary() {
         let mut t = fresh(4, 3);
@@ -2773,9 +2102,7 @@ mod tests {
         );
     }
 
-    /// Wrap bits are reported for history rows too, indexed into the
-    /// returned window, and a run straddling the history/viewport seam
-    /// joins.
+    /// History rows report wrap bits too, and a run across the seam joins.
     #[test]
     fn screen_state_reports_soft_wrap_in_scrollback() {
         // 3-row viewport; a long first line wraps into two rows and the
@@ -2802,9 +2129,7 @@ mod tests {
         );
     }
 
-    /// A bounded history request that leaves older retained rows behind
-    /// reports `truncated`; one that reaches all of them does not
-    /// (ADR-0077 §3).
+    /// `truncated` is set only when older retained rows were left out.
     #[test]
     fn screen_state_reports_truncated_only_when_the_window_clipped() {
         let mut t = fresh(20, 2);
@@ -2869,12 +2194,7 @@ mod tests {
 
     #[test]
     fn synthesizer_round_trips_via_libghostty() {
-        // Feed bytes into a Terminal, synthesise a snapshot, feed the
-        // snapshot into a fresh Terminal — the cursor position must match.
-        // We assert cursor position rather than full grid equality because
-        // the byte synthesis is best-effort fidelity, not perfect diff;
-        // the snapshot algorithm is allowed to use a different (but
-        // equivalent) sequence of bytes.
+        // Replayed snapshot reproduces the cursor position.
         let mut a = fresh(20, 5);
         a.vt_write(b"hello\r\nworld");
         let synth = synthesize(&a).expect("synth");
@@ -2890,15 +2210,8 @@ mod tests {
         assert_eq!((ax, ay), (bx, by), "cursor position should round-trip");
     }
 
-    /// phux-uow0: the actor reuses ONE `SnapshotSynthesizer` across every
-    /// attach (`self.synth`). A client attaching AFTER content was written
-    /// must receive that content in its snapshot — even though a prior
-    /// `synthesize()` already ran and consumed libghostty's shared per-row
-    /// dirty bits. `synthesize()` is a FULL snapshot: it must repaint every
-    /// row unconditionally, not emit a delta against the consumed dirty state.
-    /// Pre-fix, the second snapshot came back blank (the dirty bits were gone),
-    /// so a snapshot-reliant re-attach saw an empty screen and hung waiting for
-    /// live output that never came (the `attach_detach_churn` / `both_axes` flakes).
+    /// Reusing one synthesizer across attaches still yields the full grid
+    /// after a prior `synthesize()` consumed the dirty bits.
     #[test]
     fn synthesize_reused_across_calls_emits_full_snapshot_each_time() {
         let mut t = fresh(20, 5);
@@ -2930,16 +2243,8 @@ mod tests {
         assert_eq!(render_grid(&b)[0], "MARKER              ");
     }
 
-    /// phux-uow0 REAL root cause: libghostty's per-row dirty bits live on the
-    /// `Terminal` and are CONSUMED by `RenderState::update`. The actor has
-    /// MULTIPLE `RenderState` consumers on one Terminal — the shared snapshot
-    /// synthesizer (`self.synth`, reused across attaches) plus the per-consumer
-    /// state-sync references primed in `register_consumer`. If a per-consumer
-    /// `update` eats the dirty bits BEFORE the full snapshot runs, `synthesize()`
-    /// must STILL emit the complete grid: it is a FULL snapshot, not a delta.
-    /// This mirrors the actor sequence that blanked a re-attach's snapshot:
-    /// client-1 attach (`synthesize`), marker arrives (`vt_write`), client-2
-    /// attach (`register_consumer`'s update consumes dirty), client-2 snapshot.
+    /// Another render state consuming the dirty bits before the snapshot
+    /// must not blank it: `synthesize()` is full, not a delta.
     #[test]
     fn full_snapshot_survives_another_consumer_eating_dirty_bits() {
         let mut t = fresh(20, 5);
@@ -2967,12 +2272,7 @@ mod tests {
         );
     }
 
-    /// Regression test for phux-073: a wide CJK glyph (here `你`) takes
-    /// two columns; libghostty marks the second column as
-    /// `CellWide::SpacerTail`. Before the fix the synthesizer treated
-    /// that tail as a blank cell and emitted a space, producing the
-    /// wrong layout on replay. After the fix the tail is skipped and
-    /// the grid round-trips exactly.
+    /// A wide glyph's tail is skipped, not replayed as a space.
     #[test]
     fn synthesizer_skips_wide_cell_tails() {
         let mut a = fresh(10, 2);
@@ -3006,13 +2306,7 @@ mod tests {
         );
     }
 
-    /// Companion to `synthesizer_skips_wide_cell_tails`: exercise the
-    /// wide-tail discriminator across a heterogeneous mix of CJK,
-    /// emoji, and ASCII on multiple rows. Each emoji codepoint
-    /// (e.g. `😀`, U+1F600) is double-width and produces a
-    /// `CellWide::SpacerTail` neighbor in libghostty's grid, the same
-    /// way CJK does. The round-trip must reproduce the source grid
-    /// cell-for-cell.
+    /// Mixed CJK, emoji, and ASCII round-trip cell-for-cell.
     #[test]
     fn synthesizer_round_trips_cjk_and_emoji() {
         let mut a = fresh(20, 4);
@@ -3034,9 +2328,6 @@ mod tests {
             "CJK + emoji content must round-trip through the synthesizer"
         );
 
-        // The source row containing `東` must carry the literal glyph,
-        // not a leading space that would indicate the wide tail leaked
-        // into the leading position.
         assert!(
             src_grid[0].starts_with('東'),
             "source row 0 should start with 東, got {:?}",
@@ -3044,17 +2335,8 @@ mod tests {
         );
     }
 
-    /// phux-99n: a snapshot taken while a 1049-alt-screen program
-    /// (vim/less/man/htop/tmux) is running MUST re-establish the alt
-    /// screen via `?1049h` so the receiving mirror lands on the alt
-    /// buffer — and must NOT force the primary screen via a stale `?47l`.
-    ///
-    /// This is the FLIP of the audit pin test
-    /// `audit_snapshot_drops_alt_screen_1049_mode`: the pin asserted the
-    /// buggy status quo (`?1049h` absent, `?47l` emitted); we assert the
-    /// fix. 1049 also saves the cursor + clears on entry, so it must be
-    /// emitted BEFORE the cursor re-establishment — verified by checking
-    /// `?1049h` precedes the cursor-home/CUP in the byte stream.
+    /// A 1049 alt-screen snapshot re-establishes `?1049h`, before the
+    /// cursor restore.
     #[test]
     fn snapshot_reestablishes_alt_screen_1049() {
         let mut t = fresh(20, 4);
@@ -3078,19 +2360,12 @@ mod tests {
             bytes.contains("?1049h"),
             "snapshot must re-emit ?1049h so the mirror lands on the alt screen; bytes={bytes:?}",
         );
-        // 47 is off, so the snapshot reports its true (off) state. The bug
-        // was emitting ?47l as the ONLY alt-screen signal; now ?1049h
-        // carries the screen and ?47l is merely the honest 47 state.
         assert!(
             !bytes.contains("?47h"),
             "47 is off; snapshot must not assert ?47h; bytes={bytes:?}",
         );
-        // Ordering: 1049 saves cursor + clears on entry, so it must come
-        // before the epilogue's cursor re-establishment, else the CUP we
-        // emit to restore the cursor is clobbered by the screen switch.
-        // The epilogue's cursor-visibility CSI (`?25h`/`?25l`) is emitted
-        // immediately after that CUP and only there, so it is a reliable
-        // landmark for "the cursor has been re-established".
+        // `?25h`/`?25l` follows the cursor restore, so it marks "cursor
+        // re-established".
         let pos_1049 = bytes.find("?1049h").expect("?1049h present");
         let pos_cursor_vis = bytes
             .find("?25h")
@@ -3102,17 +2377,8 @@ mod tests {
         );
     }
 
-    /// The mouse-tracking DEC modes must survive the snapshot boundary.
-    ///
-    /// Regression for phux-mlo5 ("can't scroll in a TUI after attaching"): the
-    /// epilogue replayed bracketed paste, focus events, and the alt-screen
-    /// bits but never the mouse modes. The client keeps its own libghostty
-    /// mirror and gates the wheel on it — a mirror seeded from a snapshot
-    /// that omits `?1000h`/`?1002h`/`?1003h` believes no program wants the
-    /// mouse, so it swallowed the wheel into wheel-to-arrow translation
-    /// instead of forwarding `INPUT_MOUSE`. Asserted through a REPLAY into
-    /// a fresh terminal, because it is the mirror's resulting mode state —
-    /// not the byte spelling — that the client actually reads.
+    /// Mouse-tracking modes survive the snapshot, checked on the replayed
+    /// mirror's mode state.
     #[test]
     fn snapshot_reestablishes_mouse_tracking_modes() {
         // The DECSET set opencode / Claude Code were probed to use.
@@ -3137,10 +2403,7 @@ mod tests {
         }
     }
 
-    /// The inverse: a pane whose program never asked for the mouse must
-    /// leave the mirror with tracking OFF, so the wheel keeps driving the
-    /// local scrollback viewport. An unconditional `?1000h` in the epilogue
-    /// would break scrollback in every plain shell pane.
+    /// A pane that never asked for the mouse replays with tracking off.
     #[test]
     fn snapshot_leaves_mouse_tracking_off_for_a_plain_pane() {
         let mut t = fresh(20, 4);
@@ -3163,11 +2426,7 @@ mod tests {
         }
     }
 
-    /// DEC 1007 (xterm alternate scroll) is the bit that decides whether an
-    /// alt-screen pane WITHOUT mouse tracking gets wheel-to-arrow-key
-    /// translation. libghostty defaults it on, so the load-bearing case is
-    /// an app that opted OUT: `?1007l` must survive the snapshot, or a
-    /// reattach silently resurrects arrow keys the app asked not to get.
+    /// An app's `?1007l` opt-out survives the snapshot.
     #[test]
     fn snapshot_preserves_an_alt_scroll_opt_out() {
         let mut t = fresh(20, 4);
@@ -3187,9 +2446,7 @@ mod tests {
         );
     }
 
-    /// phux-99n: the legacy 47 alt-screen mode still round-trips. A
-    /// program that uses bare `?47h` (rare, but valid) must have the
-    /// snapshot re-emit `?47h`, not silently drop it.
+    /// Legacy `?47h` round-trips.
     #[test]
     fn snapshot_reestablishes_alt_screen_47_legacy() {
         let mut t = fresh(20, 4);
@@ -3205,9 +2462,7 @@ mod tests {
         );
     }
 
-    /// phux-99n: on the PRIMARY screen the snapshot must report all three
-    /// alt-screen modes as off (`?47l ?1047l ?1049l`) — i.e. it must not
-    /// accidentally assert any alt-screen mode.
+    /// On the primary screen every alt-screen mode is reported off.
     #[test]
     fn snapshot_primary_screen_emits_all_alt_modes_off() {
         let mut t = fresh(20, 4);
@@ -3226,12 +2481,7 @@ mod tests {
         );
     }
 
-    /// phux-99n: the per-consumer reference diff trips on a 47<->1049
-    /// transition. The audit noted that tracking only the legacy-47 bit in
-    /// `ReferenceCursorMode` would miss a transition between the two
-    /// distinct alt-screen modes. After priming on 1049, switching to the
-    /// primary screen must produce a non-empty diff that re-emits
-    /// `?1049l`.
+    /// The reference diff trips on a 1049 -> primary transition.
     #[test]
     fn reference_diff_trips_on_alt_screen_transition() {
         let mut t = fresh(20, 4);
@@ -3262,12 +2512,7 @@ mod tests {
         );
     }
 
-    /// A program can enable mouse tracking without touching a single row
-    /// or moving the cursor (`:set mouse=a` in vim, a TUI arming the mouse
-    /// for a modal). `ReferenceCursorMode` therefore tracks the mouse mode
-    /// bits: without them the diff is empty, the consumer's mirror keeps
-    /// the stale "nobody wants the mouse" state, and the wheel stays
-    /// mis-routed until something else happens to dirty a row.
+    /// A bare mouse-mode toggle (no row or cursor change) still diffs.
     #[test]
     fn reference_diff_trips_on_a_bare_mouse_mode_toggle() {
         let mut t = fresh(20, 4);
@@ -3292,11 +2537,7 @@ mod tests {
         );
     }
 
-    /// phux-4l0 (correctness half): an unchanged terminal diffs to an
-    /// empty body across repeated calls (emit-once / steady state). The
-    /// behavioral idle short-circuit lives in the actor's `tick_emit`
-    /// (see `terminal_actor.rs`); this pins the synthesis-level invariant
-    /// the short-circuit relies on — a clean terminal yields nothing.
+    /// An unchanged terminal diffs to nothing, repeatedly.
     #[test]
     fn reference_diff_empty_when_unchanged() {
         let mut t = fresh(40, 10);
@@ -3320,9 +2561,7 @@ mod tests {
         }
     }
 
-    /// `render_screen`'s `Some(n)` history window is an exact boundary,
-    /// same as the plain projection's: the row `n` back from the viewport
-    /// is included, the row `n + 1` back is not (review item 5).
+    /// `Some(n)` includes exactly `n` history rows.
     #[test]
     fn render_screen_some_n_boundary_includes_exactly_n_history_rows() {
         // 5 lines, 20x2 viewport -> 3 rows of scrollback (line1..line3),
@@ -3350,19 +2589,14 @@ mod tests {
         );
     }
 
-    /// `render_screen`'s history window never exceeds `ROW_WINDOW_MAX`
-    /// rows, even for `Some(0)` ("all retained history") against a
-    /// terminal retaining more than that (review item 2(a)).
+    /// The rendered history window never exceeds `ROW_WINDOW_MAX` rows.
     #[test]
     fn render_screen_clamps_all_retained_history_to_row_window_max() {
         let mut t = GhosttyTerminal::new(10, 2).expect("Terminal::new");
         let over = usize::try_from(ROW_WINDOW_MAX).unwrap_or(usize::MAX) + 5;
         t.set_scrollback_max_lines(Some(over + 10))
             .expect("set_scrollback_max_lines");
-        // The line cap alone is not the only retention limit: a separate
-        // byte budget defaults low enough to cap retention well under
-        // `over` rows on its own, which would make this test pass for the
-        // wrong reason (the byte cap, not `render_screen`'s own clamp).
+        // Lift the byte cap so the clamp under test, not retention, bounds it.
         t.set_scrollback_max_bytes(None)
             .expect("set_scrollback_max_bytes");
         let mut input = Vec::with_capacity(over * 4);
@@ -3387,9 +2621,6 @@ mod tests {
             rendered.data.contains(&format!("r{}", over - 1)),
             "the most-recent retained row must still be present",
         );
-        // Row names have no leading zeros (`format!("r{i}")`), so "r0" as
-        // a bare substring can only ever be the literal row `r0` — never
-        // a prefix of `r10`/`r100`/etc.
         assert!(
             !rendered.data.contains("r0"),
             "the oldest retained row must have been clamped away by ROW_WINDOW_MAX \
@@ -3397,11 +2628,7 @@ mod tests {
         );
     }
 
-    /// A rendered capture whose measured byte count exceeds the budget is
-    /// refused with `RenderBudgetExceeded`, not silently truncated or
-    /// allocated anyway (review item 2(b)). Uses the budget-parameterized
-    /// test seam rather than constructing megabytes of content: a
-    /// two-character render trivially exceeds a one-byte budget.
+    /// Over budget is refused, not truncated.
     #[test]
     fn render_screen_over_budget_is_refused_not_truncated() {
         let mut t = fresh(20, 2);
@@ -3418,9 +2645,7 @@ mod tests {
         }
     }
 
-    /// The happy path for the same budget seam: a generous budget renders
-    /// normally, proving the refusal above is about the byte count, not a
-    /// broken formatter call.
+    /// Within budget renders normally.
     #[test]
     fn render_screen_under_budget_renders_normally() {
         let mut t = fresh(20, 2);

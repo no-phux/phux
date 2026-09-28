@@ -1,28 +1,12 @@
-//! Stdout for the `phux` binary — the one place that knows what to do when
-//! the reader hangs up.
-//!
-//! `println!` panics when the write fails, and the write fails the moment a
-//! human does an ordinary thing: `phux snapshot work | head -8`, or quitting
-//! `less` before the listing ends. The reader closes its end, the next write
-//! gets `EPIPE` (Rust masks `SIGPIPE` at startup, so it surfaces as an error
-//! and not a signal), and `println!`'s internal `expect` unwinds. Before
-//! this module existed that produced, for a perfectly healthy server, a
-//! ~50-frame backtrace and an ERROR line reading `server panic` from the
-//! process-global panic hook — a triage hazard on top of a crash on top of
-//! a non-event (phux-h5hj.8, phux-ngq2).
-//!
-//! Every stdout write in this crate goes through `outln!`, `out!`, or
-//! `bytes`. That is not a convention anyone has to remember: the bin crate
-//! no longer carries a `clippy::print_stdout` allow, so a new `println!`
-//! fails `just ci` instead of failing a user six months from now.
-//!
-//! Stderr is deliberately left on `eprintln!`. It is the diagnostic channel,
-//! it is almost never the piped one, and routing it through here would mean
-//! a failure to report a failure exits the process from inside the reporter.
+//! Stdout for the `phux` binary: the one place that handles a reader
+//! hanging up (`phux snapshot work | head`). `println!` panics on `EPIPE`;
+//! every stdout write here goes through `outln!`, `out!`, or `bytes`, and the
+//! crate carries no `clippy::print_stdout` allow, so a stray `println!` fails
+//! lint. Stderr stays on `eprintln!`.
 
 use std::fmt;
 use std::io::{self, ErrorKind, Write};
-use std::process;
+use std::process::{self, ExitCode};
 
 /// Status handed to the OS when a write fails for a reason that is *not* the
 /// reader leaving. Mirrors `ExitCode::FAILURE`, which these paths cannot
@@ -44,25 +28,14 @@ pub(crate) fn fragment(args: fmt::Arguments<'_>) {
     settle(out.write_fmt(args));
 }
 
-/// Write raw bytes to stdout.
-///
-/// For payloads rendered into a buffer by someone else's API — `phux
-/// completion <shell>`, whose script comes out of `clap_complete` — rather
-/// than formatted here.
+/// Write raw bytes to stdout (payloads rendered elsewhere).
 pub(crate) fn bytes(buf: &[u8]) {
     let mut out = io::stdout().lock();
     settle(out.write_all(buf));
 }
 
-/// Write raw bytes to stdout and push them out *now*.
-///
-/// For `phux play`, whose stdout is a pane's PTY and whose payload is a
-/// terminal byte stream, not lines. Rust's stdout is a `LineWriter`, so a
-/// chunk ending in `$ ` — a shell prompt, the single most common way for a
-/// recording to end — would sit in the buffer until some later chunk
-/// happened to carry a newline. The pane would then paint a stale frame and
-/// the playback's whole point, that the timing is the recording's timing,
-/// would be a lie for every partial line in the file.
+/// Write raw bytes to stdout and flush now: `phux play` feeds a PTY, and a
+/// line-buffered partial line (a prompt) would paint late.
 pub(crate) fn bytes_now(buf: &[u8]) {
     // One lock for the write and the flush: a second `stdout().lock()` would
     // be a second chance for another writer to interleave between a chunk
@@ -71,59 +44,25 @@ pub(crate) fn bytes_now(buf: &[u8]) {
     settle(out.write_all(buf).and_then(|()| out.flush()));
 }
 
-/// Turn the result of a stdout write into the right process outcome.
-///
-/// `pub(crate)` for the one stdout write this module cannot own: clap's
-/// `Error::print()` for `--help`/`--version`, which renders straight to
-/// `io::stdout()` inside clap. Its caller (`report_parse_error` in
-/// `lib.rs`) settles the returned `io::Result` here so a reader that hung
-/// up gets the same clean `exit(0)` as every `outln!` site.
-pub(crate) fn settle(result: io::Result<()>) {
+/// Turn a stdout write result into the process outcome: a closed reader
+/// exits 0, anything else is one stderr line and a failing status.
+fn settle(result: io::Result<()>) {
     let Err(err) = result else { return };
     if err.kind() == ErrorKind::BrokenPipe {
         give_up();
     }
-    // Anything else is a real failure the user wants to know about: a full
-    // disk under `phux snapshot --json > out.json`, `EIO` on a dying tty.
-    // One stderr line and a failing status says what the old panic said,
-    // without 50 frames of noise and without exit code 101.
+    // A real failure (full disk, `EIO`): one stderr line and a failing status.
     eprintln!("phux: cannot write to stdout: {err}");
     process::exit(EXIT_WRITE_FAILED);
 }
 
 /// End the process because stdout's reader is gone.
 ///
-/// DESIGN — why this exits here instead of returning a sentinel that each
-/// verb propagates back to `main`:
-///
-/// 1. A sentinel would put the contract straight back into the caller's
-///    head, which is the thing this module exists to delete. The write
-///    sites sit inside `-> ()` renderers (`print_screen_box`, the `doctor`
-///    summary, the `service install` report); every one of them, plus every
-///    frame between them and `main`, would have to grow a `Result` and
-///    remember to forward it. One missed `?` and the panic is back —
-///    silently, in whichever verb nobody piped into `head` until a user did.
-/// 2. There is nothing left to unwind. Every stdout write in this crate
-///    *reports work that already completed*: the cast file is finalized
-///    before `rec` prints its summary, the unit file is on disk before
-///    `service install` prints it, the session is already dead before
-///    `kill` says so. No caller is mid-mutation at a write site, so an
-///    unwind would buy nothing but another chance to write a report to a
-///    reader that left.
-/// 3. Zero, not 141 or 101: a reader that hung up is the intended end of
-///    `| head`, not a failure. The shell reports the last pipeline element's
-///    status anyway, and a nonzero here would trip `set -o pipefail` scripts
-///    over a non-event.
-///
-/// The cost, stated plainly: `process::exit` runs no destructors. A
-/// `PHUX_LOG` file tee can lose the tail buffered in its non-blocking
-/// writer, and a `--features dhat-heap` build will not write its
-/// `dhat-heap.json` — both are diagnostics, both only for the invocation
-/// whose reader walked away, and neither is a build a user runs. The
-/// client's detach path already accepts the same trade (see
-/// `phux_server::telemetry::init_client`); nothing else a one-shot verb
-/// holds has a `Drop` that matters. Flushing stdout first is pointless: the
-/// pipe it would flush into is the thing that just went away.
+/// Exits here rather than returning a sentinel: every write site reports work
+/// that already completed, so there is nothing to unwind, and threading a
+/// `Result` through every renderer would reintroduce the panic at the first
+/// missed `?`. Exit 0 because `| head` hanging up is the intended end. The cost
+/// is that no destructors run (a `PHUX_LOG` tee may lose its tail).
 fn give_up() -> ! {
     process::exit(0)
 }
@@ -140,12 +79,31 @@ macro_rules! outln {
     };
 }
 
-/// `print!` that treats a closed reader as a clean exit instead of a panic.
-///
-/// Stdout stays line-buffered, so a fragment with no newline waits in the
-/// buffer for one — exactly as with `print!`.
+/// `print!` that treats a closed reader as a clean exit. Line-buffered, like
+/// `print!`.
 macro_rules! out {
     ($($arg:tt)*) => {
         $crate::output::fragment(::core::format_args!($($arg)*))
     };
+}
+
+/// Print `value` as one pretty-printed JSON document. phux's own documents
+/// always serialize, so a failure is reported as a bug on the `--json` error
+/// contract.
+pub(crate) fn json(value: &impl serde::Serialize) -> ExitCode {
+    match serde_json::to_string_pretty(value) {
+        Ok(rendered) => {
+            outln!("{rendered}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => crate::commands::json_err::emit(
+            true,
+            &crate::commands::json_err::CliError::new(
+                crate::commands::json_err::codes::JSON_SERIALIZE,
+                format!("could not render JSON: {err}"),
+                "this is a phux bug; run `phux doctor` and report it",
+            ),
+            1,
+        ),
+    }
 }

@@ -1,6 +1,14 @@
-//! Hub, relay connector, satellite metadata, and TLS identity integration tests.
+//! Hub, relay, connector, satellite, and TLS identity integration tests.
 
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "tests"
+)]
+#![allow(clippy::future_not_send, reason = "LocalSet-driven tests")]
+
+mod hub_relay_federation;
 mod hub_runtime;
-mod relay_connector_spike;
-mod satellite_metadata_subscription;
+mod relay_e2e;
 mod tls_server_name;

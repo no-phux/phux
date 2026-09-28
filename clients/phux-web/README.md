@@ -55,18 +55,6 @@ Zig module as a **second, separate** wasm instance and calls across to it. Two
 wasm instances live in the page; bytes are copied across the boundary (fine for
 terminal traffic). See [ADR-0024]/[ADR-0025] for why this beats linking them.
 
-## Runtime flow
-
-```text
-1. browser loads phux_web.js + phux_web_bg.wasm
-2. Rust client boots → instantiates the embedded ghostty-vt.wasm
-3. opens a WebSocket to the phux server
-4. server ──► binary frame (FrameKind)  → decode with phux-protocol → VT bytes
-5. write VT bytes into the engine (vt_write) → engine updates its grid + cursor
-6. read the grid back → paint <canvas>; a 530 ms interval blinks the cursor
-7. you type ──► KeyboardEvent → phux-protocol INPUT_KEY → WebSocket → server
-```
-
 ## Public API
 
 Two `#[wasm_bindgen]` entry points, designed to be driven from JS:

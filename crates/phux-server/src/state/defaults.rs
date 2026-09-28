@@ -2,11 +2,7 @@ use portable_pty::CommandBuilder;
 
 use super::ServerState;
 
-/// Server-owned identity for the session seeded at startup.
-///
-/// Kept in boot configuration rather than inferred from registry order so an
-/// untouched `AttachTarget::Last` resolves the configured seed even when other
-/// sessions exist. Resolution still verifies that the named session is live.
+/// Boot-configuration setters and getters.
 impl ServerState {
     /// Mirror [`crate::runtime::ServerConfig::pre_seeded_session`] into state.
     pub(crate) fn set_pre_seeded_session(&mut self, name: Option<String>) {
@@ -20,20 +16,9 @@ impl ServerState {
         self.config.pre_seeded_session.as_deref()
     }
 
-    /// Configure the PTY mode and seed command used by
-    /// `crate::runtime::handle_attach`'s
-    /// `AttachTarget::CreateIfMissing` branch (phux-k61.3).
-    ///
-    /// Called once at server startup to mirror
-    /// [`crate::runtime::ServerConfig::seed_with_pty`] /
-    /// [`crate::runtime::ServerConfig::seed_command`] into state, so the
-    /// attach-time creation path can read them without an extra channel
-    /// to the runtime.
-    ///
-    /// When `with_pty` is `false`, `cmd` is ignored — the create path
-    /// spawns a no-PTY actor instead. Setting `cmd = None` with
-    /// `with_pty = true` falls back to
-    /// [`crate::terminal_actor::default_shell_command`] at create time.
+    /// Configure the attach-time `CreateIfMissing` seed: a PTY pane
+    /// (`cmd`, or the default shell when `None`) or, without `with_pty`, a
+    /// PTY-less actor.
     pub fn set_attach_create_pty(&mut self, with_pty: bool, cmd: Option<CommandBuilder>) {
         self.config.attach_create_seeds_pty = with_pty;
         self.config.attach_create_seed_command = cmd;
@@ -45,20 +30,13 @@ impl ServerState {
         self.config.attach_create_seeds_pty
     }
 
-    /// Clone the optional pre-built seed command. Used by the create
-    /// path inside `handle_attach`: each `AttachTarget::CreateIfMissing`
-    /// that fires gets a fresh clone, so the slot stays populated for
-    /// future creates. `CommandBuilder` is `Clone` (per portable-pty
-    /// 0.8), so this is cheap.
+    /// A fresh clone of the seed command for one create.
     #[must_use]
     pub fn attach_create_seed_command(&self) -> Option<CommandBuilder> {
         self.config.attach_create_seed_command.clone()
     }
 
-    /// Set the per-pane scrollback bounds (`defaults.history-limit` and
-    /// `defaults.history-bytes`) used by the attach-time creation path
-    /// and `SPAWN_RESOURCE`. Called once at server startup to mirror
-    /// [`crate::runtime::ServerConfig::scrollback`] into state.
+    /// Set the per-pane scrollback bounds.
     pub const fn set_scrollback_limits(&mut self, scrollback: phux_config::ScrollbackLimits) {
         self.config.scrollback = scrollback;
     }
@@ -88,9 +66,7 @@ impl ServerState {
         self.config.voice = voice;
     }
 
-    /// Set the L3 per-key metadata value cap (`limits.metadata-value-bytes`,
-    /// ADR-0129). Called once at server startup to mirror
-    /// [`crate::runtime::ServerConfig::metadata_value_bytes`].
+    /// Set the metadata value cap (ADR-0129).
     pub const fn set_metadata_value_bytes(&mut self, bytes: u32) {
         self.config.metadata_value_bytes = bytes;
     }
@@ -108,10 +84,7 @@ impl ServerState {
         self.config.voice.clone()
     }
 
-    /// Set the working-directory inheritance policy
-    /// (`defaults.cwd-inheritance`) used by `SPAWN_RESOURCE`. Called once
-    /// at server startup to mirror
-    /// [`crate::runtime::ServerConfig::cwd_inheritance`] into state.
+    /// Set the cwd-inheritance policy.
     pub const fn set_cwd_inheritance(&mut self, mode: phux_config::CwdInheritance) {
         self.config.cwd_inheritance = mode;
     }
@@ -123,9 +96,7 @@ impl ServerState {
         self.config.cwd_inheritance
     }
 
-    /// Set the default `TERM` (`defaults.term`) advertised to
-    /// server-spawned panes. Called once at server startup to mirror
-    /// [`crate::runtime::ServerConfig::term`] into state.
+    /// Set the default `TERM` for spawned panes.
     pub fn set_term(&mut self, term: String) {
         self.config.term = term;
     }
@@ -137,10 +108,7 @@ impl ServerState {
         &self.config.term
     }
 
-    /// Set the resolved default shell (`defaults.shell` → `$SHELL` →
-    /// `/bin/sh`, phux-i0e8.4.1) server-spawned panes run when no wire
-    /// `command` names a program. Called once at server startup to
-    /// mirror [`crate::runtime::ServerConfig::shell`] into state.
+    /// Set the resolved default shell.
     pub fn set_shell(&mut self, shell: String) {
         self.config.shell = shell;
     }
@@ -151,11 +119,8 @@ impl ServerState {
         &self.config.shell
     }
 
-    /// Set whether a command-less pane spawn should invoke [`Self::shell`]
-    /// in its platform login mode (phux-87rr). Called once at server
-    /// startup to mirror [`crate::runtime::ServerConfig::login_shell`]
-    /// into state; `true` only when the binary detected it was started
-    /// under a service manager's generated unit.
+    /// Set whether command-less spawns use login mode (service-managed
+    /// servers).
     pub const fn set_login_shell(&mut self, login_shell: bool) {
         self.config.login_shell = login_shell;
     }
@@ -166,10 +131,7 @@ impl ServerState {
         self.config.login_shell
     }
 
-    /// Set the UDS path this server listens on. Called once at server
-    /// startup to mirror [`crate::runtime::ServerConfig::socket_path`]
-    /// into state so every pane spawn site can inject it as
-    /// `PHUX_SOCKET` (phux-cufw).
+    /// Set the UDS path injected into panes as `PHUX_SOCKET`.
     pub fn set_server_socket_path(&mut self, path: std::path::PathBuf) {
         self.config.server_socket_path = Some(path);
     }
@@ -181,9 +143,7 @@ impl ServerState {
         self.config.server_socket_path.as_deref()
     }
 
-    /// Set the multi-client window-size policy (`defaults.window-size`,
-    /// phux-nk07). Called once at server startup to mirror
-    /// [`crate::runtime::ServerConfig::window_size`] into state.
+    /// Set the multi-client window-size policy.
     pub const fn set_window_size(&mut self, window_size: phux_config::WindowSize) {
         self.config.window_size = window_size;
     }

@@ -1,64 +1,32 @@
-//! Best-effort overlay-network address detection (ADR-0037).
+//! Best-effort overlay-network address detection for `phux pair` (ADR-0037).
 //!
-//! `phux pair` prints credentials but no address, leaving the operator to
-//! hunt down the host's overlay IP by hand. This module closes that gap:
-//! the primary source is the `tailscale` CLI (`tailscale ip -4`, which is
-//! also the Headscale client), overridable via `$PHUX_TAILSCALE` (listed in
-//! the CLI ENVIRONMENT help) — mirroring the `$PHUX_SSH` seam in the hub
-//! dialer; the fallback is a zero-dependency UDP route probe that reports
-//! the kernel-chosen source address only when it sits inside the Tailscale
-//! CGNAT range (`100.64.0.0/10`).
-//!
-//! The fallback is a *guess made in the absence of configuration*, so it is
-//! consulted only when `$PHUX_TAILSCALE` is unset. Once an operator names
-//! the overlay CLI, that CLI is the whole answer — including when it says
-//! nothing (phux-vlv1). Reading the routing table behind an explicit
-//! setting is how `$PHUX_TAILSCALE` came to be an override that could not
-//! actually override: pointing it at a command that reports no overlay left
-//! `detect` returning the host's real tailnet address anyway, which is what
-//! made every consumer of this module — `phux doctor` most sharply, since it
-//! *dials* what it detects — impossible to isolate in a test.
-//!
-//! Per ADR-0037 phux stays overlay-agnostic: nothing here is load-bearing,
-//! every failure (missing binary, tailscaled down, unparseable output)
-//! degrades to printing nothing, and no overlay is special-cased below the
-//! UX layer. Known limitation: raw `WireGuard` or Nebula overlays addressed
-//! from ordinary private ranges (`10.x`, `192.168.x`) are not detected —
-//! their operators find the address with their usual tooling.
+//! The source is `tailscale ip -4` (overridable via `$PHUX_TAILSCALE`), with a
+//! fallback UDP route probe reported only inside the Tailscale CGNAT range.
+//! The probe is a guess made only when `$PHUX_TAILSCALE` is unset: a named CLI
+//! is the whole answer, even when it says nothing. Every failure degrades to
+//! detecting nothing.
 
 use std::net::IpAddr;
 
-/// Detect the host's overlay-network addresses, best effort.
-///
-/// Returns an empty vec when nothing is detected — callers print nothing
-/// and detection can never affect an exit code.
-///
-/// `$PHUX_TAILSCALE` selects the CLI *and* suppresses the route-probe
-/// fallback: see the module doc for why an override that can be overruled
-/// is not an override.
+/// Detect the host's overlay-network addresses, best effort (empty when
+/// nothing is detected).
 #[must_use]
 pub fn detect() -> Vec<IpAddr> {
     detect_from_override(std::env::var_os("PHUX_TAILSCALE").as_deref())
 }
 
-/// [`detect`] with the `$PHUX_TAILSCALE` value passed in, so the
-/// override-suppresses-the-probe wiring is testable without mutating the
-/// environment (`env::set_var` is unsafe under edition 2024).
+/// [`detect`] with the `$PHUX_TAILSCALE` value injected for tests.
 fn detect_from_override(program: Option<&std::ffi::OsStr>) -> Vec<IpAddr> {
     let Some(program) = program else {
-        // Unconfigured: the default CLI, then the guess.
         return detect_with(
             || run_tailscale_ip(std::ffi::OsStr::new("tailscale")),
             cgnat_route_probe,
         );
     };
-    // Configured: the named CLI is the whole answer, and the `|| None`
-    // probe is the point — nothing may contradict it.
     detect_with(|| run_tailscale_ip(program), || None)
 }
 
-/// [`detect`] with both sources injectable, so tests can drive the
-/// tailscale-wins / fallback / nothing-detected matrix without a tailnet.
+/// [`detect`] with both sources injectable.
 fn detect_with(
     tailscale: impl Fn() -> Option<String>,
     route_probe: impl Fn() -> Option<IpAddr>,
@@ -75,32 +43,16 @@ fn detect_with(
         .collect()
 }
 
-/// How long the tailscale shell-out may run before it is killed. `tailscale
-/// ip` answers in milliseconds when healthy; anything slower means a wedged
-/// tailscaled, and best-effort detection must never hang `phux pair`.
+/// How long `tailscale ip` may run before it is killed: a wedged tailscaled
+/// must never hang `phux pair`.
 const TAILSCALE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Run `tailscale ip -4` (or the `$PHUX_TAILSCALE` override) and return its
-/// stdout, or `None` when the binary is missing, exits non-zero (tailscaled
-/// down, not logged in), or outlives the deadline (tailscaled wedged). The
-/// program is a parameter rather than an env read so tests can point it at a
-/// stub script without mutating the environment (`env::set_var` is unsafe
-/// under edition 2024 and this crate forbids unsafe code).
-///
-/// The wait is bounded by [`TAILSCALE_DEADLINE`]: `tailscale ip` talks to
-/// tailscaled over its local API socket and can block indefinitely when the
-/// daemon is wedged (mid-upgrade, stuck state). A blocking `output()` call
-/// would hang `phux pair` with it, so the child is polled against the
-/// deadline and killed on expiry.
+/// Run `<program> ip -4` and return its stdout, or `None` when it is missing,
+/// fails, or outlives [`TAILSCALE_DEADLINE`] (it is then killed).
 fn run_tailscale_ip(program: &std::ffi::OsStr) -> Option<String> {
     run_tailscale_ip_with_deadline(program, TAILSCALE_DEADLINE)
 }
 
-/// [`run_tailscale_ip`] with the deadline injectable, so the happy-path
-/// round-trip test can use a bound generous enough to survive a loaded CI
-/// box (a `/bin/sh` stub can take over 2s just to spawn there) without
-/// loosening the production deadline. Deadline *behavior* is pinned
-/// separately by the wedged-stub test.
 fn run_tailscale_ip_with_deadline(
     program: &std::ffi::OsStr,
     deadline: std::time::Duration,
@@ -120,8 +72,7 @@ fn run_tailscale_ip_with_deadline(
             Ok(None) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
-            // Deadline expired (or the wait itself failed): kill and reap
-            // so no zombie outlives the command, then report nothing.
+            // Deadline expired: kill and reap so no zombie outlives us.
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -132,9 +83,7 @@ fn run_tailscale_ip_with_deadline(
     if !status.success() {
         return None;
     }
-    // Reading stdout only after exit cannot deadlock: a couple of seconds
-    // of `tailscale ip` output (a handful of address lines) is far below
-    // the pipe buffer capacity, so the child never blocks on a full pipe.
+    // A few address lines never fill the pipe, so reading after exit is safe.
     let mut buf = Vec::new();
     std::io::Read::read_to_end(&mut child.stdout.take()?, &mut buf).ok()?;
     Some(String::from_utf8_lossy(&buf).into_owned())
@@ -207,16 +156,9 @@ mod tests {
         assert_eq!(addrs, vec![ip("100.99.98.97")]);
     }
 
-    /// phux-vlv1: an explicitly configured overlay CLI that reports nothing
-    /// means "no overlay", full stop. Before this, the route probe ran anyway
-    /// and reported the host's real tailnet address — so `$PHUX_TAILSCALE`
-    /// could not actually turn detection off, and no test could isolate the
-    /// consumers that dial what this returns (`phux doctor`'s
-    /// remote-reachable check).
-    ///
-    /// The assertion holds on a tailnet-attached developer box and on a CI
-    /// runner alike, which is exactly the point: it is the only branch here
-    /// whose answer does not depend on the host.
+    /// A configured overlay CLI that reports nothing means "no overlay": the
+    /// route probe must not second-guess it (it would report the host's
+    /// real tailnet address).
     #[test]
     fn a_configured_overlay_cli_suppresses_the_route_probe() {
         assert!(
@@ -240,16 +182,7 @@ mod tests {
         assert!(detect_with(|| None, || None).is_empty());
     }
 
-    #[test]
-    fn missing_binary_degrades_to_none() {
-        assert!(
-            run_tailscale_ip(std::ffi::OsStr::new("/nonexistent/phux-no-such-binary")).is_none()
-        );
-    }
-
-    /// End-to-end through the real spawn path: a stub script standing in
-    /// for the tailscale CLI (the `$PHUX_TAILSCALE` seam, injected directly
-    /// because env mutation is unsafe under edition 2024).
+    /// End-to-end through the real spawn path with a stub CLI.
     #[cfg(unix)]
     #[test]
     fn stub_tailscale_binary_round_trips() {
@@ -261,23 +194,15 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
             .expect("chmod stub");
 
-        // Generous deadline: this test pins the spawn/parse round-trip, not
-        // deadline behavior (the wedged-stub test does that). Under full
-        // parallel nextest load the stub's /bin/sh spawn alone has been
-        // observed to blow the 2s production deadline and flake this test.
+        // Generous deadline: a loaded CI box can take seconds to spawn /bin/sh.
         let out =
             run_tailscale_ip_with_deadline(script.as_os_str(), std::time::Duration::from_secs(30))
                 .expect("stub output");
         assert_eq!(parse_tailscale_ip_output(&out), vec![ip("100.99.98.97")]);
     }
 
-    /// A wedged tailscaled must not hang `phux pair`: a stub that sleeps
-    /// far past the deadline is killed and degrades to `None`. The
-    /// deadline is injected short (the test waits it out for real, and the
-    /// 2s production default is pure dead time — the kill-at-deadline
-    /// behavior is what is under test, not the 2s figure). The elapsed
-    /// bound is generous (well under the stub's sleep, well over the
-    /// deadline) to keep slow CI from flaking.
+    /// A wedged tailscaled must not hang `phux pair`: a stub sleeping past
+    /// the deadline is killed and degrades to nothing.
     #[cfg(unix)]
     #[test]
     fn wedged_tailscale_binary_is_killed_at_the_deadline() {

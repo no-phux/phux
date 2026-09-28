@@ -1,32 +1,11 @@
-//! The agent-ask round trip: report a pending question, and answer one.
+//! The agent-ask round trip: [`report`] a pending question (the ADR-0036
+//! hook ingress), and answer one ([`parse_ask_title`] + [`deliver_answer`])
+//! with a choice the asking agent published (ADR-0035).
 //!
-//! Two directions, both over the existing wire:
-//!
-//! - **Reporting** ([`report`]) is the opt-in hook ingress of
-//!   [ADR-0036](../../../docs/adr/0036-agent-asked-detection.md) point 1. An
-//!   integration whose agent has blocked for a human answer calls it, and the
-//!   server emits the normal `AgentEvent::Asked` without the agent having to
-//!   write an OSC title sentinel into its own pane.
-//! - **Answering** ([`parse_ask_title`] + [`deliver_answer`]) is the return
-//!   leg. It exists because `Asked` carries the *suggestions the asking agent
-//!   itself published* ([ADR-0035](../../../docs/adr/0035-agent-asked-event.md)),
-//!   so an orchestrator can reply with a validated choice instead of a blind
-//!   keystroke.
-//!
-//! # Why answering reads the title rather than asking the server
-//!
-//! The server owns the live ask (`AskedDetector`), but nothing on the wire
-//! reads it back: `Asked` is broadcast on the event stream and there is no
-//! query command. The ADR-0035 sentinel, though, lives in the pane's *title*,
-//! and `GET_STATE` already carries every pane's title — so for a
-//! sentinel-sourced ask the live question is readable client-side, with no new
-//! wire surface and no server round trip the client does not already make
-//! (ADR-0021: selectors, and now ask liveness, resolve client-side).
-//!
-//! That is a real limit, stated rather than papered over: an ask reported
-//! through [`report`] sets no title, so [`parse_ask_title`] cannot see it. A
-//! hook-sourced ask is answerable only once the server grows a read-back for
-//! its own detector state.
+//! Answering reads the live ask from the pane's title sentinel, which
+//! `GET_STATE` already carries; nothing on the wire reads the server's own
+//! ask state back. So a hook-reported ask (which sets no title) cannot be
+//! answered this way.
 
 use std::path::Path;
 
@@ -70,12 +49,7 @@ pub async fn report(
     payload: AskedPayload,
 ) -> Result<(), AttachError> {
     let mut conn = Connection::connect(socket).await?;
-    // `handle_report_asked` broadcasts the resulting `Asked` event to the
-    // pane's *event subscribers* before returning its ack — so on a
-    // connection that had subscribed, the event would arrive ahead of the
-    // COMMAND_RESULT. A hook reporter never subscribes: this connection is
-    // opened here, sends exactly one command, and is dropped. Nothing can fan
-    // out onto its mailbox, so there is nothing to keep.
+    // This fresh connection never subscribes, so nothing interleaves.
     match conn
         .request(
             1,
@@ -102,15 +76,8 @@ pub async fn report(
 /// Literal prefix of the ADR-0035 `phux-ask` terminal-title sentinel.
 const ASK_TITLE_PREFIX: &str = "phux-ask";
 
-/// A pending ask, as read out of a pane's terminal title.
-///
-/// The client-side mirror of the server's own `AskMarker`
-/// (`crates/phux-server/src/terminal_actor/mod.rs`), parsing the identical
-/// grammar. The duplication is deliberate and load-bearing: the server parses
-/// the title to *emit* the event, and a client parses the same title to check
-/// the ask it was told about is still the live one. Two readers of one
-/// documented wire-adjacent format, not two sources of truth — the grammar is
-/// normative in ADR-0035 and neither copy may extend it unilaterally.
+/// A pending ask, as read out of a pane's terminal title: the client-side
+/// reader of the ADR-0035 grammar the server's own `AskMarker` parses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AskMarker {
     /// Stable question id an answer correlates against. Empty when the title
@@ -123,12 +90,8 @@ pub struct AskMarker {
 }
 
 impl AskMarker {
-    /// Whether this ask carries an id an answer can be correlated against.
-    ///
-    /// An anonymous ask (`phux-ask:Continue?`) is indistinguishable from the
-    /// *next* anonymous ask with the same text, so it cannot be answered
-    /// safely: the "is this still the question I read?" check would pass
-    /// across a question boundary. Callers refuse rather than guess.
+    /// Whether this ask carries an id an answer can be correlated against;
+    /// an anonymous ask is indistinguishable from the next one worded alike.
     #[must_use]
     pub const fn is_identified(&self) -> bool {
         !self.id.is_empty()
@@ -192,19 +155,11 @@ pub fn parse_ask_title(title: &str) -> Option<AskMarker> {
 }
 
 /// The input batch that answers an ask with `text`: one trusted paste, then
-/// the real Enter key.
+/// Enter.
 ///
-/// Deliberately built here rather than by routing `[text, "Enter"]` through
-/// [`crate::send_keys::events_for`]. That function interprets its arguments as
-/// key *specs*, and a perfectly ordinary answer — `up`, `esc`, `space`, `C-c`
-/// — is a named spec. Answering an agent's "which direction?" with `up` would
-/// send an arrow key instead of the word. An answer is never a key spec; it is
-/// text the asking agent published, and it is typed verbatim.
-///
-/// One batch with Enter last is the ADR-0076 shape: a partial write can only
-/// truncate the tail, and the tail is the submission, so the worst case is an
-/// unsubmitted answer sitting visible in the composer rather than a truncated
-/// one submitted with confidence.
+/// Not [`crate::send_keys::events_for`], which would read an answer like `up`
+/// as an arrow key. Enter last means a partial write can only lose
+/// the submission (ADR-0076).
 #[must_use]
 pub fn answer_events(text: &str) -> Vec<InputEvent> {
     let mut parser = StdinParser::default();
@@ -217,52 +172,19 @@ pub fn answer_events(text: &str) -> Vec<InputEvent> {
     events
 }
 
-/// Deliver `text` as the answer to `pane`'s pending ask, over `conn`.
+/// Deliver `text` as the answer to `pane`'s pending ask, over `conn`, with
+/// one acknowledged [`apply_input_once`] (the verdict table `agent prompt`
+/// uses).
 ///
-/// Delegates the write itself to [`crate::agent_prompt::apply_input_once`] —
-/// the same acknowledged path `agent prompt` uses — rather than issuing its own
-/// `APPLY_INPUT`. That is deliberate: the interesting part of an acknowledged
-/// write is not sending it, it is *reading the reply*, and
-/// [`crate::agent_prompt::classify`] already encodes the one reading each
-/// `ErrorCode` may be given, including the rule that a code this build does not
-/// recognise pessimizes to [`ApplyVerdict::Unknown`]. A second copy of that
-/// table is a second place for an optimistic default to creep in, and the
-/// optimistic default here is a duplicated submission.
-///
-/// `operation_id` must come from a CSPRNG. It is the key to the server's
-/// 10-minute dedupe horizon, under which re-sending the *same* id and payload
-/// replays the cached result instead of typing twice; a guessable id lets an
-/// unrelated client bind that entry first and turn a legitimate answer into an
-/// id-reuse conflict.
-///
-/// Takes an existing connection rather than a socket path so the caller can
-/// read the pane's title and write the answer as consecutive frames on one
-/// connection: the server handles a connection's frames in arrival order, so
-/// nothing this client sends can interleave between the liveness check and the
-/// write.
-///
-/// # This is a single [`apply_input_once`] call, not [`crate::agent_prompt::deliver_acknowledged`]
-///
-/// `agent prompt` and `agent send-keys` both go through `deliver_acknowledged`,
-/// which retries [`ApplyVerdict::Busy`] under [`crate::agent_prompt::submit_with_backoff`]
-/// on the same operation id. This function deliberately does not: the caller's
-/// pre-write liveness check (a `GET_STATE` title read, matched against the
-/// asker's `--id`) is a snapshot that goes stale the moment the pane's title
-/// changes, and a multi-second backoff sleep is exactly long enough for that to
-/// happen — retrying here would risk typing a validated answer into a question
-/// the agent has since moved past, which is the one failure this verb exists to
-/// prevent. `ApplyVerdict::Busy` is therefore surfaced to the caller as-is
-/// (nothing was written) and left for the operator to re-run, which
-/// re-establishes the liveness check rather than reusing a stale one. Nothing
-/// subscribes on this connection either, so unlike `deliver_acknowledged` there
-/// is no interleaved `METADATA_CHANGED` to fold into an occupant-change
-/// check — see the `debug_assert!` below.
+/// `operation_id` must come from a CSPRNG: it keys the server's dedupe
+/// horizon. The caller reads the title and writes the answer on the same
+/// connection, so nothing can interleave between check and write. A
+/// [`ApplyVerdict::Busy`] is surfaced, not retried: the liveness check would
+/// go stale during a backoff.
 ///
 /// # Errors
 ///
-/// Returns [`AttachError`] on transport failure. A server *refusal* is not an
-/// error here — it is an [`ApplyVerdict`], because "the batch was refused" and
-/// "the connection broke" are different questions with different remedies.
+/// Transport failure. A server refusal is an [`ApplyVerdict`], not an error.
 pub async fn deliver_answer(
     conn: &mut Connection,
     pane: &ResourceId,
@@ -272,9 +194,7 @@ pub async fn deliver_answer(
 ) -> Result<ApplyVerdict, AttachError> {
     let (verdict, interleaved) =
         apply_input_once(conn, pane, operation_id, answer_events(text), request_id).await?;
-    // This connection subscribed to nothing and the input lane emits no frame
-    // of its own ahead of the ack, so anything here would be a server bug
-    // rather than a transition worth keeping (same argument as `report`).
+    // Unsubscribed: anything interleaved would be a server bug.
     debug_assert!(
         interleaved.is_empty(),
         "unsubscribed connection received {interleaved:?} ahead of the APPLY_INPUT ack",
@@ -299,8 +219,7 @@ mod tests {
         assert!(marker.is_identified());
         assert_eq!(marker.suggestion(2), Some("No"));
         assert_eq!(marker.suggestion(4), None);
-        // 1-based: index 0 is not a choice, and must not silently mean the
-        // first suggestion.
+        // 1-based: index 0 must not silently mean the first suggestion.
         assert_eq!(marker.suggestion(0), None);
         assert!(marker.lists(" yes "));
         assert!(!marker.lists("maybe"));
@@ -336,9 +255,8 @@ mod tests {
         }
     }
 
-    /// The answer is typed verbatim, never re-interpreted as a key spec. `up`
-    /// is a word here, not an arrow key — this is the regression that would
-    /// otherwise send `ESC [ A` into someone's turn.
+    /// The answer is typed verbatim, never re-interpreted as a key spec: `up`
+    /// is a word here, not `ESC [ A`.
     #[test]
     fn an_answer_that_looks_like_a_key_spec_is_still_typed_as_text() {
         for answer in ["up", "esc", "space", "C-c", "yes"] {

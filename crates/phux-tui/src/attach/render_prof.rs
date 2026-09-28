@@ -1,10 +1,5 @@
-//! Render-profile shim over [`phux_client::perf`].
-//!
-//! The counters used to live here behind a `PHUX_RENDER_PROF` latch. They
-//! are now always-on statics in [`phux_client::perf`] (one relaxed `fetch_add`
-//! each, so there is nothing to gate), and this module keeps the `note_*`
-//! call sites and the one-line-per-second `render_prof` log that the env
-//! knob still turns on.
+//! The once-a-second `render_prof` log line (`PHUX_RENDER_PROF=1`) over the
+//! always-on [`phux_client::perf`] counters.
 
 #![allow(
     clippy::redundant_pub_crate,
@@ -28,24 +23,6 @@ pub(crate) fn enabled() -> bool {
     INITIALIZED.store(true, Relaxed);
     on
 }
-
-macro_rules! counter {
-    ($name:ident, $cell:path) => {
-        pub(crate) fn $name(n: u64) {
-            $cell.add(n);
-        }
-    };
-}
-
-counter!(note_frames, perf::FRAMES);
-counter!(note_paints, perf::PAINTS);
-counter!(note_skipped, perf::SKIPPED);
-counter!(note_bar_composes, perf::BAR_COMPOSES);
-counter!(note_layouts, perf::LAYOUTS);
-counter!(note_flushes, perf::FLUSHES);
-counter!(note_bytes, perf::BYTES_OUT);
-counter!(note_paced_replies, perf::PACER_REPLIES);
-counter!(note_paced_waits, perf::PACER_WAITS);
 
 const WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -111,26 +88,4 @@ fn tick_at(now: std::time::Instant) {
         window_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
         "render_prof",
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn counters_always_move() {
-        let before = perf::FRAMES.get();
-        note_frames(5);
-        assert!(perf::FRAMES.get() >= before + 5);
-    }
-
-    #[test]
-    fn a_sub_window_tick_does_not_log_or_reset() {
-        let now = std::time::Instant::now();
-        WINDOW_START.with(|cell| cell.set(Some(now)));
-        let before = perf::PAINTS.get();
-        note_paints(3);
-        tick_at(now);
-        assert!(perf::PAINTS.get() >= before + 3);
-    }
 }

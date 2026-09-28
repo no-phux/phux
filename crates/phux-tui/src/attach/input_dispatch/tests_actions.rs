@@ -2,173 +2,171 @@
 //! navigation, and session flows.
 #![allow(clippy::expect_used, reason = "tests")]
 
-//! Input dispatcher: translates parser-emitted events into wire frames
-//! or layout-action effects.
-//!
-//! Owns the resolver-intercept path (prefix chord → `ResolvedAction` →
-//! mutate the active window of the `Workspace`), the predict overlay's
-//! keystroke feed, and the parked-spawn bookkeeping (`PendingSplit` /
-//! `PendingWindow`) that bridges a local `split-pane` / `new-window`
-//! chord to its remote `SPAWN_RESOURCE` reply.
-
-use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
 use std::collections::HashMap;
 
 use phux_protocol::ResourceId;
-use phux_protocol::wire::frame::FrameKind;
+use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
+use phux_protocol::ids::{SatelliteHost, SessionId};
+use phux_protocol::wire::frame::{Command, FrameKind};
+use phux_protocol::wire::info::{HostInventory, HostSessionInfo, SessionInfo};
+use toml::Value;
 
 use crate::attach::actions::SplitHost;
-use crate::attach::connection::Connection;
-use crate::attach::directory_picker::ListingHost;
+use crate::attach::directory_picker::{DirectorySupport, ListingHost};
 use crate::attach::focus::FocusHistory;
-use crate::attach::pane_state::{AttentionNavigation, PaneSlot};
+use crate::attach::pane_state::PaneSlot;
 use crate::attach::plugin_panes::{HostedPlacement, PluginPaneEntry};
-use crate::layout::{SplitDir, Workspace};
-use crate::predict::PredictionState;
+use crate::layout::{LayoutNode, LayoutState, SplitDir, WindowState, Workspace, split_at};
 use crate::render::Theme;
-use crate::render::overlay::{OverlayState, PromptOverlay};
-
-use std::collections::BTreeMap;
-
-use crate::render::overlay::CopyModeOverlay;
+use crate::render::overlay::{CopyModeOverlay, OverlayState, PromptOverlay};
 
 use super::args::*;
 use super::dispatch::*;
 use super::effects::*;
 use super::pickers::*;
-use super::run_action::*;
 use super::test_support::*;
 
+/// Run `action` against `workspace` on a current server.
+fn run(action: &phux_config::keybind::ResolvedAction, workspace: &mut Workspace) -> ActionEffects {
+    let mut f = fx(std::mem::take(workspace));
+    let effects = f.run(action);
+    *workspace = f.workspace;
+    effects
+}
+
+fn edge() -> SatelliteHost {
+    SatelliteHost::new("edge")
+}
+
+fn satellite_id(host: &str, id: u32) -> ResourceId {
+    ResourceId::satellite(SatelliteHost::new(host), id)
+}
+
+fn sinfo(id: u32, name: &str) -> SessionInfo {
+    SessionInfo::new(SessionId::new(id), name).with_window_count(1)
+}
+
+fn names(workspace: &Workspace) -> Vec<&str> {
+    workspace.windows.iter().map(|w| w.name.as_str()).collect()
+}
+
+fn three_windows() -> Workspace {
+    let mut workspace = Workspace::single(tid(1));
+    workspace.add_window("2".to_owned(), tid(2));
+    workspace.add_window("3".to_owned(), tid(3)); // active = 2
+    workspace
+}
+
+/// Window 0 split into panes 1|2, window 1 a single pane 3 (active).
+fn fleet_workspace() -> Workspace {
+    let mut workspace = two_pane_workspace();
+    workspace.windows[0].name = "main".to_owned();
+    workspace.windows.push(WindowState::new(
+        "logs".to_owned(),
+        LayoutState::single(tid(3)),
+    ));
+    workspace.active = 1;
+    workspace
+}
+
+fn spawn_initial_size_of(frame: &FrameKind) -> Option<(u16, u16)> {
+    let FrameKind::SpawnResource { initial_size, .. } = frame else {
+        panic!("expected SpawnResource, got {frame:?}");
+    };
+    *initial_size
+}
+
+/// Whether a spawn asks for the instance binding (ADR-0109).
+fn asks_binding(frame: &FrameKind) -> bool {
+    matches!(
+        frame,
+        FrameKind::SpawnResource { resource: Some(resource), .. } if resource.bind_instance
+    )
+}
+
+/// `split-pane` with `direction = vertical`.
+fn split_action() -> phux_config::keybind::ResolvedAction {
+    act("split-pane", &[("direction", "vertical".into())])
+}
+
+/// A focused satellite pane with `cwd`, as a fixture plus its pane slots.
+fn satellite_pane(cwd: Option<&str>) -> (CtxFixture, HashMap<ResourceId, PaneSlot>) {
+    let pane = satellite_id("edge", 9);
+    let mut slot = PaneSlot::new().expect("pane slot");
+    slot.cwd = cwd.map(str::to_owned);
+    (
+        fx(Workspace::single(pane.clone())),
+        HashMap::from([(pane, slot)]),
+    )
+}
+
+/// A hub that predates host-aware listing and spawns.
+fn older_hub(f: &mut CtxFixture) {
+    f.directory_support = DirectorySupport::from_features(ServerFeatureSet::with(&[
+        ServerFeature::SpawnInitialSize,
+        ServerFeature::ListDirectory,
+    ]));
+}
+
+// ---- small helpers and frames ----------------------------------------------
+
+/// Regression: kill-pane once typed `exit\n` at the pane and hoped a shell
+/// was listening. It is one correlated `KILL_RESOURCE` (a `TERMINAL_NOT_FOUND`
+/// refusal is the only evidence a stale leaf should leave the layout).
 #[test]
 fn kill_resource_frame_targets_the_pane_with_a_correlated_command() {
-    // Regression: kill-pane used to type `exit\n` at the pane as five
-    // INPUT_KEY frames and hope a shell was listening. Anything else in the
-    // foreground — an editor, a pager, an agent CLI, a wedged process —
-    // swallowed the keystrokes and the pane never closed. It is now one
-    // KILL_RESOURCE the server acts on regardless of what is running.
-    let frame = kill_resource_frame(&tid(7), 42);
-    match frame {
+    assert_eq!(
+        kill_resource_frame(&tid(7), 42),
         FrameKind::Command {
-            request_id,
-            command:
-                phux_protocol::wire::frame::Command::KillResource {
-                    terminal_id,
-                    operation_id,
-                },
-        } => {
-            assert_eq!(terminal_id, tid(7));
-            // The id has to be correlated: a TERMINAL_NOT_FOUND refusal is
-            // the only evidence a client gets that a leaf naming a dead
-            // resource should leave the layout.
-            assert_eq!(request_id, 42);
-            assert_eq!(operation_id, None);
+            request_id: 42,
+            command: Command::KillResource {
+                terminal_id: tid(7),
+                operation_id: None,
+            },
         }
-        other => panic!("expected a KILL_RESOURCE command, got {other:?}"),
+    );
+}
+
+/// `direction` names the divider orientation, not the split axis.
+#[test]
+fn split_dir_arg_parses_horizontal_and_vertical() {
+    for (value, dir) in [
+        ("horizontal", Some(SplitDir::Vertical)),
+        ("vertical", Some(SplitDir::Horizontal)),
+        ("diagonal", None),
+    ] {
+        assert_eq!(
+            split_dir_arg(&act("split-pane", &[("direction", value.into())])),
+            dir
+        );
     }
 }
 
 #[test]
-fn split_dir_arg_parses_horizontal_and_vertical() {
-    use phux_config::keybind::ResolvedAction;
-    // `direction` names the divider orientation, not the split axis:
-    // "horizontal" divider ⇒ stacked panes ⇒ SplitDir::Vertical;
-    // "vertical" divider ⇒ side-by-side panes ⇒ SplitDir::Horizontal.
-    let mut h = ResolvedAction {
-        action: "split-pane".to_owned(),
-        args: std::collections::BTreeMap::new(),
-    };
-    h.args.insert(
-        "direction".to_owned(),
-        toml::Value::String("horizontal".into()),
-    );
-    assert_eq!(split_dir_arg(&h), Some(SplitDir::Vertical));
-
-    let mut v = ResolvedAction {
-        action: "split-pane".to_owned(),
-        args: std::collections::BTreeMap::new(),
-    };
-    v.args.insert(
-        "direction".to_owned(),
-        toml::Value::String("vertical".into()),
-    );
-    assert_eq!(split_dir_arg(&v), Some(SplitDir::Horizontal));
-
-    let mut bogus = ResolvedAction {
-        action: "split-pane".to_owned(),
-        args: std::collections::BTreeMap::new(),
-    };
-    bogus.args.insert(
-        "direction".to_owned(),
-        toml::Value::String("diagonal".into()),
-    );
-    assert_eq!(split_dir_arg(&bogus), None);
-}
-
-#[test]
 fn focused_pane_rect_tracks_rendered_pane_bounds() {
-    use crate::layout::{LayoutNode, LayoutState, Rect, WindowState, split_at};
-
-    let tree = split_at(
-        &LayoutNode::Leaf(tid(1)),
-        &tid(1),
-        &tid(2),
-        SplitDir::Horizontal,
-        0.5,
-    )
-    .unwrap();
-    let workspace = Workspace {
-        windows: vec![WindowState::new(
-            "1".to_owned(),
-            LayoutState {
-                tree: Some(tree),
-                focus: Some(tid(2)),
-            },
-        )],
-        active: 0,
-    };
-
-    let split_rect = focused_pane_rect_for(
-        &workspace,
-        None,
-        Some(&tid(2)),
-        (80, 24),
-        Some(crate::render::chrome::status_bar::Position::Bottom),
-        None,
-    );
-    // Row 0 is the pane-grid rail (phux-l96p.8); panes start at row 1.
-    assert_eq!(split_rect.y, 1);
-    assert_eq!(
-        split_rect.h, 22,
-        "neither the status-bar row nor the pane rail is copy-mode content"
-    );
-    assert_eq!(split_rect.x + split_rect.w, 80);
+    use crate::layout::Rect;
+    use crate::render::chrome::status_bar::Position;
+    let mut workspace = two_pane_workspace();
+    workspace.windows[0].state.focus = Some(tid(2));
+    let bottom = Some(Position::Bottom);
+    let split = focused_pane_rect_for(&workspace, None, Some(&tid(2)), (80, 24), bottom, None);
+    // Row 0 is the pane rail; the bar row is not copy-mode content either.
+    assert_eq!((split.y, split.h, split.x + split.w), (1, 22, 80));
     assert!(
-        split_rect.w < 80,
-        "split pane must not inherit the outer viewport width"
+        split.w < 80,
+        "a split pane must not inherit the viewport width"
     );
-    assert_ne!(
-        split_rect,
-        Rect {
-            x: 0,
-            y: 0,
-            w: 80,
-            h: 23
-        }
-    );
-
-    let zoomed = tid(2);
-    let zoomed_rect = focused_pane_rect_for(
+    // A zoomed pane takes the whole content rect, rail excluded.
+    let zoomed = focused_pane_rect_for(
         &workspace,
-        Some(&zoomed),
+        Some(&tid(2)),
         Some(&tid(2)),
         (80, 24),
-        Some(crate::render::chrome::status_bar::Position::Bottom),
+        bottom,
         None,
     );
-    // A zoomed pane takes the whole content rect — which is still the
-    // content rect: the rail is chrome, and zoom does not reclaim it.
     assert_eq!(
-        zoomed_rect,
+        zoomed,
         Rect {
             x: 0,
             y: 1,
@@ -178,157 +176,148 @@ fn focused_pane_rect_tracks_rendered_pane_bounds() {
     );
 }
 
-/// Run `action` against `workspace`, returning the resulting effects.
-fn run(action: &phux_config::keybind::ResolvedAction, workspace: &mut Workspace) -> ActionEffects {
-    run_with_last(action, workspace, None)
+/// A peer's layout broadcast can shrink the focused pane with no SIGWINCH.
+/// Copy mode must adopt the new rect, or its stranded corner resolves to
+/// nothing and Enter silently copies nothing.
+#[test]
+fn layout_replace_reclaims_the_focused_pane_rect_for_overlays() {
+    let viewport = (80, 24);
+    let wide = focused_pane_rect_for(
+        &two_pane_workspace(),
+        None,
+        Some(&tid(1)),
+        viewport,
+        None,
+        None,
+    );
+    let mut overlays = OverlayState::new();
+    overlays.push(Box::new(CopyModeOverlay::new(
+        wide.h.saturating_sub(1),
+        wide.w.saturating_sub(1),
+        wide.w,
+        wide.h,
+    )));
+    let narrow_ws = two_pane_workspace_at(0.1);
+    let narrow = focused_pane_rect_for(&narrow_ws, None, Some(&tid(1)), viewport, None, None);
+    let stale = overlays.copy_selection().expect("selection survives");
+    assert!(
+        stale.end_col >= narrow.w,
+        "precondition: corner stranded outside"
+    );
+
+    sync_overlays_to_focused_pane(
+        &mut overlays,
+        &narrow_ws,
+        None,
+        Some(&tid(1)),
+        viewport,
+        None,
+        None,
+    );
+    let fixed = overlays
+        .copy_selection()
+        .expect("copy-mode survives the resize");
+    assert!(
+        fixed.end_row < narrow.h && fixed.end_col < narrow.w,
+        "{fixed:?} vs {narrow:?}"
+    );
 }
 
-/// ADR-0105: `new-window` works from the empty state of a keep-empty
-/// session. With no window and nothing focused it still parks a spawn, and
-/// the spawn names no owner, so the server places it in the attached session.
+// ---- windows, panes, and spawns --------------------------------------------
+
 #[test]
-fn new_window_from_an_empty_workspace_parks_a_spawn() {
-    let mut workspace = Workspace::default();
+fn reload_config_action_raises_only_the_reload_effect() {
+    let effects = run(
+        &bare_action("reload-config"),
+        &mut Workspace::single(tid(1)),
+    );
+    assert!(effects.reload_config);
+    assert!(!effects.layout_mutated && !effects.bell && effects.kill_frames.is_empty());
+}
+
+#[test]
+fn new_window_parks_pending_and_emits_a_sized_unbound_spawn() {
+    let mut workspace = Workspace::single(tid(1));
     let effects = run(&bare_action("new-window"), &mut workspace);
-    let (_, _, frame) = effects
-        .spawn_window
-        .expect("new-window must spawn from the empty state");
+    let (_, pending, frame) = effects.spawn_window.expect("new-window parks a SPAWN");
+    assert_eq!(pending.name, "2", "the default name skips the in-use \"1\"");
+    // One leaf fills the 80x23 content rect (row 0 is the rail).
+    assert_eq!(spawn_initial_size_of(&frame), Some((80, 23)));
+    assert!(
+        matches!(&frame, FrameKind::SpawnResource { resource: None, .. }),
+        "{frame:?}"
+    );
+    assert_eq!(workspace.windows.len(), 1, "the window opens on reply");
+
+    // ADR-0105: new-window also works from a keep-empty session's empty state.
+    let effects = run(&bare_action("new-window"), &mut Workspace::default());
+    let (_, _, frame) = effects.spawn_window.expect("spawns from the empty state");
     assert!(matches!(
         frame,
-        phux_protocol::wire::frame::FrameKind::SpawnResource {
+        FrameKind::SpawnResource {
             owner_terminal: None,
             ..
         }
     ));
 }
 
-/// Every server feature the dispatcher consults, as a current server
-/// advertises them.
-const ALL_FEATURES: ServerFeatureSet = ServerFeatureSet::with(&[
-    ServerFeature::SpawnInitialSize,
-    ServerFeature::ListDirectory,
-    ServerFeature::ListDirectoryHost,
-]);
-
-/// [`run`] against a server that did NOT advertise
-/// `ServerFeature::SpawnInitialSize` (phux-a5xj).
-fn run_without_spawn_size_support(
-    action: &phux_config::keybind::ResolvedAction,
-    workspace: &mut Workspace,
-) -> ActionEffects {
-    let features = ServerFeatureSet::with(&[ServerFeature::ListDirectory]);
-    run_with_last_and_features(action, workspace, None, features)
-}
-
-/// [`run`] against a server that did NOT advertise
-/// `ServerFeature::ListDirectory`.
-fn run_without_list_directory_support(
-    action: &phux_config::keybind::ResolvedAction,
-    workspace: &mut Workspace,
-) -> ActionEffects {
-    let features = ServerFeatureSet::with(&[ServerFeature::SpawnInitialSize]);
-    run_with_last_and_features(action, workspace, None, features)
-}
-
-fn run_with_last(
-    action: &phux_config::keybind::ResolvedAction,
-    workspace: &mut Workspace,
-    last_focused: Option<ResourceId>,
-) -> ActionEffects {
-    run_with_last_and_features(action, workspace, last_focused, ALL_FEATURES)
-}
-
-fn run_with_last_and_features(
-    action: &phux_config::keybind::ResolvedAction,
-    workspace: &mut Workspace,
-    last_focused: Option<ResourceId>,
-    features: ServerFeatureSet,
-) -> ActionEffects {
-    run_with_last_features_and_hosts(action, workspace, last_focused, features, &[])
-}
-
-/// phux-c2td.3: the same runner with a federation host inventory in the
-/// dispatch context, for `switch-session { name, host }`.
-fn run_with_hosts(
-    action: &phux_config::keybind::ResolvedAction,
-    workspace: &mut Workspace,
-    hosts: &[phux_protocol::wire::info::HostInventory],
-) -> ActionEffects {
-    run_with_last_features_and_hosts(action, workspace, None, ALL_FEATURES, hosts)
-}
-
-fn run_with_last_features_and_hosts(
-    action: &phux_config::keybind::ResolvedAction,
-    workspace: &mut Workspace,
-    last_focused: Option<ResourceId>,
-    features: ServerFeatureSet,
-    hosts: &[phux_protocol::wire::info::HostInventory],
-) -> ActionEffects {
-    run_in(
-        action,
-        workspace,
-        last_focused,
-        features,
-        hosts,
-        &HashMap::new(),
-    )
-}
-
-/// [`run_with_last_features_and_hosts`] with the dispatcher's pane slots,
-/// for actions that read a pane's state (its cwd).
-fn run_in(
-    action: &phux_config::keybind::ResolvedAction,
-    workspace: &mut Workspace,
-    last_focused: Option<ResourceId>,
-    features: ServerFeatureSet,
-    hosts: &[phux_protocol::wire::info::HostInventory],
-    panes: &HashMap<ResourceId, PaneSlot>,
-) -> ActionEffects {
-    let mut fx = CtxFixture::default();
-    fx.next_request_id = 100;
-    fx.focus_history = last_focused.map_or_else(FocusHistory::default, FocusHistory::with_previous);
-    fx.spawn_initial_size_supported = features.contains(ServerFeature::SpawnInitialSize);
-    fx.directory_support =
-        crate::attach::directory_picker::DirectorySupport::from_features(features);
-    fx.sidebar_targets = Some(targets(0, workspace.windows.len(), 0));
-    let mut ctx = fx.ctx();
-    ctx.workspace = workspace;
-    ctx.hosts = hosts;
-    let focused = ctx.workspace.active_window().and_then(|w| w.focus.clone());
-    run_action(action, &mut ctx, focused.as_ref(), panes)
-}
-
+/// `new-window { cwd, host }` (the directory picker's confirm row) spawns in
+/// that directory, on that satellite when a host is named.
 #[test]
-fn reload_config_action_raises_the_reload_effect() {
-    // phux-foz.5: the arm only raises the effect — the driver owns
-    // the actual re-read + swap (the ctx borrows the state to
-    // replace). No layout mutation, no bell, no frames.
-    let mut workspace = Workspace::single(tid(1));
-    let effects = run(&bare_action("reload-config"), &mut workspace);
-    assert!(effects.reload_config, "reload-config must raise the effect");
-    assert!(!effects.layout_mutated);
-    assert!(!effects.bell);
-    assert!(effects.kill_frames.is_empty());
-}
-
-#[test]
-fn new_window_parks_pending_and_emits_spawn() {
-    let mut workspace = Workspace::single(tid(1)); // window "1"
-    let effects = run(&bare_action("new-window"), &mut workspace);
-    let (_req, pending, frame) = effects
+fn new_window_cwd_and_host_args_ride_the_spawn() {
+    let cwd = act("new-window", &[("cwd", "/srv/app".into())]);
+    let (_, _, frame) = run(&cwd, &mut Workspace::single(tid(1)))
         .spawn_window
-        .expect("new-window should park a PendingWindow + SPAWN");
-    // Default name skips the in-use "1".
-    assert_eq!(pending.name, "2");
-    assert!(matches!(frame, FrameKind::SpawnResource { .. }));
-    // No synchronous workspace mutation — the window opens on reply.
-    assert_eq!(workspace.windows.len(), 1);
+        .expect("SPAWN");
+    assert!(
+        matches!(&frame, FrameKind::SpawnResource { cwd: Some(c), satellite: None, .. } if c == "/srv/app"),
+        "{frame:?}"
+    );
+
+    let hosted = act(
+        "new-window",
+        &[("cwd", "/home/e/src".into()), ("host", "edge".into())],
+    );
+    let (_, _, frame) = run(&hosted, &mut Workspace::single(tid(1)))
+        .spawn_window
+        .expect("SPAWN");
+    assert!(
+        matches!(&frame, FrameKind::SpawnResource { cwd: Some(c), satellite: Some(h), .. } if c == "/home/e/src" && *h == edge()),
+        "{frame:?}"
+    );
+    assert!(asks_binding(&frame));
 }
 
+/// A split names the tile its new leaf will occupy (80x23 split with one
+/// divider column: 40/39), so the server bootstraps it at the right size.
 #[test]
-fn kill_window_emits_one_soft_kill_sequence_per_leaf() {
-    use crate::layout::{LayoutNode, LayoutState, SplitDir, WindowState, split_at};
-    // Active window with three leaves: ((1|2)/3).
+fn split_pane_spawn_carries_the_new_leafs_tile() {
+    let effects = run(&split_action(), &mut Workspace::single(tid(1)));
+    let (_, _, frame) = effects.spawn_terminal.expect("split parks a SPAWN");
+    assert_eq!(spawn_initial_size_of(&frame), Some((39, 23)));
+}
+
+/// Without `ServerFeature::SpawnInitialSize` the field stays absent
+/// (ADR-0061: no dependence on unadvertised surface).
+#[test]
+fn spawn_omits_initial_size_when_the_server_did_not_advertise_it() {
+    for action in [split_action(), bare_action("new-window")] {
+        let mut f = fx(Workspace::single(tid(1)));
+        f.spawn_initial_size_supported = false;
+        let effects = f.run(&action);
+        let frame = effects
+            .spawn_terminal
+            .map(|(_, _, frame)| frame)
+            .or_else(|| effects.spawn_window.map(|(_, _, frame)| frame))
+            .expect("SPAWN");
+        assert_eq!(spawn_initial_size_of(&frame), None, "{}", action.action);
+    }
+}
+
+/// kill-window kills every leaf (each correlated, each an expected close);
+/// kill-pane its focused one. Nothing is removed until the closes land.
+#[test]
+fn kill_window_and_kill_pane_emit_correlated_expected_kills() {
     let tree = split_at(
         &LayoutNode::Leaf(tid(1)),
         &tid(1),
@@ -348,272 +337,228 @@ fn kill_window_emits_one_soft_kill_sequence_per_leaf() {
         )],
         active: 0,
     };
-    let effects = run(&bare_action("kill-window"), &mut workspace);
-    // One KILL_RESOURCE per leaf, each under its own request id.
-    assert_eq!(effects.kill_frames.len(), 3);
-    assert_eq!(
-        effects
+    for (action, killed) in [
+        ("kill-window", vec![tid(1), tid(2), tid(3)]),
+        ("kill-pane", vec![tid(1)]),
+    ] {
+        let effects = run(&bare_action(action), &mut workspace);
+        assert_eq!(effects.kill_frames.len(), killed.len(), "{action}");
+        let targets: Vec<_> = effects
             .kill_requests
             .iter()
             .map(|(_, leaf)| leaf.clone())
-            .collect::<Vec<_>>(),
-        vec![tid(1), tid(2), tid(3)],
-    );
-    // phux-i0e8.2.2: every targeted leaf is marked as an expected
-    // close so the resulting TERMINAL_CLOSEDs stay notice-silent.
-    assert_eq!(effects.expected_closes, vec![tid(1), tid(2), tid(3)]);
-    // No synchronous removal — ResourceClosed folds + prunes.
-    assert_eq!(workspace.windows.len(), 1);
-}
-
-/// phux-i0e8.2.2: `kill-pane` marks its own target as an expected
-/// close alongside the kill frame, and correlates the request id so a
-/// refusal can be attributed back to the leaf.
-#[test]
-fn kill_pane_marks_the_focused_pane_as_expected_close() {
-    let mut workspace = Workspace::single(tid(7));
-    let effects = run(&bare_action("kill-pane"), &mut workspace);
-    assert_eq!(effects.kill_frames.len(), 1);
-    assert_eq!(effects.expected_closes, vec![tid(7)]);
-    assert_eq!(
-        effects
-            .kill_requests
-            .iter()
-            .map(|(_, leaf)| leaf.clone())
-            .collect::<Vec<_>>(),
-        vec![tid(7)],
-    );
+            .collect();
+        assert_eq!(targets, killed, "{action}");
+        assert_eq!(effects.expected_closes, killed, "{action}");
+        assert_eq!(workspace.windows.len(), 1);
+    }
+    let effects = run(&bare_action("kill-window"), &mut Workspace::default());
+    assert!(effects.bell && effects.kill_frames.is_empty());
 }
 
 #[test]
-fn next_window_switches_active_clears_predict_no_metadata() {
+fn window_navigation_switches_active_without_broadcasting() {
     let mut workspace = Workspace::single(tid(1));
     workspace.add_window("2".to_owned(), tid(2));
     workspace.select(0);
     let effects = run(&bare_action("next-window"), &mut workspace);
     assert_eq!(workspace.active, 1);
-    assert!(effects.layout_mutated);
-    assert!(effects.clear_predict);
+    assert!(effects.layout_mutated && effects.clear_predict);
     assert!(!effects.set_metadata, "window switch is per-client");
     assert_eq!(effects.set_focus, Some(tid(2)));
+
+    let mut single = Workspace::single(tid(1));
+    let effects = run(&bare_action("next-window"), &mut single);
+    assert!(!effects.layout_mutated && !effects.clear_predict);
+
+    let mut workspace = three_windows();
+    let effects = run(
+        &act("select-window", &[("index", 0.into())]),
+        &mut workspace,
+    );
+    assert_eq!(workspace.active, 0);
+    assert!(effects.layout_mutated);
+    assert_eq!(effects.set_focus, Some(tid(1)));
+    let effects = run(
+        &act("select-window", &[("index", 5.into())]),
+        &mut workspace,
+    );
+    assert!(!effects.layout_mutated, "out of range is a no-op");
+    let effects = run(&bare_action("select-window"), &mut workspace);
+    assert!(
+        effects.bell && !effects.layout_mutated,
+        "missing index bells"
+    );
 }
 
 #[test]
-fn last_pane_dispatch_jumps_across_windows_and_toggles() {
-    let mut workspace = Workspace::single(tid(1));
-    workspace.add_window("2".to_owned(), tid(2));
-    workspace.select(0);
+fn last_pane_jumps_across_windows_and_toggles() {
+    let mut f = fx(Workspace::single(tid(1)));
+    let effects = f.run(&bare_action("last-pane"));
+    assert!(
+        effects.bell && !effects.layout_mutated && effects.set_focus.is_none(),
+        "no history"
+    );
 
-    let action = bare_action("last-pane");
-    let effects = run_with_last(&action, &mut workspace, Some(tid(2)));
-    assert_eq!(workspace.active, 1);
+    f.workspace.add_window("2".to_owned(), tid(2));
+    f.workspace.select(0);
+    f.focus_history = FocusHistory::with_previous(tid(2));
+    let effects = f.run(&bare_action("last-pane"));
+    assert_eq!(f.workspace.active, 1);
     assert_eq!(
-        workspace.active_window().and_then(|w| w.focus.clone()),
+        f.workspace.active_window().and_then(|w| w.focus.clone()),
         Some(tid(2))
     );
-    assert_eq!(effects.set_focus, Some(tid(2)));
-    assert!(effects.clear_predict);
-    assert!(!effects.set_metadata, "focus MRU is client-local");
+    assert!(
+        effects.clear_predict && !effects.set_metadata,
+        "focus MRU is client-local"
+    );
     let mut focused = Some(tid(1));
     let mut history = FocusHistory::with_previous(tid(2));
-    apply_focus_transition(
-        &mut history,
-        &mut focused,
-        effects.set_focus.expect("dispatch target"),
-    );
+    history.transition(&mut focused, effects.set_focus);
     assert_eq!(history.previous(), Some(&tid(1)));
 
-    // Feed the recorded pane back through dispatch + the same apply path:
-    // repeated last-pane genuinely toggles and repairs the MRU to pane 2.
-    let effects = run_with_last(&action, &mut workspace, Some(tid(1)));
-    assert_eq!(workspace.active, 0);
-    apply_focus_transition(
-        &mut history,
-        &mut focused,
-        effects.set_focus.expect("toggle target"),
-    );
+    // Feeding the recorded pane back toggles and repairs the MRU.
+    f.focus_history = FocusHistory::with_previous(tid(1));
+    let effects = f.run(&bare_action("last-pane"));
+    assert_eq!(f.workspace.active, 0);
+    history.transition(&mut focused, effects.set_focus);
     assert_eq!(focused, Some(tid(1)));
     assert_eq!(history.previous(), Some(&tid(2)));
 }
 
-// ---------------------------------------------------------------------
-// phux-a5xj — the dispatcher stamps the tile onto the spawn
-// ---------------------------------------------------------------------
-
-fn spawn_initial_size_of(frame: &FrameKind) -> Option<(u16, u16)> {
-    let FrameKind::SpawnResource { initial_size, .. } = frame else {
-        panic!("expected SpawnResource, got {frame:?}");
-    };
-    *initial_size
-}
-
-/// A `split-pane` must name the tile the new leaf is about to occupy, so
-/// the server bootstraps the pane there instead of at 80x24 and then
-/// being told the truth by a resize that throws the checkpoint away.
-///
-/// The 80x24 viewport tiles to an 80x23 content rect (row 0 is the
-/// pane-grid rail, phux-l96p.8); a horizontal split spends one divider
-/// column, leaving 79 to share 40/39 — so the new (right-hand) leaf is
-/// 39x23. Asserting the exact number, not merely "some size", is what
-/// makes this a regression guard rather than a smoke test.
+/// `move-window` moves the active window (keeping it active) and broadcasts;
+/// `delta` and `index` both clamp at the ends; no destination bells.
 #[test]
-fn split_pane_spawn_carries_the_new_leafs_tile() {
-    let mut workspace = Workspace::single(tid(1));
-    let mut action = bare_action("split-pane");
-    action.args.insert(
-        "direction".to_owned(),
-        toml::Value::String("vertical".into()),
+fn move_window_moves_the_active_window_and_clamps() {
+    let mut workspace = three_windows();
+    let effects = run(
+        &act("move-window", &[("delta", (-1).into())]),
+        &mut workspace,
     );
-    let effects = run(&action, &mut workspace);
-    let (_req, _pending, frame) = effects.spawn_terminal.expect("split parks a SPAWN");
-    assert_eq!(spawn_initial_size_of(&frame), Some((39, 23)));
+    assert_eq!(names(&workspace), ["1", "3", "2"]);
+    assert_eq!(workspace.active, 1);
+    assert!(effects.layout_mutated && effects.set_metadata && !effects.bell);
+
+    run(
+        &act("move-window", &[("delta", (-9).into())]),
+        &mut workspace,
+    );
+    assert_eq!(names(&workspace), ["3", "1", "2"]);
+    let effects = run(
+        &act("move-window", &[("delta", (-1).into())]),
+        &mut workspace,
+    );
+    assert!(effects.bell && !effects.set_metadata, "already first");
+
+    for index in [2, 99] {
+        let mut workspace = three_windows();
+        workspace.select(0);
+        let effects = run(
+            &act("move-window", &[("index", index.into())]),
+            &mut workspace,
+        );
+        assert_eq!(names(&workspace), ["2", "3", "1"]);
+        assert_eq!(workspace.active, 2);
+        assert!(effects.set_metadata);
+    }
+
+    let mut workspace = three_windows();
+    let effects = run(&bare_action("move-window"), &mut workspace);
+    assert!(effects.bell && !effects.layout_mutated);
+    assert_eq!(names(&workspace), ["1", "2", "3"]);
 }
 
-/// A `new-window` seeds a window holding one leaf, so the pane fills the
-/// whole content rect.
+/// toggle-zoom requests the flip on a multi-pane window and bells on a
+/// single pane; toggle-sidebar always requests its flip.
 #[test]
-fn new_window_spawn_carries_the_full_content_rect() {
-    let mut workspace = Workspace::single(tid(1));
-    let effects = run(&bare_action("new-window"), &mut workspace);
-    let (_req, _pending, frame) = effects.spawn_window.expect("new-window parks a SPAWN");
-    assert_eq!(spawn_initial_size_of(&frame), Some((80, 23)));
-}
-
-/// `new-window { cwd }` (the directory picker's confirm row) starts the new
-/// window's shell in that directory, interpreted on the attached server's
-/// host.
-#[test]
-fn new_window_cwd_arg_rides_the_spawn() {
-    let mut workspace = Workspace::single(tid(1));
-    let mut action = bare_action("new-window");
-    action
-        .args
-        .insert("cwd".to_owned(), toml::Value::String("/srv/app".into()));
-    let effects = run(&action, &mut workspace);
-    let (_req, _pending, frame) = effects.spawn_window.expect("new-window parks a SPAWN");
+fn toggle_zoom_and_sidebar_request_their_flips() {
+    let effects = run(&bare_action("toggle-zoom"), &mut two_pane_workspace());
+    assert!(effects.toggle_zoom && effects.layout_mutated && !effects.bell);
+    let effects = run(&bare_action("toggle-zoom"), &mut Workspace::single(tid(1)));
+    assert!(effects.bell && !effects.toggle_zoom && !effects.layout_mutated);
+    let effects = run(
+        &bare_action("toggle-sidebar"),
+        &mut Workspace::single(tid(1)),
+    );
     assert!(
-        matches!(&frame, FrameKind::SpawnResource { cwd: Some(cwd), .. } if cwd == "/srv/app"),
-        "the cwd arg must ride SPAWN_RESOURCE.cwd: {frame:?}"
+        effects.toggle_sidebar && effects.layout_mutated && !effects.bell && !effects.toggle_zoom
     );
 }
 
-/// `go-to-directory` asks the attached server for a listing: the explicit
-/// `path` when given, else the empty home request (no pane cwd is known in
-/// this fixture).
+/// Applying `toggle_sidebar` flips the driver-owned flag, off to on and back.
+#[tokio::test]
+async fn apply_effects_flips_sidebar_enabled_state() {
+    let mut f = CtxFixture::default();
+    for expected in [true, false] {
+        let effects = f.run(&bare_action("toggle-sidebar"));
+        f.apply(effects).await;
+        assert_eq!(f.sidebar_enabled, expected);
+    }
+}
+
+fn root_ratio(workspace: &Workspace) -> f32 {
+    match workspace.active_window().unwrap().tree.as_ref().unwrap() {
+        LayoutNode::Split { ratio, .. } => *ratio,
+        other => panic!("expected root Split, got {other:?}"),
+    }
+}
+
+/// `resize-pane` moves the ratio by amount/axis-cells and broadcasts; missing
+/// args or a squeeze below the 2-cell floor bell without mutating
+/// (ADR-0019 decision 5).
+#[test]
+fn resize_pane_moves_ratio_or_bells() {
+    let resize = |amount: i64| {
+        act(
+            "resize-pane",
+            &[("direction", "right".into()), ("amount", amount.into())],
+        )
+    };
+    let mut workspace = two_pane_workspace();
+    let effects = run(&resize(8), &mut workspace);
+    assert!(!effects.bell && effects.layout_mutated && effects.set_metadata);
+    assert!(
+        (root_ratio(&workspace) - 0.6).abs() < 1e-4,
+        "{}",
+        root_ratio(&workspace)
+    );
+
+    for action in [bare_action("resize-pane"), resize(80)] {
+        let mut workspace = two_pane_workspace();
+        let effects = run(&action, &mut workspace);
+        assert!(effects.bell && !effects.layout_mutated && !effects.set_metadata);
+        assert!((root_ratio(&workspace) - 0.5).abs() < f32::EPSILON);
+    }
+}
+
+/// rename-window with a name renames and broadcasts; without one it opens a
+/// prompt and broadcasts nothing until commit.
+#[test]
+fn rename_window_renames_or_prompts() {
+    let mut workspace = Workspace::single(tid(1));
+    let effects = run(
+        &act("rename-window", &[("name", "build".into())]),
+        &mut workspace,
+    );
+    assert_eq!(workspace.windows[0].name, "build");
+    assert!(effects.layout_mutated && effects.set_metadata);
+
+    let mut f = fx(Workspace::single(tid(1)));
+    let effects = f.run(&bare_action("rename-window"));
+    assert!(f.overlays.is_active() && effects.layout_mutated && !effects.set_metadata);
+    assert_eq!(f.workspace.windows[0].name, "1");
+}
+
+// ---- directories and satellites ---------------------------------------------
+
+/// `go-to-directory` lists the explicit `path`, else the home request, on
+/// the attached server; the placeholder overlay needs a repaint.
 #[test]
 fn go_to_directory_requests_a_listing() {
-    let mut workspace = Workspace::single(tid(1));
-    let effects = run(&bare_action("go-to-directory"), &mut workspace);
-    let (pending, frame) = effects
-        .list_directory
-        .expect("go-to-directory sends LIST_DIRECTORY");
-    assert_eq!(
-        frame,
-        FrameKind::ListDirectory {
-            request_id: pending.request_id,
-            path: String::new(),
-            host: None,
-        }
-    );
-    assert_eq!(pending.host, ListingHost::Attached);
-
-    let mut action = bare_action("go-to-directory");
-    action
-        .args
-        .insert("path".to_owned(), toml::Value::String("/srv".into()));
-    let effects = run(&action, &mut workspace);
-    let (_pending, frame) = effects
-        .list_directory
-        .expect("go-to-directory sends LIST_DIRECTORY");
-    assert!(matches!(&frame, FrameKind::ListDirectory { path, .. } if path == "/srv"));
-    assert!(!effects.bell);
-    assert!(
-        effects.layout_mutated,
-        "the listing placeholder overlay needs a repaint"
-    );
-}
-
-fn edge() -> phux_protocol::ids::SatelliteHost {
-    phux_protocol::ids::SatelliteHost::new("edge")
-}
-
-/// A focused satellite pane and its slot, with `cwd` as the pane's directory.
-fn satellite_pane(cwd: Option<&str>) -> (Workspace, HashMap<ResourceId, PaneSlot>) {
-    let pane = ResourceId::satellite(edge(), 9);
-    let mut slot = PaneSlot::new().expect("pane slot");
-    slot.cwd = cwd.map(str::to_owned);
-    (
-        Workspace::single(pane.clone()),
-        HashMap::from([(pane, slot)]),
-    )
-}
-
-/// On a satellite pane the listing is asked of that satellite through the
-/// hub (`LIST_DIRECTORY.host`), starting at the pane's own directory there.
-#[test]
-fn go_to_directory_on_a_satellite_pane_names_its_host_and_cwd() {
-    let (mut workspace, panes) = satellite_pane(Some("/home/e/src"));
-    let effects = run_in(
+    let effects = run(
         &bare_action("go-to-directory"),
-        &mut workspace,
-        None,
-        ALL_FEATURES,
-        &[],
-        &panes,
-    );
-    let (pending, frame) = effects
-        .list_directory
-        .expect("go-to-directory sends LIST_DIRECTORY");
-    assert_eq!(
-        frame,
-        FrameKind::ListDirectory {
-            request_id: pending.request_id,
-            path: "/home/e/src".to_owned(),
-            host: Some(edge()),
-        }
-    );
-    assert_eq!(pending.host, ListingHost::Satellite(edge()));
-}
-
-/// With no directory known for the satellite pane the listing starts at the
-/// satellite user's home (the empty path), still on the satellite.
-#[test]
-fn a_satellite_pane_without_a_cwd_lists_the_satellites_home() {
-    let (mut workspace, panes) = satellite_pane(None);
-    let effects = run_in(
-        &bare_action("go-to-directory"),
-        &mut workspace,
-        None,
-        ALL_FEATURES,
-        &[],
-        &panes,
-    );
-    let (_pending, frame) = effects.list_directory.expect("LIST_DIRECTORY");
-    assert!(
-        matches!(&frame, FrameKind::ListDirectory { path, host: Some(host), .. }
-            if path.is_empty() && *host == edge()),
-        "{frame:?}"
-    );
-}
-
-/// A hub that predates `LIST_DIRECTORY.host` would skip the field and list
-/// itself, so the request stays on the hub: no host, and not the satellite
-/// pane's cwd (a satellite path). The pending listing remembers why, for the
-/// picker's title.
-#[test]
-fn a_hub_without_host_listing_keeps_the_request_on_itself() {
-    let (mut workspace, panes) = satellite_pane(Some("/home/e/src"));
-    let features = ServerFeatureSet::with(&[
-        ServerFeature::SpawnInitialSize,
-        ServerFeature::ListDirectory,
-    ]);
-    let effects = run_in(
-        &bare_action("go-to-directory"),
-        &mut workspace,
-        None,
-        features,
-        &[],
-        &panes,
+        &mut Workspace::single(tid(1)),
     );
     let (pending, frame) = effects.list_directory.expect("LIST_DIRECTORY");
     assert_eq!(
@@ -621,112 +566,92 @@ fn a_hub_without_host_listing_keeps_the_request_on_itself() {
         FrameKind::ListDirectory {
             request_id: pending.request_id,
             path: String::new(),
-            host: None,
+            host: None
+        }
+    );
+    assert_eq!(pending.host, ListingHost::Attached);
+
+    let effects = run(
+        &act("go-to-directory", &[("path", "/srv".into())]),
+        &mut Workspace::single(tid(1)),
+    );
+    let (_, frame) = effects.list_directory.expect("LIST_DIRECTORY");
+    assert!(matches!(&frame, FrameKind::ListDirectory { path, .. } if path == "/srv"));
+    assert!(!effects.bell && effects.layout_mutated);
+
+    // Without `LIST_DIRECTORY` the older server would drop the frame: bell.
+    let mut f = fx(Workspace::single(tid(1)));
+    f.directory_support =
+        DirectorySupport::from_features(ServerFeatureSet::with(&[ServerFeature::SpawnInitialSize]));
+    let effects = f.run(&bare_action("go-to-directory"));
+    assert!(effects.list_directory.is_none() && effects.bell);
+}
+
+/// On a satellite pane the listing asks that satellite through the hub, at
+/// the pane's directory (or its home); an older hub keeps it on itself.
+#[test]
+fn go_to_directory_on_a_satellite_pane_names_its_host() {
+    for (cwd, path) in [(Some("/home/e/src"), "/home/e/src"), (None, "")] {
+        let (mut f, panes) = satellite_pane(cwd);
+        let (pending, frame) = f
+            .run_in(&bare_action("go-to-directory"), &panes)
+            .list_directory
+            .expect("LIST");
+        assert_eq!(
+            frame,
+            FrameKind::ListDirectory {
+                request_id: pending.request_id,
+                path: path.to_owned(),
+                host: Some(edge())
+            }
+        );
+        assert_eq!(pending.host, ListingHost::Satellite(edge()));
+    }
+
+    let (mut f, panes) = satellite_pane(Some("/home/e/src"));
+    older_hub(&mut f);
+    let (pending, frame) = f
+        .run_in(&bare_action("go-to-directory"), &panes)
+        .list_directory
+        .expect("LIST");
+    assert_eq!(
+        frame,
+        FrameKind::ListDirectory {
+            request_id: pending.request_id,
+            path: String::new(),
+            host: None
         }
     );
     assert_eq!(pending.host, ListingHost::AttachedInsteadOf(edge()));
 }
 
-/// The confirm row of a satellite listing commits `new-window { cwd, host }`:
-/// the window spawns on that satellite through the hub, at that path.
+/// Splitting a satellite pane spawns on that satellite at its cwd (bound);
+/// a local pane's split is unchanged; an older hub keeps it local and
+/// remembers the satellite it stands in for.
 #[test]
-fn new_window_with_a_host_spawns_on_that_satellite() {
-    let mut workspace = Workspace::single(tid(1));
-    let mut action = bare_action("new-window");
-    action
-        .args
-        .insert("cwd".to_owned(), toml::Value::String("/home/e/src".into()));
-    action
-        .args
-        .insert("host".to_owned(), toml::Value::String("edge".into()));
-    let effects = run(&action, &mut workspace);
-    let (_req, _pending, frame) = effects.spawn_window.expect("new-window parks a SPAWN");
+fn split_pane_follows_the_focused_panes_host() {
+    let (mut f, panes) = satellite_pane(Some("/home/e/src"));
+    let (_, pending, frame) = f
+        .run_in(&split_action(), &panes)
+        .spawn_terminal
+        .expect("SPAWN");
     assert!(
-        matches!(&frame, FrameKind::SpawnResource { cwd: Some(cwd), satellite: Some(host), .. }
-            if cwd == "/home/e/src" && *host == edge()),
+        matches!(&frame, FrameKind::SpawnResource { cwd: Some(c), satellite: Some(h), .. } if c == "/home/e/src" && *h == edge()),
         "{frame:?}"
     );
-    assert!(asks_binding(&frame), "{frame:?}");
-}
-
-/// phux-c2td.25: whether a spawn asks for the instance binding (ADR-0109).
-fn asks_binding(frame: &FrameKind) -> bool {
-    matches!(
-        frame,
-        FrameKind::SpawnResource {
-            resource: Some(resource),
-            ..
-        } if resource.bind_instance
-    )
-}
-
-/// A local `new-window` asks for no binding: the frame is what it always
-/// was.
-#[test]
-fn a_local_new_window_asks_no_binding() {
-    let mut workspace = Workspace::single(tid(1));
-    let effects = run(&bare_action("new-window"), &mut workspace);
-    let (_req, _pending, frame) = effects.spawn_window.expect("new-window parks a SPAWN");
-    assert!(
-        matches!(&frame, FrameKind::SpawnResource { resource: None, .. }),
-        "{frame:?}"
-    );
-}
-
-/// `split-pane` with `direction = vertical`.
-fn split_action() -> phux_config::keybind::ResolvedAction {
-    let mut action = bare_action("split-pane");
-    action.args.insert(
-        "direction".to_owned(),
-        toml::Value::String("vertical".into()),
-    );
-    action
-}
-
-/// phux-c2td.18: splitting a satellite pane spawns the new pane on that
-/// satellite through the hub, at the pane's directory there.
-#[test]
-fn split_pane_on_a_satellite_pane_spawns_on_that_satellite_at_its_cwd() {
-    let (mut workspace, panes) = satellite_pane(Some("/home/e/src"));
-    let effects = run_in(
-        &split_action(),
-        &mut workspace,
-        None,
-        ALL_FEATURES,
-        &[],
-        &panes,
-    );
-    let (_req, pending, frame) = effects.spawn_terminal.expect("split parks a SPAWN");
-    assert!(
-        matches!(&frame, FrameKind::SpawnResource { cwd: Some(cwd), satellite: Some(host), .. }
-            if cwd == "/home/e/src" && *host == edge()),
-        "{frame:?}"
-    );
-    assert_eq!(pending.host, SplitHost::Satellite(edge()));
     assert_eq!(
-        pending.adopt, None,
-        "nothing to attach until the spawn answers"
+        (pending.host, pending.adopt),
+        (SplitHost::Satellite(edge()), None)
     );
-    assert!(asks_binding(&frame), "{frame:?}");
-}
+    assert!(asks_binding(&frame));
 
-/// A local pane's split is what it always was: no host, no cwd, even when
-/// the client knows the pane's directory.
-#[test]
-fn split_pane_on_a_local_pane_is_unchanged() {
-    let mut workspace = Workspace::single(tid(1));
-    let mut slot = PaneSlot::new().expect("pane slot");
+    let mut slot = PaneSlot::new().expect("slot");
     slot.cwd = Some("/srv/app".to_owned());
     let panes = HashMap::from([(tid(1), slot)]);
-    let effects = run_in(
-        &split_action(),
-        &mut workspace,
-        None,
-        ALL_FEATURES,
-        &[],
-        &panes,
-    );
-    let (_req, pending, frame) = effects.spawn_terminal.expect("split parks a SPAWN");
+    let (_, pending, frame) = fx(Workspace::single(tid(1)))
+        .run_in(&split_action(), &panes)
+        .spawn_terminal
+        .expect("SPAWN");
     assert!(
         matches!(
             &frame,
@@ -739,93 +664,14 @@ fn split_pane_on_a_local_pane_is_unchanged() {
         "{frame:?}"
     );
     assert_eq!(pending.host, SplitHost::Attached);
-    assert!(!asks_binding(&frame), "{frame:?}");
-}
+    assert!(!asks_binding(&frame));
 
-/// phux-lxov.1: `split-pane { host }` from a local pane spawns on that
-/// satellite with no owner, so the hub places the new pane itself and the
-/// reply's Satellite id is what the layout stores.
-#[test]
-fn split_onto_host_spawns_with_satellite_and_no_owner() {
-    let mut workspace = Workspace::single(tid(1));
-    let mut action = split_action();
-    action
-        .args
-        .insert("host".to_owned(), toml::Value::String("devbox".into()));
-    let effects = run(&action, &mut workspace);
-    let (_req, pending, frame) = effects.spawn_terminal.expect("split parks a SPAWN");
-    let devbox = phux_protocol::ids::SatelliteHost::new("devbox");
-    assert!(
-        matches!(
-            &frame,
-            FrameKind::SpawnResource {
-                satellite: Some(host),
-                owner_terminal: None,
-                ..
-            } if *host == devbox
-        ),
-        "{frame:?}"
-    );
-    assert_eq!(pending.host, SplitHost::Satellite(devbox));
-    assert_eq!(pending.adopt, None);
-    assert_eq!(pending.open_existing, None);
-    assert!(asks_binding(&frame), "{frame:?}");
-}
-
-/// phux-lxov.1: `split-pane { resource = "host/@N" }` attaches that pane
-/// into the current window. It does not spawn, and it does not open a
-/// new window.
-#[test]
-fn open_satellite_pane_attaches_it_into_the_current_window() {
-    let mut workspace = Workspace::single(tid(1));
-    let mut action = split_action();
-    action.args.insert(
-        "resource".to_owned(),
-        toml::Value::String("devbox/@7".into()),
-    );
-    let effects = run(&action, &mut workspace);
-    let target = ResourceId::satellite("devbox", 7);
-    let (_req, pending, frame) = effects
+    let (mut f, panes) = satellite_pane(Some("/home/e/src"));
+    older_hub(&mut f);
+    let (_, pending, frame) = f
+        .run_in(&split_action(), &panes)
         .spawn_terminal
-        .expect("open parks an ATTACH on the split");
-    assert_eq!(pending.open_existing.as_ref(), Some(&target));
-    assert_eq!(pending.adopt, None);
-    assert!(
-        matches!(
-            &frame,
-            FrameKind::Command {
-                command: phux_protocol::wire::frame::Command::AttachResource { terminal_id, .. },
-                ..
-            } if terminal_id == &target
-        ),
-        "{frame:?}"
-    );
-    assert!(effects.spawn_window.is_none());
-    let leaves = crate::layout::leaves(
-        workspace
-            .active_window()
-            .and_then(|window| window.tree.as_ref())
-            .expect("tree"),
-    );
-    assert_eq!(
-        leaves,
-        vec![tid(1)],
-        "the leaf appears when the attach succeeds"
-    );
-}
-
-/// A hub without host-aware spawns keeps today's split on itself, with no
-/// satellite path, and the parked split remembers which satellite it stands
-/// in for so the reply can say where the pane opened.
-#[test]
-fn split_pane_on_a_satellite_pane_stays_on_an_older_hub() {
-    let (mut workspace, panes) = satellite_pane(Some("/home/e/src"));
-    let features = ServerFeatureSet::with(&[
-        ServerFeature::SpawnInitialSize,
-        ServerFeature::ListDirectory,
-    ]);
-    let effects = run_in(&split_action(), &mut workspace, None, features, &[], &panes);
-    let (_req, pending, frame) = effects.spawn_terminal.expect("split parks a SPAWN");
+        .expect("SPAWN");
     assert!(
         matches!(
             &frame,
@@ -838,601 +684,77 @@ fn split_pane_on_a_satellite_pane_stays_on_an_older_hub() {
         "{frame:?}"
     );
     assert_eq!(pending.host, SplitHost::AttachedInsteadOf(edge()));
-    assert!(!asks_binding(&frame), "a split kept on the hub is local");
+    assert!(!asks_binding(&frame));
 }
 
-/// Against a server that never advertised `LIST_DIRECTORY` the action bells
-/// and sends nothing: the older server would drop the unknown frame and the
-/// picker would never open.
+/// `split-pane { host }` spawns on that satellite with no owner; `split-pane
+/// { resource = "host/@N" }` attaches that existing pane into the current
+/// window instead of spawning (the leaf appears when the attach succeeds).
 #[test]
-fn go_to_directory_bells_without_server_support() {
-    let mut workspace = Workspace::single(tid(1));
-    let effects =
-        run_without_list_directory_support(&bare_action("go-to-directory"), &mut workspace);
-    assert!(effects.list_directory.is_none());
-    assert!(effects.bell);
-}
-
-/// Against a server that never advertised the capability the field stays
-/// absent, so the frame is byte-identical to what that server has always
-/// decoded (ADR-0061: a client MUST NOT depend on unadvertised surface).
-#[test]
-fn spawn_omits_initial_size_when_the_server_did_not_advertise_it() {
-    let mut workspace = Workspace::single(tid(1));
-    let mut action = bare_action("split-pane");
-    action.args.insert(
-        "direction".to_owned(),
-        toml::Value::String("vertical".into()),
-    );
-    let effects = run_without_spawn_size_support(&action, &mut workspace);
-    let (_req, _pending, frame) = effects.spawn_terminal.expect("split parks a SPAWN");
-    assert_eq!(spawn_initial_size_of(&frame), None);
-
-    let mut workspace = Workspace::single(tid(1));
-    let effects = run_without_spawn_size_support(&bare_action("new-window"), &mut workspace);
-    let (_req, _pending, frame) = effects.spawn_window.expect("new-window parks a SPAWN");
-    assert_eq!(spawn_initial_size_of(&frame), None);
-}
-
-#[test]
-fn last_pane_without_history_bells_without_mutation() {
-    let mut workspace = Workspace::single(tid(1));
-    let effects = run(&bare_action("last-pane"), &mut workspace);
-    assert!(effects.bell);
-    assert!(!effects.layout_mutated);
-    assert!(effects.set_focus.is_none());
-}
-
-#[test]
-fn next_window_single_window_is_noop() {
-    let mut workspace = Workspace::single(tid(1));
-    let effects = run(&bare_action("next-window"), &mut workspace);
-    assert_eq!(workspace.active, 0);
-    assert!(!effects.layout_mutated);
-    assert!(!effects.clear_predict);
-}
-
-#[test]
-fn select_window_jumps_to_index() {
-    let mut workspace = Workspace::single(tid(1));
-    workspace.add_window("2".to_owned(), tid(2));
-    workspace.add_window("3".to_owned(), tid(3)); // active = 2
-    let mut action = bare_action("select-window");
-    action
-        .args
-        .insert("index".to_owned(), toml::Value::Integer(0));
-    let effects = run(&action, &mut workspace);
-    assert_eq!(workspace.active, 0);
-    assert!(effects.layout_mutated);
-    assert_eq!(effects.set_focus, Some(tid(1)));
-}
-
-#[test]
-fn select_window_out_of_range_is_noop() {
-    let mut workspace = Workspace::single(tid(1)); // only index 0
-    let mut action = bare_action("select-window");
-    action
-        .args
-        .insert("index".to_owned(), toml::Value::Integer(5));
-    let effects = run(&action, &mut workspace);
-    assert_eq!(workspace.active, 0);
-    assert!(!effects.layout_mutated);
-}
-
-#[test]
-fn select_window_missing_index_bells() {
-    let mut workspace = Workspace::single(tid(1));
-    let effects = run(&bare_action("select-window"), &mut workspace);
-    assert!(effects.bell);
-    assert!(!effects.layout_mutated);
-}
-
-fn three_windows() -> Workspace {
-    let mut workspace = Workspace::single(tid(1));
-    workspace.add_window("2".to_owned(), tid(2));
-    workspace.add_window("3".to_owned(), tid(3)); // active = 2
-    workspace
-}
-
-fn window_names(workspace: &Workspace) -> Vec<&str> {
-    workspace.windows.iter().map(|w| w.name.as_str()).collect()
-}
-
-fn move_window_action(key: &str, value: i64) -> phux_config::keybind::ResolvedAction {
-    let mut action = bare_action("move-window");
-    action
-        .args
-        .insert(key.to_owned(), toml::Value::Integer(value));
-    action
-}
-
-/// `move-window` moves the ACTIVE window and keeps it active. Window order
-/// is shared layout, so the move broadcasts like a rename.
-#[test]
-fn move_window_by_delta_moves_the_active_window() {
-    let mut workspace = three_windows();
-    let effects = run(&move_window_action("delta", -1), &mut workspace);
-    assert_eq!(window_names(&workspace), ["1", "3", "2"]);
-    assert_eq!(workspace.active, 1, "the moved window stays active");
-    assert!(effects.layout_mutated);
-    assert!(effects.set_metadata, "window order is shared layout");
-    assert!(!effects.bell);
-}
-
-/// A delta past either end clamps there instead of wrapping.
-#[test]
-fn move_window_delta_clamps_at_the_ends() {
-    let mut workspace = three_windows();
-    run(&move_window_action("delta", -9), &mut workspace);
-    assert_eq!(window_names(&workspace), ["3", "1", "2"]);
-    let effects = run(&move_window_action("delta", -1), &mut workspace);
-    assert!(effects.bell, "already first: nothing to move");
-    assert!(!effects.set_metadata);
-}
-
-#[test]
-fn move_window_to_an_index() {
-    let mut workspace = three_windows();
-    workspace.select(0);
-    let effects = run(&move_window_action("index", 2), &mut workspace);
-    assert_eq!(window_names(&workspace), ["2", "3", "1"]);
-    assert_eq!(workspace.active, 2);
-    assert!(effects.set_metadata);
-}
-
-/// An out-of-range `index` clamps to the last slot, like `delta` does.
-#[test]
-fn move_window_index_past_the_end_clamps() {
-    let mut workspace = three_windows();
-    workspace.select(0);
-    let effects = run(&move_window_action("index", 99), &mut workspace);
-    assert_eq!(window_names(&workspace), ["2", "3", "1"]);
-    assert!(effects.set_metadata);
-}
-
-#[test]
-fn move_window_without_a_destination_bells() {
-    let mut workspace = three_windows();
-    let effects = run(&bare_action("move-window"), &mut workspace);
-    assert!(effects.bell);
-    assert!(!effects.layout_mutated);
-    assert_eq!(window_names(&workspace), ["1", "2", "3"]);
-}
-
-/// phux-x2hm: a multi-pane window can zoom — `toggle-zoom` requests the
-/// driver-side flip (`toggle_zoom`) plus a repaint (`layout_mutated`),
-/// without mutating the real tree or bell-ing.
-#[test]
-fn toggle_zoom_on_multi_pane_window_requests_toggle() {
-    use crate::layout::{LayoutState, WindowState, split_at};
-    let tree = split_at(
-        &crate::layout::LayoutNode::Leaf(tid(1)),
-        &tid(1),
-        &tid(2),
-        crate::layout::SplitDir::Horizontal,
-        0.5,
-    )
-    .unwrap();
-    let mut workspace = Workspace {
-        windows: vec![WindowState::new(
-            "1".to_owned(),
-            LayoutState {
-                tree: Some(tree),
-                focus: Some(tid(1)),
-            },
-        )],
-        active: 0,
-    };
-    let effects = run(&bare_action("toggle-zoom"), &mut workspace);
-    assert!(effects.toggle_zoom, "multi-pane window may zoom");
-    assert!(effects.layout_mutated, "zoom toggles drive a repaint");
-    assert!(!effects.bell);
-}
-
-/// phux-x2hm: a single-pane window has nothing to zoom — `toggle-zoom`
-/// bells (tmux parity) and does NOT request a toggle or repaint.
-#[test]
-fn toggle_zoom_on_single_pane_window_bells() {
-    let mut workspace = Workspace::single(tid(1));
-    let effects = run(&bare_action("toggle-zoom"), &mut workspace);
-    assert!(effects.bell, "single-pane window cannot zoom");
-    assert!(!effects.toggle_zoom);
-    assert!(!effects.layout_mutated);
-}
-
-/// The root split's ratio, for asserting a resize actually moved it.
-fn root_ratio(workspace: &Workspace) -> f32 {
-    match workspace.active_window().unwrap().tree.as_ref().unwrap() {
-        crate::layout::LayoutNode::Split { ratio, .. } => *ratio,
-        other => panic!("expected root Split, got {other:?}"),
-    }
-}
-
-/// Like [`two_pane_workspace`], but with a caller-chosen root ratio —
-/// stands in for the workspace a peer's layout broadcast lands
-/// (`server_frame`'s `is_layout_key` arm decodes and swaps it in
-/// wholesale; a peer dragging the divider is the same shape as a
-/// smaller `ratio` here).
-fn two_pane_workspace_with_ratio(ratio: f32) -> Workspace {
-    use crate::layout::{LayoutState, WindowState, split_at};
-    let tree = split_at(
-        &crate::layout::LayoutNode::Leaf(tid(1)),
-        &tid(1),
-        &tid(2),
-        SplitDir::Horizontal,
-        ratio,
-    )
-    .unwrap();
-    Workspace {
-        windows: vec![WindowState::new(
-            "1".to_owned(),
-            LayoutState {
-                tree: Some(tree),
-                focus: Some(tid(1)),
-            },
-        )],
-        active: 0,
-    }
-}
-
-/// phux-z6wt: a peer's layout broadcast can shrink the focused pane with
-/// no SIGWINCH involved — `server_frame`'s `is_layout_key` arm decodes
-/// the peer's `Workspace`, swaps it in wholesale, and returns
-/// `FrameOutcome { layout_replaced: true, .. }`. PR #331 (phux-d26y)
-/// only fanned the focused pane's new size out to overlays on the
-/// SIGWINCH edge, so before this fix nothing on the `layout_replaced`
-/// path called it: copy-mode kept clamping the selection into the pane
-/// size it had when it opened. Stale-large strands the corner outside
-/// the new, smaller grid, and the copy path resolves that corner
-/// through `terminal.grid_ref(..).ok()?` — so `extract_selection_text`
-/// returns `None` and Enter dismisses copy-mode having silently copied
-/// nothing.
-///
-/// This drives `sync_overlays_to_focused_pane` — the driver helper the
-/// `layout_replaced` block (and the SIGWINCH arm) both call — directly
-/// against a workspace shaped like the "already reconciled" state
-/// `server_frame` hands the driver, so the assertion exercises the
-/// exact rect recomputation + fan-out the fix wires in, without needing
-/// a two-client pty harness to produce the broadcast itself.
-#[test]
-fn layout_replace_reclaims_the_focused_pane_rect_for_overlays() {
-    let viewport = (80, 24);
-
-    // The wide workspace: a 50/50 split, so the focused left pane
-    // (tid(1)) is roughly half the viewport.
-    let wide = two_pane_workspace_with_ratio(0.5);
-    let wide_pane = focused_pane_rect_for(&wide, None, Some(&tid(1)), viewport, None, None);
-
-    // Copy-mode opens against that size and the selection is dragged to
-    // the pane's bottom-right corner.
-    let mut overlays = OverlayState::new();
-    overlays.push(Box::new(CopyModeOverlay::new(
-        wide_pane.h.saturating_sub(1),
-        wide_pane.w.saturating_sub(1),
-        wide_pane.w,
-        wide_pane.h,
-    )));
-
-    // A peer shrinks the same divider hard to the left — this is the
-    // workspace `server_frame` has already swapped in by the time the
-    // driver's `layout_replaced` block runs, with no SIGWINCH anywhere
-    // in the sequence.
-    let narrow = two_pane_workspace_with_ratio(0.1);
-    let narrow_pane = focused_pane_rect_for(&narrow, None, Some(&tid(1)), viewport, None, None);
+fn split_onto_a_host_or_an_existing_satellite_pane() {
+    let devbox = SatelliteHost::new("devbox");
+    let mut action = split_action();
+    action.args.insert("host".to_owned(), "devbox".into());
+    let (_, pending, frame) = run(&action, &mut Workspace::single(tid(1)))
+        .spawn_terminal
+        .expect("SPAWN");
     assert!(
-        narrow_pane.w < wide_pane.w,
-        "sanity: the shrink actually narrowed the focused pane",
+        matches!(&frame, FrameKind::SpawnResource { satellite: Some(h), owner_terminal: None, .. } if *h == devbox),
+        "{frame:?}"
     );
+    assert_eq!(pending.host, SplitHost::Satellite(devbox));
+    assert!(pending.adopt.is_none() && pending.open_existing.is_none());
+    assert!(asks_binding(&frame));
 
-    // Precondition: the stale selection really is stranded outside the
-    // narrower pane the peer just produced — this is the bug's exact
-    // consequence, reproduced without touching any driver code.
-    let stale = overlays
-        .copy_selection()
-        .expect("copy-mode retains its selection across the broadcast");
-    assert!(
-        stale.end_col >= narrow_pane.w,
-        "sanity: the pre-fix corner ({stale:?}) must sit outside the \
-             narrower pane ({narrow_pane:?}) for this test to mean anything",
-    );
-
-    // The fix: the driver's `layout_replaced` block calls this exact
-    // helper with the already-swapped workspace.
-    sync_overlays_to_focused_pane(
-        &mut overlays,
-        &narrow,
-        None,
-        Some(&tid(1)),
-        viewport,
-        None,
-        None,
-    );
-
-    let fixed = overlays
-        .copy_selection()
-        .expect("copy-mode survives the resize (ADR-0045: it does not dismiss)");
-    assert!(
-        fixed.end_row < narrow_pane.h && fixed.end_col < narrow_pane.w,
-        "every corner of the selection must be inside the pane the peer's \
-             broadcast produced: {fixed:?} vs {narrow_pane:?}",
-    );
-}
-
-/// phux-foz.3: `resize-pane { direction, amount }` dispatches through
-/// `run_action` — the ratio moves by amount/axis-cells, the layout
-/// repaints, and the mutation broadcasts via `SET_METADATA` (unlike
-/// per-client focus moves).
-#[test]
-fn resize_pane_dispatch_moves_ratio_and_broadcasts() {
-    let mut workspace = two_pane_workspace();
-    let before = root_ratio(&workspace);
-    let mut action = bare_action("resize-pane");
+    let mut action = split_action();
     action
         .args
-        .insert("direction".to_owned(), toml::Value::String("right".into()));
-    action
-        .args
-        .insert("amount".to_owned(), toml::Value::Integer(8));
-    let effects = run(&action, &mut workspace);
-    assert!(!effects.bell);
-    assert!(effects.layout_mutated, "resize repaints the layout");
-    assert!(
-        effects.set_metadata,
-        "a layout mutation broadcasts to other clients"
-    );
-    let after = root_ratio(&workspace);
-    // Growing the focused (left) pane rightward by 8 of 80 cols.
-    assert!(
-        (after - before - 0.1).abs() < 1e-4,
-        "ratio moved {before} -> {after}, wanted +0.1"
-    );
-}
-
-/// phux-foz.3: a `resize-pane` missing its args bells and mutates
-/// nothing (ADR-0019 decision 5 bell-no-op contract).
-#[test]
-fn resize_pane_dispatch_missing_args_bells() {
-    let mut workspace = two_pane_workspace();
-    let before = root_ratio(&workspace);
-    let effects = run(&bare_action("resize-pane"), &mut workspace);
-    assert!(effects.bell);
-    assert!(!effects.layout_mutated);
-    assert!(!effects.set_metadata);
-    assert!((root_ratio(&workspace) - before).abs() < f32::EPSILON);
-}
-
-/// phux-foz.3: a resize that would squeeze a pane below the 2-cell
-/// floor (ADR-0019 decision 5) bells and leaves the ratio unchanged.
-#[test]
-fn resize_pane_dispatch_min_cell_floor_bells() {
-    let mut workspace = two_pane_workspace();
-    let before = root_ratio(&workspace);
-    let mut action = bare_action("resize-pane");
-    action
-        .args
-        .insert("direction".to_owned(), toml::Value::String("right".into()));
-    action
-        .args
-        .insert("amount".to_owned(), toml::Value::Integer(80));
-    let effects = run(&action, &mut workspace);
-    assert!(effects.bell, "floor violation is a bell-no-op");
-    assert!(!effects.layout_mutated);
-    assert!((root_ratio(&workspace) - before).abs() < f32::EPSILON);
-}
-
-/// phux-4h5a: `toggle-sidebar` requests the driver-side flip
-/// (`toggle_sidebar`) plus a repaint (`layout_mutated`), unconditionally —
-/// even single-pane, since the strip lists windows. It never bells and
-/// mutates no tree.
-#[test]
-fn toggle_sidebar_requests_flip_and_repaint() {
-    let mut workspace = Workspace::single(tid(1));
-    let effects = run(&bare_action("toggle-sidebar"), &mut workspace);
-    assert!(effects.toggle_sidebar, "toggle-sidebar requests the flip");
-    assert!(
-        effects.layout_mutated,
-        "sidebar toggle drives a reflow repaint"
-    );
-    assert!(!effects.bell);
-    assert!(!effects.toggle_zoom);
-}
-
-/// phux-4h5a: `apply_action_effects` flips the driver-owned
-/// `sidebar_enabled` when `toggle_sidebar` is set — off→on and back on a
-/// second toggle.
-#[tokio::test]
-async fn apply_effects_flips_sidebar_enabled_state() {
-    let mut fx = CtxFixture::default();
-    let mut ctx = fx.ctx();
-    let effects = run_action(
-        &bare_action("toggle-sidebar"),
-        &mut ctx,
-        None,
-        &HashMap::new(),
-    );
-    let mut out: Vec<u8> = Vec::new();
-    let (a, _b) = tokio::net::UnixStream::pair().expect("uds pair");
-    let mut conn = Connection::from_stream(a);
-    let mut focused_resource = None;
-    let mut detach_pending = false;
-    let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 80, 24);
-    let panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
-    apply_action_effects(
-        effects,
-        &mut out,
-        &mut conn,
-        &mut ctx,
-        &mut focused_resource,
-        &mut detach_pending,
-        &mut predict,
-        &panes,
-    )
-    .await
-    .expect("apply effects");
-    assert!(fx.sidebar_enabled, "first toggle enables the sidebar");
-
-    // A second toggle disables it again.
-    let mut ctx = fx.ctx();
-    let effects = run_action(
-        &bare_action("toggle-sidebar"),
-        &mut ctx,
-        None,
-        &HashMap::new(),
-    );
-    apply_action_effects(
-        effects,
-        &mut out,
-        &mut conn,
-        &mut ctx,
-        &mut focused_resource,
-        &mut detach_pending,
-        &mut predict,
-        &panes,
-    )
-    .await
-    .expect("apply effects");
-    assert!(!fx.sidebar_enabled, "second toggle disables the sidebar");
-}
-
-#[test]
-fn rename_window_with_name_arg_renames_and_broadcasts() {
-    let mut workspace = Workspace::single(tid(1)); // window "1"
-    let mut action = bare_action("rename-window");
-    action
-        .args
-        .insert("name".to_owned(), toml::Value::String("build".into()));
-    let effects = run(&action, &mut workspace);
-    assert_eq!(workspace.windows[0].name, "build");
-    assert!(effects.layout_mutated);
-    assert!(effects.set_metadata, "rename is shared window state");
-}
-
-/// Like [`run`], but returns the `OverlayState` so a test can assert
-/// an action pushed an overlay.
-fn run_capturing(
-    action: &phux_config::keybind::ResolvedAction,
-    workspace: &mut Workspace,
-) -> (ActionEffects, OverlayState) {
-    let (effects, overlays, _) = run_capturing_with_sessions(action, workspace, &[], None);
-    (effects, overlays)
-}
-
-/// Like [`run_capturing`], but seeds the dispatcher's cached session
-/// graph so `session-picker` tests can drive the picker. The third element
-/// is the host-inventory refresh request the action raised (phux-c2td.3).
-fn run_capturing_with_sessions(
-    action: &phux_config::keybind::ResolvedAction,
-    workspace: &mut Workspace,
-    sessions: &[phux_protocol::wire::info::SessionInfo],
-    focused_session: Option<phux_protocol::ids::SessionId>,
-) -> (ActionEffects, OverlayState, bool) {
-    let mut fx = CtxFixture::default();
-    fx.next_request_id = 100;
-    fx.focused_session = focused_session;
-    fx.sidebar_targets = Some(targets(0, workspace.windows.len(), 0));
-    let effects = {
-        let mut ctx = fx.ctx();
-        ctx.workspace = workspace;
-        ctx.sessions = sessions;
-        let focused = ctx.workspace.active_window().and_then(|w| w.focus.clone());
-        run_action(action, &mut ctx, focused.as_ref(), &HashMap::new())
-    };
-    (effects, fx.overlays, fx.host_refresh_request)
-}
-
-#[test]
-fn rename_window_no_arg_opens_prompt() {
-    let mut workspace = Workspace::single(tid(1)); // window "1"
-    let (effects, overlays) = run_capturing(&bare_action("rename-window"), &mut workspace);
-    assert!(
-        overlays.is_active(),
-        "no-arg rename should open the prompt overlay"
-    );
-    assert!(effects.layout_mutated);
-    // Not renamed yet — that happens when the prompt commits.
-    assert_eq!(workspace.windows[0].name, "1");
-    assert!(!effects.set_metadata, "no broadcast until commit");
-}
-
-#[test]
-fn kill_window_on_empty_workspace_bells() {
-    let mut workspace = Workspace::default();
-    let effects = run(&bare_action("kill-window"), &mut workspace);
-    assert!(effects.bell);
-    assert!(effects.kill_frames.is_empty());
-}
-
-#[test]
-fn palette_committed_action_routes_through_run_action() {
-    // A palette row's ResolvedAction, fed back through run_action,
-    // produces the same effect a keybind would. Use `detach` — a row
-    // whose effect is unambiguous.
-    let cfg = phux_config::parse_str(
-        phux_config::DEFAULT_CONFIG_TOML,
-        std::path::Path::new("default.toml"),
-    )
-    .expect("default config parses");
-    let items = crate::attach::action_registry::palette_items(Some(&cfg.keybindings), &[], &[]);
-    let detach = items
-        .iter()
-        .find(|i| i.action.action == "detach")
-        .expect("detach in palette");
-    let mut workspace = Workspace::default();
-    let effects = run(&detach.action, &mut workspace);
-    assert!(effects.detach, "committing the detach palette row detaches");
-}
-
-#[test]
-fn plugin_action_records_run_intent_for_the_async_caller() {
-    // phux-r82.5: the sync dispatcher never execs the plugin itself —
-    // it records (plugin, action) and the async caller spawns the
-    // child-process run so the input loop can't freeze on a plugin.
-    let mut args = BTreeMap::new();
-    args.insert(
-        "plugin".to_owned(),
-        toml::Value::String("com.example.tools".to_owned()),
-    );
-    args.insert(
-        "action".to_owned(),
-        toml::Value::String("summarize".to_owned()),
-    );
-    let action = phux_config::keybind::ResolvedAction {
-        action: "plugin-action".to_owned(),
-        args,
-    };
+        .insert("resource".to_owned(), "devbox/@7".into());
     let mut workspace = Workspace::single(tid(1));
     let effects = run(&action, &mut workspace);
+    let target = satellite_id("devbox", 7);
+    let (_, pending, frame) = effects.spawn_terminal.expect("open parks an ATTACH");
+    assert_eq!(pending.open_existing.as_ref(), Some(&target));
+    assert!(pending.adopt.is_none() && effects.spawn_window.is_none());
+    assert!(
+        matches!(&frame, FrameKind::Command { command: Command::AttachResource { terminal_id, .. }, .. } if *terminal_id == target),
+        "{frame:?}"
+    );
+    assert_eq!(
+        crate::layout::leaves(workspace.active_window().unwrap().tree.as_ref().unwrap()),
+        vec![tid(1)]
+    );
+}
+
+// ---- plugins and overlays ---------------------------------------------------
+
+#[test]
+fn plugin_action_records_run_intent_or_bells() {
+    let action = act(
+        "plugin-action",
+        &[
+            ("plugin", "com.example.tools".into()),
+            ("action", "summarize".into()),
+        ],
+    );
+    let effects = run(&action, &mut Workspace::single(tid(1)));
     assert_eq!(
         effects.run_plugin,
         Some(("com.example.tools".to_owned(), "summarize".to_owned()))
     );
-    assert!(!effects.bell);
-    assert!(!effects.layout_mutated, "no repaint for a spawned run");
+    assert!(
+        !effects.bell && !effects.layout_mutated,
+        "the async caller spawns the run"
+    );
+
+    let effects = run(
+        &bare_action("plugin-action"),
+        &mut Workspace::single(tid(1)),
+    );
+    assert!(effects.bell && effects.run_plugin.is_none());
 }
 
-#[test]
-fn plugin_action_missing_args_bells() {
-    let mut workspace = Workspace::single(tid(1));
-    let effects = run(&bare_action("plugin-action"), &mut workspace);
-    assert!(effects.bell, "missing plugin/action args must bell");
-    assert!(effects.run_plugin.is_none());
-}
-
-// ---------- phux-r82.7: plugin-pane placement routing ----------
-
-/// Build the `plugin-pane { plugin, pane }` dispatcher action.
-fn plugin_pane_action(plugin: &str, pane: &str) -> phux_config::keybind::ResolvedAction {
-    let mut args = BTreeMap::new();
-    args.insert("plugin".to_owned(), toml::Value::String(plugin.to_owned()));
-    args.insert("pane".to_owned(), toml::Value::String(pane.to_owned()));
-    phux_config::keybind::ResolvedAction {
-        action: "plugin-pane".to_owned(),
-        args,
-    }
-}
-
-/// A hostable pane snapshot entry with the given placement.
-fn pane_entry(placement: HostedPlacement) -> PluginPaneEntry {
+fn board(placement: HostedPlacement) -> PluginPaneEntry {
     PluginPaneEntry {
         plugin_id: "com.example.board".to_owned(),
         plugin_name: "Board".to_owned(),
@@ -1444,597 +766,135 @@ fn pane_entry(placement: HostedPlacement) -> PluginPaneEntry {
     }
 }
 
-/// Like [`run`], but with a plugin-pane snapshot installed.
-fn run_with_panes(
-    action: &phux_config::keybind::ResolvedAction,
-    workspace: &mut Workspace,
-    panes: &[PluginPaneEntry],
+fn run_plugin_pane(
+    plugin: &str,
+    placement: HostedPlacement,
+    workspace: Workspace,
 ) -> ActionEffects {
-    let mut fx = CtxFixture::default();
-    fx.next_request_id = 100;
-    fx.sidebar_targets = Some(targets(0, workspace.windows.len(), 0));
-    let mut ctx = fx.ctx();
-    ctx.workspace = workspace;
-    ctx.plugin_panes = panes;
-    let focused = ctx.workspace.active_window().and_then(|w| w.focus.clone());
-    run_action(action, &mut ctx, focused.as_ref(), &HashMap::new())
+    let mut f = fx(workspace);
+    f.plugin_panes = vec![board(placement)];
+    f.run(&act(
+        "plugin-pane",
+        &[("plugin", plugin.into()), ("pane", "board".into())],
+    ))
 }
 
-/// The spawn frame's plugin-relevant fields, destructured for
-/// assertions.
-struct SpawnParts {
-    command: Option<Vec<String>>,
-    cwd: Option<String>,
-    env: Option<Vec<(String, String)>>,
-}
-
-fn spawn_frame_parts(frame: &FrameKind) -> SpawnParts {
-    let FrameKind::SpawnResource {
-        command, cwd, env, ..
-    } = frame
-    else {
-        panic!("expected SpawnResource, got {frame:?}");
-    };
-    SpawnParts {
-        command: command.clone(),
-        cwd: cwd.clone(),
-        env: env.clone(),
+/// Split/zoomed placements park a split running the manifest argv with the
+/// identity env; a tab placement parks a window named after the title.
+#[test]
+fn plugin_pane_placement_routes_the_spawn() {
+    let argv = Some(vec!["agent-board".to_owned(), "--watch".to_owned()]);
+    for (placement, zoom) in [
+        (HostedPlacement::Split, false),
+        (HostedPlacement::Zoomed, true),
+    ] {
+        let effects = run_plugin_pane("com.example.board", placement, Workspace::single(tid(1)));
+        let (_, pending, frame) = effects.spawn_terminal.expect("parks a split");
+        assert_eq!(pending.focused_at_request, tid(1));
+        assert_eq!(pending.zoom_on_spawn, zoom);
+        assert!(effects.spawn_window.is_none());
+        let FrameKind::SpawnResource {
+            command, cwd, env, ..
+        } = frame
+        else {
+            panic!("spawn")
+        };
+        assert_eq!(command, argv);
+        assert_eq!(cwd.as_deref(), Some("/plugins/board"));
+        let env = env.expect("identity env injected");
+        for pair in [
+            ("PHUX_PLUGIN_ID", "com.example.board"),
+            ("PHUX_PLUGIN_PANE_ID", "board"),
+            ("PHUX_PLUGIN_ROOT", "/plugins/board"),
+        ] {
+            assert!(
+                env.contains(&(pair.0.to_owned(), pair.1.to_owned())),
+                "{pair:?}"
+            );
+        }
     }
-}
-
-#[test]
-fn plugin_pane_split_placement_parks_pending_split_with_argv_and_env() {
-    let mut workspace = Workspace::single(tid(1));
-    let effects = run_with_panes(
-        &plugin_pane_action("com.example.board", "board"),
-        &mut workspace,
-        &[pane_entry(HostedPlacement::Split)],
+    let effects = run_plugin_pane(
+        "com.example.board",
+        HostedPlacement::Tab,
+        Workspace::single(tid(1)),
     );
-    let (_req, pending, frame) = effects
-        .spawn_terminal
-        .expect("split placement parks a PendingSplit + SPAWN");
-    assert_eq!(pending.focused_at_request, tid(1));
-    assert!(!pending.zoom_on_spawn, "plain split must not zoom");
-    assert!(effects.spawn_window.is_none());
-    let SpawnParts { command, cwd, env } = spawn_frame_parts(&frame);
-    assert_eq!(
-        command,
-        Some(vec!["agent-board".to_owned(), "--watch".to_owned()]),
-        "spawn runs the manifest argv, not the default shell",
-    );
-    assert_eq!(cwd.as_deref(), Some("/plugins/board"));
-    let env = env.expect("identity env injected");
-    assert!(env.contains(&("PHUX_PLUGIN_ID".to_owned(), "com.example.board".to_owned())));
-    assert!(env.contains(&("PHUX_PLUGIN_PANE_ID".to_owned(), "board".to_owned())));
-    assert!(env.contains(&("PHUX_PLUGIN_ROOT".to_owned(), "/plugins/board".to_owned())));
-}
-
-#[test]
-fn plugin_pane_zoomed_placement_requests_zoom_on_spawn() {
-    let mut workspace = Workspace::single(tid(1));
-    let effects = run_with_panes(
-        &plugin_pane_action("com.example.board", "board"),
-        &mut workspace,
-        &[pane_entry(HostedPlacement::Zoomed)],
-    );
-    let (_req, pending, _frame) = effects
-        .spawn_terminal
-        .expect("zoomed placement parks a PendingSplit + SPAWN");
-    assert!(pending.zoom_on_spawn, "zoomed placement zooms on reply");
-}
-
-#[test]
-fn plugin_pane_tab_placement_parks_pending_window_named_after_title() {
-    let mut workspace = Workspace::single(tid(1));
-    let effects = run_with_panes(
-        &plugin_pane_action("com.example.board", "board"),
-        &mut workspace,
-        &[pane_entry(HostedPlacement::Tab)],
-    );
-    let (_req, pending, frame) = effects
-        .spawn_window
-        .expect("tab placement parks a PendingWindow + SPAWN");
+    let (_, pending, frame) = effects.spawn_window.expect("tab parks a window");
     assert_eq!(pending.name, "Agent Board");
     assert!(effects.spawn_terminal.is_none());
-    let SpawnParts { command, .. } = spawn_frame_parts(&frame);
-    assert_eq!(
-        command,
-        Some(vec!["agent-board".to_owned(), "--watch".to_owned()])
-    );
+    assert!(matches!(frame, FrameKind::SpawnResource { command, .. } if command == argv));
 }
 
+/// An unknown entry (disabled plugin, typo, overlay declaration) or a split
+/// with no focused pane bells.
 #[test]
-fn plugin_pane_unknown_entry_bells() {
-    // Covers a disabled plugin, a typo'd id, or an overlay declaration
-    // (never snapshotted) reached via a user-config binding.
-    let mut workspace = Workspace::single(tid(1));
-    let effects = run_with_panes(
-        &plugin_pane_action("com.example.absent", "board"),
-        &mut workspace,
-        &[pane_entry(HostedPlacement::Split)],
-    );
-    assert!(effects.bell);
-    assert!(effects.spawn_terminal.is_none());
-    assert!(effects.spawn_window.is_none());
-}
-
-#[test]
-fn plugin_pane_split_without_focused_pane_bells() {
-    let mut workspace = Workspace::default(); // empty: no focus
-    let effects = run_with_panes(
-        &plugin_pane_action("com.example.board", "board"),
-        &mut workspace,
-        &[pane_entry(HostedPlacement::Split)],
-    );
-    assert!(effects.bell);
-    assert!(effects.spawn_terminal.is_none());
-}
-
-#[test]
-fn help_and_command_palette_are_action_finder_aliases() {
-    for action in ["show-help", "command-palette"] {
-        let mut workspace = Workspace::single(tid(1));
-        let (effects, overlays) = run_capturing(&bare_action(action), &mut workspace);
+fn plugin_pane_unknown_or_unfocused_bells() {
+    for (plugin, workspace) in [
+        ("com.example.absent", Workspace::single(tid(1))),
+        ("com.example.board", Workspace::default()),
+    ] {
+        let effects = run_plugin_pane(plugin, HostedPlacement::Split, workspace);
         assert!(
-            overlays.is_active(),
-            "{action} should push the action finder"
+            effects.bell && effects.spawn_terminal.is_none() && effects.spawn_window.is_none(),
+            "{plugin}"
         );
-        assert_eq!(overlays.depth(), 1);
-        assert!(!effects.layout_mutated);
-        assert!(!effects.bell);
     }
 }
 
+/// A palette row's action, fed back through `run_action`, has the same
+/// effect a keybinding does.
 #[test]
-fn settings_action_pushes_the_settings_page() {
-    let mut workspace = Workspace::single(tid(1));
-    let (effects, overlays) = run_capturing(&bare_action("settings"), &mut workspace);
-    assert!(
-        overlays.is_active(),
-        "settings should push the settings page"
-    );
-    assert_eq!(overlays.depth(), 1);
-    assert!(
-        !overlays.top_is_passthrough(),
-        "the settings page captures input"
-    );
-    assert!(!effects.layout_mutated);
-    assert!(!effects.bell);
-    assert!(!effects.reload_config, "opening the page reloads nothing");
-}
-
-#[test]
-fn getting_started_action_reopens_passthrough_guidance() {
-    let mut workspace = Workspace::single(tid(1));
-    let (effects, overlays) = run_capturing(&bare_action("getting-started"), &mut workspace);
-    assert!(overlays.is_active(), "getting-started should push guidance");
-    assert!(
-        overlays.top_is_passthrough(),
-        "revisited guidance must not consume the dismissing key"
-    );
-    assert!(!effects.layout_mutated);
-    assert!(!effects.bell);
-}
-
-#[test]
-fn window_picker_action_pushes_overlay_with_windows() {
-    let mut workspace = Workspace::single(tid(1));
-    workspace.add_window("2".to_owned(), tid(2));
-    let (effects, overlays) = run_capturing(&bare_action("window-picker"), &mut workspace);
-    assert!(overlays.is_active(), "window-picker should push an overlay");
-    assert!(!effects.bell);
-}
-
-#[test]
-fn window_picker_on_empty_workspace_bells() {
-    let mut workspace = Workspace::default();
-    let (effects, overlays) = run_capturing(&bare_action("window-picker"), &mut workspace);
-    assert!(!overlays.is_active(), "no windows ⇒ no overlay");
-    assert!(effects.bell);
-}
-
-#[test]
-fn current_session_window_rows_label_index_name_and_pane_count() {
-    let mut workspace = Workspace::single(tid(1)); // window "1", 1 pane
-    workspace.add_window("editor".to_owned(), tid(2));
-    let items = current_session_window_rows(&workspace);
-    assert_eq!(items.len(), 2);
-    assert_eq!(items[0].label, "0:1");
-    assert_eq!(items[0].secondary.as_deref(), Some("1 pane"));
-    assert!(items[0].indented, "window rows nest under their session");
-    assert_eq!(items[1].label, "1:editor");
-    // Each row commits select-window with its index.
-    assert_eq!(items[1].action.action, "select-window");
-    assert_eq!(
-        items[1].action.args.get("index"),
-        Some(&toml::Value::Integer(1))
-    );
-}
-
-#[test]
-fn window_picker_groups_windows_under_their_session() {
-    let mut workspace = Workspace::single(tid(1));
-    workspace.add_window("editor".to_owned(), tid(2));
-    let sessions = [sinfo(1, "work"), sinfo(2, "scratch")];
-    let items = window_picker_items(
-        &workspace,
-        &sessions,
-        &HashMap::new(),
-        Some(phux_protocol::ids::SessionId::new(1)),
-    );
-    // Current session ("work") leads, as a header marked "(current)".
-    assert!(items[0].is_header());
-    assert_eq!(items[0].label, "work (current)");
-    // Its windows nest directly beneath, selectable + indented.
-    assert!(!items[1].is_header() && items[1].indented);
-    assert_eq!(items[1].action.action, "select-window");
-    assert_eq!(items[2].action.action, "select-window");
-    // The foreign session is a header followed by a switch-session row.
-    let scratch = items
+fn palette_committed_action_routes_through_run_action() {
+    let cfg = default_cfg();
+    let items = crate::attach::action_registry::palette_items(Some(&cfg.keybindings), &[], &[]);
+    let detach = items
         .iter()
-        .position(|i| i.is_header() && i.label == "scratch")
-        .expect("scratch header present");
-    assert_eq!(items[scratch + 1].action.action, "switch-session");
-    assert_eq!(
-        items[scratch + 1].action.args.get("name"),
-        Some(&toml::Value::String("scratch".to_owned())),
-    );
-    // No cached layout for "scratch" ⇒ no `window` arg (fallback row,
-    // plain switch).
-    assert!(!items[scratch + 1].action.args.contains_key("window"));
+        .find(|i| i.action.action == "detach")
+        .expect("detach in palette");
+    assert!(run(&detach.action, &mut Workspace::default()).detach);
 }
 
-/// phux-foz.8: with a peer session's persisted layout cached, the
-/// picker lists that session's windows as one-step rows committing
-/// `switch-session { name, window }` — same `index:name` + pane-count
-/// shape as the current session's rows.
+/// Each overlay-opening action pushes one overlay without a repaint or bell;
+/// guidance is passthrough, the settings page captures input.
 #[test]
-fn window_picker_lists_foreign_windows_one_step_when_layout_cached() {
-    let mut workspace = Workspace::single(tid(1));
-    workspace.add_window("editor".to_owned(), tid(2));
-    let sessions = [sinfo(1, "work"), sinfo(2, "scratch")];
-    // scratch's persisted workspace: two windows, "build" and "logs".
-    let mut scratch_ws = Workspace::single(tid(10));
-    scratch_ws.rename_active("build".to_owned());
-    scratch_ws.add_window("logs".to_owned(), tid(11));
-    let mut foreign = HashMap::new();
-    foreign.insert(phux_protocol::ids::SessionId::new(2), scratch_ws);
-
-    let items = window_picker_items(
-        &workspace,
-        &sessions,
-        &foreign,
-        Some(phux_protocol::ids::SessionId::new(1)),
-    );
-    let scratch = items
-        .iter()
-        .position(|i| i.is_header() && i.label == "scratch")
-        .expect("scratch header present");
-    // Two one-step window rows, indented under the header.
-    let row0 = &items[scratch + 1];
-    let row1 = &items[scratch + 2];
-    assert_eq!(row0.label, "0:build");
-    assert_eq!(row0.secondary.as_deref(), Some("1 pane"));
-    assert!(row0.indented);
-    assert_eq!(row0.action.action, "switch-session");
-    assert_eq!(
-        row0.action.args.get("name"),
-        Some(&toml::Value::String("scratch".to_owned())),
-    );
-    assert_eq!(
-        row0.action.args.get("window"),
-        Some(&toml::Value::Integer(0)),
-    );
-    assert_eq!(row1.label, "1:logs");
-    assert_eq!(
-        row1.action.args.get("window"),
-        Some(&toml::Value::Integer(1)),
-    );
-    // No fallback "switch to this session" row when windows list.
-    assert!(
-        items.iter().all(|i| i.label != "switch to this session"),
-        "one-step rows replace the fallback row"
-    );
+fn overlay_actions_push_their_overlay() {
+    for (action, passthrough) in [
+        ("show-help", false),
+        ("command-palette", false),
+        ("settings", false),
+        ("getting-started", true),
+        ("agent-fleet", false),
+    ] {
+        let mut f = fx(Workspace::single(tid(1)));
+        let effects = f.run(&bare_action(action));
+        assert_eq!(f.overlays.depth(), 1, "{action}");
+        assert_eq!(f.overlays.top_is_passthrough(), passthrough, "{action}");
+        assert!(
+            !effects.layout_mutated && !effects.bell && !effects.reload_config,
+            "{action}"
+        );
+    }
+    let mut f = fx(Workspace::single(tid(1)));
+    f.workspace.add_window("2".to_owned(), tid(2));
+    assert!(!f.run(&bare_action("window-picker")).bell);
+    assert!(f.overlays.is_active());
+    for action in ["window-picker", "agent-fleet"] {
+        let mut f = fx(Workspace::default());
+        assert!(
+            f.run(&bare_action(action)).bell,
+            "{action}: nothing to list"
+        );
+        assert!(!f.overlays.is_active());
+    }
 }
 
-/// phux-foz.8: an empty cached workspace (decoded but windowless) is
-/// not useful — the picker falls back to the plain switch row.
+/// The fleet overlay is keyed for the driver's live refresh; a static overlay
+/// (the palette) ignores it.
 #[test]
-fn window_picker_empty_foreign_layout_falls_back_to_switch_row() {
+fn only_the_fleet_overlay_accepts_a_live_fleet_refresh() {
+    use crate::attach::fleet::{FLEET_LIVE_KEY, fleet_items};
+
     let workspace = Workspace::single(tid(1));
-    let sessions = [sinfo(1, "work"), sinfo(2, "scratch")];
-    let mut foreign = HashMap::new();
-    foreign.insert(phux_protocol::ids::SessionId::new(2), Workspace::default());
-    let items = window_picker_items(
-        &workspace,
-        &sessions,
-        &foreign,
-        Some(phux_protocol::ids::SessionId::new(1)),
-    );
-    let scratch = items
-        .iter()
-        .position(|i| i.is_header() && i.label == "scratch")
-        .expect("scratch header present");
-    assert_eq!(items[scratch + 1].label, "switch to this session");
-    assert!(!items[scratch + 1].action.args.contains_key("window"));
-}
-
-/// phux-foz.8: committing a one-step picker row through `run_action`
-/// yields the combined reattach target — session name AND window index
-/// — that the driver resolves after the re-attach.
-#[test]
-fn one_step_picker_row_commits_switch_session_with_window() {
-    let mut workspace = Workspace::single(tid(1));
-    let mut scratch_ws = Workspace::single(tid(10));
-    scratch_ws.add_window("logs".to_owned(), tid(11));
-    let rows = foreign_session_window_rows(&sinfo(2, "scratch"), &scratch_ws);
-    assert_eq!(rows.len(), 2);
-    let effects = run(&rows[1].action, &mut workspace);
-    assert_eq!(
-        effects.reattach,
-        Some(ReattachTarget::Existing {
-            name: "scratch".to_owned(),
-            id: Some(phux_protocol::ids::SessionId::new(2)),
-            window: Some(1),
-            pane: None,
-            resource: None,
-        }),
-        "the one-step row carries the target window through dispatch"
-    );
-    // The switch is a re-attach, not a local window change.
-    assert_eq!(workspace.active, 0);
-}
-
-/// phux-foz.8: a `switch-session` with a bad `window` arg (negative /
-/// non-integer) degrades to a plain switch rather than belling — the
-/// `name` is still valid and honoring it is strictly more useful.
-#[test]
-fn switch_session_bad_window_arg_degrades_to_plain_switch() {
-    let mut workspace = Workspace::single(tid(1));
-    let mut args = BTreeMap::new();
-    args.insert("name".to_owned(), toml::Value::String("scratch".to_owned()));
-    args.insert("window".to_owned(), toml::Value::Integer(-3));
-    let action = phux_config::keybind::ResolvedAction {
-        action: "switch-session".to_owned(),
-        args,
-    };
-    let effects = run(&action, &mut workspace);
-    assert_eq!(
-        effects.reattach,
-        Some(ReattachTarget::Existing {
-            name: "scratch".to_owned(),
-            id: None,
-            window: None,
-            pane: None,
-            resource: None,
-        }),
-    );
-    assert!(!effects.bell);
-}
-
-/// phux-jpqd: a `switch-session { name, window, pane }` — the commit the
-/// agent-fleet dashboard's foreign pane rows carry — parses into the
-/// combined one-step cross-session pane target.
-#[test]
-fn switch_session_with_pane_arg_carries_one_step_pane_target() {
-    let mut workspace = Workspace::single(tid(1));
-    let mut args = BTreeMap::new();
-    args.insert("name".to_owned(), toml::Value::String("scratch".to_owned()));
-    args.insert("window".to_owned(), toml::Value::Integer(1));
-    args.insert("pane".to_owned(), toml::Value::Integer(2));
-    let action = phux_config::keybind::ResolvedAction {
-        action: "switch-session".to_owned(),
-        args,
-    };
-    let effects = run(&action, &mut workspace);
-    assert_eq!(
-        effects.reattach,
-        Some(ReattachTarget::Existing {
-            name: "scratch".to_owned(),
-            id: None,
-            window: Some(1),
-            pane: Some(2),
-            resource: None,
-        }),
-    );
-    assert!(!effects.bell);
-    // The switch is a re-attach, not a local change.
-    assert_eq!(workspace.active, 0);
-}
-
-#[test]
-fn window_picker_commit_routes_select_window_through_run_action() {
-    // The architectural invariant: a picker selection commits a
-    // select-window ResolvedAction that, when fed back through
-    // run_action, performs the same per-client switch a numeric prefix
-    // binding does.
-    let mut workspace = Workspace::single(tid(1));
-    workspace.add_window("2".to_owned(), tid(2));
-    workspace.select(0); // active = 0
-    let items = current_session_window_rows(&workspace);
-    // Commit the picker row for window index 1.
-    let effects = run(&items[1].action, &mut workspace);
-    assert_eq!(
-        workspace.active, 1,
-        "select-window switched the active window"
-    );
-    assert!(effects.layout_mutated);
-    assert_eq!(effects.set_focus, Some(tid(2)));
-    assert!(!effects.set_metadata, "window switch is per-client");
-}
-
-// ---------- phux-oih5.16: client-local attention navigation ----------
-
-/// Run an attention action with caller-owned pane flags and excursion
-/// state, so successive dispatches exercise origin preservation.
-fn run_attention(
-    action: &str,
-    workspace: &mut Workspace,
-    panes: &HashMap<ResourceId, PaneSlot>,
-    navigation: &mut AttentionNavigation,
-) -> ActionEffects {
-    let focused = workspace.active_window().and_then(|w| w.focus.clone());
-    let mut fx = CtxFixture::default();
-    fx.next_request_id = 100;
-    fx.sidebar_targets = Some(targets(0, workspace.windows.len(), 0));
-    let mut ctx = fx.ctx();
-    ctx.workspace = workspace;
-    ctx.attention_navigation = navigation;
-    run_action(&bare_action(action), &mut ctx, focused.as_ref(), panes)
-}
-
-fn asking_panes(ids: &[u32]) -> HashMap<ResourceId, PaneSlot> {
-    ids.iter()
-        .map(|id| {
-            let terminal = tid(*id);
-            let mut slot = PaneSlot::new_with_size(20, 4).expect("pane slot");
-            slot.attention = true;
-            (terminal, slot)
-        })
-        .collect()
-}
-
-#[test]
-fn next_attention_with_no_attention_is_a_local_bell_noop() {
-    let mut workspace = fleet_workspace();
-    workspace.select(0);
-    let before = workspace.clone();
-    let mut navigation = AttentionNavigation::default();
-    let effects = run_attention(
-        "next-attention",
-        &mut workspace,
-        &HashMap::new(),
-        &mut navigation,
-    );
-    assert!(effects.bell);
-    assert!(!effects.layout_mutated);
-    assert!(!effects.set_metadata);
-    assert_eq!(workspace, before);
-    assert!(
-        navigation.take_origin().is_none(),
-        "no jump must not save an origin"
-    );
-}
-
-#[test]
-fn next_attention_cycles_window_then_dfs_with_wrap_and_one_origin() {
-    // fleet_workspace is window 0 DFS [1,2], then window 1 DFS [3].
-    let mut workspace = fleet_workspace();
-    workspace.select(0);
-    let panes = asking_panes(&[2, 3]);
-    let mut navigation = AttentionNavigation::default();
-
-    let first = run_attention("next-attention", &mut workspace, &panes, &mut navigation);
-    assert_eq!(workspace.active, 0);
-    assert_eq!(workspace.windows[0].state.focus, Some(tid(2)));
-    assert_eq!(first.set_focus, Some(tid(2)));
-    assert!(!first.set_metadata, "attention focus is never shared");
-
-    let cross = run_attention("next-attention", &mut workspace, &panes, &mut navigation);
-    assert_eq!(
-        workspace.active, 1,
-        "cycle crosses windows in display order"
-    );
-    assert_eq!(cross.set_focus, Some(tid(3)));
-    assert!(!cross.set_metadata);
-
-    let wrapped = run_attention("next-attention", &mut workspace, &panes, &mut navigation);
-    assert_eq!(workspace.active, 0, "last asking pane wraps to the first");
-    assert_eq!(wrapped.set_focus, Some(tid(2)));
-    assert!(!wrapped.set_metadata);
-
-    let returned = run_attention(
-        "return-from-attention",
-        &mut workspace,
-        &panes,
-        &mut navigation,
-    );
-    assert_eq!(
-        returned.set_focus,
-        Some(tid(1)),
-        "cycling kept the first origin"
-    );
-    assert_eq!(workspace.windows[0].state.focus, Some(tid(1)));
-    assert!(!returned.set_metadata);
-
-    let consumed = run_attention(
-        "return-from-attention",
-        &mut workspace,
-        &panes,
-        &mut navigation,
-    );
-    assert!(consumed.bell, "return consumes the single saved origin");
-    assert!(!consumed.layout_mutated);
-    assert!(!consumed.set_metadata);
-}
-
-#[test]
-fn return_from_attention_consumes_a_stale_origin_safely() {
-    let mut workspace = fleet_workspace();
-    workspace.select(0);
-    let panes = asking_panes(&[2]);
-    let mut navigation = AttentionNavigation::default();
-    let jumped = run_attention("next-attention", &mut workspace, &panes, &mut navigation);
-    assert_eq!(jumped.set_focus, Some(tid(2)));
-
-    // The original pane closes while the user is examining the question.
-    workspace.windows[0].state = crate::layout::LayoutState::single(tid(2));
-    let before = workspace.clone();
-    let stale = run_attention(
-        "return-from-attention",
-        &mut workspace,
-        &panes,
-        &mut navigation,
-    );
-    assert!(stale.bell);
-    assert!(!stale.layout_mutated);
-    assert!(stale.set_focus.is_none());
-    assert!(!stale.set_metadata);
-    assert_eq!(
-        workspace, before,
-        "stale return must not focus another pane"
-    );
-
-    let consumed = run_attention(
-        "return-from-attention",
-        &mut workspace,
-        &panes,
-        &mut navigation,
-    );
-    assert!(
-        consumed.bell,
-        "stale origin is consumed on the first return"
-    );
-    assert!(!consumed.layout_mutated);
-}
-
-// ---------- phux-foz.7: agent-fleet dashboard + focus-pane ----------
-
-#[test]
-fn agent_fleet_action_pushes_overlay() {
-    let mut workspace = Workspace::single(tid(1));
-    let (effects, overlays) = run_capturing(&bare_action("agent-fleet"), &mut workspace);
-    assert!(overlays.is_active(), "agent-fleet should push the overlay");
-    assert_eq!(overlays.depth(), 1);
-    assert!(!effects.bell);
-}
-
-#[test]
-fn agent_fleet_on_empty_workspace_bells() {
-    let mut workspace = Workspace::default();
-    let (effects, overlays) = run_capturing(&bare_action("agent-fleet"), &mut workspace);
-    assert!(!overlays.is_active(), "nothing to list => no overlay");
-    assert!(effects.bell);
-}
-
-#[test]
-fn agent_fleet_overlay_accepts_live_fleet_refresh() {
-    // The pushed overlay is constructed with the fleet live key, so the
-    // driver's push-based refresh (rows rebuilt when an agent event
-    // lands) reaches it in place.
-    let mut workspace = Workspace::single(tid(1));
-    let (_effects, mut overlays) = run_capturing(&bare_action("agent-fleet"), &mut workspace);
-    let fresh = crate::attach::fleet::fleet_items(
+    let fresh = fleet_items(
         &workspace,
         &[],
         None,
@@ -2043,121 +903,115 @@ fn agent_fleet_overlay_accepts_live_fleet_refresh() {
         &HashMap::new(),
         &HashMap::new(),
     );
-    assert!(
-        overlays.refresh_items(crate::attach::fleet::FLEET_LIVE_KEY, &fresh),
-        "the fleet overlay must accept a matching live refresh"
-    );
+    let mut f = fx(workspace.clone());
+    f.run(&bare_action("agent-fleet"));
+    assert!(f.overlays.refresh_items(FLEET_LIVE_KEY, &fresh));
+    let mut f = fx(workspace);
+    f.run(&bare_action("command-palette"));
+    assert!(!f.overlays.refresh_items(FLEET_LIVE_KEY, &[]));
 }
+
+// ---- window picker and focus-pane ---------------------------------------------
 
 #[test]
-fn command_palette_ignores_fleet_refresh() {
-    // Static overlays (the palette, the pickers) must never swap their
-    // rows for fleet data.
+fn current_session_window_rows_commit_select_window() {
     let mut workspace = Workspace::single(tid(1));
-    let (_effects, mut overlays) = run_capturing(&bare_action("command-palette"), &mut workspace);
-    assert!(
-        !overlays.refresh_items(crate::attach::fleet::FLEET_LIVE_KEY, &[]),
-        "a static overlay must ignore the fleet refresh"
+    workspace.add_window("editor".to_owned(), tid(2));
+    workspace.select(0);
+    let items = current_session_window_rows(&workspace);
+    assert_eq!(items.len(), 2);
+    assert_eq!(
+        (items[0].label.as_str(), items[0].secondary.as_deref()),
+        ("0:1", Some("1 pane"))
     );
+    assert!(items[0].indented, "window rows nest under their session");
+    assert_eq!(items[1].label, "1:editor");
+    assert_eq!(items[1].action.args.get("index"), Some(&Value::Integer(1)));
+    // Committing a row performs the per-client switch a binding does.
+    let effects = run(&items[1].action, &mut workspace);
+    assert_eq!(workspace.active, 1);
+    assert!(effects.layout_mutated && !effects.set_metadata);
+    assert_eq!(effects.set_focus, Some(tid(2)));
 }
 
-/// Window 0 split into panes 1|2, window 1 a single pane 3.
-fn fleet_workspace() -> Workspace {
-    use crate::layout::{LayoutNode, LayoutState, SplitDir, WindowState, split_at};
-    let tree = split_at(
-        &LayoutNode::Leaf(tid(1)),
-        &tid(1),
-        &tid(2),
-        SplitDir::Horizontal,
-        0.5,
-    )
-    .unwrap();
-    Workspace {
-        windows: vec![
-            WindowState::new(
-                "main".to_owned(),
-                LayoutState {
-                    tree: Some(tree),
-                    focus: Some(tid(1)),
-                },
-            ),
-            WindowState::new("logs".to_owned(), LayoutState::single(tid(3))),
-        ],
-        active: 1,
+/// The picker leads with the current session's windows; a peer with a
+/// cached layout lists its windows as one-step `switch-session { name,
+/// window }` rows, else (no or an empty layout) one plain switch row.
+#[test]
+fn window_picker_groups_windows_under_their_session() {
+    let mut workspace = Workspace::single(tid(1));
+    workspace.add_window("editor".to_owned(), tid(2));
+    let sessions = [sinfo(1, "work"), sinfo(2, "scratch")];
+    let mut scratch = Workspace::single(tid(10));
+    scratch.rename_active("build".to_owned());
+    scratch.add_window("logs".to_owned(), tid(11));
+
+    for (cached, rows) in [
+        (None, 0),
+        (Some(Workspace::default()), 0),
+        (Some(scratch), 2),
+    ] {
+        let foreign: HashMap<_, _> = cached
+            .into_iter()
+            .map(|ws| (SessionId::new(2), ws))
+            .collect();
+        let items = window_picker_items(&workspace, &sessions, &foreign, Some(SessionId::new(1)));
+        assert!(items[0].is_header());
+        assert_eq!(items[0].label, "work (current)");
+        assert!(!items[1].is_header() && items[1].indented);
+        assert_eq!(items[1].action.action, "select-window");
+        assert_eq!(items[2].action.action, "select-window");
+        let at = items
+            .iter()
+            .position(|i| i.is_header() && i.label == "scratch")
+            .expect("header");
+        if rows == 0 {
+            assert_eq!(items[at + 1].label, "switch to this session");
+            assert_eq!(
+                items[at + 1].action.args.get("name"),
+                Some(&Value::String("scratch".to_owned()))
+            );
+            assert!(!items[at + 1].action.args.contains_key("window"));
+            continue;
+        }
+        for (i, label) in ["0:build", "1:logs"].into_iter().enumerate() {
+            let row = &items[at + 1 + i];
+            assert_eq!(row.label, label);
+            assert!(row.indented);
+            assert_eq!(row.action.action, "switch-session");
+            assert_eq!(
+                row.action.args.get("window"),
+                Some(&Value::Integer(i64::try_from(i).unwrap()))
+            );
+        }
+        assert_eq!(items[at + 1].secondary.as_deref(), Some("1 pane"));
+        assert!(items.iter().all(|i| i.label != "switch to this session"));
     }
 }
 
 #[test]
 fn focus_pane_switches_window_and_focuses_leaf() {
-    let mut workspace = fleet_workspace(); // active = window 1
-    let mut action = bare_action("focus-pane");
-    action
-        .args
-        .insert("window".to_owned(), toml::Value::Integer(0));
-    action
-        .args
-        .insert("pane".to_owned(), toml::Value::Integer(1));
-    let effects = run(&action, &mut workspace);
-    assert_eq!(workspace.active, 0, "switched to the target window");
-    assert_eq!(
-        workspace.windows[0].state.focus,
-        Some(tid(2)),
-        "focus landed on the second DFS leaf"
-    );
-    assert_eq!(effects.set_focus, Some(tid(2)));
-    assert!(effects.layout_mutated);
-    assert!(!effects.set_metadata, "focus is per-client, no broadcast");
-    assert!(!effects.bell);
-}
+    let focus_pane = |pane: i64| act("focus-pane", &[("window", 0.into()), ("pane", pane.into())]);
+    for select_first in [false, true] {
+        let mut workspace = fleet_workspace();
+        if select_first {
+            workspace.select(0);
+        }
+        let effects = run(&focus_pane(1), &mut workspace);
+        assert_eq!(workspace.active, 0);
+        assert_eq!(workspace.windows[0].state.focus, Some(tid(2)));
+        assert_eq!(effects.set_focus, Some(tid(2)));
+        assert!(effects.layout_mutated && !effects.set_metadata && !effects.bell);
+    }
+    // Missing args or a stale address bell without switching windows.
+    for action in [bare_action("focus-pane"), focus_pane(9)] {
+        let mut workspace = fleet_workspace();
+        let effects = run(&action, &mut workspace);
+        assert!(effects.bell && effects.set_focus.is_none());
+        assert_eq!(workspace.active, 1);
+    }
+    // A fleet row commits the same focus-pane.
 
-#[test]
-fn focus_pane_within_active_window_moves_focus_only() {
-    let mut workspace = fleet_workspace();
-    workspace.select(0); // active = 0, focus = tid(1)
-    let mut action = bare_action("focus-pane");
-    action
-        .args
-        .insert("window".to_owned(), toml::Value::Integer(0));
-    action
-        .args
-        .insert("pane".to_owned(), toml::Value::Integer(1));
-    let effects = run(&action, &mut workspace);
-    assert_eq!(workspace.active, 0);
-    assert_eq!(workspace.windows[0].state.focus, Some(tid(2)));
-    assert_eq!(effects.set_focus, Some(tid(2)));
-}
-
-#[test]
-fn focus_pane_missing_args_bells() {
-    let mut workspace = fleet_workspace();
-    let effects = run(&bare_action("focus-pane"), &mut workspace);
-    assert!(effects.bell);
-    assert!(effects.set_focus.is_none());
-}
-
-#[test]
-fn focus_pane_stale_coordinates_bell_without_mutation() {
-    // The fleet rows may outlive a layout change; a stale (window, pane)
-    // address must bell rather than focus the wrong pane.
-    let mut workspace = fleet_workspace();
-    let mut action = bare_action("focus-pane");
-    action
-        .args
-        .insert("window".to_owned(), toml::Value::Integer(0));
-    action
-        .args
-        .insert("pane".to_owned(), toml::Value::Integer(9));
-    let effects = run(&action, &mut workspace);
-    assert!(effects.bell);
-    assert_eq!(workspace.active, 1, "no window switch on a stale address");
-    assert!(effects.set_focus.is_none());
-}
-
-#[test]
-fn fleet_commit_routes_focus_pane_through_run_action() {
-    // The architectural invariant: a fleet row's committed ResolvedAction,
-    // fed back through run_action, performs the same per-client focus a
-    // keybinding path would.
     let mut workspace = fleet_workspace();
     let items = crate::attach::fleet::fleet_items(
         &workspace,
@@ -2168,118 +1022,244 @@ fn fleet_commit_routes_focus_pane_through_run_action() {
         &HashMap::new(),
         &HashMap::new(),
     );
-    // Row 1 is window 0's second pane (tid 2).
     let effects = run(&items[1].action.clone(), &mut workspace);
-    assert_eq!(workspace.active, 0);
-    assert_eq!(effects.set_focus, Some(tid(2)));
+    assert_eq!((workspace.active, effects.set_focus), (0, Some(tid(2))));
 }
 
-fn sinfo(id: u32, name: &str) -> phux_protocol::wire::info::SessionInfo {
-    phux_protocol::wire::info::SessionInfo::new(phux_protocol::ids::SessionId::new(id), name)
-        .with_window_count(1)
+// ---- attention navigation ----------------------------------------------------
+
+fn asking_panes(ids: &[u32]) -> HashMap<ResourceId, PaneSlot> {
+    ids.iter()
+        .map(|id| {
+            let mut slot = PaneSlot::new_with_size(20, 4).expect("pane slot");
+            slot.attention = true;
+            (tid(*id), slot)
+        })
+        .collect()
+}
+
+fn attention_fixture() -> CtxFixture {
+    let mut workspace = fleet_workspace();
+    workspace.select(0);
+    fx(workspace)
+}
+
+/// Client-local attention navigation: with nothing asking it bells and saves
+/// no origin; otherwise it cycles DFS across windows with wrap, keeps the
+/// first origin, and one return consumes it. Nothing is ever broadcast.
+#[test]
+fn next_attention_cycles_and_return_consumes_one_origin() {
+    let mut f = attention_fixture();
+    let before = f.workspace.clone();
+    let effects = f.run_in(&bare_action("next-attention"), &HashMap::new());
+    assert!(effects.bell && !effects.layout_mutated && !effects.set_metadata);
+    assert_eq!(f.workspace, before);
+    assert!(f.attention_navigation.take_origin().is_none());
+
+    let panes = asking_panes(&[2, 3]);
+    for (active, focus) in [(0, 2), (1, 3), (0, 2)] {
+        let effects = f.run_in(&bare_action("next-attention"), &panes);
+        assert_eq!(
+            (f.workspace.active, effects.set_focus),
+            (active, Some(tid(focus)))
+        );
+        assert!(!effects.set_metadata);
+    }
+    let returned = f.run_in(&bare_action("return-from-attention"), &panes);
+    assert_eq!(
+        returned.set_focus,
+        Some(tid(1)),
+        "cycling kept the first origin"
+    );
+    assert_eq!(f.workspace.windows[0].state.focus, Some(tid(1)));
+    assert!(!returned.set_metadata);
+    let consumed = f.run_in(&bare_action("return-from-attention"), &panes);
+    assert!(consumed.bell && !consumed.layout_mutated && !consumed.set_metadata);
+}
+
+/// The origin pane closed while the user looked at the question: return
+/// bells, focuses nothing else, and still consumes the stale origin.
+#[test]
+fn return_from_attention_consumes_a_stale_origin_safely() {
+    let mut f = attention_fixture();
+    let panes = asking_panes(&[2]);
+    assert_eq!(
+        f.run_in(&bare_action("next-attention"), &panes).set_focus,
+        Some(tid(2))
+    );
+    f.workspace.windows[0].state = LayoutState::single(tid(2));
+    let before = f.workspace.clone();
+    for _ in 0..2 {
+        let effects = f.run_in(&bare_action("return-from-attention"), &panes);
+        assert!(effects.bell && !effects.layout_mutated && effects.set_focus.is_none());
+        assert_eq!(f.workspace, before);
+    }
+}
+
+// ---- sessions ----------------------------------------------------------------
+
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "compared against `effects.reattach`"
+)]
+fn existing(
+    name: &str,
+    id: Option<u32>,
+    window: Option<usize>,
+    pane: Option<usize>,
+    resource: Option<ResourceId>,
+) -> Option<ReattachTarget> {
+    Some(ReattachTarget::Existing {
+        name: name.to_owned(),
+        id: id.map(SessionId::new),
+        window,
+        pane,
+        resource,
+    })
 }
 
 #[test]
 fn session_picker_items_include_focused_first_and_commit_switch_session() {
     let sessions = [sinfo(1, "work"), sinfo(2, "scratch"), sinfo(3, "logs")];
-    let items = session_picker_items(&sessions, Some(phux_protocol::ids::SessionId::new(1)));
-    assert_eq!(items.len(), 3);
-    assert_eq!(items[0].label, "work");
+    let items = session_picker_items(&sessions, Some(SessionId::new(1)));
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(labels, ["work", "logs", "scratch"]);
     assert_eq!(items[0].secondary.as_deref(), Some("1 window, current"));
-    assert_eq!(items[1].label, "logs");
-    assert_eq!(items[2].label, "scratch");
-    // Each row commits switch-session with the session name and stable id.
+    assert_eq!(items[1].secondary.as_deref(), Some("1 window"));
     assert_eq!(items[0].action.action, "switch-session");
     assert_eq!(
         items[0].action.args.get("name"),
-        Some(&toml::Value::String("work".to_owned()))
+        Some(&Value::String("work".to_owned()))
     );
-    assert_eq!(
-        items[0].action.args.get("id"),
-        Some(&toml::Value::Integer(1))
-    );
-    assert_eq!(items[1].secondary.as_deref(), Some("1 window"));
-}
-
-#[test]
-fn session_picker_action_pushes_overlay_with_peer_sessions() {
-    let mut workspace = Workspace::single(tid(1));
-    let sessions = [sinfo(1, "work"), sinfo(2, "scratch")];
-    let (effects, overlays, _) = run_capturing_with_sessions(
-        &bare_action("session-picker"),
-        &mut workspace,
-        &sessions,
-        Some(phux_protocol::ids::SessionId::new(1)),
-    );
-    assert!(
-        overlays.is_active(),
-        "session-picker should push an overlay"
-    );
-    assert!(!effects.bell);
-}
-
-#[test]
-fn session_picker_with_only_current_session_still_opens_for_new() {
-    // Even when the client's own session is the only one, the picker
-    // opens so the user can create a new session via the "+ New
-    // session" row — it no longer bells into a dead end.
-    let mut workspace = Workspace::single(tid(1));
-    let sessions = [sinfo(1, "work")];
-    let (effects, overlays, _) = run_capturing_with_sessions(
-        &bare_action("session-picker"),
-        &mut workspace,
-        &sessions,
-        Some(phux_protocol::ids::SessionId::new(1)),
-    );
-    assert!(overlays.is_active(), "picker opens to offer + New session");
-    assert!(!effects.bell);
-}
-
-#[test]
-fn session_picker_with_no_sessions_still_opens_for_new() {
-    // Before the first ATTACHED snapshot lands the cache is empty; the
-    // picker still opens with the "+ New session" row.
-    let mut workspace = Workspace::single(tid(1));
-    let (effects, overlays, _) =
-        run_capturing_with_sessions(&bare_action("session-picker"), &mut workspace, &[], None);
-    assert!(overlays.is_active());
-    assert!(!effects.bell);
-}
-
-#[test]
-fn session_picker_commit_routes_switch_session_through_run_action() {
-    // The architectural invariant: a picker row commits a
-    // switch-session ResolvedAction that, fed back through run_action,
-    // yields the reattach effect keyed by the chosen name.
-    let mut workspace = Workspace::single(tid(1));
-    let sessions = [sinfo(1, "work"), sinfo(2, "scratch")];
-    let items = session_picker_items(&sessions, Some(phux_protocol::ids::SessionId::new(1)));
-    let scratch = items
-        .iter()
-        .find(|item| item.label == "scratch")
-        .expect("peer session row");
-    let effects = run(&scratch.action, &mut workspace);
+    assert_eq!(items[0].action.args.get("id"), Some(&Value::Integer(1)));
+    // Committing a peer row requests the switch by name and stable id.
+    let effects = run(&items[2].action, &mut Workspace::single(tid(1)));
     assert_eq!(
         effects.reattach,
-        Some(ReattachTarget::Existing {
-            name: "scratch".to_owned(),
-            id: Some(phux_protocol::ids::SessionId::new(2)),
-            window: None,
-            pane: None,
-            resource: None,
-        }),
-        "committing the picker row requests a switch to that session"
+        existing("scratch", Some(2), None, None, None)
     );
 }
 
+/// The session picker always opens (its "+ New session" row is never a dead
+/// end) and asks the driver for a fresh host inventory.
+#[test]
+fn session_picker_always_opens_and_requests_a_host_inventory() {
+    for sessions in [
+        vec![],
+        vec![sinfo(1, "work")],
+        vec![sinfo(1, "work"), sinfo(2, "scratch")],
+    ] {
+        let mut f = fx(Workspace::single(tid(1)));
+        f.focused_session = (!sessions.is_empty()).then(|| SessionId::new(1));
+        f.sessions = sessions;
+        assert!(!f.run(&bare_action("session-picker")).bell);
+        assert!(f.overlays.is_active() && f.host_refresh_request);
+    }
+}
+
+/// `switch-session` args: `window`/`pane` carry the one-step target (a bad
+/// `window` degrades to a plain switch), `id` outranks a stale name, and
+/// `resource` names local or satellite identity. No name bells.
+#[test]
+fn switch_session_args_build_the_reattach_target() {
+    let mut scratch = Workspace::single(tid(10));
+    scratch.add_window("logs".to_owned(), tid(11));
+    let rows = foreign_session_window_rows(&sinfo(2, "scratch"), &scratch);
+    assert_eq!(rows.len(), 2);
+    let cases = [
+        (
+            rows[1].action.clone(),
+            existing("scratch", Some(2), Some(1), None, None),
+        ),
+        (
+            act(
+                "switch-session",
+                &[("name", "scratch".into()), ("window", (-3).into())],
+            ),
+            existing("scratch", None, None, None, None),
+        ),
+        (
+            act(
+                "switch-session",
+                &[
+                    ("name", "scratch".into()),
+                    ("window", 1.into()),
+                    ("pane", 2.into()),
+                ],
+            ),
+            existing("scratch", None, Some(1), Some(2), None),
+        ),
+        (
+            act(
+                "switch-session",
+                &[("name", "stale".into()), ("id", 7.into())],
+            ),
+            existing("stale", Some(7), None, None, None),
+        ),
+        (
+            act(
+                "switch-session",
+                &[
+                    ("name", "peer".into()),
+                    ("id", 2.into()),
+                    ("resource", "@10".into()),
+                ],
+            ),
+            existing("peer", Some(2), None, None, Some(tid(10))),
+        ),
+        (
+            act(
+                "switch-session",
+                &[("name", "peer".into()), ("resource", "prod-3/@10".into())],
+            ),
+            existing("peer", None, None, None, Some(satellite_id("prod-3", 10))),
+        ),
+    ];
+    for (action, target) in cases {
+        let mut workspace = Workspace::single(tid(1));
+        let effects = run(&action, &mut workspace);
+        assert_eq!(effects.reattach, target, "{:?}", action.args);
+        assert!(!effects.bell);
+        assert_eq!(
+            workspace.active, 0,
+            "a switch is a re-attach, not a local change"
+        );
+    }
+    let effects = run(
+        &bare_action("switch-session"),
+        &mut Workspace::single(tid(1)),
+    );
+    assert!(effects.reattach.is_none() && effects.bell);
+}
+
+/// new-session with a name creates and switches; without one it prompts.
+#[test]
+fn new_session_creates_or_prompts() {
+    let effects = run(
+        &act("new-session", &[("name", "scratch".into())]),
+        &mut Workspace::single(tid(1)),
+    );
+    assert_eq!(
+        effects.reattach,
+        Some(ReattachTarget::Create("scratch".to_owned()))
+    );
+    let mut f = fx(Workspace::single(tid(1)));
+    assert!(f.run(&bare_action("new-session")).reattach.is_none());
+    assert!(f.overlays.is_active());
+}
+
+#[test]
+fn detach_action_requests_detach_effect() {
+    let effects = run(&bare_action("detach"), &mut Workspace::default());
+    assert!(effects.detach && !effects.layout_mutated);
+}
+
+/// The move-pane picker offers only exact cached local destinations (not the
+/// source, satellites, or uncached sessions), and a row commits the move.
 #[test]
 fn move_pane_picker_offers_only_exact_cached_local_destinations() {
-    use crate::layout::{LayoutNode, LayoutState, WindowState};
-    use phux_protocol::ids::SessionId;
-    use phux_protocol::wire::info::SessionInfo;
-
     let source = tid(1);
-    let current = Workspace {
+    let mut current = Workspace {
         windows: vec![WindowState::new(
             "editor".to_owned(),
             LayoutState {
@@ -2299,23 +1279,14 @@ fn move_pane_picker_offers_only_exact_cached_local_destinations() {
         )],
         active: 0,
     };
-    let cached = Workspace {
-        windows: vec![WindowState::new(
-            "tests".to_owned(),
-            LayoutState {
-                tree: Some(LayoutNode::Leaf(tid(3))),
-                focus: Some(tid(3)),
-            },
-        )],
-        active: 0,
-    };
+    let mut cached = Workspace::single(tid(3));
+    cached.windows[0].name = "tests".to_owned();
     let sessions = [
         SessionInfo::new(SessionId::new(1), "work"),
         SessionInfo::new(SessionId::new(2), "build"),
         SessionInfo::new(SessionId::new(3), "uncached"),
     ];
     let foreign = HashMap::from([(SessionId::new(2), cached)]);
-
     let rows = move_pane_picker_items(
         &source,
         &current,
@@ -2324,77 +1295,49 @@ fn move_pane_picker_offers_only_exact_cached_local_destinations() {
         &sessions,
         &foreign,
     );
-
     assert_eq!(
-        rows.iter()
-            .map(|row| row.label.as_str())
-            .collect::<Vec<_>>(),
-        vec!["@2", "@3"],
-        "source, satellite, and uncached-session panes must not be offered"
+        rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
+        ["@2", "@3"]
     );
     assert_eq!(
         rows.iter()
-            .map(|row| row.secondary.as_deref().unwrap_or_default())
+            .map(|r| r.secondary.as_deref().unwrap_or_default())
             .collect::<Vec<_>>(),
-        vec!["work · 0:editor · pane 2", "build · 0:tests · pane 1"]
+        ["work · 0:editor · pane 2", "build · 0:tests · pane 1"]
     );
     assert_eq!(rows[1].action.action, "move-pane");
     assert_eq!(rows[1].action.args["target"].as_integer(), Some(3));
     assert_eq!(rows[1].action.args.len(), 1);
 
-    let mut dispatch_workspace = current;
-    let effects = run(&rows[1].action, &mut dispatch_workspace);
-    let intent = effects.move_pane.expect("picker row commits a move");
-    assert_eq!(intent.source, tid(1));
-    assert_eq!(intent.target, tid(3));
-    assert_eq!(intent.dir, SplitDir::Horizontal);
+    let intent = run(&rows[1].action, &mut current)
+        .move_pane
+        .expect("commits a move");
+    assert_eq!(
+        (intent.source, intent.target, intent.dir),
+        (tid(1), tid(3), SplitDir::Horizontal)
+    );
     assert_eq!(intent.ratio.to_bits(), 0.5_f32.to_bits());
-}
 
-#[test]
-fn move_pane_without_an_exact_destination_bells_without_mutating_layout() {
     let mut workspace = Workspace::single(tid(1));
-    let before = workspace.clone();
     let effects = run(&bare_action("move-pane"), &mut workspace);
-
-    assert!(effects.bell);
-    assert!(effects.move_pane.is_none());
-    assert_eq!(workspace, before);
+    assert!(effects.bell && effects.move_pane.is_none());
+    assert_eq!(workspace, Workspace::single(tid(1)));
 }
 
-#[test]
-fn switch_session_missing_name_bells() {
-    let mut workspace = Workspace::single(tid(1));
-    let effects = run(&bare_action("switch-session"), &mut workspace);
-    assert!(effects.reattach.is_none());
-    assert!(effects.bell, "a switch-session with no name arg bells");
-}
+// ---- host-grouped session picker ----------------------------------------------
 
-// ---- phux-c2td.3: host-grouped session picker -------------------------
-
-fn satellite_id(host: &str, id: u32) -> ResourceId {
-    ResourceId::satellite(phux_protocol::ids::SatelliteHost::new(host), id)
-}
-
-/// One reachable satellite carrying two sessions, and one the hub could
-/// not reach.
-fn host_fixture() -> Vec<phux_protocol::wire::info::HostInventory> {
-    use phux_protocol::ids::SatelliteHost;
-    use phux_protocol::wire::info::{HostInventory, HostSessionInfo};
-
+/// One reachable satellite with two sessions, one idle, and one unreachable.
+fn host_fixture() -> Vec<HostInventory> {
+    let session = |id, name, windows, panes, active| {
+        HostSessionInfo::new(phux_protocol::SessionId::new(id), name)
+            .with_window_count(windows)
+            .with_pane_count(panes)
+            .with_active_resource(Some(satellite_id("edge", active)))
+    };
     vec![
         HostInventory::reachable(
-            SatelliteHost::new("edge"),
-            vec![
-                HostSessionInfo::new(phux_protocol::SessionId::new(1), "build")
-                    .with_window_count(2)
-                    .with_pane_count(3)
-                    .with_active_resource(Some(satellite_id("edge", 9))),
-                HostSessionInfo::new(phux_protocol::SessionId::new(2), "logs")
-                    .with_window_count(1)
-                    .with_pane_count(1)
-                    .with_active_resource(Some(satellite_id("edge", 11))),
-            ],
+            edge(),
+            vec![session(1, "build", 2, 3, 9), session(2, "logs", 1, 1, 11)],
         ),
         HostInventory::reachable(SatelliteHost::new("idle"), Vec::new()),
         HostInventory::unreachable(SatelliteHost::new("down"), "link is down"),
@@ -2402,22 +1345,21 @@ fn host_fixture() -> Vec<phux_protocol::wire::info::HostInventory> {
 }
 
 /// The picker groups under a header per host, keeps an unreachable host
-/// visible, and commits `switch-session { name, host }` for a satellite.
+/// visible, commits `switch-session { name, host }` for a satellite, and
+/// marks a satellite session already open here. No inventory: ungrouped.
 #[test]
 fn session_picker_groups_rows_by_host() {
     let sessions = [sinfo(1, "work")];
-    let workspace = Workspace::single(tid(1));
     let items = host_grouped_session_items(
         &sessions,
-        Some(phux_protocol::ids::SessionId::new(1)),
+        Some(SessionId::new(1)),
         &host_fixture(),
-        &workspace,
+        &Workspace::single(tid(1)),
     );
-
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(
         labels,
-        vec![
+        [
             "Local",
             "work",
             "edge - 2 sessions",
@@ -2425,152 +1367,98 @@ fn session_picker_groups_rows_by_host() {
             "logs",
             "idle - connected, no sessions",
             "down - unreachable: link is down"
-        ],
+        ]
     );
-    assert!(
-        items[0].is_header()
-            && items[2].is_header()
-            && items[5].is_header()
-            && items[6].is_header()
-    );
-    assert!(
-        items[1].indented && items[3].indented,
-        "session rows nest under their host header"
-    );
-    // The local row is untouched; the satellite row carries its host.
-    assert_eq!(items[1].action.action, "switch-session");
+    for i in [0, 2, 5, 6] {
+        assert!(items[i].is_header(), "{i}");
+    }
+    assert!(items[1].indented && items[3].indented);
     assert!(!items[1].action.args.contains_key("host"));
-    let build = &items[3];
-    assert_eq!(build.action.action, "switch-session");
+    assert_eq!(items[3].action.action, "switch-session");
     assert_eq!(
-        build.action.args.get("host"),
-        Some(&toml::Value::String("edge".to_owned()))
+        items[3].action.args.get("host"),
+        Some(&Value::String("edge".to_owned()))
     );
     assert_eq!(
-        build.action.args.get("name"),
-        Some(&toml::Value::String("build".to_owned()))
+        items[3].action.args.get("name"),
+        Some(&Value::String("build".to_owned()))
     );
     assert_eq!(
-        build.secondary.as_deref(),
-        Some("on edge, 2 windows, 3 panes"),
-        "the row names its host, so it still reads under a typed query"
+        items[3].secondary.as_deref(),
+        Some("on edge, 2 windows, 3 panes")
     );
-    // The unreachable host contributes its header and nothing else.
-    assert!(items[6].is_header());
-}
 
-/// With no inventory (a non-hub server, or one without the feature) the
-/// picker is its ungrouped self.
-#[test]
-fn session_picker_without_hosts_is_ungrouped() {
-    let sessions = [sinfo(1, "work"), sinfo(2, "scratch")];
-    let workspace = Workspace::single(tid(1));
-    let grouped = host_grouped_session_items(
-        &sessions,
-        Some(phux_protocol::ids::SessionId::new(1)),
-        &[],
-        &workspace,
-    );
-    assert_eq!(
-        grouped.len(),
-        session_picker_items(&sessions, Some(phux_protocol::ids::SessionId::new(1))).len()
-    );
-    assert!(grouped.iter().all(|item| !item.is_header()));
-}
-
-/// A satellite session that is already open here is marked, so choosing it
-/// reads as "go there", not "open it again".
-#[test]
-fn an_open_satellite_session_is_marked_open_here() {
-    let mut workspace = Workspace::single(tid(1));
-    workspace.add_window("edge/build".to_owned(), satellite_id("edge", 9));
-    let items = host_grouped_session_items(&[], None, &host_fixture(), &workspace);
-    let build = items
-        .iter()
-        .find(|item| item.label == "build")
-        .expect("satellite session row");
+    let mut open = Workspace::single(tid(1));
+    open.add_window("edge/build".to_owned(), satellite_id("edge", 9));
+    let items = host_grouped_session_items(&[], None, &host_fixture(), &open);
+    let build = items.iter().find(|i| i.label == "build").expect("row");
     assert!(
         build
             .secondary
             .as_deref()
             .is_some_and(|s| s.contains("open here")),
-        "expected an open-here marker: {:?}",
+        "{:?}",
         build.secondary
     );
+
+    let sessions = [sinfo(1, "work"), sinfo(2, "scratch")];
+    let grouped = host_grouped_session_items(
+        &sessions,
+        Some(SessionId::new(1)),
+        &[],
+        &Workspace::single(tid(1)),
+    );
+    assert_eq!(
+        grouped.len(),
+        session_picker_items(&sessions, Some(SessionId::new(1))).len()
+    );
+    assert!(grouped.iter().all(|item| !item.is_header()));
 }
 
-/// Committing a satellite row sends the attach for that session's active
-/// pane through the hub and parks its window — no session re-attach is
-/// requested, and nothing opens until the attach succeeds.
+fn switch_to_satellite(
+    host: &str,
+    name: &str,
+    workspace: Workspace,
+) -> (ActionEffects, CtxFixture) {
+    let mut f = fx(workspace);
+    f.hosts = host_fixture();
+    let effects = f.run(&act(
+        "switch-session",
+        &[("name", name.into()), ("host", host.into())],
+    ));
+    (effects, f)
+}
+
+/// A satellite session opens through the hub: one `ATTACH_RESOURCE` for its
+/// active pane and a parked window, with no re-attach and nothing opened
+/// until the attach succeeds. Already open here, it focuses that window.
 #[test]
-fn switching_to_a_satellite_session_opens_its_pane_through_the_hub() {
-    let mut workspace = Workspace::single(tid(1));
-    let mut args = BTreeMap::new();
-    args.insert("name".to_owned(), toml::Value::String("build".to_owned()));
-    args.insert("host".to_owned(), toml::Value::String("edge".to_owned()));
-    let action = phux_config::keybind::ResolvedAction {
-        action: "switch-session".to_owned(),
-        args,
-    };
-
-    let effects = run_with_hosts(&action, &mut workspace, &host_fixture());
-
-    assert!(
-        effects.reattach.is_none(),
-        "a satellite session is not a session re-attach"
-    );
-    // Nothing opens, focuses, or saves until the attach succeeds: the
-    // window is parked for the reply (`handler::handle_window_adopt_reply`).
-    assert_eq!(
-        workspace.windows.len(),
-        1,
-        "no window before the attach lands"
-    );
-    assert_eq!(effects.set_focus, None);
-    assert!(!effects.layout_mutated && !effects.set_metadata);
-    // Exactly one ATTACH_RESOURCE for the satellite pane: it already
-    // exists, so there is no spawn to park.
-    assert_eq!(effects.command_frames.len(), 1);
-    let FrameKind::Command { command, .. } = &effects.command_frames[0] else {
-        panic!("expected a command frame");
+fn switching_to_a_satellite_session_opens_or_focuses_its_pane() {
+    let (effects, f) = switch_to_satellite("edge", "build", Workspace::single(tid(1)));
+    assert!(effects.reattach.is_none());
+    assert_eq!(f.workspace.windows.len(), 1);
+    assert!(effects.set_focus.is_none() && !effects.layout_mutated && !effects.set_metadata);
+    let [FrameKind::Command { command, .. }] = effects.command_frames.as_slice() else {
+        panic!("expected one command frame: {:?}", effects.command_frames);
     };
     assert_eq!(
         command,
-        &phux_protocol::wire::frame::Command::AttachResource {
+        &Command::AttachResource {
             terminal_id: satellite_id("edge", 9),
-            role_policy: None,
+            role_policy: None
         }
     );
-}
 
-/// Choosing the same satellite session again focuses the window already
-/// holding its pane instead of opening a second one onto it.
-#[test]
-fn switching_to_an_open_satellite_session_focuses_its_window() {
-    let mut workspace = Workspace::single(tid(1));
-    workspace.add_window("edge/build".to_owned(), satellite_id("edge", 9));
-    workspace.select(0);
-    let mut args = BTreeMap::new();
-    args.insert("name".to_owned(), toml::Value::String("build".to_owned()));
-    args.insert("host".to_owned(), toml::Value::String("edge".to_owned()));
-    let action = phux_config::keybind::ResolvedAction {
-        action: "switch-session".to_owned(),
-        args,
-    };
-
-    let effects = run_with_hosts(&action, &mut workspace, &host_fixture());
-
-    assert_eq!(workspace.windows.len(), 2, "no second window is opened");
-    assert_eq!(workspace.active, 1, "focus moves to the window holding it");
+    let mut open = Workspace::single(tid(1));
+    open.add_window("edge/build".to_owned(), satellite_id("edge", 9));
+    open.select(0);
+    let (effects, f) = switch_to_satellite("edge", "build", open);
+    assert_eq!((f.workspace.windows.len(), f.workspace.active), (2, 1));
     assert_eq!(effects.set_focus, Some(satellite_id("edge", 9)));
-    assert!(
-        effects.command_frames.is_empty(),
-        "the pane is already attached here"
-    );
+    assert!(effects.command_frames.is_empty());
 }
 
-/// An unreachable host, an unknown host, and an unknown session all bell
-/// rather than pretending to switch.
+/// An unreachable host, an unknown host, and an unknown session all bell.
 #[test]
 fn switching_to_an_unreachable_or_unknown_satellite_session_bells() {
     for (host, name) in [
@@ -2578,143 +1466,41 @@ fn switching_to_an_unreachable_or_unknown_satellite_session_bells() {
         ("nosuch", "build"),
         ("edge", "nosuch"),
     ] {
-        let mut workspace = Workspace::single(tid(1));
-        let mut args = BTreeMap::new();
-        args.insert("name".to_owned(), toml::Value::String(name.to_owned()));
-        args.insert("host".to_owned(), toml::Value::String(host.to_owned()));
-        let action = phux_config::keybind::ResolvedAction {
-            action: "switch-session".to_owned(),
-            args,
-        };
-
-        let effects = run_with_hosts(&action, &mut workspace, &host_fixture());
-
-        assert!(effects.bell, "{host}/{name} should bell");
-        assert!(effects.reattach.is_none());
-        assert!(effects.command_frames.is_empty());
-        assert_eq!(workspace.windows.len(), 1, "{host}/{name} opened a window");
+        let (effects, f) = switch_to_satellite(host, name, Workspace::single(tid(1)));
+        assert!(
+            effects.bell && effects.reattach.is_none() && effects.command_frames.is_empty(),
+            "{host}/{name}"
+        );
+        assert_eq!(f.workspace.windows.len(), 1);
     }
 }
 
-/// Opening the picker asks the driver for a fresh inventory.
+// ---- rename-session --------------------------------------------------------------
+
+/// With a name, rename-session requests the effect; without one it opens a
+/// prompt prefilled with the current name, whose commit yields the effect.
 #[test]
-fn opening_the_session_picker_requests_a_host_inventory() {
-    let mut workspace = Workspace::single(tid(1));
-    let (effects, overlays, host_refresh) =
-        run_capturing_with_sessions(&bare_action("session-picker"), &mut workspace, &[], None);
-    assert!(overlays.is_active());
-    assert!(!effects.bell);
-    assert!(
-        host_refresh,
-        "the open raises the host-inventory refresh request"
-    );
-}
-
-#[test]
-fn new_session_with_name_requests_create_reattach() {
-    let mut workspace = Workspace::single(tid(1));
-    let mut args = BTreeMap::new();
-    args.insert("name".to_owned(), toml::Value::String("scratch".to_owned()));
-    let action = phux_config::keybind::ResolvedAction {
-        action: "new-session".to_owned(),
-        args,
-    };
-    let effects = run(&action, &mut workspace);
-    assert_eq!(
-        effects.reattach,
-        Some(ReattachTarget::Create("scratch".to_owned())),
-        "new-session with a name requests a create-and-switch"
-    );
-}
-
-#[test]
-fn new_session_without_name_opens_prompt() {
-    let mut workspace = Workspace::single(tid(1));
-    let (effects, overlays) = run_capturing(&bare_action("new-session"), &mut workspace);
-    assert!(
-        overlays.is_active(),
-        "new-session with no name opens the name prompt"
-    );
-    assert!(
-        effects.reattach.is_none(),
-        "the prompt commit drives the re-attach later"
-    );
-}
-
-#[test]
-fn detach_action_requests_detach_effect() {
-    let mut fx = CtxFixture::default();
-    fx.workspace = Workspace::default();
-    let mut ctx = fx.ctx();
-    let action = phux_config::keybind::ResolvedAction {
-        action: "detach".to_owned(),
-        args: BTreeMap::new(),
-    };
-
-    let effects = run_action(&action, &mut ctx, None, &HashMap::new());
-
-    assert!(effects.detach);
-    assert!(!effects.layout_mutated);
-}
-
-#[test]
-fn rename_session_with_name_arg_requests_rename_effect() {
-    // An explicit `name` produces the rename-session effect carrying the
-    // new name; no prompt is opened. The send + local-name update happen
-    // in `apply_action_effects` (async), so run_action only sets the
-    // effect.
-    let mut workspace = Workspace::single(tid(1));
-    let mut args = BTreeMap::new();
-    args.insert("name".to_owned(), toml::Value::String("notes".to_owned()));
-    let action = phux_config::keybind::ResolvedAction {
-        action: "rename-session".to_owned(),
-        args,
-    };
-    let effects = run(&action, &mut workspace);
-    assert_eq!(
-        effects.rename_session.as_deref(),
-        Some("notes"),
-        "rename-session with a name requests the rename effect",
-    );
-}
-
-#[test]
-fn rename_session_without_name_opens_prompt_prefilled() {
-    // No `name` arg opens the prompt pre-filled with the current session
-    // name; the rename itself is deferred to the prompt commit.
-    let mut fx = CtxFixture::default();
-    fx.next_request_id = 100;
-    fx.session_name = "work".to_owned();
-    let effects = {
-        let mut ctx = fx.ctx();
-        run_action(
-            &bare_action("rename-session"),
-            &mut ctx,
-            None,
-            &HashMap::new(),
-        )
-    };
-    assert!(
-        fx.overlays.is_active(),
-        "no-arg rename-session opens the name prompt",
-    );
-    assert!(
-        effects.rename_session.is_none(),
-        "the prompt commit drives the rename later",
-    );
-}
-
-#[test]
-fn rename_session_prompt_commits_rename_session_action() {
-    // The prompt the bare action opens must commit a
-    // `rename-session { name }` ResolvedAction, so feeding it back
-    // through run_action yields the rename effect (the same single
-    // dispatch path rename-window uses).
+fn rename_session_requests_the_effect_or_prompts() {
     use crate::render::overlay::{OverlayCommand, RenderOverlay};
     use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 
+    let effects = run(
+        &act("rename-session", &[("name", "notes".into())]),
+        &mut Workspace::single(tid(1)),
+    );
+    assert_eq!(effects.rename_session.as_deref(), Some("notes"));
+
+    let mut f = fx(Workspace::single(tid(1)));
+    f.session_name = "work".to_owned();
+    assert!(
+        f.run(&bare_action("rename-session"))
+            .rename_session
+            .is_none()
+    );
+    assert!(f.overlays.is_active());
+
     let mut prompt = PromptOverlay::rename_session("work", &Theme::default());
-    let press = |key: PhysicalKey, text: Option<&str>| KeyEvent {
+    let key = |key, text: Option<&str>| KeyEvent {
         action: KeyAction::Press,
         key,
         mods: ModSet::empty(),
@@ -2723,225 +1509,65 @@ fn rename_session_prompt_commits_rename_session_action() {
         text: text.map(ToOwned::to_owned),
         unshifted_codepoint: None,
     };
-    // Clear the prefilled "work" and type "notes".
     for _ in 0..4 {
-        let _ = prompt.handle_key(&press(PhysicalKey::Backspace, None));
+        let _ = prompt.handle_key(&key(PhysicalKey::Backspace, None));
     }
-    for ch in ['n', 'o', 't', 'e', 's'] {
-        let _ = prompt.handle_key(&press(PhysicalKey::A, Some(&ch.to_string())));
+    for ch in ["n", "o", "t", "e", "s"] {
+        let _ = prompt.handle_key(&key(PhysicalKey::A, Some(ch)));
     }
-    let OverlayCommand::Commit(resolved) = prompt.handle_key(&press(PhysicalKey::Enter, None))
-    else {
+    let OverlayCommand::Commit(resolved) = prompt.handle_key(&key(PhysicalKey::Enter, None)) else {
         panic!("Enter on a non-empty prompt should commit");
     };
-    assert_eq!(resolved.action, "rename-session");
-
-    let mut workspace = Workspace::single(tid(1));
-    let effects = run(&resolved, &mut workspace);
-    assert_eq!(
-        effects.rename_session.as_deref(),
-        Some("notes"),
-        "the committed prompt action yields the rename effect with the typed name",
-    );
+    let effects = run(&resolved, &mut Workspace::single(tid(1)));
+    assert_eq!(effects.rename_session.as_deref(), Some("notes"));
 }
 
-#[test]
-fn switch_session_id_arg_navigates_by_session_identity() {
-    let mut workspace = Workspace::single(tid(1));
-    let mut args = BTreeMap::new();
-    args.insert("name".to_owned(), toml::Value::String("stale".to_owned()));
-    args.insert("id".to_owned(), toml::Value::Integer(7));
-    let action = phux_config::keybind::ResolvedAction {
-        action: "switch-session".to_owned(),
-        args,
-    };
-    let effects = run(&action, &mut workspace);
-    assert_eq!(
-        effects.reattach,
-        Some(ReattachTarget::Existing {
-            name: "stale".to_owned(),
-            id: Some(phux_protocol::ids::SessionId::new(7)),
-            window: None,
-            pane: None,
-            resource: None,
-        }),
-        "a painted row's session id outranks a stale display name"
-    );
+fn rename_fixture(sessions: &[(u32, &str)]) -> CtxFixture {
+    let mut f = fx(Workspace::single(tid(1)));
+    f.session_name = "work".to_owned();
+    f.focused_session = Some(SessionId::new(1));
+    f.sessions = sessions
+        .iter()
+        .map(|(id, name)| SessionInfo::new(SessionId::new(*id), *name))
+        .collect();
+    f
 }
 
-#[test]
-fn switch_session_resource_arg_navigates_by_resource_identity() {
-    let mut workspace = Workspace::single(tid(1));
-    let mut args = BTreeMap::new();
-    args.insert("name".to_owned(), toml::Value::String("peer".to_owned()));
-    args.insert("id".to_owned(), toml::Value::Integer(2));
-    args.insert("resource".to_owned(), toml::Value::String("@10".to_owned()));
-    let action = phux_config::keybind::ResolvedAction {
-        action: "switch-session".to_owned(),
-        args,
-    };
-    let effects = run(&action, &mut workspace);
-    assert_eq!(
-        effects.reattach,
-        Some(ReattachTarget::Existing {
-            name: "peer".to_owned(),
-            id: Some(phux_protocol::ids::SessionId::new(2)),
-            window: None,
-            pane: None,
-            resource: Some(ResourceId::local(10)),
-        }),
-        "resource identity is the navigation key when no TUI indices exist"
-    );
-
-    let mut args = BTreeMap::new();
-    args.insert("name".to_owned(), toml::Value::String("peer".to_owned()));
-    args.insert(
-        "resource".to_owned(),
-        toml::Value::String("prod-3/@10".to_owned()),
-    );
-    let action = phux_config::keybind::ResolvedAction {
-        action: "switch-session".to_owned(),
-        args,
-    };
-    let effects = run(&action, &mut workspace);
-    assert_eq!(
-        effects.reattach.and_then(|t| match t {
-            ReattachTarget::Existing { resource, .. } => resource,
-            ReattachTarget::Create(_) => None,
-        }),
-        Some(ResourceId::satellite("prod-3", 10)),
-    );
-}
-
+/// A rename writes `SESSION_NAME_KEY` behind a correlated `GET_STATE` barrier and
+/// does not touch the status name until the server confirms.
 #[tokio::test(flavor = "current_thread")]
 async fn rename_session_does_not_apply_locally_until_confirmed() {
-    let mut workspace = Workspace::single(tid(1));
-    let mut args = BTreeMap::new();
-    args.insert("name".to_owned(), toml::Value::String("notes".to_owned()));
-    let action = phux_config::keybind::ResolvedAction {
-        action: "rename-session".to_owned(),
-        args,
-    };
-    let effects = run(&action, &mut workspace);
-    assert_eq!(effects.rename_session.as_deref(), Some("notes"));
-
-    let mut fx = CtxFixture::default();
-    fx.workspace = workspace;
-    fx.next_request_id = 100;
-    fx.session_name = "work".to_owned();
-    fx.focused_session = Some(phux_protocol::ids::SessionId::new(1));
-    fx.sessions = vec![phux_protocol::wire::info::SessionInfo::new(
-        phux_protocol::ids::SessionId::new(1),
-        "work",
-    )];
-    let mut ctx = fx.ctx();
-    let (a, b) = tokio::net::UnixStream::pair().expect("uds pair");
-    let mut conn = Connection::from_stream(a);
-    let mut peer = Connection::from_stream(b);
-    let mut out: Vec<u8> = Vec::new();
-    let mut focused_resource = None;
-    let mut detach_pending = false;
-    let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 80, 24);
-    let panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
-    apply_action_effects(
-        effects,
-        &mut out,
-        &mut conn,
-        &mut ctx,
-        &mut focused_resource,
-        &mut detach_pending,
-        &mut predict,
-        &panes,
-    )
-    .await
-    .expect("apply rename");
-    drop(conn);
+    let mut f = rename_fixture(&[(1, "work")]);
+    let effects = f.run(&act("rename-session", &[("name", "notes".into())]));
+    let frames = f.apply(effects).await;
+    assert_eq!(f.session_name, "work");
+    let pending = f.rename_pending.expect("GET_STATE barrier parked");
     assert_eq!(
-        fx.session_name, "work",
-        "a refused or unconfirmed rename must not rewrite the status name"
+        (pending.current.as_str(), pending.new_name.as_str()),
+        ("work", "notes")
     );
-    let pending = fx.rename_pending.expect("GET_STATE barrier parked");
-    assert_eq!(pending.current, "work");
-    assert_eq!(pending.new_name, "notes");
-    let mut frames = Vec::new();
-    while let Ok(Ok(frame)) = tokio::time::timeout(PEER_DRAIN_DEADLINE, peer.recv()).await {
-        frames.push(frame);
-    }
+    assert_eq!(pending.session_id, Some(SessionId::new(1)));
     assert!(
-        frames.iter().any(|frame| matches!(
-            frame,
-            FrameKind::SetMetadata { key, .. }
-            if key == phux_protocol::wire::frame::SESSION_NAME_KEY
-        )),
-        "rename must write SESSION_NAME_KEY: {frames:?}"
+        frames.iter().any(|f| matches!(f, FrameKind::SetMetadata { key, .. } if key == phux_protocol::wire::frame::SESSION_NAME_KEY)),
+        "{frames:?}"
     );
     assert!(
-        frames.iter().any(|frame| matches!(
-            frame,
-            FrameKind::Command {
-                request_id,
-                command: phux_protocol::wire::frame::Command::GetState { .. }
-            } if *request_id == pending.barrier
-        )),
-        "rename must send a correlated GET_STATE barrier: {frames:?}"
-    );
-    assert_eq!(
-        pending.session_id.map(phux_protocol::ids::SessionId::get),
-        Some(1)
+        frames.iter().any(|f| matches!(f, FrameKind::Command { request_id, command: Command::GetState { .. } } if *request_id == pending.barrier)),
+        "{frames:?}"
     );
 }
 
+/// A taken name is refused before anything is written.
 #[tokio::test(flavor = "current_thread")]
 async fn rename_session_refuses_a_taken_name_before_sending() {
-    let mut workspace = Workspace::single(tid(1));
-    let mut args = BTreeMap::new();
-    args.insert("name".to_owned(), toml::Value::String("notes".to_owned()));
-    let action = phux_config::keybind::ResolvedAction {
-        action: "rename-session".to_owned(),
-        args,
-    };
-    let effects = run(&action, &mut workspace);
-    let mut fx = CtxFixture::default();
-    fx.workspace = workspace;
-    fx.session_name = "work".to_owned();
-    fx.sessions = vec![
-        phux_protocol::wire::info::SessionInfo::new(phux_protocol::ids::SessionId::new(1), "work"),
-        phux_protocol::wire::info::SessionInfo::new(phux_protocol::ids::SessionId::new(2), "notes"),
-    ];
-    let mut ctx = fx.ctx();
-    let (a, b) = tokio::net::UnixStream::pair().expect("uds pair");
-    let mut conn = Connection::from_stream(a);
-    let mut peer = Connection::from_stream(b);
-    let mut out: Vec<u8> = Vec::new();
-    let mut focused_resource = None;
-    let mut detach_pending = false;
-    let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 80, 24);
-    let panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
-    apply_action_effects(
-        effects,
-        &mut out,
-        &mut conn,
-        &mut ctx,
-        &mut focused_resource,
-        &mut detach_pending,
-        &mut predict,
-        &panes,
-    )
-    .await
-    .expect("apply rename");
-    drop(conn);
+    let mut f = rename_fixture(&[(1, "work"), (2, "notes")]);
+    let effects = f.run(&act("rename-session", &[("name", "notes".into())]));
+    let frames = f.apply(effects).await;
+    assert!(f.rename_pending.is_none());
     assert!(
-        fx.rename_pending.is_none(),
-        "a refused rename is not in flight"
+        f.rename_notice
+            .expect("refusal notice")
+            .contains("already exists")
     );
-    let notice = fx.rename_notice.expect("refusal notice");
-    assert!(notice.contains("already exists"), "{notice}");
-    let mut frames = Vec::new();
-    while let Ok(Ok(frame)) = tokio::time::timeout(PEER_DRAIN_DEADLINE, peer.recv()).await {
-        frames.push(frame);
-    }
-    assert!(
-        frames.is_empty(),
-        "a taken name must not be written: {frames:?}"
-    );
+    assert!(frames.is_empty(), "{frames:?}");
 }

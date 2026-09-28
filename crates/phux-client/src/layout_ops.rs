@@ -1,26 +1,10 @@
-//! Shared headless operations over the persisted TUI layout.
+//! Headless read-modify-write of a session's persisted TUI layout
+//! (`phux.tui.layout/v1/<session>`, a v3 [`Workspace`] envelope) over L3
+//! metadata, for the CLI and MCP.
 //!
-//! CLI commands and MCP tools use this module to read a session's
-//! `phux.tui.layout/v1/<session>` value, decode the current v3 [`Workspace`]
-//! envelope, apply a mutation using the
-//! existing `phux-client-core` layout types, and write a v3 envelope back with
-//! `SET_METADATA`. No layout vocabulary is added to the wire protocol.
-//!
-//! This module deliberately exposes no headless focus mutation. Per ADR-0049,
-//! focus is client-local and attention is the navigation signal; layout
-//! metadata writers have no authority to yank an attached client's viewport.
-//! The compatibility focus fields remain solely because v2 encoding requires
-//! them, and attached clients ignore them during reconciliation.
-//!
-//! The coordination model is explicitly **last-write-wins**. A mutation is a
-//! `GET_METADATA` followed by a whole-value `SET_METADATA`; concurrent writers
-//! can overwrite one another. The trailing `GET_METADATA` is both a flush
-//! barrier for the fire-and-forget SET and the value returned to the caller.
-//! Callers should use a dedicated connection: the reads route through
-//! [`Connection::request_metadata`], which hands back anything the server
-//! interleaved, and this module has no consumer for a `RESOURCE_OUTPUT` or an
-//! `EVENT` so it discards them (loudly — see
-//! `Reply::into_result_ignoring_interleaved`).
+//! There is deliberately no headless focus mutation (ADR-0049). Writes are
+//! last-write-wins; a trailing `GET_METADATA` flushes the fire-and-forget SET
+//! and confirms it. Use a dedicated, unsubscribed connection.
 
 use phux_protocol::ids::{GroupId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{FrameKind, Scope};
@@ -48,91 +32,43 @@ pub fn layout_key(session: SessionId) -> String {
 /// Whose layout a [`LAYOUT_KEY`] names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutKeyOwner {
-    /// The bare legacy key, written before per-session keying existed. It
-    /// names no session, so it can only be the reader's own.
+    /// The bare legacy key: it names no session, so it is the reader's own.
     Legacy,
     /// The per-session key for this session.
     Session(SessionId),
 }
 
-/// Whose layout `key` names, or `None` when it is not a layout key we can
-/// attribute.
+/// Whose layout `key` names, or `None` when it is not attributable.
 ///
-/// "Is this the layout family?" was the right question only while a client
-/// subscribed to exactly one layout key. Once it watches peers too
-/// (phux-k0cw), adopting a peer's topology as your own would silently replace
-/// your pane tree, so the question becomes "whose layout is this?".
-///
-/// This recognizes only the TUI's own `phux.tui.layout/v1` family (SPEC
-/// L3.md §3.2). A named projection under a different prefix
-/// (`--projection`, §3.5) is deliberately invisible here: the TUI MUST NOT
-/// adopt a private arrangement another consumer wrote for itself, so a
-/// foreign prefix falls through to `None` exactly like any other unrelated
-/// key. See [`validate_projection_key`] for the general `<prefix>.layout/v1/<session>`
-/// grammar a `--projection` value is checked against.
+/// Only the TUI's own `phux.tui.layout/v1` family (SPEC L3.md §3.2) is
+/// recognized: a named projection under another prefix (§3.5) is private to
+/// its writer and must never be adopted by the TUI.
 #[must_use]
 pub fn layout_key_session(key: &str) -> Option<LayoutKeyOwner> {
     if key == LAYOUT_KEY {
         return Some(LayoutKeyOwner::Legacy);
     }
     let suffix = key.strip_prefix(&format!("{LAYOUT_KEY}/"))?;
-    // An unparsable suffix names no session we can attribute. It must NOT
-    // fall back to `Legacy` — the caller reads that as "ours" and adopts it.
-    // Answering `None` drops the frame instead, the only safe direction for a
-    // layout we cannot prove is our own.
+    // An unparsable suffix is `None`, never `Legacy` (which reads as ours).
     Some(LayoutKeyOwner::Session(SessionId::new(
         suffix.parse::<u32>().ok()?,
     )))
 }
 
-/// Validate a `--projection KEY` value against the SPEC L3.md §3.5 grammar.
-///
-/// The grammar is `<prefix>.layout/v1/<session-id>`, where `<session-id>` is
-/// the decimal wire id of `session` (the session the operation actually
-/// addresses). `<prefix>` may be anything non-empty that does not itself
-/// contain the `.layout/v1/` separator — this is deliberately permissive so
-/// a consumer's own namespaced key (`myapp.layout/v1/<session>`) validates
-/// the same way the reference TUI's own default key does.
+/// Validate a `--projection KEY` value against the SPEC L3.md §3.5 grammar
+/// `<prefix>.layout/v1/<session-id>`, naming `session`.
 ///
 /// # Errors
 ///
-/// Returns [`LayoutOpsError::InvalidProjectionKey`] when `key` does not
-/// parse as `<prefix>.layout/v1/<id>`, or when the embedded id does not name
-/// `session`.
+/// [`LayoutOpsError::InvalidProjectionKey`] when `key` does not parse, or
+/// names another session.
 pub fn validate_projection_key(key: &str, session: SessionId) -> Result<(), LayoutOpsError> {
     let invalid = || LayoutOpsError::InvalidProjectionKey(key.to_owned());
-    let id = projection_key_session(key).ok_or_else(invalid)?;
+    let id = crate::layout::projection_key_session(key).ok_or_else(invalid)?;
     if id != session {
         return Err(invalid());
     }
     Ok(())
-}
-
-/// Parse the session a `<prefix>.layout/v1/<session-id>` key names, without
-/// checking it against any particular session. `None` when `key` does not
-/// match the grammar at all.
-///
-/// The `<session-id>` segment must be the session's **canonical** decimal
-/// form — no leading zero (other than a bare `"0"`), no leading `+`, no
-/// non-ASCII-digit content — enforced as `suffix == id.to_string()` rather
-/// than merely "parses as u32". Without this, `myapp.layout/v1/07` and
-/// `myapp.layout/v1/7` would both name session 7 but compare unequal as
-/// strings: the server's reap cleanup matches the literal key
-/// `*.layout/v1/7` (`state/reap.rs`), so a non-canonical key that slipped
-/// past a looser check here would validate for `--projection` yet never be
-/// found and deleted when its session reaps — orphaned forever. `<prefix>`
-/// must also not itself contain the `.layout/v1/` separator, so a key with
-/// two occurrences (`a.layout/v1/b.layout/v1/7`) is rejected rather than
-/// silently matched on its last one.
-///
-/// Used to match an unordered pair of `--projection` keys against a pair of
-/// sessions (a cross-session `move-pane`) — see `phux_client::pane_move`.
-///
-/// The grammar lives in `phux-client-core` so the C FFI named-projection
-/// seam shares it.
-#[must_use]
-pub fn projection_key_session(key: &str) -> Option<SessionId> {
-    crate::layout::projection_key_session(key)
 }
 
 /// One pure mutation of a decoded [`Workspace`].
@@ -149,8 +85,8 @@ pub enum LayoutMutation {
         /// Fraction assigned to the existing target, in `(0, 1)`.
         ratio: f32,
     },
-    /// Insert a pane without changing serialized active-window or focus fields.
-    /// Headless spawn placement uses this so it cannot publish shared focus.
+    /// [`Self::Split`] without changing the serialized active window or focus,
+    /// so headless spawn placement cannot publish shared focus.
     SplitPreservingFocus {
         /// Existing pane whose leaf is replaced by a split.
         target: ResourceId,
@@ -180,9 +116,7 @@ pub enum LayoutMutation {
         /// Second existing pane.
         second: ResourceId,
     },
-    /// Remove `target`, collapsing its parent split. A one-pane window is
-    /// removed; the final pane in the workspace cannot be removed because
-    /// this mutation API requires a nonempty workspace.
+    /// Remove `target`, collapsing its parent split (never the final pane).
     Close {
         /// Existing pane to remove.
         target: ResourceId,
@@ -231,8 +165,7 @@ pub enum LayoutOpsError {
         "projection key {0:?} must be `<prefix>.layout/v1/<session-id>` naming the addressed session"
     )]
     InvalidProjectionKey(String),
-    /// [`LayoutOps::write_and_confirm`]'s trailing read found a value, but
-    /// not the exact bytes just written.
+    /// The confirming read found other bytes than those just written.
     #[error(
         "layout write was not confirmed: the read-back value did not match what was written \
          (a concurrent writer, or the write exceeded limits.metadata-value-bytes and was \
@@ -241,14 +174,11 @@ pub enum LayoutOpsError {
     NotConfirmed,
 }
 
-/// Stateful request-id allocator and layout metadata client.
-///
-/// Construct one over a dedicated [`Connection`], then call [`Self::read`] or
-/// [`Self::mutate`].
+/// Layout metadata client over a dedicated [`Connection`], allocating
+/// request ids from `first_request_id`.
 #[derive(Debug)]
 pub struct LayoutOps<'a> {
     conn: &'a mut Connection,
-    session: SessionId,
     group: GroupId,
     key: String,
     next_request_id: u32,
@@ -271,7 +201,6 @@ impl<'a> LayoutOps<'a> {
     ) -> Self {
         Self {
             conn,
-            session,
             group,
             key: layout_key(session),
             next_request_id: first_request_id,
@@ -294,7 +223,6 @@ impl<'a> LayoutOps<'a> {
         validate_projection_key(&key, session)?;
         Ok(Self {
             conn,
-            session,
             group: DEFAULT_LAYOUT_GROUP_ID,
             key,
             next_request_id: first_request_id,
@@ -313,15 +241,8 @@ impl<'a> LayoutOps<'a> {
         Workspace::decode_cbor(&bytes).map_err(Into::into)
     }
 
-    /// Read this session's layout, writing `fallback` only when no value exists.
-    ///
-    /// This is the initialization seam for create-without-attach consumers:
-    /// the server keeps the layout blob opaque, while the client that owns the
-    /// projection makes a new session layout-ready before returning success.
-    /// Like other layout writes this remains last-write-wins at the metadata
-    /// layer. The confirming read must match the fallback exactly, so a
-    /// concurrent writer that wins the race surfaces as
-    /// [`LayoutOpsError::NotConfirmed`].
+    /// Read this session's layout, writing and confirming `fallback` only
+    /// when no value exists (create-without-attach seeding).
     ///
     /// # Errors
     ///
@@ -334,16 +255,8 @@ impl<'a> LayoutOps<'a> {
         }
     }
 
-    /// Read, mutate, encode as v3, SET, then read back and confirm the value.
-    ///
-    /// Coordination is last-write-wins at the `SET_METADATA` layer (whoever
-    /// writes last simply overwrites), but this call itself is not
-    /// tolerant of losing that race: [`Self::write_and_confirm`] requires
-    /// the confirming read to match exactly what this call just computed,
-    /// so a concurrent writer that lands between this call's own SET and
-    /// its confirming GET surfaces as [`LayoutOpsError::NotConfirmed`]
-    /// rather than silently handing back someone else's value as if it
-    /// were this mutation's result.
+    /// Read, mutate, write, and confirm; losing a race to a concurrent
+    /// writer is [`LayoutOpsError::NotConfirmed`], never their value.
     ///
     /// # Errors
     ///
@@ -380,31 +293,20 @@ impl<'a> LayoutOps<'a> {
             .conn
             .request_metadata(request_id, Scope::Group(self.group), self.key.clone())
             .await?;
-        // `handle_get_metadata` (`crates/phux-server/src/runtime/client.rs`)
-        // answers with METADATA_VALUE and pushes nothing of its own, and this
-        // type documents a dedicated connection — one that never sent
-        // ATTACH_RESOURCE or SUBSCRIBE_EVENTS, so no pane actor can fan out
-        // onto it. Nothing can be interleaved here; if something is, the
-        // discard is logged rather than silent.
+        // A dedicated, unsubscribed connection: nothing can interleave.
         reply
             .into_result_ignoring_interleaved()
             .map_err(|refusal| LayoutOpsError::Refused(refusal.message))
     }
 
     /// Overwrite the stored envelope with exactly `workspace` and confirm it
-    /// with a trailing read — the raw write half of [`Self::mutate`], for a
-    /// caller that has already computed the whole target value (e.g.
-    /// `phux workspace restore` replaying an archived split tree) rather
-    /// than applying one [`LayoutMutation`] to what is already there.
+    /// with a trailing read.
     ///
     /// # Errors
     ///
-    /// Returns transport/envelope errors, [`LayoutOpsError::MissingLayout`]
-    /// when the confirming read finds nothing at all, or
-    /// [`LayoutOpsError::NotConfirmed`] when it finds a value that is not
-    /// byte-for-byte what was just written — either can mean a concurrent
-    /// writer or a value over `limits.metadata-value-bytes` silently
-    /// dropped server-side (`SET_METADATA` has no reply frame).
+    /// Transport/envelope errors, or [`LayoutOpsError::MissingLayout`] /
+    /// [`LayoutOpsError::NotConfirmed`] when the read-back is not exactly the
+    /// write (a concurrent writer, or an oversized value silently dropped).
     pub async fn write_and_confirm(
         &mut self,
         workspace: &Workspace,
@@ -419,37 +321,14 @@ impl<'a> LayoutOps<'a> {
                 value: bytes.clone(),
             })
             .await?;
-        // SET_METADATA has no reply. The ordered trailing GET proves the
-        // server consumed it and also reports a concurrent last writer —
-        // but a value over `limits.metadata-value-bytes` is *also* a
-        // silent no-op server-side (docs/spec/L3.md §2), so a confirming
-        // read that doesn't match what was just written is ambiguous
-        // between "someone else won the race" and "this write was too
-        // big and got dropped". A read-back that *decodes* but doesn't
-        // match what was sent (e.g. a concurrent writer's own, otherwise
-        // valid, v3 envelope) must not be accepted as if this write had
-        // won — hence the exact byte comparison below, not just
-        // "did something decode". Callers that turn a placement mismatch
-        // into a "concurrent writer" message should name the cap as a
-        // possible cause too (see `phux_client::pane_move`).
+        // SET_METADATA has no reply; only an exact byte match proves this
+        // write won (a decodable foreign value must not pass).
         let value = self.get_value().await?;
         let read_back = value.ok_or(LayoutOpsError::MissingLayout)?;
         if read_back != bytes {
             return Err(LayoutOpsError::NotConfirmed);
         }
         Workspace::decode_cbor(&read_back).map_err(Into::into)
-    }
-
-    /// The session this handle addresses.
-    #[must_use]
-    pub const fn session(&self) -> SessionId {
-        self.session
-    }
-
-    /// The metadata key this handle reads and writes.
-    #[must_use]
-    pub fn key(&self) -> &str {
-        &self.key
     }
 
     const fn allocate_request_id(&mut self) -> u32 {
@@ -459,13 +338,8 @@ impl<'a> LayoutOps<'a> {
     }
 }
 
-/// [`LayoutOps::new`] plus [`LayoutOps::write_and_confirm`] over a fresh
-/// connection.
-///
-/// The whole-envelope write `phux workspace restore` uses to publish a
-/// freshly restored session's layout, which (unlike placement's
-/// read-modify-write) is always a first write, never a mutation of an
-/// existing value.
+/// [`LayoutOps::write_and_confirm`] over a fresh connection (`phux
+/// workspace restore`).
 ///
 /// # Errors
 ///
@@ -484,10 +358,6 @@ pub async fn write_layout_on(
 }
 
 /// Apply one mutation without doing I/O.
-///
-/// This is public so CLI/MCP code can test or compose layout changes without
-/// duplicating tree algorithms. It only uses `phux-client-core`'s existing
-/// [`Workspace`] and [`LayoutNode`] types.
 ///
 /// # Errors
 ///
@@ -614,23 +484,13 @@ fn apply_move(
     } else {
         move_across_windows(
             workspace,
-            MoveWindows {
-                source_index,
-                target_index,
-            },
+            (source_index, target_index),
             source,
             target,
             dir,
             ratio,
         )
     }
-}
-
-/// The pair of window indices a cross-window move connects.
-#[derive(Debug, Clone, Copy)]
-struct MoveWindows {
-    source_index: usize,
-    target_index: usize,
 }
 
 /// Re-place `source` next to `target` inside the single window holding both:
@@ -656,16 +516,12 @@ fn move_within_window(
 /// window's focus and pruning it if it emptied.
 fn move_across_windows(
     workspace: &mut Workspace,
-    windows: MoveWindows,
+    (source_index, target_index): (usize, usize),
     source: &ResourceId,
     target: &ResourceId,
     dir: SplitDir,
     ratio: f32,
 ) -> Result<(), LayoutOpsError> {
-    let MoveWindows {
-        source_index,
-        target_index,
-    } = windows;
     let source_tree = window_tree(workspace, source_index, source)?;
     workspace.windows[source_index].state.tree = kill_pane(source_tree, source)?;
     repair_focus(&mut workspace.windows[source_index].state);
@@ -736,57 +592,23 @@ mod tests {
         ResourceId::local(id)
     }
 
-    /// phux-k0cw: the family test became a WHOSE test, because a client that
-    /// watches peers must not adopt their layouts.
+    /// Whose layout a key names: an unattributable key is `None`, never
+    /// `Legacy`, and a private `--projection` prefix is never the TUI's own.
     #[test]
-    fn layout_key_session_names_the_owner_not_just_the_family() {
-        // The bare legacy key predates per-session keying, so it names no
-        // session and can only be our own.
+    fn layout_key_session_names_the_owner_and_ignores_private_projections() {
+        let own = |id| Some(LayoutKeyOwner::Session(SessionId::new(id)));
         assert_eq!(layout_key_session(LAYOUT_KEY), Some(LayoutKeyOwner::Legacy));
-        assert_eq!(
-            layout_key_session("phux.tui.layout/v1/7"),
-            Some(LayoutKeyOwner::Session(SessionId::new(7)))
-        );
-        assert_eq!(
-            layout_key_session(&layout_key(SessionId::new(42))),
-            Some(LayoutKeyOwner::Session(SessionId::new(42))),
-            "the writer and the reader must agree on the key shape"
-        );
-        // Unparsable suffix: NOT `Legacy`. That is the answer the caller
-        // adopts as its own layout — so an unattributable key must drop out
-        // of the family entirely rather than be mistaken for ours.
-        assert_eq!(layout_key_session("phux.tui.layout/v1/zzz"), None);
-        // A key that merely shares the prefix-without-separator is not in the
-        // family, and unrelated keys aren't either.
-        assert_eq!(layout_key_session("phux.tui.layout/v12"), None);
-        assert_eq!(layout_key_session("phux.tui.other/v1"), None);
-    }
-
-    /// ADR-0129: the TUI must never adopt a private (non-default) named
-    /// projection as its own layout. `layout_key_session` is the one gate
-    /// the TUI reconciliation path uses to decide "is this my layout?", so
-    /// pinning it against every custom `--projection` prefix here is what
-    /// keeps a private arrangement invisible to the shared TUI/Cockpit view.
-    #[test]
-    fn tui_never_recognizes_a_private_projection_key_as_its_own() {
+        assert_eq!(layout_key_session("phux.tui.layout/v1/7"), own(7));
+        assert_eq!(layout_key_session(&layout_key(SessionId::new(42))), own(42));
         for foreign in [
+            "phux.tui.layout/v1/zzz",
+            "phux.tui.layout/v12",
+            "phux.tui.other/v1",
             "myapp.layout/v1/7",
-            "scratch.layout/v1/7",
             "a.b.c.layout/v1/7",
         ] {
-            assert_eq!(
-                layout_key_session(foreign),
-                None,
-                "{foreign:?} names a private projection, not the TUI's own key"
-            );
+            assert_eq!(layout_key_session(foreign), None, "{foreign:?}");
         }
-        // The TUI's own default key for the same session IS recognized —
-        // the contrast that proves the above isn't an accidental blanket
-        // rejection.
-        assert_eq!(
-            layout_key_session("phux.tui.layout/v1/7"),
-            Some(LayoutKeyOwner::Session(SessionId::new(7)))
-        );
     }
 
     #[test]
@@ -794,61 +616,20 @@ mod tests {
         let session = SessionId::new(7);
         assert!(validate_projection_key("phux.tui.layout/v1/7", session).is_ok());
         assert!(validate_projection_key("myapp.layout/v1/7", session).is_ok());
-        assert!(matches!(
-            validate_projection_key("myapp.layout/v1/8", session),
-            Err(LayoutOpsError::InvalidProjectionKey(_))
-        ));
-        assert!(matches!(
-            validate_projection_key("not-a-layout-key", session),
-            Err(LayoutOpsError::InvalidProjectionKey(_))
-        ));
-        assert!(matches!(
-            validate_projection_key(".layout/v1/7", session),
-            Err(LayoutOpsError::InvalidProjectionKey(_))
-        ));
-    }
-
-    /// The session-id segment must be canonical decimal: no leading zero,
-    /// no leading `+`, nothing but ASCII digits. A non-canonical id that
-    /// merely *parses* to the right session would validate here but never
-    /// match the literal key the server's reap cleanup deletes
-    /// (`state/reap.rs`'s exact `.layout/v1/<id>` suffix match), orphaning
-    /// it forever.
-    #[test]
-    fn projection_key_session_id_must_be_canonical_decimal() {
-        let session = SessionId::new(7);
-        for non_canonical in [
+        for bad in [
+            "myapp.layout/v1/8",
+            "not-a-layout-key",
+            ".layout/v1/7",
             "myapp.layout/v1/07",
-            "myapp.layout/v1/+7",
-            "myapp.layout/v1/7 ",
         ] {
             assert!(
                 matches!(
-                    validate_projection_key(non_canonical, session),
+                    validate_projection_key(bad, session),
                     Err(LayoutOpsError::InvalidProjectionKey(_))
                 ),
-                "{non_canonical:?} must be rejected as non-canonical"
-            );
-            assert_eq!(
-                projection_key_session(non_canonical),
-                None,
-                "{non_canonical:?} must not resolve to any session"
+                "{bad:?}"
             );
         }
-        // The zero session id is its own canonical form.
-        assert_eq!(
-            projection_key_session("myapp.layout/v1/0"),
-            Some(SessionId::new(0))
-        );
-    }
-
-    /// A prefix that itself contains the `.layout/v1/` separator is
-    /// rejected rather than matched on its last occurrence — otherwise a
-    /// key like `a.layout/v1/b.layout/v1/7` would silently validate with
-    /// `a.layout/v1/b` as "the prefix".
-    #[test]
-    fn projection_key_prefix_must_not_contain_the_separator_itself() {
-        assert_eq!(projection_key_session("a.layout/v1/b.layout/v1/7"), None);
     }
 
     fn split(left: u32, right: u32, dir: SplitDir, ratio: f32) -> LayoutNode {
@@ -876,9 +657,8 @@ mod tests {
         }
     }
 
-    // Fixed bytes emitted by the pre-window v1 encoder. Keeping this literal
-    // prevents a current encoder change from weakening the old-schema refusal
-    // fixture along with the decoder under test.
+    // Fixed bytes from the pre-window v1 encoder, kept literal so an encoder
+    // change cannot weaken the old-schema refusal.
     const LEGACY_V1_FIXTURE: &[u8] = &[
         163, 103, 118, 101, 114, 115, 105, 111, 110, 1, 100, 114, 111, 111, 116, 165, 100, 107,
         105, 110, 100, 101, 115, 112, 108, 105, 116, 99, 100, 105, 114, 104, 118, 101, 114, 116,
@@ -1059,19 +839,17 @@ mod tests {
         assert_eq!(workspace, original, "a rejected move is transactional");
     }
 
+    /// A raw client connection paired with a scripted server running `spec`.
+    fn scripted(spec: ScriptSpec) -> (Connection, tokio::task::JoinHandle<Vec<FrameKind>>) {
+        let (client_stream, server_stream) = tokio::net::UnixStream::pair().unwrap();
+        let server = tokio::spawn(ScriptedServer::on_stream(server_stream, spec).run());
+        (Connection::from_stream(client_stream), server)
+    }
+
     #[tokio::test]
     async fn mutate_correlates_replies_and_confirms_set() {
-        let (client_stream, server_stream) = tokio::net::UnixStream::pair().unwrap();
-        let mut client = Connection::from_stream(client_stream);
         let initial = two_window_workspace();
-
-        // The harness stores what this session SETs and hands it back on the
-        // confirming GET, so the read-modify-write round trip runs against
-        // the same read-your-own-write behaviour `handle_set_metadata` /
-        // `handle_get_metadata` give it — not a canned echo. The
-        // METADATA_VALUE for request 999 belongs to a different pipelined
-        // request and is pushed AHEAD of this one's reply, which is the only
-        // ordering in which mis-correlation is a hazard.
+        // A foreign METADATA_VALUE ahead of the reply must not be taken.
         let spec = ScriptSpec::new()
             .foreign_metadata_value(999)
             .stored_metadata(
@@ -1079,7 +857,7 @@ mod tests {
                 &layout_key(SessionId::new(7)),
                 initial.encode_cbor().unwrap(),
             );
-        let server_task = tokio::spawn(ScriptedServer::on_stream(server_stream, spec).run());
+        let (mut client, server_task) = scripted(spec);
 
         let confirmed = LayoutOps::new(&mut client, SessionId::new(7), 10)
             .mutate(LayoutMutation::Swap {
@@ -1092,8 +870,6 @@ mod tests {
             leaves(confirmed.windows[0].state.tree.as_ref().unwrap()),
             vec![tid(2), tid(1)]
         );
-        // `ops` only borrows the connection; dropping the connection is what
-        // ends the harness's serve loop.
         drop(client);
 
         let seen = server_task.await.unwrap();
@@ -1134,8 +910,6 @@ mod tests {
     /// never the shared `phux.tui.layout/v1/<session>` default.
     #[tokio::test]
     async fn insert_pane_with_projection_writes_the_named_key_and_leaves_the_default_untouched() {
-        let (client_stream, server_stream) = tokio::net::UnixStream::pair().unwrap();
-        let mut client = Connection::from_stream(client_stream);
         let initial = two_window_workspace();
         let named_key = "myapp.layout/v1/7".to_owned();
         let spec = ScriptSpec::new().stored_metadata(
@@ -1143,7 +917,7 @@ mod tests {
             &named_key,
             initial.encode_cbor().unwrap(),
         );
-        let server_task = tokio::spawn(ScriptedServer::on_stream(server_stream, spec).run());
+        let (mut client, server_task) = scripted(spec);
 
         let mut ops =
             LayoutOps::with_key(&mut client, SessionId::new(7), named_key.clone(), 10).unwrap();
@@ -1178,22 +952,16 @@ mod tests {
         );
     }
 
-    /// ADR-0129 review item 5(a): a confirming read that decodes fine but
-    /// is not byte-for-byte what was just written — here, because the
-    /// server silently dropped the `SET_METADATA` (the same shape a value
-    /// over `limits.metadata-value-bytes` has) and the confirming `GET`
-    /// still sees the old stored value — must not be accepted as this
-    /// write's own result.
+    /// A silently dropped SET leaves a decodable stale read-back, which must
+    /// not be accepted as this write's result.
     #[tokio::test]
     async fn write_and_confirm_refuses_a_read_back_that_does_not_match_what_was_written() {
-        let (client_stream, server_stream) = tokio::net::UnixStream::pair().unwrap();
-        let mut client = Connection::from_stream(client_stream);
         let stale = Workspace::single(tid(9)).encode_cbor().unwrap();
         let key = layout_key(SessionId::new(7));
         let spec = ScriptSpec::new()
             .stored_metadata(Scope::Group(DEFAULT_LAYOUT_GROUP_ID), &key, stale)
             .drop_metadata_writes(Scope::Group(DEFAULT_LAYOUT_GROUP_ID), &key);
-        let server_task = tokio::spawn(ScriptedServer::on_stream(server_stream, spec).run());
+        let (mut client, server_task) = scripted(spec);
 
         let result = LayoutOps::new(&mut client, SessionId::new(7), 10)
             .write_and_confirm(&Workspace::single(tid(1)))
@@ -1208,10 +976,8 @@ mod tests {
 
     #[tokio::test]
     async fn correlated_error_is_reported() {
-        let (client_stream, server_stream) = tokio::net::UnixStream::pair().unwrap();
-        let mut client = Connection::from_stream(client_stream);
         let spec = ScriptSpec::new().refuse_metadata(ErrorCode::InvalidCommand, "foreign group");
-        let server_task = tokio::spawn(ScriptedServer::on_stream(server_stream, spec).run());
+        let (mut client, server_task) = scripted(spec);
         let result = LayoutOps::in_group(&mut client, SessionId::new(1), GroupId::new(77), 5)
             .read()
             .await;
@@ -1224,10 +990,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_or_seed_initializes_an_absent_layout_and_confirms_it() {
-        let (client_stream, server_stream) = tokio::net::UnixStream::pair().unwrap();
-        let mut client = Connection::from_stream(client_stream);
-        let spec = ScriptSpec::new();
-        let server_task = tokio::spawn(ScriptedServer::on_stream(server_stream, spec).run());
+        let (mut client, server_task) = scripted(ScriptSpec::new());
         let fallback = Workspace::single(tid(7));
 
         let confirmed = LayoutOps::new(&mut client, SessionId::new(3), 20)
@@ -1261,15 +1024,13 @@ mod tests {
 
     #[tokio::test]
     async fn read_or_seed_preserves_an_existing_layout_without_writing() {
-        let (client_stream, server_stream) = tokio::net::UnixStream::pair().unwrap();
-        let mut client = Connection::from_stream(client_stream);
         let existing = two_window_workspace();
         let spec = ScriptSpec::new().stored_metadata(
             Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
             &layout_key(SessionId::new(3)),
             existing.encode_cbor().unwrap(),
         );
-        let server_task = tokio::spawn(ScriptedServer::on_stream(server_stream, spec).run());
+        let (mut client, server_task) = scripted(spec);
 
         let confirmed = LayoutOps::new(&mut client, SessionId::new(3), 20)
             .read_or_seed(Workspace::single(tid(99)))

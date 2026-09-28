@@ -198,22 +198,7 @@ fn print_json(report: &WorkspaceReport) -> ExitCode {
         },
         "worktrees": worktrees,
     });
-    match serde_json::to_string_pretty(&doc) {
-        Ok(rendered) => {
-            outln!("{rendered}");
-            ExitCode::SUCCESS
-        }
-        // A `--json` path, so the failure is the contract line, never prose.
-        Err(err) => crate::commands::json_err::emit(
-            true,
-            &crate::commands::json_err::CliError::new(
-                crate::commands::json_err::codes::JSON_SERIALIZE,
-                format!("could not render workspace JSON: {err}"),
-                "this is a phux bug; run `phux doctor` and report it",
-            ),
-            1,
-        ),
-    }
+    crate::output::json(&doc)
 }
 
 fn worktree_json(entry: &WorktreeInfo) -> serde_json::Value {

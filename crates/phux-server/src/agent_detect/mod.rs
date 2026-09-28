@@ -1,64 +1,25 @@
 //! Level-triggered agent-state detector (ADR-0046).
 //!
-//! # Why level-triggered
-//!
-//! The obvious design is edge-triggered: have the agent's shell hooks fire
-//! on start and stop. It is also wrong. An edge-triggered reporter is lossy
-//! — miss ONE transition (a crash, a `kill -9`, a hook that did not fire,
-//! a race at startup) and the pane lies forever, with no path back to the
-//! truth. A periodic re-derivation from the screen re-establishes ground
-//! truth every tick and is therefore **self-healing**: however we got into
-//! a wrong state, the next tick fixes it.
-//!
-//! # The trust model
-//!
-//! [`AgentDetector::tick`] implements it, in this order:
+//! Re-deriving state from the screen every tick is self-healing, unlike
+//! edge-triggered hooks, where one missed transition lies forever.
+//! [`AgentDetector::tick`] does, in order:
 //!
 //! 1. **Identify** the agent from the PTY's foreground process group.
-//! 2. **Grace** — publish nothing for [`STARTUP_GRACE`] after IDENTIFICATION
-//!    while a splash screen paints, so we never flash `blocked` at launch.
-//!    Anchored there and not at pane creation: a pane seeds a shell, and the
-//!    common way an agent appears is a human typing `claude` into it minutes
-//!    later, which is exactly the launch the guard exists for.
-//! 3. **Derive** a state from the manifest's region-scoped rules.
-//!    *Fail safe:* identified but nothing matched means [`DetectedState::Idle`],
-//!    **never** `Blocked`. A missed notification is cheap; a permanently-red
-//!    sidebar destroys the user's trust in the whole feature, which is
-//!    strictly worse than having no feature.
-//! 4. **Hysteresis, asymmetric.** The UX thesis in one line: *transitions
-//!    that demand attention are instant; transitions that release it are
-//!    debounced.* `blocked` and `working` publish on the FIRST tick that
-//!    sees them. `working -> idle` is the ambiguous one — the screen stopped
-//!    saying "working" but does not positively say "idle" (a spinner cleared
-//!    mid-redraw) — so it is held for [`IDLE_CONFIRMATIONS`] ticks, capped at
-//!    [`IDLE_HOLD_CAP`], and the hold is BYPASSED when a rule supplies
-//!    positive idle evidence.
-//! 5. **Edge-filtered publish.** Only a genuinely changed tuple is emitted.
-//!    An agent that is `working` and spewing output for ten minutes produces
-//!    ZERO metadata writes and ZERO events.
+//! 2. **Grace**: publish nothing for [`STARTUP_GRACE`] after identification,
+//!    so a splash screen never flashes `blocked`.
+//! 3. **Derive** from the manifest's rules. Nothing matched means `Idle`,
+//!    never `Blocked`.
+//! 4. **Asymmetric hysteresis**: `blocked`/`working` publish at once;
+//!    `working -> idle` is held for [`IDLE_CONFIRMATIONS`] ticks (capped at
+//!    [`IDLE_HOLD_CAP`]) unless a rule gives positive idle evidence.
+//! 5. **Edge filter**: only a changed tuple is emitted.
 //!
-//! Staleness needs no TTL: identity is re-derived every [`IDENTIFY_RECHECK`],
-//! so a dead agent's badge is actively *retracted* rather than left to spin
-//! forever. A dead process must not lie.
-//!
-//! # Evidence, not silence
-//!
-//! The identity step distinguishes three answers, not two
-//! ([`identify::Occupancy`]): the pane is occupied by an agent, the pane is
-//! *observably* occupied by something that is not an agent, or the question
-//! could not be answered at all. Only the middle one is evidence of
-//! departure, and even then it must be seen [`VACANT_CONFIRMATIONS`] times
-//! running before anything is retracted. A query that failed leaves every
-//! belief exactly as it was. That asymmetry is what lets a retraction be
-//! trusted enough to withdraw a *human's* declaration (`docs/spec/L3.md`
-//! §3.7, "Server as a producer"), which is the only path back to truth for a
-//! pane whose declared agent was `kill -9`'d.
-//!
-//! Occupancy also carries the foreground **pgid paired with its leader's
-//! start time** ([`identify::Occupant`]), so `claude` restarted in the same
-//! pane is a different occupant rather than the same one — an event that was
-//! previously invisible by construction — and so a pgid the OS recycled to a
-//! new process cannot impersonate the one that held it before.
+//! Identity distinguishes agent, observed non-agent, and unanswerable
+//! ([`identify::Occupancy`]). Only a confirmed vacancy, seen
+//! [`VACANT_CONFIRMATIONS`] times, retracts; a failed query changes nothing.
+//! That is what makes a retraction trustworthy enough to withdraw a human's
+//! declaration (`docs/spec/L3.md` §3.7). Occupants are `(pgid, start time)`
+//! pairs, so a restart or a recycled pgid is a new occupant.
 
 #![allow(
     clippy::redundant_pub_crate,
@@ -69,9 +30,7 @@ pub(crate) mod identify;
 pub(crate) mod live_session;
 pub(crate) mod record;
 
-// Manifest evaluation lives in `phux-agent-rules` (phux-w7z2.24). These
-// re-exports keep the detector's existing paths (`rules::`, `regions::`,
-// `DetectedState`) pointed at that crate.
+// Manifest evaluation lives in `phux-agent-rules`.
 pub(crate) use phux_agent_rules::DetectedState;
 pub(crate) use phux_agent_rules::regions;
 pub(crate) use phux_agent_rules::rules;
@@ -84,33 +43,21 @@ use tracing::trace;
 
 use rules::RuleSet;
 
-/// Tick floor while no agent has been identified. Slow: there is nothing to
-/// derive, and most panes are shells that will never host an agent.
+/// Tick floor while no agent has been identified.
 pub(crate) const TICK_UNIDENTIFIED: Duration = Duration::from_millis(500);
 /// Tick floor once an agent is identified.
 pub(crate) const TICK_IDENTIFIED: Duration = Duration::from_millis(300);
 /// Tick floor while confirming a `working -> idle` transition.
 pub(crate) const TICK_CONFIRMING: Duration = Duration::from_millis(100);
 
-/// How often identity is re-derived once it is known. Also the answer to
-/// staleness: an exited agent is noticed within this window and retracted.
-///
-/// The production value; [`identify_recheck`] is what the detector consults,
-/// so an integration test can shrink it rather than sitting out real
-/// multiples of it per case.
+/// How often identity is re-derived once known; also bounds how long a dead
+/// agent's badge survives.
 const IDENTIFY_RECHECK: Duration = Duration::from_secs(5);
 
 /// Test seam: override [`IDENTIFY_RECHECK`] in milliseconds.
-///
-/// Same idiom and same justification as [`ENV_STARTUP_GRACE_MS`]. A
-/// withdrawal needs [`VACANT_CONFIRMATIONS`] *confirmed* vacant observations,
-/// so an end-to-end test of a killed agent otherwise waits out two full
-/// production rechecks; production never sets this.
 const ENV_IDENTIFY_RECHECK_MS: &str = "PHUX_AGENT_IDENTIFY_RECHECK_MS";
 
-/// The effective identity recheck interval. Read once per process — it is
-/// consulted on every detector tick, and the env cannot change under a
-/// running server.
+/// The effective identity recheck interval, read once per process.
 fn identify_recheck() -> Duration {
     static RECHECK: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
     *RECHECK.get_or_init(|| {
@@ -121,50 +68,25 @@ fn identify_recheck() -> Duration {
     })
 }
 
-/// Consecutive *confirmed vacant* observations required before an identified
-/// agent is declared gone.
-///
-/// At the [`IDENTIFY_RECHECK`] cadence this is at least one full recheck
-/// interval of sustained, positively-observed vacancy. It buys down the one
-/// real hazard of a level-triggered retraction: an agent that briefly hands
-/// its terminal to a foreground subprocess mid-turn (a pager, an editor, a
-/// build) is vacant for a tick and must not have its badge — or its human's
-/// declaration — withdrawn for it.
+/// Consecutive confirmed-vacant observations before an agent is declared
+/// gone, so briefly handing the terminal to a pager or build does not
+/// withdraw its badge.
 const VACANT_CONFIRMATIONS: u8 = 2;
-/// A freshly-spawned pane is polled harder for this long, so an agent
-/// launched at pane creation is identified promptly instead of waiting out
-/// a full [`IDENTIFY_RECHECK`].
+/// A freshly spawned pane is polled harder for this long.
 const IDENTIFY_ACQUIRE_WINDOW: Duration = Duration::from_millis(1500);
-/// A hook can beat the first identity poll during process startup. Retain only
-/// a short-lived edge so it cannot attach to an unrelated future occupant.
+/// How long a hook that beat the first identity poll stays applicable.
 const HOOK_IDENTITY_GRACE: Duration = Duration::from_millis(1500);
 /// Identity poll interval inside [`IDENTIFY_ACQUIRE_WINDOW`].
 const IDENTIFY_ACQUIRE_POLL: Duration = Duration::from_millis(500);
-/// Publish nothing for this long after an agent is IDENTIFIED: agents paint a
-/// splash screen, and a splash screen must not flash `blocked`.
-///
-/// Anchored at identification rather than at actor construction. A pane's seed
-/// command is a shell; the agent is typed into it later, so an anchor at
-/// construction expires before the agent that needs guarding even exists.
-///
-/// This is the production value; [`startup_grace`] is what `tick` consults,
-/// so the integration tests can shrink the window without waiting out real
-/// seconds of wall clock per positive case.
+/// Publish nothing for this long after an agent is identified (splash
+/// screens). Anchored at identification because agents are usually typed
+/// into an existing shell.
 const STARTUP_GRACE: Duration = Duration::from_secs(3);
 
 /// Test seam: override [`STARTUP_GRACE`] in milliseconds.
-///
-/// Follows the module's existing env-var idiom (`PHUX_AGENT_DETECT`,
-/// `PHUX_AGENT_RULES_DIR` in `rules`). Integration tests set this to a few
-/// hundred milliseconds so a positive detection does not sit out a real 3 s
-/// splash-screen window per test; production never sets it, so the default
-/// stays exactly [`STARTUP_GRACE`].
 const ENV_STARTUP_GRACE_MS: &str = "PHUX_AGENT_STARTUP_GRACE_MS";
 
-/// The effective startup grace: [`STARTUP_GRACE`] unless
-/// [`ENV_STARTUP_GRACE_MS`] overrides it. Read once per process — the value
-/// is consulted on every detector tick, and the env cannot change under a
-/// running server.
+/// The effective startup grace, read once per process.
 fn startup_grace() -> Duration {
     static GRACE: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
     *GRACE.get_or_init(|| {
@@ -193,46 +115,24 @@ pub(crate) struct AgentReport {
 }
 
 /// Something a pane's actor derived that only `ServerState` can act on,
-/// drained by `runtime::client::spawn_agent_state_drain`.
-///
-/// Deliberately NOT a `phux_protocol` `AgentEvent`: that is a wire type, and
-/// nothing here introduces a wire surface. The record variants ride the
-/// shipped `SET_METADATA` / `METADATA_CHANGED` path for the conventional
-/// detector-owned Terminal keys; [`Self::AskSentinel`] rides the ask ladder
-/// and the already-allocated `Asked` event. What they share is the reason
-/// this channel exists: the actor owns the grid, the PTY and the title, and
-/// the arbiters that rank those observations live outside it.
+/// drained by `runtime::client::spawn_agent_state_drain`. Not a wire type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentDetectEvent {
     /// Publish the privacy-bounded foreground-process observation.
     Occupant(identify::PaneOccupant),
     /// Write this record.
     State(AgentReport),
-    /// The pane's occupant CHANGED identity — a different kind, or the same
-    /// kind at a different pgid (a restart). Correct the record in ONE write,
-    /// landing on `unknown`; never a delete, never a tombstone.
-    ///
-    /// A latency optimization, not a correctness mechanism: this ride is
-    /// `try_send` and may be dropped, so the arbiter's `State` path must
-    /// reassert `kind` and `name` on every write regardless (invariant I1 in
-    /// `crate::agent_state`). If this were the only path that corrected
-    /// `kind`, a full sink would leave a lie in the store.
+    /// The occupant changed (kind or pgid): correct the record in one write,
+    /// landing on `unknown`. Best-effort (`try_send`), so the `State` path
+    /// must reassert `kind` and `name` on every write anyway.
     Reidentified {
         /// The kind now occupying the pane.
         kind: String,
         /// The new occupant's manifest name.
         name: String,
     },
-    /// The pane's `phux-ask` title sentinel appeared, changed, or cleared
-    /// (ADR-0036 tier 2). `Some` is the question the marker now carries;
-    /// `None` is the pane retitling away from a marker.
-    ///
-    /// Not a detector tick output — the actor parses the title on the PTY
-    /// chunk path — but it needs exactly what the tick outputs need, so it
-    /// rides the same channel rather than adding a third per-pane task. Set
-    /// and clear travel together here on purpose: split across two channels
-    /// they could arrive out of order and leave the ladder believing a
-    /// cleared marker is still asking.
+    /// The `phux-ask` title sentinel appeared, changed (`Some`), or cleared
+    /// (`None`). Set and clear share this channel so they stay ordered.
     AskSentinel(Option<crate::agent_asked::AskedPayload>),
     /// The agent is gone; withdraw the record.
     Retract,
@@ -276,72 +176,30 @@ struct PendingIdle {
     since: Instant,
 }
 
-/// One pane's detector. Owned by the `TerminalActor`, driven by its own
-/// interval — never by PTY bytes, so a chatty agent costs zero extra work.
+/// One pane's detector, driven by the actor's timer (never by PTY bytes).
 pub(crate) struct AgentDetector {
     rules: Rc<RuleSet>,
     /// The agent kind currently running, if any.
     identified: Option<String>,
-    /// The foreground process group [`Self::identified`] was seen in, paired
-    /// with that group leader's start time.
-    ///
-    /// The identity of the OCCUPANT, not merely of the software: `claude`
-    /// killed and `claude` restarted in the same pane are two different
-    /// agents with two different transcripts, and without this they are one
-    /// indistinguishable thing. Also what re-anchors [`STARTUP_GRACE`], so a
-    /// new instance's splash screen is judged against its own launch rather
-    /// than against its predecessor's.
-    ///
-    /// The start time is half of the identity and not decoration: a pgid is a
-    /// recycled small integer, so the pair is what actually distinguishes two
-    /// processes (see [`identify::Occupant`]).
+    /// The identified occupant as `(pgid, leader start time)`: a restart in
+    /// the same pane is a different agent, and re-anchors [`STARTUP_GRACE`].
     identified_occupant: Option<identify::Occupant>,
-    /// The last foreground pgid ANY successful occupancy resolution reported
-    /// — agent or vacant, unlike [`Self::identified_occupant`], which is only
-    /// ever set while an agent is identified.
-    ///
-    /// The seam phux-w7z2.50 added: reading a pgid (`tcgetpgrp`) is one
-    /// ioctl; reading and parsing its argv (`process_argv`) is a `/proc` read
-    /// or two `sysctl`s, and argv only changes when the pgid does. Between
-    /// full identity rechecks, [`Self::tick`] compares a CHEAP pgid-only
-    /// probe against this field and pays for the expensive argv read only
-    /// when the two disagree — which is also exactly the condition under
-    /// which the answer could possibly have changed. A `None` reading (the
-    /// probe failed, or there is no PTY) is never compared against and never
-    /// stored: not an observation, same rule as [`identify::Occupancy`].
-    ///
-    /// This does NOT touch the pid-reuse pairing phux-w7z2.43 established: a
-    /// pgid the OS recycles to a new process wears the SAME integer, so the
-    /// cheap probe cannot see that swap and does not try to. It falls
-    /// through to the periodic full recheck exactly as it always did, which
-    /// is where [`identify::Occupant::same`]'s `(pgid, started)` comparison
-    /// lives, untouched.
+    /// The last foreground pgid any successful resolution reported. Between
+    /// full rechecks a cheap `tcgetpgrp` is compared against it, and only a
+    /// mismatch pays for the argv read. A recycled pgid looks identical, so
+    /// the periodic full recheck still owns that case.
     last_pgid: Option<i32>,
-    /// Consecutive *confirmed vacant* observations since the last time an
-    /// agent was seen. Never incremented by an unanswerable query.
-    ///
-    /// The liveness clock lives HERE and nowhere else. It deliberately does
-    /// not go into the stored record: a timestamp in the record varies on
-    /// every write, and `metadata_set` dedups on byte equality, so stamping
-    /// one would turn an idle fleet's zero writes into a write per pane per
-    /// tick (ADR-0046 decision 7).
+    /// Consecutive confirmed-vacant observations. Kept here, not in the
+    /// record, because a timestamp in the record would defeat write dedup.
     vacant_streak: u8,
     /// When identity is next re-derived.
     next_identify: Instant,
-    /// When this detector was constructed — anchors [`IDENTIFY_ACQUIRE_WINDOW`].
+    /// Anchors [`IDENTIFY_ACQUIRE_WINDOW`].
     started: Instant,
-    /// When the current agent was IDENTIFIED — anchors [`STARTUP_GRACE`].
-    ///
-    /// Not `started`: a pane seeds a shell, and the overwhelmingly common way
-    /// an agent appears is a human typing `claude` at that shell minutes
-    /// later. Anchoring the grace at construction makes it a dead branch for
-    /// exactly that case, which is the one the splash-screen guard exists for.
+    /// When the current agent was identified; anchors [`STARTUP_GRACE`].
     identified_at: Option<Instant>,
-    /// The last tuple we published. The edge filter.
-    ///
-    /// A model of the detector's own emissions, so it goes stale the moment
-    /// something else writes the store. [`Self::invalidate_published`] is the
-    /// store's way of saying so; see `crate::agent_state` for who calls it.
+    /// The last tuple we published (the edge filter). Stale once something
+    /// else writes the store; see [`Self::invalidate_published`].
     published: Option<AgentReport>,
     /// An in-flight `working -> idle` hold.
     pending_idle: Option<PendingIdle>,
@@ -353,39 +211,18 @@ pub(crate) struct AgentDetector {
     pending_occupant: Option<identify::PaneOccupant>,
     /// Latest hook edge received just before process identity resolved.
     pending_hook: Option<(DetectedState, Instant)>,
-    /// Which rung of the evidence ladder wrote [`Self::published`].
-    ///
-    /// The ladder itself is [`crate::agent_state::EvidenceSource`]; this is
-    /// where a pane's current incumbent lives. Only the two edge-triggered
-    /// rungs consult it — a hook must not overwrite what a live stream said,
-    /// because both carry the same facts and the stream carries them in
-    /// order. The screen path is ranked by the live-child probe instead
-    /// (see [`Self::tick_for_pane`]), which is a level, not an edge, and so
-    /// cannot be expressed as an incumbent.
-    ///
-    /// `Screen` is the floor: it is what a pane starts at and what a
-    /// `session_end` returns it to.
+    /// Which evidence rung wrote [`Self::published`]. Only the hook and
+    /// stream paths consult it; the screen is ranked by the live-session
+    /// probe instead. `Screen` is the floor.
     published_source: crate::agent_state::EvidenceSource,
-    /// Injected answer to "does this pane's Terminal own a live
-    /// `AgentSession` child?" (ADR-0103 decision 5).
-    ///
-    /// `None` — the default, and the only value production takes until the
-    /// `AgentSession` engine lands — means "no", which is the world this
-    /// detector was written for. See [`live_session`].
+    /// "Does this pane own a live `AgentSession` child?" (ADR-0103 §5).
+    /// `None` means no.
     live_session: Option<live_session::LiveSessionProbe>,
-    /// What the probe said on the previous tick, so the child ENDING is an
-    /// edge the detector can act on rather than a level it merely stops
-    /// reading. See [`Self::tick_for_pane`] for what it does with it.
+    /// The probe's previous answer, so the child ending is an edge.
     live_session_held: bool,
-    /// The last state a live stream published, or `None` when no stream has
-    /// spoken or the last thing it said was a retraction.
-    ///
-    /// The screen's side of ADR-0103 decision 5 needs more than "is there a
-    /// child": a stream that has said `working` is *asserting* something the
-    /// screen may not contradict, while one whose last word was `stop` (or a
-    /// `session_end` retraction) has stopped asserting and can no longer say
-    /// that the turn has since gone quiet. Only the second admits a
-    /// screen-derived `idle`. See [`Self::tick_for_pane`] step 4b.
+    /// The last state a live stream published, or `None` if it has said
+    /// nothing or retracted. Decides whether a screen `idle` may publish
+    /// (see [`Self::screen_may_publish`]).
     stream_state: Option<DetectedState>,
     cadence: Cadence,
     /// Test seam: where [`Self::reidentify`] gets identity from.
@@ -393,12 +230,8 @@ pub(crate) struct AgentDetector {
     identity_source: IdentitySource,
 }
 
-/// Where [`AgentDetector::reidentify`] reads identity from.
-///
-/// An agent typed at a shell prompt is the dominant flow and the one whose
-/// acquisition sequencing was broken, and a unit test cannot conjure a real
-/// foreground process group. The override replaces only the *kernel lookup*;
-/// every line of the sequencing it feeds is the shipping one.
+/// Where [`AgentDetector::reidentify`] reads identity from in tests (a unit
+/// test cannot create a real foreground process group).
 #[cfg(test)]
 #[derive(Debug, Clone)]
 enum IdentitySource {
@@ -424,8 +257,8 @@ impl std::fmt::Debug for AgentDetector {
 }
 
 impl AgentDetector {
-    /// Inject high-priority hook evidence without latching the metadata record.
-    /// The actor marks the grid dirty after this call, so the next ordinary
+    /// Inject hook evidence. The actor marks the grid dirty afterwards, so the
+    /// next tick may supersede it with screen evidence.
     /// detector tick re-evaluates screen evidence and may supersede the hook.
     pub(crate) fn report_hook_state(
         &mut self,
@@ -433,11 +266,8 @@ impl AgentDetector {
         now: Instant,
     ) -> Option<AgentReport> {
         if !crate::agent_state::EvidenceSource::Hook.outranks(self.published_source) {
-            // Recorded, not published: a stream that is currently asserting
-            // this pane's state carries the same facts in order, so letting
-            // the hook edge race it would make the record depend on mailbox
-            // timing. The pending slot keeps the fallback's latest view for
-            // whenever the stream retracts.
+            // A live stream carries the same facts in order; keep the hook
+            // pending for when the stream retracts.
             self.pending_hook = Some((state, now));
             return None;
         }
@@ -461,18 +291,10 @@ impl AgentDetector {
         Some(report)
     }
 
-    /// Publish an `AgentSession` child's derived state at the `Stream`
-    /// rank, above the hook edge (ADR-0103 §5).
-    ///
-    /// `None` retracts: the session ended, the stream stops asserting, and
-    /// the hook and screen paths resume. A retraction publishes nothing on
-    /// its own — withdrawing a claim is not a new claim, and the next
-    /// ordinary tick derives whatever is actually true now.
-    ///
-    /// Like [`Self::report_hook_state`] this needs an identified pane: the
-    /// record names a `kind`, and asserting a state beside a kind nobody has
-    /// established would violate invariant I2 in [`crate::agent_state`]. The
-    /// evidence is held in the pending slot until identity resolves.
+    /// Publish an `AgentSession` child's state at the `Stream` rank
+    /// (ADR-0103 §5). `None` retracts: the rank drops and the next ordinary
+    /// tick derives what is true. Needs an identified pane; until then the
+    /// evidence waits in the pending slot.
     pub(crate) fn report_stream_state(
         &mut self,
         state: Option<DetectedState>,
@@ -480,11 +302,7 @@ impl AgentDetector {
     ) -> Option<AgentReport> {
         self.stream_state = state;
         let Some(state) = state else {
-            // A `session_end` withdraws the stream's claim; it does not
-            // assert a final state. Dropping the rank is the whole of the
-            // retraction — the resumed screen path derives what is true now,
-            // which is what the falling-edge filter invalidation in
-            // `tick_for_pane` makes it reassert.
+            // Withdrawing a claim publishes nothing by itself.
             self.published_source = crate::agent_state::EvidenceSource::Screen;
             self.pending_idle = None;
             return None;
@@ -509,9 +327,7 @@ impl AgentDetector {
         Some(report)
     }
 
-    /// Build a detector. `now` anchors the identity acquire window, so the
-    /// caller constructs this at the moment the child actually begins
-    /// painting. The startup grace is anchored on IDENTIFICATION instead.
+    /// Build a detector; `now` anchors the identity acquire window.
     pub(crate) const fn new(rules: Rc<RuleSet>, now: Instant) -> Self {
         Self {
             rules,
@@ -538,70 +354,36 @@ impl AgentDetector {
         }
     }
 
-    /// Forget what we last published, because the metadata STORE changed
-    /// underneath us (an explicit `SET_METADATA` or `DELETE_METADATA` on
-    /// `phux.agent/v1`).
-    ///
-    /// [`Self::published`] is the detector's model of its own emissions, not
-    /// of the store. Without this, a `DELETE` that hands the record back to
-    /// the detector is a no-op for an idle agent: the next tick re-derives the
-    /// same tuple, the edge filter suppresses it, and the pane simply has no
-    /// agent record until the agent's state next changes — which, for an agent
-    /// waiting on a human, is never. Clearing the filter re-arms exactly one
-    /// republish; the "a working agent produces zero writes" invariant is
-    /// untouched, because nothing calls this on the steady path.
+    /// Forget what we last published because the store changed underneath
+    /// (`SET_METADATA`/`DELETE_METADATA` on `phux.agent/v1`). Re-arms exactly
+    /// one republish, so an idle agent's record comes back after a delete.
     pub(crate) fn invalidate_published(&mut self) {
         self.published = None;
     }
 
-    /// Wire the live-`AgentSession`-child probe for this pane (ADR-0103
-    /// decision 5).
-    ///
-    /// The one line the `AgentSession` engine lane adds at integration; until
-    /// then no caller exists and the detector's answer is a constant `false`,
-    /// which is the behaviour every shipped test pins.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "the producer of a live AgentSession child lands with the engine; the seam is defined here so the screen detector's side of the precedence is written and tested when it does"
-        )
-    )]
+    /// Wire the live-`AgentSession`-child probe (ADR-0103 §5).
     pub(crate) fn set_live_session_probe(&mut self, probe: live_session::LiveSessionProbe) {
         self.live_session = Some(probe);
     }
 
     /// Whether a live `AgentSession` child currently outranks the screen.
-    ///
-    /// Read once per tick and never cached across ticks: the child can end
-    /// between any two of them, and a stale `true` would keep the scrape
-    /// muted for a pane that is once again the only thing describing itself.
+    /// Read every tick, never cached.
     fn live_session_active(&self) -> bool {
         self.live_session.as_ref().is_some_and(|probe| probe())
     }
 
-    /// Whether a screen derivation may be published while a live
-    /// `AgentSession` child exists. See step 4b of [`Self::tick_for_pane`]
-    /// for what each arm is protecting.
+    /// Whether a screen derivation may publish while a live session exists.
     const fn screen_may_publish(&self, derived: DetectedState, matched: bool) -> bool {
         let idle = matches!(derived, DetectedState::Idle);
         match self.stream_state {
-            // The stream has opened but asserted nothing yet, or has
-            // retracted. There is no stream state to overwrite, so the
-            // detector keeps the pane exactly as it had it: `idle` is
-            // detector-owned (ADR-0085) and a lifecycle state is still the
-            // stream's to make. This is also the write that carries IDENTITY
-            // — `name` and `kind` ride on the same record — so suppressing it
-            // would leave a pane with a live session and no agent record at
-            // all until its first record landed.
+            // Nothing asserted yet (or retracted): only `idle` may publish,
+            // which also carries the identity for a session that has not
+            // spoken.
             None => idle,
-            // `stop`: the stream has said its last word and cannot say that
-            // the pane has since gone quiet, so a POSITIVE idle takes over.
-            // The fail-safe idle may not — `done` is a real state and "no
-            // rule matched" is not evidence against it.
+            // After `stop`, a positive idle may take over; the fail-safe
+            // idle may not overwrite `done`.
             Some(DetectedState::Done) => idle && matched,
-            // Still asserting `working` or `blocked`. Nothing the screen
-            // guessed outranks the agent describing itself.
+            // Still asserting `working`/`blocked`: the screen yields.
             Some(_) => false,
         }
     }
@@ -617,31 +399,10 @@ impl AgentDetector {
 
     /// Whether this tick needs a grid read.
     ///
-    /// The cheap steady state is mandatory: an idle pane whose grid has not
-    /// changed since the last detector tick cannot have changed state, so we
-    /// skip the scan entirely and the whole feature costs one timer wakeup.
-    ///
-    /// `terminal_dirty` is the actor's `agent_dirty_since_detect` flag — a
-    /// flag scoped to THIS tick's cadence, not the 30 ms `tick_emit` one,
-    /// which would read `false` almost always and skip every scan forever.
-    ///
-    /// While no agent is identified there is nothing to derive against, so no
-    /// scan is needed at all. While confirming, we always scan: the whole
-    /// point of the hold is to re-look.
-    ///
-    /// Otherwise a clean grid is skipped **whatever the current state**, not
-    /// just when it is `idle`. `RuleSet::evaluate` is a pure function of
-    /// `(title, lines)`, and both the PTY-chunk path and the resize path set
-    /// the actor's dirty flag — a title change cannot sneak past a clean flag,
-    /// because libghostty learns the new title from the same chunk. So a clean
-    /// grid provably re-derives the same state, and re-projecting it is pure
-    /// waste. That matters most for `blocked`: a permission prompt is a static
-    /// screen that can sit there for hours, and it is exactly the state that
-    /// used to force a full grid projection every 300 ms forever.
-    ///
-    /// `current.is_none()` is load-bearing, not decorative: a freshly
-    /// identified pane has derived nothing yet and MUST scan, even if the grid
-    /// has been clean since before the agent existed.
+    /// Unidentified panes never scan; confirming ticks always do. Otherwise a
+    /// clean grid is skipped whatever the state: evaluation is a pure
+    /// function of title and lines, and both dirty the actor's flag. A
+    /// freshly identified pane (`current == None`) must scan regardless.
     pub(crate) fn wants_screen(&self, terminal_dirty: bool) -> bool {
         if self.identified.is_none() {
             return false;
@@ -652,11 +413,8 @@ impl AgentDetector {
         terminal_dirty || self.current.is_none()
     }
 
-    /// One detector tick. See the module docs for the algorithm.
-    ///
-    /// `screen` is `None` when [`Self::wants_screen`] said the scan could be
-    /// skipped; the detector then holds its last derivation rather than
-    /// inventing a new one.
+    /// One detector tick (test entry; see [`Self::tick_for_pane`]). `screen`
+    /// is `None` when [`Self::wants_screen`] skipped the scan.
     #[cfg(test)]
     pub(crate) fn tick(
         &mut self,
@@ -680,21 +438,12 @@ impl AgentDetector {
         progress: &str,
         screen: Option<&[String]>,
     ) -> DetectOutcome {
-        // 0. Rank. While a live `AgentSession` child is appending records the
-        //    arbiter is publishing `Stream` evidence and the screen is the
-        //    bottom of the ladder (ADR-0103 decision 5). Read once, here, so
-        //    identity, vacancy and hysteresis all see the same answer.
+        // 0. Rank: a live `AgentSession` child outranks the screen
+        //    (ADR-0103 §5). Read once so every step agrees.
         let live_session = self.live_session_active();
         if self.live_session_held && !live_session {
-            // `session_end`: the child is gone and the scrape is the only
-            // source left. The store holds whatever the stream last wrote,
-            // while `published` models an emission this detector never made
-            // - so it is a model of a store that no longer exists, exactly
-            // the condition `invalidate_published` exists for. Clearing it
-            // re-arms ONE republish; without it a pane whose agent is sitting
-            // idle waiting on a human would keep the stream's last word
-            // forever, because the next screen derivation matches the stale
-            // filter and is swallowed.
+            // The session ended: the store holds the stream's last word, so
+            // re-arm one republish from the screen.
             self.invalidate_published();
             self.stream_state = None;
         }
@@ -708,9 +457,8 @@ impl AgentDetector {
             return DetectOutcome::Quiet;
         };
 
-        // A lifecycle hook may run before the actor's first identity poll.
-        // Publish that edge as soon as the process resolves, but never carry
-        // it far enough to describe an unrelated future occupant.
+        // A hook that beat identity publishes once the process resolves,
+        // but only within `HOOK_IDENTITY_GRACE`.
         if let Some((state, reported_at)) = self.pending_hook.take()
             && now.saturating_duration_since(reported_at) <= HOOK_IDENTITY_GRACE
         {
@@ -726,10 +474,7 @@ impl AgentDetector {
             return DetectOutcome::Publish(report);
         }
 
-        // 2. Startup grace. Identity may already be resolved; we simply do
-        //    not publish while the splash paints. Anchored at IDENTIFICATION,
-        //    so it covers the agent a human typed at a shell prompt — the
-        //    common case — and not merely the pane's seed command.
+        // 2. Startup grace, anchored at identification.
         let anchor = self.identified_at.unwrap_or(self.started);
         if now < anchor + startup_grace() {
             return DetectOutcome::Quiet;
@@ -740,24 +485,13 @@ impl AgentDetector {
         };
         let name = manifest.name.clone();
 
-        // 3. Derive.
-        //
-        // `matched` is the third answer this step has always computed and
-        // never carried out: whether a state-bearing rule actually fired, as
-        // opposed to the fail-safe below inventing `idle` from silence. The
-        // precedence gate in 4b needs it, because "the screen positively says
-        // idle" and "the screen says nothing at all" are the same
-        // `DetectedState::Idle` and must not be the same evidence.
+        // 3. Derive. `matched` separates "a rule said idle" from the
+        //    fail-safe idle, which step 4b treats differently.
         let (derived, visible_idle, matched) = match screen {
-            // Scan skipped and nothing has ever been derived: we have no
-            // evidence at all. HOLD, do not guess. Inventing `idle` here is
-            // what latched a freshly-identified agent to `idle` forever —
-            // `wants_screen` would then see `current == Some(Idle)` and never
-            // ask for the scan that would have corrected it.
+            // Nothing ever derived and no scan: hold. Guessing `idle` here
+            // would latch, since `wants_screen` would then never scan.
             None if self.current.is_none() => return DetectOutcome::Quiet,
-            // Scan skipped: hold the last derivation, do not guess. A held
-            // derivation is not a fresh match, so it carries no evidence a
-            // live stream could be outranked by.
+            // Scan skipped: hold the last derivation (not a fresh match).
             None => (self.current.unwrap_or(DetectedState::Idle), false, false),
             Some(lines) => {
                 let evaluation = manifest.evaluate(&regions::Screen {
@@ -766,24 +500,10 @@ impl AgentDetector {
                     lines,
                 });
                 if evaluation.freeze {
-                    // A transcript viewer / model picker / pager. The screen
-                    // carries NO information about agent state, so freeze the
-                    // last derivation and publish nothing.
-                    //
-                    // Abandoning any in-flight `working -> idle` hold is
-                    // mandatory, not incidental: the hold pins the 100 ms
-                    // `Confirming` cadence AND an unconditional grid scan, and
-                    // both exits from `Confirming` live in `settle_idle`,
-                    // which this early return jumps over. A pager stays open
-                    // for minutes. The hold simply restarts when it closes and
-                    // a real derivation resumes.
-                    //
-                    // `current` is realigned with the badge we are freezing so
-                    // that a later skipped scan holds THAT, rather than the
-                    // half-derived `idle` the abandoned hold left behind —
-                    // which would reopen the hold on the next screen-less tick,
-                    // forever. `published` is untouched: freezing publishes
-                    // nothing, by definition.
+                    // A pager or picker carries no state: freeze and publish
+                    // nothing. Drop any idle hold (its exits live in
+                    // `settle_idle`, which this skips) and realign `current`
+                    // with the frozen badge so a later skipped scan holds it.
                     self.pending_idle = None;
                     self.cadence = Cadence::Identified;
                     self.current = self.published.as_ref().map(|r| r.state);
@@ -796,8 +516,7 @@ impl AgentDetector {
                     visible_idle = evaluation.visible_idle,
                     "agent-detect: derived",
                 );
-                // FAIL SAFE: no state-bearing rule matched => Idle. Never
-                // Blocked. This is the single most important line in the file.
+                // FAIL SAFE: no state-bearing rule matched => Idle, never Blocked.
                 (
                     evaluation.state.unwrap_or(DetectedState::Idle),
                     evaluation.visible_idle,
@@ -820,26 +539,10 @@ impl AgentDetector {
             return DetectOutcome::Quiet;
         }
 
-        // 4b. Precedence. A live child outranks the screen (ADR-0103 decision
-        //     5, `docs/spec/L1.md` agent state derivation), so while one
-        //     exists the screen publishes only what the stream cannot say
-        //     about itself. What survives is exactly what that decision
-        //     names: identity (the process probe above, which still acquires,
-        //     corrects and retracts), departure, and a POSITIVE idle.
-        //
-        //     A screen-derived `working` / `blocked` / `done` never survives:
-        //     that is the stream saying the same thing from the outside, and
-        //     a contradiction resolved in the screen's favour is the ladder
-        //     inverted. What `idle` may do depends on what the stream last
-        //     said, which is what `screen_may_publish` decides — the key
-        //     line being that the fail-safe `idle` of step 3 is the ABSENCE
-        //     of evidence, not evidence of absence. A blank pane matches no
-        //     rule every 300 ms forever, and publishing that over the
-        //     stream's `working` is how a pane mid-turn read `idle` a third
-        //     of a second after its own agent said otherwise.
-        //
-        //     `published` is deliberately NOT advanced here: it models this
-        //     detector's own emissions, and suppressing one is not making one.
+        // 4b. Precedence (ADR-0103 §5): with a live child, the screen may
+        //     not publish `working`/`blocked`/`done`, and its `idle` only per
+        //     `screen_may_publish`. `published` is not advanced by a
+        //     suppressed write.
         if live_session && !self.screen_may_publish(derived, matched) {
             trace!(
                 %kind,
@@ -864,18 +567,10 @@ impl AgentDetector {
         DetectOutcome::Publish(report)
     }
 
-    /// Identity, split cheap-first (phux-w7z2.50).
-    ///
-    /// The periodic full recheck ([`identify_recheck`] / [`IDENTIFY_ACQUIRE_POLL`])
-    /// runs exactly as it always has — [`Self::reidentify`], unconditionally,
-    /// argv and all. Between those, this pays for one `tcgetpgrp` ioctl every
-    /// ordinary tick and compares it against [`Self::last_pgid`]; only a
-    /// DISAGREEMENT is worth the argv read, because argv cannot have changed
-    /// without the pgid changing too. A same-pgid pid recycle — the hole
-    /// phux-w7z2.43 closed — is invisible to this cheap probe by construction
-    /// (it is the same integer) and is caught by the full recheck exactly as
-    /// before; this only ever shortens the wait for the case the probe CAN
-    /// see.
+    /// Identity, cheap first: the periodic full recheck runs as always, and
+    /// between rechecks a `tcgetpgrp` mismatch against [`Self::last_pgid`]
+    /// triggers an early one. A recycled pgid is invisible here and left to
+    /// the full recheck.
     fn maybe_identify(
         &mut self,
         now: Instant,
@@ -889,17 +584,14 @@ impl AgentDetector {
         if let Some(pgid) = probed
             && Some(pgid) != self.last_pgid
         {
-            // The cheap answer disagrees with what we last resolved in full.
-            // Pay for the expensive path now instead of waiting out the rest
-            // of the recheck interval.
+            // Cheap probe disagrees; re-derive now.
             return self.reidentify(now, master_fd, pane_child_pid);
         }
         None
     }
 
-    /// Re-derive identity from the kernel, in full (pgid AND argv). Returns
-    /// `Some(outcome)` when the tick is fully resolved by the identity step
-    /// alone (the agent went away, or none has appeared yet).
+    /// Re-derive identity in full (pgid and argv). `Some` means the identity
+    /// step alone resolves the tick.
     fn reidentify(
         &mut self,
         now: Instant,
@@ -955,8 +647,7 @@ impl AgentDetector {
         self.pending_occupant = Some(occupant);
     }
 
-    /// The cheap half: ask the kernel for the foreground pgid ONLY. See
-    /// [`Self::maybe_identify`].
+    /// The cheap half: foreground pgid only.
     #[cfg(not(test))]
     #[allow(
         clippy::unused_self,
@@ -966,9 +657,7 @@ impl AgentDetector {
         identify::foreground_pgid(master_fd)
     }
 
-    /// As above, honouring the [`IdentitySource`] test seam: a forced
-    /// occupancy answers its own pgid without a live kernel, exactly as
-    /// [`Self::resolve_identity`] does for the full path.
+    /// As above, honouring the [`IdentitySource`] test seam.
     #[cfg(test)]
     fn resolve_pgid(&self, master_fd: Option<RawFd>) -> Option<i32> {
         match &self.identity_source {
@@ -977,20 +666,14 @@ impl AgentDetector {
         }
     }
 
-    /// The human-facing name the manifest gives `kind`, falling back to the
-    /// slug itself for a kind with no manifest.
+    /// The manifest's name for `kind`, or the slug itself.
     fn manifest_name(&self, kind: &str) -> String {
         self.rules
             .manifest(kind)
             .map_or_else(|| kind.to_owned(), |m| m.name.clone())
     }
 
-    /// The pure half of [`Self::reidentify`]: everything that happens once the
-    /// kernel has told us who (if anyone) owns the PTY's foreground process
-    /// group. Split out so the acquisition sequencing — the part that latched
-    /// a freshly identified agent to `idle` — is reachable from a test without
-    /// a live PTY.
-    ///
+    /// Everything after the kernel answered who owns the foreground group.
     /// The transition table, in full:
     ///
     /// | observation | prior identity | action |
@@ -1003,10 +686,9 @@ impl AgentDetector {
     /// | `Agent`, different kind OR different pgid | some | re-acquire **and** `Reidentified`. |
     /// | `Agent`, same kind, same pgid | some | fall through to the screen. |
     ///
-    /// At most ONE event per tick: `Retract` and `Reidentified` both
-    /// short-circuit, and the tick after a `Reidentified` sits inside the
-    /// re-anchored [`STARTUP_GRACE`], so a `State` for the new occupant can
-    /// never arrive in the same tick as — or before — the correction.
+    /// At most one event per tick: `Retract` and `Reidentified` short-circuit,
+    /// and the re-anchored [`STARTUP_GRACE`] keeps a new occupant's `State`
+    /// strictly after its correction.
     fn apply_identity(
         &mut self,
         now: Instant,
@@ -1014,10 +696,8 @@ impl AgentDetector {
     ) -> Option<DetectOutcome> {
         use identify::Occupancy;
 
-        // Record the pgid this FULL resolution found, whatever it was, so
-        // the next cheap probe (phux-w7z2.50) has something to compare
-        // against. `Unresolved` carries none: an unanswered query is not an
-        // observation and must not be remembered as one.
+        // Remember this full resolution's pgid for the cheap probe
+        // (`Unresolved` carries none).
         if let Some(pgid) = occupancy.pgid() {
             self.last_pgid = Some(pgid);
         }
@@ -1032,11 +712,8 @@ impl AgentDetector {
             };
 
         match occupancy {
-            // The query failed. That is not an observation, and a belief is
-            // not revised on the strength of one. Crucially the streak is NOT
-            // advanced: a run of failures must never accumulate into a
-            // retraction, or an unreadable pane looks exactly like a dead
-            // agent and the distinction the seam exists for is lost.
+            // A failed query is not an observation: hold, and never advance
+            // the vacancy streak.
             Occupancy::Unresolved => {
                 trace!("agent-detect: occupancy unresolved; holding");
                 Some(DetectOutcome::Quiet)
@@ -1061,10 +738,7 @@ impl AgentDetector {
             return DetectOutcome::Quiet;
         }
 
-        // Confirmed gone. A dead / exited agent must not keep a live badge:
-        // this is the staleness answer, and no TTL is needed because identity
-        // is re-derived on a fixed cadence and its *confirmed* absence is
-        // actionable.
+        // Confirmed gone: retract.
         self.identified = None;
         self.identified_occupant = None;
         self.identified_at = None;
@@ -1073,12 +747,8 @@ impl AgentDetector {
         self.pending_hook = None;
         self.cadence = Cadence::Unidentified;
         self.vacant_streak = 0;
-        // Gate on having HAD an identity, not on `published`. Every explicit
-        // `SET_METADATA` calls `invalidate_published`, so for one tick after
-        // any hook write `published` is `None` while an agent is very much
-        // identified — and a death in that window would have retracted
-        // nothing at all. `published` models our emissions; `identified`
-        // models the pane.
+        // Gate on having had an identity, not on `published`, which may be
+        // briefly `None` after any metadata write.
         self.published = None;
         trace!("agent-detect: occupant confirmed gone; retracting");
         DetectOutcome::Retract
@@ -1096,19 +766,13 @@ impl AgentDetector {
 
         let same_kind = self.identified.as_deref() == Some(kind.as_str());
         // A `None` prior occupant heals silently rather than counting as a
-        // change: it means the identity came from somewhere with no process to
-        // record, and inventing a restart out of that would be a write. The
-        // same reasoning inside `Occupant::same` covers an unreadable start
-        // time.
+        // change.
         let same_occupant = same_kind
             && self
                 .identified_occupant
                 .is_none_or(|prior| prior.same(occupant));
         if same_occupant {
-            // Record the fresh reading, but never DOWNGRADE a start time we
-            // already know to a `None` this tick's query failed to produce:
-            // losing it would leave the pair permanently unable to notice a
-            // later recycle, one failed query at a time.
+            // Refresh, but never downgrade a known start time to `None`.
             self.identified_occupant = Some(match self.identified_occupant {
                 Some(prior) if occupant.started.is_none() => {
                     identify::Occupant::new(occupant.pgid, prior.started)
@@ -1122,19 +786,15 @@ impl AgentDetector {
         trace!(%kind, pgid = occupant.pgid, replaced, "agent-detect: identified");
         self.identified = Some(kind.clone());
         self.identified_occupant = Some(occupant);
-        // The splash screen paints from HERE — including for a RESTART of the
-        // same kind, which would otherwise have its splash judged against its
-        // predecessor's edge filter.
+        // Grace restarts here, including for a same-kind restart.
         self.identified_at = Some(now);
-        // A different occupant is a different pane, as far as we are
-        // concerned. Nothing we previously derived applies.
+        // A different occupant: nothing previously derived applies.
         self.published = None;
         self.pending_idle = None;
         self.current = None;
         self.cadence = Cadence::Identified;
 
-        // Acquiring an empty pane is not a correction; there is nothing in
-        // the store that could be describing the wrong process.
+        // Acquiring an empty pane is not a correction.
         if !replaced {
             return None;
         }
@@ -1157,8 +817,7 @@ impl AgentDetector {
             return true;
         }
 
-        // Ambiguous: the screen stopped saying "working" but does not say
-        // "idle". Look again, fast, a few more times.
+        // Ambiguous: look again, fast.
         self.cadence = Cadence::Confirming;
         let pending = self.pending_idle.get_or_insert(PendingIdle {
             confirmations: 0,
@@ -1174,25 +833,19 @@ impl AgentDetector {
         settled
     }
 
-    /// Test seam: force an identity without a live PTY, so the hysteresis
-    /// state machine — which is pure — can be driven by a fake clock. Also used
-    /// by the `terminal_actor` tests that pin `detect_tick`'s contract with the
-    /// dirty flag, which only bites once an agent is identified.
-    /// Test seam: the state this detector last published. Read by the
-    /// actor-level tests, which live outside this module and therefore
-    /// cannot reach the field.
+    /// Test seam: the state this detector last published.
     #[cfg(test)]
     pub(crate) fn published_state(&self) -> Option<DetectedState> {
         self.published.as_ref().map(|report| report.state)
     }
-
+    #[cfg(test)]
+    /// Test seam: force an identity without a live PTY.
     #[cfg(test)]
     pub(crate) fn force_identity(&mut self, kind: &str, now: Instant) {
         self.identified = Some(kind.to_owned());
         self.identified_at = Some(now);
         self.cadence = Cadence::Identified;
-        // Push the next identity poll far out; `tick` must not try to read a
-        // (nonexistent) PTY during the state-machine tests.
+        // Push the next identity poll out; there is no PTY to read.
         self.next_identify = now + Duration::from_secs(3600);
     }
 }
@@ -1210,8 +863,7 @@ mod tests {
         STARTUP_GRACE, TICK_CONFIRMING, TICK_IDENTIFIED, VACANT_CONFIRMATIONS,
     };
 
-    /// A manifest exercising every arm of the hysteresis machine with
-    /// unambiguous synthetic screens.
+    /// A manifest exercising every arm of the hysteresis machine.
     const MANIFEST: &str = r#"
 kind = "t"
 name = "t-agent"
@@ -1254,10 +906,7 @@ skip-state-update = true
 match = { contains = "PAGER" }
 "#;
 
-    /// A SECOND agent kind, so "the pane's occupant changed" is expressible.
-    /// Its rules are deliberately the same shape as `MANIFEST`'s: the point of
-    /// the kind-change cases is that a screen deriving a perfectly good state
-    /// must not be attributed to the wrong process.
+    /// A second kind, so an occupant change is expressible.
     const MANIFEST_OTHER: &str = r#"
 kind = "u"
 name = "u-agent"
@@ -1274,17 +923,10 @@ match = { contains = "WORKING" }
     struct Harness {
         detector: AgentDetector,
         now: Instant,
-        /// The actor's `agent_dirty_since_detect` flag, for the tests that
-        /// replay the actor's real tick sequence.
+        /// The actor's `agent_dirty_since_detect` flag.
         dirty: bool,
-        /// The fake `AgentSession` child behind the detector's live-session
-        /// probe (ADR-0103 decision 5), flipped by [`Harness::session_open`]
-        /// and [`Harness::session_end`].
-        ///
-        /// Wired for EVERY harness, not only the cases that flip it: `false`
-        /// is the shipped world, so the other cases in this module are
-        /// simultaneously the regression test that a wired-but-quiet probe
-        /// changes nothing.
+        /// The fake `AgentSession` child behind the live-session probe. Wired
+        /// for every harness, so `false` also proves a quiet probe is inert.
         live_session: Rc<std::cell::Cell<bool>>,
     }
 
@@ -1293,12 +935,10 @@ match = { contains = "WORKING" }
             let mut h = Self::unidentified();
             let now = h.now;
             h.detector.force_identity("t", now);
-            // Step past the startup grace unless a test opts out.
             h
         }
 
-        /// A detector on a pane that is still just a shell — no agent has been
-        /// identified, and identity is whatever the override says.
+        /// A pane that is still just a shell.
         fn unidentified() -> Self {
             let spec: ManifestSpec = toml::from_str(MANIFEST).expect("manifest parses");
             let other: ManifestSpec = toml::from_str(MANIFEST_OTHER).expect("manifest parses");
@@ -1323,14 +963,9 @@ match = { contains = "WORKING" }
             self
         }
 
-        /// Replay the `TerminalActor`'s REAL `detect_tick` sequence: advance
-        /// the clock by the detector's own interval, ask `wants_screen` (which
-        /// is asked BEFORE identity resolves, and that is the whole point),
-        /// consume the dirty flag only if a scan actually happens, then tick.
-        ///
-        /// Distinct from [`Self::tick`], which hands the detector a screen
-        /// unconditionally: the bug this replays lives entirely in the
-        /// ordering, so a test that skips the ordering cannot see it.
+        /// Replay the actor's real `detect_tick` ordering: `wants_screen` is
+        /// asked before identity resolves, and the dirty flag is consumed only
+        /// when a scan happens.
         fn actor_tick(&mut self, screen: &str) -> DetectOutcome {
             self.now += self.detector.interval();
             let lines = [screen.to_owned()];
@@ -1342,36 +977,29 @@ match = { contains = "WORKING" }
                 .tick(self.now, None, "", "", scan.then_some(&lines[..]))
         }
 
-        /// The human types an agent's name at the pane's shell prompt. The
-        /// agent paints, which sets the actor's dirty flag.
+        /// A human launches an agent at the shell prompt; it paints.
         fn launch_agent(&mut self, kind: &str) {
             self.occupy(agent(kind, 100));
             self.dirty = true;
         }
 
-        /// Replace what the kernel would report about the pane's foreground
-        /// process group, and let the next tick's identity poll come due.
+        /// Set what the kernel reports about the foreground group.
         fn occupy(&mut self, occupancy: Occupancy) {
             self.detector.identity_source = super::IdentitySource::Forced(occupancy);
         }
 
-        /// Force the identity poll due on the next tick, whatever the
-        /// cadence — the identity half is what these cases are about, and
-        /// waiting out a real recheck interval per observation is pure sleep.
+        /// Make the next tick's identity poll due.
         fn poll_identity_now(&mut self) {
             self.detector.next_identify = self.now;
         }
 
-        /// One tick whose identity poll is guaranteed to run, with a screen
-        /// that would derive `working` if the tick ever reached the screen
-        /// half.
+        /// A tick whose identity poll runs, with a `WORKING` screen.
         fn identity_tick(&mut self) -> DetectOutcome {
             self.poll_identity_now();
             self.tick("WORKING")
         }
 
-        /// Advance the fake clock by the detector's own current interval and
-        /// feed it a screen. This is what the actor's timer arm does.
+        /// Advance by the detector's interval and feed it a screen.
         fn tick(&mut self, screen: &str) -> DetectOutcome {
             self.now += self.detector.interval();
             let lines = vec![screen.to_owned()];
@@ -1388,32 +1016,22 @@ match = { contains = "WORKING" }
             self.detector.published.as_ref().map(|r| r.state)
         }
 
-        /// An `AgentSession` child opens under this pane and starts feeding
-        /// the arbiter at rank `Stream`.
         fn session_open(&self) {
             self.live_session.set(true);
         }
 
-        /// The child emits `session_end` and is reaped; the screen is the
-        /// only source describing the pane again.
         fn session_end(&self) {
             self.live_session.set(false);
         }
 
-        /// The live child's stream derives a state and the arbiter publishes
-        /// it at rank `Stream` — the producer half of ADR-0103 decision 5,
-        /// which in production is `publish_stream_evidence`.
+        /// The live child's stream publishes `state` at rank `Stream`.
         fn stream_says(&mut self, state: DetectedState) {
             let now = self.now;
             self.detector.report_stream_state(Some(state), now);
         }
     }
 
-    /// The kernel's answer for a live agent in a pane.
-    ///
-    /// The start time is derived from the pgid, so two different pgids in a
-    /// test are never accidentally one occupant and the same pgid twice always
-    /// is. The pid-reuse cases state the pair themselves via `agent_started`.
+    /// A live agent occupant; the start time is derived from the pgid.
     fn agent(kind: &str, pgid: i32) -> Occupancy {
         let started = u64::try_from(pgid).unwrap_or(0).saturating_mul(7);
         agent_started(kind, pgid, Some(started))
@@ -1435,23 +1053,15 @@ match = { contains = "WORKING" }
     }
 
     #[test]
-    fn blocked_publishes_on_the_first_tick() {
-        let mut h = Harness::new().past_grace();
-        let out = h.tick("BLOCKED");
-        assert_eq!(published(&out), DetectedState::Blocked);
-    }
-
-    #[test]
-    fn working_publishes_on_the_first_tick() {
-        let mut h = Harness::new().past_grace();
-        let out = h.tick("WORKING");
-        assert_eq!(published(&out), DetectedState::Working);
-    }
-
-    #[test]
-    fn done_publishes_on_the_first_tick() {
-        let mut h = Harness::new().past_grace();
-        assert_eq!(published(&h.tick("DONE")), DetectedState::Done);
+    fn attention_states_publish_on_the_first_tick() {
+        for (screen, state) in [
+            ("BLOCKED", DetectedState::Blocked),
+            ("WORKING", DetectedState::Working),
+            ("DONE", DetectedState::Done),
+        ] {
+            let mut h = Harness::new().past_grace();
+            assert_eq!(published(&h.tick(screen)), state, "{screen}");
+        }
     }
 
     #[test]
@@ -1506,8 +1116,7 @@ match = { contains = "WORKING" }
         }
     }
 
-    /// The ambiguous transition: the screen stopped saying "working" but does
-    /// not positively say "idle". Hold, then release.
+    /// Ambiguous `working -> idle`: held, then released.
     #[test]
     fn working_to_ambiguous_idle_is_held_for_three_confirmations() {
         let mut h = Harness::new().past_grace();
@@ -1529,8 +1138,7 @@ match = { contains = "WORKING" }
         );
     }
 
-    /// The hold ticks FAST, so the debounce costs ~300 ms of latency, not
-    /// three lazy 300 ms ticks.
+    /// The hold ticks at the fast confirming cadence.
     #[test]
     fn the_hold_runs_at_the_confirming_cadence() {
         let mut h = Harness::new().past_grace();
@@ -1544,8 +1152,7 @@ match = { contains = "WORKING" }
         );
     }
 
-    /// Positive idle evidence bypasses the hold entirely: the screen is not
-    /// merely "no longer saying working", it is affirmatively saying idle.
+    /// Positive idle evidence bypasses the hold.
     #[test]
     fn visible_idle_bypasses_the_hold() {
         let mut h = Harness::new().past_grace();
@@ -1555,16 +1162,14 @@ match = { contains = "WORKING" }
         assert_eq!(h.detector.interval(), TICK_IDENTIFIED);
     }
 
-    /// The hold has a wall-clock cap, so a screen that never resolves cannot
-    /// pin a `working` badge forever.
+    /// The hold is capped in wall-clock time.
     #[test]
     fn the_hold_is_capped_in_wall_clock_time() {
         let mut h = Harness::new().past_grace();
         h.tick("WORKING");
         // One ambiguous tick to open the hold ...
         assert_eq!(h.tick("nothing"), DetectOutcome::Quiet);
-        // ... then jump the clock past the cap: the very next tick releases,
-        // without waiting for the confirmation count.
+        // Past the cap, the next tick releases.
         h.now += super::IDLE_HOLD_CAP;
         let lines = vec!["nothing".to_owned()];
         let out = h.detector.tick(h.now, None, "", "", Some(&lines));
@@ -1582,8 +1187,7 @@ match = { contains = "WORKING" }
         assert!(h.detector.pending_idle.is_none(), "hold cleared");
     }
 
-    /// Going idle from a non-working state is not ambiguous at all, so it is
-    /// not debounced.
+    /// Idle from a non-working state is not debounced.
     #[test]
     fn idle_from_blocked_is_not_debounced() {
         let mut h = Harness::new().past_grace();
@@ -1592,8 +1196,7 @@ match = { contains = "WORKING" }
         assert_eq!(published(&out), DetectedState::Idle);
     }
 
-    /// A pager / transcript viewer / model picker carries no information.
-    /// Freeze; do not guess.
+    /// A pager carries no information: freeze.
     #[test]
     fn skip_state_update_freezes_the_previous_state() {
         let mut h = Harness::new().past_grace();
@@ -1606,9 +1209,7 @@ match = { contains = "WORKING" }
         assert_eq!(published(&h.tick("IDLE")), DetectedState::Idle);
     }
 
-    /// A freeze rule that ALSO matches a blocked screen still freezes — but
-    /// our shipped manifest deliberately excludes that overlap. This pins the
-    /// documented precedence.
+    /// A freeze rule outranks a matching blocked rule.
     #[test]
     fn freeze_outranks_every_state_bearing_rule() {
         let mut h = Harness::new().past_grace();
@@ -1616,8 +1217,7 @@ match = { contains = "WORKING" }
         assert_eq!(h.state(), None);
     }
 
-    /// THE fail-safe. An identified agent whose screen matches nothing is
-    /// idle, never blocked.
+    /// The fail-safe: no matching rule means idle, never blocked.
     #[test]
     fn an_identified_agent_with_no_matching_rule_is_idle_never_blocked() {
         let mut h = Harness::new().past_grace();
@@ -1626,8 +1226,7 @@ match = { contains = "WORKING" }
         assert_ne!(h.state(), Some(DetectedState::Blocked));
     }
 
-    /// THE efficiency contract. A `working` agent spewing output for ten
-    /// minutes must produce exactly ONE metadata write.
+    /// A long `working` run produces exactly one write.
     #[test]
     fn a_long_working_run_publishes_exactly_once() {
         let mut h = Harness::new().past_grace();
@@ -1655,13 +1254,11 @@ match = { contains = "WORKING" }
         assert_eq!(publishes, 1);
     }
 
-    /// The startup grace: an agent painting a splash screen that happens to
-    /// contain a scary word must not flash `blocked` at launch.
+    /// A splash screen containing a blocked word does not publish in grace.
     #[test]
     fn the_startup_grace_suppresses_publication() {
         let mut h = Harness::new();
-        // Not past grace. Tick across the whole window; `elapsed` tracks where
-        // the NEXT tick will land, so the loop never steps onto the boundary.
+        // `elapsed` tracks where the next tick lands, never the boundary.
         let mut elapsed = TICK_IDENTIFIED;
         while elapsed < STARTUP_GRACE {
             assert_eq!(h.tick("BLOCKED"), DetectOutcome::Quiet, "silent in grace");
@@ -1675,8 +1272,7 @@ match = { contains = "WORKING" }
         assert_eq!(published(&out), DetectedState::Blocked);
     }
 
-    /// The cheap steady state: with the scan skipped, the detector holds its
-    /// last derivation and says nothing.
+    /// With the scan skipped, the detector holds and says nothing.
     #[test]
     fn a_skipped_scan_holds_the_last_state_and_is_quiet() {
         let mut h = Harness::new().past_grace();
@@ -1693,11 +1289,7 @@ match = { contains = "WORKING" }
         assert!(h.detector.wants_screen(true), "dirty => scan");
     }
 
-    /// A `blocked` pane is a permission prompt: a STATIC screen that waits on a
-    /// human for minutes or hours, emitting not one byte. Re-projecting the
-    /// whole libghostty grid every 300 ms to re-derive a result that provably
-    /// cannot have changed abandons the cheap steady state in precisely the
-    /// state that is by definition the longest-lived.
+    /// A static `blocked` prompt with a clean grid is not rescanned.
     #[test]
     fn a_blocked_pane_with_a_clean_grid_does_not_rescan() {
         let mut h = Harness::new().past_grace();
@@ -1713,9 +1305,7 @@ match = { contains = "WORKING" }
         assert!(h.detector.wants_screen(true));
     }
 
-    /// The `current.is_none()` disjunct in `wants_screen` is load-bearing: a
-    /// freshly identified pane has derived nothing yet and MUST scan, even
-    /// though the grid has been clean since before the agent existed.
+    /// A freshly identified pane scans even with a clean grid.
     #[test]
     fn a_freshly_identified_pane_scans_even_with_a_clean_grid() {
         let h = Harness::new().past_grace();
@@ -1735,8 +1325,7 @@ match = { contains = "WORKING" }
         assert_eq!(detector.interval(), super::TICK_UNIDENTIFIED);
     }
 
-    /// An unidentified pane (no PTY / no agent) never publishes anything, and
-    /// never retracts anything it did not write.
+    /// An unidentified pane never publishes or retracts.
     #[test]
     fn an_unidentified_pane_is_silent() {
         let spec: ManifestSpec = toml::from_str(MANIFEST).expect("parses");
@@ -1752,21 +1341,13 @@ match = { contains = "WORKING" }
 
     // --- occupancy: departure needs evidence, and evidence needs confirming -
 
-    /// A dead agent must not lie: when the pane is *observed* to be occupied
-    /// by something that is not an agent, the record we wrote is retracted,
-    /// not left to spin forever.
-    ///
-    /// Was written against `master_fd = None`, which used to mean "gone" and
-    /// now means "unanswerable" — the distinction this whole seam exists for
-    /// (see `an_unresolved_occupancy_never_retracts`). Rewritten to state a
-    /// real vacancy, which is what it was always trying to say.
+    /// An observed non-agent occupant retracts the record.
     #[test]
     fn losing_the_occupant_retracts_a_published_record() {
         let mut h = Harness::new().past_grace();
         assert_eq!(published(&h.tick("WORKING")), DetectedState::Working);
 
-        // The agent exits; the pane's foreground process group now runs the
-        // shell it was launched from.
+        // The agent exits back to its shell.
         h.occupy(Occupancy::Vacant { pgid: 100 });
         for i in 1..VACANT_CONFIRMATIONS {
             assert_eq!(
@@ -1783,10 +1364,7 @@ match = { contains = "WORKING" }
         assert_eq!(h.identity_tick(), DetectOutcome::Quiet);
     }
 
-    /// THE write-rate guard for the retraction path. A pane that has been
-    /// empty for a hundred ticks is not a hundred events: one retraction, then
-    /// silence. A retract that repeated would be a `METADATA_CHANGED` per
-    /// subscriber per tick for every pane that ever ran an agent.
+    /// A long vacancy is one retraction, then silence.
     #[test]
     fn a_vacant_pane_retracts_once_and_then_is_silent() {
         let mut h = Harness::new().past_grace();
@@ -1806,15 +1384,8 @@ match = { contains = "WORKING" }
         assert_eq!(quiets, 19);
     }
 
-    /// The other half, and the one that makes the retraction trustworthy
-    /// enough to withdraw a HUMAN's declaration: a query the server could not
-    /// answer is not evidence of anything. `foreground_pgid` fails on a pane
-    /// mid-teardown, `process_argv` fails on a race with `execve`, and a
-    /// server that treats either as "the agent died" deletes live badges on a
-    /// transient syscall failure — and, after this change, withdraws
-    /// declarations too.
-    ///
-    /// Twenty consecutive failures must accumulate into exactly nothing.
+    /// Unanswerable queries are not evidence: twenty failures accumulate
+    /// into nothing.
     #[test]
     fn an_unresolved_occupancy_never_retracts() {
         let mut h = Harness::new().past_grace();
@@ -1835,9 +1406,7 @@ match = { contains = "WORKING" }
         );
         assert_eq!(h.state(), Some(DetectedState::Working), "badge held");
 
-        // And a single confirmed vacancy after all that failure still has to
-        // be confirmed on its own terms — the failures contributed nothing to
-        // the streak.
+        // The failures contributed nothing to the vacancy streak.
         h.occupy(Occupancy::Vacant { pgid: 100 });
         assert_eq!(
             h.identity_tick(),
@@ -1847,9 +1416,7 @@ match = { contains = "WORKING" }
         assert_eq!(h.identity_tick(), DetectOutcome::Retract);
     }
 
-    /// A brief foreground subprocess — the agent shells out to a pager, an
-    /// editor, a build — is one vacant observation, and must not cost the
-    /// badge.
+    /// One vacant observation (a brief subprocess) does not retract.
     #[test]
     fn a_single_vacant_observation_does_not_retract() {
         let mut h = Harness::new().past_grace();
@@ -1862,17 +1429,14 @@ match = { contains = "WORKING" }
         assert_eq!(h.identity_tick(), DetectOutcome::Quiet, "nothing happened");
         assert_eq!(h.state(), Some(DetectedState::Working), "badge untouched");
 
-        // ... and the streak reset with it: the next single vacancy is not
-        // the second half of the earlier one.
+        // The streak reset too.
         h.occupy(Occupancy::Vacant { pgid: 100 });
         assert_eq!(h.identity_tick(), DetectOutcome::Quiet);
     }
 
     // --- the occupant changed (phux-w7z2.27) --------------------------------
 
-    /// Acquire an agent through the REAL identity path (not `force_identity`),
-    /// so the pgid is recorded, and get past the startup grace with a
-    /// published `working` badge.
+    /// Acquire through the real identity path and publish `working`.
     fn occupied(kind: &str, pgid: i32) -> Harness {
         let mut h = Harness::unidentified();
         h.occupy(agent(kind, pgid));
@@ -1882,11 +1446,8 @@ match = { contains = "WORKING" }
         h
     }
 
-    /// A pane hosting `t` is killed and `u` is started in it. The old code
-    /// silently reset the detector's own memory and emitted NOTHING, so the
-    /// record kept `kind = t` and the next screen-derived state — derived from
-    /// U's screen — was written beside it. Nothing looked stale: the state was
-    /// fresh, the name was present, and the kind was a lie.
+    /// A different kind in the same pane is corrected, not left beside a
+    /// stale `kind`.
     #[test]
     fn a_different_kind_in_the_same_pane_is_a_correction() {
         let mut h = occupied("t", 100);
@@ -1902,9 +1463,7 @@ match = { contains = "WORKING" }
         );
     }
 
-    /// A correction is never a retraction. A `Retract` broadcasts a tombstone
-    /// and leaves a hole a `phux agent wait` exits on, mid-turn, for a pane
-    /// that is very much still running an agent.
+    /// A correction is never a retraction.
     #[test]
     fn a_kind_change_never_retracts() {
         let mut h = occupied("t", 100);
@@ -1915,17 +1474,11 @@ match = { contains = "WORKING" }
         );
     }
 
-    /// THE one that is undetectable today by construction: `identify` resolved
-    /// the foreground pgid and threw it away, so a *restart* of the same kind
-    /// in the same pane was indistinguishable from the original process. A new
-    /// Claude with a fresh, empty transcript inherited its predecessor's badge,
-    /// its edge filter and its expired startup grace.
+    /// A same-kind restart (new pgid) is a new occupant.
     #[test]
     fn a_same_kind_restart_is_a_new_occupant() {
         let mut h = occupied("t", 100);
 
-        // Same binary, different process: the human hit ctrl-c and ran it
-        // again.
         h.occupy(agent("t", 271));
         assert_eq!(
             h.identity_tick(),
@@ -1937,9 +1490,7 @@ match = { contains = "WORKING" }
         );
     }
 
-    /// The control for the case above: the SAME process observed again is not
-    /// an event. Without this, every identity poll would be a correction and a
-    /// metadata write — ADR-0046 decision 7 destroyed by the fix for .27.
+    /// The same occupant seen again is not an event.
     #[test]
     fn the_same_occupant_seen_again_is_not_an_event() {
         let mut h = occupied("t", 100);
@@ -1955,12 +1506,7 @@ match = { contains = "WORKING" }
 
     // --- pid reuse (phux-w7z2.43) -------------------------------------------
 
-    /// THE hole .43 closes. A pgid is a small integer the OS recycles. `.27`
-    /// made a same-kind restart visible by retaining the pgid — but only when
-    /// the restart happened to land on a DIFFERENT id. Hand the new process
-    /// its predecessor's id and the detector reads it as the same occupant: no
-    /// correction, no re-anchored startup grace, and a fresh empty transcript
-    /// wearing the previous agent's badge.
+    /// A recycled pgid with a new start time is a new occupant.
     #[test]
     fn a_recycled_pgid_is_a_new_occupant_not_the_old_one() {
         let mut h = occupied("t", 100);
@@ -1977,12 +1523,7 @@ match = { contains = "WORKING" }
         );
     }
 
-    /// The control, and the one that protects ADR-0046 decision 7: the same
-    /// process re-read is the same `(pgid, started)` pair, so an identified
-    /// fleet sitting still produces no corrections at all. A start-time query
-    /// that varied per call — a clock read, a formatting difference, a unit
-    /// conversion — would turn every identity recheck into a metadata write on
-    /// every pane, which is the whole cost model of the feature.
+    /// A stable start time never manufactures a restart.
     #[test]
     fn a_stable_start_time_never_manufactures_a_restart() {
         let mut h = occupied("t", 100);
@@ -1996,10 +1537,7 @@ match = { contains = "WORKING" }
         assert_eq!(h.state(), Some(DetectedState::Working), "badge untouched");
     }
 
-    /// A platform (or a transient failure) that cannot answer the start-time
-    /// question must degrade to the pre-.43 behaviour — compare pgids — and
-    /// NOT to "everything is new". The alternative is a correction and a
-    /// metadata write per pane per recheck on every unsupported platform.
+    /// Without start times, comparison degrades to pgids, not "all new".
     #[test]
     fn an_unavailable_start_time_degrades_to_comparing_pgids() {
         let mut h = Harness::unidentified();
@@ -2023,23 +1561,18 @@ match = { contains = "WORKING" }
         ));
     }
 
-    /// A start time we once read and then transiently failed to re-read must
-    /// not be forgotten. Overwriting the known pair with a `None` would leave
-    /// the detector permanently unable to notice a later recycle of that id —
-    /// the evidence leaking away one failed query at a time.
+    /// A transiently unreadable start time does not erase the known one.
     #[test]
     fn a_transiently_unreadable_start_time_does_not_erase_the_one_we_have() {
         let mut h = occupied("t", 100);
 
-        // Three rechecks where the start-time query fails. Same pgid, so this
-        // is the same occupant and nothing is emitted ...
+        // Same pgid, failed start-time reads: same occupant, nothing emitted.
         for _ in 0..3 {
             h.occupy(agent_started("t", 100, None));
             assert_eq!(h.identity_tick(), DetectOutcome::Quiet);
         }
 
-        // ... and the original start time is still what we compare against, so
-        // a recycle is still caught after the outage.
+        // The original start time still catches a later recycle.
         h.occupy(agent_started("t", 100, Some(999_999)));
         assert_eq!(
             h.identity_tick(),
@@ -2053,18 +1586,12 @@ match = { contains = "WORKING" }
 
     // --- the cheap pgid probe (phux-w7z2.50) --------------------------------
 
-    /// THE perf fix, proven positive: a genuine occupant change — a
-    /// different pgid — is caught on the very next ORDINARY tick, not held
-    /// until the full recheck five seconds later. `h.tick` here is the plain
-    /// cadence helper, not `identity_tick`'s forced full poll.
+    /// A pgid change is caught by the cheap probe on an ordinary tick.
     #[test]
     fn a_pgid_change_is_caught_by_the_ordinary_cadence_not_just_the_recheck() {
         let mut h = occupied("t", 100);
 
-        // A restart lands on a different pgid. The full recheck is not due
-        // for several more seconds (`occupied` leaves well under one
-        // `IDENTIFY_RECHECK` on the clock), so if this is caught at all here,
-        // it was the cheap probe that caught it.
+        // The full recheck is not due yet, so only the cheap probe can see it.
         h.occupy(agent("u", 200));
         assert_eq!(
             h.tick("WORKING"),
@@ -2077,22 +1604,15 @@ match = { contains = "WORKING" }
         );
     }
 
-    /// THE regression guard: the cheap probe must not let a pid-reused pgid
-    /// slip past the pairing phux-w7z2.43 established. Same integer, so the
-    /// probe cannot see the swap by construction — it must fall through to
-    /// the full recheck, exactly as before this change, rather than either
-    /// (a) manufacturing a correction it has no evidence for, or (b) somehow
-    /// suppressing the correction the full recheck is still owed.
+    /// A recycled pgid is invisible to the cheap probe but still caught on
+    /// the full recheck.
     #[test]
     fn a_recycled_pgid_is_invisible_to_the_cheap_probe_but_still_caught_on_recheck() {
         let mut h = occupied("t", 100);
 
-        // Same pgid, different start time: the id was recycled under the
-        // agent's nose.
         h.occupy(agent_started("t", 100, Some(999_999)));
 
-        // Several ordinary-cadence ticks: the cheap probe reads the SAME
-        // pgid every time, so it has nothing to act on and must stay quiet.
+        // Same pgid every cheap probe: stay quiet.
         for i in 0..5 {
             assert_eq!(
                 h.tick("WORKING"),
@@ -2107,9 +1627,6 @@ match = { contains = "WORKING" }
             );
         }
 
-        // The full recheck is what actually pays for the start-time
-        // comparison, and it must still catch the recycle — the cheap probe
-        // must not have suppressed or pre-empted it.
         assert_eq!(
             h.identity_tick(),
             DetectOutcome::Reidentified {
@@ -2120,9 +1637,7 @@ match = { contains = "WORKING" }
         );
     }
 
-    /// The cheap probe reads no argv at all: an unresolvable pgid (no PTY, a
-    /// pane mid-teardown) must be held exactly like an unresolved FULL query
-    /// — never treated as a change, never advancing anything.
+    /// An unresolvable cheap probe holds rather than guessing.
     #[test]
     fn an_unresolvable_cheap_probe_holds_rather_than_guessing() {
         let mut h = occupied("t", 100);
@@ -2138,10 +1653,7 @@ match = { contains = "WORKING" }
         assert_eq!(h.state(), Some(DetectedState::Working), "badge untouched");
     }
 
-    /// The new occupant gets its OWN startup grace. Re-anchoring is what stops
-    /// a fresh instance's splash screen from being judged against its
-    /// predecessor's edge filter — and it is what guarantees the drain sees the
-    /// correction strictly before any state for the new occupant.
+    /// A new occupant gets its own startup grace.
     #[test]
     fn a_new_occupant_re_anchors_the_startup_grace() {
         let mut h = occupied("t", 100);
@@ -2176,15 +1688,11 @@ match = { contains = "WORKING" }
         }
     }
 
-    /// At most one event per tick, and the correction is never in the same
-    /// tick as a state. The drain relies on this ordering to know that a
-    /// `State` it sees after a `Reidentified` describes the new occupant.
+    /// A correction is alone in its tick, never with a state.
     #[test]
     fn a_correction_short_circuits_its_own_tick() {
         let mut h = occupied("t", 100);
         h.occupy(agent("u", 200));
-        // The screen says WORKING on this very tick, and it is still only a
-        // correction that comes out.
         assert!(matches!(
             h.identity_tick(),
             DetectOutcome::Reidentified { .. }
@@ -2197,20 +1705,9 @@ match = { contains = "WORKING" }
 
     // --- the mid-pane agent launch (the dominant interactive flow) ---------
 
-    /// THE latch. A pane runs a shell; two minutes later the human types
-    /// `claude`, which paints a permission dialog and then goes silent behind
-    /// it, waiting on them.
-    ///
-    /// `wants_screen` is asked BEFORE identity resolves, and it is `false` for
-    /// the whole of a pane's unidentified life — so the tick that first
-    /// identifies the agent reads no screen. Consuming the dirty flag on that
-    /// tick threw away the only evidence that the dialog had ever been
-    /// painted; deriving `idle` from the screen it never read then latched:
-    /// `wants_screen` saw `current == Some(Idle)` and never asked for the scan
-    /// that would have corrected it, and the agent — being blocked — produced
-    /// no further bytes to re-dirty the grid. The pane was BLOCKED and the
-    /// sidebar said `idle`, permanently, in exactly the state the whole
-    /// feature exists to surface.
+    /// An agent launched at a shell that paints a dialog and goes silent must
+    /// not latch to `idle`: the identifying tick reads no screen and must
+    /// neither publish nor consume the dirty flag.
     #[test]
     fn a_mid_pane_agent_launch_does_not_latch_to_idle() {
         let mut h = Harness::unidentified();
@@ -2220,16 +1717,12 @@ match = { contains = "WORKING" }
             assert_eq!(h.actor_tick("$ "), DetectOutcome::Quiet);
         }
 
-        // The human types the agent's name. It paints its dialog, dirtying the
-        // grid, and then waits for an answer — emitting nothing further, ever.
         h.launch_agent("t");
         assert!(
             !h.detector.wants_screen(h.dirty),
             "unidentified: there is nothing to derive against, so no scan",
         );
 
-        // The identification tick. It reads no screen, so it must publish
-        // NOTHING — and it must not eat the dirty bit.
         assert_eq!(
             h.actor_tick("BLOCKED"),
             DetectOutcome::Quiet,
@@ -2255,13 +1748,7 @@ match = { contains = "WORKING" }
         assert_eq!(h.state(), Some(DetectedState::Blocked));
     }
 
-    /// The other half of the latch, isolated. A screen-less tick that has
-    /// NOTHING derived yet holds zero evidence, so it must hold — not guess.
-    /// `current.unwrap_or(Idle)` is sound only when `current` is `Some` (the
-    /// "hold, do not guess" contract); with `current == None` it invents a
-    /// state from a screen it never read, and the guess is self-reinforcing
-    /// through `wants_screen`. Reachable whenever `viewport_lines` fails to
-    /// project the grid, and the backstop if the grace anchor ever regresses.
+    /// A screen-less tick with nothing derived holds instead of guessing.
     #[test]
     fn a_screenless_tick_with_nothing_derived_publishes_nothing() {
         let mut h = Harness::new().past_grace();
@@ -2278,20 +1765,13 @@ match = { contains = "WORKING" }
         );
     }
 
-    /// The startup grace is anchored at IDENTIFICATION, not at construction.
-    /// A pane seeds a shell and the agent is typed into it minutes later, so an
-    /// anchor at pane creation is a dead branch for precisely the launch the
-    /// splash-screen guard exists to cover.
+    /// The startup grace is anchored at identification, not pane creation.
     #[test]
     fn the_startup_grace_is_anchored_at_identification_not_pane_creation() {
         let mut h = Harness::unidentified();
-        // Ten minutes of shell: any grace anchored at construction is long
-        // gone.
         h.now += Duration::from_secs(600);
         h.launch_agent("t");
 
-        // The identification tick, then the agent's splash screen — which here
-        // contains a word a `blocked` rule matches.
         assert_eq!(h.actor_tick("BLOCKED"), DetectOutcome::Quiet, "identifying");
         for i in 1..10 {
             assert_eq!(
@@ -2308,12 +1788,7 @@ match = { contains = "WORKING" }
 
     // --- the edge filter is a model of OUR emissions, not of the store ------
 
-    /// A `DELETE_METADATA` hands the record back to the detector (ADR-0046 §E).
-    /// But the edge filter still holds the tuple the detector last derived, so
-    /// the next tick derives the same thing, suppresses it, and writes nothing
-    /// — the record simply does not come back until the agent's state next
-    /// changes, which for an idle agent waiting on a human is NEVER. The store
-    /// therefore has to be able to say "forget what you published".
+    /// After the store changes, an unchanged state is republished once.
     #[test]
     fn invalidating_the_edge_filter_republishes_an_unchanged_state() {
         let mut h = Harness::new().past_grace();
@@ -2339,8 +1814,7 @@ match = { contains = "WORKING" }
         );
     }
 
-    /// The same, on the path that actually runs: an idle agent's grid is clean,
-    /// so no scan happens at all. The republish must not depend on one.
+    /// The same without a scan (an idle agent's clean grid).
     #[test]
     fn an_invalidated_idle_agent_republishes_without_a_scan() {
         let mut h = Harness::new().past_grace();
@@ -2355,10 +1829,7 @@ match = { contains = "WORKING" }
 
     // --- freeze ------------------------------------------------------------
 
-    /// A pager opened DURING a `working -> idle` hold must not pin the 100 ms
-    /// confirming cadence — and the unconditional grid scan that rides it — for
-    /// as long as it stays open, which is minutes. Both exits from `Confirming`
-    /// live in `settle_idle`, which the freeze branch returns before reaching.
+    /// A pager during an idle hold drops the hold and the fast cadence.
     #[test]
     fn a_freeze_during_the_idle_hold_drops_the_hold_and_the_fast_cadence() {
         let mut h = Harness::new().past_grace();
@@ -2391,8 +1862,7 @@ match = { contains = "WORKING" }
             "the badge is still frozen exactly where it was",
         );
 
-        // Closing the pager resumes normal derivation, and the hold restarts
-        // from scratch rather than resuming a stale confirmation count.
+        // Closing the pager restarts the hold from scratch.
         for i in 1..IDLE_CONFIRMATIONS {
             assert_eq!(
                 h.tick("nothing matches"),
@@ -2403,8 +1873,7 @@ match = { contains = "WORKING" }
         assert_eq!(published(&h.tick("nothing matches")), DetectedState::Idle);
     }
 
-    /// Title rules outrank screen rules — the end-to-end version of the unit
-    /// test in `rules`, driven through `tick`.
+    /// Title rules outrank screen rules, end to end.
     #[test]
     fn the_title_outranks_the_screen() {
         let spec: ManifestSpec = toml::from_str(
@@ -2438,11 +1907,8 @@ match = { contains = "IDLE" }
         assert_eq!(published(&out), DetectedState::Working);
     }
 
-    /// ADR-0103 decision 5, the whole of it in one case: the stream is the
-    /// agent describing itself and the screen is a guess about pixels, so
-    /// when a live child exists the screen does not get to publish a
-    /// lifecycle state over it — not even a `blocked` the rules matched
-    /// outright, which is the loudest thing the scrape can say.
+    /// With a live session the screen cannot publish a lifecycle state, not
+    /// even a matched `blocked`.
     #[test]
     fn a_live_agent_session_suppresses_a_contradicting_screen_derivation() {
         let mut h = Harness::new().past_grace();
@@ -2457,15 +1923,8 @@ match = { contains = "IDLE" }
         assert_eq!(h.state(), None);
     }
 
-    /// The exception the same decision carves out: `idle` stays
-    /// detector-owned (ADR-0085). A stream that has gone quiet cannot emit a
-    /// record saying so — silence is not a record — so if the screen did not
-    /// keep the idle confirmation, an agent that finished would sit on its
-    /// last stream-published state forever.
-    ///
-    /// A session that has opened and said nothing yet has published no state
-    /// to protect, so this is also the write that gives such a pane its
-    /// agent record at all: `name` and `kind` ride on it.
+    /// A session that has said nothing leaves idle (and identity) to the
+    /// screen.
     #[test]
     fn a_live_agent_session_leaves_the_idle_confirmation_to_the_screen() {
         let mut h = Harness::new().past_grace();
@@ -2477,9 +1936,7 @@ match = { contains = "IDLE" }
         );
     }
 
-    /// `stop` is a real state, and "no rule matched" is not evidence against
-    /// it. A blank pane after the stream's last word keeps `done` — this is
-    /// the exact level `phux agent show` reads back once the turn ends.
+    /// The fail-safe idle does not overwrite a stream's `done`.
     #[test]
     fn the_fail_safe_idle_does_not_overwrite_a_streams_done() {
         let mut h = Harness::new().past_grace();
@@ -2491,15 +1948,7 @@ match = { contains = "IDLE" }
         assert_eq!(h.state(), Some(DetectedState::Done));
     }
 
-    /// The defect the e2e lane caught, in one case: the fail-safe `idle` of
-    /// step 3 is the absence of evidence, and the absence of evidence must
-    /// not overwrite the stream's own word about itself.
-    ///
-    /// A blank pane — an agent whose UI paints nothing this manifest knows —
-    /// matches no rule on every tick forever. Without the gate, the very next
-    /// 300 ms tick after `prompt` published `working` reverts the record to
-    /// `idle`, and `phux agent show` reports an agent mid-turn as idle with
-    /// no stream source in sight.
+    /// The fail-safe idle does not overwrite a live stream's `working`.
     #[test]
     fn the_fail_safe_idle_does_not_overwrite_a_live_stream() {
         let mut h = Harness::new().past_grace();
@@ -2521,10 +1970,7 @@ match = { contains = "IDLE" }
         );
     }
 
-    /// And the stronger half: even a rule that positively asserts `idle` is
-    /// not allowed to talk over a stream that is still asserting `working`.
-    /// The stream is inside the agent; the screen is guessing at pixels the
-    /// agent painted, and one of them has to lose.
+    /// Even a positive idle does not talk over a stream still `working`.
     #[test]
     fn a_positive_idle_does_not_overwrite_a_stream_still_working() {
         let mut h = Harness::new().past_grace();
@@ -2538,10 +1984,7 @@ match = { contains = "IDLE" }
         assert_eq!(h.state(), Some(DetectedState::Blocked));
     }
 
-    /// Once the stream says `stop` it has stopped asserting, and the pane
-    /// going quiet afterwards is exactly the thing no record can carry. That
-    /// is where ADR-0085's detector-owned idle takes over, and it is the only
-    /// place a screen derivation outlives a live session.
+    /// After the stream says `stop`, a positive idle publishes.
     #[test]
     fn a_positive_idle_publishes_once_the_stream_has_stopped() {
         let mut h = Harness::new().past_grace();
@@ -2555,8 +1998,7 @@ match = { contains = "IDLE" }
         );
     }
 
-    /// A `session_end` retraction leaves the stream asserting nothing, so the
-    /// screen resumes even before the child is reaped and the probe falls.
+    /// A retracted stream hands idle straight back to the screen.
     #[test]
     fn a_retracted_stream_hands_the_idle_confirmation_straight_back() {
         let mut h = Harness::new().past_grace();
@@ -2567,10 +2009,8 @@ match = { contains = "IDLE" }
         assert_eq!(published(&h.tick("IDLE")), DetectedState::Idle);
     }
 
-    /// And the other exception: departure. A `kill -9` runs no `session_end`,
-    /// so the process probe's confirmed vacancy is the only path back to
-    /// truth for a pane whose child died with its agent — the same reason the
-    /// retraction is trusted enough to withdraw a human's declaration.
+    /// Confirmed departure still retracts with a live session (`kill -9`
+    /// runs no `session_end`).
     #[test]
     fn a_live_agent_session_still_retracts_a_departed_agent() {
         let mut h = Harness::new().past_grace();
@@ -2589,15 +2029,7 @@ match = { contains = "IDLE" }
         assert_eq!(h.state(), None);
     }
 
-    /// `session_end`: the child is gone, the scrape resumes, and it reasserts
-    /// ONCE rather than waiting for the pane's state to happen to change.
-    ///
-    /// The republish is the load-bearing half. While the child lived the
-    /// record was the stream's to write, so the detector's edge filter — a
-    /// model of its OWN emissions — describes a store it did not author. An
-    /// agent sitting `blocked` on a permission prompt changes state next at
-    /// no predictable time, so a filter left in place would leave the stream's
-    /// last word standing indefinitely.
+    /// After `session_end` the screen resumes and reasserts once.
     #[test]
     fn the_screen_scrape_resumes_and_reasserts_once_when_the_session_ends() {
         let mut h = Harness::new().past_grace();
@@ -2619,12 +2051,7 @@ match = { contains = "IDLE" }
         );
     }
 
-    /// Hook evidence outranks the screen and is NOT what decision 5
-    /// suppresses — a `REPORT_AGENT_STATE` that reaches the detector still
-    /// lands. (With a live child the command router sends it down the
-    /// synthesized-record path instead; that routing is
-    /// `handle_report_agent_state`'s, not the detector's, and this pins the
-    /// detector half so the two cannot be confused.)
+    /// Hook evidence is not suppressed by a live session.
     #[test]
     fn hook_evidence_is_not_suppressed_by_a_live_session() {
         let mut h = Harness::new().past_grace();

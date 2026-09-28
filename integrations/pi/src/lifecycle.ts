@@ -64,21 +64,10 @@ export class PhuxLifecycleShutdownError extends Error {
 }
 
 /**
- * What this integration declares: WHO occupies the pane, never WHAT they are
- * doing.
- *
- * A declared `state` outranks the server's derivation for the record's whole
- * lifetime (`docs/spec/L3.md` §3.7, ADR-0046 point 8), so reporting one here
- * stood phux's own `pi.toml` manifest down on every pane running this
- * extension — phux shipped the rules and the integration disarmed them
- * (phux-w7z2.38).
- *
- * State is deliberately absent from the binding, not merely from the record.
- * `SET_METADATA` replaces the record wholesale, so an identity write carries
- * `state: "unknown"`; if a lifecycle transition still produced a *write*, it
- * would clobber the derived state and publish a `working -> unknown` edge that
- * `phux agent wait` reads as the agent departing (phux-w7z2.37, the regression
- * the Claude shim hit first). Only a change of owner or target writes.
+ * Who occupies the pane, never what they are doing. A declared `state` would
+ * outrank the server's `pi.toml` derivation (L3 §3.7), and because
+ * `SET_METADATA` replaces the record wholesale, a per-transition write would
+ * clobber derived state. Only a change of owner or target writes.
  */
 interface Binding {
   readonly target: PhuxTargetSelection;
@@ -270,7 +259,7 @@ export class PhuxLifecycle {
       }
 
       if (desired === null) return;
-      if (this.applied !== null && sameBinding(this.applied, desired)) return;
+      if (this.applied !== null && sameOwnerTarget(this.applied, desired)) return;
 
       this.owned = desired;
       try {
@@ -360,9 +349,7 @@ export function registerPhuxLifecycle(
       event.reason === "reload",
     );
   });
-  // Per-turn events feed the AgentSession stream. They must not write
-  // detector `state` (phux-w7z2.38): identity stays on session start / target
-  // change, and the detector remains the fallback when emit is absent.
+  // Per-turn events feed the AgentSession stream and never write `state`.
   pi.on("agent_start", () => lifecycle.emit("prompt"));
   pi.on("tool_execution_start", (event: ToolExecutionStartEvent) => {
     lifecycle.emit("tool_start", { tool_name: event.toolName, tool_use_id: event.toolCallId });
@@ -423,14 +410,4 @@ function sameOwnerTarget(left: Binding, right: Binding): boolean {
     left.target.selector === right.target.selector &&
     left.target.session === right.target.session &&
     left.target.window === right.target.window;
-}
-
-/**
- * Identity is the whole binding, so this is `sameOwnerTarget`. Kept as a
- * distinct name because the reconciler's two call sites mean different things:
- * one asks "is the pane we own still the pane we want", the other "is a write
- * needed at all".
- */
-function sameBinding(left: Binding, right: Binding): boolean {
-  return sameOwnerTarget(left, right);
 }

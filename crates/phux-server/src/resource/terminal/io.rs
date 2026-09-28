@@ -9,18 +9,13 @@ use super::{
 };
 
 impl TerminalActor {
-    /// Synthesize a snapshot of the current `Terminal` state. Exposed
-    /// for tests that want to drive the synthesis path synchronously
-    /// without going through the actor's `select!` loop.
+    /// Synthesize a snapshot of the current `Terminal` (test entry point).
     pub(super) fn synthesize(&self) -> Result<SnapshotBytes, crate::grid::SynthesisError> {
         self.synthesize_with_scrollback(None)
     }
 
-    /// Synthesize an ATTACH snapshot, optionally priming the client's
-    /// scrollback with retained history rows (`phux-9q5f`). `scrollback`
-    /// follows the [`crate::grid::SnapshotSynthesizer::synthesize_with_scrollback`]
-    /// convention. Exposed for tests that drive the synthesis path
-    /// synchronously without the actor's `select!` loop.
+    /// Synthesize an ATTACH snapshot, optionally priming scrollback (see
+    /// [`crate::grid::SnapshotSynthesizer::synthesize_with_scrollback`]).
     pub(super) fn synthesize_with_scrollback(
         &self,
         scrollback: Option<u32>,
@@ -29,8 +24,7 @@ impl TerminalActor {
         let Some(terminal) = canonical.try_terminal() else {
             return Err(crate::grid::SynthesisError::TerminalUnavailable);
         };
-        // phux-uow0: the full snapshot uses a fresh RenderState internally, so
-        // it needs only a shared borrow.
+        // A full snapshot uses a fresh render state; a shared borrow suffices.
         let synth = self.synth.borrow();
         synth.synthesize_with_scrollback(terminal, scrollback)
     }
@@ -48,32 +42,14 @@ impl TerminalActor {
         synth.synthesize_with_scrollback_bounded(terminal, scrollback, max_bytes)
     }
 
-    /// Project the current `Terminal` grid into a structured
-    /// [`phux_core::screen::ScreenState`], stamping `pane` as the
-    /// wire-local id. Side-effect-free — the read path for `GET_SCREEN`.
+    /// Project the grid into a [`phux_core::screen::ScreenState`] for
+    /// `GET_SCREEN`, stamping `pane`. `format` also renders through
+    /// libghostty's Formatter (`0` none, `1` HTML, `2` VT).
     ///
-    /// `format` additionally renders the same capture through
-    /// libghostty-vt's own Formatter into `ScreenState.rendered` (D9,
-    /// fallback rung three): `0` (low 7 bits) none, `1` HTML, `2` VT.
-    /// Bounded and side-effect-free like the rest of this read — one
-    /// Formatter call over an explicit
-    /// [`libghostty_vt::selection::Selection`], never a second extraction
-    /// implementation (CONTRIBUTING).
-    ///
-    /// A render failure is non-fatal (review item 3): the plain
-    /// projection still ships, `rendered` stays `None`, and
-    /// `rendered_error` names why, logged at `warn`. The one exception is
-    /// [`SynthesisError::RenderBudgetExceeded`], which this propagates as
-    /// a hard `Err` — the caller (`reply_screen_state`) turns that into a
-    /// typed `RESOURCE_EXHAUSTED` refusal instead of any reply, because a
-    /// caller who asked for a rendering and would blow the byte budget
-    /// needs to know to retry narrower, not receive nothing silently.
-    ///
-    /// When a rendering was requested, the reply omits the plain
-    /// `lines`/`scrollback`/`soft_wrap`/`truncated` text (review item
-    /// 2(c)): the capture already carries the same content, and shipping
-    /// both would double an already-inflated (HTML/base64) reply for no
-    /// reason.
+    /// A render failure is non-fatal (`rendered_error` says why), except
+    /// [`SynthesisError::RenderBudgetExceeded`], which propagates so the
+    /// caller refuses with `RESOURCE_EXHAUSTED`. With a rendering the plain
+    /// text fields are omitted (the capture carries the same content).
     pub(super) fn screen_state(
         &self,
         pane: u32,
@@ -85,9 +61,7 @@ impl TerminalActor {
         let Some(terminal) = canonical.try_terminal() else {
             return Err(crate::grid::SynthesisError::TerminalUnavailable);
         };
-        // Shared borrow: the read goes through a fresh per-call
-        // `RenderState` (see the synthesizer body), so it never contends
-        // with the tick path's `&mut` use of the pooled state.
+        // Shared borrow: the read uses a fresh render state.
         let synth = self.synth.borrow();
         let mut screen = synth.screen_state_with_scrollback(terminal, pane, scrollback, cells)?;
         match synth.render_screen(terminal, scrollback, format) {
@@ -118,8 +92,7 @@ impl TerminalActor {
     pub(super) fn publish_input_snapshot(&self) {
         let canonical = self.terminal.borrow();
         let Some(terminal) = canonical.try_terminal() else {
-            // On loan to a capture. The snapshot the encoders already hold
-            // stays valid, and the cut's return is followed by a resync.
+            // On loan to a capture; the resync after its return covers it.
             trace!("input snapshot skipped: canonical terminal is on loan");
             return;
         };
@@ -131,32 +104,25 @@ impl TerminalActor {
         }
     }
 
-    /// Translate a [`TerminalInput`] into PTY bytes via the per-pane
-    /// encoders + the current terminal state.
-    ///
-    /// Returns `Ok(None)` when the event was deliberately dropped
-    /// (e.g., focus events while DEC 1004 is off; rejected untrusted
-    /// pastes). Returns `Err` on encoder failure; the caller logs and
-    /// Was this pane's PTY silent long enough that the next output can be
-    /// attributed to the input being handed off? A pane already streaming
-    /// (a build, a `tail -f`) would pair the input with an unrelated chunk.
+    /// Was the PTY quiet long enough that the next output can be attributed
+    /// to this input (not to an already-streaming job)?
     fn pane_quiet_for_echo(&self) -> bool {
         self.last_output_at
             .get()
             .is_none_or(|at| at.elapsed() >= crate::perf::ECHO_QUIET_WINDOW)
     }
 
-    /// continues — a single bad input must not kill the actor.
+    /// Encode a [`TerminalInput`] into PTY bytes. `Ok(None)` means
+    /// deliberately dropped (focus reports off, a rejected paste); `Err` is an
+    /// encoder failure the caller logs.
     pub(super) fn encode_input(
         &self,
         input: &TerminalInput,
     ) -> Result<Option<Vec<u8>>, libghostty_vt::Error> {
         let canonical = self.terminal.borrow();
         let Some(terminal) = canonical.try_terminal() else {
-            // Encoding reads terminal modes (DECCKM, kitty flags, DEC 2004),
-            // so it cannot be done without the terminal. `Ok(None)` is this
-            // function's existing "deliberately dropped" answer; the gated
-            // input arms keep this out of the production path.
+            // Encoding reads terminal modes, so drop while on loan; the gated
+            // input arms keep this off the production path.
             trace!("input dropped: canonical terminal is on loan to a capture");
             return Ok(None);
         };
@@ -186,15 +152,11 @@ impl TerminalActor {
         }
     }
 
-    /// Encode one input event and forward it to the PTY writer thread.
-    /// Shared by the bounded `input_rx` drain in [`Self::run`]. A failed
-    /// encode or a closed writer logs and is dropped — a single bad event
-    /// must not kill the actor.
+    /// Encode one input event and forward it to the PTY writer. Failures
+    /// log and drop; one bad event must not kill the actor.
     pub(super) fn service_input(&self, input: &TerminalInput) {
-        // Every arm below logs at debug or above: a dropped or empty input
-        // is invisible to the caller (ROUTE_INPUT acks Ok regardless, per
-        // SPEC §9 fire-and-forget), so this log is the only witness when a
-        // key vanishes between the mailbox and the PTY.
+        // Log every outcome: ROUTE_INPUT acks regardless, so this is the only
+        // witness when a key vanishes.
         match self.encode_input(input) {
             Ok(Some(bytes)) => {
                 if bytes.is_empty() {
@@ -215,15 +177,9 @@ impl TerminalActor {
         }
     }
 
-    /// Forward bytes encoded by the dedicated input lane to the PTY writer.
-    ///
-    /// Every branch that discards `request` here does so **before** it ever
-    /// reaches a live writer thread — `write(2)` is provably never invoked —
-    /// so an acknowledged request's completion is reported explicitly as
-    /// [`WriteCompletion::NotWritten`] (phux-w7z2.60) rather than left to
-    /// [`WriteCompletionSink`]'s pessimistic `Drop` fallback. A fire-and-forget
-    /// request (`request.completion` is `None`) has nothing to report either
-    /// way.
+    /// Forward lane-encoded bytes to the PTY writer. Every discard here
+    /// happens before any `write(2)`, so an acknowledged request reports
+    /// [`WriteCompletion::NotWritten`] explicitly.
     pub(super) fn service_encoded_input(&self, request: EncodedInputRequest) {
         if request.bytes.is_empty() && request.completion.is_none() {
             return;
@@ -245,22 +201,14 @@ impl TerminalActor {
                 }
                 debug!(len, "input queued to PTY writer");
             }
-            // Dropping input is fire-and-forget per SPEC L1 §9, but it
-            // is not a debug-level event: the bytes are gone, nothing
-            // downstream reports it, and the caller is still acked `Ok`.
-            // At `debug!` this was invisible by default, which is how a
-            // payload split across several events could lose an
-            // interior one and corrupt mid-stream with no trace
-            // (phux-oxd7).
+            // Dropped input is acked `Ok` and reported nowhere else, so warn.
             Err(mpsc::error::TrySendError::Full(request)) => {
                 warn!(len, "PTY writer queue full; dropping input");
                 if let Some(completion) = request.completion {
                     completion.complete(WriteCompletion::NotWritten);
                 }
             }
-            // The writer thread is gone. Every subsequent byte for this
-            // pane goes nowhere while output, snapshots, and acks all
-            // keep working — the pane looks alive and is not.
+            // The writer thread is gone: input is dead while output lives on.
             Err(mpsc::error::TrySendError::Closed(request)) => {
                 error!(len, "PTY writer channel closed; pane input is dead");
                 if let Some(completion) = request.completion {
@@ -270,32 +218,21 @@ impl TerminalActor {
         }
     }
 
-    /// Apply a resize to both the libghostty `Terminal` and the PTY
-    /// kernel-side winsize. Idempotent; logs and continues on errors.
-    ///
-    /// Returns whether anything actually moved. A request that repeats the
-    /// settled geometry changes no byte of grid, PTY winsize, or cell size,
-    /// so the caller must not follow it with a resync broadcast either — a
-    /// resync rotates the bootstrap generation, and rotating it for a resize
-    /// that did not happen is exactly the wasted capture phux-a5xj is about.
+    /// Apply a resize to the `Terminal` and the PTY winsize, returning
+    /// whether anything moved. An unchanged geometry earns no resync (that
+    /// would rotate the bootstrap generation for nothing).
     pub(super) fn handle_resize(
         &mut self,
         cols: u16,
         rows: u16,
         cell_px: Option<(u16, u16)>,
     ) -> bool {
-        // libghostty has no concept of a zero-dimension grid: a 0-col or
-        // 0-row resize fails with `InvalidValue` and leaves the grid at its
-        // prior size. SPEC §10.5 already treats a zero-dimension viewport as
-        // a no-op at the ATTACH path; clamp the live VIEWPORT_RESIZE path to
-        // the same 1-cell minimum here so a `0x0` from a client (a host
-        // terminal collapsing to nothing) can never reach libghostty.
+        // libghostty rejects zero dimensions; clamp to 1 like the ATTACH
+        // path (SPEC §10.5).
         let cols = cols.max(1);
         let rows = rows.max(1);
-        // Repeating the settled geometry is a true no-op. In particular, a
-        // second same-size subscriber must not invalidate every independent
-        // native history cursor merely because viewport arbitration emitted
-        // the current winner again.
+        // The settled geometry repeated is a no-op; it must not invalidate
+        // native history cursors.
         if cols == self.cols && rows == self.rows && cell_px.is_none_or(|cell| cell == self.cell_px)
         {
             return false;
@@ -306,27 +243,14 @@ impl TerminalActor {
         }
         let (cell_w, cell_h) = self.cell_px;
 
-        // `Terminal::resize` takes the per-cell pixel size and derives the
-        // terminal's pixel dimensions (`cells x cell size`) for XTWINOPS
-        // size reports, mode-2048 in-band notifications, and image
-        // protocols. Seeded to `DEFAULT_CELL_PX` and replaced by a client's
-        // reported cell size, so it is always nonzero — pixel probes inside
-        // the pane never see a zero text area.
-        //
-        // A both-axes shrink in a single resize() call once overflowed
-        // libghostty's `PageList.resizeCols` (phux-y06, the SIGABRT
-        // reproduced by the resize-extremes storm); libghostty-vt 0.2.0
-        // covers that path, so a both-shrink is a single safe call.
+        // Pixel dimensions are `cells x cell size`, always nonzero.
         let applied = {
             let mut term = self.terminal.borrow_mut();
             let result = term.resize(cols, rows, u32::from(cell_w), u32::from(cell_h));
             if let Err(err) = result {
                 warn!(?err, cols, rows, "terminal resize failed");
             }
-            // Cache the dims libghostty actually settled on, never the
-            // requested dims: on error (e.g. a clamped 0 that still failed)
-            // the grid is unchanged, so caching the request would desync
-            // the cache from the real grid size.
+            // Cache what libghostty settled on, not the request.
             term.try_terminal().map_or((cols, rows), |t| {
                 (t.cols().unwrap_or(cols), t.rows().unwrap_or(rows))
             })
@@ -345,16 +269,12 @@ impl TerminalActor {
             cell_height: u32::from(cell_h),
         });
         self.publish_input_snapshot();
-        // A resize reflows the grid: every consumer reference is rebuilt
-        // on the next diff, so force the next tick to walk (phux-4l0), and
-        // force the next detector tick to re-scan (ADR-0046) — a reflow can
-        // move the prompt box, which is a region the rules depend on.
+        // A reflow rebuilds every consumer reference and may move detector
+        // regions: force both ticks to rescan.
         self.terminal_dirty_since_tick = true;
         self.agent_dirty_since_detect = true;
         if let Some(pty) = &self.pty {
-            // The kernel `winsize` pixel fields are the whole text area;
-            // saturate rather than wrap if an enormous grid on a dense
-            // display overflows the u16 (the kernel field is no wider).
+            // Winsize pixels saturate rather than wrap.
             let size = PtySize {
                 rows: applied.1,
                 cols: applied.0,
@@ -375,47 +295,17 @@ impl TerminalActor {
         true
     }
 
-    /// Broadcast a full synthesized snapshot of the canonical `Terminal`'s
-    /// current grid to every attached client, as an in-band
+    /// Broadcast a full synthesized snapshot as an in-band
     /// [`PaneOutput::Resync`].
     ///
-    /// Two callers: a resize that reflowed the grid (phux-8v1, below), and a
-    /// `resync_only` request from an output pump that dropped bytes past the
-    /// broadcast buffer (`RecvError::Lagged`) and needs its consumer's mirror
-    /// rebuilt. Both want the same thing — the authoritative grid re-sent on the
-    /// ordered output channel so it cleanly supersedes whatever the client last
-    /// applied, with no double-apply or lost output.
-    ///
-    /// Why this is needed: a resize triggers an *independent* reflow on
-    /// both the server's canonical `Terminal` and each client's mirror
-    /// `Terminal`. Those reflows can diverge — libghostty's cols-shrink
-    /// reflow does not reproduce the client mirror's content identically,
-    /// dropping rows — so after a resize the client mirror and the server
-    /// grid disagree. The live output path (the PTY-byte broadcast fanned
-    /// out by the per-attach pump in `runtime.rs`) only carries *new* PTY
-    /// bytes, so the historical grid content is never re-sent and the
-    /// divergence is permanent: the user sees lost / duplicated rows
-    /// ("repeating/duplicated characters on resize").
-    ///
-    /// The synthesized bytes from [`SnapshotSynthesizer::synthesize`] open
-    /// with a `DECSTR + ED2 + home` reset preamble, so feeding them to the
-    /// client mirror via the ordinary `RESOURCE_OUTPUT` → `vt_write` path
-    /// resets that mirror and repaints it from authoritative state. We
-    /// reuse the existing output broadcast rather than the per-consumer
-    /// state-sync path (`consumer_states`) because the runtime drives the
-    /// broadcast/pump path; the q0e per-consumer tick is not wired into
-    /// the runtime today.
-    ///
-    /// `audience` says which pumps replace their generation. It is still one
-    /// broadcast item on the ordered channel even when addressed to a single
-    /// pump: that is what orders the replacement cut after every live chunk
-    /// the pump already saw, and what lets a fenced pump draining at memory
-    /// speed reach it. Every other pump skips it.
+    /// Used after a reflow (server and client reflow independently and can
+    /// diverge, and live output never re-sends history) and for pumps that
+    /// lagged past the broadcast buffer. The replay opens with a reset, so it
+    /// cleanly supersedes the client mirror. `audience` picks which pumps
+    /// replace their generation; it is still one ordered broadcast item, so
+    /// it lands after every chunk those pumps already saw.
     pub(super) fn broadcast_resync(&self, reason: ResyncReason, audience: ResyncAudience) {
-        // No subscribers → nothing to resync. `receiver_count` is the
-        // broadcast channel's live-subscriber count; the seed receiver
-        // held by the actor was dropped at construction, so this is the
-        // attached-pump count.
+        // No attached pumps (the actor's seed receiver was dropped).
         if self.core.output_tx.receiver_count() == 0 {
             return;
         }
@@ -425,13 +315,8 @@ impl TerminalActor {
                     bytes = snap.bytes.len(),
                     "resize resync: snapshot broadcast"
                 );
-                // A `Lagged`/no-receiver send error is benign here — the
-                // next PTY output or a re-attach snapshot re-syncs.
-                // phux-3ns5: ship the post-reflow grid as a `Resync` (→
-                // `TERMINAL_SNAPSHOT`) carrying the settled dims, so the
-                // client mirror resizes to `(cols, rows)` before applying
-                // the replay. Delivered as raw output it could not resize
-                // the mirror, stranding a resize-grow with blank space.
+                // Send errors are benign. `Resync` carries the settled dims
+                // so the mirror resizes before applying the replay.
                 let _ = self.core.output_tx.send(PaneOutput::Resync {
                     cols: self.cols,
                     rows: self.rows,
@@ -450,35 +335,17 @@ impl TerminalActor {
         }
     }
 
-    /// Best-effort reap the child if it has already exited. Called on
-    /// PTY EOF — at that point the child has almost certainly exited
-    /// (EOF on the master fd indicates the slave has been closed,
-    /// which usually means the child has exited or detached). We try
-    /// `try_wait` first to avoid blocking; if it returns `None` we
-    /// leave the child alone (it might still be alive doing something
-    /// odd; the shutdown path will deal with it).
-    ///
-    /// Returns the child's [`ExitOutcome`](phux_core::process::ExitOutcome):
-    /// the code for a normal `_exit(n)`, the signal number for a death by
-    /// signal (no longer flattened away), and neither when the child could
-    /// not be reaped or the cause is unknown. `RESOURCE_CLOSED.exit_status`
-    /// still carries only the code (SPEC §10.1 compact subset).
+    /// Reap the child on PTY EOF if it has exited, returning its
+    /// [`ExitOutcome`](phux_core::process::ExitOutcome) (code, signal, or
+    /// unknown). A child still running is left to the shutdown path.
     pub(super) fn reap_child_if_any(&mut self) -> phux_core::process::ExitOutcome {
         use phux_core::process::ExitOutcome;
         let Some(pty) = self.pty.as_mut() else {
             return ExitOutcome::UNKNOWN;
         };
-        // PTY EOF races the child becoming waitable: the master reads EOF
-        // the moment the last slave fd closes, which can be a hair before
-        // the kernel marks the process reapable. A single `try_wait` here
-        // reported `exit_status: None` for children that exited cleanly
-        // microseconds later, so RESOURCE_CLOSED lied to agents reading
-        // exit codes. Retry briefly. The blocking sleep is deliberate:
-        // this runs on the single current-thread runtime, but only once
-        // per pane lifetime, and the budget is small; an async retry would
-        // need to move `child` out of `self.pty`, which the shutdown path
-        // still owns. A child that closed its slave but keeps running
-        // (a daemonizer) exhausts the budget and reports `None`, as before.
+        // EOF can precede the child becoming waitable, so retry briefly. The
+        // blocking sleep is once per pane and tiny; a daemonizer that keeps
+        // running exhausts it and reports unknown.
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(20);
         loop {
             match pty.child.try_wait() {
@@ -501,22 +368,11 @@ impl TerminalActor {
         }
     }
 
-    /// React to PTY EOF (the child went away): detach the PTY-read branch
-    /// and record the exit facet. `exit_notify` is fired by the run loop
-    /// *after* it flushes any pending gap resync, so a fenced consumer still
-    /// gets the last screen before `RESOURCE_CLOSED` (phux-fpgl.28).
-    ///
-    /// Dropping `pty_rx` parks the pump's `select!` arm forever, but the
-    /// actor deliberately stays alive — it must remain reachable for
-    /// late-arriving `SnapshotRequest`s (a client attaching just after the
-    /// child exited) and for orderly shutdown via the cancellation token.
-    /// The child is reaped here so we don't leave a zombie waiting for the
-    /// explicit shutdown signal. (phux-it8: firing `exit_notify` is what
-    /// lets attached clients learn the shell exited instead of freezing in
-    /// alt-screen.)
-    ///
-    /// The runtime decides whether this EOF closes the pane or replaces the
-    /// child with a fresh default shell (last live Terminal in the session).
+    /// React to PTY EOF: stop reading, reap the child, record the exit
+    /// facet. The actor stays alive for late `SnapshotRequest`s and orderly
+    /// shutdown; the run loop fires `exit_notify` after flushing gap
+    /// resyncs. The runtime decides whether to close the pane or respawn a
+    /// shell.
     pub(super) fn handle_pty_eof(&mut self) {
         debug!("PTY EOF; recording exit and keeping actor alive for a final resync flush");
         self.pty_rx = None;
@@ -553,41 +409,17 @@ impl TerminalActor {
         self.last_progress.clear();
         self.in_output_burst = false;
         self.output_since_idle_tick = false;
-        // Land every in-flight native cut BEFORE the reset. A pending
-        // bootstrap owns the canonical terminal (it is moved into the
-        // snapshot capture for the duration), and this path is reached
-        // exactly when a client may be attaching: `handle_pty_eof` keeps the
-        // actor alive precisely so a `SnapshotRequest` racing the child's
-        // exit still finds it. Resetting while the terminal is on loan used
-        // to hit `NativeTerminalManager::reset`'s `unreachable!` and abort
-        // the whole server process, taking every session on it with it.
-        //
-        // Invalidating is also the honest answer: the screen the cut
-        // captured is about to be cleared, so any cursor derived from it is
-        // stale. `install_replacement_pty` broadcasts an everyone-resync
-        // right after, which is the resync the tombstoned pumps need, so the
-        // returned targets need no separate address (phux-p5bo).
+        // Land in-flight native cuts before the reset: a pending bootstrap
+        // holds the terminal, and a client may be attaching right now. The
+        // everyone-resync from `install_replacement_pty` covers the pumps.
         self.land_native_cuts();
         self.terminal.borrow_mut().reset_for_new_child();
     }
 
-    /// Fail any in-flight native bootstrap and tombstone every outstanding
-    /// cursor, returning the canonical terminal to the manager.
-    ///
-    /// A native bootstrap capture MOVES the canonical terminal out of
-    /// `NativeTerminalManager` for the length of the cut (up to
-    /// `NATIVE_CAPTURE_LIFETIME`), so any path that touches the terminal
-    /// while one is in flight aborts the process — release builds are
-    /// `panic = "abort"`, and this server holds every session the user has.
-    /// The `select!` arms that can reach the terminal are gated on
-    /// `!bootstrap_pending`; the teardown paths below run OUTSIDE those
-    /// guards, so they land the cut instead.
-    ///
-    /// Landing is also the honest answer on those paths: the pane is exiting
-    /// or being replaced, so the screen the cut captured is already stale.
-    ///
-    /// No-op on a build without the native engine, which never loans the
-    /// terminal out.
+    /// Fail any in-flight native bootstrap and tombstone every cursor,
+    /// returning the terminal to the manager. The teardown paths run outside
+    /// the `!bootstrap_pending` guards, so they land the cut instead of
+    /// touching a loaned terminal. No-op without the native engine.
     pub(super) fn land_native_cuts(&mut self) {
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         {
@@ -624,15 +456,10 @@ impl TerminalActor {
         Ok(())
     }
 
-    /// Let go of a retained pane's PTY once its process has exited
-    /// (ADR-0124): close the master and the writer, so an exited pane holds
-    /// no pseudoterminal and no descriptor while it waits to be purged. The
-    /// grid and history live in the engine and stay.
-    ///
-    /// EOF reaped the child when it could. One it could not (it closed its
-    /// tty but lives on, or `try_wait` failed) is handed to a reaper thread
-    /// rather than left a zombie; the recorded exit decides, not a second
-    /// `try_wait`, which could name a recycled pid.
+    /// Release a retained pane's PTY after its process exited (ADR-0124);
+    /// the grid stays. A child EOF could not reap goes to a reaper thread,
+    /// decided by the recorded exit, not a second `try_wait` on a maybe
+    /// recycled pid.
     pub(super) fn release_pty_after_exit(&mut self) {
         self.pty_rx = None;
         drop(self.pty_tx.take());
@@ -648,18 +475,14 @@ impl TerminalActor {
         if !reaped {
             spawn_detached_reaper(pid);
         }
-        // The reader already saw EOF and the writer's channel just closed,
-        // so both threads end on their own; dropping the handles detaches
-        // them rather than blocking this actor on a join.
+        // Both threads end on their own; detach rather than join.
         drop(pty.reader_thread.take());
         drop(pty.writer_thread.take());
         drop(pty);
     }
 
-    /// Tear down the PTY: gracefully stop the child if still alive, drop
-    /// the master (which sends EOF to the slave and unblocks the reader
-    /// thread), and join the bridge threads. Best-effort: errors are
-    /// logged, not propagated, because we're on the shutdown path.
+    /// Tear down the PTY: gracefully stop a live child, drop the master, and
+    /// join the bridge threads (bounded). Errors are logged.
     #[allow(
         clippy::future_not_send,
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
@@ -668,37 +491,14 @@ impl TerminalActor {
         let Some(mut pty) = self.pty.take() else {
             return;
         };
-        // Close the PTY receiver FIRST, before anything below that waits.
-        //
-        // The reader-to-actor channel is bounded (`spawn::PTY_CHANNEL_DEPTH`),
-        // and from here to the end of this function the actor never drains it
-        // again — it is parked in the code below, not in its `select!` loop.
-        // Leaving the receiver open therefore lets the queue fill and parks
-        // the reader thread in `blocking_send`, which stops it calling
-        // `read(2)` on the master. An unread PTY master accepts very little
-        // before `write(2)` blocks (measured: 1024 bytes on macOS), so a
-        // foreground job flushing a transcript wedges mid-flush — defeating
-        // the grace window immediately below, whose entire purpose is to let
-        // that flush finish.
-        //
-        // Dropping the receiver is what keeps the reader running rather than
-        // stopping it: it switches to `spawn::drain_master_to_eof`, which
-        // keeps reading and discarding so the far side of the PTY never
-        // blocks. Discarding is not a behaviour change — nothing rendered
-        // these bytes before either, since the actor is on its way out.
+        // Close the PTY receiver first. The actor stops draining it now, and
+        // a full queue would park the reader, leaving the master unread and
+        // wedging a child mid-flush in `write(2)`. Dropped, the reader
+        // switches to discarding until EOF.
         self.pty_rx = None;
-        // If the child is still alive, tear it down *gracefully* so a
-        // foreground process (e.g. `claude`) gets a chance to flush before
-        // we pull the rug — see `terminate_child_group`. If it already
-        // exited this is a no-op; the reap below collects the zombie.
-        //
-        // A failed `try_wait` is treated as "still running", deliberately.
-        // This branch used to log and fall through having sent no signal at
-        // all: a child that was in fact alive was never asked to exit, never
-        // killed, and the blocking reap then waited on it forever — freezing
-        // every pane on this current-thread runtime (ADR-0003), not just this
-        // one. Signalling a child that turns out to be dead is harmless
-        // (`ESRCH`); failing to signal one that is alive is unbounded.
+        // Hang up the child gracefully. A failed `try_wait` counts as alive:
+        // signalling a dead child is harmless, not signalling a live one
+        // blocked the reap forever.
         let observed = pty.child.try_wait();
         if needs_termination(&observed) {
             if let Err(err) = &observed {
@@ -711,14 +511,9 @@ impl TerminalActor {
         } else {
             trace!("pty child already exited");
         }
-        // Drop the master so the reader thread sees EOF and exits.
-        // We drop pty_tx so the writer thread sees a closed channel
-        // and exits. Both happen automatically when `self.pty` /
-        // `self.pty_tx` are dropped at the end of `run`, but doing it
-        // here makes the thread joins below predictable.
+        // Close the writer channel so the writer thread exits.
         drop(self.pty_tx.take());
-        // Reap the child so the OS releases its slot — without ever blocking
-        // this task. See `reap_bounded`.
+        // Reap without blocking this task; see `reap_bounded`.
         let child_pid = pty.child.process_id();
         if matches!(
             reap_bounded(|| pty.child.try_wait()).await,
@@ -727,23 +522,10 @@ impl TerminalActor {
             warn!("pty child did not exit within the reap budget; handing it to a reaper thread");
             spawn_detached_reaper(child_pid);
         }
-        // ORDER IS LOAD-BEARING: drop the PTY before joining the bridge
-        // threads.
-        //
-        // Dropping `pty` closes this side's master handle and releases the
-        // child, which is what lets the reader's `read(2)` return. Joining
-        // first — as this did — deadlocks the whole server whenever the
-        // reader is inside `spawn::drain_master_to_eof`, because that
-        // function's budget is only observed BETWEEN reads: a `read(2)`
-        // already blocked on a slave someone else still holds open never
-        // returns to check it. Any process that escaped the snapshotted
-        // groups is such a holder, and on a shared current-thread runtime
-        // (ADR-0003) one of those freezes every pane on the server, forever.
-        //
-        // Dropping first is necessary but NOT sufficient — the reader holds
-        // its own `dup`ed descriptor, so our close does not by itself end its
-        // read — which is why the joins below are bounded rather than
-        // unconditional.
+        // Drop the PTY before joining: a reader blocked in `read(2)` (the
+        // drain budget is only checked between reads) never returns while
+        // we hold the master. Even then the reader's dup'd fd may keep it
+        // blocked, so the joins are bounded.
         let reader_thread = pty.reader_thread.take();
         let writer_thread = pty.writer_thread.take();
         drop(pty);
@@ -751,21 +533,11 @@ impl TerminalActor {
         join_thread_bounded(writer_thread, "pty writer").await;
     }
 
-    /// Gracefully stop a still-running PTY child on pane teardown (phux-sw1).
-    ///
-    /// A pane close is a hangup: send `SIGHUP` to both the PTY's foreground
-    /// process group and the session-leading shell group. Interactive shells
-    /// put foreground jobs such as `claude` in a separate process group, so
-    /// signaling only the shell group misses the process that needs to flush.
-    /// Poll for both groups to exit within [`super::PANE_KILL_GRACE`], then `SIGKILL`
-    /// any survivors as a backstop. The PTY master stays open for the duration,
-    /// so the foreground process can still write during the grace window.
-    ///
-    /// This replaces an immediate `std::process::Child::kill` (a `SIGKILL` of
-    /// the shell pid alone, with no grace), which killed a foreground agent
-    /// before it could persist its transcript. The foreground group is
-    /// snapshotted from the PTY before signaling to avoid losing it when the
-    /// shell exits. Falls back to the library kill if no group can be found.
+    /// Gracefully stop a live PTY child on teardown: `SIGHUP` both the
+    /// foreground process group (snapshotted first, since the shell may exit
+    /// at once) and the shell's group, wait up to
+    /// [`super::PANE_KILL_GRACE`] for them to exit, then `SIGKILL` survivors.
+    /// The master stays open so the foreground job can flush.
     #[allow(
         clippy::future_not_send,
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
@@ -787,10 +559,8 @@ impl TerminalActor {
     }
 }
 
-/// Snapshot the process groups a pane hangup must reach.
-///
-/// Signal the foreground job first. The shell may exit immediately on
-/// SIGHUP, at which point tcgetpgrp can no longer recover this group.
+/// Snapshot the process groups a hangup must reach, foreground job first
+/// (`tcgetpgrp` fails once the shell exits).
 fn pane_signal_groups(pty: &PtyOwned) -> Vec<nix::unistd::Pid> {
     use nix::unistd::Pid;
 
@@ -819,8 +589,7 @@ fn pane_signal_groups(pty: &PtyOwned) -> Vec<nix::unistd::Pid> {
     groups
 }
 
-/// Send `SIGHUP` to every snapshotted group, in order. `true` when at least
-/// one group actually took the signal (an `ESRCH` group is already gone).
+/// `SIGHUP` every group; `true` if at least one took it.
 fn hangup_pane_groups(groups: &[nix::unistd::Pid]) -> bool {
     use nix::errno::Errno;
     use nix::sys::signal::{Signal, killpg};
@@ -836,13 +605,8 @@ fn hangup_pane_groups(groups: &[nix::unistd::Pid]) -> bool {
     delivered
 }
 
-/// Wait out the [`super::pane_kill_grace`] budget, returning `true` once every
-/// snapshotted group has exited.
-///
-/// Poll every snapshotted group, not just the shell child: the shell can
-/// exit while a foreground job remains alive. Reap the shell as it exits
-/// so its zombie does not keep the shell process group looking alive for
-/// the entire grace period.
+/// Wait out [`super::pane_kill_grace`], `true` once every group exited.
+/// Reaps the shell as it goes so its zombie does not keep its group alive.
 #[allow(
     clippy::future_not_send,
     reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
@@ -851,11 +615,7 @@ async fn await_pane_group_exit(pty: &mut PtyOwned, groups: &[nix::unistd::Pid]) 
     use nix::errno::Errno;
     use nix::sys::signal::killpg;
 
-    // Tests may gate the ceiling on an observed trap-started marker so
-    // a starved `/bin/sh` does not spend the flush budget waiting to
-    // be scheduled (phux-ko7j). Production has no gate: the deadline
-    // starts here, as it always has. Groups that already exited return
-    // on the first poll in either case.
+    // Tests may start the ceiling only once a trap-started marker exists.
     #[cfg(test)]
     if let Some(gate) = super::pane_kill_grace_gate() {
         let hold = tokio::time::Instant::now() + super::PANE_KILL_GRACE_GATE_WAIT;
@@ -892,13 +652,8 @@ async fn await_pane_group_exit(pty: &mut PtyOwned, groups: &[nix::unistd::Pid]) 
     false
 }
 
-/// Does this `try_wait` result leave the child needing termination?
-///
-/// Only a confirmed exit says no. `Ok(None)` is "still running", and an `Err`
-/// is "we do not know" — for which the safe reading is "alive". Signalling a
-/// child that turns out to be dead is harmless (`ESRCH`); failing to signal a
-/// live one used to strand it unsignalled and then block the reap on it
-/// forever.
+/// Whether a `try_wait` result needs termination: only a confirmed exit
+/// says no; an error means "unknown", treated as alive.
 const fn needs_termination(observed: &std::io::Result<Option<portable_pty::ExitStatus>>) -> bool {
     !matches!(observed, Ok(Some(_)))
 }
@@ -914,19 +669,9 @@ enum ReapOutcome {
     Expired,
 }
 
-/// Poll `poll` until the child is collected or [`PANE_KILL_REAP_BUDGET`]
-/// expires, without ever blocking the calling task.
-///
-/// `Child::wait` is a blocking `waitpid`. Calling it from the actor is only
-/// sound if the child is guaranteed dead, and it is not: every path into this
-/// function has *asked* the child to exit, but `hard_kill_pane_groups` only
-/// reaches the process groups snapshotted before signalling. One that slips
-/// through blocks `waitpid` forever — and because every pane actor shares one
-/// current-thread runtime (ADR-0003), that is a frozen server, not a stuck
-/// pane.
-///
-/// Takes a closure rather than the child so the policy can be tested without
-/// a real PTY; see `reap_bounded_tests`.
+/// Poll until the child is collected or [`PANE_KILL_REAP_BUDGET`] expires,
+/// never blocking the task (a blocking `waitpid` on an escaped child would
+/// freeze the shared runtime). Takes a closure so it is testable.
 async fn reap_bounded<F>(mut poll: F) -> ReapOutcome
 where
     F: FnMut() -> std::io::Result<Option<portable_pty::ExitStatus>>,
@@ -951,15 +696,8 @@ where
     }
 }
 
-/// Hand a child that outlived the reap budget to a detached thread that will
-/// block in `waitpid` for as long as it takes.
-///
-/// Abandoning it outright — which is what this path used to do — leaks a
-/// zombie for the lifetime of the server, and nothing else ever collects it:
-/// phux installs no `SIGCHLD` handler and has no central reaper, and the
-/// adopted-PTY child only reaps on an explicit poll. One thread parked in
-/// `waitpid` is far cheaper than an entry in the process table that never
-/// goes away, and unlike the actor task this thread is allowed to block.
+/// Hand a child that outlived the reap budget to a detached `waitpid`
+/// thread; nothing else would ever reap it.
 fn spawn_detached_reaper(pid: Option<u32>) {
     let Some(pid) = pid.and_then(|raw| i32::try_from(raw).ok()) else {
         warn!("pty child outlived the reap budget and has no pid; it will stay a zombie");
@@ -978,17 +716,9 @@ fn spawn_detached_reaper(pid: Option<u32>) {
     }
 }
 
-/// Join a bridge thread, but give up and detach it if it does not exit inside
-/// [`PANE_KILL_REAP_BUDGET`].
-///
-/// A bare `join()` here is a whole-server deadlock waiting to happen: the
-/// reader can be blocked in `read(2)` on a slave that a process outside the
-/// snapshotted groups still holds open, and the writer can be blocked writing
-/// to a full one. A thread cannot be cancelled in Rust, so the bound is
-/// "stop waiting", not "stop the thread" — we drop the handle and let it
-/// finish on its own when its descriptor finally closes. That leaks at worst
-/// one parked thread per abandoned pane, against freezing every pane on the
-/// runtime.
+/// Join a bridge thread, detaching it if it misses
+/// [`PANE_KILL_REAP_BUDGET`] (threads cannot be cancelled; a bare `join`
+/// could freeze the runtime).
 async fn join_thread_bounded(handle: Option<std::thread::JoinHandle<()>>, what: &'static str) {
     let Some(handle) = handle else {
         return;
@@ -1007,18 +737,8 @@ async fn join_thread_bounded(handle: Option<std::thread::JoinHandle<()>>, what: 
     let _ = handle.join();
 }
 
-/// `SIGKILL` the pane's child directly, bypassing `portable_pty`'s killer.
-///
-/// `ChildKiller::kill` is the wrong tool on two counts. It sends `SIGHUP`,
-/// not `SIGKILL` — so the "fall back to killing the child" paths in
-/// [`TerminalActor::terminate_child_group`] were only hanging it up again,
-/// which is exactly what had already failed. And having sent it, the
-/// implementation calls `std::thread::sleep` up to four times at 50 ms while
-/// it polls, so a fallback that is supposed to be immediate blocked the actor
-/// task — and with it every pane on the runtime — for up to 200 ms.
-///
-/// `nix` is already a dependency for the group signalling next door, so the
-/// direct call costs nothing and says what it means.
+/// `SIGKILL` the child directly. `portable_pty`'s killer sends `SIGHUP`
+/// and sleeps up to 200 ms on the actor task.
 fn hard_kill_child(pty: &mut PtyOwned) {
     use nix::sys::signal::{Signal, kill};
     use nix::unistd::Pid;
@@ -1035,8 +755,7 @@ fn hard_kill_child(pty: &mut PtyOwned) {
     let _ = pty.child.kill();
 }
 
-/// Backstop: a group ignored the hangup (or is mid-flush past the
-/// budget). Hard-kill every surviving snapshotted group.
+/// Backstop: `SIGKILL` every surviving group.
 fn hard_kill_pane_groups(groups: &[nix::unistd::Pid]) {
     use nix::errno::Errno;
     use nix::sys::signal::{Signal, killpg};
@@ -1053,20 +772,13 @@ mod teardown_policy_tests {
     use super::{ReapOutcome, join_thread_bounded, needs_termination, reap_bounded};
     use crate::terminal_actor::{PANE_KILL_POLL, PANE_KILL_REAP_BUDGET};
 
-    /// The portable gate on the join hang.
-    ///
-    /// The integration fixture for this (a detached process holding the slave
-    /// open) cannot demonstrate the bug on a BSD-family kernel — see
-    /// `pane_kill_is_bounded_when_a_detached_process_holds_the_slave_open` —
-    /// so the property is pinned here instead, where it depends on nothing but
-    /// our own code: a thread that will not exit must cost us the budget and
-    /// then be abandoned, never an unbounded `join()`.
+    /// A thread that never exits costs the budget and is then abandoned
+    /// (the portable form of the slave-held-open hang).
     #[tokio::test(start_paused = true)]
     async fn a_thread_that_never_exits_is_detached_rather_than_joined() {
         let (release, parked) = std::sync::mpsc::channel::<()>();
         let handle = std::thread::spawn(move || {
-            // Parks until the test lets it go — the in-process stand-in for a
-            // reader blocked in `read(2)` on a slave nobody will close.
+            // Stand-in for a reader blocked on a slave nobody closes.
             let _ = parked.recv();
         });
 
@@ -1082,13 +794,10 @@ mod teardown_policy_tests {
         let _ = release.send(());
     }
 
-    /// The other half: a thread that does exit must be joined promptly, not
-    /// sat out for the full budget.
+    /// A thread that exits is joined promptly.
     #[tokio::test(start_paused = true)]
     async fn a_thread_that_exits_is_joined_without_serving_the_budget() {
         let handle = std::thread::spawn(|| {});
-        // Let it finish before we start waiting, so this asserts the fast
-        // path rather than racing it.
         while !handle.is_finished() {
             std::thread::yield_now();
         }
@@ -1102,9 +811,7 @@ mod teardown_policy_tests {
         );
     }
 
-    /// The `Err` arm is the one that used to strand a live child unsignalled
-    /// and then block the reap on it forever, so it is the one worth pinning:
-    /// "we could not tell" must mean "terminate it", not "assume it is gone".
+    /// An unknown `try_wait` result means terminate.
     #[test]
     fn only_a_confirmed_exit_skips_termination() {
         assert!(
@@ -1119,9 +826,7 @@ mod teardown_policy_tests {
         );
     }
 
-    /// The whole point of the bounded reap: a child that never exits must not
-    /// hold the actor. Virtual time, so this asserts the policy rather than
-    /// the wall clock.
+    /// A child that never exits cannot hold the actor.
     #[tokio::test(start_paused = true)]
     async fn a_child_that_never_exits_expires_the_budget_instead_of_blocking() {
         let started = tokio::time::Instant::now();

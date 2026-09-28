@@ -1,20 +1,11 @@
 //! Registry resolution for a remote host: rung 1 of the CLI's `phux --remote`
 //! ladder (ADR-0093), for native embedders.
 //!
-//! The `[[remote]]` registry in the phux `config.toml` (ADR-0055) is the only
-//! registry. `phux host add|enroll` and `phux --remote` write it; this module
-//! only reads it, through the same `phux-config` schema and loader the CLI
-//! uses, so an entry means one thing to both.
-//!
-//! The target grammar and the three-way match mirror
-//! `crates/phux/src/commands/remote_target.rs`. They are restated here rather
-//! than imported because that module is private to the CLI binary; the tests
-//! below pin the same spellings the CLI's tests pin, so a drift fails here.
-//!
-//! Deliberately absent: rungs 2-4. Pairing (a pasted connect code, or `phux
-//! pair` over ssh) is an operator-present terminal act that writes a bearer
-//! token to disk; an embedder that cannot find a registered host says so and
-//! names the CLI command that pairs it.
+//! Reads the `[[remote]]` registry (ADR-0055) through the CLI's own
+//! `phux-config` schema. The target grammar and match order mirror the
+//! private `crates/phux/src/commands/remote_target.rs`; the tests pin the
+//! same spellings. Pairing (rungs 2-4) is operator-present and stays in
+//! the CLI.
 
 use std::path::{Path, PathBuf};
 

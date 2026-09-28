@@ -1,7 +1,5 @@
-//! Constructors and build wiring for [`TerminalActor`]: the public
-//! bundle-shaped constructors, the shared `build` path, default-color
-//! installation, OSC 10/11 color-query replies, and the libghostty
-//! effect handlers.
+//! Constructors and build wiring for [`TerminalActor`], default colors,
+//! OSC 10/11 replies, and libghostty effect handlers.
 
 use super::process_facet::ChildFacts;
 use super::{
@@ -18,15 +16,8 @@ use super::{
 use phux_config::ScrollbackLimits;
 
 impl TerminalActor {
-    /// Build a fresh actor of the given dimensions **without** a backing
-    /// PTY. Used by tests that exercise snapshot / shutdown semantics
-    /// without driving a real process.
-    ///
-    /// The `GhosttyTerminal` is allocated via libghostty's default allocator
-    /// (NULL alloc → `'static` lifetimes). Scrollback is `DEFAULT_SCROLLBACK`
-    /// — a tmux-style mid-range value the runtime overrides with
-    /// `defaults.history-limit` / `defaults.history-bytes` via
-    /// [`Self::build_with_token`].
+    /// A PTY-less actor of the given size (tests). Scrollback is
+    /// `DEFAULT_SCROLLBACK`; the runtime uses [`Self::build_with_token`].
     #[allow(clippy::new_ret_no_self, reason = "bundle-shaped constructor")]
     pub fn new(cols: u16, rows: u16) -> Result<TerminalActorBundle, TerminalActorError> {
         Self::build(
@@ -39,12 +30,8 @@ impl TerminalActor {
         )
     }
 
-    /// Build a fresh actor backed by a real PTY running `cmd`.
-    ///
-    /// Spawns the command on the slave side, kicks off the reader and
-    /// writer bridge threads, and returns the bundle. The caller hands
-    /// `actor` to `spawn_local` and keeps `handle` + `token` to talk
-    /// to and tear down the actor.
+    /// An actor backed by a real PTY running `cmd`. Hand `actor` to
+    /// `spawn_local`; keep `handle` and `token`.
     pub fn new_with_command(
         cmd: CommandBuilder,
         cols: u16,
@@ -60,8 +47,7 @@ impl TerminalActor {
         )
     }
 
-    /// Convenience: spawn the user's default shell (`$SHELL` or
-    /// `/bin/sh`; no server config in scope here) in a fresh PTY.
+    /// Spawn the default shell in a fresh PTY (no server config).
     pub fn new_with_default_shell(
         cols: u16,
         rows: u16,
@@ -73,14 +59,8 @@ impl TerminalActor {
         )
     }
 
-    /// Build an actor whose cancellation token is `token` (typically a
-    /// `root_token.child_token()` from [`crate::runtime::ServerRuntime`]).
-    /// The bundle's `token` field is a clone of the same token, so
-    /// cancelling either propagates to the actor.
-    ///
-    /// This is the path the runtime uses; tests use [`Self::new`] /
-    /// [`Self::new_with_command`] which generate an unlinked fresh
-    /// token internally.
+    /// Build an actor cancelled by `token` (usually a runtime child token);
+    /// the bundle's `token` is a clone of it. The runtime path.
     pub fn build_with_token(
         cols: u16,
         rows: u16,
@@ -98,8 +78,8 @@ impl TerminalActor {
         )
     }
 
-    /// Runtime constructor that seeds host default colors before the PTY is
-    /// spawned and any child output can be parsed.
+    /// Like [`Self::build_with_token`], seeding host default colors before
+    /// any child output is parsed.
     pub fn build_with_token_and_colors(
         cols: u16,
         rows: u16,
@@ -118,13 +98,9 @@ impl TerminalActor {
         )
     }
 
-    /// Build an actor around a PTY master fd + child PID inherited across a
-    /// graceful-upgrade `execve` (ADR-0032), then replay `seed` (the pane's
-    /// snapshot from the [`StateBlob`](crate::upgrade::blob::StateBlob)) into
-    /// the fresh `Terminal` so the grid matches what the old image showed.
-    ///
-    /// The PTY is not re-opened and the child is not re-spawned — both kept
-    /// running across the exec; this rebuilds only the server-side plumbing.
+    /// Rebuild an actor around a PTY master fd and child pid inherited across
+    /// a graceful-upgrade exec (ADR-0032), replaying `seed` so the grid
+    /// matches the old image.
     pub fn new_with_adopted_pty(
         master_fd: std::os::fd::RawFd,
         child_pid: i32,
@@ -167,15 +143,9 @@ impl TerminalActor {
             terminal.set_scrollback_max_lines(Some(scrollback.lines as usize))?;
             terminal
         };
-        // `set_scrollback_max_lines` is only libghostty's *line* limit.
-        // The engine enforces a byte limit alongside it and applies whichever
-        // is reached first, and a terminal built through the C API keeps
-        // Ghostty's 10_000-byte constructor default — floored at two standard
-        // pages. That byte floor, not `history-limit`, decided how much
-        // history a phux pane kept: 810 rows at 80 columns and 295 rows at
-        // 200 columns, whatever `history-limit` said. Install
-        // `defaults.history-bytes` explicitly so both bounds are the
-        // operator's (ADR-0094).
+        // Install the byte limit too: libghostty applies whichever bound is
+        // hit first, and its constructor default would otherwise decide
+        // (ADR-0094).
         terminal.set_scrollback_max_bytes(Some(scrollback.bytes as usize))?;
         terminal.set_continuation_max_bytes(64 * 1024 * 1024)?;
         phux_protocol::kitty_replay::configure_terminal_for_kitty_graphics(&mut terminal)?;
@@ -242,8 +212,7 @@ impl TerminalActor {
         let actor = Self {
             terminal: RefCell::new(CanonicalTerminal::Plain(Some(terminal))),
             synth: RefCell::new(synth),
-            // A pane may carry initial content (PTY banner, restored
-            // scrollback); start dirty so the first tick always emits.
+            // Initial content may exist; start dirty so the first tick emits.
             terminal_dirty_since_tick: true,
             last_input_at: std::cell::Cell::new(None),
             last_output_at: std::cell::Cell::new(None),
@@ -282,14 +251,8 @@ impl TerminalActor {
             consumer_detach_rx,
             consumer_ack_rx,
             consumer_states: HashMap::new(),
-            // phux-yeca: keep the human attach path on the raw PTY
-            // broadcast pump by default. The per-consumer synthesized-VT
-            // tick path is correct for state-sync experiments, but as the
-            // sole emitter it adds a visible 20-30 ms floor to local typing
-            // and can lose byte-exact styling that interactive shells/TUIs
-            // rely on. Tests can still flip this on explicitly with
-            // `enable_tick_emit_for_test`; production needs a negotiated
-            // consumer mode before making synthesized ticks the human path.
+            // Human attach stays on raw PTY bytes; synthesized ticks add
+            // latency and lose byte-exact styling. Tests opt in.
             consumer_tick_emits: false,
             pty_rx,
             pty_tx,
@@ -306,11 +269,7 @@ impl TerminalActor {
             ask_retry_owed: false,
             in_output_burst: false,
             output_since_idle_tick: false,
-            // Seeded from the child's real starting directory (a kernel
-            // query right after spawn, when `chdir` has already happened),
-            // not `$HOME`: a `$HOME` seed swallowed the `cwd_changed` of a
-            // shell that started elsewhere and `cd`'d home. The pane still
-            // announces its starting directory once (`cwd_announced`).
+            // The child's real starting directory, not `$HOME`.
             last_known_cwd: RefCell::new(child_facts.cwd),
             cwd_announced: Cell::new(false),
             osc133: osc133::Osc133Scanner::new(),
@@ -383,9 +342,8 @@ impl TerminalActor {
         Ok(())
     }
 
-    /// Answer OSC 10/11 queries found in a just-parsed PTY chunk from the
-    /// canonical terminal's effective colors. The scanner persists across PTY
-    /// reads, so an escape sequence split at any byte boundary still works.
+    /// Answer OSC 10/11 queries in a parsed chunk from the canonical colors.
+    /// The scanner persists, so split sequences still work.
     pub(super) fn answer_color_queries(&mut self, bytes: &[u8]) {
         let mut queries = 0_u8;
         self.color_query_scanner.feed(bytes, |selector| {
@@ -400,9 +358,7 @@ impl TerminalActor {
         }
         let canonical = self.terminal.borrow();
         let Some(terminal) = canonical.try_terminal() else {
-            // The palette lives in the terminal; without it there is no
-            // honest answer, and a wrong colour is worse than none. The
-            // querying app re-asks, and the capture is bounded.
+            // No palette to answer from; a wrong color is worse than none.
             tracing::trace!("colour query unanswered: canonical terminal is on loan");
             return;
         };
@@ -425,26 +381,13 @@ impl TerminalActor {
         }
     }
 
-    /// Install the libghostty effect handlers the actor relies on.
+    /// Install libghostty's effect handlers.
     ///
-    /// `on_size` answers XTWINOPS size queries (CSI 14/16/18 t) from the
-    /// shared geometry cell; `handle_resize` keeps it current. Without
-    /// this callback libghostty silently drops the query and pixel-aware
-    /// programs (`kitten icat` preflights, sixel sizers) see a mute
-    /// terminal even though the kernel winsize carries pixel dims.
-    ///
-    /// `on_pty_write` routes terminal-generated replies (XTWINOPS size
-    /// reports, DECRQM mode reports, CSI 21 t title reports, mode-2048
-    /// in-band resize notifications) back to the child through the same
-    /// writer bridge that carries client input; libghostty discards
-    /// every reply when it is absent. The callback fires synchronously
-    /// inside `vt_write` while the actor holds the `Terminal` borrow, so
-    /// it must not touch the terminal — a channel send is safe. The
-    /// sender it captures is WEAK: the closure lives in the Terminal's
-    /// vtable, which the actor owns through `shutdown_pty` — a strong
-    /// clone there would keep the writer-bridge channel open while
-    /// `shutdown_pty` joins the writer thread (which only exits on
-    /// channel close), deadlocking teardown.
+    /// `on_size` answers XTWINOPS size queries from the shared geometry.
+    /// `on_pty_write` routes terminal-generated replies back to the child via
+    /// the writer bridge. It fires inside `vt_write`, so it only sends on a
+    /// channel, and holds the sender weakly: a strong clone would keep the
+    /// writer channel open and deadlock `shutdown_pty`'s join.
     pub(super) fn install_effects(
         terminal: &mut GhosttyTerminal<'static, 'static>,
         size_report: &Rc<Cell<SizeReportSize>>,
@@ -457,8 +400,7 @@ impl TerminalActor {
         if let Some(tx) = pty_tx {
             let tx = tx.downgrade();
             terminal.on_pty_write(move |_term, bytes| {
-                // No upgrade ⇒ the writer bridge (and child) are gone;
-                // the reply has no recipient. Drop it.
+                // Writer gone: nobody to reply to.
                 if let Some(tx) = tx.upgrade() {
                     let _ = tx.try_send(EncodedInputRequest::legacy(bytes.to_vec()));
                 }
@@ -467,14 +409,8 @@ impl TerminalActor {
         Ok(())
     }
 
-    /// Test-only constructor: write `bytes` into the actor's `Terminal`
-    /// before the actor starts running. Useful for unit and integration
-    /// tests that want the snapshot/incremental synthesis path to
-    /// return non-trivial content without wiring up a PTY pump.
-    ///
-    /// Public (rather than `#[cfg(test)]`) so integration tests under
-    /// `crates/phux-server/tests/` can call it. Not exercised by
-    /// production code; the name + doc make the intent clear.
+    /// Write `bytes` into the terminal before the actor runs (tests,
+    /// including integration tests).
     pub fn new_with_seed(
         cols: u16,
         rows: u16,

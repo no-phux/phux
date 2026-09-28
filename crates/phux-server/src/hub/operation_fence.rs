@@ -1,24 +1,13 @@
-//! The hub's incarnation fence and actor correlation for the keyed
-//! operations it forwards to one satellite (`docs/spec/L1.md` §9.1).
+//! The hub's incarnation fence and actor correlation for keyed operations it
+//! forwards to one satellite (`docs/spec/L1.md` §9.1).
 //!
-//! A satellite owns the dedupe of a keyed operation it runs (`APPLY_INPUT`,
-//! a keyed kill or signal), and that record lives in the satellite's memory:
-//! it dies with the process, which is what a changed `HELLO_OK.server_id`
-//! means (ADR-0053 item 5). A consumer behind a hub sees only the hub's
-//! `server_id`, so it cannot tell that the satellite restarted between two
-//! attempts, and a retry forwarded blindly could run twice. The hub
-//! therefore records, for each operation id it forwards, the incarnation it
-//! forwarded to, and answers a retry that would cross a restart with
-//! `INCARNATION_CHANGED` instead of forwarding it.
-//!
-//! The same record names the hub consumer that sent the operation, so when
-//! the hub re-stamps an event the operation caused on the satellite, the
-//! event names that consumer rather than the link every consumer shares.
-//!
-//! Bounded like the dedupe record it fronts: the same ten-minute horizon
-//! from admission and the same entry cap, and a full record refuses a new id
-//! rather than evicting a live one. One record per satellite, shared across
-//! the link's reconnects, since a reconnect is exactly when it matters.
+//! A satellite's dedupe record dies with its process (a changed
+//! `HELLO_OK.server_id`), which a consumer behind the hub cannot see. The
+//! hub records the incarnation each operation id was forwarded to and
+//! answers a retry across a restart with `INCARNATION_CHANGED`. The record
+//! also names the consumer that sent the operation, for re-stamped events.
+//! Bounded like the dedupe record (ten-minute horizon, entry cap; full
+//! refuses rather than evicts) and shared across the link's reconnects.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};

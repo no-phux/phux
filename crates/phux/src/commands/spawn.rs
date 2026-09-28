@@ -11,12 +11,12 @@ use phux_protocol::wire::frame::{
 };
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::agent::AgentSessionRecord;
 use crate::commands::json_err::{CliError, codes};
 use crate::commands::{
     SpawnSplit, cli_runtime, json_err, parse_selector, request_command, resolve_targets,
 };
 use crate::exit_codes::EXIT_USAGE;
+use phux_client::agent_session_record::AgentSessionRecord;
 
 /// What `phux spawn` asks the server to keep for it: the pane after its
 /// process exits (`--retain`, ADR-0124), and the answer to a retry
@@ -78,7 +78,7 @@ pub(crate) fn unsupported_server(json: bool, missing: ServerFeature) -> ExitCode
         ServerFeature::RetainOnExit => "--retain",
         _ => "--idempotency-key",
     };
-    let name = crate::feature_names::feature_name(missing);
+    let name = missing.snake_name();
     json_err::emit(
         json,
         &CliError::new(
@@ -113,23 +113,12 @@ fn refuse_unsupported(
     Some(unsupported_server(json, missing))
 }
 
-/// `phux spawn` — create a Terminal without attaching (`SPAWN_RESOURCE`,
-/// SPEC L1 §3.1). Does not auto-start a server.
-///
-/// With explicit placement, the target Terminal addresses the exact owning
-/// window and shared layout metadata inserts the new leaf beside it. Without
-/// placement, the pane joins the server's most recently active session (the
-/// legacy `GET_STATE` focus heuristic). With `--satellite NAME`
-/// a federation hub routes the spawn over its link to that satellite
-/// (phux-v45.6) and the returned Terminal is satellite-tagged: the
-/// printed id is addressable through the hub by the satellite-capable
-/// verbs. On a non-hub server (or for an unknown name) the spawn is
-/// refused with the typed `UnsupportedSatelliteRoute`; an unreachable
-/// satellite fails fast with `SatelliteUnreachable`.
-///
-/// Output hygiene matches the other one-shot verbs: with `--json` stdout
-/// carries only `{"terminal_id": N, "satellite": "NAME" | null}`;
-/// diagnostics go to stderr with a nonzero exit.
+/// `phux spawn` — create a Terminal without attaching (`SPAWN_RESOURCE`, L1
+/// §3.1); never auto-starts a server. With placement the new leaf goes beside
+/// the target Terminal; without, it joins the most recently active session.
+/// `--satellite NAME` routes the spawn through a hub (refused on a non-hub or
+/// for an unknown name). `--json` stdout is only
+/// `{"terminal_id": N, "satellite": "NAME" | null}`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_spawn(
     satellite: Option<String>,
@@ -215,24 +204,12 @@ pub(crate) fn run_spawn(
     }
 }
 
-/// Send a `SPAWN_RESOURCE` frame and return the matching `RESOURCE_SPAWNED`
-/// result. Shared by `phux spawn` and `phux launch` (phux-ark7) so both
-/// ride the identical wire path — the server injects `PHUX_TERMINAL_ID`
-/// into the spawned pane regardless of which verb requested it. The wire
-/// round trip, including the optional agent-session provenance write and its
-/// `KILL_RESOURCE` rollback on failure, is
-/// [`phux_client::agent_session_record::spawn_with_agent_session_on`].
-///
-/// On a connect/transport failure this prints the `no server` diagnostic
-/// (attributed to `verb`) and returns the failure [`ExitCode`] in `Err`, so
-/// callers only handle the `SpawnResult` variants.
-///
-/// The correlation id is not a parameter: it is read out of `frame`'s own
-/// `request_id` field, so the id sent and the id waited on cannot drift.
-///
-/// `json` selects the failure channel per the JSON error contract
-/// (phux-i0e8.8.2): under `--json` a connect failure is one JSON error line
-/// on stderr rather than the prose diagnostic.
+/// Send a `SPAWN_RESOURCE` and return its `RESOURCE_SPAWNED`, shared by
+/// `phux spawn` and `phux launch`. The round trip (with the optional
+/// agent-session write and its rollback) is
+/// [`phux_client::agent_session_record::spawn_with_agent_session_on`]; the
+/// correlation id is read from `frame`. A connect failure is reported (as JSON
+/// under `json`) and returned in `Err`.
 pub(crate) fn dispatch_spawn(
     socket_path: &Path,
     frame: &FrameKind,
@@ -245,14 +222,8 @@ pub(crate) fn dispatch_spawn(
         .map_err(|err| json_err::report_no_server(json, &err, socket_path, verb))
 }
 
-/// Open a connection, send `frame`, and return the correlated spawn outcome.
-///
-/// The wire round trip — the plain spawn, plus the optional agent-session
-/// provenance write and its same-connection `KILL_RESOURCE` rollback on
-/// failure — is [`phux_client::agent_session_record::spawn_with_agent_session_on`],
-/// which prints the spawn's own degradation notices itself (before calling
-/// `persist_record`, so the two interleaved prints land in the historical
-/// encounter order) rather than returning them for this wrapper to print.
+/// Open a connection, send `frame`, and return the correlated outcome; the
+/// client helper prints its own degradation notices in order.
 pub(crate) async fn dispatch_spawn_async(
     socket_path: &Path,
     frame: &FrameKind,
@@ -266,11 +237,9 @@ pub(crate) async fn dispatch_spawn_async(
     .await
 }
 
-/// Resolve an explicit local owner, spawn into its exact server window, then
-/// insert the returned leaf through shared `LayoutOps`
-/// ([`phux_client::spawn::verify_and_publish_placement`]). If layout
-/// publication fails after spawn, kill the known new Terminal before
-/// returning failure.
+/// Resolve an explicit local owner, spawn into its window, then insert the
+/// leaf via [`phux_client::spawn::verify_and_publish_placement`]. If layout
+/// publication fails, kill the new Terminal before returning failure.
 #[allow(
     clippy::too_many_arguments,
     reason = "shared spawn placement keeps the complete CLI operation explicit"
@@ -310,7 +279,7 @@ pub(crate) fn dispatch_spawn_placed(
         };
         let candidates = resolve_targets(socket_path, &selector, &snapshot).await;
         let Some(owner) =
-            crate::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
+            phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
         else {
             eprintln!("phux: no such target");
             return Err(ExitCode::FAILURE);
@@ -384,18 +353,9 @@ pub(crate) fn dispatch_spawn_placed(
 fn print_spawned(terminal_id: &ResourceId, replayed: bool, json: bool) -> ExitCode {
     if json {
         let payload = phux_client::spawn::spawned_document(terminal_id, replayed);
-        return match serde_json::to_string_pretty(&payload) {
-            Ok(s) => {
-                outln!("{s}");
-                ExitCode::SUCCESS
-            }
-            Err(err) => {
-                eprintln!("phux: failed to serialize spawn result as JSON: {err}");
-                ExitCode::FAILURE
-            }
-        };
+        return crate::output::json(&payload);
     }
-    let selector = crate::selector::format_terminal_id(terminal_id);
+    let selector = phux_client::selector::format_terminal_id(terminal_id);
     let verb = if replayed {
         "Found pane (an earlier spawn with this key)"
     } else {

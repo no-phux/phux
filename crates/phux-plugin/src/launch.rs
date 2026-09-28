@@ -1,17 +1,6 @@
-//! Launch executor resolution (phux-ark7, [ADR-0042]).
-//!
-//! Resolve a named agent integration template — shipped by an *enabled*
-//! plugin under its `integrations/` directory — into a spawnable
-//! child-process argv. This is the resolution half of the launch executor:
-//! it loads the config, finds the integration, expands the
-//! `${PHUX_PLUGIN_ROOT}` placeholder, and returns a [`ResolvedLaunch`] the
-//! CLI spawns through the ordinary `SPAWN_RESOURCE` path (so the server's
-//! `PHUX_TERMINAL_ID` injection and pane recording compose for free).
-//!
-//! There is no in-process host: the launched program is a child-process
-//! argv, exactly like plugin actions and event hooks.
-//!
-//! [ADR-0042]: ../../docs/adr/0042-launch-executor.md
+//! Launch executor resolution (ADR-0042): resolve an agent integration
+//! template shipped by an enabled plugin under `integrations/` into a
+//! spawnable argv, which the CLI spawns through `SPAWN_RESOURCE`.
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -23,13 +12,10 @@ use phux_config::integration::{
 };
 use phux_config::loader as config_loader;
 
-/// Directory, relative to a plugin root, where a plugin ships its agent
-/// integration templates. A convention, not a manifest-declared path: the
-/// launch executor scans it for every enabled plugin.
+/// Where a plugin ships its integration templates, relative to its root.
 const INTEGRATIONS_DIR: &str = "integrations";
 
-/// A fully resolved launch: the argv to spawn, where to run it, and which
-/// plugin/integration it came from.
+/// A fully resolved launch: the argv to spawn, where, and from which plugin.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedLaunch {
     /// Owning plugin id.
@@ -38,8 +24,7 @@ pub struct ResolvedLaunch {
     pub integration_id: String,
     /// Integration display name, when declared.
     pub display_name: Option<String>,
-    /// Spawnable argv: the template command with `${PHUX_PLUGIN_ROOT}`
-    /// expanded and any caller-supplied extra args appended.
+    /// The template command, plugin root expanded, extra args appended.
     pub argv: Vec<String>,
     /// Working directory the program runs in.
     pub cwd: PathBuf,
@@ -49,19 +34,16 @@ pub struct ResolvedLaunch {
     pub plugin_root: PathBuf,
     /// Provider-native session policy declared by the integration.
     pub session_identity: Option<IntegrationSessionIdentity>,
-    /// The launched agent's self-declared identity, when the template
-    /// carries an `[agent_identity]` section. Its `kind` is the
-    /// detection-manifest slug, not the template's category `kind`.
+    /// The launched agent's self-declared identity, when declared.
     pub agent_identity: Option<IntegrationAgentIdentity>,
 }
 
 impl ResolvedLaunch {
-    /// Rebuild this launch argv as a provider-native resume invocation.
+    /// This launch argv as a provider-native resume invocation.
     ///
     /// # Errors
     ///
-    /// Returns an error when the integration does not support native resume
-    /// or the supplied identity violates the policy's bounds.
+    /// When native resume is unsupported or the identity is invalid.
     pub fn resume_argv(&self, native_id: &str) -> Result<Vec<String>, SessionResumeError> {
         self.session_identity
             .as_ref()
@@ -69,12 +51,11 @@ impl ResolvedLaunch {
             .resume_argv(&self.argv, native_id)
     }
 
-    /// Rebuild this launch argv with a caller-supplied fresh-session identity.
+    /// This launch argv with a caller-supplied fresh-session identity.
     ///
     /// # Errors
     ///
-    /// Returns an error when the provider has no documented fresh-identity
-    /// argv or the supplied identity violates the policy's bounds.
+    /// When fresh identities are unsupported or the identity is invalid.
     pub fn fresh_argv(&self, native_id: &str) -> Result<Vec<String>, SessionResumeError> {
         self.session_identity
             .as_ref()
@@ -92,11 +73,9 @@ pub struct LaunchableIntegration {
     pub integration_id: String,
     /// Display name, when declared.
     pub display_name: Option<String>,
-    /// Kind slug, when declared. A package *category* (`terminal-agent`),
-    /// not the detection slug — that lives in `agent_identity`.
+    /// Package category (`terminal-agent`), when declared.
     pub kind: Option<String>,
-    /// The launched agent's self-declared identity, when the template
-    /// carries an `[agent_identity]` section.
+    /// The launched agent's self-declared identity (its detection kind).
     pub agent_identity: Option<IntegrationAgentIdentity>,
 }
 
@@ -160,8 +139,7 @@ pub enum LaunchError {
     NotFound {
         /// Requested integration id.
         name: String,
-        /// Ids of the launchable integrations that *are* available, for a
-        /// caller-formatted hint.
+        /// Ids of the launchable integrations that are available.
         available: Vec<String>,
     },
     /// The integration exists but declares no `[launch]` command.
@@ -189,27 +167,16 @@ struct EnabledPlugin {
     plugin_root: PathBuf,
 }
 
-/// Resolve `integration_id` against every enabled plugin's `integrations/`
-/// directory, expanding the launch command into a spawnable argv rooted at
-/// the owning plugin.
+/// Resolve `integration_id` across every enabled plugin into a spawnable
+/// argv. `extra_args` are appended verbatim; `workspace_cwd` is where a
+/// `working_directory = "workspace"` template runs.
 ///
-/// `extra_args` are appended verbatim to the launched program's argv (the
-/// user's `phux launch codex -- --resume`). `workspace_cwd` is the
-/// directory a `working_directory = "workspace"` template runs in
-/// (typically the process's current directory).
-///
-/// Resolution scans every enabled plugin and rejects an integration id claimed
-/// by more than one enabled template. Within a plugin, templates are read in
-/// sorted filename order. A template that fails to parse is skipped **unless**
-/// its filename stem is the requested id, in which case its error is surfaced.
+/// An id claimed by two enabled templates is refused. A template that fails
+/// to parse is skipped unless its filename stem is the requested id.
 ///
 /// # Errors
 ///
-/// Returns [`LaunchError`] when the config or a plugin manifest cannot be
-/// loaded, a plugin's `integrations/` directory cannot be read, the
-/// requested integration's template is invalid, no enabled plugin ships the
-/// integration ([`LaunchError::NotFound`]), or the integration declares no
-/// `[launch]` command ([`LaunchError::NoLaunchCommand`]).
+/// Any [`LaunchError`].
 pub fn resolve_launch(
     config_path: &Path,
     integration_id: &str,
@@ -239,9 +206,7 @@ fn resolve_loaded(
         let template = match entry.template {
             Ok(template) => template,
             Err(source) => {
-                // Surface the error only when this is the file the
-                // caller asked for (by filename stem); a broken sibling
-                // template must not block launching a healthy one.
+                // A broken sibling must not block a healthy launch.
                 if entry.path.file_stem().and_then(|s| s.to_str()) == Some(integration_id) {
                     return Err(LaunchError::Template {
                         path: entry.path,
@@ -307,29 +272,16 @@ fn resolve_loaded(
     })
 }
 
-/// Resolve the integration a `--kind` starts, and build its argv, from one
-/// walk of the enabled plugin tree.
+/// Resolve the integration a `--kind` starts, in one walk of the plugin tree.
 ///
-/// The integration id and the detection kind are different namespaces: a
-/// template's own `kind` is a category (`terminal-agent`); the detection slug
-/// lives in its `[agent_identity]` block. With no explicit id, the
-/// integration is therefore the unique enabled one whose `[agent_identity]
-/// kind` claims `kind` (`--kind claude` resolves `claude-code` with no second
-/// flag); two claimants are refused by name rather than picked between, and
-/// no claimant falls back to the id spelled like the kind, which is the
-/// pre-`agent_identity` default.
-///
-/// One entry point rather than [`list_launchable`] followed by
-/// [`resolve_launch`], because that pair walked the whole tree twice — config
-/// read and parse, every enabled plugin's manifest, every `integrations/`
-/// directory, and every template file, twice — on exactly the default path
-/// this resolution exists to serve.
+/// Without an explicit id it is the unique enabled integration whose
+/// `[agent_identity] kind` claims `kind` (`--kind claude` finds
+/// `claude-code`), else the id spelled like the kind.
 ///
 /// # Errors
 ///
-/// Returns [`KindLaunchError::Ambiguous`] when more than one enabled
-/// integration claims `kind`, and [`KindLaunchError::Resolve`] for every
-/// failure [`resolve_launch`] reports, naming the id that was resolved.
+/// [`KindLaunchError::Ambiguous`] when several integrations claim `kind`;
+/// [`KindLaunchError::Resolve`] for any [`resolve_launch`] failure.
 pub fn resolve_launch_for_kind(
     config_path: &Path,
     explicit_id: Option<&str>,
@@ -337,9 +289,6 @@ pub fn resolve_launch_for_kind(
     extra_args: &[String],
     workspace_cwd: &Path,
 ) -> Result<ResolvedLaunch, KindLaunchError> {
-    // A tree that cannot be walked is reported against the id the caller
-    // asked for, or the one the kind would have fallen back to — the same
-    // diagnosis the pre-single-walk code produced one step later.
     let loaded = match load_templates(config_path) {
         Ok(loaded) => loaded,
         Err(source) => {
@@ -370,12 +319,8 @@ pub fn resolve_launch_for_kind(
     })
 }
 
-/// Failure resolving a launch from a detection kind.
-///
-/// Exhaustive on purpose, unlike [`LaunchError`]: its one consumer maps every
-/// variant onto a refusal with its own code and remedy, so a variant added
-/// without a mapping should be a compile error there rather than a silent
-/// fall-through to a generic message.
+/// Failure resolving a launch from a detection kind. Exhaustive on purpose:
+/// its consumer maps every variant to a refusal.
 #[derive(Debug, thiserror::Error)]
 pub enum KindLaunchError {
     /// More than one enabled integration claims the kind — a default this
@@ -408,26 +353,17 @@ pub enum KindClaim {
     Ambiguous(Vec<String>),
 }
 
-/// Do two kind slugs name the same kind?
-///
-/// The whole tolerance, in one place: surrounding whitespace and ASCII case
-/// are insignificant. Every comparison of a requested kind against a declared
-/// one goes through here — the `[agent_identity]` claim match below and the
-/// CLI's readiness verdict — so "these two stay in step" is a fact the
-/// compiler keeps rather than a comment two functions promise each other.
+/// Do two kind slugs name the same kind (ignoring surrounding space and
+/// ASCII case)? Every kind comparison goes through here.
 #[must_use]
 pub fn kind_matches(left: &str, right: &str) -> bool {
     left.trim().eq_ignore_ascii_case(right.trim())
 }
 
-/// Match a detection kind against each launchable integration's
-/// `[agent_identity] kind`.
+/// Match a detection kind against each integration's `[agent_identity] kind`.
 ///
-/// A template's top-level `kind` (a category such as `terminal-agent`)
-/// deliberately never matches. Identical ids are collapsed before counting:
-/// one id shipped by two plugins is [`resolve_launch`]'s
-/// [`LaunchError::DuplicateIntegrationId`] failure, not an ambiguity between
-/// two genuine choices a refusal could name.
+/// A category never matches. Identical ids collapse: one id shipped twice
+/// is [`LaunchError::DuplicateIntegrationId`], not an ambiguity.
 #[must_use]
 pub fn integration_for_kind(kind: &str, launchable: &[LaunchableIntegration]) -> KindClaim {
     let mut claims: Vec<String> = launchable
@@ -449,15 +385,12 @@ pub fn integration_for_kind(kind: &str, launchable: &[LaunchableIntegration]) ->
     }
 }
 
-/// Enumerate every launchable integration (one with a `[launch]` command)
-/// shipped by an enabled plugin, in config order then sorted filename
-/// order.
+/// Every launchable integration of the enabled plugins, in config then
+/// filename order; unparseable templates are skipped.
 ///
 /// # Errors
 ///
-/// Returns [`LaunchError`] when the config or a plugin manifest cannot be
-/// loaded, or a plugin's `integrations/` directory cannot be read. An
-/// individual template that fails to parse is skipped.
+/// When the config, a manifest, or an `integrations/` directory fails.
 pub fn list_launchable(config_path: &Path) -> Result<Vec<LaunchableIntegration>, LaunchError> {
     Ok(launchable(&load_templates(config_path)?))
 }
@@ -550,14 +483,13 @@ struct LoadedTemplate {
     plugin_id: String,
     plugin_root: PathBuf,
     path: PathBuf,
-    /// The parse outcome, kept rather than discarded at the walk: listing
-    /// skips a broken template, while resolution surfaces its error when it
-    /// is the file the caller named. One walk has to serve both.
+    /// Kept as a `Result`: listing skips a broken template, resolution may
+    /// surface its error.
     template: Result<IntegrationTemplate, IntegrationError>,
 }
 
-/// Walk every enabled plugin's `integrations/` directory once, parsing each
-/// template exactly once — config order, then sorted filename order.
+/// Walk every enabled plugin's templates once, in config then filename
+/// order.
 fn load_templates(config_path: &Path) -> Result<Vec<LoadedTemplate>, LaunchError> {
     let mut out = Vec::new();
     for plugin in enabled_plugins(config_path)? {
@@ -606,9 +538,8 @@ fn enabled_plugins(config_path: &Path) -> Result<Vec<EnabledPlugin>, LaunchError
     Ok(out)
 }
 
-/// Collect a plugin's integration template paths (`integrations/*.toml`) in
-/// sorted order. A missing `integrations/` directory yields an empty list
-/// (not every plugin ships integrations).
+/// A plugin's `integrations/*.toml`, sorted; none when the directory is
+/// missing.
 fn template_paths(plugin_root: &Path) -> Result<Vec<PathBuf>, LaunchError> {
     let dir = plugin_root.join(INTEGRATIONS_DIR);
     let entries = match std::fs::read_dir(&dir) {
@@ -628,9 +559,8 @@ fn template_paths(plugin_root: &Path) -> Result<Vec<PathBuf>, LaunchError> {
 mod tests {
     use super::{KindClaim, LaunchableIntegration, integration_for_kind, kind_matches};
 
-    /// A launchable integration as [`super::list_launchable`] surfaces it:
-    /// the category `kind` is always `terminal-agent`, and `agent_kind` (when
-    /// given) rides the `[agent_identity]` block.
+    /// A launchable integration with category `terminal-agent` and an
+    /// optional `[agent_identity] kind`.
     fn launchable(id: &str, agent_kind: Option<&str>) -> LaunchableIntegration {
         LaunchableIntegration {
             plugin_id: "example.agent-tools".to_owned(),
@@ -646,81 +576,37 @@ mod tests {
         }
     }
 
-    /// The one tolerance rule, shared with the CLI's readiness verdict so the
-    /// two can never disagree about whether a kind matches.
     #[test]
-    fn kind_matching_ignores_surrounding_space_and_ascii_case() {
-        assert!(kind_matches("claude", "claude"));
-        assert!(kind_matches(" CLAUDE ", "claude"));
-        assert!(kind_matches("claude", "\tClaude\n"));
-        assert!(!kind_matches("claude", "claude-code"));
-        assert!(!kind_matches("", "claude"));
-    }
+    fn kind_claims_resolve_uniquely_ambiguously_or_not_at_all() {
+        assert!(kind_matches(" CLAUDE ", "claude") && kind_matches("claude", "\tClaude\n"));
+        assert!(!kind_matches("claude", "claude-code") && !kind_matches("", "claude"));
 
-    /// The map this resolution exists for: `--kind claude` finds
-    /// `claude-code` through its `[agent_identity] kind`. The category `kind`
-    /// (`terminal-agent`, on every template) never matches.
-    #[test]
-    fn a_unique_agent_identity_claim_resolves_the_integration() {
-        let launchables = [
+        let unique = [
             launchable("claude-code", Some("claude")),
             launchable("codex", Some("codex")),
-            launchable("generic-shell-agent", Some("generic")),
+            launchable("bare", None),
         ];
-        assert_eq!(
-            integration_for_kind("claude", &launchables),
-            KindClaim::Unique("claude-code".to_owned())
-        );
-        assert_eq!(
-            integration_for_kind(" CLAUDE ", &launchables),
-            KindClaim::Unique("claude-code".to_owned())
-        );
-        // `terminal-agent` is every template's category, never a claim.
-        assert_eq!(
-            integration_for_kind("terminal-agent", &launchables),
-            KindClaim::Unclaimed
-        );
-    }
-
-    /// Two enabled integrations claiming one kind is an ambiguity naming
-    /// both, rather than a pick — the claimants ride the answer so the
-    /// caller's refusal can print them.
-    #[test]
-    fn an_ambiguous_kind_claim_names_every_claimant() {
-        let launchables = [
+        let two = [
             launchable("claude-fork", Some("claude")),
             launchable("claude-code", Some("claude")),
-            launchable("codex", Some("codex")),
         ];
-        assert_eq!(
-            integration_for_kind("claude", &launchables),
-            KindClaim::Ambiguous(vec!["claude-code".to_owned(), "claude-fork".to_owned()])
-        );
-        // One id shipped twice is `resolve_launch`'s DuplicateIntegrationId
-        // failure, not an ambiguity between two genuine choices.
         let duplicated = [
             launchable("claude-code", Some("claude")),
             launchable("claude-code", Some("claude")),
         ];
+        let claude = || KindClaim::Unique("claude-code".to_owned());
+        assert_eq!(integration_for_kind(" CLAUDE ", &unique), claude());
+        // The category `kind` is never a claim.
         assert_eq!(
-            integration_for_kind("claude", &duplicated),
-            KindClaim::Unique("claude-code".to_owned())
-        );
-    }
-
-    /// A template with no `[agent_identity]` block claims nothing, and an
-    /// empty listing claims nothing — both leave the caller on the
-    /// id-spelled-like-the-kind fallback.
-    #[test]
-    fn a_kind_no_template_claims_is_unclaimed() {
-        let launchables = [
-            launchable("claude-code", None),
-            launchable("codex", Some("codex")),
-        ];
-        assert_eq!(
-            integration_for_kind("claude", &launchables),
+            integration_for_kind("terminal-agent", &unique),
             KindClaim::Unclaimed
         );
+        assert_eq!(integration_for_kind("bare", &unique), KindClaim::Unclaimed);
         assert_eq!(integration_for_kind("claude", &[]), KindClaim::Unclaimed);
+        assert_eq!(
+            integration_for_kind("claude", &two),
+            KindClaim::Ambiguous(vec!["claude-code".to_owned(), "claude-fork".to_owned()])
+        );
+        assert_eq!(integration_for_kind("claude", &duplicated), claude());
     }
 }

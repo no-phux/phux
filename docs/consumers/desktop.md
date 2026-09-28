@@ -18,23 +18,17 @@ product; the native desktop is not yet a verified shipping implementation.
 > implemented UI. Their release evidence is tracked in the final Status table.
 
 The architecture choice is [ADR-0139](../adr/0139-solid-desktop-over-native-runtime-views.md).
-Implementation kickoff is authorized. [Cockpit](./cockpit.md) remains the
-separate Native SDK experiment; this is not a rename or migration of its UI.
-The first release requires independent same-terminal views. Linux follows as
-tracked work; Intel macOS is not a first-release requirement.
+[Cockpit](./cockpit.md) remains a separate client. The first release requires
+independent same-terminal views; Linux follows, Intel macOS is not required.
 
 ## Start with a terminal
 
-On first launch, offer a local terminal immediately and an **Open Folder**
-action alongside recent projects. Creating an account, defining a project, or
-launching an agent is not a prerequisite. An existing daemon is reused through
-the runtime; startup failure names the failed step and offers a concrete retry
-or diagnostic action. A loading state cannot masquerade as an empty inventory.
-
-The primary surface is the terminal. A collapsible project navigator, tabs,
-split panes, a command palette, and an optional resource inspector organize it.
-Menus, palette entries, context menus, and shortcuts invoke one command surface
-with consistent labels, availability, and target identity.
+First launch offers a local terminal immediately plus **Open Folder** and
+recent projects; no account, project, or agent is a prerequisite. An existing
+daemon is reused; a startup failure names the failed step and offers a retry,
+and loading never masquerades as an empty inventory. The terminal is the
+primary surface, organized by a project navigator, tabs, splits, a command
+palette, and an optional inspector, all driven by one command surface.
 
 ## Projects, folders, and worktrees
 
@@ -52,19 +46,12 @@ These are desktop organization terms, not new server resource kinds:
 | Terminal | The daemon-owned resource and its running process. |
 | View | An independent presentation of that terminal, with its own scroll, selection, and search state. |
 
-**Open Folder** reuses an existing matching host-qualified folder or creates a
-project with that folder. Users can rename the project and add other folders.
-Worktree discovery groups related checkouts without merging their paths or
-running shells. Opening a worktree selects its folder; starting a terminal
-uses that folder as its requested working directory. Changing directories in
-a running shell updates observed CWD but does not silently move its placement
-to a different project. Manual organization remains stable.
-
-Remote folders remain visible when offline, with their host and unavailable
-state. Removing a project or folder reference does not delete disk contents or
-terminate its terminals. Existing terminals can be assigned to a project
-without changing their server session or restarting their process. Git
-worktree creation/removal is not implied by listing and opening checkouts.
+**Open Folder** reuses a matching host-qualified folder or creates a project
+for it. Worktree discovery groups checkouts without merging paths; a new
+terminal starts in the selected folder, and a shell's later `cd` never moves
+its placement to another project. Offline remote folders stay visible.
+Removing a project or folder reference deletes nothing and terminates
+nothing; assigning an existing terminal to a project never restarts it.
 
 ## Tabs, splits, windows, and independent views
 
@@ -101,19 +88,13 @@ the result. Merely opening an observer view does not resize the application.
 | Transport interruption | Show reconnecting/stale state; runtime recovery owns retries. |
 | Daemon crash/restart | Mark old resources missing; processes and volatile scrollback are lost. |
 
-Termination names the target and uses server capabilities and approvals. It
-does not hide behind a generic close button. [Daemon durability limits](../adr/0130-on-disk-pty-journal-is-not-built.md)
-also apply to desktop restore: a layout snapshot is not a process checkpoint.
-Never silently bind an old placement to a reused numeric ID on a new daemon.
-Offer an explicit new terminal after loss, using a remembered folder only when
-the user chooses to create it; do not replay old commands automatically.
-
-Restore windows, tabs, split ratios, project associations, selected placement,
-and view preferences from a versioned local snapshot. Remap missing monitors
-into usable bounds. Offline and missing terminals keep understandable
-placeholders. A corrupt or newer snapshot produces an actionable recovery
-state rather than deletion of the original file. Live selection/search anchors
-are generation-bound and cannot be treated as durable document positions.
+Termination names its target and goes through server capabilities and
+approvals. A layout snapshot is not a process checkpoint
+([ADR-0130](../adr/0130-on-disk-pty-journal-is-not-built.md)): never bind an
+old placement to a reused id on a new daemon, and never replay commands.
+Restore windows, tabs, ratios, projects, and view preferences from a
+versioned local snapshot, with placeholders for missing terminals and a
+recovery state (not deletion) for a corrupt or newer snapshot.
 
 ## Terminal interaction
 
@@ -140,43 +121,24 @@ fidelity evidence and any explicit unsupported-case disposition.
 
 ## Agents appear where the work is
 
-A terminal remains usable as a terminal when an agent starts. Its agent badge
-and an unobtrusive detail affordance become visible from existing emitted
-state. The first agent therefore reveals useful context without mandatory
-onboarding or replacing the terminal with a dashboard. Project navigation and
-an attention view are complementary ways to find the same work.
-
-The inspector shows available AgentSession children, lifecycle and attention,
-bounded recent events, questions, and server-held approvals. Emitted lifecycle
-and detector fallback remain distinguishable; an unknown vocabulary value is
-not an error or invented success. Truncation, sequence gaps, removed parents,
-and stale approvals are visible. Attention notifications are deduplicated,
-preference-controlled, and take the user to the relevant resource without
-typing into it. Approval buttons appear only with the necessary server
-capability and authority. No Objective/Run scheduler or speculative coordinator
-is part of this desktop contract.
+A terminal stays a terminal when an agent starts; a badge and detail
+affordance appear from emitted state. The inspector shows AgentSession
+children, lifecycle, attention, bounded recent events, questions, and
+server-held approvals, keeping emitted state distinguishable from detector
+fallback and making gaps and stale approvals visible. Notifications are
+deduplicated and navigate without typing; approval buttons appear only with
+server authority.
 
 ## Connections, settings, and native behavior
 
-Local and registered remote hosts can be open concurrently. Host labels and
-resource identity remain qualified throughout navigation and diagnostics.
-Reuse registry credentials and the shared dialer; show authentication refusal,
-expired credentials, unsupported server versions, and offline inventory as
-different states. Observer and writable transitions follow server authority.
-
-Settings show effective value, default, source, and whether an edit applies
-live or at next start. Shared keys use the existing configuration catalogue
-and comment-preserving writer; UI-only preferences have a desktop-owned
-schema. Validate before atomic write, detect external edits, support theme and
-font preview, and explain keymap conflicts. Invalid configuration leaves a
-recoverable app rather than a blank window.
-
-Native menus, Dock/reopen, dialogs, file drops, clipboard, links, notifications,
-display scale, appearance, reduced motion, and high contrast are part of the
-product. Keyboard focus and screen-reader navigation cover both chrome and
-terminal text. Terminal titles and output remain data; links and dropped paths
-cannot become implicit command execution. Diagnostics are bounded and
-redacted, with connection/resource/view identity and actionable error context.
+Local and registered remote hosts open concurrently with host-qualified
+identity, through the shared registry and dialer; auth refusal, expiry,
+version mismatch, and offline inventory are distinct states. Settings show
+effective value, default, source, and when an edit applies, using the shared
+catalogue and comment-preserving writer. Native menus, Dock, dialogs, drops,
+clipboard, notifications, scale, appearance, reduced motion, high contrast,
+and screen-reader navigation are in scope; titles, links, and dropped paths
+never become implicit command execution.
 
 ## Status
 

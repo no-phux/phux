@@ -1,28 +1,9 @@
-//! Binary-level output-hygiene tests for `phux` (cli-ergonomics).
-//!
-//! These drive the REAL `phux` binary (handed to us by cargo at
-//! `env!("CARGO_BIN_EXE_phux")`) but need NO running server, so unlike
-//! `run_wait_e2e.rs` they are cheap and run in the default pool. They pin
-//! the contracts an agent or shell script depends on:
-//!
-//!   * A one-shot verb prints NO build banner — stderr stays clean.
-//!   * A `--json` path puts ONLY JSON on stdout (or nothing, on error),
-//!     never the banner; errors go to stderr with a nonzero exit.
-//!   * `--version` reports on stdout, banner-free.
-//!   * A verb whose reader hangs up (`| head`, quitting `less`) exits 0 in
-//!     silence instead of panicking — see `run_with_closed_stdout`.
-//!
-//! Every verb that contacts a server is pointed at a socket path that
-//! does not exist, so the server is never auto-spawned: `ls` does not
-//! auto-start one, and the selector verbs see a connect error first.
-//!
-//! "Needs no running server" is not the same as "needs no network", and
-//! `doctor` is the verb where the two came apart (phux-vlv1). Its
-//! remote-reachable check detects the host's overlay address and dials it
-//! with a 4s budget, so on a tailnet-attached developer box these
-//! default-pool tests opened a real TLS connection to that developer's own
-//! live server and hung on it under load. Every spawn here therefore goes
-//! through [`phux`], which turns overlay detection off.
+//! Output-hygiene contracts of the real binary, with no server (dead socket
+//! paths, so nothing auto-spawns): one-shot verbs print no banner, `--json`
+//! puts only JSON on stdout and errors on stderr, `--version` is clean stdout,
+//! and a closed reader (`| head`) exits 0 silently. Every spawn goes through
+//! [`phux`], which disables overlay detection so `doctor` never dials a real
+//! tailnet server.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -35,27 +16,16 @@ use tempfile::TempDir;
 /// Path to the freshly-built `phux` binary, injected by cargo.
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 
-/// A socket path guaranteed not to exist, so no verb finds (or spawns) a
-/// server. Unique per process to avoid any cross-run collision.
+/// A socket path that does not exist, so no verb finds (or spawns) a server.
 fn dead_socket() -> String {
     format!("/tmp/phux-no-such-server-{}.sock", std::process::id())
 }
 
-/// A program name that cannot exist, used to turn overlay detection off.
-///
-/// `$PHUX_TAILSCALE` names the CLI `phux_config::overlay::detect` runs, and
-/// setting it also suppresses the CGNAT route heuristic — so naming one that
-/// cannot answer means "this host has no overlay", whatever the host is. A
-/// nonexistent program rather than a stub script: a failed `execve` cannot
-/// be slow, where a `/bin/sh` stub has been seen to blow the 2s detection
-/// deadline on a loaded box and hand back the ambient answer.
+/// A nonexistent `$PHUX_TAILSCALE` CLI: turns overlay detection (and the
+/// CGNAT heuristic) off, and a failed `execve` cannot be slow.
 const NO_OVERLAY_CLI: &str = "/nonexistent/phux-output-hygiene-no-overlay";
 
 /// The binary under test, with overlay detection off.
-///
-/// Every spawn in this file goes through here. The module doc says why:
-/// these tests are in the default pool and must not touch the network, and
-/// `doctor` will dial whatever address detection hands it.
 fn phux() -> Command {
     let mut cmd = Command::new(PHUX);
     cmd.env("PHUX_TAILSCALE", NO_OVERLAY_CLI);
@@ -165,7 +135,7 @@ fn run(args: &[&str]) -> (i32, String, String) {
     (
         out.status.code().expect("phux exited via code, not signal"),
         String::from_utf8_lossy(&out.stdout).into_owned(),
-        strip_dhat(&String::from_utf8_lossy(&out.stderr)),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
     )
 }
 
@@ -178,35 +148,11 @@ fn run_with_xdg(args: &[&str], xdg_config_home: &std::path::Path) -> (i32, Strin
     (
         out.status.code().expect("phux exited via code, not signal"),
         String::from_utf8_lossy(&out.stdout).into_owned(),
-        strip_dhat(&String::from_utf8_lossy(&out.stderr)),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
     )
 }
 
-/// Drop `dhat:` diagnostic lines from stderr.
-///
-/// An `--all-features` build (the `just ci` profile) carries the
-/// `dhat-heap` profiler, whose Drop prints nondeterministic heap stats to
-/// stderr on every clean `main` return. Those lines are a build diagnostic,
-/// not CLI output; left in, they break equality assertions (the stats vary
-/// run to run) under that one feature set. Deliberately NOT applied to
-/// `run_with_closed_stdout`: the hang-up path must skip destructors
-/// entirely (`process::exit`), so dhat output there is a real regression
-/// the strict emptiness assertion exists to catch.
-fn strip_dhat(stderr: &str) -> String {
-    stderr
-        .lines()
-        .filter(|line| !line.starts_with("dhat: "))
-        .fold(String::new(), |mut acc, line| {
-            acc.push_str(line);
-            acc.push('\n');
-            acc
-        })
-}
-
-/// The build banner line that used to print on EVERY invocation. No
-/// one-shot verb may emit it (it pollutes stderr for scripts/agents).
-/// The banner is now a plain `phux <version>` — matched here in full so
-/// these absence checks stay meaningful.
+/// The build banner; no one-shot verb may print it.
 const BANNER_FRAGMENT: &str = concat!("phux ", env!("CARGO_PKG_VERSION"));
 
 #[test]
@@ -217,8 +163,6 @@ fn version_is_clean_stdout_with_no_banner() {
         stdout.contains(env!("CARGO_PKG_VERSION")),
         "--version stdout should carry the version; got {stdout:?}"
     );
-    // clap's own `--version` output on stdout is legitimately `phux <version>`;
-    // the banner would be a stderr line, so that is where absence is checked.
     assert!(
         !stderr.contains(BANNER_FRAGMENT),
         "--version must not print the banner to stderr; stdout={stdout:?} stderr={stderr:?}"
@@ -241,18 +185,14 @@ fn skill_flag_is_clean_and_matches_the_legacy_verb() {
     assert!(flag_stdout.ends_with('\n'));
     assert!(flag_stderr.is_empty(), "--skill stderr={flag_stderr:?}");
     assert!(verb_stderr.is_empty(), "skill stderr={verb_stderr:?}");
-}
 
-#[test]
-fn scoped_skills_match_across_flag_and_verb_forms() {
     for scope in ["quick", "agent", "terminal"] {
         let (_, flag, flag_err) = run(&[&format!("--skill={scope}")]);
         let (_, verb, verb_err) = run(&["skill", scope]);
         assert_eq!(flag, verb, "scope={scope}");
         assert!(flag.starts_with("---\nname: using-phux\n"));
         assert!(!flag.contains("phux-skill-region:"));
-        assert!(flag_err.is_empty());
-        assert!(verb_err.is_empty());
+        assert!(flag_err.is_empty() && verb_err.is_empty());
     }
 }
 
@@ -293,23 +233,6 @@ fn capabilities_are_clean_machine_readable_and_socketless() {
 }
 
 #[test]
-fn help_does_not_print_banner() {
-    let (code, stdout, stderr) = run(&["--help"]);
-    assert_eq!(code, 0, "--help should exit 0");
-    // usage-rs puts `phux <version>` on the first line of `--help` stdout,
-    // the same way `--version` does. The banner that used to pollute every
-    // invocation is a stderr line; that is where absence is checked.
-    assert!(
-        !stderr.contains(BANNER_FRAGMENT),
-        "--help must not print the banner to stderr; stdout={stdout:?} stderr={stderr:?}"
-    );
-    assert!(
-        stdout.contains("Sessions:"),
-        "--help stdout should be the long help, not a banner line; got {stdout:?}"
-    );
-}
-
-#[test]
 fn short_and_long_help_progressively_disclose_the_root() {
     let (short_code, short, short_err) = run(&["-h"]);
     let (long_code, long, long_err) = run(&["--help"]);
@@ -320,6 +243,10 @@ fn short_and_long_help_progressively_disclose_the_root() {
     assert!(short.contains("phux --skill"));
     assert!(!short.contains("Sessions:"), "short help:\n{short}");
     assert!(long.contains("Sessions:"), "long help:\n{long}");
+    assert!(
+        !long_err.contains(BANNER_FRAGMENT),
+        "--help printed the banner"
+    );
     assert!(long.contains("Learn more:"), "long help:\n{long}");
     // Grouped rows are laid out in columns; compare on whitespace-collapsed text.
     let flat = long.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -332,61 +259,6 @@ fn short_and_long_help_progressively_disclose_the_root() {
         "long help must list launch:\n{long}"
     );
 }
-
-#[test]
-fn ls_json_no_server_is_silent_stdout_and_banner_free() {
-    let sock = dead_socket();
-    let (code, stdout, stderr) = run(&["ls", "--json", "--socket", &sock]);
-    assert_ne!(code, 0, "`ls --json` with no server should exit nonzero");
-    assert!(
-        stdout.is_empty(),
-        "`ls --json` with no server must leave stdout empty (no banner, no partial JSON); got {stdout:?}"
-    );
-    assert!(
-        !stderr.contains(BANNER_FRAGMENT),
-        "`ls --json` must not print the banner to stderr; got {stderr:?}"
-    );
-    assert!(
-        stderr.contains("no server"),
-        "the error should explain there is no server; got {stderr:?}"
-    );
-}
-
-#[test]
-fn ls_plain_no_server_is_banner_free() {
-    let sock = dead_socket();
-    let (code, _stdout, stderr) = run(&["ls", "--socket", &sock]);
-    assert_ne!(
-        code, 0,
-        "`ls` with no server should exit nonzero (like tmux)"
-    );
-    assert!(
-        !stderr.contains(BANNER_FRAGMENT),
-        "`ls` must not print the banner; got {stderr:?}"
-    );
-}
-
-#[test]
-fn snapshot_json_no_server_is_silent_stdout_and_banner_free() {
-    let sock = dead_socket();
-    let (code, stdout, stderr) = run(&["snapshot", "--json", "work", "--socket", &sock]);
-    assert_ne!(
-        code, 0,
-        "`snapshot --json` with no server should exit nonzero"
-    );
-    assert!(
-        stdout.is_empty(),
-        "`snapshot --json` with no server must leave stdout empty; got {stdout:?}"
-    );
-    assert!(
-        !stderr.contains(BANNER_FRAGMENT),
-        "`snapshot --json` must not print the banner; got {stderr:?}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// One grammar: the global `--socket` (ADR-0065)
-// ---------------------------------------------------------------------------
 
 /// `phux --socket X ls` and `phux ls --socket X` are the same invocation:
 /// same exit code, same stdout, same stderr. Pointed at a dead socket so
@@ -456,22 +328,6 @@ fn root_rec_before_verb_teaches_the_two_spellings() {
     assert!(
         stderr.contains("phux attach --rec") && stderr.contains("phux rec"),
         "the refusal must name the attach and headless spellings; got {stderr:?}"
-    );
-}
-
-#[test]
-fn config_path_is_clean_stdout_with_no_banner() {
-    // `config` never contacts a server, so it always runs. Its stdout must
-    // be the path alone — no banner above it.
-    let (code, stdout, stderr) = run(&["config", "path"]);
-    assert_eq!(code, 0, "`config path` should exit 0; stderr={stderr}");
-    assert!(
-        !stdout.contains(BANNER_FRAGMENT) && !stderr.contains(BANNER_FRAGMENT),
-        "`config path` must not print the banner; stdout={stdout:?} stderr={stderr:?}"
-    );
-    assert!(
-        stdout.lines().count() == 1 && !stdout.trim().is_empty(),
-        "`config path` stdout should be exactly the path on one line; got {stdout:?}"
     );
 }
 
@@ -604,115 +460,31 @@ enabled = false
     assert_eq!(value["plugins"][0]["enabled"], false);
 }
 
-/// `phux rec --json` against a dead socket: the connect error is the only
-/// output, and it goes to stderr. An agent that pipes stdout into a JSON
-/// parser must get either one object or nothing — never a banner, never a
-/// half-written result line.
-#[test]
-fn rec_json_no_server_is_silent_stdout_and_banner_free() {
-    let tmp = TempDir::new().expect("tempdir");
-    let out = tmp.path().join("demo.cast");
-    let sock = dead_socket();
-    let (code, stdout, stderr) = run(&[
-        "rec",
-        "--json",
-        "-o",
-        out.to_str().expect("utf-8 temp path"),
-        "--socket",
-        &sock,
-    ]);
-
-    assert_ne!(code, 0, "`rec --json` with no server should exit nonzero");
-    assert!(
-        stdout.is_empty(),
-        "`rec --json` with no server must leave stdout empty (no banner, no partial JSON); got {stdout:?}"
-    );
-    assert!(
-        !stderr.contains(BANNER_FRAGMENT),
-        "`rec --json` must not print the banner to stderr; got {stderr:?}"
-    );
-    assert!(
-        stderr.contains("no server"),
-        "the error should explain there is no server; got {stderr:?}"
-    );
-    assert!(
-        !out.exists(),
-        "a capture that never started must not leave an empty cast behind"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// The JSON error contract (ADR-0065 §4, phux-i0e8.8.2)
-//
-// Every converted `--json` verb failing against a dead socket must leave
-// stdout empty and put ONE JSON line on stderr:
-// {"schema_version":1,"error":{"code":"no_server","message":...},
-//  "remedy":...,"exit_code":1} — with the process exiting 1. The prose
-// paths (no `--json`) are pinned separately above and in unit tests.
-// ---------------------------------------------------------------------------
-
 /// Run `phux <args...>` with an optional `XDG_CONFIG_HOME`, returning
 /// `(exit_code, stdout, stderr)`.
 fn run_maybe_xdg(args: &[&str], xdg: Option<&std::path::Path>) -> (i32, String, String) {
     xdg.map_or_else(|| run(args), |xdg| run_with_xdg(args, xdg))
 }
 
-/// Assert the whole per-verb contract: exit 1, empty stdout, and stderr
-/// that is ONE line parsing as the contract document with code `no_server`,
-/// `exit_code` 1, the socket named in the message, and a non-empty remedy.
+/// The `no_server` contract, with the socket named in the message.
 fn assert_no_server_json_contract(
     verb: &str,
     args: &[&str],
     xdg: Option<&std::path::Path>,
     sock: &str,
 ) {
-    let (code, stdout, stderr) = run_maybe_xdg(args, xdg);
-    assert_eq!(
-        code,
-        1,
-        "`phux {}` with no server must exit 1; stderr={stderr}",
-        args.join(" ")
-    );
-    assert!(
-        stdout.is_empty(),
-        "`{verb} --json` failure must leave stdout empty; got {stdout:?}"
-    );
-    let line = stderr.trim();
-    assert!(
-        !line.contains('\n'),
-        "`{verb} --json` failure must be ONE stderr line; got {stderr:?}"
-    );
-    let doc: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|err| {
-        panic!("`{verb} --json` stderr must parse as JSON ({err}); got {stderr:?}")
-    });
-    assert_eq!(doc["schema_version"], 1, "{verb}: {doc}");
-    assert_eq!(doc["error"]["code"], "no_server", "{verb}: {doc}");
+    let doc = assert_json_error_contract(verb, args, xdg, "no_server", 1);
     assert!(
         doc["error"]["message"]
             .as_str()
             .is_some_and(|m| m.contains(sock)),
         "{verb}: the message names the socket; got {doc}"
     );
-    assert_eq!(doc["exit_code"], 1, "{verb}: {doc}");
-    assert!(
-        doc["remedy"].as_str().is_some_and(|r| !r.is_empty()),
-        "{verb}: the error must carry a non-empty remedy; got {doc}"
-    );
 }
 
-/// One converted verb, `--json`, against a dead socket: exit 1, empty
-/// stdout, and stderr that parses as the contract document with code
-/// `no_server`, `exit_code` 1, and a non-empty remedy.
-///
-/// The "dead socket" is a real socket file whose listener has gone (bound,
-/// then dropped) rather than a missing path: connecting to it is a clean
-/// `ECONNREFUSED` on every platform, where a plain file would be `ENOTSOCK`.
-///
-/// Every verb here is one that only ever *dials* a server. An abandoned
-/// socket used to hold `new --json` on the connect-refused path too, because
-/// auto-spawn was gated on the socket file not existing — a bug ADR-0080
-/// fixed, so a stale entry is now reaped and a server started. Spawning verbs
-/// therefore have no "no server" case to pin here.
+/// Every dialing `--json` verb against an abandoned socket (bound, then
+/// dropped: a clean `ECONNREFUSED`) follows the `no_server` contract.
+/// Auto-spawning verbs (`new`) reap the stale socket instead.
 #[test]
 fn json_error_contract_holds_across_core_verbs_with_no_server() {
     let tmp = TempDir::new().expect("tempdir");
@@ -778,20 +550,11 @@ fn json_error_contract_holds_across_core_verbs_with_no_server() {
             vec!["rec", "--json", "-o", out, "--socket", sock],
             None,
         ),
-        // `new` is deliberately absent: it AUTO-SPAWNS, so against any
-        // reachable path it now creates a server rather than failing, and
-        // against an unreachable one it reports the bind error (`transport`)
-        // rather than `no_server`. Neither is this table's contract. Its
-        // corrected behaviour — reap the stale entry, start a server — is
-        // pinned in `tests/stale_socket_recovery.rs`.
         (
             "ask",
             vec!["ask", "work", "--json", "--socket", sock, "hello?"],
             None,
         ),
-        // The registry rollout (phux-i0e8.8.3): `tag` is the one registry
-        // verb that dials the server, so its dead-socket failure joins the
-        // same table as the core verbs.
         (
             "tag",
             vec!["tag", "ls", "work", "--json", "--socket", sock],
@@ -802,30 +565,22 @@ fn json_error_contract_holds_across_core_verbs_with_no_server() {
     for (verb, args, xdg) in cases {
         assert_no_server_json_contract(verb, args, *xdg, sock);
     }
+    assert!(
+        !std::path::Path::new(out).exists(),
+        "a capture that never started must not leave an empty cast behind"
+    );
 }
 
-// ---------------------------------------------------------------------------
-// The JSON error contract across the registry verbs (phux-i0e8.8.3)
-//
-// The sub-registries (`plugin`, `host`, `worktree`,
-// `workspace`, `config check`, plus `tag`'s serverless selector error)
-// mostly never dial a server; their failures are local — a broken config, an
-// unknown id, not-a-repository. Under `--json` each must still leave stdout
-// empty and put ONE contract line on stderr, with a code from the closed
-// vocabulary and `exit_code` mirroring the process status.
-// ---------------------------------------------------------------------------
-
-/// Assert the general per-verb contract: the expected exit code, empty
-/// stdout, and stderr that is ONE line parsing as the contract document
-/// with the expected `error.code`, a matching `exit_code`, and a non-empty
-/// remedy.
+/// Assert the per-verb contract: the expected exit code, empty stdout, and
+/// ONE stderr line parsing as the contract document with the expected
+/// `error.code`, matching `exit_code`, and a non-empty remedy.
 fn assert_json_error_contract(
     verb: &str,
     args: &[&str],
     xdg: Option<&std::path::Path>,
     expected_code: &str,
     expected_exit: i32,
-) {
+) -> serde_json::Value {
     let (code, stdout, stderr) = run_maybe_xdg(args, xdg);
     assert_eq!(
         code,
@@ -852,6 +607,7 @@ fn assert_json_error_contract(
         doc["remedy"].as_str().is_some_and(|r| !r.is_empty()),
         "{verb}: the error must carry a non-empty remedy; got {doc}"
     );
+    doc
 }
 
 /// One registry-table case: (verb, argv, `XDG_CONFIG_HOME` override,
@@ -940,7 +696,7 @@ fn json_error_contract_holds_across_registry_verbs() {
     ];
 
     for (verb, args, xdg, code, exit) in cases {
-        assert_json_error_contract(verb, args, *xdg, code, *exit);
+        let _ = assert_json_error_contract(verb, args, *xdg, code, *exit);
     }
 }
 
@@ -978,11 +734,8 @@ fn logs_json_inventory_is_pure_json_stdout() {
     );
 }
 
-/// `phux doctor --json` on a FAILURE exit stays prose-free: the verdict —
-/// including the failing check and its hint — is the JSON document on
-/// stdout, and stderr carries nothing. Provoked with a socket path that
-/// cannot fit in `sockaddr_un`, the one check that fails without any
-/// server or config involvement.
+/// `doctor --json` on a failure exit: the verdict is the stdout document and
+/// stderr is empty (provoked with a socket path too long for `sockaddr_un`).
 #[test]
 fn doctor_json_failure_exit_is_json_only() {
     let tmp = TempDir::new().expect("tempdir");
@@ -1025,30 +778,11 @@ fn no_server_without_json_stays_prose() {
         stderr.contains("no server running") && stderr.contains("phux doctor"),
         "prose keeps the remedy block; got {stderr:?}"
     );
+    assert!(!stderr.contains(BANNER_FRAGMENT), "stderr={stderr:?}");
 }
 
-// ---------------------------------------------------------------------------
-// Broken pipe (phux-h5hj.8, phux-ngq2)
-//
-// `phux snapshot work | head -8` used to die with a ~50-frame backtrace and
-// an ERROR line reading `server panic`, because `println!` panics when its
-// write fails and the panic hook of the day was the SERVER's. Piping a verb
-// into `head` or `less` is an ordinary thing for a human to do; it has to
-// exit 0 in silence.
-// ---------------------------------------------------------------------------
-
-/// Run `phux <args...>` with **the read end of its stdout pipe already
-/// closed**, and return `(exit_status_code, stderr)`.
-///
-/// This closes a real pipe on a real spawned binary. Simulating it — calling
-/// the print helper with a fake writer that returns `BrokenPipe` — would
-/// prove nothing about the two things that actually broke: the panic hook a
-/// dying process runs, and the exit status the shell sees.
-///
-/// `code` is `None` when the child died from a signal, which is a failure
-/// mode this contract must exclude too: Rust masks `SIGPIPE` at startup, and
-/// a `phux` that started letting it through would die with 141 instead of
-/// reporting 0.
+/// Run `phux <args...>` with the read end of its real stdout pipe already
+/// closed; returns `(exit code, None if killed by a signal; stderr)`.
 fn run_with_closed_stdout(args: &[&str]) -> (Option<i32>, String) {
     let mut child = phux()
         .args(args)
@@ -1057,10 +791,6 @@ fn run_with_closed_stdout(args: &[&str]) -> (Option<i32>, String) {
         .spawn()
         .expect("spawn phux binary");
 
-    // Drop OUR end of the pipe — the only reader — before the child gets
-    // through clap parsing and reaches its first write. With no reader left,
-    // the write fails with EPIPE immediately, whatever its size; we do not
-    // depend on filling a 64 KiB pipe buffer to provoke it.
     drop(child.stdout.take().expect("child stdout is piped"));
 
     let out = child.wait_with_output().expect("wait for phux");
@@ -1097,48 +827,33 @@ fn assert_survives_closed_stdout(args: &[&str]) {
     );
 }
 
-/// `phux completion bash` is the load-bearing case: the script is ~160 KB,
-/// so it cannot fit in a pipe buffer and the write is guaranteed to reach a
-/// reader that has gone — no scheduling luck involved. It is also the verb
-/// whose stdout belongs to `clap_complete`, which `.expect()`s its writes;
-/// the fix had to render into a buffer rather than hand it `io::stdout()`.
 #[test]
-fn completion_survives_a_closed_stdout() {
-    assert_survives_closed_stdout(&["completion", "bash"]);
+fn config_path_is_one_clean_line() {
+    let (code, stdout, stderr) = run(&["config", "path"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(!stderr.contains(BANNER_FRAGMENT), "stderr={stderr:?}");
+    assert!(
+        stdout.lines().count() == 1 && !stdout.trim().is_empty(),
+        "{stdout:?}"
+    );
 }
 
-/// The `print!`-shaped path (no trailing newline): `config show --default`
-/// streams the packaged config as one fragment, so it exercises `out!`
-/// rather than `outln!`.
+/// A hung-up reader must end each shape of stdout writer silently: a
+/// ~160 KB completion script (guaranteed to hit the closed pipe), an `out!`
+/// fragment, a `--json` document, a verb that dials first, and the parser's
+/// own `--version` / `--help` / `--skill` output.
 #[test]
-fn config_show_default_survives_a_closed_stdout() {
-    assert_survives_closed_stdout(&["config", "show", "--default"]);
-}
-
-/// A `--json` path. An agent piping `phux config plugins --json` into `jq
-/// -e '.plugins[0]'` gets a reader that exits early on the first match; the
-/// verb must not turn that into a crash.
-#[test]
-fn config_plugins_json_survives_a_closed_stdout() {
-    assert_survives_closed_stdout(&["config", "plugins", "--json"]);
-}
-
-/// A verb that talks to the socket first and reports afterwards. Pointed at
-/// a dead socket so no server is spawned — `doctor` reports the absence
-/// rather than failing, so it still reaches its writes.
-#[test]
-fn doctor_survives_a_closed_stdout() {
+fn every_writer_survives_a_closed_stdout() {
     let sock = dead_socket();
-    assert_survives_closed_stdout(&["doctor", "--socket", &sock]);
-}
-
-/// `--version` and `--help` are written by clap, not by us. They are in the
-/// same contract — a user pipes `phux --help | head` more often than
-/// anything else here — so pin them rather than assume clap keeps handling
-/// it.
-#[test]
-fn clap_output_survives_a_closed_stdout() {
-    assert_survives_closed_stdout(&["--version"]);
-    assert_survives_closed_stdout(&["--help"]);
-    assert_survives_closed_stdout(&["--skill"]);
+    for args in [
+        vec!["completion", "bash"],
+        vec!["config", "show", "--default"],
+        vec!["config", "plugins", "--json"],
+        vec!["doctor", "--socket", &sock],
+        vec!["--version"],
+        vec!["--help"],
+        vec!["--skill"],
+    ] {
+        assert_survives_closed_stdout(&args);
+    }
 }

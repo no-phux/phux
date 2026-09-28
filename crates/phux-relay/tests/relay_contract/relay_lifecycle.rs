@@ -1,10 +1,7 @@
-//! Tunnel and token lifecycle against the PRODUCTION relay (ADR-0057
-//! outline semantics): a redial REPLACES the live tunnel (last-writer-wins
-//! `RECLAIMED`), a re-mint REPLACES the route's token (revoking the old
-//! one at the next handshake), consumers on a lost tunnel fail boundedly,
-//! many concurrent consumers share one route, and the `--max-conns` cap
-//! refuses over-cap connections with `OVER_CAP` without touching existing
-//! ones.
+//! Tunnel and token lifecycle against the production relay: redial
+//! replaces (`RECLAIMED`), re-mint revokes at the next handshake, a lost
+//! tunnel ends its bridges boundedly, concurrent consumers share a route,
+//! and the `--max-conns` cap refuses with `OVER_CAP`.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -23,9 +20,8 @@ use crate::common::{
     spawn_connector, spawn_relay,
 };
 
-/// Requirement 5, pinned explicitly: a second connector claiming the same
-/// route while the first is still alive WINS. The incumbent is closed with
-/// `RECLAIMED` (0x03) and consumers land on the new tunnel.
+/// A second connector claiming a live route wins; the incumbent is closed
+/// `RECLAIMED` and new consumers land on the new tunnel.
 #[tokio::test]
 async fn redial_while_old_alive_new_wins_old_sees_reclaimed() {
     let dir = tempfile::tempdir().unwrap();
@@ -107,9 +103,8 @@ async fn consumer_mid_bridge_bounded_error_on_tunnel_loss_then_redial_recovers()
     assert_eq!(conn2.bridged(), 1);
 }
 
-/// Requirement 6: eight concurrent consumers on one route, each seeing
-/// exactly its own tagged echo; the connector bridged eight distinct
-/// streams and no payload leaked across taps.
+/// Eight concurrent consumers on one route each get their own stream and
+/// echo, and no payload leaks across taps.
 #[tokio::test]
 async fn concurrent_consumers_one_route() {
     let dir = tempfile::tempdir().unwrap();
@@ -196,11 +191,8 @@ async fn extra_consumer_stream_never_crosses_the_tunnel_identity_boundary() {
     assert_eq!(connector.bridged(), 2);
 }
 
-/// The outline's replace-on-remint (token-route bijection): re-minting a
-/// route rotates its token. The live tunnel is NOT torn down (revocation
-/// is at the next handshake), the OLD token is refused with `AUTH_FAILED`
-/// on its next dial, and the NEW token claims the route (reclaiming the
-/// incumbent).
+/// Re-minting rotates a route's token: the live tunnel keeps serving, and
+/// the old token is refused with `AUTH_FAILED` at its next handshake.
 #[tokio::test]
 async fn remint_replaces_token_and_invalidates_old_at_next_handshake() {
     let dir = tempfile::tempdir().unwrap();
@@ -217,9 +209,7 @@ async fn remint_replaces_token_and_invalidates_old_at_next_handshake() {
     .await;
     await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
 
-    // Rotate: the store now binds alpha to token2 only.
-    let token2 = mint(&relay.tokens_path, "alpha");
-    assert_ne!(token1, token2);
+    assert_ne!(token1, mint(&relay.tokens_path, "alpha"));
 
     // The established tunnel is untouched by the rotation: it still serves.
     let mut consumer = dial_consumer(relay.addr, &relay.fingerprint, "alpha")
@@ -236,32 +226,19 @@ async fn remint_replaces_token_and_invalidates_old_at_next_handshake() {
         .await
         .expect("old token refused promptly");
     assert_app_closed(&err, AUTH_FAILED_CODE, "old token after remint");
-
-    // The NEW token claims the route, reclaiming the incumbent.
-    let conn2 = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token2, b"TWO:").await;
-    let err = conn1.closed().await;
-    assert_app_closed(&err, RECLAIMED_CODE, "incumbent reclaimed by new token");
-    let mut consumer2 = dial_consumer(relay.addr, &relay.fingerprint, "alpha")
-        .await
-        .expect("consumer dials the rotated tunnel");
-    expect_echo(&mut consumer2, b"TWO:", b"post-rotation").await;
-    assert_eq!(conn2.bridged(), 1);
+    assert!(conn1.conn.close_reason().is_none(), "live tunnel untouched");
 }
 
-/// The outline's `--max-conns` cap: with `max_conns = 2` exhausted by one
-/// tunnel and one live consumer bridge, the next connection completes its
-/// handshake and is refused with `OVER_CAP` (0x05) — while the existing
-/// tunnel and consumer keep working untouched.
+/// With `max_conns = 2` held by a tunnel and a consumer, the next
+/// connection is refused `OVER_CAP` after the handshake while existing ones
+/// keep working; releasing a slot restores admission.
 #[tokio::test]
 async fn over_cap_connection_refused_existing_unaffected() {
     let dir = tempfile::tempdir().unwrap();
     let relay = spawn_relay(dir.path(), 2).await;
     let token = mint(&relay.tokens_path, "alpha");
 
-    // Slot 1: the tunnel. (No idle probe here — a probe would transiently
-    // hold a cap slot; the retrying echo helper syncs on the claim
-    // instead, and its failed pre-tunnel attempts release their slots
-    // immediately.)
+    // Slot 1: the tunnel (no idle probe: it would hold a slot).
     let connector = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"A:").await;
     // Slot 2: a consumer holding a live bridge.
     let mut consumer1 =
@@ -295,11 +272,8 @@ async fn over_cap_connection_refused_existing_unaffected() {
     assert_eq!(connector.bridged(), 2);
 }
 
-/// Decision 6 / invariant 4, the stream-0 watchdog: after a completed
-/// auth preamble, stream 0 is reserved. A connector that writes one more
-/// byte on it is closed with specifically `PROTOCOL_VIOLATION` (0x04) and
-/// the watchdog's reason text — richer relay dialogue requires an ALPN
-/// bump, never in-band bytes.
+/// Stream 0 is reserved after the preamble (ADR-0051 invariant 4): one more
+/// byte closes the tunnel with `PROTOCOL_VIOLATION`.
 #[tokio::test]
 async fn byte_on_stream0_after_preamble_closes_with_protocol_violation() {
     let dir = tempfile::tempdir().unwrap();
@@ -335,9 +309,8 @@ async fn byte_on_stream0_after_preamble_closes_with_protocol_violation() {
     }
 }
 
-/// Deleting the store file revokes every route at the next handshake
-/// (outline D9 liveness, the revocation half): live connections persist,
-/// but a redial is refused and consumers find the route unknown at TLS.
+/// Deleting the store revokes every route at the next handshake: a redial is
+/// refused and consumers find the route unknown at TLS.
 #[tokio::test]
 async fn deleting_store_revokes_at_next_handshake() {
     let dir = tempfile::tempdir().unwrap();

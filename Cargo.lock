@@ -42,12 +42,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
-name = "allocator-api2"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c880a97d28a3681c0267bd29cff89621202715b065127cd445fa0f0fe0aa2880"
-
-[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1299,7 +1293,7 @@ version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 dependencies = [
- "allocator-api2 0.2.21",
+ "allocator-api2",
  "equivalent",
  "foldhash",
 ]
@@ -1310,7 +1304,7 @@ version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
- "allocator-api2 0.2.21",
+ "allocator-api2",
  "equivalent",
  "foldhash",
 ]
@@ -1724,7 +1718,6 @@ name = "libghostty-vt"
 version = "0.2.1"
 source = "git+https://github.com/phall1/libghostty-rs.git?rev=a0f75ba1de17ec63b14fbc259ae097de24243571#a0f75ba1de17ec63b14fbc259ae097de24243571"
 dependencies = [
- "allocator-api2 0.4.0",
  "bitflags 2.13.2",
  "int-enum",
  "libghostty-vt-sys",
@@ -2393,7 +2386,6 @@ dependencies = [
  "phux-perf",
  "phux-protocol",
  "phux-record",
- "phux-relay",
  "phux-server",
  "quinn",
  "regex",
@@ -2579,7 +2571,6 @@ version = "0.46.0"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
- "chrono",
  "flate2",
  "insta",
  "int-enum",
@@ -2627,7 +2618,6 @@ dependencies = [
 name = "phux-server"
 version = "0.46.0"
 dependencies = [
- "allocator-api2 0.4.0",
  "base64 0.23.1",
  "bytes",
  "chrono",
@@ -2638,7 +2628,6 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "httlib-huffman",
- "insta",
  "libc",
  "libghostty-vt",
  "memchr",
@@ -2685,7 +2674,6 @@ version = "0.46.0"
 dependencies = [
  "bytes",
  "libghostty-vt",
- "phux-config",
  "phux-protocol",
  "phux-relay",
  "phux-server",

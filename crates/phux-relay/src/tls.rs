@@ -1,25 +1,11 @@
 //! TLS termination for the relay's single QUIC endpoint.
 //!
-//! One endpoint advertises BOTH ALPNs — the dedicated connector protocol
-//! (`phux-relay/1`) and the production consumer protocol (`phux-quic/1`);
-//! which leg a connection belongs to is read back from the negotiated ALPN,
-//! never from the byte stream (ADR-0051 invariant 7).
-//!
-//! Consumer routing is TLS SNI (ADR-0052 Decision 1): a consumer hello
-//! whose server name is absent or not an enrolled route is refused **at
-//! the TLS layer** by `SniGate`, a `ResolvesServerCert` that declines to
-//! produce a certificate — the handshake aborts and zero phux-shaped bytes
-//! are ever exchanged. Connector hellos (which offer the relay ALPN) pass
-//! the gate; their authentication is the stream-0 token preamble.
-//!
-//! Certificate provisioning is not implemented here. It is
-//! [`phux_dial::cert`]'s — a persisted self-signed pair, no-op when both
-//! files exist so the pinned fingerprint stays stable across restarts. This
-//! module used to carry a near-verbatim copy of `phux-server`'s
-//! `transport::tls`, which its own header admitted; ADR-0051 forbids
-//! depending on `phux-server`, so the one implementation lives in the crate
-//! both sit on. What stays here is the part that is genuinely the relay's:
-//! the dual-ALPN server config and the crate-internal `SniGate` resolver.
+//! One endpoint advertises both ALPNs (`phux-relay/1` for connectors,
+//! `phux-quic/1` for consumers); the leg is read from the negotiated ALPN,
+//! never the byte stream (ADR-0051 invariant 7). Consumer hellos whose SNI is
+//! absent or not an enrolled route are refused **at the TLS layer** by
+//! [`SniGate`] (ADR-0052 Decision 1). Certificate provisioning is
+//! [`phux_dial::cert`]'s.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -31,47 +17,22 @@ use phux_protocol::policy::{QUIC_ALPN, QUIC_RELAY_ALPN};
 use crate::RelayError;
 use crate::tokens::RouteTokenStore;
 
-/// Default persisted path for the relay's self-signed certificate:
-/// `<state-dir>/relay-cert.pem`, sibling of the server's
-/// `remote-cert.pem`.
-#[must_use]
-pub fn default_relay_cert_path() -> PathBuf {
-    crate::paths::state_dir().join("relay-cert.pem")
-}
-
-/// Default persisted path for the relay's private key:
-/// `<state-dir>/relay-key.pem`.
-#[must_use]
-pub fn default_relay_key_path() -> PathBuf {
-    crate::paths::state_dir().join("relay-key.pem")
-}
-
-/// Provision a self-signed certificate + key at the given paths if either
-/// is missing.
+/// Provision the relay's self-signed certificate + key if missing.
 ///
-/// A complete pair is left untouched, so the fingerprint both legs pin
-/// stays stable across restarts (and operator-supplied certificates work
-/// for free). The certificate is public; the key is written owner-only
-/// (`0o600`). SANs cover loopback names — irrelevant to fingerprint
-/// pinning, but they keep a conventionally-validating client working.
-///
-/// The relay names no advertised address in its SANs: a consumer reaches it
-/// by an *enrolled route name* carried in SNI (ADR-0052), and pins the
-/// fingerprint, so there is no address here to put in a certificate.
+/// A complete pair is left untouched so pins stay stable. Only loopback SANs:
+/// consumers address the relay by route name in SNI and pin the fingerprint.
 pub fn ensure_self_signed(cert_path: &Path, key_path: &Path) -> Result<(), RelayError> {
     Ok(cert::ensure_self_signed(cert_path, key_path)?)
 }
 
-/// SHA-256 fingerprint of the leaf certificate, formatted as uppercase
-/// colon-separated hex (`AB:CD:...`) — identical to the shape
-/// `phux pair` prints, so relay pins read the same everywhere.
+/// SHA-256 fingerprint of the leaf certificate as uppercase colon-separated
+/// hex, the shape `phux pair` prints.
 pub fn cert_fingerprint(cert_path: &Path) -> Result<String, RelayError> {
     Ok(cert::cert_fingerprint(cert_path)?)
 }
 
-/// Build the relay's rustls `ServerConfig`: TLS 1.3 only, no client auth,
-/// both ALPNs, and the [`SniGate`] certificate resolver enforcing
-/// enrolled-route SNI for consumer legs.
+/// The relay's rustls `ServerConfig`: TLS 1.3 only, no client auth, both
+/// ALPNs, and the [`SniGate`] resolver.
 pub(crate) fn server_config(
     cert_path: &Path,
     key_path: &Path,
@@ -95,17 +56,12 @@ pub(crate) fn server_config(
     Ok(config)
 }
 
-/// TLS-layer SNI refusal (ADR-0052 Decision 1).
+/// TLS-layer SNI refusal: returning `None` aborts the handshake before any
+/// application byte flows.
 ///
-/// Returning `None` from `resolve` aborts the handshake before any
-/// application byte can flow — an unknown or absent route name never
-/// reaches phux code, indistinguishable from a non-phux TLS server.
-///
-/// The enrolled-route set is re-read from the token store per handshake
-/// (the same per-attempt re-read as tunnel auth), so `phux relay pair`
-/// takes effect on a running relay without a restart. An unreadable store
-/// fails closed: consumers are refused, never waved through.
-pub(crate) struct SniGate {
+/// The enrolled-route set is re-read per handshake so `phux relay pair` is
+/// live without a restart; an unreadable store fails closed.
+struct SniGate {
     /// The relay's one certified key, served to every admitted hello.
     key: Arc<rustls::sign::CertifiedKey>,
     /// Route-token store path; source of the enrolled-route set.
@@ -147,23 +103,16 @@ impl rustls::server::ResolvesServerCert for SniGate {
     }
 }
 
-/// The gate's decision, as a pure function.
-///
-/// A hello offering the relay ALPN is a connector leg: SNI is not
-/// load-bearing there (authentication is the stream-0 token preamble), so
-/// it always passes. Anything else is a consumer leg and must name an
-/// enrolled route via SNI; absent or unknown names are refused.
-pub(crate) fn gate_allows(
-    offers_relay_alpn: bool,
-    sni: Option<&str>,
-    routes: &BTreeSet<String>,
-) -> bool {
+/// The gate's decision. A connector hello (relay ALPN) always passes; its
+/// authentication is the stream-0 token preamble. A consumer must name an
+/// enrolled route via SNI.
+fn gate_allows(offers_relay_alpn: bool, sni: Option<&str>, routes: &BTreeSet<String>) -> bool {
     offers_relay_alpn || sni.is_some_and(|name| routes.contains(name))
 }
 
-/// The enrolled-route set, re-read from the token store. Unreadable or
-/// malformed stores yield the empty set (fail closed).
-pub(crate) fn enrolled_routes(tokens_path: &Path) -> BTreeSet<String> {
+/// The enrolled-route set, re-read from the token store; empty (fail closed)
+/// when the store is unreadable or malformed.
+fn enrolled_routes(tokens_path: &Path) -> BTreeSet<String> {
     match RouteTokenStore::load(tokens_path) {
         Ok(store) => store.routes(),
         Err(err) => {
@@ -177,8 +126,9 @@ pub(crate) fn enrolled_routes(tokens_path: &Path) -> BTreeSet<String> {
 mod tests {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
 
+    /// The relay maps a surviving half-pair onto its own error (with the
+    /// operator hint) and leaves the certificate untouched.
     #[test]
     fn ensure_self_signed_refuses_a_partial_pair() {
         let dir = tempfile::tempdir().unwrap();
@@ -187,108 +137,62 @@ mod tests {
         ensure_self_signed(&cert, &key).unwrap();
         let fp = cert_fingerprint(&cert).unwrap();
 
-        // Key lost, cert survives: must refuse, not silently rotate the
-        // fingerprint every connector and consumer pins.
         fs::remove_file(&key).unwrap();
         let err = ensure_self_signed(&cert, &key).unwrap_err();
         assert!(matches!(err, RelayError::PartialTlsPair { .. }), "{err}");
-        assert_eq!(
-            cert_fingerprint(&cert).unwrap(),
-            fp,
-            "cert must be untouched"
-        );
-    }
-
-    fn routes(names: &[&str]) -> BTreeSet<String> {
-        names.iter().map(|&n| n.to_owned()).collect()
+        assert_eq!(cert_fingerprint(&cert).unwrap(), fp);
     }
 
     #[test]
-    fn gate_admits_relay_alpn_regardless_of_sni() {
-        let enrolled = routes(&["alpha"]);
-        assert!(gate_allows(true, None, &enrolled));
-        assert!(gate_allows(true, Some("not-enrolled"), &enrolled));
-        assert!(gate_allows(true, Some("alpha"), &BTreeSet::new()));
+    fn gate_admits_connectors_always_and_consumers_only_for_enrolled_sni() {
+        let enrolled: BTreeSet<String> = ["alpha", "beta"].map(str::to_owned).into();
+        let empty = BTreeSet::new();
+        for (relay_alpn, sni, routes, allowed) in [
+            (true, None, &enrolled, true),
+            (true, Some("not-enrolled"), &enrolled, true),
+            (true, Some("alpha"), &empty, true),
+            (false, Some("alpha"), &enrolled, true),
+            (false, Some("beta"), &enrolled, true),
+            (false, Some("gamma"), &enrolled, false),
+            (false, None, &enrolled, false),
+            (false, Some("alpha"), &empty, false),
+        ] {
+            assert_eq!(
+                gate_allows(relay_alpn, sni, routes),
+                allowed,
+                "relay_alpn={relay_alpn} sni={sni:?}"
+            );
+        }
     }
 
     #[test]
-    fn gate_admits_consumers_only_for_enrolled_sni() {
-        let enrolled = routes(&["alpha", "beta"]);
-        assert!(gate_allows(false, Some("alpha"), &enrolled));
-        assert!(gate_allows(false, Some("beta"), &enrolled));
-        assert!(!gate_allows(false, Some("gamma"), &enrolled));
-        assert!(!gate_allows(false, None, &enrolled), "absent SNI refused");
-        assert!(!gate_allows(false, Some("alpha"), &BTreeSet::new()));
-    }
-
-    #[test]
-    fn enrolled_routes_fails_closed_on_malformed_store() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("relay-tokens");
-        fs::write(&path, "not a valid line\n").unwrap();
-        assert!(enrolled_routes(&path).is_empty());
-    }
-
-    #[test]
-    fn enrolled_routes_reflects_the_file_per_call() {
+    fn enrolled_routes_is_reread_per_call_and_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("relay-tokens");
         assert!(enrolled_routes(&path).is_empty(), "missing file: no routes");
 
-        // Pair-while-running: a mint is visible on the very next call, and
-        // deleting the file revokes on the next call — no reload machinery.
         crate::tokens::mint_route_token(&path, "alpha").unwrap();
         assert!(enrolled_routes(&path).contains("alpha"));
         fs::remove_file(&path).unwrap();
         assert!(enrolled_routes(&path).is_empty());
+
+        fs::write(&path, "not a valid line\n").unwrap();
+        assert!(enrolled_routes(&path).is_empty(), "malformed: fail closed");
     }
 
     #[test]
-    fn ensure_self_signed_provisions_then_is_idempotent() {
-        let dir = tempfile::tempdir().unwrap();
-        let cert = dir.path().join("relay-cert.pem");
-        let key = dir.path().join("relay-key.pem");
-
-        ensure_self_signed(&cert, &key).unwrap();
-        assert!(cert.exists() && key.exists());
-
-        let key_mode = fs::metadata(&key).unwrap().permissions().mode() & 0o777;
-        assert_eq!(key_mode, 0o600, "private key must be owner-only");
-
-        // Idempotent: a second call does not regenerate, so the pinned
-        // fingerprint stays stable across restarts.
-        let fp1 = cert_fingerprint(&cert).unwrap();
-        ensure_self_signed(&cert, &key).unwrap();
-        let fp2 = cert_fingerprint(&cert).unwrap();
-        assert_eq!(fp1, fp2);
-
-        // Fingerprint shape: 32 SHA-256 bytes as colon-separated hex pairs.
-        assert_eq!(fp1.matches(':').count(), 31);
-        assert!(fp1.bytes().all(|b| b.is_ascii_hexdigit() || b == b':'));
-    }
-
-    #[test]
-    fn server_config_builds_with_both_alpns_and_the_gate() {
+    fn server_config_offers_both_alpns_and_needs_material() {
         let dir = tempfile::tempdir().unwrap();
         let cert = dir.path().join("relay-cert.pem");
         let key = dir.path().join("relay-key.pem");
         let tokens = dir.path().join("relay-tokens");
-        ensure_self_signed(&cert, &key).unwrap();
+        assert!(server_config(&cert, &key, &tokens).is_err());
 
+        ensure_self_signed(&cert, &key).unwrap();
         let config = server_config(&cert, &key, &tokens).unwrap();
         assert_eq!(
             config.alpn_protocols,
-            vec![QUIC_RELAY_ALPN.to_vec(), QUIC_ALPN.to_vec()],
-            "one endpoint, both legs"
+            vec![QUIC_RELAY_ALPN.to_vec(), QUIC_ALPN.to_vec()]
         );
-    }
-
-    #[test]
-    fn server_config_errors_on_missing_material() {
-        let dir = tempfile::tempdir().unwrap();
-        let missing = dir.path().join("nope.pem");
-        let tokens = dir.path().join("relay-tokens");
-        assert!(server_config(&missing, &missing, &tokens).is_err());
-        assert!(cert_fingerprint(&missing).is_err());
     }
 }

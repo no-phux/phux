@@ -1,14 +1,5 @@
 //! Window/session picker rows and the client-local window switch.
 
-//! Input dispatcher: translates parser-emitted events into wire frames
-//! or layout-action effects.
-//!
-//! Owns the resolver-intercept path (prefix chord → `ResolvedAction` →
-//! mutate the active window of the `Workspace`), the predict overlay's
-//! keystroke feed, and the parked-spawn bookkeeping (`PendingSplit` /
-//! `PendingWindow`) that bridges a local `split-pane` / `new-window`
-//! chord to its remote `SPAWN_RESOURCE` reply.
-
 use std::collections::HashMap;
 
 use phux_protocol::ResourceId;
@@ -21,12 +12,9 @@ use super::args::switch_session_args;
 use super::ctx::DispatchCtx;
 use super::effects::ActionEffects;
 
-/// Build exact local destinations for moving the focused pane.
-///
-/// Only topology the TUI actually has is offered: the attached workspace and
-/// foreign workspaces with a complete cached layout. The focused source,
-/// satellite leaves, and foreign sessions without a layout cache are omitted.
-/// Each row identifies session, window, pane ordinal, and stable local id.
+/// Exact local destinations for moving the focused pane: panes of this
+/// workspace and of foreign sessions with a cached layout, excluding the
+/// source and satellite leaves.
 pub(super) fn move_pane_picker_items(
     source: &ResourceId,
     workspace: &Workspace,
@@ -92,30 +80,11 @@ fn append_move_destinations(
     }
 }
 
-/// Build the `<leader> w` grouped window picker's rows (phux-4li.19 / nav).
-///
-/// The picker is hierarchical: one [`SelectItem::header`] per session, with
-/// that session's windows nested (indented) beneath it. Sessions are
-/// ordered with the **current** session first (so the windows you can act
-/// on directly lead), then the rest by name for a stable layout.
-///
-/// - Under the **current** session, each window row is `index:name` with
-///   the pane count as the dimmed secondary; it commits
-///   `select-window { index }` — the same per-client window switch the
-///   numeric prefix bindings use, routed through the single dispatch path.
-/// - Under **other** sessions with a cached persisted layout
-///   (`foreign_layouts`, fetched by the driver at attach — phux-foz.8),
-///   each window renders the same `index:name` row committing
-///   `switch-session { name, window = index }`: one step re-attaches to
-///   that session AND selects the window once its layout loads.
-/// - A foreign session with **no** cached layout (nothing persisted yet,
-///   the GET reply hasn't landed, or the session appeared after attach)
-///   falls back to a single "switch to this session" row committing
-///   `switch-session { name }` — its own picker then lists its windows.
-///
-/// Headers are non-selectable; a session with no rows beneath it (the
-/// current session with zero windows) still contributes its header, and
-/// the caller bells when *only* headers result.
+/// The grouped window picker: one header per session (current first, then
+/// by name). Current-session windows commit `select-window { index }`; a
+/// peer with a cached layout lists one-step `switch-session { name, window }`
+/// rows, else a single "switch to this session" row. The caller bells when
+/// only headers result.
 pub(super) fn window_picker_items(
     workspace: &Workspace,
     sessions: &[phux_protocol::wire::info::SessionInfo],
@@ -147,10 +116,6 @@ pub(super) fn window_picker_items(
             .get(&session.id)
             .filter(|ws| !ws.windows.is_empty())
         {
-            // phux-foz.8: the one-step rows. Same `index:name` + pane-count
-            // shape as the current session's rows, but committing
-            // `switch-session { name, window }` so a single Enter lands in
-            // that window of that session.
             items.extend(foreign_session_window_rows(session, foreign));
         } else {
             // No cached layout for this foreign session; offer a switch.
@@ -220,13 +185,8 @@ pub(super) fn current_session_window_rows(workspace: &Workspace) -> Vec<SelectIt
         .collect()
 }
 
-/// phux-foz.8: the indented one-step jump rows for a **foreign** session,
-/// drawn from its cached persisted [`Workspace`] (`DispatchCtx::
-/// foreign_layouts`). Same `index:name` + pane-count shape as
-/// [`current_session_window_rows`], but each row commits
-/// `switch-session { name, window = index }` — the combined
-/// re-attach-and-select the driver resolves after the target's layout
-/// loads.
+/// One-step `switch-session { name, window }` rows for a foreign session's
+/// cached layout, shaped like [`current_session_window_rows`].
 pub(super) fn foreign_session_window_rows(
     session: &phux_protocol::wire::info::SessionInfo,
     workspace: &Workspace,
@@ -265,14 +225,8 @@ pub(super) fn foreign_session_window_rows(
         .collect()
 }
 
-/// Build the session picker's rows from the client's cached
-/// session graph (phux-4li.20).
-///
-/// One row per session, with `focused` first and marked `current`. Each row's
-/// label is the session name with a window/attached-client summary as the
-/// dimmed secondary. Choosing it commits `switch-session { name }`; the
-/// current row dismisses as a silent no-op and peer rows reattach through the
-/// same dispatch path.
+/// Session picker rows: `focused` first and marked current (committing it is
+/// a silent no-op), each committing `switch-session { name }`.
 pub(super) fn session_picker_items(
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<phux_protocol::ids::SessionId>,
@@ -315,17 +269,12 @@ pub(super) fn session_picker_items(
 /// Header for this host's group in the host-grouped session picker.
 pub(super) const LOCAL_HOST_HEADER: &str = "Local";
 
-/// Live-refresh key for the session picker: the driver rebuilds its rows
-/// when a fresh host inventory lands, so a picker opened before the
-/// `GET_STATE` reply fills in its satellites in place instead of showing a
-/// stale fleet.
+/// Live-refresh key: an open session picker is rebuilt when a fresh host
+/// inventory lands.
 pub(in crate::attach) const SESSION_PICKER_LIVE_KEY: &str = "session-picker";
 
-/// The complete session-picker row set: the host-grouped sessions plus the
-/// trailing "+ New session" row.
-///
-/// One builder so the initial open and the live refresh that lands with a
-/// fresh host inventory cannot drift apart.
+/// The full session-picker rows (host-grouped sessions plus "+ New
+/// session"), one builder for the open and the live refresh.
 pub(in crate::attach) fn session_picker_rows(
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<phux_protocol::ids::SessionId>,
@@ -337,18 +286,11 @@ pub(in crate::attach) fn session_picker_rows(
     items
 }
 
-/// Build the session picker's rows grouped by host (phux-c2td.3).
-///
-/// With no satellite inventory (`hosts` empty — a non-hub server, or one
-/// that predates `ServerFeature::HostSessions`) this is exactly
-/// [`session_picker_items`]: an ungrouped list, unchanged. With one, this
-/// host's sessions nest under a [`LOCAL_HOST_HEADER`] header and each
-/// satellite follows under its own, its sessions committing
-/// `switch-session { name, host }` — the same key, one host further out.
-///
-/// A satellite the hub could not reach keeps its header, marked
-/// `(unreachable)`, rather than disappearing: a session that exists but is
-/// currently unlistable is exactly the one a user needs told about.
+/// Session picker rows grouped by host: without an inventory exactly
+/// [`session_picker_items`]; with one, this host under
+/// [`LOCAL_HOST_HEADER`] and each satellite under its own header (kept,
+/// marked unreachable, when the hub could not list it), committing
+/// `switch-session { name, host }`.
 pub(super) fn host_grouped_session_items(
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<phux_protocol::ids::SessionId>,
@@ -438,10 +380,7 @@ fn satellite_session_item(
     .indented()
 }
 
-/// The index of the first window of this client's workspace holding `id` as
-/// a leaf, if any. Behind a satellite session's "open here" marker, and
-/// behind `switch-session { name, host }` choosing to focus an already-open
-/// satellite pane instead of opening a second window onto it.
+/// The first window holding `id` as a leaf, if any.
 pub(super) fn window_holding(
     workspace: &Workspace,
     id: &phux_protocol::ResourceId,
@@ -463,10 +402,7 @@ fn count_label(n: u16, one: &str, many: &str) -> String {
     }
 }
 
-/// The trailing "+ New session" row for the session picker. Committing it
-/// runs the bare `new-session` action, which opens the name prompt — so a
-/// new session is always reachable from `<leader> a`, even when this is
-/// the only session.
+/// The trailing "+ New session" row (opens the name prompt).
 pub(super) fn new_session_item() -> SelectItem {
     SelectItem::new(
         "+ New session…".to_owned(),
@@ -478,14 +414,9 @@ pub(super) fn new_session_item() -> SelectItem {
     .secondary("create".to_owned())
 }
 
-/// Apply a window-switch `mutate` to the workspace and, **only if the
-/// active window actually changed**, record the follow-up: repaint the
-/// new composition, drop the prediction queue, and move focus to the new
-/// active window's focused leaf. A no-op switch (single window, wrap to
-/// self, or an out-of-range `select`) leaves `effects` untouched.
-///
-/// Window selection is per-client like focus (ADR-0019 decision 6), so
-/// this emits no `SET_METADATA` — siblings keep their own active window.
+/// Apply a window-switch `mutate`; only when the active window changed,
+/// repaint, drop predictions, and move focus. Per-client (ADR-0019): no
+/// `SET_METADATA`.
 pub(super) fn switch_window(
     ctx: &mut DispatchCtx<'_>,
     effects: &mut ActionEffects,

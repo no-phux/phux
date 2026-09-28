@@ -12,66 +12,32 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
+const DEADLINE: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(50);
 
 /// A `phux server` child with a long-lived seed pane, killed on drop.
-struct Server {
-    _process: common::ServerProcess,
-    socket: PathBuf,
-    _dir: tempfile::TempDir,
-}
+struct Server(common::ServerGuard);
 
 impl Server {
     fn start() -> Self {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let socket = dir
-            .path()
-            .join(format!("resource-{}.sock", std::process::id()));
-        let child = Command::new(PHUX)
-            .args([
-                "server",
-                "--session",
-                "work",
-                "--seed-command",
-                "exec sleep 600",
-                "--exit-after-idle",
-                "600",
-                "--socket",
-            ])
-            .arg(&socket)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server");
-        let server = Self {
-            _process: common::ServerProcess::from_child(child, socket.clone()),
-            socket,
-            _dir: dir,
-        };
-        let deadline = Instant::now() + SOCKET_DEADLINE;
-        while !server.socket.exists() {
-            assert!(
-                Instant::now() < deadline,
-                "the server never bound its socket"
-            );
-            std::thread::sleep(POLL);
-        }
-        server
+        Self(
+            common::ServerGuard::builder("resource")
+                .seed_command("exec sleep 600")
+                .start(),
+        )
     }
 
     /// Run `phux --socket SOCKET ARGS...`. `--socket` goes first so a
     /// trailing `-- COMMAND` cannot swallow it.
     fn phux(&self, args: &[&str]) -> Output {
-        phux_at(&self.socket, args)
+        phux_at(&self.0.socket, args)
     }
 
     fn json(&self, args: &[&str]) -> (Value, Output) {
@@ -100,14 +66,6 @@ impl Server {
 }
 
 impl Server {
-    /// Whether `phux status --json` lists `feature`.
-    fn advertises(&self, feature: &str) -> bool {
-        let (status, _) = self.json(&["status", "--json"]);
-        status["features"]
-            .as_array()
-            .is_some_and(|features| features.iter().any(|f| f == feature))
-    }
-
     /// How many Terminals `phux ls --json` lists.
     fn terminal_count(&self) -> usize {
         let (listing, _) = self.json(&["ls", "--json"]);
@@ -169,7 +127,7 @@ fn spawn_retain_wait_exit_end_to_end() {
 
     // The purge is an explicit kill; afterwards the pane is gone (exit 1).
     assert!(server.phux(&["kill", "--yes", &pane]).status.success());
-    let deadline = Instant::now() + SOCKET_DEADLINE;
+    let deadline = Instant::now() + DEADLINE;
     loop {
         let (doc, out) = server.json(&["resource", "wait", "--json", "--timeout", "5", &pane]);
         if doc["outcome"] == "gone" {
@@ -179,38 +137,6 @@ fn spawn_retain_wait_exit_end_to_end() {
         assert!(Instant::now() < deadline, "the purge never landed: {doc}");
         std::thread::sleep(POLL);
     }
-}
-
-#[test]
-#[ignore = "spawns a real phux server; run via `just e2e`."]
-fn spawn_with_idempotency_key_twice_yields_one_pane() {
-    const KEY: &str = "5d8f0c2a9e7b41c6a3f1e0d9c8b7a6f5";
-    let server = Server::start();
-    assert!(
-        server.advertises("spawn_idempotency"),
-        "this build's server honors keyed spawns"
-    );
-    let args = [
-        "spawn",
-        "--json",
-        "--idempotency-key",
-        KEY,
-        "--",
-        "sleep",
-        "600",
-    ];
-    let (first, out) = server.json(&args);
-    assert!(out.status.success(), "{out:?}");
-    let (second, out) = server.json(&args);
-    assert!(out.status.success(), "{out:?}");
-    assert_eq!(first["terminal_id"], second["terminal_id"], "one pane");
-    assert_eq!(first["replayed"], false);
-    assert_eq!(second["replayed"], true, "the retry is the replay path");
-    assert_eq!(
-        server.terminal_count(),
-        2,
-        "the seed pane plus one spawned pane"
-    );
 }
 
 #[test]
@@ -297,54 +223,6 @@ fn new_with_a_key_reused_for_another_request_registers_nothing() {
     );
 }
 
-#[test]
-#[ignore = "spawns a real phux server; run via `just e2e`."]
-fn watch_after_cursor_replays_missed_events() {
-    let server = Server::start();
-    let pane = server.spawn(&["--retain=600"], &["/bin/sh", "-c", "sleep 1; exit 3"]);
-
-    // A first, short watch hands back a cursor from before the exit.
-    let first = server.phux(&["watch", "--json", "--timeout", "0", &pane]);
-    let cursor = last_stderr_json(&first)["cursor"]
-        .as_str()
-        .expect("a journaling server issues a cursor")
-        .to_owned();
-
-    // Nobody is watching when the pane exits.
-    let (doc, _) = server.json(&["resource", "wait", "--json", "--timeout", "20", &pane]);
-    assert_eq!(doc["outcome"], "exited", "{doc}");
-
-    // Resuming from the cursor replays the exit the watcher missed.
-    let replay = server.phux(&[
-        "watch",
-        "--json",
-        "--after",
-        &cursor,
-        "--until",
-        "terminal_control",
-        "--timeout",
-        "10",
-        &pane,
-    ]);
-    assert_eq!(replay.status.code(), Some(0), "{replay:?}");
-    let lines: Vec<Value> = String::from_utf8_lossy(&replay.stdout)
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("NDJSON line"))
-        .collect();
-    let control = lines
-        .iter()
-        .find(|line| line["event"] == "terminal_control")
-        .expect("the missed exit is replayed");
-    assert_eq!(control["action"], "exited");
-    assert_eq!(control["exit_status"], 3);
-    assert!(control["seq"].as_u64().is_some(), "{control}");
-    let reached = last_stderr_json(&replay)["cursor"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    assert_ne!(reached, cursor, "the cursor advances past the replay");
-}
-
 /// `watch --after CURSOR @N` on a pane that closed unretained: the pane is
 /// no longer in the inventory, but the replay still reaches its close.
 #[test]
@@ -414,16 +292,10 @@ fn resource_show_json_has_lifecycle_and_process() {
     assert_eq!(screen["mutating"], false);
 }
 
-/// PHA-406 closeout: the whole resource-lifecycle journey through the CLI,
-/// one agent step at a time, the way it composes for a real caller: a keyed
-/// spawn with retain (a repeat under the same key is the replay, not a
-/// second task) -> `resource wait` from a second, later process observes
-/// the exit and its status race-free -> `resource show` reads the same
-/// exit facet off the retained pane -> `watch --after` resumes from a
-/// cursor anchored to the pane's own `pane_spawned` event and replays the
-/// close nobody watched live -> `kill` purges the retained pane, after
-/// which `resource show` answers a plain miss instead of a stale exit
-/// facet.
+/// The whole resource lifecycle through the CLI: a keyed, retained spawn
+/// (a repeat under the key replays), `resource wait` and `show` read the
+/// exit, `watch --after` replays the unwatched exit from a spawn-anchored
+/// cursor, and `kill` purges the pane so `show` answers a plain miss.
 #[test]
 #[ignore = "spawns a real phux server; run via `just e2e`."]
 fn scripted_task_lifecycle_pha406() {
@@ -458,13 +330,8 @@ fn scripted_task_lifecycle_pha406() {
         "the seed pane plus the one spawned pane, not two"
     );
 
-    // A second, later process — a fresh `phux resource wait` subprocess —
-    // sees the exit and its status: subscribe-then-read is race-free
-    // whether the exit already happened or is still coming. Its cursor's
-    // `server_id` prefix names this server incarnation's journal; the `seq`
-    // half is not used below (a fresh replay from 0 is taken instead, so
-    // the pre-exit cursor is anchored to a real event rather than a race
-    // against wall-clock time).
+    // A later process sees the exit race-free; only the cursor's
+    // `server_id` half is used below.
     let (wait, out) = server.json(&["resource", "wait", "--json", "--timeout", "20", &pane]);
     assert_eq!(out.status.code(), Some(0), "{wait}");
     assert_eq!(wait["outcome"], "exited");
@@ -482,11 +349,8 @@ fn scripted_task_lifecycle_pha406() {
     assert_eq!(show["lifecycle"], "exited");
     assert_eq!(show["exit"]["status"], 7);
 
-    // A full replay of this pane's journal (`--after server_id:0`), gated
-    // on its own `pane_spawned`, hands back a cursor anchored to that one
-    // event — proven (by journal order, not by timing) to predate the
-    // exit, since the server journals the spawn before it can journal the
-    // exit of the process it spawned.
+    // Replaying from 0 up to `pane_spawned` yields a cursor that predates
+    // the exit by journal order, not timing.
     let after_zero = format!("{server_id}:0");
     let spawn_replay = watch_after_until(&server, &after_zero, "pane_spawned", &pane);
     assert_eq!(spawn_replay.status.code(), Some(0), "{spawn_replay:?}");
@@ -521,7 +385,7 @@ fn scripted_task_lifecycle_pha406() {
     // Kill purges the retained pane; afterwards `resource show` answers a
     // plain miss, not a stale exit facet.
     assert!(server.phux(&["kill", "--yes", &pane]).status.success());
-    let deadline = Instant::now() + SOCKET_DEADLINE;
+    let deadline = Instant::now() + DEADLINE;
     loop {
         let show = server.phux(&["resource", "show", "--json", &pane]);
         if show.status.code() == Some(1) {

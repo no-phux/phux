@@ -1,15 +1,11 @@
-//! From a resolved registry entry to a dial: the CLI's trust rules, the
-//! operator-facing wording of every failure, and the SPEC §5 frame cutting
-//! the WebSocket lane needs.
+//! From a resolved registry entry to a dial.
 //!
-//! Trust and credential rules are the CLI's (`phux attach`'s
-//! `plan_quic_dial` / `plan_ws_dial`): a routable host needs a certificate
-//! pin, and a routable WebSocket also needs `wss://` and a bearer token. The
-//! token file is read by [`load_token`] just before the dial, on the dialing
-//! thread, and the owned copy is dropped as soon as the dial returns. Client
-//! TLS identity is always [`phux_dial::TlsClientIdentity::None`]: an
-//! embedder must not inherit `PHUX_WORKLOAD_CERT` / `PHUX_WORKLOAD_KEY` from
-//! a launcher shell.
+//! The CLI's trust rules apply (a routable host needs a pin; a routable
+//! WebSocket also needs `wss://` and a token), with operator-facing wording
+//! for every failure and the SPEC §5 frame cutting the WebSocket lane needs.
+//! The token is read just before the dial and dropped after it; client TLS
+//! identity is always [`phux_dial::TlsClientIdentity::None`], so an embedder
+//! never inherits a launcher shell's workload certificate.
 
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
@@ -22,11 +18,8 @@ use phux_protocol::wire::framing;
 
 use crate::target::{Resolved, read_token};
 
-/// The bound on name resolution plus transport establishment.
-///
-/// The CLI has no overall bound here; an embedder does, because a status
-/// line that says "connecting" for macOS's 75-second TCP connect timeout
-/// reads as a hang.
+/// Bound on name resolution plus transport establishment, so "connecting"
+/// never sits through a 75-second OS connect timeout.
 pub const DIAL_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Largest frame body a consumer may hand the WebSocket lane: the SPEC §5

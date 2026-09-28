@@ -1,20 +1,11 @@
 //! Stat-generation hot reload of the workload registry (`workload-auth.md`
 //! §7).
 //!
-//! Each lookup stats the registry file; an unchanged stamp reuses the cached
-//! snapshot, and a changed one re-reads it. The snapshot lock is never held
-//! across a filesystem call: the stat and the read both happen outside it,
-//! and a probe sequence number decides which of two racing reloads installs,
-//! so the newest probe always wins and a slow reader can never put an older
-//! generation back.
-//!
-//! A malformed, insecure, or missing file installs the empty snapshot, and
-//! that verdict is cached until the file changes. Nothing falls back to the
-//! last known-good generation: a broken registry admits no one until a valid
-//! one is written. A transient failure (an I/O error such as `EMFILE`, or a
-//! read that never saw a stable file) admits no one for that lookup only and
-//! is not cached, so the next lookup retries instead of locking everyone out
-//! until the file happens to change.
+//! Each lookup stats the file and re-reads only on change, never holding
+//! the lock across I/O; a probe sequence number makes the newest probe win.
+//! A broken or missing file installs (and caches) the empty snapshot, with
+//! no fallback to a known-good generation; a transient failure denies that
+//! lookup only and is not cached.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -46,9 +37,8 @@ impl Observed {
 
 /// The result of loading a changed registry.
 enum Loaded {
-    /// A verdict to cache under `Observed` until the file changes; `broken`
-    /// when it is the empty snapshot of a missing, insecure, or malformed
-    /// file rather than a valid registry.
+    /// A verdict cached until the file changes; `broken` for the empty
+    /// snapshot of a bad file.
     Cache(Observed, Arc<WorkloadRegistry>, bool),
     /// A transient failure: admit no one now, retry on the next lookup.
     Transient,
@@ -80,9 +70,7 @@ impl Cached {
 pub enum RegistryObservation {
     /// A valid registry: its verdicts apply at once.
     Loaded(Arc<WorkloadRegistry>),
-    /// A missing, insecure, or malformed file, which admits no one. Two
-    /// observations compare equal while the file stays in the same broken
-    /// state.
+    /// A missing, insecure, or malformed file (admits no one).
     Broken(BrokenRegistry),
     /// A read failed for a reason that may clear on its own.
     Transient,
@@ -113,11 +101,8 @@ impl std::fmt::Debug for ReloadingWorkloadRegistry {
 }
 
 impl ReloadingWorkloadRegistry {
-    /// Load the registry and begin tracking its file.
-    ///
-    /// The initial load is strict: a malformed or insecure registry is an
-    /// error, so a server configured for workload authority refuses to start
-    /// on it (`workload-auth.md` §8). A missing file is the empty snapshot.
+    /// Load strictly (a bad file refuses startup, §8; missing is empty) and
+    /// start tracking.
     ///
     /// # Errors
     ///
@@ -154,11 +139,8 @@ impl ReloadingWorkloadRegistry {
         }
     }
 
-    /// What the registry file holds right now: a valid snapshot, a broken
-    /// state (missing, insecure, or malformed), or a transient failure. The
-    /// live revocation watcher applies a valid snapshot's verdicts at once
-    /// and a broken state's empty snapshot only once it persists
-    /// (`workload-auth.md` §7).
+    /// The file's current state (valid, broken, or transient failure) for
+    /// the revocation watcher (§7).
     #[must_use]
     pub fn observe(&self) -> RegistryObservation {
         let probe = self.probes.fetch_add(1, Ordering::SeqCst) + 1;
@@ -174,9 +156,7 @@ impl ReloadingWorkloadRegistry {
         }
     }
 
-    /// Map a verified TLS leaf certificate to its active credential in the
-    /// current snapshot, stamped with that snapshot's registry instance and
-    /// generation.
+    /// The active credential for a verified TLS leaf, with registry stamps.
     #[must_use]
     pub fn lookup_certificate(
         &self,

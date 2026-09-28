@@ -22,24 +22,8 @@ pub fn render_report(report: &PerfReport, interval: Option<std::time::Duration>)
         .map(|m| Row::from_metric(m, interval))
         .collect();
     let widths = column_widths(&rows);
-    let _ = writeln!(
-        out,
-        "{:<w0$}  {:>w1$}  {:>w2$}  {:>w3$}  {:>w4$}  {:>w5$}  {:>w6$}",
-        "metric",
-        "count",
-        "rate/s",
-        "p50",
-        "p90",
-        "p99",
-        "max",
-        w0 = widths[0],
-        w1 = widths[1],
-        w2 = widths[2],
-        w3 = widths[3],
-        w4 = widths[4],
-        w5 = widths[5],
-        w6 = widths[6],
-    );
+    let header = ["count", "rate/s", "p50", "p90", "p99", "max"].map(str::to_owned);
+    write_row(&mut out, "metric", &header, &widths);
     let mut last_group = "";
     for row in &rows {
         let group = row.name.split('.').next().unwrap_or_default();
@@ -47,26 +31,18 @@ pub fn render_report(report: &PerfReport, interval: Option<std::time::Duration>)
             out.push('\n');
         }
         last_group = group;
-        let _ = writeln!(
-            out,
-            "{:<w0$}  {:>w1$}  {:>w2$}  {:>w3$}  {:>w4$}  {:>w5$}  {:>w6$}",
-            row.name,
-            row.cols[0],
-            row.cols[1],
-            row.cols[2],
-            row.cols[3],
-            row.cols[4],
-            row.cols[5],
-            w0 = widths[0],
-            w1 = widths[1],
-            w2 = widths[2],
-            w3 = widths[3],
-            w4 = widths[4],
-            w5 = widths[5],
-            w6 = widths[6],
-        );
+        write_row(&mut out, &row.name, &row.cols, &widths);
     }
     out
+}
+
+/// One aligned line: the name left-aligned, every column right-aligned.
+fn write_row(out: &mut String, name: &str, cols: &[String; 6], widths: &[usize; 7]) {
+    let _ = write!(out, "{name:<w$}", w = widths[0]);
+    for (col, w) in cols.iter().zip(&widths[1..]) {
+        let _ = write!(out, "  {col:>w$}");
+    }
+    out.push('\n');
 }
 
 fn render_header(out: &mut String, report: &PerfReport, interval: Option<std::time::Duration>) {

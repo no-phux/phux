@@ -1,8 +1,4 @@
-//! `ServerState`'s wire-id facade.
-//!
-//! The tables and allocators live on [`IdSpace`](super::IdSpace); these are
-//! the delegating shims the runtime calls, kept on [`ServerState`] because
-//! that is the receiver every dispatch site already holds.
+//! `ServerState`'s wire-id facade over [`IdSpace`](super::IdSpace).
 
 use phux_core::ids::{ResourceId, WindowId};
 use phux_protocol::ids::{ResourceId as WireResourceId, WindowId as WireWindowId};
@@ -10,10 +6,7 @@ use phux_protocol::ids::{ResourceId as WireResourceId, WindowId as WireWindowId}
 use super::ServerState;
 
 impl ServerState {
-    /// Wire pane id for `pane`, allocating one if needed.
-    ///
-    /// Delegates to `IdSpace::intern_terminal` (crate-internal);
-    /// idempotent, and several call sites depend on that.
+    /// Wire pane id for `terminal`, allocating if needed (idempotent).
     pub fn intern_terminal_wire(&mut self, terminal: ResourceId) -> WireResourceId {
         self.idspace.intern_terminal(terminal)
     }
