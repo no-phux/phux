@@ -583,10 +583,11 @@ impl TerminalActor {
         }
         self.apply_native_replay(&pending.replay);
         for waiter in pending.waiters {
+            // `Resize` survives the collapse: the cut was invalidated, not
+            // refused, and the waiter's pump waits for the resync that follows.
             let error = match error {
-                crate::native_state::NativeStateError::OutOfMemory => {
-                    crate::native_state::NativeStateError::OutOfMemory
-                }
+                crate::native_state::NativeStateError::OutOfMemory
+                | crate::native_state::NativeStateError::Resize => error,
                 _ => crate::native_state::NativeStateError::LimitExceeded,
             };
             let _ = waiter.reply.send(Err(error));
