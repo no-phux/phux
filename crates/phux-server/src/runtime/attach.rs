@@ -815,12 +815,14 @@ impl OutputPumpContext {
     /// Ask the actor for the replacement native checkpoint. Only a refused
     /// capture loses the generation; a closed mailbox or dropped reply means
     /// the actor is already gone, which ends this pump without failing the
-    /// connection.
+    /// connection. `None` means the actor invalidated the cut mid-capture (a
+    /// reflow, a replacement child, or teardown): a resync or the pane's
+    /// close follows, so the generation is not lost.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     async fn capture_native_checkpoint(
         &self,
         bootstrap_id: BootstrapId,
-    ) -> Result<crate::terminal_actor::NativeBootstrapReply, PumpFault> {
+    ) -> Result<Option<crate::terminal_actor::NativeBootstrapReply>, PumpFault> {
         let captured = request_native_checkpoint(&self.terminal, |reply| {
             crate::terminal_actor::NativeBootstrapRequest {
                 owner: self.client_id.0,
@@ -839,7 +841,19 @@ impl OutputPumpContext {
             Err(NativeCaptureFailure::Unsent | NativeCaptureFailure::Dropped) => {
                 return Err(PumpFault::PaneGone);
             }
-            Err(NativeCaptureFailure::Refused(_)) => {
+            Err(NativeCaptureFailure::Refused(crate::native_state::NativeStateError::Resize)) => {
+                debug!(
+                    terminal_id = ?self.wire_terminal_id,
+                    "native checkpoint invalidated mid-capture; awaiting the resync"
+                );
+                return Ok(None);
+            }
+            Err(NativeCaptureFailure::Refused(error)) => {
+                warn!(
+                    terminal_id = ?self.wire_terminal_id,
+                    %error,
+                    "native checkpoint resync refused"
+                );
                 let _ = self
                     .out_tx
                     .send(Outbound::Frame(FrameKind::Error {
@@ -851,11 +865,12 @@ impl OutputPumpContext {
                 return Err(PumpFault::GenerationLost);
             }
         };
-        Ok(reply)
+        Ok(Some(reply))
     }
 
     /// Tombstone the live generation, publish its native replacement, and
-    /// adopt the post-cut receiver the actor fenced it behind.
+    /// adopt the post-cut receiver the actor fenced it behind. `false` means
+    /// the actor invalidated the capture: the generation stays retired.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     async fn republish_native_generation(
         &self,
@@ -863,7 +878,7 @@ impl OutputPumpContext {
         output_rx: &mut tokio::sync::broadcast::Receiver<PaneOutput>,
         prior_bootstrap_id: BootstrapId,
         reason: crate::terminal_actor::ResyncReason,
-    ) -> Result<(), PumpFault> {
+    ) -> Result<bool, PumpFault> {
         if generation.is_active()
             && self
                 .out_tx
@@ -881,7 +896,10 @@ impl OutputPumpContext {
         }
         // The id advances only once the replacement frames are queued.
         let bootstrap_id = next_bootstrap_id(prior_bootstrap_id);
-        let reply = self.capture_native_checkpoint(bootstrap_id).await?;
+        let Some(reply) = self.capture_native_checkpoint(bootstrap_id).await? else {
+            generation.retire();
+            return Ok(false);
+        };
         let (cut, cursor) = publish_native_bootstrap(&self.out_tx, reply)
             .await
             .map_err(|()| PumpFault::GenerationLost)?;
@@ -907,7 +925,7 @@ impl OutputPumpContext {
         self.publish_last_seq(generation);
         // Chunks queued behind the replay waited on it, not on the consumer.
         generation.restart_staleness_clock();
-        Ok(())
+        Ok(true)
     }
 
     /// Publish the synthesized-VT replacement generation for a resync.
@@ -966,12 +984,28 @@ impl OutputPumpContext {
                 )
                 .await
             {
-                Ok(()) => ControlFlow::Continue(()),
+                Ok(true) => ControlFlow::Continue(()),
+                Ok(false) => self.await_superseded_resync(generation).await,
                 Err(fault) => ControlFlow::Break(Some(fault)),
             };
         }
         self.republish_synthesized_generation(generation, resync)
             .await
+    }
+
+    /// The actor invalidated this pump's capture and the generation is
+    /// already tombstoned. Stay fenced and ask for the resync, under the gap
+    /// retry budget, so a lost broadcast cannot freeze the client; a closing
+    /// pane ends the pump quietly instead.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    async fn await_superseded_resync(
+        &self,
+        generation: &mut PumpGeneration,
+    ) -> ControlFlow<Option<PumpFault>> {
+        if generation.fence_for_gap() {
+            return ControlFlow::Continue(());
+        }
+        self.send_gap_resync(generation).await
     }
 
     /// A dropped broadcast window leaves the client's mirror stale: fence the
@@ -4706,6 +4740,170 @@ mod tests {
             codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
             features: phux_protocol::caps::EngineFeatureSet::required_native(),
         }
+    }
+
+    /// Start a native-profile ATTACH pump on `terminal` whose published
+    /// bootstrap covers nothing yet.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    fn spawn_native_pump(
+        terminal: crate::terminal_actor::TerminalHandle,
+        output: &tokio::sync::broadcast::Sender<PaneOutput>,
+        resize: tokio::sync::mpsc::Sender<ResizeRequest>,
+    ) -> TwoPumpConsumer {
+        let (out_tx, out_rx) = tokio::sync::mpsc::channel(32);
+        let ctx = OutputPumpContext {
+            out_tx,
+            resize,
+            wire_terminal_id: phux_protocol::ids::ResourceId::local(1),
+            stream_id: two_pump_stream(),
+            initial_bootstrap_id: two_pump_initial_generation(),
+            client_id: ClientId(7),
+            client_caps: ClientCapabilities::default(),
+            profile: BootstrapStreamProfile::NativeState {
+                codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
+            },
+            limits: BootstrapLimits::default(),
+            lag_label: "native test pump",
+            stale_skip: false,
+            cancel: None,
+            last_seq: None,
+            terminal,
+        };
+        let (gate_tx, gate_rx) = oneshot::channel();
+        gate_tx
+            .send(OutputPumpStart {
+                published_cut: 0,
+                replay: Vec::new(),
+                live: None,
+            })
+            .unwrap_or_else(|_| panic!("gate receiver alive"));
+        let live = output.subscribe();
+        let task =
+            tokio::task::spawn_local(async move { run_output_pump(&ctx, gate_rx, live).await });
+        TwoPumpConsumer { out_rx, task }
+    }
+
+    /// The actor's reply to `capture`: an empty checkpoint at sequence 0.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    fn empty_native_checkpoint(
+        capture: &crate::terminal_actor::NativeBootstrapRequest,
+    ) -> crate::terminal_actor::NativeBootstrapReply {
+        crate::terminal_actor::NativeBootstrapReply {
+            frames: vec![
+                FrameKind::BootstrapBegin {
+                    terminal_id: capture.terminal_id.clone(),
+                    stream_id: capture.stream_id,
+                    bootstrap_id: capture.bootstrap_id,
+                    profile: BootstrapStreamProfile::NativeState {
+                        codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
+                    },
+                    cols: 80,
+                    rows: 24,
+                    base_seq: 0,
+                },
+                FrameKind::BootstrapReady {
+                    terminal_id: capture.terminal_id.clone(),
+                    stream_id: capture.stream_id,
+                    bootstrap_id: capture.bootstrap_id,
+                    history_cursor: None,
+                },
+            ],
+            retained_bytes: 0,
+            base_seq: 0,
+            publication_cursor: [9; 32],
+        }
+    }
+
+    /// A native capture the actor invalidates mid-flight (the last shell's
+    /// in-place respawn, a reflow) is superseded, not refused: the pump asks
+    /// for the resync and republishes, and the client is never told its
+    /// generation was lost or disconnected.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_invalidated_native_capture_waits_for_the_resync_instead_of_failing() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (handle, _consumer_attach_rx, mut bootstrap_rx, mut publication_rx) =
+                    native_attach_handle();
+                let (output, _keepalive) = tokio::sync::broadcast::channel(16);
+                let (resize, mut resize_rx) = tokio::sync::mpsc::channel(4);
+                let terminal = handle.terminal().expect("terminal facet").clone();
+                let mut consumer = spawn_native_pump(terminal, &output, resize);
+                let resync = |reason| PaneOutput::Resync {
+                    cols: 80,
+                    rows: 24,
+                    reason,
+                    audience: ResyncAudience::Everyone,
+                    base_seq: 0,
+                    bytes: bytes::Bytes::new(),
+                };
+
+                output
+                    .send(resync(crate::terminal_actor::ResyncReason::Exit))
+                    .expect("pump subscribed");
+                let invalidated = bootstrap_rx.recv().await.expect("exit capture request");
+                invalidated
+                    .reply
+                    .send(Err(crate::native_state::NativeStateError::Resize))
+                    .expect("pump awaits its capture");
+                let request = resync_request_from(&mut resize_rx, &mut consumer).await;
+                assert_eq!(
+                    request.resync_for.map(|pump| pump.bootstrap_id),
+                    Some(two_pump_initial_generation()),
+                    "the pump asks for its own replacement generation"
+                );
+                assert!(
+                    !consumer.task.is_finished(),
+                    "the pump must outlive the invalidation"
+                );
+
+                output
+                    .send(resync(crate::terminal_actor::ResyncReason::Resize))
+                    .expect("pump subscribed");
+                let capture = bootstrap_rx
+                    .recv()
+                    .await
+                    .expect("replacement capture request");
+                let replacement = capture.bootstrap_id;
+                let reply = empty_native_checkpoint(&capture);
+                capture
+                    .reply
+                    .send(Ok(reply))
+                    .expect("pump awaits its capture");
+                let publication = publication_rx.recv().await.expect("publication request");
+                publication
+                    .reply
+                    .send(Ok(crate::terminal_actor::NativePublicationReply {
+                        replay: Vec::new(),
+                        live: output.subscribe(),
+                    }))
+                    .expect("pump awaits its publication");
+
+                assert_eq!(
+                    frames_seen(&mut consumer, 3).await,
+                    vec![
+                        Seen::Tombstone,
+                        Seen::Begin {
+                            generation: replacement,
+                            base_seq: 0,
+                        },
+                        Seen::Ready {
+                            generation: replacement,
+                        },
+                    ],
+                    "one tombstone, then the replacement; no error frame"
+                );
+                assert_eq!(
+                    replacement,
+                    next_bootstrap_id(two_pump_initial_generation()),
+                    "the replacement follows the tombstoned generation"
+                );
+                assert_quiet(&mut consumer, "the resynced pump").await;
+                assert!(!consumer.task.is_finished(), "the client stays attached");
+                consumer.task.abort();
+            })
+            .await;
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
