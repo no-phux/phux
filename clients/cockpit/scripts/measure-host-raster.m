@@ -198,6 +198,85 @@ static BOOL MeasureImage(CGImageRef image, Ink *out) {
     return YES;
 }
 
+// THE GHOSTTY REFERENCE (phux-cockpit-aht)
+// ---------------------------------------
+// "Thin" only means something against a reference, and the reference the owner
+// reads text in is Ghostty. So the same row, the same face resolved by the
+// host, the same size and scale, is also rasterized with Ghostty's own
+// CoreText recipe (src/font/face/coretext.zig renderGlyph at 763386e6f): an
+// alpha-only linearGray mask, antialiasing on, subpixel positioning on,
+// quantization off, font smoothing = `font-thicken`, gray fill =
+// `font-thicken-strength` / 255 (the fill level is what steers CoreText's
+// dilation). The mask is then blended fg-over-bg in gamma space, which is what
+// both Ghostty's macOS default `alpha-blending = native` and its
+// `linear-corrected` mode produce for a grayscale pair (shaders.metal: the
+// correction maps linear blending back onto the gamma-space result). Same
+// basis as the host rows: luma on the composited 8-bit bytes.
+//
+// Measured 2026-09-29 at the pin, 13pt, scale 2: the host's cell_grid inks
+// within 0.2% of `font-thicken = true, font-thicken-strength = 255`, the
+// heaviest thickening Ghostty offers. There is no stem-darkening or gamma
+// deficit left to fix in the host; see docs/RENDER_FIDELITY.md section 7.
+static BOOL MeasureGhosttyRecipe(NSFont *font, BOOL thicken, int strength, NSUInteger cols, Ink *out) {
+    const size_t width = (size_t)(cols * kCellWidth * kScale);
+    const size_t height = (size_t)(kCellHeight * kScale);
+    uint8_t *mask = calloc(width * height, 1);
+    if (!mask) return NO;
+    CGColorSpaceRef gray = CGColorSpaceCreateWithName(kCGColorSpaceLinearGray);
+    CGContextRef ctx = CGBitmapContextCreate(mask, width, height, 8, width, gray, kCGImageAlphaOnly);
+    CGColorSpaceRelease(gray);
+    if (!ctx) {
+        free(mask);
+        return NO;
+    }
+    CGContextSetAllowsFontSmoothing(ctx, true);
+    CGContextSetShouldSmoothFonts(ctx, thicken);
+    CGContextSetAllowsFontSubpixelPositioning(ctx, true);
+    CGContextSetShouldSubpixelPositionFonts(ctx, true);
+    CGContextSetAllowsFontSubpixelQuantization(ctx, false);
+    CGContextSetShouldSubpixelQuantizeFonts(ctx, false);
+    CGContextSetAllowsAntialiasing(ctx, true);
+    CGContextSetShouldAntialias(ctx, true);
+    CGContextSetGrayFillColor(ctx, strength / 255.0, 1);
+    CGContextScaleCTM(ctx, kScale, kScale);
+    CTFontRef ctFont = (__bridge CTFontRef)font;
+    for (NSUInteger column = 0; column < cols && column < kSampleText.length; column++) {
+        UniChar ch = [kSampleText characterAtIndex:column];
+        CGGlyph glyph = 0;
+        if (!CTFontGetGlyphsForCharacters(ctFont, &ch, &glyph, 1)) continue;
+        // y-up context: the baseline sits kBaseline below the row's top edge.
+        const CGPoint pen = CGPointMake(column * kCellWidth, kCellHeight - kBaseline);
+        CTFontDrawGlyphs(ctFont, &glyph, &pen, 1, ctx);
+    }
+    CGContextRelease(ctx);
+
+    NSArray *fg = ForegroundColor();
+    NSArray *bg = BackgroundColor();
+    double fg8[3], bg8[3];
+    for (int k = 0; k < 3; k++) {
+        fg8[k] = round([fg[k] doubleValue] * 255.0);
+        bg8[k] = round([bg[k] doubleValue] * 255.0);
+    }
+    double sum = 0;
+    unsigned long long solid = 0, lit = 0;
+    for (size_t index = 0; index < width * height; index++) {
+        const double a = mask[index] / 255.0;
+        double c[3];
+        for (int k = 0; k < 3; k++) c[k] = round(bg8[k] + (fg8[k] - bg8[k]) * a);
+        const double luma = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        sum += luma;
+        if (luma > 127.0) solid++;
+        if (luma > 32.0) lit++;
+    }
+    free(mask);
+    out->width = width;
+    out->height = height;
+    out->mean = sum / (double)(width * height);
+    out->solid = solid;
+    out->lit = lit;
+    return YES;
+}
+
 static void WritePng(CGImageRef image, NSString *path) {
     if (!image || path.length == 0) return;
     NSURL *url = [NSURL fileURLWithPath:path];
@@ -212,15 +291,17 @@ static void WritePng(CGImageRef image, NSString *path) {
 int main(int argc, const char **argv) {
     @autoreleasepool {
         if (argc < 2) {
-            fprintf(stderr, "usage: measure-host-raster <font.ttf> [--png-prefix PREFIX] [--min-solid N]\n");
+            fprintf(stderr, "usage: measure-host-raster <font.ttf> [--png-prefix PREFIX] [--min-solid N] [--bench N]\n");
             return 2;
         }
         NSString *fontPath = [NSString stringWithUTF8String:argv[1]];
         NSString *pngPrefix = nil;
         long long minSolid = -1;
+        long long benchRuns = 0;
         for (int index = 2; index + 1 < argc; index += 2) {
             if (strcmp(argv[index], "--png-prefix") == 0) pngPrefix = [NSString stringWithUTF8String:argv[index + 1]];
             else if (strcmp(argv[index], "--min-solid") == 0) minSolid = atoll(argv[index + 1]);
+            else if (strcmp(argv[index], "--bench") == 0) benchRuns = atoll(argv[index + 1]);
         }
 
         // Register the app's own face under font id 1, through the host's own
@@ -290,6 +371,51 @@ int main(int argc, const char **argv) {
             if (pngPrefix) {
                 WritePng(entry.image, [NSString stringWithFormat:@"%@-%s.png", pngPrefix, cases[index].name]);
             }
+        }
+
+        // phux-cockpit-jw4: host_draw is the host rebuilding one of these row
+        // rasters per changed row per present, so the cost of one row is the
+        // unit that decides the frame. Timed here, with no window, display
+        // link or occlusion: a live profile on an occluded or locked display
+        // presents at 1 Hz and describes a condition no user is in. Wall
+        // time on one thread; the live host fans rows out over dispatch_apply.
+        if (benchRuns > 0) {
+            NSDictionary *command = CellGridCommand(cols);
+            uint64_t total = 0, best = UINT64_MAX;
+            for (long long run = 0; run < benchRuns; run++) {
+                const uint64_t begin = NativeSdkTimestampNanoseconds();
+                NativeSdkPacketCommandRaster *entry =
+                    [view rasterCacheBuildEntryForCommand:command
+                                                     kind:@"cell_grid"
+                                                    scale:kScale
+                                               pixelWidth:pixelWidth
+                                              pixelHeight:pixelHeight];
+                const uint64_t elapsed = NativeSdkTimestampNanoseconds() - begin;
+                if (!entry) return 1;
+                total += elapsed;
+                if (elapsed < best) best = elapsed;
+            }
+            printf("bench=cell_grid cols=%lu runs=%lld mean_us=%.1f min_us=%.1f\n",
+                   (unsigned long)cols, benchRuns, total / (double)benchRuns / 1000.0, best / 1000.0);
+        }
+
+        // Reported, never asserted: the floor below stays the host's own
+        // number, and these rows exist to answer "thin compared to what".
+        NSFont *face = NativeSdkFontForFontId(1, kFontSize);
+        struct {
+            const char *name;
+            BOOL thicken;
+            int strength;
+        } references[] = {
+            {"ghostty-thicken-off", NO, 255},
+            {"ghostty-thicken-50", YES, 50},
+            {"ghostty-thicken-255", YES, 255},
+        };
+        for (size_t index = 0; face && index < sizeof(references) / sizeof(references[0]); index++) {
+            Ink ink;
+            if (!MeasureGhosttyRecipe(face, references[index].thicken, references[index].strength, cols, &ink)) continue;
+            printf("reference=%-19s width=%zu height=%zu mean_luma=%.4f solid=%llu lit=%llu\n",
+                   references[index].name, ink.width, ink.height, ink.mean, ink.solid, ink.lit);
         }
 
         if (minSolid >= 0) {
