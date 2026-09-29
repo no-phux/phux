@@ -436,7 +436,16 @@ export function createWorkspace(bridge: Bridge, hooks: WorkspaceHooks): Workspac
 
   function rebuild(node: SavedNode, live: Set<string>): LayoutNode | undefined {
     if (node.kind === "leaf") {
-      if (!live.has(node.terminalId) || !bridge.ready(node.terminalId)) return undefined;
+      if (!live.has(node.terminalId)) return undefined;
+      if (!bridge.ready(node.terminalId)) {
+        // A pane from another session is live but not subscribed yet. Attach
+        // it and bring it back as its own tab once ready, rather than lose it.
+        if (!awaiting.has(node.terminalId)) {
+          bridge.client().attachTerminalPreservingGeometry(node.terminalId);
+          awaiting.set(node.terminalId, { kind: "tab" });
+        }
+        return undefined;
+      }
       return leaf(place(node.terminalId));
     }
     const first = rebuild(node.first, live);

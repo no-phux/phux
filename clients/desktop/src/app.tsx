@@ -465,7 +465,7 @@ function DesktopApp(props: AppProps): JSX.Element {
       group: "Terminal",
       chord: "cmd+shift+t",
       icon: "terminal",
-      run: () => workspace.newTerminal("~"),
+      run: () => workspace.newTerminal(process.env.HOME),
     },
     {
       id: "folder",
@@ -789,7 +789,7 @@ function DesktopApp(props: AppProps): JSX.Element {
   });
 
   const shortcuts = commands
-    .filter((command) => command.chord && !command.id.startsWith("tab-"))
+    .filter((command) => command.chord && !/^tab-\d$/.test(command.id))
     .map((command) => ({ title: command.title, chord: command.chord ?? "", group: command.group }));
 
   // ── Drags (splits, sidebar, tabs) ──────────────────────────────
