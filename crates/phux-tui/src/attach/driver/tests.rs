@@ -386,42 +386,36 @@ fn which_key_timeout_pushes_a_passthrough_popup_only_when_pending() {
 #[test]
 fn foreign_replies_cache_clear_and_survive_garbage() {
     let sid = SessionId::new(7);
-    let mut layouts: HashMap<SessionId, Workspace> = HashMap::new();
+    let mut peers = PeerWatch::default();
     let mut ws = Workspace::single(ResourceId::local(1));
     ws.add_window("logs".to_owned(), ResourceId::local(2));
     let bytes = ws.encode_cbor().expect("encode");
-    apply_foreign_layout_reply(&mut layouts, sid, Some(&bytes));
-    assert_eq!(layouts.get(&sid).map(|w| w.windows.len()), Some(2));
-    apply_foreign_layout_reply(&mut layouts, sid, Some(b"not cbor"));
-    assert!(!layouts.contains_key(&sid));
-    apply_foreign_layout_reply(&mut layouts, sid, Some(&bytes));
-    apply_foreign_layout_reply(&mut layouts, sid, None);
-    assert!(!layouts.contains_key(&sid));
+    peers.apply_layout_reply(sid, Some(&bytes));
+    assert_eq!(
+        peers.foreign_layouts.get(&sid).map(|w| w.windows.len()),
+        Some(2)
+    );
+    peers.apply_layout_reply(sid, Some(b"not cbor"));
+    assert!(!peers.foreign_layouts.contains_key(&sid));
+    peers.apply_layout_reply(sid, Some(&bytes));
+    peers.apply_layout_reply(sid, None);
+    assert!(!peers.foreign_layouts.contains_key(&sid));
 
     let id = ResourceId::local(3);
-    let mut agents: HashMap<ResourceId, AgentRecord> = HashMap::new();
     let record = AgentRecord {
         name: "packer".to_owned(),
         kind: Some("codex".to_owned()),
         state: AgentMetaState::Working,
         ..AgentRecord::default()
     };
-    assert!(apply_foreign_agent_reply(
-        &mut agents,
-        id.clone(),
-        Some(&record.encode())
-    ));
-    assert_eq!(agents[&id].name, "packer");
-    assert!(!apply_foreign_agent_reply(
-        &mut agents,
-        id.clone(),
-        Some(&record.encode())
-    ));
-    apply_foreign_agent_reply(&mut agents, id.clone(), Some(b"not json"));
-    assert!(!agents.contains_key(&id));
-    apply_foreign_agent_reply(&mut agents, id.clone(), Some(&record.encode()));
-    apply_foreign_agent_reply(&mut agents, id.clone(), None);
-    assert!(!agents.contains_key(&id));
+    assert!(peers.apply_agent_reply(id.clone(), Some(&record.encode())));
+    assert_eq!(peers.foreign_agents[&id].name, "packer");
+    assert!(!peers.apply_agent_reply(id.clone(), Some(&record.encode())));
+    peers.apply_agent_reply(id.clone(), Some(b"not json"));
+    assert!(!peers.foreign_agents.contains_key(&id));
+    peers.apply_agent_reply(id.clone(), Some(&record.encode()));
+    peers.apply_agent_reply(id.clone(), None);
+    assert!(!peers.foreign_agents.contains_key(&id));
 }
 
 /// Peer layout keys are SUBSCRIBED once (there is no unsubscribe), still
@@ -429,23 +423,22 @@ fn foreign_replies_cache_clear_and_survive_garbage() {
 #[tokio::test]
 async fn peer_layout_keys_are_subscribed_not_just_read() {
     let (mut client, server) = pair();
-    let sessions = vec![
-        phux_protocol::wire::info::SessionInfo::new(SessionId::new(1), "work").with_window_count(1),
-        phux_protocol::wire::info::SessionInfo::new(SessionId::new(2), "scratch")
-            .with_window_count(1),
-    ];
-    let (mut next, mut pending, mut subscribed) = (1, HashMap::new(), HashSet::new());
+    let mut peers = PeerWatch {
+        sessions: vec![
+            phux_protocol::wire::info::SessionInfo::new(SessionId::new(1), "work")
+                .with_window_count(1),
+            phux_protocol::wire::info::SessionInfo::new(SessionId::new(2), "scratch")
+                .with_window_count(1),
+        ],
+        focused_session: Some(SessionId::new(1)),
+        ..PeerWatch::default()
+    };
+    let mut next = 1;
     for _ in 0..2 {
-        sync_foreign_layout_subscriptions(
-            &mut client,
-            &sessions,
-            Some(SessionId::new(1)),
-            &mut next,
-            &mut pending,
-            &mut subscribed,
-        )
-        .await
-        .expect("sweep sends");
+        peers
+            .sweep_layouts(&mut client, &mut next)
+            .await
+            .expect("sweep sends");
     }
     let frames = drain(client, server).await;
     let (peer_key, own_key) = (layout_key(SessionId::new(2)), layout_key(SessionId::new(1)));
@@ -475,17 +468,15 @@ async fn foreign_agent_ids_are_fetched_and_subscribed_once() {
     let (mut client, server) = pair();
     let local = ResourceId::local(10);
     let satellite = ResourceId::satellite("prod-3", 2);
-    let (mut next, mut pending, mut subscribed) = (1, HashMap::new(), HashSet::new());
-    sync_foreign_agent_ids(
-        &mut client,
-        vec![local.clone(), satellite.clone(), local.clone()],
-        &mut next,
-        &mut pending,
-        &mut subscribed,
-        &mut HashMap::new(),
-    )
-    .await
-    .expect("sweep sends");
+    let (mut peers, mut next) = (PeerWatch::default(), 1);
+    peers
+        .watch_agents(
+            &mut client,
+            vec![local.clone(), satellite.clone(), local.clone()],
+            &mut next,
+        )
+        .await
+        .expect("sweep sends");
     let frames = drain(client, server).await;
     let count = |id: &ResourceId, get: bool, key: &str| {
         frames
@@ -504,7 +495,7 @@ async fn foreign_agent_ids_are_fetched_and_subscribed_once() {
     for id in [&local, &satellite] {
         assert_eq!(count(id, true, RESOURCE_AGENT_KEY), 1, "{id}: {frames:?}");
         assert_eq!(count(id, false, RESOURCE_AGENT_KEY), 1, "{id}: {frames:?}");
-        assert!(subscribed.contains(id));
+        assert!(peers.foreign_agent_subscribed.contains(id));
     }
     assert_eq!(count(&satellite, true, RESOURCE_ASKED_KEY), 1, "{frames:?}");
     assert_eq!(count(&local, true, RESOURCE_ASKED_KEY), 0, "{frames:?}");
@@ -515,16 +506,21 @@ async fn foreign_agent_ids_are_fetched_and_subscribed_once() {
 #[test]
 fn prune_foreign_agents_retains_only_live_foreign_panes() {
     let (live, stale) = (ResourceId::local(1), ResourceId::local(2));
-    let mut cache: HashMap<ResourceId, AgentRecord> = [
-        (live.clone(), AgentRecord::default()),
-        (stale.clone(), AgentRecord::default()),
-    ]
-    .into();
-    let mut subscribed: HashSet<ResourceId> = [live.clone(), stale.clone()].into();
-    prune_foreign_agents(&mut cache, &mut subscribed, &HashSet::from([live.clone()]));
+    let mut peers = PeerWatch {
+        foreign_agents: [
+            (live.clone(), AgentRecord::default()),
+            (stale.clone(), AgentRecord::default()),
+        ]
+        .into(),
+        foreign_agent_subscribed: [live.clone(), stale.clone()].into(),
+        ..PeerWatch::default()
+    };
+    peers.prune_agents(&HashSet::from([live.clone()]));
+    let (cache, subscribed) = (&peers.foreign_agents, &peers.foreign_agent_subscribed);
     assert!(cache.contains_key(&live) && !cache.contains_key(&stale));
     assert!(subscribed.contains(&live) && !subscribed.contains(&stale));
-    prune_foreign_agents(&mut cache, &mut subscribed, &HashSet::new());
+    peers.prune_agents(&HashSet::new());
+    let (cache, subscribed) = (&peers.foreign_agents, &peers.foreign_agent_subscribed);
     assert!(cache.is_empty() && subscribed.is_empty());
 }
 

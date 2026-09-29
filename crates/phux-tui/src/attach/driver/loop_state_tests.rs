@@ -1,6 +1,8 @@
 use super::*;
+use phux_client::agent_meta::AgentRecord;
 use phux_protocol::WindowId;
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ServerFeatureSet};
+use phux_protocol::ids::SessionId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
@@ -1884,11 +1886,7 @@ async fn confirmed_death_clears_review_and_locality_does_not() {
         .observe_record(&done_id, Some(&done), Some(&done_id));
     seed_cached_peer(&mut state, &done_id);
     state.peers.foreign_agents.insert(done_id.clone(), done);
-    prune_foreign_agents(
-        &mut state.peers.foreign_agents,
-        &mut state.peers.foreign_agent_subscribed,
-        &std::collections::HashSet::new(),
-    );
+    state.peers.prune_agents(&std::collections::HashSet::new());
     assert!(
         state.review.is_seen(&done_id),
         "pruning a peer cache is a locality change, not death"
