@@ -177,6 +177,8 @@ const KEY_NAMES: Record<string, string> = {
   bracket_left: "[",
   bracket_right: "]",
   grave_accent: "`",
+  backquote: "`",
+  quote: "'",
   equal: "=",
   minus: "-",
   comma: ",",
@@ -202,7 +204,10 @@ const MODIFIERS: Record<string, "cmd" | "ctrl" | "alt" | "shift"> = {
   shift: "shift",
 };
 
-/** `super+shift+arrow_left` -> `cmd+shift+left`; undefined for sequences or unknown parts. */
+/**
+ * `super+shift+arrow_left` -> `cmd+shift+left`; undefined for sequences,
+ * unknown parts, and a bare printable key (binding it would eat typing).
+ */
 export function ghosttyChord(trigger: string): string | undefined {
   const mods = new Set<string>();
   let key: string | undefined;
@@ -217,16 +222,17 @@ export function ghosttyChord(trigger: string): string | undefined {
     key = "=";
     mods.add("shift");
   }
-  key = KEY_NAMES[key] ?? key.replace(/^digit_/, "");
+  key = KEY_NAMES[key] ?? key.replace(/^(digit|key)_(?=.$)/, "");
+  if (mods.size === 0 && key.length === 1) return undefined;
   return [...["cmd", "ctrl", "alt", "shift"].filter((mod) => mods.has(mod)), key].join("+");
 }
 
 /** Ghostty action (without its parameter where the parameter doesn't matter) -> command id. */
 const ACTIONS: Record<string, string> = {
   "new_split:right": "split-right",
-  "new_split:left": "split-right",
+  "new_split:left": "split-left",
   "new_split:down": "split-down",
-  "new_split:up": "split-down",
+  "new_split:up": "split-up",
   "new_split:auto": "split-right",
   "goto_split:left": "pane-left",
   "goto_split:right": "pane-right",
@@ -250,7 +256,10 @@ const ACTIONS: Record<string, string> = {
   previous_tab: "tab-prev",
   next_tab: "tab-next",
   last_tab: "tab-9",
+  prompt_surface_title: "rename",
+  prompt_tab_title: "rename",
   toggle_fullscreen: "fullscreen",
+  toggle_maximize: "maximize",
   increase_font_size: "font-up",
   decrease_font_size: "font-down",
   reset_font_size: "font-reset",
@@ -259,40 +268,106 @@ const ACTIONS: Record<string, string> = {
   scroll_to_top: "scroll-top",
   scroll_to_bottom: "scroll-bottom",
   clear_screen: "clear",
+  start_search: "find",
+  search_selection: "find-selection",
+  "navigate_search:next": "find-next",
+  "navigate_search:previous": "find-prev",
+  end_search: "find-close",
   open_config: "settings",
   reload_config: "reload-config",
   toggle_command_palette: "palette",
   toggle_quick_terminal: "quick-terminal",
   toggle_tab_overview: "goto",
+  ignore: "ignore",
   unbind: "",
 };
+
+/** Actions whose parameter is the payload: typed text, a size, a count. */
+function parameterized(name: string, argument: string): string | undefined {
+  if (name === "text") return `send:${zigString(argument)}`;
+  if (name === "esc") return `send:\u001b${zigString(argument)}`;
+  if (name === "csi") return `send:\u001b[${zigString(argument)}`;
+  const number = argument.trim() === "" ? Number.NaN : Number(argument);
+  if (!Number.isFinite(number)) return undefined;
+  if (name === "set_font_size") return `font-size:${number}`;
+  if (name === "scroll_page_lines" && Number.isInteger(number) && number !== 0)
+    return `scroll-lines:${number}`;
+  if (name === "move_tab" && number !== 0) return number < 0 ? "tab-move-left" : "tab-move-right";
+  return undefined;
+}
 
 /** The command a Ghostty action maps to, or undefined when there is none. */
 export function ghosttyAction(action: string): string | undefined {
   const trimmed = action.trim();
   const tab = /^goto_tab:(\d)$/.exec(trimmed);
   if (tab) return `tab-${tab[1]}`;
-  const [name = "", argument = ""] = trimmed.split(":");
+  const colon = trimmed.indexOf(":");
+  const name = colon < 0 ? trimmed : trimmed.slice(0, colon);
+  const argument = colon < 0 ? "" : trimmed.slice(colon + 1);
   const direction = argument.split(",")[0] ?? "";
-  return ACTIONS[`${name}:${direction}`] ?? ACTIONS[name];
+  return ACTIONS[`${name}:${direction}`] ?? ACTIONS[name] ?? parameterized(name, argument);
+}
+
+/** Zig string-literal escapes, as Ghostty's `text:` action takes them. Unknown ones stay literal. */
+export function zigString(value: string): string {
+  const simple: Record<string, string> = {
+    n: "\n",
+    r: "\r",
+    t: "\t",
+    "\\": "\\",
+    "'": "'",
+    '"': '"',
+  };
+  return value.replace(
+    /\\(x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]{1,6}\}|[nrt\\'"])/g,
+    (whole: string, code: string) => {
+      if (code.startsWith("x")) return String.fromCharCode(Number.parseInt(code.slice(1), 16));
+      if (code.startsWith("u{")) {
+        const point = Number.parseInt(code.slice(2, -1), 16);
+        return point <= 0x10ffff ? String.fromCodePoint(point) : whole;
+      }
+      return simple[code] ?? whole;
+    },
+  );
+}
+
+/** Chords the terminal itself already serves with the Ghostty action's meaning. */
+const BUILT_IN: Record<string, string> = {
+  "cmd+c": "copy_to_clipboard",
+  "cmd+v": "paste_from_clipboard",
+  "cmd+q": "quit",
+};
+
+/** Where the trigger ends: the first `=`, unless the trigger's key is a literal `=`. */
+function triggerEnd(value: string): number {
+  const first = value.indexOf("=");
+  return first > 0 && value[first - 1] === "+" ? value.indexOf("=", first + 1) : first;
 }
 
 function setKeybind(config: GhosttyConfig, value: string): void {
   if (value === "clear") {
     config.keybinds.clear();
+    config.globals.clear();
+    config.unmapped.length = 0;
     return;
   }
-  const equals = value.lastIndexOf("=");
+  const equals = triggerEnd(value);
   if (equals < 0) return;
   // Prefixes like `global:` and `unconsumed:` change delivery, not the chord.
   const raw = value.slice(0, equals);
   const global = /^((all|unconsumed|performable):)*global:/.test(raw);
   const trigger = raw.replace(/^((global|all|unconsumed|performable):)+/, "");
-  const action = value.slice(equals + 1);
+  const action = value.slice(equals + 1).trim();
   const chord = ghosttyChord(trigger);
+  if (chord && BUILT_IN[chord] === action) return;
   const command = ghosttyAction(action);
-  if (!chord) return;
-  if (command === undefined) {
+  if (!chord || command === undefined) {
+    // Sequences, bare keys and actions with no equivalent: the chord keeps
+    // no earlier config binding, and Settings lists the line.
+    if (chord) {
+      config.keybinds.delete(chord);
+      config.globals.delete(chord);
+    }
     config.unmapped.push(`${trigger} = ${action}`);
     return;
   }

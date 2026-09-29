@@ -41,6 +41,13 @@ describe("split tree", () => {
     expect(root.kind === "split" && root.first).toBe(a);
   });
 
+  test("a split before the target puts the new leaf left of or above it", () => {
+    const root = splitAt(grid(), "c", place("d"), "column", true);
+    expect(ids(root)).toEqual(["a", "b", "d", "c"]);
+    const rects = layoutRects(root, { x: 0, y: 0, width: 1, height: 1 });
+    expect(rects.get("d")?.y).toBeLessThan(rects.get("c")?.y ?? 0);
+  });
+
   test("removing a leaf promotes its sibling into the parent's rect", () => {
     const root = grid();
     const without = removeLeaf(root, "b");

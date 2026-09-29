@@ -33,7 +33,7 @@ import type { SavedLayout, SavedNode } from "./persist";
 /** Where a terminal that is not yet ready will be placed. */
 export type Destination =
   | { kind: "tab" }
-  | { kind: "split"; tabId: string; targetId: string; axis: Axis };
+  | { kind: "split"; tabId: string; targetId: string; axis: Axis; before?: boolean };
 
 export interface Workspace {
   tabs: Accessor<DeskTab[]>;
@@ -56,7 +56,8 @@ export interface Workspace {
   equalizeTab(): void;
   resizeSplit(splitId: string, ratio: number): void;
   newTerminal(cwd?: string): void;
-  split(axis: Axis): void;
+  /** Split the focused pane with a new terminal after it, or `before` it. */
+  split(axis: Axis, before?: boolean): void;
   duplicateView(): void;
   closePane(placementId?: string): void;
   reveal(terminalId: string): void;
@@ -243,7 +244,13 @@ export function createWorkspace(
           const { zoomedId: _zoom, ...rest } = tab;
           return {
             ...rest,
-            root: splitAt(tab.root, destination.targetId, placement, destination.axis),
+            root: splitAt(
+              tab.root,
+              destination.targetId,
+              placement,
+              destination.axis,
+              destination.before,
+            ),
             focusedId: placement.id,
           };
         }),
@@ -305,14 +312,14 @@ export function createWorkspace(
     request({ kind: "tab" }, cwd ?? focusedCwd());
   }
 
-  function split(axis: Axis): void {
+  function split(axis: Axis, before = false): void {
     const tab = activeTab();
     const target = focused();
     if (!tab || !target) {
       newTerminal();
       return;
     }
-    request({ kind: "split", tabId: tab.id, targetId: target.id, axis }, focusedCwd());
+    request({ kind: "split", tabId: tab.id, targetId: target.id, axis, before }, focusedCwd());
   }
 
   function duplicateView(): void {

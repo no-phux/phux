@@ -58,28 +58,33 @@ export function focusedPlacement(tab: DeskTab): Placement | undefined {
   return findPlacement(tab.root, tab.focusedId) ?? placements(tab.root)[0];
 }
 
-/** Put `placement` beside `targetId`, splitting that leaf along `axis`. */
+/**
+ * Put `placement` beside `targetId`, splitting that leaf along `axis`: after
+ * it (right or below), or `before` it (left or above).
+ */
 export function splitAt(
   node: LayoutNode,
   targetId: string,
   placement: Placement,
   axis: Axis,
+  before = false,
 ): LayoutNode {
   if (node.kind === "leaf") {
     if (node.placement.id !== targetId) return node;
+    const added = leaf(placement);
     return {
       kind: "split",
       id: newId("split"),
       axis,
       ratio: 0.5,
-      first: node,
-      second: leaf(placement),
+      first: before ? added : node,
+      second: before ? node : added,
     };
   }
   return {
     ...node,
-    first: splitAt(node.first, targetId, placement, axis),
-    second: splitAt(node.second, targetId, placement, axis),
+    first: splitAt(node.first, targetId, placement, axis, before),
+    second: splitAt(node.second, targetId, placement, axis, before),
   };
 }
 

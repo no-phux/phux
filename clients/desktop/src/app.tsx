@@ -320,6 +320,21 @@ function DesktopApp(props: AppProps): JSX.Element {
     setFind({ placementId: focus.id, query: "", caseSensitive: false, matches: [], index: 0 });
   }
 
+  /** Search for the focused view's selected text (its first line), like Command-E on macOS. */
+  function findSelection(): void {
+    const focus = workspace.focused();
+    if (!focus) return;
+    const selected = safe(() => bridge.client().viewSelectionText(focus.viewId), "");
+    const query = (selected.split(/\r?\n/).find((line) => line.trim()) ?? "").slice(0, 512);
+    if (!query) {
+      openFind();
+      return;
+    }
+    const caseSensitive = find()?.caseSensitive ?? false;
+    setFind({ placementId: focus.id, query, caseSensitive, matches: [], index: 0 });
+    runSearch(query, caseSensitive);
+  }
+
   function runSearch(query: string, caseSensitive: boolean): void {
     const state = find();
     const placement = placementById(state?.placementId);
@@ -388,6 +403,19 @@ function DesktopApp(props: AppProps): JSX.Element {
     workspace.restore(snapshot);
     bridge.reconnect();
     toast({ kind: "info", title: "Reconnecting", body: socketPath });
+  }
+
+  function scrollLines(rows: number): void {
+    const focus = workspace.focused();
+    if (focus) safe(() => bridge.client().scrollView(focus.viewId, rows), undefined);
+  }
+
+  /** Move the active tab one place, wrapping like Ghostty's move_tab. */
+  function moveActiveTab(step: 1 | -1): void {
+    const list = workspace.tabs();
+    const from = list.findIndex((tab) => tab.id === workspace.activeId());
+    if (from < 0 || list.length < 2) return;
+    workspace.moveTab(from, (from + step + list.length) % list.length);
   }
 
   function scrollPage(direction: 1 | -1): void {
@@ -584,6 +612,20 @@ function DesktopApp(props: AppProps): JSX.Element {
       run: () => workspace.split("column"),
     },
     {
+      id: "split-left",
+      title: "Split Left",
+      group: "Panes",
+      icon: "splitRight",
+      run: () => workspace.split("row", true),
+    },
+    {
+      id: "split-up",
+      title: "Split Up",
+      group: "Panes",
+      icon: "splitDown",
+      run: () => workspace.split("column", true),
+    },
+    {
       id: "view",
       title: "Open Another View of This Terminal",
       group: "Panes",
@@ -685,6 +727,18 @@ function DesktopApp(props: AppProps): JSX.Element {
       chord: "cmd+shift+[",
       run: () => workspace.stepTab(-1),
     },
+    {
+      id: "tab-move-left",
+      title: "Move Tab Left",
+      group: "Tabs",
+      run: () => moveActiveTab(-1),
+    },
+    {
+      id: "tab-move-right",
+      title: "Move Tab Right",
+      group: "Tabs",
+      run: () => moveActiveTab(1),
+    },
     { id: "rename", title: "Rename Tab…", group: "Tabs", icon: "terminal", run: renameActive },
     {
       id: "window",
@@ -715,6 +769,20 @@ function DesktopApp(props: AppProps): JSX.Element {
       group: "Terminal",
       chord: "cmd+shift+g",
       run: () => (find() ? stepFind(-1) : openFind()),
+    },
+    {
+      id: "find-selection",
+      title: "Use Selection for Find",
+      group: "Terminal",
+      chord: "cmd+e",
+      icon: "search",
+      run: findSelection,
+    },
+    {
+      id: "find-close",
+      title: "Close Find",
+      group: "Terminal",
+      run: closeFind,
     },
     {
       id: "follow",
@@ -858,6 +926,13 @@ function DesktopApp(props: AppProps): JSX.Element {
       run: () => gpuix?.renderer.toggleFullscreen?.(),
     },
     {
+      id: "maximize",
+      title: "Zoom Window",
+      group: "View",
+      icon: "maximize",
+      run: () => gpuix?.renderer.zoomWindow?.(),
+    },
+    {
       id: "reload-config",
       title: "Reload Ghostty Config",
       group: "Ghostty",
@@ -896,6 +971,29 @@ function DesktopApp(props: AppProps): JSX.Element {
     })),
   ];
 
+  /** Commands only a keybind names: typed text, a font size, a line count, or nothing. */
+  function boundCommand(id: string): Command | undefined {
+    const group = "Ghostty keybinds";
+    if (id === "ignore") return { id, title: "Ignore Key", group, run: () => {} };
+    if (id.startsWith("send:")) {
+      const text = id.slice("send:".length);
+      return { id, title: `Send ${JSON.stringify(text)}`, group, run: () => sendText(text) };
+    }
+    const [name, value = ""] = id.split(":");
+    const number = Number(value);
+    if (value === "" || !Number.isFinite(number)) return undefined;
+    if (name === "font-size")
+      return {
+        id,
+        title: `Font Size ${number}`,
+        group,
+        run: () => updatePrefs({ fontSize: number }),
+      };
+    if (name === "scroll-lines")
+      return { id, title: `Scroll ${number} Lines`, group, run: () => scrollLines(number) };
+    return undefined;
+  }
+
   const byId = new Map(commands.map((command) => [command.id, command]));
   const defaultChords = new Map<string, Command>();
   for (const command of commands) {
@@ -908,7 +1006,7 @@ function DesktopApp(props: AppProps): JSX.Element {
     const map = new Map(defaultChords);
     if (!prefs().ghosttyKeys) return map;
     for (const [chord, id] of ghostty().keybinds) {
-      const command = byId.get(id);
+      const command = byId.get(id) ?? boundCommand(id);
       if (command) map.set(chord, command);
       else map.delete(chord);
     }
@@ -994,14 +1092,17 @@ function DesktopApp(props: AppProps): JSX.Element {
     return [...panes, ...tabs];
   });
 
-  const shortcuts = createMemo(() =>
-    commands.flatMap((command) => {
+  const shortcuts = createMemo(() => [
+    ...commands.flatMap((command) => {
       const chord = displayChords().get(command.id);
       return chord && !/^tab-\d$/.test(command.id)
         ? [{ title: command.title, chord, group: command.group }]
         : [];
     }),
-  );
+    ...[...keymap()].flatMap(([chord, command]) =>
+      byId.has(command.id) ? [] : [{ title: command.title, chord, group: command.group }],
+    ),
+  ]);
 
   // ── Drags (splits, sidebar, tabs) ──────────────────────────────
 

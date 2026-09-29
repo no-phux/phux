@@ -47,9 +47,9 @@ export function chordOf(event: KeyLike): string {
 }
 
 /**
- * Any modified key as a chord, for lookup against the effective keymap
- * (Ghostty binds non-Command chords such as `ctrl+tab`). Escape passes through
- * bare; other unmodified or Shift-only keys are typing, never commands.
+ * Any key as a chord, for lookup against the effective keymap: Ghostty binds
+ * non-Command chords such as `ctrl+tab`, `shift+enter` or a bare `f12`. Only
+ * an unmodified printable key is typing and never a chord.
  */
 export function keyChord(event: KeyLike): string {
   const modifiers = event.modifiers;
@@ -57,10 +57,12 @@ export function keyChord(event: KeyLike): string {
   if (!raw || event.isHeld) return "";
   if (modifiers?.cmd) return chordOf(event);
   const lowered = raw.toLowerCase();
-  if (!modifiers?.ctrl && !modifiers?.alt) return lowered === "escape" ? "escape" : "";
   const key = UNSHIFTED[lowered] ?? lowered;
-  const shift = modifiers.shift || key !== lowered || lowered !== raw;
-  return [modifiers.ctrl ? "ctrl" : "", modifiers.alt ? "alt" : "", shift ? "shift" : "", key]
+  const shift = !!modifiers?.shift || key !== lowered || lowered !== raw;
+  const ctrl = !!modifiers?.ctrl;
+  const alt = !!modifiers?.alt;
+  if (!ctrl && !alt && !shift && key.length === 1) return "";
+  return [ctrl ? "ctrl" : "", alt ? "alt" : "", shift ? "shift" : "", key]
     .filter(Boolean)
     .join("+");
 }
