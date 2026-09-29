@@ -763,6 +763,12 @@ export declare class DesktopClient {
    * Named/control keys use keyEvent, clipboard content uses pasteView.
    */
   commitText(view: string, text: string): boolean
+  /**
+   * Type text that may contain controls, for keybinding actions such as
+   * Ghostty's `text:\x1b\r` or a Ctrl-L clear. C0 controls become their
+   * keys and ESC+key becomes Alt+key; see `typed_keys`. At most 4096 bytes.
+   */
+  typeText(view: string, text: string): boolean
   keyEvent(view: string, event: DesktopKeyEvent): boolean
   mouseEvent(view: string, event: DesktopMouseEvent): boolean
   focusView(view: string, focused: boolean): boolean
@@ -881,6 +887,7 @@ export interface DesktopConnectionIdentity {
 /**
  * Initial local-server connection configuration. Dimensions are the runtime
  * connection's initial viewport, not an independently resizable view.
+ *
  * `cols = rows = 0` casts no geometry vote: attaching resizes nothing and
  * each terminal is sized explicitly (`resizeView`).
  */

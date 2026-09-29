@@ -5,6 +5,7 @@ import {
   ghosttyPrefs,
   ghosttyTheme,
   parseGhostty,
+  zigString,
 } from "../../src/settings/ghostty";
 import { keyChord } from "../../src/shell/keymap";
 import { leaf, nudge, splitAt, type LayoutNode } from "../../src/workspace/layout";
@@ -39,6 +40,18 @@ keybind = super+3=goto_tab:3
 keybind = ctrl+shift+tab=previous_tab
 keybind = super+shift+arrow_up=jump_to_prompt:-1
 keybind = super+t=unbind
+keybind = shift+enter=text:\\x1b\\r
+keybind = super+alt+t=text:a=b
+keybind = super+==reset_font_size
+keybind = ctrl+a>c=new_tab
+keybind = x=new_tab
+keybind = super+c=copy_to_clipboard
+keybind = super+shift+left=move_tab:-1
+keybind = super+i=ignore
+keybind = super+e=search_selection
+keybind = super+alt+h=new_split:left
+keybind = super+k=reset
+keybind = f12=set_font_size:15
 nonsense line without equals
 `;
 
@@ -72,7 +85,52 @@ describe("ghostty config", () => {
     expect(config.keybinds.get("ctrl+shift+tab")).toBe("tab-prev");
     expect(config.keybinds.get("ctrl+`")).toBe("quick-terminal");
     expect(config.keybinds.get("cmd+t")).toBe("");
-    expect(config.unmapped).toEqual(["super+shift+arrow_up = jump_to_prompt:-1"]);
+    expect(config.unmapped).toEqual([
+      "super+shift+arrow_up = jump_to_prompt:-1",
+      "ctrl+a>c = new_tab",
+      "x = new_tab",
+      "super+k = reset",
+    ]);
+  });
+
+  test("text, parameters and the remaining daily actions have equivalents", () => {
+    expect(config.keybinds.get("shift+enter")).toBe("send:\u001b\r");
+    expect(config.keybinds.get("cmd+alt+t")).toBe("send:a=b");
+    expect(config.keybinds.get("cmd+=")).toBe("font-reset");
+    expect(config.keybinds.get("cmd+shift+left")).toBe("tab-move-left");
+    expect(config.keybinds.get("cmd+i")).toBe("ignore");
+    expect(config.keybinds.get("cmd+e")).toBe("find-selection");
+    expect(config.keybinds.get("cmd+alt+h")).toBe("split-left");
+    expect(config.keybinds.get("f12")).toBe("font-size:15");
+    // Copy stays the terminal's own; an unsupported rebind drops no built-in.
+    expect(config.keybinds.has("cmd+c")).toBe(false);
+    expect(config.keybinds.has("cmd+k")).toBe(false);
+    expect(ghosttyAction("csi:A")).toBeUndefined();
+    expect(ghosttyAction("esc:d")).toBe("send:\u001bd");
+    expect(ghosttyAction("scroll_page_lines:-3")).toBe("scroll-lines:-3");
+    expect(ghosttyAction("navigate_search:previous")).toBe("find-prev");
+    expect(ghosttyAction("prompt_surface_title")).toBe("rename");
+    expect(ghosttyAction("move_tab:0")).toBeUndefined();
+    expect(ghosttyAction("set_font_size:big")).toBeUndefined();
+  });
+
+  test("text payloads take Zig string escapes", () => {
+    expect(zigString(String.raw`\x1b\r`)).toBe("\u001b\r");
+    expect(zigString(String.raw`\u{1F600}\t\"\\n`)).toBe('\u{1F600}\t"\\n');
+    expect(zigString(String.raw`\q \u{110000}`)).toBe(String.raw`\q \u{110000}`);
+  });
+
+  test("a later bind or clear replaces earlier ones, globals included", () => {
+    const later = parseGhostty(
+      "keybind = global:ctrl+grave_accent=toggle_quick_terminal\nkeybind = ctrl+grave_accent=reset",
+    );
+    expect(later.keybinds.size).toBe(0);
+    expect(later.globals.size).toBe(0);
+    const cleared = parseGhostty(
+      "keybind = global:ctrl+grave_accent=toggle_quick_terminal\nkeybind = super+k=reset\nkeybind = clear",
+    );
+    expect(cleared.globals.size).toBe(0);
+    expect(cleared.unmapped).toEqual([]);
   });
 
   test("a theme needs both default colours; a palette needs all 16", () => {
@@ -102,6 +160,9 @@ describe("ghostty config", () => {
     expect(ghosttyChord("shift+super+bracket_right")).toBe("cmd+shift+]");
     expect(ghosttyChord("ctrl+a>c")).toBeUndefined();
     expect(ghosttyChord("super+")).toBeUndefined();
+    expect(ghosttyChord("a")).toBeUndefined();
+    expect(ghosttyChord("key_a+ctrl")).toBe("ctrl+a");
+    expect(ghosttyChord("super+backquote")).toBe("cmd+`");
     expect(ghosttyAction("new_split:down")).toBe("split-down");
     expect(ghosttyAction("resize_split:left,20")).toBe("resize-left");
     expect(ghosttyAction("goto_tab:9")).toBe("tab-9");
@@ -118,7 +179,10 @@ describe("window chords", () => {
       "ctrl+shift+tab",
     );
     expect(keyChord({ key: "a", modifiers: none })).toBe("");
-    expect(keyChord({ key: "A", modifiers: { ...none, shift: true } })).toBe("");
+    expect(keyChord({ key: "A", modifiers: { ...none, shift: true } })).toBe("shift+a");
+    expect(keyChord({ key: "enter", modifiers: { ...none, shift: true } })).toBe("shift+enter");
+    expect(keyChord({ key: "f12", modifiers: none })).toBe("f12");
+    expect(keyChord({ key: "escape", modifiers: { ...none, shift: true } })).toBe("escape");
     expect(keyChord({ key: "escape", modifiers: none })).toBe("escape");
     expect(keyChord({ key: "k", modifiers: { ...none, cmd: true } })).toBe("cmd+k");
   });

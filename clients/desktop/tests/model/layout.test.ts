@@ -3,6 +3,7 @@ import {
   clampRatio,
   cycle,
   equalize,
+  focusAfterRemoval,
   layoutRects,
   leaf,
   neighbor,
@@ -39,6 +40,13 @@ describe("split tree", () => {
     const root = splitAt(a, "a", place("b"), "row");
     expect(ids(root)).toEqual(["a", "b"]);
     expect(root.kind === "split" && root.first).toBe(a);
+  });
+
+  test("a split before the target puts the new leaf left of or above it", () => {
+    const root = splitAt(grid(), "c", place("d"), "column", true);
+    expect(ids(root)).toEqual(["a", "b", "d", "c"]);
+    const rects = layoutRects(root, { x: 0, y: 0, width: 1, height: 1 });
+    expect(rects.get("d")?.y).toBeLessThan(rects.get("c")?.y ?? 0);
   });
 
   test("removing a leaf promotes its sibling into the parent's rect", () => {
@@ -97,6 +105,16 @@ describe("tabs", () => {
     expect(next.map((item) => item.id)).toEqual(["other"]);
     expect(ids(next[0]?.root)).toEqual(["c"]);
     expect(next[0]?.focusedId).toBe("c");
+  });
+
+  test("an exited terminal hands focus to its neighbour, not the first pane", () => {
+    // a | (b / c), focus on c: c's shell exits, so b (just before it) takes focus.
+    const [next] = withoutTerminal([tab(grid(), "c")], "t-c");
+    expect(ids(next?.root)).toEqual(["a", "b"]);
+    expect(next?.focusedId).toBe("b");
+    expect(focusAfterRemoval(["a", "b", "c"], "a", new Set(["a"]))).toBe("b");
+    expect(focusAfterRemoval(["a", "b", "c"], "b", new Set(["a"]))).toBe("b");
+    expect(focusAfterRemoval(["a"], "a", new Set(["a"]))).toBe("");
   });
 
   test("refocus drops a zoom that no longer points at a leaf", () => {

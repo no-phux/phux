@@ -240,7 +240,7 @@ export function Settings(props: {
           <Show when={section() === "keyboard"}>
             <Group
               title="Shortcuts"
-              hint="Command-key chords belong to the app; everything else goes to the terminal."
+              hint="Command-key chords and your Ghostty keybinds belong to the app; everything else goes to the terminal."
             >
               <div style={column({ gap: 1 })}>
                 <For each={props.shortcuts}>
@@ -285,7 +285,7 @@ export function Settings(props: {
             <Show when={props.ghostty.unmapped.length > 0}>
               <Group
                 title="Not supported here"
-                hint="These Ghostty actions have no equivalent yet."
+                hint="These keybinds (key sequences, bare letters, or actions with no equivalent yet) are skipped; their keys keep the built-in behaviour."
               >
                 <div style={column({ gap: 2 })}>
                   <For each={props.ghostty.unmapped}>
