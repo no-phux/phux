@@ -35,6 +35,8 @@ const child = spawn(process.execPath, [resolve(output, "desktop-main.js")], {
   env: {
     ...process.env,
     PHUX_DESKTOP_ADDON: addon,
+    // Reconnect restarts a stopped server with the same CLI that started it.
+    PHUX_BIN: phux,
     PHUX_SOCKET: socketPath,
     PHUX_SESSION: sessionName,
   },

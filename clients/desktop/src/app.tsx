@@ -68,6 +68,8 @@ interface AppProps {
   startupError?: string | undefined;
   /** Reads the user's Ghostty config text, or undefined when there is none. */
   readGhostty?: (() => string | undefined) | undefined;
+  /** Start the server (and home session) if it is gone; returns the failure, if any. */
+  ensureServer?: (() => string | undefined) | undefined;
   /** This window's key router; the app installs its shortcut handler here. */
   keys: WindowKeys;
   /** Open another window on the same server (Command-N), optionally showing one terminal. */
@@ -131,6 +133,7 @@ function DesktopApp(props: AppProps): JSX.Element {
   const initial = parseLayout(layouts.read());
   let lastSaved: SavedLayout | undefined = initial;
   const readGhostty = untrack(() => props.readGhostty);
+  const ensureServer = untrack(() => props.ensureServer);
   const ghosttyText = readGhostty?.();
   const startGhostty = parseGhostty(ghosttyText ?? "");
   const [ghostty, setGhostty] = createSignal(startGhostty);
@@ -399,6 +402,10 @@ function DesktopApp(props: AppProps): JSX.Element {
   // ── Actions ────────────────────────────────────────────────────
 
   function reconnect(): void {
+    // A server that exited (crash, upgrade, `phux kill-server`) comes back
+    // first, so Reconnect recovers without a trip to the command line.
+    const failure = bridge.status() === "Attached" ? undefined : ensureServer?.();
+    if (failure) toast({ kind: "error", title: "Could not start the phux server", body: failure });
     persist();
     const snapshot = lastSaved;
     workspace.releaseAll();
@@ -1570,15 +1577,20 @@ const WINDOW = {
   trafficLightY: 14,
 } as const;
 
-export function mount(
-  host: DesktopHost,
-  socketPath: string,
-  sessionName: string,
-  layouts: LayoutStore,
-  startupError?: string,
-  readGhostty?: () => string | undefined,
-  quickLayouts?: LayoutStore,
-): void {
+export interface MountOptions {
+  socketPath: string;
+  sessionName: string;
+  layouts: LayoutStore;
+  startupError?: string | undefined;
+  readGhostty?: (() => string | undefined) | undefined;
+  quickLayouts?: LayoutStore | undefined;
+  /** Runs `phux server --ensure` and the home session; returns the failure, if any. */
+  ensureServer?: (() => string | undefined) | undefined;
+}
+
+export function mount(host: DesktopHost, options: MountOptions): void {
+  const { socketPath, sessionName, layouts, startupError, readGhostty, quickLayouts } = options;
+  const ensureServer = options.ensureServer;
   const mainKeys: WindowKeys = { run: () => {} };
   const quick: { close?: () => void } = {};
 
@@ -1618,6 +1630,7 @@ export function mount(
         sessionName={sessionName}
         layouts={store}
         readGhostty={readGhostty}
+        ensureServer={ensureServer}
         keys={keys}
         newWindow={newWindow}
         toggleQuick={toggleQuick}
@@ -1670,6 +1683,7 @@ export function mount(
         layouts={layouts}
         startupError={startupError}
         readGhostty={readGhostty}
+        ensureServer={ensureServer}
         keys={mainKeys}
         newWindow={newWindow}
         toggleQuick={toggleQuick}

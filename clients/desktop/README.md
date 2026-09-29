@@ -54,6 +54,7 @@ chords belong to the app; everything else reaches the terminal.
 | ⌘N               | New window, with its own connection and a fresh terminal                    |
 | ⌥⌘N              | Move the focused pane into a new window of its own                          |
 | ⌘K               | Clear the screen                                                            |
+| ⇧⌘R              | Reconnect, first restarting the server if it has stopped                    |
 | ⌘-click          | Open the link under the pointer (OSC 8 or a URL in the text)                |
 
 ### Coming from Ghostty

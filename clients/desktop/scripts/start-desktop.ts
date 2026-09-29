@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { loadDesktopHost } from "../native/loader.mjs";
 import { readGhosttyConfig } from "./ghostty-config";
 import { fileLayoutStore } from "./layout-store";
+import { ensureServer, ensureSession, findPhux } from "./server";
 
 export interface DesktopStart {
   addon: string;
@@ -17,6 +18,22 @@ export interface DesktopStart {
   startupError?: string;
 }
 
+/**
+ * Reconnect's recovery: start the server on this window's socket and recreate
+ * its home session if they are gone. Returns the failure for the shell to show.
+ */
+function restartServer(start: DesktopStart): string | undefined {
+  const phux = findPhux(process.env.PHUX_BIN);
+  if (!phux) return "Install the phux CLI (~/.local/bin/phux) so the desktop can start a server.";
+  try {
+    ensureServer(phux, start.socketPath);
+    ensureSession(phux, start.socketPath, start.sessionName);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 export async function startDesktop(start: DesktopStart): Promise<void> {
   const host = loadDesktopHost(start.addon);
   const native = await import("@gpuix/native/host");
@@ -24,15 +41,15 @@ export async function startDesktop(start: DesktopStart): Promise<void> {
   native.registerCustomElementType("phux-drag-region");
   const app = await import("../src/app");
   const state = process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state");
-  app.mount(
-    host,
-    start.socketPath,
-    start.sessionName,
-    fileLayoutStore(join(state, "phux-desktop/layout.json")),
-    start.startupError,
-    readGhosttyConfig,
-    fileLayoutStore(join(state, "phux-desktop/quick.json")),
-  );
+  app.mount(host, {
+    socketPath: start.socketPath,
+    sessionName: start.sessionName,
+    layouts: fileLayoutStore(join(state, "phux-desktop/layout.json")),
+    startupError: start.startupError,
+    readGhostty: readGhosttyConfig,
+    quickLayouts: fileLayoutStore(join(state, "phux-desktop/quick.json")),
+    ensureServer: () => restartServer(start),
+  });
   scheduleCapture(process.env.PHUX_DESKTOP_CAPTURE);
 }
 
