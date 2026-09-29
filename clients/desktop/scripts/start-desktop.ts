@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { loadDesktopHost } from "../native/loader.mjs";
 import { readGhosttyConfig } from "./ghostty-config";
 import { fileLayoutStore } from "./layout-store";
-import { ensureServer, ensureSession, findPhux } from "./server";
+import { ensureServer, ensureSession, findPhux, serverSocket } from "./server";
 
 export interface DesktopStart {
   addon: string;
@@ -19,15 +19,21 @@ export interface DesktopStart {
 }
 
 /**
- * Reconnect's recovery: start the server on this window's socket and recreate
- * its home session if they are gone. Returns the failure for the shell to show.
+ * Reconnect's recovery: start the server the way launch did (PHUX_SOCKET or
+ * the profile's own socket, never a guessed path) and recreate the home
+ * session. A server that now listens elsewhere than this window's socket is
+ * reported rather than dialled. Returns the failure for the shell to show.
  */
 function restartServer(start: DesktopStart): string | undefined {
   const phux = findPhux(process.env.PHUX_BIN);
   if (!phux) return "Install the phux CLI (~/.local/bin/phux) so the desktop can start a server.";
   try {
-    ensureServer(phux, start.socketPath);
-    ensureSession(phux, start.socketPath, start.sessionName);
+    const explicit = process.env.PHUX_SOCKET || undefined;
+    ensureServer(phux, explicit);
+    const socket = explicit ?? serverSocket(phux);
+    if (socket !== start.socketPath)
+      return `The server listens on ${socket}, not ${start.socketPath}. Relaunch Phux to use it.`;
+    ensureSession(phux, socket, start.sessionName);
     return undefined;
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
