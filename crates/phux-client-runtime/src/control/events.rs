@@ -196,6 +196,14 @@ pub enum Event {
         /// The new working directory.
         cwd: String,
     },
+    /// The current agent declaration, from a fenced read or a live update.
+    /// The binding owns interpretation of the record; `None` retracts it.
+    AgentMetadata {
+        /// The terminal.
+        terminal_id: ResourceId,
+        /// The `phux.agent/v1` record, or its absence.
+        value: Option<Vec<u8>>,
+    },
     /// An agent in the terminal is waiting on a human answer.
     AgentAsked {
         /// The terminal.

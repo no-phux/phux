@@ -209,6 +209,7 @@ impl ControlPlane {
                     terminal_id: key.terminal_id,
                 }),
                 phux_client_core::engine::EngineStatus::Title(title) => {
+                    self.fence_topology_read();
                     if let Some(pane) = self
                         .topology
                         .as_mut()

@@ -32,6 +32,9 @@ const fn terminal() -> ResourceId {
 #[path = "support/geometry.rs"]
 mod geometry;
 
+#[path = "support/roster.rs"]
+mod roster;
+
 #[cfg(feature = "engine")]
 #[test]
 fn replacing_an_engine_synchronously_retires_all_outgoing_view_slots() {
@@ -712,6 +715,7 @@ fn live_session_switch_uses_the_same_socket_and_preserves_home_pumps() {
     let _ = plane.take_outbound();
     refresh_to(&mut plane, two_session_snapshot(false));
 
+    let _ = plane.take_outbound(); // Metadata discovery belongs to the refresh.
     assert!(!plane.attach_session(AttachTarget::ByName("beta".to_owned())));
     assert_eq!(plane.attached_session(), Some(1));
     assert_eq!(plane.selected_session(), Some(2));

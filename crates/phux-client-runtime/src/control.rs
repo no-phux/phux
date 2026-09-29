@@ -64,6 +64,7 @@ mod input;
 mod kernel;
 pub mod keys;
 mod responses;
+mod roster;
 mod state;
 mod topology;
 
@@ -397,6 +398,7 @@ pub struct ControlPlane {
     events: Vec<Event>,
     damaged: Vec<ResourceId>,
     extensions: extensions::Extensions,
+    roster: roster::RosterRecovery,
 }
 
 impl ControlPlane {
@@ -445,6 +447,7 @@ impl ControlPlane {
             events: Vec::new(),
             damaged: Vec::new(),
             extensions: extensions::Extensions::default(),
+            roster: roster::RosterRecovery::default(),
         }
     }
 
@@ -701,6 +704,7 @@ impl ControlPlane {
     /// `HELLO`. Frames still queued from the previous connection are
     /// discarded, as they were built against per-connection state.
     pub fn connection_opened(&mut self) {
+        self.roster = roster::RosterRecovery::default();
         self.geometry_bootstrapped.clear();
         self.connection_epoch = self.connection_epoch.saturating_add(1);
         self.outbound.clear();

@@ -93,6 +93,9 @@ impl ControlPlane {
         if self.events.len() >= EVENT_QUEUE_CAP {
             self.events.retain(Event::is_lossless);
             self.events.push(Event::TopologyChanged);
+            if self.handshake_ready {
+                self.recover_roster();
+            }
         }
         self.events.push(event);
     }

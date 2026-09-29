@@ -248,6 +248,7 @@ impl ControlPlane {
                 reason,
                 signal,
             } => {
+                self.fence_topology_read();
                 self.attach_terminals.remove(&terminal_id);
                 self.apply_engine(EngineEvent::Closed {
                     terminal_id: terminal_id.clone(),
@@ -298,6 +299,9 @@ impl ControlPlane {
     }
 
     pub(super) fn feed_stream_frame(&mut self, frame: FrameKind) -> Result<(), ControlError> {
+        let Some(frame) = self.roster_metadata_frame(frame) else {
+            return Ok(());
+        };
         match classify_engine_frame(frame)? {
             ClassifiedFrame::Engine(event) => self.apply_engine(event),
             ClassifiedFrame::Other(frame) => {

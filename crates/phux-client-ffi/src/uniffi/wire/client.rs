@@ -38,7 +38,6 @@ pub struct RemoteClient {
     input_deliveries: Mutex<Vec<WireInputDelivery>>,
     authoritative_damage: Mutex<HashSet<ResourceId>>,
     generations: Mutex<HashMap<ResourceId, u64>>,
-    pending_agent_metadata: Mutex<HashMap<u32, ResourceId>>,
 }
 
 #[uniffi::export]
@@ -77,7 +76,6 @@ impl RemoteClient {
             input_deliveries: Mutex::new(Vec::new()),
             authoritative_damage: Mutex::new(HashSet::new()),
             generations: Mutex::new(HashMap::new()),
-            pending_agent_metadata: Mutex::new(HashMap::new()),
         })
     }
 
@@ -540,70 +538,12 @@ impl RemoteClient {
         });
     }
 
-    fn sync_agent_metadata(&self) {
-        let Some(client) = self.runtime_client() else {
-            return;
-        };
-        let supports_metadata = client
-            .server()
-            .is_some_and(|server| server.layers.contains(Layer::L3));
-        if !supports_metadata {
-            return;
-        }
-        let Some(topology) = client.topology() else {
-            return;
-        };
-        // A topology snapshot supersedes unanswered reads from the previous
-        // connection or graph revision; their late replies are ignored.
-        self.pending_agent_metadata.lock().unwrap().clear();
-        for pane in topology.panes {
-            let request_id = client.next_request_id();
-            self.pending_agent_metadata
-                .lock()
-                .unwrap()
-                .insert(request_id, pane.terminal_id.clone());
-            client.queue_frame(&FrameKind::GetMetadata {
-                request_id,
-                scope: Scope::Resource(pane.terminal_id.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            });
-            client.queue_frame(&FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(pane.terminal_id),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            });
-        }
-    }
-
-    fn project_metadata_frame(&self, frame: FrameKind, projected: &mut Vec<WireEvent>) {
-        match frame {
-            FrameKind::MetadataChanged {
-                scope: Scope::Resource(id),
-                key,
-                value,
-                ..
-            } if key == RESOURCE_AGENT_KEY => {
-                projected.push(agent::badge(&id, value.as_deref()).into());
-            }
-            FrameKind::MetadataValue { request_id, value } => {
-                if let Some(id) = self
-                    .pending_agent_metadata
-                    .lock()
-                    .unwrap()
-                    .remove(&request_id)
-                {
-                    projected.push(agent::badge(&id, value.as_deref()).into());
-                }
-            }
-            _ => {}
-        }
-    }
-
     /// Lower one runtime event.
     ///
     /// The two classifiers run first: whatever they recognize is a product
     /// fact the projection layer already decided, and this method only
     /// lowers it. What is left is either bridge-local state (the damage
-    /// bookkeeping, the metadata correlation) or a fact with no Swift
+    /// bookkeeping) or a fact with no Swift
     /// vocabulary.
     fn project_event(&self, event: Event, projected: &mut Vec<WireEvent>) {
         let event = match event::terminal_signal(event) {
@@ -617,7 +557,6 @@ impl RemoteClient {
         match event {
             Event::TopologyChanged => {
                 projected.push(WireEvent::TopologyChanged);
-                self.sync_agent_metadata();
             }
             Event::TerminalChanged { terminal_id } => {
                 self.authoritative_damage
@@ -652,7 +591,9 @@ impl RemoteClient {
                 }
                 .into(),
             ),
-            Event::Frame(frame) => self.project_metadata_frame(*frame, projected),
+            Event::AgentMetadata { terminal_id, value } => {
+                projected.push(agent::badge(&terminal_id, value.as_deref()).into());
+            }
             _ => {}
         }
     }
@@ -663,5 +604,51 @@ impl Drop for RemoteClient {
         if let Some(client) = self.client.get_mut().unwrap().take() {
             client.close();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phux_protocol::wire::frame::{FrameKind, RESOURCE_AGENT_KEY, Scope};
+
+    #[test]
+    fn agent_declarations_lower_once_and_absence_clears_the_existing_badge() {
+        let remote = RemoteClient::new("unused".into(), 80, 24, None, None);
+        let terminal_id = ResourceId::local(7);
+        let value = Some(br#"{"name":"agent","state":"blocked"}"#.to_vec());
+        let mut projected = Vec::new();
+        remote.project_event(
+            Event::AgentMetadata {
+                terminal_id: terminal_id.clone(),
+                value: value.clone(),
+            },
+            &mut projected,
+        );
+        // Raw extension delivery remains available to the C ABI, but cannot
+        // reintroduce duplicate or stale badge handling in this encoder.
+        remote.project_event(
+            Event::Frame(Box::new(FrameKind::MetadataChanged {
+                scope: Scope::Resource(terminal_id.clone()),
+                key: RESOURCE_AGENT_KEY.into(),
+                value,
+                actor: None,
+            })),
+            &mut projected,
+        );
+        remote.project_event(
+            Event::AgentMetadata {
+                terminal_id,
+                value: None,
+            },
+            &mut projected,
+        );
+        assert_eq!(projected.len(), 2);
+        assert!(
+            matches!(&projected[0], WireEvent::AgentStateChanged { name, .. } if name == "agent")
+        );
+        assert!(
+            matches!(&projected[1], WireEvent::AgentStateChanged { name, .. } if name.is_empty())
+        );
     }
 }
