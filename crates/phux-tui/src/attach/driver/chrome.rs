@@ -7,6 +7,7 @@ use phux_protocol::ids::{ClientId, ResourceId};
 use phux_protocol::wire::frame::ResourceLifecycle;
 
 use crate::attach::agent_rows::AgentSessionRows;
+use crate::attach::chrome_ctx::{ChromeCtx, PaneScene};
 use crate::attach::pane_state::{ExitMark, PaneSlot, VcsIndex};
 use crate::attach::review::ReviewIndex;
 use crate::attach::server_frame::AgentMetaIndex;
@@ -123,19 +124,9 @@ fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
 /// Refresh all chrome inputs from one coherent view: window tabs, supervisory
 /// badges, agent rows and host-qualified session navigation. Returns whether
 /// any painter input changed, so unchanged metadata bursts need no paint.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the chrome refresh is the single chokepoint every painter feeds \
-              through; collapsing the list means a context struct, which is \
-              phux-jx39's job and not this stage's"
-)]
 pub(super) fn refresh_window_chrome(
-    status_bar: Option<&mut StatusBarPainter>,
-    sidebar_painter: &mut SidebarPainter,
-    workspace: &Workspace,
-    panes: &HashMap<ResourceId, PaneSlot>,
-    focused_resource: Option<&ResourceId>,
-    zoomed: Option<&ResourceId>,
+    chrome: &mut ChromeCtx<'_>,
+    scene: PaneScene<'_>,
     own_client_id: Option<ClientId>,
     // ADR-0040 records: a window whose focused leaf declares one is labelled
     // from it instead of the OSC title.
@@ -149,25 +140,62 @@ pub(super) fn refresh_window_chrome(
     // The peer-wide state the sidebar zones project from.
     peers: crate::attach::sidebar_zones::PeerInputs<'_>,
 ) -> bool {
+    let PaneScene {
+        workspace,
+        panes,
+        zoomed,
+        ..
+    } = scene;
     let mut windows = window_infos(workspace, panes, zoomed, &agent_meta.records, vcs);
     let local = agent_entries(workspace, panes, agent_meta, agent_sessions, peers.review);
-    badge_windows(&mut windows, workspace, &local, sidebar_painter.theme());
+    let badge_theme = chrome
+        .sidebar_painter
+        .as_deref()
+        .map_or(chrome.theme, SidebarPainter::theme);
+    badge_windows(&mut windows, workspace, &local, badge_theme);
     let mut changed = false;
-    if let Some(sb) = status_bar {
-        changed |= sb.set_windows(windows.clone());
-        changed |= sb.set_supervisory(supervisory_badge(panes, focused_resource, own_client_id));
-        changed |= sb.set_attention(attention_hint(panes));
-        // The focused pane's cwd / exit feed the bar widgets.
-        let focused = focused_resource.and_then(|id| panes.get(id));
-        changed |= sb.set_focused_cwd(focused.and_then(|slot| slot.cwd.clone()));
-        changed |= sb.set_last_exit(focused.and_then(|slot| slot.last_exit));
+    if let Some(sb) = chrome.status_bar.as_deref_mut() {
+        changed |= feed_status_bar(sb, windows.clone(), scene, own_client_id);
     }
-    changed |= sidebar_painter.set_windows(windows);
+    if let Some(sidebar_painter) = chrome.sidebar_painter.as_deref_mut() {
+        changed |= feed_sidebar(sidebar_painter, windows, local, workspace, &peers);
+    }
+    changed
+}
+
+/// Push the window tabs and the focused pane's badges into the bar.
+fn feed_status_bar(
+    sb: &mut StatusBarPainter,
+    windows: Vec<phux_config::widget::WindowInfo>,
+    scene: PaneScene<'_>,
+    own_client_id: Option<ClientId>,
+) -> bool {
+    let panes = scene.panes;
+    let mut changed = sb.set_windows(windows);
+    changed |= sb.set_supervisory(supervisory_badge(panes, scene.focused, own_client_id));
+    changed |= sb.set_attention(attention_hint(panes));
+    // The focused pane's cwd / exit feed the bar widgets.
+    let focused = scene.focused.and_then(|id| panes.get(id));
+    changed |= sb.set_focused_cwd(focused.and_then(|slot| slot.cwd.clone()));
+    changed |= sb.set_last_exit(focused.and_then(|slot| slot.last_exit));
+    changed
+}
+
+/// Push the window rows, the session roster, and the needs-you queue into
+/// the sidebar strip.
+fn feed_sidebar(
+    sidebar_painter: &mut SidebarPainter,
+    windows: Vec<phux_config::widget::WindowInfo>,
+    local: Vec<AgentEntry>,
+    workspace: &Workspace,
+    peers: &crate::attach::sidebar_zones::PeerInputs<'_>,
+) -> bool {
+    let mut changed = sidebar_painter.set_windows(windows);
     changed |=
-        sidebar_painter.set_roster(crate::attach::sidebar_zones::session_roster(&peers, &local));
+        sidebar_painter.set_roster(crate::attach::sidebar_zones::session_roster(peers, &local));
     // Stable navigation order; lifecycle changes only restyle existing rows.
     // Satellite agents append after that order, grouped by name then host.
-    let mut agents = crate::attach::sidebar_zones::needs_you_queue(local, &peers);
+    let mut agents = crate::attach::sidebar_zones::needs_you_queue(local, peers);
     let mut open = HashSet::new();
     for window in &workspace.windows {
         if let Some(tree) = window.state.tree.as_ref() {
@@ -175,7 +203,7 @@ pub(super) fn refresh_window_chrome(
         }
     }
     agents.extend(crate::attach::sidebar_zones::satellite_agent_rows(
-        &peers, &open,
+        peers, &open,
     ));
     changed |= sidebar_painter.set_needs_you(agents);
     changed
@@ -779,14 +807,25 @@ mod tests {
         // focus action itself produced, one iteration before the flip.
         let mut sidebar_painter = SidebarPainter::new(crate::render::Theme::default());
         let mut vcs = VcsIndex::default();
+        let theme = crate::render::Theme::default();
         let mut refresh = |painter: &mut SidebarPainter, panes: &HashMap<ResourceId, PaneSlot>| {
-            refresh_window_chrome(
-                None,
-                painter,
-                &workspace,
+            let mut chrome = ChromeCtx {
+                viewport: (80, 24),
+                sidebar: None,
+                status_bar: None,
+                sidebar_painter: Some(painter),
+                session_name: "",
+                theme: &theme,
+            };
+            let scene = PaneScene {
+                workspace: &workspace,
                 panes,
-                Some(&done),
-                None,
+                focused: Some(&done),
+                zoomed: None,
+            };
+            refresh_window_chrome(
+                &mut chrome,
+                scene,
                 None,
                 &meta,
                 &mut vcs,

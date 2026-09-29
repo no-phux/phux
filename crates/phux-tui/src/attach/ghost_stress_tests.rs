@@ -265,18 +265,22 @@ impl Rig {
         }
         let mut out: Vec<u8> = Vec::new();
         if let Some(ls) = self.workspace.render_window(self.zoomed.as_ref()) {
+            let theme = crate::render::theme::Theme::default();
+            let mut chrome = crate::attach::chrome_ctx::ChromeCtx {
+                viewport: self.viewport,
+                sidebar: self.sidebar,
+                status_bar: None,
+                sidebar_painter: None,
+                session_name: &self.session_name,
+                theme: &theme,
+            };
             paint_full_frame(
                 &mut out,
                 ls.as_ref(),
                 &mut self.panes,
                 &self.kernel,
                 self.focused.as_ref(),
-                self.viewport,
-                None,
-                self.sidebar,
-                None,
-                &self.session_name,
-                &crate::render::theme::Theme::default(),
+                &mut chrome,
             );
         }
         self.glass.vt_write(&out);
