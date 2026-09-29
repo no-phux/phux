@@ -1,9 +1,24 @@
 # phux desktop
 
-Build and run from this checkout on an Apple-silicon Mac:
+Install the app on an Apple-silicon Mac:
 
 ```sh
 just doctor desktop
+just desktop-install-app
+```
+
+That builds `/Applications/Phux.app`: the shell and launcher compiled into one
+executable, with the release native addon beside it. Launched from the Dock or
+Spotlight, it uses your installed `phux` CLI (`~/.local/bin/phux`, Homebrew or
+`~/.cargo/bin`) to start or reuse your server and attaches its `default`
+session. `PHUX_PROFILE`, `PHUX_SOCKET` and `PHUX_SESSION` override that choice.
+Startup problems are shown in the window and logged to
+`~/Library/Logs/phux-desktop.log`. `just desktop-package` builds the bundle
+without installing it.
+
+For development, run from this checkout instead:
+
+```sh
 just desktop-app
 ```
 
@@ -35,6 +50,23 @@ chords belong to the app; everything else reaches the terminal.
 | ⇧⌘A              | Jump to the agent that most needs you                                       |
 | ⌘B, ⌘,           | Toggle the sidebar, open Settings                                           |
 | ⌘= ⌘- ⌘0         | Font size                                                                   |
+| ⌘N               | New window, with its own connection and a fresh terminal                    |
+| ⌘K               | Clear the screen                                                            |
+| ⌘-click          | Open the link under the pointer (OSC 8 or a URL in the text)                |
+
+### Coming from Ghostty
+
+If you have a Ghostty config (`~/.config/ghostty/config`, or the Application
+Support copy), the first launch adopts it: font family and size,
+`adjust-cell-width/height` percentages, colours including the 16-colour
+palette and a named `theme`, window padding, `unfocused-split-opacity`,
+`split-divider-color`, and `macos-option-as-alt`. Your `keybind` lines replace
+the built-in chords where an equivalent command exists, including non-Command
+chords such as `ctrl+tab`. A `global:` bind to `toggle_quick_terminal` becomes a
+system-wide hotkey for a quick-terminal window that keeps its own terminal
+between toggles. If Ghostty is still running it holds that hotkey too, so quit it
+or rebind one of them. Settings > Ghostty re-applies the config, reloads it,
+switches keybind import off, and lists the actions with no equivalent yet.
 
 Drag split dividers, the sidebar edge, or tabs to rearrange; double-click a tab
 to rename it and a pane header to zoom. Dropping files onto a terminal pastes

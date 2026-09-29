@@ -137,13 +137,20 @@ layout and paint, rather than independently rounded in TypeScript and Rust.
 One writable view per terminal owns its size: the terminal's only visible
 view, or among several, the one the user focused last. The shell names that
 owner (`sizeOwner`); the native element proposes whole cells that fit its
-painted bounds through `resize_terminal`, edge-triggered and throttled during a
-drag with a trailing frame so the final size is sent. Gaining ownership or
+painted bounds through `resize_terminal`, edge-triggered, once the size has held
+still for 60 ms (a timer, not the next frame, sends it). A pane already at its
+authoritative size sends nothing, and new terminals spawn at their predicted
+size, so shells are not resized through intermediate layouts. Gaining ownership or
 re-activating the window re-proposes, reclaiming a size another client changed.
 Focus transfer changes the owner only after identity and role checks; observer
 activity does not seize control. Other views crop/display authoritative
 columns and rows, with their own scroll positions and unused space. No locally
 invented reflow.
+
+The desktop connects with a zero viewport, which casts no window-size vote
+(L1 §9.2): attaching reshapes nothing another client is showing, spawns take
+the server default unless given a predicted size, and quitting leaves the
+explicit sizes in place instead of restoring headless geometry.
 
 Add a targeted runtime geometry seam that remembers desired geometry per
 terminal, applies it only to the intended terminal on attach/reconnect, and
