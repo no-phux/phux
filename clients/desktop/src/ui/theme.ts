@@ -18,9 +18,15 @@ export interface Theme {
   danger: string;
   warning: string;
   success: string;
+  /** The 16 ANSI colours applications draw with. Absent keeps the terminal's own. */
+  palette?: string[];
+  selectionForeground?: string;
+  /** Split divider colour; defaults to the border token. */
+  divider?: string;
 }
 
-export interface Palette extends Theme {
+export interface Palette extends Omit<Theme, "divider"> {
+  divider: string;
   raised: string;
   border: string;
   hover: string;
@@ -47,6 +53,24 @@ export const themes: readonly Theme[] = [
     danger: "#f7768e",
     warning: "#e0af68",
     success: "#9ece6a",
+    palette: [
+      "#15161e",
+      "#f7768e",
+      "#9ece6a",
+      "#e0af68",
+      "#7aa2f7",
+      "#bb9af7",
+      "#7dcfff",
+      "#a9b1d6",
+      "#414868",
+      "#f7768e",
+      "#9ece6a",
+      "#e0af68",
+      "#7aa2f7",
+      "#bb9af7",
+      "#7dcfff",
+      "#c0caf5",
+    ],
   },
   {
     id: "nord",
@@ -61,6 +85,24 @@ export const themes: readonly Theme[] = [
     danger: "#bf616a",
     warning: "#ebcb8b",
     success: "#a3be8c",
+    palette: [
+      "#3b4252",
+      "#bf616a",
+      "#a3be8c",
+      "#ebcb8b",
+      "#81a1c1",
+      "#b48ead",
+      "#88c0d0",
+      "#e5e9f0",
+      "#4c566a",
+      "#bf616a",
+      "#a3be8c",
+      "#ebcb8b",
+      "#81a1c1",
+      "#b48ead",
+      "#8fbcbb",
+      "#eceff4",
+    ],
   },
   {
     id: "dracula",
@@ -75,6 +117,24 @@ export const themes: readonly Theme[] = [
     danger: "#ff5555",
     warning: "#f1fa8c",
     success: "#50fa7b",
+    palette: [
+      "#21222c",
+      "#ff5555",
+      "#50fa7b",
+      "#f1fa8c",
+      "#bd93f9",
+      "#ff79c6",
+      "#8be9fd",
+      "#f8f8f2",
+      "#6272a4",
+      "#ff6e6e",
+      "#69ff94",
+      "#ffffa5",
+      "#d6acff",
+      "#ff92df",
+      "#a4ffff",
+      "#ffffff",
+    ],
   },
   {
     id: "mocha",
@@ -89,6 +149,24 @@ export const themes: readonly Theme[] = [
     danger: "#f38ba8",
     warning: "#f9e2af",
     success: "#a6e3a1",
+    palette: [
+      "#45475a",
+      "#f38ba8",
+      "#a6e3a1",
+      "#f9e2af",
+      "#89b4fa",
+      "#f5c2e7",
+      "#94e2d5",
+      "#bac2de",
+      "#585b70",
+      "#f38ba8",
+      "#a6e3a1",
+      "#f9e2af",
+      "#89b4fa",
+      "#f5c2e7",
+      "#94e2d5",
+      "#a6adc8",
+    ],
   },
   {
     id: "latte",
@@ -103,13 +181,32 @@ export const themes: readonly Theme[] = [
     danger: "#d20f39",
     warning: "#df8e1d",
     success: "#40a02b",
+    palette: [
+      "#5c5f77",
+      "#d20f39",
+      "#40a02b",
+      "#df8e1d",
+      "#1e66f5",
+      "#ea76cb",
+      "#179299",
+      "#acb0be",
+      "#6c6f85",
+      "#d20f39",
+      "#40a02b",
+      "#df8e1d",
+      "#1e66f5",
+      "#ea76cb",
+      "#179299",
+      "#bcc0cc",
+    ],
   },
 ];
 
 export const defaultThemeId = "midnight";
 
-export function themeById(id: string): Theme {
-  return themes.find((theme) => theme.id === id) ?? fallbackTheme();
+/** Built-ins plus a theme imported from the user's Ghostty config, when present. */
+export function themeById(id: string, extra: readonly Theme[] = []): Theme {
+  return [...extra, ...themes].find((theme) => theme.id === id) ?? fallbackTheme();
 }
 
 function fallbackTheme(): Theme {
@@ -133,6 +230,7 @@ export function palette(theme: Theme): Palette {
     faint: mix(base, ink, 0.3),
     accentWash: mix(theme.surface, theme.accent, 0.2),
     accentText: readableOn(theme.accent, base, ink),
+    divider: theme.divider ?? mix(base, ink, 0.1),
     backdrop: `${base}b8`,
   };
 }

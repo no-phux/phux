@@ -88,7 +88,7 @@ function Split(props: SplitProps & { split: SplitNode }): JSX.Element {
         <div
           style={{
             ...thickness(1),
-            backgroundColor: active() ? colors().accent : colors().border,
+            backgroundColor: active() ? colors().accent : colors().divider,
           }}
         />
       </div>

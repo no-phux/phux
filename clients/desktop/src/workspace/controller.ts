@@ -14,6 +14,7 @@ import {
   leaf,
   neighbor,
   newId,
+  nudge,
   placements,
   refocus,
   removeLeaf,
@@ -50,6 +51,8 @@ export interface Workspace {
   focusDirection(direction: Direction): void;
   cyclePane(step: 1 | -1): void;
   toggleZoom(): void;
+  /** Move the nearest divider along `direction`, like Ghostty's resize_split. */
+  nudge(direction: Direction): void;
   equalizeTab(): void;
   resizeSplit(splitId: string, ratio: number): void;
   newTerminal(cwd?: string): void;
@@ -75,7 +78,16 @@ export interface WorkspaceHooks {
   notify(kind: "info" | "error", title: string, body?: string): void;
 }
 
-export function createWorkspace(bridge: Bridge, hooks: WorkspaceHooks): Workspace {
+export interface WorkspaceOptions {
+  /** A new window: open a fresh terminal rather than the session's home pane. */
+  fresh?: boolean;
+}
+
+export function createWorkspace(
+  bridge: Bridge,
+  hooks: WorkspaceHooks,
+  options: WorkspaceOptions = {},
+): Workspace {
   const [tabs, setTabs] = createSignal<DeskTab[]>([]);
   const [activeId, setActiveId] = createSignal("");
   const [pending, setPending] = createSignal(0);
@@ -243,9 +255,35 @@ export function createWorkspace(bridge: Bridge, hooks: WorkspaceHooks): Workspac
     commit([...tabs(), tab], tab.id);
   }
 
+  /**
+   * The grid a new terminal will get, predicted from the focused pane, so the
+   * shell starts at its real size instead of redrawing after a resize. The
+   * pane's fit corrects any off-by-one once it paints.
+   */
+  function predictedSize(destination: Destination): { cols: number; rows: number } | undefined {
+    if (!bridge.server()?.features.includes("spawn_initial_size")) return undefined;
+    const placement = focused();
+    if (!placement) return undefined;
+    let info: { cols: number; rows: number };
+    try {
+      info = bridge.client().viewInfo(placement.viewId);
+    } catch {
+      return undefined;
+    }
+    if (info.cols < 4 || info.rows < 4) return undefined;
+    if (destination.kind === "tab") return { cols: info.cols, rows: info.rows };
+    // A first split gains pane headers; a split halves one axis less its divider.
+    const header = placements(activeTab()?.root ?? leaf(placement)).length === 1 ? 2 : 0;
+    return destination.axis === "row"
+      ? { cols: Math.floor((info.cols - 1) / 2), rows: info.rows - header }
+      : { cols: info.cols, rows: Math.floor((info.rows - 1) / 2) - header };
+  }
+
   function request(destination: Destination, cwd?: string): void {
-    const options: { cwd?: string } = {};
+    const options: { cwd?: string; initialSize?: { cols: number; rows: number } } = {};
     if (cwd) options.cwd = cwd;
+    const size = predictedSize(destination);
+    if (size && size.cols >= 2 && size.rows >= 1) options.initialSize = size;
     const id = bridge.spawn(options);
     if (id === undefined) {
       hooks.notify("error", "Not connected", "Wait for the server, or reconnect with ⌘R.");
@@ -428,6 +466,10 @@ export function createWorkspace(bridge: Bridge, hooks: WorkspaceHooks): Workspac
       commit(next, active);
       return;
     }
+    if (options.fresh) {
+      request({ kind: "tab" });
+      return;
+    }
     const home = bridge.panes().find((pane) => pane.sessionName === bridge.target.sessionName);
     if (home && bridge.ready(home.terminalId)) land(home.terminalId, { kind: "tab" });
     else if (home) awaiting.set(home.terminalId, { kind: "tab" });
@@ -491,6 +533,14 @@ export function createWorkspace(bridge: Bridge, hooks: WorkspaceHooks): Workspac
     focusDirection,
     cyclePane,
     toggleZoom,
+    nudge: (direction) => {
+      const tab = activeTab();
+      if (!tab) return;
+      updateTab(tab.id, (item) => ({
+        ...item,
+        root: nudge(item.root, item.focusedId, direction, 0.04),
+      }));
+    },
     equalizeTab: () => {
       const tab = activeTab();
       if (tab) updateTab(tab.id, (item) => ({ ...item, root: equalize(item.root) }));
