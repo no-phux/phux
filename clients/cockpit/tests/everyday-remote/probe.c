@@ -80,7 +80,11 @@ static void pinned_history_input(PhuxResourceId id) {
     assert(execution_count("executed") == 0);
     checked(phux_client_send_paste(client, &id, (const uint8_t *)"first-input\n", 12, true));
     while (grid(id).history_pages_loaded == 0) assert(pump(5000));
-    checked(phux_client_scroll_viewport(client, &id, 2, -1));
+    /* Scroll to the oldest loaded row: that is what requests the next page,
+     * so the pinned row below must survive a real import. A one-row scroll
+     * stays near the tail; with structural pages of ~1000 rows at 80 columns
+     * it requests nothing and the retention check proves nothing (phux-qt5h). */
+    checked(phux_client_scroll_viewport(client, &id, 0, 0));
     PhuxDocumentAnchor anchor;
     PhuxDocumentPoint top = {.space = PHUX_DOCUMENT_VIEWPORT, .row = 0, .column = 0};
     checked(phux_client_anchor_create(client, &id, top, &anchor));
@@ -91,6 +95,10 @@ static void pinned_history_input(PhuxResourceId id) {
     row_text(id, after, sizeof(after));
     assert(strcmp(before, after) == 0);
     checked(phux_client_anchor_release(client, &id, anchor));
+    /* The PTY child records the line on its own schedule; a short history
+     * drain can finish first. Wait for it, then require exactly one. */
+    while (execution_count("executed") == 0) assert(pump(5000));
+    while (pump(100)) {}
     assert(execution_count("executed") == 1);
     oldest_history(id);
     checked(phux_client_history_follow_live(client, &id));

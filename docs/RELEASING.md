@@ -41,6 +41,14 @@ onto the draft release-please made and flips it public only after the complete
 target matrix succeeds. The Homebrew push runs *after* that flip, because the
 tap re-resolves the release through the GitHub API and a draft is invisible.
 
+The built **source** is the tag; the build **harness** is `main`. `publish.yml`
+runs on `workflow_run` and `schedule` events, which always execute the default
+branch, so `release.yml` checks out `main` first, runs harness scripts such as
+`scripts/ci/setup-linux-release-userspace.sh` from it, and only then detaches
+to the tag. A release-infrastructure fix that lands after its tag was cut
+therefore applies on the next publish run; re-dispatching **publish** is the
+recovery. `scripts/check-release-orchestration.mjs` pins this ordering.
+
 ## Release control surface
 
 | You want to | Do this |
