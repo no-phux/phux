@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-23
+last-reviewed: 2026-09-28
 ---
 
 # Desktop
@@ -13,9 +13,10 @@ execution. Apple-silicon macOS is the first target. This page specifies the
 product; the native desktop is not yet a verified shipping implementation.
 
 <!-- impl-status: partial; probe: GridFrame -->
-> **Status: partial.** The shared runtime and immutable grid publication exist.
-> The desktop interactions below are accepted requirements, not claims of
-> implemented UI. Their release evidence is tracked in the final Status table.
+> **Status: partial.** The Solid shell runs daily on Apple silicon: tabs,
+> split trees, independent views, the command palette, agent attention,
+> themes and restore are implemented. Release evidence (accessibility,
+> packaging, native CI) is still open; the final Status table tracks each gap.
 
 The architecture choice is [ADR-0139](../adr/0139-solid-desktop-over-native-runtime-views.md).
 [Cockpit](./cockpit.md) remains a separate client. The first release requires
@@ -147,10 +148,10 @@ The tracking IDs name remaining work, not delivered features.
 
 | Target | Current evidence and gap | Tracked work |
 |---|---|---|
-| Native Solid desktop | Shared runtime exists; matched host, binding, painter, input, and feasibility evidence remain required. | phux-d4x9.1–.6, phux-d4x9.20 |
-| Terminal-first projects and workspace | Accepted ontology and interaction contract; desktop shell/layout/restore not release-verified. | phux-d4x9.7–.9 |
-| Independent same-terminal views | Current runtime presentation is terminal-keyed; first-release runtime and UI proof required. | phux-d4x9.17, phux-d4x9.18 |
-| Connections, settings, and agents | Existing substrate capabilities; complete desktop projection and failure journeys required. | phux-d4x9.10–.12 |
+| Native Solid desktop | Matched host, painter and input run the shell; pane-fit geometry is native. Feasibility and presentation gates stay the acceptance record. | phux-d4x9.1–.6, phux-d4x9.20 |
+| Terminal-first projects and workspace | Tabs, split trees (drag, zoom, directional focus), restore by server identity, Open Folder. Projects/worktree grouping is not built. | phux-d4x9.7–.9 |
+| Independent same-terminal views | Open Another View, sole-or-last-focused size owner, per-view find. Regression coverage still required. | phux-d4x9.17, phux-d4x9.18 |
+| Connections, settings, and agents | One local socket; settings (theme, font, input); agent badges, urgency list, toasts. Remote hosts and approvals are not built. | phux-d4x9.10–.12 |
 | Native accessibility and delivery safety | Required journeys and teardown/input proofs are not yet qualified. | phux-d4x9.13, phux-d4x9.14 |
 | Apple-silicon release | Native regression gates and signed-package preparation remain required. | phux-d4x9.15, phux-d4x9.16 |
 | Linux | Subsequent platform qualification; no support claim from framework compatibility alone. | phux-d4x9.19 |

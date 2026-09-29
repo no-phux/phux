@@ -10,7 +10,37 @@ just desktop-app
 That clones the pinned GPUIX source, applies the reviewed patches, builds the
 native host, builds `phux` from this tree, starts a server if one is not
 already running, and opens the desktop. Set `PHUX_SOCKET` only when you want a
-server other than the one this checkout just ensured.
+server other than the one this checkout just ensured. `PHUX_PROFILE=<name>`
+isolates the whole instance; `PHUX_DESKTOP_BACKGROUND=1` opens the window
+behind the active app.
+
+## Using it
+
+The window is a sidebar (agents by urgency, then every session and its panes),
+a tab bar under the traffic lights, split panes, and a status bar. Command-key
+chords belong to the app; everything else reaches the terminal.
+
+| Keys             | Action                                                                      |
+| ---------------- | --------------------------------------------------------------------------- |
+| ⇧⌘P / ⌘P         | Command palette / go to a terminal, agent or tab (`>` switches to commands) |
+| ⌘T, ⌘O           | New terminal in the focused pane's folder; open a folder                    |
+| ⌘D / ⇧⌘D         | Split right / down (a new terminal)                                         |
+| ⌥⌘D              | Another view of the focused terminal                                        |
+| ⌘W / ⇧⌘W         | Close pane / tab (detaches; the process keeps running)                      |
+| ⌥⌘ arrows, ⌘[ ⌘] | Focus the pane in a direction, cycle panes                                  |
+| ⇧⌘↩              | Zoom the focused pane                                                       |
+| ⌘1–⌘9, ⇧⌘[ ⇧⌘]   | Select a tab                                                                |
+| ⌘F, ⌘G / ⇧⌘G     | Find in the terminal, next / previous match                                 |
+| ⌘L               | Scroll back to live output                                                  |
+| ⇧⌘A              | Jump to the agent that most needs you                                       |
+| ⌘B, ⌘,           | Toggle the sidebar, open Settings                                           |
+| ⌘= ⌘- ⌘0         | Font size                                                                   |
+
+Drag split dividers, the sidebar edge, or tabs to rearrange; double-click a tab
+to rename it and a pane header to zoom. Dropping files onto a terminal pastes
+their shell-quoted paths. **Terminate Terminal Process** (palette only) is the
+one action that ends a process. Layout and display preferences persist per
+server incarnation under `$XDG_STATE_HOME/phux-desktop/`.
 
 ## Native framework verification
 
@@ -44,7 +74,8 @@ bun run check:tooling
 ```
 
 `check:tooling` runs formatting, strict TS7 typecheck, type-aware
-warning-free Oxlint, the vendored rule suites and adversarial CLI/JSX fixtures.
+warning-free Oxlint, the vendored rule suites, the workspace model tests
+(`tests/model`) and adversarial CLI/JSX fixtures.
 Fix with `bun run format` and `bun run lint --fix`. Exact tool and framework
 versions are pinned in `package.json` and `bun.lock`; no global JS tool install
 or `bunx` download is involved. A tooling pass is not native/GPU evidence; see
