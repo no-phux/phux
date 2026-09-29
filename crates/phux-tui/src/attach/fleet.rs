@@ -143,6 +143,34 @@ pub(super) fn fleet_items(
     items
 }
 
+/// The live fleet dashboard's rows: every session's panes from
+/// [`fleet_items`], then the satellite agents not already open here.
+pub(super) fn live_fleet_items(
+    workspace: &Workspace,
+    panes: &HashMap<ResourceId, PaneSlot>,
+    agent_sessions: &AgentSessionRows,
+    agent_meta: &HashMap<ResourceId, AgentRecord>,
+    vcs: &mut VcsIndex,
+    peers: &super::sidebar_zones::PeerInputs<'_>,
+) -> Vec<SelectItem> {
+    let meta = collect_pane_meta(panes, vcs, agent_sessions);
+    let mut items = fleet_items(
+        workspace,
+        peers.sessions,
+        peers.focused_session,
+        agent_meta,
+        &meta,
+        peers.foreign_layouts,
+        peers.foreign_agents,
+    );
+    items.extend(satellite_agent_items(
+        peers.foreign_agents,
+        peers.foreign_attention,
+        workspace,
+    ));
+    items
+}
+
 /// Satellite terminals grouped by agent name (ADR-0136): a header per agent,
 /// a row per host, committing `split-pane { resource }` (which focuses the
 /// pane when already open). Panes already in `workspace` are skipped.

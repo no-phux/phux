@@ -437,18 +437,22 @@ impl H {
         if outcome.layout_replaced
             && let Some(active) = self.ws.render_window(self.zoomed.as_ref())
         {
+            let theme = crate::render::theme::Theme::default();
+            let mut chrome = crate::attach::chrome_ctx::ChromeCtx {
+                viewport: self.viewport,
+                sidebar: None,
+                status_bar: None,
+                sidebar_painter: None,
+                session_name: &self.name,
+                theme: &theme,
+            };
             crate::attach::paint::paint_full_frame(
                 &mut self.out,
                 active.as_ref(),
                 &mut self.panes,
                 &self.kernel,
                 self.focused.as_ref(),
-                self.viewport,
-                None,
-                None,
-                None,
-                &self.name,
-                &crate::render::theme::Theme::default(),
+                &mut chrome,
             );
         }
         outcome
