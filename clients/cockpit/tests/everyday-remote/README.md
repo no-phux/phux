@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-29
 ---
 
 # Enrolled loopback transport proof
@@ -63,8 +63,10 @@ root. The C probe's recorded path is transient, but its hash remains evidence.
   terminal record must equal `["second-terminal-only"]` after all input,
   reconnect and provider operations; a count-only match cannot pass.
 - The history fixture emits 1,600 numbered lines. Native history pages load
-  while input is dispatched; a scrolled viewport retains its first row during
-  imports. The oldest line starts unsearchable and becomes searchable after
+  while input is dispatched; a viewport scrolled to the oldest loaded row
+  requests the next page and, pinned, retains its first row during that
+  import. Structural pages hold about 1,000 rows at 80 columns, so a scroll
+  that stays near the tail would request nothing (phux-qt5h). The oldest line starts unsearchable and becomes searchable after
   explicit history loading. The negotiated request uses a 32-row hint and
   production-sized byte limits; native structural pages are not synthetic rows.
 - Spawn, shared-layout split and window rename go through the public FFI and
@@ -134,6 +136,11 @@ base `3eeba41f` and its same-checkout `ffi-dev` artifacts:
   completed; wrong pins and revoked credentials failed admission.
 - `bash scripts/check-docs.sh`, Zig formatting, C compilation with
   `-Wall -Wextra -Werror`, and `git diff --check`: passed.
+
+On 2026-09-29, against main `b493043ac` (Phux 0.46.0), the default run passed
+on both transports, including both provider tests. With structural history
+pages, each transport imported two pages while pinned and 1,603 rows in
+total.
 
 The initial live scenarios are contract probes. The real
 revoked-token run did uncover follow-up `phux-2jza.11`: QUIC reports only
