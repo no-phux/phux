@@ -1391,6 +1391,7 @@ fn dispatch(
             replace_token,
         }) => commands::pair::run_pair(
             action,
+            socket,
             tokens,
             cert,
             qr,
@@ -2037,7 +2038,8 @@ mod tests {
     #[test]
     fn socketless_verbs_are_named_and_socket_consumers_are_not() {
         for argv in [
-            ["phux", "pair", "--socket", "/tmp/x.sock"].as_slice(),
+            ["phux", "pair", "ls", "--socket", "/tmp/x.sock"].as_slice(),
+            ["phux", "pair", "revoke", "id", "--socket", "/tmp/x.sock"].as_slice(),
             ["phux", "--socket", "/tmp/x.sock", "config", "path"].as_slice(),
             ["phux", "plugin", "list", "--socket", "/tmp/x.sock"].as_slice(),
             ["phux", "logs", "--socket", "/tmp/x.sock"].as_slice(),
@@ -2053,6 +2055,7 @@ mod tests {
 
         for argv in [
             ["phux", "ls", "--socket", "/tmp/x.sock"].as_slice(),
+            ["phux", "pair", "--socket", "/tmp/x.sock"].as_slice(),
             ["phux", "config", "reload", "--socket", "/tmp/x.sock"].as_slice(),
             ["phux", "tag", "ls", "work", "--socket", "/tmp/x.sock"].as_slice(),
             ["phux", "service", "install", "--socket", "/tmp/x.sock"].as_slice(),

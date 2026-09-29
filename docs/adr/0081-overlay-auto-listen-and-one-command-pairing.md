@@ -17,6 +17,7 @@ auto-binds, because a port is global to the host in a way a socket path is not.
 
 Status: Accepted
 Date: 2026-08-09
+Superseded in part by [ADR-0141](./0141-pair-mints-only-against-a-live-listener.md): `phux pair` asks the running server what it bound before minting, and the link names that bind instead of a derived port.
 Builds on: ADR-0037 (overlay-agnostic address detection), ADR-0031
 (auto-provisioned remote TLS + token store), ADR-0080 (profile isolation)
 

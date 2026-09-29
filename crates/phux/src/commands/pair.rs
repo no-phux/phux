@@ -1,12 +1,15 @@
 //! `phux pair` — mint, rotate, or revoke remote credentials (ADR-0031).
 //!
-//! The token authenticates a device that attaches over `wss://`; the server
-//! reads the same token store at `PHUX_WS_TOKENS`. These operations only write
-//! that file — they never contact a running server — so they work before the
-//! server starts and need no socket.
+//! The token authenticates a device that attaches over `wss://` or QUIC; the
+//! server reads the same token store at `PHUX_WS_TOKENS`. Minting first asks
+//! the running server which remote listeners it has bound (`GET_STATE`'s
+//! listener report) and refuses when none would accept the credential, so a
+//! token, link, or QR is only ever printed for a door that is open, and the
+//! link names the address that door is actually bound to (ADR-0141). `ls`,
+//! `prune`, `rotate`, and `revoke` only edit the store and need no server.
 
-use std::net::IpAddr;
-use std::path::PathBuf;
+use std::net::{IpAddr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use usage::Subcommands;
@@ -212,12 +215,14 @@ fn percent_decode(value: &str) -> Result<String, String> {
 }
 
 /// Resolve the ws(s):// URL the link embeds: `--host` wins (a bare
-/// `host:port` gets `wss://`); otherwise the first overlay address plus the
-/// `PHUX_WS_ADDR` port. `None` when no address source exists.
+/// `host:port` gets `wss://`); otherwise the address the running server's
+/// wss listener is bound to. An unspecified bind (`0.0.0.0`/`::`) is dialed
+/// on the first overlay address; a loopback bind is unreachable from a
+/// device. `None` when nothing a device could dial is known.
 fn resolve_server_url(
     host: Option<&str>,
     overlay: &[IpAddr],
-    ws_addr: Option<&str>,
+    bound_wss: Option<SocketAddr>,
 ) -> Option<String> {
     if let Some(host) = host {
         if host.starts_with("ws://") || host.starts_with("wss://") {
@@ -225,13 +230,164 @@ fn resolve_server_url(
         }
         return Some(format!("wss://{host}"));
     }
-    let ip = overlay.first()?;
-    // The port of a HOST:PORT value; never guess one.
-    let port: u16 = ws_addr?.rsplit_once(':')?.1.parse().ok()?;
-    Some(match ip {
-        IpAddr::V4(v4) => format!("wss://{v4}:{port}"),
-        IpAddr::V6(v6) => format!("wss://[{v6}]:{port}"),
-    })
+    let bound = bound_wss?;
+    let ip = if bound.ip().is_unspecified() {
+        *overlay.first()?
+    } else if bound.ip().is_loopback() {
+        return None;
+    } else {
+        bound.ip()
+    };
+    Some(format!("wss://{}", SocketAddr::new(ip, bound.port())))
+}
+
+/// The words of the refusal when the server has no remote listener bound.
+/// `phux host add` recognizes them to restart a server that disabled its
+/// listeners at boot, so they are a contract with that caller.
+pub(crate) const NO_BOUND_LISTENER: &str = "has no remote listener bound";
+
+/// The remote listeners the running server reports bound: what a credential
+/// minted now can actually authenticate against.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct LiveListeners {
+    /// The bound wss listener's address.
+    wss: Option<String>,
+    /// The bound QUIC listener's address.
+    quic: Option<String>,
+}
+
+impl LiveListeners {
+    /// The wss bind as a socket address, when it parses as one.
+    fn wss_addr(&self) -> Option<SocketAddr> {
+        self.wss.as_deref().and_then(|addr| addr.parse().ok())
+    }
+}
+
+/// Ask the server on `socket` which remote listeners it has bound. `Err` is
+/// the refusal to print: no server, or a server with nothing bound, would
+/// leave a minted credential authenticating nothing.
+fn query_live_listeners(socket: &Path) -> Result<LiveListeners, String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| format!("could not build a runtime to ask the server: {err}"))?;
+    let view = runtime
+        .block_on(phux_client::state::get_state(socket))
+        .map_err(|err| no_live_server(socket, &err))?;
+    live_listeners(socket, view.snapshot().listeners())
+}
+
+/// The refusal when `GET_STATE` could not be asked at all.
+fn no_live_server(socket: &Path, err: &phux_client::attach::AttachError) -> String {
+    let reason = match err {
+        phux_client::attach::AttachError::Io(io)
+            if matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+            ) =>
+        {
+            format!("no server is running at {}", socket.display())
+        }
+        other => format!(
+            "could not ask the server at {} what it is listening on: {other}",
+            socket.display()
+        ),
+    };
+    format!(
+        "{reason}; a credential minted now would pair with nothing, so none was minted.\n  \
+         start one that stays up (`phux service install`, or `phux server --ensure`), \
+         then rerun `phux pair`; pass --socket PATH to pair with a server on another socket"
+    )
+}
+
+/// The pure half of [`query_live_listeners`]: the bound rows of `report`, or
+/// the refusal naming why nothing is bound.
+fn live_listeners(
+    socket: &Path,
+    report: Option<&phux_protocol::wire::RemoteListenersReport>,
+) -> Result<LiveListeners, String> {
+    use phux_protocol::wire::RemoteListenerTransport;
+
+    let bound_addr = |transport| {
+        report?
+            .listeners
+            .iter()
+            .find(|slot| slot.transport == transport && slot.bound)
+            .map(|slot| slot.addr.clone().unwrap_or_default())
+    };
+    let live = LiveListeners {
+        wss: bound_addr(RemoteListenerTransport::Wss),
+        quic: bound_addr(RemoteListenerTransport::Quic),
+    };
+    let any_bound = report.is_some_and(|report| report.listeners.iter().any(|slot| slot.bound));
+    if any_bound {
+        return Ok(live);
+    }
+    let disabled = report
+        .map(|report| {
+            report
+                .unhealthy()
+                .map(|slot| {
+                    let reason = slot.disabled_reason.map_or(
+                        "unknown",
+                        phux_protocol::wire::ListenerDisabledReason::as_str,
+                    );
+                    format!(
+                        "{} at {} disabled ({reason})",
+                        slot.transport,
+                        slot.addr.as_deref().unwrap_or("?")
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let why = if disabled.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", disabled.join("; "))
+    };
+    Err(format!(
+        "the server at {} {NO_BOUND_LISTENER}{why}, so nothing would accept a \
+         credential and none was minted.\n  \
+         give it one: restart it with `--listen HOST:PORT` or `--quic HOST:PORT` \
+         (`PHUX_WS_ADDR` / `PHUX_QUIC_ADDR`), or join an overlay network so the default-profile \
+         server auto-binds one (`phux upgrade` restarts it with panes intact); \
+         `phux doctor` names the cause",
+        socket.display()
+    ))
+}
+
+/// Refuse, before anything is minted, a link or QR that cannot work: `--host`
+/// names a wss endpoint, so it needs a bound wss listener behind it, and
+/// `--qr` needs a link at all.
+fn link_refusal(
+    host: Option<&str>,
+    qr: bool,
+    live: &LiveListeners,
+    server_url: Option<&str>,
+) -> Option<String> {
+    if host.is_some() && live.wss.is_none() {
+        return Some(
+            "--host names the WebSocket endpoint the connect link carries, but the server has \
+             no wss listener bound, so the link could not connect; none was minted.\n  \
+             restart the server with `--listen HOST:PORT` (`PHUX_WS_ADDR`), or drop --host \
+             and --qr to mint a credential for its other listeners"
+                .to_owned(),
+        );
+    }
+    if qr && server_url.is_none() {
+        let state = live.wss.as_deref().map_or_else(
+            || "not bound".to_owned(),
+            |addr| format!("bound to {addr}, which a device cannot dial"),
+        );
+        return Some(format!(
+            "--qr needs a connect link, and the server's wss listener is {state}; \
+             none was minted.\n  \
+             pass --host HOST:PORT naming how the device reaches the server, or bind a \
+             reachable wss listener (`--listen`, or an overlay address)"
+        ));
+    }
+    None
 }
 
 /// Every server name this pairing run advertises, in SAN / `ServerName`
@@ -295,8 +451,10 @@ fn render_qr(payload: &str) -> Result<String, String> {
 
 /// Mint a token into the store and print it with the certificate
 /// fingerprint. Defaults are the shared paths the server reads (ADR-0031), and
-/// the certificate is provisioned if absent. With a known address the
-/// credentials are also printed as a connect link, and `--qr` renders it.
+/// the certificate is provisioned if absent. Nothing is minted unless the
+/// server on `socket` has a remote listener bound (ADR-0141). With a
+/// reachable wss listener the credentials are also printed as a connect
+/// link, and `--qr` renders it.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "CLI entry point owns the args clap dispatch hands it; taking them by value keeps the call site clean"
@@ -307,6 +465,7 @@ fn render_qr(payload: &str) -> Result<String, String> {
 )]
 pub(crate) fn run_pair(
     action: Option<PairAction>,
+    socket: Option<PathBuf>,
     tokens: Option<PathBuf>,
     cert: Option<PathBuf>,
     qr: bool,
@@ -328,7 +487,32 @@ pub(crate) fn run_pair(
         return ExitCode::FAILURE;
     }
 
-    let addresses = resolve_pair_addresses(host.as_deref());
+    // Everything that could make the credential useless is settled before
+    // the store is touched. The store's own refusal comes first, in the
+    // words a failed mint uses, because `phux host add` answers the
+    // legacy-store one by migrating.
+    if let Err(err) = phux_server::auth::TokenStore::load(&tokens) {
+        eprintln!("phux pair: failed to mint token: {err}");
+        return ExitCode::FAILURE;
+    }
+    let socket = socket.unwrap_or_else(phux_server::runtime::default_socket_path);
+    let live = match query_live_listeners(&socket) {
+        Ok(live) => live,
+        Err(refusal) => {
+            eprintln!("phux pair: {refusal}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let addresses = resolve_pair_addresses(host.as_deref(), live);
+    if let Some(refusal) = link_refusal(
+        host.as_deref(),
+        qr,
+        &addresses.live,
+        addresses.server_url.as_deref(),
+    ) {
+        eprintln!("phux pair: {refusal}");
+        return ExitCode::FAILURE;
+    }
     provision_pairing_certificate(&certificate, &addresses.advertised);
 
     let Some(minted) = mint_pairing_credential(&tokens, replace_token.as_deref()) else {
@@ -357,19 +541,21 @@ pub(crate) fn run_pair(
         .map(|url| build_connect_link(url, name.as_deref(), fingerprint.as_deref(), &token));
 
     if json {
-        return print_pair_json(
+        return crate::output::json(&pair_document(
             &token,
             fingerprint.as_deref(),
             &addresses.overlay,
-            addresses.ws_addr.as_deref(),
+            &addresses.live,
             link.as_deref(),
             &tokens,
             &minted.id,
             minted.generation,
-        );
+        ));
     }
 
-    print_connect_link(link.as_deref(), qr);
+    if let Some(link) = link.as_deref() {
+        print_connect_link(link, qr);
+    }
 
     outln!("Token written to {}", tokens.display());
     ExitCode::SUCCESS
@@ -407,9 +593,9 @@ fn resolve_certificate_paths(cert: Option<PathBuf>) -> CertificatePaths {
 struct PairAddresses {
     /// Detected overlay addresses, printed as "dial one of these".
     overlay: Vec<IpAddr>,
-    /// The server's configured (or derived) `HOST:PORT` bind.
-    ws_addr: Option<String>,
-    /// The ws(s):// URL the connect link embeds, when one can be resolved.
+    /// What the running server has bound.
+    live: LiveListeners,
+    /// The ws(s):// URL the link embeds, when one can be resolved.
     server_url: Option<String>,
     /// The names a certificate minted for this run must claim.
     advertised: Vec<String>,
@@ -417,18 +603,13 @@ struct PairAddresses {
 
 /// Resolve every address this run advertises. Runs before the certificate
 /// is provisioned, because SANs are chosen at generation time (ADR-0091).
-/// Best-effort; falls back to the server's auto-bind port on the overlay
-/// address when `PHUX_WS_ADDR` is unset.
-fn resolve_pair_addresses(host: Option<&str>) -> PairAddresses {
+fn resolve_pair_addresses(host: Option<&str>, live: LiveListeners) -> PairAddresses {
     let overlay = phux_config::overlay::detect();
-    let ws_addr = std::env::var("PHUX_WS_ADDR").ok().or_else(|| {
-        (!overlay.is_empty()).then(|| format!(":{}", phux_server::runtime::DEFAULT_WS_PORT))
-    });
-    let server_url = resolve_server_url(host, &overlay, ws_addr.as_deref());
+    let server_url = resolve_server_url(host, &overlay, live.wss_addr());
     let advertised = advertised_names(server_url.as_deref(), &overlay);
     PairAddresses {
         overlay,
-        ws_addr,
+        live,
         server_url,
         advertised,
     }
@@ -517,18 +698,8 @@ fn print_overlay_addresses(overlay: &[IpAddr]) {
     outln!();
 }
 
-/// Print the connect link, and its QR under `--qr`; without an address,
-/// `--qr` warns that there is nothing to encode.
-fn print_connect_link(link: Option<&str>, qr: bool) {
-    let Some(link) = link else {
-        if qr {
-            eprintln!(
-                "phux pair: warning: --qr needs a server address; pass --host HOST:PORT \
-                 (no overlay address + PHUX_WS_ADDR port to derive one from)"
-            );
-        }
-        return;
-    };
+/// Print the connect link, and its QR under `--qr`.
+fn print_connect_link(link: &str, qr: bool) {
     outln!("One-tap connect link (open on the device — carries the token):");
     outln!("  {link}");
     outln!();
@@ -791,39 +962,11 @@ fn migrate_legacy_credentials(tokens: &std::path::Path) -> bool {
     }
 }
 
-/// Emit the machine-readable pairing document. `quic_addr`/`ws_addr` are the
-/// configured binds, null without a listener, which is what makes
-/// `phux host add` fall back to `ssh://`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one argument per pairing document source keeps secret-bearing output construction explicit"
-)]
-fn print_pair_json(
-    token: &str,
-    fingerprint: Option<&str>,
-    overlay: &[IpAddr],
-    ws_addr: Option<&str>,
-    connect_link: Option<&str>,
-    tokens_path: &std::path::Path,
-    credential_id: &str,
-    generation: u64,
-) -> ExitCode {
-    let document = pair_document(
-        token,
-        fingerprint,
-        overlay,
-        ws_addr,
-        std::env::var("PHUX_QUIC_ADDR").ok().as_deref(),
-        connect_link,
-        tokens_path,
-        credential_id,
-        generation,
-    );
-    crate::output::json(&document)
-}
-
 /// The `phux pair --json` document. Pure, so the shape (including
 /// `schema_version`) is unit-testable without touching the environment.
+/// `ws_addr`/`quic_addr` are the listeners the running server reports bound,
+/// null when that transport is not listening, which is what makes
+/// `phux host add` fall back to `ssh://`.
 #[allow(
     clippy::too_many_arguments,
     reason = "one field per documented key; a struct would only move the same names one level up"
@@ -832,8 +975,7 @@ fn pair_document(
     token: &str,
     fingerprint: Option<&str>,
     overlay: &[IpAddr],
-    ws_addr: Option<&str>,
-    quic_addr: Option<&str>,
+    live: &LiveListeners,
     connect_link: Option<&str>,
     tokens_path: &std::path::Path,
     credential_id: &str,
@@ -847,8 +989,8 @@ fn pair_document(
             .iter()
             .map(std::string::ToString::to_string)
             .collect::<Vec<_>>(),
-        "ws_addr": ws_addr,
-        "quic_addr": quic_addr,
+        "ws_addr": live.wss,
+        "quic_addr": live.quic,
         "connect_link": connect_link,
         "tokens_path": tokens_path.display().to_string(),
         "credential_id": credential_id,
@@ -859,11 +1001,26 @@ fn pair_document(
 #[cfg(test)]
 mod tests {
     use super::{
-        advertised_names, build_connect_link, legacy_connect_link, pair_document,
-        parse_connect_link, percent_encode, render_qr, resolve_server_url,
+        LiveListeners, advertised_names, build_connect_link, legacy_connect_link, link_refusal,
+        live_listeners, pair_document, parse_connect_link, percent_encode, render_qr,
+        resolve_server_url,
     };
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use phux_protocol::wire::{
+        ListenerDisabledReason, RemoteListenerSlot, RemoteListenerTransport, RemoteListenersReport,
+    };
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::path::Path;
+
+    fn live(wss: Option<&str>, quic: Option<&str>) -> LiveListeners {
+        LiveListeners {
+            wss: wss.map(str::to_owned),
+            quic: quic.map(str::to_owned),
+        }
+    }
+
+    fn addr(text: &str) -> Option<SocketAddr> {
+        text.parse().ok()
+    }
 
     /// `phux pair --json` pins `schema_version` 1 plus the documented
     /// fields, with absent addresses/link reported as `null` rather than
@@ -875,8 +1032,7 @@ mod tests {
             "deadbeef",
             Some("AB:CD"),
             &overlay,
-            Some("0.0.0.0:8787"),
-            Some("0.0.0.0:8788"),
+            &live(Some("0.0.0.0:8787"), Some("0.0.0.0:8788")),
             Some("https://phux.sh/connect?url=wss://100.64.0.2:8787&token=deadbeef"),
             Path::new("/state/remote-tokens"),
             "credential-a",
@@ -897,13 +1053,12 @@ mod tests {
         assert_eq!(doc["generation"], 1);
         assert_eq!(doc.as_object().map(serde_json::Map::len), Some(10));
 
-        // No address material known: nulls, not absent keys.
+        // No listener of a transport bound: nulls, not absent keys.
         let doc = pair_document(
             "deadbeef",
             None,
             &[],
-            None,
-            None,
+            &live(None, None),
             None,
             Path::new("/state/remote-tokens"),
             "credential-a",
@@ -967,32 +1122,133 @@ mod tests {
             resolve_server_url(Some("wss://mini.tail-net.ts.net:8787"), &[], None),
             Some("wss://mini.tail-net.ts.net:8787".to_owned())
         );
-        // The flag also beats a detected overlay address.
+        // The flag also beats the bound listener and a detected overlay address.
         let overlay = [IpAddr::V4(Ipv4Addr::new(100, 64, 0, 9))];
         assert_eq!(
-            resolve_server_url(Some("mini:1"), &overlay, Some("0.0.0.0:2")),
+            resolve_server_url(Some("mini:1"), &overlay, addr("100.64.0.9:2")),
             Some("wss://mini:1".to_owned())
         );
     }
 
+    /// Without `--host` the link names the address the server's wss listener
+    /// is actually bound to, never a guessed port.
     #[test]
-    fn overlay_fallback_derives_url_only_with_a_port() {
+    fn derived_url_is_the_bound_wss_listener() {
         let overlay = [IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2))];
-        // Overlay IP + PHUX_WS_ADDR port -> self-contained wss URL.
+        // The auto-overlay listener binds the overlay address itself.
         assert_eq!(
-            resolve_server_url(None, &overlay, Some("0.0.0.0:8787")),
+            resolve_server_url(None, &overlay, addr("100.64.0.2:8787")),
             Some("wss://100.64.0.2:8787".to_owned())
         );
-        // No port to borrow -> no derived URL (never guess a port).
-        assert_eq!(resolve_server_url(None, &overlay, None), None);
-        assert_eq!(resolve_server_url(None, &overlay, Some("no-port")), None);
-        // No host flag and no overlay address -> nothing to build.
-        assert_eq!(resolve_server_url(None, &[], Some("0.0.0.0:8787")), None);
-        // A v6 overlay address is bracketed so the URL stays parseable.
-        let v6 = [IpAddr::V6(Ipv6Addr::LOCALHOST)];
+        // A concrete routable bind is dialed as bound, on its real port.
         assert_eq!(
-            resolve_server_url(None, &v6, Some("0.0.0.0:8787")),
-            Some("wss://[::1]:8787".to_owned())
+            resolve_server_url(None, &overlay, addr("192.168.1.5:9000")),
+            Some("wss://192.168.1.5:9000".to_owned())
+        );
+        // An unspecified bind is dialed on the overlay address, bound port...
+        assert_eq!(
+            resolve_server_url(None, &overlay, addr("0.0.0.0:9001")),
+            Some("wss://100.64.0.2:9001".to_owned())
+        );
+        // ...and yields nothing with no overlay address to dial it on.
+        assert_eq!(resolve_server_url(None, &[], addr("0.0.0.0:9001")), None);
+        // A loopback bind is unreachable from a device.
+        assert_eq!(
+            resolve_server_url(None, &overlay, addr("127.0.0.1:8787")),
+            None
+        );
+        // No wss listener bound: no link, whatever the overlay says.
+        assert_eq!(resolve_server_url(None, &overlay, None), None);
+        // A v6 address is bracketed so the URL stays parseable.
+        let v6 = [IpAddr::V6(Ipv6Addr::new(
+            0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 1,
+        ))];
+        assert_eq!(
+            resolve_server_url(None, &v6, addr("[::]:8787")),
+            Some("wss://[fd7a:115c:a1e0::1]:8787".to_owned())
+        );
+    }
+
+    /// No listener report, or one with nothing bound, is a refusal naming
+    /// the socket and each disabled row's reason; any bound row admits a mint.
+    #[test]
+    fn a_mint_needs_a_bound_remote_listener() {
+        let socket = Path::new("/run/phux.sock");
+
+        let absent = live_listeners(socket, None).expect_err("no report, nothing bound");
+        assert!(
+            absent.contains("/run/phux.sock") && absent.contains("no remote listener bound"),
+            "{absent}"
+        );
+        assert!(absent.contains("none was minted"), "{absent}");
+
+        let empty = RemoteListenersReport::new();
+        assert!(live_listeners(socket, Some(&empty)).is_err());
+
+        let wss_down = RemoteListenerSlot::disabled(
+            RemoteListenerTransport::Wss,
+            Some("100.64.0.2:8787".to_owned()),
+            ListenerDisabledReason::BindFailed,
+        );
+        let disabled = RemoteListenersReport::new().with_listeners(vec![wss_down.clone()]);
+        let refusal = live_listeners(socket, Some(&disabled)).expect_err("disabled is not bound");
+        assert!(
+            refusal.contains("wss at 100.64.0.2:8787 disabled (bind_failed)"),
+            "{refusal}"
+        );
+
+        let quic_only = RemoteListenersReport::new().with_listeners(vec![
+            wss_down,
+            RemoteListenerSlot::bound(RemoteListenerTransport::Quic, "0.0.0.0:8788"),
+        ]);
+        assert_eq!(
+            live_listeners(socket, Some(&quic_only)).expect("QUIC accepts credentials"),
+            live(None, Some("0.0.0.0:8788"))
+        );
+
+        let both = RemoteListenersReport::new().with_listeners(vec![
+            RemoteListenerSlot::bound(RemoteListenerTransport::Wss, "100.64.0.2:8787"),
+            RemoteListenerSlot::bound(RemoteListenerTransport::Quic, "100.64.0.2:8788"),
+        ]);
+        assert_eq!(
+            live_listeners(socket, Some(&both)).expect("bound"),
+            live(Some("100.64.0.2:8787"), Some("100.64.0.2:8788"))
+        );
+    }
+
+    /// `--host` needs a wss listener behind it and `--qr` needs a link; both
+    /// are refused before anything is minted.
+    #[test]
+    fn link_requests_that_cannot_connect_are_refused() {
+        let quic_only = live(None, Some("0.0.0.0:8788"));
+        let wss = live(Some("100.64.0.2:8787"), None);
+        let loopback = live(Some("127.0.0.1:8787"), None);
+
+        // No link asked for: minting for QUIC alone is fine.
+        assert_eq!(link_refusal(None, false, &quic_only, None), None);
+        // --host with no wss listener cannot connect.
+        let refusal = link_refusal(
+            Some("mini:8787"),
+            false,
+            &quic_only,
+            Some("wss://mini:8787"),
+        )
+        .expect("refused");
+        assert!(refusal.contains("no wss listener bound"), "{refusal}");
+        // --host over a bound wss listener is the operator's claim to keep.
+        assert_eq!(
+            link_refusal(Some("mini:8787"), true, &loopback, Some("wss://mini:8787")),
+            None
+        );
+        // --qr with nothing to encode names the bind that is unreachable.
+        let refusal = link_refusal(None, true, &loopback, None).expect("refused");
+        assert!(refusal.contains("bound to 127.0.0.1:8787"), "{refusal}");
+        let refusal = link_refusal(None, true, &quic_only, None).expect("refused");
+        assert!(refusal.contains("not bound"), "{refusal}");
+        // --qr with a derived link goes ahead.
+        assert_eq!(
+            link_refusal(None, true, &wss, Some("wss://100.64.0.2:8787")),
+            None
         );
     }
 

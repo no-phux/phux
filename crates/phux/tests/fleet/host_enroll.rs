@@ -42,6 +42,10 @@ enum Pair {
     Ok,
     /// The store predates versioning; `--migrate-legacy` is required.
     LegacyStore,
+    /// As [`Pair::LegacyStore`], on a server that disabled its listeners
+    /// when that store failed to load at boot: the migration lands, but no
+    /// credential is minted until `phux upgrade` restarts it.
+    LegacyStoreListenersDisabled,
 }
 
 /// One scratch home for a single run: private config, state, and (when the
@@ -76,6 +80,7 @@ impl EnrollHome {
         let pair = match pair {
             Pair::Ok => "true".to_owned(),
             Pair::LegacyStore => "case \"$*\" in *--migrate-legacy*) ;; *) echo 'phux pair: failed to mint token: legacy token store requires explicit migration' >&2; exit 1 ;; esac".to_owned(),
+            Pair::LegacyStoreListenersDisabled => "if [ ! -f \"$PHUX_TEST_SSH_CALLS.upgraded\" ]; then case \"$*\" in *--migrate-legacy*) echo 'phux pair: the server at /tmp/x.sock has no remote listener bound (quic at 0.0.0.0:8788 disabled (token_store_load_failed)), so nothing would accept a credential and none was minted.' >&2; exit 1 ;; *) echo 'phux pair: failed to mint token: legacy token store requires explicit migration' >&2; exit 1 ;; esac; fi".to_owned(),
         };
         let path = self.dir.path().join("fake-ssh");
         let script = format!(
@@ -87,7 +92,7 @@ impl EnrollHome {
                *\"phux --version\"*) echo \"phux 0.0.0-test\" ;;\n\
                *\"phux service install\"*) {install} ;;\n\
                *\"phux server --ensure\"*) echo \"ensured\" ;;\n\
-               *\"phux upgrade\"*) echo \"upgrading\" ;;\n\
+               *\"phux upgrade\"*) touch \"$PHUX_TEST_SSH_CALLS.upgraded\"; echo \"upgrading\" ;;\n\
                *\"phux pair --json\"*)\n\
                  {pair}\n\
                  printf '%s\\n' '{{\"token\":\"{TOKEN}\",\"cert_fingerprint\":\"{FINGERPRINT}\",\"overlay_addresses\":[\"{OVERLAY}\"]}}' ;;\n\
@@ -509,6 +514,42 @@ fn add_migrates_a_legacy_token_store_once() {
     assert!(
         stderr.contains("token store predates versioning; migrated it")
             && stderr.contains("restarted the server so its listeners re-read"),
+        "stderr={stderr}"
+    );
+    home.assert_token_routed(&home.token_path("remotes", "mini"), "satellites");
+}
+
+/// A server that disabled its listeners when the legacy store failed to load
+/// at boot refuses the migrating mint; enrollment restarts it and pairs once
+/// more rather than failing the add.
+#[test]
+fn add_restarts_a_server_whose_listeners_the_legacy_store_disabled() {
+    let home = EnrollHome::new();
+    let ssh = home.install_fake_ssh_with(Install::Ok, Pair::LegacyStoreListenersDisabled);
+
+    let (code, _stdout, stderr) = home.run(&["host", "add", "me@mini"], &ssh);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let calls = home.ssh_calls();
+    let migrated = calls
+        .find("phux pair --json --migrate-legacy")
+        .expect("migration retry");
+    let upgrade = calls.find("phux upgrade").expect("listener restart");
+    let retried = calls[upgrade..]
+        .find("phux pair --json\n")
+        .map(|at| at + upgrade)
+        .expect("a pair after the restart");
+    assert!(
+        migrated < upgrade && upgrade < retried,
+        "the refused migration, then the restart, then one more pair; calls={calls:?}"
+    );
+    assert_eq!(
+        calls.matches("phux upgrade").count(),
+        1,
+        "one restart; calls={calls:?}"
+    );
+    assert!(
+        stderr.contains("restarted the server so its listeners re-read")
+            && stderr.contains("token store predates versioning; migrated it"),
         "stderr={stderr}"
     );
     home.assert_token_routed(&home.token_path("remotes", "mini"), "satellites");

@@ -287,7 +287,7 @@ fn socketless_verb_rejects_socket_with_teaching_error() {
     let sock = dead_socket();
     for args in [
         vec!["config", "path", "--socket", sock.as_str()],
-        vec!["pair", "--socket", sock.as_str()],
+        vec!["pair", "ls", "--socket", sock.as_str()],
         vec!["--socket", sock.as_str(), "plugin", "list"],
     ] {
         let (code, stdout, stderr) = run(&args);

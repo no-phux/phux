@@ -172,6 +172,7 @@ column is the base status word plus at most one relationship clause, about
 | [0138](./0138-cockpit-rides-the-next-channel.md) | Cockpit rides the next channel, and next queues instead of cancelling | Accepted (builds on [0113](./0113-next-release-channel.md)) |
 | [0139](./0139-solid-desktop-over-native-runtime-views.md) | Solid desktop over native runtime views | Accepted (extends [0135](./0135-one-binding-crate.md)) |
 | [0140](./0140-sidebar-machines-come-from-a-hosts-provider.md) | Sidebar machines come from a hosts provider | Accepted (builds on [0107](./0107-satellite-sessions-are-listed-never-adopted.md)) |
+| [0141](./0141-pair-mints-only-against-a-live-listener.md) | Pair mints only against a live listener | Accepted (amends [0081](./0081-overlay-auto-listen-and-one-command-pairing.md)) |
 
 ## When to write an ADR
 
