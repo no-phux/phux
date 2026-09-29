@@ -58,28 +58,33 @@ export function focusedPlacement(tab: DeskTab): Placement | undefined {
   return findPlacement(tab.root, tab.focusedId) ?? placements(tab.root)[0];
 }
 
-/** Put `placement` beside `targetId`, splitting that leaf along `axis`. */
+/**
+ * Put `placement` beside `targetId`, splitting that leaf along `axis`: after
+ * it (right or below), or `before` it (left or above).
+ */
 export function splitAt(
   node: LayoutNode,
   targetId: string,
   placement: Placement,
   axis: Axis,
+  before = false,
 ): LayoutNode {
   if (node.kind === "leaf") {
     if (node.placement.id !== targetId) return node;
+    const added = leaf(placement);
     return {
       kind: "split",
       id: newId("split"),
       axis,
       ratio: 0.5,
-      first: node,
-      second: leaf(placement),
+      first: before ? added : node,
+      second: before ? node : added,
     };
   }
   return {
     ...node,
-    first: splitAt(node.first, targetId, placement, axis),
-    second: splitAt(node.second, targetId, placement, axis),
+    first: splitAt(node.first, targetId, placement, axis, before),
+    second: splitAt(node.second, targetId, placement, axis, before),
   };
 }
 
@@ -203,15 +208,32 @@ export function cycle(node: LayoutNode, fromId: string, step: 1 | -1): string | 
   return next?.id;
 }
 
+/**
+ * The leaf to focus once `removed` leaves go: the focused one if it stays,
+ * else the nearest survivor before it in reading order, else the next one.
+ */
+export function focusAfterRemoval(
+  order: readonly string[],
+  focusedId: string,
+  removed: ReadonlySet<string>,
+): string {
+  if (!removed.has(focusedId)) return focusedId;
+  const index = Math.max(order.indexOf(focusedId), 0);
+  const kept = (id: string): boolean => !removed.has(id);
+  return order.slice(0, index).findLast(kept) ?? order.slice(index + 1).find(kept) ?? "";
+}
+
 /** Drop every leaf that shows `terminalId`. Tabs left empty disappear. */
 export function withoutTerminal(tabs: DeskTab[], terminalId: string): DeskTab[] {
   return tabs.flatMap((tab) => {
+    const doomed = placements(tab.root).filter((placement) => placement.terminalId === terminalId);
+    if (doomed.length === 0) return [tab];
     let root: LayoutNode | undefined = tab.root;
-    for (const placement of placements(tab.root)) {
-      if (placement.terminalId === terminalId && root) root = removeLeaf(root, placement.id);
-    }
+    for (const placement of doomed) if (root) root = removeLeaf(root, placement.id);
     if (!root) return [];
-    return [refocus({ ...tab, root })];
+    const order = placements(tab.root).map((placement) => placement.id);
+    const removed = new Set(doomed.map((placement) => placement.id));
+    return [refocus({ ...tab, root, focusedId: focusAfterRemoval(order, tab.focusedId, removed) })];
   });
 }
 

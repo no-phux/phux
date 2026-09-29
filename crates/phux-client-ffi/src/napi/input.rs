@@ -3,7 +3,13 @@
 
 use ::napi::{Error, Result};
 use napi_derive::napi;
-use phux_client_runtime::{Client, control::ControlPlane};
+use phux_client_runtime::{
+    Client,
+    control::{
+        ControlPlane,
+        keys::{key_event_for_char, press},
+    },
+};
 use phux_protocol::ResourceId;
 use phux_protocol::input::{
     focus::FocusEvent,
@@ -62,6 +68,48 @@ fn paste_delivery(client: &Client, view: &str, text: &str) -> Result<u64> {
         client.wake();
     }
     Ok(delivery)
+}
+
+/// Key presses for `text` as a keybinding's `text:` action means it: each C0
+/// control becomes the key that produces that byte (`\r` Enter, `\n` Ctrl-J,
+/// `\x0c` Ctrl-L, `\x1f` Ctrl-_), and an ESC before another key is Alt held
+/// on that key, which is what the byte pair encodes. Private-use function
+/// codes have no key and are dropped.
+fn typed_keys(text: &str) -> Vec<KeyEvent> {
+    let mut events = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        let meta = (ch == '\u{1b}')
+            .then(|| chars.peek().copied())
+            .flatten()
+            .filter(|next| *next != '\u{1b}')
+            .and_then(typed_key);
+        if let Some(mut event) = meta {
+            chars.next();
+            event.mods.insert(ModSet::ALT);
+            events.push(event);
+        } else if let Some(event) = typed_key(ch) {
+            events.push(event);
+        }
+    }
+    events
+}
+
+/// The key for one typed scalar. Unlike the runtime's text mapping, controls
+/// keep their exact byte: LF is Ctrl-J (not Enter's CR), BS is Ctrl-H (not
+/// Backspace's DEL), and NUL and 0x1C..=0x1F are their Control chords.
+fn typed_key(ch: char) -> Option<KeyEvent> {
+    let control = |key| Some(press(key, ModSet::CTRL, None));
+    match ch {
+        '\n' => control(PhysicalKey::J),
+        '\u{8}' => control(PhysicalKey::H),
+        '\u{0}' => control(PhysicalKey::Space),
+        '\u{1c}' => control(PhysicalKey::Backslash),
+        '\u{1d}' => control(PhysicalKey::BracketRight),
+        '\u{1e}' => control(PhysicalKey::Digit6),
+        '\u{1f}' => control(PhysicalKey::Minus),
+        other => key_event_for_char(other),
+    }
 }
 
 fn modifiers(value: f64) -> Result<ModSet> {
@@ -176,6 +224,18 @@ impl DesktopClient {
         validate_key_text(&text)?;
         send(&self.client()?, &view, |control, id| {
             control.send_text(id, &text)
+        })
+    }
+
+    /// Type text that may contain controls, for keybinding actions such as
+    /// Ghostty's `text:\x1b\r` or a Ctrl-L clear. C0 controls become their
+    /// keys and ESC+key becomes Alt+key; see `typed_keys`. At most 4096 bytes.
+    #[napi]
+    pub fn type_text(&self, view: String, text: String) -> Result<bool> {
+        bounded_text(&text, 4096)?;
+        let events = typed_keys(&text);
+        send(&self.client()?, &view, |control, id| {
+            events.into_iter().all(|event| control.send_key(id, event))
         })
     }
 
@@ -496,6 +556,64 @@ mod tests {
             DesktopResizeOutcome::Observer
         );
         assert!(observer.take_outbound().is_empty());
+    }
+
+    #[test]
+    fn typed_text_turns_controls_into_keys_and_escape_into_alt() {
+        let keys = |text: &str| {
+            typed_keys(text)
+                .into_iter()
+                .map(|event| (event.key, event.mods, event.text))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(keys("\u{1b}\r"), [(PhysicalKey::Enter, ModSet::ALT, None)]);
+        assert_eq!(keys("\u{c}"), [(PhysicalKey::L, ModSet::CTRL, None)]);
+        assert_eq!(
+            keys("a\u{1b}b"),
+            [
+                (PhysicalKey::A, ModSet::empty(), Some("a".into())),
+                (PhysicalKey::B, ModSet::ALT, Some("b".into())),
+            ]
+        );
+        assert_eq!(
+            keys("\u{1b}\u{1b}"),
+            [
+                (PhysicalKey::Escape, ModSet::empty(), None),
+                (PhysicalKey::Escape, ModSet::empty(), None),
+            ]
+        );
+        assert_eq!(
+            keys("\u{1b}"),
+            [(PhysicalKey::Escape, ModSet::empty(), None)]
+        );
+        assert_eq!(
+            keys("\n\u{8}\u{0}\u{1f}"),
+            [
+                (PhysicalKey::J, ModSet::CTRL, None),
+                (PhysicalKey::H, ModSet::CTRL, None),
+                (PhysicalKey::Space, ModSet::CTRL, None),
+                (PhysicalKey::Minus, ModSet::CTRL, None),
+            ]
+        );
+        assert!(keys("\u{f700}").is_empty());
+    }
+
+    #[test]
+    fn typed_text_reaches_the_terminal_as_key_frames() {
+        let (client, view) = ready_client();
+        assert!(
+            send(&client, &view, |control, id| typed_keys("\u{c}")
+                .into_iter()
+                .all(|event| control.send_key(id, event)))
+            .expect("ready view")
+        );
+        let outbound = client.take_outbound();
+        assert_eq!(outbound.len(), 1);
+        assert!(matches!(
+            FrameKind::decode(&outbound[0]).expect("decode").0,
+            FrameKind::InputKey { event, .. }
+                if event.key == PhysicalKey::L && event.mods == ModSet::CTRL
+        ));
     }
 
     #[test]

@@ -40,6 +40,7 @@ use crate::attach::input_dispatch::{
 
 /// The QUIC connection keeps one of its 128 bidi streams for control.
 const MAX_PENDING_STREAM_BINDS: usize = 127;
+use crate::attach::chrome_ctx::{ChromeCtx, PaneScene};
 use crate::attach::onboarding::{AttachClaim, AttachMoment};
 use crate::attach::outcome::{AttachEnd, AttachError};
 use crate::attach::paint::{
@@ -74,9 +75,7 @@ use super::entry::{
 use super::main_loop::{
     FRAME_COALESCE_CAP, coalesce_defer_flags, frame_defers_paint, frame_paint_target,
 };
-use super::overlay_paint::{
-    paint_active_overlay, refresh_fleet_if_open, refresh_session_picker_if_open,
-};
+use super::overlay_paint::paint_active_overlay;
 use super::session_io::{
     send_attach, send_terminal_replies, send_unless_peer_gone, should_emit_frame_ack,
     take_terminal_replies,
@@ -856,13 +855,23 @@ impl SessionLoop {
         let rows = crate::attach::agent_rows::agent_session_rows(&self.engine_kernel);
         self.review
             .observe_streams(&rows, self.focused_resource.as_ref());
-        let mut changed = refresh_window_chrome(
-            self.settings.status_bar.as_mut(),
+        let sidebar = self.sidebar();
+        let mut chrome = ChromeCtx::new(
+            &mut self.settings,
             &mut self.sidebar_painter,
-            &self.workspace,
-            &self.panes,
-            self.focused_resource.as_ref(),
-            self.zoomed.as_ref(),
+            &self.session_name,
+            self.viewport_dims,
+            sidebar,
+        );
+        let scene = PaneScene {
+            workspace: &self.workspace,
+            panes: &self.panes,
+            focused: self.focused_resource.as_ref(),
+            zoomed: self.zoomed.as_ref(),
+        };
+        let mut changed = refresh_window_chrome(
+            &mut chrome,
+            scene,
             self.own_client_id,
             &self.agent_meta,
             &mut self.vcs,
@@ -918,32 +927,26 @@ impl SessionLoop {
         let Some(ls) = self.workspace.render_window(self.zoomed.as_ref()) else {
             return self.paint_empty_state(out, sidebar, level);
         };
+        let mut chrome = ChromeCtx::new(
+            &mut self.settings,
+            &mut self.sidebar_painter,
+            &self.session_name,
+            self.viewport_dims,
+            sidebar,
+        );
+        let focused = self.focused_resource.as_ref();
         Some(match level {
             RepaintLevel::None => StatusBarPaint::NotPublished,
-            RepaintLevel::Chrome => paint_chrome_in_place(
-                out,
-                ls.as_ref(),
-                &self.panes,
-                self.focused_resource.as_ref(),
-                self.viewport_dims,
-                self.settings.status_bar.as_mut(),
-                sidebar,
-                Some(&mut self.sidebar_painter),
-                &self.session_name,
-                &self.settings.theme,
-            ),
+            RepaintLevel::Chrome => {
+                paint_chrome_in_place(out, ls.as_ref(), &self.panes, focused, &mut chrome)
+            }
             RepaintLevel::Full => paint_full_frame(
                 out,
                 ls.as_ref(),
                 &mut self.panes,
                 &self.engine_kernel,
-                self.focused_resource.as_ref(),
-                self.viewport_dims,
-                self.settings.status_bar.as_mut(),
-                sidebar,
-                Some(&mut self.sidebar_painter),
-                &self.session_name,
-                &self.settings.theme,
+                focused,
+                &mut chrome,
             ),
         })
     }
@@ -968,13 +971,16 @@ impl SessionLoop {
             &new_window,
         );
         let lines = crate::attach::paint::empty_session_lines(chord.as_deref());
+        let mut chrome = ChromeCtx::new(
+            &mut self.settings,
+            &mut self.sidebar_painter,
+            &self.session_name,
+            self.viewport_dims,
+            sidebar,
+        );
         Some(crate::attach::paint::paint_empty_session(
             out,
-            self.viewport_dims,
-            self.settings.status_bar.as_mut(),
-            sidebar,
-            Some(&mut self.sidebar_painter),
-            &self.session_name,
+            &mut chrome,
             &lines,
         ))
     }
@@ -985,22 +991,48 @@ impl SessionLoop {
         out: &mut W,
         sidebar: Option<SidebarReservation>,
     ) {
-        let painted = paint_active_overlay(
+        let painted = self.paint_overlay_layer(out, sidebar);
+        self.finish_paint(painted);
+    }
+
+    /// The paint half of [`Self::paint_overlay`]; committing the onboarding
+    /// claim is the caller's.
+    fn paint_overlay_layer<W: crate::attach::RenderSink>(
+        &mut self,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+    ) -> StatusBarPaint {
+        let base = self.workspace.render_window(self.zoomed.as_ref());
+        let mut chrome = ChromeCtx::new(
+            &mut self.settings,
+            &mut self.sidebar_painter,
+            &self.session_name,
+            self.viewport_dims,
+            sidebar,
+        );
+        paint_active_overlay(
             out,
             &self.overlays,
-            &self.workspace,
+            base.as_deref(),
             &mut self.panes,
             &self.engine_kernel,
             self.focused_resource.as_ref(),
-            self.zoomed.as_ref(),
-            self.viewport_dims,
-            self.settings.status_bar.as_mut(),
-            sidebar,
-            Some(&mut self.sidebar_painter),
-            &self.session_name,
-            &self.settings.theme,
-        );
-        self.finish_paint(painted);
+            &mut chrome,
+        )
+    }
+
+    /// Repaint the overlay stack when the live overlay tagged `key` took the
+    /// fresh `items`; a no-op when it is not open.
+    fn refresh_live_overlay<W: crate::attach::RenderSink>(
+        &mut self,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+        key: &str,
+        items: &[crate::render::overlay::SelectItem],
+    ) {
+        if self.overlays.refresh_items(key, items) {
+            self.paint_overlay(out, sidebar);
+        }
     }
 
     /// Open the directory picker on the listing the latest `go-to-directory`
@@ -1623,21 +1655,9 @@ impl SessionLoop {
             ),
             &self.settings.theme,
         )));
-        paint_active_overlay(
-            out,
-            &self.overlays,
-            &self.workspace,
-            &mut self.panes,
-            &self.engine_kernel,
-            self.focused_resource.as_ref(),
-            self.zoomed.as_ref(),
-            self.viewport_dims,
-            self.settings.status_bar.as_mut(),
-            sidebar,
-            Some(&mut self.sidebar_painter),
-            &self.session_name,
-            &self.settings.theme,
-        );
+        // The intro commits when its paint reaches the sink, not when a
+        // return notice is published, so it skips `finish_paint`.
+        self.paint_overlay_layer(out, sidebar);
         let paint_accepted = out.flush().is_ok();
         finish_onboarding_claim(self.onboarding_claim.take(), paint_accepted);
     }
@@ -3401,25 +3421,17 @@ impl SessionLoop {
         out: &mut W,
         sidebar: Option<SidebarReservation>,
     ) {
-        let painted = refresh_session_picker_if_open(
-            out,
-            &mut self.overlays,
-            &self.workspace,
-            &mut self.panes,
-            &self.engine_kernel,
-            self.focused_resource.as_ref(),
-            self.zoomed.as_ref(),
-            self.viewport_dims,
-            self.settings.status_bar.as_mut(),
-            sidebar,
-            &mut self.sidebar_painter,
-            &self.session_name,
-            &self.settings.theme,
+        if !self.overlays.is_active() {
+            return;
+        }
+        let items = crate::attach::input_dispatch::session_picker_rows(
             &self.peers.sessions,
             self.peers.focused_session,
             &self.peers.hosts,
+            &self.workspace,
         );
-        self.finish_paint(painted);
+        let key = crate::attach::input_dispatch::SESSION_PICKER_LIVE_KEY;
+        self.refresh_live_overlay(out, sidebar, key, &items);
     }
 
     /// Rebuild and repaint the agent-fleet dashboard, if it is open.
@@ -3428,29 +3440,19 @@ impl SessionLoop {
         out: &mut W,
         sidebar: Option<SidebarReservation>,
     ) {
-        let painted = refresh_fleet_if_open(
-            out,
-            &mut self.overlays,
+        if !self.overlays.is_active() {
+            return;
+        }
+        let items = crate::attach::fleet::live_fleet_items(
             &self.workspace,
-            &mut self.panes,
-            &self.engine_kernel,
-            self.focused_resource.as_ref(),
-            self.zoomed.as_ref(),
-            self.viewport_dims,
-            self.settings.status_bar.as_mut(),
-            sidebar,
-            &mut self.sidebar_painter,
-            &self.session_name,
-            &self.settings.theme,
-            &self.peers.sessions,
-            self.peers.focused_session,
+            &self.panes,
+            &crate::attach::agent_rows::agent_session_rows(&self.engine_kernel),
             &self.agent_meta.records,
             &mut self.vcs,
-            &self.peers.foreign_layouts,
-            &self.peers.foreign_agents,
-            &self.peers.foreign_attention,
+            &self.peers.inputs(&self.review),
         );
-        self.finish_paint(painted);
+        let key = crate::attach::fleet::FLEET_LIVE_KEY;
+        self.refresh_live_overlay(out, sidebar, key, &items);
     }
 
     // ---- timers, signals, and the periodic paints -----------------------
@@ -3621,12 +3623,16 @@ impl SessionLoop {
         let fallback_origin = Some(self.bar_fallback_origin(sidebar));
         // A frame block opens only if the bar writes, so an unchanged tick
         // emits nothing.
-        let painted = crate::attach::paint::close_frame_with_chrome(
-            crate::attach::paint::FrameBlock::begin(out),
-            self.settings.status_bar.as_mut(),
+        let mut chrome = ChromeCtx::new(
+            &mut self.settings,
+            &mut self.sidebar_painter,
+            &self.session_name,
             self.viewport_dims,
             sidebar,
-            &self.session_name,
+        );
+        let painted = crate::attach::paint::close_frame_with_chrome(
+            crate::attach::paint::FrameBlock::begin(out),
+            &mut chrome,
             focused_cursor,
             fallback_origin,
             // The tick refreshes what the painter cannot observe (clock, exec).

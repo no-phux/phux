@@ -17,6 +17,7 @@ use phux_protocol::ids::{ResourceId, SessionId};
 use phux_protocol::wire::frame::{AttachTarget, DetachReason, FrameKind, Scope, ViewportInfo};
 use tokio::net::UnixStream;
 
+use crate::attach::chrome_ctx::ChromeCtx;
 use crate::attach::connection::{Connection, Dial};
 use crate::attach::onboarding;
 use crate::attach::outcome::{AttachEnd, AttachError};
@@ -161,16 +162,16 @@ fn returning(path: &Path) -> (onboarding::AttachClaim, StatusBarPainter) {
 }
 
 fn paint_bar(painter: &mut StatusBarPainter, cols: u16, out: &mut Vec<u8>) -> StatusBarPaint {
-    paint_bar_after_pane(
-        Some(painter),
-        out,
-        (cols, 24),
-        None,
-        "demo",
-        None,
-        None,
-        false,
-    )
+    let theme = crate::render::theme::Theme::default();
+    let mut chrome = ChromeCtx {
+        viewport: (cols, 24),
+        sidebar: None,
+        status_bar: Some(painter),
+        sidebar_painter: None,
+        session_name: "demo",
+        theme: &theme,
+    };
+    paint_bar_after_pane(out, &mut chrome, None, None, false)
 }
 
 /// The return notice commits the onboarding claim only once it is painted
@@ -895,18 +896,21 @@ fn shipped_frame_rows(
     let theme = crate::render::theme::Theme::default();
     let mut sidebar_painter = probe_sidebar(windows);
     let mut out: Vec<u8> = Vec::new();
+    let mut chrome = ChromeCtx {
+        viewport: view,
+        sidebar,
+        status_bar: Some(&mut status_bar),
+        sidebar_painter: Some(&mut sidebar_painter),
+        session_name: "phux",
+        theme: &theme,
+    };
     paint_full_frame(
         &mut out,
         &workspace.render_window(None).expect("layout"),
         &mut panes,
         &kernel,
         Some(&id),
-        view,
-        Some(&mut status_bar),
-        sidebar,
-        Some(&mut sidebar_painter),
-        "phux",
-        &theme,
+        &mut chrome,
     );
     probe_rows(&out, view)
 }
@@ -1041,20 +1045,22 @@ fn overlay_frame(overlay: Box<dyn RenderOverlay>, with_painter: bool) -> (Vec<St
     let mut overlays = OverlayState::new();
     overlays.push(overlay);
     let mut out: Vec<u8> = Vec::new();
+    let mut chrome = ChromeCtx {
+        viewport: VIEW,
+        sidebar,
+        status_bar: None,
+        sidebar_painter: with_painter.then_some(&mut sidebar_painter),
+        session_name: "probe",
+        theme: &theme,
+    };
     paint_active_overlay(
         &mut out,
         &overlays,
-        &workspace,
+        workspace.render_window(None).as_deref(),
         &mut panes,
         &kernel,
         Some(&id),
-        None,
-        VIEW,
-        None,
-        sidebar,
-        with_painter.then_some(&mut sidebar_painter),
-        "probe",
-        &theme,
+        &mut chrome,
     );
     let rows = probe_rows(&out, VIEW);
     let strip = rows

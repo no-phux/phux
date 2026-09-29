@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use phux_protocol::ids::{ClientId, ResourceId};
 
+use crate::attach::chrome_ctx::{ChromeCtx, PaneScene};
 use crate::attach::paint::{SidebarReservation, StatusBarPaint, paint_full_frame};
 use crate::attach::pane_state::{AttachKernel, PaneSlot, VcsIndex};
 use crate::attach::server_frame::AgentMetaIndex;
@@ -91,6 +92,7 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
     session_name: &str,
 ) -> StatusBarPaint {
     let mut painted = StatusBarPaint::NotPublished;
+    let base = workspace.render_window(zoomed);
     match settings.reload_in_place(&phux_config::loader::config_path()) {
         Ok(()) => {
             tracing::info!("config reloaded in place");
@@ -102,13 +104,22 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
             overlays.set_theme(&settings.theme);
             // A fresh painter carries the new theme and repaints everything.
             *sidebar_painter = SidebarPainter::new(settings.theme);
-            refresh_window_chrome(
-                settings.status_bar.as_mut(),
+            let mut chrome = ChromeCtx::new(
+                settings,
                 sidebar_painter,
+                session_name,
+                viewport_dims,
+                sidebar,
+            );
+            let scene = PaneScene {
                 workspace,
                 panes,
-                focused_resource,
+                focused: focused_resource,
                 zoomed,
+            };
+            refresh_window_chrome(
+                &mut chrome,
+                scene,
                 own_client_id,
                 agent_meta,
                 vcs,
@@ -116,21 +127,10 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
                 peers,
             );
             if !overlays.is_active()
-                && let Some(ls) = workspace.render_window(zoomed).as_deref()
+                && let Some(ls) = base.as_deref()
             {
-                painted = paint_full_frame(
-                    out,
-                    ls,
-                    panes,
-                    engine_kernel,
-                    focused_resource,
-                    viewport_dims,
-                    settings.status_bar.as_mut(),
-                    sidebar,
-                    Some(sidebar_painter),
-                    session_name,
-                    &settings.theme,
-                );
+                painted =
+                    paint_full_frame(out, ls, panes, engine_kernel, focused_resource, &mut chrome);
             }
         }
         Err(msg) => {
@@ -148,20 +148,21 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
         }
     }
     if overlays.is_active() {
+        let mut chrome = ChromeCtx::new(
+            settings,
+            sidebar_painter,
+            session_name,
+            viewport_dims,
+            sidebar,
+        );
         painted = paint_active_overlay(
             out,
             overlays,
-            workspace,
+            base.as_deref(),
             panes,
             engine_kernel,
             focused_resource,
-            zoomed,
-            viewport_dims,
-            settings.status_bar.as_mut(),
-            sidebar,
-            Some(&mut *sidebar_painter),
-            session_name,
-            &settings.theme,
+            &mut chrome,
         );
     }
     painted

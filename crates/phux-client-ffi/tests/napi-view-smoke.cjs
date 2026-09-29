@@ -49,6 +49,7 @@ function validateNumbers(view) {
   assert.throws(() => client.keyEvent(view, { ...key, composing: true }), /CompositionRequiresNativeImeBridge/);
   assert.throws(() => client.commitText(view, '\n'), /InvalidKeyText/);
   assert.throws(() => client.commitText(view, 'x'.repeat(4097)), /TextLimitExceeded/);
+  assert.throws(() => client.typeText(view, 'x'.repeat(4097)), /TextLimitExceeded/);
   assert.throws(() => client.mouseEvent(view, { action: 0, button: 1, mods: 0, x: Infinity, y: 0 }), /InvalidCoordinate/);
   assert.throws(() => client.searchView(view, 'x'.repeat(4097), true), /TextLimitExceeded/);
   for (const bad of ['0', '01', '+1', '1e2', '18446744073709551616']) {
@@ -221,6 +222,11 @@ async function main() {
   assert.equal(client.viewInfo(second).terminalId, pane.terminalId);
   assert.equal(client.viewSelectionText(second), live.text);
   await delivery(client.pasteView(second, ' sibling survives'), 'Delivered');
+  // typeText turns controls into keys: Enter runs each typed line in the real PTY.
+  assert.equal(client.typeText(second, '\r'), true);
+  assert.equal(client.commitText(second, "printf 'TYPED-%s\\n' ok"), true);
+  assert.equal(client.typeText(second, '\r'), true);
+  await until(() => client.searchView(second, 'TYPED-ok', true).length === 1, 'typeText Enter');
   const replacement = client.createView(pane.terminalId);
   assert.notEqual(replacement, first);
   assert.notEqual(replacement, second);

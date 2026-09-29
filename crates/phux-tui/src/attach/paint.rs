@@ -11,6 +11,7 @@ use std::time::SystemTime;
 use libghostty_vt::Terminal as GhosttyTerminal;
 use phux_protocol::ids::ResourceId;
 
+use super::chrome_ctx::ChromeCtx;
 use super::pane_state::{AttachKernel, PaneSlot, published_replica};
 use crate::layout::LayoutState;
 use crate::render::chrome::status_bar::{
@@ -316,22 +317,13 @@ pub(super) fn end_of_frame_cursor<W: Write>(
 /// The composite is buffered in a [`FrameBlock`] and reaches `out` as ONE
 /// write and ONE flush, so the stdout queue delivers or drops it whole (a
 /// frame split across chunks could lose its `ED2` but keep its terminator).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the paint context is passed flat, like handle_server_frame"
-)]
 pub(super) fn paint_full_frame<W: super::RenderSink>(
     out: &mut W,
     layout_state: &LayoutState,
     panes: &mut HashMap<ResourceId, PaneSlot>,
     kernel: &AttachKernel,
     focused_resource: Option<&ResourceId>,
-    viewport_dims: (u16, u16),
-    mut status_bar: Option<&mut StatusBarPainter>,
-    sidebar: Option<SidebarReservation>,
-    sidebar_painter: Option<&mut crate::render::chrome::sidebar::SidebarPainter>,
-    session_name: &str,
-    theme: &crate::render::theme::Theme,
+    chrome: &mut ChromeCtx<'_>,
 ) -> StatusBarPaint {
     let mut block = FrameBlock::begin(out);
     let (painted, composed) = paint_full_frame_into(
@@ -340,14 +332,9 @@ pub(super) fn paint_full_frame<W: super::RenderSink>(
         panes,
         kernel,
         focused_resource,
-        viewport_dims,
-        status_bar.as_deref_mut(),
-        sidebar,
-        sidebar_painter,
-        session_name,
-        theme,
+        chrome,
     );
-    seal_frame(block, painted, composed, status_bar)
+    seal_frame(block, painted, composed, chrome.status_bar.as_deref_mut())
 }
 
 /// ADR-0105: the empty state's title line.
@@ -376,40 +363,33 @@ pub(super) fn empty_session_lines(new_window_chord: Option<&str>) -> [String; 3]
 /// at the content origin, since there is no pane to own it.
 pub(super) fn paint_empty_session<W: super::RenderSink>(
     out: &mut W,
-    viewport_dims: (u16, u16),
-    mut status_bar: Option<&mut StatusBarPainter>,
-    sidebar: Option<SidebarReservation>,
-    sidebar_painter: Option<&mut crate::render::chrome::sidebar::SidebarPainter>,
-    session_name: &str,
+    chrome: &mut ChromeCtx<'_>,
     lines: &[String],
 ) -> StatusBarPaint {
     let mut block = FrameBlock::begin(out);
-    let bar = status_bar.as_ref().map(|p| p.position());
     let ContentLayout {
         rect: content,
         rail,
-    } = content_layout(viewport_dims, bar, sidebar);
+    } = chrome.content_layout();
     let origin = Some((content.x, content.y));
     let _ = block.write_all(b"\x1b[2J\x1b[H");
     write_centered_lines(&mut block, content, lines);
-    if let (Some(res), Some(painter)) = (sidebar, sidebar_painter) {
-        painter.invalidate();
-        painter.set_rule(sidebar_rule(res.edge));
-        painter.set_junction(rail);
-        let _ = painter.paint(&mut block, sidebar_rect(viewport_dims, res));
-    }
-    let painted = paint_bar_after_pane(
-        status_bar.as_deref_mut(),
-        &mut block,
-        viewport_dims,
-        sidebar,
-        session_name,
-        None,
-        origin,
-        true,
-    );
+    repaint_sidebar_strip(&mut block, chrome, rail);
+    let painted = paint_bar_after_pane(&mut block, chrome, None, origin, true);
     let composed = end_of_frame_cursor(&mut block, None, origin).is_ok();
-    seal_frame(block, painted, composed, status_bar)
+    seal_frame(block, painted, composed, chrome.status_bar.as_deref_mut())
+}
+
+/// Force the sidebar strip to re-emit after a clear wiped its columns. A
+/// no-op without a reservation or a painter.
+fn repaint_sidebar_strip<W: Write>(out: &mut W, chrome: &mut ChromeCtx<'_>, rail: Option<u16>) {
+    let (Some(res), Some(painter)) = (chrome.sidebar, chrome.sidebar_painter.as_deref_mut()) else {
+        return;
+    };
+    painter.invalidate();
+    painter.set_rule(sidebar_rule(res.edge));
+    painter.set_junction(rail);
+    let _ = painter.paint(out, sidebar_rect(chrome.viewport, res));
 }
 
 /// Write `lines` centered in `rect`, each clipped to the rect's width.
@@ -450,23 +430,15 @@ fn seal_frame<W: Write>(
 /// [`paint_full_frame`]'s body, emitting into the frame block. Returns the
 /// bar outcome and whether the composition itself succeeded (the cursor tail
 /// landed); shipping is the caller's.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the same paint context as paint_full_frame, which this is the body of"
-)]
 fn paint_full_frame_into<W: Write>(
     out: &mut W,
     layout_state: &LayoutState,
     panes: &mut HashMap<ResourceId, PaneSlot>,
     kernel: &AttachKernel,
     focused_resource: Option<&ResourceId>,
-    viewport_dims: (u16, u16),
-    status_bar: Option<&mut StatusBarPainter>,
-    sidebar: Option<SidebarReservation>,
-    sidebar_painter: Option<&mut crate::render::chrome::sidebar::SidebarPainter>,
-    session_name: &str,
-    theme: &crate::render::theme::Theme,
+    chrome: &mut ChromeCtx<'_>,
 ) -> (StatusBarPaint, bool) {
+    let viewport_dims = chrome.viewport;
     // The whole-repaint duration: the client-side render-lag signal.
     let _paint = tracing::debug_span!(
         "paint_full_frame",
@@ -476,11 +448,10 @@ fn paint_full_frame_into<W: Write>(
     )
     .entered();
     let _timed = phux_client::perf::PAINT_FULL.timer();
-    let bar = status_bar.as_ref().map(|p| p.position());
     let ContentLayout {
         rect: content,
         rail,
-    } = content_layout(viewport_dims, bar, sidebar);
+    } = chrome.content_layout();
     let multi = super::multi_pane::compute_layout_in(layout_state, content, viewport_dims);
     // ED2 + home, inside the frame block's transaction.
     let _ = out.write_all(b"\x1b[2J\x1b[H");
@@ -514,28 +485,14 @@ fn paint_full_frame_into<W: Write>(
         content,
         rail,
         focused_resource,
-        theme,
+        chrome.theme,
         |id| super::pane_state::pane_label(panes_ref, id),
     );
     // The ED2 cleared the strip, so force it to re-emit.
-    if let (Some(res), Some(painter)) = (sidebar, sidebar_painter) {
-        painter.invalidate();
-        painter.set_rule(sidebar_rule(res.edge));
-        painter.set_junction(rail);
-        let _ = painter.paint(out, sidebar_rect(viewport_dims, res));
-    }
+    repaint_sidebar_strip(out, chrome, rail);
     // The ED2 above cleared the bar row, so force a re-emit even if the
     // bar's content is byte-identical to the previous frame.
-    let status_bar_painted = paint_bar_after_pane(
-        status_bar,
-        out,
-        viewport_dims,
-        sidebar,
-        session_name,
-        None,
-        None,
-        true,
-    );
+    let status_bar_painted = paint_bar_after_pane(out, chrome, None, None, true);
     // The focused render may be a no-op, so always end with an explicit
     // cursor placement rather than wherever the bar left it.
     let final_cursor = focused_resource.and_then(|fid| {
@@ -561,55 +518,28 @@ fn paint_full_frame_into<W: Write>(
 /// always ends in its own [`end_of_frame_cursor`], not
 /// [`paint_bar_after_pane`]'s (which returns early without a bar), because the
 /// strip moved the host cursor. One frame block, like [`paint_full_frame`].
-#[allow(
-    clippy::too_many_arguments,
-    reason = "mirrors paint_full_frame's chrome context minus the pane map's mutability; same arg-list refactor follow-up"
-)]
 pub(super) fn paint_chrome_in_place<W: super::RenderSink>(
     out: &mut W,
     layout_state: &LayoutState,
     panes: &HashMap<ResourceId, PaneSlot>,
     focused_resource: Option<&ResourceId>,
-    viewport_dims: (u16, u16),
-    mut status_bar: Option<&mut StatusBarPainter>,
-    sidebar: Option<SidebarReservation>,
-    sidebar_painter: Option<&mut crate::render::chrome::sidebar::SidebarPainter>,
-    session_name: &str,
-    theme: &crate::render::theme::Theme,
+    chrome: &mut ChromeCtx<'_>,
 ) -> StatusBarPaint {
     let mut block = FrameBlock::begin(out);
-    let (painted, composed) = paint_chrome_in_place_into(
-        &mut block,
-        layout_state,
-        panes,
-        focused_resource,
-        viewport_dims,
-        status_bar.as_deref_mut(),
-        sidebar,
-        sidebar_painter,
-        session_name,
-        theme,
-    );
-    seal_frame(block, painted, composed, status_bar)
+    let (painted, composed) =
+        paint_chrome_in_place_into(&mut block, layout_state, panes, focused_resource, chrome);
+    seal_frame(block, painted, composed, chrome.status_bar.as_deref_mut())
 }
 
 /// [`paint_chrome_in_place`]'s body, emitting into the frame block.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the same chrome context as paint_chrome_in_place, which this is the body of"
-)]
 fn paint_chrome_in_place_into<W: Write>(
     out: &mut W,
     layout_state: &LayoutState,
     panes: &HashMap<ResourceId, PaneSlot>,
     focused_resource: Option<&ResourceId>,
-    viewport_dims: (u16, u16),
-    status_bar: Option<&mut StatusBarPainter>,
-    sidebar: Option<SidebarReservation>,
-    sidebar_painter: Option<&mut crate::render::chrome::sidebar::SidebarPainter>,
-    session_name: &str,
-    theme: &crate::render::theme::Theme,
+    chrome: &mut ChromeCtx<'_>,
 ) -> (StatusBarPaint, bool) {
+    let viewport_dims = chrome.viewport;
     let _paint = tracing::debug_span!(
         "paint_chrome_in_place",
         cols = viewport_dims.0,
@@ -617,11 +547,10 @@ fn paint_chrome_in_place_into<W: Write>(
     )
     .entered();
     let _timed = phux_client::perf::PAINT_CHROME.timer();
-    let bar = status_bar.as_ref().map(|p| p.position());
     let ContentLayout {
         rect: content,
         rail,
-    } = content_layout(viewport_dims, bar, sidebar);
+    } = chrome.content_layout();
     let multi = super::multi_pane::compute_layout_in(layout_state, content, viewport_dims);
     // The focused pane's LAST authoritative cursor — read, never re-derived by
     // a render. `None` (hidden / not yet rendered) falls back to the pane's
@@ -640,27 +569,32 @@ fn paint_chrome_in_place_into<W: Write>(
         content,
         rail,
         focused_resource,
-        theme,
+        chrome.theme,
         |id| super::pane_state::pane_label(panes, id),
     );
-    if let (Some(res), Some(painter)) = (sidebar, sidebar_painter) {
+    if let (Some(res), Some(painter)) = (chrome.sidebar, chrome.sidebar_painter.as_deref_mut()) {
         painter.set_rule(sidebar_rule(res.edge));
         painter.set_junction(rail);
         let _ = painter.paint(out, sidebar_rect(viewport_dims, res));
     }
     // `bar_row_clobbered = false`: nothing cleared the bar row, so the
     // painter's cache decides. Skipped entirely when the config has no bar.
-    let status_bar_painted = status_bar.map_or(StatusBarPaint::NotPublished, |painter| {
-        paint_bar_row(
-            painter,
-            out,
-            viewport_dims,
-            sidebar,
-            session_name,
-            false,
-            ComposePolicy::Always,
-        )
-    });
+    let (sidebar, session_name) = (chrome.sidebar, chrome.session_name);
+    let status_bar_painted =
+        chrome
+            .status_bar
+            .as_deref_mut()
+            .map_or(StatusBarPaint::NotPublished, |painter| {
+                paint_bar_row(
+                    painter,
+                    out,
+                    viewport_dims,
+                    sidebar,
+                    session_name,
+                    false,
+                    ComposePolicy::Always,
+                )
+            });
     // The cursor tail runs on every path, bar or no bar.
     let cursor_placed = end_of_frame_cursor(out, restore, fallback).is_ok();
     (status_bar_painted, cursor_placed)
@@ -674,21 +608,16 @@ fn paint_chrome_in_place_into<W: Write>(
 /// `bar_row_clobbered` bypasses the painter's cache: only a caller that
 /// physically cleared the bar row (the full-frame `ED2`) passes `true`; on
 /// the output hot path an unchanged bar emits nothing.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the paint context is passed flat, like paint_full_frame"
-)]
 pub(super) fn paint_bar_after_pane<W: Write>(
-    status_bar: Option<&mut StatusBarPainter>,
     out: &mut W,
-    viewport_dims: (u16, u16),
-    sidebar: Option<SidebarReservation>,
-    session_name: &str,
+    chrome: &mut ChromeCtx<'_>,
     restore_cursor: Option<(u16, u16)>,
     fallback_origin: Option<(u16, u16)>,
     bar_row_clobbered: bool,
 ) -> StatusBarPaint {
-    let Some(painter) = status_bar else {
+    let (viewport_dims, sidebar, session_name) =
+        (chrome.viewport, chrome.sidebar, chrome.session_name);
+    let Some(painter) = chrome.status_bar.as_deref_mut() else {
         // With no bar there is no cursor tail below, so publish the pane's
         // bytes here.
         let _ = out.flush();
@@ -755,26 +684,19 @@ pub(super) fn paint_bar_row<W: Write>(
 /// cursor placement, then the block's single flush. A frame that emitted
 /// nothing closes to nothing. A failed close invalidates the bar cache and
 /// reports `NotPublished`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the frame tail's context: block, painter, geometry, sidebar, session, cursor, compose policy; same arg-list refactor follow-up as paint_full_frame"
-)]
 pub(super) fn close_frame_with_chrome<W: Write>(
     block: FrameBlock<'_, W>,
-    status_bar: Option<&mut StatusBarPainter>,
-    viewport_dims: (u16, u16),
-    sidebar: Option<SidebarReservation>,
-    session_name: &str,
+    chrome: &mut ChromeCtx<'_>,
     cursor: Option<(u16, u16)>,
     fallback_origin: Option<(u16, u16)>,
     compose: ComposePolicy,
 ) -> StatusBarPaint {
     close_frame_reporting(
         block,
-        status_bar,
-        viewport_dims,
-        sidebar,
-        session_name,
+        chrome.status_bar.as_deref_mut(),
+        chrome.viewport,
+        chrome.sidebar,
+        chrome.session_name,
         cursor,
         fallback_origin,
         compose,
@@ -1087,7 +1009,16 @@ mod tests {
         );
         assert!(empty_session_lines(None)[2].contains("command palette"));
         let mut out: Vec<u8> = Vec::new();
-        let _ = paint_empty_session(&mut out, (80, 24), None, None, None, "parked", &lines);
+        let theme = Theme::default();
+        let mut chrome = ChromeCtx {
+            viewport: (80, 24),
+            sidebar: None,
+            status_bar: None,
+            sidebar_painter: None,
+            session_name: "parked",
+            theme: &theme,
+        };
+        let _ = paint_empty_session(&mut out, &mut chrome, &lines);
         let text = String::from_utf8_lossy(&out);
         assert!(
             lines.iter().all(|line| text.contains(line.as_str())),
@@ -1288,18 +1219,22 @@ mod tests {
     ) -> StatusBarPaint {
         let (kernel, _, mut panes) = published_test_state(entries);
         let (res, strip) = sidebar.map_or((None, None), |(res, strip)| (Some(res), Some(strip)));
+        let theme = Theme::default();
+        let mut chrome = ChromeCtx {
+            viewport,
+            sidebar: res,
+            status_bar: bar,
+            sidebar_painter: strip,
+            session_name: "demo",
+            theme: &theme,
+        };
         paint_full_frame(
             out,
             layout,
             &mut panes,
             &kernel,
             layout.focus.as_ref(),
-            viewport,
-            bar,
-            res,
-            strip,
-            "demo",
-            &Theme::default(),
+            &mut chrome,
         )
     }
 
@@ -1466,16 +1401,16 @@ mod tests {
         clobbered: bool,
     ) -> String {
         let mut out = Vec::new();
-        paint_bar_after_pane(
-            Some(painter),
-            &mut out,
-            (80, 24),
-            None,
-            "demo",
-            cursor,
-            fallback,
-            clobbered,
-        );
+        let theme = Theme::default();
+        let mut chrome = ChromeCtx {
+            viewport: (80, 24),
+            sidebar: None,
+            status_bar: Some(painter),
+            sidebar_painter: None,
+            session_name: "demo",
+            theme: &theme,
+        };
+        paint_bar_after_pane(&mut out, &mut chrome, cursor, fallback, clobbered);
         String::from_utf8_lossy(&out).into_owned()
     }
 
@@ -1525,18 +1460,16 @@ mod tests {
         bar: Option<&mut StatusBarPainter>,
         strip: &mut SidebarPainter,
     ) {
-        paint_chrome_in_place(
-            out,
-            layout,
-            panes,
-            layout.focus.as_ref(),
-            (80, 24),
-            bar,
-            Some(LEFT20),
-            Some(strip),
-            "demo",
-            &Theme::default(),
-        );
+        let theme = Theme::default();
+        let mut chrome = ChromeCtx {
+            viewport: (80, 24),
+            sidebar: Some(LEFT20),
+            status_bar: bar,
+            sidebar_painter: Some(strip),
+            session_name: "demo",
+            theme: &theme,
+        };
+        paint_chrome_in_place(out, layout, panes, layout.focus.as_ref(), &mut chrome);
     }
 
     /// The anti-strobe contract: the in-place chrome paint is one

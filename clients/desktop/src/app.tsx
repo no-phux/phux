@@ -68,14 +68,18 @@ interface AppProps {
   startupError?: string | undefined;
   /** Reads the user's Ghostty config text, or undefined when there is none. */
   readGhostty?: (() => string | undefined) | undefined;
+  /** Start the server (and home session) if it is gone; returns the failure, if any. */
+  ensureServer?: (() => string | undefined) | undefined;
   /** This window's key router; the app installs its shortcut handler here. */
   keys: WindowKeys;
-  /** Open another window on the same server (Command-N). */
-  newWindow: () => void;
+  /** Open another window on the same server (Command-N), optionally showing one terminal. */
+  newWindow: (terminalId?: string) => void;
   /** Show or hide the quick terminal window. */
   toggleQuick: () => void;
   /** A secondary window starts with a new terminal, not the restored layout. */
   fresh?: boolean | undefined;
+  /** A secondary window opened to show this terminal instead of a new one. */
+  initialTerminal?: string | undefined;
 }
 
 interface WindowKeys {
@@ -129,6 +133,7 @@ function DesktopApp(props: AppProps): JSX.Element {
   const initial = parseLayout(layouts.read());
   let lastSaved: SavedLayout | undefined = initial;
   const readGhostty = untrack(() => props.readGhostty);
+  const ensureServer = untrack(() => props.ensureServer);
   const ghosttyText = readGhostty?.();
   const startGhostty = parseGhostty(ghosttyText ?? "");
   const [ghostty, setGhostty] = createSignal(startGhostty);
@@ -157,13 +162,14 @@ function DesktopApp(props: AppProps): JSX.Element {
     { socketPath, sessionName },
   );
   const fresh = untrack(() => props.fresh) === true;
+  const initialTerminal = untrack(() => props.initialTerminal);
   const workspace = createWorkspace(
     bridge,
     {
       changed: persist,
       notify: (kind, title, body) => toast({ kind, title, ...(body ? { body } : {}) }),
     },
-    { fresh },
+    { fresh, ...(initialTerminal ? { initialTerminal } : {}) },
   );
   workspace.restore(initial);
   bridge.onEvents(receive);
@@ -320,6 +326,21 @@ function DesktopApp(props: AppProps): JSX.Element {
     setFind({ placementId: focus.id, query: "", caseSensitive: false, matches: [], index: 0 });
   }
 
+  /** Search for the focused view's selected text (its first line), like Command-E on macOS. */
+  function findSelection(): void {
+    const focus = workspace.focused();
+    if (!focus) return;
+    const selected = safe(() => bridge.client().viewSelectionText(focus.viewId), "");
+    const query = (selected.split(/\r?\n/).find((line) => line.trim()) ?? "").slice(0, 512);
+    if (!query) {
+      openFind();
+      return;
+    }
+    const caseSensitive = find()?.caseSensitive ?? false;
+    setFind({ placementId: focus.id, query, caseSensitive, matches: [], index: 0 });
+    runSearch(query, caseSensitive);
+  }
+
   function runSearch(query: string, caseSensitive: boolean): void {
     const state = find();
     const placement = placementById(state?.placementId);
@@ -381,6 +402,10 @@ function DesktopApp(props: AppProps): JSX.Element {
   // ── Actions ────────────────────────────────────────────────────
 
   function reconnect(): void {
+    // A server that exited (crash, upgrade, `phux kill-server`) comes back
+    // first, so Reconnect recovers without a trip to the command line.
+    const failure = bridge.status() === "Attached" ? undefined : ensureServer?.();
+    if (failure) toast({ kind: "error", title: "Could not start the phux server", body: failure });
     persist();
     const snapshot = lastSaved;
     workspace.releaseAll();
@@ -388,6 +413,19 @@ function DesktopApp(props: AppProps): JSX.Element {
     workspace.restore(snapshot);
     bridge.reconnect();
     toast({ kind: "info", title: "Reconnecting", body: socketPath });
+  }
+
+  function scrollLines(rows: number): void {
+    const focus = workspace.focused();
+    if (focus) safe(() => bridge.client().scrollView(focus.viewId, rows), undefined);
+  }
+
+  /** Move the active tab one place, wrapping like Ghostty's move_tab. */
+  function moveActiveTab(step: 1 | -1): void {
+    const list = workspace.tabs();
+    const from = list.findIndex((tab) => tab.id === workspace.activeId());
+    if (from < 0 || list.length < 2) return;
+    workspace.moveTab(from, (from + step + list.length) % list.length);
   }
 
   function scrollPage(direction: 1 | -1): void {
@@ -410,10 +448,24 @@ function DesktopApp(props: AppProps): JSX.Element {
     }, undefined);
   }
 
-  /** Form feed: the shell clears its screen, as Ctrl-L would. History is the server's. */
+  /** Ctrl-L: the shell clears its screen. History is the server's. */
   function clearScreen(): void {
+    sendText("\f");
+  }
+
+  /**
+   * Type `text` into the focused terminal as keys: controls become their keys
+   * and ESC before a key becomes Alt (Ghostty's `text:` and `esc:`).
+   * commitText refuses controls, so this is the only path for them.
+   */
+  function sendText(text: string): void {
     const focus = workspace.focused();
-    if (focus) safe(() => bridge.client().commitText(focus.viewId, "\f"), false);
+    if (!focus) return;
+    try {
+      bridge.client().typeText(focus.viewId, text);
+    } catch (error) {
+      toast({ kind: "error", title: "Could not send keys", body: String(error) });
+    }
   }
 
   function reloadGhostty(): void {
@@ -449,20 +501,15 @@ function DesktopApp(props: AppProps): JSX.Element {
       );
   }
 
+  /**
+   * A full window of its own (keys, resizing, reconnect) opens on this
+   * terminal; this window only lets go of its view. The process never stops.
+   */
   function moveToWindow(): void {
     const focus = workspace.focused();
-    const opener = globalThis.phuxOpenWindow;
-    if (!focus || !opener) return;
-    const placement = workspace.detachToWindow(focus.id);
-    if (!placement) return;
-    opener({
-      clientHandle: bridge.handle(),
-      terminalId: placement.terminalId,
-      viewId: placement.viewId,
-      title: paneTitle(paneOf(placement.terminalId)),
-      font: font(),
-      theme: terminalTheme(),
-    });
+    if (!focus) return;
+    props.newWindow(focus.terminalId);
+    workspace.closePane(focus.id);
   }
 
   function askTerminate(): void {
@@ -570,6 +617,20 @@ function DesktopApp(props: AppProps): JSX.Element {
       run: () => workspace.split("column"),
     },
     {
+      id: "split-left",
+      title: "Split Left",
+      group: "Panes",
+      icon: "splitRight",
+      run: () => workspace.split("row", true),
+    },
+    {
+      id: "split-up",
+      title: "Split Up",
+      group: "Panes",
+      icon: "splitDown",
+      run: () => workspace.split("column", true),
+    },
+    {
       id: "view",
       title: "Open Another View of This Terminal",
       group: "Panes",
@@ -671,6 +732,18 @@ function DesktopApp(props: AppProps): JSX.Element {
       chord: "cmd+shift+[",
       run: () => workspace.stepTab(-1),
     },
+    {
+      id: "tab-move-left",
+      title: "Move Tab Left",
+      group: "Tabs",
+      run: () => moveActiveTab(-1),
+    },
+    {
+      id: "tab-move-right",
+      title: "Move Tab Right",
+      group: "Tabs",
+      run: () => moveActiveTab(1),
+    },
     { id: "rename", title: "Rename Tab…", group: "Tabs", icon: "terminal", run: renameActive },
     {
       id: "window",
@@ -701,6 +774,20 @@ function DesktopApp(props: AppProps): JSX.Element {
       group: "Terminal",
       chord: "cmd+shift+g",
       run: () => (find() ? stepFind(-1) : openFind()),
+    },
+    {
+      id: "find-selection",
+      title: "Use Selection for Find",
+      group: "Terminal",
+      chord: "cmd+e",
+      icon: "search",
+      run: findSelection,
+    },
+    {
+      id: "find-close",
+      title: "Close Find",
+      group: "Terminal",
+      run: closeFind,
     },
     {
       id: "follow",
@@ -844,6 +931,13 @@ function DesktopApp(props: AppProps): JSX.Element {
       run: () => gpuix?.renderer.toggleFullscreen?.(),
     },
     {
+      id: "maximize",
+      title: "Zoom Window",
+      group: "View",
+      icon: "maximize",
+      run: () => gpuix?.renderer.zoomWindow?.(),
+    },
+    {
       id: "reload-config",
       title: "Reload Ghostty Config",
       group: "Ghostty",
@@ -882,6 +976,29 @@ function DesktopApp(props: AppProps): JSX.Element {
     })),
   ];
 
+  /** Commands only a keybind names: typed text, a font size, a line count, or nothing. */
+  function boundCommand(id: string): Command | undefined {
+    const group = "Ghostty keybinds";
+    if (id === "ignore") return { id, title: "Ignore Key", group, run: () => {} };
+    if (id.startsWith("send:")) {
+      const text = id.slice("send:".length);
+      return { id, title: `Send ${JSON.stringify(text)}`, group, run: () => sendText(text) };
+    }
+    const [name, value = ""] = id.split(":");
+    const number = Number(value);
+    if (value === "" || !Number.isFinite(number)) return undefined;
+    if (name === "font-size")
+      return {
+        id,
+        title: `Font Size ${number}`,
+        group,
+        run: () => updatePrefs({ fontSize: number }),
+      };
+    if (name === "scroll-lines")
+      return { id, title: `Scroll ${number} Lines`, group, run: () => scrollLines(number) };
+    return undefined;
+  }
+
   const byId = new Map(commands.map((command) => [command.id, command]));
   const defaultChords = new Map<string, Command>();
   for (const command of commands) {
@@ -894,7 +1011,7 @@ function DesktopApp(props: AppProps): JSX.Element {
     const map = new Map(defaultChords);
     if (!prefs().ghosttyKeys) return map;
     for (const [chord, id] of ghostty().keybinds) {
-      const command = byId.get(id);
+      const command = byId.get(id) ?? boundCommand(id);
       if (command) map.set(chord, command);
       else map.delete(chord);
     }
@@ -980,14 +1097,17 @@ function DesktopApp(props: AppProps): JSX.Element {
     return [...panes, ...tabs];
   });
 
-  const shortcuts = createMemo(() =>
-    commands.flatMap((command) => {
+  const shortcuts = createMemo(() => [
+    ...commands.flatMap((command) => {
       const chord = displayChords().get(command.id);
       return chord && !/^tab-\d$/.test(command.id)
         ? [{ title: command.title, chord, group: command.group }]
         : [];
     }),
-  );
+    ...[...keymap()].flatMap(([chord, command]) =>
+      byId.has(command.id) ? [] : [{ title: command.title, chord, group: command.group }],
+    ),
+  ]);
 
   // ── Drags (splits, sidebar, tabs) ──────────────────────────────
 
@@ -1085,7 +1205,6 @@ function DesktopApp(props: AppProps): JSX.Element {
 
   onMount(() => {
     untrack(() => props.keys).run = shortcut;
-    if (!fresh) globalThis.phuxShortcut = shortcut;
     const startupError = untrack(() => props.startupError);
     if (startupError)
       toast({ kind: "error", title: "Could not start the phux server", body: startupError });
@@ -1113,7 +1232,6 @@ function DesktopApp(props: AppProps): JSX.Element {
   });
 
   onCleanup(() => {
-    if (!fresh) globalThis.phuxShortcut = undefined;
     persist();
     workspace.releaseAll();
     bridge.close();
@@ -1459,24 +1577,33 @@ const WINDOW = {
   trafficLightY: 14,
 } as const;
 
-export function mount(
-  host: DesktopHost,
-  socketPath: string,
-  sessionName: string,
-  layouts: LayoutStore,
-  startupError?: string,
-  readGhostty?: () => string | undefined,
-  quickLayouts?: LayoutStore,
-): void {
+export interface MountOptions {
+  socketPath: string;
+  sessionName: string;
+  layouts: LayoutStore;
+  startupError?: string | undefined;
+  readGhostty?: (() => string | undefined) | undefined;
+  quickLayouts?: LayoutStore | undefined;
+  /** Runs `phux server --ensure` and the home session; returns the failure, if any. */
+  ensureServer?: (() => string | undefined) | undefined;
+}
+
+export function mount(host: DesktopHost, options: MountOptions): void {
+  const { socketPath, sessionName, layouts, startupError, readGhostty, quickLayouts } = options;
+  const ensureServer = options.ensureServer;
   const mainKeys: WindowKeys = { run: () => {} };
   const quick: { close?: () => void } = {};
 
   /**
    * A window with its own connection and workspace. Command-N windows start
-   * with a new terminal and save nothing; the quick terminal keeps its own
-   * small layout so the same terminal comes back on every toggle.
+   * with a new terminal (or the one a pane moved out with) and save nothing;
+   * the quick terminal keeps its own small layout so the same terminal comes
+   * back on every toggle.
    */
-  function openWindow(options: { quick: boolean }): { close: () => void; isOpen: () => boolean } {
+  function openWindow(options: { quick: boolean; terminalId?: string }): {
+    close: () => void;
+    isOpen: () => boolean;
+  } {
     const keys: WindowKeys = { run: () => {} };
     let root: ReturnType<typeof createRoot> | undefined;
     const renderer = new host.GpuixRenderer((error, event) => {
@@ -1503,10 +1630,12 @@ export function mount(
         sessionName={sessionName}
         layouts={store}
         readGhostty={readGhostty}
+        ensureServer={ensureServer}
         keys={keys}
         newWindow={newWindow}
         toggleQuick={toggleQuick}
         fresh
+        initialTerminal={options.terminalId}
       />
     ));
     let disposed = false;
@@ -1530,8 +1659,8 @@ export function mount(
     };
   }
 
-  function newWindow(): void {
-    openWindow({ quick: false });
+  function newWindow(terminalId?: string): void {
+    openWindow(terminalId ? { quick: false, terminalId } : { quick: false });
   }
 
   let quickWindow: ReturnType<typeof openWindow> | undefined;
@@ -1554,6 +1683,7 @@ export function mount(
         layouts={layouts}
         startupError={startupError}
         readGhostty={readGhostty}
+        ensureServer={ensureServer}
         keys={mainKeys}
         newWindow={newWindow}
         toggleQuick={toggleQuick}
@@ -1574,7 +1704,9 @@ export function mount(
       },
     },
   );
-  registerGlobalHotkeys(host, readGhostty, toggleQuick);
+  // Settings > Ghostty "Use Ghostty keybinds" off covers global binds too.
+  if (parseLayout(layouts.read())?.display.ghosttyKeys !== false)
+    registerGlobalHotkeys(host, readGhostty, toggleQuick);
   process.once("SIGTERM", () => {
     quick.close?.();
     resetRender();

@@ -46,12 +46,15 @@ chords belong to the app; everything else reaches the terminal.
 | ⇧⌘↩              | Zoom the focused pane                                                       |
 | ⌘1–⌘9, ⇧⌘[ ⇧⌘]   | Select a tab                                                                |
 | ⌘F, ⌘G / ⇧⌘G     | Find in the terminal, next / previous match                                 |
+| ⌘E               | Find the selected text                                                      |
 | ⌘L               | Scroll back to live output                                                  |
 | ⇧⌘A              | Jump to the agent that most needs you                                       |
 | ⌘B, ⌘,           | Toggle the sidebar, open Settings                                           |
 | ⌘= ⌘- ⌘0         | Font size                                                                   |
 | ⌘N               | New window, with its own connection and a fresh terminal                    |
+| ⌥⌘N              | Move the focused pane into a new window of its own                          |
 | ⌘K               | Clear the screen                                                            |
+| ⇧⌘R              | Reconnect, first restarting the server if it has stopped                    |
 | ⌘-click          | Open the link under the pointer (OSC 8 or a URL in the text)                |
 
 ### Coming from Ghostty
@@ -62,11 +65,20 @@ Support copy), the first launch adopts it: font family and size,
 palette and a named `theme`, window padding, `unfocused-split-opacity`,
 `split-divider-color`, and `macos-option-as-alt`. Your `keybind` lines replace
 the built-in chords where an equivalent command exists, including non-Command
-chords such as `ctrl+tab`. A `global:` bind to `toggle_quick_terminal` becomes a
+chords such as `ctrl+tab`, `shift+enter` or a bare `f12`. Besides splits, tabs,
+fonts, scrolling and search, that covers `text:` and `esc:` (typed as keys:
+each control byte as its Control chord, `\n` as Ctrl-J, and ESC before a key
+as Alt on it, so `shift+enter=text:\x1b\r` gives Alt-Enter; raw escape
+sequences such as `csi:` are not sent), `ignore`, `move_tab`, `new_split:left/up`,
+`prompt_surface_title`, `set_font_size`, `scroll_page_lines`, `toggle_maximize`
+and the search actions. A `global:` bind to `toggle_quick_terminal` becomes a
 system-wide hotkey for a quick-terminal window that keeps its own terminal
 between toggles. If Ghostty is still running it holds that hotkey too, so quit it
 or rebind one of them. Settings > Ghostty re-applies the config, reloads it,
-switches keybind import off, and lists the actions with no equivalent yet.
+switches keybind import off (the global hotkey too, from the next launch), and
+lists the binds it skipped: key sequences,
+bare letters, and actions with no equivalent yet (`jump_to_prompt`,
+`select_all`, `reset`, `write_*_file`, clipboard actions off ⌘C/⌘V).
 
 Drag split dividers, the sidebar edge, or tabs to rearrange; double-click a tab
 to rename it and a pane header to zoom. Dropping files onto a terminal pastes

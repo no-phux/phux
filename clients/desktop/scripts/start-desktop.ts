@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { loadDesktopHost } from "../native/loader.mjs";
 import { readGhosttyConfig } from "./ghostty-config";
 import { fileLayoutStore } from "./layout-store";
+import { ensureServer, ensureSession, findPhux, serverSocket } from "./server";
 
 export interface DesktopStart {
   addon: string;
@@ -17,26 +18,44 @@ export interface DesktopStart {
   startupError?: string;
 }
 
+/**
+ * Reconnect's recovery: start the server the way launch did (PHUX_SOCKET or
+ * the profile's own socket, never a guessed path) and recreate the home
+ * session. A server that now listens elsewhere than this window's socket is
+ * reported rather than dialled. Returns the failure for the shell to show.
+ */
+function restartServer(start: DesktopStart): string | undefined {
+  const phux = findPhux(process.env.PHUX_BIN);
+  if (!phux) return "Install the phux CLI (~/.local/bin/phux) so the desktop can start a server.";
+  try {
+    const explicit = process.env.PHUX_SOCKET || undefined;
+    ensureServer(phux, explicit);
+    const socket = explicit ?? serverSocket(phux);
+    if (socket !== start.socketPath)
+      return `The server listens on ${socket}, not ${start.socketPath}. Relaunch Phux to use it.`;
+    ensureSession(phux, socket, start.sessionName);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 export async function startDesktop(start: DesktopStart): Promise<void> {
   const host = loadDesktopHost(start.addon);
   const native = await import("@gpuix/native/host");
   native.registerCustomElementType("phux-terminal");
   native.registerCustomElementType("phux-drag-region");
-  const windows = await import("../src/other-window");
   const app = await import("../src/app");
-  globalThis.phuxOpenWindow = (placement) => {
-    windows.openOtherWindow(host.GpuixRenderer, placement);
-  };
   const state = process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state");
-  app.mount(
-    host,
-    start.socketPath,
-    start.sessionName,
-    fileLayoutStore(join(state, "phux-desktop/layout.json")),
-    start.startupError,
-    readGhosttyConfig,
-    fileLayoutStore(join(state, "phux-desktop/quick.json")),
-  );
+  app.mount(host, {
+    socketPath: start.socketPath,
+    sessionName: start.sessionName,
+    layouts: fileLayoutStore(join(state, "phux-desktop/layout.json")),
+    startupError: start.startupError,
+    readGhostty: readGhosttyConfig,
+    quickLayouts: fileLayoutStore(join(state, "phux-desktop/quick.json")),
+    ensureServer: () => restartServer(start),
+  });
   scheduleCapture(process.env.PHUX_DESKTOP_CAPTURE);
 }
 

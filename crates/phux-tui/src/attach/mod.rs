@@ -11,6 +11,7 @@ pub mod action_registry;
 pub mod actions;
 mod agent_rows;
 mod attach_role;
+mod chrome_ctx;
 // What is on each right-click menu (ADR-0058). The overlay that
 // renders one lives in `render::overlay::menu`.
 mod context_menu;
