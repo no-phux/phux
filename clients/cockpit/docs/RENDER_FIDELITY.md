@@ -662,6 +662,12 @@ at the pin `d6e85cd9`, 13pt, scale 2:
 
 Deriving command: `./scripts/host-raster-check.sh`
 
+At scale 1 (the same harness with `kScale = 1.0`) the relation is unchanged:
+host `cell_grid` mean_luma 49.2882 / solid 1255, Ghostty strength 255
+49.4102 / 1257, strength 50 42.9615 / 1022. So the loss of ink from 1x to 2x
+that `aht` round 6 read as "no stem darkening" is CoreText's smoothing
+behaviour, and Ghostty has it too.
+
 The host already inks within 0.2% of the heaviest thickening Ghostty offers,
 and 15% more solid pixels than the owner's own Ghostty setting (`font-thicken
 = true`, `font-thicken-strength = 50`). The `thicken = false` row reproduces
