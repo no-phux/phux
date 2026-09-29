@@ -8,11 +8,12 @@ import { fileURLToPath } from "node:url";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const read = (path) => readFile(join(root, path), "utf8");
 
-const [configText, manifestText, releasePlease, publish, linearWorkflow, integrationWorkflow, cockpitVersionText] = await Promise.all([
+const [configText, manifestText, releasePlease, publish, release, linearWorkflow, integrationWorkflow, cockpitVersionText] = await Promise.all([
   read("release-please-config.json"),
   read(".release-please-manifest.json"),
   read(".github/workflows/release-please.yml"),
   read(".github/workflows/publish.yml"),
+  read(".github/workflows/release.yml"),
   read(".github/workflows/linear-release.yml"),
   read(".github/workflows/agent-integration-release.yml"),
   read("clients/cockpit/version.txt"),
@@ -42,6 +43,28 @@ assert.match(publish, /ffi-android\.yml/, "root releases attach the Android UniF
 assert.match(publish, /ffi-xcframework\.yml/, "root releases attach the xcframework");
 assert.match(publish, /linear-release\.yml/, "published releases are reported to Linear");
 assert.match(publish, /publish_plan\.py/, "one plan decides every component");
+// Release harness scripts run from the default branch, source from the tag
+// (phux-jwoj). publish.yml's automatic triggers execute main, release.yml is
+// reachable only through it, and its build job runs the userspace setup from
+// that checkout before detaching to the tag. If release.yml ever runs from the
+// release commit, an infra fix landed after the tag can never help that tag.
+assert.match(
+  publish,
+  /workflow_run:\n\s+workflows: \[[^\]]*\]\n\s+types: \[completed\]\n\s+branches: \[main\]/,
+  "publish runs on completed main workflows so its harness is main",
+);
+assert.match(
+  release,
+  /\non:\n  workflow_call:\n(?:    .*\n|\n)*?\npermissions:/,
+  "release.yml is reachable only through publish.yml",
+);
+{
+  const checkout = release.search(/uses: actions\/checkout@[0-9a-f]{40} # v[\d.]+\n\n\s+- name: Setup Linux 22\.04 release userspace/);
+  const setup = release.indexOf("run: bash scripts/ci/setup-linux-release-userspace.sh");
+  const detach = release.indexOf('git checkout --detach "refs/tags/${TAG}"', setup);
+  assert.ok(checkout >= 0, "release build checks out the workflow ref (no ref:) right before setup");
+  assert.ok(setup > checkout && detach > setup, "release harness setup runs from the workflow ref before detaching to the tag");
+}
 assert.doesNotMatch(
   publish,
   /uses: \.\/\.github\/workflows\/agent-integration-release\.yml/,
