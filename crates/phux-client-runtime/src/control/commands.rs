@@ -221,8 +221,9 @@ impl ControlPlane {
             },
         });
         // ATTACH_RESOURCE does not resize; reflow the terminal to this
-        // viewport as a session ATTACH would have.
-        if self.follows_global_geometry(terminal_id) {
+        // viewport as a session ATTACH would have. A connection that casts
+        // no geometry vote (a 0x0 viewport) sizes terminals explicitly.
+        if self.votes_on_geometry() && self.follows_global_geometry(terminal_id) {
             self.queue_frame(&FrameKind::ResizeTerminal {
                 terminal_id: terminal_id.clone(),
                 cols,
@@ -323,7 +324,10 @@ impl ControlPlane {
             owner_terminal,
             agent_session: None,
             resource: None,
-            initial_size: Some(request.initial_size.unwrap_or(self.options.viewport)),
+            // Without a geometry vote the server's default size applies.
+            initial_size: request
+                .initial_size
+                .or_else(|| self.votes_on_geometry().then_some(self.options.viewport)),
         });
         request_id
     }

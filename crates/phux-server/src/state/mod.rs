@@ -666,6 +666,19 @@ mod tests {
     }
 
     #[test]
+    fn a_client_without_a_geometry_vote_leaves_explicit_geometry_on_detach() {
+        let mut s = ServerState::new();
+        let (_sid, _wid, pid) = s.seed_session("default");
+        let gui = s.new_client_id();
+        s.attach_default_caps(gui, "default", mk_tx()).unwrap();
+        // A zero ATTACH viewport records nothing; the GUI sized the pane itself.
+        s.registry_mut().terminal_mut(pid).unwrap().dims = (137, 53);
+
+        s.detach(gui);
+        assert_eq!(s.registry().terminal(pid).unwrap().dims, (137, 53));
+    }
+
+    #[test]
     fn manual_policy_holds_explicit_geometry_after_last_detach() {
         use phux_config::WindowSize;
         use phux_protocol::wire::frame::ViewportInfo;

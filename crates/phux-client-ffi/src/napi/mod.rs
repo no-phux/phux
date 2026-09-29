@@ -63,6 +63,9 @@ fn terminal_id(value: &str) -> Result<ResourceId> {
 
 /// Initial local-server connection configuration. Dimensions are the runtime
 /// connection's initial viewport, not an independently resizable view.
+///
+/// `cols = rows = 0` casts no geometry vote: attaching resizes nothing and
+/// each terminal is sized explicitly (`resizeView`).
 #[napi(object)]
 #[derive(Debug)]
 pub struct DesktopConnectOptions {
@@ -80,8 +83,11 @@ impl DesktopConnectOptions {
         if self.socket_path.is_empty() {
             return Err(Error::from_reason("InvalidConnectOptions"));
         }
-        let cols = dimension(self.cols)?;
-        let rows = dimension(self.rows)?;
+        let (cols, rows) = if self.cols == 0.0 && self.rows == 0.0 {
+            (0, 0)
+        } else {
+            (dimension(self.cols)?, dimension(self.rows)?)
+        };
         let attach = self.session_name.map(existing_session).transpose()?;
         Ok((
             Target::uds(self.socket_path),

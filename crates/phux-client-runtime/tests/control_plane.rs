@@ -851,6 +851,61 @@ fn own_spawns_are_never_attached_a_second_time() {
 }
 
 #[test]
+fn a_connection_without_a_geometry_vote_never_sizes_terminals_implicitly() {
+    let mut plane = ControlPlane::new(ControlOptions {
+        attach: Some(AttachTarget::ByName("main".to_owned())),
+        viewport: (0, 0),
+        ..ControlOptions::default()
+    });
+    assert!(!plane.votes_on_geometry());
+    plane.connection_opened();
+    let _ = plane.take_outbound();
+    plane
+        .feed(hello_ok(PROTOCOL_VERSION.patch))
+        .expect("HELLO_OK");
+    let attach = plane
+        .take_outbound()
+        .into_iter()
+        .map(|frame| decode(&frame))
+        .find_map(|frame| match frame {
+            FrameKind::Attach {
+                attach_id,
+                viewport,
+                ..
+            } => Some((attach_id, viewport)),
+            _ => None,
+        })
+        .expect("ATTACH");
+    assert_eq!((attach.1.cols, attach.1.rows), (0, 0));
+    attach_with_history(&mut plane, attach.0, b"home", None);
+    let _ = plane.take_events();
+    let _ = plane.take_outbound();
+
+    let _ = plane.spawn_terminal(SpawnRequest::default());
+    let spawned = plane
+        .take_outbound()
+        .into_iter()
+        .map(|frame| decode(&frame))
+        .find_map(|frame| match frame {
+            FrameKind::SpawnResource { initial_size, .. } => Some(initial_size),
+            _ => None,
+        })
+        .expect("SPAWN_RESOURCE");
+    assert_eq!(spawned, None, "the server's default size applies");
+
+    refresh_to(&mut plane, two_session_snapshot(false));
+    let _ = plane.take_outbound();
+    assert_ne!(plane.attach_terminal(&ResourceId::local(8)), 0);
+    assert!(
+        !plane
+            .take_outbound()
+            .into_iter()
+            .any(|frame| matches!(decode(&frame), FrameKind::ResizeTerminal { .. })),
+        "a foreign attach is not reflowed to a viewport",
+    );
+}
+
+#[test]
 fn refusals_are_terminal_and_a_requested_detach_closes() {
     let mut plane = ControlPlane::new(ControlOptions::default());
     plane.connection_opened();
