@@ -10,7 +10,7 @@ use gpuix_native::native_extensions::gpui::{
     self, App, Bounds, ClipboardItem, Context, EntityInputHandler, FocusHandle, KeyDownEvent,
     KeyUpEvent, Pixels, Point, UTF16Selection, Window, WindowId,
 };
-use phux_client_runtime::control::ControlPlane;
+use phux_client_runtime::control::{ControlPlane, TerminalResizeOutcome};
 use phux_client_runtime::{Client, ViewId, publication::GridFrame};
 use phux_protocol::{
     ResourceId,
@@ -19,7 +19,15 @@ use phux_protocol::{
         key::{KeyAction, KeyEvent, ModSet, PhysicalKey},
     },
 };
-use std::{collections::BTreeMap, ops::Range};
+use std::{
+    collections::BTreeMap,
+    ops::Range,
+    time::{Duration, Instant},
+};
+
+/// Minimum spacing between PTY size proposals while a pane is being dragged.
+/// A throttled proposal requests another frame, so the final size still goes out.
+const FIT_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Geometry already computed by the painter, in logical window pixels.
 #[derive(Clone, Copy, Debug)]
@@ -81,6 +89,8 @@ pub struct TerminalInput {
     scroll_remainder: f32,
     option_as_alt: bool,
     last_error: Option<InputError>,
+    fitted: Option<((u16, u16), Instant)>,
+    fit_active: bool,
     #[cfg(feature = "input-fixture")]
     test_window_active: bool,
 }
@@ -110,6 +120,8 @@ impl TerminalInput {
             scroll_remainder: 0.0,
             option_as_alt: false,
             last_error: None,
+            fitted: None,
+            fit_active: false,
             #[cfg(feature = "input-fixture")]
             test_window_active: false,
         }
@@ -165,6 +177,7 @@ impl TerminalInput {
         if self.identity.is_some_and(|previous| previous != identity) {
             self.cancel();
             self.metrics = None;
+            self.fitted = None;
             return Err(InputError::StalePresentation);
         }
         self.identity = Some(identity);
@@ -180,6 +193,50 @@ impl TerminalInput {
         self.gesture = 0;
         self.reported_button = None;
         self.scroll_remainder = 0.0;
+    }
+
+    /// Propose this pane's cell capacity as the terminal's PTY size while this
+    /// view owns the terminal's geometry (desktop architecture, "Geometry").
+    /// The shell names one owner per terminal: its only view, or the view the
+    /// user focused last. Other views crop or leave space. Proposals are
+    /// edge-triggered: an unchanged capacity sends nothing, so views cannot
+    /// oscillate. Gaining ownership or re-activating the window forgets the
+    /// last proposal, so the owner reclaims a size another client changed.
+    pub fn fit(&mut self, owner: bool, window: &Window) {
+        let active = self.window_active(window);
+        let reactivated = active && !self.fit_active;
+        self.fit_active = active;
+        let Some(metrics) = self.metrics else {
+            return;
+        };
+        if !owner || reactivated {
+            self.fitted = None;
+        }
+        if !owner {
+            return;
+        }
+        let Some(capacity) = capacity(metrics) else {
+            return;
+        };
+        let now = Instant::now();
+        match self.fitted {
+            Some((sent, _)) if sent == capacity => return,
+            Some((_, at)) if now.duration_since(at) < FIT_INTERVAL => {
+                window.request_animation_frame();
+                return;
+            }
+            _ => {}
+        }
+        let Ok(client) = self.client() else {
+            return;
+        };
+        let (cols, rows) = capacity;
+        let outcome = client.with_control(|control| {
+            control.resize_terminal(&self.terminal, cols.into(), rows.into())
+        });
+        if outcome == TerminalResizeOutcome::Queued {
+            self.fitted = Some((capacity, now));
+        }
     }
 
     fn client(&self) -> Result<Client, InputError> {
@@ -580,5 +637,49 @@ impl EntityInputHandler for TerminalInput {
             self.record(result);
         }
         cx.notify();
+    }
+}
+
+/// Whole cells that fit the painted bounds. `None` for a collapsed pane.
+fn capacity(metrics: InputMetrics) -> Option<(u16, u16)> {
+    let cols = (metrics.bounds.size.width / metrics.cell_width).floor();
+    let rows = (metrics.bounds.size.height / metrics.line_height).floor();
+    let fits = cols >= 2.0 && rows >= 1.0;
+    if !fits {
+        return None;
+    }
+    Some((clamp(cols), clamp(rows)))
+}
+
+fn clamp(cells: f32) -> u16 {
+    cells.min(f32::from(u16::MAX)) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InputMetrics, capacity};
+    use gpuix_native::native_extensions::gpui::{Bounds, point, px, size};
+
+    fn metrics(width: f32, height: f32) -> InputMetrics {
+        let bounds = Bounds::new(point(px(10.), px(20.)), size(px(width), px(height)));
+        InputMetrics {
+            bounds,
+            cell_width: px(8.),
+            line_height: px(17.),
+            cursor_bounds: bounds,
+        }
+    }
+
+    #[test]
+    fn capacity_counts_whole_cells_only() {
+        assert_eq!(capacity(metrics(807., 409.)), Some((100, 24)));
+        assert_eq!(capacity(metrics(16., 17.)), Some((2, 1)));
+    }
+
+    #[test]
+    fn collapsed_or_degenerate_panes_propose_nothing() {
+        assert_eq!(capacity(metrics(15., 400.)), None);
+        assert_eq!(capacity(metrics(400., 16.)), None);
+        assert_eq!(capacity(metrics(f32::NAN, 400.)), None);
     }
 }

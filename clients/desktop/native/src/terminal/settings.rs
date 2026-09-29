@@ -18,6 +18,8 @@ pub(super) struct Settings {
     pub cursor_visible: bool,
     pub blink_visible: bool,
     pub option_as_alt: bool,
+    /// This view proposes the terminal's PTY size from its painted bounds.
+    pub size_owner: bool,
 }
 
 impl Default for Settings {
@@ -38,6 +40,7 @@ impl Default for Settings {
             cursor_visible: true,
             blink_visible: true,
             option_as_alt: false,
+            size_owner: true,
         }
     }
 }
@@ -61,6 +64,7 @@ impl Settings {
             "focused" => self.focused = visible,
             "cursorVisible" => self.cursor_visible = visible,
             "blinkVisible" => self.blink_visible = visible,
+            "sizeOwner" => self.size_owner = visible,
             // An invalidation token, deliberately not a publication generation.
             "paintRevision" => (),
             _ => (),

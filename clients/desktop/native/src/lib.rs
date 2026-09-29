@@ -3,6 +3,7 @@
 //! The optional phux-client-ffi encoder owns the only Client registry. Native
 //! consumers resolve the same handle without taking its listener or event queue.
 
+mod chrome;
 pub mod input;
 mod presentation;
 #[cfg_attr(
@@ -26,6 +27,7 @@ pub fn initialize_desktop_host() -> napi::Result<()> {
     native_extensions::install(|registry| {
         probe::install(registry);
         terminal::install(registry);
+        chrome::install(registry);
     })
     .map_err(napi::Error::from_reason)
 }

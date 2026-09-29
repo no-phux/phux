@@ -166,7 +166,7 @@ pub(crate) fn schedule_recovery(
     painted: &Arc<GridFrame>,
     bounds: gpui::Bounds<gpui::Pixels>,
     window: &mut Window,
-    cx: &mut App,
+    _cx: &mut App,
 ) {
     if ticket.fence.is_none() || !Arc::ptr_eq(painted, &ticket.frame) {
         return;
@@ -190,9 +190,7 @@ pub(crate) fn schedule_recovery(
             frame,
         };
         // A rejected receipt leaves the fence set. There is no second acknowledgement path.
-        if ticket.acknowledge(presented, cx).is_err() {
-            return;
-        }
+        let _ = ticket.acknowledge(presented, cx);
     });
 }
 

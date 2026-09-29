@@ -12,6 +12,7 @@ if (!addon || !socketPath) {
 const host = loadDesktopHost(addon);
 const native = await import("@gpuix/native/host");
 native.registerCustomElementType("phux-terminal");
+native.registerCustomElementType("phux-drag-region");
 const windows = await import("../src/other-window");
 const app = await import("../src/app");
 globalThis.phuxOpenWindow = (placement) => {

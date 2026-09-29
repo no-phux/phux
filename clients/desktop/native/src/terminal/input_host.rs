@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub(super) fn present(
     input: &gpui::Entity<TerminalInput>,
     report: &Observation,
+    size_owner: bool,
     rebind: &AtomicBool,
     window: &mut gpui::Window,
     cx: &mut gpui::App,
@@ -39,6 +40,7 @@ pub(super) fn present(
         rebind.store(true, Ordering::Release);
         return;
     }
+    input.update(cx, |state, _| state.fit(size_owner, window));
     let focus = input.read(cx).focus_handle().clone();
     window.handle_input(
         &focus,
