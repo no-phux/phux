@@ -6,7 +6,10 @@ default-members = ["crates/phux", "crates/phux-mcp"]
 # Browser/wasm consumers (phux-486) live under clients/ and target wasm32 only.
 # They are their own cargo workspaces so the native `cargo build --workspace`
 # (and CI) never tries to build wasm-bindgen crates for the host.
-exclude = ["clients"]
+# `.claude` holds agent worktrees. Without it, Cargo's cached-root lookup
+# adopts this checkout as the workspace of a nested worktree's out-of-tree
+# path dependencies (the desktop host's GPUI checkout) and fails inheritance.
+exclude = ["clients", ".claude"]
 
 [workspace.package]
 version = "0.46.0"
