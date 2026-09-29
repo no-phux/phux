@@ -5,6 +5,7 @@
 #   ./scripts/host-raster-check.sh                 # measure and report
 #   ./scripts/host-raster-check.sh --min-solid N   # ...and fail below N
 #   ./scripts/host-raster-check.sh --png-prefix P  # keep the rasters
+#   ./scripts/host-raster-check.sh --bench N       # ...and time N row rasters
 #   PHUX_COCKPIT_SDK_SRC=<dir> ./scripts/host-raster-check.sh   # a different SDK
 # measures: pinned SDK host/CoreText glyph rasterization
 #
@@ -22,7 +23,7 @@ PIN_CACHE="${PHUX_COCKPIT_SDK_CACHE:-${ROOT}/.zig-cache/pinned-sdk}"
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --min-solid|--png-prefix) ARGS+=("$1" "$2"); shift 2 ;;
+        --min-solid|--png-prefix|--bench) ARGS+=("$1" "$2"); shift 2 ;;
         -h|--help) sed -n '2,/^set -euo pipefail/{ /^set -euo pipefail/!p; }' "$0"; exit 0 ;;
         *) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
     esac
