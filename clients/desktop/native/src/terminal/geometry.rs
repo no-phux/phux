@@ -32,9 +32,14 @@ impl Geometry {
             None,
         );
         let scale = window.scale_factor();
-        let cell_width = snap(sample.width().max(px(1.)), scale);
+        let cell_width = snap(
+            (sample.width() * settings.cell_width_scale).max(px(1.)),
+            scale,
+        );
         let cell_height = snap(
-            px(settings.font_size * settings.line_height).max(sample.ascent + sample.descent),
+            (px(settings.font_size * settings.line_height).max(sample.ascent + sample.descent)
+                * settings.cell_height_scale)
+                .max(px(1.)),
             scale,
         );
         Self {

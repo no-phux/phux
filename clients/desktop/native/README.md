@@ -35,7 +35,14 @@ rejected even after a failed start, and WASI-selection overrides are refused.
 `phux-terminal` sizes its terminal from its own bounds when the shell marks it
 `sizeOwner` (see the architecture's Geometry section), gives the keyboard back
 to the window when `focused` drops, and reports `click` and `fileDrop` so the
-shell can track the chosen pane and paste dropped paths. `phux-drag-region`
+shell can track the chosen pane and paste dropped paths. Its `theme.palette`
+maps the 16 ANSI colours: foregrounds by their palette index, backgrounds and
+underlines by matching the frame's own palette. `font.cellWidth`/`cellHeight`
+scale the measured cell. `appChords` lists non-Command chords the shell binds,
+which then bubble to the window instead of reaching the PTY. A Command-click
+opens the cell's OSC 8 link, or a URL in the row's text, for an allowlisted set
+of schemes. `GlobalHotkeys` registers system-wide chords through
+`global-hotkey` (Carbon hotkeys; no Accessibility permission). `phux-drag-region`
 moves the window and zooms it on double-click, which a transparent titlebar
 otherwise loses.
 

@@ -3,6 +3,7 @@
 
 mod composition;
 mod keys;
+mod link;
 mod pointer;
 
 use composition::Composition;
@@ -25,9 +26,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Minimum spacing between PTY size proposals while a pane is being dragged.
-/// A throttled proposal requests another frame, so the final size still goes out.
-const FIT_INTERVAL: Duration = Duration::from_millis(50);
+/// How long a pane's capacity must hold still before it becomes a PTY resize.
+/// Layout settling, window drags and split drags produce bursts of sizes;
+/// every intermediate resize makes a shell redraw its prompt into history.
+/// A settling proposal requests frames, so the final size always goes out.
+const FIT_SETTLE: Duration = Duration::from_millis(60);
 
 /// Geometry already computed by the painter, in logical window pixels.
 #[derive(Clone, Copy, Debug)]
@@ -89,7 +92,10 @@ pub struct TerminalInput {
     scroll_remainder: f32,
     option_as_alt: bool,
     last_error: Option<InputError>,
-    fitted: Option<((u16, u16), Instant)>,
+    /// The size this view last proposed.
+    fitted: Option<(u16, u16)>,
+    /// A capacity waiting to hold still for `FIT_SETTLE`.
+    settling: Option<((u16, u16), Instant)>,
     fit_active: bool,
     #[cfg(feature = "input-fixture")]
     test_window_active: bool,
@@ -121,6 +127,7 @@ impl TerminalInput {
             option_as_alt: false,
             last_error: None,
             fitted: None,
+            settling: None,
             fit_active: false,
             #[cfg(feature = "input-fixture")]
             test_window_active: false,
@@ -202,7 +209,7 @@ impl TerminalInput {
     /// edge-triggered: an unchanged capacity sends nothing, so views cannot
     /// oscillate. Gaining ownership or re-activating the window forgets the
     /// last proposal, so the owner reclaims a size another client changed.
-    pub fn fit(&mut self, owner: bool, window: &Window) {
+    pub fn fit(&mut self, owner: bool, window: &Window, cx: &mut Context<Self>) {
         let active = self.window_active(window);
         let reactivated = active && !self.fit_active;
         self.fit_active = active;
@@ -218,14 +225,37 @@ impl TerminalInput {
         let Some(capacity) = capacity(metrics) else {
             return;
         };
-        let now = Instant::now();
-        match self.fitted {
-            Some((sent, _)) if sent == capacity => return,
-            Some((_, at)) if now.duration_since(at) < FIT_INTERVAL => {
-                window.request_animation_frame();
-                return;
-            }
-            _ => {}
+        // Already proposed, or (first look) already the authoritative size, as
+        // for a terminal spawned at its predicted geometry.
+        if self.fitted == Some(capacity) || (self.fitted.is_none() && capacity == self.dimensions) {
+            self.fitted = Some(capacity);
+            self.settling = None;
+            return;
+        }
+        if self
+            .settling
+            .is_some_and(|(pending, _)| pending == capacity)
+        {
+            return;
+        }
+        // A timer, not the next frame, sends the settled size: a background or
+        // occluded window may not paint again, and the resize must still go out.
+        self.settling = Some((capacity, Instant::now()));
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FIT_SETTLE).await;
+            let _ = this.update(cx, |state, _| state.flush_fit());
+        })
+        .detach();
+    }
+
+    /// Send the pending capacity once it has held still for `FIT_SETTLE`. A
+    /// newer capacity restarts the clock and its own timer sends it.
+    fn flush_fit(&mut self) {
+        let Some((capacity, since)) = self.settling else {
+            return;
+        };
+        if since.elapsed() < FIT_SETTLE {
+            return;
         }
         let Ok(client) = self.client() else {
             return;
@@ -235,8 +265,9 @@ impl TerminalInput {
             control.resize_terminal(&self.terminal, cols.into(), rows.into())
         });
         if outcome == TerminalResizeOutcome::Queued {
-            self.fitted = Some((capacity, now));
+            self.fitted = Some(capacity);
         }
+        self.settling = None;
     }
 
     fn client(&self) -> Result<Client, InputError> {

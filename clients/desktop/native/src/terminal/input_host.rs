@@ -40,7 +40,7 @@ pub(super) fn present(
         rebind.store(true, Ordering::Release);
         return;
     }
-    input.update(cx, |state, _| state.fit(size_owner, window));
+    input.update(cx, |state, cx| state.fit(size_owner, window, cx));
     let focus = input.read(cx).focus_handle().clone();
     window.handle_input(
         &focus,
@@ -92,6 +92,23 @@ pub(super) fn on_key_up(
     if result != Ok(KeyDisposition::Platform) {
         cx.stop_propagation();
     }
+}
+
+/// `keystroke` in the shell's chord form, for chords without Command.
+pub(super) fn chord(keystroke: &gpui::Keystroke) -> String {
+    let modifiers = &keystroke.modifiers;
+    let mut parts = Vec::with_capacity(4);
+    if modifiers.control {
+        parts.push("ctrl");
+    }
+    if modifiers.alt {
+        parts.push("alt");
+    }
+    if modifiers.shift {
+        parts.push("shift");
+    }
+    parts.push(&keystroke.key);
+    parts.join("+")
 }
 
 fn shortcut(event: &gpui::KeyDownEvent, key: &str) -> bool {

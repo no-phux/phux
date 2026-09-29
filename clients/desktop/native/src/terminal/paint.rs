@@ -5,7 +5,7 @@ use gpui::prelude::*;
 use gpui::{Bounds, ContentMask, Hsla, Pixels, ShapedLine, TextAlign, fill, point, px, size};
 use phux_client_core::grid::{
     CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC, CELL_OVERLINE,
-    CELL_SELECTED, CELL_STRIKETHROUGH, COLOR_KIND_DEFAULT,
+    CELL_SELECTED, CELL_STRIKETHROUGH, COLOR_KIND_DEFAULT, COLOR_KIND_PALETTE,
 };
 use phux_client_runtime::publication::{Cell, CellMetadata, CursorStyle, CursorWidth, Rgb};
 
@@ -413,6 +413,27 @@ fn rgb(color: Rgb) -> Hsla {
     gpui::rgb(u32::from(color.r) << 16 | u32::from(color.g) << 8 | u32::from(color.b)).into()
 }
 
+/// The theme's colour for one of the 16 ANSI slots, when a theme names them.
+fn ansi(settings: &Settings, index: usize) -> Option<Hsla> {
+    settings.palette.as_ref()?.get(index).copied()
+}
+
+/// Background and underline colours arrive palette-resolved without their
+/// index. A colour equal to one of the frame's 16 ANSI entries was almost
+/// certainly that slot, so it takes the theme's colour; anything else (true
+/// colour, the 240 extended slots) paints as the application sent it.
+fn themed_rgb(frame: &GridFrame, settings: &Settings, color: Rgb) -> Hsla {
+    if settings.palette.is_some()
+        && let Some(index) = frame.colors.palette[..16]
+            .iter()
+            .position(|entry| *entry == color)
+        && let Some(themed) = ansi(settings, index)
+    {
+        return themed;
+    }
+    rgb(color)
+}
+
 fn defaults(frame: &GridFrame, settings: &Settings) -> (Hsla, Hsla) {
     let (foreground, background) = if frame.colors.reversed {
         (settings.background, settings.foreground)
@@ -442,21 +463,33 @@ fn cell_colors(
     let defaults = defaults(frame, settings);
     let mut foreground = if metadata.foreground_kind == COLOR_KIND_DEFAULT {
         defaults.0
+    } else if metadata.foreground_kind == COLOR_KIND_PALETTE
+        && let Some(themed) = ansi(settings, usize::from(metadata.foreground_palette_index))
+    {
+        themed
     } else {
-        rgb(Rgb {
-            r: cell.foreground_r,
-            g: cell.foreground_g,
-            b: cell.foreground_b,
-        })
+        themed_rgb(
+            frame,
+            settings,
+            Rgb {
+                r: cell.foreground_r,
+                g: cell.foreground_g,
+                b: cell.foreground_b,
+            },
+        )
     };
     let mut background = if metadata.background_color_is_default {
         defaults.1
     } else {
-        rgb(Rgb {
-            r: cell.background_r,
-            g: cell.background_g,
-            b: cell.background_b,
-        })
+        themed_rgb(
+            frame,
+            settings,
+            Rgb {
+                r: cell.background_r,
+                g: cell.background_g,
+                b: cell.background_b,
+            },
+        )
     };
     if cell.flags & CELL_INVERSE != 0 {
         std::mem::swap(&mut foreground, &mut background);
@@ -473,11 +506,15 @@ fn cell_colors(
     let underline = if metadata.underline_color_is_default {
         foreground
     } else {
-        rgb(Rgb {
-            r: cell.underline_r,
-            g: cell.underline_g,
-            b: cell.underline_b,
-        })
+        themed_rgb(
+            frame,
+            settings,
+            Rgb {
+                r: cell.underline_r,
+                g: cell.underline_g,
+                b: cell.underline_b,
+            },
+        )
     };
     CellColors {
         foreground,

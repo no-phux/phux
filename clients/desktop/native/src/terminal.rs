@@ -166,6 +166,7 @@ impl CustomElement for Terminal {
             }
             self.was_focused = self.settings.focused;
             let down = input.clone();
+            let app_chords = self.settings.app_chords.clone();
             let up = input.clone();
             let press = input.clone();
             let movement = input.clone();
@@ -174,10 +175,23 @@ impl CustomElement for Terminal {
             surface = surface
                 .track_focus(&focus)
                 .on_key_down(move |event, window, cx| {
+                    // A chord the shell owns bubbles to the window untouched.
+                    if !event.keystroke.modifiers.platform
+                        && app_chords.contains(&input_host::chord(&event.keystroke))
+                    {
+                        return;
+                    }
                     input_host::on_key_down(&down, event, window, cx)
                 })
                 .on_key_up(move |event, window, cx| input_host::on_key_up(&up, event, window, cx))
                 .on_mouse_down(gpui::MouseButton::Left, move |event, window, cx| {
+                    if event.modifiers.platform
+                        && let Some(url) = press.read(cx).link_at(event.position)
+                    {
+                        cx.open_url(&url);
+                        cx.stop_propagation();
+                        return;
+                    }
                     press.read(cx).focus_handle().clone().focus(window, cx);
                     press.update(cx, |state, cx| {
                         let _ = state.mouse_down(event, window, cx);
@@ -261,6 +275,7 @@ impl CustomElement for Terminal {
             "blinkVisible",
             "paintRevision",
             "sizeOwner",
+            "appChords",
         ]
     }
 
