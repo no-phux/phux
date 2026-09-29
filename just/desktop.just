@@ -82,3 +82,13 @@ desktop-native-fixtures-build:
 [doc('Paint real PTY publications through Metal using the acceptance addon')]
 desktop-native-painter-test:
     PHUX_DESKTOP_ADDON="$PWD/clients/desktop/.cache/host-fixtures/phux-desktop-native.darwin-arm64.node" bash clients/desktop/tests/native/terminal-run.sh
+
+[group('desktop')]
+[doc('Build Phux.app (one compiled executable plus the release addon) under clients/desktop/dist/app')]
+desktop-package: desktop-install desktop-native-build
+    cd clients/desktop && bun scripts/package-app.ts
+
+[group('desktop')]
+[doc('Build Phux.app and install it to /Applications; it attaches your default server session')]
+desktop-install-app: desktop-install desktop-native-build
+    cd clients/desktop && bun scripts/package-app.ts --install

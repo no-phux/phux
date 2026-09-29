@@ -151,9 +151,9 @@ The tracking IDs name remaining work, not delivered features.
 | Native Solid desktop | Matched host, painter and input run the shell; pane-fit geometry is native. Feasibility and presentation gates stay the acceptance record. | phux-d4x9.1–.6, phux-d4x9.20 |
 | Terminal-first projects and workspace | Tabs, split trees (drag, zoom, directional focus), restore by server identity, Open Folder. Projects/worktree grouping is not built. | phux-d4x9.7–.9 |
 | Independent same-terminal views | Open Another View, sole-or-last-focused size owner, per-view find. Regression coverage still required. | phux-d4x9.17, phux-d4x9.18 |
-| Connections, settings, and agents | One local socket; settings (theme, font, input); agent badges, urgency list, toasts. Remote hosts and approvals are not built. | phux-d4x9.10–.12 |
+| Connections, settings, and agents | One local socket per window; `Phux.app` attaches the `default` session through the installed CLI; settings and Ghostty-config import (font, palette, keybinds, quick terminal); agent badges, urgency list, toasts. Remote hosts and approvals are not built. | phux-d4x9.10–.12 |
 | Native accessibility and delivery safety | Required journeys and teardown/input proofs are not yet qualified. | phux-d4x9.13, phux-d4x9.14 |
-| Apple-silicon release | Native regression gates and signed-package preparation remain required. | phux-d4x9.15, phux-d4x9.16 |
+| Apple-silicon release | `just desktop-install-app` builds an ad-hoc-signed local bundle. Native regression gates, notarization and updates remain required. | phux-d4x9.15, phux-d4x9.16 |
 | Linux | Subsequent platform qualification; no support claim from framework compatibility alone. | phux-d4x9.19 |
 
 ## Where to go next
