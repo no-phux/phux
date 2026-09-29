@@ -148,6 +148,13 @@ fn probeOf(stat: std.c.Stat) Probe {
 }
 
 fn probeFd(fd: std.posix.fd_t) ?Probe {
+    // spike: Zig routes Linux stat through syscalls, not std.c.
+    if (comptime @import("builtin").os.tag == .linux) {
+        const linux = std.os.linux;
+        var st: linux.Statx = undefined;
+        if (linux.errno(linux.statx(fd, "", linux.AT.EMPTY_PATH, .{ .TYPE = true }, &st)) != .SUCCESS) return null;
+        return .{ .char_device = (st.mode & linux.S.IFMT) == linux.S.IFCHR, .rdev = (@as(i64, st.rdev_major) << 32) | st.rdev_minor };
+    }
     var stat: std.c.Stat = undefined;
     if (std.c.fstat(fd, &stat) != 0) return null;
     return probeOf(stat);

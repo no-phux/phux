@@ -250,14 +250,14 @@ fn hasCapability(capabilities: []const []const u8, required: []const u8) bool {
 pub fn serverPresent(path: []const u8) !bool {
     if (path.len >= @sizeOf(@FieldType(std.posix.sockaddr.un, "path"))) return error.InvalidSocketPath;
     var address = std.mem.zeroes(std.posix.sockaddr.un);
-    address.len = @intCast(@offsetOf(std.posix.sockaddr.un, "path") + path.len + 1);
+    if (@hasField(std.posix.sockaddr.un, "len")) address.len = @intCast(@offsetOf(std.posix.sockaddr.un, "path") + path.len + 1);
     address.family = std.posix.AF.UNIX;
     @memcpy(address.path[0..path.len], path);
     const fd = std.c.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0);
     if (fd < 0) return error.SocketOpenFailed;
     defer _ = std.c.close(fd);
     if (std.c.fcntl(fd, std.posix.F.SETFL, @as(c_int, @bitCast(std.posix.O{ .NONBLOCK = true }))) < 0) return error.SocketProbeFailed;
-    const rc = std.c.connect(fd, @ptrCast(&address), address.len);
+    const rc = std.c.connect(fd, @ptrCast(&address), @sizeOf(std.posix.sockaddr.un));
     if (rc == 0) return true;
     return switch (std.posix.errno(rc)) {
         .NOENT, .CONNREFUSED => false,
@@ -403,7 +403,7 @@ fn exitedWithEvidence(child: *std.process.Child, recorded: *?c_int) !bool {
 fn leaderExited(child: *std.process.Child) !bool {
     var info = std.mem.zeroes(wait_api.siginfo_t);
     const rc = wait_api.waitid(wait_api.P_PID, @intCast(child.id.?), &info, wait_api.WEXITED | wait_api.WNOHANG | wait_api.WNOWAIT);
-    if (rc == 0) return info.si_pid != 0;
+    if (rc == 0) return (if (@hasField(wait_api.siginfo_t, "si_pid")) info.si_pid else info._sifields._sigchld.si_pid) != 0;
     if (std.posix.errno(rc) == .INTR) return false;
     if (std.posix.errno(rc) == .CHILD) child.id = null;
     return error.EnsureWaitFailed;
@@ -747,13 +747,13 @@ test "existing exact socket never launches helper even when its server version i
     var fixture = try TestFixture.init();
     defer fixture.deinit();
     var address = std.mem.zeroes(std.posix.sockaddr.un);
-    address.len = @intCast(@offsetOf(std.posix.sockaddr.un, "path") + fixture.socket.len + 1);
+    if (@hasField(std.posix.sockaddr.un, "len")) address.len = @intCast(@offsetOf(std.posix.sockaddr.un, "path") + fixture.socket.len + 1);
     address.family = std.posix.AF.UNIX;
     @memcpy(address.path[0..fixture.socket.len], fixture.socket);
     const fd = std.c.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0);
     try std.testing.expect(fd >= 0);
     defer _ = std.c.close(fd);
-    try std.testing.expectEqual(@as(c_int, 0), std.c.bind(fd, @ptrCast(&address), address.len));
+    try std.testing.expectEqual(@as(c_int, 0), std.c.bind(fd, @ptrCast(&address), @sizeOf(std.posix.sockaddr.un)));
     try std.testing.expectEqual(@as(c_int, 0), std.c.listen(fd, 8));
     var stopping = std.atomic.Value(bool).init(false);
     try ensure(std.testing.allocator, std.testing.io, fixture.socket, &stopping, .{ .cli_path = "/usr/bin/false" });

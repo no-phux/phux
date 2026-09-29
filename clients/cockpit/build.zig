@@ -130,6 +130,7 @@ fn addDisabledProviderCompileCheck(
         .target = target,
         .optimize = optimize,
     });
+    check.link_libc = true;
     check.addImport("native_sdk", sdk_module);
     check.addImport("core", core);
     check.addImport("cockpit_engine", createTsEngine(
@@ -353,6 +354,7 @@ fn createPhuxModules(
         .optimize = optimize,
     });
     transport_module.addImport("phux_ref", ref_module);
+    transport_module.link_libc = true;
     const extension_module = b.createModule(.{
         .root_source_file = b.path("src/providers/phux/extension.zig"),
         .target = target,
@@ -383,6 +385,8 @@ fn createPhuxModules(
         .cwd_relative = b.pathJoin(&.{ ffi.lib_dir, "libphux_client_ffi.a" }),
     });
     host_module.linkSystemLibrary("c", .{});
+    // spike: Rust's std unwinder on linux-gnu.
+    if (target.result.os.tag == .linux) for ([_]*std.Build.Module{ host_module, extension_module }) |module| module.linkSystemLibrary("gcc_s", .{});
     // phux-config's time zone lookup needs CoreFoundation in the standalone
     // phux test artifacts.
     if (target.result.os.tag == .macos) {
@@ -426,6 +430,8 @@ fn createPhuxModules(
 fn attachPhuxModules(b: *std.Build, root: *std.Build.Module, modules: PhuxModules) void {
     root.addImport("phux_provider", modules.provider);
     root.addImport("phux_pointer", modules.pointer);
+    root.linkSystemLibrary("c", .{});
+    if (root.resolved_target.?.result.os.tag != .macos) return;
     root.addCSourceFile(.{
         .file = b.path("src/providers/phux/pointer_macos.m"),
         .flags = &.{ "-fobjc-arc", "-fblocks" },
@@ -436,7 +442,6 @@ fn attachPhuxModules(b: *std.Build, root: *std.Build.Module, modules: PhuxModule
         });
     }
     root.linkFramework("AppKit", .{});
-    root.linkSystemLibrary("c", .{});
 }
 
 /// The phux modules whose own tests `test` runs, reported verbatim in the
@@ -475,16 +480,18 @@ fn addPhuxGraphTests(
     // pointer.zig declares phux_pointer_monitor_start/stop, which live in
     // pointer_macos.m. The app graph adds that source to its own root; a
     // standalone test artifact has to carry it.
-    modules.pointer.addCSourceFile(.{
-        .file = b.path("src/providers/phux/pointer_macos.m"),
-        .flags = &.{ "-fobjc-arc", "-fblocks" },
-    });
-    if (b.sysroot) |sysroot| {
-        modules.pointer.addFrameworkPath(.{
-            .cwd_relative = b.pathJoin(&.{ sysroot, "System/Library/Frameworks" }),
+    if (target.result.os.tag == .macos) {
+        modules.pointer.addCSourceFile(.{
+            .file = b.path("src/providers/phux/pointer_macos.m"),
+            .flags = &.{ "-fobjc-arc", "-fblocks" },
         });
+        if (b.sysroot) |sysroot| {
+            modules.pointer.addFrameworkPath(.{
+                .cwd_relative = b.pathJoin(&.{ sysroot, "System/Library/Frameworks" }),
+            });
+        }
+        modules.pointer.linkFramework("AppKit", .{});
     }
-    modules.pointer.linkFramework("AppKit", .{});
     modules.pointer.linkSystemLibrary("c", .{});
 
     // Keep this in step with phux_test_module_names.
@@ -684,9 +691,6 @@ pub fn build(b: *std.Build) void {
         .native_extension = "src/native_extension.zig",
     });
     keepRingP256Helpers(artifacts.exe);
-    const app_module = artifacts.exe.root_module;
-    if (app_module.resolved_target.?.result.os.tag != .macos)
-        @panic("phux-cockpit supports macOS only");
     addTsEngineModules(b, artifacts, measure, phux_enabled, ffi);
     if (phux_enabled) addCoordinatorCli(b, artifacts, ffi_profile);
 

@@ -190,6 +190,12 @@ fn runDriver(io: std.Io, argv: []const []const u8, timeout_ms: u32) Error!Captur
 extern "c" fn _NSGetExecutablePath(buf: [*c]u8, bufsize: *u32) c_int;
 
 pub fn executablePath(buf: []u8) Error![]u8 {
+    // spike: Linux resolves /proc/self/exe.
+    if (comptime @import("builtin").os.tag == .linux) {
+        const n = std.c.readlink("/proc/self/exe", buf.ptr, buf.len);
+        if (n < 0) return error.BundleMissing;
+        return buf[0..@intCast(n)];
+    }
     var size: u32 = @intCast(buf.len);
     if (_NSGetExecutablePath(buf.ptr, &size) != 0) return error.BundleMissing;
     const len = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
