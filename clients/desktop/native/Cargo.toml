@@ -25,6 +25,9 @@ unicode-segmentation = "1"
 napi = { version = "=3.12.7", features = ["napi8", "serde-json"] }
 napi-derive = "=3.6.8"
 serde_json = "1"
+# Quick terminal: system-wide hotkeys without Accessibility permission or
+# handwritten Carbon FFI (the host denies unsafe code).
+global-hotkey = "=0.8.0"
 
 [build-dependencies]
 napi-build = "=2.4.4"

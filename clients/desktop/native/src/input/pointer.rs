@@ -33,6 +33,20 @@ impl TerminalInput {
             && y < f64::from(f32::from(metrics.line_height)) * f64::from(self.dimensions.1)
     }
 
+    /// The link under a Command-click, resolved against the live frame.
+    pub fn link_at(&self, position: Point<Pixels>) -> Option<String> {
+        let metrics = self.metrics?;
+        if !self.hit(position) {
+            return None;
+        }
+        let (x, y) = metrics.local(position);
+        let col = (x / f64::from(f32::from(metrics.cell_width))) as u16;
+        let row = (y / f64::from(f32::from(metrics.line_height))) as u16;
+        let client = self.client().ok()?;
+        let frame = client.with_control(|control| control.publication().acquire_view(self.view))?;
+        super::link::link_in(&frame, row, col)
+    }
+
     pub fn mouse_down(
         &mut self,
         event: &MouseDownEvent,

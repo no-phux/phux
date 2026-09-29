@@ -877,6 +877,8 @@ export interface DesktopConnectionIdentity {
 /**
  * Initial local-server connection configuration. Dimensions are the runtime
  * connection's initial viewport, not an independently resizable view.
+ * `cols = rows = 0` casts no geometry vote: attaching resizes nothing and
+ * each terminal is sized explicitly (`resizeView`).
  */
 export interface DesktopConnectOptions {
   socketPath: string
@@ -1067,6 +1069,18 @@ export interface DesktopViewInfo {
   scrollOffset: string
   scrollLength: string
   atTail: boolean
+}
+
+/** Hotkeys registered by this process. Dropping it unregisters them. */
+export declare class GlobalHotkeys {
+  constructor()
+  /**
+   * Register a chord in the shell's `cmd+ctrl+alt+shift+key` form. Fails
+   * when another app (Ghostty, for one) already holds it.
+   */
+  register(chord: string): void
+  /** Chords pressed since the last call, oldest first. Releases are dropped. */
+  takePressed(): Array<string>
 }
 
 /** Process-local fixture counts, including actual GPUI paint callbacks. */
