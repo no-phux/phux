@@ -158,6 +158,12 @@ impl CustomElement for Terminal {
             if self.settings.focused && !self.was_focused && !focus.is_focused(window) {
                 focus.focus(window, cx);
             }
+            // The shell withdrew input (a modal or find field took over). Give
+            // the keyboard back to the window so keys cannot reach the PTY
+            // behind an overlay that has no text field of its own.
+            if !self.settings.focused && self.was_focused && focus.is_focused(window) {
+                window.blur();
+            }
             self.was_focused = self.settings.focused;
             let down = input.clone();
             let up = input.clone();
@@ -198,6 +204,7 @@ impl CustomElement for Terminal {
                 });
         }
         let painted = input;
+        let size_owner = self.settings.size_owner;
         surface
             .child(
                 gpui::canvas(
@@ -205,7 +212,7 @@ impl CustomElement for Terminal {
                     move |_bounds, prepared, window, cx| {
                         let report = prepared.paint(_bounds, window, cx);
                         if let Some(input) = &painted {
-                            input_host::present(input, &report, &rebind, window, cx);
+                            input_host::present(input, &report, size_owner, &rebind, window, cx);
                             input_host::paint_preedit(
                                 input,
                                 report.geometry.bounds.origin,
@@ -253,11 +260,15 @@ impl CustomElement for Terminal {
             "cursorVisible",
             "blinkVisible",
             "paintRevision",
+            "sizeOwner",
         ]
     }
 
     fn supported_events(&self) -> &'static [&'static str] {
-        &[]
+        // Wired on primary mouse-up and OS drops by `custom_surface`. Pointer
+        // input itself stays native; these only tell the shell which pane the
+        // user chose and which paths arrived.
+        &["click", "fileDrop"]
     }
 
     fn destroy(&mut self) {

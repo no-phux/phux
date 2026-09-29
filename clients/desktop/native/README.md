@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-27
+last-reviewed: 2026-09-28
 ---
 
 # Single-addon desktop host
@@ -31,6 +31,13 @@ its C ABI disabled and owns the sole Client registry. Do not add another.
 sets `NAPI_RS_NATIVE_LIBRARY_PATH`, loads the addon and installs extensions.
 Call it before importing GPUIX or the Solid adapter. A second addon path is
 rejected even after a failed start, and WASI-selection overrides are refused.
+
+`phux-terminal` sizes its terminal from its own bounds when the shell marks it
+`sizeOwner` (see the architecture's Geometry section), gives the keyboard back
+to the window when `focused` drops, and reports `click` and `fileDrop` so the
+shell can track the chosen pane and paste dropped paths. `phux-drag-region`
+moves the window and zooms it on double-click, which a transparent titlebar
+otherwise loses.
 
 `nativeClientStatus(handle)` resolves a handle through the painter's accessor
 without draining events. `DesktopClient.close()` returns the final event batch,

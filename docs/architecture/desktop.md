@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-26
+last-reviewed: 2026-09-28
 ---
 
 # Desktop architecture
@@ -134,11 +134,16 @@ One geometry calculation maps font metrics, content bounds, scale, cell counts,
 pointer hit-testing, IME rectangle, and clipping. It is used by both native
 layout and paint, rather than independently rounded in TypeScript and Rust.
 
-The focused writable view proposes the terminal's desired size. Focus transfer
-changes the controller only after identity and role checks. When no eligible
-view is focused, retain the last authoritative geometry; observer activity does
-not seize control. Other views crop/display authoritative columns and rows,
-with their own scroll positions and unused space. No locally invented reflow.
+One writable view per terminal owns its size: the terminal's only visible
+view, or among several, the one the user focused last. The shell names that
+owner (`sizeOwner`); the native element proposes whole cells that fit its
+painted bounds through `resize_terminal`, edge-triggered and throttled during a
+drag with a trailing frame so the final size is sent. Gaining ownership or
+re-activating the window re-proposes, reclaiming a size another client changed.
+Focus transfer changes the owner only after identity and role checks; observer
+activity does not seize control. Other views crop/display authoritative
+columns and rows, with their own scroll positions and unused space. No locally
+invented reflow.
 
 Add a targeted runtime geometry seam that remembers desired geometry per
 terminal, applies it only to the intended terminal on attach/reconnect, and
