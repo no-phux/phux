@@ -293,6 +293,33 @@ fn consumer_overflow_recovers_declarations_without_binding_side_requests() {
 }
 
 #[test]
+fn metadata_error_preserves_the_recovery_requested_while_read_was_pending() {
+    let (mut plane, old_read) = discovered();
+    journal_gap(&mut plane);
+    let inventory = state_id(&outbound(&mut plane));
+    answer_state(&mut plane, inventory, snapshot());
+    assert!(matches!(
+        outbound(&mut plane).as_slice(),
+        [FrameKind::SubscribeMetadata { .. }]
+    ));
+    plane
+        .feed(FrameKind::Error {
+            request_id: Some(old_read),
+            code: ErrorCode::InvalidCommand,
+            message: "old read failed".into(),
+        })
+        .unwrap();
+    assert!(declarations(&mut plane).is_empty());
+    let frames = outbound(&mut plane);
+    assert_eq!(frames.len(), 1, "one coalesced retry, even on error");
+    let retry = metadata_id(&frames);
+    assert_ne!(retry, old_read);
+    answer_metadata(&mut plane, retry, None);
+    assert_eq!(declarations(&mut plane), vec![None]);
+    assert!(outbound(&mut plane).is_empty());
+}
+
+#[test]
 fn a_spawn_receipt_fences_an_older_inventory_even_before_its_broadcast() {
     let (mut plane, read) = discovered();
     answer_metadata(&mut plane, read, None);

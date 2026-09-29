@@ -844,7 +844,11 @@ export declare class DesktopClient {
    */
   takeEvents(): Array<DesktopEvent>
   refreshTopology(): number | null
-  /** Subscribe to this terminal's agent badge. Empty name means no declared agent. */
+  /**
+   * Refresh runtime-managed agent discovery. Retained for existing callers;
+   * topology discovery automatically watches every inventoried terminal.
+   * Empty badge name means no declared agent.
+   */
   watchAgent(terminal: string): void
   /** Attach an existing named server session; does not create it implicitly. */
   attachSession(name: string): void

@@ -572,6 +572,73 @@ mod tests {
     }
 
     #[test]
+    fn attach_and_gap_recovery_do_not_steal_host_metadata_replies() {
+        use crate::c::test_support::{attached_frame, queue_attach, single_terminal_snapshot};
+        use phux_protocol::wire::frame::AgentEvent;
+
+        for refused in [false, true] {
+            let client = negotiated();
+            queue_attach(client, 1);
+            assert_eq!(get(client, 1, b"myapp.layout/v1/7"), PhuxClientResult::Ok);
+            let snapshot = single_terminal_snapshot(phux_protocol::ResourceId::local(1), 80, 24);
+            assert_eq!(
+                feed(client, &attached_frame(1, snapshot)),
+                PhuxClientResult::Ok
+            );
+            assert_eq!(
+                feed(
+                    client,
+                    &FrameKind::Event {
+                        terminal: None,
+                        event: AgentEvent::JournalGap {
+                            first_missing: 1,
+                            last_missing: 2
+                        },
+                        stamp: None,
+                    }
+                ),
+                PhuxClientResult::Ok
+            );
+            let sent = queued(client);
+            assert_eq!(
+                sent.len(),
+                1,
+                "manual lifecycle must not allocate autonomous IDs: {sent:?}"
+            );
+            assert!(matches!(
+                sent[0],
+                FrameKind::GetMetadata { request_id: 1, .. }
+            ));
+            let reply = if refused {
+                FrameKind::Error {
+                    request_id: Some(1),
+                    code: ErrorCode::InvalidCommand,
+                    message: "host refusal".into(),
+                }
+            } else {
+                FrameKind::MetadataValue {
+                    request_id: 1,
+                    value: Some(b"host projection".to_vec()),
+                }
+            };
+            assert_eq!(feed(client, &reply), PhuxClientResult::Ok);
+            let done = info(client);
+            assert_eq!(done.request_id, 1);
+            assert_eq!(
+                done.status,
+                if refused { STATUS_REFUSED } else { STATUS_OK }
+            );
+            if !refused {
+                assert_eq!(
+                    unsafe { std::slice::from_raw_parts(done.value.data, done.value.len) },
+                    b"host projection"
+                );
+            }
+            unsafe { crate::c::phux_client_free(client) };
+        }
+    }
+
+    #[test]
     fn set_queues_set_then_confirming_get_and_requires_byte_match() {
         let client = negotiated();
         let key = b"myapp.layout/v1/7";

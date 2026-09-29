@@ -97,11 +97,14 @@ const APPLY_PASTE_OVERHEAD: usize = 30;
 pub struct ControlOptions {
     /// The `HELLO` client name.
     pub client_name: String,
-    /// Whether the runtime queues its post-handshake attach or topology read.
+    /// Whether the runtime queues its post-handshake attach, topology reads,
+    /// and agent metadata discovery/recovery.
     ///
     /// Socket-owning embedders set this to `false`: their stable ABI exposes
     /// `HELLO` and `ATTACH` as explicit calls, while this plane still owns all
-    /// lifecycle validation and frame application.
+    /// lifecycle validation and frame application. These embedders also own
+    /// request-ID allocation and metadata orchestration; autonomous roster
+    /// reads would collide with their externally allocated correlations.
     pub automatic_lifecycle: bool,
     /// The viewport `ATTACH` and spawns declare, in cells. `(0, 0)` casts no
     /// vote: the server ignores it in window-size policy, a session attach
