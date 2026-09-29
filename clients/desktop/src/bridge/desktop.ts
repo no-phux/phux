@@ -1,0 +1,202 @@
+/**
+ * The typed native boundary. One `DesktopClient` per connection, one drain
+ * per wake: this module owns `takeEvents`, turns the batch into Solid
+ * signals, and forwards the raw batch to one subscriber. UI code never
+ * touches the socket, parses VT, or retries delivery.
+ */
+import { batch, createSignal, type Accessor } from "solid-js";
+import type {
+  DesktopClient,
+  DesktopEvent,
+  DesktopPane,
+  DesktopServerInfo,
+  DesktopSession,
+  DesktopSpawnOptions,
+  DesktopTopology,
+} from "../../native/generated/index";
+
+export interface DesktopHost {
+  DesktopClient: new () => DesktopClient;
+}
+
+export interface AgentInfo {
+  name: string;
+  kind?: string;
+  state: string;
+  attention: string;
+  changedAt: number;
+}
+
+export interface ConnectTarget {
+  socketPath: string;
+  sessionName: string;
+}
+
+export interface Bridge {
+  status: Accessor<string>;
+  error: Accessor<string | undefined>;
+  topology: Accessor<DesktopTopology | undefined>;
+  server: Accessor<DesktopServerInfo | undefined>;
+  agents: Accessor<Record<string, AgentInfo>>;
+  /** Bumps on every drained wake; read it to re-evaluate native snapshots. */
+  revision: Accessor<number>;
+  handle: Accessor<string>;
+  target: ConnectTarget;
+  client(): DesktopClient;
+  connect(): void;
+  reconnect(): void;
+  close(): void;
+  ready(terminalId: string): boolean;
+  fenced(terminalId: string): boolean;
+  homeSession(): DesktopSession | undefined;
+  panes(): DesktopPane[];
+  spawn(options: Omit<DesktopSpawnOptions, "identity" | "sessionId">): number | undefined;
+  onEvents(listener: (events: DesktopEvent[]) => void): void;
+}
+
+export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
+  const [status, setStatus] = createSignal("Connecting");
+  const [error, setError] = createSignal<string | undefined>();
+  const [topology, setTopology] = createSignal<DesktopTopology | undefined>();
+  const [server, setServer] = createSignal<DesktopServerInfo | undefined>();
+  const [agents, setAgents] = createSignal<Record<string, AgentInfo>>({});
+  const [revision, setRevision] = createSignal(0);
+  const [handle, setHandle] = createSignal("");
+  const watched = new Set<string>();
+  let owner: DesktopClient | undefined;
+  let closed = false;
+  let listener: (events: DesktopEvent[]) => void = () => {};
+
+  function client(): DesktopClient {
+    if (!owner) throw new Error("Desktop client is not connected");
+    return owner;
+  }
+
+  function accept(events: DesktopEvent[]): void {
+    for (const event of events) {
+      if (event.kind === "ServerError") setError(event.message);
+      if (event.kind === "AgentBadge") noteAgent(event);
+    }
+    listener(events);
+  }
+
+  function noteAgent(event: Extract<DesktopEvent, { kind: "AgentBadge" }>): void {
+    setAgents((current) => {
+      const next = { ...current };
+      if (!event.name) {
+        delete next[event.terminalId];
+        return next;
+      }
+      const previous = current[event.terminalId];
+      const changed = previous?.state !== event.state || previous?.attention !== event.attention;
+      const info: AgentInfo = {
+        name: event.name,
+        state: event.state,
+        attention: event.attention,
+        changedAt: changed || !previous ? Date.now() : previous.changedAt,
+      };
+      if (event.agentKind) info.kind = event.agentKind;
+      next[event.terminalId] = info;
+      return next;
+    });
+  }
+
+  function snapshot(): void {
+    const native = client();
+    const failure = native.lastError();
+    const next = native.topology() ?? undefined;
+    batch(() => {
+      setStatus(native.status());
+      if (failure) setError(failure);
+      setTopology(next);
+      const info = native.serverInfo();
+      if (info) setServer(info);
+      setRevision((value) => value + 1);
+    });
+    for (const pane of next?.panes ?? []) {
+      if (watched.has(pane.terminalId)) continue;
+      watched.add(pane.terminalId);
+      native.watchAgent(pane.terminalId);
+    }
+  }
+
+  function activity(from: string): void {
+    if (closed || !owner || from !== owner.handle) return;
+    // One drain per wake, even when empty: the drain rearms notification.
+    const events = owner.takeEvents();
+    batch(() => {
+      accept(events);
+      snapshot();
+    });
+  }
+
+  function connect(): void {
+    closed = false;
+    owner = new host.DesktopClient();
+    watched.clear();
+    batch(() => {
+      setHandle(owner?.handle ?? "");
+      setStatus("Connecting");
+      setError(undefined);
+    });
+    owner.connect(
+      { socketPath: target.socketPath, cols: 120, rows: 36, sessionName: target.sessionName },
+      activity,
+    );
+  }
+
+  function close(): void {
+    if (closed || !owner) return;
+    closed = true;
+    accept(owner.close());
+  }
+
+  function reconnect(): void {
+    close();
+    connect();
+  }
+
+  function homeSession(): DesktopSession | undefined {
+    return topology()?.sessions.find((session) => session.name === target.sessionName);
+  }
+
+  function spawn(options: Omit<DesktopSpawnOptions, "identity" | "sessionId">): number | undefined {
+    const info = server();
+    const home = homeSession();
+    if (!info || !home || status() !== "Attached") return undefined;
+    return client().spawnTerminalWithOptions({
+      ...options,
+      identity: { serverId: info.serverId, connectionEpoch: info.connectionEpoch },
+      sessionId: home.id,
+    });
+  }
+
+  return {
+    status,
+    error,
+    topology,
+    server,
+    agents,
+    revision,
+    handle,
+    target,
+    client,
+    connect,
+    reconnect,
+    close,
+    ready: (terminalId) => {
+      revision();
+      return !closed && !!owner && owner.inputReadiness(terminalId).ready;
+    },
+    fenced: (terminalId) => {
+      revision();
+      return !closed && !!owner && owner.inputReadiness(terminalId).deliveryFenced;
+    },
+    homeSession,
+    panes: () => topology()?.panes ?? [],
+    spawn,
+    onEvents: (next) => {
+      listener = next;
+    },
+  };
+}
