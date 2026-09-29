@@ -5,7 +5,7 @@ import { Overlay } from "../shell/palette";
 import { Button, IconButton, Kbd, Label, column, row, usePalette } from "../ui/controls";
 import type { IconName } from "../ui/icons";
 import { Icon } from "../ui/controls";
-import { palette, radius, themes, uiFont, type Theme } from "../ui/theme";
+import { palette, radius, themeById, uiFont, type Theme } from "../ui/theme";
 import { defaultDisplay, fontFamilies, type DisplayPrefs } from "../workspace/persist";
 
 export interface ShortcutRow {
@@ -14,14 +14,24 @@ export interface ShortcutRow {
   group: string;
 }
 
-type Section = "appearance" | "terminal" | "keyboard" | "connection";
+type Section = "appearance" | "terminal" | "keyboard" | "ghostty" | "connection";
 
 const SECTIONS: { id: Section; label: string; icon: IconName }[] = [
   { id: "appearance", label: "Appearance", icon: "palette" },
   { id: "terminal", label: "Terminal", icon: "terminal" },
   { id: "keyboard", label: "Keyboard", icon: "command" },
+  { id: "ghostty", label: "Ghostty", icon: "copy" },
   { id: "connection", label: "Connection", icon: "bolt" },
 ];
+
+/** What Settings shows and can do about the user's Ghostty config. */
+export interface GhosttyPanel {
+  found: boolean;
+  unmapped: string[];
+  font: string | undefined;
+  apply: () => void;
+  reload: () => void;
+}
 
 /**
  * Every value shows its effect immediately and persists with the layout
@@ -31,6 +41,8 @@ export function Settings(props: {
   prefs: DisplayPrefs;
   update: (change: Partial<DisplayPrefs>) => void;
   shortcuts: ShortcutRow[];
+  themes: Theme[];
+  ghostty: GhosttyPanel;
   server: DesktopServerInfo | undefined;
   socket: string;
   session: string;
@@ -94,7 +106,7 @@ export function Settings(props: {
               hint="Chrome and terminal default colours. Applications' own colours still win."
             >
               <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
-                <For each={themes}>
+                <For each={props.themes}>
                   {(theme): JSX.Element => (
                     <ThemeCard
                       theme={theme}
@@ -123,7 +135,11 @@ export function Settings(props: {
           <Show when={section() === "terminal"}>
             <Group title="Font family">
               <div style={{ display: "flex", flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-                <For each={fontFamilies}>
+                <For
+                  each={[
+                    ...new Set([props.ghostty.font, props.prefs.fontFamily, ...fontFamilies]),
+                  ].flatMap((family) => (family ? [family] : []))}
+                >
                   {(family): JSX.Element => (
                     <Chip
                       label={family}
@@ -150,6 +166,42 @@ export function Settings(props: {
                 more={() => props.update({ lineHeight: props.prefs.lineHeight + 0.05 })}
                 reset={() => props.update({ lineHeight: defaultDisplay.lineHeight })}
               />
+              <Stepper
+                label="Cell width"
+                value={`${Math.round(props.prefs.cellWidth * 100)}%`}
+                less={() => props.update({ cellWidth: props.prefs.cellWidth - 0.01 })}
+                more={() => props.update({ cellWidth: props.prefs.cellWidth + 0.01 })}
+                reset={() => props.update({ cellWidth: 1 })}
+              />
+              <Stepper
+                label="Padding"
+                value={`${props.prefs.paddingX} \u00d7 ${props.prefs.paddingY}`}
+                less={() =>
+                  props.update({
+                    paddingX: props.prefs.paddingX - 1,
+                    paddingY: props.prefs.paddingY - 1,
+                  })
+                }
+                more={() =>
+                  props.update({
+                    paddingX: props.prefs.paddingX + 1,
+                    paddingY: props.prefs.paddingY + 1,
+                  })
+                }
+                reset={() =>
+                  props.update({
+                    paddingX: defaultDisplay.paddingX,
+                    paddingY: defaultDisplay.paddingY,
+                  })
+                }
+              />
+              <Stepper
+                label="Unfocused pane opacity"
+                value={`${Math.round(props.prefs.unfocusedOpacity * 100)}%`}
+                less={() => props.update({ unfocusedOpacity: props.prefs.unfocusedOpacity - 0.05 })}
+                more={() => props.update({ unfocusedOpacity: props.prefs.unfocusedOpacity + 0.05 })}
+                reset={() => props.update({ unfocusedOpacity: 1 })}
+              />
             </Group>
             <Group title="Input">
               <Toggle
@@ -165,7 +217,7 @@ export function Settings(props: {
                   padding: 14,
                   gap: 2,
                   borderRadius: radius.control,
-                  backgroundColor: palette(themeOf(props.prefs.themeId)).background,
+                  backgroundColor: palette(themeById(props.prefs.themeId, props.themes)).background,
                   borderWidth: 1,
                   borderColor: colors().border,
                 })}
@@ -175,7 +227,7 @@ export function Settings(props: {
                     fontFamily: props.prefs.fontFamily,
                     fontSize: props.prefs.fontSize,
                     lineHeight: props.prefs.fontSize * props.prefs.lineHeight,
-                    color: palette(themeOf(props.prefs.themeId)).foreground,
+                    color: palette(themeById(props.prefs.themeId, props.themes)).foreground,
                   }}
                 >
                   {
@@ -205,6 +257,48 @@ export function Settings(props: {
               </div>
             </Group>
           </Show>
+          <Show when={section() === "ghostty"}>
+            <Group
+              title="Ghostty config"
+              hint={
+                props.ghostty.found
+                  ? "Font, cell size, colours, palette, padding, dimming and keybinds are read from your Ghostty config."
+                  : "No Ghostty config found in ~/.config/ghostty or Application Support."
+              }
+            >
+              <div style={row({ gap: 8 })}>
+                <Button
+                  label="Use Ghostty look"
+                  icon="palette"
+                  tone="accent"
+                  run={() => props.ghostty.apply()}
+                />
+                <Button label="Reload config" icon="refresh" run={() => props.ghostty.reload()} />
+              </div>
+              <Toggle
+                label="Use Ghostty keybinds"
+                hint="Your keybind lines override the built-in chords"
+                value={props.prefs.ghosttyKeys}
+                set={(ghosttyKeys) => props.update({ ghosttyKeys })}
+              />
+            </Group>
+            <Show when={props.ghostty.unmapped.length > 0}>
+              <Group
+                title="Not supported here"
+                hint="These Ghostty actions have no equivalent yet."
+              >
+                <div style={column({ gap: 2 })}>
+                  <For each={props.ghostty.unmapped}>
+                    {(line): JSX.Element => (
+                      <Label size={uiFont.small} color={colors().muted} mono>
+                        {line}
+                      </Label>
+                    )}
+                  </For>
+                </div>
+              </Group>
+            </Show>
+          </Show>
           <Show when={section() === "connection"}>
             <Group title="Server">
               <Fact label="Status" value={props.status} />
@@ -231,14 +325,6 @@ export function Settings(props: {
       </div>
     </Overlay>
   );
-}
-
-function themeOf(id: string): Theme {
-  return themes.find((theme) => theme.id === id) ?? themes[0] ?? fallbackTheme();
-}
-
-function fallbackTheme(): Theme {
-  throw new Error("No built-in themes");
 }
 
 function Group(props: { title: string; hint?: string; children: JSX.Element }): JSX.Element {

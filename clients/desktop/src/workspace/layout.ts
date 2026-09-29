@@ -233,3 +233,31 @@ export function reorder<T>(items: readonly T[], from: number, to: number): T[] {
   next.splice(Math.max(0, Math.min(to, next.length)), 0, moved);
   return next;
 }
+
+/**
+ * Move the divider nearest `leafId` along `direction`'s axis by `delta`
+ * (a ratio), the way Ghostty's `resize_split` does: `right`/`down` push the
+ * divider right/down whichever side the leaf is on. Unchanged when no
+ * enclosing split runs along that axis.
+ */
+export function nudge(
+  node: LayoutNode,
+  leafId: string,
+  direction: Direction,
+  delta: number,
+): LayoutNode {
+  const axis: Axis = direction === "left" || direction === "right" ? "row" : "column";
+  const sign = direction === "right" || direction === "down" ? 1 : -1;
+  const target = pathTo(node, leafId)
+    ?.reverse()
+    .find((split) => split.axis === axis);
+  return target ? setRatio(node, target.id, target.ratio + sign * delta) : node;
+}
+
+type SplitNode = Extract<LayoutNode, { kind: "split" }>;
+
+function pathTo(node: LayoutNode, leafId: string): SplitNode[] | undefined {
+  if (node.kind === "leaf") return node.placement.id === leafId ? [] : undefined;
+  const below = pathTo(node.first, leafId) ?? pathTo(node.second, leafId);
+  return below ? [node, ...below] : undefined;
+}

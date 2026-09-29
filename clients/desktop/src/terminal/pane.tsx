@@ -23,7 +23,12 @@ export interface PaneProps {
   fenced: boolean;
   views: number;
   revision: number;
-  font: { family: string; size: number; lineHeight: number };
+  font: { family: string; size: number; lineHeight: number; cellWidth: number; cellHeight: number };
+  /** Non-Command chords the shell binds; the terminal lets them through. */
+  appChords: string[];
+  padding: { x: number; y: number };
+  /** 0 for none, else how strongly an unfocused pane is dimmed. */
+  dim: number;
   theme: TerminalTheme;
   optionAsAlt: boolean;
   /** Overlays drawn over the terminal, such as the find bar. */
@@ -139,10 +144,10 @@ export function Pane(props: PaneProps): JSX.Element {
           flexGrow: 1,
           minWidth: 0,
           minHeight: 0,
-          paddingTop: 6,
-          paddingLeft: 8,
-          paddingRight: 4,
-          paddingBottom: 2,
+          paddingTop: props.padding.y,
+          paddingBottom: props.padding.y,
+          paddingLeft: props.padding.x,
+          paddingRight: props.padding.x,
           backgroundColor: props.theme.background,
         }}
       >
@@ -154,16 +159,36 @@ export function Pane(props: PaneProps): JSX.Element {
           focused={props.inputFocused}
           sizeOwner={props.sizeOwner}
           optionAsAlt={props.optionAsAlt}
+          appChords={props.appChords}
           font={props.font}
           theme={props.theme}
           onClick={() => props.focus()}
           onFileDrop={(event) => props.drop(event.paths ?? [])}
           style={{ flexGrow: 1, minWidth: 0, minHeight: 0 }}
         />
+        <Show when={props.dim > 0}>
+          <div
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              pointerEvents: "none",
+              backgroundColor: `${props.theme.background}${alpha(props.dim)}`,
+            }}
+          />
+        </Show>
         {props.children}
       </div>
     </div>
   );
+}
+
+function alpha(amount: number): string {
+  return Math.round(Math.min(1, Math.max(0, amount)) * 255)
+    .toString(16)
+    .padStart(2, "0");
 }
 
 /** POSIX shell quoting for dropped paths, so a drop is text, never a command. */

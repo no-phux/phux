@@ -17,6 +17,16 @@ export interface DisplayPrefs {
   sidebarVisible: boolean;
   sidebarWidth: number;
   notifications: boolean;
+  /** Cell size multipliers, like Ghostty's adjust-cell-width/height. */
+  cellWidth: number;
+  cellHeight: number;
+  /** Space between a pane's edge and its terminal grid, in points. */
+  paddingX: number;
+  paddingY: number;
+  /** Opacity kept by panes that are not focused (1 = no dimming). */
+  unfocusedOpacity: number;
+  /** Apply the Ghostty config's keybinds over the built-in ones. */
+  ghosttyKeys: boolean;
 }
 
 export const defaultDisplay: DisplayPrefs = {
@@ -28,6 +38,12 @@ export const defaultDisplay: DisplayPrefs = {
   sidebarVisible: true,
   sidebarWidth: 248,
   notifications: true,
+  cellWidth: 1,
+  cellHeight: 1,
+  paddingX: 8,
+  paddingY: 6,
+  unfocusedOpacity: 1,
+  ghosttyKeys: true,
 };
 
 export const fontFamilies = [
@@ -192,6 +208,15 @@ export function parseDisplay(value: unknown): DisplayPrefs {
     sidebarWidth:
       typeof value.sidebarWidth === "number" ? value.sidebarWidth : defaultDisplay.sidebarWidth,
     notifications: value.notifications !== false,
+    cellWidth: typeof value.cellWidth === "number" ? value.cellWidth : defaultDisplay.cellWidth,
+    cellHeight: typeof value.cellHeight === "number" ? value.cellHeight : defaultDisplay.cellHeight,
+    paddingX: typeof value.paddingX === "number" ? value.paddingX : defaultDisplay.paddingX,
+    paddingY: typeof value.paddingY === "number" ? value.paddingY : defaultDisplay.paddingY,
+    unfocusedOpacity:
+      typeof value.unfocusedOpacity === "number"
+        ? value.unfocusedOpacity
+        : defaultDisplay.unfocusedOpacity,
+    ghosttyKeys: value.ghosttyKeys !== false,
   });
 }
 
@@ -205,9 +230,11 @@ export function sanitizeDisplay(display: DisplayPrefs): DisplayPrefs {
       2,
     ),
     optionAsAlt: display.optionAsAlt,
-    themeId: themes.some((theme) => theme.id === display.themeId)
-      ? display.themeId
-      : defaultDisplay.themeId,
+    // "ghostty" is resolved at runtime against the user's config.
+    themeId:
+      display.themeId === "ghostty" || themes.some((theme) => theme.id === display.themeId)
+        ? display.themeId
+        : defaultDisplay.themeId,
     sidebarVisible: display.sidebarVisible,
     sidebarWidth: clamp(
       Math.round(finite(display.sidebarWidth, defaultDisplay.sidebarWidth)),
@@ -215,7 +242,17 @@ export function sanitizeDisplay(display: DisplayPrefs): DisplayPrefs {
       SIDEBAR_MAX,
     ),
     notifications: display.notifications,
+    cellWidth: clamp(roundTo(finite(display.cellWidth, 1), 100), 0.5, 2),
+    cellHeight: clamp(roundTo(finite(display.cellHeight, 1), 100), 0.5, 2),
+    paddingX: clamp(Math.round(finite(display.paddingX, defaultDisplay.paddingX)), 0, 64),
+    paddingY: clamp(Math.round(finite(display.paddingY, defaultDisplay.paddingY)), 0, 64),
+    unfocusedOpacity: clamp(roundTo(finite(display.unfocusedOpacity, 1), 100), 0.15, 1),
+    ghosttyKeys: display.ghosttyKeys,
   };
+}
+
+function roundTo(value: number, steps: number): number {
+  return Math.round(value * steps) / steps;
 }
 
 function finite(value: number, fallback: number): number {

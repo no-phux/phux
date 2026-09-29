@@ -13,10 +13,17 @@ import type {
   DesktopSession,
   DesktopSpawnOptions,
   DesktopTopology,
+  EventPayload,
+  GlobalHotkeys,
+  GpuixRenderer,
 } from "../../native/generated/index";
 
 export interface DesktopHost {
   DesktopClient: new () => DesktopClient;
+  GpuixRenderer: new (
+    callback: (error: Error | null, event: EventPayload) => void,
+  ) => GpuixRenderer;
+  GlobalHotkeys: new () => GlobalHotkeys;
 }
 
 export interface AgentInfo {
@@ -140,7 +147,9 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
       setError(undefined);
     });
     owner.connect(
-      { socketPath: target.socketPath, cols: 120, rows: 36, sessionName: target.sessionName },
+      // No geometry vote (0x0): attaching never reshapes panes another client
+      // is showing; each pane sizes its own terminal explicitly.
+      { socketPath: target.socketPath, cols: 0, rows: 0, sessionName: target.sessionName },
       activity,
     );
   }

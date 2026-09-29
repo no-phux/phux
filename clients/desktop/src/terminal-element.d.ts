@@ -12,7 +12,13 @@ export interface MovedView {
   terminalId: string;
   viewId: string;
   title: string;
-  font?: { family: string; size: number; lineHeight: number };
+  font?: {
+    family: string;
+    size: number;
+    lineHeight: number;
+    cellWidth?: number;
+    cellHeight?: number;
+  };
   theme?: TerminalTheme;
 }
 
@@ -26,6 +32,8 @@ export interface TerminalTheme {
   cursor: string;
   selectionForeground: string;
   selectionBackground: string;
+  /** Exactly 16 ANSI colours; absent keeps the terminal's own palette. */
+  palette?: string[];
 }
 
 declare module "@gpuix/solid/jsx-runtime" {
@@ -40,7 +48,14 @@ declare module "@gpuix/solid/jsx-runtime" {
           focused: boolean;
           sizeOwner?: boolean;
           optionAsAlt?: boolean;
-          font?: { family: string; size: number; lineHeight: number };
+          appChords?: string[];
+          font?: {
+            family: string;
+            size: number;
+            lineHeight: number;
+            cellWidth?: number;
+            cellHeight?: number;
+          };
           theme?: TerminalTheme;
         }
       >;

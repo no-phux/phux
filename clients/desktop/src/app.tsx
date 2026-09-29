@@ -11,10 +11,10 @@ import {
   type Accessor,
   type JSX,
 } from "solid-js";
-import { render, resetRender, useGpuix } from "@gpuix/solid";
+import { createRoot, render, resetRender, useGpuix } from "@gpuix/solid";
 import type { DesktopEvent, DesktopPane, DesktopSearchMatch } from "../native/generated/index";
 import { createBridge, type DesktopHost } from "./bridge/desktop";
-import { Settings } from "./settings/settings";
+import { Settings, type GhosttyPanel } from "./settings/settings";
 import {
   ConfirmDialog,
   EmptyState,
@@ -24,7 +24,7 @@ import {
   type StatusInfo,
   type Toast,
 } from "./shell/chrome";
-import { chordOf, plainKey } from "./shell/keymap";
+import { keyChord } from "./shell/keymap";
 import { CommandPalette, type PaletteItem } from "./shell/palette";
 import { Sidebar, paneTitle, shortPath } from "./shell/sidebar";
 import { TabBar, type TabView } from "./shell/tabbar";
@@ -33,7 +33,8 @@ import { Pane, quotePaths } from "./terminal/pane";
 import type { TerminalTheme } from "./terminal-element";
 import { PaletteContext } from "./ui/controls";
 import type { IconName } from "./ui/icons";
-import { palette, themeById, themes } from "./ui/theme";
+import { palette, themeById, themes, type Theme } from "./ui/theme";
+import { ghosttyPrefs, ghosttyTheme, parseGhostty } from "./settings/ghostty";
 import {
   clampRatio,
   placements,
@@ -64,6 +65,21 @@ interface AppProps {
   socketPath: string;
   sessionName: string;
   layouts: LayoutStore;
+  startupError?: string | undefined;
+  /** Reads the user's Ghostty config text, or undefined when there is none. */
+  readGhostty?: (() => string | undefined) | undefined;
+  /** This window's key router; the app installs its shortcut handler here. */
+  keys: WindowKeys;
+  /** Open another window on the same server (Command-N). */
+  newWindow: () => void;
+  /** Show or hide the quick terminal window. */
+  toggleQuick: () => void;
+  /** A secondary window starts with a new terminal, not the restored layout. */
+  fresh?: boolean | undefined;
+}
+
+interface WindowKeys {
+  run: (chord: string) => void;
 }
 
 export interface Command {
@@ -112,8 +128,21 @@ function DesktopApp(props: AppProps): JSX.Element {
   const sessionName = untrack(() => props.sessionName);
   const initial = parseLayout(layouts.read());
   let lastSaved: SavedLayout | undefined = initial;
-  const [prefs, setPrefs] = createSignal<DisplayPrefs>(initial?.display ?? defaultDisplay);
-  const colors = createMemo(() => palette(themeById(prefs().themeId)));
+  const readGhostty = untrack(() => props.readGhostty);
+  const ghosttyText = readGhostty?.();
+  const startGhostty = parseGhostty(ghosttyText ?? "");
+  const [ghostty, setGhostty] = createSignal(startGhostty);
+  const [ghosttyFound, setGhosttyFound] = createSignal(ghosttyText !== undefined);
+  // First launch follows Ghostty; saved preferences win after that.
+  const [prefs, setPrefs] = createSignal<DisplayPrefs>(
+    initial?.display ??
+      (ghosttyText !== undefined ? ghosttyPrefs(defaultDisplay, startGhostty) : defaultDisplay),
+  );
+  const extraThemes = createMemo((): Theme[] => {
+    const theme = ghosttyTheme(ghostty());
+    return theme ? [theme] : [];
+  });
+  const colors = createMemo(() => palette(themeById(prefs().themeId, extraThemes())));
   const [modal, setModal] = createSignal<Modal>({ kind: "none" });
   const [find, setFind] = createSignal<FindState | undefined>();
   const [toasts, setToasts] = createSignal<Toast[]>([]);
@@ -127,10 +156,15 @@ function DesktopApp(props: AppProps): JSX.Element {
     untrack(() => props.host),
     { socketPath, sessionName },
   );
-  const workspace = createWorkspace(bridge, {
-    changed: persist,
-    notify: (kind, title, body) => toast({ kind, title, ...(body ? { body } : {}) }),
-  });
+  const fresh = untrack(() => props.fresh) === true;
+  const workspace = createWorkspace(
+    bridge,
+    {
+      changed: persist,
+      notify: (kind, title, body) => toast({ kind, title, ...(body ? { body } : {}) }),
+    },
+    { fresh },
+  );
   workspace.restore(initial);
   bridge.onEvents(receive);
 
@@ -227,18 +261,25 @@ function DesktopApp(props: AppProps): JSX.Element {
     return paneTitle(paneOf(focus?.terminalId));
   }
 
-  const terminalTheme = createMemo<TerminalTheme>(() => ({
-    foreground: colors().foreground,
-    background: colors().background,
-    cursor: colors().cursor,
-    selectionForeground: colors().foreground,
-    selectionBackground: colors().selection,
-  }));
+  const terminalTheme = createMemo<TerminalTheme>(() => {
+    const theme: TerminalTheme = {
+      foreground: colors().foreground,
+      background: colors().background,
+      cursor: colors().cursor,
+      selectionForeground: colors().selectionForeground ?? colors().foreground,
+      selectionBackground: colors().selection,
+    };
+    const ansi = colors().palette;
+    if (ansi) theme.palette = ansi;
+    return theme;
+  });
 
   const font = createMemo(() => ({
     family: prefs().fontFamily,
     size: prefs().fontSize,
     lineHeight: prefs().lineHeight,
+    cellWidth: prefs().cellWidth,
+    cellHeight: prefs().cellHeight,
   }));
 
   const tabViews = createMemo<TabView[]>(() =>
@@ -347,6 +388,43 @@ function DesktopApp(props: AppProps): JSX.Element {
     workspace.restore(snapshot);
     bridge.reconnect();
     toast({ kind: "info", title: "Reconnecting", body: socketPath });
+  }
+
+  function scrollPage(direction: 1 | -1): void {
+    const focus = workspace.focused();
+    if (!focus) return;
+    safe(() => {
+      const rows = bridge.client().viewInfo(focus.viewId).rows;
+      bridge.client().scrollView(focus.viewId, direction * Math.max(1, rows - 1));
+    }, undefined);
+  }
+
+  function scrollTop(): void {
+    const focus = workspace.focused();
+    if (!focus) return;
+    safe(() => {
+      const total = Number(bridge.client().viewInfo(focus.viewId).scrollTotal);
+      bridge
+        .client()
+        .scrollView(focus.viewId, -Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, total)));
+    }, undefined);
+  }
+
+  /** Form feed: the shell clears its screen, as Ctrl-L would. History is the server's. */
+  function clearScreen(): void {
+    const focus = workspace.focused();
+    if (focus) safe(() => bridge.client().commitText(focus.viewId, "\f"), false);
+  }
+
+  function reloadGhostty(): void {
+    const text = readGhostty?.();
+    setGhosttyFound(text !== undefined);
+    setGhostty(parseGhostty(text ?? ""));
+    toast(
+      text === undefined
+        ? { kind: "info", title: "No Ghostty config found" }
+        : { kind: "success", title: "Ghostty config reloaded" },
+    );
   }
 
   function follow(): void {
@@ -697,6 +775,89 @@ function DesktopApp(props: AppProps): JSX.Element {
       icon: "bell",
       run: () => updatePrefs({ notifications: !prefs().notifications }),
     },
+    ...(["left", "right", "up", "down"] as const).map((direction): Command => ({
+      id: `resize-${direction}`,
+      title: `Move Divider ${direction[0]?.toUpperCase() ?? ""}${direction.slice(1)}`,
+      group: "Panes",
+      run: () => {
+        workspace.nudge(direction);
+        persist();
+      },
+    })),
+    {
+      id: "scroll-page-up",
+      title: "Scroll Page Up",
+      group: "Terminal",
+      chord: "cmd+pageup",
+      run: () => scrollPage(-1),
+    },
+    {
+      id: "scroll-page-down",
+      title: "Scroll Page Down",
+      group: "Terminal",
+      chord: "cmd+pagedown",
+      run: () => scrollPage(1),
+    },
+    {
+      id: "scroll-top",
+      title: "Scroll to Top",
+      group: "Terminal",
+      chord: "cmd+home",
+      run: scrollTop,
+    },
+    {
+      id: "scroll-bottom",
+      title: "Scroll to Bottom",
+      group: "Terminal",
+      chord: "cmd+end",
+      icon: "follow",
+      run: follow,
+    },
+    {
+      id: "clear",
+      title: "Clear Screen",
+      group: "Terminal",
+      chord: "cmd+k",
+      run: clearScreen,
+    },
+    {
+      id: "quick-terminal",
+      title: "Toggle Quick Terminal",
+      group: "View",
+      icon: "terminal",
+      run: () => props.toggleQuick(),
+    },
+    {
+      id: "new-window",
+      title: "New Window",
+      group: "View",
+      chord: "cmd+n",
+      icon: "window",
+      run: () => props.newWindow(),
+    },
+    {
+      id: "fullscreen",
+      title: "Toggle Full Screen",
+      group: "View",
+      chord: "cmd+ctrl+f",
+      icon: "maximize",
+      run: () => gpuix?.renderer.toggleFullscreen?.(),
+    },
+    {
+      id: "reload-config",
+      title: "Reload Ghostty Config",
+      group: "Ghostty",
+      chord: "cmd+shift+,",
+      icon: "refresh",
+      run: reloadGhostty,
+    },
+    {
+      id: "import-ghostty",
+      title: "Use Ghostty Font, Colors and Padding",
+      group: "Ghostty",
+      icon: "palette",
+      run: () => updatePrefs(ghosttyPrefs(prefs(), ghostty())),
+    },
     {
       id: "reconnect",
       title: "Reconnect to Server",
@@ -721,11 +882,41 @@ function DesktopApp(props: AppProps): JSX.Element {
     })),
   ];
 
-  const byChord = new Map<string, Command>();
+  const byId = new Map(commands.map((command) => [command.id, command]));
+  const defaultChords = new Map<string, Command>();
   for (const command of commands) {
     for (const chord of [command.chord, ...(command.aliases ?? [])])
-      if (chord) byChord.set(chord, command);
+      if (chord) defaultChords.set(chord, command);
   }
+
+  /** Built-in chords, then the Ghostty config's binds and unbinds on top. */
+  const keymap = createMemo(() => {
+    const map = new Map(defaultChords);
+    if (!prefs().ghosttyKeys) return map;
+    for (const [chord, id] of ghostty().keybinds) {
+      const command = byId.get(id);
+      if (command) map.set(chord, command);
+      else map.delete(chord);
+    }
+    return map;
+  });
+
+  /** The chord to show for a command: the user's Ghostty bind wins. */
+  const displayChords = createMemo(() => {
+    const shown = new Map<string, string>();
+    for (const [chord, command] of keymap()) {
+      if (!shown.has(command.id) || command.chord !== chord) {
+        const existing = shown.get(command.id);
+        if (!existing || existing === command.chord) shown.set(command.id, chord);
+      }
+    }
+    return shown;
+  });
+
+  /** Chords without Command that the terminal must hand to the window. */
+  const appChords = createMemo(() =>
+    [...keymap().keys()].filter((chord) => !chord.startsWith("cmd+")),
+  );
 
   function shortcut(chord: string): void {
     if (chord === "escape") {
@@ -733,7 +924,7 @@ function DesktopApp(props: AppProps): JSX.Element {
       else if (find()) closeFind();
       return;
     }
-    const command = byChord.get(chord);
+    const command = keymap().get(chord);
     if (!command) return;
     const open = modal().kind;
     if (open !== "none") {
@@ -756,7 +947,8 @@ function DesktopApp(props: AppProps): JSX.Element {
         group: command.group,
         run: command.run,
       };
-      if (command.chord) item.chord = command.chord;
+      const chord = displayChords().get(command.id);
+      if (chord) item.chord = chord;
       if (command.icon) item.icon = command.icon;
       return item;
     }),
@@ -788,9 +980,14 @@ function DesktopApp(props: AppProps): JSX.Element {
     return [...panes, ...tabs];
   });
 
-  const shortcuts = commands
-    .filter((command) => command.chord && !/^tab-\d$/.test(command.id))
-    .map((command) => ({ title: command.title, chord: command.chord ?? "", group: command.group }));
+  const shortcuts = createMemo(() =>
+    commands.flatMap((command) => {
+      const chord = displayChords().get(command.id);
+      return chord && !/^tab-\d$/.test(command.id)
+        ? [{ title: command.title, chord, group: command.group }]
+        : [];
+    }),
+  );
 
   // ── Drags (splits, sidebar, tabs) ──────────────────────────────
 
@@ -869,7 +1066,7 @@ function DesktopApp(props: AppProps): JSX.Element {
       fenced: focus ? bridge.fenced(focus.terminalId) : false,
       pending: workspace.pending(),
       agents: counts,
-      theme: themeById(prefs().themeId).name,
+      theme: themeById(prefs().themeId, extraThemes()).name,
       fontSize: prefs().fontSize,
     };
   });
@@ -887,25 +1084,36 @@ function DesktopApp(props: AppProps): JSX.Element {
   });
 
   onMount(() => {
-    globalThis.phuxShortcut = shortcut;
+    untrack(() => props.keys).run = shortcut;
+    if (!fresh) globalThis.phuxShortcut = shortcut;
+    const startupError = untrack(() => props.startupError);
+    if (startupError)
+      toast({ kind: "error", title: "Could not start the phux server", body: startupError });
     bridge.connect();
     const timer = setInterval(() => {
       const at = Date.now();
+      // Only agent ages and toast expiry move with the clock; an idle
+      // terminal-only window should not re-render every second.
+      const aging = Object.keys(untrack(bridge.agents)).length > 0;
+      const expiring = untrack(toasts).length > 0;
+      if (!aging && !expiring) return;
       batch(() => {
-        setNow(at);
-        setToasts((current) =>
-          current.filter(
-            (item) =>
-              at - item.at < (item.kind === "agent" || item.kind === "error" ? 12_000 : 5_000),
-          ),
-        );
+        if (aging) setNow(at);
+        if (expiring) {
+          setToasts((current) =>
+            current.filter(
+              (item) =>
+                at - item.at < (item.kind === "agent" || item.kind === "error" ? 12_000 : 5_000),
+            ),
+          );
+        }
       });
     }, 1000);
     onCleanup(() => clearInterval(timer));
   });
 
   onCleanup(() => {
-    globalThis.phuxShortcut = undefined;
+    if (!fresh) globalThis.phuxShortcut = undefined;
     persist();
     workspace.releaseAll();
     bridge.close();
@@ -938,6 +1146,13 @@ function DesktopApp(props: AppProps): JSX.Element {
         font={font()}
         theme={terminalTheme()}
         optionAsAlt={prefs().optionAsAlt}
+        appChords={appChords()}
+        padding={{ x: prefs().paddingX, y: prefs().paddingY }}
+        dim={
+          !selected() && placements(tab()?.root ?? { kind: "leaf", placement }).length > 1
+            ? 1 - prefs().unfocusedOpacity
+            : 0
+        }
         focus={() => {
           const owner = tab();
           if (owner) workspace.focusPlacement(owner.id, placement.id);
@@ -1116,7 +1331,15 @@ function DesktopApp(props: AppProps): JSX.Element {
           switchToCommands={(query) => setModal({ kind: "commands", query })}
           prefs={prefs()}
           updatePrefs={updatePrefs}
-          shortcuts={shortcuts}
+          shortcuts={shortcuts()}
+          themes={[...extraThemes(), ...themes]}
+          ghostty={{
+            found: ghosttyFound(),
+            unmapped: ghostty().unmapped,
+            font: ghostty().fontFamily,
+            apply: () => updatePrefs(ghosttyPrefs(prefs(), ghostty())),
+            reload: reloadGhostty,
+          }}
           bridge={{
             server: bridge.server(),
             socket: socketPath,
@@ -1141,6 +1364,8 @@ function ModalLayer(props: {
   prefs: DisplayPrefs;
   updatePrefs: (change: Partial<DisplayPrefs>) => void;
   shortcuts: { title: string; chord: string; group: string }[];
+  themes: Theme[];
+  ghostty: GhosttyPanel;
   bridge: {
     server: Parameters<typeof Settings>[0]["server"];
     socket: string;
@@ -1180,6 +1405,8 @@ function ModalLayer(props: {
           prefs={props.prefs}
           update={props.updatePrefs}
           shortcuts={props.shortcuts}
+          themes={props.themes}
+          ghostty={props.ghostty}
           server={props.bridge.server}
           socket={props.bridge.socket}
           session={props.bridge.session}
@@ -1220,32 +1447,126 @@ function safe<T>(run: () => T, fallback: T): T {
   }
 }
 
+const WINDOW = {
+  title: "phux",
+  appName: "phux",
+  width: 1320,
+  height: 840,
+  minWidth: 640,
+  minHeight: 420,
+  titlebarTransparent: true,
+  trafficLightX: 14,
+  trafficLightY: 14,
+} as const;
+
 export function mount(
   host: DesktopHost,
   socketPath: string,
   sessionName: string,
   layouts: LayoutStore,
+  startupError?: string,
+  readGhostty?: () => string | undefined,
+  quickLayouts?: LayoutStore,
 ): void {
+  const mainKeys: WindowKeys = { run: () => {} };
+  const quick: { close?: () => void } = {};
+
+  /**
+   * A window with its own connection and workspace. Command-N windows start
+   * with a new terminal and save nothing; the quick terminal keeps its own
+   * small layout so the same terminal comes back on every toggle.
+   */
+  function openWindow(options: { quick: boolean }): { close: () => void; isOpen: () => boolean } {
+    const keys: WindowKeys = { run: () => {} };
+    let root: ReturnType<typeof createRoot> | undefined;
+    const renderer = new host.GpuixRenderer((error, event) => {
+      if (!error) root?.dispatch(event);
+    });
+    renderer.init(
+      options.quick
+        ? { ...WINDOW, title: "phux quick terminal", width: 1100, height: 460, focus: true }
+        : { ...WINDOW, focus: true },
+    );
+    const created = createRoot(renderer, {
+      onKeyDown(event) {
+        const chord = keyChord(event);
+        if (chord) keys.run(chord);
+      },
+    });
+    root = created;
+    const store =
+      options.quick && quickLayouts ? quickStore(quickLayouts, layouts) : borrowedPrefs(layouts);
+    created.render((): JSX.Element => (
+      <DesktopApp
+        host={host}
+        socketPath={socketPath}
+        sessionName={sessionName}
+        layouts={store}
+        readGhostty={readGhostty}
+        keys={keys}
+        newWindow={newWindow}
+        toggleQuick={toggleQuick}
+        fresh
+      />
+    ));
+    let disposed = false;
+    const dispose = (): void => {
+      if (disposed) return;
+      disposed = true;
+      clearInterval(watch);
+      created.unmount();
+    };
+    // GPUIX reports no close event: dispose the root, its views and its
+    // connection once the user closes the window.
+    const watch = setInterval(() => {
+      if (!renderer.isWindowOpen()) dispose();
+    }, 500);
+    return {
+      close: () => {
+        dispose();
+        if (renderer.isWindowOpen()) renderer.closeWindow();
+      },
+      isOpen: () => !disposed && renderer.isWindowOpen(),
+    };
+  }
+
+  function newWindow(): void {
+    openWindow({ quick: false });
+  }
+
+  let quickWindow: ReturnType<typeof openWindow> | undefined;
+  function toggleQuick(): void {
+    if (quickWindow?.isOpen()) {
+      quickWindow.close();
+      quickWindow = undefined;
+      return;
+    }
+    quickWindow = openWindow({ quick: true });
+  }
+  quick.close = () => quickWindow?.close();
+
   render(
     (): JSX.Element => (
-      <DesktopApp host={host} socketPath={socketPath} sessionName={sessionName} layouts={layouts} />
+      <DesktopApp
+        host={host}
+        socketPath={socketPath}
+        sessionName={sessionName}
+        layouts={layouts}
+        startupError={startupError}
+        readGhostty={readGhostty}
+        keys={mainKeys}
+        newWindow={newWindow}
+        toggleQuick={toggleQuick}
+      />
     ),
     {
-      title: "phux",
-      appName: "phux",
-      width: 1320,
-      height: 840,
-      minWidth: 640,
-      minHeight: 420,
-      titlebarTransparent: true,
-      trafficLightX: 14,
-      trafficLightY: 14,
+      ...WINDOW,
       focus: process.env.PHUX_DESKTOP_BACKGROUND !== "1",
       onKeyDown(event) {
         // A focused terminal consumes Escape itself; one that reaches the
         // window means an overlay or nothing holds the keyboard.
-        const chord = chordOf(event) || (plainKey(event) === "escape" ? "escape" : "");
-        if (chord) globalThis.phuxShortcut?.(chord);
+        const chord = keyChord(event);
+        if (chord) mainKeys.run(chord);
       },
       onUncaughtError: (error) => {
         resetRender();
@@ -1253,8 +1574,76 @@ export function mount(
       },
     },
   );
+  registerGlobalHotkeys(host, readGhostty, toggleQuick);
   process.once("SIGTERM", () => {
+    quick.close?.();
     resetRender();
     process.exit(0);
   });
+}
+
+/**
+ * Ghostty's `global:` binds for the quick terminal become system-wide hotkeys.
+ * Another app holding the chord (a running Ghostty, say) wins; that is logged,
+ * and the in-app binding still works while phux is focused.
+ */
+function registerGlobalHotkeys(
+  host: DesktopHost,
+  readGhostty: (() => string | undefined) | undefined,
+  toggleQuick: () => void,
+): void {
+  const text = readGhostty?.();
+  if (!text) return;
+  const config = parseGhostty(text);
+  const chords = [...config.globals].filter(
+    (chord) => config.keybinds.get(chord) === "quick-terminal",
+  );
+  if (chords.length === 0) return;
+  let hotkeys: InstanceType<DesktopHost["GlobalHotkeys"]>;
+  try {
+    hotkeys = new host.GlobalHotkeys();
+  } catch (error) {
+    console.error(`global hotkeys unavailable: ${String(error)}`);
+    return;
+  }
+  const registered = chords.filter((chord) => {
+    try {
+      hotkeys.register(chord);
+      return true;
+    } catch (error) {
+      console.error(`global hotkey ${chord} unavailable: ${String(error)}`);
+      return false;
+    }
+  });
+  if (registered.length === 0) return;
+  setInterval(() => {
+    if (hotkeys.takePressed().length > 0) toggleQuick();
+  }, 50);
+}
+
+/** The quick terminal's own tabs, shown without the sidebar in the main window's style. */
+function quickStore(quick: LayoutStore, main: LayoutStore): LayoutStore {
+  return {
+    read: () => {
+      const saved = parseLayout(quick.read());
+      const display = parseLayout(main.read())?.display;
+      if (!saved && !display) return undefined;
+      const prefs = { ...(display ?? saved?.display ?? defaultDisplay), sidebarVisible: false };
+      return saved
+        ? { ...saved, display: prefs }
+        : { version: 2, serverId: "", tabs: [], display: prefs };
+    },
+    write: (layout) => quick.write(layout),
+  };
+}
+
+/** A secondary window reads the main window's display preferences and saves nothing. */
+function borrowedPrefs(layouts: LayoutStore): LayoutStore {
+  return {
+    read: () => {
+      const main = parseLayout(layouts.read());
+      return main ? { version: 2, serverId: "", tabs: [], display: main.display } : undefined;
+    },
+    write: () => {},
+  };
 }
