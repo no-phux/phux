@@ -22,11 +22,7 @@ export async function startDesktop(start: DesktopStart): Promise<void> {
   const native = await import("@gpuix/native/host");
   native.registerCustomElementType("phux-terminal");
   native.registerCustomElementType("phux-drag-region");
-  const windows = await import("../src/other-window");
   const app = await import("../src/app");
-  globalThis.phuxOpenWindow = (placement) => {
-    windows.openOtherWindow(host.GpuixRenderer, placement);
-  };
   const state = process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state");
   app.mount(
     host,

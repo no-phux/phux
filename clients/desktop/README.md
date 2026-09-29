@@ -52,6 +52,7 @@ chords belong to the app; everything else reaches the terminal.
 | ⌘B, ⌘,           | Toggle the sidebar, open Settings                                           |
 | ⌘= ⌘- ⌘0         | Font size                                                                   |
 | ⌘N               | New window, with its own connection and a fresh terminal                    |
+| ⌥⌘N              | Move the focused pane into a new window of its own                          |
 | ⌘K               | Clear the screen                                                            |
 | ⌘-click          | Open the link under the pointer (OSC 8 or a URL in the text)                |
 

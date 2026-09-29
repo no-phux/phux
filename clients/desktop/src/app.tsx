@@ -70,12 +70,14 @@ interface AppProps {
   readGhostty?: (() => string | undefined) | undefined;
   /** This window's key router; the app installs its shortcut handler here. */
   keys: WindowKeys;
-  /** Open another window on the same server (Command-N). */
-  newWindow: () => void;
+  /** Open another window on the same server (Command-N), optionally showing one terminal. */
+  newWindow: (terminalId?: string) => void;
   /** Show or hide the quick terminal window. */
   toggleQuick: () => void;
   /** A secondary window starts with a new terminal, not the restored layout. */
   fresh?: boolean | undefined;
+  /** A secondary window opened to show this terminal instead of a new one. */
+  initialTerminal?: string | undefined;
 }
 
 interface WindowKeys {
@@ -157,13 +159,14 @@ function DesktopApp(props: AppProps): JSX.Element {
     { socketPath, sessionName },
   );
   const fresh = untrack(() => props.fresh) === true;
+  const initialTerminal = untrack(() => props.initialTerminal);
   const workspace = createWorkspace(
     bridge,
     {
       changed: persist,
       notify: (kind, title, body) => toast({ kind, title, ...(body ? { body } : {}) }),
     },
-    { fresh },
+    { fresh, ...(initialTerminal ? { initialTerminal } : {}) },
   );
   workspace.restore(initial);
   bridge.onEvents(receive);
@@ -491,20 +494,15 @@ function DesktopApp(props: AppProps): JSX.Element {
       );
   }
 
+  /**
+   * A full window of its own (keys, resizing, reconnect) opens on this
+   * terminal; this window only lets go of its view. The process never stops.
+   */
   function moveToWindow(): void {
     const focus = workspace.focused();
-    const opener = globalThis.phuxOpenWindow;
-    if (!focus || !opener) return;
-    const placement = workspace.detachToWindow(focus.id);
-    if (!placement) return;
-    opener({
-      clientHandle: bridge.handle(),
-      terminalId: placement.terminalId,
-      viewId: placement.viewId,
-      title: paneTitle(paneOf(placement.terminalId)),
-      font: font(),
-      theme: terminalTheme(),
-    });
+    if (!focus) return;
+    props.newWindow(focus.terminalId);
+    workspace.closePane(focus.id);
   }
 
   function askTerminate(): void {
@@ -1200,7 +1198,6 @@ function DesktopApp(props: AppProps): JSX.Element {
 
   onMount(() => {
     untrack(() => props.keys).run = shortcut;
-    if (!fresh) globalThis.phuxShortcut = shortcut;
     const startupError = untrack(() => props.startupError);
     if (startupError)
       toast({ kind: "error", title: "Could not start the phux server", body: startupError });
@@ -1228,7 +1225,6 @@ function DesktopApp(props: AppProps): JSX.Element {
   });
 
   onCleanup(() => {
-    if (!fresh) globalThis.phuxShortcut = undefined;
     persist();
     workspace.releaseAll();
     bridge.close();
@@ -1588,10 +1584,14 @@ export function mount(
 
   /**
    * A window with its own connection and workspace. Command-N windows start
-   * with a new terminal and save nothing; the quick terminal keeps its own
-   * small layout so the same terminal comes back on every toggle.
+   * with a new terminal (or the one a pane moved out with) and save nothing;
+   * the quick terminal keeps its own small layout so the same terminal comes
+   * back on every toggle.
    */
-  function openWindow(options: { quick: boolean }): { close: () => void; isOpen: () => boolean } {
+  function openWindow(options: { quick: boolean; terminalId?: string }): {
+    close: () => void;
+    isOpen: () => boolean;
+  } {
     const keys: WindowKeys = { run: () => {} };
     let root: ReturnType<typeof createRoot> | undefined;
     const renderer = new host.GpuixRenderer((error, event) => {
@@ -1622,6 +1622,7 @@ export function mount(
         newWindow={newWindow}
         toggleQuick={toggleQuick}
         fresh
+        initialTerminal={options.terminalId}
       />
     ));
     let disposed = false;
@@ -1645,8 +1646,8 @@ export function mount(
     };
   }
 
-  function newWindow(): void {
-    openWindow({ quick: false });
+  function newWindow(terminalId?: string): void {
+    openWindow(terminalId ? { quick: false, terminalId } : { quick: false });
   }
 
   let quickWindow: ReturnType<typeof openWindow> | undefined;

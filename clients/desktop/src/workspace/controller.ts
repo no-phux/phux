@@ -62,7 +62,6 @@ export interface Workspace {
   closePane(placementId?: string): void;
   reveal(terminalId: string): void;
   open(pane: DesktopPane): void;
-  detachToWindow(placementId: string): Placement | undefined;
   terminate(terminalId: string): void;
   handle(events: DesktopEvent[]): void;
   settle(): void;
@@ -82,6 +81,8 @@ export interface WorkspaceHooks {
 export interface WorkspaceOptions {
   /** A new window: open a fresh terminal rather than the session's home pane. */
   fresh?: boolean;
+  /** A window opened to show this existing terminal (Move Pane to New Window). */
+  initialTerminal?: string;
 }
 
 export function createWorkspace(
@@ -381,17 +382,6 @@ export function createWorkspace(
     setPending(spawns.size + awaiting.size);
   }
 
-  function detachToWindow(placementId: string): Placement | undefined {
-    const tab = activeTab();
-    if (!tab) return undefined;
-    const placement = findPlacement(tab.root, placementId);
-    if (!placement) return undefined;
-    const root = removeLeaf(tab.root, placementId);
-    if (!root) commit(tabs().filter((item) => item.id !== tab.id));
-    else updateTab(tab.id, (item) => ({ ...item, root }));
-    return placement;
-  }
-
   function terminate(terminalId: string): void {
     const info = bridge.server();
     if (!info) return;
@@ -471,6 +461,11 @@ export function createWorkspace(
     if (next.length > 0) {
       const active = next.find((tab) => tab.id === layout?.activeTab)?.id ?? next[0]?.id ?? "";
       commit(next, active);
+      return;
+    }
+    const initial = bridge.panes().find((pane) => pane.terminalId === options.initialTerminal);
+    if (initial) {
+      open(initial);
       return;
     }
     if (options.fresh) {
@@ -569,7 +564,6 @@ export function createWorkspace(
       reveal(terminalId);
     },
     open,
-    detachToWindow,
     terminate,
     handle,
     settle,
