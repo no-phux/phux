@@ -66,9 +66,10 @@ palette and a named `theme`, window padding, `unfocused-split-opacity`,
 `split-divider-color`, and `macos-option-as-alt`. Your `keybind` lines replace
 the built-in chords where an equivalent command exists, including non-Command
 chords such as `ctrl+tab`, `shift+enter` or a bare `f12`. Besides splits, tabs,
-fonts, scrolling and search, that covers `text:`, `esc:` and `csi:` (typed as
-keys, with ESC before a key sent as Alt on it, so `shift+enter=text:\x1b\r`
-gives Alt-Enter), `ignore`, `move_tab`, `new_split:left/up`,
+fonts, scrolling and search, that covers `text:` and `esc:` (typed as keys:
+each control byte as its Control chord, `\n` as Ctrl-J, and ESC before a key
+as Alt on it, so `shift+enter=text:\x1b\r` gives Alt-Enter; raw escape
+sequences such as `csi:` are not sent), `ignore`, `move_tab`, `new_split:left/up`,
 `prompt_surface_title`, `set_font_size`, `scroll_page_lines`, `toggle_maximize`
 and the search actions. A `global:` bind to `toggle_quick_terminal` becomes a
 system-wide hotkey for a quick-terminal window that keeps its own terminal

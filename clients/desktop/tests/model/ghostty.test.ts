@@ -105,7 +105,7 @@ describe("ghostty config", () => {
     // Copy stays the terminal's own; an unsupported rebind drops no built-in.
     expect(config.keybinds.has("cmd+c")).toBe(false);
     expect(config.keybinds.has("cmd+k")).toBe(false);
-    expect(ghosttyAction("csi:A")).toBe("send:\u001b[A");
+    expect(ghosttyAction("csi:A")).toBeUndefined();
     expect(ghosttyAction("esc:d")).toBe("send:\u001bd");
     expect(ghosttyAction("scroll_page_lines:-3")).toBe("scroll-lines:-3");
     expect(ghosttyAction("navigate_search:previous")).toBe("find-prev");
@@ -182,6 +182,7 @@ describe("window chords", () => {
     expect(keyChord({ key: "A", modifiers: { ...none, shift: true } })).toBe("shift+a");
     expect(keyChord({ key: "enter", modifiers: { ...none, shift: true } })).toBe("shift+enter");
     expect(keyChord({ key: "f12", modifiers: none })).toBe("f12");
+    expect(keyChord({ key: "escape", modifiers: { ...none, shift: true } })).toBe("escape");
     expect(keyChord({ key: "escape", modifiers: none })).toBe("escape");
     expect(keyChord({ key: "k", modifiers: { ...none, cmd: true } })).toBe("cmd+k");
   });

@@ -5,7 +5,10 @@ use ::napi::{Error, Result};
 use napi_derive::napi;
 use phux_client_runtime::{
     Client,
-    control::{ControlPlane, keys::key_event_for_char},
+    control::{
+        ControlPlane,
+        keys::{key_event_for_char, press},
+    },
 };
 use phux_protocol::ResourceId;
 use phux_protocol::input::{
@@ -67,10 +70,11 @@ fn paste_delivery(client: &Client, view: &str, text: &str) -> Result<u64> {
     Ok(delivery)
 }
 
-/// Key presses for `text` as a keybinding's `text:` action means it: C0
-/// controls become their keys (`\r` Enter, `\x0c` Ctrl-L), and an ESC before
-/// another key is Alt held on that key, which is what the byte pair encodes.
-/// Scalars with no key (NUL, private-use function codes) are dropped.
+/// Key presses for `text` as a keybinding's `text:` action means it: each C0
+/// control becomes the key that produces that byte (`\r` Enter, `\n` Ctrl-J,
+/// `\x0c` Ctrl-L, `\x1f` Ctrl-_), and an ESC before another key is Alt held
+/// on that key, which is what the byte pair encodes. Private-use function
+/// codes have no key and are dropped.
 fn typed_keys(text: &str) -> Vec<KeyEvent> {
     let mut events = Vec::new();
     let mut chars = text.chars().peekable();
@@ -79,16 +83,33 @@ fn typed_keys(text: &str) -> Vec<KeyEvent> {
             .then(|| chars.peek().copied())
             .flatten()
             .filter(|next| *next != '\u{1b}')
-            .and_then(key_event_for_char);
+            .and_then(typed_key);
         if let Some(mut event) = meta {
             chars.next();
             event.mods.insert(ModSet::ALT);
             events.push(event);
-        } else if let Some(event) = key_event_for_char(ch) {
+        } else if let Some(event) = typed_key(ch) {
             events.push(event);
         }
     }
     events
+}
+
+/// The key for one typed scalar. Unlike the runtime's text mapping, controls
+/// keep their exact byte: LF is Ctrl-J (not Enter's CR), BS is Ctrl-H (not
+/// Backspace's DEL), and NUL and 0x1C..=0x1F are their Control chords.
+fn typed_key(ch: char) -> Option<KeyEvent> {
+    let control = |key| Some(press(key, ModSet::CTRL, None));
+    match ch {
+        '\n' => control(PhysicalKey::J),
+        '\u{8}' => control(PhysicalKey::H),
+        '\u{0}' => control(PhysicalKey::Space),
+        '\u{1c}' => control(PhysicalKey::Backslash),
+        '\u{1d}' => control(PhysicalKey::BracketRight),
+        '\u{1e}' => control(PhysicalKey::Digit6),
+        '\u{1f}' => control(PhysicalKey::Minus),
+        other => key_event_for_char(other),
+    }
 }
 
 fn modifiers(value: f64) -> Result<ModSet> {
@@ -565,7 +586,16 @@ mod tests {
             keys("\u{1b}"),
             [(PhysicalKey::Escape, ModSet::empty(), None)]
         );
-        assert!(keys("\u{0}\u{f700}").is_empty());
+        assert_eq!(
+            keys("\n\u{8}\u{0}\u{1f}"),
+            [
+                (PhysicalKey::J, ModSet::CTRL, None),
+                (PhysicalKey::H, ModSet::CTRL, None),
+                (PhysicalKey::Space, ModSet::CTRL, None),
+                (PhysicalKey::Minus, ModSet::CTRL, None),
+            ]
+        );
+        assert!(keys("\u{f700}").is_empty());
     }
 
     #[test]

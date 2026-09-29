@@ -286,7 +286,8 @@ const ACTIONS: Record<string, string> = {
 function parameterized(name: string, argument: string): string | undefined {
   if (name === "text") return `send:${zigString(argument)}`;
   if (name === "esc") return `send:\u001b${zigString(argument)}`;
-  if (name === "csi") return `send:\u001b[${zigString(argument)}`;
+  // No `csi:`: input is structured keys, and ESC [ ... as keys is Alt-[ plus
+  // text, which only legacy encoding turns back into the sequence.
   const number = argument.trim() === "" ? Number.NaN : Number(argument);
   if (!Number.isFinite(number)) return undefined;
   if (name === "set_font_size") return `font-size:${number}`;

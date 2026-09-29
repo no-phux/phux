@@ -455,7 +455,7 @@ function DesktopApp(props: AppProps): JSX.Element {
 
   /**
    * Type `text` into the focused terminal as keys: controls become their keys
-   * and ESC before a key becomes Alt (Ghostty's `text:`, `esc:` and `csi:`).
+   * and ESC before a key becomes Alt (Ghostty's `text:` and `esc:`).
    * commitText refuses controls, so this is the only path for them.
    */
   function sendText(text: string): void {

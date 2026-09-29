@@ -62,6 +62,8 @@ export function keyChord(event: KeyLike): string {
   const ctrl = !!modifiers?.ctrl;
   const alt = !!modifiers?.alt;
   if (!ctrl && !alt && !shift && key.length === 1) return "";
+  // Shift-Escape still dismisses overlays.
+  if (!ctrl && !alt && key === "escape") return "escape";
   return [ctrl ? "ctrl" : "", alt ? "alt" : "", shift ? "shift" : "", key]
     .filter(Boolean)
     .join("+");
