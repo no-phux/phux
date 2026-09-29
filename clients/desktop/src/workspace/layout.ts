@@ -208,15 +208,32 @@ export function cycle(node: LayoutNode, fromId: string, step: 1 | -1): string | 
   return next?.id;
 }
 
+/**
+ * The leaf to focus once `removed` leaves go: the focused one if it stays,
+ * else the nearest survivor before it in reading order, else the next one.
+ */
+export function focusAfterRemoval(
+  order: readonly string[],
+  focusedId: string,
+  removed: ReadonlySet<string>,
+): string {
+  if (!removed.has(focusedId)) return focusedId;
+  const index = Math.max(order.indexOf(focusedId), 0);
+  const kept = (id: string): boolean => !removed.has(id);
+  return order.slice(0, index).findLast(kept) ?? order.slice(index + 1).find(kept) ?? "";
+}
+
 /** Drop every leaf that shows `terminalId`. Tabs left empty disappear. */
 export function withoutTerminal(tabs: DeskTab[], terminalId: string): DeskTab[] {
   return tabs.flatMap((tab) => {
+    const doomed = placements(tab.root).filter((placement) => placement.terminalId === terminalId);
+    if (doomed.length === 0) return [tab];
     let root: LayoutNode | undefined = tab.root;
-    for (const placement of placements(tab.root)) {
-      if (placement.terminalId === terminalId && root) root = removeLeaf(root, placement.id);
-    }
+    for (const placement of doomed) if (root) root = removeLeaf(root, placement.id);
     if (!root) return [];
-    return [refocus({ ...tab, root })];
+    const order = placements(tab.root).map((placement) => placement.id);
+    const removed = new Set(doomed.map((placement) => placement.id));
+    return [refocus({ ...tab, root, focusedId: focusAfterRemoval(order, tab.focusedId, removed) })];
   });
 }
 

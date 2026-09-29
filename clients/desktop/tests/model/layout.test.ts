@@ -3,6 +3,7 @@ import {
   clampRatio,
   cycle,
   equalize,
+  focusAfterRemoval,
   layoutRects,
   leaf,
   neighbor,
@@ -104,6 +105,16 @@ describe("tabs", () => {
     expect(next.map((item) => item.id)).toEqual(["other"]);
     expect(ids(next[0]?.root)).toEqual(["c"]);
     expect(next[0]?.focusedId).toBe("c");
+  });
+
+  test("an exited terminal hands focus to its neighbour, not the first pane", () => {
+    // a | (b / c), focus on c: c's shell exits, so b (just before it) takes focus.
+    const [next] = withoutTerminal([tab(grid(), "c")], "t-c");
+    expect(ids(next?.root)).toEqual(["a", "b"]);
+    expect(next?.focusedId).toBe("b");
+    expect(focusAfterRemoval(["a", "b", "c"], "a", new Set(["a"]))).toBe("b");
+    expect(focusAfterRemoval(["a", "b", "c"], "b", new Set(["a"]))).toBe("b");
+    expect(focusAfterRemoval(["a"], "a", new Set(["a"]))).toBe("");
   });
 
   test("refocus drops a zoom that no longer points at a leaf", () => {

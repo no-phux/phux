@@ -10,6 +10,7 @@ import {
   cycle,
   equalize,
   findPlacement,
+  focusAfterRemoval,
   focusedPlacement,
   leaf,
   neighbor,
@@ -350,11 +351,10 @@ export function createWorkspace(
       return;
     }
     const order = placements(tab.root).map((item) => item.id);
-    const survivor = order[Math.max(0, order.indexOf(id) - 1)] ?? "";
     updateTab(tab.id, (item) => ({
       ...item,
       root,
-      focusedId: item.focusedId === id ? survivor : item.focusedId,
+      focusedId: focusAfterRemoval(order, item.focusedId, new Set([id])),
     }));
   }
 
