@@ -4,9 +4,9 @@
 use std::sync::Arc;
 
 use super::{
-    AttachTarget, BootstrapLimits, BootstrapProfile, Command, CommandResult, CommandValue,
-    ControlError, ControlPlane, DetachReason, EngineConfig, EngineEvent, EngineHandle, ErrorCode,
-    Event, FrameKind, HashSet, LayerSet, Pending, ResourceId, ResourceKind, ServerFeature,
+    AttachTarget, BootstrapLimits, BootstrapProfile, Command, CommandResult, ControlError,
+    ControlPlane, DetachReason, EngineConfig, EngineEvent, EngineHandle, ErrorCode, Event,
+    FrameKind, HashSet, LayerSet, Pending, ResourceId, ResourceKind, ServerFeature,
     ServerFeatureSet, ServerInfo, SessionSnapshot, SpawnResult, StateScope, Status, Topology,
     ViewportInfo, topology, validate_hello_ok,
 };
@@ -133,7 +133,11 @@ impl ControlPlane {
     }
 
     pub(super) fn queue_refresh_topology(&mut self) -> u32 {
+        if let Some((request_id, _)) = self.roster.topology {
+            return request_id;
+        }
         let request_id = self.next_request_id();
+        self.roster.topology = Some((request_id, false));
         self.pending.insert(request_id, Pending::RefreshTopology);
         self.queue_frame(&FrameKind::Command {
             request_id,
@@ -171,6 +175,8 @@ impl ControlPlane {
             snapshot: snapshot.clone(),
         });
         self.push_event(Event::TopologyChanged);
+        self.fence_topology_read();
+        self.sync_agent_metadata();
         Ok(())
     }
 
@@ -242,6 +248,17 @@ impl ControlPlane {
         message: String,
     ) -> Result<(), ControlError> {
         let rendered = format!("server error {code:?}: {message}");
+        if request_id.is_some_and(|id| self.agent_metadata_error(id)) {
+            self.push_event(Event::ServerError {
+                code,
+                message,
+                request_id,
+            });
+            if code == ErrorCode::VersionIncompatible {
+                return Err(ControlError::Refused(rendered));
+            }
+            return Ok(());
+        }
         if let Some(request_id) = request_id
             && !self.pending.contains_key(&request_id)
             && !self.input_replay.owns(request_id)
@@ -339,6 +356,7 @@ impl ControlPlane {
         // Nothing else announces this client's own spawn: refresh so the
         // topology lists it.
         if spawned.is_some() && self.handshake_ready && self.options.automatic_lifecycle {
+            self.fence_topology_read();
             self.queue_refresh_topology();
         }
         true
@@ -417,9 +435,7 @@ impl ControlPlane {
                 self.push_event(Event::TerminalsClosed { request_id, error });
             }
             Pending::RefreshTopology => {
-                if let CommandResult::OkWith(CommandValue::State(snapshot)) = result {
-                    self.apply_topology_refresh(&snapshot)?;
-                }
+                self.resolve_topology_read(result)?;
             }
             Pending::Extension => {
                 self.push_event(Event::CommandResult { request_id, result });
@@ -472,6 +488,7 @@ impl ControlPlane {
             snapshot: snapshot.clone(),
         });
         self.push_event(Event::TopologyChanged);
+        self.sync_agent_metadata();
         Ok(())
     }
 }

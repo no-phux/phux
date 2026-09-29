@@ -8,6 +8,7 @@ impl ControlPlane {
         terminal: Option<ResourceId>,
         event: AgentEvent,
     ) -> Result<(), ControlError> {
+        self.observe_roster_event(&event);
         // Server-scoped events carry no terminal; the server always scopes
         // the kinds this build folds.
         let Some(terminal_id) = terminal else {
@@ -131,6 +132,7 @@ impl ControlPlane {
         signal: Option<i32>,
         reason: phux_protocol::wire::frame::CloseReason,
     ) -> bool {
+        self.forget_agent_metadata(terminal_id);
         let was_known = self.own_spawns.contains(terminal_id)
             || self.terminal_attached.contains(terminal_id)
             || self

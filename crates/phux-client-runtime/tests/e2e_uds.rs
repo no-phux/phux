@@ -32,6 +32,9 @@ mod idle_history;
 #[path = "support/geometry_live.rs"]
 mod geometry_live;
 
+#[path = "support/roster_live.rs"]
+mod roster_live;
+
 fn options() -> ClientOptions {
     ClientOptions {
         control: ControlOptions {

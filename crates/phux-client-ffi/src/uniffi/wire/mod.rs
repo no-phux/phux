@@ -13,13 +13,12 @@ use phux_client_runtime::{
     Client, ClientOptions, ConnectOptions, Listener, Runtime, Target, Transport,
 };
 use phux_protocol::ResourceId;
-use phux_protocol::caps::Layer;
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::mouse::{
     MouseAction as WireMouseAction, MouseButton as WireMouseButton, MouseEvent,
 };
 use phux_protocol::input::paste::PasteTrust;
-use phux_protocol::wire::frame::{AttachTarget, FrameKind, RESOURCE_AGENT_KEY, Scope};
+use phux_protocol::wire::frame::AttachTarget;
 
 use crate::projection::{agent, event, grid, id, outcome, status, topology};
 
