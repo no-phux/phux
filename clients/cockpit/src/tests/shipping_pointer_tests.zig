@@ -300,6 +300,31 @@ test "shipping remote pointer maps the canvas measured fractional cell pitch" {
     try fixture.expectSelection("OCKPIT");
 }
 
+test "shipping mouse reports surface pixels instead of dividing cell coordinates twice" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    const fixture = try Fixture.start();
+    defer fixture.engine.destroy();
+    const fx = NoShells{};
+    try fixture.output("\x1b[?1000h\x1b[?1006h", 1);
+    const remote = fixture.engine.model.phux().?;
+    remote.bridge.outgoing.reset();
+    const press = fixture.event(.pointer_down, 20, 5);
+    try std.testing.expectEqual(.consumed, fixture.engine.onPointer(&fx, press));
+    const bytes = remote.bridge.outgoing.take() orelse return error.TestExpectedMouse;
+    defer remote.bridge.outgoing.release(bytes);
+    try std.testing.expectEqual(@as(u8, 0x12), bytes[4]);
+    const x: f64 = @bitCast(std.mem.readInt(u64, bytes[26..34], .big));
+    const y: f64 = @bitCast(std.mem.readInt(u64, bytes[34..42], .big));
+    try std.testing.expectApproxEqAbs(@as(f64, press.x - fixture.frame().x), x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f64, press.y - fixture.frame().y), y, 0.01);
+    var release = press;
+    release.kind = .pointer_up;
+    try std.testing.expectEqual(.consumed, fixture.engine.onPointer(&fx, release));
+    const released = remote.bridge.outgoing.take() orelse return error.TestExpectedMouseRelease;
+    defer remote.bridge.outgoing.release(released);
+    try std.testing.expectEqualSlices(u8, bytes[26..42], released[26..42]);
+}
+
 test "shipping remote full mouse modes gate hover and drag reports" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.start();

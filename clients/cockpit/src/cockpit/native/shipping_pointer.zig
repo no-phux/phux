@@ -23,6 +23,7 @@ const Capture = struct {
     button: i32,
     reporting: bool,
     point: Point,
+    pixel: Point,
     cell: contract.DocumentPoint,
     gesture_handle: u64,
     modifiers: contract.ModifierMask,
@@ -139,6 +140,7 @@ pub const State = struct {
             .button = raw.button,
             .reporting = tracking,
             .point = point,
+            .pixel = pixelInFrame(point, frame),
             .cell = cell,
             .gesture_handle = if (interaction.stateForOwner(model, owner)) |state| state.gesture_handle else 0,
             .modifiers = modifiers(raw),
@@ -161,6 +163,7 @@ pub const State = struct {
         const point: Point = .{ .x = raw.x, .y = raw.y };
         const cell = coordinate(model, captured.owner, point, frame) orelse return true;
         self.captures[index].?.point = point;
+        self.captures[index].?.pixel = pixelInFrame(point, frame);
         self.captures[index].?.cell = cell;
         self.captures[index].?.modifiers = modifiers(raw);
         if (captured.reporting) {
@@ -190,7 +193,7 @@ pub const State = struct {
             return;
         }
         if (capture.reporting) {
-            _ = sendCell(model, capture.owner, .release, buttonFor(capture.button), capture.modifiers, capture.cell);
+            _ = sendPixel(model, capture.owner, .release, buttonFor(capture.button), capture.modifiers, capture.pixel.x, capture.pixel.y);
         } else finishSelection(model, capture);
     }
 
@@ -318,16 +321,24 @@ fn tracksMouse(model: *Model, owner: Owner) bool {
 }
 
 fn report(model: *Model, owner: Owner, action: contract.MouseAction, button: contract.MouseButton, mods: contract.ModifierMask, point: Point, frame: Rect) bool {
-    const cell = coordinate(model, owner, point, frame) orelse return false;
-    return sendCell(model, owner, action, button, mods, cell);
+    _ = coordinate(model, owner, point, frame) orelse return false;
+    // The Phux mouse encoder divides surface pixels by its cell extent. Sending
+    // the already-divided DocumentPoint here collapses clicks toward (0, 0).
+    const pixel = pixelInFrame(point, frame);
+    return sendPixel(model, owner, action, button, mods, pixel.x, pixel.y);
 }
 
-fn sendCell(model: *Model, owner: Owner, action: contract.MouseAction, button: contract.MouseButton, mods: contract.ModifierMask, cell: contract.DocumentPoint) bool {
+fn pixelInFrame(point: Point, frame: Rect) Point {
+    return .{ .x = std.math.clamp(point.x - frame.x, 0, frame.width),
+        .y = std.math.clamp(point.y - frame.y, 0, frame.height) };
+}
+
+fn sendPixel(model: *Model, owner: Owner, action: contract.MouseAction, button: contract.MouseButton, mods: contract.ModifierMask, x: f32, y: f32) bool {
     if (!ready(model, owner)) return false;
     const remote = model.phuxForOwner(owner) orelse return false;
     const mode = remote.mouseMode(owner) catch return false;
     if (!reportsAction(mode, action, button)) return false;
-    remote.sendMouse(owner, &.{ .action = action, .button = button, .modifiers = mods, .x = @floatFromInt(cell.column), .y = @floatFromInt(cell.row) }) catch return false;
+    remote.sendMouse(owner, &.{ .action = action, .button = button, .modifiers = mods, .x = x, .y = y }) catch return false;
     return true;
 }
 
