@@ -96,8 +96,11 @@ Search accepts at most 4096 query bytes and returns at most 4096 matches. Copy
 currently limits the returned JS text to one MiB **after** native formatting;
 native allocation and traversal bounds remain an open integration requirement.
 
-`commitText`, `keyEvent`, `mouseEvent` and `focusView` return whether input was
-queued, not whether it was delivered. `pasteView` uses acknowledged untrusted
+`commitText`, `typeText`, `keyEvent`, `mouseEvent` and `focusView` return whether
+input was queued, not whether it was delivered. `commitText` refuses controls;
+`typeText` is the keybinding path (Ghostty `text:`, a Ctrl-L clear): each C0
+control becomes its key and ESC before a key becomes Alt on that key, as
+structured key events rather than raw bytes. `pasteView` uses acknowledged untrusted
 paste and returns a delivery correlation. Current engine membership, view target,
 role and readiness checks occur under the same control lock as input admission.
 Old view IDs cannot authorize input after engine replacement even if the terminal

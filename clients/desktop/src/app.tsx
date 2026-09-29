@@ -410,10 +410,24 @@ function DesktopApp(props: AppProps): JSX.Element {
     }, undefined);
   }
 
-  /** Form feed: the shell clears its screen, as Ctrl-L would. History is the server's. */
+  /** Ctrl-L: the shell clears its screen. History is the server's. */
   function clearScreen(): void {
+    sendText("\f");
+  }
+
+  /**
+   * Type `text` into the focused terminal as keys: controls become their keys
+   * and ESC before a key becomes Alt (Ghostty's `text:`, `esc:` and `csi:`).
+   * commitText refuses controls, so this is the only path for them.
+   */
+  function sendText(text: string): void {
     const focus = workspace.focused();
-    if (focus) safe(() => bridge.client().commitText(focus.viewId, "\f"), false);
+    if (!focus) return;
+    try {
+      bridge.client().typeText(focus.viewId, text);
+    } catch (error) {
+      toast({ kind: "error", title: "Could not send keys", body: String(error) });
+    }
   }
 
   function reloadGhostty(): void {
