@@ -74,7 +74,8 @@ and the search actions. A `global:` bind to `toggle_quick_terminal` becomes a
 system-wide hotkey for a quick-terminal window that keeps its own terminal
 between toggles. If Ghostty is still running it holds that hotkey too, so quit it
 or rebind one of them. Settings > Ghostty re-applies the config, reloads it,
-switches keybind import off, and lists the binds it skipped: key sequences,
+switches keybind import off (the global hotkey too, from the next launch), and
+lists the binds it skipped: key sequences,
 bare letters, and actions with no equivalent yet (`jump_to_prompt`,
 `select_all`, `reset`, `write_*_file`, clipboard actions off ⌘C/⌘V).
 

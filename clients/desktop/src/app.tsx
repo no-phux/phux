@@ -1704,7 +1704,9 @@ export function mount(host: DesktopHost, options: MountOptions): void {
       },
     },
   );
-  registerGlobalHotkeys(host, readGhostty, toggleQuick);
+  // Settings > Ghostty "Use Ghostty keybinds" off covers global binds too.
+  if (parseLayout(layouts.read())?.display.ghosttyKeys !== false)
+    registerGlobalHotkeys(host, readGhostty, toggleQuick);
   process.once("SIGTERM", () => {
     quick.close?.();
     resetRender();
