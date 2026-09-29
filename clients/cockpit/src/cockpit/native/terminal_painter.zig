@@ -29,7 +29,7 @@ pub const window_ground_command_id: u64 = 0x0c01;
 pub const pane_dim_command_id_base: u64 = 0x0c10;
 /// Rounded card fills: one id per pane, 0x0c20..0x0c2F.
 pub const pane_card_command_id_base: u64 = 0x0c20;
-/// The focused pane's floating accent ring: one id per pane, 0x0c30..0x0c3F.
+/// The focused pane's short accent marker: one id per pane, 0x0c30..0x0c3F.
 /// `pane_dim_command_id_base` spans at most `layout.max_panes` (16) ids from
 /// 0x0c10, so 0x0c30 clears it with room.
 pub const pane_focus_command_id_base: u64 = 0x0c30;
@@ -205,9 +205,9 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
     const tree = ws.selectedTreeConst() orelse return;
     try paintTerminalContents(model, builder, tree, panes[0..count], tokens, window_active, ws.surface_scale_factor);
 
-    // Borders and the focus ring follow all panes and their dim scrims, so a
+    // Borders and the focus marker follow all panes and their dim scrims, so a
     // neighbouring pane cannot cover the active pane's focus indication.
-    // The ring also remains visible when a black terminal cannot dim further.
+    // The marker remains visible when a black terminal cannot dim further.
     try paintPaneChrome(builder, panes[0..count], tree.focus, tokens, window_active);
 }
 
@@ -351,17 +351,47 @@ fn paintPaneChrome(
             .stroke = .{ .fill = .{ .color = border }, .width = hairline },
         });
         if (pane.node != focus_node) continue;
-        try builder.strokeRect(.{
+        // A full accent perimeter dominates large panes and doubles their
+        // rounded edge against the neutral card border. Keep the focus signal
+        // inside the existing top gutter instead of changing the grid rect.
+        try builder.fillRoundedRect(.{
             .id = pane_focus_command_id_base + index,
-            .rect = projection.paneFocusRingRect(pane.rect, tokens),
-            .radius = projection.paneFocusRingRadius(tokens),
-            .stroke = .{ .fill = .{ .color = tokens.colors.accent }, .width = @max(1, tokens.stroke.focus) },
+            .rect = geometry.RectF.init(
+                pane.rect.x + tokens.radius.md + projection.pane_chrome_inset,
+                pane.rect.y + hairline,
+                projection.chrome_control_extent,
+                @max(1, tokens.stroke.focus),
+            ),
+            .radius = canvas.Radius.all(tokens.radius.sm),
+            .fill = .{ .color = tokens.colors.accent },
         });
     }
 }
 
+test "focused split keeps neutral borders and a bounded top-gutter marker" {
+    const tokens = projection.baseTokens();
+    const panes = [_]layout.Pane{
+        .{ .node = 1, .terminal = undefined, .rect = geometry.RectF.init(0, 0, 320, 400) },
+        .{ .node = 2, .terminal = undefined, .rect = geometry.RectF.init(328, 0, 320, 400) },
+    };
+    var commands: [3]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try paintPaneChrome(&builder, &panes, 2, tokens, true);
+    const list = builder.displayList().commands;
+    try std.testing.expectEqual(@as(usize, 3), list.len);
+    try std.testing.expect(list[0] == .stroke_rect);
+    try std.testing.expect(list[1] == .stroke_rect);
+    try std.testing.expect(list[2] == .fill_rounded_rect);
+    const marker = list[2].fill_rounded_rect.rect;
+    try std.testing.expectApproxEqAbs(@as(f32, 32), marker.width, 0.01);
+    try std.testing.expectApproxEqAbs(tokens.stroke.focus, marker.height, 0.01);
+    try std.testing.expect(marker.x > panes[1].rect.x);
+    try std.testing.expect(marker.y >= panes[1].rect.y);
+    try std.testing.expect(marker.y + marker.height <= panes[1].rect.y + projection.pane_chrome_inset);
+}
+
 /// The unfocused-pane scrim: black at 15% (Ghostty's unfocused-split-opacity
-/// depth), independent of the pane's own background; the accent ring carries
+/// depth), independent of the pane's own background; the accent marker carries
 /// the focus signal.
 const dim_scrim: canvas.Color = canvas.Color.rgba(0, 0, 0, 0.15);
 

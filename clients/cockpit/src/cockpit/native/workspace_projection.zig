@@ -110,16 +110,6 @@ pub fn paneCardRadius(tokens: canvas.DesignTokens) canvas.Radius {
     return canvas.Radius.all(tokens.radius.md);
 }
 
-/// The focus ring floats `stroke.focus_offset` outside the card, so focus
-/// never resizes the grid.
-pub fn paneFocusRingRect(card: geometry.RectF, tokens: canvas.DesignTokens) geometry.RectF {
-    return card.normalized().inflate(geometry.InsetsF.all(@max(0, tokens.stroke.focus_offset)));
-}
-
-pub fn paneFocusRingRadius(tokens: canvas.DesignTokens) canvas.Radius {
-    const offset = @max(0, tokens.stroke.focus_offset);
-    return canvas.Radius.all(tokens.radius.md + offset);
-}
 pub const webkit_parking_extent = scene.webkit_parking_extent;
 const widget_command_reserve: usize = canvas.terminal_grid.widget_command_reserve;
 pub const chrome_command_envelope: usize = native_sdk.runtime.max_canvas_commands_per_view - widget_command_reserve;
