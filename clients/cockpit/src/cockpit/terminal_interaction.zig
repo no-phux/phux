@@ -279,6 +279,17 @@ pub fn resize(model: *Model, fx: anytype, ref: TerminalRef, viewport: contract.V
 fn resizeLocal(pane: *local.Pane, fx: anytype, viewport: contract.Viewport) void {
     if (pane.cols == viewport.cols and pane.rows == viewport.rows) return;
     if (!pane.session.resize(viewport.cols, viewport.rows)) return;
+    // phux-cockpit-pg1 diagnostic, paired with `terminal spawn`: the grid
+    // the shell is about to be told, and where the emulator's cursor landed
+    // after the reflow, so a stranded cursor can be traced to its resize.
+    std.log.info("terminal resize pty={d} grid={d}x{d} -> {d}x{d} cursor_row={d}", .{
+        pane.pty_key,
+        pane.cols,
+        pane.rows,
+        viewport.cols,
+        viewport.rows,
+        pane.session.term.screens.active.cursor.y,
+    });
     pane.cols = viewport.cols;
     pane.rows = viewport.rows;
     pane.session.refreshScreenText();

@@ -55,6 +55,11 @@ pub fn spawnPane(pane: *Pane, fx: anytype, on_event: anytype) void {
         .rows = model.rows,
         .on_event = on_event,
     });
+    // phux-cockpit-pg1 diagnostic: with `terminal resize` below, the log
+    // carries every size a shell was given, in order, so a pane reported as
+    // blank-with-a-stranded-cursor can be matched to the SIGWINCHes its
+    // shell saw (a resize during shell init, a burst, a reflow).
+    std.log.info("terminal spawn pty={d} grid={d}x{d}", .{ model.pty_key, model.cols, model.rows });
 }
 
 /// The pane owning a keyed pty event. An event for a key no pane holds
