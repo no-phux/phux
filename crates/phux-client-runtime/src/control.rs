@@ -102,7 +102,10 @@ pub struct ControlOptions {
     /// `HELLO` and `ATTACH` as explicit calls, while this plane still owns all
     /// lifecycle validation and frame application.
     pub automatic_lifecycle: bool,
-    /// The viewport `ATTACH` and spawns declare, in cells.
+    /// The viewport `ATTACH` and spawns declare, in cells. `(0, 0)` casts no
+    /// vote: the server ignores it in window-size policy, a session attach
+    /// resizes nothing, and every terminal's size is set explicitly (a GUI
+    /// whose panes each size their own terminal).
     pub viewport: (u16, u16),
     /// The scrollback depth `ATTACH` requests and the history cache keeps.
     pub scrollback_lines: u32,
@@ -595,6 +598,12 @@ impl ControlPlane {
     #[must_use]
     pub const fn viewport(&self) -> (u16, u16) {
         self.options.viewport
+    }
+
+    /// Whether this connection's viewport takes part in window-size policy.
+    #[must_use]
+    pub const fn votes_on_geometry(&self) -> bool {
+        self.options.viewport.0 != 0 && self.options.viewport.1 != 0
     }
 
     /// The payload limits inbound frames must be decoded under.
