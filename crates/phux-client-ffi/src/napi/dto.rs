@@ -272,22 +272,6 @@ pub(super) fn encode_event(value: Event) -> Option<DesktopEvent> {
     encode_activity(value)
 }
 
-fn encode_agent_frame(frame: phux_protocol::wire::frame::FrameKind) -> Option<DesktopEvent> {
-    use phux_protocol::wire::frame::{FrameKind, RESOURCE_AGENT_KEY, Scope};
-    match frame {
-        FrameKind::MetadataChanged {
-            scope: Scope::Resource(id),
-            key,
-            value,
-            ..
-        } if key == RESOURCE_AGENT_KEY => Some(agent_badge(&id, value.as_deref())),
-        FrameKind::MetadataValue { request_id, value } => {
-            super::take_agent_watch(request_id).map(|id| agent_badge(&id, value.as_deref()))
-        }
-        _ => None,
-    }
-}
-
 fn agent_badge(id: &phux_protocol::ResourceId, bytes: Option<&[u8]>) -> DesktopEvent {
     let badge = crate::projection::agent::badge(id, bytes);
     DesktopEvent::AgentBadge {
@@ -317,7 +301,9 @@ fn encode_activity(value: Event) -> Option<DesktopEvent> {
         Event::TerminalChanged { terminal_id } => Some(DesktopEvent::TerminalChanged {
             terminal_id: id::encode(&terminal_id),
         }),
-        Event::Frame(frame) => encode_agent_frame(*frame),
+        Event::AgentMetadata { terminal_id, value } => {
+            Some(agent_badge(&terminal_id, value.as_deref()))
+        }
         Event::InputDelivery {
             delivery_id,
             outcome: value,
@@ -338,6 +324,63 @@ fn encode_activity(value: Event) -> Option<DesktopEvent> {
 mod tests {
     use super::{DesktopDelivery, DesktopEvent, encode_event};
     use phux_client_runtime::control::{DeliveryOutcome, Event};
+
+    #[test]
+    fn canonical_metadata_projects_declarations_and_retractions_once() {
+        let terminal_id = phux_protocol::ResourceId::local(42);
+        let value = br#"{"name":"worker","kind":"claude","state":"blocked"}"#.to_vec();
+        let declared = encode_event(Event::AgentMetadata {
+            terminal_id: terminal_id.clone(),
+            value: Some(value.clone()),
+        });
+        let Some(DesktopEvent::AgentBadge {
+            terminal_id: id,
+            name,
+            agent_kind,
+            state,
+            attention,
+        }) = declared
+        else {
+            panic!("missing declared badge");
+        };
+        assert_eq!(id, "local:42");
+        assert_eq!(name, "worker");
+        assert_eq!(agent_kind.as_deref(), Some("claude"));
+        assert_eq!(state, "blocked");
+        assert_eq!(attention, "high");
+        let cleared = encode_event(Event::AgentMetadata {
+            terminal_id: terminal_id.clone(),
+            value: None,
+        });
+        let Some(DesktopEvent::AgentBadge {
+            terminal_id: id,
+            name,
+            agent_kind,
+            state,
+            attention,
+        }) = cleared
+        else {
+            panic!("missing retracted badge");
+        };
+        assert_eq!(id, "local:42");
+        assert!(name.is_empty());
+        assert_eq!(agent_kind, None);
+        assert_eq!(state, "unknown");
+        assert_eq!(attention, "low");
+        // Raw extension frames remain available to other consumers, but must
+        // not bypass the runtime fence or duplicate the canonical badge.
+        assert!(
+            encode_event(Event::Frame(Box::new(
+                phux_protocol::wire::frame::FrameKind::MetadataChanged {
+                    scope: phux_protocol::wire::frame::Scope::Resource(terminal_id),
+                    key: phux_protocol::wire::frame::RESOURCE_AGENT_KEY.to_owned(),
+                    value: Some(value),
+                    actor: None,
+                }
+            )))
+            .is_none()
+        );
+    }
 
     #[test]
     fn kill_success_and_refusal_keep_exact_resource_and_request() {

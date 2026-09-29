@@ -30,6 +30,9 @@ struct MetadataRead {
 impl ControlPlane {
     /// One read in flight, plus one dirty bit, regardless of gap burst size.
     pub(super) fn recover_roster(&mut self) {
+        if !self.options.automatic_lifecycle {
+            return;
+        }
         self.fence_topology_read();
         for read in self.roster.reads.values_mut() {
             read.superseded = true;
@@ -40,6 +43,9 @@ impl ControlPlane {
     }
 
     pub(super) fn observe_roster_event(&mut self, event: &AgentEvent) {
+        if !self.options.automatic_lifecycle {
+            return;
+        }
         match event {
             AgentEvent::JournalGap { .. } | AgentEvent::SourceGap { .. } => self.recover_roster(),
             AgentEvent::ResourceSpawned { .. } => {
@@ -73,6 +79,9 @@ impl ControlPlane {
     }
 
     pub(super) fn sync_agent_metadata(&mut self) {
+        if !self.options.automatic_lifecycle {
+            return;
+        }
         if !self
             .server
             .as_ref()
@@ -210,6 +219,14 @@ impl ControlPlane {
     }
 
     pub(super) fn agent_metadata_error(&mut self, request_id: u32) -> bool {
-        self.roster.reads.remove(&request_id).is_some()
+        let Some(read) = self.roster.reads.remove(&request_id) else {
+            return false;
+        };
+        // An error is not a retraction. It still settles the old read and
+        // must preserve a refresh requested while that read was in flight.
+        if read.repeat && self.roster.subscribed.contains(&read.terminal_id) {
+            self.read_agent_metadata(read.terminal_id);
+        }
+        true
     }
 }

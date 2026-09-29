@@ -69,7 +69,6 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
   const [agents, setAgents] = createSignal<Record<string, AgentInfo>>({});
   const [revision, setRevision] = createSignal(0);
   const [handle, setHandle] = createSignal("");
-  const watched = new Set<string>();
   let owner: DesktopClient | undefined;
   let closed = false;
   let listener: (events: DesktopEvent[]) => void = () => {};
@@ -120,11 +119,6 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
       if (info) setServer(info);
       setRevision((value) => value + 1);
     });
-    for (const pane of next?.panes ?? []) {
-      if (watched.has(pane.terminalId)) continue;
-      watched.add(pane.terminalId);
-      native.watchAgent(pane.terminalId);
-    }
   }
 
   function activity(from: string): void {
@@ -140,7 +134,6 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
   function connect(): void {
     closed = false;
     owner = new host.DesktopClient();
-    watched.clear();
     batch(() => {
       setHandle(owner?.handle ?? "");
       setStatus("Connecting");

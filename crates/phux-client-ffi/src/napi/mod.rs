@@ -49,7 +49,7 @@ use napi_derive::napi;
 use phux_client_runtime::control::ControlOptions;
 use phux_client_runtime::{Client, ClientOptions, Target};
 use phux_protocol::ResourceId;
-use phux_protocol::wire::frame::{AttachTarget, FrameKind, RESOURCE_AGENT_KEY, Scope};
+use phux_protocol::wire::frame::AttachTarget;
 
 use crate::projection::{id, status, topology};
 
@@ -108,23 +108,6 @@ impl DesktopConnectOptions {
             },
         ))
     }
-}
-
-fn agent_watches() -> &'static std::sync::Mutex<std::collections::HashMap<u32, ResourceId>> {
-    static WATCHES: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<u32, ResourceId>>,
-    > = std::sync::OnceLock::new();
-    WATCHES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
-}
-
-pub(super) fn remember_agent_watch(request_id: u32, terminal: ResourceId) {
-    if let Ok(mut watches) = agent_watches().lock() {
-        watches.insert(request_id, terminal);
-    }
-}
-
-pub(super) fn take_agent_watch(request_id: u32) -> Option<ResourceId> {
-    agent_watches().lock().ok()?.remove(&request_id)
 }
 
 fn existing_session(name: String) -> Result<AttachTarget> {
@@ -262,23 +245,13 @@ impl DesktopClient {
         Ok(self.client()?.refresh_topology())
     }
 
-    /// Subscribe to this terminal's agent badge. Empty name means no declared agent.
+    /// Refresh runtime-managed agent discovery. Retained for existing callers;
+    /// topology discovery automatically watches every inventoried terminal.
+    /// Empty badge name means no declared agent.
     #[napi]
     pub fn watch_agent(&self, terminal: String) -> Result<()> {
-        let id = terminal_id(&terminal)?;
-        let client = self.client()?;
-        let request_id = client.next_request_id();
-        remember_agent_watch(request_id, id.clone());
-        let key = RESOURCE_AGENT_KEY.to_owned();
-        client.queue_frame(&FrameKind::GetMetadata {
-            request_id,
-            scope: Scope::Resource(id.clone()),
-            key: key.clone(),
-        });
-        client.queue_frame(&FrameKind::SubscribeMetadata {
-            scope: Scope::Resource(id),
-            key,
-        });
+        terminal_id(&terminal)?;
+        let _ = self.client()?.refresh_topology();
         Ok(())
     }
 
