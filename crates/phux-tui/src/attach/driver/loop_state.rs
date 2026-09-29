@@ -23,7 +23,7 @@ use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, SessionKernel};
 use phux_protocol::ResourceKind;
 use phux_protocol::caps::ServerFeature;
-use phux_protocol::ids::{ClientId, ResourceId, SatelliteHost, SessionId};
+use phux_protocol::ids::{ClientId, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{
     AttachTarget, CONFIG_RELOAD_KEY, Command, CommandResult, CommandValue, FrameKind,
     SESSION_NAME_KEY, Scope,
@@ -60,7 +60,6 @@ use crate::render::chrome::sidebar::SidebarPainter;
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
 use crate::render::overlay::{OverlayState, ToastOverlay};
 use crate::settings::TuiSettings;
-use phux_client::agent_meta::AgentRecord;
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
 use super::chrome::{mark_focused_seen, refresh_window_chrome};
@@ -80,10 +79,7 @@ use super::session_io::{
     send_attach, send_terminal_replies, send_unless_peer_gone, should_emit_frame_ack,
     take_terminal_replies,
 };
-use super::subscriptions::{
-    apply_foreign_agent_reply, apply_foreign_layout_reply, prune_foreign_agents,
-    sync_agent_meta_subscriptions, sync_foreign_agent_ids, sync_foreign_layout_subscriptions,
-};
+use super::subscriptions::{PeerWatch, sync_agent_meta_subscriptions};
 use super::terminal::{
     desired_mouse_capture, sync_hover_tracking, sync_mouse_capture, terminal_reset_on_signal,
 };
@@ -247,100 +243,6 @@ enum FrameStep {
     Rebootstrap,
     /// The attach is over; unwind out of the burst.
     Exit(LoopExit),
-}
-
-/// The peer-session caches the roster, the window picker, and the
-/// The peer-session caches the roster, window picker, and fleet dashboard
-/// project from. Written by the same peer sweep, reset together.
-#[derive(Default)]
-struct PeerCaches {
-    /// Identity of the serving machine, read once through the whoami key.
-    serving_host: Option<String>,
-    serving_host_pending: Option<u32>,
-    serving_host_attempted: bool,
-    /// Rebuild the sidebar projection once at the burst drain.
-    chrome_dirty: bool,
-    /// ADR-0140: which machine this process attached to, when the CLI
-    /// recorded one. `None` runs no hosts provider.
-    origin: Option<crate::attach::hosts::AttachOrigin>,
-    /// ADR-0140: the hosts provider's latest `phux.hosts/v1` rows. The
-    /// attached machine's row is filtered out at projection time.
-    remote_hosts: Vec<phux_core::host_list::HostJson>,
-    /// phux-4li.20: cache of the server's session graph, refreshed from
-    /// every ATTACHED snapshot. The `<leader> a` session picker reads
-    /// this to list peer sessions; `focused_session` marks the row the
-    /// client is currently attached to (excluded from the picker).
-    sessions: Vec<phux_protocol::wire::info::SessionInfo>,
-    /// Windows from the same graph; the sidebar falls back to these when a
-    /// peer has no persisted TUI layout.
-    windows: Vec<phux_protocol::wire::info::WindowInfo>,
-    /// Resources from the same graph, joined via `ResourceInfo::window_id`.
-    resources: Vec<phux_protocol::wire::info::ResourceInfo>,
-    /// The session this client is attached to, once ATTACHED has named it.
-    focused_session: Option<SessionId>,
-    /// Peer sessions' persisted layouts (one `GET_METADATA` per peer), for
-    /// one-step cross-session window rows in the picker.
-    foreign_layouts: HashMap<SessionId, Workspace>,
-    /// In-flight peer-layout GETs, by request id.
-    foreign_layout_pending: HashMap<u32, SessionId>,
-    /// `phux.agent/v1` records of foreign panes, so the fleet dashboard and
-    /// Agents list show peer agents without attaching. Pruned to the live
-    /// foreign terminal set on each fold.
-    foreign_agents: HashMap<ResourceId, AgentRecord>,
-    /// In-flight foreign agent-record GETs, by request id.
-    foreign_agent_pending: HashMap<u32, ResourceId>,
-    /// In-flight `phux.agent.asked/v1` GETs for satellite terminals, kept
-    /// apart so the byte `1` is not parsed as an agent record.
-    foreign_asked_pending: HashMap<u32, ResourceId>,
-    /// Peer layout keys already subscribed. L3 has no unsubscribe, so a
-    /// subscription lives as long as the connection.
-    foreign_layout_subscribed: HashSet<SessionId>,
-    /// The per-pane half of the same send-once bookkeeping.
-    foreign_agent_subscribed: HashSet<ResourceId>,
-    /// The federation host inventory from the latest `GET_STATE`: one row per
-    /// satellite, with its sessions or why it could not be listed. Empty
-    /// without `ServerFeature::HostSessions`.
-    hosts: Vec<phux_protocol::wire::info::HostInventory>,
-    /// The request id of the in-flight host-inventory `GET_STATE`, if any.
-    hosts_pending: Option<u32>,
-    /// When that request was sent, bounding how long notices are held.
-    hosts_pending_since: Option<std::time::Instant>,
-    /// `SatelliteUnreachable` notices that arrived while the inventory was in
-    /// flight. The reply drops only the ones it explains
-    /// ([`unexplained_unreachable_notices`]); a refusal or missed deadline
-    /// surfaces all of them.
-    held_unreachable: Vec<String>,
-    /// Peer panes whose agent asked for a human; a foreign pane has no
-    /// `PaneSlot::attention` to carry the flag.
-    foreign_attention: HashSet<ResourceId>,
-    /// The peer sweep waits for the first paint: set at construction and
-    /// consumed at the first frame-burst drain, so a bootstrap (including a
-    /// session switch, which drops all subscriptions) does not queue peer
-    /// GET/SUBSCRIBE traffic ahead of the snapshot burst that paints.
-    sweep_pending: bool,
-}
-
-impl PeerCaches {
-    /// The peer-wide projection the sidebar strip renders from.
-    fn inputs<'a>(
-        &'a self,
-        review: &'a crate::attach::review::ReviewIndex,
-    ) -> crate::attach::sidebar_zones::PeerInputs<'a> {
-        crate::attach::sidebar_zones::PeerInputs {
-            serving_host: self.serving_host.as_deref(),
-            origin: self.origin.as_ref(),
-            remote_hosts: &self.remote_hosts,
-            hosts: &self.hosts,
-            sessions: &self.sessions,
-            focused_session: self.focused_session,
-            windows: &self.windows,
-            resources: &self.resources,
-            foreign_layouts: &self.foreign_layouts,
-            foreign_agents: &self.foreign_agents,
-            foreign_attention: &self.foreign_attention,
-            review,
-        }
-    }
 }
 
 /// A `sleep_until` future for an armed deadline, or a never-resolving one.
@@ -575,7 +477,7 @@ pub(super) struct SessionLoop {
     /// and `phux.session.keep_empty/v1` broadcasts.
     keep_empty_session: bool,
     /// The peer-session caches the roster and window picker read.
-    peers: PeerCaches,
+    peers: PeerWatch,
     /// Deferred window select of a one-step cross-session pick.
     pending_window: Option<usize>,
     /// Leaf ordinal focused after that window select resolves.
@@ -780,7 +682,7 @@ impl SessionLoop {
             rename_pending: None,
             rename_notice: None,
             keep_empty_session: false,
-            peers: PeerCaches {
+            peers: PeerWatch {
                 sweep_pending: true,
                 remote_hosts: if origin.is_some() {
                     crate::attach::hosts::last_known()
@@ -788,7 +690,7 @@ impl SessionLoop {
                     Vec::new()
                 },
                 origin,
-                ..PeerCaches::default()
+                ..PeerWatch::default()
             },
             pending_window: initial_window,
             pending_pane: initial_pane,
@@ -1111,15 +1013,9 @@ impl SessionLoop {
     /// picker's one-step rows and the live roster), then the peer agent
     /// records, serving host, and host inventory. Fire-and-forget.
     async fn sweep_peer_layouts(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
-        sync_foreign_layout_subscriptions(
-            conn,
-            &self.peers.sessions,
-            self.peers.focused_session,
-            &mut self.next_request_id,
-            &mut self.peers.foreign_layout_pending,
-            &mut self.peers.foreign_layout_subscribed,
-        )
-        .await?;
+        self.peers
+            .sweep_layouts(conn, &mut self.next_request_id)
+            .await?;
         // Agent watches must not wait for a persisted TUI layout.
         self.reconcile_peer_agents(conn).await?;
         // The fleet's other half. Rides the same deferred
@@ -2426,7 +2322,7 @@ impl SessionLoop {
                 Ok(None)
             }
             // Un-correlated `SatelliteUnreachable` pushes while our inventory is
-            // in flight are held (see `PeerCaches::held_unreachable`).
+            // in flight are held (see `PeerWatch::held_unreachable`).
             FrameKind::Error {
                 request_id: None,
                 code: phux_protocol::wire::frame::ErrorCode::SatelliteUnreachable,
@@ -2467,7 +2363,7 @@ impl SessionLoop {
         let Some(session) = self.peers.foreign_layout_pending.remove(&request_id) else {
             return Ok(());
         };
-        apply_foreign_layout_reply(&mut self.peers.foreign_layouts, session, value);
+        self.peers.apply_layout_reply(session, value);
         self.reconcile_peer_agents(conn).await?;
         self.peers.chrome_dirty = true;
         repaint.raise_fleet();
@@ -2477,26 +2373,9 @@ impl SessionLoop {
     /// Prune and re-sync the foreign agent watches against the live foreign
     /// terminal set (from persisted layouts, or the server graph).
     async fn reconcile_peer_agents(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
-        let live =
-            crate::attach::sidebar_zones::foreign_terminal_ids(&self.peers.inputs(&self.review));
-        prune_foreign_agents(
-            &mut self.peers.foreign_agents,
-            &mut self.peers.foreign_agent_subscribed,
-            &live,
-        );
-        self.peers.foreign_attention.retain(|id| live.contains(id));
         self.peers
-            .foreign_asked_pending
-            .retain(|_, id| live.contains(id));
-        sync_foreign_agent_ids(
-            conn,
-            live.into_iter().collect(),
-            &mut self.next_request_id,
-            &mut self.peers.foreign_agent_pending,
-            &mut self.peers.foreign_agent_subscribed,
-            &mut self.peers.foreign_asked_pending,
-        )
-        .await
+            .sweep_agents(conn, &mut self.next_request_id, &self.review)
+            .await
     }
 
     /// Hand one frame to the server-frame handler and act on everything its
@@ -2828,8 +2707,7 @@ impl SessionLoop {
     /// Fold a foreign agent record into the fleet cache and review index;
     /// true when either moved.
     fn fold_foreign_agent(&mut self, id: &ResourceId, value: Option<&[u8]>) -> bool {
-        let cache_changed =
-            apply_foreign_agent_reply(&mut self.peers.foreign_agents, id.clone(), value);
+        let cache_changed = self.peers.apply_agent_reply(id.clone(), value);
         let review_changed = self.review.observe_record(
             id,
             self.peers.foreign_agents.get(id),
@@ -2872,7 +2750,7 @@ impl SessionLoop {
         repaint: &mut RepaintAccumulator,
     ) -> Result<(), AttachError> {
         let layout_folded = if let Some((session, value)) = outcome.foreign_layout.take() {
-            apply_foreign_layout_reply(&mut self.peers.foreign_layouts, session, value.as_deref());
+            self.peers.apply_layout_reply(session, value.as_deref());
             self.reconcile_peer_agents(conn).await?;
             true
         } else {
