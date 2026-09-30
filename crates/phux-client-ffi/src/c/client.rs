@@ -1202,7 +1202,9 @@ fn render_cache_matches(
 
 fn engine_bridge(error: EngineError) -> BridgeError {
     match error {
-        EngineError::Engine(message) => BridgeError::state(message),
+        EngineError::Engine(message) | EngineError::AnchorUnavailable(message) => {
+            BridgeError::state(message)
+        }
         EngineError::Stopped => BridgeError::engine("the engine owner thread stopped"),
         EngineError::Spawn(error) => BridgeError::engine(error.to_string()),
     }

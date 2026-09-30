@@ -65,6 +65,16 @@ pub enum HistoryRejectionReason {
     /// The engine is temporarily serving another import/export transaction.
     Busy,
 }
+
+/// Registered matches from one loaded-history search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedHistorySearch {
+    /// Matches in document order, each endpoint registered with the history.
+    pub matches: Vec<EngineSearchMatch>,
+    /// The caller's bound or the anchor budget hid at least one more match.
+    pub truncated: bool,
+}
+
 /// Exact identity of one terminal replica generation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ReplicaKey {
@@ -3750,25 +3760,34 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
     }
 
     /// Search only state already loaded into the engine.
+    ///
+    /// Returns at most `max_matches`, further capped by the replica's
+    /// remaining anchor budget. `truncated` says whether either bound hid a
+    /// match: the adapter is asked for one more than the bound and that
+    /// probe match is released before anything registers it.
     pub fn search_loaded_history(
         &mut self,
         terminal_id: &ResourceId,
         needle: &str,
         max_matches: usize,
-    ) -> Result<Vec<EngineSearchMatch>, KernelError<E::Error>> {
+    ) -> Result<LoadedHistorySearch, KernelError<E::Error>> {
         let replica = self
             .terminals
             .get_mut(terminal_id)
             .and_then(|state| state.published.as_mut())
             .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
-        let max_matches = max_matches.min(replica.history.remaining_anchor_capacity() / 2);
-        if max_matches == 0 {
-            return Ok(Vec::new());
-        }
-        let matches = self
+        let limit = max_matches.min(replica.history.remaining_anchor_capacity() / 2);
+        let mut matches = self
             .adapter
-            .search_loaded(&mut replica.engine, needle, max_matches)
+            .search_loaded(&mut replica.engine, needle, limit.saturating_add(1))
             .map_err(KernelError::Engine)?;
+        let truncated = matches.len() > limit;
+        for probe in matches.split_off(limit.min(matches.len())) {
+            self.adapter
+                .release_document_anchor(&mut replica.engine, probe.start);
+            self.adapter
+                .release_document_anchor(&mut replica.engine, probe.end);
+        }
         let registration = matches.iter().try_for_each(|found| {
             replica
                 .history
@@ -3788,7 +3807,7 @@ impl<E: EngineDocumentAdapter> SessionKernel<E> {
             }
             return Err(KernelError::HistoryCache(error));
         }
-        Ok(matches)
+        Ok(LoadedHistorySearch { matches, truncated })
     }
 
     /// Format a selection through the engine's canonical text semantics.
