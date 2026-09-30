@@ -35,6 +35,7 @@ REQUIRED_TESTS = (
     "modifier_click_opens_http_links_in_a_new_tab_and_nothing_else",
     "the_bell_announces_itself_and_flashes_the_canvas",
     "a_double_width_character_copies_without_a_trailing_space",
+    "mouse_positions_land_on_their_cells_after_another_client_reports_other_cells",
     # Unit tests in src/ that need a DOM and the live server.
     "exported_start_retains_live_client_until_transport_failure",
     "closed_ws_send_and_repeated_reconnect_teardown_release_every_app",

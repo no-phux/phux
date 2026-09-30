@@ -6,7 +6,7 @@ use phux_protocol::input::paste::PasteTrust;
 use phux_web::input::{
     BrowserKey, MAX_PASTE_BYTES, code_to_physical_key, held_button, is_copy_chord, is_find_chord,
     key_events_for_text, mouse_button, paste_event, reports_motion, route_key, scrollback_page,
-    wheel_button, wheel_rows,
+    surface_pixel, wheel_button, wheel_rows,
 };
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -293,4 +293,21 @@ fn motion_is_reported_only_to_modes_that_ask_for_it() {
         !reports_motion(false, false, true),
         "1000 reports no motion"
     );
+}
+
+#[wasm_bindgen_test]
+fn pointer_positions_land_on_the_reported_cell_grid_at_any_scale() {
+    // 8 px cells drawn 8 CSS px wide: 20 CSS px in is 20 px.
+    assert_eq!(surface_pixel(20.0, 8.0, 8, 80), 20.0);
+    // Drawn 12 CSS px wide (CSS scaling or page zoom), 30 CSS px in is two
+    // and a half cells: still 20 px of the reported grid.
+    assert_eq!(surface_pixel(30.0, 12.0, 8, 80), 20.0);
+    // Drawn 4 CSS px wide (a high-DPI backing store shown at half size).
+    assert_eq!(surface_pixel(10.0, 4.0, 8, 80), 20.0);
+    // Another reported cell size scales with it: two and a half 11 px cells.
+    assert_eq!(surface_pixel(30.0, 12.0, 11, 80), 27.0);
+    // Whole pixels, clamped to the grid.
+    assert_eq!(surface_pixel(20.5, 8.0, 8, 80), 20.0);
+    assert_eq!(surface_pixel(-3.0, 8.0, 8, 80), 0.0);
+    assert_eq!(surface_pixel(1.0e6, 8.0, 8, 80), 639.0);
 }

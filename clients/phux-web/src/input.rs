@@ -210,6 +210,19 @@ pub const fn wheel_button(rows: i32) -> MouseButton {
 /// program as in the local scrollback.
 pub const WHEEL_ROWS_PER_CLICK: f64 = 3.0;
 
+/// One axis of a pointer position as `INPUT_MOUSE` carries it: whole pixels
+/// of the cell grid the viewport reports, `cell_px` per cell, clamped to
+/// `count` cells. `offset` is the pointer's distance from the canvas edge
+/// and `css_cell` a cell's drawn size, both in CSS pixels, so CSS scaling,
+/// page zoom, and the device pixel ratio change neither which cell nor
+/// where in it the program sees the pointer.
+#[must_use]
+pub fn surface_pixel(offset: f64, css_cell: f64, cell_px: u16, count: u16) -> f64 {
+    let cells = offset / css_cell.max(f64::EPSILON);
+    let max = (f64::from(count) * f64::from(cell_px) - 1.0).max(0.0);
+    (cells * f64::from(cell_px)).floor().clamp(0.0, max)
+}
+
 /// Whether pointer motion reaches the program: any-event tracking (DECSET
 /// 1003) reports every move, button-event tracking (1002) only drags, and
 /// normal tracking (1000) none.

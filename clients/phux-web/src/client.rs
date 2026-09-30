@@ -1088,11 +1088,9 @@ impl App {
         };
         let rect = self.canvas.get_bounding_client_rect();
         let grid = self.session.grid();
-        // CSS may scale the canvas; map device cells to client pixels.
-        let scale_x = rect.width() / f64::from(self.canvas.width().max(1));
-        let scale_y = rect.height() / f64::from(self.canvas.height().max(1));
-        let left = rect.left() + f64::from(grid.cursor_col) * self.metrics.cell_w * scale_x;
-        let top = rect.top() + f64::from(grid.cursor_row) * self.metrics.cell_h * scale_y;
+        let (css_w, css_h) = self.css_cell(&rect);
+        let left = rect.left() + f64::from(grid.cursor_col) * css_w;
+        let top = rect.top() + f64::from(grid.cursor_row) * css_h;
         let _ = input.surface.set_attribute(
             "style",
             &format!("{INPUT_SURFACE_STYLE}left:{left}px;top:{top}px;"),
@@ -1247,52 +1245,42 @@ impl App {
         }
     }
 
-    /// The viewport cell under a pointer event, in the canvas's CSS scale.
-    fn cell_under(&self, event: &web_sys::MouseEvent) -> (u16, u16) {
-        let rect = self.canvas.get_bounding_client_rect();
+    /// A cell's drawn size on the page, in CSS pixels: the canvas's cell
+    /// size scaled by however CSS, page zoom, or the device pixel ratio
+    /// shows the canvas.
+    fn css_cell(&self, rect: &web_sys::DomRect) -> (f64, f64) {
         let scale_x = rect.width() / f64::from(self.canvas.width().max(1));
         let scale_y = rect.height() / f64::from(self.canvas.height().max(1));
+        (self.metrics.cell_w * scale_x, self.metrics.cell_h * scale_y)
+    }
+
+    /// The viewport cell under a pointer event.
+    fn cell_under(&self, event: &web_sys::MouseEvent) -> (u16, u16) {
+        let rect = self.canvas.get_bounding_client_rect();
+        let (css_w, css_h) = self.css_cell(&rect);
         let (cols, rows) = self.session.dims();
         cell_at(
             event.client_x() - rect.left(),
             event.client_y() - rect.top(),
-            self.metrics.cell_w * scale_x,
-            self.metrics.cell_h * scale_y,
+            css_w,
+            css_h,
             cols,
             rows,
         )
     }
 
-    /// The pointer in the canvas's own pixels, the cell grid of
-    /// [`Metrics`] (8x16, the server's default cell size for the mouse
-    /// encoder), clamped to the grid: what `INPUT_MOUSE` carries.
+    /// The pointer in pixels of the cell grid the viewport reports to the
+    /// server ([`Metrics::cell_px`] per cell), clamped to the grid: what
+    /// `INPUT_MOUSE` carries, and what the server's mouse encoder divides by
+    /// the same cell size.
     fn surface_pixels(&self, event: &web_sys::MouseEvent) -> (f64, f64) {
         let rect = self.canvas.get_bounding_client_rect();
+        let (css_w, css_h) = self.css_cell(&rect);
+        let (cell_w, cell_h) = self.metrics.cell_px();
         let (cols, rows) = self.session.dims();
-        let axis = |client: f64, origin: f64, css: f64, device: u32, cell: f64, count: u16| {
-            let scale = css / f64::from(device.max(1));
-            let max = (f64::from(count) * cell - 1.0).max(0.0);
-            ((client - origin) / scale.max(f64::EPSILON))
-                .floor()
-                .clamp(0.0, max)
-        };
         (
-            axis(
-                event.client_x(),
-                rect.left(),
-                rect.width(),
-                self.canvas.width(),
-                self.metrics.cell_w,
-                cols,
-            ),
-            axis(
-                event.client_y(),
-                rect.top(),
-                rect.height(),
-                self.canvas.height(),
-                self.metrics.cell_h,
-                rows,
-            ),
+            crate::input::surface_pixel(event.client_x() - rect.left(), css_w, cell_w, cols),
+            crate::input::surface_pixel(event.client_y() - rect.top(), css_h, cell_h, rows),
         )
     }
 
@@ -1336,16 +1324,22 @@ fn build_app(
         .dyn_into()?;
 
     let (ready_tx, ready_rx) = oneshot::channel();
+    let metrics = Metrics::default();
+    let mut session = if synthesized_only {
+        crate::Session::new_synthesized_compat(vt, cols, rows)
+    } else {
+        crate::Session::new(vt, cols, rows)
+    };
+    // Mouse reports carry positions on the grid the canvas draws; the
+    // viewport tells the server that grid's cell size.
+    let (cell_w, cell_h) = metrics.cell_px();
+    session.set_cell_size(cell_w, cell_h);
     let app = Rc::new(RefCell::new(App {
-        session: if synthesized_only {
-            crate::Session::new_synthesized_compat(vt, cols, rows)
-        } else {
-            crate::Session::new(vt, cols, rows)
-        },
+        session,
         tx,
         canvas,
         ctx,
-        metrics: Metrics::default(),
+        metrics,
         cursor_on: Cell::new(true),
         wheel_carry: Cell::new(0.0),
         painted: RefCell::new(None),
