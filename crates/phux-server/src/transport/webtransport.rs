@@ -384,9 +384,15 @@ mod tests {
 
     /// A native client that skips certificate validation; the TLS handshake
     /// and HTTP/3 CONNECT are still exercised end to end.
+    ///
+    /// It binds IPv4 loopback like the listener, never the dual-stack
+    /// default: macOS picks a dual-stack socket's ephemeral port without
+    /// checking IPv4 bindings, and when it collides with another process's
+    /// IPv4 socket that socket receives every reply, so the handshake
+    /// silently times out after 30 s (about 1 run in 300 on a busy host).
     fn client_endpoint() -> wtransport::Endpoint<wtransport::endpoint::endpoint_side::Client> {
         let config = ClientConfig::builder()
-            .with_bind_default()
+            .with_bind_address(SocketAddr::from(([127, 0, 0, 1], 0)))
             .with_no_cert_validation()
             .build();
         wtransport::Endpoint::client(config).unwrap()
