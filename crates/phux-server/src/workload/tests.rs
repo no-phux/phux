@@ -711,6 +711,23 @@ fn a_client_request_accepts_its_own_issued_chain_and_stores_it_owner_only() {
         stored_credential_id(&cert).as_deref(),
         Some(expected.as_str())
     );
+    // The leaf's notAfter is the registry expiry rounded up to the next
+    // midnight after a day of slack: never earlier, at most a day later.
+    let not_after = stored_certificate_expiry(&cert).unwrap();
+    let expires = in_an_hour();
+    assert!(
+        (expires - 60..=expires + 86_400 + 60).contains(&not_after),
+        "{not_after} vs {expires}"
+    );
+    assert_eq!(
+        stored_certificate_expiry(&remotes.join("missing.pem")),
+        None
+    );
+    assert_eq!(
+        stored_certificate_expiry(&key),
+        None,
+        "a key is no certificate"
+    );
     for needle in key_needles(&key_pem) {
         assert!(!rendered.contains(&needle), "{rendered}");
     }

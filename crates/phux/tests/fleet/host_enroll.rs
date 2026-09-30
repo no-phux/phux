@@ -797,10 +797,29 @@ fn add_json_emits_the_documented_host_document() {
     assert_eq!(host["client_key"], serde_json::Value::Null);
     assert_eq!(
         doc.as_object().map(serde_json::Map::len),
-        Some(2),
-        "exactly the two documented top-level keys; document: {doc}"
+        Some(3),
+        "exactly the three documented top-level keys; document: {doc}"
     );
     assert_eq!(host.len(), 11, "exactly the eleven documented host keys");
+    let enrollment = doc["enrollment"]
+        .as_object()
+        .expect("an `enrollment` object");
+    assert_eq!(enrollment["status"], "skipped", "document: {doc}");
+    for key in [
+        "error",
+        "credential_id",
+        "expires_at",
+        "previous_credential_id",
+        "previous_revoked",
+    ] {
+        assert_eq!(enrollment[key], serde_json::Value::Null, "{key}: {doc}");
+    }
+    assert_eq!(enrollment["warnings"], serde_json::json!([]));
+    assert_eq!(
+        enrollment.len(),
+        7,
+        "exactly the seven documented enrollment keys"
+    );
 
     // The full ssh path under --json: progress is suppressed, the document
     // carries the candidate the probe could not reach.
@@ -816,6 +835,17 @@ fn add_json_emits_the_documented_host_document() {
     assert_eq!(doc["host"]["endpoint"], "ssh://me@mini");
     assert_eq!(doc["host"]["direct"], format!("quic://{OVERLAY}:8788"));
     assert_eq!(doc["host"]["cert_fingerprint"], FINGERPRINT);
+    // This fake host answers no `phux workload` verb: pairing succeeds, the
+    // certificate does not, and the document says so rather than leaving
+    // `client_cert: null` to be read as "nothing was tried".
+    assert_eq!(doc["enrollment"]["status"], "failed", "document: {doc}");
+    assert!(
+        doc["enrollment"]["error"]
+            .as_str()
+            .is_some_and(|error| !error.is_empty()),
+        "document: {doc}"
+    );
+    assert_eq!(doc["host"]["client_cert"], serde_json::Value::Null);
     assert_token_never_printed(&stdout, &stderr);
 }
 

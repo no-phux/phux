@@ -816,9 +816,14 @@ this machine, only its CSR crosses ssh (on stdin), and the key and chain land
 as owner-only files under `<state-dir>/remotes/` that the `[[remote]]` entry
 names as `client-cert` and `client-key`. Every dial to that remote presents
 them, without the `PHUX_WORKLOAD_*` variables. Running `host add` again when
-the saved route no longer answers enrolls a new certificate and revokes the
-old one in the same registry write; `phux pair revoke sha256:...` revokes an
-enrolled certificate like any other workload credential. The CA key
+the saved route no longer answers enrolls a new certificate, records it, and
+only then revokes the old one on the far host, so a failure part way leaves
+the entry on a certificate that still works. Certificates are issued for 90
+days: `phux host renew NAME` replaces one on demand, `host add` replaces one
+within 14 days of expiry, and dials and `phux doctor` (`client-certs`) warn
+before then ([remote-access.md](remote-access.md#client-certificates-and-renewal)).
+`phux pair revoke sha256:...` revokes an enrolled certificate like any other
+workload credential. The CA key
 (`<state-dir>/workload-ca.key`), the CA certificate, and the registry
 (`<state-dir>/workload-keys`) are owner-only files, replaced under a lock by
 atomic rename; `PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, and

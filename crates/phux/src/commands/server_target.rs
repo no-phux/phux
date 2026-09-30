@@ -156,6 +156,7 @@ pub(crate) fn plan_entry(
     let identity = entry
         .client_identity()
         .map_err(|err| unusable_entry(entry, &err, &re_pair_remedy(&entry.name)))?;
+    entry.warn_if_renewal_due();
     let plan = match endpoint {
         Endpoint::Quic(addr) => attach::plan_quic_dial(rt, &addr, token, fingerprint, None),
         Endpoint::Ws(url) => attach::plan_ws_dial(url, token, fingerprint, None),
