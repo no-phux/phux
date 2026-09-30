@@ -196,15 +196,17 @@ def assert_execution_records(directory, expected, secondary=True):
 def exercise(phux, probe, provider_probe, directory, transport, connected=False,
              provider_only=False):
     env = isolated_env(directory)
-    paired = json.loads(run([phux, "pair", "--json"], directory, env,
-                            capture_output=True).stdout)
-    stale = json.loads(run([phux, "pair", "--json"], directory, env,
-                           capture_output=True).stdout)
     port = free_port({"quic": socket.SOCK_DGRAM, "wss": socket.SOCK_STREAM}[transport])
     endpoint = f"{transport}://127.0.0.1:{port}"
-    config = registry(directory, endpoint, paired["token"], stale["token"], paired["cert_fingerprint"])
-    original = config.read_bytes()
     with fixture_server(phux, directory, env, port, transport) as server:
+        # `phux pair` mints only against a live server with a bound listener.
+        paired = json.loads(run([phux, "--socket", "s", "pair", "--json"], directory, env,
+                                capture_output=True).stdout)
+        stale = json.loads(run([phux, "--socket", "s", "pair", "--json"], directory, env,
+                               capture_output=True).stdout)
+        config = registry(directory, endpoint, paired["token"], stale["token"],
+                          paired["cert_fingerprint"])
+        original = config.read_bytes()
         who = json.loads(run([phux, "whoami", "--remote", "loop", "--json"],
                              directory, env, capture_output=True).stdout)
         assert who["credential_id"] == paired["credential_id"], who

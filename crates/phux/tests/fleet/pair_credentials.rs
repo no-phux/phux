@@ -1,11 +1,96 @@
-//! Real-CLI credential lifecycle and custom-store integrity coverage.
+//! Real-CLI credential lifecycle and custom-store integrity coverage, plus
+//! the live-listener gate every mint passes first (ADR-0141).
 
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 
 use std::os::unix::fs::PermissionsExt;
-use std::process::Output;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Output, Stdio};
+use std::time::{Duration, Instant};
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
+
+/// How long a freshly started server has to accept on its socket.
+const READY_DEADLINE: Duration = Duration::from_secs(30);
+
+/// The socket every command in one test dials: beside the test's state
+/// dir, never the operator's.
+fn socket_path(state: &Path) -> PathBuf {
+    state.with_file_name("s.sock")
+}
+
+/// A real `phux server` on the test's socket with a secure loopback wss
+/// listener: the bound remote listener a mint requires. Killed on drop.
+struct Server {
+    child: Child,
+    socket: PathBuf,
+    /// The wss listener's `127.0.0.1:PORT`.
+    wss_addr: String,
+}
+
+impl Server {
+    fn start(state: &Path, tokens: Option<&Path>) -> Self {
+        let socket = socket_path(state);
+        let wss_addr = format!("127.0.0.1:{}", free_tcp_port());
+        let mut command = crate::common::phux_cmd(PHUX);
+        command
+            .env("XDG_STATE_HOME", state)
+            .env("PHUX_TAILSCALE", "phux-test-no-such-overlay-command")
+            .env("PHUX_NO_AUTO_LISTEN", "1")
+            // The routable path (TLS + bearer token) on loopback.
+            .env("PHUX_WS_SECURE", "1")
+            .arg("server")
+            .arg("--socket")
+            .arg(&socket)
+            .args(["--no-seed", "--listen", &wss_addr])
+            // Backstop only: Drop kills the server.
+            .args(["--exit-after-idle", "120"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        match tokens {
+            Some(tokens) => {
+                command.env("PHUX_WS_TOKENS", tokens);
+            }
+            None => {
+                command.env_remove("PHUX_WS_TOKENS");
+            }
+        }
+        let child = command.spawn().expect("spawn phux server");
+        let server = Self {
+            child,
+            socket,
+            wss_addr,
+        };
+        let start = Instant::now();
+        while std::os::unix::net::UnixStream::connect(&server.socket).is_err() {
+            assert!(
+                start.elapsed() < READY_DEADLINE,
+                "the server never accepted on {}",
+                server.socket.display()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        server
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_file(&self.socket);
+    }
+}
+
+/// A TCP port nothing is bound to right now.
+fn free_tcp_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind a free tcp port")
+        .local_addr()
+        .expect("local addr")
+        .port()
+}
 
 /// Run the real `phux` binary against an isolated state dir.
 ///
@@ -19,11 +104,13 @@ const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 /// --json` refusing with "legacy token store requires explicit migration",
 /// and the case that mints successfully would go on to chmod 0o640 a live
 /// credential file. The env is scrubbed rather than cleared wholesale
-/// because `PATH` and friends still have to reach the child.
-fn phux(state: &std::path::Path, tokens: Option<&std::path::Path>, args: &[&str]) -> Output {
+/// because `PATH` and friends still have to reach the child. `PHUX_SOCKET`
+/// is pinned to the test's own socket for the same reason: a mint dials it.
+fn phux(state: &Path, tokens: Option<&Path>, args: &[&str]) -> Output {
     let mut command = crate::common::phux_cmd(PHUX);
     command
         .env("XDG_STATE_HOME", state)
+        .env("PHUX_SOCKET", socket_path(state))
         .env("PHUX_TAILSCALE", "phux-test-no-such-overlay-command")
         .args(args);
     match tokens {
@@ -63,6 +150,7 @@ fn custom_store_mint_rotate_revoke_is_operational_and_secret_safe() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
     let tokens = dir.path().join("custom-credentials");
+    let _server = Server::start(&state, Some(&tokens));
 
     let minted_output = phux(&state, Some(&tokens), &["pair", "--json"]);
     let minted = json(&minted_output);
@@ -112,6 +200,7 @@ fn expired_rotation_emits_no_secret_and_leaves_the_store_unchanged() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
     let tokens = dir.path().join("custom-credentials");
+    let _server = Server::start(&state, Some(&tokens));
     let minted = json(&phux(&state, Some(&tokens), &["pair", "--json"]));
     let id = minted["credential_id"].as_str().unwrap().to_owned();
 
@@ -136,6 +225,7 @@ fn expired_rotation_emits_no_secret_and_leaves_the_store_unchanged() {
 fn default_and_environment_selected_stores_refuse_unsafe_permissions() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
+    let _server = Server::start(&state, None);
 
     let default_minted = json(&phux(&state, None, &["pair", "--json"]));
     let default_path = std::path::PathBuf::from(default_minted["tokens_path"].as_str().unwrap());
@@ -166,6 +256,7 @@ fn pair_ls_and_prune_report_credentials_without_secrets() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
     let tokens = dir.path().join("custom-credentials");
+    let _server = Server::start(&state, Some(&tokens));
 
     let minted = json(&phux(&state, Some(&tokens), &["pair", "--json"]));
     let id = minted["credential_id"].as_str().unwrap().to_owned();
@@ -211,6 +302,7 @@ fn pair_replace_token_revokes_the_previous_bearer() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
     let tokens = dir.path().join("custom-credentials");
+    let _server = Server::start(&state, Some(&tokens));
 
     let first = json(&phux(&state, Some(&tokens), &["pair", "--json"]));
     let old = first["token"].as_str().unwrap().to_owned();
@@ -239,4 +331,117 @@ fn pair_replace_token_revokes_the_previous_bearer() {
     let store = phux_server::auth::TokenStore::load(&tokens).unwrap();
     assert!(!store.verify(&bearer(&old)));
     assert!(store.verify(&bearer(&new)));
+}
+
+/// The credentials a store holds, as `phux pair ls --json` lists them (an
+/// absent store lists none).
+fn credential_count(state: &Path, tokens: &Path) -> usize {
+    let listed = json(&phux(state, Some(tokens), &["pair", "ls", "--json"]));
+    listed["credentials"].as_array().unwrap().len()
+}
+
+/// With no server on the socket, a mint refuses before touching the store:
+/// no token, no link, no QR for a door that is not there.
+#[test]
+fn a_mint_with_no_live_server_mints_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let tokens = dir.path().join("custom-credentials");
+
+    for args in [
+        ["pair", "--json"].as_slice(),
+        ["pair", "--qr", "--host", "100.64.0.2:8787"].as_slice(),
+    ] {
+        let out = phux(&state, Some(&tokens), args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success(),
+            "`phux {}` must refuse",
+            args.join(" ")
+        );
+        assert!(out.stdout.is_empty(), "a refusal prints no credential");
+        assert!(
+            stderr.contains("no server is running at")
+                && stderr.contains("s.sock")
+                && stderr.contains("none was minted")
+                && stderr.contains("phux service install"),
+            "the refusal names the socket and the remedy; got {stderr:?}"
+        );
+    }
+    assert!(!tokens.exists(), "nothing was written to the store");
+
+    // A stale socket file (a server that exited) is the same refusal.
+    std::fs::write(socket_path(&state), b"").unwrap();
+    let out = phux(&state, Some(&tokens), &["pair", "--json"]);
+    assert!(!out.status.success());
+    assert!(!tokens.exists(), "nothing was written to the store");
+
+    // A store that cannot be minted into says so first, in the words
+    // `phux host add` answers by migrating.
+    std::fs::write(&tokens, format!("{}\n", "ab".repeat(32))).unwrap();
+    std::fs::set_permissions(&tokens, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let out = phux(&state, Some(&tokens), &["pair", "--json"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(
+        stderr.contains("failed to mint token: legacy token store requires explicit migration"),
+        "{stderr}"
+    );
+}
+
+/// Against a live listener the document reports what the server actually
+/// bound, and a loopback bind yields no link a device could not use.
+#[test]
+fn a_mint_reports_the_listener_the_server_bound() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let tokens = dir.path().join("custom-credentials");
+    let server = Server::start(&state, Some(&tokens));
+
+    let minted = json(&phux(&state, Some(&tokens), &["pair", "--json"]));
+    assert_eq!(minted["ws_addr"], server.wss_addr.as_str());
+    assert!(minted["quic_addr"].is_null(), "no QUIC listener: {minted}");
+    assert!(
+        minted["connect_link"].is_null(),
+        "loopback is not dialable from a device: {minted}"
+    );
+    let store = phux_server::auth::TokenStore::load(&tokens).unwrap();
+    assert!(store.verify(&bearer(minted["token"].as_str().unwrap())));
+}
+
+/// `--qr` with no address a device can dial is refused before minting; with
+/// `--host` over the bound wss listener it renders the link.
+#[test]
+fn a_qr_mints_only_when_it_can_carry_a_dialable_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let tokens = dir.path().join("custom-credentials");
+    let server = Server::start(&state, Some(&tokens));
+
+    let refused = phux(&state, Some(&tokens), &["pair", "--qr"]);
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success(), "stdout={:?}", refused.stdout);
+    assert!(refused.stdout.is_empty(), "a refusal prints no credential");
+    assert!(
+        stderr.contains("--qr needs a connect link")
+            && stderr.contains(&server.wss_addr)
+            && stderr.contains("--host"),
+        "the refusal names the unreachable bind and the remedy; got {stderr:?}"
+    );
+    assert_eq!(credential_count(&state, &tokens), 0, "nothing was minted");
+
+    let host = format!("wss://{}", server.wss_addr);
+    let paired = phux(&state, Some(&tokens), &["pair", "--qr", "--host", &host]);
+    let stdout = String::from_utf8_lossy(&paired.stdout);
+    assert!(
+        paired.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&paired.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("https://phux.sh/connect?url={host}&"))
+            && stdout.contains("Scan to pair:"),
+        "stdout={stdout}"
+    );
+    assert_eq!(credential_count(&state, &tokens), 1);
 }

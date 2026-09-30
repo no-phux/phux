@@ -7,9 +7,16 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
+// Every process here starts from a scrubbed `PHUX_*` environment: run from
+// a phux pane, an inherited `PHUX_WS_TOKENS` / `PHUX_WS_TLS_CERT` would
+// point the far host's server and its `phux pair` at the operator's real
+// credential store and certificate.
+#[path = "../common/ambient.rs"]
+mod common;
+
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Output, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -96,7 +103,7 @@ impl FarHost {
     /// Start the far host's server with its QUIC listener, as its service
     /// unit would.
     fn start_server(&mut self) {
-        let server = Command::new(PHUX)
+        let server = common::phux_cmd(PHUX)
             .envs(hermetic_env(self.dir.path()))
             .arg("server")
             .arg("--socket")
@@ -153,7 +160,7 @@ impl FarHost {
     /// ssh, and no socket handed over, so the registry is the only way to
     /// the server.
     fn phux(&self, args: &[&str]) -> Output {
-        Command::new(PHUX)
+        common::phux_cmd(PHUX)
             .envs(self.env())
             .args(args)
             .stdin(Stdio::null())
@@ -238,7 +245,7 @@ impl Drop for FarHost {
     fn drop(&mut self) {
         // The repair rung may have started a server of its own through the
         // fake ssh; stop whatever holds the socket, then the child.
-        let _ = Command::new(PHUX)
+        let _ = common::phux_cmd(PHUX)
             .envs(self.env())
             .args(["kill", "--server"])
             .stdin(Stdio::null())

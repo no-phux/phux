@@ -355,7 +355,15 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::Plugin { .. } => Some("plugin"),
         Command::Host { .. } => Some("host"),
         Command::Relay { .. } => Some("relay"),
-        Command::Pair { .. } => Some("pair"),
+        // Minting asks the server what it has bound (ADR-0141); the
+        // lifecycle actions only edit the store.
+        Command::Pair { action, .. } => match action {
+            None => None,
+            Some(PairAction::Ls) => Some("pair ls"),
+            Some(PairAction::Prune { .. }) => Some("pair prune"),
+            Some(PairAction::Rotate { .. }) => Some("pair rotate"),
+            Some(PairAction::Revoke { .. }) => Some("pair revoke"),
+        },
         Command::Workload { .. } => Some("workload"),
         Command::Completion { .. } => Some("completion"),
         Command::Mcp { .. } => Some("mcp"),
@@ -2092,7 +2100,11 @@ pub(crate) enum Command {
     /// future connections. These operations update the store directly and take
     /// effect without restarting the server.
     ///
-    /// This never contacts a running server — it only writes the token file.
+    /// Minting first asks the running server (`--socket`) which remote
+    /// listeners it has bound, and mints nothing when none would accept the
+    /// credential: no server, no bound listener, `--host` with no wss
+    /// listener, or `--qr` with no address a device can dial. `ls`, `prune`,
+    /// `rotate`, and `revoke` only edit the store and need no server.
     #[usage(help_heading = "Machines", display_order = 43)]
     Pair {
         #[usage(subcommand)]
@@ -2110,16 +2122,18 @@ pub(crate) enum Command {
         /// Also render the pairing payload as a scannable QR code. The QR
         /// encodes the same `https://phux.sh/connect` one-tap link
         /// printed as text, so a phone can pair by scanning instead of typing. Needs a server
-        /// address: pass `--host`, or let it fall back to a detected overlay
-        /// address plus the `PHUX_WS_ADDR` port.
+        /// address: pass `--host`, or let it derive one from the running
+        /// server's bound wss listener. Refused, with nothing minted, when
+        /// neither yields an address a device can dial.
         #[usage(long)]
         qr: bool,
 
         /// Server address (`host:port`, or a full `ws://`/`wss://` URL) to
-        /// embed in the connect link so it is fully self-contained. Omitted:
-        /// derived from the detected overlay address and the `PHUX_WS_ADDR`
-        /// port when possible; otherwise no link is printed (the device
-        /// enters the address itself).
+        /// embed in the connect link so it is fully self-contained; the
+        /// running server must have a wss listener bound behind it. Omitted:
+        /// the address its wss listener is bound to (an overlay address for
+        /// a `0.0.0.0`/`::` bind); with no such address no link is printed
+        /// (the device enters the address itself).
         #[usage(long, value_name = "HOST:PORT")]
         host: Option<String>,
 

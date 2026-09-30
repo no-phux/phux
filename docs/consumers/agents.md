@@ -776,12 +776,15 @@ names are skipped (`restored` / `skipped_existing`). Schema-1 archives
 remain readable.
 
 `host ls`: `enabled` is `null` for `role: "remote"`; `session` is `null`
-for satellites. `pair --json` never contacts a server; the token is a
-secret emitted once and is not re-derivable afterwards. `connect_link`
-is `null` when no address source exists. `overlay_addresses` is empty,
-never absent, when nothing was detected. `ws_addr` / `quic_addr` are
-configured binds, not resolved dials. Rotate/revoke emit operation
-documents; revoke never includes a token.
+for satellites. `pair --json` mints only after the running server
+reports a bound remote listener, and otherwise exits 1 with an empty
+stdout and nothing minted; the token is a secret emitted once and is not
+re-derivable afterwards. `connect_link` is `null` when no address a
+device can dial is known. `overlay_addresses` is empty, never absent,
+when nothing was detected. `ws_addr` / `quic_addr` are the addresses the
+server reports bound, `null` when that transport is not listening.
+Rotate/revoke emit operation documents; revoke never includes a token
+and needs no server.
 
 Plugin registry enumerates declarative actions, events, panes, and
 links from each manifest and does not execute them. Invalid manifests

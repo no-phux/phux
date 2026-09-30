@@ -1912,7 +1912,11 @@ revokes idle credentials; `rotate` replaces the bearer with a bounded overlap;
 `revoke` denies all generations on future connections. These operations update
 the store directly and take effect without restarting the server.
 
-This never contacts a running server — it only writes the token file.
+Minting first asks the running server (`--socket`) which remote listeners it has
+bound, and mints nothing when none would accept the credential: no server, no
+bound listener, `--host` with no wss listener, or `--qr` with no address a
+device can dial. `ls`, `prune`, `rotate`, and `revoke` only edit the store and
+need no server.
 
 Usage: phux pair [FLAGS] [SUBCOMMAND]
 
@@ -1933,15 +1937,17 @@ Flags:
                              `https://phux.sh/connect` one-tap link printed as
                              text, so a phone can pair by scanning instead of
                              typing. Needs a server address: pass `--host`, or
-                             let it fall back to a detected overlay address plus
-                             the `PHUX_WS_ADDR` port.
+                             let it derive one from the running server's bound
+                             wss listener. Refused, with nothing minted, when
+                             neither yields an address a device can dial.
       --host <HOST:PORT>     Server address (`host:port`, or a full
                              `ws://`/`wss://` URL) to embed in the connect link
-                             so it is fully self-contained. Omitted: derived
-                             from the detected overlay address and the
-                             `PHUX_WS_ADDR` port when possible; otherwise no
-                             link is printed (the device enters the address
-                             itself).
+                             so it is fully self-contained; the running server
+                             must have a wss listener bound behind it. Omitted:
+                             the address its wss listener is bound to (an
+                             overlay address for a `0.0.0.0`/`::` bind); with no
+                             such address no link is printed (the device enters
+                             the address itself).
       --name <NAME>          Human-readable server name to embed in the connect
                              link, shown by the device in its server list.
                              Omitted: the device picks a default.

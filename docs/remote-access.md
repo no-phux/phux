@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-09-27
+last-reviewed: 2026-09-29
 ---
 
 # Remote access
@@ -45,8 +45,10 @@ Each step prints one line as it happens; each failure names the next command.
    with no service manager gets an unsupervised `phux server --ensure` and a
    warning that it will not survive a reboot. `--no-service` asks for that
    deliberately.
-3. **Pairing.** `phux pair --json` on the host mints a token and reports the
-   certificate fingerprint and the detected overlay addresses. A token store
+3. **Pairing.** `phux pair --json` on the host mints a token, once the server
+   reports a bound remote listener, and reports the certificate fingerprint,
+   the detected overlay addresses, and the bound listeners. A server with no
+   listener fails the add with its reason; nothing is minted. A token store
    that predates versioning is migrated once, and the server restarted so its
    listeners re-read it.
 4. **A direct route.** Every candidate is dialed briefly with the credentials
@@ -276,21 +278,39 @@ Headscale/WireGuard path is first-class. The trust model and environment
 knobs live in
 [operations.md](./operations.md#connecting-from-another-network-overlay-reachability).
 
-## Common steps: pair, then listen
+## Common steps: listen, then pair
 
-Every path below shares the same server-side setup, done once. Pairing order
-does not matter: the server re-reads the credential store when it changes, so a
-token minted against an already-running listener works at the next connection
-attempt, and credential revocation applies just as promptly. Legacy anonymous
-token lines require a one-time explicit `phux pair --migrate-legacy`. `phux pair`
-never contacts a running server, and it provisions the self-signed certificate
-if none exists yet, so the fingerprint it prints is the one the server will
-present.
+Every path below shares the same server-side setup, done once. First the
+server needs a remote listener. On the default profile a host on an overlay
+network already has one: the server binds its overlay address on 8787 (wss)
+and 8788 (QUIC) at startup
+([ADR-0081](adr/0081-overlay-auto-listen-and-one-command-pairing.md)).
+Otherwise start it on a non-loopback bind — TLS and token auth engage
+automatically:
 
 ```sh
-# On the server host, before starting the listener:
+phux server --listen 0.0.0.0:8787      # TLS WebSocket (= PHUX_WS_ADDR)
+# or, for QUIC:
+phux server --quic 0.0.0.0:8788        # (= PHUX_QUIC_ADDR)
+```
+
+Then pair, on the server host:
+
+```sh
 phux pair
 ```
+
+`phux pair` first asks the running server (the default socket, or
+`--socket PATH`) which remote listeners it has bound, and mints nothing when
+none would accept the credential: no server running, or a server with no
+remote listener, is an error that names the socket and the fix
+([ADR-0141](adr/0141-pair-mints-only-against-a-live-listener.md)). The server
+re-reads the credential store when it changes, so the token works at the next
+connection attempt with no restart, and revocation applies just as promptly.
+Legacy anonymous token lines require a one-time explicit
+`phux pair --migrate-legacy`. `phux pair` provisions the self-signed
+certificate if none exists yet, so the fingerprint it prints is the one the
+server presents.
 
 Its output looks like this (the overlay-address block appears only when a
 tailnet or CGNAT-routed address is detected on the host):
@@ -320,34 +340,29 @@ minutes by default (`--overlap-seconds 0` cuts over immediately); an existing
 absolute expiry is preserved, and an expired credential cannot be rotated.
 Revocation and the end of a rotation overlap also disconnect established
 sessions using that credential
-([operations.md](./operations.md#remote-consumer-trust-model-opt-in)):
+([operations.md](./operations.md#remote-consumer-trust-model-opt-in)).
+These, `ls`, and `prune` only edit the store and need no running server:
 
 ```sh
 phux pair rotate <credential-id> --overlap-seconds 300
 phux pair revoke <credential-id>
 ```
 
-For a phone or tablet, pass `--host HOST:PORT` (or a full `ws://`/`wss://`
-URL), or let `phux pair` fall back to a detected overlay address plus the
-`PHUX_WS_ADDR` port, and it also prints a one-tap
+For a phone or tablet `phux pair` also prints a one-tap
 `https://phux.sh/connect?url=…&fp=…&token=…` Universal Link (an https link so
 only the app owning the domain receives the bearer token), a
 `phux://connect?…` spelling for older app builds, and with `--qr` a terminal
-QR of the same link. Treat all three like the token itself. `--name` labels
-the server in the device's list.
+QR of the same link. Treat all three like the token itself. The link names the
+address the server's wss listener is bound to (the overlay address for a
+`0.0.0.0`/`::` bind), or `--host HOST:PORT` (or a full `ws://`/`wss://` URL)
+when the device reaches the server some other way, such as a MagicDNS name or
+a port forward; `--host` still needs a bound wss listener behind it. A wss
+listener bound only to loopback, or none at all, gives no link, and `--qr`
+then refuses before minting. `--name` labels the server in the device's list.
 
 ```sh
 # Credentials + a scannable one-tap QR for the device:
-phux pair --qr --host 100.x.y.z:8787 --name studio-mini
-```
-
-Then start
-the listener on a non-loopback bind — TLS and token auth engage automatically:
-
-```sh
-phux server --listen 0.0.0.0:8787      # TLS WebSocket (= PHUX_WS_ADDR)
-# or, for QUIC:
-phux server --quic 0.0.0.0:8788        # (= PHUX_QUIC_ADDR)
+phux pair --qr --name studio-mini
 ```
 
 Prefer QUIC where UDP is open — it handles roaming and connection migration
@@ -496,8 +511,8 @@ Failures fall into a few classes, and the symptom tells you which one you have.
   state dir was recreated, regenerating `remote-cert.pem`), an operator
   certificate was substituted via `PHUX_WS_TLS_CERT`/`PHUX_WS_TLS_KEY`, or you
   are dialing the wrong host. Re-run `phux pair` on the server host — it
-  re-prints the persisted certificate's fingerprint without contacting the
-  running server — and compare. Do not "fix" a mismatch by dropping the flag:
+  prints the persisted certificate's fingerprint beside a fresh credential
+  (`phux pair revoke` it if you do not need it) — and compare. Do not "fix" a mismatch by dropping the flag:
   the pin is what closes the trust-on-first-use MITM window.
 - **Certificate name mismatch** (`IP address mismatch`, `NotValidForName`,
   `ERR_CERT_COMMON_NAME_INVALID`) from a client that validates the server name
@@ -513,6 +528,7 @@ Failures fall into a few classes, and the symptom tells you which one you have.
   ```sh
   rm ~/.local/state/phux/remote-cert.pem ~/.local/state/phux/remote-key.pem
   phux pair            # regenerates, naming the address it advertises
+  phux upgrade         # restarts the server in place so it presents it
   ```
 
   then re-pair every device against the new fingerprint.

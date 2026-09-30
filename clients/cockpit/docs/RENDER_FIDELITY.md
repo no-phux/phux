@@ -480,6 +480,7 @@ other two transform, which is the floor discriminating rather than repainting.
   how `aht` was misdiagnosed twice.
 - `phux-cockpit-aht`'s fix is still unconfirmed ON GLASS. Nothing here changes
   that: it needs a human to grant Screen Recording once. See section 5.
+  Section 7 tests the premise itself against Ghostty's rasterization recipe.
 
 ---
 
@@ -629,3 +630,54 @@ is a texture readback rather than a photograph of the display — so display
 colour conversion and anything the window server does after the drawable is
 presented are still outside it. Section 5 remains the honest boundary for
 those.
+
+---
+
+## 7. Thin compared to what: the host against Ghostty's own recipe
+
+`phux-cockpit-aht` asked for stem darkening, a coverage gamma curve or
+gamma-correct blending, on the premise that Cockpit's glyphs are thinner than
+the terminal the owner reads text in. Every earlier round measured Cockpit
+against itself. None measured it against that terminal, so the premise was
+never tested.
+
+`scripts/host-raster-check.sh` now prints three `reference=` rows beside the
+host's own. They rasterize the same row, in the same face the host resolved,
+at the same size and scale, with Ghostty's CoreText recipe
+(`src/font/face/coretext.zig`, `renderGlyph`): an alpha-only `linearGray`
+mask, font smoothing set to `font-thicken`, and the gray fill level set to
+`font-thicken-strength / 255`, which is what steers CoreText's dilation. The
+mask is blended over the ground in gamma space. That is Ghostty's macOS default
+`alpha-blending = native`, and for a grayscale pair it is also what
+`linear-corrected` produces, because that mode's correction maps the linear
+blend back onto the gamma-space result (`shaders.metal`). Measured 2026-09-29
+at the pin `d6e85cd9`, 13pt, scale 2:
+
+| row | mean_luma | solid | lit |
+|---|---|---|---|
+| host `cell_grid` (what Cockpit draws) | 45.7678 | 4170 | 5101 |
+| Ghostty `font-thicken = false` | 37.1665 | 3090 | 4276 |
+| Ghostty `font-thicken = true`, strength 50 | 41.5617 | 3625 | 4742 |
+| Ghostty `font-thicken = true`, strength 255 | 45.8252 | 4172 | 5101 |
+
+Deriving command: `./scripts/host-raster-check.sh`
+
+At scale 1 (the same harness with `kScale = 1.0`) the relation is unchanged:
+host `cell_grid` mean_luma 49.2882 / solid 1255, Ghostty strength 255
+49.4102 / 1257, strength 50 42.9615 / 1022. So the loss of ink from 1x to 2x
+that `aht` round 6 read as "no stem darkening" is CoreText's smoothing
+behaviour, and Ghostty has it too.
+
+The host already inks within 0.2% of the heaviest thickening Ghostty offers,
+and 15% more solid pixels than the owner's own Ghostty setting (`font-thicken
+= true`, `font-thicken-strength = 50`). The `thicken = false` row reproduces
+section 1's smoothing-disabled row to within ten pixels, which is the check
+that the reference recipe is the one it claims to be. There is no stem
+darkening, gamma or contrast deficit left in the host to fix, and a
+Ghostty-style thicken knob could only make Cockpit's text lighter.
+
+What does differ from that Ghostty setup is not the rasterizer: it asks for
+14pt where Cockpit defaults to 13, a dimmer foreground (`#c5d0cd` against
+Cockpit's `#f4f7fb`), and `minimum-contrast = 1.1` where Cockpit's floor is 3
+(section 3b). Size is the only one of those that makes Cockpit's text read
+smaller, and it is configuration, not rendering.

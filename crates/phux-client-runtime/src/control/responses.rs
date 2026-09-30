@@ -176,6 +176,8 @@ impl ControlPlane {
         });
         self.push_event(Event::TopologyChanged);
         self.fence_topology_read();
+        // Any earlier attachment's subscriptions ended with it.
+        self.forget_roster_subscriptions();
         self.sync_agent_metadata();
         Ok(())
     }
@@ -301,6 +303,7 @@ impl ControlPlane {
         reason: Option<DetachReason>,
         message: &str,
     ) -> Result<(), ControlError> {
+        self.forget_roster_subscriptions();
         self.push_event(Event::Detached {
             reason,
             message: message.to_owned(),

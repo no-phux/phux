@@ -16,7 +16,11 @@ use super::{
 #[derive(Debug, Default)]
 pub(super) struct RosterRecovery {
     pub topology: Option<(u32, bool)>,
+    /// Terminals whose subscription and level read this connection has
+    /// already issued. An inventory refresh reads only terminals new to it.
     subscribed: HashSet<ResourceId>,
+    /// Re-read every inventoried declaration at the next inventory.
+    resync: bool,
     reads: HashMap<u32, MetadataRead>,
 }
 
@@ -39,7 +43,14 @@ impl ControlPlane {
             // Wait for the recovered inventory before reading its declarations.
             read.repeat = false;
         }
+        self.roster.resync = true;
         self.queue_refresh_topology();
+    }
+
+    /// The server ended this attachment, and with it every metadata
+    /// subscription (L3.md §1.2). The next inventory subscribes afresh.
+    pub(super) fn forget_roster_subscriptions(&mut self) {
+        self.roster.subscribed.clear();
     }
 
     pub(super) fn observe_roster_event(&mut self, event: &AgentEvent) {
@@ -95,13 +106,17 @@ impl ControlPlane {
             .flat_map(|topology| &topology.panes)
             .map(|pane| pane.terminal_id.clone())
             .collect();
+        let resync = std::mem::take(&mut self.roster.resync);
         // There is no unsubscribe frame. The server tears these down on detach;
         // keep only live inventory locally and tolerate an idempotent resubscribe.
         self.roster.subscribed.retain(|id| terminals.contains(id));
         for terminal_id in terminals {
-            self.roster.subscribed.insert(terminal_id.clone());
-            // Reassert the idempotent subscription: a session detach tears it
-            // down even when the connection and resource identity survive.
+            // A live subscription already delivers every later change, so a
+            // plain inventory refresh leaves a known terminal alone. Recovery
+            // re-reads them all, since the loss may have hidden a change.
+            if !self.roster.subscribed.insert(terminal_id.clone()) && !resync {
+                continue;
+            }
             self.queue_frame(&FrameKind::SubscribeMetadata {
                 scope: Scope::Resource(terminal_id.clone()),
                 key: RESOURCE_AGENT_KEY.to_owned(),
@@ -226,6 +241,10 @@ impl ControlPlane {
         // must preserve a refresh requested while that read was in flight.
         if read.repeat && self.roster.subscribed.contains(&read.terminal_id) {
             self.read_agent_metadata(read.terminal_id);
+        } else if !read.superseded {
+            // The declaration stays unknown while its subscription stays
+            // live; the next inventory reads it again.
+            self.roster.resync = true;
         }
         true
     }

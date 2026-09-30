@@ -70,16 +70,21 @@ async function main() {
   const attachId = client.attachTerminal(pane.terminalId);
   await until(() => answered('AttachAnswered', attachId), 'reattach terminal');
   assert.equal(answered('AttachAnswered', attachId).error, undefined);
-  const beforeInvalidSpawn = client.refreshTopology();
+  assert.equal(typeof client.refreshTopology(), 'number');
   for (const value of [-1, 4294967296, 4294967297, 1.5, NaN, Infinity]) {
     assert.throws(() => client.spawnTerminal(value), /InvalidSessionId/);
   }
-  // No asynchronous JS turn in this interval: invalid inputs cannot consume
-  // the next command correlation or issue a spawn to the server.
-  assert.equal(client.refreshTopology(), beforeInvalidSpawn + 1);
+  // Correlation ids are no probe here: the runtime coalesces topology reads
+  // and issues its own on the runtime thread. The server answers in order,
+  // so a spawn leaked by an invalid input would be answered before this one.
   const spawnId = client.spawnTerminal(pane.sessionId);
   await until(() => answered('SpawnAnswered', spawnId), 'spawn terminal');
   assert.ok(answered('SpawnAnswered', spawnId).terminalId);
+  assert.deepEqual(
+    events.filter(event => event.kind === 'SpawnAnswered').map(event => event.requestId),
+    [spawnId],
+    'invalid session ids issue no spawn',
+  );
   assert.ok(wakes >= 3, 'later activity must rearm wake');
   assert.equal(typeof client.acquire, 'undefined', 'no grid export');
   closed = true;
