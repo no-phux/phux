@@ -372,6 +372,7 @@ pub(crate) const CLI_ONLY: &[(&str, &str)] = &[
         "config agents",
         "local config inventory of declared agent integrations; `phux_agent_list` covers the live agents",
     ),
+    // Host enrollment and renewal remain CLI-only operator workflows.
     (
         "host add",
         "operator host-registry enrollment, not an agent action",
