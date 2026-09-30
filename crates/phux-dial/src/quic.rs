@@ -404,7 +404,9 @@ mod tests {
                 addr,
                 server_name: "localhost".to_owned(),
                 token: Some(vec![0xAB; 32]),
-                trust: CertTrust::SkipVerify,
+                trust: CertTrust::Pinned(
+                    crate::cert::cert_fingerprint(&dir.path().join("cert.pem")).expect("pin"),
+                ),
             },
             &TlsClientIdentity::RequirePaired {
                 certificate,

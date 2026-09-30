@@ -141,6 +141,13 @@ fn located(wire: &WireResourceId) -> Located {
     }
 }
 
+/// Whether `client` may read satellite `host` with `verb`: a hub asks only
+/// the satellites the caller could see, so a refused one discloses nothing.
+#[must_use]
+pub fn admits_satellite(s: &ServerState, client: ClientId, verb: Verb, host: &str) -> bool {
+    View::of(s.connection_grant(client)).admits(verb, &Point::SatelliteHost(host.to_owned()))
+}
+
 /// `snapshot` as `client` may see it with `verb`.
 ///
 /// `s` is the state the snapshot was cut from. Terminals are judged under
@@ -159,9 +166,23 @@ pub fn filter_snapshot(
         return snapshot;
     }
     let group = |id: u32| view.admits(verb, &Point::Group(id));
-    snapshot
-        .resources
-        .retain(|resource| view.admits(verb, &Point::Terminal(TerminalPoint::of(s, &resource.id))));
+    let terminal =
+        |id: &WireResourceId| view.admits(verb, &Point::Terminal(TerminalPoint::of(s, id)));
+    snapshot.resources.retain(|resource| terminal(&resource.id));
+    // Other connections are not the caller's to enumerate, and a child's
+    // parent is named only when the grant covers it.
+    let own = crate::runtime::wire_client(client);
+    for resource in &mut snapshot.resources {
+        resource.viewers.retain(|viewer| *viewer == own);
+        resource.input_holder = resource.input_holder.filter(|holder| *holder == own);
+        if resource
+            .parent
+            .as_ref()
+            .is_some_and(|parent| !terminal(parent))
+        {
+            resource.parent = None;
+        }
+    }
     snapshot.sessions.retain(|session| group(session.id.get()));
     snapshot
         .windows
