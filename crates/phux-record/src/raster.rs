@@ -252,62 +252,67 @@ impl Rasterizer {
     }
 
     fn draw_glyph(&self, surface: &mut Surface, slot: Slot, cell: &RenderedCell, fg: [u8; 3]) {
-        let Slot {
-            x: x0,
-            y: y0,
-            w: box_w,
-            h: cell_h,
-        } = slot;
         match self.glyph_of(&cell.grapheme) {
             Glyph::Blank => {}
-            Glyph::Boxed(ch) => {
-                let mut put = |px: u32, py: u32| {
-                    put_pixel(surface, x0.saturating_add(px), y0.saturating_add(py), fg);
-                };
-                boxdraw::draw(ch, box_w, cell_h, &mut put);
-            }
+            Glyph::Boxed(ch) => draw_boxed(surface, slot, ch, fg),
             Glyph::Bitmap(bitmap) => {
                 // Centre rather than stretch in a wide box.
-                let inset = box_w.saturating_sub(self.font.cell_w) / 2;
-                for (dy, byte) in bitmap.iter().enumerate() {
-                    let Ok(dy) = u32::try_from(dy) else { continue };
-                    if dy >= cell_h {
-                        break;
-                    }
-                    let row = if cell.style.bold {
-                        bold_row(*byte)
-                    } else {
-                        *byte
-                    };
-                    for dx in 0..8_u32 {
-                        if row & (0x80 >> dx) == 0 {
-                            continue;
-                        }
-                        put_pixel(
-                            surface,
-                            x0.saturating_add(inset).saturating_add(dx),
-                            y0.saturating_add(dy),
-                            fg,
-                        );
-                    }
-                }
+                let inset = slot.w.saturating_sub(self.font.cell_w) / 2;
+                draw_bitmap(surface, slot, inset, bitmap, cell.style.bold, fg);
             }
-            Glyph::Tofu => {
-                // A hollow box, one pixel inset, never a blank.
-                if box_w < 3 || cell_h < 3 {
-                    return;
-                }
-                let (right, bottom) = (box_w - 2, cell_h - 2);
-                for x in 1..=right {
-                    put_pixel(surface, x0 + x, y0 + 1, fg);
-                    put_pixel(surface, x0 + x, y0 + bottom, fg);
-                }
-                for y in 1..=bottom {
-                    put_pixel(surface, x0 + 1, y0 + y, fg);
-                    put_pixel(surface, x0 + right, y0 + y, fg);
-                }
-            }
+            Glyph::Tofu => draw_tofu(surface, slot, fg),
         }
+    }
+}
+
+/// Paint a procedurally drawn box/block glyph into `slot`.
+fn draw_boxed(surface: &mut Surface, slot: Slot, ch: char, fg: [u8; 3]) {
+    let mut put = |px: u32, py: u32| {
+        put_pixel(
+            surface,
+            slot.x.saturating_add(px),
+            slot.y.saturating_add(py),
+            fg,
+        );
+    };
+    boxdraw::draw(ch, slot.w, slot.h, &mut put);
+}
+
+/// Paint an 8-pixel-wide bitmap glyph `inset` pixels into `slot`, clipped
+/// to the slot's height; `bold` smears each row one pixel right.
+fn draw_bitmap(
+    surface: &mut Surface,
+    slot: Slot,
+    inset: u32,
+    bitmap: &[u8; 16],
+    bold: bool,
+    fg: [u8; 3],
+) {
+    let x0 = slot.x.saturating_add(inset);
+    for (dy, byte) in (0..slot.h).zip(bitmap.iter()) {
+        let row = if bold { bold_row(*byte) } else { *byte };
+        let y = slot.y.saturating_add(dy);
+        for dx in (0..8_u32).filter(|dx| row & (0x80 >> dx) != 0) {
+            put_pixel(surface, x0.saturating_add(dx), y, fg);
+        }
+    }
+}
+
+/// Paint a hollow box, one pixel inset, so an uncovered glyph is never
+/// blank. Too small a slot paints nothing.
+fn draw_tofu(surface: &mut Surface, slot: Slot, fg: [u8; 3]) {
+    let Slot { x: x0, y: y0, w, h } = slot;
+    if w < 3 || h < 3 {
+        return;
+    }
+    let (right, bottom) = (w - 2, h - 2);
+    for x in 1..=right {
+        put_pixel(surface, x0 + x, y0 + 1, fg);
+        put_pixel(surface, x0 + x, y0 + bottom, fg);
+    }
+    for y in 1..=bottom {
+        put_pixel(surface, x0 + 1, y0 + y, fg);
+        put_pixel(surface, x0 + right, y0 + y, fg);
     }
 }
 
