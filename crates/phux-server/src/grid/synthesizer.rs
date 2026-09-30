@@ -573,6 +573,25 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         Ok(self.diff_consumer(cols, rows_n, live_cm, reference))
     }
 
+    /// Serve several consumers from one render, the way the state-sync tick
+    /// does: one `prepare_tick`, then one `diff_consumer`
+    /// per reference, in order. Each non-empty diff advances its reference.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::synthesize_against_reference`].
+    pub fn synthesize_tick(
+        &mut self,
+        terminal: &GhosttyTerminal<'alloc, '_>,
+        references: &mut [ConsumerReference],
+    ) -> Result<Vec<SnapshotBytes>, SynthesisError> {
+        let (cols, rows_n, live_cm) = self.prepare_tick(terminal)?;
+        Ok(references
+            .iter_mut()
+            .map(|reference| self.diff_consumer(cols, rows_n, live_cm, reference))
+            .collect())
+    }
+
     /// Refresh informational metadata through the same render cache as ticks.
     /// A separate `RenderState` would consume canonical dirty bits and leave this
     /// pool's row bodies stale when an ACK arrives between PTY output and a tick.
@@ -685,27 +704,19 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         }
         let changed_row_count = reference.changed_scratch.len();
 
-        let mut out: Vec<u8> = Vec::new();
         // Screen toggle first, and only on this consumer's alt-screen
         // transition, so content lands on the right buffer.
-        if reference.cursor_mode.alt_screen_set() != live_cm.alt_screen_set() {
-            out.extend_from_slice(&self.tick_screen_toggle);
-        }
-        let ConsumerReference {
-            rows_body,
-            changed_scratch: changed,
-            ..
-        } = &*reference;
-        for &ri in changed {
-            write_cup(&mut out, ri, 0);
-            // Reset SGR at the start of each emitted row so the row body
-            // (which itself starts from a fresh pen) lands on a clean pen.
-            out.extend_from_slice(b"\x1b[0m");
-            out.extend_from_slice(&rows_body[usize::from(ri)]);
-        }
-        // Always re-emit the cursor/mode epilogue on a non-empty tick (the
-        // changed rows moved the cursor as a side effect of painting).
-        out.extend_from_slice(&self.tick_epilogue);
+        let toggle: &[u8] = if reference.cursor_mode.alt_screen_set() == live_cm.alt_screen_set() {
+            &[]
+        } else {
+            &self.tick_screen_toggle
+        };
+        let out = assemble_diff(
+            toggle,
+            &reference.changed_scratch,
+            &reference.rows_body,
+            &self.tick_epilogue,
+        );
         reference.cursor_mode = live_cm;
 
         span.record("changed_row_count", changed_row_count);
@@ -761,16 +772,12 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
             return Vec::new();
         }
 
-        let mut out: Vec<u8> = Vec::new();
-        if screen_changed {
-            out.extend_from_slice(&self.tick_screen_toggle);
-        }
-        for &ri in &changed {
-            write_cup(&mut out, ri, 0);
-            out.extend_from_slice(b"\x1b[0m");
-            out.extend_from_slice(&self.tick_rows[usize::from(ri)]);
-        }
-        out.extend_from_slice(&self.tick_epilogue);
+        let toggle: &[u8] = if screen_changed {
+            &self.tick_screen_toggle
+        } else {
+            &[]
+        };
+        let out = assemble_diff(toggle, &changed, &self.tick_rows, &self.tick_epilogue);
         span.record("changed_row_count", changed.len());
         span.record("out_bytes", out.len());
         out
@@ -1494,6 +1501,38 @@ fn write_cup(out: &mut Vec<u8>, row: u16, col: u16) {
     let _ = write!(out, "\x1b[{r};{c}H");
 }
 
+/// Encoded length of [`write_cup`]'s `ESC [ r ; c H`.
+fn cup_len(row: u16, col: u16) -> usize {
+    let digits = |n: u16| n.checked_ilog10().map_or(1, |log| log as usize + 1);
+    4 + digits(row.saturating_add(1)) + digits(col.saturating_add(1))
+}
+
+/// SGR reset opening every emitted diff row, so a row body (which starts
+/// from a fresh pen) lands on a clean pen.
+const ROW_PEN_RESET: &[u8] = b"\x1b[0m";
+
+/// Assemble one diff: `toggle`, then each `changed` row of `bodies` as
+/// `CUP + pen reset + body`, then the cursor/mode `epilogue` (always
+/// re-emitted: painting rows moved the cursor). The buffer is sized exactly
+/// up front, so it never regrows and becomes `Bytes` without a copy.
+fn assemble_diff(toggle: &[u8], changed: &[u16], bodies: &[Vec<u8>], epilogue: &[u8]) -> Vec<u8> {
+    let rows_len: usize = changed
+        .iter()
+        .map(|&ri| cup_len(ri, 0) + ROW_PEN_RESET.len() + bodies[usize::from(ri)].len())
+        .sum();
+    let len = toggle.len() + rows_len + epilogue.len();
+    let mut out = Vec::with_capacity(len);
+    out.extend_from_slice(toggle);
+    for &ri in changed {
+        write_cup(&mut out, ri, 0);
+        out.extend_from_slice(ROW_PEN_RESET);
+        out.extend_from_slice(&bodies[usize::from(ri)]);
+    }
+    out.extend_from_slice(epilogue);
+    debug_assert_eq!(out.len(), len, "diff length was exact");
+    out
+}
+
 fn emit_cursor_style(out: &mut Vec<u8>, style: CursorVisualStyle, blinking: bool) {
     // DECSCUSR `CSI <n> SP q`: 1/2 block, 3/4 underline, 5/6 bar
     // (blinking/steady). BlockHollow has no encoding; use steady block.
@@ -1537,6 +1576,28 @@ mod tests {
                 .expect("Terminal::new");
             terminal
         }
+    }
+
+    /// `cup_len` matches what `write_cup` writes at every digit boundary, so
+    /// a diff buffer sized from it is exact.
+    #[test]
+    fn cup_len_matches_the_written_sequence() {
+        for row in [0, 8, 9, 98, 99, 998, 999, 9_998, 9_999, u16::MAX] {
+            for col in [0, 9, 99, u16::MAX] {
+                let mut out = Vec::new();
+                write_cup(&mut out, row, col);
+                assert_eq!(cup_len(row, col), out.len(), "row {row} col {col}");
+            }
+        }
+    }
+
+    /// Assembled diffs keep their byte layout: toggle, then each changed row
+    /// as CUP + pen reset + body, then the epilogue.
+    #[test]
+    fn assemble_diff_lays_out_toggle_rows_and_epilogue() {
+        let bodies = vec![b"zero".to_vec(), b"one".to_vec(), b"two".to_vec()];
+        let out = assemble_diff(b"T", &[0, 2], &bodies, b"E");
+        assert_eq!(out, b"T\x1b[1;1H\x1b[0mzero\x1b[3;1H\x1b[0mtwoE");
     }
 
     #[test]
