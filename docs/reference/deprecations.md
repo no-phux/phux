@@ -24,10 +24,5 @@ A deprecated spelling survives at least one full release cycle with the warning 
 
 | Deprecated spelling | Use instead | Deprecated in | Planned removal |
 |---|---|---|---|
-| `phux host enroll` | `phux host add` | v0.37.0 | v0.39.0 |
 
-The warning is one greppable stderr line per invocation, of the form:
-
-```text
-phux: `phux host enroll` is deprecated and will be removed; use `phux host add`
-```
+No spelling is currently deprecated.

@@ -28,7 +28,7 @@ front is shown again.
 There is one registry: `[[remote]]` in the phux `config.toml`
 (`$XDG_CONFIG_HOME/phux/config.toml`, else `~/.config/phux/config.toml`;
 [ADR-0055](../../../docs/adr/0055-machine-registries.md)). `phux host add`,
-`phux host enroll` and `phux --remote` write it. Cockpit only reads it,
+`phux host add` and `phux --remote` write it. Cockpit only reads it,
 through phux-client-ffi, which uses phux-config's own loader and schema.
 
 A target is a registry name or `[USER@]HOST[:PORT]`. It is matched as the
@@ -44,7 +44,7 @@ Cockpit never pairs a host. Rungs 2 to 4 of the
 [resolution ladder](../../../docs/adr/0093-remote-target-as-a-resolution-ladder.md)
 (a pasted code, an ssh pairing, a refusal) write credentials and may prompt,
 so they stay in the CLI. An unregistered host fails with a reason naming
-`phux --remote NAME` and `phux host enroll NAME`.
+`phux --remote NAME` and `phux host add NAME`.
 
 A host can also be chosen without the panel:
 

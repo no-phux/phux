@@ -172,7 +172,7 @@ than starting replacement local shells. Startup ownership is described in the
 
 **Remote hosts.** Connect to Host (`cmd+shift+O`, or the Connect to Host
 button in the switcher) attaches a host registered with `phux host add` or
-`phux host enroll`, the same registry `phux --remote HOST` uses. Enter its
+`phux host add`, the same registry `phux --remote HOST` uses. Enter its
 registry name or `[user@]host[:port]`. `phux-remote = NAME` in the config, or
 `PHUX_REMOTE=NAME`, selects one at launch. The status bar names the host
 while connecting, connected, reconnecting, or failed, and gives the reason
@@ -339,7 +339,7 @@ install paths clear the quarantine attribute and report that fact.
 | `cmd+click` | Open the URL under the pointer |
 | `cmd+K` | Clear the screen and scrollback |
 | `cmd+shift+P` | Go to terminal — the summoned switcher (type to filter, arrows or `ctrl+N`/`ctrl+P` to move, `enter` to go, `esc` to dismiss) |
-| `cmd+shift+O` | Connect to Host — attach a host registered with `phux host add` or `phux host enroll` (`enter` to connect, Use this Mac to return) |
+| `cmd+shift+O` | Connect to Host — attach a host registered with `phux host add` (`enter` to connect, Use this Mac to return) |
 | `cmd+shift+J` | Go to Directory — browse the connected host's directories and open a new tab in one (type to filter, `enter` to descend or open, `esc` to cancel); see [Go to Directory](docs/DIRECTORY_PICKER.md) |
 | `cmd+,` | Settings — themes with a live preview and a WCAG contrast readout (arrows or `ctrl+N`/`ctrl+P` to preview, `return` to save, `esc` to cancel) |
 | `cmd+shift+B` | Show the Web surface |
