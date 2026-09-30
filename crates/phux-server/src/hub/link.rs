@@ -557,11 +557,6 @@ pub(crate) trait LinkWriter {
     clippy::future_not_send,
     reason = "ADR-0014: hub link supervisors run on the server's LocalSet; the transport seam is generic so tests can inject !Send scripted transports"
 )]
-#[allow(
-    clippy::cognitive_complexity,
-    clippy::too_many_lines,
-    reason = "one linear supervisor loop: plan -> dial (drain) -> relay -> backoff (drain); every drain arm repeats the same three-way select and splitting them scatters the lifecycle"
-)]
 pub(crate) async fn run_link<T: LinkTransport>(
     host: SatelliteHost,
     entry: HubEntry,
@@ -571,42 +566,20 @@ pub(crate) async fn run_link<T: LinkTransport>(
     cancel: CancellationToken,
 ) {
     let super::relay::RelayMailbox {
-        requests: mut relay_rx,
-        unsubscribes: mut unsub_rx,
+        requests: relay_rx,
+        unsubscribes: unsub_rx,
         journal,
         operations,
     } = mailbox;
+    let mut inbox = LinkInbox {
+        host: &host,
+        relay_rx,
+        unsub_rx,
+        cancel: &cancel,
+    };
     let spec = match plan_link(&entry) {
         Ok(spec) => spec,
-        Err(refusal) => {
-            warn!(
-                satellite = %host,
-                refusal = %refusal,
-                "hub link refused (fail closed); not dialing"
-            );
-            statuses.set(
-                &host,
-                LinkStatus::Refused {
-                    reason: refusal.to_string(),
-                },
-            );
-            // Never dialed: fail requests fast; unsubscribes have no
-            // registry to withdraw from.
-            loop {
-                tokio::select! {
-                    () = cancel.cancelled() => return,
-                    request = relay_rx.recv() => match request {
-                        Some(request) => super::relay::fail_fast(
-                            request,
-                            &host,
-                            "link refused (fail closed); fix the registry entry",
-                        ),
-                        None => return,
-                    },
-                    unsubscribe = unsub_rx.recv() => if unsubscribe.is_none() { return },
-                }
-            }
-        }
+        Err(refusal) => return refuse_link(&statuses, &refusal, &mut inbox).await,
     };
 
     let mut backoff = Backoff::new(BACKOFF_BASE, BACKOFF_CAP);
@@ -618,18 +591,9 @@ pub(crate) async fn run_link<T: LinkTransport>(
             let token = read_link_token(spec.token_file())?;
             transport.connect(&spec, token).await
         };
-        tokio::pin!(connect);
         // Fail relay requests fast while the dial is in flight.
-        let outcome = loop {
-            tokio::select! {
-                () = cancel.cancelled() => return,
-                request = relay_rx.recv() => match request {
-                    Some(request) => super::relay::fail_fast(request, &host, "link is connecting"),
-                    None => return,
-                },
-                unsubscribe = unsub_rx.recv() => if unsubscribe.is_none() { return },
-                outcome = &mut connect => break outcome,
-            }
+        let Some(outcome) = inbox.drain_until(connect, "link is connecting").await else {
+            return;
         };
 
         let (failed_attempt, last_error) = match outcome {
@@ -640,8 +604,8 @@ pub(crate) async fn run_link<T: LinkTransport>(
                 let session = run_relay_session(
                     &host,
                     conn,
-                    &mut relay_rx,
-                    &mut unsub_rx,
+                    &mut inbox.relay_rx,
+                    &mut inbox.unsub_rx,
                     &cancel,
                     journal.as_ref(),
                     &operations,
@@ -681,17 +645,81 @@ pub(crate) async fn run_link<T: LinkTransport>(
                 last_error,
             },
         );
-        let sleep = tokio::time::sleep(retry_in);
-        tokio::pin!(sleep);
+        let backoff_sleep = tokio::time::sleep(retry_in);
+        let slept = inbox
+            .drain_until(backoff_sleep, "link is backing off before redial")
+            .await;
+        if slept.is_none() {
+            return;
+        }
+    }
+}
+
+/// A link whose plan was refused is never dialed: publish the refusal,
+/// then fail relay requests fast until the supervisor exits.
+#[allow(
+    clippy::future_not_send,
+    reason = "ADR-0014: runs on the server's LocalSet inside run_link"
+)]
+async fn refuse_link(
+    statuses: &HubLinkStatuses,
+    refusal: &impl std::fmt::Display,
+    inbox: &mut LinkInbox<'_>,
+) {
+    warn!(
+        satellite = %inbox.host,
+        refusal = %refusal,
+        "hub link refused (fail closed); not dialing"
+    );
+    statuses.set(
+        inbox.host,
+        LinkStatus::Refused {
+            reason: refusal.to_string(),
+        },
+    );
+    let _never = inbox
+        .drain_until(
+            std::future::pending::<()>(),
+            "link refused (fail closed); fix the registry entry",
+        )
+        .await;
+}
+
+/// A link supervisor's relay mailbox and cancel token: what it serves
+/// between connections, and hands to [`run_relay_session`] during one.
+struct LinkInbox<'a> {
+    host: &'a SatelliteHost,
+    relay_rx: tokio::sync::mpsc::Receiver<super::relay::RelayRequest>,
+    unsub_rx: tokio::sync::mpsc::UnboundedReceiver<super::relay::Unsubscribe>,
+    cancel: &'a CancellationToken,
+}
+
+impl LinkInbox<'_> {
+    /// Await `until` while no link is up to carry relay traffic: every
+    /// relay request fails fast with `why`, and unsubscribes are dropped
+    /// (there is no registry to withdraw from). `None` means the supervisor
+    /// should exit: `cancel` fired, or every relay or unsubscribe handle was
+    /// dropped.
+    #[allow(
+        clippy::future_not_send,
+        reason = "ADR-0014: runs on the server's LocalSet inside run_link"
+    )]
+    async fn drain_until<F: std::future::Future>(
+        &mut self,
+        until: F,
+        why: &str,
+    ) -> Option<F::Output> {
+        tokio::pin!(until);
         loop {
             tokio::select! {
-                () = cancel.cancelled() => return,
-                request = relay_rx.recv() => match request {
-                    Some(request) => super::relay::fail_fast(request, &host, "link is backing off before redial"),
-                    None => return,
-                },
-                unsubscribe = unsub_rx.recv() => if unsubscribe.is_none() { return },
-                () = &mut sleep => break,
+                () = self.cancel.cancelled() => return None,
+                request = self.relay_rx.recv() => {
+                    super::relay::fail_fast(request?, self.host, why);
+                }
+                unsubscribe = self.unsub_rx.recv() => {
+                    let _dropped: super::relay::Unsubscribe = unsubscribe?;
+                }
+                output = &mut until => return Some(output),
             }
         }
     }
