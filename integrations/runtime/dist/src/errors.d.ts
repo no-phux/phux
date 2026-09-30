@@ -4,6 +4,7 @@ export interface PhuxErrorDetails {
     readonly exitCode?: number | null;
     readonly stderr?: string;
     readonly cause?: unknown;
+    readonly cliError?: Readonly<Record<string, unknown>>;
 }
 /** A stable, actionable error surface independent of the process host. */
 export declare class PhuxError extends Error {
@@ -11,5 +12,6 @@ export declare class PhuxError extends Error {
     readonly argv: readonly string[] | undefined;
     readonly exitCode: number | null | undefined;
     readonly stderr: string | undefined;
+    readonly cliError: Readonly<Record<string, unknown>> | undefined;
     constructor(code: PhuxErrorCode, message: string, details?: PhuxErrorDetails);
 }

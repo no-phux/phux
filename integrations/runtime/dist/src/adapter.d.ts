@@ -22,21 +22,24 @@ export interface SnapshotOptions extends ExecutionOptions {
     /** true or zero means all retained history; a positive number bounds it. */
     readonly scrollback?: boolean | number;
     readonly cells?: boolean;
+    readonly tail?: number;
+    readonly unwrap?: boolean;
 }
 export interface WaitOptions extends ExecutionOptions {
     readonly target?: string;
     readonly until?: string;
     readonly idleMs?: number;
+    readonly regex?: string;
+    readonly tail?: number;
+    readonly outputOnly?: boolean;
     /** phux's own wait deadline, in seconds (distinct from local timeoutMs). */
     readonly phuxTimeoutSeconds?: number;
 }
-export type WaitOutcome = {
-    readonly outcome: "satisfied";
+export interface WaitOutcome {
+    readonly outcome: "satisfied" | "timed_out";
     readonly screen: ScreenState;
-} | {
-    readonly outcome: "timed_out";
-    readonly screen: ScreenState;
-};
+    readonly warning?: string;
+}
 export interface CreateOptions extends ExecutionOptions {
     readonly cwd?: string;
     readonly command?: readonly string[];
@@ -44,6 +47,18 @@ export interface CreateOptions extends ExecutionOptions {
 export interface RunOptions extends ExecutionOptions {
     /** phux's own sentinel deadline, in seconds (distinct from local timeoutMs). */
     readonly phuxTimeoutSeconds?: number;
+}
+export type AgentLifecycleState = "idle" | "working" | "blocked" | "done";
+export interface AgentWaitOptions extends RunOptions {
+    readonly until?: readonly AgentLifecycleState[];
+}
+export interface AgentPromptOptions extends AgentWaitOptions {
+    readonly wait?: boolean;
+    readonly expectAgent?: string;
+    readonly expectKind?: string;
+}
+export interface ResourceWaitOptions extends RunOptions {
+    readonly after?: string;
 }
 export interface AgentTargetOptions extends ExecutionOptions {
     readonly target: string;
@@ -65,6 +80,7 @@ export interface SpawnOptions extends ExecutionOptions, PlacementOptions {
     readonly satellite?: string;
     readonly cwd?: string;
     readonly command?: readonly string[];
+    readonly retainSeconds?: number;
 }
 export interface LaunchOptions extends ExecutionOptions, PlacementOptions {
     readonly cwd?: string;
@@ -140,6 +156,14 @@ export declare class PhuxCli {
     wait(options?: WaitOptions): Promise<WaitOutcome>;
     run(target: string, command: readonly string[], options?: RunOptions): Promise<RunResult>;
     sendKeys(target: string, keys: readonly string[], options?: ExecutionOptions): Promise<void>;
+    /** Bracketed paste is one input operation; it does not submit Enter. */
+    paste(target: string, text: string, options?: ExecutionOptions): Promise<void>;
+    runtimeInfo(options?: ExecutionOptions): Promise<Record<string, unknown>>;
+    status(options?: ExecutionOptions): Promise<Record<string, unknown>>;
+    agentPrompt(target: string, text: string, options?: AgentPromptOptions): Promise<Record<string, unknown>>;
+    agentWait(target: string, options?: AgentWaitOptions): Promise<Record<string, unknown>>;
+    resourceWait(target: string, options?: ResourceWaitOptions): Promise<Record<string, unknown>>;
+    private outcomeCommand;
     kill(target: string, options?: ExecutionOptions): Promise<void>;
     signal(target: string, signal: TerminalSignal, options?: ExecutionOptions): Promise<void>;
     tag(action: TagAction, target: string, tags?: readonly string[], options?: ExecutionOptions): Promise<readonly TagRow[]>;

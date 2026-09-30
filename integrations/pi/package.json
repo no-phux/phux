@@ -18,6 +18,7 @@
     "dist",
     "extensions/index.ts",
     "src",
+    "skills",
     "README.md"
   ],
   "publishConfig": {
@@ -37,11 +38,12 @@
   "pi": {
     "extensions": [
       "./extensions/index.ts"
-    ]
+    ],
+    "skills": ["./skills"]
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/bundle-skill.mjs",
     "build:test": "npm run clean && tsc -p tsconfig.test.json",
     "test": "npm run test:unit && npm run pack:check && npm run smoke:load",
     "gates": "npm run typecheck && npm test && node ../../scripts/npm-audit-gate.mjs --audit-level=high --omit=dev",

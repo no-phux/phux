@@ -52,6 +52,8 @@ export interface ScreenState {
   readonly lines: readonly string[];
   readonly scrollback: readonly string[];
   readonly cells?: readonly CellInfo[];
+  readonly truncated?: boolean;
+  readonly truncated_reason?: string | null;
 }
 
 export interface RunResult {
@@ -361,8 +363,8 @@ export function parseScreenState(value: unknown): ScreenState {
   const cols = integer(root.cols, "$.cols", 0, 65_535);
   const rows = integer(root.rows, "$.rows", 0, 65_535);
   const lines = strings(root.lines, "$.lines");
-  if (lines.length !== rows) {
-    throw new SchemaValidationError("$.lines", `an array with exactly $.rows (${rows}) entries`);
+  if (lines.length > rows) {
+    throw new SchemaValidationError("$.lines", `at most $.rows (${rows}) physical or joined logical lines`);
   }
 
   let cursor: CursorState | null = null;
@@ -376,6 +378,10 @@ export function parseScreenState(value: unknown): ScreenState {
   }
 
   const scrollback = root.scrollback === undefined ? [] : strings(root.scrollback, "$.scrollback");
+  const truncation = {
+    ...(root.truncated === undefined ? {} : { truncated: boolean(root.truncated, "$.truncated") }),
+    ...(root.truncated_reason === undefined ? {} : { truncated_reason: nullableString(root.truncated_reason, "$.truncated_reason") }),
+  };
   if (root.cells === undefined) {
     return {
       schema_version: schema,
@@ -385,6 +391,7 @@ export function parseScreenState(value: unknown): ScreenState {
       cursor,
       lines,
       scrollback,
+      ...truncation,
     };
   }
   if (!Array.isArray(root.cells)) throw new SchemaValidationError("$.cells", "an array");
@@ -413,6 +420,7 @@ export function parseScreenState(value: unknown): ScreenState {
     lines,
     scrollback,
     cells,
+    ...truncation,
   };
 }
 
@@ -723,4 +731,43 @@ export function parseAgentEmitResult(value: unknown): AgentEmitResult {
     ts_ms: integer(root.ts_ms, "$.ts_ms", 0),
     type,
   };
+}
+
+/** Versioned CLI documents retain additive fields for host-native structured results. */
+export function parseVersionedDocument(value: unknown): Record<string, unknown> {
+  const root = record(value, "$");
+  integer(root.schema_version, "$.schema_version", 1);
+  return root;
+}
+
+export function parseAgentPromptResult(value: unknown): Record<string, unknown> {
+  const root = parseVersionedDocument(value);
+  string(root.terminal, "$.terminal");
+  oneOf(root.delivery, "$.delivery", ["acked"] as const);
+  string(root.operation_id, "$.operation_id");
+  boolean(root.transition_observed, "$.transition_observed");
+  return root;
+}
+
+export function parseAgentWaitResult(value: unknown): Record<string, unknown> {
+  const root = parseVersionedDocument(value);
+  string(root.terminal, "$.terminal");
+  boolean(root.satisfied, "$.satisfied");
+  string(root.state, "$.state");
+  return root;
+}
+
+export function parseResourceWaitResult(value: unknown): Record<string, unknown> {
+  const root = parseVersionedDocument(value);
+  string(root.resource, "$.resource");
+  oneOf(root.outcome, "$.outcome", ["exited", "gone", "timed_out"] as const);
+  nullableString(root.cursor, "$.cursor");
+  boolean(root.evidence_lost, "$.evidence_lost");
+  return root;
+}
+
+export function parseStatusResult(value: unknown): Record<string, unknown> {
+  const root = parseVersionedDocument(value);
+  boolean(root.running, "$.running");
+  return root;
 }

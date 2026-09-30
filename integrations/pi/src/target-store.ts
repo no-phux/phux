@@ -105,8 +105,10 @@ export class PhuxTargetStore {
   }
 
   async refresh(signal?: AbortSignal): Promise<PhuxTargetSnapshot> {
+    signal?.throwIfAborted();
     try {
       const result = await this.inventory.agentList(signal === undefined ? {} : { signal });
+      signal?.throwIfAborted();
       this.panesValue = result.agents;
       const selection = this.snapshotValue.selection;
       if (selection === null) {
@@ -130,6 +132,7 @@ export class PhuxTargetStore {
         }
       }
     } catch (error) {
+      signal?.throwIfAborted();
       this.panesValue = [];
       this.snapshotValue = {
         selection: this.snapshotValue.selection,

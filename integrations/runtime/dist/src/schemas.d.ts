@@ -53,6 +53,8 @@ export interface ScreenState {
     readonly lines: readonly string[];
     readonly scrollback: readonly string[];
     readonly cells?: readonly CellInfo[];
+    readonly truncated?: boolean;
+    readonly truncated_reason?: string | null;
 }
 export interface RunResult {
     readonly command: string;
@@ -242,3 +244,9 @@ export declare function parseAgentStateList(value: unknown): AgentStateList;
 export declare function isAgentEventType(value: string): value is AgentEventType;
 export declare function parseAgentSessionOpenResult(value: unknown): AgentSessionOpenResult;
 export declare function parseAgentEmitResult(value: unknown): AgentEmitResult;
+/** Versioned CLI documents retain additive fields for host-native structured results. */
+export declare function parseVersionedDocument(value: unknown): Record<string, unknown>;
+export declare function parseAgentPromptResult(value: unknown): Record<string, unknown>;
+export declare function parseAgentWaitResult(value: unknown): Record<string, unknown>;
+export declare function parseResourceWaitResult(value: unknown): Record<string, unknown>;
+export declare function parseStatusResult(value: unknown): Record<string, unknown>;

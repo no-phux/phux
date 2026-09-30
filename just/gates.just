@@ -35,18 +35,25 @@ binding-uniffi-test:
 
 
 # One agent integration's type, unit, packed-artifact, and audit gates.
-# The all-packages lane (scripts/ci/agent-integrations.sh) repeats the npm
-# invocations below; keep the audit env and `npm run gates` step in both.
+# The all-packages lane also checks generated artifact freshness.
 [group('gates')]
 integration-check PACKAGE:
     #!/usr/bin/env bash
     set -euo pipefail
-    case "{{PACKAGE}}" in runtime|opencode|pi|claude) ;; *) echo 'choose runtime, opencode, pi, or claude' >&2; exit 2 ;; esac
+    case "{{PACKAGE}}" in runtime|opencode-v2|omp|pi|claude) ;; *) echo 'choose runtime, opencode-v2, omp, pi, or claude' >&2; exit 2 ;; esac
     bash scripts/doctor.sh integrations
     # Incidental install audits are off; the explicit audit in gates still runs.
     export npm_config_audit=false npm_config_fund=false
-    npm --prefix "integrations/{{PACKAGE}}" ci
-    npm --prefix "integrations/{{PACKAGE}}" run gates
+    case "{{PACKAGE}}" in
+        omp|opencode-v2) cd "integrations/{{PACKAGE}}"; bun install --frozen-lockfile; bun run gates ;;
+        pi)
+            npm --prefix integrations/runtime ci
+            npm --prefix integrations/runtime run build
+            npm --prefix integrations/pi ci
+            npm --prefix integrations/pi run gates
+            ;;
+        *) npm --prefix "integrations/{{PACKAGE}}" ci; npm --prefix "integrations/{{PACKAGE}}" run gates ;;
+    esac
 
 
 # Format every Rust file in place.

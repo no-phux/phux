@@ -20,6 +20,7 @@ try {
     "README.md",
     "package.json",
     "extensions/index.ts",
+    "skills/using-phux-tools/SKILL.md",
     "dist/extensions/index.js",
     "dist/src/index.js",
     "dist/src/index.d.ts",

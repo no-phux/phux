@@ -4,6 +4,7 @@ export class PhuxError extends Error {
     argv;
     exitCode;
     stderr;
+    cliError;
     constructor(code, message, details = {}) {
         super(message, details.cause === undefined ? undefined : { cause: details.cause });
         this.name = "PhuxError";
@@ -11,5 +12,6 @@ export class PhuxError extends Error {
         this.argv = details.argv;
         this.exitCode = details.exitCode;
         this.stderr = details.stderr;
+        this.cliError = details.cliError;
     }
 }

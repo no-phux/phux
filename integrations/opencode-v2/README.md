@@ -1,54 +1,21 @@
 # @phux/opencode-v2
 
-OpenCode V2 plugin. phux owns the PTY. OpenCode owns the session. This package
-is the join, not a tunnel.
+Private OpenCode V2 plugin, pinned to the public `@opencode/plugin@2.0.18`
+contract. phux owns the terminals; OpenCode owns its session and permissions.
 
-## The seam
+## Build and load
 
-```text
-phux Terminal                 the only PTY
-  └── AgentSession            provider=opencode, native_id=<OpenCode session id>
-        this plugin emits prompt / tool / ask / stop
-        the transcript and permissions stay in OpenCode
-```
-
-If `opencode` is the process in a pane, that pane is the TUI. Typing into it
-injects keystrokes into the UI. Shell work belongs on a sibling Terminal.
-`phux_run` and `phux_send_keys` refuse `PHUX_TERMINAL_ID`. `phux_snapshot` and
-`phux_wait` may read it. `phux_create` selects the sibling.
-
-OpenCode's built-in terminal and `/api/pty` are a second PTY. This plugin does
-not call them and does not retarget the TUI widget. There is no plugin hook
-for that. Leave the widget unused.
-
-A remote view is `phux attach`, including `host/@N` through a hub. This plugin
-does not dial QUIC or WebSocket and does not forward OpenCode's HTTP API. Point
-`PHUX_SOCKET` at a local hub socket if targets should be `host/@N`. The plugin
-still speaks the phux CLI, not a second transport.
-
-## What it registers
-
-| Surface | Behavior |
-|---|---|
-| `phux_list`, `phux_create`, `phux_snapshot`, `phux_send_keys`, `phux_run`, `phux_wait` | Same six tools as the V1 adapter, plus the parent-pane write refusal. |
-| `session` `context` hook | Stable parent-pane rule, then the cache-preserving fleet suffix. |
-| tool `execute.before` / `execute.after` | `tool_start` / `tool_end` on the AgentSession. |
-| `session.status`, `session.idle`, `permission.asked`, `session.deleted` | Producer records. Identity only, never a declared `state`. |
-
-Prompt text stays off the agent stream. A `prompt` record carries a length. A
-tool record carries a name.
-
-## Load
-
-OpenCode imports `index.js`, not the TypeScript source. `bun run build` refreshes it.
+From a phux checkout:
 
 ```sh
 cd integrations/opencode-v2
-bun install
+bun install --frozen-lockfile
 bun run build
 ```
 
-This checkout's `opencode.jsonc` loads `./integrations/opencode-v2`. From another project:
+OpenCode loads the bundled `index.js`, not `src/index.ts`. The bundle includes
+phux's shared runtime; only the pinned OpenCode SDK is an external dependency.
+Configure OpenCode V2 with an absolute package directory:
 
 ```jsonc
 {
@@ -56,33 +23,70 @@ This checkout's `opencode.jsonc` loads `./integrations/opencode-v2`. From anothe
   "plugins": [
     {
       "package": "/absolute/path/to/phux/integrations/opencode-v2",
-      "options": {
-        "socket": "/absolute/path/to/phux.sock"
-      }
+      "options": { "socket": "/absolute/path/to/phux.sock" }
     }
   ]
 }
 ```
 
-Run it inside a phux pane so `PHUX_TERMINAL_ID` is set, or set `PHUX_TARGET` to
-a sibling before the first write. `PHUX_CONTEXT_AWARENESS=0` disables the fleet
-suffix. The parent-pane rule stays.
+Omit `socket` to use the phux CLI's environment/default selection. `phux` must
+be available on PATH, or set the plugin's `executable` option to its path.
+This repository's `opencode.jsonc` already selects the local package.
 
-Options match the V1 adapter: `executable`, `socket`, `lifecycleTimeoutMs`,
-`contextAwareness`, `contextTimeoutMs`.
+To move the package without the checkout, build it, run `bun pm pack`, and
+install the resulting tarball in the destination project with
+`bun add /absolute/path/to/phux-opencode-v2-0.1.0.tgz`. Set `plugins[].package`
+to the absolute installed `node_modules/@phux/opencode-v2` directory. The package
+is private; this is local artifact installation, not a public registry release.
 
-## Not in this cut
+## Tools and safety
 
-- Replacing OpenCode's `shell` tool execute. The descriptions tell the model
-  not to use it. Swapping the executor is a later change.
-- A TUI panel that attaches as a viewer. Writes would still go through the
-  tools, under the input lease.
-- Publishing. The package is private until the V2 contract is the one we ship.
+The complete shared tool catalog is registered through OpenCode's native tool
+transform API, with a native permission action for each tool name:
 
-## Check
+- Discovery: `phux_list`, `phux_panes`.
+- Terminal creation: `phux_create`, `phux_spawn`.
+- Shell control: `phux_run`, `phux_send_keys`, `phux_paste`.
+- Observation: `phux_snapshot`, `phux_wait`.
+- Agent control: `phux_agent_prompt`, `phux_agent_wait`, `phux_resource_wait`.
+- Diagnostics: `phux_status`, `phux_runtime_info`.
+
+Use direct `@N` or `host/@N` selectors. Creating a terminal selects it only for
+the calling OpenCode session. Target precedence is an explicit tool target,
+that session's selection, then `PHUX_TARGET`. Session deletion forgets its
+selection. Output is bounded; run and wait operations default to a 30-second
+phux deadline plus a 5-second local subprocess allowance. Short calls default
+to 10 seconds. Native tool cancellation propagates to the CLI subprocess.
+
+When launched in phux, `PHUX_TERMINAL_ID` identifies OpenCode's own pane. Tools
+refuse shell input, key injection, paste, and agent prompts into that pane;
+reads are allowed. Create a sibling for shell work. Lifecycle metadata stays on
+the hosting pane and never follows a selected worker. For a standalone launch,
+an explicit `PHUX_TARGET` is the fixed lifecycle identity and initial tool
+target; without either identity, no pane is labelled OpenCode.
+
+Permission requests remain in OpenCode. The plugin observes permission events
+but never approves them or rewrites host permission policy. Lifecycle records
+contain identity and event metadata, not prompt bodies or a forced agent state.
+Only one OpenCode session at a time owns the hosting pane's lifecycle stream.
+
+The context hook adds the parent-pane rule and fleet context. Set
+`PHUX_CONTEXT_AWARENESS=0` or `contextAwareness: false` to disable fleet context;
+the parent-pane rule remains. Options also include `lifecycleTimeoutMs` and
+`contextTimeoutMs`.
+
+This does not replace OpenCode's built-in shell executor, terminal widget, or
+PTY API, and does not tunnel the OpenCode server. Use the phux tools for phux
+terminal work and `phux attach` for a remote view. Satellite targets work through
+the phux CLI and its configured local hub socket.
+
+## Verification
 
 ```sh
-cd integrations/opencode-v2
-bun install
 bun run gates
 ```
+
+The package gate typechecks, builds, then tests. Its packed-artifact regression
+loads the tarball outside the checkout and checks registration against the
+public SDK. Source tests cover cross-session selection/deletion, lifecycle
+identity, parent write protection, and cancellation.

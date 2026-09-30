@@ -11,22 +11,22 @@
     "directory": "integrations/opencode-v2"
   },
   "files": [
-    "src",
+    "index.d.ts",
     "index.js",
     "README.md"
   ],
   "sideEffects": false,
   "exports": {
     ".": {
-      "types": "./src/index.ts",
+      "types": "./index.d.ts",
       "import": "./index.js"
     }
   },
   "scripts": {
-    "build": "bun build src/index.ts --outfile index.js --format esm --external @opencode/plugin",
+    "build": "bun build src/index.ts --outfile index.js --target bun --format esm --external @opencode/plugin",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test",
-    "gates": "bun run typecheck && bun test && bun run build"
+    "gates": "bun run typecheck && bun run build && bun test"
   },
   "dependencies": {
     "@opencode/plugin": "2.0.18"

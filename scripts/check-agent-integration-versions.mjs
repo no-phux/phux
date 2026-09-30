@@ -29,6 +29,13 @@ const opencode = await json("integrations/opencode-v2/package.json");
 assert.equal(opencode.private, true, "the OpenCode V2 plugin stays in-repo until it is the published contract");
 assert.match(opencode.dependencies?.["@opencode/plugin"] ?? "", /^\d+\.\d+\.\d+$/, "OpenCode V2 plugin API must be pinned exactly");
 
+const omp = await json("integrations/omp/package.json");
+assert.equal(omp.private, true, "the OMP package stays in-repo until it has a release pipeline");
+assert.match(omp.devDependencies?.["@oh-my-pi/pi-coding-agent"] ?? "", /^\d+\.\d+\.\d+$/, "OMP SDK must be pinned exactly");
+assert.deepEqual(omp.omp?.extensions, ["./dist/index.js"]);
+assert.ok(omp.files?.includes("skills"), "OMP must ship its native-tool skill");
+assert.deepEqual(omp.dependencies ?? {}, {}, "OMP bundles the neutral runtime without runtime dependencies");
+
 const pi = await json("integrations/pi/package.json");
 assert.equal(pi.private, undefined, "Pi extension must remain publishable");
 assert.equal(pi.publishConfig?.access, "public");

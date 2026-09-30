@@ -9,6 +9,10 @@
     "dist"
   ],
   "exports": {
+    "./tools": {
+      "types": "./dist/src/tools.d.ts",
+      "import": "./dist/src/tools.js"
+    },
     ".": {
       "types": "./dist/src/index.d.ts",
       "import": "./dist/src/index.js"
