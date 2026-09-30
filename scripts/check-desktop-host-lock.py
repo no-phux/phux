@@ -8,27 +8,40 @@ registry dependency's semver requirement the host lock must be re-resolved.
 Nothing does that automatically, and `just desktop-app` then aborts before it
 compiles: cargo refuses to update the host lock because `--locked` was passed.
 
-This is a STATIC check. It reads the root and host lockfiles only, so it runs on
-a bare checkout with no GPUIX source, no network and no Rust. For every path
-crate present in both locks it compares the version selected for each registry
-dependency name that both record. Dev-dependency and feature-union differences
-are ignored, so only names present in both are compared; a differing semver
-compatibility boundary (major, or major.minor while major is 0) is the signal
-that the host lock no longer satisfies the root crate's requirement. Patch
-drift within a boundary (thiserror 2.0.20 versus 2.0.21) stays valid under
-`--locked` and is not reported.
+This is a STATIC check. It reads the root and host lockfiles and the root
+crates' manifests only, so it runs on a bare checkout with no GPUIX source, no
+network and no Rust (CI runs it that way). For every path crate present in both
+locks it checks two things:
 
-Pass --fix to rewrite repairable drift in HOST_LOCK: a stale edge is rewritten
-to the root's selected version when the host lock already carries that package,
-and a path crate version is aligned with the root workspace. Anything left is
-not repairable without resolving against the bootstrapped GPUIX source
-(`just desktop-source`).
+- Every non-optional normal or build dependency the crate's Cargo.toml declares
+  (for any target; a lockfile is target-independent) is an edge in the host
+  lock. Such a dependency is unconditional, so a missing edge means `--locked`
+  would have to add it: a root crate gained a dependency the host lock never
+  resolved.
+- The version selected for each dependency name both locks record stays within
+  one semver compatibility boundary (major, or major.minor while major is 0);
+  otherwise the host lock no longer satisfies the root crate's requirement.
+  Patch drift within a boundary (thiserror 2.0.20 versus 2.0.21) stays valid
+  under `--locked` and is not reported.
+
+Dev-dependencies and optional dependencies are not required: the host builds
+the root crates as path dependencies with its own feature set, so the root
+lock's feature union and dev graph legitimately exceed the host's. A new
+dependency behind a feature the host enables is therefore invisible here and
+surfaces at `just desktop-lock-refresh` or the `--locked` host build.
+
+Pass --fix to rewrite repairable drift in HOST_LOCK: a missing edge is added,
+and a stale edge rewritten to the root's selected version, when the host lock
+already carries that package; a path crate version is aligned with the root
+workspace. Anything left is not repairable without resolving against the
+bootstrapped GPUIX source (`just desktop-source`).
 
 Usage: check-desktop-host-lock.py [--fix] [ROOT_LOCK [HOST_LOCK]]
 """
 
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 
@@ -89,13 +102,45 @@ def selections(package: Package, versions: dict[str, list[str]]) -> dict[str, tu
     return resolved
 
 
+def required_dependencies(root: Path) -> dict[str, set[str]]:
+    """Each root workspace crate's unconditional (non-dev, non-optional) packages."""
+    inherited = tomllib.loads((root / "Cargo.toml").read_text())["workspace"].get(
+        "dependencies", {}
+    )
+    required = {}
+    for manifest in sorted(root.glob("crates/*/Cargo.toml")):
+        data = tomllib.loads(manifest.read_text())
+        tables = [data, *data.get("target", {}).values()]
+        required[data["package"]["name"]] = {
+            name
+            for table in tables
+            for kind in ("dependencies", "build-dependencies")
+            for key, spec in table.get(kind, {}).items()
+            if (name := required_package(key, spec, inherited)) is not None
+        }
+    return required
+
+
+def required_package(key: str, spec, inherited: dict) -> str | None:
+    """The package a manifest entry names, or None when it is optional."""
+    if not isinstance(spec, dict):
+        return key
+    if spec.get("optional", False):
+        return None
+    if spec.get("workspace", False):
+        spec = inherited.get(key, {})
+    return spec.get("package", key) if isinstance(spec, dict) else key
+
+
 class Finding:
     def __init__(self, message: str, fix=None) -> None:
         self.message = message
         self.fix = fix
 
 
-def compare(root_text: str, host_text: str) -> list[Finding]:
+def compare(
+    root_text: str, host_text: str, required: dict[str, set[str]] | None = None
+) -> list[Finding]:
     root_packages = parse(root_text)
     host_packages = parse(host_text)
     root_versions = versions_by_name(root_packages)
@@ -117,6 +162,14 @@ def compare(root_text: str, host_text: str) -> list[Finding]:
             )
         root_selected = selections(crate, root_versions)
         host_selected = selections(host_crate, host_versions)
+        for dependency in sorted((required or {}).get(crate.name, set()) - set(host_selected)):
+            findings.append(
+                Finding(
+                    f"{crate.name} depends on {dependency}, but the host lock records no "
+                    "such edge (cargo --locked would have to add it)",
+                    missing_edge_fix(crate.name, dependency, host_versions),
+                )
+            )
         for dependency in sorted(set(root_selected) & set(host_selected)):
             _, root_version = root_selected[dependency]
             host_entry, host_version = host_selected[dependency]
@@ -154,6 +207,27 @@ def edge_fix(crate: str, host_entry: str, dependency: str, version: str):
     return apply
 
 
+def missing_edge_fix(crate: str, dependency: str, versions: dict[str, list[str]]):
+    """Add an edge to a package the host lock carries once, spelled as cargo does."""
+    # A name the lock carries once is written bare; adding an edge leaves the
+    # package set, and so every other entry's spelling, unchanged. A name it
+    # lacks or carries at several versions needs real resolution.
+    if len(versions.get(dependency, [])) != 1:
+        return None
+
+    def apply(text: str) -> str:
+        package = Package(block_for(text, crate))
+        entries = sorted([*package.dependencies, dependency])
+        body = "".join(f' "{entry}",\n' for entry in entries)
+        match = DEPENDENCIES.search(package.block)
+        if match is None:
+            raise SystemExit(f"{crate} has no dependency list in the host lock")
+        rewritten = package.block.replace(match.group(1), body, 1)
+        return text.replace(package.block, rewritten, 1)
+
+    return apply
+
+
 def block_for(text: str, crate: str) -> str:
     for block in PACKAGE.finditer(text):
         body = block.group(0)
@@ -173,17 +247,18 @@ def main(argv: list[str]) -> int:
 
     root_text = root_lock.read_text()
     host_text = host_lock.read_text()
+    required = required_dependencies(root_lock.resolve().parent)
 
     if fix:
         changed = 0
-        for finding in (f for f in compare(root_text, host_text) if f.fix is not None):
+        for finding in (f for f in compare(root_text, host_text, required) if f.fix is not None):
             host_text = finding.fix(host_text)
             changed += 1
         if changed:
             host_lock.write_text(host_text)
             print(f"fixed {changed} entr{'y' if changed == 1 else 'ies'} in {host_lock}")
 
-    findings = compare(root_text, host_text)
+    findings = compare(root_text, host_text, required)
     if not findings:
         print(f"{host_lock} is in step with {root_lock}")
         return 0
