@@ -1890,6 +1890,7 @@ fn a_snapshot_keeps_only_what_the_grant_covers() {
         Verb::Inventory,
     );
     assert_eq!(resource_ids(&terminal), vec![beta]);
+    assert!(terminal.windows.is_empty(), "nor its window");
     assert!(
         terminal.sessions.is_empty(),
         "a Terminal grant holds no Group"
@@ -1904,6 +1905,49 @@ fn a_snapshot_keeps_only_what_the_grant_covers() {
     let wrong_verb = filtered(&mut world, &["observe@global"], Verb::Inventory);
     assert!(resource_ids(&wrong_verb).is_empty());
     assert!(wrong_verb.listeners().is_none());
+
+    // A hub asks only the satellites the grant may inventory.
+    let mut satellite = |scopes: &[&str]| {
+        world.state.set_connection_grant(CLIENT, scoped(scopes));
+        super::filter::admits_satellite(&world.state, CLIENT, Verb::Inventory, "h")
+    };
+    assert!(!satellite(&["inventory@host"]));
+    assert!(!satellite(&["inventory@host:other"]));
+    assert!(satellite(&["inventory@host:h"]));
+    assert!(satellite(&["inventory@global"]));
+
+    // Other connections and an uncovered parent are not disclosed.
+    let child = world
+        .state
+        .registry_mut()
+        .new_agent_session(
+            world.alpha_core,
+            phux_core::resource::AgentFacet {
+                provider: "claude".to_owned(),
+                native_id: None,
+                state: None,
+            },
+        )
+        .unwrap();
+    let child = world.state.intern_terminal_wire(child);
+    let alpha_session = world.state.find_session_by_name("alpha").unwrap();
+    let mut whole = world.state.build_session_snapshot(alpha_session).unwrap();
+    for resource in &mut whole.resources {
+        resource.viewers = vec![phux_protocol::ids::ClientId::new(99)];
+        resource.input_holder = Some(phux_protocol::ids::ClientId::new(99));
+        if resource.id == child {
+            resource.parent = Some(world.alpha.clone());
+        }
+    }
+    world.state.set_connection_grant(
+        CLIENT,
+        scoped(&[&format!("inventory@terminal:{}", local_id(&child))]),
+    );
+    let only_child = super::filter::filter_snapshot(&world.state, CLIENT, Verb::Inventory, whole);
+    assert_eq!(resource_ids(&only_child), vec![child]);
+    let seen = &only_child.resources[0];
+    assert!(seen.viewers.is_empty() && seen.input_holder.is_none());
+    assert_eq!(seen.parent, None, "the parent is outside the grant");
 
     // The owner's grant filters nothing.
     world

@@ -3092,7 +3092,21 @@ pub(crate) async fn handle_get_state_federated(
     if !matches!(scope, StateScope::Server) {
         return local;
     }
-    let relays = state.with(crate::state::ServerState::hub_relays_all);
+    // workload-auth §6: only the satellites the viewer may inventory are
+    // asked, so another host's name and health never reach it.
+    let relays: Vec<_> = state.with(|s| {
+        s.hub_relays_all()
+            .into_iter()
+            .filter(|relay| {
+                crate::policy::filter::admits_satellite(
+                    s,
+                    viewer,
+                    phux_protocol::kinds::Verb::Inventory,
+                    relay.host().as_str(),
+                )
+            })
+            .collect()
+    });
     if relays.is_empty() {
         // Non-hub server (or hub with an empty table): the local snapshot
         // is the whole truth, and its empty `hosts` says so.

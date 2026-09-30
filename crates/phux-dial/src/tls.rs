@@ -101,6 +101,15 @@ pub fn client_config_with_identity(
     identity: &TlsClientIdentity,
     alpn: Option<&[u8]>,
 ) -> Result<rustls::ClientConfig, DialError> {
+    if matches!(identity, TlsClientIdentity::RequirePaired { .. })
+        && matches!(trust, CertTrust::SkipVerify)
+    {
+        // An unpinned server could send the CertificateRequest itself.
+        return Err(DialError::Connect(
+            "requiring paired authority needs a pinned server certificate, not skip-verify"
+                .to_owned(),
+        ));
+    }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let pem = match identity {
         TlsClientIdentity::None => None,
@@ -559,19 +568,22 @@ mod tests {
         }
     }
 
+    /// Requiring paired authority is refused against skip-verify, and turns
+    /// off session resumption.
     #[test]
     fn require_paired_disables_session_resumption() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (certificate, private_key) = client_pair(dir.path());
-        let config = client_config_with_identity(
-            &CertTrust::SkipVerify,
-            &TlsClientIdentity::RequirePaired {
-                certificate,
-                private_key,
-            },
-            None,
-        )
-        .expect("config");
+        let required = TlsClientIdentity::RequirePaired {
+            certificate,
+            private_key,
+        };
+        let unpinned = client_config_with_identity(&CertTrust::SkipVerify, &required, None)
+            .expect_err("an unpinned server could send the request itself");
+        assert!(unpinned.to_string().contains("pinned"), "{unpinned}");
+        let config =
+            client_config_with_identity(&CertTrust::Pinned("00".repeat(32)), &required, None)
+                .expect("config");
         assert_eq!(
             format!("{:?}", config.resumption),
             format!("{:?}", rustls::client::Resumption::disabled()),
