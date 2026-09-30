@@ -145,6 +145,40 @@ fn is_paste_chord(key: &BrowserKey<'_>) -> bool {
     ctrl_shift_v || shift_insert
 }
 
+/// Shift+PageUp / Shift+PageDown page the local scrollback (as in ghostty
+/// and xterm) instead of reaching the terminal: `-1` pages up, `1` down.
+#[must_use]
+pub fn scrollback_page(key: &BrowserKey<'_>) -> Option<i32> {
+    if !key.shift || key.ctrl || key.alt || key.meta || key.composing {
+        return None;
+    }
+    match key.code {
+        "PageUp" => Some(-1),
+        "PageDown" => Some(1),
+        _ => None,
+    }
+}
+
+/// `WheelEvent.deltaMode` values.
+const WHEEL_PIXELS: u32 = 0;
+const WHEEL_LINES: u32 = 1;
+
+/// Whole rows a wheel event scrolls (negative is up, into scrollback).
+/// Pixel deltas accumulate in `carry` across events, so a trackpad's many
+/// small deltas still add up to rows; line deltas are rows, page deltas
+/// are `page_rows`.
+pub fn wheel_rows(delta_y: f64, mode: u32, row_px: f64, page_rows: u16, carry: &mut f64) -> i32 {
+    let rows = match mode {
+        WHEEL_PIXELS => delta_y / row_px.max(1.0),
+        WHEEL_LINES => delta_y,
+        _ => delta_y * f64::from(page_rows.max(1)),
+    };
+    *carry += rows;
+    let whole = carry.trunc();
+    *carry -= whole;
+    whole as i32
+}
+
 /// The `INPUT_PASTE` payload for clipboard text, or `None` when there is
 /// nothing to paste or the payload exceeds [`MAX_PASTE_BYTES`].
 ///

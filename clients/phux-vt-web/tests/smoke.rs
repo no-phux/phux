@@ -59,3 +59,34 @@ async fn reads_truecolor_grid() {
         cell0.fg,
     );
 }
+
+#[wasm_bindgen_test]
+async fn viewport_scrolls_into_scrollback_and_back() {
+    let vt = Vt::load().await.expect("load ghostty-vt engine");
+    let term = vt.terminal(20, 5);
+    for line in 0..30 {
+        term.write(format!("line {line}\r\n").as_bytes());
+    }
+    let live = term.rows_text();
+    assert_eq!(live[0], "line 26", "active area: {live:?}");
+    assert!(!term.viewport_scrolled());
+
+    term.scroll_viewport(-10);
+    let scrolled = term.rows_text();
+    assert_eq!(scrolled[0], "line 16", "ten rows up: {scrolled:?}");
+    assert!(term.viewport_scrolled());
+
+    term.scroll_viewport(-1_000);
+    assert_eq!(term.rows_text()[0], "line 0", "clamped at the top");
+
+    term.write(b"more\r\n");
+    assert_eq!(
+        term.rows_text()[0],
+        "line 0",
+        "output does not yank a scrolled viewport"
+    );
+
+    term.scroll_to_bottom();
+    assert!(!term.viewport_scrolled());
+    assert_eq!(term.rows_text()[3], "more", "back on the active area");
+}

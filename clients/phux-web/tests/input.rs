@@ -4,6 +4,7 @@ use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
 use phux_protocol::input::paste::PasteTrust;
 use phux_web::input::{
     BrowserKey, MAX_PASTE_BYTES, code_to_physical_key, key_events_for_text, paste_event, route_key,
+    scrollback_page, wheel_rows,
 };
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -168,6 +169,41 @@ fn committed_text_becomes_one_key_per_scalar() {
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].text.as_deref(), Some("\u{65e5}"));
     assert_eq!(events[1].text.as_deref(), Some("\u{672c}"));
+}
+
+#[wasm_bindgen_test]
+fn shift_page_keys_page_the_local_scrollback() {
+    let shifted = |code| BrowserKey {
+        shift: true,
+        ..key(code, code)
+    };
+    assert_eq!(scrollback_page(&shifted("PageUp")), Some(-1));
+    assert_eq!(scrollback_page(&shifted("PageDown")), Some(1));
+    assert_eq!(
+        scrollback_page(&key("PageUp", "PageUp")),
+        None,
+        "bare PageUp is the app's"
+    );
+    let ctrl_shift = BrowserKey {
+        ctrl: true,
+        ..shifted("PageUp")
+    };
+    assert_eq!(scrollback_page(&ctrl_shift), None);
+    assert_eq!(scrollback_page(&shifted("ArrowUp")), None);
+}
+
+#[wasm_bindgen_test]
+fn wheel_deltas_become_whole_rows_with_a_carry() {
+    let mut carry = 0.0;
+    // Trackpad pixels: 16px rows, three 6px nudges make one row.
+    assert_eq!(wheel_rows(-6.0, 0, 16.0, 24, &mut carry), 0);
+    assert_eq!(wheel_rows(-6.0, 0, 16.0, 24, &mut carry), 0);
+    assert_eq!(wheel_rows(-6.0, 0, 16.0, 24, &mut carry), -1);
+    let mut carry = 0.0;
+    assert_eq!(wheel_rows(100.0, 0, 16.0, 24, &mut carry), 6);
+    let mut carry = 0.0;
+    assert_eq!(wheel_rows(-3.0, 1, 16.0, 24, &mut carry), -3, "line mode");
+    assert_eq!(wheel_rows(1.0, 2, 16.0, 24, &mut carry), 24, "page mode");
 }
 
 #[wasm_bindgen_test]

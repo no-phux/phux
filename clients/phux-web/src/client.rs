@@ -866,6 +866,8 @@ struct App {
     metrics: Metrics,
     /// Cursor blink phase; toggled by an interval in `run`.
     cursor_on: Cell<bool>,
+    /// Fractional wheel rows not yet scrolled (trackpads send small deltas).
+    wheel_carry: Cell<f64>,
     bindings: RefCell<AppBindings>,
     ready: RefCell<Option<oneshot::Sender<Result<(), String>>>>,
     failure_reason: RefCell<Option<String>>,
@@ -1015,7 +1017,9 @@ impl App {
         if self.canvas.height() != h {
             self.canvas.set_height(h);
         }
-        render(&self.ctx, &grid, &self.metrics, self.cursor_on.get());
+        // The cursor belongs to the live screen, not a scrolled-back view.
+        let cursor = self.cursor_on.get() && !self.session.viewport_scrolled();
+        render(&self.ctx, &grid, &self.metrics, cursor);
     }
 }
 
@@ -1052,6 +1056,7 @@ fn build_app(
         ctx,
         metrics: Metrics::default(),
         cursor_on: Cell::new(true),
+        wheel_carry: Cell::new(0.0),
         bindings: RefCell::new(AppBindings::default()),
         ready: RefCell::new(Some(ready_tx)),
         failure_reason: RefCell::new(None),
@@ -1773,24 +1778,25 @@ fn install_input(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         ("input", on_text_input),
         ("paste", on_paste),
     ];
-    for (kind, handler) in handlers {
-        let weak = Rc::downgrade(app);
-        let target = surface.clone();
-        binding.listen(&surface, kind, move |event| {
-            if let Some(app) = weak.upgrade() {
-                handler(&app, &event, &target);
-            }
-        })?;
-    }
-    for kind in ["focus", "mousedown"] {
-        let target = surface.clone();
-        binding.listen(&canvas, kind, move |event| {
-            if event.type_() == "mousedown" {
-                // Keep the canvas from taking focus back from the surface.
-                event.prevent_default();
-            }
-            let _ = target.focus();
-        })?;
+    let canvas_handlers: [(&str, InputHandler); 3] = [
+        ("focus", focus_surface),
+        ("mousedown", focus_surface),
+        ("wheel", on_wheel),
+    ];
+    let targets: [(&web_sys::EventTarget, &[(&str, InputHandler)]); 2] = [
+        (surface.as_ref(), &handlers),
+        (canvas.as_ref(), &canvas_handlers),
+    ];
+    for (target, handlers) in targets {
+        for &(kind, handler) in handlers {
+            let weak = Rc::downgrade(app);
+            let surface = surface.clone();
+            binding.listen(target, kind, move |event| {
+                if let Some(app) = weak.upgrade() {
+                    handler(&app, &event, &surface);
+                }
+            })?;
+        }
     }
 
     let old = app.borrow().bindings.borrow_mut().input.replace(binding);
@@ -1841,6 +1847,40 @@ fn focus_is_idle(document: &web_sys::Document) -> bool {
         .is_none_or(|active| document.body().is_some_and(|body| active == *body.as_ref()))
 }
 
+/// Focusing or pressing on the canvas focuses the input surface.
+fn focus_surface(_: &Rc<RefCell<App>>, event: &web_sys::Event, surface: &HtmlTextAreaElement) {
+    if event.type_() == "mousedown" {
+        // Keep the canvas from taking focus back from the surface.
+        event.prevent_default();
+    }
+    let _ = surface.focus();
+}
+
+/// The wheel pages the local scrollback; the page itself does not scroll.
+fn on_wheel(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
+    let Some(event) = event.dyn_ref::<web_sys::WheelEvent>() else {
+        return;
+    };
+    event.prevent_default();
+    let app = app.borrow();
+    // CSS may scale the canvas; a row is its cell height in client pixels.
+    let rect = app.canvas.get_bounding_client_rect();
+    let scale = rect.height() / f64::from(app.canvas.height().max(1));
+    let (_, page_rows) = app.session.dims();
+    let mut carry = app.wheel_carry.get();
+    let rows = crate::input::wheel_rows(
+        event.delta_y(),
+        event.delta_mode(),
+        app.metrics.cell_h * scale,
+        page_rows,
+        &mut carry,
+    );
+    app.wheel_carry.set(carry);
+    if rows != 0 && app.session.scroll_viewport(rows) {
+        app.paint();
+    }
+}
+
 /// Send one routed keydown; cancel the browser default only when sent.
 fn on_keydown(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
     let Some(event) = event.dyn_ref::<KeyboardEvent>() else {
@@ -1848,7 +1888,7 @@ fn on_keydown(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaEl
     };
     let key = event.key();
     let code = event.code();
-    let routed = crate::input::route_key(&crate::input::BrowserKey {
+    let browser_key = crate::input::BrowserKey {
         key: &key,
         code: &code,
         ctrl: event.ctrl_key(),
@@ -1860,7 +1900,18 @@ fn on_keydown(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaEl
         // Safari reports the keydown that starts a composition as 229
         // before `isComposing` turns true.
         composing: event.is_composing() || event.key_code() == 229,
-    });
+    };
+    if let Some(direction) = crate::input::scrollback_page(&browser_key) {
+        event.prevent_default();
+        let app = app.borrow();
+        let (_, rows) = app.session.dims();
+        let page = i32::from(rows.saturating_sub(1).max(1));
+        if app.session.scroll_viewport(direction * page) {
+            app.paint();
+        }
+        return;
+    }
+    let routed = crate::input::route_key(&browser_key);
     if let Some(key) = routed
         && send_input(app, [InputEvent::Key(key)])
     {
@@ -1944,6 +1995,11 @@ fn send_input(app: &Rc<RefCell<App>>, events: impl IntoIterator<Item = InputEven
             return false;
         }
         sent = true;
+    }
+    // Typing returns a scrolled-back view to the live screen.
+    let app = app.borrow();
+    if sent && app.session.scroll_to_bottom() {
+        app.paint();
     }
     sent
 }
