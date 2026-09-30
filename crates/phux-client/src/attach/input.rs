@@ -548,23 +548,15 @@ const fn utf8_continuation_count(b: u8) -> Option<u8> {
 /// (`0x40..=0x7E`).
 fn dispatch_csi(params: &[u8], final_byte: u8, out: &mut Vec<InputEvent>) {
     // SGR mouse (DEC 1006): `CSI < btn ; col ; row M|m`.
-    if matches!(params.first(), Some(&b'<')) && (final_byte == b'M' || final_byte == b'm') {
+    if is_sgr_mouse_report(params, final_byte) {
         dispatch_sgr_mouse(&params[1..], final_byte, out);
         return;
     }
 
     // urxvt-1015 mouse: `CSI btn ; col ; row M`, plain decimal params only.
-    if final_byte == b'M'
-        && !matches!(params.first(), Some(&b'?' | &b'<' | &b'=' | &b'>'))
-        && params
-            .iter()
-            .all(|&b| matches!(b, b'0'..=b'9' | b';' | b':'))
-    {
-        let parsed = parse_csi_params(params);
-        if parsed.len() == 3 {
-            dispatch_legacy_mouse(parsed[0], parsed[1], parsed[2], out);
-            return;
-        }
+    if let Some([btn, col, row]) = urxvt_mouse_params(params, final_byte) {
+        dispatch_legacy_mouse(btn, col, row, out);
+        return;
     }
 
     if final_byte == b'u' {
@@ -573,56 +565,89 @@ fn dispatch_csi(params: &[u8], final_byte: u8, out: &mut Vec<InputEvent>) {
     }
 
     // Private markers are not differentiated.
-    let body = if let Some(first) = params.first()
-        && matches!(*first, b'?' | b'<' | b'=' | b'>')
-    {
-        &params[1..]
-    } else {
-        params
-    };
-
-    let parsed = parse_csi_params(body);
+    let body = strip_private_marker(params);
 
     // Focus reports (DEC 1004) are bare `CSI I` / `CSI O`.
-    if body.is_empty() {
-        if final_byte == b'I' {
-            out.push(InputEvent::Focus(FocusEvent::Gained));
-            return;
-        }
-        if final_byte == b'O' {
-            out.push(InputEvent::Focus(FocusEvent::Lost));
-            return;
-        }
+    if body.is_empty()
+        && let Some(focus) = focus_report(final_byte)
+    {
+        out.push(InputEvent::Focus(focus));
+        return;
     }
 
-    // `CSI n ; mod ~`: navigation and function keys.
+    let parsed = parse_csi_params(body);
     if final_byte == b'~' {
-        let n = parsed.first().copied().unwrap_or(1);
-        let mods = parsed
-            .get(1)
-            .copied()
-            .map_or(ModSet::empty(), xterm_modifier_code);
-        if let Some(key) = csi_tilde_keycode(n) {
-            out.push(InputEvent::Key(make_named_key(key, mods)));
-        } else {
-            tracing::trace!(n, final_byte, "unknown CSI ~ keycode");
-        }
-        return;
-    }
-
-    // `CSI 1 ; mod letter` or bare `CSI letter`: arrows, Home/End, F1-F4.
-    let mods = if parsed.len() >= 2 && parsed[0] == 1 {
-        xterm_modifier_code(parsed[1])
+        dispatch_csi_tilde(&parsed, out);
     } else {
-        ModSet::empty()
-    };
-
-    if let Some(key) = csi_letter_keycode(final_byte) {
-        out.push(InputEvent::Key(make_named_key(key, mods)));
-        return;
+        dispatch_csi_letter(&parsed, final_byte, out);
     }
+}
 
-    tracing::trace!(final_byte, ?parsed, "unknown CSI sequence");
+/// A CSI parameter region's leading private marker byte.
+const fn is_private_marker(b: u8) -> bool {
+    matches!(b, b'?' | b'<' | b'=' | b'>')
+}
+
+/// `params` without its leading private marker, if any.
+const fn strip_private_marker(params: &[u8]) -> &[u8] {
+    match params.split_first() {
+        Some((&first, rest)) if is_private_marker(first) => rest,
+        _ => params,
+    }
+}
+
+fn is_sgr_mouse_report(params: &[u8], final_byte: u8) -> bool {
+    params.first() == Some(&b'<') && matches!(final_byte, b'M' | b'm')
+}
+
+/// The `btn ; col ; row` of a urxvt-1015 mouse report: final `M`, no
+/// private marker, plain decimal parameters, and exactly three of them.
+fn urxvt_mouse_params(params: &[u8], final_byte: u8) -> Option<[u32; 3]> {
+    if final_byte != b'M' || params.first().is_some_and(|&b| is_private_marker(b)) {
+        return None;
+    }
+    if !params
+        .iter()
+        .all(|&b| matches!(b, b'0'..=b'9' | b';' | b':'))
+    {
+        return None;
+    }
+    parse_csi_params(params).try_into().ok()
+}
+
+const fn focus_report(final_byte: u8) -> Option<FocusEvent> {
+    match final_byte {
+        b'I' => Some(FocusEvent::Gained),
+        b'O' => Some(FocusEvent::Lost),
+        _ => None,
+    }
+}
+
+/// `CSI n ; mod ~`: navigation and function keys.
+fn dispatch_csi_tilde(parsed: &[u32], out: &mut Vec<InputEvent>) {
+    let n = parsed.first().copied().unwrap_or(1);
+    let mods = parsed
+        .get(1)
+        .copied()
+        .map_or(ModSet::empty(), xterm_modifier_code);
+    let Some(key) = csi_tilde_keycode(n) else {
+        tracing::trace!(n, final_byte = b'~', "unknown CSI ~ keycode");
+        return;
+    };
+    out.push(InputEvent::Key(make_named_key(key, mods)));
+}
+
+/// `CSI 1 ; mod letter` or bare `CSI letter`: arrows, Home/End, F1-F4.
+fn dispatch_csi_letter(parsed: &[u32], final_byte: u8, out: &mut Vec<InputEvent>) {
+    let Some(key) = csi_letter_keycode(final_byte) else {
+        tracing::trace!(final_byte, ?parsed, "unknown CSI sequence");
+        return;
+    };
+    let mods = match parsed {
+        [1, code, ..] => xterm_modifier_code(*code),
+        _ => ModSet::empty(),
+    };
+    out.push(InputEvent::Key(make_named_key(key, mods)));
 }
 
 /// Decode an SGR mouse report body (`btn ; col ; row`, after the `<`).
@@ -674,46 +699,44 @@ fn dispatch_kitty_csi_u(params: &[u8], out: &mut Vec<InputEvent>) {
     let raw_mod = mod_group.and_then(|g| g.first().copied()).unwrap_or(1);
     let event_type = mod_group.and_then(|g| g.get(1).copied()).unwrap_or(1);
 
-    let mods = kitty_modifier_code(raw_mod);
-    let action = match event_type {
-        3 => KeyAction::Release,
-        2 => KeyAction::Repeat,
-        _ => KeyAction::Press,
-    };
-
     let Some(key) = kitty_keycode_to_physical(keycode) else {
         tracing::trace!(keycode, "kitty CSI u unmapped keycode");
         return;
     };
 
-    let text = mod_group.and_then(|g| {
-        if g.len() <= 2 {
-            return None;
-        }
-        let mut s = String::new();
-        for &cp in &g[2..] {
-            if cp == 0 {
-                continue;
-            }
-            if let Some(c) = char::from_u32(cp) {
-                s.push(c);
-            } else {
-                // Typed text: never log the value (ADR-0028).
-                tracing::trace!("kitty CSI u: invalid text codepoint, skipping");
-            }
-        }
-        if s.is_empty() { None } else { Some(s) }
-    });
-
     out.push(InputEvent::Key(KeyEvent {
-        action,
+        action: kitty_key_action(event_type),
         key,
-        mods,
+        mods: kitty_modifier_code(raw_mod),
         consumed_mods: ModSet::empty(),
         composing: false,
-        text,
+        text: mod_group.and_then(|g| kitty_text(g.get(2..)?)),
         unshifted_codepoint: Some(keycode),
     }));
+}
+
+/// Kitty event-type sub-parameter to [`KeyAction`]; unknown is a press.
+const fn kitty_key_action(event_type: u32) -> KeyAction {
+    match event_type {
+        3 => KeyAction::Release,
+        2 => KeyAction::Repeat,
+        _ => KeyAction::Press,
+    }
+}
+
+/// The text carried by kitty's associated-text codepoints, skipping zero
+/// and invalid codepoints; `None` when nothing remains.
+fn kitty_text(codepoints: &[u32]) -> Option<String> {
+    let mut text = String::new();
+    for &cp in codepoints.iter().filter(|&&cp| cp != 0) {
+        if let Some(c) = char::from_u32(cp) {
+            text.push(c);
+        } else {
+            // Typed text: never log the value (ADR-0028).
+            tracing::trace!("kitty CSI u: invalid text codepoint, skipping");
+        }
+    }
+    (!text.is_empty()).then_some(text)
 }
 
 /// Parse CSI parameter bytes into groups: `:` separates sub-parameters within
@@ -1066,6 +1089,10 @@ mod tests {
             (b"\x1b[1;5A", PhysicalKey::ArrowUp, ModSet::CTRL),
             (b"\x1b[1;8C", PhysicalKey::ArrowRight, shift_alt_ctrl),
             (b"\x1b[1;9D", PhysicalKey::ArrowLeft, ModSet::SUPER),
+            // A private marker is not differentiated; a first param other
+            // than 1 carries no modifier.
+            (b"\x1b[>1;5A", PhysicalKey::ArrowUp, ModSet::CTRL),
+            (b"\x1b[2;5A", PhysicalKey::ArrowUp, ModSet::empty()),
             (b"\x1b[H", PhysicalKey::Home, ModSet::empty()),
             (b"\x1b[1~", PhysicalKey::Home, ModSet::empty()),
             (b"\x1b[5~", PhysicalKey::PageUp, ModSet::empty()),
@@ -1286,6 +1313,11 @@ mod tests {
         for input in [
             b"\x1b[1;2z".as_slice(),
             b"\x1b[u",
+            // A two-param urxvt-shaped report, an unknown `~` key, and a
+            // focus letter carrying params all drop.
+            b"\x1b[5;3M",
+            b"\x1b[99~",
+            b"\x1b[1I",
             b"\x1b]0;title\x07",
             b"\x1bPdata\x1b\\",
         ] {
