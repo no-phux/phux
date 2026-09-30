@@ -14,20 +14,13 @@ use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 use crate::layout::{
     LayoutDecodeError, LayoutEncodeError, LayoutError, LayoutNode, SplitDir, Workspace, kill_pane,
-    leaves, split_at,
+    leaves, repair_focus, split_at,
 };
 
-/// Prefix of the conventional per-session TUI layout metadata key.
-pub const LAYOUT_KEY: &str = "phux.tui.layout/v1";
+pub use crate::layout::{LAYOUT_KEY, layout_key};
 
 /// The static Group used by v0.x servers for layout metadata.
 pub const DEFAULT_LAYOUT_GROUP_ID: GroupId = crate::layout::LAYOUT_METADATA_GROUP;
-
-/// Return the metadata key for `session`.
-#[must_use]
-pub fn layout_key(session: SessionId) -> String {
-    format!("{LAYOUT_KEY}/{}", session.get())
-}
 
 /// Whose layout a [`LAYOUT_KEY`] names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -540,18 +533,6 @@ fn find_window(workspace: &Workspace, target: &ResourceId) -> Option<usize> {
             .as_ref()
             .is_some_and(|tree| leaves(tree).contains(target))
     })
-}
-
-fn repair_focus(state: &mut crate::layout::LayoutState) {
-    state.focus = state.tree.as_ref().and_then(|tree| {
-        let panes = leaves(tree);
-        state
-            .focus
-            .as_ref()
-            .filter(|focus| panes.contains(focus))
-            .cloned()
-            .or_else(|| panes.into_iter().next())
-    });
 }
 
 fn swap_leaves(

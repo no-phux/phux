@@ -27,9 +27,9 @@ use phux_client::attach::connection::Connection;
 use phux_dial::TlsClientIdentity;
 use phux_server::workload::ClientRequest;
 
-/// Default QUIC port for an enrolled server. Matches the port
-/// `docs/remote-access.md` uses throughout.
-const DEFAULT_QUIC_PORT: u16 = 8788;
+// Default QUIC port for an enrolled server (ADR-0081), the one
+// `docs/remote-access.md` uses throughout.
+use phux_client_runtime::target::DEFAULT_QUIC_PORT;
 
 /// How long one direct-route probe may take; only a filtered path waits
 /// this long.

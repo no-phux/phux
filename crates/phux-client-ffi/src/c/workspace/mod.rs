@@ -14,8 +14,7 @@ pub use types::*;
 
 use crate::c::{client::Client, error::BridgeError};
 use model::{Catalog, Node};
-use phux_client_core::layout::Workspace;
-use phux_protocol::GroupId;
+use phux_client_core::layout::{LAYOUT_METADATA_GROUP, MAX_LAYOUT_METADATA_BYTES, Workspace};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, Scope, StateScope,
 };
@@ -170,7 +169,7 @@ const fn state_frame(id: u32) -> FrameKind {
 fn metadata_frame(id: u32, selected: u32) -> FrameKind {
     FrameKind::GetMetadata {
         request_id: id,
-        scope: Scope::Group(GroupId::new(1)),
+        scope: Scope::Group(LAYOUT_METADATA_GROUP),
         key: model::key(selected),
     }
 }
@@ -213,7 +212,7 @@ fn queue_proposed(
     let id = client.workspace.reserve_internal()?;
     client.queue_frame(&FrameKind::SetMetadata {
         request_id: id,
-        scope: Scope::Group(GroupId::new(1)),
+        scope: Scope::Group(LAYOUT_METADATA_GROUP),
         key: model::key(client.workspace.selected),
         value: bytes.clone(),
     })?;
@@ -311,7 +310,7 @@ fn receive_metadata(client: &mut Client, id: u32, bytes: Option<&[u8]>) -> Resul
     if pending.metadata.is_some() {
         return Ok(());
     }
-    if bytes.is_some_and(|bytes| bytes.len() > 256 * 1024) {
+    if bytes.is_some_and(|bytes| bytes.len() > MAX_LAYOUT_METADATA_BYTES) {
         return Err(BridgeError::state("layout metadata exceeds 256 KiB"));
     }
     if let Some(pending) = client.workspace.pending.as_mut() {

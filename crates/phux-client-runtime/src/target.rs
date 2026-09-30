@@ -2,10 +2,11 @@
 //! ladder (ADR-0093), for native embedders.
 //!
 //! Reads the `[[remote]]` registry (ADR-0055) through the CLI's own
-//! `phux-config` schema. The target grammar and match order mirror the
-//! private `crates/phux/src/commands/remote_target.rs`; the tests pin the
-//! same spellings. Pairing (rungs 2-4) is operator-present and stays in
-//! the CLI.
+//! `phux-config` schema. The target grammar, registry match order, and
+//! token-file rule here are the ones the CLI uses too
+//! (`crates/phux/src/commands/remote_target.rs`); only the error wording
+//! differs, through [`RemoteTarget::parse_labeled`]. Pairing (rungs 2-4) is
+//! operator-present and stays in the CLI.
 
 use std::path::{Path, PathBuf};
 
@@ -13,8 +14,7 @@ use phux_config::RemoteConfigEntry;
 use phux_dial::TlsClientIdentity;
 
 /// The QUIC port a server auto-binds on its overlay address (ADR-0081), and
-/// therefore the port a target with no `:PORT` means. Same constant as the
-/// CLI's `remote_target::DEFAULT_QUIC_PORT`.
+/// therefore the port a target with no `:PORT` means.
 pub const DEFAULT_QUIC_PORT: u16 = 8788;
 
 /// A parsed `[USER@]HOST[:PORT]` target. `user@` is a registry label, never a
@@ -29,42 +29,106 @@ pub struct RemoteTarget {
     pub port: Option<u16>,
 }
 
+/// Why a target is not `[USER@]HOST[:PORT]`, worded by the caller: an
+/// embedder has no flag to name, the CLI names the spelling in use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TargetError {
+    /// Nothing but whitespace.
+    Empty,
+    /// A URI (the trimmed input).
+    Uri(String),
+    /// `@host` (the trimmed input).
+    EmptyUser(String),
+    /// `user@` or `:port` (the trimmed input).
+    EmptyHost(String),
+    /// A `/` or a leading selector sigil (the host).
+    InvalidHost(String),
+    /// `[v6` (the host-and-port text).
+    UnclosedBracket(String),
+    /// `[v6]x` (the host-and-port text).
+    TrailingAfterBracket(String),
+    /// Not `1..=65535` (the port text).
+    InvalidPort(String),
+}
+
+impl TargetError {
+    /// The embedder wording, with no CLI spelling to name.
+    fn unlabeled(&self) -> String {
+        match self {
+            Self::Empty => "enter a registered host, e.g. mini or me@mini".to_owned(),
+            Self::Uri(raw) => format!(
+                "{raw:?} is a URI; register it with `phux host add NAME {raw}` and connect by NAME"
+            ),
+            Self::EmptyUser(raw) => format!("{raw:?} has an empty user"),
+            Self::EmptyHost(raw) => format!("{raw:?} has an empty host"),
+            Self::InvalidHost(host) => format!(
+                "host {host:?} must not contain '/' or start with a selector sigil (@ # . =)"
+            ),
+            Self::UnclosedBracket(rest) => format!("{rest:?} has an unclosed '['"),
+            Self::TrailingAfterBracket(rest) => format!("{rest:?} has trailing text after ']'"),
+            Self::InvalidPort(raw) => format!("port {raw:?} must be 1..=65535"),
+        }
+    }
+
+    /// The wording for a CLI spelling of the grammar (`--remote`, `host add`).
+    fn labeled(&self, label: &str) -> String {
+        match self {
+            Self::Empty => format!("{label} needs a target, e.g. {label} me@mini"),
+            Self::Uri(raw) => format!(
+                "{label} takes [USER@]HOST[:PORT], not a URI (got {raw:?}); \
+                 register a full endpoint with `phux host add NAME {raw}`"
+            ),
+            Self::EmptyUser(_)
+            | Self::EmptyHost(_)
+            | Self::UnclosedBracket(_)
+            | Self::TrailingAfterBracket(_) => format!("{label} target {}", self.unlabeled()),
+            Self::InvalidHost(_) | Self::InvalidPort(_) => format!("{label} {}", self.unlabeled()),
+        }
+    }
+}
+
 impl RemoteTarget {
     /// Parse `host`, `user@host`, `host:port`, `user@host:port`, and their
     /// bracketed-IPv6 spellings. A URI is refused rather than guessed at.
     pub fn parse(raw: &str) -> Result<Self, String> {
+        Self::parse_target(raw).map_err(|err| err.unlabeled())
+    }
+
+    /// [`Self::parse`] with the errors worded for the CLI spelling `label`
+    /// (`--remote`, `host add`) that shares the grammar.
+    pub fn parse_labeled(raw: &str, label: &str) -> Result<Self, String> {
+        Self::parse_target(raw).map_err(|err| err.labeled(label))
+    }
+
+    fn parse_target(raw: &str) -> Result<Self, TargetError> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
-            return Err("enter a registered host, e.g. mini or me@mini".to_owned());
+            return Err(TargetError::Empty);
         }
         if trimmed.contains("://") {
-            return Err(format!(
-                "{trimmed:?} is a URI; register it with `phux host add NAME {trimmed}` and \
-                 connect by NAME"
-            ));
+            return Err(TargetError::Uri(trimmed.to_owned()));
         }
+        // Split on the LAST `@`: a username cannot contain `@`, but this way
+        // an address that does is still parsed the way the operator meant.
         let (user, rest) = match trimmed.rsplit_once('@') {
-            Some((user, rest)) => {
-                if user.is_empty() {
-                    return Err(format!("{trimmed:?} has an empty user"));
-                }
-                (Some(user.to_owned()), rest)
-            }
+            Some(("", _)) => return Err(TargetError::EmptyUser(trimmed.to_owned())),
+            Some((user, rest)) => (Some(user.to_owned()), rest),
             None => (None, trimmed),
         };
         let (host, port) = split_host_port(rest)?;
         if host.is_empty() {
-            return Err(format!("{trimmed:?} has an empty host"));
+            return Err(TargetError::EmptyHost(trimmed.to_owned()));
         }
+        // A registry name may not contain `/` (it would escape the token
+        // directory on join) or a selector sigil.
         if host.contains('/') || host.starts_with(['@', '#', '.', '=']) {
-            return Err(format!(
-                "host {host:?} must not contain '/' or start with a selector sigil (@ # . =)"
-            ));
+            return Err(TargetError::InvalidHost(host));
         }
         Ok(Self { user, host, port })
     }
 
-    /// The registry key: the typed spelling minus any port.
+    /// The registry key: the typed spelling minus any port, so `mini` and
+    /// `mini:8788` are one host.
     #[must_use]
     pub fn registry_name(&self) -> String {
         self.user
@@ -84,11 +148,12 @@ impl RemoteTarget {
     }
 }
 
-fn split_host_port(rest: &str) -> Result<(String, Option<u16>), String> {
+fn split_host_port(rest: &str) -> Result<(String, Option<u16>), TargetError> {
     if let Some(inner) = rest.strip_prefix('[') {
         return split_bracketed(rest, inner);
     }
-    // A bare IPv6 literal has no port: `fd7a::1:8788` is ambiguous.
+    // A bare IPv6 literal has no port: `fd7a::1:8788` is ambiguous, and
+    // guessing would silently dial the wrong address.
     if rest.matches(':').count() > 1 {
         return Ok((rest.to_owned(), None));
     }
@@ -99,64 +164,74 @@ fn split_host_port(rest: &str) -> Result<(String, Option<u16>), String> {
 }
 
 /// `[v6]` or `[v6]:port`: the brackets make the port unambiguous.
-fn split_bracketed(rest: &str, inner: &str) -> Result<(String, Option<u16>), String> {
+fn split_bracketed(rest: &str, inner: &str) -> Result<(String, Option<u16>), TargetError> {
     let (host, tail) = inner
         .split_once(']')
-        .ok_or_else(|| format!("{rest:?} has an unclosed '['"))?;
+        .ok_or_else(|| TargetError::UnclosedBracket(rest.to_owned()))?;
     if tail.is_empty() {
         return Ok((host.to_owned(), None));
     }
     let port = tail
         .strip_prefix(':')
-        .ok_or_else(|| format!("{rest:?} has trailing text after ']'"))?;
+        .ok_or_else(|| TargetError::TrailingAfterBracket(rest.to_owned()))?;
     Ok((host.to_owned(), Some(parse_port(port)?)))
 }
 
-fn parse_port(raw: &str) -> Result<u16, String> {
+fn parse_port(raw: &str) -> Result<u16, TargetError> {
     raw.parse::<u16>()
         .ok()
         .filter(|port| *port != 0)
-        .ok_or_else(|| format!("port {raw:?} must be 1..=65535"))
+        .ok_or_else(|| TargetError::InvalidPort(raw.to_owned()))
 }
 
 /// The registry entry that describes `target`.
 ///
 /// Matched as exact `user@host`, then the bare host (what `phux host add`
-/// registers), then any entry whose endpoint addresses that host. Same
-/// order as the CLI's `find_entry`.
+/// registers), then any entry whose endpoint addresses that host.
 #[must_use]
 pub fn find_entry<'a>(
     entries: &'a [RemoteConfigEntry],
     target: &RemoteTarget,
 ) -> Option<&'a RemoteConfigEntry> {
-    let name = target.registry_name();
-    entries
-        .iter()
-        .find(|entry| entry.name == name)
-        .or_else(|| entries.iter().find(|entry| entry.name == target.host))
-        .or_else(|| {
-            entries
-                .iter()
-                .find(|entry| endpoint_host(&entry.endpoint).as_deref() == Some(&target.host))
-        })
+    find_entry_by(entries, target, |entry| (&entry.name, &entry.endpoint))
 }
 
-fn endpoint_host(endpoint: &str) -> Option<String> {
+/// [`find_entry`] over any registry row type, given its `(name, endpoint)`.
+#[must_use]
+pub fn find_entry_by<'a, E>(
+    entries: &'a [E],
+    target: &RemoteTarget,
+    name_and_endpoint: impl Fn(&E) -> (&str, &str),
+) -> Option<&'a E> {
+    let name = target.registry_name();
+    let named = |wanted: &str| {
+        entries
+            .iter()
+            .find(|entry| name_and_endpoint(entry).0 == wanted)
+    };
+    named(&name).or_else(|| named(&target.host)).or_else(|| {
+        entries.iter().find(|entry| {
+            endpoint_host(name_and_endpoint(entry).1).as_deref() == Some(&target.host)
+        })
+    })
+}
+
+/// The host an endpoint URI addresses, unbracketed; `None` when it has none.
+#[must_use]
+pub fn endpoint_host(endpoint: &str) -> Option<String> {
     let rest = endpoint.split_once("://").map(|(_, rest)| rest)?;
     let authority = rest.split(['/', '?']).next().unwrap_or(rest);
     let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
-    if let Some(inner) = authority.strip_prefix('[') {
-        return inner.split_once(']').map(|(host, _)| host.to_owned());
-    }
-    if authority.matches(':').count() > 1 {
-        return Some(authority.to_owned());
-    }
-    Some(
+    let host = if let Some(inner) = authority.strip_prefix('[') {
+        inner.split_once(']').map(|(host, _)| host)?
+    } else if authority.matches(':').count() > 1 {
+        authority
+    } else {
         authority
             .split_once(':')
             .map_or(authority, |(host, _)| host)
-            .to_owned(),
-    )
+    };
+    (!host.is_empty()).then(|| host.to_owned())
 }
 
 /// The transport a registry endpoint names, restricted to what an embedder
@@ -220,9 +295,8 @@ pub fn classify(endpoint: &str, target: &RemoteTarget) -> Result<(String, Transp
 
 /// Read the bearer token behind an entry's `token-file`.
 ///
-/// That is the first line that is neither blank nor a `#` comment, the same
-/// rule as the CLI's `read_token`. Failures name the path and never echo
-/// token bytes.
+/// That is the first line that is neither blank nor a `#` comment. Failures
+/// name the path and never echo token bytes.
 pub fn read_token(path: Option<&Path>) -> Result<Option<String>, String> {
     let Some(path) = path else {
         return Ok(None);
@@ -290,7 +364,17 @@ pub fn resolve(raw: &str, config_path: Option<&Path>) -> Result<Resolved, String
         .map_err(|err| format!("could not read the phux config {}: {err}", path.display()))?;
     reject_duplicates(&config.remote)?;
     let entry = find_entry(&config.remote, &target).ok_or_else(|| unregistered(&target))?;
-    let (endpoint, transport) = classify(&entry.endpoint, &target)?;
+    resolve_entry(entry, &target)
+}
+
+/// Resolve one registry entry for `target`, applying its explicit `:PORT`.
+///
+/// # Errors
+///
+/// An endpoint no embedder can dial ([`classify`]) or a malformed client
+/// identity ([`entry_identity`]).
+pub fn resolve_entry(entry: &RemoteConfigEntry, target: &RemoteTarget) -> Result<Resolved, String> {
+    let (endpoint, transport) = classify(&entry.endpoint, target)?;
     Ok(Resolved {
         name: entry.name.clone(),
         endpoint,
@@ -365,6 +449,10 @@ mod tests {
         let bare_v6 = target("fd7a::1");
         assert_eq!(bare_v6.port, None);
         assert_eq!(bare_v6.authority(), "[fd7a::1]:8788");
+        // `mini` and `mini:8788` are one registry host, and a portless
+        // target means the ADR-0081 auto-listen port.
+        assert_eq!(target("mini:8788").registry_name(), "mini");
+        assert_eq!(target("mini").authority(), "mini:8788");
     }
 
     #[test]

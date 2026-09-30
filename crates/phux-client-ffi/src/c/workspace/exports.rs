@@ -49,7 +49,7 @@ pub unsafe extern "C" fn phux_client_workspace_mutate(
         let bytes = next
             .encode_topology_cbor()
             .map_err(|e| BridgeError::invalid(e.to_string()))?;
-        if bytes.len() > 256 * 1024 {
+        if bytes.len() > phux_client_core::layout::MAX_LAYOUT_METADATA_BYTES {
             return Err(BridgeError::state("layout metadata exceeds 256 KiB"));
         }
         start_read(client, input.request_id, Some((next, bytes)))?;
