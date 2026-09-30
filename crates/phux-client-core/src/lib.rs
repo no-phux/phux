@@ -37,6 +37,7 @@ pub mod grid;
 pub mod handshake;
 pub mod history;
 pub mod input_replay;
+pub mod keys;
 pub mod layout;
 pub mod multi_pane;
 pub mod perf;
