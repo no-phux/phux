@@ -851,88 +851,131 @@ pub async fn wait_for_any_agent_state(
         return Ok(trackers.result(Some(matched)));
     }
 
-    let mut push_ended = false;
-    let mut poll_failures = 0_u32;
+    let mut health = PollHealth::default();
     let mut interval =
         tokio::time::interval_at(tokio::time::Instant::now() + poll_interval, poll_interval);
     let deadline = deadline(timeout);
     tokio::pin!(deadline);
 
     loop {
-        tokio::select! {
-            frame = subscription.conn.recv(), if !push_ended => {
-                match frame {
-                    Ok(frame) => {
-                        let mut baselines = Vec::new();
-                        if let Some(matched) =
-                            fold_fleet_frame(frame, &mut subscription, &mut trackers, &mut baselines).await?
-                        {
-                            return Ok(trackers.result(Some(matched)));
-                        }
-                        if let Some(matched) = baseline_fleet_terminals(
-                            &mut subscription,
-                            &mut trackers,
-                            baselines,
-                            &mut request_id,
-                        ).await? {
-                            return Ok(trackers.result(Some(matched)));
-                        }
-                    }
-                    Err(_err) => push_ended = true,
+        let matched = tokio::select! {
+            frame = subscription.conn.recv(), if !health.push_ended => match frame {
+                Ok(frame) => {
+                    fold_and_baseline(frame, &mut subscription, &mut trackers, &mut request_id)
+                        .await?
                 }
-            }
+                Err(_err) => {
+                    health.push_ended = true;
+                    None
+                }
+            },
             _ = interval.tick() => {
-                let view = match get_state(socket).await {
-                    Ok(view) => view,
-                    Err(err) => {
-                        poll_failures = poll_failures.saturating_add(1);
-                        if push_ended && poll_failures >= POLL_FAILURE_LIMIT {
-                            return Err(AgentWaitError::Transport(err));
-                        }
-                        continue;
-                    }
-                };
-                poll_failures = 0;
-                let current = local_terminals(&view);
-                let stale: Vec<ResourceId> = subscription
-                    .terminals
-                    .difference(&current)
-                    .cloned()
-                    .collect();
-                for terminal in stale {
-                    subscription.remove_terminal(&terminal);
-                    trackers.remove(&terminal);
-                }
-                for terminal in &current {
-                    if !push_ended && !subscription.terminals.contains(terminal)
-                        && subscription.subscribe_terminal(terminal.clone()).await.is_err()
-                    {
-                        push_ended = true;
-                    }
-                    match fetch_agent_record(socket, terminal).await {
-                        Ok(record) => {
-                            poll_failures = 0;
-                            if let Some(matched) = trackers.observe(
-                                terminal.clone(),
-                                record,
-                                Some(EdgeSource::Poll),
-                            ) {
-                                return Ok(trackers.result(Some(matched)));
-                            }
-                        }
-                        Err(err) => {
-                            poll_failures = poll_failures.saturating_add(1);
-                            if push_ended && poll_failures >= POLL_FAILURE_LIMIT {
-                                return Err(AgentWaitError::Transport(err));
-                            }
-                        }
-                    }
-                }
-                // Poll-only members still count for pruning and `agents`.
-                subscription.terminals.extend(current);
+                sweep_fleet(socket, &mut subscription, &mut trackers, &mut health).await?
             }
             () = &mut deadline => return Ok(trackers.result(None)),
+        };
+        if let Some(matched) = matched {
+            return Ok(trackers.result(Some(matched)));
         }
+    }
+}
+
+/// The poll floor's view of transport health: whether the push stream has
+/// ended, and how many polls in a row have failed.
+#[derive(Debug, Default)]
+struct PollHealth {
+    push_ended: bool,
+    failures: u32,
+}
+
+impl PollHealth {
+    const fn succeeded(&mut self) {
+        self.failures = 0;
+    }
+
+    /// Count one failed poll: fatal only once the push stream has ended and
+    /// [`POLL_FAILURE_LIMIT`] polls in a row have failed.
+    fn failed(&mut self, err: AttachError) -> Result<(), AgentWaitError> {
+        self.failures = self.failures.saturating_add(1);
+        if self.push_ended && self.failures >= POLL_FAILURE_LIMIT {
+            return Err(AgentWaitError::Transport(err));
+        }
+        Ok(())
+    }
+}
+
+/// Fold one pushed frame, then baseline any terminals it introduced.
+async fn fold_and_baseline(
+    frame: FrameKind,
+    subscription: &mut FleetSubscription,
+    trackers: &mut FleetTrackers<'_>,
+    request_id: &mut u32,
+) -> Result<Option<FleetAgentMatch>, AttachError> {
+    let mut baselines = Vec::new();
+    if let Some(matched) = fold_fleet_frame(frame, subscription, trackers, &mut baselines).await? {
+        return Ok(Some(matched));
+    }
+    baseline_fleet_terminals(subscription, trackers, baselines, request_id).await
+}
+
+/// One poll sweep: re-enumerate local terminals, drop the stale ones,
+/// subscribe newcomers while the push stream lives, and re-read every
+/// record. Poll-only members still count for pruning and `agents`.
+async fn sweep_fleet(
+    socket: &Path,
+    subscription: &mut FleetSubscription,
+    trackers: &mut FleetTrackers<'_>,
+    health: &mut PollHealth,
+) -> Result<Option<FleetAgentMatch>, AgentWaitError> {
+    let view = match get_state(socket).await {
+        Ok(view) => view,
+        Err(err) => {
+            health.failed(err)?;
+            return Ok(None);
+        }
+    };
+    health.succeeded();
+    let current = local_terminals(&view);
+    prune_stale_terminals(subscription, trackers, &current);
+    for terminal in &current {
+        if !health.push_ended
+            && !subscription.terminals.contains(terminal)
+            && subscription
+                .subscribe_terminal(terminal.clone())
+                .await
+                .is_err()
+        {
+            health.push_ended = true;
+        }
+        match fetch_agent_record(socket, terminal).await {
+            Ok(record) => {
+                health.succeeded();
+                let matched = trackers.observe(terminal.clone(), record, Some(EdgeSource::Poll));
+                if matched.is_some() {
+                    return Ok(matched);
+                }
+            }
+            Err(err) => health.failed(err)?,
+        }
+    }
+    subscription.terminals.extend(current);
+    Ok(None)
+}
+
+/// Forget subscribed terminals that are no longer in `current`.
+fn prune_stale_terminals(
+    subscription: &mut FleetSubscription,
+    trackers: &mut FleetTrackers<'_>,
+    current: &HashSet<ResourceId>,
+) {
+    let stale: Vec<ResourceId> = subscription
+        .terminals
+        .difference(current)
+        .cloned()
+        .collect();
+    for terminal in stale {
+        subscription.remove_terminal(&terminal);
+        trackers.remove(&terminal);
     }
 }
 
