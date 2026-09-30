@@ -15,7 +15,7 @@ use crate::attach::outcome::AttachError;
 use crate::predict::PredictiveConfig;
 use crate::render::chrome::status_bar::Notice;
 
-use super::entry::LoopExit;
+use super::entry::{EntryPick, LoopExit};
 use super::loop_state::{SessionLoop, Step};
 
 /// How many queued frames one `recv` wake-up drains before painting; only
@@ -62,7 +62,7 @@ pub(super) const fn frame_defers_paint(deferred_by_coalesce: bool, _frame: &Fram
 )]
 #[allow(
     clippy::too_many_arguments,
-    reason = "per-entry knobs from attach_session's outer loop (foz-6 onboarding + foz-8 window pick + jpqd cross-session pane pick); the list is the call contract with `entry.rs`, and the driver folds it into `SessionLoop` on the first statement"
+    reason = "per-entry knobs from attach_session's outer loop (foz-6 onboarding, the cross-session pick, the connection-lifetime carries); the list is the call contract with `entry.rs`, and the driver folds it into `SessionLoop` on the first statement"
 )]
 pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     conn: &mut Connection,
@@ -81,15 +81,8 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     onboarding_claim: Option<crate::attach::onboarding::AttachClaim>,
     // Attach-time notice (reconnects only; not on session switches).
     initial_notice: Option<Notice>,
-    // A one-step cross-session pick's window index, resolved on the first
-    // layout reconcile.
-    initial_window: Option<usize>,
-    // And its pane (DFS leaf ordinal within that window).
-    initial_pane: Option<usize>,
-    // Authoritative ResourceId to focus after re-attach, from
-    // a graph-discovered agent row (`switch-session { resource }`). Wins
-    // over window/pane indices and works before a TUI layout exists.
-    initial_resource: Option<ResourceId>,
+    // A one-step cross-session pick, resolved on the first layout reconcile.
+    initial_pick: EntryPick,
     // Sidebar state carried from the previous entry (`None` on first attach).
     carried_sidebar: Option<super::entry::CarriedSidebar>,
     // ADR-0053 replay journal (remote dials only).
@@ -111,9 +104,7 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
         predict_cfg,
         wants_state_sync,
         onboarding_claim,
-        initial_window,
-        initial_pane,
-        initial_resource,
+        initial_pick,
         carried_sidebar,
     )?;
     session.set_control_dial(control_dial.clone());

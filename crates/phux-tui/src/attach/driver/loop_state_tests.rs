@@ -177,9 +177,7 @@ async fn loop_before_drain(
         PredictiveConfig::disabled(),
         false,
         None,
-        None,
-        None,
-        None,
+        EntryPick::default(),
         None,
     )
     .unwrap();
@@ -1610,7 +1608,7 @@ async fn resource_pick_focuses_inventory_pane_without_a_tui_layout() {
         .peers
         .resources
         .push(ResourceInfo::new(target.clone(), WindowId::new(10), 80, 24));
-    state.pending_resource = Some(target.clone());
+    state.pick.resource = Some(target.clone());
     state.resolve_cross_session_pick();
     assert_eq!(state.mirror.focused_resource.as_ref(), Some(&target));
     assert!(
@@ -1622,7 +1620,7 @@ async fn resource_pick_focuses_inventory_pane_without_a_tui_layout() {
         "inventory window is adopted: {:?}",
         state.mirror.workspace.windows
     );
-    state.pending_resource = Some(target.clone());
+    state.pick.resource = Some(target.clone());
     state.mirror.workspace = Workspace::single(target.clone());
     state.mirror.workspace.windows[0].name = "review".into();
     state.resolve_cross_session_pick();

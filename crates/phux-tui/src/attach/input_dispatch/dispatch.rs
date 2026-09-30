@@ -106,7 +106,6 @@ struct EventEnv<'a, 'c, W: crate::attach::RenderSink> {
     out: &'a mut W,
     conn: &'a mut Connection,
     focused_resource: &'a mut Option<ResourceId>,
-    detach_pending: &'a mut bool,
     predict: &'a mut PredictionState,
     panes: &'a mut HashMap<ResourceId, PaneSlot>,
     ctx: &'a mut DispatchCtx<'c>,
@@ -117,10 +116,6 @@ struct EventEnv<'a, 'c, W: crate::attach::RenderSink> {
 /// resolves runs its action and is not forwarded (tmux's prefix table).
 /// Predictions paint once per batch.
 #[allow(
-    clippy::too_many_arguments,
-    reason = "the driver owns each piece separately and lends them flat"
-)]
-#[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
@@ -129,7 +124,6 @@ pub(in crate::attach) async fn dispatch_input_events<W: crate::attach::RenderSin
     conn: &mut Connection,
     events: &mut Vec<InputEvent>,
     focused_resource: &mut Option<ResourceId>,
-    detach_pending: &mut bool,
     predict: &mut PredictionState,
     panes: &mut HashMap<ResourceId, PaneSlot>,
     ctx: &mut DispatchCtx<'_>,
@@ -139,7 +133,6 @@ pub(in crate::attach) async fn dispatch_input_events<W: crate::attach::RenderSin
             out,
             conn,
             focused_resource,
-            detach_pending,
             predict,
             panes,
             ctx,
@@ -287,7 +280,6 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             self.conn,
             self.ctx,
             self.focused_resource,
-            self.detach_pending,
             self.predict,
             self.panes,
         )

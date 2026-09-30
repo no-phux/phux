@@ -66,7 +66,7 @@ use super::config_ui::{
     adopt_config_reload, apply_initial_notice, push_which_key_overlay, update_which_key_deadline,
 };
 use super::entry::{
-    CarriedSidebar, LoopExit, detached_loop_exit, finish_onboarding_claim,
+    CarriedSidebar, EntryPick, LoopExit, detached_loop_exit, finish_onboarding_claim,
     finish_return_onboarding_after_paint, seed_sidebar_enabled,
 };
 use super::main_loop::{
@@ -447,12 +447,9 @@ pub(super) struct SessionLoop {
     rename_notice: Option<String>,
     /// The peer-session caches the roster and window picker read.
     peers: PeerWatch,
-    /// Deferred window select of a one-step cross-session pick.
-    pending_window: Option<usize>,
-    /// Leaf ordinal focused after that window select resolves.
-    pending_pane: Option<usize>,
-    /// Pane focused after re-attach, even without a persisted layout.
-    pending_resource: Option<ResourceId>,
+    /// A one-step cross-session pick, resolved once the layout lands (the
+    /// resource even without a persisted layout).
+    pick: EntryPick,
     /// The outer terminal's key/mouse decoder.
     parser: StdinParser,
     /// The outer terminal's stdin (see [`crate::attach::tty_input`]).
@@ -541,7 +538,6 @@ impl SessionLoop {
     /// `carried_sidebar` is the sidebar state carried by a `switch-session`.
     #[allow(
         clippy::too_many_lines,
-        clippy::too_many_arguments,
         reason = "single constructor keeps all session-loop ownership visible"
     )]
     pub(super) fn new(
@@ -549,9 +545,7 @@ impl SessionLoop {
         predict_cfg: PredictiveConfig,
         wants_state_sync: bool,
         onboarding_claim: Option<AttachClaim>,
-        initial_window: Option<usize>,
-        initial_pane: Option<usize>,
-        initial_resource: Option<ResourceId>,
+        initial_pick: EntryPick,
         carried_sidebar: Option<CarriedSidebar>,
     ) -> Result<Self, AttachError> {
         let history_config = HistoryCacheConfig {
@@ -648,9 +642,7 @@ impl SessionLoop {
                 origin,
                 ..PeerWatch::default()
             },
-            pending_window: initial_window,
-            pending_pane: initial_pane,
-            pending_resource: initial_resource,
+            pick: initial_pick,
             parser: StdinParser::new(),
             stdin: TtyInput::open(),
             stdin_buf: [0u8; 4096],
@@ -1911,17 +1903,13 @@ impl SessionLoop {
             overlays: &mut self.overlays,
             keybindings: self.settings.keybindings.as_ref(),
             theme: &self.settings.theme,
-            sessions: &self.peers.sessions,
-            hosts: &self.peers.hosts,
+            peers: self.peers.inputs(&self.review),
             host_refresh_request: &mut self.host_refresh_request,
-            foreign_layouts: &self.peers.foreign_layouts,
-            foreign_agents: &self.peers.foreign_agents,
-            foreign_attention: &self.peers.foreign_attention,
-            focused_session: self.peers.focused_session,
             session_name: &mut self.mirror.session_name,
             rename_pending: &mut self.rename_pending,
             rename_notice: &mut self.rename_notice,
             switch_request: &mut self.switch_request,
+            detach_pending: &mut self.detach_pending,
             zoomed: &mut self.mirror.zoomed,
             sidebar,
             sidebar_enabled: &mut self.sidebar_enabled,
@@ -1951,7 +1939,6 @@ impl SessionLoop {
             conn,
             events,
             &mut self.mirror.focused_resource,
-            &mut self.detach_pending,
             &mut self.mirror.predict,
             &mut self.mirror.panes,
             &mut ctx,
@@ -3043,13 +3030,13 @@ impl SessionLoop {
     /// Apply a one-step cross-session pick: a `ResourceId` from the server
     /// graph, else the layout-backed window/pane indices.
     fn resolve_cross_session_pick(&mut self) {
-        if let Some(id) = self.pending_resource.take() {
-            self.pending_window = None;
-            self.pending_pane = None;
+        if let Some(id) = self.pick.resource.take() {
+            self.pick.window = None;
+            self.pick.pane = None;
             self.focus_pending_resource(&id);
             return;
         }
-        let Some(idx) = self.pending_window.take() else {
+        let Some(idx) = self.pick.window.take() else {
             return;
         };
         if !self.mirror.workspace.select(idx) {
@@ -3067,7 +3054,7 @@ impl SessionLoop {
             .and_then(|ls| ls.focus.clone());
         self.focus_history
             .transition(&mut self.mirror.focused_resource, next_focus);
-        if let Some(ord) = self.pending_pane.take() {
+        if let Some(ord) = self.pick.pane.take() {
             self.focus_picked_leaf(idx, ord);
         }
         if let Some(fid) = self.mirror.focused_resource.as_ref() {

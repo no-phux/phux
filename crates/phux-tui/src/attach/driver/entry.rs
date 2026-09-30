@@ -356,35 +356,18 @@ fn stop_writer(writer: &mut Option<crate::attach::stdout_writer::WriterHandle>) 
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
-#[allow(
-    clippy::too_many_arguments,
-    reason = "switch carries the same pending-focus and connection-lifetime \
-              locals the re-attach handshake already threads; a bag type \
-              would only rename the list"
-)]
 async fn switch_session<W: crate::attach::RenderSink>(
     conn: &mut Connection,
     out: &mut W,
     target: ReattachTarget,
-    pending_window: &mut Option<usize>,
-    pending_pane: &mut Option<usize>,
-    pending_resource: &mut Option<ResourceId>,
+    pick: &mut EntryPick,
     orphan_kills: &mut super::orphans::OrphanKills,
     review: &mut crate::attach::review::ReviewIndex,
 ) -> Result<FrameKind, AttachError> {
     // Lifecycle transition (info): switching sessions on the same
     // connection. `?target` names the destination.
     tracing::info!(?target, "attach loop: SWITCH_TO; re-attaching");
-    let attached = reattach_on_same_connection(
-        conn,
-        target,
-        pending_window,
-        pending_pane,
-        pending_resource,
-        orphan_kills,
-        review,
-    )
-    .await?;
+    let attached = reattach_on_same_connection(conn, target, pick, orphan_kills, review).await?;
     let _ = write_terminal_clear(out);
     Ok(attached)
 }
@@ -452,11 +435,8 @@ async fn attach_session<W: crate::attach::RenderSink>(
     // first loop entry.
     let onboarding_path = crate::attach::onboarding::state_path();
     let mut onboarding_claim = crate::attach::onboarding::begin_attach(&onboarding_path);
-    // A one-step cross-session pick's window, pane, or resource, consumed by
-    // the next `main_loop` entry.
-    let mut pending_window: Option<usize> = None;
-    let mut pending_pane: Option<usize> = None;
-    let mut pending_resource: Option<ResourceId> = None;
+    // A one-step cross-session pick, consumed by the next `main_loop` entry.
+    let mut pick = EntryPick::default();
     // Sidebar runtime state carried across switches (never `take`n).
     let mut carried_sidebar: Option<CarriedSidebar> = None;
     // First entry only: a session switch is not a reconnect.
@@ -477,9 +457,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
             wants_state_sync,
             claim,
             initial_notice.take(),
-            pending_window.take(),
-            pending_pane.take(),
-            pending_resource.take(),
+            std::mem::take(&mut pick),
             carried_sidebar,
             input_replay.clone(),
             std::mem::take(&mut orphan_kills),
@@ -525,9 +503,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
                     &mut conn,
                     out,
                     target,
-                    &mut pending_window,
-                    &mut pending_pane,
-                    &mut pending_resource,
+                    &mut pick,
                     &mut orphan_kills,
                     &mut review,
                 )
@@ -544,9 +520,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
 async fn reattach_on_same_connection(
     conn: &mut Connection,
     target: ReattachTarget,
-    pending_window: &mut Option<usize>,
-    pending_pane: &mut Option<usize>,
-    pending_resource: &mut Option<ResourceId>,
+    pick: &mut EntryPick,
     orphan_kills: &mut super::orphans::OrphanKills,
     review: &mut crate::attach::review::ReviewIndex,
 ) -> Result<phux_protocol::wire::frame::FrameKind, AttachError> {
@@ -559,9 +533,11 @@ async fn reattach_on_same_connection(
             pane,
             resource,
         } => {
-            *pending_window = window;
-            *pending_pane = pane;
-            *pending_resource = resource;
+            *pick = EntryPick {
+                window,
+                pane,
+                resource,
+            };
             id.map_or(AttachTarget::ByName(name), AttachTarget::ById)
         }
         ReattachTarget::Create(name) => create_session_target(name),
@@ -659,6 +635,19 @@ pub(super) const fn detached_loop_exit(end: AttachEnd, local_intent: bool) -> Lo
         end,
         locally_requested: is_local_detach(end, local_intent),
     }
+}
+
+/// A one-step cross-session pick (`switch-session` naming a window, pane, or
+/// resource) that the next loop entry focuses once its layout lands.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct EntryPick {
+    /// The window index to select.
+    pub(super) window: Option<usize>,
+    /// The pane within it: its DFS leaf ordinal.
+    pub(super) pane: Option<usize>,
+    /// The authoritative resource to focus, from a graph-discovered agent
+    /// row. Wins over the indices and works before a TUI layout exists.
+    pub(super) resource: Option<ResourceId>,
 }
 
 /// Sidebar state carried across an in-process session switch; runtime-only

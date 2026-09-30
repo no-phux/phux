@@ -134,9 +134,9 @@ fn move_pane(
             &source,
             ctx.workspace,
             ctx.session_name,
-            ctx.focused_session,
-            ctx.sessions,
-            ctx.foreign_layouts,
+            ctx.peers.focused_session,
+            ctx.peers.sessions,
+            ctx.peers.foreign_layouts,
         );
         if items.is_empty() {
             effects.bell = true;
@@ -871,9 +871,9 @@ fn push_context_menu(ctx: &mut DispatchCtx<'_>, focused: Option<&ResourceId>) {
 fn push_window_picker(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
     let items = window_picker_items(
         ctx.workspace,
-        ctx.sessions,
-        ctx.foreign_layouts,
-        ctx.focused_session,
+        ctx.peers.sessions,
+        ctx.peers.foreign_layouts,
+        ctx.peers.focused_session,
     );
     if items.iter().all(SelectItem::is_header) {
         effects.bell = true;
@@ -886,7 +886,12 @@ fn push_window_picker(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
 /// Push the session picker (grouped by host on a federation hub), with a
 /// "+ New session" row, and ask the driver for a fresh host inventory.
 fn push_session_picker(ctx: &mut DispatchCtx<'_>) {
-    let items = session_picker_rows(ctx.sessions, ctx.focused_session, ctx.hosts, ctx.workspace);
+    let items = session_picker_rows(
+        ctx.peers.sessions,
+        ctx.peers.focused_session,
+        ctx.peers.hosts,
+        ctx.workspace,
+    );
     *ctx.host_refresh_request = true;
     ctx.overlays.push(Box::new(
         SelectList::new("Sessions", items, ctx.theme).with_live_key(SESSION_PICKER_LIVE_KEY),
@@ -908,16 +913,16 @@ fn push_agent_fleet(
     );
     let mut items = crate::attach::fleet::fleet_items(
         ctx.workspace,
-        ctx.sessions,
-        ctx.focused_session,
+        ctx.peers.sessions,
+        ctx.peers.focused_session,
         ctx.agent_meta,
         &meta,
-        ctx.foreign_layouts,
-        ctx.foreign_agents,
+        ctx.peers.foreign_layouts,
+        ctx.peers.foreign_agents,
     );
     items.extend(crate::attach::fleet::satellite_agent_items(
-        ctx.foreign_agents,
-        ctx.foreign_attention,
+        ctx.peers.foreign_agents,
+        ctx.peers.foreign_attention,
         ctx.workspace,
     ));
     if items.iter().all(SelectItem::is_header) {
@@ -1098,7 +1103,7 @@ fn open_satellite_session(
     host: &str,
     name: &str,
 ) {
-    let Some(target) = satellite_session_pane(ctx.hosts, host, name) else {
+    let Some(target) = satellite_session_pane(ctx.peers.hosts, host, name) else {
         tracing::warn!(
             host,
             session = name,
