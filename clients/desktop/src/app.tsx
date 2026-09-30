@@ -13,7 +13,7 @@ import {
 } from "solid-js";
 import { createRoot, render, resetRender, useGpuix } from "@gpuix/solid";
 import type { DesktopEvent, DesktopPane, DesktopSearchMatch } from "../native/generated/index";
-import { createBridge, type DesktopHost } from "./bridge/desktop";
+import { createBridge, refusedInput, type DesktopHost } from "./bridge/desktop";
 import { Settings, type GhosttyPanel } from "./settings/settings";
 import {
   ConfirmDialog,
@@ -251,6 +251,8 @@ function DesktopApp(props: AppProps): JSX.Element {
       }
       if (event.kind === "Detached")
         toast({ kind: "error", title: "Detached", body: event.message });
+      const refused = refusedInput(event);
+      if (refused) toast({ kind: "error", title: "Input not delivered", body: refused });
       if (event.kind === "AgentBadge") agentChanged(event);
     }
     workspace.handle(events);

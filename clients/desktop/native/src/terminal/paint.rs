@@ -2,7 +2,10 @@ use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 
 use super::{GridFrame, Settings, geometry::Geometry, gpui};
 use gpui::prelude::*;
-use gpui::{Bounds, ContentMask, Hsla, Pixels, ShapedLine, TextAlign, fill, point, px, size};
+use gpui::{
+    Bounds, ContentMask, FontFeatures, FontId, GlyphId, Hsla, Pixels, ShapedLine, TextAlign, fill,
+    point, px, size,
+};
 use phux_client_core::grid::{
     CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC, CELL_OVERLINE,
     CELL_SELECTED, CELL_STRIKETHROUGH, COLOR_KIND_DEFAULT, COLOR_KIND_PALETTE,
@@ -29,16 +32,55 @@ pub struct GlyphObservation {
     pub foreground: Hsla,
 }
 
+/// One cell shaped alone: anything that is not opaque printable ASCII.
 struct Glyph {
     line: ShapedLine,
-    observation: GlyphObservation,
+    bounds: Bounds<Pixels>,
     opacity: f32,
     layer: Option<OpacityLayer>,
+}
+
+/// Consecutive cells of one row holding printable ASCII in one font and
+/// colour, shaped as one line and painted one glyph per cell. A screen of
+/// text is then a few shapes per row instead of one per cell.
+struct GlyphRun {
+    bounds: Bounds<Pixels>,
+    color: Hsla,
+    glyphs: Vec<(FontId, GlyphId)>,
+}
+
+enum Ink {
+    Glyph(Box<Glyph>),
+    Run(GlyphRun),
+}
+
+/// How one cell's text is drawn.
+struct TextStyle {
+    font: gpui::Font,
+    color: Hsla,
+    opacity: f32,
+}
+
+/// The run being collected: cells `start..start + text.len()` of `row`.
+struct PendingRun {
+    row: u16,
+    start: u16,
+    text: String,
+    font: gpui::Font,
+    color: Hsla,
 }
 
 struct OpacityLayer {
     element: gpui::AnyElement,
     result: Rc<RefCell<Option<Result<(), String>>>>,
+}
+
+/// Cells `start..end` of `row`, all painted `color`.
+struct BackgroundRun {
+    row: u16,
+    start: u16,
+    end: u16,
+    color: Hsla,
 }
 
 #[derive(Clone, Copy)]
@@ -54,7 +96,10 @@ pub(super) struct Prepared {
     settings: Settings,
     background: Hsla,
     backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
-    glyphs: Vec<Glyph>,
+    /// The open run of same-coloured cells on one row, merged into one quad.
+    run: Option<BackgroundRun>,
+    inks: Vec<Ink>,
+    pending: Option<PendingRun>,
     decorations: Vec<(Bounds<Pixels>, Hsla)>,
     cursor: Vec<(Bounds<Pixels>, Hsla)>,
 }
@@ -67,28 +112,35 @@ pub(super) fn prepare(
     cx: &mut gpui::App,
 ) -> Prepared {
     let started = Instant::now();
-    let mut prepared = Prepared {
-        background: settings.background.unwrap_or_else(gpui::black),
-        report: Observation {
-            view_id: settings.view_id,
-            ..Default::default()
-        },
-        settings,
-        backgrounds: Vec::new(),
-        glyphs: Vec::new(),
-        decorations: Vec::new(),
-        cursor: Vec::new(),
-    };
+    let mut prepared = Prepared::new(settings);
     match frame {
         Ok(frame) => prepared.prepare_frame(frame, bounds, window),
         Err(error) => prepared.report.error = Some(error),
     }
     prepared.prepare_opacity_layers(window, cx);
     prepared.report.prepare_micros = started.elapsed().as_micros();
+    crate::perf::PREPARE.record_elapsed(started);
     prepared
 }
 
 impl Prepared {
+    fn new(settings: Settings) -> Self {
+        Self {
+            background: settings.background.unwrap_or_else(gpui::black),
+            report: Observation {
+                view_id: settings.view_id,
+                ..Default::default()
+            },
+            settings,
+            backgrounds: Vec::new(),
+            run: None,
+            inks: Vec::new(),
+            pending: None,
+            decorations: Vec::new(),
+            cursor: Vec::new(),
+        }
+    }
+
     fn prepare_frame(
         &mut self,
         frame: Arc<GridFrame>,
@@ -103,6 +155,8 @@ impl Prepared {
                 self.prepare_cell(&frame, row, col, window);
             }
         }
+        self.flush_background();
+        self.flush_glyph_run(window);
         self.prepare_cursor(&frame);
         self.report.frame = Some(frame);
     }
@@ -124,7 +178,7 @@ impl Prepared {
             .copied()
             .unwrap_or_default();
         let colors = cell_colors(cell, metadata, frame, &self.settings);
-        self.backgrounds.push((bounds, colors.background));
+        self.background_cell(row, col, colors.background);
         if hidden(cell, &self.settings) {
             return;
         }
@@ -134,36 +188,203 @@ impl Prepared {
         if matches!(cell.wide, 2 | 3) {
             return;
         }
-        let text = String::from_utf8_lossy(frame.cell_text(row, col));
+        let text = frame.cell_text(row, col);
         if text.is_empty() {
             return;
         }
-        let bounds = geometry.cell_bounds(row, col, if cell.wide == 1 { 2 } else { 1 });
         let foreground = self.glyph_foreground(frame, row, col, colors);
+        let font = cell_font(cell, &self.settings);
+        if let [byte] = text
+            && cell.wide == 0
+            && colors.opacity >= 1.
+            && (byte.is_ascii_graphic() || *byte == b' ')
+        {
+            self.ascii_cell(row, col, *byte, font, foreground, window);
+            return;
+        }
+        self.flush_glyph_run(window);
+        let text = String::from_utf8_lossy(text).into_owned();
+        let width = if cell.wide == 1 { 2 } else { 1 };
+        let style = TextStyle {
+            font,
+            color: foreground,
+            opacity: colors.opacity,
+        };
+        self.shape_cell((row, col, width), text, style, window);
+    }
+
+    /// Extend the pending run with one ASCII cell, or start a run. A space
+    /// has no ink: it ends the run and is only observed.
+    fn ascii_cell(
+        &mut self,
+        row: u16,
+        col: u16,
+        byte: u8,
+        font: gpui::Font,
+        color: Hsla,
+        window: &gpui::Window,
+    ) {
+        if let Some(run) = &mut self.pending
+            && byte != b' '
+            && run.row == row
+            && usize::from(run.start) + run.text.len() == usize::from(col)
+            && run.color == color
+            && run.font == font
+        {
+            run.text.push(char::from(byte));
+            return;
+        }
+        self.flush_glyph_run(window);
+        if byte == b' ' {
+            let bounds = self.report.geometry.cell_bounds(row, col, 1);
+            self.observe(row, col, bounds, None, color);
+            return;
+        }
+        self.pending = Some(PendingRun {
+            row,
+            start: col,
+            text: char::from(byte).to_string(),
+            font,
+            color,
+        });
+    }
+
+    /// Shape the pending run as one line. A font that does not give exactly
+    /// one glyph per byte (a ligature or substitution survived, or a glyph
+    /// fell back to emoji) shapes those cells one at a time instead.
+    fn flush_glyph_run(&mut self, window: &gpui::Window) {
+        let Some(run) = self.pending.take() else {
+            return;
+        };
+        let geometry = self.report.geometry;
+        let len = run.text.len();
+        let mut font = run.font.clone();
+        // Cells never join: a ligature across them would misplace every
+        // later glyph of the run. Per-cell shaping never formed one either.
+        font.features = FontFeatures(Arc::new(vec![("calt".into(), 0), ("liga".into(), 0)]));
         let line = window.text_system().shape_line(
-            text.into_owned().into(),
+            run.text.clone().into(),
             px(self.settings.font_size),
             &[gpui::TextRun {
-                len: usize::from(cell.utf8_len),
-                font: cell_font(cell, &self.settings),
+                len,
+                font,
+                color: run.color,
+                ..Default::default()
+            }],
+            None,
+        );
+        let Some(glyphs) = one_glyph_per_byte(&line, len) else {
+            for (offset, byte) in run.text.bytes().enumerate() {
+                let style = TextStyle {
+                    font: run.font.clone(),
+                    color: run.color,
+                    opacity: 1.,
+                };
+                let cell = (run.row, run.start + offset as u16, 1);
+                self.shape_cell(cell, char::from(byte).to_string(), style, window);
+            }
+            return;
+        };
+        for offset in 0..len {
+            let col = run.start + offset as u16;
+            let bounds = geometry.cell_bounds(run.row, col, 1);
+            self.observe(run.row, col, bounds, None, run.color);
+        }
+        self.inks.push(Ink::Run(GlyphRun {
+            bounds: geometry.cell_bounds(run.row, run.start, len as u16),
+            color: run.color,
+            glyphs,
+        }));
+    }
+
+    /// Shape one cell's text alone. `cell` is its row, column and width.
+    fn shape_cell(
+        &mut self,
+        (row, col, width): (u16, u16, u16),
+        text: String,
+        style: TextStyle,
+        window: &gpui::Window,
+    ) {
+        let TextStyle {
+            font,
+            color: foreground,
+            opacity,
+        } = style;
+        let bounds = self.report.geometry.cell_bounds(row, col, width);
+        let len = text.len();
+        let line = window.text_system().shape_line(
+            text.into(),
+            px(self.settings.font_size),
+            &[gpui::TextRun {
+                len,
+                font,
                 color: foreground,
                 ..Default::default()
             }],
             None,
         );
-        self.glyphs.push(Glyph {
+        self.observe(row, col, bounds, Some(&line), foreground.opacity(opacity));
+        self.inks.push(Ink::Glyph(Box::new(Glyph {
             line,
-            opacity: colors.opacity,
+            bounds,
+            opacity,
             layer: None,
-            observation: GlyphObservation {
-                row,
-                col,
-                bounds,
-                origin: bounds.origin,
-                baseline: geometry.baseline + bounds.origin.y,
-                foreground: foreground.opacity(colors.opacity),
-            },
+        })));
+    }
+
+    /// Record where a cell's glyph lands, in row-major order, for fixtures.
+    fn observe(
+        &mut self,
+        row: u16,
+        col: u16,
+        bounds: Bounds<Pixels>,
+        line: Option<&ShapedLine>,
+        foreground: Hsla,
+    ) {
+        let geometry = self.report.geometry;
+        let baseline = geometry.baseline + bounds.origin.y;
+        let offset = line.map_or(geometry.baseline, |line| line_baseline(line, geometry));
+        self.report.glyphs.push(GlyphObservation {
+            row,
+            col,
+            bounds,
+            origin: point(bounds.origin.x, baseline - offset),
+            baseline,
+            foreground,
         });
+    }
+
+    /// Extend the row's open run, or start one. The whole surface is already
+    /// filled with the default background, so those cells add no quad; a
+    /// screen of text is then a handful of quads instead of one per cell.
+    fn background_cell(&mut self, row: u16, col: u16, color: Hsla) {
+        if let Some(run) = &mut self.run
+            && run.row == row
+            && run.end == col
+            && run.color == color
+        {
+            run.end += 1;
+            return;
+        }
+        self.flush_background();
+        if color != self.background {
+            self.run = Some(BackgroundRun {
+                row,
+                start: col,
+                end: col + 1,
+                color,
+            });
+        }
+    }
+
+    fn flush_background(&mut self) {
+        if let Some(run) = self.run.take() {
+            let bounds = self
+                .report
+                .geometry
+                .cell_bounds(run.row, run.start, run.end - run.start);
+            self.backgrounds.push((bounds, run.color));
+        }
     }
 
     fn glyph_foreground(&self, frame: &GridFrame, row: u16, col: u16, colors: CellColors) -> Hsla {
@@ -297,20 +518,15 @@ impl Prepared {
             for (bounds, color) in self.backgrounds {
                 window.paint_quad(fill(bounds, color));
             }
-            for mut glyph in self.glyphs {
-                let cell_bounds = glyph.observation.bounds;
-                let baseline =
-                    (self.report.geometry.cell_height - glyph.line.ascent - glyph.line.descent)
-                        / 2.
-                        + glyph.line.ascent;
-                let origin =
-                    cell_bounds.origin + point(px(0.), self.report.geometry.baseline - baseline);
-                glyph.observation.origin = origin;
-                glyph.observation.baseline = origin.y + baseline;
-                let result = glyph.paint(self.report.geometry, window, cx);
-                match result {
-                    Ok(()) => self.report.glyphs.push(glyph.observation),
-                    Err(error) => self.report.error = Some(error.to_string()),
+            let geometry = self.report.geometry;
+            let font_size = px(self.settings.font_size);
+            for ink in &mut self.inks {
+                let result = match ink {
+                    Ink::Glyph(glyph) => glyph.paint(geometry, window, cx),
+                    Ink::Run(run) => run.paint(geometry, font_size, window),
+                };
+                if let Err(error) = result {
+                    self.report.error = Some(error);
                 }
             }
             for (bounds, color) in self.decorations.into_iter().chain(self.cursor) {
@@ -318,16 +534,63 @@ impl Prepared {
             }
         });
         self.report.paint_micros = started.elapsed().as_micros();
+        crate::perf::PAINT.record_elapsed(started);
         self.report
     }
 
     fn prepare_opacity_layers(&mut self, window: &mut gpui::Window, cx: &mut gpui::App) {
-        for glyph in &mut self.glyphs {
-            if glyph.opacity < 1. {
+        for ink in &mut self.inks {
+            if let Ink::Glyph(glyph) = ink
+                && glyph.opacity < 1.
+            {
                 glyph.prepare_opacity_layer(self.report.geometry, window, cx);
             }
         }
     }
+}
+
+impl GlyphRun {
+    /// Each glyph at its own cell's origin on the shared baseline, exactly
+    /// where a cell shaped alone would put it.
+    fn paint(
+        &self,
+        geometry: Geometry,
+        font_size: Pixels,
+        window: &mut gpui::Window,
+    ) -> Result<(), String> {
+        let bounds = self.bounds;
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            let baseline = bounds.origin.y + geometry.baseline;
+            let mut x = bounds.origin.x;
+            for (font, glyph) in &self.glyphs {
+                window
+                    .paint_glyph(point(x, baseline), *font, *glyph, font_size, self.color)
+                    .map_err(|error| error.to_string())?;
+                x += geometry.cell_width;
+            }
+            Ok(())
+        })
+    }
+}
+
+/// The glyphs of a line shaped from `len` bytes of ASCII, when each byte
+/// became exactly one non-emoji glyph in order.
+fn one_glyph_per_byte(line: &ShapedLine, len: usize) -> Option<Vec<(FontId, GlyphId)>> {
+    let mut glyphs = Vec::with_capacity(len);
+    for run in &line.runs {
+        for glyph in &run.glyphs {
+            if glyph.is_emoji || glyph.index != glyphs.len() {
+                return None;
+            }
+            glyphs.push((run.font_id, glyph.id));
+        }
+    }
+    (glyphs.len() == len).then_some(glyphs)
+}
+
+/// Where a line shaped alone puts its baseline within one cell.
+fn line_baseline(line: &ShapedLine, geometry: Geometry) -> Pixels {
+    (geometry.cell_height - line.ascent - line.descent) / 2. + line.ascent
 }
 
 impl Glyph {
@@ -338,7 +601,7 @@ impl Glyph {
         cx: &mut gpui::App,
     ) {
         let line = self.line.clone();
-        let bounds = self.observation.bounds;
+        let bounds = self.bounds;
         let result = Rc::new(RefCell::new(None));
         let output = result.clone();
         // ShapedLine's color emoji path ignores TextRun.color. Div::opacity is
@@ -382,7 +645,7 @@ impl Glyph {
                 .take()
                 .ok_or("opacity layer did not paint")?;
         }
-        paint_line(&self.line, self.observation.bounds, geometry, window, cx)
+        paint_line(&self.line, self.bounds, geometry, window, cx)
     }
 }
 
@@ -596,6 +859,40 @@ mod tests {
             damage: GridDamage::Full,
             buffer: GridBuffer::default(),
         }
+    }
+
+    #[test]
+    fn backgrounds_merge_into_row_runs_and_skip_the_default() {
+        let mut prepared = Prepared::new(Settings::default());
+        prepared.report.geometry = Geometry {
+            cell_width: px(10.),
+            cell_height: px(20.),
+            ..Default::default()
+        };
+        let red: Hsla = gpui::rgb(0xff0000).into();
+        let blue: Hsla = gpui::rgb(0x0000ff).into();
+        let default = prepared.background;
+        // Row 0: default, red, red, blue, default. Row 1: red continues no run.
+        for (col, color) in [default, red, red, blue, default].into_iter().enumerate() {
+            prepared.background_cell(0, col as u16, color);
+        }
+        prepared.background_cell(1, 5, red);
+        prepared.background_cell(1, 7, red);
+        prepared.flush_background();
+        let quads: Vec<_> = prepared
+            .backgrounds
+            .iter()
+            .map(|(bounds, color)| (bounds.origin.x, bounds.origin.y, bounds.size.width, *color))
+            .collect();
+        assert_eq!(
+            quads,
+            vec![
+                (px(10.), px(0.), px(20.), red),
+                (px(30.), px(0.), px(10.), blue),
+                (px(50.), px(20.), px(10.), red),
+                (px(70.), px(20.), px(10.), red),
+            ]
+        );
     }
 
     #[test]

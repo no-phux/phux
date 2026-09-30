@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-27
+last-reviewed: 2026-09-30
 ---
 
 # Local GPUIX and Zed patches
@@ -19,6 +19,7 @@ been published upstream.
 | `0002-multi-window.patch` | GPUIX | One embedded macOS application with a GPUI window per renderer. Scroll, list, automation, painted-text, selection and search state is keyed by window; view release fences queued callbacks; `QuitMode::Explicit` lets `tick()` return false with no windows and reopen later. Non-macOS keeps the single-window path. |
 | `0003-solid-native-elements.patch` | GPUIX | `registerCustomElementType` / `isCustomElementType` in `@gpuix/native/host`, Solid mounting of registered tags, and `GpuixRenderer.hasCustomElementType` so a missing native factory fails instead of rendering `gpui::Empty`. |
 | `0004-close-window-on-reset.patch` | GPUIX | `resetRender()` closes a live macOS window before dropping the Solid root; dropping it during thread-local teardown panicked in the profiler journal. JS only. |
+| `0006-release-standard-keys.patch` | GPUIX | `native_extensions::release_standard_key` leaves one of the standard app keys (`cmd-w`, `cmd-m`, ...) unbound, and so without a menu key equivalent, for a host that handles it itself. The desktop releases `cmd-w`, which closes a pane, not the window. |
 | `0005-drawable-presented.patch` | Zed | `Window::on_drawable_presented` and AppKit visibility, the presentation receipt described in [PRESENTATION.md](../../native/PRESENTATION.md). |
 
 ## Rules

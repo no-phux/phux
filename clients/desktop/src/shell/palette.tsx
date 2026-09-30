@@ -60,7 +60,6 @@ export function CommandPalette(props: {
     if (key === "escape") props.close();
     else if (key === "down") select(selected() + 1);
     else if (key === "up") select(selected() - 1);
-    else if (key === "enter") run(results()[selected()]);
   }
 
   return (
@@ -79,6 +78,8 @@ export function CommandPalette(props: {
             setOffset(0);
           }}
           onKeyDown={keyDown}
+          // A single-line input turns Enter into `submit`; keyDown never sees it.
+          onSubmit={() => run(results()[selected()])}
           style={{
             flexGrow: 1,
             height: 30,

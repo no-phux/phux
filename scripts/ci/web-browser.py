@@ -24,11 +24,20 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_TESTS = (
     "renders_engine_grid_to_canvas",
+    "a_wide_character_paints_across_its_spacer_cell",
     "exact_wasm_codec_selects_native_and_renders_live_server",
     "synthesized_only_browser_remains_compatible_with_native_server",
     "keys_ime_commits_and_paste_reach_the_terminal_and_nothing_else_is_captured",
     "resize_reflows_the_live_terminal_and_canvas",
     "scrollback_pages_by_wheel_and_shift_page_up_and_a_drag_copies_from_it",
+    "find_highlights_matches_in_history_and_steps_between_them",
+    "mouse_reports_reach_a_tracking_program_and_shift_drag_still_selects",
+    "modifier_click_opens_http_links_in_a_new_tab_and_nothing_else",
+    "the_bell_announces_itself_and_flashes_the_canvas",
+    "a_double_width_character_copies_without_a_trailing_space",
+    "focus_changes_reach_a_program_that_asks_for_them",
+    "the_wheel_on_the_alternate_screen_is_arrow_keys",
+    "mouse_positions_land_on_their_cells_after_another_client_reports_other_cells",
     # Unit tests in src/ that need a DOM and the live server.
     "exported_start_retains_live_client_until_transport_failure",
     "closed_ws_send_and_repeated_reconnect_teardown_release_every_app",
@@ -202,6 +211,9 @@ def run_chrome(command, env, logs):
 
 def browser_tests(env, logs):
     env["PHUX_WS_ADDR"] = "127.0.0.1:0"
+    # A `cat` pane: each typed line comes back as program output, escape
+    # sequences included (ws_demo_server's default pane is a shell).
+    env["PHUX_DEMO_PANE"] = "cat"
     command = ["wasm-pack", "test", "--headless", "--chrome", "--locked", "--lib",
                "--test", "render", "--test", "e2e_browser", "--test", "e2e_input"]
     # wasm-pack accepts a driver; wasm-bindgen needs capabilities for the binary.
@@ -292,6 +304,22 @@ def authenticated_fallback_tests(env, logs, directory):
                 stop(server)
 
 
+# The runner's own knobs; every other inherited PHUX_* variable is dropped.
+RUNNER_VARIABLES = ("PHUX_WEB_CARGO_TARGET_DIR", "PHUX_BROWSER_AUTH_ONLY")
+
+
+def isolated_environment(environ):
+    """The runner's environment without inherited phux configuration.
+
+    Run from a phux pane, the shell carries the production server's socket,
+    listener addresses, TLS material, and token store (PHUX_SOCKET,
+    PHUX_QUIC_ADDR, PHUX_WS_TOKENS, ...). The demo server snapshots PHUX_*
+    at startup, so an inherited value would aim it at production state.
+    """
+    return {name: value for name, value in environ.items()
+            if not name.startswith("PHUX_") or name in RUNNER_VARIABLES}
+
+
 def interrupted(signum, _frame):
     raise SystemExit(128 + signum)
 
@@ -303,7 +331,7 @@ def main():
     logs.mkdir(parents=True, exist_ok=True)
     for name in ("build.log", "chrome.log", "server.log", "auth-server.log"):
         (logs / name).unlink(missing_ok=True)
-    env = dict(os.environ)
+    env = isolated_environment(os.environ)
     for variable, binary in (("CHROME", "chromium"), ("CHROMEDRIVER", "chromedriver")):
         executable = shutil.which(binary)
         if executable:
