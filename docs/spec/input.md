@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-23
+last-reviewed: 2026-09-30
 ---
 
 # Input events
@@ -374,21 +374,37 @@ bracketing but skips safety classification.
 ### 5.1 Atomicity is per-event only
 
 One `INPUT_PASTE` event is atomic: `data` is one contiguous buffer that
-reaches the PTY through a single `write_all`. There is **no** delivery or
-ordering guarantee *across* separate fire-and-forget events. Attached and
-`ROUTE_INPUT` input share one Terminal mailbox; if it is full, the event is
-dropped and the enclosing command still acks `OK` — the drop is silent on the
-wire ([L1.md §6.2](./L1.md)).
+reaches the PTY through a single `write_all`.
 
-This matters only when a caller fragments one logical payload — a single
-shell command, a file body, anything where the interior matters — across
-multiple `INPUT_PASTE` or `ROUTE_INPUT` events. That is **unsafe**: nothing
-guarantees the fragments arrive, arrive in order, or all arrive. Losing a
-whole event is honest and recoverable — the terminal simply shows nothing
-happened, and the caller can tell and retry. Losing an interior fragment of a
-payload spread across several events is not: the receiving shell sees a
-syntactically valid but truncated command and may execute it as-is, with no
-signal on the wire that anything was dropped.
+**Flow control, not loss.** One connection's attached `INPUT_*` events and
+`ROUTE_INPUT` commands reach a Terminal in the order sent, and the server
+MUST NOT discard one because the Terminal is busy ([ADR-0144]). When a
+Terminal cannot keep up — its program is slow to read, or the server is
+loaded — the server stops reading further frames from that connection until
+the Terminal drains, so the backlog stays in the transport and its flow
+control pushes back on the sender. A client sees this as a delay, never as a
+missing keystroke.
+
+The wait is bounded. If a Terminal accepts nothing for the server's stall
+bound (five seconds in the reference server), typically because its program
+has stopped reading its terminal, the event is refused and nothing is
+written: an `INPUT_*` frame gets an uncorrelated
+`ERROR { code: RESOURCE_EXHAUSTED }` naming the Terminal, and `ROUTE_INPUT`
+gets `COMMAND_RESULT { ERROR(RESOURCE_EXHAUSTED) }`. Until that Terminal
+drains again, further input to it on that connection is refused the same way
+at once, so one wedged Terminal cannot hold the rest of the connection.
+Authority refusals are separate and unchanged (§8).
+
+There is **no** delivery guarantee *across* separate fire-and-forget events,
+even so: a refusal, a lease change (§8), or a reconnect can lose one event
+while later ones arrive. That matters only when a caller fragments one
+logical payload — a single shell command, a file body, anything where the
+interior matters — across multiple `INPUT_PASTE` or `ROUTE_INPUT` events.
+That is **unsafe**: nothing guarantees every fragment arrives. Losing a whole
+event is honest and recoverable — the terminal simply shows nothing happened,
+and the caller can tell and retry. Losing an interior fragment of a payload
+spread across several events is not: the receiving shell sees a syntactically
+valid but truncated command and may execute it as-is.
 
 A payload too large, or too important, for one fire-and-forget event MUST NOT
 be split across multiple `INPUT_PASTE` events. Use `APPLY_INPUT`
@@ -398,6 +414,7 @@ its result by operation id, and is safe to retry after a reconnect — or
 
 [ADR-0053]: ../../docs/adr/0053-acknowledged-idempotent-input.md
 [ADR-0059]: ../../docs/adr/0059-sandboxed-chunked-file-upload.md
+[ADR-0144]: ../../docs/adr/0144-input-credits-backpressure-instead-of-drop.md
 
 ---
 

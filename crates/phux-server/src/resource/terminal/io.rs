@@ -193,7 +193,7 @@ impl TerminalActor {
             }
             return;
         };
-        match tx.try_send(request) {
+        match super::try_send_to_writer(tx, request) {
             Ok(()) => {
                 crate::perf::INPUT_EVENTS.incr();
                 if echo_probe && self.pane_quiet_for_echo() {
@@ -201,9 +201,14 @@ impl TerminalActor {
                 }
                 debug!(len, "input queued to PTY writer");
             }
-            // Dropped input is acked `Ok` and reported nowhere else, so warn.
+            // Credited input always finds a slot (ADR-0144): only a reply or
+            // uncredited no-lane input can land here.
             Err(mpsc::error::TrySendError::Full(request)) => {
-                warn!(len, "PTY writer queue full; dropping input");
+                warn!(
+                    len,
+                    credited = request.credit.is_some(),
+                    "PTY writer queue full; dropping input"
+                );
                 if let Some(completion) = request.completion {
                     completion.complete(WriteCompletion::NotWritten);
                 }

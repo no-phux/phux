@@ -123,10 +123,9 @@ fn mixed_input_key_and_route_input_preserve_wire_order() {
 
 /// A burst of `INPUT_KEY` frames that lands in one socket read reaches the
 /// PTY whole. Typed text (the desktop's `commitText`, an IME commit) is one
-/// frame per scalar, so a 256-character line arrives as one buffered read.
-/// The server must hand the pane actor a turn between those frames: routing
-/// them all in one poll overflows the actor's 64-deep encoded-input mailbox
-/// and the input lane drops everything past it.
+/// frame per scalar, so a 256-character line arrives as one buffered read,
+/// four times the pane's 64 input credits. Past those the server must wait
+/// for the pane to drain (ADR-0144); it used to drop everything past 64.
 #[test]
 fn a_buffered_input_key_burst_reaches_the_pty_whole() {
     const LETTERS: [(char, PhysicalKey); 5] = [
@@ -174,6 +173,103 @@ fn a_buffered_input_key_burst_reaches_the_pty_whole() {
                 acc.extend_from_slice(&bytes);
             }
         }
+
+        drop(stream);
+        join_after_shutdown(shutdown, server).await;
+    });
+}
+
+/// ADR-0144: input to a pane whose program has stopped reading its
+/// terminal waits instead of being dropped. Pastes fill the PTY, the writer
+/// queue and every input credit; the server then stops reading this
+/// connection, so the keystrokes typed after them wait in the socket. Once
+/// the program reads again, every byte reaches it, in order.
+#[test]
+fn input_to_a_stalled_pane_waits_and_arrives_whole() {
+    const PASTES: usize = 160;
+    const PASTE_BYTES: usize = 1024;
+    const LETTERS: [(char, PhysicalKey); 3] = [
+        ('x', PhysicalKey::X),
+        ('y', PhysicalKey::Y),
+        ('z', PhysicalKey::Z),
+    ];
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let go = tmp.path().join("go");
+        let out = tmp.path().join("out");
+        // Raw and silent, so bytes reach `cat` unedited and nothing echoes;
+        // `R` says the tty is set. `cat` writes to a file, not the terminal,
+        // so the output path cannot be what loses a byte.
+        let script = format!(
+            "stty raw -echo; printf R; while [ ! -e '{go}' ]; do sleep 0.02; done; exec cat > '{out}'",
+            go = go.display(),
+            out = out.display(),
+        );
+        let ((shutdown, server), mut stream) = seeded(&tmp, sh(&script)).await;
+        let pane = attach(&mut stream).await;
+        recv_until(&mut stream, |_, frame| match frame {
+            FrameKind::ResourceOutput { bytes, .. } if bytes.contains(&b'R') => Some(()),
+            _ => None,
+        })
+        .await;
+
+        let mut expected = Vec::new();
+        let mut burst = Vec::new();
+        for i in 0..PASTES {
+            // Distinct per paste, so a lost or reordered one shows.
+            let data = vec![b'a' + u8::try_from(i % 26).unwrap(); PASTE_BYTES];
+            expected.extend_from_slice(&data);
+            let paste = FrameKind::InputPaste {
+                terminal_id: pane.clone(),
+                event: PasteEvent {
+                    trust: PasteTrust::Trusted,
+                    data,
+                },
+            };
+            burst.extend_from_slice(&phux_server_testkit::encode_frame(&paste));
+        }
+        for i in 0..256 {
+            let (c, k) = LETTERS[i % LETTERS.len()];
+            expected.push(u8::try_from(c).unwrap());
+            burst.extend_from_slice(&phux_server_testkit::encode_frame(&key(&pane, c, k)));
+        }
+
+        // Release the program only once the server has had to wait for the
+        // pane to drain: the burst cannot finish writing before that.
+        let waits_before = phux_server::perf::INPUT_CREDIT_WAITS.get();
+        let release = tokio::task::spawn_local(async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            while phux_server::perf::INPUT_CREDIT_WAITS.get() == waits_before {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the stalled pane never saturated"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            std::fs::write(&go, b"").unwrap();
+        });
+        tokio::io::AsyncWriteExt::write_all(&mut stream, &burst)
+            .await
+            .unwrap();
+        release.await.unwrap();
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let written = loop {
+            let written = std::fs::read(&out).unwrap_or_default();
+            if written.len() >= expected.len() || tokio::time::Instant::now() >= deadline {
+                break written;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(
+            written.len(),
+            expected.len(),
+            "bytes reaching the program after the stall"
+        );
+        assert!(
+            written == expected,
+            "input reached the program out of order"
+        );
 
         drop(stream);
         join_after_shutdown(shutdown, server).await;

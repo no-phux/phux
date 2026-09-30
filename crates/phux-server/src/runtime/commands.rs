@@ -788,7 +788,17 @@ pub(crate) async fn handle_command(
             format,
         } => handle_get_screen(state, &terminal_id, request_scrollback, cells, format).await,
         Command::RouteInput { terminal_id, event } => match input_lane {
-            Some(lane) => lane.begin_route(client_id, terminal_id, event).await,
+            // A held `ROUTE_INPUT` waits for a pane input credit exactly as a
+            // direct one does (ADR-0144).
+            Some(lane) => match super::input_lane::acquire_credit(state, &terminal_id).await {
+                Ok(credit) => {
+                    lane.begin_route(client_id, terminal_id, event, credit)
+                        .await
+                }
+                Err(super::input_lane::InputStalled) => {
+                    super::input_lane::InputStalled::result(&terminal_id)
+                }
+            },
             None => handle_route_input(state, client_id, &terminal_id, event),
         },
         Command::ApplyInput {

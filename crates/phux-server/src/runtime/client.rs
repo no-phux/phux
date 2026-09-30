@@ -33,7 +33,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
-use super::input_lane::{InputLaneHandle, RoutedInput};
+use super::input_lane::{InputCredits, InputLaneHandle, InputStalled, RoutedInput};
 use super::{
     STALE_PROBE_TIMEOUT, ServerError, SpawnRequest, bootstrap_attach_terminal, handle_attach,
     handle_detach_terminal, handle_frame_ack, handle_move_terminal, handle_terminal_input,
@@ -157,6 +157,8 @@ struct CommandDispatch<'a> {
     command_tasks: &'a mut super::command_tasks::CommandTasks,
     input_receipts: &'a mut JoinSet<()>,
     input_receipt_slots: &'a std::sync::Arc<tokio::sync::Semaphore>,
+    /// This connection's pane input credits (ADR-0144).
+    input_credits: &'a mut InputCredits,
     /// The waiters of this connection's held commands (ADR-0128). Aborted
     /// with the connection, which withdraws their approvals.
     held_commands: &'a mut JoinSet<()>,
@@ -269,7 +271,18 @@ impl CommandDispatch<'_> {
                 events,
             } => lane.begin_apply(self.client_id, operation_id, terminal_id, events),
             Command::RouteInput { terminal_id, event } => {
-                lane.begin_route(self.client_id, terminal_id, event)
+                // Same FIFO and the same wait as `INPUT_*` (ADR-0144).
+                let Ok(credit) = self.input_credits.acquire(self.state, &terminal_id).await else {
+                    let _ = self
+                        .out_tx
+                        .send(Outbound::Frame(FrameKind::CommandResult {
+                            request_id,
+                            result: InputStalled::result(&terminal_id),
+                        }))
+                        .await;
+                    return;
+                };
+                lane.begin_route(self.client_id, terminal_id, event, credit)
             }
             _ => unreachable!("guarded input command"),
         };
@@ -359,6 +372,7 @@ mod input_receipt_capacity_tests {
                     command_tasks: &mut command_tasks,
                     input_receipts: &mut receipts,
                     input_receipt_slots: &slots,
+                    input_credits: &mut InputCredits::default(),
                     held_commands: &mut JoinSet::new(),
                 }
                 .submit_input(
@@ -3029,6 +3043,7 @@ where
     let mut held_commands = JoinSet::new();
     let input_receipt_slots =
         std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_INPUT_RECEIPTS));
+    let mut input_credits = InputCredits::default();
     let mut used_attach_ids = HashSet::new();
     // Written once by HELLO; a duplicate HELLO is fatal.
     let mut negotiated: Option<NegotiatedConnection> = None;
@@ -3107,6 +3122,7 @@ where
             command_tasks: &mut command_tasks,
             input_receipts: &mut input_receipts,
             input_receipt_slots: &input_receipt_slots,
+            input_credits: &mut input_credits,
             held_commands: &mut held_commands,
         };
         if let std::ops::ControlFlow::Break(ending) = dispatch.dispatch(frame).await {
@@ -3213,6 +3229,7 @@ struct FrameDispatch<'a, R> {
     command_tasks: &'a mut super::command_tasks::CommandTasks,
     input_receipts: &'a mut JoinSet<()>,
     input_receipt_slots: &'a std::sync::Arc<tokio::sync::Semaphore>,
+    input_credits: &'a mut InputCredits,
     held_commands: &'a mut JoinSet<()>,
 }
 
@@ -3388,6 +3405,7 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             command_tasks: self.command_tasks,
             input_receipts: self.input_receipts,
             input_receipt_slots: self.input_receipt_slots,
+            input_credits: self.input_credits,
             held_commands: self.held_commands,
         })
         .run(request_id, command)
@@ -3407,27 +3425,26 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
 
     /// `INPUT_*`: route the event (see [`is_input_frame`]).
     async fn input(self, frame: FrameKind) -> FrameFlow {
-        let route = |terminal_id, input| {
-            route_client_input(
-                self.state,
-                self.input_lane,
-                self.client_id,
-                terminal_id,
-                input,
-            );
-        };
         match frame {
             FrameKind::InputKey { terminal_id, event } => {
-                route(terminal_id, TerminalInput::Key(event));
+                return self
+                    .route_input(terminal_id, TerminalInput::Key(event))
+                    .await;
             }
             FrameKind::InputMouse { terminal_id, event } => {
-                route(terminal_id, TerminalInput::Mouse(event));
+                return self
+                    .route_input(terminal_id, TerminalInput::Mouse(event))
+                    .await;
             }
             FrameKind::InputFocus { terminal_id, event } => {
-                route(terminal_id, TerminalInput::Focus(event));
+                return self
+                    .route_input(terminal_id, TerminalInput::Focus(event))
+                    .await;
             }
             FrameKind::InputPaste { terminal_id, event } => {
-                route(terminal_id, TerminalInput::Paste(event));
+                return self
+                    .route_input(terminal_id, TerminalInput::Paste(event))
+                    .await;
             }
             FrameKind::InputTerminalReply { terminal_id, bytes } => {
                 let Some(selection) = self.negotiated.as_ref() else {
@@ -3444,6 +3461,40 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
             }
             other => return direction_invalid(self.client_id, &other),
         }
+        FrameFlow::Continue(())
+    }
+
+    /// Route one structured input event. Lane-bound input first takes a
+    /// pane input credit (ADR-0144), and while the pane is saturated this
+    /// connection reads no further frame: the event waits rather than being
+    /// dropped, and the transport pushes back on the sender. A pane that
+    /// stays saturated past the stall limit refuses the event with an
+    /// uncorrelated `ERROR(RESOURCE_EXHAUSTED)`.
+    async fn route_input(self, terminal_id: WireResourceId, input: TerminalInput) -> FrameFlow {
+        let lane = self.input_lane.filter(|_| terminal_id.is_local());
+        let credit = match lane {
+            Some(_) => {
+                let acquired = tokio::select! {
+                    biased;
+                    () = self.token.cancelled() => {
+                        return FrameFlow::Break(ConnectionEnding::Cancelled);
+                    }
+                    acquired = self.input_credits.acquire(self.state, &terminal_id) => acquired,
+                };
+                let Ok(credit) = acquired else {
+                    super::send_error(
+                        &self.plumbing.out_tx,
+                        ErrorCode::ResourceExhausted,
+                        &InputStalled::message(&terminal_id),
+                    )
+                    .await;
+                    return FrameFlow::Continue(());
+                };
+                credit
+            }
+            None => None,
+        };
+        route_client_input(self.state, lane, self.client_id, terminal_id, input, credit).await;
         FrameFlow::Continue(())
     }
 
@@ -3992,14 +4043,16 @@ async fn teardown_terminal_stream(
 }
 
 /// Route one decoded `INPUT_*` event: a local pane id goes to the input lane
-/// (ADR-0044) when there is one; satellite ids and the no-lane path use the
-/// inline [`handle_terminal_input`] with the same gates.
-fn route_client_input(
+/// (ADR-0044) when there is one, spending `credit` (ADR-0144); satellite ids
+/// and the no-lane path use the inline [`handle_terminal_input`] with the
+/// same gates.
+async fn route_client_input(
     state: &SharedState,
     input_lane: Option<&InputLaneHandle>,
     client_id: ClientId,
     terminal_id: WireResourceId,
     input: TerminalInput,
+    credit: Option<crate::terminal_actor::InputCredit>,
 ) {
     let frame_label = match &input {
         TerminalInput::Key(_) => "INPUT_KEY",
@@ -4010,12 +4063,10 @@ fn route_client_input(
     if let Some(lane) = input_lane
         && terminal_id.is_local()
     {
-        lane.route(RoutedInput::attached(
-            client_id,
-            terminal_id,
-            input,
-            frame_label,
-        ));
+        lane.route(
+            RoutedInput::attached(client_id, terminal_id, input, frame_label).with_credit(credit),
+        )
+        .await;
         return;
     }
     handle_terminal_input(state, client_id, &terminal_id, input, frame_label);
@@ -6244,7 +6295,12 @@ mod writer_close_tests {
             scrollback_limit_lines: 0,
             role_policy: None,
         };
-        let (frames, closed) = negotiated([attach(), attach(), FrameKind::Ping { nonce: 5 }]).await;
+        let (frames, closed) = Box::pin(negotiated([
+            attach(),
+            attach(),
+            FrameKind::Ping { nonce: 5 },
+        ]))
+        .await;
         assert!(
             frames.iter().any(|frame| matches!(
                 frame,

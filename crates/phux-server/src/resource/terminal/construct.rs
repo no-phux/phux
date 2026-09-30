@@ -274,6 +274,7 @@ impl TerminalActor {
         let facet = TerminalHandle {
             input: input_tx,
             encoded_input: encoded_input_tx,
+            input_credits: super::InputCreditPool::default(),
             input_snapshot: input_snapshot_rx,
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_bootstrap: native_bootstrap_tx,
@@ -362,10 +363,16 @@ impl TerminalActor {
             return;
         };
         if let Some(color) = foreground {
-            let _ = pty_tx.try_send(EncodedInputRequest::legacy(color_query_reply(10, color)));
+            let _ = super::try_send_to_writer(
+                pty_tx,
+                EncodedInputRequest::legacy(color_query_reply(10, color)),
+            );
         }
         if let Some(color) = background {
-            let _ = pty_tx.try_send(EncodedInputRequest::legacy(color_query_reply(11, color)));
+            let _ = super::try_send_to_writer(
+                pty_tx,
+                EncodedInputRequest::legacy(color_query_reply(11, color)),
+            );
         }
     }
 
@@ -390,7 +397,8 @@ impl TerminalActor {
             terminal.on_pty_write(move |_term, bytes| {
                 // Writer gone: nobody to reply to.
                 if let Some(tx) = tx.upgrade() {
-                    let _ = tx.try_send(EncodedInputRequest::legacy(bytes.to_vec()));
+                    let _ =
+                        super::try_send_to_writer(&tx, EncodedInputRequest::legacy(bytes.to_vec()));
                 }
             })?;
         }

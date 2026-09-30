@@ -5,7 +5,9 @@
 //! moves input routing and encoding onto its own OS thread: pane actors
 //! publish a `Send` [`InputEncoderSnapshot`] after each terminal mutation,
 //! the lane owns one encoder set per pane generation, and hands encoded
-//! bytes to the actor's bounded mailbox with `try_send`.
+//! bytes to the actor's bounded mailbox with `try_send`. Every handoff
+//! spends a pane input credit (ADR-0144, the `credit` submodule), so that
+//! `try_send` has room: senders wait for credits, the lane never does.
 //!
 //! Ordering and authority:
 //!
@@ -22,6 +24,7 @@
 //!   on the main thread.
 
 mod acknowledged;
+mod credit;
 
 use phux_protocol::ids::InputOperationId;
 use phux_protocol::input::InputEvent;
@@ -39,6 +42,7 @@ use self::acknowledged::{
     CompletionWaiter, CompletionWaiterHandle, PendingCompletion, SharedOperationCache,
     TicketSource, deadline_from, delivery_unknown, operation_digest,
 };
+pub(crate) use self::credit::{InputCredits, InputStalled, acquire_credit};
 use super::{
     terminal_input_from_event, with_attached_input_destination, with_route_input_destination,
 };
@@ -47,10 +51,10 @@ use crate::input::{
     PerTerminalMouseEncoder, PerTerminalPasteEncoder,
 };
 use crate::state::{ClientId, SharedState, TerminalInput};
-use crate::terminal_actor::{EncodedInputRequest, TerminalHandle};
+use crate::terminal_actor::{EncodedInputRequest, InputCredit, TerminalHandle};
 
-/// Bound on the lane's inbound queue; overflow drops with a `warn!`
-/// (fire-and-forget, SPEC §9).
+/// Bound on the lane's inbound queue. Attached input waits for room
+/// ([`InputLaneHandle::route`]); a command refuses with `RESOURCE_EXHAUSTED`.
 const INPUT_LANE_CAPACITY: usize = 1024;
 
 /// One local input operation lifted off the main runtime.
@@ -62,6 +66,9 @@ pub(crate) struct RoutedInput {
     pub(crate) terminal_id: phux_protocol::ids::ResourceId,
     /// The authority policy and reply behavior for this wire surface.
     pub(crate) kind: RoutedInputKind,
+    /// The pane input credit the sender took (ADR-0144); `None` makes the
+    /// lane take one itself, without waiting.
+    pub(crate) credit: Option<InputCredit>,
 }
 
 #[derive(Debug)]
@@ -97,7 +104,15 @@ impl RoutedInput {
             client_id,
             terminal_id,
             kind: RoutedInputKind::Attached { input, frame_label },
+            credit: None,
         }
+    }
+
+    /// This input, spending `credit` at its handoff.
+    #[must_use]
+    pub(crate) fn with_credit(mut self, credit: Option<InputCredit>) -> Self {
+        self.credit = credit;
+        self
     }
 }
 
@@ -176,48 +191,40 @@ impl ReceiptFailure {
 }
 
 impl InputLaneHandle {
-    /// Enqueue an input event for off-thread routing. Non-blocking: a full
-    /// queue drops the event with a `warn!` (fire-and-forget, SPEC §9), a
-    /// closed lane (thread gone during shutdown) drops at `debug!`.
-    pub(crate) fn route(&self, routed: RoutedInput) {
-        match self.tx.try_send(routed) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(routed)) => {
-                tracing::warn!(
-                    client_id = ?routed.client_id,
-                    terminal_id = ?routed.terminal_id,
-                    frame_label = routed.kind.frame_label(),
-                    "input lane queue full; dropping (fire-and-forget per SPEC §9)",
-                );
-                routed.kind.reply_dropped(CommandResult::Ok);
-            }
-            Err(mpsc::error::TrySendError::Closed(routed)) => {
-                tracing::debug!(
-                    client_id = ?routed.client_id,
-                    frame_label = routed.kind.frame_label(),
-                    "input lane closed; dropping input",
-                );
-                routed.kind.reply_dropped(CommandResult::Error {
-                    code: ErrorCode::InternalError,
-                    message: "input lane unavailable for ROUTE_INPUT".to_owned(),
-                });
-            }
+    /// Enqueue an input event for off-thread routing, waiting while the
+    /// lane's queue is full (ADR-0144). The lane never blocks, so the wait
+    /// is short and holds no lock. A closed lane (thread gone during
+    /// shutdown) drops at `debug!`.
+    pub(crate) async fn route(&self, routed: RoutedInput) {
+        if let Err(mpsc::error::SendError(routed)) = self.tx.send(routed).await {
+            tracing::debug!(
+                client_id = ?routed.client_id,
+                frame_label = routed.kind.frame_label(),
+                "input lane closed; dropping input",
+            );
+            routed.kind.reply_dropped(CommandResult::Error {
+                code: ErrorCode::InternalError,
+                message: "input lane unavailable for ROUTE_INPUT".to_owned(),
+            });
         }
     }
 
     /// Synchronously admit attach-free command input to the same FIFO as
-    /// `INPUT_*`, returning an owned lease/mailbox completion.
+    /// `INPUT_*`, returning an owned lease/mailbox completion. `credit` is
+    /// the pane input credit the caller waited for, if any.
     pub(crate) fn begin_route(
         &self,
         client_id: ClientId,
         terminal_id: phux_protocol::ids::ResourceId,
         event: InputEvent,
+        credit: Option<InputCredit>,
     ) -> InputReceipt {
         let (reply, result) = oneshot::channel();
         let routed = RoutedInput {
             client_id,
             terminal_id,
             kind: RoutedInputKind::Headless { event, reply },
+            credit,
         };
         let failure = match self.tx.try_send(routed) {
             Ok(()) => None,
@@ -294,6 +301,7 @@ impl InputLaneHandle {
                 reservation,
                 reply,
             },
+            credit: None,
         };
         match self.tx.try_send(routed) {
             Ok(()) => {}
@@ -493,26 +501,40 @@ fn encode_input(
     }
 }
 
+/// The refusal for input that found its pane saturated at the handoff.
+fn input_saturated() -> CommandResult {
+    CommandResult::Error {
+        code: ErrorCode::ResourceExhausted,
+        message: "terminal input is saturated; nothing was written".to_owned(),
+    }
+}
+
 fn handoff_encoded(
     pane: phux_core::ids::ResourceId,
     handle: &TerminalHandle,
     bytes: Option<Vec<u8>>,
     echo_probe: bool,
+    credit: Option<InputCredit>,
 ) -> Result<bool, CommandResult> {
     let Some(bytes) = bytes else {
         return Ok(true);
     };
-    match handle
-        .encoded_input
-        .try_send(EncodedInputRequest::legacy_probe(bytes, echo_probe))
-    {
+    // A sender that waited brings its credit; only input that raced a pane
+    // replacement, or came from a sender that did not wait, can find none.
+    let Some(credit) = credit::credit_for(handle, credit) else {
+        tracing::warn!(?pane, "pane input credits exhausted; refusing input");
+        return Err(input_saturated());
+    };
+    let request = EncodedInputRequest::legacy_probe(bytes, echo_probe).with_credit(credit);
+    match handle.encoded_input.try_send(request) {
         Ok(()) => Ok(true),
+        // Unreachable while every sender holds a credit (ADR-0144).
         Err(mpsc::error::TrySendError::Full(_)) => {
-            tracing::warn!(
+            tracing::error!(
                 ?pane,
-                "encoded-input actor mailbox full; dropping (fire-and-forget per SPEC §9)"
+                "credited input found the pane mailbox full; refusing"
             );
-            Ok(false)
+            Err(input_saturated())
         }
         Err(mpsc::error::TrySendError::Closed(_)) => Err(CommandResult::Error {
             code: ErrorCode::InternalError,
@@ -528,6 +550,7 @@ fn redeliver(
     current: &super::InputDestination,
     bytes: Option<Vec<u8>>,
     input: &TerminalInput,
+    credit: Option<InputCredit>,
 ) -> Result<bool, CommandResult> {
     if !encoded_for
         .input_snapshot
@@ -540,6 +563,7 @@ fn redeliver(
         &current.handle,
         bytes,
         crate::terminal_actor::echo_probe_for(input),
+        credit,
     )
 }
 
@@ -550,6 +574,7 @@ fn process_attached(
     terminal_id: &phux_protocol::ids::ResourceId,
     input: &TerminalInput,
     frame_label: &'static str,
+    credit: Option<InputCredit>,
 ) {
     let is_focus_gained = matches!(
         input,
@@ -567,12 +592,18 @@ fn process_attached(
     let bytes = encode_input(encoders, destination.pane, &destination.handle, input);
     // Re-gate and send under one state lock, so a lease change cannot slip
     // between gate and delivery while encoding happens off-lock.
-    let accepted =
+    let delivered =
         with_attached_input_destination(state, client_id, terminal_id, frame_label, |current| {
-            redeliver(&destination.handle, &current, bytes, input)
-        })
-        .and_then(Result::ok)
-        .unwrap_or(false);
+            redeliver(&destination.handle, &current, bytes, input, credit)
+        });
+    let accepted = match delivered {
+        Some(Ok(accepted)) => accepted,
+        Some(Err(refusal)) => {
+            refuse_attached(state, client_id, refusal);
+            false
+        }
+        None => false,
+    };
     if accepted && is_focus_gained {
         crate::hooks::fire_hook(
             state,
@@ -581,12 +612,32 @@ fn process_attached(
     }
 }
 
+/// `INPUT_*` frames have no reply, so a refusal after the gates is pushed as
+/// an uncorrelated `ERROR` (input.md §5.1): input is never lost silently.
+fn refuse_attached(state: &SharedState, client_id: ClientId, refusal: CommandResult) {
+    let CommandResult::Error { code, message } = refusal else {
+        return;
+    };
+    state.with(|s| {
+        if let Some(mailbox) = s.client_mailbox(client_id) {
+            let _ = mailbox.try_send(crate::mailbox::Outbound::Frame(
+                phux_protocol::wire::frame::FrameKind::Error {
+                    request_id: None,
+                    code,
+                    message,
+                },
+            ));
+        }
+    });
+}
+
 fn process_headless(
     state: &SharedState,
     encoders: &mut std::collections::HashMap<phux_core::ids::ResourceId, LaneEncoderSet>,
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
     event: InputEvent,
+    credit: Option<InputCredit>,
 ) -> CommandResult {
     let destination =
         match with_route_input_destination(state, client_id, terminal_id, std::convert::identity) {
@@ -599,7 +650,7 @@ fn process_headless(
     };
     let bytes = encode_input(encoders, destination.pane, &destination.handle, &input);
     match with_route_input_destination(state, client_id, terminal_id, |current| {
-        redeliver(&destination.handle, &current, bytes, &input)
+        redeliver(&destination.handle, &current, bytes, &input, credit)
     }) {
         Ok(Ok(_)) => CommandResult::Ok,
         Ok(Err(result)) | Err(result) => result,
@@ -763,7 +814,14 @@ fn process_apply_input(
                 "pane actor changed before APPLY_INPUT handoff",
             ));
         }
-        let request = EncodedInputRequest::acknowledged(prepared.bytes, waiter.sink(ticket));
+        // No credit, no room: refused before handoff, so retryable.
+        let Some(credit) = credit::credit_for(&current.handle, None) else {
+            return Err(acknowledged_resource_exhausted(
+                "pane actor input mailbox is full",
+            ));
+        };
+        let request = EncodedInputRequest::acknowledged(prepared.bytes, waiter.sink(ticket))
+            .with_credit(credit);
         match current.handle.encoded_input.try_send(request) {
             Ok(()) => Ok(()),
             Err(mpsc::error::TrySendError::Full(request)) => {
@@ -825,6 +883,7 @@ fn spawn_input_lane_with_completion_timeout(
                         &routed.terminal_id,
                         &input,
                         frame_label,
+                        routed.credit,
                     ),
                     RoutedInputKind::Headless { event, reply } => {
                         let result = process_headless(
@@ -833,6 +892,7 @@ fn spawn_input_lane_with_completion_timeout(
                             routed.client_id,
                             &routed.terminal_id,
                             event,
+                            routed.credit,
                         );
                         let _ = reply.send(result);
                     }
@@ -880,7 +940,9 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::terminal_actor::{DEFAULT_INPUT_MAILBOX, TerminalActor, WriteCompletion};
+    use crate::terminal_actor::{
+        DEFAULT_INPUT_MAILBOX, INPUT_CREDITS, InputCreditPool, TerminalActor, WriteCompletion,
+    };
 
     /// Bound for "this work was handed off" waits. Never the assertion
     /// itself; generous so a loaded machine does not fail a correct lane.
@@ -944,7 +1006,7 @@ mod tests {
     struct Pane {
         wire: phux_protocol::ids::ResourceId,
         core: phux_core::ids::ResourceId,
-        encoded_input: mpsc::Sender<EncodedInputRequest>,
+        credits: InputCreditPool,
         writer_rx: mpsc::Receiver<EncodedInputRequest>,
         token: CancellationToken,
     }
@@ -952,7 +1014,7 @@ mod tests {
     fn spawn_pane(state: &SharedState, session: &str, seed: &[u8]) -> Pane {
         let bundle = TerminalActor::new_with_seed(80, 24, seed).expect("actor");
         let handle = bundle.handle.clone();
-        let encoded_input = handle.terminal().expect("facet").encoded_input.clone();
+        let credits = handle.terminal().expect("facet").input_credits.clone();
         let token = bundle.token.clone();
         let mut actor = bundle.actor;
         let (_pty_evt_tx, writer_rx) = actor.install_test_pty_channels();
@@ -967,7 +1029,7 @@ mod tests {
         Pane {
             wire,
             core,
-            encoded_input,
+            credits,
             writer_rx,
             token,
         }
@@ -1014,12 +1076,15 @@ mod tests {
         }
 
         fn attached(&self, client: ClientId, bytes: &[u8]) {
-            self.handle().route(RoutedInput::attached(
-                client,
-                self.pane.wire.clone(),
-                paste(bytes),
-                "INPUT_PASTE",
-            ));
+            self.handle()
+                .route(RoutedInput::attached(
+                    client,
+                    self.pane.wire.clone(),
+                    paste(bytes),
+                    "INPUT_PASTE",
+                ))
+                .now_or_never()
+                .expect("the lane queue has room");
         }
 
         /// Client A's `APPLY_INPUT` of one paste per payload to this pane.
@@ -1035,7 +1100,7 @@ mod tests {
 
         fn route(&self, client: ClientId, bytes: &[u8]) -> InputReceipt {
             self.handle()
-                .begin_route(client, self.pane.wire.clone(), ev(bytes))
+                .begin_route(client, self.pane.wire.clone(), ev(bytes), None)
         }
     }
 
@@ -1382,36 +1447,176 @@ mod tests {
             .await;
     }
 
-    /// A full writer queue short-circuits to `INPUT_NOT_WRITTEN` without
-    /// waiting out the completion timeout, and does not grow the queue.
+    /// A pane with no free input credit (ADR-0144) refuses `APPLY_INPUT`
+    /// before handoff, without waiting out the completion timeout and
+    /// without growing the writer queue; the id stays retryable.
     #[tokio::test(flavor = "current_thread")]
-    async fn apply_input_full_writer_queue_is_bounded_and_returns_not_written() {
+    async fn apply_input_to_a_saturated_pane_is_refused_before_handoff() {
         LocalSet::new()
             .run_until(async {
-                let fx = fixture();
-                for _ in 0..DEFAULT_INPUT_MAILBOX {
-                    fx.pane
-                        .encoded_input
-                        .try_send(EncodedInputRequest::legacy(vec![b'x']))
-                        .expect("actor input mailbox open");
+                let mut fx = fixture();
+                let mut held: Vec<_> = std::iter::from_fn(|| fx.pane.credits.try_take()).collect();
+                assert_eq!(held.len(), INPUT_CREDITS);
+                // The deadline is the assertion: strictly under the timeout.
+                let result = tokio::time::timeout(
+                    ACKNOWLEDGED_COMPLETION_TIMEOUT / 2,
+                    fx.apply(18, &[b"first"]),
+                )
+                .await
+                .expect("resolves without the completion timeout");
+                assert_eq!(code(&result), Some(ErrorCode::ResourceExhausted));
+                assert_no_write(&mut fx.pane.writer_rx).await;
+
+                held.pop();
+                let retry = fx.apply(18, &[b"first"]);
+                let request = next_write(&mut fx.pane.writer_rx).await;
+                assert_eq!(request.bytes.as_ref(), b"first");
+                complete(request, WriteCompletion::Delivered);
+                assert_eq!(retry.await, CommandResult::Ok);
+            })
+            .await;
+    }
+
+    /// What one connection's read loop does per `INPUT_PASTE` (ADR-0144):
+    /// take a credit, waiting while the pane is saturated, then route.
+    async fn type_into(
+        state: SharedState,
+        lane: InputLaneHandle,
+        client: ClientId,
+        pane: phux_protocol::ids::ResourceId,
+        tag: char,
+        count: usize,
+    ) {
+        let mut credits = InputCredits::default();
+        for i in 0..count {
+            let credit = credits
+                .acquire(&state, &pane)
+                .await
+                .expect("the pane drains within the stall limit");
+            let bytes = format!("{tag}{i:04};");
+            lane.route(
+                RoutedInput::attached(client, pane.clone(), paste(bytes.as_bytes()), "INPUT_PASTE")
+                    .with_credit(credit),
+            )
+            .await;
+        }
+    }
+
+    /// Drain `count` writes, returning their concatenated bytes. Dropping
+    /// each request returns its credit, as the PTY writer does.
+    async fn drain(rx: &mut mpsc::Receiver<EncodedInputRequest>, count: usize) -> String {
+        let mut out = String::new();
+        for _ in 0..count {
+            let request = next_write(rx).await;
+            out.push_str(std::str::from_utf8(&request.bytes).expect("utf-8 payload"));
+        }
+        out
+    }
+
+    /// Every `{tag}{i};` a client typed, in the order it typed them.
+    fn typed_by(tag: char, count: usize) -> String {
+        use std::fmt::Write as _;
+        (0..count).fold(String::new(), |mut out, i| {
+            let _ = write!(out, "{tag}{i:04};");
+            out
+        })
+    }
+
+    fn only(tag: char, written: &str) -> String {
+        written
+            .split_inclusive(';')
+            .filter(|chunk| chunk.starts_with(tag))
+            .collect()
+    }
+
+    /// ADR-0144: a pane whose writer has stalled saturates, and the clients
+    /// typing into it wait instead of losing input, while other panes and
+    /// clients keep flowing. Once the stalled writer drains, every event
+    /// arrives, in each client's order, and nothing deadlocks.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_saturated_pane_loses_no_input_and_blocks_no_other_pane() {
+        const PER_CLIENT: usize = 3 * INPUT_CREDITS;
+        LocalSet::new()
+            .run_until(async {
+                let state = SharedState::new();
+                let mut stalled = spawn_pane(&state, "a", b"");
+                let mut others = [spawn_pane(&state, "b", b""), spawn_pane(&state, "c", b"")];
+                let attach = |session: &str| {
+                    state.with_mut(|s| {
+                        let id = s.new_client_id();
+                        s.attach_default_caps(id, session, mpsc::channel(16).0)
+                            .expect("attach");
+                        id
+                    })
+                };
+                let (a1, a2, b, c) = (attach("a"), attach("a"), attach("b"), attach("c"));
+                let lane = spawn_input_lane(state.clone()).expect("spawn lane");
+
+                let mut typists = tokio::task::JoinSet::new();
+                for (client, pane, tag) in [
+                    (a1, stalled.wire.clone(), 'x'),
+                    (a2, stalled.wire.clone(), 'y'),
+                    (b, others[0].wire.clone(), 'b'),
+                    (c, others[1].wire.clone(), 'c'),
+                ] {
+                    typists.spawn_local(type_into(
+                        state.clone(),
+                        lane.handle(),
+                        client,
+                        pane,
+                        tag,
+                        PER_CLIENT,
+                    ));
                 }
+
+                // The other panes take everything while `a` is stuck.
+                for (pane, tag) in others.iter_mut().zip(['b', 'c']) {
+                    let written = drain(&mut pane.writer_rx, PER_CLIENT).await;
+                    assert_eq!(written, typed_by(tag, PER_CLIENT), "pane {tag}");
+                }
+
+                // `a` holds exactly its credits, and its typists are waiting.
                 tokio::time::timeout(LANE_DELIVERY_DEADLINE, async {
-                    while fx.pane.writer_rx.len() < DEFAULT_INPUT_MAILBOX {
+                    while stalled.writer_rx.len() < INPUT_CREDITS {
                         tokio::task::yield_now().await;
                     }
                 })
                 .await
-                .expect("actor must fill the writer queue");
-                // The deadline is the assertion: strictly under the timeout.
-                for (id, payload) in [(18, &b"first"[..]), (19, b"second")] {
-                    let result = tokio::time::timeout(
-                        ACKNOWLEDGED_COMPLETION_TIMEOUT / 2,
-                        fx.apply(id, &[payload]),
-                    )
-                    .await
-                    .expect("resolves without the completion timeout");
-                    assert_eq!(code(&result), Some(ErrorCode::InputNotWritten));
-                    assert_eq!(fx.pane.writer_rx.len(), DEFAULT_INPUT_MAILBOX);
+                .expect("the stalled pane fills its credits");
+                assert_eq!(stalled.credits.available(), 0);
+                assert_eq!(stalled.writer_rx.len(), INPUT_CREDITS);
+                tokio::time::timeout(LANE_DELIVERY_DEADLINE, async {
+                    while typists.len() > 2 {
+                        if typists.try_join_next().is_none() {
+                            tokio::task::yield_now().await;
+                        }
+                    }
+                })
+                .await
+                .expect("the typists into `b` and `c` finish");
+                assert!(
+                    typists.try_join_next().is_none(),
+                    "the typists into `a` wait for credits"
+                );
+
+                let written = drain(&mut stalled.writer_rx, 2 * PER_CLIENT).await;
+                for tag in ['x', 'y'] {
+                    assert_eq!(
+                        only(tag, &written),
+                        typed_by(tag, PER_CLIENT),
+                        "client {tag}"
+                    );
+                }
+                tokio::time::timeout(LANE_DELIVERY_DEADLINE, async {
+                    while typists.join_next().await.is_some() {}
+                })
+                .await
+                .expect("every typist finishes");
+                assert_no_write(&mut stalled.writer_rx).await;
+                assert_eq!(stalled.credits.available(), INPUT_CREDITS);
+
+                for pane in std::iter::once(&stalled).chain(&others) {
+                    pane.token.cancel();
                 }
             })
             .await;
@@ -1516,7 +1721,7 @@ mod tests {
 
                 let routed = tokio::time::timeout(
                     ACKNOWLEDGED_COMPLETION_TIMEOUT / 2,
-                    handle.begin_route(fx.client_a, other.wire.clone(), ev(b"control")),
+                    handle.begin_route(fx.client_a, other.wire.clone(), ev(b"control"), None),
                 )
                 .await
                 .expect("ROUTE_INPUT must not wait on another pane's completion");
@@ -1588,12 +1793,14 @@ mod tests {
             cache: SharedOperationCache::default(),
         };
         let terminal = phux_protocol::ResourceId::local(1);
-        handle.route(RoutedInput::attached(
-            ClientId(1),
-            terminal.clone(),
-            paste(b"legacy"),
-            "INPUT_PASTE",
-        ));
+        handle
+            .route(RoutedInput::attached(
+                ClientId(1),
+                terminal.clone(),
+                paste(b"legacy"),
+                "INPUT_PASTE",
+            ))
+            .await;
         let result = handle
             .begin_apply(
                 ClientId(1),

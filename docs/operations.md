@@ -132,6 +132,7 @@ move. The columns are `count` / `rate/s` for counters and `p50` `p90`
 | `pty.vt_apply` | libghostty parse time per burst | p99 under 2 ms at 16 KiB |
 | `echo.server` | key or paste handed to the PTY writer until the next output from that pane, sampled only when the pane was quiet for the previous 100 ms; includes the child's own reaction | p50 under 1 ms for a shell prompt |
 | `input.pty_write` | `write(2)` plus flush on the writer thread | p99 under 200 us |
+| `input.credit_waits` | input events that waited for a saturated pane to drain before the server read the client's next frame ([ADR-0144](./adr/0144-input-credits-backpressure-instead-of-drop.md)) | 0 while typing; a burst or paste into a slow program may wait |
 | `tick.emit` / `tick.synth` / `tick.out_bytes` | state-sync fan-out: whole tick, per-consumer diff, per-consumer frame size | tick p99 under 5 ms; grows with consumers x rows |
 | `consumer.mailbox_full` | ticks that skipped a consumer whose outbound queue was full | 0; a steady rate is a client that cannot drain |
 | `consumer.ack_rtt` | emit to `FRAME_ACK` round trip per state-sync client | tracks the link: sub-ms local, tens of ms over QUIC |

@@ -116,6 +116,97 @@ pub struct ConsumerAckRequest {
 /// Default depth of the per-pane input mailbox.
 pub const DEFAULT_INPUT_MAILBOX: usize = 64;
 
+/// Input credits per pane (ADR-0144): credited requests in flight between
+/// their sender and the end of their `write(2)`.
+///
+/// Equal to the encoded-input mailbox depth, so a credited `try_send` never
+/// finds the mailbox full.
+pub const INPUT_CREDITS: usize = DEFAULT_INPUT_MAILBOX;
+
+/// Writer-queue slots that only uncredited terminal replies may use.
+const TERMINAL_REPLY_HEADROOM: usize = 16;
+
+/// PTY writer queue depth: every input credit plus the reply headroom, so a
+/// credited request forwarded by the actor always finds a slot.
+pub const PTY_WRITER_QUEUE: usize = INPUT_CREDITS + TERMINAL_REPLY_HEADROOM;
+
+/// One pane's input credits (ADR-0144). Cloning shares the pool.
+#[derive(Debug, Clone)]
+pub struct InputCreditPool(std::sync::Arc<tokio::sync::Semaphore>);
+
+impl Default for InputCreditPool {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(tokio::sync::Semaphore::new(
+            INPUT_CREDITS,
+        )))
+    }
+}
+
+impl InputCreditPool {
+    /// A credit, if one is free now.
+    #[must_use]
+    pub fn try_take(&self) -> Option<InputCredit> {
+        self.0.try_acquire().ok()?.forget();
+        Some(InputCredit { pool: self.clone() })
+    }
+
+    /// A credit, waiting until one is returned.
+    pub async fn take(&self) -> InputCredit {
+        // The pool is never closed, so `acquire` only fails if it were.
+        if let Ok(permit) = self.0.acquire().await {
+            permit.forget();
+        }
+        InputCredit { pool: self.clone() }
+    }
+
+    /// Credits free right now.
+    #[must_use]
+    pub fn available(&self) -> usize {
+        self.0.available_permits()
+    }
+
+    fn is(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// One held pane input credit, returned to its pool when dropped.
+#[derive(Debug)]
+pub struct InputCredit {
+    pool: InputCreditPool,
+}
+
+impl InputCredit {
+    /// Whether this credit was drawn from `pool`.
+    #[must_use]
+    pub fn is_from(&self, pool: &InputCreditPool) -> bool {
+        self.pool.is(pool)
+    }
+}
+
+impl Drop for InputCredit {
+    fn drop(&mut self) {
+        self.pool.0.add_permits(1);
+    }
+}
+
+/// Queue `request` for the PTY writer. An uncredited request (a terminal
+/// reply, or input from the no-lane path) may not take a slot reserved for
+/// credited input, so it is refused as `Full` once only those remain.
+///
+/// # Errors
+///
+/// The request back, as `try_send` would return it.
+pub(crate) fn try_send_to_writer(
+    tx: &mpsc::Sender<EncodedInputRequest>,
+    request: EncodedInputRequest,
+) -> Result<(), mpsc::error::TrySendError<EncodedInputRequest>> {
+    if request.credit.is_none() && tx.capacity() <= INPUT_CREDITS {
+        return Err(mpsc::error::TrySendError::Full(request));
+    }
+    tx.try_send(request)
+}
+
 /// Final disposition of a PTY write, reported on
 /// [`EncodedInputRequest::completion`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,6 +285,10 @@ pub(crate) struct EncodedInputRequest {
     pub(crate) echo_probe: bool,
     /// See [`WriteCompletionSink`]; dropping it reports indeterminate.
     pub(crate) completion: Option<WriteCompletionSink>,
+    /// The pane input credit this request holds (ADR-0144), released when
+    /// the request drops: after the writer thread's `write(2)`, or at
+    /// whichever step discards it.
+    pub(crate) credit: Option<InputCredit>,
 }
 
 impl EncodedInputRequest {
@@ -207,7 +302,15 @@ impl EncodedInputRequest {
             bytes: bytes.into(),
             echo_probe,
             completion: None,
+            credit: None,
         }
+    }
+
+    /// This request, holding `credit` until it is written or discarded.
+    #[must_use]
+    pub(crate) fn with_credit(mut self, credit: InputCredit) -> Self {
+        self.credit = Some(credit);
+        self
     }
 
     pub(crate) fn acknowledged(bytes: Vec<u8>, completion: WriteCompletionSink) -> Self {
@@ -215,6 +318,7 @@ impl EncodedInputRequest {
             bytes: Bytes::from(bytes),
             echo_probe: true,
             completion: Some(completion),
+            credit: None,
         }
     }
 }
@@ -474,6 +578,9 @@ pub struct TerminalHandle {
     pub input: mpsc::Sender<TerminalInput>,
     /// Bytes pre-encoded by the input lane (`try_send`, never blocks).
     pub(crate) encoded_input: mpsc::Sender<EncodedInputRequest>,
+    /// Credits for `encoded_input` (ADR-0144): each request sent there holds
+    /// one until written, so that `try_send` never finds the mailbox full.
+    pub(crate) input_credits: InputCreditPool,
     /// Latest input-encoder state, captured after every terminal mutation.
     pub input_snapshot: tokio::sync::watch::Receiver<crate::input::InputEncoderSnapshot>,
     /// Snapshot requests (ATTACH).
@@ -514,6 +621,7 @@ impl TerminalHandle {
         Self {
             input: mpsc::channel(1).0,
             encoded_input: mpsc::channel(1).0,
+            input_credits: InputCreditPool::default(),
             input_snapshot: watch::channel(crate::input::InputEncoderSnapshot::default()).1,
             snapshot: mpsc::channel(1).0,
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
