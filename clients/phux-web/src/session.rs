@@ -1117,6 +1117,13 @@ impl Session {
     /// Encode an eligible structured key event for the focused published pane.
     #[must_use]
     pub fn key_frame(&mut self, event: KeyEvent) -> Option<Vec<u8>> {
+        self.input_frame(InputEvent::Key(event))
+    }
+
+    /// Encode an eligible input atom (key, paste, ...) for the focused
+    /// published pane; `None` while no pane is eligible for input.
+    #[must_use]
+    pub fn input_frame(&mut self, event: InputEvent) -> Option<Vec<u8>> {
         if self.failed {
             return None;
         }
@@ -1130,7 +1137,7 @@ impl Session {
         }
         let (outcome, applied) = self.apply_kernel(KernelInput::Action(KernelAction::Input {
             terminal_id: &terminal_id,
-            event: &InputEvent::Key(event),
+            event: &event,
         }));
         if applied {
             outcome.send.into_iter().next()
