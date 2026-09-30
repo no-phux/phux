@@ -10,11 +10,13 @@
 pub mod client;
 pub mod framing;
 pub mod input;
+pub mod selection;
 pub mod session;
 
 pub use session::{AgentBadge, Outcome, Session};
 
 use std::cell::RefCell;
+use std::ops::Range;
 
 use futures_channel::oneshot;
 use futures_util::future::{Either, select};
@@ -182,11 +184,22 @@ impl Default for Metrics {
 /// When `cursor_on` is true and the grid's cursor is visible, an inverted block
 /// cursor is drawn over the cursor cell (the caller toggles `cursor_on` to blink).
 pub fn render(ctx: &CanvasRenderingContext2d, grid: &Grid, m: &Metrics, cursor_on: bool) {
+    render_selected(ctx, grid, m, cursor_on, &(0..0));
+}
+
+/// [`render`], drawing the row-major cell indices in `selected` inverted.
+pub fn render_selected(
+    ctx: &CanvasRenderingContext2d,
+    grid: &Grid,
+    m: &Metrics,
+    cursor_on: bool,
+    selected: &Range<usize>,
+) {
     ctx.set_font(&m.font);
     ctx.set_text_baseline("top");
     for row in 0..grid.rows {
         for col in 0..grid.cols {
-            draw_cell(ctx, grid, m, col, row);
+            draw_cell(ctx, grid, m, col, row, selected);
         }
     }
     if cursor_on {
@@ -202,30 +215,41 @@ pub fn render_cursor_cell(
     grid: &Grid,
     m: &Metrics,
     cursor_on: bool,
+    selected: &Range<usize>,
 ) {
     ctx.set_font(&m.font);
     ctx.set_text_baseline("top");
-    draw_cell(ctx, grid, m, grid.cursor_col, grid.cursor_row);
+    draw_cell(ctx, grid, m, grid.cursor_col, grid.cursor_row, selected);
     if cursor_on {
         draw_cursor(ctx, grid, m);
     }
 }
 
-fn draw_cell(ctx: &CanvasRenderingContext2d, grid: &Grid, m: &Metrics, col: u16, row: u16) {
-    let cols = usize::from(grid.cols);
-    let Some(cell) = grid
-        .cells
-        .get(usize::from(row) * cols + usize::from(col))
-        .filter(|_| col < grid.cols)
-    else {
+fn draw_cell(
+    ctx: &CanvasRenderingContext2d,
+    grid: &Grid,
+    m: &Metrics,
+    col: u16,
+    row: u16,
+    selected: &Range<usize>,
+) {
+    let index = usize::from(row) * usize::from(grid.cols) + usize::from(col);
+    let Some(cell) = grid.cells.get(index).filter(|_| col < grid.cols) else {
         return;
     };
     let x = f64::from(col) * m.cell_w;
     let y = f64::from(row) * m.cell_h;
-    ctx.set_fill_style_str(&css(cell.bg.unwrap_or(grid.default_bg)));
+    let (mut fg, mut bg) = (
+        cell.fg.unwrap_or(grid.default_fg),
+        cell.bg.unwrap_or(grid.default_bg),
+    );
+    if selected.contains(&index) {
+        std::mem::swap(&mut fg, &mut bg);
+    }
+    ctx.set_fill_style_str(&css(bg));
     ctx.fill_rect(x, y, m.cell_w, m.cell_h);
     if cell.ch != ' ' && cell.ch != '\0' {
-        ctx.set_fill_style_str(&css(cell.fg.unwrap_or(grid.default_fg)));
+        ctx.set_fill_style_str(&css(fg));
         let mut buf = [0u8; 4];
         let _ = ctx.fill_text(cell.ch.encode_utf8(&mut buf), x, y);
     }

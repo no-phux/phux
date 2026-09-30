@@ -1,6 +1,7 @@
 //! Headless Chrome against the live `ws_demo_server`: keyboard, IME commit,
 //! and clipboard paste reach the terminal through the client's input surface,
-//! and nothing else on the page is captured. The seeded pane runs `sleep` on
+//! and nothing else on the page is captured; the wheel pages scrollback and a
+//! drag selects text to copy. The seeded pane runs `sleep` on
 //! a cooked TTY, so the line discipline echoes whatever bytes arrive.
 
 use std::time::Duration;
@@ -10,8 +11,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 use web_sys::{
     ClipboardEvent, ClipboardEventInit, CompositionEvent, CompositionEventInit, DataTransfer,
-    Document, Element, HtmlCanvasElement, KeyboardEvent, KeyboardEventInit, WheelEvent,
-    WheelEventInit,
+    Document, Element, HtmlCanvasElement, KeyboardEvent, KeyboardEventInit, PointerEvent,
+    PointerEventInit, WheelEvent, WheelEventInit,
 };
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -191,7 +192,7 @@ async fn wait_until(client: &phux_web::client::Client, visible: bool, needle: &s
 }
 
 #[wasm_bindgen_test]
-async fn wheel_and_shift_page_up_scroll_back_and_typing_returns_to_live() {
+async fn scrollback_pages_by_wheel_and_shift_page_up_and_a_drag_copies_from_it() {
     let canvas = mounted_canvas("scrollback-canvas");
     let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
         .await
@@ -248,6 +249,27 @@ async fn wheel_and_shift_page_up_scroll_back_and_typing_returns_to_live() {
         screen(&client)
     );
 
+    // Nothing selected: copy is left to the browser.
+    assert_eq!(copy_event(&surface), (false, String::new()));
+    // Drag across the marker in the scrolled-back view and copy it.
+    let rows = client.rows_text();
+    let row = rows.iter().position(|r| r.contains(marker)).unwrap();
+    let col = rows[row].find(marker).unwrap();
+    let (row, first, last) = (row as u16, col as u16, (col + marker.len() - 1) as u16);
+    pointer(&canvas, "pointerdown", first, row);
+    pointer(&canvas, "pointermove", first + 3, row);
+    pointer(&canvas, "pointermove", last, row);
+    pointer(&canvas, "pointerup", last, row);
+    assert_eq!(
+        copy_event(&surface),
+        (true, marker.to_owned()),
+        "the drag copied the marker"
+    );
+    // A click without a drag clears the selection.
+    pointer(&canvas, "pointerdown", 0, 0);
+    pointer(&canvas, "pointerup", 0, 0);
+    assert_eq!(copy_event(&surface), (false, String::new()));
+
     // The Enters pushed the seeded marker off the live screen of the shared
     // pane; echo it back so suites that run later against the same server
     // still find it.
@@ -262,4 +284,30 @@ async fn wheel_and_shift_page_up_scroll_back_and_typing_returns_to_live() {
         screen(&client)
     );
     client.close();
+}
+
+fn pointer(canvas: &HtmlCanvasElement, kind: &str, col: u16, row: u16) {
+    let rect = canvas.get_bounding_client_rect();
+    let init = PointerEventInit::new();
+    init.set_pointer_id(1);
+    init.set_button(if kind == "pointermove" { -1 } else { 0 });
+    init.set_client_x((rect.left() + f64::from(col) * 8.0 + 4.0) as i32);
+    init.set_client_y((rect.top() + f64::from(row) * 16.0 + 8.0) as i32);
+    init.set_bubbles(true);
+    let event = PointerEvent::new_with_event_init_dict(kind, &init).unwrap();
+    canvas.dispatch_event(&event).unwrap();
+}
+
+fn copy_event(surface: &Element) -> (bool, String) {
+    let clipboard = DataTransfer::new().unwrap();
+    let init = ClipboardEventInit::new();
+    init.set_clipboard_data(Some(&clipboard));
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    let copy = ClipboardEvent::new_with_event_init_dict("copy", &init).unwrap();
+    surface.dispatch_event(&copy).unwrap();
+    (
+        copy.default_prevented(),
+        clipboard.get_data("text/plain").unwrap_or_default(),
+    )
 }

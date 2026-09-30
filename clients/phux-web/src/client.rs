@@ -36,7 +36,8 @@ use web_sys::{
 };
 
 use crate::framing::FrameBuffer;
-use crate::{Metrics, render, render_cursor_cell};
+use crate::selection::{Selection, cell_at};
+use crate::{Metrics, render_cursor_cell, render_selected};
 
 mod path_picker;
 
@@ -498,6 +499,7 @@ impl Client {
     /// canvas follows the replica's new geometry; a reconnect reattaches at
     /// this size.
     pub fn resize(&self, cols: u16, rows: u16) {
+        self.app.borrow().clear_selection();
         let mut app = self.app.borrow_mut();
         if let Some(config) = app.reconnect.get_mut().as_mut() {
             config.cols = cols.max(1);
@@ -912,6 +914,9 @@ struct App {
     painted: RefCell<Option<Grid>>,
     /// The program title last published to the page.
     title: RefCell<String>,
+    /// The mouse selection over the viewport, and whether a drag is live.
+    selection: Cell<Option<Selection>>,
+    selecting: Cell<bool>,
     bindings: RefCell<AppBindings>,
     ready: RefCell<Option<oneshot::Sender<Result<(), String>>>>,
     failure_reason: RefCell<Option<String>>,
@@ -1063,7 +1068,14 @@ impl App {
             return;
         }
         if let Some(grid) = self.painted.borrow().as_ref() {
-            render_cursor_cell(&self.ctx, grid, &self.metrics, self.cursor_on.get());
+            let selected = self.selected_cells(grid.cols);
+            render_cursor_cell(
+                &self.ctx,
+                grid,
+                &self.metrics,
+                self.cursor_on.get(),
+                &selected,
+            );
         }
     }
 
@@ -1083,9 +1095,49 @@ impl App {
         }
         // The cursor belongs to the live screen, not a scrolled-back view.
         let cursor = self.cursor_on.get() && !self.session.viewport_scrolled();
-        render(&self.ctx, &grid, &self.metrics, cursor);
+        let selected = self.selected_cells(grid.cols);
+        render_selected(&self.ctx, &grid, &self.metrics, cursor, &selected);
         self.painted.replace(Some(grid));
         self.publish_title();
+    }
+
+    /// Row-major indices of the selected cells, empty without a selection.
+    fn selected_cells(&self, cols: u16) -> std::ops::Range<usize> {
+        self.selection
+            .get()
+            .filter(|selection| !selection.is_click())
+            .map_or(0..0, |selection| selection.cells(cols))
+    }
+
+    /// The selected text, if anything is selected. Read from the replica's
+    /// current viewport, which the canvas shows by the next frame.
+    fn selected_text(&self) -> Option<String> {
+        let selection = self.selection.get().filter(|s| !s.is_click())?;
+        Some(selection.text(&self.session.grid()))
+    }
+
+    /// Drop the selection (it names viewport cells, which input, scrolling,
+    /// and resizing move out from under it), repainting if one was shown.
+    fn clear_selection(&self) {
+        if self.selection.take().is_some() {
+            self.request_paint();
+        }
+    }
+
+    /// The viewport cell under a pointer event, in the canvas's CSS scale.
+    fn cell_under(&self, event: &web_sys::MouseEvent) -> (u16, u16) {
+        let rect = self.canvas.get_bounding_client_rect();
+        let scale_x = rect.width() / f64::from(self.canvas.width().max(1));
+        let scale_y = rect.height() / f64::from(self.canvas.height().max(1));
+        let (cols, rows) = self.session.dims();
+        cell_at(
+            event.client_x() - rect.left(),
+            event.client_y() - rect.top(),
+            self.metrics.cell_w * scale_x,
+            self.metrics.cell_h * scale_y,
+            cols,
+            rows,
+        )
     }
 
     /// Mirror a changed program title onto the canvas and announce it, so a
@@ -1142,6 +1194,8 @@ fn build_app(
         wheel_carry: Cell::new(0.0),
         painted: RefCell::new(None),
         title: RefCell::new(String::new()),
+        selection: Cell::new(None),
+        selecting: Cell::new(false),
         bindings: RefCell::new(AppBindings::default()),
         ready: RefCell::new(Some(ready_tx)),
         failure_reason: RefCell::new(None),
@@ -1855,7 +1909,7 @@ fn install_input(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         surface: surface.clone(),
         listeners: Vec::new(),
     };
-    let handlers: [(&str, InputHandler); 5] = [
+    let handlers: [(&str, InputHandler); 6] = [
         ("keydown", on_keydown),
         ("compositionstart", |app, _, _| {
             app.borrow().place_input_surface()
@@ -1863,11 +1917,15 @@ fn install_input(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         ("compositionend", on_composition_end),
         ("input", on_text_input),
         ("paste", on_paste),
+        ("copy", on_copy),
     ];
-    let canvas_handlers: [(&str, InputHandler); 3] = [
+    let canvas_handlers: [(&str, InputHandler); 6] = [
         ("focus", focus_surface),
         ("mousedown", focus_surface),
         ("wheel", on_wheel),
+        ("pointerdown", on_pointer),
+        ("pointermove", on_pointer),
+        ("pointerup", on_pointer),
     ];
     let targets: [(&web_sys::EventTarget, &[(&str, InputHandler)]); 2] = [
         (surface.as_ref(), &handlers),
@@ -1942,6 +2000,55 @@ fn focus_surface(_: &Rc<RefCell<App>>, event: &web_sys::Event, surface: &HtmlTex
     let _ = surface.focus();
 }
 
+/// A primary-button drag over the canvas selects cells; a click clears.
+fn on_pointer(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
+    let Some(event) = event.dyn_ref::<web_sys::PointerEvent>() else {
+        return;
+    };
+    let app = app.borrow();
+    let cell = app.cell_under(event);
+    match event.type_().as_str() {
+        "pointerdown" if event.button() == 0 => {
+            app.selection.set(Some(Selection::at(cell)));
+            app.selecting.set(true);
+            // Keep receiving moves when the drag leaves the canvas.
+            let _ = app.canvas.set_pointer_capture(event.pointer_id());
+            app.request_paint();
+        }
+        "pointermove" if app.selecting.get() => {
+            if let Some(mut selection) = app.selection.get()
+                && selection.head != cell
+            {
+                selection.head = cell;
+                app.selection.set(Some(selection));
+                app.request_paint();
+            }
+        }
+        "pointerup" => {
+            let dragging = app.selecting.replace(false);
+            if dragging && app.selection.get().is_some_and(|s| s.is_click()) {
+                app.clear_selection();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Copying (the browser's own Command+C, or the chord handler) takes the
+/// selected text when there is a selection.
+fn on_copy(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
+    let Some(text) = app.borrow().selected_text() else {
+        return;
+    };
+    if let Some(data) = event
+        .dyn_ref::<ClipboardEvent>()
+        .and_then(ClipboardEvent::clipboard_data)
+        && data.set_data("text/plain", &text).is_ok()
+    {
+        event.prevent_default();
+    }
+}
+
 /// The wheel pages the local scrollback; the page itself does not scroll.
 fn on_wheel(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
     let Some(event) = event.dyn_ref::<web_sys::WheelEvent>() else {
@@ -1963,6 +2070,7 @@ fn on_wheel(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElem
     );
     app.wheel_carry.set(carry);
     if rows != 0 && app.session.scroll_viewport(rows) {
+        app.clear_selection();
         app.request_paint();
     }
 }
@@ -1987,12 +2095,17 @@ fn on_keydown(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaEl
         // before `isComposing` turns true.
         composing: event.is_composing() || event.key_code() == 229,
     };
+    if crate::input::is_copy_chord(&browser_key) && copy_selection(app) {
+        event.prevent_default();
+        return;
+    }
     if let Some(direction) = crate::input::scrollback_page(&browser_key) {
         event.prevent_default();
         let app = app.borrow();
         let (_, rows) = app.session.dims();
         let page = i32::from(rows.saturating_sub(1).max(1));
         if app.session.scroll_viewport(direction * page) {
+            app.clear_selection();
             app.request_paint();
         }
         return;
@@ -2059,6 +2172,21 @@ fn on_paste(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElem
     }
 }
 
+/// Copy the selection through the browser's copy command, which raises the
+/// `copy` event [`on_copy`] fills. Returns whether there was one to copy.
+fn copy_selection(app: &Rc<RefCell<App>>) -> bool {
+    let document = {
+        let app = app.borrow();
+        if app.selected_text().is_none() {
+            return false;
+        }
+        app.canvas.owner_document()
+    };
+    document
+        .and_then(|document| document.dyn_into::<web_sys::HtmlDocument>().ok())
+        .is_some_and(|document| document.exec_command("copy").unwrap_or(false))
+}
+
 fn text_input_events(text: &str) -> Vec<InputEvent> {
     crate::input::key_events_for_text(text)
         .into_iter()
@@ -2082,10 +2210,14 @@ fn send_input(app: &Rc<RefCell<App>>, events: impl IntoIterator<Item = InputEven
         }
         sent = true;
     }
-    // Typing returns a scrolled-back view to the live screen.
+    // Typing returns a scrolled-back view to the live screen and ends the
+    // selection, as in a local terminal.
     let app = app.borrow();
-    if sent && app.session.scroll_to_bottom() {
-        app.request_paint();
+    if sent {
+        app.clear_selection();
+        if app.session.scroll_to_bottom() {
+            app.request_paint();
+        }
     }
     sent
 }
