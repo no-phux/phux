@@ -129,7 +129,10 @@ const RENDER_STATE_ROW_DATA_CELLS: f64 = 3.0;
 const TERMINAL_DATA_CURSOR_X: f64 = 3.0;
 const TERMINAL_DATA_CURSOR_Y: f64 = 4.0;
 const TERMINAL_DATA_CURSOR_VISIBLE: f64 = 7.0;
+const TERMINAL_DATA_TITLE: f64 = 12.0;
 const TERMINAL_DATA_VIEWPORT_ACTIVE: f64 = 32.0;
+/// Longest title read back; OSC 0/2 titles are short, a hostile one is not.
+const MAX_TITLE_BYTES: u32 = 1024;
 // `GhosttyTerminalScrollViewport`: a u32 tag, then an 8-aligned value union
 // whose `delta` is a wasm32 isize; passed by pointer on wasm32.
 const SCROLL_VIEWPORT_SIZE: u32 = 24;
@@ -963,6 +966,31 @@ impl Terminal {
     /// Return the viewport to the active area (the live screen).
     pub fn scroll_to_bottom(&self) {
         self.scroll(SCROLL_VIEWPORT_BOTTOM, 0);
+    }
+
+    /// The window title the program set (OSC 0 or OSC 2), empty when none.
+    /// Invalid UTF-8 is replaced, and a title is cut at 1 KiB.
+    #[must_use]
+    pub fn title(&self) -> String {
+        let vt = &*self.vt;
+        // GhosttyString: { ptr: u32, len: u32 }, which fits the 8-byte scratch.
+        vt.w_u32(self.scratch, 0);
+        vt.w_u32(self.scratch + 4, 0);
+        let status = vt.call(
+            &vt.terminal_get,
+            &[
+                f64::from(self.term),
+                TERMINAL_DATA_TITLE,
+                f64::from(self.scratch),
+            ],
+        ) as i32;
+        let (ptr, len) = (vt.r_u32(self.scratch), vt.r_u32(self.scratch + 4));
+        if status != GHOSTTY_SUCCESS || ptr == 0 || len == 0 {
+            return String::new();
+        }
+        let len = len.min(MAX_TITLE_BYTES);
+        let bytes = vt.bytes().subarray(ptr, ptr + len).to_vec();
+        String::from_utf8_lossy(&bytes).into_owned()
     }
 
     /// Whether the viewport is scrolled back from the active area.

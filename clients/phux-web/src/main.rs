@@ -7,6 +7,7 @@
 //! falling back to the WebSocket URL. Either way the page reconnects after
 //! the server restarts or the network drops.
 
+use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
 fn main() {
@@ -19,6 +20,7 @@ fn main() {
 
 async fn auto_start() -> Result<(), JsValue> {
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+    mirror_title(&window)?;
     let location = window.location();
     let search = location.search().unwrap_or_default();
     let ws_url = url_from_query(&search, "ws=")
@@ -38,6 +40,30 @@ async fn auto_start() -> Result<(), JsValue> {
             Ok(())
         }
     }
+}
+
+/// Show the program's title (OSC 0/2) as the page title.
+fn mirror_title(window: &web_sys::Window) -> Result<(), JsValue> {
+    let Some(document) = window.document() else {
+        return Ok(());
+    };
+    let page = document.clone();
+    let on_title =
+        Closure::<dyn FnMut(web_sys::CustomEvent)>::new(move |event: web_sys::CustomEvent| {
+            let title = event.detail().as_string().unwrap_or_default();
+            page.set_title(&if title.is_empty() {
+                "phux".to_owned()
+            } else {
+                format!("{title} - phux")
+            });
+        });
+    document.add_event_listener_with_callback(
+        phux_web::client::TITLE_EVENT,
+        on_title.as_ref().unchecked_ref(),
+    )?;
+    // The page lives as long as the terminal it shows.
+    on_title.forget();
+    Ok(())
 }
 
 /// Extract a URL-valued query parameter, decoding the `:`, `/`, `?`, and `=`

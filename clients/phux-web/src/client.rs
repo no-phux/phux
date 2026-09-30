@@ -180,6 +180,13 @@ async fn load_vt() -> Result<Rc<Vt>, JsValue> {
 /// `disconnected` after the transport or protocol fails.
 pub const CONNECTION_ATTRIBUTE: &str = "data-phux-connection";
 
+/// Canvas attribute holding the title the program set (OSC 0/2).
+pub const TITLE_ATTRIBUTE: &str = "data-phux-title";
+
+/// Bubbling `CustomEvent` dispatched on the canvas when the program's title
+/// changes; `detail` is the new title (empty when cleared).
+pub const TITLE_EVENT: &str = "phux-title";
+
 /// DOM id of the element that holds the focused pane's agent badges.
 pub const BADGE_CONTAINER_ID: &str = "phux-agent-badges";
 
@@ -903,6 +910,8 @@ struct App {
     /// The grid the canvas shows, so a cursor blink redraws one cell
     /// without reading the whole grid back from the engine.
     painted: RefCell<Option<Grid>>,
+    /// The program title last published to the page.
+    title: RefCell<String>,
     bindings: RefCell<AppBindings>,
     ready: RefCell<Option<oneshot::Sender<Result<(), String>>>>,
     failure_reason: RefCell<Option<String>>,
@@ -1076,6 +1085,24 @@ impl App {
         let cursor = self.cursor_on.get() && !self.session.viewport_scrolled();
         render(&self.ctx, &grid, &self.metrics, cursor);
         self.painted.replace(Some(grid));
+        self.publish_title();
+    }
+
+    /// Mirror a changed program title onto the canvas and announce it, so a
+    /// page can show it (the standalone page sets its document title).
+    fn publish_title(&self) {
+        let title = self.session.title();
+        if *self.title.borrow() == title {
+            return;
+        }
+        let _ = self.canvas.set_attribute(TITLE_ATTRIBUTE, &title);
+        let init = web_sys::CustomEventInit::new();
+        init.set_bubbles(true);
+        init.set_detail(&JsValue::from_str(&title));
+        if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict(TITLE_EVENT, &init) {
+            let _ = self.canvas.dispatch_event(&event);
+        }
+        self.title.replace(title);
     }
 }
 
@@ -1114,6 +1141,7 @@ fn build_app(
         cursor_on: Cell::new(true),
         wheel_carry: Cell::new(0.0),
         painted: RefCell::new(None),
+        title: RefCell::new(String::new()),
         bindings: RefCell::new(AppBindings::default()),
         ready: RefCell::new(Some(ready_tx)),
         failure_reason: RefCell::new(None),
@@ -2535,12 +2563,10 @@ mod tests {
         canvas.remove();
     }
 
-    #[wasm_bindgen_test]
-    async fn ready_then_malformed_same_chunk_remains_failed() {
-        let ws = open_websocket().await;
-        let vt = Vt::load().await.unwrap();
-        let tx = super::WireTx::Ws(super::WsTx::new(ws));
-        let (app, ready) = super::build_app(&vt, tx, test_canvas(), 80, 24, false).unwrap();
+    /// One transport chunk that takes a fresh session through HELLO_OK to
+    /// ATTACH_READY with one raw-profile terminal whose bootstrap is
+    /// `payload`.
+    fn attached_chunk(payload: &'static [u8]) -> Vec<u8> {
         let terminal_id = ResourceId::new(1);
         let stream_id = StreamId::new(1).unwrap();
         let bootstrap_id = BootstrapId::new(1).unwrap();
@@ -2583,7 +2609,7 @@ mod tests {
                 stream_id,
                 bootstrap_id,
                 chunk_seq: 0,
-                payload: bytes::Bytes::from_static(b"ready"),
+                payload: bytes::Bytes::from_static(payload),
             },
             FrameKind::BootstrapReady {
                 terminal_id,
@@ -2599,6 +2625,54 @@ mod tests {
             frame.encode(&mut encoded);
             chunk.extend_from_slice(&encoded);
         }
+        chunk
+    }
+
+    #[wasm_bindgen_test]
+    async fn program_title_reaches_the_canvas_and_a_dom_event() {
+        let ws = open_websocket().await;
+        let vt = Vt::load().await.unwrap();
+        let tx = super::WireTx::Ws(super::WsTx::new(ws));
+        let canvas = test_canvas();
+        let (app, _ready) = super::build_app(&vt, tx, canvas.clone(), 80, 24, false).unwrap();
+        let seen = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let record = Rc::clone(&seen);
+        let listener =
+            Closure::<dyn FnMut(web_sys::CustomEvent)>::new(move |event: web_sys::CustomEvent| {
+                record
+                    .borrow_mut()
+                    .push(event.detail().as_string().unwrap_or_default());
+            });
+        canvas
+            .add_event_listener_with_callback(super::TITLE_EVENT, listener.as_ref().unchecked_ref())
+            .unwrap();
+
+        let chunk = attached_chunk(b"\x1b]2;vim README.md\x07prompt$ ");
+        assert_eq!(
+            super::process_webtransport_chunk(&app, &mut FrameBuffer::new(), &chunk),
+            ReceiveFlow::Continue
+        );
+        app.borrow().paint();
+        app.borrow().paint();
+        assert_eq!(
+            canvas.get_attribute(super::TITLE_ATTRIBUTE).as_deref(),
+            Some("vim README.md")
+        );
+        assert_eq!(
+            *seen.borrow(),
+            ["vim README.md"],
+            "one event per change, not per paint"
+        );
+        app.borrow_mut().dispose();
+    }
+
+    #[wasm_bindgen_test]
+    async fn ready_then_malformed_same_chunk_remains_failed() {
+        let ws = open_websocket().await;
+        let vt = Vt::load().await.unwrap();
+        let tx = super::WireTx::Ws(super::WsTx::new(ws));
+        let (app, ready) = super::build_app(&vt, tx, test_canvas(), 80, 24, false).unwrap();
+        let mut chunk = attached_chunk(b"ready");
         chunk.extend_from_slice(&[0, 0, 0, 1, 0xff]);
 
         assert_eq!(
