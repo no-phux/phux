@@ -93,51 +93,60 @@ def main():
                     "binary_sha256": hashlib.file_digest(executable.open("rb"), "sha256").hexdigest(),
                     "cli": command([cli, "--version"], environment=environment)},
         "configuration": {"state": "fresh disposable runner account; default native window and terminal", "samples_requested": 20,
-                          "startup_boundary": "direct app executable launch to first observed completed terminal command; includes CLI startup and polling",
+                          "startup_boundary": "LaunchServices open invocation to first observed completed terminal command; includes CLI startup and polling",
                           "echo_boundary": "CLI send invocation to completion marker returned by CLI read-screen; includes both CLI launches and polling; NOT PTY-byte echo or input-to-pixel"},
         "samples": [], "ok": False,
     }
-    process = None
+    result["display"] = command(["/usr/sbin/system_profiler", "SPDisplaysDataType", "-json"], timeout=30)
+    result["initial_screenshot"] = command(["/usr/sbin/screencapture", "-x", args.out / "before.png"])
+    result["signature"] = command(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)])
     try:
-        with (args.out / "app.log").open("w") as log:
-            started = time.perf_counter_ns()
-            process = subprocess.Popen([executable], env=environment, stdout=log, stderr=log, start_new_session=True)
-            deadline = time.monotonic() + 90
-            while time.monotonic() < deadline:
-                if process.poll() is not None:
-                    raise RuntimeError(f"native application exited with {process.returncode}")
-                workspaces = command([cli, "list-workspaces", "--json"], environment=environment, timeout=5)
-                if workspaces["exit_code"] == 0 and workspaces["stdout"] not in ("", "[]"):
-                    break
-                time.sleep(0.1)
-            else:
-                raise RuntimeError(f"workspace readiness failed: {workspaces}")
-            result["workspaces"] = workspaces
-            first = echo_command(cli, environment)
-            result["first_command"] = first
-            if not first["ok"]:
-                raise RuntimeError("initial terminal did not complete the readiness command")
-            result["launch_to_first_command_us"] = (time.perf_counter_ns() - started) // 1000
-            for _ in range(20):
-                result["samples"].append(echo_command(cli, environment))
-            values = [sample["elapsed_us"] for sample in result["samples"] if sample["ok"]]
-            result["completed"] = len(values)
-            result["failures"] = 20 - len(values)
-            result["median_us"] = statistics.median(values) if values else None
-            result["max_us"] = max(values) if values else None
-            result["memory"] = owned_memory(process.pid, app)
-            result["screenshot"] = command(["/usr/sbin/screencapture", "-x", args.out / "screen.png"])
-            result["ok"] = len(values) == 20
+        started = time.perf_counter_ns()
+        launch = ["/usr/bin/open", "-n", str(app)]
+        for key in ("CMUX_ALLOW_SOCKET_OVERRIDE", "CMUX_SOCKET_PATH", "CMUXD_UNIX_PATH"):
+            launch.extend(["--env", f"{key}={environment[key]}"])
+        result["launch"] = command(launch, environment=environment)
+        if result["launch"]["exit_code"] != 0:
+            raise RuntimeError("LaunchServices refused the application")
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            workspaces = command([cli, "list-workspaces", "--json"], environment=environment, timeout=5)
+            if workspaces["exit_code"] == 0 and workspaces["stdout"] not in ("", "[]"):
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError(f"workspace readiness failed: {workspaces}")
+        result["workspaces"] = workspaces
+        first = echo_command(cli, environment)
+        result["first_command"] = first
+        if not first["ok"]:
+            raise RuntimeError("initial terminal did not complete the readiness command")
+        result["launch_to_first_command_us"] = (time.perf_counter_ns() - started) // 1000
+        for _ in range(20):
+            result["samples"].append(echo_command(cli, environment))
+        values = [sample["elapsed_us"] for sample in result["samples"] if sample["ok"]]
+        result["completed"] = len(values)
+        result["failures"] = 20 - len(values)
+        result["median_us"] = statistics.median(values) if values else None
+        result["max_us"] = max(values) if values else None
+        pid = next((row["pid"] for row in process_rows() if row["executable"] == str(executable)), None)
+        if pid is None:
+            raise RuntimeError("application process unavailable for memory observation")
+        result["memory"] = owned_memory(pid, app)
+        result["screenshot"] = command(["/usr/sbin/screencapture", "-x", args.out / "screen.png"])
+        result["ok"] = len(values) == 20
     except (RuntimeError, subprocess.TimeoutExpired, OSError) as error:
         result["error"] = str(error)
     finally:
-        if process is not None and process.poll() is None:
-            os.killpg(process.pid, signal.SIGTERM)
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
+        for row in process_rows():
+            if row["executable"].startswith(str(app) + "/"):
+                try:
+                    os.kill(row["pid"], signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+        reports = Path.home() / "Library/Logs/DiagnosticReports"
+        for report in list(reports.glob("cmux*.ips")) + list(reports.glob("cmux*.crash")):
+            (args.out / report.name).write_bytes(report.read_bytes())
         (args.out / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
     return 0 if result["ok"] else 1
