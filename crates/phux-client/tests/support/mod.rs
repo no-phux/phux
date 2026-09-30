@@ -120,6 +120,7 @@ pub async fn dial(addr: SocketAddr) -> Connection {
         server_name: "localhost".to_owned(),
         token: None,
         trust: CertTrust::SkipVerify,
+        identity: None,
     };
     let deadline = Instant::now() + STEP_DEADLINE;
     loop {

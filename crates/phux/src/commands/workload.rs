@@ -42,7 +42,8 @@ pub(crate) enum WorkloadAction {
     /// certificate signing request, from stdin or from `--file`. Key material
     /// is never taken from the command line, and input that contains a
     /// private key is refused. A CSR is signed into a client certificate
-    /// written to the new file `--cert-out` names.
+    /// written to the new file `--cert-out` names, or printed with
+    /// `--cert-stdout`.
     AddKey {
         /// Read the certificate or CSR from this file instead of stdin.
         #[usage(long, value_name = "PATH")]
@@ -64,10 +65,23 @@ pub(crate) enum WorkloadAction {
         )]
         expires_in: i64,
 
-        /// New file to write the certificate issued for a CSR to. Required
-        /// with a CSR; never overwrites an existing file.
-        #[usage(long, value_name = "PATH")]
+        /// New file to write the certificate issued for a CSR to. A CSR
+        /// needs this or `--cert-stdout`; never overwrites an existing file.
+        #[usage(long, value_name = "PATH", conflicts("--cert-stdout"))]
         cert_out: Option<PathBuf>,
+
+        /// Print the certificate chain issued for a CSR (leaf, then the CA)
+        /// on stdout instead of writing a file: as PEM, or as the
+        /// `certificate_chain` field of the `--json` document. This is how
+        /// `phux host add` enrolls over ssh; the chain is public.
+        #[usage(long)]
+        cert_stdout: bool,
+
+        /// Revoke this credential (`sha256:...`) in the same registry write
+        /// that enrolls the new one, so a re-enrolled client never holds two
+        /// live credentials. One the registry does not hold is ignored.
+        #[usage(long, value_name = "CREDENTIAL_ID")]
+        replace: Option<String>,
     },
     /// List enrolled credentials.
     List {
@@ -75,7 +89,11 @@ pub(crate) enum WorkloadAction {
         #[usage(long)]
         public_keys: bool,
     },
-    /// Revoke a credential for new connections.
+    /// Revoke a credential: new connections are refused and live ones end.
+    ///
+    /// A running server observes the registry write and closes every
+    /// connection the credential admitted; no restart is needed. `phux pair
+    /// revoke` accepts the same `sha256:` ids.
     Revoke {
         /// Credential id (`sha256:...`) printed by `add-key` or `list`.
         #[usage(value_name = "CREDENTIAL_ID")]
@@ -93,13 +111,20 @@ pub(crate) fn run(action: WorkloadAction, json: bool) -> ExitCode {
             scope,
             expires_in,
             cert_out,
+            cert_stdout,
+            replace,
         } => add_key(
             &paths,
             &AddKey {
                 file,
                 scopes: scope,
                 expires_in,
-                cert_out,
+                issued: match cert_out {
+                    Some(path) => IssuedTo::File(path),
+                    None if cert_stdout => IssuedTo::Stdout,
+                    None => IssuedTo::Nowhere,
+                },
+                replace,
             },
         ),
         WorkloadAction::List { public_keys } => list(&paths, public_keys),
@@ -111,21 +136,34 @@ pub(crate) fn run(action: WorkloadAction, json: bool) -> ExitCode {
     }
 }
 
-/// A successful action's output: one JSON document, or prose lines.
+/// A successful action's output: one JSON document, or prose lines. With
+/// `payload` (an issued chain for `--cert-stdout`), the prose goes to stderr
+/// so stdout carries the PEM alone.
 struct Report {
     document: serde_json::Value,
     prose: Vec<String>,
+    payload: Option<String>,
 }
 
 impl Report {
     fn print(&self, json: bool) -> ExitCode {
-        if !json {
-            for line in &self.prose {
-                outln!("{line}");
-            }
-            return ExitCode::SUCCESS;
+        if json {
+            return crate::output::json(&self.document);
         }
-        crate::output::json(&self.document)
+        match &self.payload {
+            Some(payload) => {
+                for line in &self.prose {
+                    eprintln!("{line}");
+                }
+                out!("{payload}");
+            }
+            None => {
+                for line in &self.prose {
+                    outln!("{line}");
+                }
+            }
+        }
+        ExitCode::SUCCESS
     }
 }
 
@@ -146,26 +184,57 @@ fn authority(paths: &WorkloadPaths, init: bool) -> Result<Report, CliError> {
             "created": status.created,
         }),
         prose: vec![status.fingerprint],
+        payload: None,
     })
+}
+
+/// Where the certificate issued for a CSR goes.
+enum IssuedTo {
+    /// `--cert-out PATH`: a new file.
+    File(PathBuf),
+    /// `--cert-stdout`: the report's payload.
+    Stdout,
+    /// Neither flag: right for a supplied certificate, refused for a CSR.
+    Nowhere,
+}
+
+impl IssuedTo {
+    fn file(&self) -> Option<&Path> {
+        match self {
+            Self::File(path) => Some(path),
+            Self::Stdout | Self::Nowhere => None,
+        }
+    }
 }
 
 struct AddKey {
     file: Option<PathBuf>,
     scopes: Vec<String>,
     expires_in: i64,
-    cert_out: Option<PathBuf>,
+    issued: IssuedTo,
+    replace: Option<String>,
 }
 
 fn add_key(paths: &WorkloadPaths, args: &AddKey) -> Result<Report, CliError> {
     workload::validate_scopes(&args.scopes).map_err(|error| cli_error(&error))?;
+    if let Some(replace) = &args.replace
+        && !workload::is_canonical_credential_id(replace)
+    {
+        return Err(cli_error(&WorkloadError::InvalidCredentialId));
+    }
     let material = read_material(args.file.as_deref())?;
-    check_cert_out(&material, args.cert_out.as_deref())?;
+    check_cert_out(&material, &args.issued)?;
     let expires_at = Utc::now().timestamp().saturating_add(args.expires_in);
     let prepared = workload::prepare_enrollment(paths, &material, expires_at)
         .map_err(|error| cli_error(&error))?;
-    let written = write_issued(&prepared, args.cert_out.as_deref())?;
+    let written = write_issued(&prepared, args.issued.file())?;
     let registered = prepared
-        .commit(&paths.registry, args.scopes.clone(), expires_at)
+        .commit_replacing(
+            &paths.registry,
+            args.scopes.clone(),
+            expires_at,
+            args.replace.as_deref(),
+        )
         .map_err(|error| {
             // Nothing admits a certificate whose key the commit refused.
             if let Some(path) = &written {
@@ -182,18 +251,32 @@ fn add_key(paths: &WorkloadPaths, args: &AddKey) -> Result<Report, CliError> {
     if written.is_some() {
         prose.push("  certificate: written to the --cert-out file".to_owned());
     }
+    if registered.replaced
+        && let Some(replaced) = &args.replace
+    {
+        prose.push(format!("  replaced:    {replaced} (revoked)"));
+    }
+    let payload = matches!(args.issued, IssuedTo::Stdout)
+        .then(|| prepared.issued_chain_pem().map(str::to_owned))
+        .flatten();
+    let mut document = json!({
+        "schema_version": 1,
+        "operation": "add-key",
+        "credential_id": registered.id,
+        "material": material.kind(),
+        "scopes": args.scopes,
+        "expires_at": expires_at,
+        "registry_generation": registered.generation,
+        "certificate_written": written.is_some(),
+        "replaced": registered.replaced,
+    });
+    if let Some(chain) = &payload {
+        document["certificate_chain"] = json!(chain);
+    }
     Ok(Report {
-        document: json!({
-            "schema_version": 1,
-            "operation": "add-key",
-            "credential_id": registered.id,
-            "material": material.kind(),
-            "scopes": args.scopes,
-            "expires_at": expires_at,
-            "registry_generation": registered.generation,
-            "certificate_written": written.is_some(),
-        }),
+        document,
         prose,
+        payload,
     })
 }
 
@@ -246,18 +329,20 @@ fn material_error(message: String) -> CliError {
     CliError::new(codes::WORKLOAD, message, "")
 }
 
-fn check_cert_out(material: &ClientMaterial, cert_out: Option<&Path>) -> Result<(), CliError> {
-    match (material, cert_out) {
-        (ClientMaterial::Request(_), None) => Err(CliError::new(
+fn check_cert_out(material: &ClientMaterial, issued: &IssuedTo) -> Result<(), CliError> {
+    match (material, issued) {
+        (ClientMaterial::Request(_), IssuedTo::Nowhere) => Err(CliError::new(
             codes::WORKLOAD,
             "a CSR is signed into a new client certificate, which needs somewhere to go",
-            "name a new file for it with --cert-out PATH",
+            "name a new file for it with --cert-out PATH, or print it with --cert-stdout",
         )),
-        (ClientMaterial::Certificate { .. }, Some(_)) => Err(CliError::new(
-            codes::WORKLOAD,
-            "--cert-out applies only to a CSR; a supplied certificate is enrolled as it is",
-            "drop --cert-out",
-        )),
+        (ClientMaterial::Certificate { .. }, IssuedTo::File(_) | IssuedTo::Stdout) => {
+            Err(CliError::new(
+                codes::WORKLOAD,
+                "--cert-out and --cert-stdout apply only to a CSR; a supplied certificate is enrolled as it is",
+                "drop --cert-out / --cert-stdout",
+            ))
+        }
         _ => Ok(()),
     }
 }
@@ -322,6 +407,7 @@ fn list(paths: &WorkloadPaths, public_keys: bool) -> Result<Report, CliError> {
             "credentials": documents,
         }),
         prose,
+        payload: None,
     })
 }
 
@@ -380,7 +466,7 @@ fn revoke(paths: &WorkloadPaths, credential_id: &str) -> Result<Report, CliError
                 "Revoked {credential_id} (registry generation {}).",
                 outcome.generation
             ),
-            "A running server refuses it from its next connection attempt; no restart is needed."
+            "A running server refuses it from its next connection attempt and ends its live connections; no restart is needed."
                 .to_owned(),
         ]
     } else {
@@ -399,6 +485,7 @@ fn revoke(paths: &WorkloadPaths, credential_id: &str) -> Result<Report, CliError
             "registry_generation": outcome.generation,
         }),
         prose,
+        payload: None,
     })
 }
 

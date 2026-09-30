@@ -22,7 +22,6 @@ use std::thread::JoinHandle;
 
 use futures_util::StreamExt;
 use futures_util::stream::SplitStream;
-use phux_dial::TlsClientIdentity;
 use phux_dial::ws::{Ws, WsKeepalive, WsLiveness, WsWriter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::{ReadHalf, WriteHalf};
@@ -399,8 +398,9 @@ async fn serve_quic(
     let established = tokio::time::timeout(DIAL_TIMEOUT, async {
         let dial = plan_quic(resolved, authority).await?;
         tracing::info!(host = name, transport = "quic", addr = %dial.addr, "remote tunnel dialing");
-        // Embedders must not inherit `PHUX_WORKLOAD_*` from a launcher shell.
-        let connected = phux_dial::quic::dial_with_identity(&dial, &TlsClientIdentity::None)
+        // The registry's enrolled identity, never `PHUX_WORKLOAD_*` inherited
+        // from a launcher shell.
+        let connected = phux_dial::quic::dial_with_identity(&dial, &resolved.client_identity)
             .await
             .map_err(|err| dial_message(name, &err));
         // The bearer preamble has been written; the owned token goes now,
@@ -452,8 +452,9 @@ async fn serve_ws(
     let ws = tokio::time::timeout(DIAL_TIMEOUT, async {
         let dial = plan_ws(resolved, url, load_token(resolved)?)?;
         tracing::info!(host = name, transport = "ws", url, "remote tunnel dialing");
-        // Embedders must not inherit `PHUX_WORKLOAD_*` from a launcher shell.
-        let connected = phux_dial::ws::dial_with_identity(&dial, &TlsClientIdentity::None)
+        // The registry's enrolled identity, never `PHUX_WORKLOAD_*` inherited
+        // from a launcher shell.
+        let connected = phux_dial::ws::dial_with_identity(&dial, &resolved.client_identity)
             .await
             .map_err(|err| dial_message(name, &err));
         // The Authorization header has been sent; drop the owned token now.
@@ -598,6 +599,7 @@ mod tests {
             transport: Transport::Ws("ws://127.0.0.1:1".to_owned()),
             token_file: Some(PathBuf::from("/secret/mini.token")),
             cert_fingerprint: None,
+            client_identity: phux_dial::TlsClientIdentity::None,
         };
         let joined = std::thread::spawn({
             let shared = Arc::clone(&shared);
@@ -626,6 +628,7 @@ mod tests {
             transport: Transport::Ws("ws://127.0.0.1:1".to_owned()),
             token_file: None,
             cert_fingerprint: None,
+            client_identity: phux_dial::TlsClientIdentity::None,
         });
         assert_eq!(tunnel.state(), TunnelState::Resolved);
         assert!(tunnel.message().is_none());

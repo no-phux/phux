@@ -238,6 +238,7 @@ fn bootstrap_prints_one_line_that_is_enough_to_dial() {
         server_name: "localhost".to_owned(),
         token: Some(unhex(token)),
         trust: CertTrust::Pinned(fingerprint.to_owned()),
+        identity: None,
     });
     let features = rt.block_on(async {
         tokio::time::timeout(Duration::from_secs(10), Connection::connect_dial(&dial))

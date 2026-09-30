@@ -917,3 +917,445 @@ fn approvals_list_approve_and_watch_render_both_events() {
     assert_eq!(decided["id"], id.as_str());
     assert_eq!(decided["outcome"], "approved");
 }
+
+/// The far host of a `phux host add` enrollment: its own state, config, and
+/// socket, reached through a fake `ssh` that runs the real binary there.
+struct FarHost {
+    root: PathBuf,
+}
+
+impl FarHost {
+    fn new(dir: &Path) -> Self {
+        let root = dir.join("far");
+        prepare_dirs(&root);
+        // `mode = "paired"`: every TLS connection must present a workload
+        // certificate the registry admits (workload-auth §8).
+        std::fs::write(
+            root.join("config/phux/config.toml"),
+            "[policy]\nmode = \"paired\"\n",
+        )
+        .expect("far config");
+        Self { root }
+    }
+
+    fn env(&self) -> Vec<(&'static str, PathBuf)> {
+        let mut env = hermetic_env(&self.root);
+        env.push(("HOME", self.root.clone()));
+        env.push(("PHUX_SOCKET", self.root.join("s.sock")));
+        env
+    }
+
+    /// `phux ARGS` on the far host.
+    fn phux(&self, args: &[&str]) -> Output {
+        common::phux_cmd(PHUX)
+            .envs(self.env())
+            .current_dir(&self.root)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run far phux")
+    }
+
+    /// The far host's server: paired policy, one QUIC listener, returned once
+    /// it listens. Its log goes to `server.stderr` under the far root, for
+    /// [`Self::server_log`].
+    fn serve(&self, quic: &str) -> Server {
+        let stderr = std::fs::File::create(self.root.join("server.stderr")).expect("stderr file");
+        let child = common::phux_cmd(PHUX)
+            .envs(self.env())
+            .env("RUST_LOG", "info")
+            .current_dir(&self.root)
+            .args(["server", "--quic", quic, "--exit-after-idle", "120"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(stderr)
+            .spawn()
+            .expect("spawn far server");
+        let server = Server(child);
+        let start = Instant::now();
+        while !self.server_log().contains("QUIC listening") {
+            assert!(
+                start.elapsed() < READY_DEADLINE,
+                "the far server never listened: {}",
+                self.server_log()
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        server
+    }
+
+    /// A fake `ssh` that logs its argv to `ssh-calls` and its stdin to
+    /// `ssh-stdin`, and runs `phux` on this far host with that stdin:
+    /// `ssh -G -- HOST` names loopback, and `ssh -o BatchMode=yes HOST phux
+    /// ARGS...` runs the real binary.
+    fn fake_ssh(&self, dir: &Path) -> PathBuf {
+        use std::fmt::Write as _;
+        let exports = self
+            .env()
+            .iter()
+            .fold(String::new(), |mut exports, (key, value)| {
+                let _ = writeln!(exports, "export {key}='{}'", value.display());
+                exports
+            });
+        let script = format!(
+            "#!/bin/sh\n\
+             printf '%s\\n' \"$*\" >> '{calls}'\n\
+             if [ \"$1\" = \"-G\" ]; then echo 'hostname 127.0.0.1'; exit 0; fi\n\
+             shift 4\n\
+             {exports}\
+             tee -a '{stdin}' | '{PHUX}' \"$@\"\n",
+            calls = dir.join("ssh-calls").display(),
+            stdin = dir.join("ssh-stdin").display(),
+        );
+        let path = dir.join("fake-ssh");
+        std::fs::write(&path, script).expect("write fake ssh");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        path
+    }
+
+    /// What the far server logged so far, for a failure message.
+    fn server_log(&self) -> String {
+        std::fs::read_to_string(self.root.join("server.stderr")).unwrap_or_default()
+    }
+
+    fn credentials(&self) -> Vec<serde_json::Value> {
+        json_doc(&self.phux(&["workload", "list", "--json"]))["credentials"]
+            .as_array()
+            .expect("credentials")
+            .clone()
+    }
+}
+
+/// `phux ARGS` on the enrolling client: its own sandbox, `$PHUX_SSH` at the
+/// fake, and no `PHUX_WORKLOAD_*` identity in the environment.
+fn client_phux(dir: &Path, ssh: &Path, args: &[&str]) -> Output {
+    let client = dir.join("client");
+    common::phux_cmd(PHUX)
+        .envs(hermetic_env(&client))
+        .env("HOME", &client)
+        .env("PHUX_SSH", ssh)
+        .current_dir(&client)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run client phux")
+}
+
+/// The `[[remote]]` entry `host add` wrote for `name`.
+fn remote_entry(dir: &Path, name: &str) -> toml::Value {
+    let raw =
+        std::fs::read_to_string(dir.join("client/config/phux/config.toml")).expect("client config");
+    let config: toml::Value = toml::from_str(&raw).expect("client config parses");
+    config["remote"]
+        .as_array()
+        .expect("remotes")
+        .iter()
+        .find(|entry| entry["name"].as_str() == Some(name))
+        .expect("the remote entry")
+        .clone()
+}
+
+fn entry_path(entry: &toml::Value, key: &str) -> PathBuf {
+    PathBuf::from(
+        entry
+            .get(key)
+            .and_then(toml::Value::as_str)
+            .expect("a path in the remote entry"),
+    )
+}
+
+/// One raw QUIC connection to the far listener, dialed the way the registry
+/// entry says (its token, pin, and enrolled certificate), with HELLO sent.
+struct RawSession {
+    runtime: tokio::runtime::Runtime,
+    connection: phux_dial::quic::QuicConnection,
+}
+
+impl RawSession {
+    fn open(entry: &toml::Value, port: u16) -> Self {
+        use phux_protocol::wire::frame::FrameKind;
+
+        let token = std::fs::read_to_string(entry_path(entry, "token-file")).expect("token");
+        let dial = phux_dial::quic::QuicDial {
+            addr: std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            server_name: "localhost".to_owned(),
+            token: Some(phux_dial::quic::parse_token_hex(token.trim()).expect("hex token")),
+            trust: phux_dial::CertTrust::Pinned(
+                entry["cert-fingerprint"].as_str().expect("pin").to_owned(),
+            ),
+            identity: Some(phux_dial::TlsClientIdentity::PemFiles {
+                certificate: entry_path(entry, "client-cert"),
+                private_key: entry_path(entry, "client-key"),
+            }),
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let mut connection = runtime
+            .block_on(phux_dial::quic::dial(&dial))
+            .expect("the TLS handshake completes on the client side");
+        let hello = FrameKind::Hello {
+            client_name: "enrollment-e2e".to_owned(),
+            protocol_major: phux_protocol::PROTOCOL_VERSION.major,
+            protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
+            protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
+            client_caps: phux_protocol::caps::ClientCapabilities::default(),
+        };
+        let mut encoded = bytes::BytesMut::new();
+        hello.encode(&mut encoded);
+        // A refused connection may already be closing; the reads say so.
+        let _ = runtime.block_on(connection.2.write_all(&encoded));
+        Self {
+            runtime,
+            connection,
+        }
+    }
+
+    /// The next frame, or `None` once the server closed the stream.
+    fn next_frame(&mut self) -> Option<phux_protocol::wire::frame::FrameKind> {
+        let recv = &mut self.connection.3;
+        self.runtime.block_on(async {
+            let mut header = [0_u8; 4];
+            let read = tokio::time::timeout(READY_DEADLINE, recv.read_exact(&mut header)).await;
+            let Ok(Ok(())) = read else { return None };
+            let len = u32::from_be_bytes(header) as usize;
+            let mut packet = header.to_vec();
+            packet.resize(4 + len, 0);
+            recv.read_exact(&mut packet[4..]).await.ok()?;
+            let (frame, rest) =
+                phux_protocol::wire::frame::FrameKind::decode(&packet).expect("decode frame");
+            assert!(rest.is_empty());
+            Some(frame)
+        })
+    }
+
+    /// Every frame until the server closes.
+    fn frames_until_close(&mut self) -> Vec<phux_protocol::wire::frame::FrameKind> {
+        std::iter::from_fn(|| self.next_frame()).collect()
+    }
+
+    /// Read until `HELLO_OK`, failing if the server closes first.
+    fn await_hello_ok(&mut self) {
+        use phux_protocol::wire::frame::FrameKind;
+        let mut seen = Vec::new();
+        let admitted = std::iter::from_fn(|| self.next_frame())
+            .inspect(|frame| seen.push(frame.clone()))
+            .any(|frame| matches!(frame, FrameKind::HelloOk { .. }));
+        assert!(
+            admitted,
+            "the enrolled certificate was not admitted: {seen:?}"
+        );
+    }
+
+    /// Why the connection closed, as quinn reports it.
+    fn close_reason(&self) -> String {
+        format!("{:?}", self.connection.1.close_reason())
+    }
+}
+
+/// ADR-0116 enrollment end to end over a real paired QUIC listener: `phux
+/// host add` generates the key here, sends only the CSR over ssh, stores the
+/// validated chain owner-only, and records it in `[[remote]]`; the client
+/// then authenticates as that credential with no `PHUX_WORKLOAD_*` in its
+/// environment. Re-enrolling replaces the pair and revokes the old
+/// credential in one registry write. `phux pair revoke` of the enrolled id
+/// ends a live connection with `DETACHED { AUTHORIZATION_REVOKED }` and
+/// refuses the next one at the transport (workload-auth §7). No key byte
+/// reaches argv, stdout, stderr, or the far host.
+#[test]
+#[ignore = "spawns a real server with a paired QUIC listener; runs in the e2e lane"]
+fn host_add_enrolls_a_certificate_a_paired_listener_admits_until_revoked() {
+    let dir = TempDir::new().expect("tempdir");
+    prepare_dirs(&dir.path().join("client"));
+    let far = FarHost::new(dir.path());
+    let ssh = far.fake_ssh(dir.path());
+    let port = free_udp_port();
+    // Bound on every address, so the listener is a secure one that asks for
+    // the pairing token as a real remote's does; dialed on loopback.
+    let _server = far.serve(&format!("0.0.0.0:{port}"));
+    let quic = format!("127.0.0.1:{port}");
+
+    let add = [
+        "host",
+        "add",
+        "me@127.0.0.1",
+        "--name",
+        REMOTE,
+        "--endpoint",
+        quic.as_str(),
+        "--no-service",
+        "--json",
+    ];
+    let (entry, first) = assert_first_enrollment(dir.path(), &far, &ssh, &add, &quic);
+    let whoami = ["whoami", "--remote", REMOTE, "--json"];
+    let doc = json_doc(&client_phux(dir.path(), &ssh, &whoami));
+    assert_eq!(doc["credential_id"], first.as_str(), "{doc}");
+
+    let (entry, second) = assert_reenrollment(dir.path(), &far, &ssh, &add, &entry, &first);
+    let doc = json_doc(&client_phux(dir.path(), &ssh, &whoami));
+    assert_eq!(doc["credential_id"], second.as_str(), "{doc}");
+
+    // `phux pair revoke` covers enrolled certificates: a live connection
+    // with that certificate ends, and the next one is refused.
+    let mut live = RawSession::open(&entry, port);
+    live.await_hello_ok();
+    let revoked = far.phux(&["pair", "revoke", &second]);
+    assert!(revoked.status.success(), "{}", text(&revoked.stderr));
+    assert_revoked(&mut live);
+    let refused = client_phux(dir.path(), &ssh, &whoami);
+    assert!(
+        !refused.status.success(),
+        "a revoked certificate was admitted: {}",
+        text(&refused.stdout)
+    );
+    let mut next = RawSession::open(&entry, port);
+    let frames = next.frames_until_close();
+    assert!(
+        frames.is_empty(),
+        "a refused connection gets no frame: {frames:?}"
+    );
+    let reason = next.close_reason();
+    assert!(
+        reason.contains("unauthorized"),
+        "refused as unauthorized: {reason}"
+    );
+}
+
+/// The first `host add`: the pair is stored owner-only and recorded, only
+/// the CSR crossed ssh, and the far host holds one credential at the
+/// `host add` ceiling. Returns the entry and that credential's id.
+fn assert_first_enrollment(
+    dir: &Path,
+    far: &FarHost,
+    ssh: &Path,
+    add: &[&str],
+    quic: &str,
+) -> (toml::Value, String) {
+    let added = client_phux(dir, ssh, add);
+    assert!(added.status.success(), "host add: {}", text(&added.stderr));
+    let entry = remote_entry(dir, REMOTE);
+    assert_eq!(
+        entry["endpoint"].as_str(),
+        Some(format!("quic://{quic}").as_str()),
+        "the direct route answered with the enrolled certificate: {}\nfar server: {}",
+        text(&added.stdout),
+        far.server_log()
+    );
+    let (cert, key) = (
+        entry_path(&entry, "client-cert"),
+        entry_path(&entry, "client-key"),
+    );
+    for file in [&cert, &key] {
+        let mode = std::fs::metadata(file).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{}", file.display());
+    }
+    let key_pem = std::fs::read_to_string(&key).expect("client key");
+    let needles = key_needles(&key_pem);
+    assert_no_key_bytes(&added, &needles);
+    let calls = std::fs::read_to_string(dir.join("ssh-calls")).expect("ssh calls");
+    assert!(
+        calls.contains("workload add-key --json --cert-stdout"),
+        "the CSR went to add-key: {calls}"
+    );
+    // Everything that crossed to the far host, and what it kept.
+    let sent = std::fs::read_to_string(dir.join("ssh-stdin")).expect("ssh stdin");
+    assert!(
+        sent.contains("CERTIFICATE REQUEST"),
+        "the CSR went on stdin"
+    );
+    assert!(!sent.contains("PRIVATE KEY"), "only the CSR went on stdin");
+    let registry = std::fs::read_to_string(far.root.join("state/phux/workload-keys"))
+        .expect("the far registry");
+    let far_state = format!("{calls}{sent}{registry}");
+    for needle in &needles {
+        assert!(
+            !far_state.contains(needle.as_str()),
+            "key bytes left this machine"
+        );
+    }
+    assert!(!calls.contains("PRIVATE KEY"));
+
+    let enrolled = far.credentials();
+    assert_eq!(enrolled.len(), 1, "{enrolled:?}");
+    let first = enrolled[0]["credential_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    assert_eq!(
+        enrolled[0]["scopes"],
+        serde_json::json!(["inventory,observe,create,bind,input,signal@global"])
+    );
+    (entry, first)
+}
+
+/// Re-enrollment: with the saved route unusable (its token file gone),
+/// `host add` pairs again and enrolls a new certificate, which replaces the
+/// old one on the far host in one write and on disk here. Returns the new
+/// entry and credential id.
+fn assert_reenrollment(
+    dir: &Path,
+    far: &FarHost,
+    ssh: &Path,
+    add: &[&str],
+    entry: &toml::Value,
+    first: &str,
+) -> (toml::Value, String) {
+    let (cert, key) = (
+        entry_path(entry, "client-cert"),
+        entry_path(entry, "client-key"),
+    );
+    std::fs::remove_file(entry_path(entry, "token-file")).expect("drop token");
+    let again = client_phux(dir, ssh, add);
+    assert!(
+        again.status.success(),
+        "host add again: {}",
+        text(&again.stderr)
+    );
+    let entry = remote_entry(dir, REMOTE);
+    let second_cert = entry_path(&entry, "client-cert");
+    assert_ne!(second_cert, cert, "a new pair, never written over the old");
+    assert!(!cert.exists() && !key.exists(), "the old pair is removed");
+    let listed = far.credentials();
+    let status = |id: &str| {
+        listed
+            .iter()
+            .find(|credential| credential["credential_id"] == id)
+            .map(|credential| credential["status"].clone())
+    };
+    assert_eq!(
+        status(first),
+        Some(serde_json::json!("revoked")),
+        "{listed:?}"
+    );
+    let second = listed
+        .iter()
+        .find(|credential| credential["status"] == "active")
+        .and_then(|credential| credential["credential_id"].as_str())
+        .expect("the new credential is active")
+        .to_owned();
+    assert_ne!(second, first);
+    (entry, second)
+}
+
+/// The live connection ended: the server closed it (not a read timeout), and
+/// the `DETACHED` it flushes first, best effort (workload-auth §7), names the
+/// revocation when it arrives before the close.
+fn assert_revoked(live: &mut RawSession) {
+    use phux_protocol::wire::frame::{DetachReason, FrameKind};
+    let frames = live.frames_until_close();
+    let reason = live.close_reason();
+    assert!(
+        reason.starts_with("Some("),
+        "the server closed the revoked connection: {reason}; frames: {frames:?}"
+    );
+    for frame in &frames {
+        if let FrameKind::Detached { reason, .. } = frame {
+            assert_eq!(
+                *reason,
+                Some(DetachReason::AuthorizationRevoked),
+                "{frames:?}"
+            );
+        }
+    }
+}

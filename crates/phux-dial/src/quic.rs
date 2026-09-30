@@ -80,6 +80,12 @@ pub struct QuicDial {
     pub token: Option<Vec<u8>>,
     /// How to trust the server's certificate.
     pub trust: CertTrust,
+    /// The TLS client identity to present. `None` reads it from
+    /// `PHUX_WORKLOAD_CERT` / `PHUX_WORKLOAD_KEY` (see
+    /// [`crate::tls::client_config`]); `Some` is exactly this identity and
+    /// never reads the environment, which is what a registry entry that
+    /// enrolled a client certificate, or an embedder, supplies.
+    pub identity: Option<TlsClientIdentity>,
 }
 
 /// Decode a `phux pair` pairing token (hex, surrounding whitespace allowed).
@@ -95,8 +101,8 @@ pub fn parse_token_hex(token: &str) -> Result<Vec<u8>, DialError> {
 /// Connect with the production consumer ALPN ([`QUIC_ALPN`]).
 ///
 /// Returns the established stream halves with the auth preamble written.
-/// Reads the optional workload identity from the environment (see
-/// [`crate::tls::client_config`]).
+/// Presents [`QuicDial::identity`], or with none reads the optional workload
+/// identity from the environment (see [`crate::tls::client_config`]).
 ///
 /// # Errors
 ///
@@ -104,10 +110,11 @@ pub fn parse_token_hex(token: &str) -> Result<Vec<u8>, DialError> {
 /// [`DialError::AuthRefused`] when the peer closes with `AUTH_FAILED`, and
 /// [`DialError::Connect`] on any other failure.
 pub async fn dial(d: &QuicDial) -> Result<QuicConnection, DialError> {
-    dial_inner(d, QUIC_ALPN, None).await
+    dial_inner(d, QUIC_ALPN, d.identity.as_ref()).await
 }
 
-/// [`dial`] with an explicit TLS identity; never reads the environment.
+/// [`dial`] with an explicit TLS identity, overriding [`QuicDial::identity`];
+/// never reads the environment.
 pub async fn dial_with_identity(
     d: &QuicDial,
     identity: &TlsClientIdentity,
@@ -118,7 +125,7 @@ pub async fn dial_with_identity(
 /// [`dial`] offering an explicit ALPN, for legs that negotiate a distinct
 /// protocol (the ADR-0051 connector passes [`QUIC_RELAY_ALPN`]).
 pub async fn dial_with_alpn(d: &QuicDial, alpn: &[u8]) -> Result<QuicConnection, DialError> {
-    dial_inner(d, alpn, None).await
+    dial_inner(d, alpn, d.identity.as_ref()).await
 }
 
 async fn dial_inner(
@@ -358,6 +365,7 @@ mod tests {
             server_name: "localhost".to_owned(),
             token: Some(vec![0xAB; 32]),
             trust: CertTrust::SkipVerify,
+            identity: None,
         })
         .await;
         let classified = match dialed {
@@ -407,6 +415,7 @@ mod tests {
                 trust: CertTrust::Pinned(
                     crate::cert::cert_fingerprint(&dir.path().join("cert.pem")).expect("pin"),
                 ),
+                identity: None,
             },
             &TlsClientIdentity::RequirePaired {
                 certificate,

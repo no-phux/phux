@@ -98,6 +98,7 @@ async fn plaintext_loopback_round_trips_both_directions() {
             token: None,
             trust: CertTrust::SkipVerify,
             tls_server_name: None,
+            identity: None,
         };
         let mut conn = Connection::connect_ws(&dial).await.expect("dial");
         conn.send(&from_client).await.expect("send");
@@ -156,6 +157,7 @@ async fn wss_with_pinned_cert_sends_bearer_token() {
                 token: Some(TOKEN_HEX.to_owned()),
                 trust: CertTrust::Pinned(fingerprint),
                 tls_server_name: Some("localhost".to_owned()),
+                identity: None,
             };
             let mut conn = Connection::connect_ws(&dial).await.expect("dial");
             conn.send(&frame).await.expect("send");

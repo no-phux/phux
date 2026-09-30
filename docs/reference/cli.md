@@ -2015,10 +2015,15 @@ Global flags:
 ```text
 Revoke every generation of a credential for new connections.
 
+A `sha256:` id names an enrolled workload client certificate (the id `phux host
+add` and `phux workload add-key` print); it is revoked in the workload registry,
+exactly as `phux workload revoke` would.
+
 Usage: phux pair revoke <CREDENTIAL_ID>
 
 Arguments:
-  <CREDENTIAL_ID>  Stable credential ID printed when the credential was minted.
+  <CREDENTIAL_ID>  Stable credential ID printed when the credential was minted,
+                   or an enrolled certificate's `sha256:` credential id.
 
 Flags:
   -h, --help           Print help
@@ -3781,7 +3786,7 @@ Commands:
   add-key    Enroll a client certificate, or sign a CSR into one.
   authority  Print the workload CA fingerprint.
   list       List enrolled credentials.
-  revoke     Revoke a credential for new connections.
+  revoke     Revoke a credential: new connections are refused and live ones end.
   help       Print this message or the help of the given subcommand(s)
 
 Flags:
@@ -3801,31 +3806,42 @@ Reads one PEM client certificate issued by this authority, or one PEM
 certificate signing request, from stdin or from `--file`. Key material is never
 taken from the command line, and input that contains a private key is refused. A
 CSR is signed into a client certificate written to the new file `--cert-out`
-names.
+names, or printed with `--cert-stdout`.
 
 Usage: phux workload add-key [FLAGS]
 
 Flags:
-      --file <PATH>             Read the certificate or CSR from this file
-                                instead of stdin.
-      --scope <VERBS@SELECTOR>  Scope ceiling as
-                                `<verb>[,<verb>...]@<selector>`, where a verb is
-                                inventory, observe, create, bind, input, signal,
-                                or `*`, and a selector is global, host,
-                                host:NAME, group:ID, terminal:ID, or
-                                terminal:HOST/ID. Repeatable; at least one is
-                                required.
-      --expires-in <SECONDS>    Seconds until the credential expires (at most 20
-                                years).
-                                (default: 7776000)
-      --cert-out <PATH>         New file to write the certificate issued for a
-                                CSR to. Required with a CSR; never overwrites an
-                                existing file.
-  -h, --help                    Print help
+      --file <PATH>              Read the certificate or CSR from this file
+                                 instead of stdin.
+      --scope <VERBS@SELECTOR>   Scope ceiling as
+                                 `<verb>[,<verb>...]@<selector>`, where a verb
+                                 is inventory, observe, create, bind, input,
+                                 signal, or `*`, and a selector is global, host,
+                                 host:NAME, group:ID, terminal:ID, or
+                                 terminal:HOST/ID. Repeatable; at least one is
+                                 required.
+      --expires-in <SECONDS>     Seconds until the credential expires (at most
+                                 20 years).
+                                 (default: 7776000)
+      --cert-out <PATH>          New file to write the certificate issued for a
+                                 CSR to. A CSR needs this or `--cert-stdout`;
+                                 never overwrites an existing file.
+      --cert-stdout              Print the certificate chain issued for a CSR
+                                 (leaf, then the CA) on stdout instead of
+                                 writing a file: as PEM, or as the
+                                 `certificate_chain` field of the `--json`
+                                 document. This is how `phux host add` enrolls
+                                 over ssh; the chain is public.
+      --replace <CREDENTIAL_ID>  Revoke this credential (`sha256:...`) in the
+                                 same registry write that enrolls the new one,
+                                 so a re-enrolled client never holds two live
+                                 credentials. One the registry does not hold is
+                                 ignored.
+  -h, --help                     Print help
 
 Global flags:
-      --socket <PATH>           Server socket to dial (default: `$PHUX_SOCKET`)
-      --json                    Emit the result as JSON on stdout.
+      --socket <PATH>            Server socket to dial (default: `$PHUX_SOCKET`)
+      --json                     Emit the result as JSON on stdout.
 ```
 
 ## `phux workload authority`
@@ -3866,7 +3882,11 @@ Global flags:
 ## `phux workload revoke`
 
 ```text
-Revoke a credential for new connections.
+Revoke a credential: new connections are refused and live ones end.
+
+A running server observes the registry write and closes every connection the
+credential admitted; no restart is needed. `phux pair revoke` accepts the same
+`sha256:` ids.
 
 Usage: phux workload revoke <CREDENTIAL_ID>
 

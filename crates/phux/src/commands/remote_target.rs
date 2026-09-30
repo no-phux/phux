@@ -376,9 +376,13 @@ fn promote_direct_route(entry: RemoteEntry) -> RemoteEntry {
     let Ok(Some(token)) = remote::read_token(&entry) else {
         return entry;
     };
-    if enroll::probe(&target, &token, entry.cert_fingerprint.as_deref()).is_err() {
+    let Ok(identity) = entry.client_identity() else {
+        return entry;
+    };
+    if enroll::probe(&target, &token, entry.cert_fingerprint.as_deref(), identity).is_err() {
         return entry;
     }
+    // The rewrite keeps the enrolled client identity with the route.
     let promoted = remote::NewRemote::new(
         &entry.name,
         direct,
@@ -386,7 +390,8 @@ fn promote_direct_route(entry: RemoteEntry) -> RemoteEntry {
         entry.cert_fingerprint.as_deref(),
         entry.session.as_deref(),
     )
-    .map(|new| new.with_ssh(entry.ssh.as_deref()));
+    .map(|new| new.with_ssh(entry.ssh.as_deref()))
+    .and_then(|new| new.with_client_identity(entry.client_identity_paths()));
     match promoted.and_then(|new| remote::add_or_update(&new).map(|()| new)) {
         Ok(new) => {
             eprintln!(
@@ -494,6 +499,8 @@ fn registered_entry(target: &RemoteTarget, new: &remote::NewRemote) -> RemoteEnt
         session: None,
         ssh: None,
         direct: None,
+        client_cert: new.client_cert.clone(),
+        client_key: new.client_key.clone(),
     })
 }
 
@@ -512,16 +519,23 @@ fn register_over_ssh(
     // knows their listener is not on 8788 does not have to enroll
     // separately to say so.
     let endpoint_override = target.port.map(|_| target.authority());
-    let previous_token = existing.and_then(|entry| remote::read_token(entry).ok().flatten());
-    let previous_fingerprint = existing.and_then(|entry| entry.cert_fingerprint.clone());
+    let previous = existing
+        .map(host::PreviousEnrollment::of)
+        .unwrap_or_default();
+    let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
     let req = enroll::EnrollRequest {
         ssh_host,
         remote_phux: "phux",
         endpoint_override: endpoint_override.as_deref(),
         quic_port: target.port.unwrap_or(DEFAULT_QUIC_PORT),
         service: enroll::ServicePolicy::Install,
-        previous_token: previous_token.as_deref(),
-        previous_fingerprint: previous_fingerprint.as_deref(),
+        previous_token: previous.token.as_deref(),
+        previous_fingerprint: previous.fingerprint.as_deref(),
+        previous_identity: previous.identity.as_ref(),
+        workload: Some(enroll::WorkloadEnrollment {
+            dir: &remotes_dir,
+            name: &name,
+        }),
     };
     let (entry, outcome) = host::enroll_remote_over_ssh(
         &name,
@@ -592,6 +606,8 @@ mod tests {
             session: None,
             ssh: None,
             direct: None,
+            client_cert: None,
+            client_key: None,
         }
     }
 

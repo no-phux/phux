@@ -123,6 +123,7 @@ pub async fn dial_tunnel_raw(
         server_name: server_name.to_owned(),
         token,
         trust: CertTrust::Pinned(fingerprint.to_owned()),
+        identity: None,
     };
     timeout(
         SOCKET_CONNECT_DEADLINE,
@@ -302,6 +303,7 @@ pub async fn dial_consumer_with_bearer(
         server_name: route.to_owned(),
         token: bearer,
         trust: CertTrust::Pinned(fingerprint.to_owned()),
+        identity: None,
     };
     timeout(SOCKET_CONNECT_DEADLINE, phux_dial::quic::dial(&dial))
         .await

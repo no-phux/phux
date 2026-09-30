@@ -23,14 +23,17 @@
 //!       "cert_fingerprint": "ab..64 hex..",
 //!       "session": null,
 //!       "ssh": "me@mini",
-//!       "direct": null
+//!       "direct": null,
+//!       "client_cert": "/path/to/mini.client.0123456789abcdef.pem",
+//!       "client_key": "/path/to/mini.client.0123456789abcdef.key"
 //!     }
 //!   ]
 //! }
 //! ```
 //!
-//! `enabled` is `null` for remotes; `session`, `ssh`, and `direct` are `null`
-//! for satellites. `host add --json` wraps one such object under `"host"`;
+//! `enabled` is `null` for remotes; `session`, `ssh`, `direct`, `client_cert`,
+//! and `client_key` are `null` for satellites. The client identity is named
+//! by path only; the key bytes never appear. `host add --json` wraps one such object under `"host"`;
 //! `host rm --json` emits `{"schema_version":1,"removed":{"name":..,"role":..}}`.
 //! Failures follow the shared JSON error contract in [`super::json_err`].
 
@@ -41,7 +44,10 @@ use toml_edit::{Item, value};
 use usage::{Args, Subcommands, ValueEnum};
 
 use super::JsonOpt;
-use super::enroll::{self, EnrollEvent, EnrollFailure, EnrollRequest, ServicePolicy};
+use super::enroll::{
+    self, ClientIdentityFiles, EnrollEvent, EnrollFailure, EnrollRequest, ServicePolicy,
+    WorkloadEnrollment,
+};
 use super::json_err::{self, CliError, codes};
 use super::remote::{self, Endpoint, RemoteEntry};
 use super::remote_target::{RemoteTarget, endpoint_host};
@@ -294,6 +300,10 @@ struct HostRow {
     ssh: Option<String>,
     /// Remote only: a paired direct route kept beside an `ssh://` endpoint.
     direct: Option<String>,
+    /// Remote only: the enrolled workload client certificate chain.
+    client_cert: Option<PathBuf>,
+    /// Remote only: its private key's path (never its bytes).
+    client_key: Option<PathBuf>,
 }
 
 impl HostRow {
@@ -308,6 +318,8 @@ impl HostRow {
             session: entry.session,
             ssh: entry.ssh,
             direct: entry.direct,
+            client_cert: entry.client_cert,
+            client_key: entry.client_key,
         }
     }
 
@@ -322,6 +334,8 @@ impl HostRow {
             session: new.session,
             ssh: new.ssh,
             direct: new.direct,
+            client_cert: new.client_cert,
+            client_key: new.client_key,
         }
     }
 
@@ -336,6 +350,8 @@ impl HostRow {
             session: None,
             ssh: None,
             direct: None,
+            client_cert: None,
+            client_key: None,
         }
     }
 }
@@ -590,29 +606,8 @@ fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
     let name = opts.name.clone().unwrap_or_else(|| target.host.clone());
     let quic_port = target.port.unwrap_or(opts.quic_port);
 
-    // `--ssh-only` skips the host entirely: no pairing, no service, just a
-    // registry entry riding existing ssh trust.
     if opts.ssh_only {
-        let endpoint = format!("ssh://{ssh_host}");
-        let registered = finish_enroll(
-            opts.role,
-            &name,
-            &endpoint,
-            None,
-            opts.session.as_deref(),
-            Some(&ssh_host),
-            None,
-        );
-        return match registered {
-            Ok(row) => report_registered(
-                &row,
-                "rides your ssh trust; nothing on the host was touched",
-                &[],
-                json,
-                local_hub_for(opts.role).as_ref(),
-            ),
-            Err(err) => json_err::emit(json, &err, 1),
-        };
+        return run_add_ssh_only(&name, &ssh_host, opts);
     }
 
     let narrate = |event: &EnrollEvent| {
@@ -621,10 +616,12 @@ fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
         }
     };
 
-    // Already registered and answering: say so and stop, rather than
-    // re-pairing a machine that needs nothing.
+    // Already registered, answering, and holding a workload client
+    // certificate: say so and stop, rather than re-pairing a machine that
+    // needs nothing. One without a certificate goes on to enroll one.
     if opts.role == HostRole::Remote
         && let Some(entry) = remote::find(&name)
+        && entry.client_identity_paths().is_some()
     {
         match saved_route_answers(&entry) {
             Some(Ok(())) => {
@@ -648,6 +645,7 @@ fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
     // Prefer credentials already on file for this name when re-enrolling so
     // a stopped server does not mint another live bearer into remote-tokens.
     let previous = previous_enrollment(&name, opts.role);
+    let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
     let req = EnrollRequest {
         ssh_host: &ssh_host,
         remote_phux: &opts.remote_phux,
@@ -660,6 +658,11 @@ fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
         },
         previous_token: previous.token.as_deref(),
         previous_fingerprint: previous.fingerprint.as_deref(),
+        previous_identity: previous.identity.as_ref(),
+        workload: (opts.role == HostRole::Remote).then(|| WorkloadEnrollment {
+            dir: &remotes_dir,
+            name: &name,
+        }),
     };
     let outcome = match enroll::enroll_over_ssh(&req, &mut |event| narrate(&event)) {
         Ok(outcome) => outcome,
@@ -668,17 +671,40 @@ fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
         }
     };
 
-    let registered = finish_enroll(
+    let registered = register_enrollment(
         opts.role,
         &name,
-        &outcome.endpoint,
-        Some(&outcome.report),
+        &outcome,
         opts.session.as_deref(),
         Some(&ssh_host),
-        outcome.direct.as_deref(),
+        previous.identity.as_ref(),
     );
     match registered {
         Ok(row) => report_ssh_add(&row, &outcome, &ssh_host, quic_port, opts),
+        Err(err) => json_err::emit(json, &err, 1),
+    }
+}
+
+/// `--ssh-only` skips the host entirely: no pairing, no service, no
+/// certificate, just a registry entry riding existing ssh trust.
+fn run_add_ssh_only(name: &str, ssh_host: &str, opts: &AddOpts) -> ExitCode {
+    let json = opts.json.json;
+    let endpoint = format!("ssh://{ssh_host}");
+    let registered = finish_enroll(
+        opts.role,
+        name,
+        &Route::bare(&endpoint),
+        opts.session.as_deref(),
+        Some(ssh_host),
+    );
+    match registered {
+        Ok(row) => report_registered(
+            &row,
+            "rides your ssh trust; nothing on the host was touched",
+            &[],
+            json,
+            local_hub_for(opts.role).as_ref(),
+        ),
         Err(err) => json_err::emit(json, &err, 1),
     }
 }
@@ -729,36 +755,44 @@ fn saved_route_answers(entry: &RemoteEntry) -> Option<Result<(), String>> {
         return None;
     };
     let token = remote::read_token(entry).ok().flatten()?;
+    let identity = entry.client_identity().ok()?;
     Some(enroll::probe(
         &target,
         &token,
         entry.cert_fingerprint.as_deref(),
+        identity,
     ))
 }
 
-/// Token and pin already held for `name`, when re-enrolling a remote.
-struct PreviousEnrollment {
-    token: Option<String>,
-    fingerprint: Option<String>,
+/// Token, pin, and client identity already held for `name`, when
+/// re-enrolling a remote.
+#[derive(Default)]
+pub(crate) struct PreviousEnrollment {
+    pub(crate) token: Option<String>,
+    pub(crate) fingerprint: Option<String>,
+    pub(crate) identity: Option<ClientIdentityFiles>,
+}
+
+impl PreviousEnrollment {
+    /// What `entry` holds.
+    pub(crate) fn of(entry: &RemoteEntry) -> Self {
+        Self {
+            token: remote::read_token(entry).ok().flatten(),
+            fingerprint: entry.cert_fingerprint.clone(),
+            identity: entry
+                .client_identity_paths()
+                .map(|(cert, key)| ClientIdentityFiles::existing(cert, key)),
+        }
+    }
 }
 
 fn previous_enrollment(name: &str, role: HostRole) -> PreviousEnrollment {
     if role != HostRole::Remote {
-        return PreviousEnrollment {
-            token: None,
-            fingerprint: None,
-        };
+        return PreviousEnrollment::default();
     }
-    let Some(entry) = remote::find(name) else {
-        return PreviousEnrollment {
-            token: None,
-            fingerprint: None,
-        };
-    };
-    PreviousEnrollment {
-        token: remote::read_token(&entry).ok().flatten(),
-        fingerprint: entry.cert_fingerprint,
-    }
+    remote::find(name).map_or_else(PreviousEnrollment::default, |entry| {
+        PreviousEnrollment::of(&entry)
+    })
 }
 
 /// Set a registered remote up over ssh and rewrite its entry, so the attach
@@ -771,14 +805,13 @@ pub(crate) fn enroll_remote_over_ssh(
 ) -> Result<(RemoteEntry, enroll::EnrollOutcome), CliError> {
     let outcome = enroll::enroll_over_ssh(req, &mut |event| narrate(&event))
         .map_err(|failure| add_failure_error(req.ssh_host, HostRole::Remote, &failure))?;
-    finish_enroll(
+    register_enrollment(
         HostRole::Remote,
         name,
-        &outcome.endpoint,
-        Some(&outcome.report),
+        &outcome,
         session,
         Some(req.ssh_host),
-        outcome.direct.as_deref(),
+        req.previous_identity,
     )?;
     let entry = remote::find(name)
         .ok_or_else(|| registry_failure(format!("{name:?} was written but cannot be read back")))?;
@@ -792,48 +825,103 @@ fn local_hub_for(role: HostRole) -> Option<service::LocalHub> {
     (role == HostRole::Satellite).then(service::ensure_local_hub)
 }
 
+/// Register what the ssh middle produced, then settle the workload client
+/// identity files: a fresh identity the entry did not record is removed, and
+/// once the entry names a new identity the previous one's files go, when an
+/// enrollment wrote them (never files the operator named themselves). The
+/// registry write is the one switch between the two pairs, so a reader
+/// always sees a whole old pair or a whole new one.
+fn register_enrollment(
+    role: HostRole,
+    name: &str,
+    outcome: &enroll::EnrollOutcome,
+    session: Option<&str>,
+    ssh: Option<&str>,
+    previous: Option<&ClientIdentityFiles>,
+) -> Result<HostRow, CliError> {
+    let route = Route {
+        endpoint: &outcome.endpoint,
+        pairing: Some(&outcome.report),
+        direct: outcome.direct.as_deref(),
+        identity: outcome.identity.as_ref(),
+    };
+    let registered = finish_enroll(role, name, &route, session, ssh);
+    let recorded = registered
+        .as_ref()
+        .ok()
+        .and_then(|row| row.client_cert.as_deref());
+    if let Some(identity) = &outcome.identity
+        && recorded != Some(identity.certificate.as_path())
+    {
+        identity.discard_if_fresh();
+    }
+    let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
+    if let (Ok(_), Some(previous)) = (&registered, previous)
+        && recorded != Some(previous.certificate.as_path())
+        && previous.enrolled_under(&remotes_dir, name)
+    {
+        phux_server::workload::remove_identity_files(&previous.private_key, &previous.certificate);
+    }
+    registered
+}
+
+/// Where an enrolled entry points and what it authenticates with.
+struct Route<'a> {
+    /// The endpoint to register.
+    endpoint: &'a str,
+    /// The pairing document (`None` for `--ssh-only`).
+    pairing: Option<&'a enroll::PairReport>,
+    /// A direct route kept beside an `ssh://` endpoint.
+    direct: Option<&'a str>,
+    /// The workload client identity to record (remotes only).
+    identity: Option<&'a ClientIdentityFiles>,
+}
+
+impl<'a> Route<'a> {
+    /// An endpoint with no credentials at all (`--ssh-only`).
+    const fn bare(endpoint: &'a str) -> Self {
+        Self {
+            endpoint,
+            pairing: None,
+            direct: None,
+            identity: None,
+        }
+    }
+}
+
 /// The role-specific tail of the ssh form: validate the entry, write the
-/// pairing token under `remotes/` or `satellites/`, and register it
-/// (`pairing` is `None` for `--ssh-only`). Validation runs before the token
-/// hits disk so a rejected entry never leaves an orphaned bearer token.
+/// pairing token under `remotes/` or `satellites/`, and register it.
+/// Validation runs before the token hits disk so a rejected entry never
+/// leaves an orphaned bearer token.
 fn finish_enroll(
     role: HostRole,
     name: &str,
-    endpoint: &str,
-    pairing: Option<&enroll::PairReport>,
+    route: &Route<'_>,
     session: Option<&str>,
     ssh: Option<&str>,
-    direct: Option<&str>,
 ) -> Result<HostRow, CliError> {
     finish_enroll_in(
         &phux_server::telemetry::state_dir(),
         role,
         name,
-        endpoint,
-        pairing,
+        route,
         session,
         ssh,
-        direct,
     )
 }
 
 /// [`finish_enroll`] with the state directory injectable, so tests can use a
 /// tempdir (`env::set_var` is unsafe and this crate forbids `unsafe`).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the tail takes every field of the entry it writes; a struct would only rename the list"
-)]
 fn finish_enroll_in(
     state_dir: &Path,
     role: HostRole,
     name: &str,
-    endpoint: &str,
-    pairing: Option<&enroll::PairReport>,
+    route: &Route<'_>,
     session: Option<&str>,
     ssh: Option<&str>,
-    direct: Option<&str>,
 ) -> Result<HostRow, CliError> {
-    let direct = direct.filter(|_| role == HostRole::Remote);
+    let (endpoint, pairing) = (route.endpoint, route.pairing);
+    let direct = route.direct.filter(|_| role == HostRole::Remote);
     let dialable = keeps_credentials(role, endpoint, direct);
     let token_file = (pairing.is_some() && dialable).then(|| match role {
         HostRole::Remote => enroll::token_path(state_dir, name),
@@ -842,6 +930,12 @@ fn finish_enroll_in(
     let cert_fingerprint = pairing
         .filter(|_| dialable)
         .and_then(|report| report.cert_fingerprint.as_deref());
+    let identity = route.identity.filter(|_| dialable).map(|identity| {
+        (
+            identity.certificate.as_path(),
+            identity.private_key.as_path(),
+        )
+    });
 
     match role {
         HostRole::Remote => {
@@ -853,6 +947,7 @@ fn finish_enroll_in(
                 session,
             )
             .and_then(|new| new.with_ssh(ssh).with_direct(direct))
+            .and_then(|new| new.with_client_identity(identity))
             .map_err(reject_enrollment)?;
             write_pairing_token(token_file.as_deref(), pairing)?;
             remote::add_or_update(&new).map_err(registry_failure)?;
@@ -1094,6 +1189,9 @@ fn row_json(row: &HostRow) -> serde_json::Value {
         "session": row.session,
         "ssh": row.ssh,
         "direct": row.direct,
+        // Paths only, like the token file: the key bytes never appear.
+        "client_cert": row.client_cert.as_ref().map(|p| p.display().to_string()),
+        "client_key": row.client_key.as_ref().map(|p| p.display().to_string()),
     })
 }
 
@@ -1220,6 +1318,9 @@ fn run_show(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
     }
     if let Some(direct) = row.direct {
         outln!("  Direct fallback: {direct}");
+    }
+    if let Some(cert) = row.client_cert {
+        outln!("  Client certificate: {}", cert.display());
     }
     ExitCode::SUCCESS
 }
@@ -1449,9 +1550,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        AddMode, AddOpts, HostRole, HostRow, add_failure_error, auth_display, edit_host_field_at,
-        empty_state, finish_enroll_in, keeps_credentials, render_table, resolve_host_role,
-        resolve_rm_role, role_flag_mismatch, sort_rows,
+        AddMode, AddOpts, HostRole, HostRow, Route, add_failure_error, auth_display,
+        edit_host_field_at, empty_state, finish_enroll_in, keeps_credentials, render_table,
+        resolve_host_role, resolve_rm_role, role_flag_mismatch, sort_rows,
     };
     use crate::commands::JsonOpt;
     use crate::commands::enroll::EnrollFailure;
@@ -1468,6 +1569,8 @@ mod tests {
             session: None,
             ssh: None,
             direct: None,
+            client_cert: None,
+            client_key: None,
         }
     }
 
@@ -1822,6 +1925,8 @@ mod tests {
                 session: Some("work".to_owned()),
                 ssh: Some("me@mini".to_owned()),
                 direct: None,
+                client_cert: None,
+                client_key: None,
             },
             HostRow {
                 name: "edge".to_owned(),
@@ -1833,6 +1938,8 @@ mod tests {
                 session: None,
                 ssh: None,
                 direct: None,
+                client_cert: None,
+                client_key: None,
             },
         ];
         let table = render_table(&rows);
@@ -1875,15 +1982,17 @@ mod tests {
             cert_fingerprint: Some("ab".repeat(32)),
             overlay_addresses: vec!["100.64.0.2".to_owned()],
         };
+        let route = Route {
+            pairing: Some(&pairing),
+            ..Route::bare("quic://mini:8788")
+        };
         let err = finish_enroll_in(
             state_dir.path(),
             HostRole::Remote,
             "../../evil",
-            "quic://mini:8788",
-            Some(&pairing),
+            &route,
             None,
             Some("me@mini"),
-            None,
         )
         .expect_err("a traversal name must be refused");
         assert_eq!(err.code, codes::REGISTRY);
@@ -1909,15 +2018,17 @@ mod tests {
             cert_fingerprint: None,
             overlay_addresses: vec!["100.64.0.2".to_owned()],
         };
+        let route = Route {
+            pairing: Some(&pairing),
+            ..Route::bare("quic://mini:8788")
+        };
         let err = finish_enroll_in(
             state_dir.path(),
             HostRole::Remote,
             "mini",
-            "quic://mini:8788",
-            Some(&pairing),
+            &route,
             None,
             Some("me@mini"),
-            None,
         )
         .expect_err("an unpinned quic endpoint must be refused");
         assert!(err.message.contains("--cert-fingerprint"), "got {err:?}");

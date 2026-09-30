@@ -1046,6 +1046,7 @@ mod tests {
             token: Some(token.to_owned()),
             trust: phux_dial::CertTrust::SkipVerify,
             tls_server_name: None,
+            identity: None,
         };
         let (accepted, dialed) = tokio::time::timeout(Duration::from_secs(10), async {
             tokio::join!(

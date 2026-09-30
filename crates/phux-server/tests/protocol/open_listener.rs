@@ -160,6 +160,7 @@ async fn dial(opened: &Opened, token: &[u8]) -> Result<Session, String> {
         server_name: "localhost".to_owned(),
         token: Some(token.to_vec()),
         trust: CertTrust::Pinned(opened.fingerprint.clone()),
+        identity: None,
     };
     tokio::time::timeout(DIAL_DEADLINE, async {
         let (endpoint, conn, mut send, mut recv) = phux_dial::quic::dial(&dial)

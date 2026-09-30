@@ -182,6 +182,7 @@ async fn loopback_skip_verify_round_trips_both_directions() {
             server_name: "localhost".to_owned(),
             token: None,
             trust: CertTrust::SkipVerify,
+            identity: None,
         };
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         conn.send(&from_client).await.expect("send");
@@ -250,6 +251,7 @@ async fn negotiated_quic_streams_bind_route_and_merge_terminal_frames() {
             server_name: "localhost".to_owned(),
             token: None,
             trust: CertTrust::SkipVerify,
+            identity: None,
         };
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         assert!(conn.multistream_enabled());
@@ -332,6 +334,7 @@ async fn malformed_terminal_stream_length_fails_promptly() {
             server_name: "localhost".to_owned(),
             token: None,
             trust: CertTrust::SkipVerify,
+            identity: None,
         };
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         conn.bind_terminal(&terminal_id).await.expect("bind");
@@ -379,6 +382,7 @@ async fn partial_terminal_body_error_precedes_clean_end() {
             server_name: "localhost".to_owned(),
             token: None,
             trust: CertTrust::SkipVerify,
+            identity: None,
         };
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         conn.bind_terminal(&terminal_id).await.expect("bind");
@@ -427,6 +431,7 @@ async fn incomplete_terminal_body_does_not_block_control_and_expires() {
             server_name: "localhost".to_owned(),
             token: None,
             trust: CertTrust::SkipVerify,
+            identity: None,
         };
         #[cfg(feature = "testkit")]
         let mut conn = Connection::connect_quic_with_terminal_frame_deadline_for_test(
@@ -503,6 +508,7 @@ async fn queued_old_generation_is_discarded_after_rebind() {
             server_name: "localhost".to_owned(),
             token: None,
             trust: CertTrust::SkipVerify,
+            identity: None,
         };
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         conn.bind_terminal(&terminal_id).await.expect("first bind");
@@ -551,6 +557,7 @@ async fn client_terminal_stream_cap_accounts_for_the_control_stream() {
             server_name: "localhost".to_owned(),
             token: None,
             trust: CertTrust::SkipVerify,
+            identity: None,
         };
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         for id in 1..=127 {
@@ -598,6 +605,7 @@ async fn pinned_fingerprint_accepts_matching_cert() {
                 server_name: "localhost".to_owned(),
                 token: None,
                 trust: CertTrust::Pinned(fingerprint),
+                identity: None,
             };
             let mut conn = Connection::connect_quic(&dial).await.expect("pinned dial");
             conn.send(&frame).await.expect("send");
@@ -630,6 +638,7 @@ async fn wrong_fingerprint_is_rejected() {
         token: None,
         // A 32-byte all-zero fingerprint cannot match the real leaf.
         trust: CertTrust::Pinned("00".repeat(32)),
+        identity: None,
     };
     let result = Connection::connect_quic(&dial).await;
     assert!(
@@ -667,6 +676,7 @@ async fn shutdown_closes_connection_promptly() {
             server_name: "localhost".to_owned(),
             token: None,
             trust: CertTrust::SkipVerify,
+            identity: None,
         };
         let conn = Connection::connect_quic(&dial).await.expect("dial");
         conn.shutdown().await;
@@ -719,6 +729,7 @@ async fn token_preamble_precedes_frames() {
                 server_name: "localhost".to_owned(),
                 token: Some(token),
                 trust: CertTrust::SkipVerify,
+                identity: None,
             };
             let mut conn = Connection::connect_quic(&dial).await.expect("dial");
             conn.send(&frame).await.expect("send");

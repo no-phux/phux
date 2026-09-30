@@ -153,6 +153,9 @@ pub(crate) fn plan_entry(
     let token = remote::read_token(entry)
         .map_err(|err| unusable_entry(entry, &err, &re_pair_remedy(&entry.name)))?;
     let fingerprint = entry.cert_fingerprint.clone();
+    let identity = entry
+        .client_identity()
+        .map_err(|err| unusable_entry(entry, &err, &re_pair_remedy(&entry.name)))?;
     let plan = match endpoint {
         Endpoint::Quic(addr) => attach::plan_quic_dial(rt, &addr, token, fingerprint, None),
         Endpoint::Ws(url) => attach::plan_ws_dial(url, token, fingerprint, None),
@@ -160,7 +163,9 @@ pub(crate) fn plan_entry(
             return Err(ssh_only_refusal(&entry.name, &destination, verb));
         }
     };
-    let DialPlan { dial, loopback } = plan.map_err(|refusal| entry_refusal(entry, &refusal))?;
+    let DialPlan { dial, loopback } = plan
+        .map(|plan| plan.with_identity(identity))
+        .map_err(|refusal| entry_refusal(entry, &refusal))?;
     Ok(RemoteServer {
         name: entry.name.clone(),
         endpoint: entry.endpoint.clone(),
@@ -411,6 +416,8 @@ mod tests {
             session: None,
             ssh: None,
             direct: None,
+            client_cert: None,
+            client_key: None,
         }
     }
 
