@@ -47,8 +47,13 @@ pub(crate) enum PairAction {
         overlap_seconds: i64,
     },
     /// Revoke every generation of a credential for new connections.
+    ///
+    /// A `sha256:` id names an enrolled workload client certificate (the id
+    /// `phux host add` and `phux workload add-key` print); it is revoked in
+    /// the workload registry, exactly as `phux workload revoke` would.
     Revoke {
-        /// Stable credential ID printed when the credential was minted.
+        /// Stable credential ID printed when the credential was minted, or
+        /// an enrolled certificate's `sha256:` credential id.
         #[usage(value_name = "CREDENTIAL_ID")]
         credential_id: String,
     },
@@ -881,6 +886,16 @@ fn run_pair_rotate(
 }
 
 fn run_pair_revoke(tokens: &std::path::Path, credential_id: &str, json: bool) -> ExitCode {
+    // Bearer ids never carry the digest prefix; an enrolled certificate's
+    // always does. Its revocation lives in the workload registry.
+    if credential_id.starts_with("sha256:") {
+        return super::workload::run(
+            super::workload::WorkloadAction::Revoke {
+                credential_id: credential_id.to_owned(),
+            },
+            json,
+        );
+    }
     let outcome = match phux_server::auth::revoke_credential(tokens, credential_id) {
         Ok(outcome) => outcome,
         Err(error) => {

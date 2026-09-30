@@ -107,15 +107,27 @@ methodology link. Do not hide conditions behind tooltips.
 
 ## Product landing and demo
 
-The marketing landing keeps its existing sequence: shared-terminal proposition,
-live terminal demonstration, agent-attention demonstration, capabilities, then
-installation. Guide links lead into the reader paths above.
+The marketing landing at `src/pages/index.astro` uses
+`<MultiplexShowcase client:load>` to explain split views, shared clients, and
+detach/reattach. The sequence is shared-terminal proposition, interactive
+diagram with a launch-gated real terminal, agent-attention demonstration,
+capabilities, then installation. Guide links lead into the reader paths above.
+Update this contract when changing that sequence.
 
-The browser demonstration uses the actual phux web client. The anonymous edge
-shell is curated and OS-less; an authenticated native shell is a distinct mode
-with its own access and lifetime constraints. Describe the mode actually shown.
-The demo is launch-gated, retains a static alternative, and explains unavailable
-or failed connections instead of pretending a recording is a live session.
+The opening panel is explicitly a diagram, not simulated live output. It works
+without downloading WASM or allocating a hosted session. Opening the terminal
+dialog loads the actual phux web client: the anonymous edge tour is a curated,
+OS-less shell in a Durable Object; the optional authenticated Linux tab runs
+the native container. Label both runtimes and their different capabilities.
+The edge tour has no network or processes; do not imply it is a general shell.
+
+Closing the dialog or switching runtime releases the hosted session, including
+an in-flight attach. The diagram describes normal phux continuity; hosted demo
+sessions are intentionally disposable. JavaScript-disabled visitors still see
+the diagram, explanation, and installation links. An empty `PUBLIC_PHUX_DEMO_WS`
+produces an explicit not-configured state; an unreachable backend gets an
+actionable error and recovery controls. Neither failure disables the diagram
+or installation path.
 
 Accessibility, light/dark reading, code copying, responsive layout, and visual
 roles are specified in `DESIGN_SYSTEM.md`. Verify them in the built browser

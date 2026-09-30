@@ -58,7 +58,8 @@ function positiveInt(value: string, fallback: number): number {
 
 function attachment(ws: WebSocket): SocketAttachment | null {
   try {
-    const value = ws.deserializeAttachment() as Partial<SocketAttachment> | null;
+    const value =
+      ws.deserializeAttachment() as Partial<SocketAttachment> | null;
     if (
       value?.version !== 1 ||
       !Number.isFinite(value.idleDeadline) ||
@@ -116,7 +117,12 @@ export class SessionDO extends DurableObject<Env> {
     }
 
     const boot = await this.ctx.storage.get<BootRecord>(BOOT_KEY);
-    if (!boot || boot.version !== 1 || boot.sid !== sid || boot.status !== "prepared") {
+    if (
+      !boot ||
+      boot.version !== 1 ||
+      boot.sid !== sid ||
+      boot.status !== "prepared"
+    ) {
       return this.reject(CLOSE.UNAUTHORIZED, "session was not prepared");
     }
 
@@ -140,7 +146,10 @@ export class SessionDO extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+  async webSocketMessage(
+    ws: WebSocket,
+    message: string | ArrayBuffer,
+  ): Promise<void> {
     const boot = await this.activeBoot();
     const state = attachment(ws);
     if (!boot || !state) {
@@ -160,7 +169,9 @@ export class SessionDO extends DurableObject<Env> {
     try {
       const session = await this.edgeSession(boot);
       const before = session.checkpoint();
-      const frames = session.on_message(new Uint8Array(message)) as Uint8Array[];
+      const frames = session.on_message(
+        new Uint8Array(message),
+      ) as Uint8Array[];
       for (const frame of frames) ws.send(frame);
       const after = session.checkpoint();
       if (after !== before) await this.ctx.storage.put(CHECKPOINT_KEY, after);
@@ -170,16 +181,18 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   async webSocketClose(
-    _ws: WebSocket,
+    ws: WebSocket,
     _code: number,
     _reason: string,
     _wasClean: boolean,
   ): Promise<void> {
-    await this.cleanup();
+    // Our 2025 compatibility date does not auto-reply to Close frames. Release
+    // both transport ends as well as admission; cleanup alone leaves CLOSING.
+    await this.shut(ws, 1000, "session closed");
   }
 
-  async webSocketError(_ws: WebSocket, _error: unknown): Promise<void> {
-    await this.cleanup();
+  async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
+    await this.shut(ws, CLOSE.INTERNAL, "connection error");
   }
 
   async alarm(): Promise<void> {
@@ -224,7 +237,11 @@ export class SessionDO extends DurableObject<Env> {
     return this.session;
   }
 
-  private async shut(ws: WebSocket, code: number, reason: string): Promise<void> {
+  private async shut(
+    ws: WebSocket,
+    code: number,
+    reason: string,
+  ): Promise<void> {
     try {
       ws.close(code, reason);
     } catch {

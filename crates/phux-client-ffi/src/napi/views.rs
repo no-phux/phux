@@ -6,7 +6,7 @@ use napi_derive::napi;
 use phux_client_runtime::control::{ControlPlane, TerminalResizeOutcome};
 use phux_client_runtime::engine::{
     BoundedSelectionText, EngineDocumentPoint, EngineError, EngineHandle, Scroll,
-    SelectionGestureEvent,
+    SelectionGestureEvent, TextRegion,
 };
 use phux_client_runtime::{Client, ViewId};
 use phux_protocol::ResourceId;
@@ -140,8 +140,15 @@ pub(super) fn resize_view(
 }
 
 const SELECTION_BYTE_LIMIT: usize = 1024 * 1024;
+/// Whole-region reads feed a file, not the clipboard; loaded history is
+/// already budgeted, so this only refuses an outsized document.
+const REGION_BYTE_LIMIT: usize = 32 * 1024 * 1024;
 
 fn selection_text(result: BoundedSelectionText) -> Result<String> {
+    bounded_utf8(result, SELECTION_BYTE_LIMIT)
+}
+
+fn bounded_utf8(result: BoundedSelectionText, limit: usize) -> Result<String> {
     let bytes = match result {
         BoundedSelectionText::Text(bytes) => bytes,
         BoundedSelectionText::Unavailable => {
@@ -160,7 +167,7 @@ fn selection_text(result: BoundedSelectionText) -> Result<String> {
     // Strict decoding cannot expand the byte budget; retain the check as a
     // boundary invariant rather than falling back to an unbounded formatter.
     let text = String::from_utf8(bytes).map_err(|_| Error::from_reason("InvalidSelectionUtf8"))?;
-    bounded_text(&text, SELECTION_BYTE_LIMIT)?;
+    bounded_text(&text, limit)?;
     Ok(text)
 }
 
@@ -298,6 +305,17 @@ impl DesktopClient {
             .map_err(engine_error)
     }
 
+    /// Ghostty's `jump_to_prompt`: bring the `prompts`th shell prompt (OSC
+    /// 133) above (negative) or below the viewport's top row to the top. A
+    /// prompt in the active area follows live output; with no prompt in that
+    /// direction the view stays put. Safe integers only.
+    #[napi]
+    pub fn jump_to_prompt_view(&self, view: String, prompts: f64) -> Result<()> {
+        self.client()?
+            .scroll_view(view_id(&view)?, Scroll::Prompt(integer(prompts)?))
+            .map_err(engine_error)
+    }
+
     #[napi]
     pub fn follow_live_view(&self, view: String) -> Result<()> {
         self.client()?
@@ -387,6 +405,33 @@ impl DesktopClient {
             .selection_text_view_bounded(view_id(&view)?, SELECTION_BYTE_LIMIT)
             .map_err(engine_error)?;
         selection_text(result)
+    }
+
+    /// Select the view's whole screen, loaded scrollback included (Ghostty's
+    /// `select_all`). False, with the selection cleared, when it is empty.
+    #[napi]
+    pub fn select_all_view(&self, view: String) -> Result<bool> {
+        engine(&self.client()?)?
+            .select_all_view(view_id(&view)?)
+            .map_err(engine_error)
+    }
+
+    /// The view's whole document as plain text, at most 32 MiB: loaded
+    /// scrollback plus the active screen (Ghostty's `write_screen_file`), or
+    /// with `history_only` the scrollback alone (`write_scrollback_file`,
+    /// empty on the alternate screen). Neither selects nor scrolls the view;
+    /// an oversized document fails without truncating.
+    #[napi]
+    pub fn view_document_text(&self, view: String, history_only: bool) -> Result<String> {
+        let region = if history_only {
+            TextRegion::History
+        } else {
+            TextRegion::Screen
+        };
+        let result = engine(&self.client()?)?
+            .view_region_text_bounded(view_id(&view)?, region, REGION_BYTE_LIMIT)
+            .map_err(engine_error)?;
+        bounded_utf8(result, REGION_BYTE_LIMIT)
     }
 
     /// Search at most 4096 query bytes. The runtime caps results at 4096 and

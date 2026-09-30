@@ -115,6 +115,10 @@ pub struct WsDial {
     pub trust: CertTrust,
     /// Optional TLS server name override for SNI/certificate verification.
     pub tls_server_name: Option<String>,
+    /// The TLS client identity to present on `wss://`. `None` reads it from
+    /// `PHUX_WORKLOAD_CERT` / `PHUX_WORKLOAD_KEY`; `Some` is exactly this
+    /// identity and never reads the environment.
+    pub identity: Option<TlsClientIdentity>,
 }
 
 /// The established WebSocket stream type [`dial`] returns.
@@ -147,11 +151,11 @@ impl<T> ByteStream for T where
 /// [`DialError::Io`] on tungstenite-level socket I/O failures during the
 /// upgrade.
 pub async fn dial(d: &WsDial) -> Result<Ws, DialError> {
-    dial_inner(d, None).await
+    dial_inner(d, d.identity.as_ref()).await
 }
 
-/// [`dial`] with an explicit TLS identity; never reads `PHUX_WORKLOAD_CERT`
-/// or `PHUX_WORKLOAD_KEY`.
+/// [`dial`] with an explicit TLS identity, overriding [`WsDial::identity`];
+/// never reads `PHUX_WORKLOAD_CERT` or `PHUX_WORKLOAD_KEY`.
 ///
 /// # Errors
 ///
@@ -521,6 +525,7 @@ mod tests {
             token: None,
             trust: CertTrust::SkipVerify,
             tls_server_name: None,
+            identity: None,
         }
     }
 
@@ -609,6 +614,7 @@ mod tests {
                     token: Some(TOKEN.to_owned()),
                     trust: CertTrust::Pinned(fingerprint),
                     tls_server_name: Some("localhost".to_owned()),
+                    identity: None,
                 },
                 &TlsClientIdentity::None,
             )

@@ -278,14 +278,35 @@ const ACTIONS: Record<string, string> = {
   toggle_command_palette: "palette",
   toggle_quick_terminal: "quick-terminal",
   toggle_tab_overview: "goto",
+  select_all: "select-all",
+  paste_from_clipboard: "paste",
+  paste_from_selection: "paste-selection",
   ignore: "ignore",
   unbind: "",
+};
+
+/** Ghostty's `write_*_file` regions, as the shell's `write-file:` names them. */
+const WRITE_REGIONS: Record<string, string> = {
+  write_screen_file: "screen",
+  write_scrollback_file: "scrollback",
+  write_selection_file: "selection",
 };
 
 /** Actions whose parameter is the payload: typed text, a size, a count. */
 function parameterized(name: string, argument: string): string | undefined {
   if (name === "text") return `send:${zigString(argument)}`;
   if (name === "esc") return `send:\u001b${zigString(argument)}`;
+  // Only plain text is copied or written: `vt` and `html` have no equivalent,
+  // and `mixed` (plain plus rich text) copies its plain half.
+  if (name === "copy_to_clipboard")
+    return ["", "plain", "mixed"].includes(argument.trim()) ? "copy" : undefined;
+  const region = WRITE_REGIONS[name];
+  if (region) {
+    const [mode = "", format = "plain"] = argument.split(",").map((part) => part.trim());
+    return ["copy", "paste", "open"].includes(mode) && format === "plain"
+      ? `write-file:${region}:${mode}`
+      : undefined;
+  }
   // No `csi:`: input is structured keys, and ESC [ ... as keys is Alt-[ plus
   // text, which only legacy encoding turns back into the sequence.
   const number = argument.trim() === "" ? Number.NaN : Number(argument);
@@ -294,6 +315,8 @@ function parameterized(name: string, argument: string): string | undefined {
   if (name === "scroll_page_lines" && Number.isInteger(number) && number !== 0)
     return `scroll-lines:${number}`;
   if (name === "move_tab" && number !== 0) return number < 0 ? "tab-move-left" : "tab-move-right";
+  if (name === "jump_to_prompt" && Number.isSafeInteger(number) && number !== 0)
+    return number === -1 ? "prompt-prev" : number === 1 ? "prompt-next" : `prompt-jump:${number}`;
   return undefined;
 }
 

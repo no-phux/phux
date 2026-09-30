@@ -334,13 +334,11 @@ a:hover {
   }
 }
 
-/* ── live terminal island (<PhuxTerminal>) ──────────────────────────────────
-   Quiet by design: one hairline border, a soft lift, the canvas. No chrome bar,
-   no status glyphs, no captions. */
+/* ── live hosted terminal (<PhuxTerminal>) ────────────────────────────────── */
 .pterm {
   font-family: var(--font-code);
   position: relative;
-  width: max-content;
+  width: min(920px, 100%);
   max-width: 100%;
   border: 1px solid var(--color-rule);
   border-radius: 10px;
@@ -349,7 +347,7 @@ a:hover {
   overflow: auto;
 }
 .pterm-native {
-  width: min(920px, calc(100vw - 32px));
+  width: min(920px, 100%);
   border-radius: 2px;
   overflow: hidden;
   background: #090a0d;
@@ -360,8 +358,9 @@ a:hover {
   min-height: 34px;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
-  padding: 0 13px;
+  padding: 8px 13px;
   border-bottom: 1px solid #24262d;
   color: #8e929d;
   background: #101116;
@@ -387,7 +386,7 @@ a:hover {
   border-radius: 50%;
   background: #60646f;
 }
-.pterm-native[data-status="live"] .pterm-state::before {
+.pterm[data-status="live"] .pterm-state::before {
   background: #b9ff65;
   box-shadow: 0 0 9px rgba(185, 255, 101, 0.55);
 }
@@ -397,15 +396,23 @@ a:hover {
 }
 .pterm-screen {
   position: relative;
-  min-height: min(512px, 58dvh);
+  min-height: min(384px, 50svh);
   overflow: auto;
   background:
     radial-gradient(circle at 50% 0, rgba(75, 87, 104, 0.08), transparent 42%),
     #08080b;
 }
-.pterm-native .pterm-canvas {
-  max-width: 100%;
+.pterm-canvas-host {
+  width: 100%;
+  min-width: 0;
+}
+.pterm .pterm-canvas {
+  max-width: none;
   margin: 0 auto;
+}
+.pterm:not([data-status="live"]) .pterm-canvas-host {
+  position: absolute;
+  visibility: hidden;
 }
 .pterm-unlock,
 .pterm-retry {
@@ -475,8 +482,9 @@ a:hover {
   letter-spacing: 0.03em;
 }
 .pterm-controls button {
-  padding: 4px 8px;
-  font-size: 10px;
+  min-height: 36px;
+  padding: 6px 10px;
+  font-size: 11px;
 }
 .pterm-facts {
   display: grid;
@@ -532,27 +540,29 @@ a:hover {
   outline: 2px solid var(--color-accent);
   outline-offset: -2px;
 }
-/* poster-first layering — the poster (same pixel size as the grid) sits in
-   normal flow and sizes the frame; a no-JS canvas is non-replaced and would
-   collapse to 0×0 if it were the sizer. The live canvas overlays it 1:1 and
-   paints over it, so nothing shifts when the live render takes over. */
 .pterm-poster {
-  display: block;
-  max-width: 100%;
-  height: auto;
-}
-.pterm-canvas.is-overlay {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
+  object-fit: contain;
 }
 .pterm-overlay {
-  position: absolute;
-  inset: 0;
+  position: relative;
+  min-height: inherit;
+  box-sizing: border-box;
+  padding: 20px 0;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+.pterm-retry .pterm-launch {
+  margin-top: 16px;
+}
+.pterm-overlay > .pterm-actions {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
 }
 .pterm-dim {
   color: var(--color-dim);
@@ -588,12 +598,6 @@ a:hover {
 }
 
 @media (max-width: 620px) {
-  .pterm-native {
-    width: calc(100vw - 16px);
-  }
-  .pterm-screen {
-    min-height: 56dvh;
-  }
   .pterm-actions {
     grid-template-columns: 1fr;
   }

@@ -929,6 +929,7 @@ fn probe_remote_listener(url: &str) -> Reachability {
         token: None,
         trust: phux_dial::CertTrust::SkipVerify,
         tls_server_name: None,
+        identity: None,
     };
     let probe = async {
         let Ok(outcome) =

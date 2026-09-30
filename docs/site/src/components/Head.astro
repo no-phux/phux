@@ -27,9 +27,17 @@ const ogImage = new URL("/og.png", SITE.url).href;
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <link rel="preconnect" href="https://fonts.bunny.net" crossorigin />
 <link
+  media="print"
+  onload="this.media='all'"
   rel="stylesheet"
-  href="https://fonts.bunny.net/css?family=ibm-plex-sans:400,500,600,700|ibm-plex-mono:400,500"
+  href="https://fonts.bunny.net/css?family=ibm-plex-sans:400,500,600,700|ibm-plex-mono:400,500&display=swap"
 />
+<noscript>
+  <link
+    rel="stylesheet"
+    href="https://fonts.bunny.net/css?family=ibm-plex-sans:400,500,600,700|ibm-plex-mono:400,500&display=swap"
+  />
+</noscript>
 <!-- Warm DNS/TLS for the live demo origin; the terminal island dials it on click. -->
 {origin !== SITE.docsUrl && <link rel="preconnect" href="https://shell.phux.sh" crossorigin />}
 <title>{title}</title>

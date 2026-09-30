@@ -3667,7 +3667,25 @@ pub const Engine = struct {
         remote.acknowledgeCommandFinished(ref);
     }
 
+    /// Anything on a local pane you are LOOKING at is not news: every pane of
+    /// the selected tab is on screen, so its bell and its loss so far are
+    /// acknowledged. Skipped while the app is in the background, where a bell
+    /// is exactly the one worth keeping.
+    fn acknowledgeVisibleLocal(self: *Engine) void {
+        const model = self.model;
+        if (!model.focused) return;
+        const tree = model.selectedTreeConst() orelse return;
+        var refs: [layout.max_panes]TerminalRef = undefined;
+        for (refs[0..tree.terminals(&refs)]) |ref| {
+            const pane = model.provider.terminal(ref) orelse continue;
+            pane.clearBell();
+            pane.acknowledgeLoss();
+        }
+    }
+
+    /// Runs after every engine entry point that can change what is on screen.
     fn syncRemoteFocus(self: *Engine) void {
+        self.acknowledgeVisibleLocal();
         self.creation.observeFocus(self.model);
         const next = self.currentRemoteFocusOwner();
         if (support.optOwnerEql(self.remote_focus_owner, next)) return;

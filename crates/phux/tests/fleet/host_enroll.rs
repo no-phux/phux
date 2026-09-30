@@ -711,21 +711,16 @@ fn ssh_only_registers_ssh_endpoint_without_contacting_the_host() {
     );
 }
 
-/// `phux host enroll` still works as a hidden alias of the ssh form, and
-/// `phux machine` is a visible alias of `phux host` — the word people reach
-/// for.
+/// `phux machine` is a visible alias of `phux host`, the word people reach
+/// for, and `phux host enroll` is gone.
 #[test]
-fn enroll_and_machine_spellings_reach_the_same_verb() {
+fn machine_spelling_reaches_the_same_verb() {
     let never_ssh = Path::new("/nonexistent/phux-test-ssh");
 
     let home = EnrollHome::new();
-    let (code, _stdout, stderr) = home.run(&["host", "enroll", "me@mini", "--ssh-only"], never_ssh);
-    assert_eq!(code, 0, "stderr={stderr}");
-    assert!(
-        stderr.contains("`phux host enroll` is deprecated") && stderr.contains("phux host add"),
-        "the alias warns toward its replacement: {stderr}"
-    );
-    assert!(home.config().contains("endpoint = \"ssh://me@mini\""));
+    let (code, _stdout, _stderr) =
+        home.run(&["host", "enroll", "me@mini", "--ssh-only"], never_ssh);
+    assert_ne!(code, 0, "the retired `host enroll` spelling must not parse");
 
     let home = EnrollHome::new();
     let (code, stdout, stderr) = home.run(&["machine", "add", "me@mini", "--ssh-only"], never_ssh);
@@ -797,12 +792,15 @@ fn add_json_emits_the_documented_host_document() {
     assert_eq!(host["session"], serde_json::Value::Null);
     assert_eq!(host["ssh"], "me@mini");
     assert_eq!(host["direct"], serde_json::Value::Null);
+    // `--ssh-only` touches nothing on the host, so no certificate is enrolled.
+    assert_eq!(host["client_cert"], serde_json::Value::Null);
+    assert_eq!(host["client_key"], serde_json::Value::Null);
     assert_eq!(
         doc.as_object().map(serde_json::Map::len),
         Some(2),
         "exactly the two documented top-level keys; document: {doc}"
     );
-    assert_eq!(host.len(), 9, "exactly the nine documented host keys");
+    assert_eq!(host.len(), 11, "exactly the eleven documented host keys");
 
     // The full ssh path under --json: progress is suppressed, the document
     // carries the candidate the probe could not reach.

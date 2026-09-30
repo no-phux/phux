@@ -50,6 +50,9 @@ pub(super) struct ServerConfig {
     pub(super) pre_seeded_session: Option<String>,
     /// Retain-on-exit settings (ADR-0124).
     pub(super) retain: super::retained::RetainPolicy,
+    /// The `PHUX_*` process configuration the remote surface reads
+    /// (`ServerConfig::env`); empty unless the server was configured with it.
+    pub(super) server_env: std::sync::Arc<crate::runtime::ServerEnv>,
 }
 
 impl Default for ServerConfig {
@@ -73,6 +76,7 @@ impl Default for ServerConfig {
             attach_create_seed_command: None,
             pre_seeded_session: None,
             retain: super::retained::RetainPolicy::default(),
+            server_env: std::sync::Arc::default(),
         }
     }
 }

@@ -391,7 +391,7 @@ fn is_stale_temp(name: &str, own: Option<&str>) -> bool {
     random && (own == Some(base) || MANAGED_NAMES.contains(&base))
 }
 
-fn is_owned_regular_file(path: &Path) -> bool {
+pub(super) fn is_owned_regular_file(path: &Path) -> bool {
     fs::symlink_metadata(path)
         .is_ok_and(|meta| meta.file_type().is_file() && meta.uid() == effective_uid())
 }

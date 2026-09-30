@@ -3,8 +3,9 @@
  * shell. Shared by the dev entry (`desktop-main.ts`) and the packaged app
  * (`app-main.ts`); only how they find the addon and socket differs.
  */
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { loadDesktopHost } from "../native/loader.mjs";
 import { readGhosttyConfig } from "./ghostty-config";
 import { fileLayoutStore } from "./layout-store";
@@ -40,6 +41,16 @@ function restartServer(start: DesktopStart): string | undefined {
   }
 }
 
+/**
+ * Ghostty's `write_*_file` target: a fresh private directory under the
+ * temporary directory per write, so no path is ever reused or shared.
+ */
+function writeTempFile(name: string, text: string): string {
+  const path = join(mkdtempSync(join(tmpdir(), "phux-")), basename(name));
+  writeFileSync(path, text, { mode: 0o600 });
+  return path;
+}
+
 export async function startDesktop(start: DesktopStart): Promise<void> {
   const host = loadDesktopHost(start.addon);
   const native = await import("@gpuix/native/host");
@@ -55,6 +66,7 @@ export async function startDesktop(start: DesktopStart): Promise<void> {
     readGhostty: readGhosttyConfig,
     quickLayouts: fileLayoutStore(join(state, "phux-desktop/quick.json")),
     ensureServer: () => restartServer(start),
+    writeTempFile,
   });
   scheduleCapture(process.env.PHUX_DESKTOP_CAPTURE);
 }

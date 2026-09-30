@@ -5,6 +5,8 @@
 // React in here, so a web component or any framework can drive it too. The
 // React wrapper lives in ../PhuxTerminal.tsx.
 
+import type * as TerminalModule from "../../lib/phux-web/phux_web.js";
+
 export type SessionBackend = "native" | "edge";
 export type SessionFallbackReason =
   | "auth-required"
@@ -58,6 +60,7 @@ export interface MountOptions {
   cols: number;
   rows: number;
   mode?: "demo" | "portfolio" | "native";
+  signal?: AbortSignal;
   onEvent?: (event: HostedEvent) => void;
 }
 
@@ -72,24 +75,72 @@ export interface MountOptions {
 export async function mountPhuxTerminal(
   opts: MountOptions,
 ): Promise<PhuxController> {
-  const [mod, wasm] = await Promise.all([
-    import("../../lib/phux-web/phux_web.js"),
-    import("../../lib/phux-web/phux_web_bg.wasm?url"),
-  ]);
-  await mod.default({ module_or_path: wasm.default });
+  const mod = await loadTerminal();
+  opts.signal?.throwIfAborted();
   const endpoint = new URL(opts.wsUrl);
-  if (opts.mode && opts.mode !== "demo")
-    endpoint.searchParams.set("mode", opts.mode);
-  return mod.start_hosted(
+  endpoint.searchParams.set("mode", opts.mode ?? "demo");
+  const mounted = await mod.start_hosted(
     endpoint.toString(),
     opts.canvasId,
     opts.cols,
     opts.rows,
     (value: unknown) => {
       const event = parseHostedEvent(value);
-      if (event) opts.onEvent?.(event);
+      if (event && !opts.signal?.aborted) opts.onEvent?.(event);
     },
+    opts.signal,
   );
+  let closed = false;
+  const controller = {
+    close() {
+      if (closed) return;
+      closed = true;
+      opts.signal?.removeEventListener("abort", controller.close);
+      mounted.close();
+      mounted.free();
+    },
+  };
+  if (opts.signal?.aborted) {
+    controller.close();
+    opts.signal.throwIfAborted();
+  }
+  opts.signal?.addEventListener("abort", controller.close, { once: true });
+  return controller;
+}
+
+let terminalModule: Promise<typeof TerminalModule> | undefined;
+
+function loadTerminal() {
+  terminalModule ??= (async () => {
+    const [mod, wasm] = await Promise.all([
+      import("../../lib/phux-web/phux_web.js"),
+      import("../../lib/phux-web/phux_web_bg.wasm?url"),
+    ]);
+    await mod.default({ module_or_path: wasm.default });
+    return mod;
+  })().catch((error: unknown) => {
+    terminalModule = undefined;
+    throw error;
+  });
+  return terminalModule;
+}
+
+/** Warm code only on user intent; this never allocates a hosted session. */
+export async function warmPhuxTerminal(): Promise<void> {
+  await loadTerminal();
+}
+
+/** Match the renderer's 8 × 16 px cells without shrinking text on phones. */
+export function terminalGeometry(
+  width: number,
+  height: number,
+  cols: number,
+  rows: number,
+) {
+  return {
+    cols: Math.max(20, Math.min(cols, Math.floor(width / 8))),
+    rows: Math.max(10, Math.min(rows, Math.floor(height / 16))),
+  };
 }
 
 const fallbacks = new Set<SessionFallbackReason>([

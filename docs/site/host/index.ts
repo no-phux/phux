@@ -7,10 +7,8 @@
  * (host/mcp.ts), records passive aggregate telemetry (host/telemetry.ts),
  * and serves the public telemetry dashboard API at /api/telemetry.
  */
-import { Effect } from "effect";
 import { routeRequest } from "./routes";
 import { handleAssociationRequest } from "./pairing";
-import { handleMcpRequest } from "./mcp";
 import { estimateTokens, htmlToMarkdown, wantsMarkdown } from "./markdown";
 import {
   TelemetryDO,
@@ -20,12 +18,6 @@ import {
   type TelemetryNamespace,
   type WaitUntil,
 } from "./telemetry";
-import {
-  buildEnvelope,
-  forwardEnvelope,
-  runAnalyticsBackground,
-} from "./analytics";
-import { handleAnalyticsHttp } from "./analytics-http";
 
 export { TelemetryDO };
 
@@ -42,11 +34,7 @@ export interface Env {
 }
 
 export default {
-  async fetch(
-    request: Request,
-    env: Env,
-    ctx?: WaitUntil,
-  ): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: WaitUntil): Promise<Response> {
     const url = new URL(request.url);
 
     // Apple's association file is answered before any routing, because
@@ -61,18 +49,30 @@ export default {
       return Response.redirect(routed.location, routed.status);
     }
 
-    // Hosted MCP endpoint (streamable HTTP, POST /mcp).
-    const mcp = await handleMcpRequest(request, env, (dim, key) =>
-      recordEvents(env.TELEMETRY, ctx, [{ dim, key }]),
-    );
-    if (mcp) {
-      recordEvents(
-        env.TELEMETRY,
-        ctx,
-        classifyRequest(request, mcp, [{ dim: "signal", key: "mcp" }]),
+    // Bundled scripts/styles are host-neutral and carry no visitor telemetry.
+    // Keep host routing above this shortcut; do not bypass it for docs assets.
+    if (url.pathname.startsWith("/_astro/") && shouldSkipPath(url.pathname)) {
+      return env.ASSETS.fetch(request);
+    }
+
+    // Hosted MCP endpoint (streamable HTTP, POST /mcp). Load its tool catalogue
+    // only on this route, not on every document or asset request.
+    if (url.pathname === "/mcp") {
+      // Intentional cold-start boundary: a static import initializes the tool
+      // catalogue even when this isolate only serves static assets.
+      const { handleMcpRequest } = await import("./mcp");
+      const mcp = await handleMcpRequest(request, env, (dim, key) =>
+        recordEvents(env.TELEMETRY, ctx, [{ dim, key }]),
       );
-      observe(env, ctx, request, mcp);
-      return mcp;
+      if (mcp) {
+        recordEvents(
+          env.TELEMETRY,
+          ctx,
+          classifyRequest(request, mcp, [{ dim: "signal", key: "mcp" }]),
+        );
+        observe(env, ctx, request, mcp);
+        return mcp;
+      }
     }
 
     // Public telemetry aggregates (the /telemetry page reads this).
@@ -85,6 +85,8 @@ export default {
     }
     // Voluntary member signup (the join-the-beta form) and device claim.
     if (url.pathname === "/api/join" || url.pathname === "/api/claim") {
+      // Static imports would initialize the Effect HTTP stack on asset requests.
+      const { handleAnalyticsHttp } = await import("./analytics-http");
       return handleAnalyticsHttp(request, env, ctx);
     }
 
@@ -136,13 +138,22 @@ function observe(
   request: Request,
   response: Response,
 ): void {
-  if (shouldSkipPath(new URL(request.url).pathname)) return;
-  runAnalyticsBackground(
-    ctx,
-    buildEnvelope(request, response).pipe(
-      Effect.flatMap((envelope) => forwardEnvelope(env, envelope)),
-    ),
-  );
+  if (!env.ANALYTICS || shouldSkipPath(new URL(request.url).pathname)) return;
+  // Intentional cold-start boundary: static imports initialize Effect and its
+  // analytics runtime even for requests that never emit observations.
+  // Include initialization in waitUntil so an outstanding event is not dropped.
+  const pending = Promise.all([import("effect"), import("./analytics")])
+    .then(([{ Effect }, { buildEnvelope, forwardEnvelope, runAnalytics }]) =>
+      runAnalytics(
+        buildEnvelope(request, response).pipe(
+          Effect.flatMap((envelope) => forwardEnvelope(env, envelope)),
+          Effect.ignoreCause,
+        ),
+      ),
+    )
+    .catch(() => {});
+  if (ctx) ctx.waitUntil(pending);
+  else void pending;
 }
 
 async function markdownResponse(asset: Response): Promise<Response> {
@@ -162,8 +173,16 @@ async function telemetryApi(request: Request, env: Env): Promise<Response> {
     return Response.json({ rows: [], generatedAt: new Date().toISOString() });
   }
   const url = new URL(request.url);
-  const hours = Math.min(168, Math.max(1, Number.parseInt(url.searchParams.get("hours") ?? "48", 10) || 48));
-  const since = new Date(Date.now() - hours * 3_600_000).toISOString().slice(0, 13);
+  const hours = Math.min(
+    168,
+    Math.max(
+      1,
+      Number.parseInt(url.searchParams.get("hours") ?? "48", 10) || 48,
+    ),
+  );
+  const since = new Date(Date.now() - hours * 3_600_000)
+    .toISOString()
+    .slice(0, 13);
   const upstream = await env.TELEMETRY.getByName("global").fetch(
     new Request(new URL(`/?since=${since}`, url.origin).href),
   );
@@ -177,20 +196,30 @@ async function telemetryApi(request: Request, env: Env): Promise<Response> {
   });
 }
 
-function ingestKeyMatches(secret: string | undefined, provided: string | null): boolean {
+function ingestKeyMatches(
+  secret: string | undefined,
+  provided: string | null,
+): boolean {
   if (!secret) return false;
   const candidate = provided ?? "";
   let difference = candidate.length ^ secret.length;
   const length = Math.max(candidate.length, secret.length);
   for (let index = 0; index < length; index++) {
-    difference |= (candidate.charCodeAt(index) || 0) ^ (secret.charCodeAt(index) || 0);
+    difference |=
+      (candidate.charCodeAt(index) || 0) ^ (secret.charCodeAt(index) || 0);
   }
   return difference === 0;
 }
 
 async function telemetryIngest(request: Request, env: Env): Promise<Response> {
-  if (request.method !== "POST") return new Response("post only", { status: 405 });
-  if (!ingestKeyMatches(env.TELEMETRY_INGEST_KEY, request.headers.get("x-telemetry-key"))) {
+  if (request.method !== "POST")
+    return new Response("post only", { status: 405 });
+  if (
+    !ingestKeyMatches(
+      env.TELEMETRY_INGEST_KEY,
+      request.headers.get("x-telemetry-key"),
+    )
+  ) {
     return new Response("unauthorized", { status: 403 });
   }
   let body: { events?: unknown };

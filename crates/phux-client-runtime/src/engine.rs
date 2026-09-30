@@ -266,6 +266,22 @@ pub enum Scroll {
     Delta(i64),
     /// An absolute row offset from the top of the scrollable area.
     Row(u64),
+    /// Put the `n`th shell prompt (OSC 133) above (negative) or below
+    /// (positive) the viewport's top row at the top, as Ghostty's
+    /// `jump_to_prompt` does; a prompt in the active area follows the tail.
+    /// Without that many prompts, the farthest one found is used; with none,
+    /// the viewport stays put.
+    Prompt(i64),
+}
+
+/// A whole-document text range a consumer can copy out.
+#[cfg(feature = "engine")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextRegion {
+    /// Loaded scrollback plus the active screen.
+    Screen,
+    /// Loaded scrollback only; empty on the alternate screen.
+    History,
 }
 
 /// One document coordinate accepted by the owner thread.
@@ -509,6 +525,15 @@ enum Query {
         ResourceId,
         SelectionGestureEvent,
         Sender<Result<SelectionGestureResult, EngineError>>,
+    ),
+    #[cfg(feature = "engine")]
+    SelectAll(ResourceId, Sender<Result<bool, EngineError>>),
+    #[cfg(feature = "engine")]
+    RegionText(
+        ResourceId,
+        TextRegion,
+        usize,
+        Sender<Result<BoundedSelectionText, EngineError>>,
     ),
     #[cfg(not(feature = "engine"))]
     TakeOutput(ResourceId, Sender<Vec<u8>>),

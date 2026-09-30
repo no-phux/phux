@@ -46,8 +46,12 @@ saved preference before paint and Astro document swaps.
 - Reader surface radii are 6–14px. Task cards group choices on the overview;
   ordinary articles do not need cards around every paragraph.
 
-Marketing retains its flat, square-edged rules, terminal palette, and live-island
-presentation. Reader tokens do not restyle those surfaces.
+Marketing keeps a flat, rule-aligned page and terminal palette. Its interactive
+showcase and live-terminal dialog use rounded frames and a restrained shadow
+to distinguish the pop-open workspace; the terminal interior stays undecorated,
+without ornamental gradients. Reader tokens do not restyle those surfaces.
+Marketing motion is limited to user-triggered pane transitions and dialog
+opening, respects reduced motion, and never runs continuously in the diagram.
 
 ## Article structure
 

@@ -57,9 +57,8 @@ fn write_token(path: &Path, token: &[u8]) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).expect("chmod token");
 }
 
-/// Enroll the route and the consumer credential, then point
-/// `PHUX_WS_TOKENS` at the consumer store. Call before any runtime thread
-/// exists (nextest runs each test in its own process).
+/// Enroll the route and the consumer credential; [`Topology::start`] points
+/// the server's token store at the consumer store.
 fn provision(dir: &Path) {
     std::fs::write(
         dir.join("relay-tokens"),
@@ -70,8 +69,6 @@ fn provision(dir: &Path) {
     let consumer_tokens = dir.join("consumer-tokens");
     write_token(&consumer_tokens, &CONSUMER_TOKEN);
     phux_server::auth::migrate_legacy_store(&consumer_tokens).expect("migrate consumer store");
-    // SAFETY: called before the runtime starts; no other thread reads env.
-    unsafe { std::env::set_var("PHUX_WS_TOKENS", &consumer_tokens) };
 }
 
 impl Topology {
@@ -94,6 +91,10 @@ impl Topology {
             pre_seeded_session: seed.is_some().then(|| "default".to_owned()),
             seed_with_pty: false,
             seed_command: None,
+            env: phux_server::ServerEnv {
+                ws_tokens: Some(dir.path().join("consumer-tokens")),
+                ..phux_server::ServerEnv::default()
+            },
             ..ServerConfig::with_default_socket()
         };
         if let Some(seed) = seed {
@@ -155,6 +156,7 @@ async fn dial(
         server_name: route.to_owned(),
         token,
         trust: CertTrust::Pinned(fingerprint.to_owned()),
+        identity: None,
     };
     let (endpoint, conn, send, recv) = phux_dial::quic::dial(&dial)
         .await

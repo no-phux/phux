@@ -2,7 +2,6 @@
 
 use bytes::BytesMut;
 use futures_util::StreamExt;
-use phux_dial::TlsClientIdentity;
 use phux_dial::ws::{WsActivity, WsReader, WsWriter, recv_activity_alive};
 use phux_protocol::wire::frame::FrameKind;
 use phux_protocol::wire::framing;
@@ -224,7 +223,7 @@ async fn dial_ws(target: &Target, url: &str, options: ConnectOptions) -> Result<
             None => load_token(&resolved).map_err(ConnectionEnd::Refused)?,
         };
         let plan = plan_ws(&resolved, url, token).map_err(ConnectionEnd::Refused)?;
-        let connected = phux_dial::ws::dial_with_identity(&plan, &TlsClientIdentity::None).await;
+        let connected = phux_dial::ws::dial_with_identity(&plan, &resolved.client_identity).await;
         // The Authorization header has been sent; drop the owned token now.
         drop(plan);
         connected.map_err(|error| classify(name, &error))
@@ -252,7 +251,7 @@ async fn dial_quic(
         let plan = plan_quic_with_token(&resolved, authority, target.token.clone())
             .await
             .map_err(ConnectionEnd::Refused)?;
-        let connected = phux_dial::quic::dial_with_identity(&plan, &TlsClientIdentity::None).await;
+        let connected = phux_dial::quic::dial_with_identity(&plan, &resolved.client_identity).await;
         // The bearer preamble has been written; the owned token goes now.
         drop(plan);
         connected.map_err(|error| classify(name, &error))

@@ -16,9 +16,12 @@ WebTransport or WebSocket. Splits and layout are outside its current scope.
 
 ## Try the demo or build your own?
 
-- **Try phux in a browser:** open the terminal demo on [phux.sh](https://phux.sh/).
-  It connects to the demo's provisioned server, not to your laptop or a host
-  you name. Do not enter private credentials or sensitive work in a demo.
+- **Try phux in a browser:** open [phux.sh](https://phux.sh/) and use the
+  interactive diagram's launch button to open the real terminal. The diagram
+  itself is not a live session. The terminal connects to the demo's provisioned
+  server, not your laptop or a host you name. Closing the dialog or switching
+  runtime releases that disposable session. Do not enter private credentials
+  or sensitive work in a demo.
 - **Use your own terminals today:** follow the [local quickstart](../QUICKSTART.md),
   [Cockpit guide](./cockpit.md), or [remote access guide](../remote-access.md).
   This page does not offer a hosted “connect my server” control.

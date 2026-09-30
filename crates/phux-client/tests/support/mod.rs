@@ -8,59 +8,23 @@ use std::time::Duration;
 
 use phux_client::attach::connection::Connection;
 use phux_client::attach::{CertTrust, QuicDial};
-use phux_server::{ServerConfig, ServerRuntime};
+use phux_server::{ServerConfig, ServerEnv, ServerRuntime};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep, timeout};
 
 pub const STEP_DEADLINE: Duration = Duration::from_secs(15);
 
-/// The TLS/upload environment a QUIC server reads, restored on drop.
-pub struct EnvGuard {
-    previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
-}
-
-impl EnvGuard {
-    pub fn install(cert: &Path, key: &Path, upload_dir: Option<&Path>) -> Self {
-        phux_server::transport::tls::ensure_self_signed(cert, key).expect("provision QUIC cert");
-        let previous = [
-            "PHUX_WS_TLS_CERT",
-            "PHUX_WS_TLS_KEY",
-            "PHUX_UPLOAD_DIR",
-            "PHUX_WS_SECURE",
-            "PHUX_WORKLOAD_MTLS",
-            "PHUX_TEST_WORKLOAD_FAILURE",
-        ]
-        .into_iter()
-        .map(|name| (name, std::env::var_os(name)))
-        .collect();
-        // SAFETY: the test binary is single-threaded at this point; no other
-        // thread reads the environment while it is written.
-        unsafe {
-            std::env::set_var("PHUX_WS_TLS_CERT", cert);
-            std::env::set_var("PHUX_WS_TLS_KEY", key);
-            if let Some(dir) = upload_dir {
-                std::env::set_var("PHUX_UPLOAD_DIR", dir);
-            }
-            std::env::remove_var("PHUX_WS_SECURE");
-            std::env::remove_var("PHUX_WORKLOAD_MTLS");
-            std::env::remove_var("PHUX_TEST_WORKLOAD_FAILURE");
-        }
-        Self { previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        for (name, value) in &self.previous {
-            // SAFETY: as in `install`.
-            unsafe {
-                match value {
-                    Some(value) => std::env::set_var(name, value),
-                    None => std::env::remove_var(name),
-                }
-            }
-        }
+/// The TLS/upload configuration a QUIC server reads: a fresh self-signed
+/// pair at `cert`/`key`, and `upload_dir` when given. Nothing else is set,
+/// so the server never inherits the test process's `PHUX_*` environment.
+pub fn quic_env(cert: &Path, key: &Path, upload_dir: Option<&Path>) -> ServerEnv {
+    phux_server::transport::tls::ensure_self_signed(cert, key).expect("provision QUIC cert");
+    ServerEnv {
+        tls_cert: Some(cert.to_path_buf()),
+        tls_key: Some(key.to_path_buf()),
+        upload_dir: upload_dir.map(Path::to_path_buf),
+        ..ServerEnv::default()
     }
 }
 
@@ -120,6 +84,7 @@ pub async fn dial(addr: SocketAddr) -> Connection {
         server_name: "localhost".to_owned(),
         token: None,
         trust: CertTrust::SkipVerify,
+        identity: None,
     };
     let deadline = Instant::now() + STEP_DEADLINE;
     loop {

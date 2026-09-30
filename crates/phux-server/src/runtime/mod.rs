@@ -37,6 +37,7 @@ pub mod idempotent_create;
 pub mod input_lane;
 pub mod keyed_ops;
 pub mod operation_dedupe;
+mod process_env;
 /// Shared per-generation state both pane output pumps enforce.
 mod pump;
 pub mod resource_commands;
@@ -62,6 +63,7 @@ mod workload_auth;
 pub(crate) use attach::*;
 pub(crate) use client::*;
 pub use commands::*;
+pub use process_env::ServerEnv;
 
 /// Timeout for the "is the socket still live?" liveness probe used when an
 /// existing socket file is encountered during bind.
@@ -143,6 +145,12 @@ pub struct ServerConfig {
     /// (`--exit-after-idle`, ADR-0063). `None` keeps the tmux contract: live
     /// until the last pane is reaped.
     pub exit_after_idle: Option<Duration>,
+    /// The `PHUX_*` process configuration (listener addresses, TLS pair,
+    /// credential store, workload mode). Only the `phux server` entry point
+    /// fills it from the environment ([`ServerEnv::from_process`]); the
+    /// default sets nothing, so an in-process server never inherits the
+    /// launching shell's (a production pane exports several).
+    pub env: ServerEnv,
 }
 
 /// The opt-in flags the running server applied.
@@ -200,6 +208,7 @@ impl ServerConfig {
             policy_mode: None,
             hook_catalog: crate::hooks::HookCatalog::default(),
             exit_after_idle: None,
+            env: ServerEnv::default(),
         }
     }
 }
@@ -367,11 +376,12 @@ pub enum ServerError {
 #[derive(Debug)]
 pub struct ServerRuntime {
     cfg: ServerConfig,
-    /// WebSocket listen address; `None` falls back to `PHUX_WS_ADDR`.
+    /// WebSocket listen address; `None` falls back to [`ServerEnv::ws_addr`].
     ws_addr: Option<SocketAddr>,
-    /// QUIC listen address; `None` falls back to `PHUX_QUIC_ADDR`.
+    /// QUIC listen address; `None` falls back to [`ServerEnv::quic_addr`].
     quic_addr: Option<SocketAddr>,
-    /// WebTransport listen address; `None` falls back to `PHUX_WT_ADDR`.
+    /// WebTransport listen address; `None` falls back to
+    /// [`ServerEnv::wt_addr`].
     #[cfg(feature = "webtransport")]
     wt_addr: Option<SocketAddr>,
     /// Inherited handoff-blob descriptor for `--resume` (ADR-0032).
@@ -541,18 +551,24 @@ impl ServerRuntime {
         // Connector plans and the policy posture are startup gates: bad
         // configuration fails before anything is bound.
         let connector_specs = crate::connector::plan_connectors(&self.connectors)?;
+        // Each opt-in address: the flag wins over the environment.
+        let env = &self.cfg.env;
+        let ws_addr = self.ws_addr.or(env.ws_addr);
+        let quic_addr = self.quic_addr.or(env.quic_addr);
         #[cfg(feature = "webtransport")]
-        let webtransport = self.wt_addr.is_some() || std::env::var_os("PHUX_WT_ADDR").is_some();
+        let webtransport_addr = self.wt_addr.or(env.wt_addr);
+        #[cfg(feature = "webtransport")]
+        let webtransport = webtransport_addr.is_some();
         #[cfg(not(feature = "webtransport"))]
         let webtransport = false;
         let (posture, posture_engine) = startup_policy(
             &self.cfg,
-            self.ws_addr,
-            self.quic_addr,
+            ws_addr,
+            quic_addr,
             webtransport,
             !self.connectors.is_empty(),
         )?;
-        let connector_consumer_tokens = load_connector_consumer_tokens(&connector_specs)?;
+        let connector_consumer_tokens = load_connector_consumer_tokens(&connector_specs, env)?;
 
         let resume_blob = read_resume_blob(self.resume_fd, &self.inherited_upgrade)?;
         let listener = adopt_or_bind_listener(
@@ -576,10 +592,6 @@ impl ServerRuntime {
         let seed_with_pty = self.cfg.seed_with_pty;
         let seed_command = self.cfg.seed_command.clone();
         let scrollback = self.cfg.scrollback;
-        let ws_addr_override = self.ws_addr;
-        let quic_addr_override = self.quic_addr;
-        #[cfg(feature = "webtransport")]
-        let webtransport_addr_override = self.wt_addr;
         let overlay_detect = self.overlay_detect;
         let hook_catalog = self.cfg.hook_catalog.clone();
         let hook_socket_path = socket_path.clone();
@@ -611,16 +623,14 @@ impl ServerRuntime {
                 // Configured listeners bind before the session tree exists, and
                 // nothing slow may run between "a pane exists" and "the accept
                 // loop runs": a live pane must never race an unreachable server.
-                let configured =
-                    ConfiguredListeners::bind(ws_addr_override, quic_addr_override, &state).await;
+                let configured = ConfiguredListeners::bind(ws_addr, quic_addr, &state).await;
                 #[cfg(feature = "webtransport")]
-                let webtransport_listener = webtransport_addr_override
-                    .or_else(|| env_socket_addr("PHUX_WT_ADDR"))
-                    .and_then(|addr| {
-                        let (listener, slot) = build_wt_listener(addr);
-                        state.with_mut(|s| s.record_remote_listener(slot));
-                        listener
-                    });
+                let webtransport_listener = webtransport_addr.and_then(|addr| {
+                    let env = state.with(crate::state::ServerState::server_env);
+                    let (listener, slot) = build_wt_listener(addr, &env);
+                    state.with_mut(|s| s.record_remote_listener(slot));
+                    listener
+                });
 
                 if let Some(blob) = resume_blob {
                     resume_session_tree(&state, &blob, &root_token)?;
@@ -718,11 +728,12 @@ fn install_hub_table(
 /// supervisor attempt; only the store's presence is a startup gate.
 fn load_connector_consumer_tokens(
     specs: &[crate::connector::ConnectorSpec],
+    env: &ServerEnv,
 ) -> Result<Option<std::sync::Arc<crate::auth::ReloadingTokenStore>>, ServerError> {
     if specs.is_empty() {
         return Ok(None);
     }
-    let path = tokens_path();
+    let path = env.tokens_path();
     if let Err(refusal) = phux_config::production::refuse_dev_on_production_state(&path) {
         return Err(ServerError::ConnectorTokenStore {
             path,
@@ -817,6 +828,7 @@ fn mirror_config_into_state(cfg: &ServerConfig, socket_path: &Path, state: &Shar
         if let Some(engine) = cfg.policy_engine.clone() {
             s.set_policy_engine(engine);
         }
+        s.set_server_env(cfg.env.clone());
     });
 }
 
@@ -834,11 +846,8 @@ fn startup_policy(
     connectors: bool,
 ) -> Result<(crate::policy::PolicyPosture, PostureEngine), ServerError> {
     let remote = remote_listener_configured(ws_addr, quic_addr, webtransport, connectors);
-    let posture = crate::policy::PolicyPosture::resolve(
-        cfg.policy_mode,
-        workload_auth::workload_mode(),
-        remote,
-    )?;
+    let posture =
+        crate::policy::PolicyPosture::resolve(cfg.policy_mode, cfg.env.workload_mtls, remote)?;
     workload_auth::refuse_uncovered_surfaces(
         posture.requires_workload_mtls(),
         connectors,
@@ -868,8 +877,8 @@ fn posture_policy_engine(
         PolicyPosture::Transitional { .. } => return Ok(None),
         PolicyPosture::Local => std::sync::Arc::new(ScopedPolicy::local()),
         PolicyPosture::Paired => {
-            let authority =
-                workload_auth::WorkloadAuth::configured().map_err(ServerError::PolicyMaterial)?;
+            let authority = workload_auth::WorkloadAuth::configured(&cfg.env)
+                .map_err(ServerError::PolicyMaterial)?;
             std::sync::Arc::new(ScopedPolicy::paired(authority.registry))
         }
     };
@@ -880,19 +889,13 @@ fn posture_policy_engine(
 /// WebTransport listener (flag or environment) or a relay connector. The
 /// `local` posture refuses to start beside one, and the transitional posture
 /// warns about it (`docs/spec/workload-auth.md` §8).
-fn remote_listener_configured(
+const fn remote_listener_configured(
     ws_addr: Option<SocketAddr>,
     quic_addr: Option<SocketAddr>,
     webtransport: bool,
     connectors: bool,
 ) -> bool {
-    let ws = ws_addr
-        .or_else(|| env_socket_addr("PHUX_WS_ADDR"))
-        .is_some();
-    let quic = quic_addr
-        .or_else(|| env_socket_addr("PHUX_QUIC_ADDR"))
-        .is_some();
-    ws || quic || webtransport || connectors
+    ws_addr.is_some() || quic_addr.is_some() || webtransport || connectors
 }
 
 /// Mirror the posture into shared state: whether TLS listeners require a
@@ -929,7 +932,7 @@ fn auto_overlay_allowed(ports: AutoOverlayPorts, state: &SharedState) -> bool {
     ports.any()
         && !local_only
         && auto_overlay_gate_open(
-            std::env::var_os(DISABLE_AUTO_LISTEN_ENV).is_some(),
+            state.with(|s| s.server_env().no_auto_listen),
             phux_config::instance::is_default_profile(),
         )
 }
@@ -995,7 +998,8 @@ fn spawn_hub_links(
         s.set_hub_link_statuses(statuses.clone());
         s.set_hub_relays(relays.clone());
     });
-    crate::hub::link::spawn_links(table, &statuses, &relays, root_token, state);
+    let ssh_program = state.with(|s| s.server_env().ssh_program());
+    crate::hub::link::spawn_links(table, &statuses, &relays, root_token, state, ssh_program);
 }
 
 /// Supervise the planned outbound connectors. Nothing to supervise without a
@@ -1100,15 +1104,12 @@ struct ConfiguredListeners {
 }
 
 impl ConfiguredListeners {
-    /// Resolve each opt-in address (the flag wins over the environment) and
-    /// bind the ones that were asked for.
+    /// Bind the resolved opt-in addresses that were asked for.
     async fn bind(
-        ws_override: Option<SocketAddr>,
-        quic_override: Option<SocketAddr>,
+        ws_addr: Option<SocketAddr>,
+        quic_addr: Option<SocketAddr>,
         state: &SharedState,
     ) -> Self {
-        let ws_addr = ws_override.or_else(|| env_socket_addr("PHUX_WS_ADDR"));
-        let quic_addr = quic_override.or_else(|| env_socket_addr("PHUX_QUIC_ADDR"));
         Self {
             ws_addr,
             quic_addr,
@@ -1157,16 +1158,17 @@ impl RemoteListeners {
         state: &SharedState,
     ) -> Self {
         let workload_mtls = state.with(crate::state::ServerState::workload_mtls_required);
+        let env = state.with(crate::state::ServerState::server_env);
         let ws = match ws_addr {
             Some(addr) => {
-                let (listener, slot) = build_ws_listener(addr, workload_mtls).await;
+                let (listener, slot) = build_ws_listener(addr, workload_mtls, &env).await;
                 state.with_mut(|s| s.record_remote_listener(slot));
                 listener
             }
             None => None,
         };
         let quic = quic_addr.and_then(|addr| {
-            let (listener, slot) = build_quic_listener_for(addr, workload_mtls);
+            let (listener, slot) = build_quic_listener_for(addr, workload_mtls, &env);
             state.with_mut(|s| s.record_remote_listener(slot));
             listener
         });
@@ -1370,8 +1372,8 @@ const fn disabled<L>(
 
 /// `PHUX_WS_SECURE=1` forces the secure path on a loopback address, for
 /// testing the remote path locally.
-fn secure_bind(addr: SocketAddr) -> bool {
-    !addr.ip().is_loopback() || std::env::var_os("PHUX_WS_SECURE").is_some_and(|v| !v.is_empty())
+const fn secure_bind(addr: SocketAddr, env: &ServerEnv) -> bool {
+    !addr.ip().is_loopback() || env.ws_secure
 }
 
 /// Build the optional WebSocket listener (ADR-0031). The bind address is the
@@ -1383,10 +1385,11 @@ fn secure_bind(addr: SocketAddr) -> bool {
 async fn build_ws_listener(
     addr: SocketAddr,
     workload_mtls: bool,
+    env: &ServerEnv,
 ) -> (Option<crate::transport::WsListener>, RemoteListenerSlot) {
     const WSS: RemoteListenerTransport = RemoteListenerTransport::Wss;
     let addr_s = addr.to_string();
-    let workload = match workload_auth::WorkloadAuth::for_posture(workload_mtls) {
+    let workload = match workload_auth::WorkloadAuth::for_posture(workload_mtls, env) {
         Ok(workload) => workload,
         Err(err) => {
             error!(error = %err, "configured workload mTLS unavailable; WebSocket disabled");
@@ -1394,7 +1397,7 @@ async fn build_ws_listener(
         }
     };
 
-    if !secure_bind(addr) && workload.is_none() {
+    if !secure_bind(addr, env) && workload.is_none() {
         return match crate::transport::WsListener::bind(addr).await {
             Ok(ws) => {
                 let bound = ws.local_addr().map_or(addr_s, |a| a.to_string());
@@ -1408,7 +1411,7 @@ async fn build_ws_listener(
         };
     }
 
-    let Some((cert_path, key_path)) = remote_certificate(addr, "wss") else {
+    let Some((cert_path, key_path)) = remote_certificate(addr, "wss", env) else {
         return disabled(WSS, addr_s, ListenerDisabledReason::CertProvisionFailed);
     };
     let acceptor = match crate::transport::tls::acceptor_from_pem_with_client_ca(
@@ -1422,7 +1425,7 @@ async fn build_ws_listener(
             return disabled(WSS, addr_s, ListenerDisabledReason::TlsSetupFailed);
         }
     };
-    let store = remote_token_store(&tokens_path(), "wss");
+    let store = remote_token_store(&env.tokens_path(), "wss");
     let token_count = store.len();
     let workload_mtls = workload.is_some();
     match crate::transport::WsListener::bind_secure(
@@ -1443,12 +1446,6 @@ async fn build_ws_listener(
             disabled(WSS, addr_s, ListenerDisabledReason::BindFailed)
         }
     }
-}
-
-/// The bearer-token store path: `PHUX_WS_TOKENS`, else the default.
-fn tokens_path() -> PathBuf {
-    std::env::var_os("PHUX_WS_TOKENS")
-        .map_or_else(crate::auth::default_token_store_path, PathBuf::from)
 }
 
 /// The credential store a secure remote listener gates admission on. Loaded
@@ -1498,31 +1495,26 @@ fn warn_if_cert_omits_bind(cert_path: &Path, advertised: &[String], transport: &
     }
 }
 
-/// Parse a [`SocketAddr`] from environment variable `var`; unset or
-/// malformed (warned) leaves the transport disabled.
-fn env_socket_addr(var: &str) -> Option<SocketAddr> {
-    let raw = std::env::var(var).ok()?;
-    match raw.parse::<SocketAddr>() {
-        Ok(addr) => Some(addr),
-        Err(err) => {
-            warn!(var, addr = %raw, error = %err, "invalid socket address; transport disabled");
-            None
-        }
-    }
-}
-
 /// Certificate and key a TLS listener bound to `addr` presents: the
 /// operator's (`PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY`) when set, otherwise
 /// the shared self-signed pair, provisioned on first use and never
 /// regenerated (ADR-0091), so every listener presents the one fingerprint
 /// `phux pair` prints. `None`, after logging, when it cannot be provisioned.
-fn remote_certificate(addr: SocketAddr, transport: &str) -> Option<(PathBuf, PathBuf)> {
-    let cert_env = std::env::var_os("PHUX_WS_TLS_CERT").map(PathBuf::from);
-    let key_env = std::env::var_os("PHUX_WS_TLS_KEY").map(PathBuf::from);
-    let operator_cert = cert_env.is_some() || key_env.is_some();
-    let cert_path = cert_env.unwrap_or_else(crate::transport::tls::default_cert_path);
-    let key_path = key_env.unwrap_or_else(crate::transport::tls::default_key_path);
-    if let Err(refusal) = refuse_dev_on_production_credentials(&cert_path, &key_path) {
+fn remote_certificate(
+    addr: SocketAddr,
+    transport: &str,
+    env: &ServerEnv,
+) -> Option<(PathBuf, PathBuf)> {
+    let operator_cert = env.tls_cert.is_some() || env.tls_key.is_some();
+    let cert_path = env
+        .tls_cert
+        .clone()
+        .unwrap_or_else(crate::transport::tls::default_cert_path);
+    let key_path = env
+        .tls_key
+        .clone()
+        .unwrap_or_else(crate::transport::tls::default_key_path);
+    if let Err(refusal) = refuse_dev_on_production_credentials(&cert_path, &key_path, env) {
         error!(transport, "{refusal}; listener disabled");
         return None;
     }
@@ -1543,10 +1535,14 @@ fn remote_certificate(addr: SocketAddr, transport: &str) -> Option<(PathBuf, Pat
 /// `PHUX_WS_TLS_*` / `PHUX_WS_TOKENS` (a production pane exports them) would
 /// otherwise hand it. Every remote listener resolves its certificate through
 /// [`remote_certificate`], so this gates them all.
-fn refuse_dev_on_production_credentials(cert_path: &Path, key_path: &Path) -> Result<(), String> {
+fn refuse_dev_on_production_credentials(
+    cert_path: &Path,
+    key_path: &Path,
+    env: &ServerEnv,
+) -> Result<(), String> {
     crate::transport::tls::refuse_dev_on_production_tls(cert_path, key_path)
         .map_err(|err| err.to_string())?;
-    phux_config::production::refuse_dev_on_production_state(&tokens_path())
+    phux_config::production::refuse_dev_on_production_state(&env.tokens_path())
 }
 
 /// Bearer-token store for a QUIC-class listener: required on a secure bind,
@@ -1554,8 +1550,9 @@ fn refuse_dev_on_production_credentials(cert_path: &Path, key_path: &Path) -> Re
 fn remote_tokens(
     secure: bool,
     transport: &str,
+    env: &ServerEnv,
 ) -> Option<std::sync::Arc<crate::auth::ReloadingTokenStore>> {
-    secure.then(|| std::sync::Arc::new(remote_token_store(&tokens_path(), transport)))
+    secure.then(|| std::sync::Arc::new(remote_token_store(&env.tokens_path(), transport)))
 }
 
 /// Build the optional QUIC listener for `addr` (ADR-0007). QUIC is always
@@ -1565,19 +1562,20 @@ fn remote_tokens(
 fn build_quic_listener_for(
     addr: SocketAddr,
     workload_mtls: bool,
+    env: &ServerEnv,
 ) -> (
     Option<crate::transport::quic::QuicListener>,
     RemoteListenerSlot,
 ) {
     const QUIC: RemoteListenerTransport = RemoteListenerTransport::Quic;
-    let secure = secure_bind(addr);
+    let secure = secure_bind(addr, env);
     let addr_s = addr.to_string();
-    let Some((cert_path, key_path)) = remote_certificate(addr, "quic") else {
+    let Some((cert_path, key_path)) = remote_certificate(addr, "quic", env) else {
         return disabled(QUIC, addr_s, ListenerDisabledReason::CertProvisionFailed);
     };
-    let tokens = remote_tokens(secure, "quic");
+    let tokens = remote_tokens(secure, "quic", env);
     let token_count = tokens.as_ref().map_or(0, |s| s.len());
-    let workload_auth = match workload_auth::WorkloadAuth::for_posture(workload_mtls) {
+    let workload_auth = match workload_auth::WorkloadAuth::for_posture(workload_mtls, env) {
         Ok(auth) => auth,
         Err(err) => {
             error!(error = %err, "configured workload mTLS unavailable; QUIC disabled");
@@ -1618,17 +1616,18 @@ fn build_quic_listener_for(
 #[cfg(feature = "webtransport")]
 fn build_wt_listener(
     addr: SocketAddr,
+    env: &ServerEnv,
 ) -> (
     Option<crate::transport::webtransport::WtListener>,
     RemoteListenerSlot,
 ) {
     const WT: RemoteListenerTransport = RemoteListenerTransport::Wt;
-    let secure = secure_bind(addr);
+    let secure = secure_bind(addr, env);
     let addr_s = addr.to_string();
-    let Some((cert_path, key_path)) = remote_certificate(addr, "webtransport") else {
+    let Some((cert_path, key_path)) = remote_certificate(addr, "webtransport", env) else {
         return disabled(WT, addr_s, ListenerDisabledReason::CertProvisionFailed);
     };
-    let tokens = remote_tokens(secure, "webtransport");
+    let tokens = remote_tokens(secure, "webtransport", env);
     let token_count = tokens.as_ref().map_or(0, |s| s.len());
     match crate::transport::webtransport::WtListener::from_pem(addr, &cert_path, &key_path, tokens)
     {

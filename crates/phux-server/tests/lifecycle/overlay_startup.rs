@@ -122,7 +122,7 @@ fn server_serves_clients_while_overlay_detection_is_still_running() {
                 Instant::now() < start_deadline,
                 "overlay detection never ran, so nothing here was exercised. \
                  The auto-listen gate is closed on this machine: check \
-                 PHUX_NO_AUTO_LISTEN and PHUX_PROFILE.",
+                 PHUX_PROFILE.",
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

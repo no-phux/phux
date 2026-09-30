@@ -441,7 +441,12 @@ For contributors and agents: test a fix against a dev server (`just
 rebuild` hot-swaps the dev-profile server only). Never copy a build into an
 install location such as `~/.local/bin`, and never point a build at the
 production socket or state. Tests that spawn `phux` start from a scrubbed
-`PHUX_*` environment (`crates/phux/tests/common/ambient.rs`). The guards
+`PHUX_*` environment (`crates/phux/tests/common/ambient.rs`), and an
+in-process server never reads one: the runtime takes its `PHUX_*`
+configuration (listener addresses, TLS pair, credential store, workload
+mode, upload directory, SSH program) from `ServerConfig::env`, which only
+`phux server` fills from the environment and which is empty by default. The
+guards
 refuse all of it, and trying to route around them is the failure they exist
 to prevent.
 
@@ -790,7 +795,17 @@ token or any phux frame is sent, so a listener that lost its workload check
 cannot quietly downgrade the client to bearer-only admission
 ([workload-auth.md](spec/workload-auth.md) §3). It is off by default, needs
 both identity variables, and disables TLS session resumption so every
-handshake shows whether the server asked. The CA key
+handshake shows whether the server asked.
+
+`phux host add me@host` enrolls a certificate for you over ssh
+([workload-auth.md](spec/workload-auth.md) §8.1): the key is generated on
+this machine, only its CSR crosses ssh (on stdin), and the key and chain land
+as owner-only files under `<state-dir>/remotes/` that the `[[remote]]` entry
+names as `client-cert` and `client-key`. Every dial to that remote presents
+them, without the `PHUX_WORKLOAD_*` variables. Running `host add` again when
+the saved route no longer answers enrolls a new certificate and revokes the
+old one in the same registry write; `phux pair revoke sha256:...` revokes an
+enrolled certificate like any other workload credential. The CA key
 (`<state-dir>/workload-ca.key`), the CA certificate, and the registry
 (`<state-dir>/workload-keys`) are owner-only files, replaced under a lock by
 atomic rename; `PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, and

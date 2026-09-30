@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use phux_config::RemoteConfigEntry;
+use phux_dial::TlsClientIdentity;
 
 /// The QUIC port a server auto-binds on its overlay address (ADR-0081), and
 /// therefore the port a target with no `:PORT` means. Same constant as the
@@ -120,7 +121,7 @@ fn parse_port(raw: &str) -> Result<u16, String> {
 
 /// The registry entry that describes `target`.
 ///
-/// Matched as exact `user@host`, then the bare host (what `phux host enroll`
+/// Matched as exact `user@host`, then the bare host (what `phux host add`
 /// registers), then any entry whose endpoint addresses that host. Same
 /// order as the CLI's `find_entry`.
 #[must_use]
@@ -209,7 +210,7 @@ pub fn classify(endpoint: &str, target: &RemoteTarget) -> Result<(String, Transp
     if trimmed.starts_with("ssh://") {
         return Err(format!(
             "{trimmed} rides ssh, which needs a terminal; run `phux --remote NAME` in one, \
-             or give the host a direct listener with `phux host enroll`"
+             or give the host a direct listener with `phux host add`"
         ));
     }
     Err(format!(
@@ -255,6 +256,28 @@ pub struct Resolved {
     pub token_file: Option<PathBuf>,
     /// The SHA-256 leaf fingerprint to pin, or `None` for loopback.
     pub cert_fingerprint: Option<String>,
+    /// The workload client certificate the entry enrolled (ADR-0116), or
+    /// [`TlsClientIdentity::None`]. Only paths: the key is read by the TLS
+    /// stack at dial time, and the environment is never consulted.
+    pub client_identity: TlsClientIdentity,
+}
+
+/// The TLS identity a registry entry names: its enrolled certificate and
+/// key, or none.
+///
+/// # Errors
+///
+/// Half an identity or a relative path (see
+/// [`RemoteConfigEntry::client_identity`]).
+pub fn entry_identity(entry: &RemoteConfigEntry) -> Result<TlsClientIdentity, String> {
+    Ok(entry
+        .client_identity()?
+        .map_or(TlsClientIdentity::None, |(certificate, private_key)| {
+            TlsClientIdentity::PemFiles {
+                certificate,
+                private_key,
+            }
+        }))
 }
 
 /// Resolve `raw` against the registry at `config_path`, or at the CLI's own
@@ -278,6 +301,7 @@ pub fn resolve(raw: &str, config_path: Option<&Path>) -> Result<Resolved, String
         transport,
         token_file: entry.token_file.clone(),
         cert_fingerprint: entry.cert_fingerprint.clone(),
+        client_identity: entry_identity(entry)?,
     })
 }
 
@@ -298,7 +322,7 @@ fn unregistered(target: &RemoteTarget) -> String {
     let name = target.registry_name();
     format!(
         "{name} is not a registered host; pair it once in a terminal with \
-         `phux --remote {name}` or `phux host enroll {name}`"
+         `phux --remote {name}` or `phux host add {name}`"
     )
 }
 
@@ -315,6 +339,8 @@ mod tests {
             session: None,
             ssh: None,
             direct: None,
+            client_cert: None,
+            client_key: None,
         }
     }
 
@@ -371,7 +397,7 @@ mod tests {
             find_entry(&entries, &target("phall@studio")).map(|e| e.name.as_str()),
             Some("phall@studio")
         );
-        // `enroll` registers the bare host; `me@mini` still finds it.
+        // `host add` registers the bare host; `me@mini` still finds it.
         assert_eq!(
             find_entry(&entries, &target("me@mini")).map(|e| e.name.as_str()),
             Some("mini")
@@ -433,6 +459,48 @@ mod tests {
         // An absent config file is an empty registry, not an I/O failure.
         let empty = resolve("mini", Some(&dir.path().join("absent.toml"))).expect_err("empty");
         assert!(empty.contains("not a registered host"), "{empty}");
+    }
+
+    /// The registry's enrolled client certificate is what the dial presents;
+    /// an entry without one presents none, and half of one is refused.
+    #[test]
+    fn resolution_carries_the_enrolled_client_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("config.toml");
+        let pin = "ab".repeat(32);
+        std::fs::write(
+            &config,
+            format!(
+                "[[remote]]\nname = \"mini\"\nendpoint = \"quic://127.0.0.1:8788\"\n\
+                 cert-fingerprint = \"{pin}\"\nclient-cert = \"/s/mini.pem\"\n\
+                 client-key = \"/s/mini.key\"\n\
+                 [[remote]]\nname = \"bare\"\nendpoint = \"quic://127.0.0.1:8789\"\n\
+                 [[remote]]\nname = \"half\"\nendpoint = \"quic://127.0.0.1:8790\"\n\
+                 client-cert = \"/s/half.pem\"\n"
+            ),
+        )
+        .expect("config");
+        let resolved = resolve("mini", Some(&config)).expect("mini");
+        assert_eq!(
+            resolved.client_identity,
+            TlsClientIdentity::PemFiles {
+                certificate: PathBuf::from("/s/mini.pem"),
+                private_key: PathBuf::from("/s/mini.key"),
+            }
+        );
+        let target = crate::connection::Target::from(resolved);
+        assert!(matches!(
+            target.client_identity,
+            TlsClientIdentity::PemFiles { .. }
+        ));
+        assert_eq!(
+            resolve("bare", Some(&config))
+                .expect("bare")
+                .client_identity,
+            TlsClientIdentity::None
+        );
+        let half = resolve("half", Some(&config)).expect_err("half");
+        assert!(half.contains("together"), "{half}");
     }
 
     #[test]

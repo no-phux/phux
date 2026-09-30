@@ -16,14 +16,14 @@ use super::{
     EngineDocumentPoint, EngineDocumentSelection, EngineError, GhosttyAdapter, GhosttyReplica,
     GridBuffer, GridDamage, GridFrame, GridProjector, HashMap, MouseMode, Publication, ReplicaInfo,
     Rgb, Scroll, ScrollViewport, Scrollbar, SearchMatch, SearchResults, SelectionGestureEvent,
-    SelectionGestureResult,
+    SelectionGestureResult, TextRegion,
 };
-#[cfg(feature = "engine")]
-use libghostty_vt::selection::Selection;
 #[cfg(feature = "engine")]
 use libghostty_vt::selection::gesture::{
     Behavior, Behaviors, DragEvent, Geometry, Gesture, PressEvent,
 };
+#[cfg(feature = "engine")]
+use libghostty_vt::selection::{FormatOptions, Selection};
 #[cfg(feature = "engine")]
 use libghostty_vt::terminal::{Point, PointCoordinate, PointSpace};
 
@@ -343,6 +343,12 @@ impl Owner {
             }
             Query::Gesture(id, event, reply) => {
                 let _ = reply.send(self.selection_gesture(&id, event));
+            }
+            Query::SelectAll(id, reply) => {
+                let _ = reply.send(self.select_all(&id));
+            }
+            Query::RegionText(id, region, max_bytes, reply) => {
+                let _ = reply.send(self.region_text(&id, region, max_bytes));
             }
             _ => {}
         }
@@ -1002,6 +1008,74 @@ impl Owner {
         Ok((start, end))
     }
 
+    /// Ghostty's own select-all span, committed like a gesture selection so
+    /// its anchors follow the content and are released with the next one.
+    #[cfg(feature = "engine")]
+    fn select_all(&mut self, id: &ResourceId) -> Result<bool, EngineError> {
+        self.reset_gesture(id);
+        let points = {
+            let terminal = self.terminal(id)?;
+            let selected = terminal
+                .select_all()
+                .map_err(|error| engine_error(error.to_string()))?;
+            selected
+                .map(|selected| gesture_document_points(terminal, &selected))
+                .transpose()?
+        };
+        let Some((start, end)) = points else {
+            self.clear_selection(id)?;
+            return Ok(false);
+        };
+        self.commit_gesture_selection(id, start, end, false)?;
+        Ok(true)
+    }
+
+    #[cfg(feature = "engine")]
+    fn region_text(
+        &self,
+        id: &ResourceId,
+        region: TextRegion,
+        max_bytes: usize,
+    ) -> Result<super::BoundedSelectionText, EngineError> {
+        let terminal = self.terminal(id)?;
+        let error = |error: libghostty_vt::Error| engine_error(error.to_string());
+        let cols = terminal.cols().map_err(error)?;
+        let rows = match region {
+            TextRegion::Screen => terminal.total_rows(),
+            TextRegion::History => terminal.scrollback_rows(),
+        }
+        .map_err(error)?;
+        let Some(last) = rows.checked_sub(1) else {
+            return Ok(super::BoundedSelectionText::Text(Vec::new()));
+        };
+        let last = u32::try_from(last).map_err(|_| engine_error("region exceeds u32 rows"))?;
+        let corner = |x, y| terminal.grid_ref(Point::History(PointCoordinate { x, y }));
+        let selection = Selection::new(
+            corner(0, 0).map_err(error)?,
+            corner(cols.saturating_sub(1), last).map_err(error)?,
+            false,
+        );
+        // The span is the loaded document itself, already bounded by the
+        // history budget, so the formatter's work is too; only the output
+        // size is refused here.
+        let formatted = terminal
+            .format_selection_alloc(
+                None,
+                FormatOptions::new()
+                    .with_selection(&selection)
+                    .with_unwrap(true)
+                    .with_trim(true),
+            )
+            .map_err(error)?;
+        Ok(match formatted {
+            Some(bytes) if bytes.len() > max_bytes => {
+                super::BoundedSelectionText::ByteLimitExceeded
+            }
+            Some(bytes) => super::BoundedSelectionText::Text(bytes.to_vec()),
+            None => super::BoundedSelectionText::Text(Vec::new()),
+        })
+    }
+
     #[cfg(feature = "engine")]
     fn terminal(
         &self,
@@ -1150,6 +1224,7 @@ fn viewport_scroll(scroll: Scroll) -> Result<ScrollViewport, EngineError> {
         Scroll::Row(row) => usize::try_from(row)
             .map(ScrollViewport::Row)
             .map_err(|_| engine_error("scroll row exceeds usize")),
+        Scroll::Prompt(_) => Err(engine_error("prompt jumps resolve against a terminal")),
     }
 }
 
