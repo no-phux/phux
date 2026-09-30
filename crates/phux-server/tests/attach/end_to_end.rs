@@ -19,7 +19,7 @@ use tokio::net::UnixStream;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, command,
     expect_protocol_error_close, join_after_shutdown, recv_typed, recv_until, run_local,
-    send_frame, spawn_server, wait_for_raw_socket,
+    send_frame, spawn_server_with, wait_for_raw_socket,
 };
 
 fn hello_with(minor: u16, client_caps: ClientCapabilities) -> FrameKind {
@@ -62,9 +62,19 @@ fn server() -> (
     std::path::PathBuf,
     phux_server_testkit::ServerHandles,
 ) {
+    server_with(|_| {})
+}
+
+fn server_with(
+    configure: impl FnOnce(&mut phux_server::ServerConfig),
+) -> (
+    TempDir,
+    std::path::PathBuf,
+    phux_server_testkit::ServerHandles,
+) {
     let tmp = TempDir::new().unwrap();
     let socket = tmp.path().join("phux.sock");
-    let handles = spawn_server(socket.clone(), Some("default"));
+    let handles = spawn_server_with(socket.clone(), Some("default"), configure);
     (tmp, socket, handles)
 }
 
@@ -294,10 +304,8 @@ fn put_file_round_trip_publishes_only_the_verified_file() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let upload_dir = tmp.path().join("uploads");
-        // SAFETY: nextest runs each test in its own process; set before any
-        // server task reads it.
-        unsafe { std::env::set_var("PHUX_UPLOAD_DIR", &upload_dir) };
-        let (_tmp, socket, (shutdown, server)) = server();
+        let (_tmp, socket, (shutdown, server)) =
+            server_with(|cfg| cfg.env.upload_dir = Some(upload_dir.clone()));
         let mut stream = raw(&socket).await;
         send_frame(&mut stream, &hello()).await;
         recv_typed(&mut stream).await;

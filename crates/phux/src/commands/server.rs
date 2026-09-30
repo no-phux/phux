@@ -287,6 +287,8 @@ fn build_server_config(
         hook_catalog,
         // Ephemeral lifetime (ADR-0063); absent by default.
         exit_after_idle: exit_after_idle.map(Duration::from_secs),
+        // The one place the `PHUX_*` process configuration is read.
+        env: phux_server::ServerEnv::from_process(),
     }
 }
 

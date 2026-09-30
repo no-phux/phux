@@ -441,7 +441,12 @@ For contributors and agents: test a fix against a dev server (`just
 rebuild` hot-swaps the dev-profile server only). Never copy a build into an
 install location such as `~/.local/bin`, and never point a build at the
 production socket or state. Tests that spawn `phux` start from a scrubbed
-`PHUX_*` environment (`crates/phux/tests/common/ambient.rs`). The guards
+`PHUX_*` environment (`crates/phux/tests/common/ambient.rs`), and an
+in-process server never reads one: the runtime takes its `PHUX_*`
+configuration (listener addresses, TLS pair, credential store, workload
+mode, upload directory, SSH program) from `ServerConfig::env`, which only
+`phux server` fills from the environment and which is empty by default. The
+guards
 refuse all of it, and trying to route around them is the failure they exist
 to prevent.
 

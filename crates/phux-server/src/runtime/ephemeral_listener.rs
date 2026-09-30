@@ -62,7 +62,8 @@ fn workload_authority(
     state: &SharedState,
 ) -> Result<Option<super::workload_auth::WorkloadAuth>, CommandResult> {
     let required = state.with(crate::state::ServerState::workload_mtls_required);
-    super::workload_auth::WorkloadAuth::for_posture(required).map_err(|err| {
+    let env = state.with(crate::state::ServerState::server_env);
+    super::workload_auth::WorkloadAuth::for_posture(required, &env).map_err(|err| {
         warn!(error = %err, "OPEN_LISTENER refused: configured workload mTLS is unavailable");
         refusal(
             ErrorCode::InternalError,
@@ -93,8 +94,9 @@ pub(super) fn handle_open_listener(
     }
     let linger = effective_linger(request.linger_secs);
 
+    let env = state.with(crate::state::ServerState::server_env);
     let Some((cert, key)) =
-        super::remote_certificate(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)), "quic")
+        super::remote_certificate(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)), "quic", &env)
     else {
         return refusal(
             ErrorCode::InternalError,

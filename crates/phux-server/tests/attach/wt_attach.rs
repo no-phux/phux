@@ -3,7 +3,6 @@
 //! be reassembled across arbitrary chunk boundaries.
 
 #![cfg(feature = "webtransport")]
-#![allow(unused_unsafe, reason = "env::set_var is unsafe only on edition 2024")]
 
 use std::time::Duration;
 
@@ -33,11 +32,6 @@ fn wt_hello_attach_receives_attached_and_snapshot() {
         tls_dir.path().join("key.pem"),
     );
     phux_server::transport::tls::ensure_self_signed(&cert, &key).unwrap();
-    // SAFETY: set before the runtime (and any other thread) starts.
-    unsafe {
-        std::env::set_var("PHUX_WS_TLS_CERT", &cert);
-        std::env::set_var("PHUX_WS_TLS_KEY", &key);
-    }
 
     run_local(async move {
         let tmp = TempDir::new().unwrap();
@@ -46,6 +40,11 @@ fn wt_hello_attach_receives_attached_and_snapshot() {
             pre_seeded_session: Some("default".to_owned()),
             seed_with_pty: false,
             seed_command: None,
+            env: phux_server::ServerEnv {
+                tls_cert: Some(cert),
+                tls_key: Some(key),
+                ..phux_server::ServerEnv::default()
+            },
             ..ServerConfig::with_default_socket()
         };
         let (_shutdown, stop) = oneshot::channel::<()>();

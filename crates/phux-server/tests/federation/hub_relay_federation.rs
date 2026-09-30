@@ -127,12 +127,27 @@ fn spawn_hub_with_session(
     satellites: Vec<SatelliteConfigEntry>,
     pre_seeded_session: Option<&str>,
 ) -> (oneshot::Sender<()>, ServerTask) {
+    spawn_hub_with_env(
+        socket_path,
+        satellites,
+        pre_seeded_session,
+        phux_server::ServerEnv::default(),
+    )
+}
+
+fn spawn_hub_with_env(
+    socket_path: PathBuf,
+    satellites: Vec<SatelliteConfigEntry>,
+    pre_seeded_session: Option<&str>,
+    env: phux_server::ServerEnv,
+) -> (oneshot::Sender<()>, ServerTask) {
     let (tx, rx) = oneshot::channel::<()>();
     let cfg = ServerConfig {
         socket_path,
         pre_seeded_session: pre_seeded_session.map(str::to_owned),
         seed_with_pty: false,
         seed_command: None,
+        env,
         ..ServerConfig::with_default_socket()
     };
     let handle = tokio::task::spawn_local(async move {
@@ -791,7 +806,7 @@ async fn run_stub_bridge(c2s: PathBuf, s2c: PathBuf, sat_sock: PathBuf) {
     }
 }
 
-/// The relay over the SSH-stdio dial path, with `$PHUX_SSH` pointing at a
+/// The relay over the SSH-stdio dial path, with `PHUX_SSH` pointing at a
 /// stub whose stdio the harness splices onto the satellite's UDS.
 #[test]
 fn ssh_stub_link_relays_commands_end_to_end() {
@@ -801,15 +816,12 @@ fn ssh_stub_link_relays_commands_end_to_end() {
     mkfifo(&c2s);
     mkfifo(&s2c);
     let stub = write_ssh_stub(tmp.path(), &c2s, &s2c);
-    // SAFETY: nextest runs each test in its own process and no other thread
-    // exists yet; the runtime is built inside run_local below.
-    unsafe { std::env::set_var("PHUX_SSH", &stub) };
 
     phux_server_testkit::run_local(async move {
         let sat_sock = tmp.path().join("sat.sock");
         let (ws_port, sat_shutdown, sat_task) = spawn_satellite(sat_sock.clone());
         let bridge = tokio::task::spawn_local(run_stub_bridge(c2s, s2c, sat_sock));
-        let (hub_shutdown, hub_task) = spawn_hub(
+        let (hub_shutdown, hub_task) = spawn_hub_with_env(
             tmp.path().join("hub.sock"),
             vec![SatelliteConfigEntry {
                 name: "sat".to_owned(),
@@ -818,6 +830,11 @@ fn ssh_stub_link_relays_commands_end_to_end() {
                 token_file: None,
                 cert_fingerprint: None,
             }],
+            None,
+            phux_server::ServerEnv {
+                ssh_program: Some(stub.clone().into_os_string()),
+                ..phux_server::ServerEnv::default()
+            },
         );
         // Discovery uses the satellite's WS listener; only the hub leg rides ssh.
         let sat_pane = discover_satellite_pane(ws_port).await;

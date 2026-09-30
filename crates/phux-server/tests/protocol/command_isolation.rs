@@ -228,10 +228,10 @@ fn held_transcribe_does_not_block_control_or_independent_terminal_input() {
         let started = tmp.path().join("transcriber-started");
         let release = tmp.path().join("release-transcriber");
         let input_marker = tmp.path().join("terminal-b-input");
-        unsafe { std::env::set_var("PHUX_UPLOAD_DIR", &upload_dir) };
 
         let transcriber = blocking_transcriber(&started, &release);
         let (shutdown, server) = cat_server(&socket, move |cfg| {
+            cfg.env.upload_dir = Some(upload_dir);
             cfg.voice.transcriber = Some(transcriber);
             cfg.voice.timeout_secs = Some(15);
         });
@@ -285,7 +285,6 @@ fn held_transcribe_does_not_block_control_or_independent_terminal_input() {
             "held transcript"
         );
 
-        unsafe { std::env::remove_var("PHUX_UPLOAD_DIR") };
         drop(stream);
         join_after_shutdown(shutdown, server).await;
     });
@@ -299,8 +298,9 @@ fn put_file_then_transcribe_is_fifo_and_pastes_the_transcript() {
         let _serial = BULK_TEST_LOCK.acquire().await.unwrap();
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("phux.sock");
-        unsafe { std::env::set_var("PHUX_UPLOAD_DIR", tmp.path().join("uploads")) };
+        let upload_root = tmp.path().join("uploads");
         let (shutdown, server) = cat_server(&socket, |cfg| {
+            cfg.env.upload_dir = Some(upload_root);
             cfg.voice.transcriber = Some(passthrough_transcriber());
         });
         let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
@@ -356,7 +356,6 @@ fn put_file_then_transcribe_is_fifo_and_pastes_the_transcript() {
         assert_eq!(value["text"], "fifo transcript");
         assert_eq!(value["pasted"], true);
 
-        unsafe { std::env::remove_var("PHUX_UPLOAD_DIR") };
         drop(stream);
         join_after_shutdown(shutdown, server).await;
     });
@@ -396,10 +395,12 @@ fn stalled_disk_upload_does_not_block_a_new_connection() {
         let socket = tmp.path().join("phux.sock");
         let hold = tmp.path().join("upload-hold");
         std::fs::create_dir(&hold).unwrap();
-        unsafe { std::env::set_var("PHUX_UPLOAD_DIR", tmp.path().join("uploads")) };
+        let upload_root = tmp.path().join("uploads");
         unsafe { std::env::set_var("PHUX_TEST_UPLOAD_HOLD", &hold) };
 
-        let (shutdown, server) = cat_server(&socket, |_| {});
+        let (shutdown, server) = cat_server(&socket, |cfg| {
+            cfg.env.upload_dir = Some(upload_root);
+        });
         let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
         let terminal_id = attach(&mut stream).await;
         let upload_id = FileUploadId::new([0x5d; 16]).unwrap();
@@ -438,7 +439,6 @@ fn stalled_disk_upload_does_not_block_a_new_connection() {
         }
 
         unsafe { std::env::remove_var("PHUX_TEST_UPLOAD_HOLD") };
-        unsafe { std::env::remove_var("PHUX_UPLOAD_DIR") };
         drop(stream);
         join_after_shutdown(shutdown, server).await;
     });
@@ -510,9 +510,10 @@ fn saturation_refuses_without_starting_and_teardown_releases_global_capacity() {
         let socket = tmp.path().join("phux.sock");
         let started = tmp.path().join("starts");
         let release = tmp.path().join("release");
-        unsafe { std::env::set_var("PHUX_UPLOAD_DIR", tmp.path().join("uploads")) };
+        let upload_root = tmp.path().join("uploads");
         let transcriber = blocking_transcriber(&started, &release);
         let (shutdown, server) = cat_server(&socket, move |cfg| {
+            cfg.env.upload_dir = Some(upload_root);
             cfg.voice.transcriber = Some(transcriber);
             cfg.voice.timeout_secs = Some(15);
         });
@@ -604,7 +605,6 @@ fn saturation_refuses_without_starting_and_teardown_releases_global_capacity() {
             transcript(await_command_result(&mut replacement, 501).await),
             "client-4"
         );
-        unsafe { std::env::remove_var("PHUX_UPLOAD_DIR") };
         drop(replacement);
         join_after_shutdown(shutdown, server).await;
     });

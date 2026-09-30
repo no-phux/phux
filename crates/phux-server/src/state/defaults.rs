@@ -78,6 +78,19 @@ impl ServerState {
         self.config.metadata_value_bytes
     }
 
+    /// Set the `PHUX_*` process configuration. Called once at server
+    /// startup to mirror [`crate::runtime::ServerConfig::env`].
+    pub fn set_server_env(&mut self, env: crate::runtime::ServerEnv) {
+        self.config.server_env = std::sync::Arc::new(env);
+    }
+
+    /// The `PHUX_*` process configuration set by [`Self::set_server_env`]:
+    /// listener addresses, TLS pair, credential store, workload locations.
+    #[must_use]
+    pub fn server_env(&self) -> std::sync::Arc<crate::runtime::ServerEnv> {
+        std::sync::Arc::clone(&self.config.server_env)
+    }
+
     /// Read the `[voice]` settings set by [`Self::set_voice`].
     #[must_use]
     pub fn voice(&self) -> phux_config::VoiceCfg {

@@ -20,7 +20,7 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, SpawnResult, ViewportInfo};
 use phux_server::DEFAULT_GROUP_ID;
-use support::{EnvGuard, STEP_DEADLINE, Server, dial, free_udp_addr, seeded_config};
+use support::{STEP_DEADLINE, Server, dial, free_udp_addr, quic_env, seeded_config};
 use tempfile::TempDir;
 use tokio::time::{Instant, timeout};
 
@@ -161,12 +161,10 @@ async fn prove_spawned_pane_binds() {
     let tmp = TempDir::new().unwrap();
     let cert = tmp.path().join("cert.pem");
     let key = tmp.path().join("key.pem");
-    let _env = EnvGuard::install(&cert, &key, None);
     let quic_addr = free_udp_addr();
-    let server = Server::start(
-        seeded_config(tmp.path().join("phux.sock"), SESSION),
-        quic_addr,
-    );
+    let mut config = seeded_config(tmp.path().join("phux.sock"), SESSION);
+    config.env = quic_env(&cert, &key, None);
+    let server = Server::start(config, quic_addr);
     let mut connection = dial(quic_addr).await;
     assert!(
         connection.multistream_enabled(),

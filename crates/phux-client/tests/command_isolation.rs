@@ -23,7 +23,7 @@ use phux_protocol::wire::frame::{
 };
 use phux_server::DEFAULT_GROUP_ID;
 use sha2::{Digest, Sha256};
-use support::{EnvGuard, STEP_DEADLINE, Server, dial, free_udp_addr, seeded_config};
+use support::{STEP_DEADLINE, Server, dial, free_udp_addr, quic_env, seeded_config};
 use tempfile::TempDir;
 use tokio::time::{Instant, sleep, timeout};
 
@@ -291,9 +291,9 @@ async fn prove_quic_isolation() {
     let started = tmp.path().join("transcriber-started");
     let release = tmp.path().join("transcriber-release");
     let input_marker = tmp.path().join("input-order");
-    let _env = EnvGuard::install(&cert, &key, Some(&tmp.path().join("uploads")));
     let quic_addr = free_udp_addr();
     let mut config = seeded_config(tmp.path().join("phux.sock"), "quic-command-isolation");
+    config.env = quic_env(&cert, &key, Some(&tmp.path().join("uploads")));
     config.voice.transcriber = Some(blocking_transcriber(&started, &release));
     config.voice.timeout_secs = Some(15);
     let server = Server::start(config, quic_addr);

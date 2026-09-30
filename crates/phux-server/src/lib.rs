@@ -45,7 +45,7 @@ pub use id_bridge::IdBridge;
 pub use resource::{
     ResourceCore, ResourceFacetHandle, ResourceHandle, ResourceId, ResourceKind, WrongResourceKind,
 };
-pub use runtime::{ServerConfig, ServerError, ServerRuntime, default_socket_path};
+pub use runtime::{ServerConfig, ServerEnv, ServerError, ServerRuntime, default_socket_path};
 pub use state::{
     AttachError, AttachedClient, ClientId, DEFAULT_GROUP_ID, Outbound, ServerState, SharedState,
     TerminalInput,

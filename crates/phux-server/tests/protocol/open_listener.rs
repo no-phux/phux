@@ -6,8 +6,6 @@
 //! used it for its linger. Every case drives a real in-process server and real
 //! QUIC dials on loopback.
 
-#![allow(unused_unsafe, reason = "env::set_var is unsafe only on edition 2024")]
-
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -21,7 +19,7 @@ use phux_protocol::wire::frame::{
 };
 use phux_server_testkit::{
     SERVER_JOIN_DEADLINE, SOCKET_CONNECT_DEADLINE, await_command_result, encode_frame_vec,
-    run_local, send_frame, spawn_server, wait_for_socket,
+    run_local, send_frame, spawn_server_with, wait_for_socket,
 };
 use tempfile::TempDir;
 use tokio::net::UnixStream;
@@ -34,10 +32,11 @@ const DIAL_DEADLINE: Duration = Duration::from_secs(4);
 struct Tls {
     _dir: TempDir,
     cert: PathBuf,
+    key: PathBuf,
 }
 
-/// Point the server at one certificate for the whole binary. The variables
-/// are process-global, so they are set once, before any server reads them.
+/// One throwaway certificate for the whole binary, so the tests never touch
+/// the real state directory.
 fn tls() -> &'static Tls {
     static TLS: OnceLock<Tls> = OnceLock::new();
     TLS.get_or_init(|| {
@@ -45,14 +44,11 @@ fn tls() -> &'static Tls {
         let cert = dir.path().join("cert.pem");
         let key = dir.path().join("key.pem");
         phux_server::transport::tls::ensure_self_signed(&cert, &key).expect("certificate");
-        // SAFETY: runs once, inside `get_or_init`, before any server in this
-        // process starts; every test reaches a server only through this call,
-        // so nothing reads the environment while it is written.
-        unsafe {
-            std::env::set_var("PHUX_WS_TLS_CERT", &cert);
-            std::env::set_var("PHUX_WS_TLS_KEY", &key);
+        Tls {
+            _dir: dir,
+            cert,
+            key,
         }
-        Tls { _dir: dir, cert }
     })
 }
 
@@ -194,11 +190,14 @@ where
     F: FnOnce(UnixStream) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    tls();
+    let tls = tls();
     let dir = TempDir::new().expect("tempdir");
     let socket = dir.path().join("s.sock");
     run_local(async move {
-        let (shutdown, handle) = spawn_server(socket.clone(), Some("s"));
+        let (shutdown, handle) = spawn_server_with(socket.clone(), Some("s"), |cfg| {
+            cfg.env.tls_cert = Some(tls.cert.clone());
+            cfg.env.tls_key = Some(tls.key.clone());
+        });
         let uds = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
         body(uds).await;
         let _ = shutdown.send(());
@@ -234,6 +233,37 @@ fn a_listener_admits_its_own_token_and_nothing_else() {
             "an unknown token is refused"
         );
     });
+}
+
+/// A shell inside a production pane exports the server's `PHUX_*`
+/// configuration. An in-process server takes its configuration from its
+/// `ServerConfig`, never from that ambient environment: the paths below sit
+/// under the production state directory, which a development build refuses
+/// to touch, so reading any of them would fail `OPEN_LISTENER`.
+#[test]
+fn ambient_production_env_does_not_reach_an_in_process_server() {
+    let home = std::env::var_os("HOME").expect("HOME is set");
+    let state = PathBuf::from(home).join(".local/state/phux/hermetic-test-never-created");
+    // SAFETY: nextest runs each test in its own process, and this runs before
+    // any server thread exists.
+    unsafe {
+        std::env::set_var("PHUX_WS_TOKENS", state.join("remote-tokens"));
+        std::env::set_var("PHUX_WS_TLS_CERT", state.join("remote-cert.pem"));
+        std::env::set_var("PHUX_WS_TLS_KEY", state.join("remote-key.pem"));
+        std::env::set_var("PHUX_QUIC_ADDR", "0.0.0.0:0");
+    }
+    with_server(|mut uds| async move {
+        let a = opened(open(&mut uds, 1, ListenerTransport::Quic, None, 0).await);
+        assert_eq!(
+            a.fingerprint,
+            phux_server::transport::tls::cert_fingerprint(&tls().cert).expect("fingerprint"),
+            "the listener presents the configured certificate, not the inherited one"
+        );
+    });
+    assert!(
+        !state.exists(),
+        "nothing was written under production state"
+    );
 }
 
 #[test]
