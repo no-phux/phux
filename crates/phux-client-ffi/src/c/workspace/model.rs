@@ -281,7 +281,7 @@ pub(super) fn adopt(
 ) -> Result<Workspace, BridgeError> {
     let mut workspace = match bytes {
         Some(bytes) => {
-            if bytes.len() > 256 * 1024 {
+            if bytes.len() > layout::MAX_LAYOUT_METADATA_BYTES {
                 return Err(BridgeError::state("layout metadata exceeds 256 KiB"));
             }
             Workspace::decode_cbor(bytes).map_err(|e| BridgeError::invalid(e.to_string()))?
@@ -340,5 +340,5 @@ pub(super) fn preserve_focus(workspace: &mut Workspace, previous: &Workspace) {
 }
 
 pub(super) fn key(selected: u32) -> String {
-    format!("phux.tui.layout/v1/{}", SessionId::new(selected).get())
+    layout::layout_key(SessionId::new(selected))
 }

@@ -27,131 +27,13 @@ use super::pair;
 use super::rec::RecordSpec;
 use super::remote::{self, Endpoint, RemoteEntry};
 
-/// The default QUIC port a server auto-binds (ADR-0081), and therefore the
-/// port a `--remote` target with no `:PORT` means.
-const DEFAULT_QUIC_PORT: u16 = 8788;
+pub(crate) use phux_client_runtime::target::{DEFAULT_QUIC_PORT, RemoteTarget, endpoint_host};
 
-/// A parsed `[USER@]HOST[:PORT]` remote target.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RemoteTarget {
-    /// The `user@` half, when the operator typed one. Names the ssh
-    /// destination for the bootstrap rung; never travels on the wire.
-    pub(crate) user: Option<String>,
-    /// Hostname or IP literal. IPv6 is stored unbracketed; [`Self::authority`]
-    /// re-brackets it.
-    pub(crate) host: String,
-    /// An explicit `:PORT`, which overrides whatever a registry entry
-    /// remembers for this dial only.
-    pub(crate) port: Option<u16>,
-}
-
-impl RemoteTarget {
-    /// Parse `host`, `user@host`, `host:port`, `user@host:port`, and bracketed
-    /// IPv6. A URI is refused with a pointer to `phux host add`.
-    pub(crate) fn parse(raw: &str) -> Result<Self, String> {
-        Self::parse_labeled(raw, "--remote")
-    }
-
-    /// [`Self::parse`] with the errors worded for another spelling of the
-    /// same grammar (`phux host add HOST` shares it).
-    pub(crate) fn parse_labeled(raw: &str, label: &str) -> Result<Self, String> {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return Err(format!("{label} needs a target, e.g. {label} me@mini"));
-        }
-        if trimmed.contains("://") {
-            return Err(format!(
-                "{label} takes [USER@]HOST[:PORT], not a URI (got {trimmed:?}); \
-                 register a full endpoint with `phux host add NAME {trimmed}`"
-            ));
-        }
-
-        // Split on the LAST `@`: a username cannot contain `@`, but this way
-        // an address that does is still parsed the way the operator meant.
-        let (user, rest) = match trimmed.rsplit_once('@') {
-            Some((user, rest)) => {
-                if user.is_empty() {
-                    return Err(format!("{label} target {trimmed:?} has an empty user"));
-                }
-                (Some(user.to_owned()), rest)
-            }
-            None => (None, trimmed),
-        };
-
-        let (host, port) = split_host_port(rest, label)?;
-        if host.is_empty() {
-            return Err(format!("{label} target {trimmed:?} has an empty host"));
-        }
-        // A registry name may not contain `/` (it would escape the token
-        // directory on join) or a selector sigil. Catch it here, where the
-        // message can point at what the operator typed.
-        if host.contains('/') || host.starts_with(['@', '#', '.', '=']) {
-            return Err(format!(
-                "{label} host {host:?} must not contain '/' or start with a selector sigil (@ # . =)"
-            ));
-        }
-
-        Ok(Self { user, host, port })
-    }
-
-    /// The registry key: the typed spelling minus any port, so `mini` and
-    /// `mini:8788` are one host.
-    pub(crate) fn registry_name(&self) -> String {
-        self.user
-            .as_ref()
-            .map_or_else(|| self.host.clone(), |user| format!("{user}@{}", self.host))
-    }
-
-    /// The `HOST:PORT` authority to dial, bracketing an IPv6 literal.
-    pub(crate) fn authority(&self) -> String {
-        let port = self.port.unwrap_or(DEFAULT_QUIC_PORT);
-        if self.host.contains(':') {
-            format!("[{}]:{port}", self.host)
-        } else {
-            format!("{}:{port}", self.host)
-        }
-    }
-
-    /// The destination to hand `ssh`, which understands `user@host` natively.
-    pub(crate) fn ssh_destination(&self) -> String {
-        self.registry_name()
-    }
-}
-
-/// Split `HOST[:PORT]`, honoring `[v6]:port` and a bare IPv6 literal.
-fn split_host_port(rest: &str, label: &str) -> Result<(String, Option<u16>), String> {
-    if let Some(inner) = rest.strip_prefix('[') {
-        let (host, tail) = inner
-            .split_once(']')
-            .ok_or_else(|| format!("{label} target {rest:?} has an unclosed '['"))?;
-        let port = match tail {
-            "" => None,
-            tail => Some(parse_port(
-                tail.strip_prefix(':').ok_or_else(|| {
-                    format!("{label} target {rest:?} has trailing text after ']'")
-                })?,
-                label,
-            )?),
-        };
-        return Ok((host.to_owned(), port));
-    }
-    // More than one `:` and no brackets means a bare IPv6 literal: it has no
-    // port, because `fd7a::1:8788` is ambiguous and guessing would silently
-    // dial the wrong address.
-    if rest.matches(':').count() > 1 {
-        return Ok((rest.to_owned(), None));
-    }
-    match rest.split_once(':') {
-        Some((host, port)) => Ok((host.to_owned(), Some(parse_port(port, label)?))),
-        None => Ok((rest.to_owned(), None)),
-    }
-}
-
-fn parse_port(raw: &str, label: &str) -> Result<u16, String> {
-    raw.parse::<u16>()
-        .ok()
-        .filter(|port| *port != 0)
-        .ok_or_else(|| format!("{label} port {raw:?} must be 1..=65535"))
+/// Parse a `--remote` target: `host`, `user@host`, `host:port`,
+/// `user@host:port`, and bracketed IPv6. The grammar is the runtime's (one
+/// for the CLI and every embedder); errors name `--remote`.
+pub(crate) fn parse_target(raw: &str) -> Result<RemoteTarget, String> {
+    RemoteTarget::parse_labeled(raw, "--remote")
 }
 
 /// Find the registry entry for this target: the exact `user@host`, then the
@@ -159,34 +41,10 @@ fn parse_port(raw: &str, label: &str) -> Result<u16, String> {
 /// config yields `None`, falling through to the bootstrap rungs.
 pub(crate) fn find_entry(target: &RemoteTarget) -> Option<RemoteEntry> {
     let entries = remote::load_registry().ok()?;
-    let name = target.registry_name();
-    entries
-        .iter()
-        .find(|entry| entry.name == name)
-        .or_else(|| entries.iter().find(|entry| entry.name == target.host))
-        .or_else(|| {
-            entries
-                .iter()
-                .find(|entry| endpoint_host(&entry.endpoint).as_deref() == Some(&target.host))
-        })
-        .cloned()
-}
-
-/// The host an endpoint URI addresses (`None` when it has none).
-pub(crate) fn endpoint_host(endpoint: &str) -> Option<String> {
-    let rest = endpoint.split_once("://").map(|(_, rest)| rest)?;
-    let authority = rest.split(['/', '?']).next().unwrap_or(rest);
-    let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
-    let host = if let Some(inner) = authority.strip_prefix('[') {
-        inner.split_once(']').map(|(host, _)| host)?
-    } else if authority.matches(':').count() > 1 {
-        authority
-    } else {
-        authority
-            .split_once(':')
-            .map_or(authority, |(host, _)| host)
-    };
-    (!host.is_empty()).then(|| host.to_owned())
+    phux_client_runtime::target::find_entry_by(&entries, target, |entry| {
+        (&entry.name, &entry.endpoint)
+    })
+    .cloned()
 }
 
 /// Apply an explicit `:PORT` to a registered entry for this dial only; the
@@ -245,7 +103,7 @@ pub(crate) struct RemoteAttach<'a> {
 pub(crate) fn run_registered(name: &str, entry: RemoteEntry, rec: Option<&RecordSpec>) -> ExitCode {
     // A registry name is validated (no sigil, no `/`, no `:`), so it always
     // parses as a bare host; the entry itself is what gets dialed.
-    let target = RemoteTarget::parse(name).unwrap_or_else(|_| RemoteTarget {
+    let target = parse_target(name).unwrap_or_else(|_| RemoteTarget {
         user: None,
         host: name.to_owned(),
         port: None,
@@ -299,7 +157,7 @@ fn attach_registered(args: &RemoteAttach<'_>, entry: RemoteEntry) -> ExitCode {
     // and only then the entry's own reading of itself.
     let ssh_host = entry.ssh.clone().unwrap_or_else(|| {
         if args.target.user.is_some() {
-            args.target.ssh_destination()
+            args.target.registry_name()
         } else {
             entry.ssh_destination()
         }
@@ -447,7 +305,8 @@ pub(crate) fn resolve(
     if bootstrap == Bootstrap::Never {
         return Err(unregistered_message(target, None));
     }
-    register_over_ssh(target, &target.ssh_destination(), None).map_err(|err| {
+    // `ssh` takes the typed `user@host` spelling as its destination.
+    register_over_ssh(target, &target.registry_name(), None).map_err(|err| {
         unregistered_message(
             target,
             Some(&format!("{}\nphux:   {}", err.message, err.remedy)),
@@ -593,7 +452,7 @@ fn unregistered_remedies(target: &RemoteTarget) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bootstrap, RemoteTarget, endpoint_host, with_port_override};
+    use super::{Bootstrap, RemoteTarget, endpoint_host, parse_target, with_port_override};
     use crate::commands::remote::RemoteEntry;
 
     fn entry(name: &str, endpoint: &str) -> RemoteEntry {
@@ -625,87 +484,37 @@ mod tests {
         let err = RemoteTarget::parse_labeled("mini:0", "host add").expect_err("port 0");
         assert!(err.starts_with("host add port"), "{err}");
         assert!(
-            RemoteTarget::parse("mini:0")
+            parse_target("mini:0")
                 .expect_err("port 0")
                 .starts_with("--remote port")
         );
     }
 
+    /// Every refusal names the CLI spelling, so an operator sees which flag
+    /// the grammar belongs to.
     #[test]
-    fn parses_every_target_spelling() {
-        let bare = RemoteTarget::parse("mini").expect("bare");
-        assert_eq!(bare.user, None);
-        assert_eq!(bare.host, "mini");
-        assert_eq!(bare.port, None);
-
-        let user = RemoteTarget::parse("phall@mini.ts.net").expect("user");
-        assert_eq!(user.user.as_deref(), Some("phall"));
-        assert_eq!(user.host, "mini.ts.net");
-
-        let port = RemoteTarget::parse("phall@mini:9999").expect("port");
-        assert_eq!(port.port, Some(9999));
-        assert_eq!(port.host, "mini");
-    }
-
-    #[test]
-    fn parses_ipv6_with_and_without_a_port() {
-        // Bracketed: the port is unambiguous.
-        let bracketed = RemoteTarget::parse("me@[fd7a::1]:8788").expect("bracketed");
-        assert_eq!(bracketed.host, "fd7a::1");
-        assert_eq!(bracketed.port, Some(8788));
-
-        // Bare: `fd7a::1` has no port, and guessing one from the last colon
-        // would silently dial a different address.
-        let bare = RemoteTarget::parse("fd7a::1").expect("bare v6");
-        assert_eq!(bare.host, "fd7a::1");
-        assert_eq!(bare.port, None);
-        assert_eq!(bare.authority(), "[fd7a::1]:8788");
-    }
-
-    #[test]
-    fn refuses_targets_that_are_not_host_shaped() {
-        // A URI is a real thing operators will try; the error names the verb
-        // that does accept one instead of guessing.
-        let err = RemoteTarget::parse("quic://mini:8788").expect_err("uri");
-        assert!(err.contains("phux host add"), "{err}");
-
-        assert!(RemoteTarget::parse("").is_err());
-        assert!(RemoteTarget::parse("  ").is_err());
-        assert!(RemoteTarget::parse("@mini").is_err(), "empty user");
-        assert!(RemoteTarget::parse("me@").is_err(), "empty host");
-        assert!(RemoteTarget::parse("mini:0").is_err(), "port 0");
-        assert!(RemoteTarget::parse("mini:70000").is_err(), "port overflow");
-        assert!(RemoteTarget::parse("mini:ssh").is_err(), "non-numeric port");
-        // Would escape the token directory on join.
-        assert!(RemoteTarget::parse("../evil").is_err());
-        // Would shadow the selector grammar.
-        assert!(RemoteTarget::parse("#tag").is_err());
-    }
-
-    #[test]
-    fn registry_name_drops_the_port_but_keeps_the_user() {
-        // `--remote mini` and `--remote mini:8788` are one machine, so they
-        // must not become two registry entries.
-        assert_eq!(
-            RemoteTarget::parse("mini:8788").expect("t").registry_name(),
-            "mini"
-        );
-        assert_eq!(
-            RemoteTarget::parse("phall@mini:8788")
-                .expect("t")
-                .registry_name(),
-            "phall@mini"
-        );
-    }
-
-    #[test]
-    fn authority_defaults_to_the_auto_listen_quic_port() {
-        // ADR-0081 binds 8788 without being asked, so a target with no port
-        // must mean that one.
-        assert_eq!(
-            RemoteTarget::parse("mini").expect("t").authority(),
-            "mini:8788"
-        );
+    fn every_refusal_names_the_remote_flag() {
+        for (raw, prefix) in [
+            ("", "--remote needs a target"),
+            ("quic://mini:8788", "--remote takes [USER@]HOST[:PORT]"),
+            ("@mini", "--remote target \"@mini\" has an empty user"),
+            ("me@", "--remote target \"me@\" has an empty host"),
+            ("../evil", "--remote host \"../evil\""),
+            (
+                "[fd7a::1",
+                "--remote target \"[fd7a::1\" has an unclosed '['",
+            ),
+            (
+                "[fd7a::1]x",
+                "--remote target \"[fd7a::1]x\" has trailing text",
+            ),
+            ("mini:70000", "--remote port \"70000\""),
+        ] {
+            let err = parse_target(raw).expect_err(raw);
+            assert!(err.starts_with(prefix), "{raw:?}: {err}");
+        }
+        let uri = parse_target("quic://mini:8788").expect_err("uri");
+        assert!(uri.contains("phux host add"), "{uri}");
     }
 
     #[test]
@@ -726,7 +535,7 @@ mod tests {
 
     #[test]
     fn explicit_port_overrides_the_registered_endpoint() {
-        let target = RemoteTarget::parse("mini:9999").expect("t");
+        let target = parse_target("mini:9999").expect("t");
         let overridden = with_port_override(entry("mini", "quic://mini:8788"), &target);
         assert_eq!(overridden.endpoint, "quic://mini:9999");
 
@@ -742,7 +551,7 @@ mod tests {
 
     #[test]
     fn no_explicit_port_leaves_the_entry_untouched() {
-        let target = RemoteTarget::parse("mini").expect("t");
+        let target = parse_target("mini").expect("t");
         let untouched = with_port_override(entry("mini", "quic://mini:9999"), &target);
         assert_eq!(
             untouched.endpoint, "quic://mini:9999",

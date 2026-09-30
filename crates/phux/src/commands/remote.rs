@@ -402,19 +402,10 @@ fn fill_table(table: &mut Table, new: &NewRemote) {
 
 /// Read the bearer token for an entry, if it declares a token file.
 ///
-/// The token is a secret, so failures name the path and never echo bytes.
+/// The token is a secret, so failures name the path and never echo bytes;
+/// the file rule is the runtime's, shared with every embedder.
 pub(crate) fn read_token(entry: &RemoteEntry) -> Result<Option<String>, String> {
-    let Some(path) = &entry.token_file else {
-        return Ok(None);
-    };
-    let raw = std::fs::read_to_string(path)
-        .map_err(|err| format!("could not read token file {}: {err}", path.display()))?;
-    let token = raw
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty() && !line.starts_with('#'))
-        .ok_or_else(|| format!("token file {} has no token line", path.display()))?;
-    Ok(Some(token.to_owned()))
+    phux_client_runtime::target::read_token(entry.token_file.as_deref())
 }
 
 #[cfg(test)]

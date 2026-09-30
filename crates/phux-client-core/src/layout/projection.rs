@@ -7,6 +7,16 @@
 
 use phux_protocol::{GroupId, SessionId};
 
+/// Prefix of the shared per-session layout key the TUI and Cockpit read
+/// (`docs/spec/L3.md` §3.2).
+pub const LAYOUT_KEY: &str = "phux.tui.layout/v1";
+
+/// The shared layout metadata key for `session`.
+#[must_use]
+pub fn layout_key(session: SessionId) -> String {
+    format!("{LAYOUT_KEY}/{}", session.get())
+}
+
 /// Group 1 is the v0.x layout metadata scope (`docs/spec/L3.md` §3.2).
 pub const LAYOUT_METADATA_GROUP: GroupId = GroupId::new(1);
 

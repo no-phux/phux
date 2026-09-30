@@ -231,7 +231,7 @@ const fn root_remote_before_verb(cli: &Cli) -> Option<&'static str> {
 /// The parse error for this invocation's `--remote`, root or verb-scoped;
 /// checked before the TTY preflight.
 fn malformed_remote_target(cli: &Cli) -> Option<String> {
-    commands::remote_target::RemoteTarget::parse(invocation_remote(cli)?).err()
+    commands::remote_target::parse_target(invocation_remote(cli)?).err()
 }
 
 /// The `--remote` this invocation carries: the root copy for the naked
@@ -281,9 +281,9 @@ fn attach_remote_target(
     no_enroll: bool,
     rec: Option<&commands::rec::RecordSpec>,
 ) -> ExitCode {
-    use commands::remote_target::{Bootstrap, RemoteAttach, RemoteTarget};
+    use commands::remote_target::{Bootstrap, RemoteAttach, parse_target};
 
-    let target = match RemoteTarget::parse(target) {
+    let target = match parse_target(target) {
         Ok(target) => target,
         Err(err) => {
             eprintln!("phux: {err}");

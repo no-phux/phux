@@ -19,7 +19,7 @@ use phux_server::runtime::default_socket_path;
 use super::attach::{self, DialPlan, DialRefusal};
 use super::json_err::{self, CliError, codes};
 use super::remote::{self, Endpoint, RemoteEntry};
-use super::remote_target::{self, Bootstrap, RemoteTarget};
+use super::remote_target::{self, Bootstrap};
 
 /// The refusal for `--socket` next to `--remote`. One names a local UDS, the
 /// other a network dial, and silently preferring either would run the verb
@@ -109,7 +109,7 @@ fn resolve_remote(
     verb: &str,
     json: bool,
 ) -> Result<RemoteServer, ExitCode> {
-    let target = RemoteTarget::parse(raw).map_err(|err| {
+    let target = remote_target::parse_target(raw).map_err(|err| {
         json_err::emit(json, &CliError::new(codes::REMOTE_UNRESOLVED, err, ""), 2)
     })?;
     // Attach's own resolver; `--json` never pairs.

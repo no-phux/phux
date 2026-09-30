@@ -211,7 +211,10 @@ impl WindowState {
 mod identity;
 mod projection;
 
-pub use projection::{LAYOUT_METADATA_GROUP, MAX_LAYOUT_METADATA_BYTES, projection_key_session};
+pub use projection::{
+    LAYOUT_KEY, LAYOUT_METADATA_GROUP, MAX_LAYOUT_METADATA_BYTES, layout_key,
+    projection_key_session,
+};
 
 /// The windows the TUI presents for one Group, plus the (per-client)
 /// active index.
@@ -532,7 +535,9 @@ fn pane_count(workspace: &Workspace) -> usize {
         .sum()
 }
 
-fn repair_focus(state: &mut LayoutState) {
+/// Keep `state`'s focus when it is still a leaf, else fall back to the
+/// first leaf (or none for an empty tree).
+pub fn repair_focus(state: &mut LayoutState) {
     state.focus = state.tree.as_ref().and_then(|tree| {
         let panes = leaves(tree);
         state

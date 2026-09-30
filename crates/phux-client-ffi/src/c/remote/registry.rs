@@ -283,20 +283,10 @@ impl PhuxMachineRegistry {
             host: entry.name.clone(),
             port: None,
         };
-        let (endpoint, transport) =
-            target::classify(&entry.endpoint, &target).map_err(BridgeError::state)?;
-        let resolved = target::Resolved {
-            name: entry.name.clone(),
-            endpoint: endpoint.clone(),
-            session: entry.session.clone().filter(|s| !s.trim().is_empty()),
-            transport,
-            token_file: entry.token_file.clone(),
-            cert_fingerprint: entry.cert_fingerprint.clone(),
-            client_identity: target::entry_identity(entry).map_err(BridgeError::state)?,
-        };
+        let resolved = target::resolve_entry(entry, &target).map_err(BridgeError::state)?;
         Ok(PhuxRemoteTunnel {
             name: entry.name.clone(),
-            endpoint,
+            endpoint: resolved.endpoint.clone(),
             session: row.session.clone(),
             inner: Ok(Tunnel::new(resolved)),
         })

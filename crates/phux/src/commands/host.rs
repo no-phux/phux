@@ -602,7 +602,8 @@ fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
             );
         }
     };
-    let ssh_host = target.ssh_destination();
+    // `ssh` takes the typed `user@host` spelling as its destination.
+    let ssh_host = target.registry_name();
     let name = opts.name.clone().unwrap_or_else(|| target.host.clone());
     let quic_port = target.port.unwrap_or(opts.quic_port);
 
