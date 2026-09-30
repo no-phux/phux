@@ -851,6 +851,8 @@ Sessions: `invalid_session_name` (exit 2: empty, a leading `@`, `#`, or
 `%`, or a `:` or `/@` inside, so no selector could name it),
 `session_exists`, `session_create_failed` (the server did not confirm a
 `new`).
+Spawn: `spawn_failed` (the server refused the command or working
+directory, or a `--target` placement could not land).
 Local I/O: `io` (a bug-report bundle could not be written under the
 state directory), `json_serialize`.
 Agent lifecycle: `no_agent_record`, `satellite_target`,
