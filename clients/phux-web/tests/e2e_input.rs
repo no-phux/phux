@@ -864,6 +864,56 @@ fn occurrences(client: &phux_web::client::Client, needle: &str) -> usize {
     screen(client).matches(needle).count()
 }
 
+/// Wait until `needle` shows more than `before` times.
+async fn wait_more(client: &phux_web::client::Client, needle: &str, before: usize) -> bool {
+    for _ in 0..POLLS {
+        if occurrences(client, needle) > before {
+            return true;
+        }
+        sleep(POLL).await;
+    }
+    false
+}
+
+#[wasm_bindgen_test]
+async fn focus_changes_reach_a_program_that_asks_for_them() {
+    let canvas = mounted_canvas("focus-canvas");
+    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
+        .await
+        .expect("connect to live phux server");
+    canvas.focus().unwrap();
+    let surface: web_sys::HtmlElement = input_surface(&canvas).dyn_into().unwrap();
+    program_prints(&client, &surface, &["[?1004h"], "FOCUS_ON", &[]).await;
+
+    // The server writes CSI O and CSI I to the pane; the TTY echoes them.
+    let (lost, gained) = (occurrences(&client, "^[[O"), occurrences(&client, "^[[I"));
+    surface.blur().unwrap();
+    assert!(
+        wait_more(&client, "^[[O", lost).await,
+        "focus out: {}",
+        screen(&client)
+    );
+    surface.focus().unwrap();
+    assert!(
+        wait_more(&client, "^[[I", gained).await,
+        "focus in: {}",
+        screen(&client)
+    );
+
+    program_prints(&client, &surface, &["[?1004l"], "FOCUS_OFF", &[]).await;
+    let (lost, gained) = (occurrences(&client, "^[[O"), occurrences(&client, "^[[I"));
+    surface.blur().unwrap();
+    surface.focus().unwrap();
+    sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        (occurrences(&client, "^[[O"), occurrences(&client, "^[[I")),
+        (lost, gained),
+        "no reports once the program stops asking: {}",
+        screen(&client)
+    );
+    client.close();
+}
+
 fn wheel(canvas: &HtmlCanvasElement, delta_y: f64) {
     let init = WheelEventInit::new();
     init.set_delta_y(delta_y);

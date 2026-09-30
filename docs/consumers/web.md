@@ -222,6 +222,11 @@ What a page embedding the client can rely on, beyond typing:
   the most recent such report on the terminal: another client reporting its
   own cells later shifts the browser's positions until the browser reports
   again (a resize or a reconnect).
+- **Focus reporting.** While the program asks for focus reports (DECSET
+  1004), the terminal gaining or losing the keyboard (a click on it, the
+  find bar or another control on the page taking the keys, the window going
+  to the background) reaches it as `INPUT_FOCUS`, which the server writes as
+  `CSI I` or `CSI O`.
 - **Links.** Command+click, or Ctrl+click, opens the program's OSC 8
   hyperlink under the pointer, or a plain URL in that row, in a new tab
   with no opener or referrer. Only `http`, `https`, and `mailto` links open;
@@ -254,7 +259,6 @@ What a page embedding the client can rely on, beyond typing:
   renderer pass lands, the advertisement widens with it.
 - **Engine boundary copies.** Bytes cross two wasm linear memories (the Rust
   client and `ghostty-vt.wasm`), which is fine for terminal traffic.
-- **Not yet.** The web client does not report focus (DEC 1004).
 
 ## Agent sessions
 

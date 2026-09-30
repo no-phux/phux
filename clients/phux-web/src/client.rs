@@ -24,6 +24,7 @@ use futures_util::future::{Either, select};
 use gloo_timers::future::TimeoutFuture;
 use phux_protocol::BootstrapProfile;
 use phux_protocol::input::InputEvent;
+use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::ModSet;
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::wire::frame::FrameKind;
@@ -2120,8 +2121,10 @@ fn install_input(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         surface: surface.clone(),
         listeners: Listeners::default(),
     };
-    let handlers: [(&str, InputHandler); 6] = [
+    let handlers: [(&str, InputHandler); 8] = [
         ("keydown", on_keydown),
+        ("focus", on_focus_change),
+        ("blur", on_focus_change),
         ("compositionstart", |app, _, _| {
             app.borrow().place_input_surface()
         }),
@@ -2685,9 +2688,24 @@ fn text_input_events(text: &str) -> Vec<InputEvent> {
         .collect()
 }
 
+/// Send input the user typed or pointed: as [`send_events`], and when any
+/// was sent, return a scrolled-back view to the live screen and end the
+/// selection, as in a local terminal.
+fn send_input(app: &Rc<RefCell<App>>, events: impl IntoIterator<Item = InputEvent>) -> bool {
+    let sent = send_events(app, events);
+    let app = app.borrow();
+    if sent {
+        app.clear_selection();
+        if app.session.scroll_to_bottom() {
+            app.request_paint();
+        }
+    }
+    sent
+}
+
 /// Encode and send input atoms for the focused terminal. Returns whether any
 /// was sent; a transport failure closes the connection.
-fn send_input(app: &Rc<RefCell<App>>, events: impl IntoIterator<Item = InputEvent>) -> bool {
+fn send_events(app: &Rc<RefCell<App>>, events: impl IntoIterator<Item = InputEvent>) -> bool {
     let mut sent = false;
     for event in events {
         let mut a = app.borrow_mut();
@@ -2701,16 +2719,29 @@ fn send_input(app: &Rc<RefCell<App>>, events: impl IntoIterator<Item = InputEven
         }
         sent = true;
     }
-    // Typing returns a scrolled-back view to the live screen and ends the
-    // selection, as in a local terminal.
-    let app = app.borrow();
-    if sent {
-        app.clear_selection();
-        if app.session.scroll_to_bottom() {
-            app.request_paint();
-        }
-    }
     sent
+}
+
+/// Focus reporting (DECSET 1004): while the program asks for it, the input
+/// surface gaining or losing focus (a click on the terminal, the find bar
+/// or another control taking the keys, the window going to the background)
+/// reaches it as `INPUT_FOCUS`, which the server writes as `CSI I` or
+/// `CSI O`. It is not typing: the view and the selection stay.
+fn on_focus_change(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
+    let reporting = app
+        .borrow()
+        .session
+        .terminal()
+        .is_some_and(|terminal| terminal.dec_mode(1004));
+    if !reporting {
+        return;
+    }
+    let focus = if event.type_() == "focus" {
+        FocusEvent::Gained
+    } else {
+        FocusEvent::Lost
+    };
+    send_events(app, [InputEvent::Focus(focus)]);
 }
 
 /// Cursor blink: toggle the phase and repaint on a fixed cadence.
