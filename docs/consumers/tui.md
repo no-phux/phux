@@ -92,6 +92,12 @@ from the worktree path. That is a CLI composition; attaching to the
 derived name is ordinary TUI attach. See [`agents.md`](./agents.md) for
 the verbs.
 
+**Attach finds; `new` creates.** As with tmux's `attach -t`, `phux attach
+NAME` joins an existing session and never creates one on a running server:
+an unknown name exits 1 and names `phux new NAME`. With no server running,
+the auto-started server seeds its first session under NAME, since a new
+server holds nothing else to join.
+
 **Attach roles.** `phux attach --viewer` attaches to watch: every pane
 renders, and the server refuses this attach's input. `phux attach --take`
 attaches and takes the wheel of every pane it opens in the same step; the

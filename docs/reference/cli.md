@@ -796,6 +796,10 @@ Attach to a session, here or on a registered host
 Interactive: requires a TTY. With no name, attaches to the most-recently-focused
 session, auto-spawning a server if none is running.
 
+Attach never creates a session on a running server: an unknown name is an error
+(`phux new NAME` creates one). With no server running, the auto-spawned server
+seeds its first session under NAME.
+
 A name registered as a host (`phux host add`) shadows a local session of the
 same name: `phux attach NAME` dials the registered host instead of the local
 socket. Pass `--socket` to force the local reading of the name.

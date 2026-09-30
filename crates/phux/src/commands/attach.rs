@@ -972,6 +972,7 @@ pub(crate) fn run_attach_rec(
     } else {
         None
     };
+    let explicit_name = session.clone();
     let target = requested_attach_target(session);
 
     // Best-effort auto-spawn, pre-seeded with the session being attached to;
@@ -1019,6 +1020,19 @@ pub(crate) fn run_attach_rec(
         // Already reported by the reconnect window (distinct SocketGone /
         // TimedOut lines naming `phux doctor`) — see `attach_with_reconnect`.
         Err(AttachError::Disconnected) => ExitCode::FAILURE,
+        // Attach never creates: a name the live server does not hold names
+        // the verb that does, instead of only relaying the refusal.
+        Err(AttachError::Refused(_))
+            if explicit_name.as_deref().is_some_and(|name| {
+                rt.block_on(phux_client::state::get_state(&socket_path))
+                    .is_ok_and(|view| session_is_missing(view.snapshot(), name))
+            }) =>
+        {
+            for line in missing_session_lines(explicit_name.as_deref().unwrap_or_default()) {
+                eprintln!("{line}");
+            }
+            ExitCode::FAILURE
+        }
         Err(err) => {
             // `phux-roz` (5): produce actionable text per variant. The
             // guard (if any) has already dropped, so this lands on the
@@ -1033,6 +1047,24 @@ pub(crate) fn run_attach_rec(
     // leave the CLI stuck after it has already restored the terminal.
     rt.shutdown_timeout(Duration::ZERO);
     exit
+}
+
+/// Whether `snapshot` (a complete `GET_STATE`: session lists never
+/// aggregate satellites) holds no session named `name`.
+fn session_is_missing(snapshot: &phux_protocol::wire::info::SessionSnapshot, name: &str) -> bool {
+    snapshot.sessions.iter().all(|session| session.name != name)
+}
+
+/// The refusal for `phux attach NAME` when the server has no `NAME`: attach
+/// is lookup-only, so the remedy is the verb that creates one.
+fn missing_session_lines(name: &str) -> Vec<String> {
+    vec![
+        format!("phux: no session named {name:?} on this server"),
+        format!(
+            "  create it with `phux new {}`, or run `phux ls` to list sessions",
+            super::ssh_bootstrap::shell_quote(name)
+        ),
+    ]
 }
 
 /// Stderr hint for a non-loopback dial that got no answer: either an overlay
@@ -1709,6 +1741,33 @@ mod tests {
             requested_attach_target(Some("explicit".to_owned())),
             AttachTarget::ByName("explicit".to_owned()),
         );
+    }
+
+    /// `phux attach X` against a live server that has no `X` used to print
+    /// only the server's refusal. Attach stays lookup-only (tmux's `attach -t`
+    /// refuses the same way), so the miss names the verb that creates it.
+    #[test]
+    fn a_missing_session_names_the_create_and_list_verbs() {
+        let session = |name: &str| {
+            phux_protocol::wire::info::SessionInfo::new(phux_protocol::ids::SessionId::new(1), name)
+        };
+        let snapshot = phux_protocol::wire::info::SessionSnapshot::new(
+            phux_protocol::ids::SessionId::new(1),
+            phux_protocol::ids::WindowId::new(1),
+            phux_protocol::ids::ResourceId::local(1),
+        )
+        .with_sessions(vec![session("main")]);
+        assert!(session_is_missing(&snapshot, "work"));
+        assert!(!session_is_missing(&snapshot, "main"));
+
+        assert_eq!(
+            missing_session_lines("work"),
+            vec![
+                "phux: no session named \"work\" on this server".to_owned(),
+                "  create it with `phux new work`, or run `phux ls` to list sessions".to_owned(),
+            ]
+        );
+        assert!(missing_session_lines("my work")[1].contains("`phux new 'my work'`"));
     }
 
     /// A detach says nothing; a last-pane death names the exit shape.
