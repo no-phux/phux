@@ -74,7 +74,7 @@ use super::main_loop::{
 };
 use super::overlay_paint::paint_active_overlay;
 use super::session_io::{
-    send_attach, send_terminal_replies, send_unless_peer_gone, should_emit_frame_ack,
+    peer_gone, send_attach, send_terminal_replies, send_unless_peer_gone, should_emit_frame_ack,
     take_terminal_replies,
 };
 use super::subscriptions::{PeerWatch, sync_agent_meta_subscriptions};
@@ -1527,7 +1527,21 @@ impl SessionLoop {
     ) -> Result<Step, AttachError> {
         let sidebar = self.sidebar();
         self.settle_iteration(out, sidebar, needs_resync)?;
-        self.select_next_event(conn, out, sidebar).await
+        match self.select_next_event(conn, out, sidebar).await {
+            // Any write into a server that already hung up (a SIGWINCH
+            // resize racing a server crash, say) defers to the read side,
+            // exactly as `send_unless_peer_gone` does: the next `recv`
+            // drains what the server sent and then reports the EOF, which is
+            // what the reconnect path and the explained endings key on.
+            Err(err) if peer_gone(&err) && conn.write_hit_closed_peer() => {
+                tracing::debug!(
+                    ?err,
+                    "write found the server gone; the read side names the ending"
+                );
+                Ok(Step::Continue)
+            }
+            stepped => stepped,
+        }
     }
 
     /// Bring the outer terminal's modes, the attention ladder, and any
