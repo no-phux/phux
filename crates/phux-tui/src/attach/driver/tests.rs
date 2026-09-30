@@ -639,6 +639,17 @@ fn headless_completion_drains_history_and_metadata_after_attach_ready() {
     completion.observe_frame(&page(b"older", None), 7);
     assert!(completion.is_complete(true));
 
+    // A page the engine does not follow up (its prefetch window is full)
+    // settles the chain even though older history remains on the server.
+    let mut completion = HeadlessCompletion::new(None);
+    completion.observe_frame(&FrameKind::AttachReady { attach_id: 7 }, 7);
+    completion.note_history_request(&id, stream_id, bootstrap_id);
+    completion.observe_frame(&page(b"newest", Some(b"older")), 7);
+    assert!(
+        completion.is_complete(true),
+        "an unrequested next cursor must not hold the snapshot open"
+    );
+
     // Tombstone and rejection are terminal answers too.
     for frame in [
         FrameKind::HistoryTombstone {
