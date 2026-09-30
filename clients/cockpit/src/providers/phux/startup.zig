@@ -232,7 +232,7 @@ pub fn compatibleProbe(gpa: std.mem.Allocator, json: []const u8) bool {
     // Same contract as crates/phux-protocol/src/lib.rs; runtime handshake is
     // still authoritative for the running coordinator's negotiated features.
     if (p.protocol.major != 0 or p.protocol.minor != 9) return false;
-    for ([_][]const u8{ "server-ensure-v1", "server-ensure-json-v1", "structured-spawn-v1", "host-enroll-v1" }) |required| {
+    for ([_][]const u8{ "server-ensure-v1", "server-ensure-json-v1", "structured-spawn-v1", "host-add-v1" }) |required| {
         if (!hasCapability(p.capabilities, required)) return false;
     }
     return true;
@@ -690,7 +690,7 @@ test "already reaped helper is never signaled again" {
 }
 
 const test_probe =
-    \\{"schema_version":1,"binary":"phux","version":"unknown-development-version","protocol":{"major":0,"minor":9,"patch":0},"capabilities":["server-ensure-v1","server-ensure-json-v1","structured-spawn-v1","host-enroll-v1"]}
+    \\{"schema_version":1,"binary":"phux","version":"unknown-development-version","protocol":{"major":0,"minor":9,"patch":0},"capabilities":["server-ensure-v1","server-ensure-json-v1","structured-spawn-v1","host-add-v1"]}
 ;
 
 test "runtime compatibility uses versioned protocol evidence rather than CLI semver" {

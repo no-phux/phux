@@ -117,7 +117,7 @@ pub fn plan_ws(resolved: &Resolved, url: &str, token: Option<String>) -> Result<
         }
         if token.is_none() {
             return Err(format!(
-                "{name} has no token file in the registry; re-pair it with `phux host enroll {name}`"
+                "{name} has no token file in the registry; re-pair it with `phux host add {name}`"
             ));
         }
     }
@@ -190,9 +190,7 @@ pub fn check_inbound(name: &str, frame: &[u8]) -> Result<(), String> {
 /// The remedy for a routable host with no pin in the registry.
 #[must_use]
 pub fn unpinned(name: &str) -> String {
-    format!(
-        "{name} has no certificate pin in the registry; re-pair it with `phux host enroll {name}`"
-    )
+    format!("{name} has no certificate pin in the registry; re-pair it with `phux host add {name}`")
 }
 
 /// A dial that outlasted [`DIAL_TIMEOUT`].
@@ -223,7 +221,7 @@ pub fn dial_message(name: &str, err: &DialError) -> String {
         ),
         DialError::Connect(detail) => format!("{name}: {detail}"),
         DialError::AuthRefused(detail) => format!(
-            "{name} refused the pairing token ({detail}); re-pair it with `phux host enroll {name}`"
+            "{name} refused the pairing token ({detail}); re-pair it with `phux host add {name}`"
         ),
         DialError::Io(detail) => format!("{name}: {detail}"),
         DialError::Stalled(detail) => format!("{name} stopped answering ({detail})"),
@@ -390,7 +388,7 @@ mod tests {
             "{msg}"
         );
         assert!(
-            msg.contains("phux host enroll stale-token"),
+            msg.contains("phux host add stale-token"),
             "B9 remedy must name re-pair: {msg}"
         );
         assert!(

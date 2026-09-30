@@ -83,18 +83,5 @@ impl Deprecation {
     }
 }
 
-/// Every deprecated spelling the binary currently accepts. `phux host
-/// enroll` stays past its planned removal because Cockpit's add-machine flow
-/// still invokes it (capability `host-enroll-v1`).
-pub(crate) const DEPRECATED: &[Deprecation] = &[Deprecation {
-    surface: DeprecatedSurface::Verb,
-    old: "phux host enroll",
-    new: "phux host add",
-    note: "phux: `phux host enroll` is deprecated and will be removed; use `phux host add`",
-    setup_argv: &[],
-    // `--ssh-only` registers without contacting the host, so the row runs
-    // to success with no ssh and no server.
-    example_argv: &["host", "enroll", "me@mini", "--ssh-only"],
-    deprecated_in: "v0.37.0",
-    removed_in: "v0.39.0",
-}];
+/// Every deprecated spelling the binary currently accepts.
+pub(crate) const DEPRECATED: &[Deprecation] = &[];
