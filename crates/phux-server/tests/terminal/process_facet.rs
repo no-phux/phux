@@ -128,6 +128,12 @@ fn canonical(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// How far a reported start time may sit from the true spawn instant. Linux
+/// floors twice: `btime` to whole seconds (up to 999 ms early) and
+/// `starttime` to a clock tick (up to 10 ms early at the fixed `USER_HZ` of
+/// 100). Hosted CI measured 1004 ms early, past a bare one-second allowance.
+const START_SLACK_MS: u64 = 1_000 + 10;
+
 fn unix_now_ms() -> u64 {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
     u64::try_from(now.unwrap().as_millis()).unwrap()
@@ -154,8 +160,10 @@ fn process_facet_reports_child_foreground_and_cwd() {
         assert_eq!(doc["shell_state"]["state"], "unknown", "{doc}");
         let child = process.child.expect("child");
         let start_ms = child.start_ms.expect("start time");
-        // Linux derives it from whole-second `btime`: allow a second each way.
-        assert!(start_ms + 1_000 >= before_ms && start_ms <= unix_now_ms() + 1_000);
+        assert!(
+            start_ms + START_SLACK_MS >= before_ms && start_ms <= unix_now_ms() + START_SLACK_MS,
+            "start_ms {start_ms} is not the spawn time (spawned after {before_ms})"
+        );
         assert_eq!(
             canonical(Path::new(&process.cwd.unwrap())),
             canonical(&work)
