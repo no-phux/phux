@@ -527,8 +527,16 @@ fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) 
             ) => {
                 tracing::debug!(?status, "session kernel status (no TUI consumer yet)");
             }
-            KernelEffect::Status(status) => {
+            // A resync means the replica diverged: worth a warning.
+            KernelEffect::Status(
+                status @ phux_client_core::session::KernelStatus::ResyncRequired { .. },
+            ) => {
                 tracing::warn!(?status, "session kernel status");
+            }
+            // Title, bell, and history paging are routine (an agent's spinner
+            // retitles its pane several times a second): debug, not warn.
+            KernelEffect::Status(status) => {
+                tracing::debug!(?status, "session kernel status");
             }
             KernelEffect::Job(job) => {
                 tracing::debug!(?job, "session kernel cooperative job");

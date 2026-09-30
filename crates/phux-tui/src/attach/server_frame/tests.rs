@@ -1476,6 +1476,55 @@ fn output_emits_separate_apply_and_paint_spans() {
     }
 }
 
+/// A pane retitling itself is routine: the kernel's title/bell/history
+/// statuses must not log at WARN, which filled client logs to 10 MB with a
+/// line per agent spinner frame and printed on `phux snapshot --rendered`.
+#[test]
+fn routine_kernel_statuses_do_not_log_at_warn() {
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::Layer as _;
+    use tracing_subscriber::fmt::MakeWriter;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::{Registry, filter::LevelFilter, fmt};
+
+    #[derive(Clone, Default)]
+    struct Buf(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Buf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("lock").extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> MakeWriter<'a> for Buf {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    let buf = Buf::default();
+    let layer = fmt::layer()
+        .with_ansi(false)
+        .with_writer(buf.clone())
+        .with_filter(LevelFilter::WARN);
+    let subscriber = Registry::default().with(layer);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing_core::callsite::rebuild_interest_cache();
+        let pane = tid(1);
+        let mut h = H::published(Workspace::single(pane.clone()), &[(&pane, 80, 24, b"")]);
+        h.output(&pane, b"\x1b]2;working\x07\x07");
+    });
+
+    let log = String::from_utf8(buf.0.lock().expect("lock").clone()).expect("utf8");
+    assert!(
+        !log.contains("session kernel status"),
+        "routine statuses logged at WARN:\n{log}"
+    );
+}
+
 #[test]
 fn bell_frame_writes_bel_to_sink() {
     let mut h = H::on(Workspace::single(tid(1)), &[]);
