@@ -61,8 +61,8 @@ impl TerminalActor {
         let Some(terminal) = canonical.try_terminal() else {
             return Err(crate::grid::SynthesisError::TerminalUnavailable);
         };
-        // Shared borrow: the read uses a fresh render state.
-        let synth = self.synth.borrow();
+        // Exclusive: the projection walks the tick's pooled render state.
+        let mut synth = self.synth.borrow_mut();
         let mut screen = synth.screen_state_with_scrollback(terminal, pane, scrollback, cells)?;
         match synth.render_screen(terminal, scrollback, format) {
             Ok(rendered) => screen.rendered = rendered,
