@@ -1,1 +1,1 @@
-${file:/workspace/merged_924_changelog.md}
+file:///workspace/CHANGELOG_924_fixed.md
