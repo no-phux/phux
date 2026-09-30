@@ -1114,9 +1114,72 @@ impl Session {
             })
     }
 
+    /// Scroll the focused replica's viewport `rows` rows (negative is up,
+    /// into scrollback). Local only: the server's pane never moves. Returns
+    /// whether a published replica took the scroll.
+    pub fn scroll_viewport(&self, rows: i32) -> bool {
+        let Some(terminal) = self.published_terminal() else {
+            return false;
+        };
+        terminal.scroll_viewport(rows);
+        true
+    }
+
+    /// Return a scrolled-back viewport to the live screen. Returns whether
+    /// it moved (and so needs a repaint).
+    pub fn scroll_to_bottom(&self) -> bool {
+        match self.published_terminal() {
+            Some(terminal) if terminal.viewport_scrolled() => {
+                terminal.scroll_to_bottom();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The title the focused replica's program set (OSC 0/2), empty if none.
+    #[must_use]
+    pub fn title(&self) -> String {
+        self.published_terminal()
+            .map(Terminal::title)
+            .unwrap_or_default()
+    }
+
+    /// Whether the focused replica's viewport is scrolled back.
+    #[must_use]
+    pub fn viewport_scrolled(&self) -> bool {
+        self.published_terminal()
+            .is_some_and(Terminal::viewport_scrolled)
+    }
+
+    /// Record a new viewport and, once the handshake is done, encode the
+    /// `VIEWPORT_RESIZE` announcing it. Before `HELLO_OK` the `ATTACH`
+    /// carries the new size instead, so no frame is needed; an unchanged
+    /// size sends nothing. The server resizes the pane (subject to its
+    /// multi-client size policy) and the replica follows its re-bootstrap.
+    pub fn resize_frame(&mut self, cols: u16, rows: u16) -> Option<Vec<u8>> {
+        let (cols, rows) = (cols.max(1), rows.max(1));
+        if self.failed || (cols, rows) == (self.cols, self.rows) {
+            return None;
+        }
+        self.cols = cols;
+        self.rows = rows;
+        self.kernel.as_ref()?;
+        Some(encode(&FrameKind::ViewportResize {
+            viewport: ViewportInfo::new(cols, rows),
+        }))
+    }
+
     /// Encode an eligible structured key event for the focused published pane.
     #[must_use]
     pub fn key_frame(&mut self, event: KeyEvent) -> Option<Vec<u8>> {
+        self.input_frame(InputEvent::Key(event))
+    }
+
+    /// Encode an eligible input atom (key, paste, ...) for the focused
+    /// published pane; `None` while no pane is eligible for input.
+    #[must_use]
+    pub fn input_frame(&mut self, event: InputEvent) -> Option<Vec<u8>> {
         if self.failed {
             return None;
         }
@@ -1130,7 +1193,7 @@ impl Session {
         }
         let (outcome, applied) = self.apply_kernel(KernelInput::Action(KernelAction::Input {
             terminal_id: &terminal_id,
-            event: &InputEvent::Key(event),
+            event: &event,
         }));
         if applied {
             outcome.send.into_iter().next()

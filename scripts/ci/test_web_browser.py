@@ -201,6 +201,14 @@ class BrowserRunnerTests(unittest.TestCase):
                 browser.run([sys.executable, "-c", "raise SystemExit(7)"],
                             cwd=browser.ROOT, env=os.environ, timeout=5, log=log)
 
+    def test_unsignalable_zombie_group_is_already_stopped(self):
+        # A successful run must not turn into a failure when Darwin refuses
+        # to signal a group that holds only zombies.
+        process = Mock(pid=12345)
+        with patch.object(browser.os, "killpg", side_effect=PermissionError):
+            browser.stop(process)
+        process.wait.assert_called_once_with(timeout=5)
+
     def test_timeout_reaps_child(self):
         with tempfile.TemporaryDirectory() as scratch:
             pid_file = Path(scratch) / "pid"

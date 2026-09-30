@@ -23,19 +23,21 @@ use futures_channel::oneshot;
 use futures_util::future::{Either, select};
 use gloo_timers::future::TimeoutFuture;
 use phux_protocol::BootstrapProfile;
-use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::FrameKind;
-use phux_vt_web::Vt;
+use phux_vt_web::{Grid, Vt};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
-    BinaryType, CanvasRenderingContext2d, HtmlCanvasElement, KeyboardEvent, MessageEvent,
-    ReadableStreamDefaultReader, WebSocket, WebTransport, WritableStreamDefaultWriter,
+    BinaryType, CanvasRenderingContext2d, ClipboardEvent, CompositionEvent, HtmlCanvasElement,
+    HtmlTextAreaElement, KeyboardEvent, MessageEvent, ReadableStreamDefaultReader, WebSocket,
+    WebTransport, WritableStreamDefaultWriter,
 };
 
 use crate::framing::FrameBuffer;
-use crate::{Metrics, render};
+use crate::selection::{Selection, cell_at};
+use crate::{Metrics, render_cursor_cell, render_selected};
 
 mod path_picker;
 
@@ -175,6 +177,17 @@ async fn load_vt() -> Result<Rc<Vt>, JsValue> {
     }
 }
 
+/// Canvas attribute naming the connection state: `connected` once attached,
+/// `disconnected` after the transport or protocol fails.
+pub const CONNECTION_ATTRIBUTE: &str = "data-phux-connection";
+
+/// Canvas attribute holding the title the program set (OSC 0/2).
+pub const TITLE_ATTRIBUTE: &str = "data-phux-title";
+
+/// Bubbling `CustomEvent` dispatched on the canvas when the program's title
+/// changes; `detail` is the new title (empty when cleared).
+pub const TITLE_EVENT: &str = "phux-title";
+
 /// DOM id of the element that holds the focused pane's agent badges.
 pub const BADGE_CONTAINER_ID: &str = "phux-agent-badges";
 
@@ -227,7 +240,7 @@ pub async fn run_hosted(
     await_protocol_ready(&app, ready, deadline.remaining_ms()).await?;
     ensure_app_live(&app)?;
 
-    install_keyboard(&app)?;
+    install_input(&app)?;
     path_picker::install(&app)?;
     install_cursor_blink(&app)?;
 
@@ -274,7 +287,7 @@ async fn run_websocket(
     await_protocol_ready(&app, ready, deadline.remaining_ms()).await?;
     ensure_app_live(&app)?;
 
-    install_keyboard(&app)?;
+    install_input(&app)?;
     path_picker::install(&app)?;
     install_cursor_blink(&app)?;
 
@@ -394,7 +407,7 @@ async fn run_webtransport_loaded(
     await_protocol_ready(&app, ready, deadline.remaining_ms()).await?;
     ensure_app_live(&app)?;
 
-    install_keyboard(&app)?;
+    install_input(&app)?;
     path_picker::install(&app)?;
     install_cursor_blink(&app)?;
 
@@ -408,14 +421,18 @@ pub struct Client {
 }
 
 impl Client {
-    pub(crate) fn enable_auto_reconnect(&self, wt_url: &str, ws_url: &str) {
+    /// Keep this connection alive past transport loss: after a failure, a
+    /// fresh client redials (WebTransport first when `wt_url` is given,
+    /// else the WebSocket) until one attaches, then supervises itself the
+    /// same way. The client is retained by its own handlers from here on.
+    pub fn enable_auto_reconnect(&self, wt_url: Option<&str>, ws_url: &str) {
         let (canvas, cols, rows) = {
             let app = self.app.borrow();
             let grid = app.session.grid();
             (app.canvas.clone(), grid.cols, grid.rows)
         };
         let config = ReconnectConfig {
-            wt_url: wt_url.to_owned(),
+            wt_url: wt_url.map(str::to_owned),
             ws_url: ws_url.to_owned(),
             canvas,
             cols,
@@ -475,6 +492,25 @@ impl Client {
     /// Close the transport and drop browser handlers and timers.
     pub fn close(&self) {
         self.app.borrow_mut().dispose();
+    }
+
+    /// Resize the terminal viewport to `cols`x`rows` cells. The server
+    /// resizes the pane (subject to its multi-client size policy) and the
+    /// canvas follows the replica's new geometry; a reconnect reattaches at
+    /// this size.
+    pub fn resize(&self, cols: u16, rows: u16) {
+        self.app.borrow().clear_selection();
+        let mut app = self.app.borrow_mut();
+        if let Some(config) = app.reconnect.get_mut().as_mut() {
+            config.cols = cols.max(1);
+            config.rows = rows.max(1);
+        }
+        let Some(frame) = app.session.resize_frame(cols, rows) else {
+            return;
+        };
+        if let Err(message) = app.tx.send(&frame) {
+            app.fail(&message);
+        }
     }
 
     /// Privacy-safe terminal failure reason, if this connection ended.
@@ -727,9 +763,10 @@ impl OutboundQueue {
 #[derive(Default)]
 struct AppBindings {
     websocket: Option<WebSocketBindings>,
-    keyboard: Option<KeyboardBinding>,
+    input: Option<InputBinding>,
     path_picker: Option<path_picker::PickerBinding>,
     blink: Option<BlinkBinding>,
+    frame: Option<FrameBinding>,
     bootstrap_expiry: Option<BlinkBinding>,
     wt_reader_cancel: Option<oneshot::Sender<()>>,
 }
@@ -739,14 +776,17 @@ impl AppBindings {
         if let Some(websocket) = self.websocket.take() {
             websocket.dispose();
         }
-        if let Some(keyboard) = self.keyboard.take() {
-            keyboard.dispose();
+        if let Some(input) = self.input.take() {
+            input.dispose();
         }
         if let Some(picker) = self.path_picker.take() {
             picker.dispose();
         }
         if let Some(blink) = self.blink.take() {
             blink.dispose();
+        }
+        if let Some(frame) = self.frame.take() {
+            frame.dispose();
         }
         if let Some(expiry) = self.bootstrap_expiry.take() {
             expiry.dispose();
@@ -775,16 +815,74 @@ impl WebSocketBindings {
     }
 }
 
-struct KeyboardBinding {
-    document: web_sys::Document,
-    callback: Closure<dyn FnMut(KeyboardEvent)>,
+/// Class of the hidden `<textarea>` that owns terminal input.
+pub const INPUT_SURFACE_CLASS: &str = "phux-web-input";
+
+/// The input surface and every listener it and the canvas carry.
+struct InputBinding {
+    surface: HtmlTextAreaElement,
+    listeners: Vec<Listener>,
 }
 
-impl KeyboardBinding {
+struct Listener {
+    target: web_sys::EventTarget,
+    kind: &'static str,
+    callback: Closure<dyn FnMut(web_sys::Event)>,
+}
+
+impl InputBinding {
+    fn listen(
+        &mut self,
+        target: &web_sys::EventTarget,
+        kind: &'static str,
+        handler: impl FnMut(web_sys::Event) + 'static,
+    ) -> Result<(), JsValue> {
+        let callback = Closure::<dyn FnMut(web_sys::Event)>::new(handler);
+        target.add_event_listener_with_callback(kind, callback.as_ref().unchecked_ref())?;
+        self.listeners.push(Listener {
+            target: target.clone(),
+            kind,
+            callback,
+        });
+        Ok(())
+    }
+
     fn dispose(self) {
-        let _ = self
-            .document
-            .remove_event_listener_with_callback("keydown", self.callback.as_ref().unchecked_ref());
+        for listener in self.listeners {
+            let _ = listener.target.remove_event_listener_with_callback(
+                listener.kind,
+                listener.callback.as_ref().unchecked_ref(),
+            );
+        }
+        self.surface.remove();
+    }
+}
+
+/// The one animation-frame callback that paints, and its pending request.
+struct FrameBinding {
+    window: web_sys::Window,
+    callback: Closure<dyn FnMut()>,
+    pending: Cell<Option<i32>>,
+}
+
+impl FrameBinding {
+    fn request(&self) {
+        if self.pending.get().is_some() {
+            return;
+        }
+        if let Ok(id) = self
+            .window
+            .request_animation_frame(self.callback.as_ref().unchecked_ref())
+        {
+            self.pending.set(Some(id));
+        }
+    }
+
+    fn dispose(self) {
+        if let Some(id) = self.pending.take() {
+            let _ = self.window.cancel_animation_frame(id);
+        }
+        drop(self.callback);
     }
 }
 
@@ -809,6 +907,16 @@ struct App {
     metrics: Metrics,
     /// Cursor blink phase; toggled by an interval in `run`.
     cursor_on: Cell<bool>,
+    /// Fractional wheel rows not yet scrolled (trackpads send small deltas).
+    wheel_carry: Cell<f64>,
+    /// The grid the canvas shows, so a cursor blink redraws one cell
+    /// without reading the whole grid back from the engine.
+    painted: RefCell<Option<Grid>>,
+    /// The program title last published to the page.
+    title: RefCell<String>,
+    /// The mouse selection over the viewport, and whether a drag is live.
+    selection: Cell<Option<Selection>>,
+    selecting: Cell<bool>,
     bindings: RefCell<AppBindings>,
     ready: RefCell<Option<oneshot::Sender<Result<(), String>>>>,
     failure_reason: RefCell<Option<String>>,
@@ -828,8 +936,15 @@ impl App {
 
     fn signal_ready(&self) {
         if let Some(ready) = self.ready.borrow_mut().take() {
+            self.mark_connection("connected");
             let _ = ready.send(Ok(()));
         }
+    }
+
+    /// Reflect the connection on the canvas as [`CONNECTION_ATTRIBUTE`], so
+    /// a page can dim or badge a stale terminal while a reconnect is pending.
+    fn mark_connection(&self, state: &str) {
+        let _ = self.canvas.set_attribute(CONNECTION_ATTRIBUTE, state);
     }
 
     fn signal_failed(&self, message: &str) {
@@ -844,6 +959,7 @@ impl App {
         }
         self.failure_reason.replace(Some(message.to_owned()));
         self.session.fail_protocol(message);
+        self.mark_connection("disconnected");
         self.signal_failed(message);
         self.bindings.get_mut().dispose();
         self.tx.close();
@@ -916,6 +1032,53 @@ impl App {
         Some(container)
     }
 
+    /// Move the input surface over the cursor cell, so an IME candidate
+    /// window opens where the text will land.
+    fn place_input_surface(&self) {
+        let bindings = self.bindings.borrow();
+        let Some(input) = bindings.input.as_ref() else {
+            return;
+        };
+        let rect = self.canvas.get_bounding_client_rect();
+        let grid = self.session.grid();
+        // CSS may scale the canvas; map device cells to client pixels.
+        let scale_x = rect.width() / f64::from(self.canvas.width().max(1));
+        let scale_y = rect.height() / f64::from(self.canvas.height().max(1));
+        let left = rect.left() + f64::from(grid.cursor_col) * self.metrics.cell_w * scale_x;
+        let top = rect.top() + f64::from(grid.cursor_row) * self.metrics.cell_h * scale_y;
+        let _ = input.surface.set_attribute(
+            "style",
+            &format!("{INPUT_SURFACE_STYLE}left:{left}px;top:{top}px;"),
+        );
+    }
+
+    /// Paint on the next animation frame. Frames arriving in a burst (a
+    /// flood of output, a WebTransport chunk of many frames) share one
+    /// paint, and a hidden tab paints nothing until it is shown again.
+    fn request_paint(&self) {
+        if let Some(frame) = self.bindings.borrow().frame.as_ref() {
+            frame.request();
+        }
+    }
+
+    /// Toggle the cursor blink phase and redraw only the cursor's cell.
+    fn blink(&self) {
+        self.cursor_on.set(!self.cursor_on.get());
+        if self.session.viewport_scrolled() {
+            return;
+        }
+        if let Some(grid) = self.painted.borrow().as_ref() {
+            let selected = self.selected_cells(grid.cols);
+            render_cursor_cell(
+                &self.ctx,
+                grid,
+                &self.metrics,
+                self.cursor_on.get(),
+                &selected,
+            );
+        }
+    }
+
     fn paint(&self) {
         if !self.session.render_visible() {
             return;
@@ -930,7 +1093,68 @@ impl App {
         if self.canvas.height() != h {
             self.canvas.set_height(h);
         }
-        render(&self.ctx, &grid, &self.metrics, self.cursor_on.get());
+        // The cursor belongs to the live screen, not a scrolled-back view.
+        let cursor = self.cursor_on.get() && !self.session.viewport_scrolled();
+        let selected = self.selected_cells(grid.cols);
+        render_selected(&self.ctx, &grid, &self.metrics, cursor, &selected);
+        self.painted.replace(Some(grid));
+        self.publish_title();
+    }
+
+    /// Row-major indices of the selected cells, empty without a selection.
+    fn selected_cells(&self, cols: u16) -> std::ops::Range<usize> {
+        self.selection
+            .get()
+            .filter(|selection| !selection.is_click())
+            .map_or(0..0, |selection| selection.cells(cols))
+    }
+
+    /// The selected text, if anything is selected. Read from the replica's
+    /// current viewport, which the canvas shows by the next frame.
+    fn selected_text(&self) -> Option<String> {
+        let selection = self.selection.get().filter(|s| !s.is_click())?;
+        Some(selection.text(&self.session.grid()))
+    }
+
+    /// Drop the selection (it names viewport cells, which input, scrolling,
+    /// and resizing move out from under it), repainting if one was shown.
+    fn clear_selection(&self) {
+        if self.selection.take().is_some() {
+            self.request_paint();
+        }
+    }
+
+    /// The viewport cell under a pointer event, in the canvas's CSS scale.
+    fn cell_under(&self, event: &web_sys::MouseEvent) -> (u16, u16) {
+        let rect = self.canvas.get_bounding_client_rect();
+        let scale_x = rect.width() / f64::from(self.canvas.width().max(1));
+        let scale_y = rect.height() / f64::from(self.canvas.height().max(1));
+        let (cols, rows) = self.session.dims();
+        cell_at(
+            event.client_x() - rect.left(),
+            event.client_y() - rect.top(),
+            self.metrics.cell_w * scale_x,
+            self.metrics.cell_h * scale_y,
+            cols,
+            rows,
+        )
+    }
+
+    /// Mirror a changed program title onto the canvas and announce it, so a
+    /// page can show it (the standalone page sets its document title).
+    fn publish_title(&self) {
+        let title = self.session.title();
+        if *self.title.borrow() == title {
+            return;
+        }
+        let _ = self.canvas.set_attribute(TITLE_ATTRIBUTE, &title);
+        let init = web_sys::CustomEventInit::new();
+        init.set_bubbles(true);
+        init.set_detail(&JsValue::from_str(&title));
+        if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict(TITLE_EVENT, &init) {
+            let _ = self.canvas.dispatch_event(&event);
+        }
+        self.title.replace(title);
     }
 }
 
@@ -967,6 +1191,11 @@ fn build_app(
         ctx,
         metrics: Metrics::default(),
         cursor_on: Cell::new(true),
+        wheel_carry: Cell::new(0.0),
+        painted: RefCell::new(None),
+        title: RefCell::new(String::new()),
+        selection: Cell::new(None),
+        selecting: Cell::new(false),
         bindings: RefCell::new(AppBindings::default()),
         ready: RefCell::new(Some(ready_tx)),
         failure_reason: RefCell::new(None),
@@ -974,11 +1203,12 @@ fn build_app(
         self_owner: RefCell::new(None),
     }));
     install_bootstrap_expiry(&app)?;
+    install_frame(&app)?;
     Ok((app, ready_rx))
 }
 
 struct ReconnectConfig {
-    wt_url: String,
+    wt_url: Option<String>,
     ws_url: String,
     canvas: HtmlCanvasElement,
     cols: u16,
@@ -989,17 +1219,17 @@ fn spawn_reconnect(config: ReconnectConfig) {
     wasm_bindgen_futures::spawn_local(async move {
         TimeoutFuture::new(250).await;
         loop {
-            match run_with_fallback(
-                &config.wt_url,
-                &config.ws_url,
-                config.canvas.clone(),
-                config.cols,
-                config.rows,
-            )
-            .await
-            {
+            let canvas = config.canvas.clone();
+            let attempt = match config.wt_url.as_deref() {
+                Some(wt_url) => {
+                    run_with_fallback(wt_url, &config.ws_url, canvas, config.cols, config.rows)
+                        .await
+                }
+                None => run(&config.ws_url, canvas, config.cols, config.rows).await,
+            };
+            match attempt {
                 Ok(client) => {
-                    client.enable_auto_reconnect(&config.wt_url, &config.ws_url);
+                    client.enable_auto_reconnect(config.wt_url.as_deref(), &config.ws_url);
                     return;
                 }
                 Err(_) => TimeoutFuture::new(1_000).await,
@@ -1561,7 +1791,7 @@ impl BatchEffects {
     fn paint(self, app: &Rc<RefCell<App>>) {
         let app = app.borrow();
         if self.render {
-            app.paint();
+            app.request_paint();
         }
         if self.badges {
             app.paint_badges();
@@ -1656,46 +1886,342 @@ fn close_webtransport_exit(app: &Rc<RefCell<App>>, message: &str, protocol: bool
     app.fail(message);
 }
 
-/// Keyboard: each keydown becomes an `INPUT_KEY` for the attached terminal.
-fn install_keyboard(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
-    let document = web_sys::window()
-        .and_then(|w| w.document())
+/// Inline style of the input surface: invisible and inert to the pointer,
+/// but a real focusable text control so the browser runs IME composition,
+/// dead keys, mobile keyboards, and clipboard paste against it.
+const INPUT_SURFACE_STYLE: &str = "position:fixed;width:1px;height:1px;padding:0;border:0;\
+margin:0;opacity:0;resize:none;overflow:hidden;white-space:pre;pointer-events:none;\
+caret-color:transparent;";
+
+/// Keyboard, IME, and paste: a hidden `<textarea>` beside the canvas owns
+/// terminal input. Focusing or clicking the canvas focuses it, so only keys
+/// typed at the terminal become `INPUT_KEY`; the embedding page's other
+/// controls keep theirs. Keydowns the terminal encodes are sent and
+/// cancelled; composed text arrives as `compositionend` or `input`, and a
+/// clipboard paste as one `INPUT_PASTE`.
+fn install_input(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
+    let canvas = app.borrow().canvas.clone();
+    let document = canvas
+        .owner_document()
         .ok_or_else(|| JsValue::from_str("no document"))?;
-    let weak = Rc::downgrade(app);
-    let onkey = Closure::<dyn FnMut(KeyboardEvent)>::new(move |e: KeyboardEvent| {
-        if path_picker::is_picker_event(&e) {
-            return;
+    let surface = create_input_surface(&document, &canvas)?;
+    let mut binding = InputBinding {
+        surface: surface.clone(),
+        listeners: Vec::new(),
+    };
+    let handlers: [(&str, InputHandler); 6] = [
+        ("keydown", on_keydown),
+        ("compositionstart", |app, _, _| {
+            app.borrow().place_input_surface()
+        }),
+        ("compositionend", on_composition_end),
+        ("input", on_text_input),
+        ("paste", on_paste),
+        ("copy", on_copy),
+    ];
+    let canvas_handlers: [(&str, InputHandler); 7] = [
+        ("focus", focus_surface),
+        ("mousedown", focus_surface),
+        ("wheel", on_wheel),
+        ("pointerdown", on_pointer),
+        ("pointermove", on_pointer),
+        ("pointerup", on_pointer),
+        ("pointercancel", on_pointer),
+    ];
+    let targets: [(&web_sys::EventTarget, &[(&str, InputHandler)]); 2] = [
+        (surface.as_ref(), &handlers),
+        (canvas.as_ref(), &canvas_handlers),
+    ];
+    for (target, handlers) in targets {
+        for &(kind, handler) in handlers {
+            let weak = Rc::downgrade(app);
+            let surface = surface.clone();
+            binding.listen(target, kind, move |event| {
+                if let Some(app) = weak.upgrade() {
+                    handler(&app, &event, &surface);
+                }
+            })?;
         }
-        let Some(app) = weak.upgrade() else {
-            return;
-        };
-        let Some(event) = key_event_from_browser(&e) else {
-            return;
-        };
-        let mut a = app.borrow_mut();
-        if let Some(frame) = a.session.key_frame(event) {
-            if let Err(message) = a.tx.send(&frame) {
-                drop(a);
-                close_with_transport_error(&app, &message);
-                return;
-            }
-            e.prevent_default();
-        }
-    });
-    document.add_event_listener_with_callback("keydown", onkey.as_ref().unchecked_ref())?;
-    let old = app
-        .borrow()
-        .bindings
-        .borrow_mut()
-        .keyboard
-        .replace(KeyboardBinding {
-            document,
-            callback: onkey,
-        });
+    }
+
+    let old = app.borrow().bindings.borrow_mut().input.replace(binding);
     if let Some(old) = old {
         old.dispose();
     }
+    if focus_is_idle(&document) {
+        app.borrow().place_input_surface();
+        let _ = surface.focus();
+    }
     Ok(())
+}
+
+type InputHandler = fn(&Rc<RefCell<App>>, &web_sys::Event, &HtmlTextAreaElement);
+
+/// The hidden, focusable text control, mounted beside the canvas.
+fn create_input_surface(
+    document: &web_sys::Document,
+    canvas: &HtmlCanvasElement,
+) -> Result<HtmlTextAreaElement, JsValue> {
+    let surface: HtmlTextAreaElement = document.create_element("textarea")?.dyn_into()?;
+    surface.set_class_name(INPUT_SURFACE_CLASS);
+    for (name, value) in [
+        ("aria-label", "Terminal input"),
+        ("autocomplete", "off"),
+        ("autocorrect", "off"),
+        ("autocapitalize", "off"),
+        ("spellcheck", "false"),
+        ("tabindex", "-1"),
+        ("style", INPUT_SURFACE_STYLE),
+    ] {
+        surface.set_attribute(name, value)?;
+    }
+    let parent = canvas
+        .parent_element()
+        .or_else(|| document.body().map(Into::into))
+        .ok_or_else(|| JsValue::from_str("no element to host the input surface"))?;
+    parent.append_child(&surface)?;
+    Ok(surface)
+}
+
+/// Whether nothing holds focus: a fresh page, or a reconnect whose previous
+/// surface held it. The terminal takes focus then, so typing works without
+/// a click, but never from another control the user is in.
+fn focus_is_idle(document: &web_sys::Document) -> bool {
+    document
+        .active_element()
+        .is_none_or(|active| document.body().is_some_and(|body| active == *body.as_ref()))
+}
+
+/// Focusing or pressing on the canvas focuses the input surface.
+fn focus_surface(_: &Rc<RefCell<App>>, event: &web_sys::Event, surface: &HtmlTextAreaElement) {
+    if event.type_() == "mousedown" {
+        // Keep the canvas from taking focus back from the surface.
+        event.prevent_default();
+    }
+    let _ = surface.focus();
+}
+
+/// A primary-button drag over the canvas selects cells; a click clears.
+fn on_pointer(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
+    let Some(event) = event.dyn_ref::<web_sys::PointerEvent>() else {
+        return;
+    };
+    let app = app.borrow();
+    let cell = app.cell_under(event);
+    match event.type_().as_str() {
+        "pointerdown" if event.button() == 0 => {
+            app.selection.set(Some(Selection::at(cell)));
+            app.selecting.set(true);
+            // Keep receiving moves when the drag leaves the canvas.
+            let _ = app.canvas.set_pointer_capture(event.pointer_id());
+            app.request_paint();
+        }
+        "pointermove" if app.selecting.get() => {
+            if let Some(mut selection) = app.selection.get()
+                && selection.head != cell
+            {
+                selection.head = cell;
+                app.selection.set(Some(selection));
+                app.request_paint();
+            }
+        }
+        // A cancelled pointer (a touch taken for panning) ends the drag too.
+        "pointerup" | "pointercancel" => {
+            let dragging = app.selecting.replace(false);
+            if dragging && app.selection.get().is_some_and(|s| s.is_click()) {
+                app.clear_selection();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Copying (the browser's own Command+C, or the chord handler) takes the
+/// selected text when there is a selection.
+fn on_copy(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
+    let Some(text) = app.borrow().selected_text() else {
+        return;
+    };
+    if let Some(data) = event
+        .dyn_ref::<ClipboardEvent>()
+        .and_then(ClipboardEvent::clipboard_data)
+        && data.set_data("text/plain", &text).is_ok()
+    {
+        event.prevent_default();
+    }
+}
+
+/// The wheel pages the local scrollback; the page itself does not scroll.
+fn on_wheel(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
+    let Some(event) = event.dyn_ref::<web_sys::WheelEvent>() else {
+        return;
+    };
+    event.prevent_default();
+    let app = app.borrow();
+    // CSS may scale the canvas; a row is its cell height in client pixels.
+    let rect = app.canvas.get_bounding_client_rect();
+    let scale = rect.height() / f64::from(app.canvas.height().max(1));
+    let (_, page_rows) = app.session.dims();
+    let mut carry = app.wheel_carry.get();
+    let rows = crate::input::wheel_rows(
+        event.delta_y(),
+        event.delta_mode(),
+        app.metrics.cell_h * scale,
+        page_rows,
+        &mut carry,
+    );
+    app.wheel_carry.set(carry);
+    if rows != 0 && app.session.scroll_viewport(rows) {
+        app.clear_selection();
+        app.request_paint();
+    }
+}
+
+/// Send one routed keydown; cancel the browser default only when sent.
+fn on_keydown(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
+    let Some(event) = event.dyn_ref::<KeyboardEvent>() else {
+        return;
+    };
+    let key = event.key();
+    let code = event.code();
+    let browser_key = crate::input::BrowserKey {
+        key: &key,
+        code: &code,
+        ctrl: event.ctrl_key(),
+        shift: event.shift_key(),
+        alt: event.alt_key(),
+        meta: event.meta_key(),
+        alt_graph: event.get_modifier_state("AltGraph"),
+        repeat: event.repeat(),
+        // Safari reports the keydown that starts a composition as 229
+        // before `isComposing` turns true.
+        composing: event.is_composing() || event.key_code() == 229,
+    };
+    if crate::input::is_copy_chord(&browser_key) && copy_selection(app) {
+        event.prevent_default();
+        return;
+    }
+    if let Some(direction) = crate::input::scrollback_page(&browser_key) {
+        event.prevent_default();
+        let app = app.borrow();
+        let (_, rows) = app.session.dims();
+        let page = i32::from(rows.saturating_sub(1).max(1));
+        if app.session.scroll_viewport(direction * page) {
+            app.clear_selection();
+            app.request_paint();
+        }
+        return;
+    }
+    let routed = crate::input::route_key(&browser_key);
+    if let Some(key) = routed
+        && send_input(app, [InputEvent::Key(key)])
+    {
+        event.prevent_default();
+    }
+}
+
+/// An IME or dead-key composition committed its text.
+fn on_composition_end(
+    app: &Rc<RefCell<App>>,
+    event: &web_sys::Event,
+    surface: &HtmlTextAreaElement,
+) {
+    if let Some(text) = event
+        .dyn_ref::<CompositionEvent>()
+        .and_then(CompositionEvent::data)
+    {
+        send_input(app, text_input_events(&text));
+    }
+    surface.set_value("");
+}
+
+/// Text inserted without a composition (mobile keyboards, dictation, an
+/// emoji picker). Composition commits arrive as `compositionend` instead,
+/// whichever order the browser fires the two in.
+fn on_text_input(app: &Rc<RefCell<App>>, event: &web_sys::Event, surface: &HtmlTextAreaElement) {
+    let Some(event) = event.dyn_ref::<web_sys::InputEvent>() else {
+        return;
+    };
+    if event.is_composing() {
+        return;
+    }
+    let plain = matches!(
+        event.input_type().as_str(),
+        "insertText" | "insertReplacementText"
+    );
+    if plain && let Some(text) = event.data() {
+        send_input(app, text_input_events(&text));
+    }
+    surface.set_value("");
+}
+
+/// A clipboard paste becomes one `INPUT_PASTE`; nothing lands in the surface.
+fn on_paste(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
+    event.prevent_default();
+    let text = event
+        .dyn_ref::<ClipboardEvent>()
+        .and_then(ClipboardEvent::clipboard_data)
+        .and_then(|data| data.get_data("text/plain").ok())
+        .unwrap_or_default();
+    match crate::input::paste_event(&text) {
+        Some(paste) => {
+            send_input(app, [InputEvent::Paste(paste)]);
+        }
+        None if !text.is_empty() => web_sys::console::warn_1(&JsValue::from_str(
+            "phux-web: paste larger than the 512 KiB limit was not sent",
+        )),
+        None => {}
+    }
+}
+
+/// Copy the selection through the browser's copy command, which raises the
+/// `copy` event [`on_copy`] fills. Returns whether there was one to copy.
+fn copy_selection(app: &Rc<RefCell<App>>) -> bool {
+    let document = {
+        let app = app.borrow();
+        if app.selected_text().is_none() {
+            return false;
+        }
+        app.canvas.owner_document()
+    };
+    document
+        .and_then(|document| document.dyn_into::<web_sys::HtmlDocument>().ok())
+        .is_some_and(|document| document.exec_command("copy").unwrap_or(false))
+}
+
+fn text_input_events(text: &str) -> Vec<InputEvent> {
+    crate::input::key_events_for_text(text)
+        .into_iter()
+        .map(InputEvent::Key)
+        .collect()
+}
+
+/// Encode and send input atoms for the focused terminal. Returns whether any
+/// was sent; a transport failure closes the connection.
+fn send_input(app: &Rc<RefCell<App>>, events: impl IntoIterator<Item = InputEvent>) -> bool {
+    let mut sent = false;
+    for event in events {
+        let mut a = app.borrow_mut();
+        let Some(frame) = a.session.input_frame(event) else {
+            return sent;
+        };
+        if let Err(message) = a.tx.send(&frame) {
+            drop(a);
+            close_with_transport_error(app, &message);
+            return false;
+        }
+        sent = true;
+    }
+    // Typing returns a scrolled-back view to the live screen and ends the
+    // selection, as in a local terminal.
+    let app = app.borrow();
+    if sent {
+        app.clear_selection();
+        if app.session.scroll_to_bottom() {
+            app.request_paint();
+        }
+    }
+    sent
 }
 
 /// Cursor blink: toggle the phase and repaint on a fixed cadence.
@@ -1704,9 +2230,7 @@ fn install_cursor_blink(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
     let weak = Rc::downgrade(app);
     let blink = Closure::<dyn FnMut()>::new(move || {
         if let Some(app) = weak.upgrade() {
-            let app = app.borrow();
-            app.cursor_on.set(!app.cursor_on.get());
-            app.paint();
+            app.borrow().blink();
         }
     });
     let interval = window.set_interval_with_callback_and_timeout_and_arguments_0(
@@ -1726,6 +2250,32 @@ fn install_cursor_blink(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
     if let Some(old) = old {
         old.dispose();
     }
+    Ok(())
+}
+
+/// The animation-frame callback every paint request shares.
+fn install_frame(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
+    let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+    let weak = Rc::downgrade(app);
+    let callback = Closure::<dyn FnMut()>::new(move || {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let app = app.borrow();
+        if let Some(frame) = app.bindings.borrow().frame.as_ref() {
+            frame.pending.set(None);
+        }
+        app.paint();
+    });
+    app.borrow()
+        .bindings
+        .borrow_mut()
+        .frame
+        .replace(FrameBinding {
+            window,
+            callback,
+            pending: Cell::new(None),
+        });
     Ok(())
 }
 
@@ -1755,92 +2305,6 @@ fn install_bootstrap_expiry(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
             callback,
         });
     Ok(())
-}
-
-/// Map a browser `KeyboardEvent` to a wire `KeyEvent`. Returns `None` for
-/// modifier-only keydowns (which carry no terminal input on their own).
-fn key_event_from_browser(e: &KeyboardEvent) -> Option<KeyEvent> {
-    let key = code_to_physical_key(&e.code());
-
-    let mut mods = ModSet::empty();
-    if e.ctrl_key() {
-        mods |= ModSet::CTRL;
-    }
-    if e.shift_key() {
-        mods |= ModSet::SHIFT;
-    }
-    if e.alt_key() {
-        mods |= ModSet::ALT;
-    }
-    if e.meta_key() {
-        mods |= ModSet::SUPER;
-    }
-
-    // `key()` is the produced character; carry it as text for printable keys
-    // (single char, no Ctrl/Meta). Named keys ("Enter", "Shift", …) are >1 char.
-    let produced = e.key();
-    if produced == "Shift" || produced == "Control" || produced == "Alt" || produced == "Meta" {
-        return None;
-    }
-    let text =
-        (produced.chars().count() == 1 && !e.ctrl_key() && !e.meta_key()).then_some(produced);
-
-    Some(KeyEvent {
-        action: KeyAction::Press,
-        key,
-        mods,
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text,
-        unshifted_codepoint: None,
-    })
-}
-
-/// Map a W3C `KeyboardEvent.code` to libghostty's physical-key discriminant.
-/// `KeyA`–`KeyZ` and `Digit0`–`Digit9` map arithmetically; the rest by name.
-fn code_to_physical_key(code: &str) -> PhysicalKey {
-    use PhysicalKey as K;
-
-    if let Some(c) = code.strip_prefix("Key").and_then(|s| s.chars().next())
-        && c.is_ascii_uppercase()
-    {
-        return PhysicalKey::try_from(20 + (c as u32 - u32::from(b'A'))).unwrap_or(K::Unidentified);
-    }
-    if let Some(d) = code.strip_prefix("Digit").and_then(|s| s.chars().next())
-        && d.is_ascii_digit()
-    {
-        return PhysicalKey::try_from(6 + (d as u32 - u32::from(b'0'))).unwrap_or(K::Unidentified);
-    }
-
-    match code {
-        "Enter" | "NumpadEnter" => K::Enter,
-        "Backspace" => K::Backspace,
-        "Tab" => K::Tab,
-        "Space" => K::Space,
-        "Escape" => K::Escape,
-        "ArrowUp" => K::ArrowUp,
-        "ArrowDown" => K::ArrowDown,
-        "ArrowLeft" => K::ArrowLeft,
-        "ArrowRight" => K::ArrowRight,
-        "Home" => K::Home,
-        "End" => K::End,
-        "PageUp" => K::PageUp,
-        "PageDown" => K::PageDown,
-        "Delete" => K::Delete,
-        "Insert" => K::Insert,
-        "Minus" => K::Minus,
-        "Equal" => K::Equal,
-        "Period" => K::Period,
-        "Comma" => K::Comma,
-        "Slash" => K::Slash,
-        "Semicolon" => K::Semicolon,
-        "Quote" => K::Quote,
-        "Backslash" => K::Backslash,
-        "BracketLeft" => K::BracketLeft,
-        "BracketRight" => K::BracketRight,
-        "Backquote" => K::Backquote,
-        _ => K::Unidentified,
-    }
 }
 
 #[cfg(test)]
@@ -1873,6 +2337,13 @@ mod tests {
     use web_sys::{HtmlCanvasElement, WebSocket};
 
     wasm_bindgen_test_configure!(run_in_browser);
+
+    /// The live `ws_demo_server` the browser lane starts (a fixed default
+    /// for running these by hand).
+    const TEST_WS_URL: &str = match option_env!("PHUX_TEST_WS_URL") {
+        Some(url) => url,
+        None => "ws://127.0.0.1:47654/",
+    };
 
     #[wasm_bindgen_test]
     fn poisoned_framing_stops_pump_and_invokes_close() {
@@ -2079,7 +2550,7 @@ mod tests {
     }
 
     async fn open_websocket() -> WebSocket {
-        let ws = WebSocket::new("ws://127.0.0.1:47654/").expect("create test WebSocket");
+        let ws = WebSocket::new(TEST_WS_URL).expect("create test WebSocket");
         for _ in 0..200 {
             if ws.ready_state() == WebSocket::OPEN {
                 return ws;
@@ -2116,7 +2587,7 @@ mod tests {
     async fn malformed_token_fails_closed_before_an_available_ws_fallback() {
         let result = super::run_with_fallback(
             "https://127.0.0.1:9/session?token=not-hex",
-            "ws://127.0.0.1:47654/",
+            TEST_WS_URL,
             test_canvas(),
             80,
             24,
@@ -2204,7 +2675,7 @@ mod tests {
         document.body().unwrap().append_child(&canvas).unwrap();
 
         crate::start(
-            "ws://127.0.0.1:47654/".to_owned(),
+            TEST_WS_URL.to_owned(),
             "phux-start-retention-test".to_owned(),
             80,
             24,
@@ -2226,12 +2697,10 @@ mod tests {
         canvas.remove();
     }
 
-    #[wasm_bindgen_test]
-    async fn ready_then_malformed_same_chunk_remains_failed() {
-        let ws = open_websocket().await;
-        let vt = Vt::load().await.unwrap();
-        let tx = super::WireTx::Ws(super::WsTx::new(ws));
-        let (app, ready) = super::build_app(&vt, tx, test_canvas(), 80, 24, false).unwrap();
+    /// One transport chunk that takes a fresh session through HELLO_OK to
+    /// ATTACH_READY with one raw-profile terminal whose bootstrap is
+    /// `payload`.
+    fn attached_chunk(payload: &'static [u8]) -> Vec<u8> {
         let terminal_id = ResourceId::new(1);
         let stream_id = StreamId::new(1).unwrap();
         let bootstrap_id = BootstrapId::new(1).unwrap();
@@ -2274,7 +2743,7 @@ mod tests {
                 stream_id,
                 bootstrap_id,
                 chunk_seq: 0,
-                payload: bytes::Bytes::from_static(b"ready"),
+                payload: bytes::Bytes::from_static(payload),
             },
             FrameKind::BootstrapReady {
                 terminal_id,
@@ -2290,6 +2759,54 @@ mod tests {
             frame.encode(&mut encoded);
             chunk.extend_from_slice(&encoded);
         }
+        chunk
+    }
+
+    #[wasm_bindgen_test]
+    async fn program_title_reaches_the_canvas_and_a_dom_event() {
+        let ws = open_websocket().await;
+        let vt = Vt::load().await.unwrap();
+        let tx = super::WireTx::Ws(super::WsTx::new(ws));
+        let canvas = test_canvas();
+        let (app, _ready) = super::build_app(&vt, tx, canvas.clone(), 80, 24, false).unwrap();
+        let seen = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let record = Rc::clone(&seen);
+        let listener =
+            Closure::<dyn FnMut(web_sys::CustomEvent)>::new(move |event: web_sys::CustomEvent| {
+                record
+                    .borrow_mut()
+                    .push(event.detail().as_string().unwrap_or_default());
+            });
+        canvas
+            .add_event_listener_with_callback(super::TITLE_EVENT, listener.as_ref().unchecked_ref())
+            .unwrap();
+
+        let chunk = attached_chunk(b"\x1b]2;vim README.md\x07prompt$ ");
+        assert_eq!(
+            super::process_webtransport_chunk(&app, &mut FrameBuffer::new(), &chunk),
+            ReceiveFlow::Continue
+        );
+        app.borrow().paint();
+        app.borrow().paint();
+        assert_eq!(
+            canvas.get_attribute(super::TITLE_ATTRIBUTE).as_deref(),
+            Some("vim README.md")
+        );
+        assert_eq!(
+            *seen.borrow(),
+            ["vim README.md"],
+            "one event per change, not per paint"
+        );
+        app.borrow_mut().dispose();
+    }
+
+    #[wasm_bindgen_test]
+    async fn ready_then_malformed_same_chunk_remains_failed() {
+        let ws = open_websocket().await;
+        let vt = Vt::load().await.unwrap();
+        let tx = super::WireTx::Ws(super::WsTx::new(ws));
+        let (app, ready) = super::build_app(&vt, tx, test_canvas(), 80, 24, false).unwrap();
+        let mut chunk = attached_chunk(b"ready");
         chunk.extend_from_slice(&[0, 0, 0, 1, 0xff]);
 
         assert_eq!(
@@ -2314,7 +2831,7 @@ mod tests {
             let (app, _ready) = super::build_app(&vt, tx, test_canvas(), 80, 24, false).unwrap();
             super::install_transport_failure_hook(&app);
             super::install_websocket_handlers(&app, &ws);
-            super::install_keyboard(&app).unwrap();
+            super::install_input(&app).unwrap();
             super::install_cursor_blink(&app).unwrap();
             app.borrow().self_owner.replace(Some(Rc::clone(&app)));
             let weak = Rc::downgrade(&app);
@@ -2322,11 +2839,19 @@ mod tests {
             super::send_handshake(&app);
             assert!(app.borrow().session.is_failed());
             assert!(app.borrow().self_owner.borrow().is_none());
+            assert_eq!(
+                app.borrow()
+                    .canvas
+                    .get_attribute(super::CONNECTION_ATTRIBUTE)
+                    .as_deref(),
+                Some("disconnected"),
+                "a failed connection is marked on its canvas"
+            );
             {
                 let app = app.borrow();
                 let bindings = app.bindings.borrow();
                 assert!(bindings.websocket.is_none());
-                assert!(bindings.keyboard.is_none());
+                assert!(bindings.input.is_none());
                 assert!(bindings.blink.is_none());
                 assert!(bindings.bootstrap_expiry.is_none());
             }
@@ -2336,6 +2861,44 @@ mod tests {
             drop(app);
             assert!(weak.upgrade().is_none(), "failed App must be released");
         }
+    }
+
+    #[wasm_bindgen_test]
+    async fn paint_requests_share_one_animation_frame_and_teardown_cancels_it() {
+        let ws = open_websocket().await;
+        let vt = Vt::load().await.unwrap();
+        let tx = super::WireTx::Ws(super::WsTx::new(ws));
+        let (app, _ready) = super::build_app(&vt, tx, test_canvas(), 80, 24, false).unwrap();
+        let pending = |app: &Rc<std::cell::RefCell<super::App>>| {
+            app.borrow()
+                .bindings
+                .borrow()
+                .frame
+                .as_ref()
+                .and_then(|frame| frame.pending.get())
+        };
+
+        app.borrow().request_paint();
+        let first = pending(&app).expect("a paint is scheduled");
+        for _ in 0..100 {
+            app.borrow().request_paint();
+        }
+        assert_eq!(pending(&app), Some(first), "a burst shares one frame");
+        for _ in 0..50 {
+            if pending(&app).is_none() {
+                break;
+            }
+            TimeoutFuture::new(10).await;
+        }
+        assert_eq!(pending(&app), None, "the frame ran and cleared its request");
+
+        app.borrow().request_paint();
+        assert!(pending(&app).is_some());
+        app.borrow_mut().dispose();
+        assert!(
+            app.borrow().bindings.borrow().frame.is_none(),
+            "teardown cancels the pending frame"
+        );
     }
 
     #[wasm_bindgen_test]
