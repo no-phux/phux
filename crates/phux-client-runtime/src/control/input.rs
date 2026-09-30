@@ -107,6 +107,35 @@ impl ControlPlane {
         self.begin_acknowledged_input(terminal_id, events)
     }
 
+    /// Deliver the user's own clipboard paste: the same intent boundary as a
+    /// DEC 2004 paste reaching the TUI, or `phux paste`, so it is trusted and
+    /// the server brackets it without refusing multi-line text. A paste that
+    /// fits one `APPLY_INPUT` goes acknowledged (the returned correlation
+    /// resolves [`Event::InputDelivery`]). A larger one, or one for a
+    /// satellite pane (acknowledged input is local-only), goes as one atomic
+    /// `INPUT_PASTE` event, never split (input.md §5.1), and has no receipt:
+    /// `None`. Unresolved acknowledged input for the terminal refuses the
+    /// raw event with a receipt rather than let it reach the PTY first.
+    pub fn apply_user_paste(&mut self, terminal_id: &ResourceId, text: &str) -> Option<u64> {
+        let fits = text.len() <= MAX_APPLY_INPUT_COMMAND_BODY - APPLY_PASTE_OVERHEAD;
+        if fits && matches!(terminal_id, ResourceId::Local { .. }) {
+            let events = vec![InputEvent::Paste(PasteEvent {
+                trust: PasteTrust::Trusted,
+                data: text.as_bytes().to_vec(),
+            })];
+            return Some(self.begin_acknowledged_input(terminal_id, events));
+        }
+        if self.input_replay.must_order_after(terminal_id) {
+            return Some(
+                self.refuse_acknowledged_input("an earlier paste to this terminal is unresolved"),
+            );
+        }
+        if !self.send_paste(terminal_id, text.as_bytes().to_vec(), PasteTrust::Trusted) {
+            return Some(self.refuse_acknowledged_input("delivery to this terminal is fenced"));
+        }
+        None
+    }
+
     /// Atomically flush a draft and press Tab through the acknowledged
     /// path, so a reconnect can neither reorder nor duplicate them.
     pub fn apply_tab_completion(&mut self, terminal_id: &ResourceId, text: &str) -> u64 {

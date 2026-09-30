@@ -164,6 +164,15 @@ grid publications, `runtime.project` projection time). `kernel.frames`
 divided by `runtime.publish` is how many output frames one publication
 absorbed; near 1 under a flood means frames are being fed one at a time.
 
+The desktop host (`clients/desktop`) appends its painter rows to the same
+report, `desktopPerfJson`: `desktop.prepare` and `desktop.paint` (per
+terminal element per window draw) and `desktop.key_to_paint`, from a key
+reaching a focused terminal to the first paint of that terminal's next
+output. Launched with `PHUX_DESKTOP_PERF=<absolute path>`, the desktop
+appends one JSON line per second with that report, the main window's draw
+count and recent draw times, and its wake drains (count, events, milliseconds
+spent applying them).
+
 For a reproducible number rather than a live one, `just perf-echo` runs
 the byte-level echo probe against an isolated server at a chosen size
 with a flooding sibling pane, and `just profile` records a CPU profile of

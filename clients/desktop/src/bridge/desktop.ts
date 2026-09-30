@@ -46,7 +46,11 @@ export interface Bridge {
   topology: Accessor<DesktopTopology | undefined>;
   server: Accessor<DesktopServerInfo | undefined>;
   agents: Accessor<Record<string, AgentInfo>>;
-  /** Bumps on every drained wake; read it to re-evaluate native snapshots. */
+  /**
+   * Bumps on every drained wake; read it to re-evaluate per-terminal native
+   * state (readiness, delivery fences, paint). Topology, status and server
+   * refresh only on wakes whose events can change them.
+   */
   revision: Accessor<number>;
   handle: Accessor<string>;
   target: ConnectTarget;
@@ -62,6 +66,38 @@ export interface Bridge {
   onEvents(listener: (events: DesktopEvent[]) => void): void;
   /** Host path answers (`PATH_QUERY`), drained on the same wake as events. */
   onPathAnswers(listener: (answers: DesktopPathAnswer[]) => void): void;
+}
+
+/**
+ * Wake drains across every bridge in this process, for `PHUX_DESKTOP_PERF`:
+ * how many wakes, how many events they carried, and the milliseconds spent
+ * draining and applying them (including the Solid updates they trigger).
+ */
+export const drainStats = { wakes: 0, events: 0, ms: 0, maxMs: 0 };
+
+/**
+ * Whether an event can change the topology, status or server snapshot. Frame
+ * damage, delivery receipts and agent badges cannot: the runtime queues a
+ * topology, status or lifecycle event for every change to those (and a
+ * `TopologyChanged` when it drops events on overflow).
+ */
+export function structural(event: DesktopEvent): boolean {
+  return !(
+    event.kind === "TerminalChanged" ||
+    event.kind === "InputDelivery" ||
+    event.kind === "AgentBadge"
+  );
+}
+
+/**
+ * The server's or runtime's reason when acknowledged input (a paste, an
+ * inserted path) was refused, so the shell can say so instead of the paste
+ * silently vanishing. Delivered and Unknown are not refusals: Unknown shows
+ * as the pane's delivery fence.
+ */
+export function refusedInput(event: DesktopEvent): string | undefined {
+  if (event.kind !== "InputDelivery" || `${event.outcome}` !== "Refused") return undefined;
+  return event.message || "The terminal did not accept the input.";
 }
 
 export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
@@ -121,12 +157,12 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
       setTopology(next);
       const info = native.serverInfo();
       if (info) setServer(info);
-      setRevision((value) => value + 1);
     });
   }
 
   function activity(from: string): void {
     if (closed || !owner || from !== owner.handle) return;
+    const started = performance.now();
     // One drain per wake, even when empty: the drain rearms notification.
     const events = owner.takeEvents();
     // Drain every wake: the runtime's answer queue is bounded, and a full
@@ -135,8 +171,17 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
     batch(() => {
       accept(events);
       if (answers.length > 0) pathListener(answers);
-      snapshot();
+      // A new topology object re-renders every row derived from it, so read
+      // one only when an event can have changed it: output, receipts and
+      // agent badges cannot, and under a flood they are nearly every wake.
+      if (events.some(structural)) snapshot();
+      setRevision((value) => value + 1);
     });
+    const elapsed = performance.now() - started;
+    drainStats.wakes += 1;
+    drainStats.events += events.length;
+    drainStats.ms += elapsed;
+    drainStats.maxMs = Math.max(drainStats.maxMs, elapsed);
   }
 
   function connect(): void {

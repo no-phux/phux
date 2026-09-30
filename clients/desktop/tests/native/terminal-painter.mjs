@@ -251,7 +251,8 @@ try {
   host.terminalFixtureDestroyView(client.handle, left);
   repaint();
   assert.equal(report(2).glyphs.length, 0, "removed slot clears old native text");
-  assert.match(report(2).error, /no publication/);
+  // The presentation surface names the rejection: the view left the engine.
+  assert.match(report(2).error, /StaleView/);
   batch([["destroyElement", 2]]);
   assert.equal(report(2), undefined, "observation teardown follows view teardown");
   const replacement = host.terminalFixtureCreateView(client.handle, terminal);
