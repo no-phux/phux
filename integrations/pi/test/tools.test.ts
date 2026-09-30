@@ -4,12 +4,16 @@ import test from "node:test";
 import type { AgentToolResult, ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 
 import { PhuxCli } from "../src/adapter.js";
+import { PhuxError } from "../src/errors.js";
 import type { ProcessResult, RunRequest } from "../src/runner.js";
+import type { AgentPane } from "../src/schemas.js";
 import { PhuxTargetStore } from "../src/target-store.js";
 import {
   MAX_MODEL_BYTES,
   MAX_MODEL_LINES,
   PhuxAskParams,
+  PhuxAgentPromptParams,
+  PhuxAgentWaitParams,
   PhuxCreateParams,
   PhuxInsertPaneParams,
   PhuxKillParams,
@@ -17,13 +21,17 @@ import {
   PhuxListParams,
   PhuxMovePaneParams,
   PhuxPanesParams,
+  PhuxPasteParams,
   PhuxRenderedSnapshotParams,
+  PhuxResourceWaitParams,
+  PhuxRuntimeInfoParams,
   PhuxRunParams,
   PhuxSendKeysParams,
   PhuxSignalParams,
   PhuxSnapshotParams,
   PhuxSpawnParams,
   PhuxSwapPaneParams,
+  PhuxStatusParams,
   PhuxTagParams,
   PhuxTargetsParams,
   PhuxWaitParams,
@@ -48,7 +56,7 @@ interface ObjectSchema {
   readonly additionalProperties?: boolean;
   readonly anyOf?: readonly ObjectSchema[];
   readonly required?: readonly string[] | undefined;
-  readonly not?: { readonly required?: readonly string[] };
+  readonly not?: { readonly anyOf?: readonly { readonly required?: readonly string[] }[] };
   readonly properties?: Record<string, {
     readonly type?: string;
     readonly minItems?: number;
@@ -64,7 +72,7 @@ const completed = (stdout: string, exitCode = 0): ProcessResult => ({
   termination: "completed", exitCode, stdout, stderr: "",
 });
 
-const agentPane = (terminal: string, session = "work", window = `window-${terminal.slice(1)}`) => ({
+const agentPane = (terminal: string, session = "work", window = `window-${terminal.slice(1)}`): AgentPane => ({
   terminal, session, window,
   agent: { id: "codex", label: "Codex", kind: "codex" },
   state: "working", confidence: 0.9, attention: "normal",
@@ -83,6 +91,8 @@ function fixture(options: {
   readonly snapshotScrollback?: readonly string[];
   readonly agentLists?: readonly (readonly AgentFixture[] | Error)[];
   readonly watchEvents?: number;
+  readonly parentTerminalId?: string;
+  readonly respond?: (request: RunRequest) => ProcessResult | undefined | Promise<ProcessResult | undefined>;
 } = {}): {
   readonly tools: Map<string, CapturedTool>;
   readonly requests: RunRequest[];
@@ -96,6 +106,8 @@ function fixture(options: {
     socket: "/tmp/phux.sock",
     runner: async (request) => {
       requests.push(request);
+      const response = await options.respond?.(request);
+      if (response !== undefined) return response;
       switch (request.args[0]) {
         case "new": return completed(JSON.stringify({ session: "fresh", terminal_id: 9 }));
         case "snapshot": {
@@ -112,7 +124,7 @@ function fixture(options: {
             lines: ["ready"], scrollback: options.snapshotScrollback ?? [],
           }));
         }
-        case "send-keys": return completed("");
+        case "send-keys": case "paste": return completed("");
         case "run": return completed(JSON.stringify({
           command: "echo ok", exit_code: 0, output: options.runOutput ?? "ok", duration_ms: 4,
           truncated: options.runTruncated ?? false,
@@ -125,11 +137,24 @@ function fixture(options: {
           schema_version: 1, sessions: [{ name: "work", windows: 2, attached: false }],
         }));
         case "agent": {
+          if (request.args[1] === "prompt") return completed(JSON.stringify({
+            schema_version: 1, terminal: "@9", delivery: "acked", operation_id: "op",
+            transition_observed: request.args.includes("--wait"),
+          }));
+          if (request.args[1] === "wait") return completed(JSON.stringify({
+            schema_version: 1, terminal: "@9", satisfied: true, state: "done",
+          }));
           const inventory = inventories[Math.min(inventoryIndex, inventories.length - 1)];
           inventoryIndex++;
           if (inventory instanceof Error) throw inventory;
           return completed(JSON.stringify({ schema_version: 1, agents: inventory ?? [] }));
         }
+        case "resource": return completed(JSON.stringify({
+          schema_version: 1, resource: "@9", outcome: "exited", cursor: "cursor", evidence_lost: false,
+          exit_code: 0,
+        }));
+        case "status": return completed(JSON.stringify({ schema_version: 1, running: true }));
+        case "runtime-info": return completed(JSON.stringify({ schema_version: 1 }));
         case "spawn": return completed(JSON.stringify({ terminal_id: 9, satellite: null }));
         case "launch": return completed(JSON.stringify({
           schema_version: 1, terminal_id: 10, integration: "codex", plugin: "agents", argv: ["secret"],
@@ -168,7 +193,7 @@ function fixture(options: {
       tools.set(captured.name, captured);
     },
   } as unknown as ExtensionAPI;
-  registerPhuxTools(api, cli, store);
+  registerPhuxTools(api, cli, store, options.parentTerminalId);
   return { tools, requests, store };
 }
 
@@ -197,14 +222,17 @@ test("every registered tool schema, including union branches, is strict", () => 
     PhuxLaunchParams, PhuxInsertPaneParams, PhuxMovePaneParams, PhuxSwapPaneParams,
     PhuxKillParams, PhuxSignalParams, PhuxTagParams,
     PhuxAskParams, PhuxWatchParams, PhuxRenderedSnapshotParams, PhuxTargetsParams,
+    PhuxPasteParams, PhuxAgentPromptParams, PhuxAgentWaitParams,
+    PhuxResourceWaitParams, PhuxStatusParams, PhuxRuntimeInfoParams,
   ]) assertStrict(schema as ObjectSchema);
 
   assert.equal((PhuxCreateParams as ObjectSchema).properties?.command?.minItems, 1);
   assert.equal((PhuxSendKeysParams as ObjectSchema).properties?.keys?.minItems, 1);
   assert.equal((PhuxRunParams as ObjectSchema).properties?.command?.type, "string");
-  assert.equal((PhuxRunParams as ObjectSchema).properties?.timeout_seconds?.minimum, 0);
+  assert.equal((PhuxRunParams as ObjectSchema).properties?.timeout_seconds?.minimum, 1);
   assert.equal((PhuxWaitParams as ObjectSchema).properties?.timeout_seconds?.minimum, 1);
-  assert.deepEqual((PhuxWaitParams as ObjectSchema).not?.required, ["until", "idle_ms"]);
+  assert.deepEqual((PhuxWaitParams as ObjectSchema).not?.anyOf?.map((branch) => branch.required),
+    [["until", "idle_ms"], ["until", "regex"], ["regex", "idle_ms"]]);
 });
 
 test("placement and spatial schemas encode conditional requirements and numeric bounds", () => {
@@ -284,10 +312,10 @@ test("wait rejects zero and competing conditions without executing", async () =>
   const { tools, requests } = fixture();
   await assert.rejects(tool(tools, "phux_wait").execute("zero", {
     target: "@9", timeout_seconds: 0,
-  }), /positive integer; omit it to wait indefinitely/);
+  }), RangeError);
   await assert.rejects(tool(tools, "phux_wait").execute("both", {
     target: "@9", until: "done", idle_ms: 10,
-  }), /either until or idle_ms, not both/);
+  }), Error);
   assert.equal(requests.length, 0);
 });
 
@@ -362,7 +390,7 @@ test("targets execute mutations and group expansion for tag and confirmed kill",
 
   assert.match(text(targets), /group:workers/);
   assert.deepEqual(requests.filter((request) => request.args[0] === "tag").map((request) => request.args[2]), ["@3", "@4"]);
-  assert.deepEqual(requests.filter((request) => request.args[0] === "kill").map((request) => request.args[1]), ["@3", "@4"]);
+  assert.deepEqual(requests.filter((request) => request.args[0] === "kill").map((request) => request.args[2]), ["@3", "@4"]);
   assert.equal(killed.details?.count, 2);
 });
 
@@ -375,12 +403,12 @@ test("kill and destructive signals require explicit strong confirmation", async 
   }), /explicit target and confirm:true/);
   await tool(tools, "phux_signal").execute("signal-safe", { target: "@3", signal: "freeze" });
   await tool(tools, "phux_signal").execute("signal-confirmed", {
-    target: "work", signal: "kill", confirm: true,
+    target: "@4", signal: "kill", confirm: true,
   });
 
   assert.deepEqual(requests.filter((request) => request.args[0] === "signal").map((request) => request.args), [
     ["signal", "@3", "freeze", "--socket", "/tmp/phux.sock"],
-    ["signal", "work", "kill", "--socket", "/tmp/phux.sock"],
+    ["signal", "--yes", "@4", "kill", "--socket", "/tmp/phux.sock"],
   ]);
   assert.equal(requests.some((request) => request.args[0] === "kill"), false);
 });
@@ -486,4 +514,150 @@ test("custom renderers sanitize dynamic fields and show compact summaries", asyn
   const spatialCall = move.renderCall?.({ source: malicious, target: "@9\rspoof" }, theme, {}).render(200).join("\n") ?? "";
   assert.equal(sanitizeRenderText(malicious), "badRED NEXTC1 ");
   assert.doesNotMatch(`${call}${spatialCall}`, /\x1b|\x9b|\x07|\r|\[31m/);
+});
+
+test("parent protection rejects implicit, alias, group and raw-selector writes before any mutation", async () => {
+  const { tools, requests, store } = fixture({ parentTerminalId: "3" });
+  await tool(tools, "phux_targets").execute("alias", { action: "set_alias", name: "parent", target: "@3" });
+  await tool(tools, "phux_targets").execute("group", { action: "set_group", name: "mixed", targets: ["@4", "@3"] });
+  store.select(agentPane("@3"));
+  requests.length = 0;
+  for (const [name, params] of [
+    ["phux_send_keys", { keys: ["Enter"] }],
+    ["phux_paste", { target: "alias:parent", text: "hello" }],
+    ["phux_run", { target: "@3", command: "echo unsafe" }],
+    ["phux_agent_prompt", { target: "@3", text: "unsafe" }],
+    ["phux_kill", { target: "group:mixed", confirm: true }],
+    ["phux_tag", { target: "group:mixed", action: "add", tags: ["unsafe"] }],
+    ["phux_signal", { target: "work", signal: "interrupt" }],
+    ["phux_send_keys", { target: "@03", keys: ["Enter"] }],
+    ["phux_ask", { target: "@3", question: "unsafe" }],
+  ] as const) await assert.rejects(tool(tools, name).execute("blocked", params));
+  assert.equal(requests.some((request) => request.args[0] !== "agent"), false);
+  assert.equal(requests.some((request) => request.args[1] === "prompt"), false);
+  await tool(tools, "phux_paste").execute("worker", { target: "@4", text: "safe" });
+  assert.equal(requests.filter((request) => request.args[0] === "paste").length, 1);
+});
+
+test("an invalid inherited parent identity fails closed without preventing observation", async () => {
+  const { tools, requests } = fixture({ parentTerminalId: "invalid" });
+  await assert.rejects(tool(tools, "phux_paste").execute("write", { target: "@4", text: "no" }));
+  await tool(tools, "phux_snapshot").execute("read", { target: "@4" });
+  assert.deepEqual(requests.map((request) => request.args[0]), ["snapshot"]);
+});
+
+test("multiline paste is one literal input argument and does not send Enter", async () => {
+  const { tools, requests } = fixture();
+  const literal = "--flag\n  indented();\n$(not a local shell)\n";
+  await tool(tools, "phux_paste").execute("paste", { target: "@9", text: literal });
+  assert.deepEqual(requests.map((request) => request.args), [
+    ["paste", "--socket", "/tmp/phux.sock", "--", "@9", literal],
+  ]);
+});
+
+test("run and all wait operations are finite and keep operation and local deadlines distinct", async () => {
+  const { tools, requests } = fixture();
+  for (const [name, params] of [
+    ["phux_run", { target: "@9", command: "echo ok" }],
+    ["phux_wait", { target: "@9" }],
+    ["phux_agent_prompt", { target: "@9", text: "work" }],
+    ["phux_agent_wait", { target: "@9" }],
+    ["phux_resource_wait", { target: "@9" }],
+  ] as const) {
+    for (const timeout_seconds of [0, -1, Infinity, 1.5]) {
+      await assert.rejects(tool(tools, name).execute("unbounded", { ...params, timeout_seconds }), RangeError);
+    }
+    await tool(tools, name).execute("default", params);
+  }
+  assert.equal(requests.length, 5);
+  for (const request of requests) {
+    assert.equal(request.args[request.args.indexOf("--timeout") + 1], "30");
+    assert.equal(request.timeoutMs, 35_000);
+  }
+  await tool(tools, "phux_agent_wait").execute("long", { target: "@9", timeout_seconds: 120 });
+  assert.equal(requests.at(-1)?.timeoutMs, 125_000);
+  await tool(tools, "phux_run").execute("short-local", { target: "@9", command: "echo ok", local_timeout_ms: 250 });
+  assert.equal(requests.at(-1)?.timeoutMs, 250);
+  await tool(tools, "phux_agent_prompt").execute("submit", { target: "@9", text: "work", wait: false });
+  assert.equal(requests.at(-1)?.args.includes("--wait"), false);
+  assert.equal(requests.at(-1)?.args.includes("--timeout"), false);
+  await assert.rejects(tool(tools, "phux_agent_prompt").execute("invalid", {
+    target: "@9", text: "work", wait: false, timeout_seconds: 1,
+  }));
+});
+
+test("nonzero command exit, wait timeout, and uncertain agent delivery remain distinct", async () => {
+  const cliError = { code: "delivery_unknown", message: "inspect before resending", operation_id: "op" };
+  const { tools, requests } = fixture({
+    respond: (request) => {
+      if (request.args[0] === "run") return completed(JSON.stringify({
+        command: "exit 7", exit_code: 7, duration_ms: 1, output: "", truncated: false,
+      }), 7);
+      if (request.args[0] === "wait") return completed(JSON.stringify({
+        schema_version: 3, pane: 9, cols: 80, rows: 1, cursor: null, lines: ["working"], scrollback: [],
+      }), 124);
+      if (request.args[1] === "prompt") return {
+        termination: "completed", exitCode: 1, stdout: "", stderr: JSON.stringify(cliError),
+      };
+      return undefined;
+    },
+  });
+  assert.equal((await tool(tools, "phux_run").execute("run", { target: "@9", command: "exit 7" })).details?.exitCode, 7);
+  assert.equal((await tool(tools, "phux_wait").execute("wait", { target: "@9" })).details?.outcome, "timed_out");
+  await assert.rejects(tool(tools, "phux_agent_prompt").execute("prompt", { target: "@9", text: "work" }), (error: unknown) =>
+    error instanceof PhuxError && error.cliError?.code === "delivery_unknown");
+  assert.equal(requests.filter((request) => request.args[1] === "prompt").length, 1);
+});
+
+test("cancellation during alias refresh aborts instead of becoming inventory unavailability or sending input", async () => {
+  const controller = new AbortController();
+  const reason = new Error("cancelled by Pi");
+  let cancelInventory = false;
+  const { tools, requests } = fixture({
+    respond: (request) => {
+      if (cancelInventory && request.args[1] === "list") {
+        assert.equal(request.signal, controller.signal);
+        controller.abort(reason);
+        throw reason;
+      }
+      return undefined;
+    },
+  });
+  await tool(tools, "phux_targets").execute("alias", { action: "set_alias", name: "worker", target: "@9" });
+  cancelInventory = true;
+  await assert.rejects(tool(tools, "phux_paste").execute("cancelled", {
+    target: "alias:worker", text: "never send",
+  }, controller.signal), (error: unknown) => error === reason);
+  assert.equal(requests.some((request) => request.args[0] === "paste"), false);
+});
+
+test("cancelling an in-flight agent prompt reaches the subprocess and never retries uncertain delivery", async () => {
+  const controller = new AbortController();
+  const { tools, requests } = fixture({
+    respond: async (request) => {
+      if (request.args[1] !== "prompt") return undefined;
+      assert.equal(request.signal, controller.signal);
+      controller.abort();
+      return { termination: "aborted", exitCode: null, stdout: "", stderr: "" };
+    },
+  });
+  await assert.rejects(tool(tools, "phux_agent_prompt").execute("cancelled", {
+    target: "@9", text: "work",
+  }, controller.signal), (error: unknown) => error instanceof PhuxError && error.code === "aborted");
+  assert.equal(requests.length, 1);
+});
+
+test("wait surfaces absent shell-integration warnings rather than claiming echo filtering worked", async () => {
+  const warning = "output-only requires OSC-133 shell integration; nothing was filtered";
+  const { tools } = fixture({
+    respond: (request) => request.args[0] === "wait" ? {
+      ...completed(JSON.stringify({
+        schema_version: 3, pane: 9, cols: 80, rows: 1, cursor: null, lines: ["done"], scrollback: [],
+      })),
+      stderr: warning,
+    } : undefined,
+  });
+  const result = await tool(tools, "phux_wait").execute("wait", { target: "@9", regex: "done", output_only: true, tail: 5 });
+  assert.equal(result.details?.warning, warning);
+  assert.ok(text(result).includes(warning));
 });

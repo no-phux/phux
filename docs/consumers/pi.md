@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, consumers, contributors
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-30
 ---
 
 # Pi integration
@@ -9,7 +9,7 @@ last-reviewed: 2026-09-12
 **TL;DR.** `@phux/pi` lets Pi select and operate panes in an external local
 phux server, preserves branch-local targets, and appends bounded fleet-state
 checkpoints and deltas without rewriting Pi's stable prompt prefix. It provides
-nineteen terminal tools, three human commands, identity-only lifecycle
+twenty-five terminal/control tools, three human commands, identity-only lifecycle
 metadata, and AgentSession emit when the server supports it. It does not embed
 a terminal or own the server.
 
@@ -19,7 +19,10 @@ a terminal or own the server.
 
 The package requires Node.js 22 or newer, Pi, and an external `phux` executable
 on `PATH`. It does not bundle phux or start a separate implementation. The
-minimum compatible binary is `phux 0.16.0`; check it before loading the package:
+CLI capability is authoritative: this surface uses `paste`, `agent prompt/wait`,
+`resource wait`, `runtime-info`, and current snapshot/wait options. An older
+binary may support only part of it; unsupported verbs fail rather than being
+emulated. Check the installed binary before loading the package:
 
 ```sh
 phux --version
@@ -34,7 +37,8 @@ unless a global copy is already configured.
 The extension inherits `PHUX_SOCKET`; set it before starting Pi when the server
 uses a non-default local Unix socket. It also reads `PHUX_TERMINAL_ID`, which
 phux sets for a hosted agent, to identify Pi's own pane in automatic fleet
-context. Set `PHUX_CONTEXT_AWARENESS=0` before startup to disable that context.
+context and refuse input/destructive tool actions against it. Set
+`PHUX_CONTEXT_AWARENESS=0` before startup to disable context, not this protection.
 There is no package command for choosing an alternate executable. Library
 consumers can construct `PhuxCli` with an absolute `executable`, but the
 installed Pi extension expects `phux` on `PATH`.
@@ -83,24 +87,30 @@ focus, take, give, or paste. Insert and move accept optional `direction` and
 
 ## Surface
 
-The extension registers exactly these nineteen model tools:
+The extension registers exactly these twenty-five model tools:
 
 | Tool | Operation |
 |---|---|
 | `phux_list` | List phux sessions. |
 | `phux_create` | Create a named session without attaching and select its seed pane. |
-| `phux_snapshot` | Read a pane's bounded, side-effect-free screen projection. |
-| `phux_send_keys` | Send named keys or literal key text to one pane. |
-| `phux_run` | Run one shell command line and return its exit result. |
-| `phux_wait` | Wait for visible text or idleness and return the bounded final screen. |
+| `phux_snapshot` | Read a bounded, side-effect-free pane projection; supports `scrollback`, `cells`, `tail`, and `unwrap`. |
+| `phux_send_keys` | Send named keys or literal key text to one worker pane; not a paste operation. |
+| `phux_paste` | Paste literal multiline text as one input event without appending Enter. |
+| `phux_run` | Run one command at a known shell prompt and return its exit result. |
+| `phux_wait` | Wait for literal `until`, `regex`, or `idle_ms`; supports `output_only` and `tail`. |
+| `phux_agent_prompt` | Submit a single-line agent turn with acknowledged delivery and optional identity checks; wait for a post-delivery lifecycle transition by default. |
+| `phux_agent_wait` | Observe agent lifecycle state without sending input. |
+| `phux_resource_wait` | Wait for an explicit resource's process exit; accepts an `after` cursor from an earlier wait. |
+| `phux_status` | Read canonical server status JSON; distinct from `/phux-status` target status. |
+| `phux_runtime_info` | Read runtime discovery/capability JSON. |
 | `phux_panes` | Inventory pane ownership, agent state, attention, title, cwd, and evidence. |
-| `phux_spawn` | Spawn a pane without attaching, optionally place it beside one exact local pane, and optionally save an alias. |
+| `phux_spawn` | Spawn without attaching; optional local placement, alias, and positive `retain_seconds` for post-exit inspection. |
 | `phux_launch` | Launch a configured integration from the CLI's versioned machine result, with optional local placement. |
 | `phux_insert_pane` | Insert one already-created exact local pane beside another. |
 | `phux_move_pane` | Move one exact local pane beside another, including across sessions. |
 | `phux_swap_pane` | Swap two exact local pane leaves without changing geometry. |
-| `phux_kill` | With an explicit target and `confirm:true`, destroy a selector, alias, or the validated members of a named group. Selectors and groups may destroy multiple panes. |
-| `phux_signal` | Interrupt, freeze, or resume a pane's process group; terminate and kill require an explicit target and `confirm:true` because selectors may affect multiple processes or panes. |
+| `phux_kill` | With an explicit canonical pane/alias/group and `confirm:true`, destroy the validated targets. Check every group member before any destruction. |
+| `phux_signal` | Interrupt, freeze, or resume a canonical worker pane or alias; terminate and kill require an explicit target and `confirm:true`. |
 | `phux_tag` | List, add, or remove terminal tags. |
 | `phux_ask` | Report a human-attention ask event. |
 | `phux_watch_events` | Collect typed events for 50 ms–30 s, then stop the streaming CLI subprocess. |
@@ -124,10 +134,52 @@ lease.
 
 Tool output sent to the model is bounded to 200 lines and 12 KiB. CLI stdout
 and stderr capture are independently bounded, every subprocess accepts Pi
-cancellation, and targeted CLI tools expose finite local timeouts. The watch
+cancellation. Short subprocess calls default to a 10-second local deadline.
+`phux_run`, `phux_wait`, `phux_agent_wait`, `phux_resource_wait`, and waiting
+`phux_agent_prompt` calls default to `timeout_seconds:30`; the allowed range is
+1–86400 seconds. Zero, non-finite values, and indefinite waits are rejected.
+Their local subprocess deadline defaults to the chosen operation timeout plus
+five seconds. `local_timeout_ms` can deliberately override it (1–86405000 ms),
+including a shorter deadline; stopping a local CLI process does not prove that
+the remote command or prompt stopped or was never delivered. The watch
 adapter requires a finite collection window and returns at most 100 parsed events rather than
 leaving an indefinitely streaming subprocess. Results state when the adapter
 truncated output and preserve a separate truncation flag reported by phux.
+
+Nonzero shell-command exit codes remain `phux_run` results, not wait failures.
+A screen wait timeout returns `outcome:timed_out` with its final screen.
+Agent and resource results preserve the CLI's JSON fields, including delivery
+receipt, transition/satisfaction status, resource outcome, and cursor where
+present. CLI failures retain the runtime's typed error and structured CLI error
+record. Cancellation remains cancellation, not a synthetic timeout or missing
+inventory. No mutation is automatically retried.
+
+Choose the operation to match the foreground program:
+
+- **Shell:** `phux_run` only at a known shell prompt. Its sentinels are shell
+  syntax, not agent instructions.
+- **Interactive editor/REPL/TUI:** `phux_paste` preserves literal newlines and
+  indentation in one paste event; `phux_send_keys` sends deliberate navigation,
+  Enter, or interrupt keys. A newline can still be interpreted as submission
+  by a program without bracketed-paste handling.
+- **Agent turn:** `phux_agent_prompt` takes single-line text (the CLI enforces a
+  4096-byte ceiling), with optional `expect_agent` and `expect_kind` assertions.
+  It waits for a post-delivery transition to idle, blocked, or done by default;
+  `until` can select lifecycle states. `wait:false` submits without waiting and
+  forbids `until` and `timeout_seconds`. An acknowledged receipt proves delivery
+  to the input queue, not consumption. A transition wait timeout may follow
+  successful delivery. On `delivery_unknown` or local interruption, inspect the
+  pane before deciding what to do; never blindly resend.
+- **Process completion:** `phux_resource_wait` requires an explicit resource
+  identity, not a pane alias/group or implicit selection. A direct `@N` can
+  name an already-exited retained resource.
+
+`phux_wait` accepts at most one of `until`, `regex`, and `idle_ms`. `output_only`
+filters shell-marked command echo only when OSC-133 integration is present; the
+tool preserves the CLI warning when filtering is unavailable. `tail` limits
+the logical lines inspected by wait. Snapshot `tail` instead bounds rendered
+rows with the viewport as a floor; `unwrap` joins soft-wrapped lines. An idle
+screen is not evidence that an agent turn completed.
 
 ## Automatic fleet context
 
@@ -173,8 +225,19 @@ pane selectors. Definitions store pane ownership, not only `@id`. Immediately
 before every named-target action, the extension refreshes inventory and rejects
 missing or reused ids; inventory failure fails closed. Spatial operations also
 require each role to resolve to exactly one distinct local pane and reject named
-groups and satellite pane selectors. Explicit raw CLI selectors are caller-owned
-for ownership and are still subject to the canonical CLI's exact-one validation. Branch
+groups and satellite pane selectors. Read-only tools can pass explicit raw CLI
+selectors to the CLI. Input, prompt, kill, signal, tag mutation, and ask tools
+require canonical `@N` or `host/@N` targets after named-target resolution:
+session, focus, wildcard, and other broad raw selectors are rejected because
+they cannot safely exclude Pi's hosting pane. `PHUX_TERMINAL_ID` identifies
+that pane; a matching resolved target is refused, including implicit targets,
+aliases, and members of groups. An invalid inherited identity fails closed for
+these writes. A group containing the parent is rejected before any member is
+mutated. Without an inherited identity there is no known hosting pane to
+exclude, but the canonical-target requirement remains.
+
+Layout placement and insert/move/swap are topology operations, not terminal
+input: placing a worker beside the hosting pane remains allowed. Branch
 navigation reconstructs the latest selection and named-target document on that
 branch.
 
@@ -211,9 +274,12 @@ a reload keeps it. This is status metadata, not an input lock.
 
 ## Current boundaries and security
 
-- There is no paste tool. The CLI has `phux paste` and MCP has `phux_paste`;
-  Pi does not wrap either. `phux_send_keys` remains key input only and must
-  not be presented as clipboard or bracketed-paste support.
+- `phux_paste` uses the canonical paste CLI; it neither simulates keys nor
+  appends Enter. `phux_send_keys` remains key input, not clipboard support.
+- `phux_agent_prompt` requires the CLI's acknowledged-delivery capability.
+  Unsupported servers and satellite prompt targets are refused by the CLI,
+  never downgraded to fire-and-forget keys. The acknowledged lane is shared:
+  serialize agent prompt submissions rather than prompting a fleet concurrently.
 - `phux_rendered_snapshot` follows the CLI's `snapshot --rendered` contract:
   unlike ordinary snapshot it attaches a headless client and establishes that
   client's bounded viewport. Use `phux_snapshot` for a side-effect-free pane

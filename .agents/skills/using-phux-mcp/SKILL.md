@@ -13,6 +13,11 @@ session or run `phux mcp --schema` outside one. Do not copy argument schemas or
 infer fields from examples. `phux mcp` is the installed stdio entry point;
 registration does not start a phux server.
 
+Native OMP, OpenCode, and Pi integrations also register `phux_*` tools, but
+their names and argument fields are not the MCP contract. Use
+`using-phux-tools` for those integrations; do not mix `phux_list` with
+MCP's `phux_ls`, or native `retain_seconds` with MCP's `retain_secs`.
+
 ## Workflow
 
 1. Discover sessions with `phux_ls` and choose a returned direct selector such
@@ -40,11 +45,18 @@ inspect the pane and do not resend because the first operation may still land.
 Serialize acknowledged fleet prompts because the input lane is server-scoped.
 A paste inserts text but does not submit it.
 
+Cancellation or a local tool deadline only ends observation; it does not undo
+input or stop the terminal process. For `phux_resource_wait`, retain the
+returned cursor for resumption. `gone`, `timed_out`, or lost journal evidence
+must not be reported as a successful process exit.
+
 ## Safety
 
 - MCP input mutates a real PTY that a human may share. Layout changes never
   move the human's client-local focus.
 - Prefer exact pane ids for writes; session names and tags may select sets.
+- Never send input into the pane hosting your own harness. Create a sibling
+  terminal for shell work; do not send shell commands into an agent TUI.
 - Before kill, detach, or a destructive signal, resolve and display the target,
   inspect its state, explain the effect, obtain affirmative confirmation, pass
   `confirm: true`, then verify the inventory change.

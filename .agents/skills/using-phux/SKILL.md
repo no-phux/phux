@@ -11,6 +11,11 @@ metadata:
 Use phux when terminal state or a process must survive across steps. Use the
 normal shell tool when one command can run and exit in a single call.
 
+When native `phux_*` tools are registered, prefer them and load
+`using-phux-tools`: they carry finite deadlines, cancellation, bounded results,
+and harness-local target selection. Do not translate their argument names into
+CLI flags by guesswork. For an MCP connection use `using-phux-mcp` instead.
+
 This skill is compiled into phux releases. If the checked-in skill and an
 installed binary differ, trust the binary you are driving:
 
@@ -23,9 +28,10 @@ phux runtime-info --json
 <!-- phux-skill-region: quick -->
 ## Workflow
 
-1. **Discover.** Run `phux ls --json`. If `PHUX_TERMINAL_ID` is set, never read
-   or send input to `@$PHUX_TERMINAL_ID`; that is your own pane. `PHUX_SOCKET`
-   already selects its server.
+1. **Discover.** Run `phux agent list --json` for exact pane selectors and
+   ownership; `phux ls --json` lists sessions. If `PHUX_TERMINAL_ID` is set,
+   never send input to that pane: it hosts you, not a shell.
+   `PHUX_SOCKET` already selects its server.
 2. **Choose one target.** Prefer a returned `@N` (or satellite `host/@N`) for
    writes. `name`, `name:W`, `name:W.P`, and `#tag` may select sets; `.` means
    the focused session; `%name` identifies one named agent. Headless `=` is
@@ -45,6 +51,10 @@ phux runtime-info --json
 Exit 124 means an observation timed out. `phux run` reserves 125 for its own
 timeout because it otherwise mirrors the child process exit code. With
 `--json`, branch on structured fields and `error.code`, not prose.
+
+A local timeout or cancellation stops observation, not the terminal process or
+input already sent. Re-observe before deciding what to do next; do not repeat
+a command because its response was lost.
 
 ## Safety
 
@@ -83,6 +93,19 @@ input lane is server-scoped. Use `phux agent --help` and
 Use `snapshot --unwrap` when matching logical lines and `--cells` only when
 style or semantic marks matter. `wait --until` can match echoed input; prefer
 `--output-only` when shell integration is available or match output-only text.
+
+For a standalone process, prefer retained spawn plus exit observation over
+guessing from screen idleness:
+
+```sh
+phux spawn --json --retain=300 -- sh -lc 'make check'
+# Use the returned terminal_id, not the human's focused pane:
+phux resource wait --json --timeout 60 @7
+```
+
+`exited` carries the process result; `gone` is not success. Preserve a returned
+cursor and pass `--after CURSOR` to resume observation after a disconnect.
+`evidence_lost` means the journal cannot prove every event was observed.
 
 For multiline input, paste and submit separately:
 

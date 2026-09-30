@@ -8,13 +8,9 @@ import {
 } from "../../runtime/src/awareness.js";
 import { deletedSessionId, applyServerEvent } from "./events.js";
 import { OpenCodeLifecycle } from "./lifecycle.js";
-import type { ToolContext } from "./tools-core.js";
+import { createPhuxTools } from "../../runtime/src/tools.js";
 import { PARENT_PANE_RULE, parentPane } from "./parent.js";
-import { createGuardedTools } from "./tools.js";
 
-export { PARENT_PANE_RULE, parentPane, samePane } from "./parent.js";
-export { applyServerEvent, deletedSessionId } from "./events.js";
-export { createGuardedTools } from "./tools.js";
 
 export interface PhuxOpenCodeV2Options {
   readonly executable?: string;
@@ -39,11 +35,12 @@ export default Plugin.define({
     const environmentTarget = readEnvironmentTarget(environment.PHUX_TARGET);
     const parent = parentPane(environment.PHUX_TERMINAL_ID);
     const cli = new PhuxCli(cliOptions(options, environment));
-    let selectedTarget: string | undefined;
-    const currentTarget = (): string | undefined => selectedTarget ?? environmentTarget;
+    const selectedTargets = new Map<string, string>();
+    // The hosting pane is identity; controlled targets never become this agent.
+    const identityTarget = parent ?? environmentTarget;
     const lifecycle = new OpenCodeLifecycle({
       cli,
-      target: currentTarget,
+      target: () => identityTarget,
       ...(options.lifecycleTimeoutMs === undefined ? {} : { timeoutMs: options.lifecycleTimeoutMs }),
     });
     const awareness = new PhuxContextAwareness(cli, {
@@ -51,29 +48,24 @@ export default Plugin.define({
       ...(options.contextTimeoutMs === undefined ? {} : { timeoutMs: options.contextTimeoutMs }),
     });
     const latestContext = new Map<string, string>();
-    const contextIdentity = () => {
-      const self = normalizeTerminalIdentity(environment.PHUX_TERMINAL_ID);
-      const selected = currentTarget();
+    const contextIdentity = (sessionID: string) => {
+      const self = normalizeTerminalIdentity(identityTarget);
+      const selected = selectedTargets.get(sessionID) ?? environmentTarget;
       return {
         ...(self === null ? {} : { self }),
         ...(selected === undefined ? {} : { selected }),
       };
     };
 
-    const tools = createGuardedTools(
-      {
-        cli,
-        ...(environmentTarget === undefined ? {} : { environmentTarget }),
-        getSelectedTarget: () => selectedTarget,
-        selectTarget: (target) => {
-          selectedTarget = target;
-        },
-        targetSelected: (toolContext) => {
-          void lifecycle.targetSelected(toolContext.sessionID);
-        },
+    const tools = createPhuxTools({
+      cli,
+      ...(environmentTarget === undefined ? {} : { environmentTarget }),
+      ...(parent === null ? {} : { parentTarget: parent }),
+      getSelectedTarget: (context) => context === undefined ? undefined : selectedTargets.get(context.sessionID),
+      selectTarget: (target, context) => {
+        if (context !== undefined) selectedTargets.set(context.sessionID, target);
       },
-      parent,
-    );
+    });
 
     await ctx.tool.transform((editor) => {
       for (const tool of Object.values(tools)) {
@@ -81,18 +73,15 @@ export default Plugin.define({
           name: tool.name,
           description: tool.description,
           input: tool.input,
-          options: { codemode: true },
-          execute: async (input, context) => {
-            const result = await tool.execute(input, toolContext(context));
-            return { content: result.content, metadata: result.metadata };
-          },
+          options: { codemode: true, permission: tool.name },
+          execute: (input, context) => tool.execute(input, context),
         });
       }
     });
 
     await ctx.session.hook("context", async (event) => {
       event.system.push({ type: "text", text: PARENT_PANE_RULE });
-      const emission = await awareness.next(event.sessionID, contextIdentity());
+      const emission = await awareness.next(event.sessionID, contextIdentity(event.sessionID));
       if (emission !== null) latestContext.set(event.sessionID, emission.text);
       const text = latestContext.get(event.sessionID);
       if (text !== undefined) event.system.push({ type: "text", text });
@@ -108,12 +97,13 @@ export default Plugin.define({
     const controller = new AbortController();
     const events = (async () => {
       for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-        await applyServerEvent(lifecycle, event);
         const deleted = deletedSessionId(event);
         if (deleted !== undefined) {
           awareness.delete(deleted);
           latestContext.delete(deleted);
+          selectedTargets.delete(deleted);
         }
+        await applyServerEvent(lifecycle, event);
       }
     })();
     void events.catch((error: unknown) => {
@@ -125,18 +115,12 @@ export default Plugin.define({
       controller.abort();
       await events.catch(() => undefined);
       await lifecycle.dispose();
+      selectedTargets.clear();
+      latestContext.clear();
     };
   },
 });
 
-function toolContext(context: { readonly sessionID: string; readonly messageID: string; readonly agent: string; readonly id?: string }): ToolContext {
-  return {
-    sessionID: context.sessionID,
-    messageID: context.messageID,
-    agent: context.agent,
-    id: context.id ?? context.messageID,
-  };
-}
 
 function readOptions(value: unknown): PhuxOpenCodeV2Options {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return {};

@@ -25,6 +25,11 @@ import {
   parseSpawnResult,
   parseSwapPaneResult,
   parseWatchEvent,
+  parseAgentPromptResult,
+  parseAgentWaitResult,
+  parseResourceWaitResult,
+  parseStatusResult,
+  parseVersionedDocument,
   SchemaValidationError,
   type AgentEmitResult,
   type AgentEventType,
@@ -77,19 +82,26 @@ export interface SnapshotOptions extends ExecutionOptions {
   /** true or zero means all retained history; a positive number bounds it. */
   readonly scrollback?: boolean | number;
   readonly cells?: boolean;
+  readonly tail?: number;
+  readonly unwrap?: boolean;
 }
 
 export interface WaitOptions extends ExecutionOptions {
   readonly target?: string;
   readonly until?: string;
   readonly idleMs?: number;
+  readonly regex?: string;
+  readonly tail?: number;
+  readonly outputOnly?: boolean;
   /** phux's own wait deadline, in seconds (distinct from local timeoutMs). */
   readonly phuxTimeoutSeconds?: number;
 }
 
-export type WaitOutcome =
-  | { readonly outcome: "satisfied"; readonly screen: ScreenState }
-  | { readonly outcome: "timed_out"; readonly screen: ScreenState };
+export interface WaitOutcome {
+  readonly outcome: "satisfied" | "timed_out";
+  readonly screen: ScreenState;
+  readonly warning?: string;
+}
 
 export interface CreateOptions extends ExecutionOptions {
   readonly cwd?: string;
@@ -99,6 +111,19 @@ export interface CreateOptions extends ExecutionOptions {
 export interface RunOptions extends ExecutionOptions {
   /** phux's own sentinel deadline, in seconds (distinct from local timeoutMs). */
   readonly phuxTimeoutSeconds?: number;
+}
+
+export type AgentLifecycleState = "idle" | "working" | "blocked" | "done";
+export interface AgentWaitOptions extends RunOptions {
+  readonly until?: readonly AgentLifecycleState[];
+}
+export interface AgentPromptOptions extends AgentWaitOptions {
+  readonly wait?: boolean;
+  readonly expectAgent?: string;
+  readonly expectKind?: string;
+}
+export interface ResourceWaitOptions extends RunOptions {
+  readonly after?: string;
 }
 
 export interface AgentTargetOptions extends ExecutionOptions {
@@ -126,6 +151,7 @@ export interface SpawnOptions extends ExecutionOptions, PlacementOptions {
   readonly satellite?: string;
   readonly cwd?: string;
   readonly command?: readonly string[];
+  readonly retainSeconds?: number;
 }
 
 export interface LaunchOptions extends ExecutionOptions, PlacementOptions {
@@ -269,6 +295,10 @@ export class PhuxCli {
     if (options.split !== undefined) args.push("--split", options.split);
     if (options.ratio !== undefined) args.push("--ratio", String(options.ratio));
     if (options.cwd !== undefined) args.push("--cwd", options.cwd);
+    if (options.retainSeconds !== undefined) {
+      requirePositiveInteger(options.retainSeconds, "retainSeconds");
+      args.push(`--retain=${String(options.retainSeconds)}`);
+    }
     this.pushSocket(args);
     if (options.command !== undefined) {
       if (options.command.length === 0) throw new TypeError("command must contain at least one argv item");
@@ -440,6 +470,11 @@ export class PhuxCli {
       args.push("--scrollback", String(options.scrollback));
     }
     if (options.cells === true) args.push("--cells");
+    if (options.tail !== undefined) {
+      requirePositiveInteger(options.tail, "tail");
+      args.push("--tail", String(options.tail));
+    }
+    if (options.unwrap === true) args.push("--unwrap");
     this.pushSocket(args);
     if (options.target !== undefined) args.push(options.target);
     return this.jsonCommand("snapshot", args, options, parseScreenState);
@@ -447,36 +482,43 @@ export class PhuxCli {
 
   async wait(options: WaitOptions = {}): Promise<WaitOutcome> {
     const args = ["wait", "--json"];
+    if ([options.until, options.regex, options.idleMs].filter((value) => value !== undefined).length > 1) {
+      throw new TypeError("wait accepts only one of until, regex, or idleMs");
+    }
+    if (options.regex !== undefined) args.push("--regex", options.regex);
+    if (options.outputOnly === true) args.push("--output-only");
+    if (options.tail !== undefined) {
+      requirePositiveInteger(options.tail, "tail");
+      args.push("--tail", String(options.tail));
+    }
     if (options.until !== undefined) args.push("--until", options.until);
     if (options.idleMs !== undefined) {
       requireNonNegativeInteger(options.idleMs, "idleMs");
       args.push("--idle", String(options.idleMs));
     }
-    if (options.phuxTimeoutSeconds !== undefined) {
-      requireNonNegativeInteger(options.phuxTimeoutSeconds, "phuxTimeoutSeconds");
-      args.push("--timeout", String(options.phuxTimeoutSeconds));
-    }
+    args.push("--timeout", String(operationSeconds(options)));
     this.pushSocket(args);
     if (options.target !== undefined) args.push(options.target);
-    const result = await this.completed("wait", args, options, true);
+    const result = await this.completed("wait", args, boundedExecution(options), true);
     if (result.exitCode !== 0 && result.exitCode !== 124) {
       throw commandFailed("wait", this.executable, args, result);
     }
     const screen = parseJson("wait", this.executable, result.stdout, args, parseScreenState);
-    return { outcome: result.exitCode === 124 ? "timed_out" : "satisfied", screen };
+    return {
+      outcome: result.exitCode === 124 ? "timed_out" : "satisfied",
+      screen,
+      ...(result.stderr.trim() === "" ? {} : { warning: result.stderr.trim().slice(0, 2048) }),
+    };
   }
 
   async run(target: string, command: readonly string[], options: RunOptions = {}): Promise<RunResult> {
     if (command.length === 0) throw new TypeError("command must contain at least one argv item");
     const args = ["run", "--json"];
-    if (options.phuxTimeoutSeconds !== undefined) {
-      requireNonNegativeInteger(options.phuxTimeoutSeconds, "phuxTimeoutSeconds");
-      args.push("--timeout", String(options.phuxTimeoutSeconds));
-    }
+    args.push("--timeout", String(operationSeconds(options)));
     this.pushSocket(args);
     args.push(target, ...command);
 
-    const result = await this.completed("run", args, options, true);
+    const result = await this.completed("run", args, boundedExecution(options), true);
     if (result.exitCode !== 0 && result.stdout.trim().length === 0) {
       throw commandFailed("run", this.executable, args, result);
     }
@@ -501,14 +543,95 @@ export class PhuxCli {
     await this.completed("send-keys", args, options, false);
   }
 
+  /** Bracketed paste is one input operation; it does not submit Enter. */
+  async paste(target: string, text: string, options: ExecutionOptions = {}): Promise<void> {
+    const args = this.withSocket(["paste"]);
+    args.push("--", target, text);
+    await this.completed("paste", args, options, false);
+  }
+
+  async runtimeInfo(options: ExecutionOptions = {}): Promise<Record<string, unknown>> {
+    return this.jsonCommand("runtime-info", ["runtime-info", "--json"], options, parseVersionedDocument);
+  }
+
+  async status(options: ExecutionOptions = {}): Promise<Record<string, unknown>> {
+    return this.outcomeCommand("status", this.withSocket(["status", "--json"]), options, parseStatusResult,
+      (document) => document.running === true ? 0 : 1);
+  }
+
+  async agentPrompt(target: string, text: string, options: AgentPromptOptions = {}): Promise<Record<string, unknown>> {
+    if (text.trim() === "" || /[\r\n]/.test(text)) throw new TypeError("agent prompt requires non-empty single-line text");
+    if (options.wait === false && (options.until !== undefined || options.phuxTimeoutSeconds !== undefined)) {
+      throw new TypeError("until and phuxTimeoutSeconds require wait");
+    }
+    const args = ["agent", "prompt", "--json"];
+    if (options.expectAgent !== undefined) args.push("--expect-agent", options.expectAgent);
+    if (options.expectKind !== undefined) args.push("--expect-kind", options.expectKind);
+    if (options.wait !== false) {
+      args.push("--wait", "--timeout", String(operationSeconds(options)));
+      pushUntil(args, options.until);
+    }
+    this.pushSocket(args);
+    args.push("--", target, text);
+    try {
+      return await this.outcomeCommand("agent prompt", args, boundedExecution(options), parseAgentPromptResult,
+        (document) => options.wait !== false && document.transition_observed === false ? 124 : 0);
+    } catch (error) {
+      if (error instanceof PhuxError && ["timeout", "aborted", "output_limit", "malformed_json", "invalid_response"].includes(error.code)) {
+        throw new PhuxError(error.code, `${error.message}. Prompt delivery may have occurred. Do not resend; inspect the pane.`, {
+          ...(error.argv === undefined ? {} : { argv: error.argv }),
+          ...(error.exitCode === undefined ? {} : { exitCode: error.exitCode }),
+          ...(error.stderr === undefined ? {} : { stderr: error.stderr }),
+          cause: error,
+        });
+      }
+      throw error;
+    }
+  }
+
+  async agentWait(target: string, options: AgentWaitOptions = {}): Promise<Record<string, unknown>> {
+    const args = ["agent", "wait", "--json", "--timeout", String(operationSeconds(options))];
+    pushUntil(args, options.until);
+    this.pushSocket(args);
+    args.push("--", target);
+    return this.outcomeCommand("agent wait", args, boundedExecution(options), parseAgentWaitResult,
+      (document) => document.satisfied === true ? 0 : 124);
+  }
+
+  async resourceWait(target: string, options: ResourceWaitOptions = {}): Promise<Record<string, unknown>> {
+    const args = ["resource", "wait", "--json", "--timeout", String(operationSeconds(options))];
+    if (options.after !== undefined) args.push("--after", options.after);
+    this.pushSocket(args);
+    args.push("--", target);
+    return this.outcomeCommand("resource wait", args, boundedExecution(options), parseResourceWaitResult,
+      (document) => document.outcome === "exited" ? 0 : document.outcome === "gone" ? 1 : 124);
+  }
+
+  private async outcomeCommand(
+    verb: string,
+    args: string[],
+    options: ExecutionOptions,
+    parser: (value: unknown) => Record<string, unknown>,
+    expectedExit: (document: Record<string, unknown>) => number,
+  ): Promise<Record<string, unknown>> {
+    const result = await this.completed(verb, args, options, true);
+    if (result.stdout.trim() === "") throw commandFailed(verb, this.executable, args, result);
+    const document = parseJson(verb, this.executable, result.stdout, args, parser);
+    if (result.exitCode !== expectedExit(document)) {
+      throw invalidResponse(verb, this.executable, args, "result outcome does not match process exit status");
+    }
+    const warning = result.stderr.trim().slice(0, 2048);
+    return warning === "" ? document : { ...document, warning };
+  }
+
   async kill(target: string, options: ExecutionOptions = {}): Promise<void> {
-    const args = ["kill", target];
+    const args = ["kill", "--yes", target];
     this.pushSocket(args);
     await this.completed("kill", args, options, false);
   }
 
   async signal(target: string, signal: TerminalSignal, options: ExecutionOptions = {}): Promise<void> {
-    const args = ["signal", target, signal];
+    const args = ["signal", ...(signal === "terminate" || signal === "kill" ? ["--yes"] : []), target, signal];
     this.pushSocket(args);
     await this.completed("signal", args, options, false);
   }
@@ -606,7 +729,7 @@ export class PhuxCli {
       ...(this.cwd === undefined ? {} : { cwd: this.cwd }),
       ...(this.env === undefined ? {} : { env: this.env }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
-      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      timeoutMs: options.timeoutMs ?? 10_000,
       maxStdoutBytes: this.maxStdoutBytes,
       maxStderrBytes: this.maxStderrBytes,
     };
@@ -640,6 +763,24 @@ export class PhuxCli {
 
   private pushSocket(args: string[]): void {
     if (this.socket !== undefined) args.push("--socket", this.socket);
+  }
+}
+
+function operationSeconds(options: RunOptions): number {
+  const seconds = options.phuxTimeoutSeconds ?? 30;
+  requirePositiveInteger(seconds, "phuxTimeoutSeconds");
+  if (seconds > 86_400) throw new RangeError("phuxTimeoutSeconds must not exceed 86400");
+  return seconds;
+}
+
+function boundedExecution(options: RunOptions): ExecutionOptions {
+  return { ...options, timeoutMs: options.timeoutMs ?? operationSeconds(options) * 1000 + 5000 };
+}
+
+function pushUntil(args: string[], states: readonly AgentLifecycleState[] | undefined): void {
+  for (const state of states ?? []) {
+    if (!["idle", "working", "blocked", "done"].includes(state)) throw new TypeError("invalid agent lifecycle state");
+    args.push("--until", state);
   }
 }
 
@@ -753,6 +894,15 @@ function commandFailed(
   args: string[],
   result: ProcessResult,
 ): PhuxError {
+  let cliError: Record<string, unknown> | undefined;
+  try {
+    const document: unknown = JSON.parse(result.stderr.trim());
+    if (document !== null && typeof document === "object" && !Array.isArray(document)) {
+      cliError = document as Record<string, unknown>;
+    }
+  } catch {
+    // Non-JSON diagnostics from older binaries remain available as stderr.
+  }
   return new PhuxError(
     "command_failed",
     `phux ${verb} failed with exit code ${String(result.exitCode)}${diagnosticSuffix(result.stderr)}`,
@@ -760,6 +910,7 @@ function commandFailed(
       argv: [executable, ...args],
       exitCode: result.exitCode,
       stderr: result.stderr,
+      ...(cliError === undefined ? {} : { cliError }),
     },
   );
 }

@@ -125,8 +125,8 @@ export function parseScreenState(value) {
     const cols = integer(root.cols, "$.cols", 0, 65_535);
     const rows = integer(root.rows, "$.rows", 0, 65_535);
     const lines = strings(root.lines, "$.lines");
-    if (lines.length !== rows) {
-        throw new SchemaValidationError("$.lines", `an array with exactly $.rows (${rows}) entries`);
+    if (lines.length > rows) {
+        throw new SchemaValidationError("$.lines", `at most $.rows (${rows}) physical or joined logical lines`);
     }
     let cursor = null;
     if (root.cursor !== null) {
@@ -138,6 +138,10 @@ export function parseScreenState(value) {
         };
     }
     const scrollback = root.scrollback === undefined ? [] : strings(root.scrollback, "$.scrollback");
+    const truncation = {
+        ...(root.truncated === undefined ? {} : { truncated: boolean(root.truncated, "$.truncated") }),
+        ...(root.truncated_reason === undefined ? {} : { truncated_reason: nullableString(root.truncated_reason, "$.truncated_reason") }),
+    };
     if (root.cells === undefined) {
         return {
             schema_version: schema,
@@ -147,6 +151,7 @@ export function parseScreenState(value) {
             cursor,
             lines,
             scrollback,
+            ...truncation,
         };
     }
     if (!Array.isArray(root.cells))
@@ -177,6 +182,7 @@ export function parseScreenState(value) {
         lines,
         scrollback,
         cells,
+        ...truncation,
     };
 }
 export function parseCreateResult(value) {
@@ -485,4 +491,38 @@ export function parseAgentEmitResult(value) {
         ts_ms: integer(root.ts_ms, "$.ts_ms", 0),
         type,
     };
+}
+/** Versioned CLI documents retain additive fields for host-native structured results. */
+export function parseVersionedDocument(value) {
+    const root = record(value, "$");
+    integer(root.schema_version, "$.schema_version", 1);
+    return root;
+}
+export function parseAgentPromptResult(value) {
+    const root = parseVersionedDocument(value);
+    string(root.terminal, "$.terminal");
+    oneOf(root.delivery, "$.delivery", ["acked"]);
+    string(root.operation_id, "$.operation_id");
+    boolean(root.transition_observed, "$.transition_observed");
+    return root;
+}
+export function parseAgentWaitResult(value) {
+    const root = parseVersionedDocument(value);
+    string(root.terminal, "$.terminal");
+    boolean(root.satisfied, "$.satisfied");
+    string(root.state, "$.state");
+    return root;
+}
+export function parseResourceWaitResult(value) {
+    const root = parseVersionedDocument(value);
+    string(root.resource, "$.resource");
+    oneOf(root.outcome, "$.outcome", ["exited", "gone", "timed_out"]);
+    nullableString(root.cursor, "$.cursor");
+    boolean(root.evidence_lost, "$.evidence_lost");
+    return root;
+}
+export function parseStatusResult(value) {
+    const root = parseVersionedDocument(value);
+    boolean(root.running, "$.running");
+    return root;
 }

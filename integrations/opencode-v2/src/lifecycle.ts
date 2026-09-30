@@ -49,7 +49,6 @@ export class OpenCodeLifecycle {
   private readonly timeoutMs: number;
   private readonly onError: (error: unknown) => void;
   private readonly target: () => string | undefined;
-  private readonly states = new Map<string, OpenCodeLifecycleState>();
   private readonly owned = new Map<string, OwnedBinding>();
   private readonly sessions = new Map<string, AgentSessionEmitter>();
   private readonly openedPanes = new Map<string, string>();
@@ -72,18 +71,10 @@ export class OpenCodeLifecycle {
    */
   observeState(sessionId: string, state: OpenCodeLifecycleState): Promise<void> {
     if (this.disposed) return this.tail;
-    this.states.set(sessionId, state);
     return this.enqueue(async () => {
       await this.publish(sessionId);
       await this.emit(sessionId, state === "working" ? "prompt" : "stop");
     });
-  }
-
-  /** A tool invocation is an honest working signal if no status event was seen yet. */
-  targetSelected(sessionId: string): Promise<void> {
-    if (this.disposed) return this.tail;
-    if (!this.states.has(sessionId)) this.states.set(sessionId, "working");
-    return this.enqueue(() => this.publish(sessionId));
   }
 
   ask(sessionId: string, data: Readonly<Record<string, unknown>> = { kind: "permission" }): Promise<void> {
@@ -120,7 +111,6 @@ export class OpenCodeLifecycle {
   }
 
   deleteSession(sessionId: string): Promise<void> {
-    this.states.delete(sessionId);
     return this.enqueue(async () => {
       await this.finishSession(sessionId);
       await this.clearSession(sessionId);
@@ -130,7 +120,6 @@ export class OpenCodeLifecycle {
   async dispose(): Promise<void> {
     if (this.disposed) return this.tail;
     this.disposed = true;
-    this.states.clear();
     const sessions = [...new Set([...this.owned.keys(), ...this.sessions.keys()])];
     this.enqueue(async () => {
       for (const sessionId of sessions) {
@@ -171,7 +160,7 @@ export class OpenCodeLifecycle {
       return;
     }
 
-    await this.bindSession(sessionId, target);
+    if (!await this.bindSession(sessionId, target)) return;
 
     // Already declared on this pane. SET_METADATA replaces the record
     // wholesale, so a per-turn rewrite would clobber the server's derived
@@ -221,14 +210,15 @@ export class OpenCodeLifecycle {
     return created;
   }
 
-  private async bindSession(sessionId: string, target: string): Promise<void> {
+  private async bindSession(sessionId: string, target: string): Promise<boolean> {
     const owner = this.openedPanes.get(target);
-    if (owner !== undefined && owner !== sessionId) return;
+    if (owner !== undefined && owner !== sessionId) return false;
     const previous = [...this.openedPanes.entries()].find((entry) => entry[1] === sessionId);
     if (previous !== undefined && previous[0] !== target) this.openedPanes.delete(previous[0]);
     const emitter = this.emitter(sessionId);
     await emitter.bind(target, sessionId, this.execution());
     if (emitter.isOpen) this.openedPanes.set(target, sessionId);
+    return true;
   }
 
   private async emit(
