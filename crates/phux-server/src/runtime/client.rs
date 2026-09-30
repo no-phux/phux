@@ -2437,6 +2437,24 @@ impl ClientPlumbing {
         }
     }
 
+    /// Close the connection as its frame loop `ending` requires.
+    async fn end(
+        self,
+        ending: ConnectionEnding,
+        state: &SharedState,
+        client_id: ClientId,
+        root_token: &CancellationToken,
+    ) {
+        match ending {
+            ConnectionEnding::TransportGone => {}
+            ConnectionEnding::Violation(close) => self.close(close, state, client_id).await,
+            ConnectionEnding::Cancelled => {
+                self.close_for_cancellation(state, client_id, root_token)
+                    .await;
+            }
+        }
+    }
+
     /// End one connection for a protocol violation, in the order §9
     /// requires: tear down what may be attached, then `ERROR`, `DETACHED`,
     /// and close.
@@ -2919,11 +2937,9 @@ async fn serve_history_request(
 /// writer task, so every send shares one ordering domain.
 #[allow(
     clippy::too_many_lines,
-    clippy::cognitive_complexity,
     clippy::too_many_arguments,
     clippy::significant_drop_tightening,
-    clippy::single_match_else,
-    reason = "one read loop with one dispatch arm per wire frame; arm bodies are extracted, and the connection context comes verbatim from the accept loop"
+    reason = "one read loop: select, validate, guard, then FrameDispatch; the connection context comes verbatim from the accept loop"
 )]
 pub(crate) async fn handle_client<R, W>(
     mut reader: R,
@@ -2964,9 +2980,6 @@ where
     // Absolute from admission: pre-HELLO PINGs must not keep a peer alive.
     let hello_deadline = tokio::time::sleep(crate::transport::HANDSHAKE_DEADLINE);
     tokio::pin!(hello_deadline);
-    let route_input = |terminal_id, input| {
-        route_client_input(&state, input_lane.as_ref(), client_id, terminal_id, input);
-    };
 
     let ending = 'conn: loop {
         // Cancellation preempts a slow read. The frame arm precedes the
@@ -2979,45 +2992,16 @@ where
                 break 'conn ConnectionEnding::Cancelled;
             }
             () = wait_initial_hello(hello_deadline.as_mut(), negotiated.is_none()) => {
-                warn!(?client_id, "client did not complete HELLO before deadline; closing");
-                break 'conn ConnectionEnding::Violation(ConnectionClose {
-                    attached_reason: None,
-                    detach_reason: DetachReason::ProtocolError,
-                    code: ErrorCode::VersionIncompatible,
-                    message: "HELLO deadline elapsed".to_owned(),
-                });
+                break 'conn hello_deadline_elapsed(client_id);
             }
-            res = reader.read_frame() => match res {
-                Ok(Some(framed)) => (framed, reader.frame_origin()),
-                Ok(None) => {
-                    debug!("client disconnected (eof)");
-                    break 'conn ConnectionEnding::TransportGone;
-                }
-                Err(err) => {
-                    let Some(close) = framing_violation_close(&err, client_id) else {
-                        debug!(error = %err, "client read error; closing");
-                        break 'conn ConnectionEnding::TransportGone;
-                    };
-                    break 'conn ConnectionEnding::Violation(close);
-                }
+            res = reader.read_frame() => match admit_read(res, client_id) {
+                Ok(framed) => (framed, reader.frame_origin()),
+                Err(ending) => break 'conn ending,
             },
-            () = command_tasks.stopped() => {
-                warn!(?client_id, "bulk command worker stopped unexpectedly; closing");
-                break 'conn ConnectionEnding::Violation(ConnectionClose {
-                    attached_reason: Some("bulk command worker stopped"),
-                    detach_reason: DetachReason::ProtocolError,
-                    code: ErrorCode::InternalError,
-                    message: "bulk command worker stopped unexpectedly".to_owned(),
-                });
-            }
+            () = command_tasks.stopped() => break 'conn bulk_worker_stopped(client_id),
             Some(_) = input_receipts.join_next(), if !input_receipts.is_empty() => continue,
             Some(_) = held_commands.join_next(), if !held_commands.is_empty() => continue,
-            event = async {
-                match stream_events.as_mut() {
-                    Some(rx) => rx.recv().await,
-                    None => core::future::pending().await,
-                }
-            } => {
+            event = next_stream_event(stream_events.as_mut()) => {
                 dispatch_stream_event(
                     event,
                     &mut stream_events,
@@ -3050,6 +3034,136 @@ where
             continue;
         }
 
+        let dispatch = FrameDispatch {
+            reader: &mut reader,
+            state: &state,
+            client_id,
+            token: &token,
+            root_token: &root_token,
+            input_lane: input_lane.as_ref(),
+            transport,
+            route_supports_quic_streams,
+            plumbing: &mut plumbing,
+            negotiated: &mut negotiated,
+            stream_events: &mut stream_events,
+            used_attach_ids: &mut used_attach_ids,
+            command_tasks: &mut command_tasks,
+            input_receipts: &mut input_receipts,
+            input_receipt_slots: &input_receipt_slots,
+            held_commands: &mut held_commands,
+        };
+        if let std::ops::ControlFlow::Break(ending) = dispatch.dispatch(frame).await {
+            break 'conn ending;
+        }
+    };
+    // A closing connection withdraws its holds before any await (ADR-0128):
+    // no decision can land in the teardown window.
+    super::approvals::withdraw(&state, client_id);
+    held_commands.shutdown().await;
+    input_receipts.shutdown().await;
+    command_tasks.shutdown().await;
+    plumbing.end(ending, &state, client_id, &root_token).await;
+    Ok(())
+}
+
+/// The next QUIC Terminal-stream event; pending forever when the
+/// connection has no stream receiver (yet, or any more).
+async fn next_stream_event(
+    stream_events: Option<&mut tokio::sync::mpsc::Receiver<QuicStreamEvent>>,
+) -> Option<QuicStreamEvent> {
+    match stream_events {
+        Some(rx) => rx.recv().await,
+        None => core::future::pending().await,
+    }
+}
+
+/// A read's frame, or how the connection ends: EOF and transport errors
+/// leave nobody to tell; a framing violation is owed its close.
+fn admit_read(
+    res: io::Result<Option<BytesMut>>,
+    client_id: ClientId,
+) -> Result<BytesMut, ConnectionEnding> {
+    match res {
+        Ok(Some(framed)) => Ok(framed),
+        Ok(None) => {
+            debug!("client disconnected (eof)");
+            Err(ConnectionEnding::TransportGone)
+        }
+        Err(err) => {
+            let Some(close) = framing_violation_close(&err, client_id) else {
+                debug!(error = %err, "client read error; closing");
+                return Err(ConnectionEnding::TransportGone);
+            };
+            Err(ConnectionEnding::Violation(close))
+        }
+    }
+}
+
+/// The peer did not complete HELLO within the handshake deadline.
+fn hello_deadline_elapsed(client_id: ClientId) -> ConnectionEnding {
+    warn!(
+        ?client_id,
+        "client did not complete HELLO before deadline; closing"
+    );
+    ConnectionEnding::Violation(ConnectionClose {
+        attached_reason: None,
+        detach_reason: DetachReason::ProtocolError,
+        code: ErrorCode::VersionIncompatible,
+        message: "HELLO deadline elapsed".to_owned(),
+    })
+}
+
+/// The connection's bulk command worker died under it.
+fn bulk_worker_stopped(client_id: ClientId) -> ConnectionEnding {
+    warn!(
+        ?client_id,
+        "bulk command worker stopped unexpectedly; closing"
+    );
+    ConnectionEnding::Violation(ConnectionClose {
+        attached_reason: Some("bulk command worker stopped"),
+        detach_reason: DetachReason::ProtocolError,
+        code: ErrorCode::InternalError,
+        message: "bulk command worker stopped unexpectedly".to_owned(),
+    })
+}
+
+/// How one connection's frame loop ended.
+enum ConnectionEnding {
+    /// EOF or a transport error: nobody is left to tell.
+    TransportGone,
+    /// The peer broke the protocol; it is owed `ERROR` then `DETACHED`.
+    Violation(ConnectionClose),
+    /// The connection (or the server) was cancelled.
+    Cancelled,
+}
+
+/// One decoded client frame's dispatch context: the connection's state,
+/// borrowed from [`handle_client`] for the length of one frame.
+/// `Break` ends the connection with that [`ConnectionEnding`].
+struct FrameDispatch<'a, R> {
+    reader: &'a mut R,
+    state: &'a SharedState,
+    client_id: ClientId,
+    token: &'a CancellationToken,
+    root_token: &'a CancellationToken,
+    input_lane: Option<&'a InputLaneHandle>,
+    transport: TransportType,
+    route_supports_quic_streams: bool,
+    plumbing: &'a mut ClientPlumbing,
+    negotiated: &'a mut Option<NegotiatedConnection>,
+    stream_events: &'a mut Option<tokio::sync::mpsc::Receiver<QuicStreamEvent>>,
+    used_attach_ids: &'a mut HashSet<u32>,
+    command_tasks: &'a mut super::command_tasks::CommandTasks,
+    input_receipts: &'a mut JoinSet<()>,
+    input_receipt_slots: &'a std::sync::Arc<tokio::sync::Semaphore>,
+    held_commands: &'a mut JoinSet<()>,
+}
+
+type FrameFlow = std::ops::ControlFlow<ConnectionEnding>;
+
+impl<R: FrameReader> FrameDispatch<'_, R> {
+    /// Dispatch one admitted frame: one arm per client-to-server kind.
+    async fn dispatch(self, frame: FrameKind) -> FrameFlow {
         match frame {
             FrameKind::Hello {
                 client_name,
@@ -3065,29 +3179,11 @@ where
                     protocol_patch,
                     client_caps,
                 };
-                if let Err(close) = negotiate_hello(
-                    &state,
-                    client_id,
-                    &plumbing.out_tx,
-                    hello,
-                    &mut negotiated,
-                    transport,
-                    route_supports_quic_streams,
-                )
-                .await
-                {
-                    break 'conn ConnectionEnding::Violation(close);
-                }
-                if let Some(selection) = negotiated.as_ref() {
-                    plumbing.set_compression(selection.compression);
-                    // The client learns the bit from HELLO_OK, so no Terminal
-                    // stream can have opened before this.
-                    if selection.quic_streams() {
-                        stream_events = reader.take_stream_events();
-                    }
-                }
+                return self.hello(hello).await;
             }
-            FrameKind::Ping { nonce } => reply_pong(&plumbing.out_tx, client_id, nonce).await,
+            FrameKind::Ping { nonce } => {
+                reply_pong(&self.plumbing.out_tx, self.client_id, nonce).await;
+            }
             FrameKind::Attach {
                 attach_id,
                 target,
@@ -3096,115 +3192,231 @@ where
                 scrollback_limit_lines,
                 role_policy,
             } => {
-                match classify_attach_id(attach_id, &mut used_attach_ids, client_id) {
-                    AttachIdVerdict::Fresh => {}
-                    AttachIdVerdict::Reused => {
-                        super::send_error(
-                            &plumbing.out_tx,
-                            ErrorCode::MalformedMessage,
-                            &format!(
-                                "ATTACH attach_id {attach_id} was already used on this connection"
-                            ),
-                        )
-                        .await;
-                        continue;
-                    }
-                    AttachIdVerdict::Reserved => {
-                        break 'conn ConnectionEnding::Violation(ConnectionClose {
-                            attached_reason: Some("zero ATTACH id"),
-                            detach_reason: DetachReason::ProtocolError,
-                            code: ErrorCode::MalformedMessage,
-                            message: "ATTACH attach_id must be nonzero".to_owned(),
-                        });
-                    }
-                }
-                let Some(selection) = negotiated.as_ref() else {
-                    continue;
-                };
-                debug!(
-                    ?client_id,
-                    attach_id,
-                    profile = ?selection.profile,
-                    chunk_limit = selection.limits.max_chunk_bytes(),
-                    history_page_limit = selection.limits.max_history_page_bytes(),
-                    "ATTACH with immutable bootstrap selection",
-                );
-                let attach_started = std::time::Instant::now();
-                // QUIC multi-stream: content streams start at STREAM_BIND.
-                let defer_subscription = selection.quic_streams();
-                handle_attach(
-                    &state,
-                    client_id,
+                let request = AttachFrame {
                     attach_id,
                     target,
                     viewport,
                     request_scrollback,
                     scrollback_limit_lines,
                     role_policy,
-                    &plumbing.out_tx,
-                    selection.client_caps,
-                    selection.profile,
-                    selection.limits,
-                    &root_token,
-                    &mut plumbing.output_pumps,
-                    &token,
-                    defer_subscription,
+                };
+                return self.attach(request).await;
+            }
+            FrameKind::Detach => self.detach().await,
+            FrameKind::Command {
+                request_id,
+                command,
+            } => return self.command(request_id, command).await,
+            frame if is_input_frame(&frame) => return self.input(frame).await,
+            frame if is_stream_frame(&frame) => return self.stream_frame(frame).await,
+            frame if is_metadata_frame(&frame) => return self.metadata(frame).await,
+            frame => return self.resource(frame).await,
+        }
+        FrameFlow::Continue(())
+    }
+
+    /// HELLO: negotiate the connection, then apply what it selected.
+    async fn hello(self, hello: HelloRequest) -> FrameFlow {
+        if let Err(close) = negotiate_hello(
+            self.state,
+            self.client_id,
+            &self.plumbing.out_tx,
+            hello,
+            self.negotiated,
+            self.transport,
+            self.route_supports_quic_streams,
+        )
+        .await
+        {
+            return FrameFlow::Break(ConnectionEnding::Violation(close));
+        }
+        if let Some(selection) = self.negotiated.as_ref() {
+            self.plumbing.set_compression(selection.compression);
+            // The client learns the bit from HELLO_OK, so no Terminal
+            // stream can have opened before this.
+            if selection.quic_streams() {
+                *self.stream_events = self.reader.take_stream_events();
+            }
+        }
+        FrameFlow::Continue(())
+    }
+
+    /// ATTACH: vet the attach id, then attach under the negotiated
+    /// bootstrap selection.
+    async fn attach(self, request: AttachFrame) -> FrameFlow {
+        let attach_id = request.attach_id;
+        match classify_attach_id(attach_id, self.used_attach_ids, self.client_id) {
+            AttachIdVerdict::Fresh => {}
+            AttachIdVerdict::Reused => {
+                super::send_error(
+                    &self.plumbing.out_tx,
+                    ErrorCode::MalformedMessage,
+                    &format!("ATTACH attach_id {attach_id} was already used on this connection"),
                 )
                 .await;
-                crate::perf::ATTACH_HANDLE.record_elapsed(attach_started);
+                return FrameFlow::Continue(());
             }
-            FrameKind::Detach => {
-                detach_on_request(
-                    &state,
-                    client_id,
-                    &plumbing.out_tx,
-                    &mut plumbing.output_pumps,
+            AttachIdVerdict::Reserved => {
+                return FrameFlow::Break(ConnectionEnding::Violation(ConnectionClose {
+                    attached_reason: Some("zero ATTACH id"),
+                    detach_reason: DetachReason::ProtocolError,
+                    code: ErrorCode::MalformedMessage,
+                    message: "ATTACH attach_id must be nonzero".to_owned(),
+                }));
+            }
+        }
+        let Some(selection) = self.negotiated.as_ref() else {
+            return FrameFlow::Continue(());
+        };
+        debug!(
+            client_id = ?self.client_id,
+            attach_id,
+            profile = ?selection.profile,
+            chunk_limit = selection.limits.max_chunk_bytes(),
+            history_page_limit = selection.limits.max_history_page_bytes(),
+            "ATTACH with immutable bootstrap selection",
+        );
+        let attach_started = std::time::Instant::now();
+        // QUIC multi-stream: content streams start at STREAM_BIND.
+        let defer_subscription = selection.quic_streams();
+        handle_attach(
+            self.state,
+            self.client_id,
+            attach_id,
+            request.target,
+            request.viewport,
+            request.request_scrollback,
+            request.scrollback_limit_lines,
+            request.role_policy,
+            &self.plumbing.out_tx,
+            selection.client_caps,
+            selection.profile,
+            selection.limits,
+            self.root_token,
+            &mut self.plumbing.output_pumps,
+            self.token,
+            defer_subscription,
+        )
+        .await;
+        crate::perf::ATTACH_HANDLE.record_elapsed(attach_started);
+        FrameFlow::Continue(())
+    }
+
+    /// Session DETACH: detach, and end every Terminal stream too.
+    async fn detach(self) {
+        detach_on_request(
+            self.state,
+            self.client_id,
+            &self.plumbing.out_tx,
+            &mut self.plumbing.output_pumps,
+        )
+        .await;
+        self.plumbing.drop_all_stream_bindings().await;
+    }
+
+    /// COMMAND: run it on this connection's dispatch; a command that
+    /// detached a Terminal drops that Terminal's stream binding too.
+    async fn command(self, request_id: u32, command: Command) -> FrameFlow {
+        let Some(selection) = *self.negotiated else {
+            return FrameFlow::Continue(());
+        };
+        let command_outcome = (CommandDispatch {
+            state: self.state,
+            client_id: self.client_id,
+            out_tx: &self.plumbing.out_tx,
+            input_lane: self.input_lane,
+            token: self.token,
+            root_token: self.root_token,
+            selection,
+            command_tasks: self.command_tasks,
+            input_receipts: self.input_receipts,
+            input_receipt_slots: self.input_receipt_slots,
+            held_commands: self.held_commands,
+        })
+        .run(request_id, command)
+        .await;
+        match command_outcome {
+            CommandDispatchOutcome::Completed(Some(terminal_id)) => {
+                // Already unsubscribed; drop the stream binding too.
+                self.plumbing.drop_stream_binding(&terminal_id).await;
+            }
+            CommandDispatchOutcome::Completed(None) => {}
+            CommandDispatchOutcome::Cancelled => {
+                return FrameFlow::Break(ConnectionEnding::Cancelled);
+            }
+        }
+        FrameFlow::Continue(())
+    }
+
+    /// `INPUT_*`: route the event (see [`is_input_frame`]).
+    async fn input(self, frame: FrameKind) -> FrameFlow {
+        let route = |terminal_id, input| {
+            route_client_input(
+                self.state,
+                self.input_lane,
+                self.client_id,
+                terminal_id,
+                input,
+            );
+        };
+        match frame {
+            FrameKind::InputKey { terminal_id, event } => {
+                route(terminal_id, TerminalInput::Key(event));
+            }
+            FrameKind::InputMouse { terminal_id, event } => {
+                route(terminal_id, TerminalInput::Mouse(event));
+            }
+            FrameKind::InputFocus { terminal_id, event } => {
+                route(terminal_id, TerminalInput::Focus(event));
+            }
+            FrameKind::InputPaste { terminal_id, event } => {
+                route(terminal_id, TerminalInput::Paste(event));
+            }
+            FrameKind::InputTerminalReply { terminal_id, bytes } => {
+                let Some(selection) = self.negotiated.as_ref() else {
+                    return FrameFlow::Continue(());
+                };
+                dispatch_terminal_reply(
+                    self.client_id,
+                    *selection,
+                    &terminal_id,
+                    bytes,
+                    &self.plumbing.out_tx,
                 )
                 .await;
-                // Session DETACH ends every Terminal stream too.
-                plumbing.drop_all_stream_bindings().await;
             }
+            other => return direction_invalid(self.client_id, &other),
+        }
+        FrameFlow::Continue(())
+    }
+
+    /// Frames about one attached Terminal's content stream (see
+    /// [`is_stream_frame`]).
+    async fn stream_frame(self, frame: FrameKind) -> FrameFlow {
+        match frame {
             FrameKind::ViewportResize { viewport } => {
                 debug!(
-                    ?client_id,
+                    client_id = ?self.client_id,
                     cols = viewport.cols,
                     rows = viewport.rows,
                     "VIEWPORT_RESIZE"
                 );
-                handle_viewport_resize(&state, client_id, &viewport);
+                handle_viewport_resize(self.state, self.client_id, &viewport);
             }
-            FrameKind::InputKey { terminal_id, event } => {
-                route_input(terminal_id, TerminalInput::Key(event));
-            }
-            FrameKind::InputMouse { terminal_id, event } => {
-                route_input(terminal_id, TerminalInput::Mouse(event));
-            }
-            FrameKind::InputFocus { terminal_id, event } => {
-                route_input(terminal_id, TerminalInput::Focus(event));
-            }
-            FrameKind::InputPaste { terminal_id, event } => {
-                route_input(terminal_id, TerminalInput::Paste(event));
-            }
-            FrameKind::InputTerminalReply { terminal_id, bytes } => {
-                let Some(selection) = negotiated.as_ref() else {
-                    continue;
-                };
-                dispatch_terminal_reply(
-                    client_id,
-                    *selection,
-                    &terminal_id,
-                    bytes,
-                    &plumbing.out_tx,
-                )
-                .await;
+            FrameKind::ResizeTerminal {
+                terminal_id,
+                cols,
+                rows,
+            } => {
+                handle_terminal_resize(self.state, self.client_id, &terminal_id, cols, rows);
             }
             // ADR-0103 §4: an agent-session stream is raw-profile with no
             // history beyond its bootstrap. Both refusals keep the connection.
             FrameKind::FrameAck {
                 ref terminal_id, ..
-            } if is_agent_session(&state, terminal_id) => {
+            } if is_agent_session(self.state, terminal_id) => {
                 super::send_error(
-                    &plumbing.out_tx,
+                    &self.plumbing.out_tx,
                     ErrorCode::MalformedMessage,
                     "FRAME_ACK is not valid on an agent-session stream",
                 )
@@ -3212,9 +3424,9 @@ where
             }
             FrameKind::HistoryRequest {
                 ref terminal_id, ..
-            } if is_agent_session(&state, terminal_id) => {
+            } if is_agent_session(self.state, terminal_id) => {
                 super::send_error(
-                    &plumbing.out_tx,
+                    &self.plumbing.out_tx,
                     ErrorCode::WrongResourceKind,
                     "an agent-session stream retains no history beyond its bootstrap",
                 )
@@ -3227,8 +3439,8 @@ where
                 seq,
             } => {
                 handle_frame_ack(
-                    &state,
-                    client_id,
+                    self.state,
+                    self.client_id,
                     &terminal_id,
                     stream_id,
                     bootstrap_id,
@@ -3244,15 +3456,15 @@ where
                 max_bytes,
                 max_rows,
             } => {
-                let Some(selection) = negotiated.as_ref() else {
-                    continue;
+                let Some(selection) = self.negotiated.as_ref() else {
+                    return FrameFlow::Continue(());
                 };
                 // Terminal-content replies ride the bound stream when one
                 // exists (proto.md §4.9); control otherwise.
-                let history_tx = plumbing.sender_for(&terminal_id);
+                let history_tx = self.plumbing.sender_for(&terminal_id);
                 serve_history_request(
-                    &state,
-                    client_id,
+                    self.state,
+                    self.client_id,
                     &history_tx,
                     *selection,
                     HistoryPageRequest {
@@ -3266,20 +3478,21 @@ where
                 )
                 .await;
             }
+            other => return direction_invalid(self.client_id, &other),
+        }
+        FrameFlow::Continue(())
+    }
+
+    /// L3 metadata frames (see [`is_metadata_frame`]).
+    async fn metadata(self, frame: FrameKind) -> FrameFlow {
+        let (state, client_id, out_tx) = (self.state, self.client_id, &self.plumbing.out_tx);
+        match frame {
             FrameKind::GetMetadata {
                 request_id,
                 scope,
                 key,
             } => {
-                handle_get_metadata(
-                    &state,
-                    client_id,
-                    request_id,
-                    &scope,
-                    &key,
-                    &plumbing.out_tx,
-                )
-                .await;
+                handle_get_metadata(state, client_id, request_id, &scope, &key, out_tx).await;
             }
             FrameKind::SetMetadata {
                 request_id,
@@ -3287,15 +3500,7 @@ where
                 key,
                 value,
             } if super::approvals::is_decision(&scope, &key) => {
-                super::approvals::decide(
-                    &state,
-                    client_id,
-                    request_id,
-                    &key,
-                    &value,
-                    &plumbing.out_tx,
-                )
-                .await;
+                super::approvals::decide(state, client_id, request_id, &key, &value, out_tx).await;
             }
             FrameKind::SetMetadata {
                 request_id,
@@ -3304,13 +3509,13 @@ where
                 value,
             } => {
                 handle_set_metadata(
-                    &state,
+                    state,
                     client_id,
                     request_id,
                     &scope,
                     &key,
                     value,
-                    &root_token,
+                    self.root_token,
                 );
             }
             FrameKind::DeleteMetadata {
@@ -3318,25 +3523,44 @@ where
                 scope,
                 key,
             } => {
-                handle_delete_metadata(&state, client_id, request_id, &scope, &key);
+                handle_delete_metadata(state, client_id, request_id, &scope, &key);
             }
             FrameKind::ListMetadata { request_id, scope } => {
-                handle_list_metadata(&state, client_id, request_id, &scope, &plumbing.out_tx).await;
+                handle_list_metadata(state, client_id, request_id, &scope, out_tx).await;
             }
+            FrameKind::SubscribeMetadata { scope, key } => {
+                handle_subscribe_metadata(state, client_id, scope, key, out_tx);
+            }
+            FrameKind::SubscribeEvents {
+                terminal,
+                after_seq,
+            } => {
+                handle_subscribe_events(state, client_id, terminal, after_seq, out_tx);
+            }
+            other => return direction_invalid(client_id, &other),
+        }
+        FrameFlow::Continue(())
+    }
+
+    /// Resource and filesystem frames; any other kind is not valid from a
+    /// client and closes the connection.
+    async fn resource(self, frame: FrameKind) -> FrameFlow {
+        let (state, client_id) = (self.state, self.client_id);
+        match frame {
             FrameKind::ListDirectory {
                 request_id,
                 path,
                 host,
             } => {
                 super::directory::handle_list_directory(
-                    &state,
+                    state,
                     client_id,
                     super::directory::ListRequest {
                         request_id,
                         path,
                         host,
                     },
-                    &plumbing.out_tx,
+                    &self.plumbing.out_tx,
                 );
             }
             FrameKind::PathQuery {
@@ -3347,7 +3571,7 @@ where
                 host,
             } => {
                 super::path_search::handle_path_query(
-                    &state,
+                    state,
                     client_id,
                     super::path_search::PathRequest {
                         request_id,
@@ -3356,17 +3580,8 @@ where
                         recursive,
                         host,
                     },
-                    &plumbing.out_tx,
+                    &self.plumbing.out_tx,
                 );
-            }
-            FrameKind::SubscribeMetadata { scope, key } => {
-                handle_subscribe_metadata(&state, client_id, scope, key, &plumbing.out_tx);
-            }
-            FrameKind::SubscribeEvents {
-                terminal,
-                after_seq,
-            } => {
-                handle_subscribe_events(&state, client_id, terminal, after_seq, &plumbing.out_tx);
             }
             FrameKind::SpawnResource {
                 request_id,
@@ -3381,11 +3596,11 @@ where
                 initial_size,
                 resource,
             } => {
-                let Some(selection) = negotiated.as_ref() else {
-                    continue;
+                let Some(selection) = self.negotiated.as_ref() else {
+                    return FrameFlow::Continue(());
                 };
                 crate::runtime::idempotent_create::handle_spawn_resource(
-                    &state,
+                    state,
                     client_id,
                     request_id,
                     SpawnRequest {
@@ -3400,12 +3615,12 @@ where
                         initial_size,
                         resource,
                     },
-                    &plumbing.out_tx,
+                    &self.plumbing.out_tx,
                     selection.profile,
                     selection.limits,
-                    &root_token,
-                    &token,
-                    &mut plumbing.output_pumps,
+                    self.root_token,
+                    self.token,
+                    &mut self.plumbing.output_pumps,
                     // QUIC multi-stream: content starts at STREAM_BIND (L1 §4.9).
                     selection.quic_streams(),
                 )
@@ -3417,92 +3632,76 @@ where
                 owner_terminal,
             } => {
                 handle_move_terminal(
-                    &state,
+                    state,
                     client_id,
                     request_id,
                     terminal,
                     owner_terminal,
-                    &plumbing.out_tx,
+                    &self.plumbing.out_tx,
                 )
                 .await;
             }
-            FrameKind::ResizeTerminal {
-                terminal_id,
-                cols,
-                rows,
-            } => {
-                handle_terminal_resize(&state, client_id, &terminal_id, cols, rows);
-            }
-            FrameKind::Command {
-                request_id,
-                command,
-            } => {
-                let Some(selection) = negotiated else {
-                    continue;
-                };
-                let command_outcome = (CommandDispatch {
-                    state: &state,
-                    client_id,
-                    out_tx: &plumbing.out_tx,
-                    input_lane: input_lane.as_ref(),
-                    token: &token,
-                    root_token: &root_token,
-                    selection,
-                    command_tasks: &mut command_tasks,
-                    input_receipts: &mut input_receipts,
-                    input_receipt_slots: &input_receipt_slots,
-                    held_commands: &mut held_commands,
-                })
-                .run(request_id, command)
-                .await;
-                match command_outcome {
-                    CommandDispatchOutcome::Completed(Some(terminal_id)) => {
-                        // Already unsubscribed; drop the stream binding too.
-                        plumbing.drop_stream_binding(&terminal_id).await;
-                    }
-                    CommandDispatchOutcome::Completed(None) => {}
-                    CommandDispatchOutcome::Cancelled => break 'conn ConnectionEnding::Cancelled,
-                }
-            }
-            other => {
-                warn!(?client_id, kind = ?other, "direction-invalid client frame; closing");
-                break 'conn ConnectionEnding::Violation(ConnectionClose {
-                    attached_reason: Some("direction-invalid frame"),
-                    detach_reason: DetachReason::ProtocolError,
-                    code: ErrorCode::InvalidCommand,
-                    message: format!(
-                        "frame is not valid from a client in the negotiated phase: {other:?}"
-                    ),
-                });
-            }
+            other => return direction_invalid(client_id, &other),
         }
-    };
-    // A closing connection withdraws its holds before any await (ADR-0128):
-    // no decision can land in the teardown window.
-    super::approvals::withdraw(&state, client_id);
-    held_commands.shutdown().await;
-    input_receipts.shutdown().await;
-    command_tasks.shutdown().await;
-    match ending {
-        ConnectionEnding::TransportGone => {}
-        ConnectionEnding::Violation(close) => plumbing.close(close, &state, client_id).await,
-        ConnectionEnding::Cancelled => {
-            plumbing
-                .close_for_cancellation(&state, client_id, &root_token)
-                .await;
-        }
+        FrameFlow::Continue(())
     }
-    Ok(())
 }
 
-/// How one connection's frame loop ended.
-enum ConnectionEnding {
-    /// EOF or a transport error: nobody is left to tell.
-    TransportGone,
-    /// The peer broke the protocol; it is owed `ERROR` then `DETACHED`.
-    Violation(ConnectionClose),
-    /// The connection (or the server) was cancelled.
-    Cancelled,
+/// A frame kind a client may not send in the negotiated phase: close.
+fn direction_invalid(client_id: ClientId, other: &FrameKind) -> FrameFlow {
+    warn!(?client_id, kind = ?other, "direction-invalid client frame; closing");
+    FrameFlow::Break(ConnectionEnding::Violation(ConnectionClose {
+        attached_reason: Some("direction-invalid frame"),
+        detach_reason: DetachReason::ProtocolError,
+        code: ErrorCode::InvalidCommand,
+        message: format!("frame is not valid from a client in the negotiated phase: {other:?}"),
+    }))
+}
+
+/// The fields of one `ATTACH` frame.
+struct AttachFrame {
+    attach_id: u32,
+    target: phux_protocol::wire::frame::AttachTarget,
+    viewport: phux_protocol::wire::frame::ViewportInfo,
+    request_scrollback: bool,
+    scrollback_limit_lines: u32,
+    role_policy: Option<phux_protocol::wire::frame::RolePolicy>,
+}
+
+/// `INPUT_*` frames: routed to the Terminal's input path.
+const fn is_input_frame(frame: &FrameKind) -> bool {
+    matches!(
+        frame,
+        FrameKind::InputKey { .. }
+            | FrameKind::InputMouse { .. }
+            | FrameKind::InputFocus { .. }
+            | FrameKind::InputPaste { .. }
+            | FrameKind::InputTerminalReply { .. }
+    )
+}
+
+/// Frames about an attached Terminal's size or content stream.
+const fn is_stream_frame(frame: &FrameKind) -> bool {
+    matches!(
+        frame,
+        FrameKind::ViewportResize { .. }
+            | FrameKind::ResizeTerminal { .. }
+            | FrameKind::FrameAck { .. }
+            | FrameKind::HistoryRequest { .. }
+    )
+}
+
+/// L3 metadata and event-subscription frames.
+const fn is_metadata_frame(frame: &FrameKind) -> bool {
+    matches!(
+        frame,
+        FrameKind::GetMetadata { .. }
+            | FrameKind::SetMetadata { .. }
+            | FrameKind::DeleteMetadata { .. }
+            | FrameKind::ListMetadata { .. }
+            | FrameKind::SubscribeMetadata { .. }
+            | FrameKind::SubscribeEvents { .. }
+    )
 }
 
 /// Handle one QUIC Terminal-stream event (proto.md §4.2). `Bound` binds and
