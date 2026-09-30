@@ -176,8 +176,11 @@ fn run_rendered(
     socket_path: &std::path::Path,
     rt: &tokio::runtime::Runtime,
 ) -> ExitCode {
-    let target = session.map_or(AttachTarget::Last, |s| AttachTarget::ByName(s.to_owned()));
     rt.block_on(async move {
+        let target = match rendered_attach_target(session, socket_path, json).await {
+            Ok(target) => target,
+            Err(code) => return code,
+        };
         let frame = match run_headless_rendered(socket_path, target, opts.cols, opts.rows).await {
             Ok(frame) => frame,
             Err(err @ AttachError::Io(_)) => {
@@ -195,6 +198,51 @@ fn run_rendered(
             ExitCode::SUCCESS
         }
     })
+}
+
+/// The session a `--rendered` view attaches to. A bare session name (or no
+/// TARGET) attaches as written; any other selector (`@N`, `name:N.M`, `.`)
+/// resolves to its pane first and attaches that pane's session, instead of
+/// asking the server for a session literally named `@1`.
+async fn rendered_attach_target(
+    session: Option<&str>,
+    socket_path: &std::path::Path,
+    json: bool,
+) -> Result<AttachTarget, ExitCode> {
+    use phux_client::selector::Selector;
+    let Some(raw) = session else {
+        return Ok(AttachTarget::Last);
+    };
+    let selector = parse_selector(Some(raw))?;
+    if let Selector::Session(name) = selector {
+        return Ok(AttachTarget::ByName(name));
+    }
+    let pane = resolve_target(socket_path, &selector, "snapshot", json).await?;
+    let snapshot = phux_client::state::get_state(socket_path)
+        .await
+        .map_err(|err| json_err::report_no_server(json, &err, socket_path, "snapshot"))?
+        // Only sessions and windows are read: they never aggregate.
+        .into_snapshot_ignoring_degradation();
+    session_of_pane(&snapshot, &pane).map_or_else(
+        || {
+            eprintln!("phux: {raw} is not in a local session that can be attached");
+            Err(ExitCode::FAILURE)
+        },
+        |name| Ok(AttachTarget::ByName(name)),
+    )
+}
+
+/// The name of the session whose window holds `pane`.
+fn session_of_pane(
+    snapshot: &phux_protocol::wire::info::SessionSnapshot,
+    pane: &phux_protocol::ids::ResourceId,
+) -> Option<String> {
+    let (_, session) = phux_client::spawn::ownership_for_terminal(snapshot, pane)?;
+    snapshot
+        .sessions
+        .iter()
+        .find(|candidate| candidate.id == session)
+        .map(|session| session.name.clone())
 }
 
 /// Boxed text view of a composited [`RenderedFrame`]; wide-glyph tails are
@@ -282,6 +330,45 @@ fn footer(screen: &ScreenState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `phux snapshot @1 --rendered` asked the server to attach a session
+    /// named "@1". A pane selector attaches the pane's own session; a bare
+    /// name is still taken as written, with no lookup.
+    #[tokio::test]
+    async fn rendered_view_attaches_the_session_that_holds_the_pane() {
+        use phux_protocol::ids::{ResourceId, SessionId, WindowId};
+        use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
+
+        let (work, play) = (SessionId::new(1), SessionId::new(2));
+        let snapshot = SessionSnapshot::new(work, WindowId::new(1), ResourceId::local(1))
+            .with_sessions(vec![
+                SessionInfo::new(work, "work"),
+                SessionInfo::new(play, "play"),
+            ])
+            .with_windows(vec![
+                WindowInfo::new(WindowId::new(1), work, "w"),
+                WindowInfo::new(WindowId::new(2), play, "p"),
+            ])
+            .with_resources(vec![
+                ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24),
+                ResourceInfo::new(ResourceId::local(7), WindowId::new(2), 80, 24),
+            ]);
+        assert_eq!(
+            session_of_pane(&snapshot, &ResourceId::local(7)).as_deref(),
+            Some("play")
+        );
+        assert_eq!(session_of_pane(&snapshot, &ResourceId::local(9)), None);
+
+        let unused = std::path::Path::new("/nonexistent/phux-rendered.sock");
+        assert_eq!(
+            rendered_attach_target(Some("work"), unused, false).await,
+            Ok(AttachTarget::ByName("work".to_owned()))
+        );
+        assert_eq!(
+            rendered_attach_target(None, unused, false).await,
+            Ok(AttachTarget::Last)
+        );
+    }
 
     /// The CLI flags reach the library's history rule unchanged: `--tail N`
     /// asks for `N` history rows, and an explicit `--scrollback` wins. The
