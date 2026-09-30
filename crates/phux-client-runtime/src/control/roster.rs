@@ -9,8 +9,8 @@ use phux_protocol::caps::Layer;
 use phux_protocol::wire::frame::{RESOURCE_AGENT_KEY, Scope};
 
 use super::{
-    AgentEvent, CommandResult, CommandValue, ControlError, ControlPlane, Event, FrameKind, HashMap,
-    HashSet, ResourceId,
+    AgentEvent, CommandResult, CommandValue, ControlError, ControlPlane, ErrorCode, Event,
+    FrameKind, HashMap, HashSet, ResourceId,
 };
 
 #[derive(Debug, Default)]
@@ -21,6 +21,9 @@ pub(super) struct RosterRecovery {
     subscribed: HashSet<ResourceId>,
     /// Re-read every inventoried declaration at the next inventory.
     resync: bool,
+    /// Terminals the grant inventories but may not observe: their reads are
+    /// refused with `PERMISSION_DENIED`, a stable answer for the connection.
+    denied: HashSet<ResourceId>,
     reads: HashMap<u32, MetadataRead>,
 }
 
@@ -111,6 +114,9 @@ impl ControlPlane {
         // keep only live inventory locally and tolerate an idempotent resubscribe.
         self.roster.subscribed.retain(|id| terminals.contains(id));
         for terminal_id in terminals {
+            if self.roster.denied.contains(&terminal_id) {
+                continue;
+            }
             // A live subscription already delivers every later change, so a
             // plain inventory refresh leaves a known terminal alone. Recovery
             // re-reads them all, since the loss may have hidden a change.
@@ -220,6 +226,7 @@ impl ControlPlane {
 
     pub(super) fn forget_agent_metadata(&mut self, terminal_id: &ResourceId) {
         self.roster.subscribed.remove(terminal_id);
+        self.roster.denied.remove(terminal_id);
         // Retain correlations until their replies so they cannot leak as raw
         // extension replies or be mistaken for a new resource's declaration.
         for read in self
@@ -233,10 +240,22 @@ impl ControlPlane {
         }
     }
 
-    pub(super) fn agent_metadata_error(&mut self, request_id: u32) -> bool {
-        let Some(read) = self.roster.reads.remove(&request_id) else {
-            return false;
-        };
+    /// Settle a refused roster read; `None` when `request_id` is not one.
+    /// `Some(true)` when the refusal is the grant's stable answer, which is
+    /// no consumer's error: the runtime issued the read on its own.
+    pub(super) fn agent_metadata_error(
+        &mut self,
+        request_id: u32,
+        code: ErrorCode,
+    ) -> Option<bool> {
+        let read = self.roster.reads.remove(&request_id)?;
+        if code == ErrorCode::PermissionDenied {
+            // A grant never widens on a live connection (workload-auth §7),
+            // so neither the read nor its subscription is ever retried here.
+            self.roster.subscribed.remove(&read.terminal_id);
+            self.roster.denied.insert(read.terminal_id);
+            return Some(true);
+        }
         // An error is not a retraction. It still settles the old read and
         // must preserve a refresh requested while that read was in flight.
         if read.repeat && self.roster.subscribed.contains(&read.terminal_id) {
@@ -246,6 +265,6 @@ impl ControlPlane {
             // live; the next inventory reads it again.
             self.roster.resync = true;
         }
-        true
+        Some(false)
     }
 }
