@@ -25,7 +25,7 @@ use gloo_timers::future::TimeoutFuture;
 use phux_protocol::BootstrapProfile;
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::FrameKind;
-use phux_vt_web::Vt;
+use phux_vt_web::{Grid, Vt};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -36,7 +36,7 @@ use web_sys::{
 };
 
 use crate::framing::FrameBuffer;
-use crate::{Metrics, render};
+use crate::{Metrics, render, render_cursor_cell};
 
 mod path_picker;
 
@@ -757,6 +757,7 @@ struct AppBindings {
     input: Option<InputBinding>,
     path_picker: Option<path_picker::PickerBinding>,
     blink: Option<BlinkBinding>,
+    frame: Option<FrameBinding>,
     bootstrap_expiry: Option<BlinkBinding>,
     wt_reader_cancel: Option<oneshot::Sender<()>>,
 }
@@ -774,6 +775,9 @@ impl AppBindings {
         }
         if let Some(blink) = self.blink.take() {
             blink.dispose();
+        }
+        if let Some(frame) = self.frame.take() {
+            frame.dispose();
         }
         if let Some(expiry) = self.bootstrap_expiry.take() {
             expiry.dispose();
@@ -845,6 +849,34 @@ impl InputBinding {
     }
 }
 
+/// The one animation-frame callback that paints, and its pending request.
+struct FrameBinding {
+    window: web_sys::Window,
+    callback: Closure<dyn FnMut()>,
+    pending: Cell<Option<i32>>,
+}
+
+impl FrameBinding {
+    fn request(&self) {
+        if self.pending.get().is_some() {
+            return;
+        }
+        if let Ok(id) = self
+            .window
+            .request_animation_frame(self.callback.as_ref().unchecked_ref())
+        {
+            self.pending.set(Some(id));
+        }
+    }
+
+    fn dispose(self) {
+        if let Some(id) = self.pending.take() {
+            let _ = self.window.cancel_animation_frame(id);
+        }
+        drop(self.callback);
+    }
+}
+
 struct BlinkBinding {
     window: web_sys::Window,
     interval: i32,
@@ -868,6 +900,9 @@ struct App {
     cursor_on: Cell<bool>,
     /// Fractional wheel rows not yet scrolled (trackpads send small deltas).
     wheel_carry: Cell<f64>,
+    /// The grid the canvas shows, so a cursor blink redraws one cell
+    /// without reading the whole grid back from the engine.
+    painted: RefCell<Option<Grid>>,
     bindings: RefCell<AppBindings>,
     ready: RefCell<Option<oneshot::Sender<Result<(), String>>>>,
     failure_reason: RefCell<Option<String>>,
@@ -1003,6 +1038,26 @@ impl App {
         );
     }
 
+    /// Paint on the next animation frame. Frames arriving in a burst (a
+    /// flood of output, a WebTransport chunk of many frames) share one
+    /// paint, and a hidden tab paints nothing until it is shown again.
+    fn request_paint(&self) {
+        if let Some(frame) = self.bindings.borrow().frame.as_ref() {
+            frame.request();
+        }
+    }
+
+    /// Toggle the cursor blink phase and redraw only the cursor's cell.
+    fn blink(&self) {
+        self.cursor_on.set(!self.cursor_on.get());
+        if self.session.viewport_scrolled() {
+            return;
+        }
+        if let Some(grid) = self.painted.borrow().as_ref() {
+            render_cursor_cell(&self.ctx, grid, &self.metrics, self.cursor_on.get());
+        }
+    }
+
     fn paint(&self) {
         if !self.session.render_visible() {
             return;
@@ -1020,6 +1075,7 @@ impl App {
         // The cursor belongs to the live screen, not a scrolled-back view.
         let cursor = self.cursor_on.get() && !self.session.viewport_scrolled();
         render(&self.ctx, &grid, &self.metrics, cursor);
+        self.painted.replace(Some(grid));
     }
 }
 
@@ -1057,6 +1113,7 @@ fn build_app(
         metrics: Metrics::default(),
         cursor_on: Cell::new(true),
         wheel_carry: Cell::new(0.0),
+        painted: RefCell::new(None),
         bindings: RefCell::new(AppBindings::default()),
         ready: RefCell::new(Some(ready_tx)),
         failure_reason: RefCell::new(None),
@@ -1064,6 +1121,7 @@ fn build_app(
         self_owner: RefCell::new(None),
     }));
     install_bootstrap_expiry(&app)?;
+    install_frame(&app)?;
     Ok((app, ready_rx))
 }
 
@@ -1651,7 +1709,7 @@ impl BatchEffects {
     fn paint(self, app: &Rc<RefCell<App>>) {
         let app = app.borrow();
         if self.render {
-            app.paint();
+            app.request_paint();
         }
         if self.badges {
             app.paint_badges();
@@ -1877,7 +1935,7 @@ fn on_wheel(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElem
     );
     app.wheel_carry.set(carry);
     if rows != 0 && app.session.scroll_viewport(rows) {
-        app.paint();
+        app.request_paint();
     }
 }
 
@@ -1907,7 +1965,7 @@ fn on_keydown(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaEl
         let (_, rows) = app.session.dims();
         let page = i32::from(rows.saturating_sub(1).max(1));
         if app.session.scroll_viewport(direction * page) {
-            app.paint();
+            app.request_paint();
         }
         return;
     }
@@ -1999,7 +2057,7 @@ fn send_input(app: &Rc<RefCell<App>>, events: impl IntoIterator<Item = InputEven
     // Typing returns a scrolled-back view to the live screen.
     let app = app.borrow();
     if sent && app.session.scroll_to_bottom() {
-        app.paint();
+        app.request_paint();
     }
     sent
 }
@@ -2010,9 +2068,7 @@ fn install_cursor_blink(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
     let weak = Rc::downgrade(app);
     let blink = Closure::<dyn FnMut()>::new(move || {
         if let Some(app) = weak.upgrade() {
-            let app = app.borrow();
-            app.cursor_on.set(!app.cursor_on.get());
-            app.paint();
+            app.borrow().blink();
         }
     });
     let interval = window.set_interval_with_callback_and_timeout_and_arguments_0(
@@ -2032,6 +2088,32 @@ fn install_cursor_blink(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
     if let Some(old) = old {
         old.dispose();
     }
+    Ok(())
+}
+
+/// The animation-frame callback every paint request shares.
+fn install_frame(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
+    let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+    let weak = Rc::downgrade(app);
+    let callback = Closure::<dyn FnMut()>::new(move || {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let app = app.borrow();
+        if let Some(frame) = app.bindings.borrow().frame.as_ref() {
+            frame.pending.set(None);
+        }
+        app.paint();
+    });
+    app.borrow()
+        .bindings
+        .borrow_mut()
+        .frame
+        .replace(FrameBinding {
+            window,
+            callback,
+            pending: Cell::new(None),
+        });
     Ok(())
 }
 
@@ -2571,6 +2653,44 @@ mod tests {
             drop(app);
             assert!(weak.upgrade().is_none(), "failed App must be released");
         }
+    }
+
+    #[wasm_bindgen_test]
+    async fn paint_requests_share_one_animation_frame_and_teardown_cancels_it() {
+        let ws = open_websocket().await;
+        let vt = Vt::load().await.unwrap();
+        let tx = super::WireTx::Ws(super::WsTx::new(ws));
+        let (app, _ready) = super::build_app(&vt, tx, test_canvas(), 80, 24, false).unwrap();
+        let pending = |app: &Rc<std::cell::RefCell<super::App>>| {
+            app.borrow()
+                .bindings
+                .borrow()
+                .frame
+                .as_ref()
+                .and_then(|frame| frame.pending.get())
+        };
+
+        app.borrow().request_paint();
+        let first = pending(&app).expect("a paint is scheduled");
+        for _ in 0..100 {
+            app.borrow().request_paint();
+        }
+        assert_eq!(pending(&app), Some(first), "a burst shares one frame");
+        for _ in 0..50 {
+            if pending(&app).is_none() {
+                break;
+            }
+            TimeoutFuture::new(10).await;
+        }
+        assert_eq!(pending(&app), None, "the frame ran and cleared its request");
+
+        app.borrow().request_paint();
+        assert!(pending(&app).is_some());
+        app.borrow_mut().dispose();
+        assert!(
+            app.borrow().bindings.borrow().frame.is_none(),
+            "teardown cancels the pending frame"
+        );
     }
 
     #[wasm_bindgen_test]

@@ -184,50 +184,75 @@ impl Default for Metrics {
 pub fn render(ctx: &CanvasRenderingContext2d, grid: &Grid, m: &Metrics, cursor_on: bool) {
     ctx.set_font(&m.font);
     ctx.set_text_baseline("top");
-
-    let cols = usize::from(grid.cols);
-    for row in 0..usize::from(grid.rows) {
-        for col in 0..cols {
-            let Some(cell) = grid.cells.get(row * cols + col) else {
-                continue;
-            };
-            let x = col as f64 * m.cell_w;
-            let y = row as f64 * m.cell_h;
-
-            let bg = cell.bg.unwrap_or(grid.default_bg);
-            ctx.set_fill_style_str(&css(bg));
-            ctx.fill_rect(x, y, m.cell_w, m.cell_h);
-
-            if cell.ch != ' ' && cell.ch != '\0' {
-                let fg = cell.fg.unwrap_or(grid.default_fg);
-                ctx.set_fill_style_str(&css(fg));
-                let mut buf = [0u8; 4];
-                let _ = ctx.fill_text(cell.ch.encode_utf8(&mut buf), x, y);
-            }
+    for row in 0..grid.rows {
+        for col in 0..grid.cols {
+            draw_cell(ctx, grid, m, col, row);
         }
     }
+    if cursor_on {
+        draw_cursor(ctx, grid, m);
+    }
+}
 
-    // Inverted block cursor: fill the cell with the foreground color, then
-    // redraw its glyph in the background color on top.
-    if cursor_on && grid.cursor_visible {
-        let (col, row) = (usize::from(grid.cursor_col), usize::from(grid.cursor_row));
-        if col < cols && row < usize::from(grid.rows) {
-            let x = col as f64 * m.cell_w;
-            let y = row as f64 * m.cell_h;
-            let cell = grid.cells.get(row * cols + col);
-            let fg = cell.and_then(|c| c.fg).unwrap_or(grid.default_fg);
-            ctx.set_fill_style_str(&css(fg));
-            ctx.fill_rect(x, y, m.cell_w, m.cell_h);
-            if let Some(c) = cell
-                && c.ch != ' '
-                && c.ch != '\0'
-            {
-                let bg = c.bg.unwrap_or(grid.default_bg);
-                ctx.set_fill_style_str(&css(bg));
-                let mut buf = [0u8; 4];
-                let _ = ctx.fill_text(c.ch.encode_utf8(&mut buf), x, y);
-            }
-        }
+/// Redraw only the cursor's cell of an already painted `grid`: the cell as
+/// is, then the cursor over it when `cursor_on`. A blink costs one cell
+/// instead of the whole grid.
+pub fn render_cursor_cell(
+    ctx: &CanvasRenderingContext2d,
+    grid: &Grid,
+    m: &Metrics,
+    cursor_on: bool,
+) {
+    ctx.set_font(&m.font);
+    ctx.set_text_baseline("top");
+    draw_cell(ctx, grid, m, grid.cursor_col, grid.cursor_row);
+    if cursor_on {
+        draw_cursor(ctx, grid, m);
+    }
+}
+
+fn draw_cell(ctx: &CanvasRenderingContext2d, grid: &Grid, m: &Metrics, col: u16, row: u16) {
+    let cols = usize::from(grid.cols);
+    let Some(cell) = grid
+        .cells
+        .get(usize::from(row) * cols + usize::from(col))
+        .filter(|_| col < grid.cols)
+    else {
+        return;
+    };
+    let x = f64::from(col) * m.cell_w;
+    let y = f64::from(row) * m.cell_h;
+    ctx.set_fill_style_str(&css(cell.bg.unwrap_or(grid.default_bg)));
+    ctx.fill_rect(x, y, m.cell_w, m.cell_h);
+    if cell.ch != ' ' && cell.ch != '\0' {
+        ctx.set_fill_style_str(&css(cell.fg.unwrap_or(grid.default_fg)));
+        let mut buf = [0u8; 4];
+        let _ = ctx.fill_text(cell.ch.encode_utf8(&mut buf), x, y);
+    }
+}
+
+/// Inverted block cursor: fill the cell with the foreground color, then
+/// redraw its glyph in the background color on top.
+fn draw_cursor(ctx: &CanvasRenderingContext2d, grid: &Grid, m: &Metrics) {
+    let (col, row) = (grid.cursor_col, grid.cursor_row);
+    if !grid.cursor_visible || col >= grid.cols || row >= grid.rows {
+        return;
+    }
+    let x = f64::from(col) * m.cell_w;
+    let y = f64::from(row) * m.cell_h;
+    let cell = grid
+        .cells
+        .get(usize::from(row) * usize::from(grid.cols) + usize::from(col));
+    let fg = cell.and_then(|c| c.fg).unwrap_or(grid.default_fg);
+    ctx.set_fill_style_str(&css(fg));
+    ctx.fill_rect(x, y, m.cell_w, m.cell_h);
+    if let Some(c) = cell
+        && c.ch != ' '
+        && c.ch != '\0'
+    {
+        ctx.set_fill_style_str(&css(c.bg.unwrap_or(grid.default_bg)));
+        let mut buf = [0u8; 4];
+        let _ = ctx.fill_text(c.ch.encode_utf8(&mut buf), x, y);
     }
 }
 
