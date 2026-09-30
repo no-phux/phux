@@ -70,6 +70,8 @@ web-sys = { version = "0.3", features = [
     "HtmlDocument",
     "MouseEvent",
     "PointerEvent",
+    "MediaQueryList",
+    "CssStyleDeclaration",
     "Event",
     "EventTarget",
     "Location",
@@ -91,6 +93,8 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3", features = [
     "ClipboardEventInit",
     "CompositionEventInit",
+    "EventInit",
+    "MouseEventInit",
     "KeyboardEventInit",
     "PointerEventInit",
     "WheelEventInit",

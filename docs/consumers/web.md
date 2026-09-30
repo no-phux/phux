@@ -53,7 +53,7 @@ x86_64 Linux `zig_0_16` compiles one function differently and fails `--check`.
 ## Running it locally
 
 ```sh
-# A standalone seeded server to point a build at:
+# A standalone seeded server to point a build at; its pane is a shell:
 PHUX_WS_ADDR=127.0.0.1:47654 cargo run -p phux-server --example ws_demo_server
 ```
 
@@ -173,7 +173,7 @@ the one documented in the [wire encoding reference](../spec/appendix-encoding.md
    `SynthesizedVtStateSync` acknowledges a transition after applying it.
    Retained history is requested incrementally after READY. Paints are
    coalesced to animation frames; the 530 ms cursor blink redraws only the
-   cursor's cell.
+   cursor's row.
 6. Input goes through a hidden `<textarea>` beside the canvas, focused when
    the canvas is focused or clicked (and on connect when nothing else holds
    focus), so the page's other controls keep their keys. A keydown the
@@ -190,9 +190,52 @@ What a page embedding the client can rely on, beyond typing:
 - **Scrollback.** The wheel over the canvas, and Shift+PageUp/PageDown, page
   through the history the replica holds (including what the bootstrap
   carried from before the attach). Scrolling is local; typing returns to the
-  live screen.
+  live screen. On the alternate screen of a program that does not track the
+  mouse (a pager, an editor), which has no scrollback, the wheel sends that
+  program an arrow key per row instead (at most 30 per wheel event), as the
+  reference TUI and xterm's alternate scroll do, unless the program turned
+  alternate scroll (DECSET 1007) off.
 - **Selection and copy.** Dragging selects screen text; Command+C, or
-  Ctrl+Shift+C, copies it. A click clears it; Ctrl+C stays the interrupt.
+  Ctrl+Shift+C, copies it as the engine formats a copy: a wide (CJK)
+  character without its spacer cell, a soft-wrapped line as one line. A
+  click clears it; Ctrl+C stays the interrupt.
+- **Find.** Command+F, or Ctrl+Shift+F, typed at the terminal opens a find
+  bar after the canvas (class `phux-find`); the same chord elsewhere on the
+  page stays the browser's. It searches the whole history the replica
+  holds, ignoring ASCII case, and highlights every match on screen. Enter
+  steps to the next older match and Shift+Enter to the next newer one,
+  scrolling it into view; Escape closes the bar and returns the keys to the
+  terminal. A match does not span a soft-wrapped line break, and one search
+  keeps at most 1,000 matches. The native clients' anchor-based search needs
+  the native engine, so the browser searches the engine's plain-text
+  rendering of its screen instead.
+- **Mouse reporting.** While the program tracks the mouse (DECSET 9, 1000,
+  1002, or 1003, in any report format such as SGR 1006), presses, releases,
+  the wheel (as buttons 4 and 5), and the motion its mode asks for reach it
+  as structured `INPUT_MOUSE` events, and the right-click menu is its.
+  Shift+drag and Shift+wheel stay local (select, scroll back), as does the
+  pointer while the view is scrolled back. Positions are pixels of the
+  canvas's cell grid, measured from where the canvas is drawn, so CSS
+  scaling, page zoom, and the device pixel ratio do not move them off
+  their cell. The viewport (`ATTACH`, `VIEWPORT_RESIZE`) reports that grid's
+  size in pixels, and the server's mouse encoder divides by the cell size of
+  the most recent such report on the terminal: another client reporting its
+  own cells later shifts the browser's positions until the browser reports
+  again (a resize or a reconnect).
+- **Focus reporting.** While the program asks for focus reports (DECSET
+  1004), the terminal gaining or losing the keyboard (a click on it, the
+  find bar or another control on the page taking the keys, the window going
+  to the background) reaches it as `INPUT_FOCUS`, which the server writes as
+  `CSI I` or `CSI O`.
+- **Links.** Command+click, or Ctrl+click, opens the program's OSC 8
+  hyperlink under the pointer, or a plain URL in that row, in a new tab
+  with no opener or referrer. Only `http`, `https`, and `mailto` links open;
+  an OSC 8 link with another scheme opens nothing. The pointer turns into a
+  hand over a link while the modifier is held.
+- **Bell.** A BEL from the program dispatches a bubbling `phux-bell`
+  `CustomEvent` on the canvas and flashes the canvas for 150 ms; with
+  `prefers-reduced-motion: reduce` the page gets the event and no flash. A
+  burst of bells rings once.
 - **Resize.** `HostedClient.resize(cols, rows)` (Rust: `Client::resize`)
   announces a new viewport; the canvas follows the pane's new geometry.
 - **Title.** The program's OSC 0/2 title is mirrored onto the canvas as
@@ -208,7 +251,8 @@ What a page embedding the client can rely on, beyond typing:
 - **Single terminal.** No splits, windows, or layout chrome — that is the TUI's
   job. The web client mirrors one terminal.
 - **Text, color, cursor.** The canvas renderer paints grapheme cells with fg/bg
-  and a blinking block cursor. Images and sixel (which the engine does parse)
+  and a blinking block cursor; a wide (CJK) character paints across its
+  spacer cell. Images and sixel (which the engine does parse)
   are a future renderer pass. Accordingly, the client's `HELLO` advertises **no
   image protocols** (`Session::client_caps`), so the server strips kitty
   graphics, sixel, and iTerm2 image escapes before forwarding (SPEC 6.2,
@@ -216,8 +260,6 @@ What a page embedding the client can rely on, beyond typing:
   renderer pass lands, the advertisement widens with it.
 - **Engine boundary copies.** Bytes cross two wasm linear memories (the Rust
   client and `ghostty-vt.wasm`), which is fine for terminal traffic.
-- **Not yet.** Mouse reporting to programs (a drag always selects), search,
-  clickable OSC 8 links, and the bell.
 
 ## Agent sessions
 
@@ -237,10 +279,16 @@ lifecycle frames that follow; it adds nothing to the wire and reads no stream
 ## Verification
 
 `wasm-pack test --node` in `phux-vt-web` and `phux-web` drives the real
-engine, the codec, frame reassembly, and key, IME, paste, and selection
-routing. `python3 scripts/ci/web-browser.py` (inside `nix develop .#browser`)
+engine (including its bell, copy formatting, hyperlink, and mouse-mode
+reads), the codec, frame reassembly, the viewport's pixel size, key, IME,
+paste, mouse, wheel, and selection routing, search, and link detection. `python3 scripts/ci/web-browser.py` (inside `nix develop .#browser`)
 starts `ws_demo_server` and runs the headless Chrome suites against it: the
-`src/` unit tests, the canvas pixel test, live connect, input and paste,
-resize, scrollback and copy, and the authenticated WebTransport-to-WebSocket
-fallback. The server's attach and `transport::webtransport` tests cover the
+`src/` unit tests, the canvas pixel tests (including a wide character's
+right half), live connect, input and paste, resize, scrollback and copy,
+find, mouse reporting (including after another client reports other cells),
+focus reporting, the alternate screen's wheel, links, the bell, wide
+character copy, and the authenticated WebTransport-to-WebSocket fallback.
+The runner starts the demo server with `PHUX_DEMO_PANE=cat` and strips every
+other inherited `PHUX_*` variable: the pane runs `cat`, so a test makes the
+"program" emit mouse modes, OSC 8 links, and BEL by typing them. The server's attach and `transport::webtransport` tests cover the
 bootstrap sequence and the WebTransport handshake and token gate.

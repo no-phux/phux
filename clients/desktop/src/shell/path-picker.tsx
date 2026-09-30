@@ -73,7 +73,6 @@ export function PathPicker(props: {
     else if (key === "down") select(selected() + 1);
     else if (key === "up") select(selected() - 1);
     else if (key === "tab" || key === "right") open(lines()[selected()]);
-    else if (key === "enter") commit(lines()[selected()]);
   }
 
   return (
@@ -89,6 +88,8 @@ export function PathPicker(props: {
             props.search(event.value ?? "");
           }}
           onKeyDown={keyDown}
+          // A single-line input turns Enter into `submit`; keyDown never sees it.
+          onSubmit={() => commit(lines()[selected()])}
           style={{
             flexGrow: 1,
             height: 30,

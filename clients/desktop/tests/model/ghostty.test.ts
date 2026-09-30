@@ -218,7 +218,31 @@ describe("ghostty config", () => {
     expect(config.keybinds.has("cmd+y")).toBe(false);
     expect(config.unmapped).toEqual(["super+x = toString", "super+y = constructor"]);
     expect(ghosttyChord("constructor+k")).toBeUndefined();
-    expect(ghosttyChord("super+__proto__")).toBe("cmd+__proto__");
+    // Not a key this app can receive: skipped and listed, never a dead bind.
+    expect(ghosttyChord("super+__proto__")).toBeUndefined();
+  });
+
+  test("W3C key codes, physical keys and stray spaces bind the key they name", () => {
+    expect(ghosttyChord("super+KeyK")).toBe("cmd+k");
+    expect(ghosttyChord("ctrl+Digit1")).toBe("ctrl+1");
+    expect(ghosttyChord("super+ArrowUp")).toBe("cmd+up");
+    expect(ghosttyChord("super+shift+BracketRight")).toBe("cmd+shift+]");
+    expect(ghosttyChord("super+physical:k")).toBe("cmd+k");
+    expect(ghosttyChord("physical:super+j")).toBe("cmd+j");
+    expect(ghosttyChord("super+enter ")).toBe("cmd+enter");
+    expect(ghosttyChord("super+ enter")).toBe("cmd+enter");
+    expect(ghosttyChord("super+page_down")).toBe("cmd+pagedown");
+    expect(ghosttyChord("f13")).toBe("f13");
+    expect(ghosttyChord("ctrl+escape")).toBe("ctrl+escape");
+  });
+
+  test("a key the app never receives is listed as skipped, not bound", () => {
+    const config = parseGhostty(
+      "keybind = super+kp_add=increase_font_size\nkeybind = super+enter = toggle_fullscreen",
+    );
+    expect(config.keybinds.has("cmd+kp_add")).toBe(false);
+    expect(config.unmapped).toEqual(["super+kp_add = increase_font_size"]);
+    expect(config.keybinds.get("cmd+enter")).toBe("fullscreen");
   });
 });
 

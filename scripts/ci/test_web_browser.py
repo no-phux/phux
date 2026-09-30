@@ -201,6 +201,22 @@ class BrowserRunnerTests(unittest.TestCase):
                 browser.run([sys.executable, "-c", "raise SystemExit(7)"],
                             cwd=browser.ROOT, env=os.environ, timeout=5, log=log)
 
+    def test_inherited_phux_configuration_never_reaches_the_demo_server(self):
+        env = browser.isolated_environment({
+            "PATH": "/bin",
+            "PHUX_SOCKET": "/tmp/phux-user/phux.sock",
+            "PHUX_QUIC_ADDR": "0.0.0.0:8788",
+            "PHUX_WS_TOKENS": "/home/user/.local/state/phux/remote-tokens",
+            "PHUX_WS_TLS_CERT": "/home/user/.local/state/phux/remote-cert.pem",
+            "PHUX_WEB_CARGO_TARGET_DIR": "/scratch/web",
+            "PHUX_BROWSER_AUTH_ONLY": "1",
+        })
+        self.assertEqual(env, {
+            "PATH": "/bin",
+            "PHUX_WEB_CARGO_TARGET_DIR": "/scratch/web",
+            "PHUX_BROWSER_AUTH_ONLY": "1",
+        })
+
     def test_unsignalable_zombie_group_is_already_stopped(self):
         # A successful run must not turn into a failure when Darwin refuses
         # to signal a group that holds only zombies.
