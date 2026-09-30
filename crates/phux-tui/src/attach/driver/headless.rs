@@ -27,7 +27,7 @@ use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layou
 
 use super::chrome::{agent_entries, window_infos};
 use super::session_io::{
-    attach_client_caps, attach_client_name, send_attach, send_terminal_replies,
+    attach_client_caps, attach_client_name, send_attach_without_size_vote, send_terminal_replies,
     take_terminal_replies, wait_for_attached,
 };
 use crate::settings::TuiSettings;
@@ -346,7 +346,8 @@ async fn restart_attach(
             "engine requested rebootstrap before ATTACHED named the session".to_owned(),
         ));
     }
-    let attach_id = send_attach(conn, AttachTarget::ByName(session_name.to_owned())).await?;
+    let attach_id =
+        send_attach_without_size_vote(conn, AttachTarget::ByName(session_name.to_owned())).await?;
     completion.restart_attach();
     Ok(attach_id)
 }
@@ -449,7 +450,7 @@ pub async fn run_headless_rendered(
         negotiated.profile,
         history_config,
     );
-    let mut attach_id = send_attach(&mut conn, target).await?;
+    let mut attach_id = send_attach_without_size_vote(&mut conn, target).await?;
     let attached = wait_for_attached(&mut conn, attach_id).await?;
 
     let viewport_dims = (cols.max(1), rows.max(1));
