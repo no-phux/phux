@@ -18,6 +18,7 @@ if [[ -z ${EPOCHREALTIME:-} ]]; then
 fi
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ORIGINAL_ARGS=("$@")
 MUX_SELECT=both
 BIG_HISTORY=0
 PTY_ITERS=60
@@ -31,8 +32,9 @@ PATH_MBIT=0
 LOSS_PERCENT=0
 LOSS_SEED=0
 PHUX_BIN="$REPO/target/release/phux"
-HERDR_BIN="${HERDR_BIN:-/opt/homebrew/bin/herdr}"
+HERDR_BIN="${HERDR_BIN:-herdr}"
 TMUX_BIN="${TMUX_BIN:-tmux}"
+PYTHON_BIN="$(command -v python3)"
 OUT_DIR=""
 ATTACH_SAMPLES=5
 KEY_SAMPLES=40
@@ -45,9 +47,11 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/bench/mux-compare.sh [options]
   --mux LIST              comma list of lanes, or "both"/"all" (default: both)
-                          lanes: phux phux-ws phux-quic herdr
+                          lanes: phux phux-ws phux-quic herdr tmux
+                          both: phux,herdr,tmux; all: every lane above
   --phux-bin PATH         phux binary (default: target/release/phux)
-  --herdr-bin PATH        herdr binary (default: /opt/homebrew/bin/herdr)
+  --herdr-bin PATH        herdr binary (default: herdr on PATH)
+  --tmux-bin PATH         tmux binary (default: tmux on PATH)
   --out DIR               raw sample output (default: target/bench/mux-compare-<ts>)
   --attach-samples N      attach samples per phase (default: 5)
   --key-samples N         key echo samples (default: 40)
@@ -68,6 +72,7 @@ while (($#)); do
     --mux) MUX_SELECT="$2"; shift 2 ;;
     --phux-bin) PHUX_BIN="$2"; shift 2 ;;
     --herdr-bin) HERDR_BIN="$2"; shift 2 ;;
+    --tmux-bin) TMUX_BIN="$2"; shift 2 ;;
     --out) OUT_DIR="$2"; shift 2 ;;
     --attach-samples) ATTACH_SAMPLES="$2"; shift 2 ;;
     --key-samples) KEY_SAMPLES="$2"; shift 2 ;;
@@ -83,8 +88,13 @@ while (($#)); do
   esac
 done
 
+for count in "$ATTACH_SAMPLES" "$KEY_SAMPLES" "$SEQ_LINES" "$PTY_ITERS"; do
+  [[ $count =~ ^[1-9][0-9]*$ ]] || { printf 'sample/line counts must be positive integers\n' >&2; exit 2; }
+done
 [[ -n $OUT_DIR ]] || OUT_DIR="$REPO/target/bench/mux-compare-$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$OUT_DIR"
+mkdir -p "$(dirname "$OUT_DIR")"
+mkdir "$OUT_DIR" || { printf 'choose a new output directory; existing evidence is never overwritten\n' >&2; exit 2; }
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
 # The run root must stay short: a unix socket path is capped at 104 bytes.
 # `mktemp -d` (not a bare pid) so a stale directory from a killed run, or a
@@ -97,14 +107,23 @@ QUIC_PORT=$(( WS_PORT + 1 ))
 # The WAN-simulation relay sits in front of the QUIC listener on its own port.
 QUIC_RELAY_PORT=$(( WS_PORT + 900 ))
 RELAY_PID=""
-TMUX_SOCK="bench-$$"
-TMUX=("$TMUX_BIN" -L "$TMUX_SOCK")
+TMUX_BIN="$(command -v "$TMUX_BIN")"
+TMUX=(env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$RUN/observer-home"
+  TERM=xterm-256color "$TMUX_BIN" -f /dev/null -S "$RUN/observer.sock")
+mkdir -p "$RUN/observer-home"
 SERVER_PIDS=()
 COMMAND_LOG="$OUT_DIR/commands.txt"
 declare -A RESULT=()
 declare -A RAW=()
 
 cleanup() {
+  write_json
+  local lane
+  for lane in "$RUN"/*; do
+    [[ -d $lane && -f $lane/attach.sh ]] || continue
+    mkdir -p "$OUT_DIR/${lane##*/}-diagnostics"
+    cp "$lane"/*.log "$lane"/attach.sh "$OUT_DIR/${lane##*/}-diagnostics/" 2>/dev/null || true
+  done
   "${TMUX[@]}" kill-server 2>/dev/null || true
   [[ -n $RELAY_PID ]] && kill "$RELAY_PID" 2>/dev/null
   RELAY_PID=""
@@ -212,11 +231,7 @@ SHELL=/bin/sh ENV=$MUX_HOME/shrc PS1='$PROMPT ' PHUX_PROFILE=muxbench HERDR_DISA
 }
 
 write_attach_wrapper() {
-  # A bare shell writes its prompt to stderr, so the baseline keeps stderr on
-  # the pane; a multiplexer client paints through its own PTY, so its stderr is
-  # diverted to a log where it cannot pollute the screen.
   local err="2>>\"$MUX_HOME/client.log\""
-  [[ $MUX == tmux ]] && err=""
   cat >"$MUX_ATTACH" <<EOF
 #!/bin/sh
 env -i $(iso_env) $1 $err
@@ -240,22 +255,29 @@ start_server() {
       { eval "exec ${BASE_ENV[*]} $(iso_env) $filter \"\$PHUX_BIN\" server --socket \"\$MUX_HOME/mux.sock\" \
         --session bench $listeners --exit-after-idle 900" >"$MUX_HOME/server.log" 2>&1; } &
       MUX_SERVER_PID=$!
+      SERVER_PIDS+=("$MUX_SERVER_PID")
       local deadline=$((SECONDS + 30))
       while [[ ! -S "$MUX_HOME/mux.sock" ]] && (( SECONDS < deadline )); do sleep 0.05; done
       [[ -S "$MUX_HOME/mux.sock" ]] || { printf 'phux server never bound its socket\n' >&2; return 1; }
+      ;;
+    tmux)
+      log_cmd "env -i <isolated env> $TMUX_BIN -f /dev/null -S $MUX_HOME/mux.sock new-session -d -s bench -x $COLS -y $ROWS /bin/sh"
+      tmux_ctl new-session -d -s bench -x "$COLS" -y "$ROWS" /bin/sh >>"$MUX_HOME/server.log" 2>&1
+      MUX_SERVER_PID=$(tmux_ctl display-message -p -t bench '#{pid}')
+      SERVER_PIDS+=("$MUX_SERVER_PID")
       ;;
     herdr)
       log_cmd "env -i <isolated env> $HERDR_BIN server"
       : 
       { eval "exec ${BASE_ENV[*]} $(iso_env) \"\$HERDR_BIN\" server" >"$MUX_HOME/server.log" 2>&1; } &
       MUX_SERVER_PID=$!
+      SERVER_PIDS+=("$MUX_SERVER_PID")
       local sock="$MUX_HOME/cfg/herdr/herdr.sock" deadline=$((SECONDS + 30))
       while [[ ! -S $sock ]] && (( SECONDS < deadline )); do sleep 0.05; done
       [[ -S $sock ]] || { printf 'herdr server never bound its socket\n' >&2; return 1; }
       seed_herdr
       ;;
   esac
-  SERVER_PIDS+=("$MUX_SERVER_PID")
 }
 
 stop_server() {
@@ -263,6 +285,10 @@ stop_server() {
   kill "$MUX_SERVER_PID" 2>/dev/null || true
   wait_gone "$MUX_SERVER_PID"
   kill -9 "$MUX_SERVER_PID" 2>/dev/null || true
+  local i
+  for i in "${!SERVER_PIDS[@]}"; do
+    [[ ${SERVER_PIDS[$i]} == "$MUX_SERVER_PID" ]] && unset 'SERVER_PIDS[i]'
+  done
   MUX_SERVER_PID=""
 }
 
@@ -312,6 +338,10 @@ path_shaping_enabled() {
     'BEGIN { exit !(r != 0 || b != 0 || l != 0) }'
 }
 
+
+tmux_ctl() {
+  eval "${BASE_ENV[*]} $(iso_env) \"\$TMUX_BIN\" -f /dev/null -S \"\$MUX_HOME/mux.sock\" \"\$@\""
+}
 # Detach keys are each multiplexer's documented binding: phux C-a d, herdr C-b q.
 # The three phux lanes differ only in the transport the client dials.
 setup_mux() {
@@ -333,7 +363,8 @@ setup_mux() {
       fi
       MUX_ARGV="$PHUX_BIN attach --quic 127.0.0.1:$port bench" ;;
     herdr) FAMILY=herdr; MUX_DETACH=(C-b q); MUX_ARGV="$HERDR_BIN" ;;
-    tmux) FAMILY=tmux; MUX_DETACH=(); MUX_ARGV="/bin/sh" ;;
+    tmux) FAMILY=tmux; MUX_DETACH=(C-b d)
+      MUX_ARGV="'$TMUX_BIN' -f /dev/null -S $MUX_HOME/mux.sock attach-session -t bench" ;;
   esac
   write_attach_wrapper "$MUX_ARGV"
 }
@@ -386,7 +417,7 @@ settle_pane() {
 }
 
 measure_attach() {
-  local phase=$1 samples=() i t
+  local phase=$1 samples=() successes=() i t failures=0
   for ((i = 0; i < ATTACH_SAMPLES; i++)); do
     if [[ $phase == cold ]]; then
       stop_server
@@ -394,10 +425,12 @@ measure_attach() {
     fi
     t=$(timed_attach)
     samples+=("$t")
+    if (( t >= 0 )); then successes+=("$t"); else failures=$((failures + 1)); fi
     detach_session
   done
   RAW["$MUX:attach_$phase"]=$(IFS=,; printf '%s' "${samples[*]}")
-  RESULT["$MUX:attach_$phase"]=$(pct 50 "${samples[@]}")
+  RESULT["$MUX:attach_$phase"]=$(pct 50 "${successes[@]}")
+  RESULT["$MUX:attach_${phase}_timeouts"]=$failures
 }
 
 # Type one letter and poll at 1ms until it lands next to the prompt.
@@ -423,7 +456,6 @@ measure_keys() {
 # A lane that lost its client mid-run would silently measure nothing, so prove
 # a live client is attached before any metric that depends on one.
 ensure_attached() {
-  [[ $FAMILY == tmux ]] && return 0
   [[ -n $(client_pid "$SESSION") ]] && return 0
   printf 'warning: %s lost its client; re-attaching\n' "$MUX" >&2
   timed_attach >/dev/null
@@ -507,12 +539,12 @@ measure_resize() {
 
 # --- byte-level echo, handshake accounting, big-history scenario -------------
 
-# Run the pty probe against this lane's attach command. No tmux, no screen
-# scrape: the probe owns the pty, so its floor is the pty round trip.
+# The probe owns the outer PTY directly. The tmux lane runs a real tmux attach
+# client here, not /bin/sh; no observer tmux or screen-capture polling is involved.
 run_pty_probe() {
   local label=$1 out=$2 iters=$3 cols=$4 rows=$5 extra=${6:-}
   log_cmd "env -i <isolated env> python3 scripts/bench/pty-echo.py --label $label --iters $iters --cols $cols --rows $rows $extra -- $MUX_ARGV"
-  eval "${BASE_ENV[*]} $(iso_env) python3 \"\$PTY_PROBE\" --label \"\$label\" --iters $iters \
+  eval "${BASE_ENV[*]} $(iso_env) \"\$PYTHON_BIN\" \"\$PTY_PROBE\" --label \"\$label\" --iters $iters \
     --cols $cols --rows $rows --json \"\$out\" $extra -- $MUX_ARGV" >>"$MUX_HOME/pty.log" 2>&1 || true
 }
 
@@ -536,6 +568,9 @@ measure_pty_echo() {
   for key in p50 p90 p99 max; do
     RESULT["$MUX:pty_$key"]=$(probe_field "$out" "${key}_us")
   done
+  RESULT["$MUX:pty_ok"]=$(probe_field "$out" ok)
+  RESULT["$MUX:pty_completed"]=$(probe_field "$out" completed)
+  RESULT["$MUX:pty_timeouts"]=$(probe_field "$out" timeouts)
   RAW["$MUX:pty_us"]=$(python3 -c 'import json,sys;print(",".join(str(v) for v in json.load(open(sys.argv[1])).get("samples_us",[])))' "$out" 2>/dev/null || true)
 }
 
@@ -644,6 +679,25 @@ fill_herdr_history() {
   RESULT["$MUX:bh_panes"]=${#panes[@]}
 }
 
+fill_tmux_history() {
+  local i name deadline
+  for ((i = 1; i <= BH_PANES; i++)); do
+    name=bench
+    if (( i > 1 )); then
+      name="bench$i"
+      tmux_ctl new-session -d -s "$name" -x "$BH_COLS" -y "$ROWS" /bin/sh
+    fi
+    tmux_ctl resize-window -t "$name" -x "$BH_COLS" -y "$ROWS"
+    tmux_ctl send-keys -t "$name" "seq 1 $BH_LINES; echo F\"\"ILLED_$name" Enter
+    deadline=$((SECONDS + 180))
+    until tmux_ctl capture-pane -p -t "$name" | grep -Fq "FILLED_$name"; do
+      (( SECONDS < deadline )) || { printf 'tmux history fill timed out\n' >&2; return 1; }
+      sleep 0.05
+    done
+  done
+  RESULT["$MUX:bh_panes"]=$BH_PANES
+}
+
 run_big_history() {
   setup_mux "$1"
   printf 'measuring %s big-history ...\n' "$1" >&2
@@ -658,6 +712,7 @@ run_big_history() {
   case "$FAMILY" in
     phux) fill_phux_history; RESULT["$MUX:bh_panes"]=$BH_PANES ;;
     herdr) fill_herdr_history ;;
+    tmux) fill_tmux_history ;;
   esac
   sleep 1
   RESULT["$MUX:bh_rss_kb"]=$(rss_kb "$MUX_SERVER_PID")
@@ -677,6 +732,8 @@ run_big_history() {
   # a second view of the same server, which is that product's equivalent.
   if [[ $FAMILY == phux ]]; then
     second="$PHUX_BIN attach --socket $MUX_HOME/mux.sock bench2"
+  elif [[ $FAMILY == tmux ]]; then
+    second="'$TMUX_BIN' -f /dev/null -S $MUX_HOME/mux.sock attach-session -t bench2"
   else
     second="$HERDR_BIN"
   fi
@@ -694,24 +751,20 @@ run_big_history() {
 run_mux() {
   setup_mux "$1"
   printf 'measuring %s ...\n' "$1" >&2
-  if [[ $1 != tmux ]]; then
-    start_server
-    # Warm-up attach: absorbs first-run onboarding so it is not timed.
-    timed_attach >/dev/null
-    settle_pane || true
-    detach_session
-    measure_attach cold
-    measure_attach warm
-  fi
+  start_server
+  # Warm-up absorbs onboarding for warm runs; cold runs restart the server.
+  timed_attach >/dev/null
+  settle_pane
+  detach_session
+  measure_attach cold
+  measure_attach warm
   measure_pty_echo
   timed_attach >/dev/null
   settle_pane || true
   measure_keys
-  if [[ $1 != tmux ]]; then
-    measure_throughput
-    measure_idle
-    measure_resize
-  fi
+  measure_throughput
+  measure_idle
+  measure_resize
   cp -f "$MUX_HOME/server.log" "$OUT_DIR/$1-server.log" 2>/dev/null || true
   detach_session
   measure_handshake
@@ -744,15 +797,19 @@ write_json() {
 report() {
   local muxes=("$@")
   local heads; heads=$(IFS='|'; printf '%s' "${muxes[*]}"); heads=${heads//|/ | }
-  printf '\n| Metric | %s | tmux (baseline) |\n' "$heads"
-  printf '|---|%s---|\n' "$(printf -- '---|%.0s' "${muxes[@]}")"
+  printf '\n| Metric | %s |\n' "$heads"
+  printf '|---|%s\n' "$(printf -- '---|%.0s' "${muxes[@]}")"
   local row
   for row in \
     "Attach to first prompt, cold (ms, median):attach_cold" \
     "Attach to first prompt, warm (ms, median):attach_warm" \
+    "Attach cold timeouts (raw -1 samples):attach_cold_timeouts" \
+    "Attach warm timeouts (raw -1 samples):attach_warm_timeouts" \
+    "PTY echo completed samples:pty_completed" \
+    "PTY echo timed-out samples:pty_timeouts" \
     "PTY echo p50 (us):pty_p50" \
     "PTY echo p90 (us):pty_p90" \
-    "PTY echo p99 (us):pty_p99" \
+    "PTY echo p99 (us, only n>=1000):pty_p99" \
     "PTY echo max (us):pty_max" \
     "Screen-scrape echo p50 (ms, sanity):key_p50" \
     "Screen-scrape echo p99 (ms, sanity):key_p99" \
@@ -761,8 +818,8 @@ report() {
     "seq 1 $SEQ_LINES wall (ms):throughput_ms" \
     "Server CPU over that run (ms):cpu_server_ms" \
     "Client CPU over that run (ms):cpu_client_ms" \
-    "Server RSS after (KB):rss_server_kb" \
-    "Client RSS after (KB):rss_client_kb" \
+    "Server-only RSS after (KiB):rss_server_kb" \
+    "Attach-client-only RSS after (KiB):rss_client_kb" \
     "Idle CPU, ps %cpu mean (%):idle_pcpu" \
     "Idle CPU, cputime delta (%):idle_cputime_pct" \
     "Resize shrink/grow repaint (ms):resize_ms" \
@@ -779,7 +836,6 @@ report() {
     local label=${row%:*} key=${row##*:} m line
     line="| $label |"
     for m in "${muxes[@]}"; do line+=" $(cell "$m:$key") |"; done
-    line+=" $(cell "tmux:$key") |"
     printf '%s\n' "$line"
   done
   printf '\nRaw samples: %s\nCommands used: %s\n' "$OUT_DIR/samples.json" "$COMMAND_LOG"
@@ -793,28 +849,39 @@ main() {
   log_cmd "# pane geometry: ${COLS}x${ROWS}"
   local muxes=() m
   case "$MUX_SELECT" in
-    both) muxes=(phux herdr) ;;
-    all) muxes=(phux phux-ws phux-quic herdr) ;;
+    both) muxes=(phux herdr tmux) ;;
+    all) muxes=(phux phux-ws phux-quic herdr tmux) ;;
     *) IFS=, read -r -a muxes <<<"$MUX_SELECT" ;;
   esac
   for m in "${muxes[@]}"; do
     case "$m" in
       phux|phux-ws|phux-quic) bin="$PHUX_BIN" ;;
       herdr) bin="$HERDR_BIN" ;;
+      tmux) bin="$TMUX_BIN" ;;
       *) printf 'bad lane: %s\n' "$m" >&2; exit 2 ;;
     esac
+    bin="$(command -v "$bin")" || { printf 'missing binary for %s\n' "$m" >&2; exit 2; }
     [[ -x $bin ]] || { printf 'missing %s\n' "$bin" >&2; exit 2; }
+    case "$m" in
+      phux*) PHUX_BIN="$bin" ;;
+      herdr) HERDR_BIN="$bin" ;;
+    esac
   done
   [[ -f $PTY_PROBE ]] || { printf 'missing %s\n' "$PTY_PROBE" >&2; exit 2; }
+  "$PYTHON_BIN" "$REPO/scripts/bench/metadata.py" \
+    --out "$OUT_DIR/metadata.json" --repo "$REPO" \
+    --phux "$PHUX_BIN" --herdr "$HERDR_BIN" --tmux "$TMUX_BIN" \
+    --lanes "$(IFS=,; printf '%s' "${muxes[*]}")" \
+    --config "{\"attach_samples\":$ATTACH_SAMPLES,\"key_samples\":$KEY_SAMPLES,\"pty_iters\":$PTY_ITERS,\"seq_lines\":$SEQ_LINES,\"big_history\":$BIG_HISTORY,\"rtt_ms\":$RTT_MS,\"path_mbit\":$PATH_MBIT,\"loss_percent\":$LOSS_PERCENT,\"loss_seed\":$LOSS_SEED}" \
+    -- "$0" "${ORIGINAL_ARGS[@]}"
   for m in "${muxes[@]}"; do run_mux "$m"; done
-  run_mux tmux
   if (( BIG_HISTORY )); then
     for m in "${muxes[@]}"; do
-      [[ $m == phux || $m == herdr ]] && run_big_history "$m"
+      [[ $m == phux || $m == herdr || $m == tmux ]] && run_big_history "$m"
     done
   fi
   write_json
-  report "${muxes[@]}"
+  report "${muxes[@]}" | tee "$OUT_DIR/report.md"
 }
 
 main "$@"

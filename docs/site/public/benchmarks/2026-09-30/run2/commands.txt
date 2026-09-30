@@ -1,0 +1,82 @@
+# private tmux server: env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=<RUN>/observer-home TERM=xterm-256color <TMUX_BIN> -f /dev/null -S <RUN>/observer.sock
+# pane geometry: 120x40
+# attach wrapper (tmux): env -i <isolated env> '<TMUX_BIN>' -f /dev/null -S <RUN>/tmux/mux.sock attach-session -t bench
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> python3 scripts/bench/pty-echo.py --label tmux --iters 1000 --cols 120 --rows 40  -- '<TMUX_BIN>' -f /dev/null -S <RUN>/tmux/mux.sock attach-session -t bench
+# attach wrapper (herdr): env -i <isolated env> <HERDR_BIN>
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> workspace create --cwd <RUN>/herdr --label bench --focus
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> python3 scripts/bench/pty-echo.py --label herdr --iters 1000 --cols 120 --rows 40  -- <HERDR_BIN>
+# attach wrapper (phux): env -i <isolated env> <PHUX_BIN> attach --socket <RUN>/phux/mux.sock bench
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env> python3 scripts/bench/pty-echo.py --label phux --iters 1000 --cols 120 --rows 40  -- <PHUX_BIN> attach --socket <RUN>/phux/mux.sock bench
+env -i <isolated env> RUST_LOG=phux_server=debug <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+# attach wrapper (tmux): env -i <isolated env> '<TMUX_BIN>' -f /dev/null -S <RUN>/tmux/mux.sock attach-session -t bench
+env -i <isolated env> <TMUX_BIN> -f /dev/null -S <RUN>/tmux/mux.sock new-session -d -s bench -x 120 -y 40 /bin/sh
+env -i <isolated env> python3 scripts/bench/pty-echo.py --label tmux-bh --iters 1000 --cols 188 --rows 40 --settle-timeout 8 --attach-timeout 60 --interfere-at 500 --interfere ''<TMUX_BIN>' -f /dev/null -S <RUN>/tmux/mux.sock attach-session -t bench2' -- '<TMUX_BIN>' -f /dev/null -S <RUN>/tmux/mux.sock attach-session -t bench
+# attach wrapper (herdr): env -i <isolated env> <HERDR_BIN>
+env -i <isolated env> <HERDR_BIN> server
+env -i <isolated env> python3 scripts/bench/pty-echo.py --label herdr-bh --iters 1000 --cols 188 --rows 40 --settle-timeout 8 --attach-timeout 60 --interfere-at 500 --interfere '<HERDR_BIN>' -- <HERDR_BIN>
+# attach wrapper (phux): env -i <isolated env> <PHUX_BIN> attach --socket <RUN>/phux/mux.sock bench
+env -i <isolated env>  <PHUX_BIN> server --socket <RUN>/phux/mux.sock --session bench --listen 127.0.0.1:19220 --quic 127.0.0.1:19221 --exit-after-idle 900
+env -i <isolated env> python3 scripts/bench/pty-echo.py --label phux-bh --iters 1000 --cols 188 --rows 40 --settle-timeout 8 --attach-timeout 60 --interfere-at 500 --interfere '<PHUX_BIN> attach --socket <RUN>/phux/mux.sock bench2' -- <PHUX_BIN> attach --socket <RUN>/phux/mux.sock bench

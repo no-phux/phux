@@ -98,6 +98,20 @@ describe("host routing", () => {
     });
   });
 
+  test("evaluation and recovery pages use the docs origin without swallowing similarly named assets", () => {
+    expect(routeRequest(SITE_HOST, urlOn(SITE_HOST, "/performance?view=latency"))).toEqual({
+      kind: "redirect",
+      location: "https://docs.phux.sh/performance?view=latency",
+      status: 301,
+    });
+    expect(routeRequest(SITE_HOST, urlOn(SITE_HOST, "/troubleshooting"))).toEqual({
+      kind: "redirect",
+      location: "https://docs.phux.sh/troubleshooting",
+      status: 301,
+    });
+    expect(routeRequest(SITE_HOST, urlOn(SITE_HOST, "/performance-chart.svg"))).toEqual({ kind: "asset" });
+  });
+
   test("phux.sh keeps the landing, installers, and embed", () => {
     expect(routeRequest(SITE_HOST, urlOn(SITE_HOST, "/"))).toEqual({ kind: "asset" });
     expect(routeRequest(SITE_HOST, urlOn(SITE_HOST, "/install"))).toEqual({ kind: "asset" });
