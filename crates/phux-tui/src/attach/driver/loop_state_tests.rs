@@ -2116,3 +2116,82 @@ async fn fold_of_a_replaced_layout_raises_a_full_repaint_and_the_fleet() {
     assert!(repaint.fleet_dirty);
     assert_eq!(repaint.level, RepaintLevel::Full);
 }
+
+/// `C-a H` moved the divider on screen but never resized the panes' PTYs:
+/// the batch reflowed only on a zoom or sidebar change, so the shells kept
+/// their old width and painted letterboxed (or cropped) in the new tiles.
+/// A resize of the active window's own layout must send `RESIZE_TERMINAL`
+/// for the leaves whose rect moved.
+#[tokio::test(flavor = "current_thread")]
+async fn resize_pane_resizes_the_panes_whose_tiles_moved() {
+    use crate::layout::{LayoutNode, LayoutState, SplitDir, WindowState, split_at};
+    use phux_config::keybind::parse_chord;
+
+    let (mut state, mut client, mut server, mut out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    let config = phux_config::parse_with_defaults("", std::path::Path::new("t.toml"))
+        .expect("shipped defaults parse");
+    state.settings = crate::settings::TuiSettings::tolerant_from(&config);
+    let (left, right) = (ResourceId::local(1), ResourceId::local(2));
+    let tree = split_at(
+        &LayoutNode::Leaf(left.clone()),
+        &left,
+        &right,
+        SplitDir::Horizontal,
+        0.5,
+    )
+    .expect("split");
+    state.mirror.workspace = Workspace {
+        windows: vec![WindowState::new(
+            "0".to_owned(),
+            LayoutState {
+                tree: Some(tree),
+                focus: Some(right.clone()),
+            },
+        )],
+        active: 0,
+    };
+    state.mirror.focused_resource = Some(right.clone());
+    drop(frames_sent(&mut client, &mut server).await);
+
+    let press = |spec: &str| {
+        let chord = parse_chord(spec).expect("chord");
+        InputEvent::Key(KeyEvent {
+            action: KeyAction::Press,
+            key: chord.key,
+            mods: chord.modifiers,
+            consumed_mods: ModSet::empty(),
+            composing: false,
+            text: None,
+            unshifted_codepoint: None,
+        })
+    };
+    // Layout actions wait for the initial shared layout read.
+    state.layout_read_complete = true;
+    // The loop's own sidebar, so only the resize can change the geometry.
+    let sidebar = state.sidebar();
+    state
+        .dispatch_batch(
+            &mut client,
+            &mut out,
+            sidebar,
+            vec![press("C-a"), press("H")],
+        )
+        .await
+        .expect("dispatch");
+
+    let resized: Vec<ResourceId> = frames_sent(&mut client, &mut server)
+        .await
+        .into_iter()
+        .filter_map(|frame| match frame {
+            FrameKind::ResizeTerminal { terminal_id, .. } => Some(terminal_id),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        resized.contains(&left) && resized.contains(&right),
+        "both tiles moved, so both PTYs must be resized; sent {resized:?}"
+    );
+    drop(client);
+    drop(server);
+}

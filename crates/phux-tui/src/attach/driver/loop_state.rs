@@ -83,7 +83,7 @@ use super::terminal::{
 };
 use super::viewport::{
     HOST_CELL_PX_FALLBACK, current_viewport, current_viewport_or_default,
-    emit_bootstrap_workspace_reflow, emit_view_reflow, host_cell_px, view_rects,
+    emit_bootstrap_workspace_reflow, emit_moved_tiles, emit_view_reflow, host_cell_px, view_rects,
     viewport_resize_frame,
 };
 
@@ -1782,9 +1782,11 @@ impl SessionLoop {
         // Computed before dispatch drains `events`; armed after, so it keys to
         // the pane focus landed on.
         let expects_reply = events.iter().any(input_expects_a_reply);
-        // Pre-dispatch view, so zoom and sidebar toggles can reflow PTYs.
+        // Pre-dispatch view, so zoom and sidebar toggles, and a resized or
+        // rearranged window, can reflow PTYs.
         let prev_zoomed = self.mirror.zoomed.clone();
         let prev_sidebar = sidebar;
+        let prev_active_window = self.mirror.workspace.active;
         let prev_view_rects = view_rects(
             &self.mirror.workspace,
             prev_zoomed.as_ref(),
@@ -1822,7 +1824,7 @@ impl SessionLoop {
                 review: std::mem::take(&mut self.review),
             }));
         }
-        // Resize PTYs only when client-local geometry (zoom, sidebar) changed.
+        // Resize PTYs when client-local geometry (zoom, sidebar) changed.
         if self.mirror.zoomed != prev_zoomed || sidebar != prev_sidebar {
             emit_view_reflow(
                 conn,
@@ -1832,6 +1834,21 @@ impl SessionLoop {
                 self.content(sidebar),
             )
             .await?;
+        } else if layout_changed
+            && self.mirror.workspace.active == prev_active_window
+            && !self.detach_pending
+        {
+            // This window's own layout moved (`resize-pane`, a divider drag,
+            // a swap): resize exactly the panes whose tile changed. A switch
+            // to another window is not a resize (bootstrap sized its panes),
+            // and nothing may follow a sent `DETACH`.
+            let rects = view_rects(
+                &self.mirror.workspace,
+                self.mirror.zoomed.as_ref(),
+                self.content(sidebar),
+                self.viewport_dims,
+            );
+            emit_moved_tiles(conn, &prev_view_rects, &rects).await?;
         }
         if layout_changed {
             // ADR-0040: an input action may have split/closed panes;
