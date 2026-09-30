@@ -726,6 +726,10 @@ address is the toggle:
   the user visits could drive this listener. Native clients send no `Origin`
   and are unaffected. `PHUX_WS_ALLOWED_ORIGINS` names more origins
   (comma-separated), or `*` behind a proxy that checks origins itself.
+  A listener that admits anyone (this one, and a loopback QUIC or
+  WebTransport listener) serves at most 256 connections at once; one
+  past that is closed as soon as it connects, and the refusal is logged
+  at a bounded rate.
 - **Routable address → TLS + token, auto-provisioned.** Binding
   off-loopback is treated as exposing the server: phux generates and
   persists a self-signed certificate (under the state dir) if none is
