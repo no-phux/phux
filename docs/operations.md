@@ -990,7 +990,12 @@ The surface is two commands: `phux relay pair --route NAME` mints the
 tunnel token and prints the fingerprint both legs pin; `phux relay run
 --listen ADDR` runs the relay in the foreground. `--listen` has no
 default; `--max-conns` (default 64) is the sole limiting knob. Pairing an
-already-enrolled route replaces that route's token.
+already-enrolled route replaces that route's token. Beyond that cap, one
+source address may have at most 16 connections between its first packet
+and its admission (the handshake, then a connector's auth preamble or a
+consumer's first stream), plus 16 more that answered a QUIC Retry; past
+that it is refused, so one address cannot occupy the handshake pool, and
+spoofing an address cannot lock out the real one.
 
 **State files.** Exactly three, at fixed paths in the phux state
 directory (`$XDG_STATE_HOME/phux`, or `$HOME/.local/state/phux` when
@@ -998,11 +1003,14 @@ unset) — siblings of the server's `remote-*` files:
 
 - `relay-tokens` — one `<64-char hex token> <route>` line per enrolled
   route; `#` comments and blank lines are ignored; mode `0600`. The relay
-  re-reads this file on every connection attempt, so `phux relay pair`
-  takes effect on a running relay and deleting a line revokes at the next
-  handshake — no restart, no reload signal. A live tunnel survives its
-  token's deletion until it drops or the relay restarts; restarting the
-  relay is the immediate revocation path.
+  checks the file on every connection attempt (one `stat`) and re-reads it
+  whenever it changed, so `phux relay pair` takes effect on a running
+  relay and deleting a line revokes at the next handshake — no restart, no
+  reload signal. A live tunnel survives its token's deletion until it
+  drops or the relay restarts; restarting the relay is the immediate
+  revocation path. A store owned by another account, or writable by
+  others, is refused (the relay will not start, and a running one admits
+  nobody until it is fixed); one others can read loads with a warning.
 - `relay-cert.pem` / `relay-key.pem` — the relay's self-signed TLS pair,
   provisioned on first use and left untouched when both files exist, so
   the pinned fingerprint stays stable across restarts. Operator-supplied
@@ -1012,8 +1020,17 @@ unset) — siblings of the server's `remote-*` files:
 There are no path flags and no `PHUX_RELAY_*` environment variables.
 Listing enrollments is reading the file; revoking is deleting a line;
 re-pairing rotates. The connector token file on the server is re-read on
-every dial. Concurrent `phux relay pair` invocations are last-write-wins
-— run one at a time.
+every dial, and must be owner-only and owned by the server's user.
+Concurrent `phux relay pair` invocations are last-write-wins — run one at
+a time.
+
+**Private keys.** Every TLS private key a listener or the relay serves
+with (`remote-key.pem`, `PHUX_WS_TLS_KEY`, `relay-key.pem`) is checked
+when it is loaded. A key owned by another account (root excepted, for
+keys an operator keeps under `/etc`), one other accounts can read, or one
+anyone but its owner can write is refused with the `chmod` or `chown`
+that fixes it. A group-readable key, such as one shared through an
+`ssl-cert` group, is used with a warning.
 
 Refusals are distinguishable at the consumer. An unknown or absent route
 name fails during the TLS handshake itself — no phux bytes are exchanged.

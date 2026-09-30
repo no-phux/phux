@@ -17,7 +17,7 @@ pub(crate) enum RelayAction {
     /// for their enrolled route, and remote consumers dial in naming a
     /// route, each spliced onto that route's live tunnel as opaque
     /// bytes. Enroll routes with `phux relay pair`; the token store is
-    /// re-read per connection attempt, so pairing a new route (or
+    /// re-read whenever it changes, so pairing a new route (or
     /// revoking one by deleting its line) needs no restart. Serves
     /// until Ctrl-C.
     Run {

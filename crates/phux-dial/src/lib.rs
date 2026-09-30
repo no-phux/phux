@@ -13,6 +13,8 @@
 #[cfg(feature = "provision")]
 pub mod cert;
 pub mod quic;
+#[cfg(feature = "provision")]
+pub mod secret_file;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod tls;

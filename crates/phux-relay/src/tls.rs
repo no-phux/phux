@@ -8,14 +8,14 @@
 //! [`phux_dial::cert`]'s.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use phux_dial::cert;
 use phux_protocol::policy::{QUIC_ALPN, QUIC_RELAY_ALPN};
 
 use crate::RelayError;
-use crate::tokens::RouteTokenStore;
+use crate::tokens::CachedRouteTokens;
 
 /// Provision the relay's self-signed certificate + key if missing.
 ///
@@ -36,7 +36,7 @@ pub fn cert_fingerprint(cert_path: &Path) -> Result<String, RelayError> {
 pub(crate) fn server_config(
     cert_path: &Path,
     key_path: &Path,
-    tokens_path: &Path,
+    tokens: Arc<CachedRouteTokens>,
 ) -> Result<rustls::ServerConfig, RelayError> {
     let certs = cert::load_certs(cert_path)?;
     let key = cert::load_key(key_path)?;
@@ -50,7 +50,7 @@ pub(crate) fn server_config(
         .with_no_client_auth()
         .with_cert_resolver(Arc::new(SniGate {
             key: certified,
-            tokens_path: tokens_path.to_owned(),
+            tokens,
         }));
     config.alpn_protocols = vec![QUIC_RELAY_ALPN.to_vec(), QUIC_ALPN.to_vec()];
     Ok(config)
@@ -59,20 +59,21 @@ pub(crate) fn server_config(
 /// TLS-layer SNI refusal: returning `None` aborts the handshake before any
 /// application byte flows.
 ///
-/// The enrolled-route set is re-read per handshake so `phux relay pair` is
-/// live without a restart; an unreadable store fails closed.
+/// The enrolled-route set follows the store file per handshake (re-read
+/// only when it changed) so `phux relay pair` is live without a restart; an
+/// unreadable store fails closed.
 struct SniGate {
     /// The relay's one certified key, served to every admitted hello.
     key: Arc<rustls::sign::CertifiedKey>,
-    /// Route-token store path; source of the enrolled-route set.
-    tokens_path: PathBuf,
+    /// The route-token store; source of the enrolled-route set.
+    tokens: Arc<CachedRouteTokens>,
 }
 
 /// Redacted: the certified key never appears in logs.
 impl std::fmt::Debug for SniGate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SniGate")
-            .field("tokens_path", &self.tokens_path)
+            .field("tokens", &self.tokens)
             .finish_non_exhaustive()
     }
 }
@@ -88,7 +89,7 @@ impl rustls::server::ResolvesServerCert for SniGate {
         let routes = if offers_relay_alpn {
             BTreeSet::new()
         } else {
-            enrolled_routes(&self.tokens_path)
+            enrolled_routes(&self.tokens)
         };
         let sni = client_hello.server_name();
         if gate_allows(offers_relay_alpn, sni, &routes) {
@@ -110,16 +111,10 @@ fn gate_allows(offers_relay_alpn: bool, sni: Option<&str>, routes: &BTreeSet<Str
     offers_relay_alpn || sni.is_some_and(|name| routes.contains(name))
 }
 
-/// The enrolled-route set, re-read from the token store; empty (fail closed)
-/// when the store is unreadable or malformed.
-fn enrolled_routes(tokens_path: &Path) -> BTreeSet<String> {
-    match RouteTokenStore::load(tokens_path) {
-        Ok(store) => store.routes(),
-        Err(err) => {
-            tracing::warn!(%err, "route-token store unreadable; refusing all consumers");
-            BTreeSet::new()
-        }
-    }
+/// The enrolled-route set as the token store stands; empty (fail closed)
+/// when the store is unreadable, malformed, or insecure.
+fn enrolled_routes(tokens: &CachedRouteTokens) -> BTreeSet<String> {
+    tokens.current().routes()
 }
 
 #[cfg(test)]
@@ -166,18 +161,25 @@ mod tests {
     }
 
     #[test]
-    fn enrolled_routes_is_reread_per_call_and_fails_closed() {
+    fn enrolled_routes_follow_the_file_and_fail_closed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("relay-tokens");
-        assert!(enrolled_routes(&path).is_empty(), "missing file: no routes");
+        let tokens = CachedRouteTokens::new(path.clone());
+        assert!(
+            enrolled_routes(&tokens).is_empty(),
+            "missing file: no routes"
+        );
 
         crate::tokens::mint_route_token(&path, "alpha").unwrap();
-        assert!(enrolled_routes(&path).contains("alpha"));
+        assert!(enrolled_routes(&tokens).contains("alpha"));
         fs::remove_file(&path).unwrap();
-        assert!(enrolled_routes(&path).is_empty());
+        assert!(enrolled_routes(&tokens).is_empty());
 
         fs::write(&path, "not a valid line\n").unwrap();
-        assert!(enrolled_routes(&path).is_empty(), "malformed: fail closed");
+        assert!(
+            enrolled_routes(&tokens).is_empty(),
+            "malformed: fail closed"
+        );
     }
 
     #[test]
@@ -185,11 +187,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cert = dir.path().join("relay-cert.pem");
         let key = dir.path().join("relay-key.pem");
-        let tokens = dir.path().join("relay-tokens");
-        assert!(server_config(&cert, &key, &tokens).is_err());
+        let tokens = Arc::new(CachedRouteTokens::new(dir.path().join("relay-tokens")));
+        assert!(server_config(&cert, &key, Arc::clone(&tokens)).is_err());
 
         ensure_self_signed(&cert, &key).unwrap();
-        let config = server_config(&cert, &key, &tokens).unwrap();
+        let config = server_config(&cert, &key, tokens).unwrap();
         assert_eq!(
             config.alpn_protocols,
             vec![QUIC_RELAY_ALPN.to_vec(), QUIC_ALPN.to_vec()]

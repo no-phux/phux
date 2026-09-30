@@ -2522,6 +2522,7 @@ dependencies = [
  "phux-protocol",
  "quinn",
  "rcgen",
+ "rustix",
  "rustls",
  "sha2 0.11.0",
  "tempfile",
@@ -2529,6 +2530,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
+ "tracing",
 ]
 
 [[package]]

@@ -8,9 +8,9 @@
 //! <64-char lowercase hex token> <route-name>
 //! ```
 //!
-//! Revocation is deleting a line; the relay re-reads the file per connection
-//! attempt. Token and route are one-to-one: re-minting a route replaces its
-//! line.
+//! Revocation is deleting a line; the relay re-reads the file whenever it
+//! changed ([`CachedRouteTokens`]). Token and route are one-to-one:
+//! re-minting a route replaces its line.
 
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
@@ -57,8 +57,12 @@ impl std::fmt::Debug for RouteTokenStore {
 impl RouteTokenStore {
     /// Load the store from `path`. A missing file is an empty store; a
     /// malformed line or an invalid route name is an error (fail-fast at
-    /// startup rather than silently dropping an enrollment).
+    /// startup rather than silently dropping an enrollment), and so is a
+    /// file another account owns or can write
+    /// ([`phux_dial::secret_file::SecretFile::TokenStore`]). A file others
+    /// can read loads with a warning.
     pub fn load(path: &Path) -> Result<Self, RelayError> {
+        check_store_file(path)?;
         let raw = read_store_or_empty(path)?;
         let mut entries = Vec::new();
         for (idx, line) in raw.lines().enumerate() {
@@ -169,6 +173,112 @@ pub fn mint_route_token(path: &Path, route: &str) -> Result<String, RelayError> 
     ensure_parent_dir(path)?;
     replace_store_atomically(path, &contents)?;
     Ok(encoded)
+}
+
+/// Refuse a store another account owns or can write (either could enroll a
+/// route or read every tunnel token), and warn about one others can read.
+/// A missing store passes: it loads empty.
+fn check_store_file(path: &Path) -> Result<(), RelayError> {
+    use phux_dial::secret_file::{SecretFile, check_metadata, effective_uid};
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err.into()),
+    };
+    let verdict = check_metadata(path, &metadata, SecretFile::TokenStore, effective_uid());
+    if let Some(warning) = verdict.map_err(RelayError::InsecureFile)? {
+        tracing::warn!("{warning}");
+    }
+    Ok(())
+}
+
+/// What identifies one version of the store file: a rewrite by rename
+/// changes the inode, and an in-place edit the size or a timestamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StoreStamp {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+
+impl StoreStamp {
+    /// The stamp of the file at `path`; `Ok(None)` when it does not exist.
+    fn of(path: &Path) -> io::Result<Option<Self>> {
+        use std::os::unix::fs::MetadataExt as _;
+        match fs::metadata(path) {
+            Ok(meta) => Ok(Some(Self {
+                dev: meta.dev(),
+                ino: meta.ino(),
+                len: meta.len(),
+                mtime: (meta.mtime(), meta.mtime_nsec()),
+                ctime: (meta.ctime(), meta.ctime_nsec()),
+            })),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+}
+
+/// The route-token store as the running relay consults it on every
+/// handshake.
+///
+/// The file is re-read only when it changed since the last read (one `stat`
+/// per handshake otherwise), so `phux relay pair` and line deletion still
+/// apply without a restart while a flood of `ClientHello`s costs no file
+/// reads. A store that cannot be read or parsed, or is insecure, reads as
+/// empty (fail closed) and is warned about once per change.
+#[derive(Debug)]
+pub(crate) struct CachedRouteTokens {
+    path: PathBuf,
+    cached: std::sync::Mutex<Option<(Option<StoreStamp>, std::sync::Arc<RouteTokenStore>)>>,
+    loads: std::sync::atomic::AtomicU64,
+}
+
+impl CachedRouteTokens {
+    /// A cache over the store at `path`; the first [`Self::current`] reads.
+    pub(crate) const fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            cached: std::sync::Mutex::new(None),
+            loads: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// The store as the file stands now.
+    pub(crate) fn current(&self) -> std::sync::Arc<RouteTokenStore> {
+        let stamp = match StoreStamp::of(&self.path) {
+            Ok(stamp) => stamp,
+            Err(err) => {
+                tracing::warn!(%err, "route-token store unreadable; failing closed");
+                return std::sync::Arc::default();
+            }
+        };
+        let mut cached = self
+            .cached
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((seen, store)) = cached.as_ref()
+            && *seen == stamp
+        {
+            return std::sync::Arc::clone(store);
+        }
+        self.loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let store = std::sync::Arc::new(RouteTokenStore::load(&self.path).unwrap_or_else(|err| {
+            tracing::warn!(%err, "route-token store unusable; failing closed");
+            RouteTokenStore::default()
+        }));
+        *cached = Some((stamp, std::sync::Arc::clone(&store)));
+        store
+    }
+
+    /// How many times the file was read (tests).
+    #[cfg(test)]
+    pub(crate) fn loads(&self) -> u64 {
+        self.loads.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 /// Read the store text at `path`. A missing file reads as an empty store,
@@ -441,6 +551,59 @@ mod tests {
         fs::write(&path, "broken line here\n").unwrap();
         assert!(mint_route_token(&path, "alpha").is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), "broken line here\n");
+    }
+
+    /// Handshakes read the file only when it changed: a flood of lookups on
+    /// an unchanged store is one read, while a re-mint, a deletion, and a
+    /// malformed rewrite are each seen at the next lookup.
+    #[test]
+    fn the_cached_store_rereads_only_a_changed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-tokens");
+        let cached = CachedRouteTokens::new(path.clone());
+        assert!(cached.current().is_empty());
+        let first = mint_route_token(&path, "alpha").unwrap();
+        for _ in 0..100 {
+            assert_eq!(
+                cached.current().lookup(&hex::decode(&first).unwrap()),
+                Some("alpha")
+            );
+        }
+        assert_eq!(
+            cached.loads(),
+            2,
+            "missing, then one read of the minted store"
+        );
+
+        let second = mint_route_token(&path, "alpha").unwrap();
+        let store = cached.current();
+        assert!(store.lookup(&hex::decode(&first).unwrap()).is_none());
+        assert_eq!(store.lookup(&hex::decode(&second).unwrap()), Some("alpha"));
+        fs::remove_file(&path).unwrap();
+        assert!(cached.current().is_empty());
+        fs::write(&path, "broken\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(cached.current().is_empty(), "malformed fails closed");
+    }
+
+    /// A store other accounts can write is refused (anyone could enroll a
+    /// route); one they can only read loads, with a warning.
+    #[test]
+    fn a_store_others_can_write_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay-tokens");
+        let token = mint_route_token(&path, "alpha").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(matches!(
+            RouteTokenStore::load(&path),
+            Err(RelayError::InsecureFile(_))
+        ));
+        let cached = CachedRouteTokens::new(path.clone());
+        assert!(cached.current().is_empty(), "the relay fails closed");
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let store = RouteTokenStore::load(&path).unwrap();
+        assert_eq!(store.lookup(&hex::decode(&token).unwrap()), Some("alpha"));
     }
 
     #[test]

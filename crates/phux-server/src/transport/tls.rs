@@ -54,6 +54,10 @@ pub enum TlsError {
     /// ([`refuse_dev_on_production_tls`]).
     #[error("{0}")]
     ProductionState(String),
+    /// The private key is owned by another account, or other accounts can
+    /// read or replace it.
+    #[error("{0}")]
+    InsecureKey(String),
 }
 
 /// Maps onto the variants [`TlsError`] already had, so operator-facing
@@ -65,6 +69,7 @@ impl From<cert::CertError> for TlsError {
             cert::CertError::Rcgen(err) => Self::Rcgen(err),
             cert::CertError::Pem(err) => Self::Pem(err),
             cert::CertError::NoCerts(path) => Self::NoCerts(path),
+            cert::CertError::InsecureKey(message) => Self::InsecureKey(message),
             cert::CertError::PartialTlsPair { present, missing } => {
                 Self::PartialTlsPair { present, missing }
             }
@@ -314,6 +319,24 @@ mod tests {
         let missing = dir.path().join("nope.pem");
         assert!(acceptor_from_pem(&missing, &missing).is_err());
         assert!(cert_fingerprint(&missing).is_err());
+    }
+
+    /// An operator key (`PHUX_WS_TLS_KEY`) other accounts can read is refused
+    /// before any listener serves with it; a group-readable one (an
+    /// `ssl-cert` group setup) is used, with a warning.
+    #[test]
+    fn a_world_readable_key_is_refused_and_a_group_readable_one_served() {
+        let (_dir, cert, key) = fresh_pair();
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).unwrap();
+        let Err(err) = acceptor_from_pem(&cert, &key) else {
+            panic!("a world-readable key must be refused");
+        };
+        assert!(matches!(err, TlsError::InsecureKey(_)), "{err}");
+        assert!(quic_server_config_with_client_ca(&cert, &key, None).is_err());
+
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o640)).unwrap();
+        acceptor_from_pem(&cert, &key).unwrap();
+        quic_server_config_with_client_ca(&cert, &key, None).unwrap();
     }
 
     #[test]

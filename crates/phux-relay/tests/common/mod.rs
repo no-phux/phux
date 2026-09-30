@@ -60,21 +60,31 @@ pub async fn spawn_relay_with(
     max_conns: usize,
     preamble_deadline: Option<Duration>,
 ) -> RelayHandle {
+    spawn_relay_tuned(dir, max_conns, |runtime| match preamble_deadline {
+        Some(deadline) => runtime.with_preamble_deadline(deadline),
+        None => runtime,
+    })
+    .await
+}
+
+/// [`spawn_relay_with`], with `tune` applied to the runtime before it binds.
+pub async fn spawn_relay_tuned(
+    dir: &Path,
+    max_conns: usize,
+    tune: impl FnOnce(RelayRuntime) -> RelayRuntime,
+) -> RelayHandle {
     let cert_path = dir.join("relay-cert.pem");
     let key_path = dir.join("relay-key.pem");
     let tokens_path = dir.join("relay-tokens");
     phux_relay::ensure_self_signed(&cert_path, &key_path).expect("provision relay cert");
     let fingerprint = phux_relay::cert_fingerprint(&cert_path).expect("relay fingerprint");
-    let mut runtime = RelayRuntime::new(RelayConfig {
+    let runtime = tune(RelayRuntime::new(RelayConfig {
         listen: "127.0.0.1:0".parse().expect("loopback listen addr"),
         cert_path,
         key_path,
         tokens_path: tokens_path.clone(),
         max_conns,
-    });
-    if let Some(deadline) = preamble_deadline {
-        runtime = runtime.with_preamble_deadline(deadline);
-    }
+    }));
     let bound = runtime.bind().expect("relay binds on port 0");
     let addr = bound.local_addr();
     let (shutdown, rx) = oneshot::channel::<()>();

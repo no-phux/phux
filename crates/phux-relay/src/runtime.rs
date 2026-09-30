@@ -3,9 +3,10 @@
 //! connection; per-connection failures are logged and never tear down the
 //! endpoint.
 
-use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use phux_dial::quic::is_tunnel_cid;
@@ -15,7 +16,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::registry::TunnelRegistry;
 use crate::splice::splice;
-use crate::tokens::RouteTokenStore;
+use crate::tokens::{CachedRouteTokens, RouteTokenStore};
 use crate::{
     AUTH_FAILED_CODE, OVER_CAP_CODE, PROTOCOL_VIOLATION_CODE, ROUTE_OFFLINE_CODE, RelayError, tls,
 };
@@ -31,6 +32,18 @@ const HANDSHAKES_PER_SLOT: usize = 4;
 
 /// How long a peer has to complete the QUIC/TLS handshake.
 const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Connections one source address may have between its first packet and
+/// its admission.
+///
+/// Admission is the handshake, then a connector's auth preamble or a
+/// consumer's first stream. Address-validated and unvalidated connections
+/// are counted separately. A source past its unvalidated share must answer a
+/// Retry, so spoofing a victim's address cannot use up the victim's share;
+/// past its validated share it is refused. One address therefore holds at
+/// most twice this many of the handshake pool, never all of it. Tests
+/// shorten it via [`RelayRuntime::with_handshakes_per_source`].
+pub const DEFAULT_HANDSHAKES_PER_SOURCE: usize = 16;
 
 /// QUIC idle timeout, matching the server listener and phux-dial.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -120,6 +133,7 @@ impl RelayConfig {
 pub struct RelayRuntime {
     config: RelayConfig,
     preamble_deadline: Duration,
+    handshakes_per_source: usize,
 }
 
 impl RelayRuntime {
@@ -129,7 +143,16 @@ impl RelayRuntime {
         Self {
             config,
             preamble_deadline: PREAMBLE_DEADLINE,
+            handshakes_per_source: DEFAULT_HANDSHAKES_PER_SOURCE,
         }
+    }
+
+    /// Override the per-source admission share (default
+    /// [`DEFAULT_HANDSHAKES_PER_SOURCE`]), so tests can fill it quickly.
+    #[must_use]
+    pub const fn with_handshakes_per_source(mut self, share: usize) -> Self {
+        self.handshakes_per_source = share;
+        self
     }
 
     /// Override the tunnel auth-preamble deadline (default 5s), so tests can
@@ -142,8 +165,8 @@ impl RelayRuntime {
 
     /// Run the relay until `shutdown` resolves or the endpoint closes.
     ///
-    /// The token store is re-read per connection attempt, so `phux relay
-    /// pair` and line deletion take effect without a restart.
+    /// The token store is re-read whenever it changed, so `phux relay pair`
+    /// and line deletion take effect without a restart.
     pub async fn run_async(self, shutdown: impl Future<Output = ()>) -> Result<(), RelayError> {
         self.bind()?.serve(shutdown).await
     }
@@ -154,11 +177,13 @@ impl RelayRuntime {
     pub fn bind(self) -> Result<BoundRelay, RelayError> {
         let config = self.config;
         let preamble_deadline = self.preamble_deadline;
-        // Fail-fast validation load; per-connection lookups re-read.
+        // Fail-fast validation load; per-connection lookups re-read it
+        // whenever the file changes.
         let store = RouteTokenStore::load(&config.tokens_path)?;
+        let tokens = Arc::new(CachedRouteTokens::new(config.tokens_path.clone()));
         tls::ensure_self_signed(&config.cert_path, &config.key_path)?;
         let tls_config =
-            tls::server_config(&config.cert_path, &config.key_path, &config.tokens_path)?;
+            tls::server_config(&config.cert_path, &config.key_path, Arc::clone(&tokens))?;
         let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)
             .map_err(|err| RelayError::Rustls(rustls::Error::General(err.to_string())))?;
         let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
@@ -174,9 +199,10 @@ impl RelayRuntime {
             tunnel_config: Arc::new(tunnel_config),
             local_addr,
             routes: store.len(),
-            tokens_path: config.tokens_path,
+            tokens,
             max_conns: config.max_conns,
             preamble_deadline,
+            handshakes_per_source: self.handshakes_per_source,
         })
     }
 }
@@ -191,9 +217,10 @@ pub struct BoundRelay {
     tunnel_config: Arc<quinn::ServerConfig>,
     local_addr: SocketAddr,
     routes: usize,
-    tokens_path: PathBuf,
+    tokens: Arc<CachedRouteTokens>,
     max_conns: usize,
     preamble_deadline: Duration,
+    handshakes_per_source: usize,
 }
 
 impl BoundRelay {
@@ -218,24 +245,24 @@ impl BoundRelay {
         let slots = Arc::new(Semaphore::new(self.max_conns));
         let max_handshakes = self.max_conns.max(1).saturating_mul(HANDSHAKES_PER_SLOT);
         let handshakes = Arc::new(Semaphore::new(max_handshakes));
+        let sources = Arc::new(SourceShares::new(self.handshakes_per_source));
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
                 () = &mut shutdown => break,
                 incoming = endpoint.accept() => {
                     let Some(incoming) = incoming else { break };
-                    let Some(handshake) = admit_handshake(incoming, &handshakes, max_handshakes)
+                    let Some(admitted) =
+                        admit_handshake(incoming, &handshakes, max_handshakes, &sources)
                     else {
                         continue;
                     };
-                    let (incoming, permit) = handshake;
                     tokio::spawn(handle_connection(
-                        incoming,
+                        admitted,
                         Arc::clone(&self.tunnel_config),
                         registry.clone(),
-                        self.tokens_path.clone(),
+                        Arc::clone(&self.tokens),
                         self.preamble_deadline,
-                        permit,
                         Arc::clone(&slots),
                     ));
                 }
@@ -247,42 +274,133 @@ impl BoundRelay {
     }
 }
 
-/// Take a handshake slot for `incoming`, or turn it away without spawning
-/// anything: a stateless refusal when every slot is busy, and a Retry (proof
-/// the source address is real) once half of them are, so spoofed Initials
-/// can never occupy more than half.
+/// The in-flight admissions of each source address, by whether its address
+/// was validated; see [`DEFAULT_HANDSHAKES_PER_SOURCE`].
+#[derive(Debug)]
+struct SourceShares {
+    share: usize,
+    in_flight: Mutex<HashMap<(IpAddr, bool), usize>>,
+}
+
+impl SourceShares {
+    fn new(share: usize) -> Self {
+        Self {
+            share: share.max(1),
+            in_flight: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<(IpAddr, bool), usize>> {
+        self.in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Take one of `ip`'s `validated` share, if any is left.
+    fn try_take(self: &Arc<Self>, ip: IpAddr, validated: bool) -> Option<SourceShare> {
+        let key = (ip, validated);
+        let mut in_flight = self.lock();
+        let count = in_flight.entry(key).or_insert(0);
+        let admitted = *count < self.share;
+        if admitted {
+            *count += 1;
+        }
+        drop(in_flight);
+        admitted.then(|| SourceShare {
+            shares: Arc::clone(self),
+            key,
+        })
+    }
+}
+
+/// One held unit of a source's share; returned on drop, and the map entry
+/// goes with the last one so it stays bounded by what is in flight.
+#[derive(Debug)]
+struct SourceShare {
+    shares: Arc<SourceShares>,
+    key: (IpAddr, bool),
+}
+
+impl Drop for SourceShare {
+    fn drop(&mut self) {
+        let mut in_flight = self.shares.lock();
+        if let Some(count) = in_flight.get_mut(&self.key) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                in_flight.remove(&self.key);
+            }
+        }
+    }
+}
+
+/// A connection admitted to the handshake: its handshake slot, released
+/// once the handshake ends, and its source share, released once it is
+/// admitted as a tunnel or consumer.
+struct AdmittedHandshake {
+    incoming: quinn::Incoming,
+    handshake: OwnedSemaphorePermit,
+    source: SourceShare,
+}
+
+/// Take a handshake slot and a source share for `incoming`, or turn it away
+/// without spawning anything: a stateless refusal when every slot is busy or
+/// the source's validated share is spent, and a Retry (proof the source
+/// address is real) once half the slots are busy or the source's unvalidated
+/// share is spent, so spoofed Initials can never occupy more than half, nor
+/// crowd out the address they spoof.
 fn admit_handshake(
     incoming: quinn::Incoming,
     handshakes: &Arc<Semaphore>,
     max_handshakes: usize,
-) -> Option<(quinn::Incoming, OwnedSemaphorePermit)> {
+    sources: &Arc<SourceShares>,
+) -> Option<AdmittedHandshake> {
+    let validated = incoming.remote_address_validated();
     let loaded = handshakes.available_permits() <= max_handshakes / 2;
-    if loaded && !incoming.remote_address_validated() && incoming.may_retry() {
+    if loaded && !validated && incoming.may_retry() {
         let _ = incoming.retry();
         return None;
     }
-    let Ok(permit) = Arc::clone(handshakes).try_acquire_owned() else {
-        tracing::debug!(remote = %incoming.remote_address(), "refused: handshakes at capacity");
+    let remote = incoming.remote_address();
+    let Some(source) = sources.try_take(remote.ip(), validated) else {
+        if !validated && incoming.may_retry() {
+            let _ = incoming.retry();
+        } else {
+            tracing::debug!(%remote, "refused: source at its handshake share");
+            incoming.refuse();
+        }
+        return None;
+    };
+    let Ok(handshake) = Arc::clone(handshakes).try_acquire_owned() else {
+        tracing::debug!(%remote, "refused: handshakes at capacity");
         incoming.refuse();
         return None;
     };
-    Some((incoming, permit))
+    Some(AdmittedHandshake {
+        incoming,
+        handshake,
+        source,
+    })
 }
 
 /// Drive one accepted connection to its leg by negotiated ALPN, never by
 /// what it sends (ADR-0051 invariant 7). The handshake runs under its own
 /// slot and deadline; the connection slot is taken only once it completes
-/// and is held throughout. The flow-control config is chosen first from the
-/// connection-ID tag.
+/// and is held throughout, and the source share until the leg's admission
+/// step (preamble or first stream) ends. The flow-control config is chosen
+/// first from the connection-ID tag.
 async fn handle_connection(
-    incoming: quinn::Incoming,
+    admitted: AdmittedHandshake,
     tunnel_config: Arc<quinn::ServerConfig>,
     registry: TunnelRegistry<quinn::Connection>,
-    tokens_path: PathBuf,
+    tokens: Arc<CachedRouteTokens>,
     preamble_deadline: Duration,
-    handshake_permit: OwnedSemaphorePermit,
     slots: Arc<Semaphore>,
 ) {
+    let AdmittedHandshake {
+        incoming,
+        handshake: handshake_permit,
+        source,
+    } = admitted;
     let tagged = is_tunnel_cid(&incoming.orig_dst_cid());
     let connecting = if tagged {
         incoming.accept_with(tunnel_config)
@@ -315,9 +433,15 @@ async fn handle_connection(
         return;
     };
     if alpn == QUIC_RELAY_ALPN {
-        admit_tunnel(conn, tagged, &tokens_path, preamble_deadline, &registry).await;
+        let leg = TunnelLeg {
+            bounded: tagged,
+            tokens: &tokens,
+            preamble_deadline,
+            source,
+        };
+        admit_tunnel(conn, leg, &registry).await;
     } else if alpn == QUIC_ALPN {
-        bridge_consumer(conn, server_name, &registry).await;
+        bridge_consumer(conn, server_name, source, &registry).await;
     } else {
         // rustls only negotiates advertised protocols; defensive.
         conn.close(PROTOCOL_VIOLATION_CODE.into(), b"unknown protocol");
@@ -334,16 +458,30 @@ fn handshake_identity(conn: &quinn::Connection) -> Option<(Vec<u8>, Option<Strin
     Some((data.protocol?, data.server_name))
 }
 
+/// What admitting one connector tunnel needs beyond the connection.
+struct TunnelLeg<'a> {
+    /// Whether the connection ID carried the tunnel tag.
+    bounded: bool,
+    tokens: &'a CachedRouteTokens,
+    preamble_deadline: Duration,
+    /// Held until the preamble is read (or its deadline passes).
+    source: SourceShare,
+}
+
 /// Admit (or refuse) a connector tunnel: read the stream-0 auth preamble,
 /// resolve its route, claim it, then watch stream 0 until the connection
-/// ends. `bounded` is whether the connection ID carried the tunnel tag.
+/// ends.
 async fn admit_tunnel(
     conn: quinn::Connection,
-    bounded: bool,
-    tokens_path: &Path,
-    preamble_deadline: Duration,
+    leg: TunnelLeg<'_>,
     registry: &TunnelRegistry<quinn::Connection>,
 ) {
+    let TunnelLeg {
+        bounded,
+        tokens,
+        preamble_deadline,
+        source,
+    } = leg;
     let remote = conn.remote_address();
     // `accept_bi` resolves on the first bytes, so one deadline covers both.
     let opened = tokio::time::timeout(preamble_deadline, async {
@@ -354,20 +492,15 @@ async fn admit_tunnel(
     .await
     .ok()
     .flatten();
+    drop(source);
     let Some((send0, mut recv0, token)) = opened else {
         tracing::warn!(%remote, "refused: no tunnel auth preamble within deadline");
         conn.close(AUTH_FAILED_CODE.into(), b"unauthorized");
         return;
     };
 
-    // Re-read per attempt; an unreadable store fails closed.
-    let store = match RouteTokenStore::load(tokens_path) {
-        Ok(store) => store,
-        Err(err) => {
-            tracing::warn!(%err, "route-token store unreadable; failing closed");
-            RouteTokenStore::default()
-        }
-    };
+    // As the file stands now; an unreadable store fails closed.
+    let store = tokens.current();
     let Some(route) = store.lookup(&token).map(str::to_owned) else {
         tracing::warn!(%remote, "refused: bad tunnel token");
         conn.close(AUTH_FAILED_CODE.into(), b"unauthorized");
@@ -420,6 +553,7 @@ async fn admit_tunnel(
 async fn bridge_consumer(
     conn: quinn::Connection,
     server_name: Option<String>,
+    source: SourceShare,
     registry: &TunnelRegistry<quinn::Connection>,
 ) {
     let remote = conn.remote_address();
@@ -435,9 +569,9 @@ async fn bridge_consumer(
         return;
     };
     // Bounded so a handshake-only consumer cannot pin its cap permit.
-    let consumer_streams = match tokio::time::timeout(CONSUMER_STREAM_DEADLINE, conn.accept_bi())
-        .await
-    {
+    let consumer_streams = tokio::time::timeout(CONSUMER_STREAM_DEADLINE, conn.accept_bi()).await;
+    drop(source);
+    let consumer_streams = match consumer_streams {
         Ok(Ok(streams)) => streams,
         Ok(Err(_)) => return,
         Err(_) => {
