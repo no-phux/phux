@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-30
 ---
 
 # The phux web client
@@ -37,7 +37,8 @@ Use the native or Nix tools in the [setup guide](../SETUP.md#browser-client):
 ```sh
 # Build the client using the committed engine artifact (no Zig needed).
 cd clients/phux-web && wasm-pack build --target web --release --out-dir pkg
-#    -> pkg/phux_web.js + pkg/phux_web_bg.wasm  (~6 MB; engine included)
+#    -> pkg/phux_web.js + pkg/phux_web_bg.wasm  (~2 MB, ~600 KB gzipped;
+#       the embedded engine is 1.5 MB of it)
 ```
 
 `build.rs` in `phux-vt-web` fails with a clear message if the committed engine
@@ -66,6 +67,17 @@ the generated JS/WASM assets loaded, then inspect the browser console and the
 server output for transport or handshake errors. Confirm the client and server
 come from compatible revisions before changing authentication or certificates.
 Keep this plain-WebSocket development listener on loopback.
+
+**Serve the page from a loopback origin** (`http://127.0.0.1:…` or
+`http://localhost:…`; Trunk's default is one). The loopback listener refuses
+the WebSocket upgrade with HTTP 403 when the page's `Origin` is not a
+loopback one, so an arbitrary site cannot drive it
+([remote consumer trust model](../operations.md#remote-consumer-trust-model-opt-in)).
+A page opened from `file://` (origin `null`) or through a LAN or tailnet host
+name is refused: the console shows `Unexpected response code: 403` and
+`start()` rejects with a transport error. Serve it from loopback, or name
+that exact origin in the server's `PHUX_WS_ALLOWED_ORIGINS` when you trust
+it; a browser on another machine belongs on the TLS + token listener.
 
 For the WebTransport path, run a real server with a WebTransport listener and
 hand the client both URLs (it tries WebTransport, then falls back):
@@ -97,7 +109,7 @@ Two crates make it up, plus one vendored artifact:
 |---|---|---|
 | `ghostty-vt.wasm` | Zig (ghostty's) | The VT engine itself: parses escape codes, holds the grid and cursor. A vendored build artifact, not phux code. |
 | `phux-vt-web` | Rust | A safe driver over the engine's C ABI: make a `Terminal`, `write` VT bytes, read a styled `Grid` (cells, fg/bg, cursor). Depends on nothing phux. |
-| `phux-web` | Rust | The client: a WebSocket `Session` over the engine, a `<canvas>` renderer (cursor blink), keyboard handling, and the `#[wasm_bindgen]` `start()` entry. |
+| `phux-web` | Rust | The client: a WebSocket/WebTransport `Session` over the engine, a `<canvas>` renderer, the input surface (keys, IME, paste, selection and copy, scrollback), and the `#[wasm_bindgen]` entry points. |
 
 ## The two-wasm architecture
 
@@ -159,10 +171,36 @@ the one documented in the [wire encoding reference](../spec/appendix-encoding.md
    `RESOURCE_OUTPUT` from `base_seq + 1`. Native checkpoint and raw live bytes
    are never rewritten. Raw profiles send no `FRAME_ACK`; only negotiated
    `SynthesizedVtStateSync` acknowledges a transition after applying it.
-   Retained history is requested incrementally after READY. A 530 ms interval
-   toggles cursor blink.
-6. On `keydown`, map `KeyboardEvent.code` to a `PhysicalKey`, build a
-   `KeyEvent`, and send `INPUT_KEY` for the attached terminal.
+   Retained history is requested incrementally after READY. Paints are
+   coalesced to animation frames; the 530 ms cursor blink redraws only the
+   cursor's cell.
+6. Input goes through a hidden `<textarea>` beside the canvas, focused when
+   the canvas is focused or clicked (and on connect when nothing else holds
+   focus), so the page's other controls keep their keys. A keydown the
+   terminal encodes becomes `INPUT_KEY`; IME, dead-key, and mobile-keyboard
+   text arrives as committed text; a clipboard paste is one `Trusted`
+   `INPUT_PASTE` of at most 512 KiB, which the server brackets from the
+   pane's DEC 2004 state. Command/Super chords, Ctrl+Shift+V, and
+   Shift+Insert stay the browser's.
+
+## In the page
+
+What a page embedding the client can rely on, beyond typing:
+
+- **Scrollback.** The wheel over the canvas, and Shift+PageUp/PageDown, page
+  through the history the replica holds (including what the bootstrap
+  carried from before the attach). Scrolling is local; typing returns to the
+  live screen.
+- **Selection and copy.** Dragging selects screen text; Command+C, or
+  Ctrl+Shift+C, copies it. A click clears it; Ctrl+C stays the interrupt.
+- **Resize.** `HostedClient.resize(cols, rows)` (Rust: `Client::resize`)
+  announces a new viewport; the canvas follows the pane's new geometry.
+- **Title.** The program's OSC 0/2 title is mirrored onto the canvas as
+  `data-phux-title` and announced by a bubbling `phux-title` `CustomEvent`
+  whose `detail` is the title.
+- **Connection state.** The canvas carries `data-phux-connection`
+  (`connected` or `disconnected`). `start_webtransport` and the standalone
+  Trunk page redial after a drop; `start` and `start_hosted` do not.
 
 
 ## Scope and limits
@@ -178,6 +216,8 @@ the one documented in the [wire encoding reference](../spec/appendix-encoding.md
   renderer pass lands, the advertisement widens with it.
 - **Engine boundary copies.** Bytes cross two wasm linear memories (the Rust
   client and `ghostty-vt.wasm`), which is fine for terminal traffic.
+- **Not yet.** Mouse reporting to programs (a drag always selects), search,
+  clickable OSC 8 links, and the bell.
 
 ## Agent sessions
 
@@ -197,7 +237,10 @@ lifecycle frames that follow; it adds nothing to the wire and reads no stream
 ## Verification
 
 `wasm-pack test --node` in `phux-vt-web` and `phux-web` drives the real
-engine, the codec, and frame reassembly; `wasm-pack test --headless
---chrome` runs the canvas pixel test and a live end-to-end connect against
-`ws_demo_server`. The server's attach and `transport::webtransport` tests
-cover the bootstrap sequence and the WebTransport handshake and token gate.
+engine, the codec, frame reassembly, and key, IME, paste, and selection
+routing. `python3 scripts/ci/web-browser.py` (inside `nix develop .#browser`)
+starts `ws_demo_server` and runs the headless Chrome suites against it: the
+`src/` unit tests, the canvas pixel test, live connect, input and paste,
+resize, scrollback and copy, and the authenticated WebTransport-to-WebSocket
+fallback. The server's attach and `transport::webtransport` tests cover the
+bootstrap sequence and the WebTransport handshake and token gate.
