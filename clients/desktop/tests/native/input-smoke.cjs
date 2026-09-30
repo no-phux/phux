@@ -85,7 +85,7 @@ async function main() {
   command("commit", "日本");
   await until(() => bytes() === "ab日本", "composition commit once");
   command("unmark");
-  command("mark", "👩‍👩‍👧‍👦");
+  command("mark", "👩‍👩‍👧‍👧");
   assert.deepEqual(snapshot().selected, [0, 11], "UTF16 selection rounds to complete grapheme");
   command("unmark");
   assert.equal(snapshot().preedit, "");
@@ -138,6 +138,13 @@ async function main() {
     () => events.some((e) => e.kind === "InputDelivery" && e.outcome === "Delivered"),
     "sole owner delivery receipt",
   );
+  // The shell's Paste command reaches the terminal while an overlay such as
+  // the find bar holds the keyboard; Command-V itself still needs focus.
+  command("active", "", { enabled: false });
+  const beforeRequest = bytes();
+  command("requestPaste", "Q");
+  await until(() => bytes() === beforeRequest + "Q", "requested paste without keyboard focus");
+  command("active", "", { enabled: true });
   command("paste", "unsafe\n");
   await until(
     () => events.some((e) => e.kind === "InputDelivery" && e.outcome === "Refused"),
