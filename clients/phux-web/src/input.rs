@@ -145,6 +145,15 @@ fn is_paste_chord(key: &BrowserKey<'_>) -> bool {
     ctrl_shift_v || shift_insert
 }
 
+/// Command+C, or Ctrl+Shift+C where there is no Command key: copy the
+/// selection, when there is one.
+#[must_use]
+pub fn is_copy_chord(key: &BrowserKey<'_>) -> bool {
+    let command_c = key.meta && !key.ctrl && !key.alt && key.code == "KeyC";
+    let ctrl_shift_c = key.ctrl && key.shift && !key.alt && !key.meta && key.code == "KeyC";
+    command_c || ctrl_shift_c
+}
+
 /// Shift+PageUp / Shift+PageDown page the local scrollback (as in ghostty
 /// and xterm) instead of reaching the terminal: `-1` pages up, `1` down.
 #[must_use]

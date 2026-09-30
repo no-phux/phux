@@ -3,8 +3,8 @@
 use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
 use phux_protocol::input::paste::PasteTrust;
 use phux_web::input::{
-    BrowserKey, MAX_PASTE_BYTES, code_to_physical_key, key_events_for_text, paste_event, route_key,
-    scrollback_page, wheel_rows,
+    BrowserKey, MAX_PASTE_BYTES, code_to_physical_key, is_copy_chord, key_events_for_text,
+    paste_event, route_key, scrollback_page, wheel_rows,
 };
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -214,4 +214,24 @@ fn clipboard_paste_is_trusted_and_bounded() {
     assert!(paste_event("").is_none());
     assert!(paste_event(&"x".repeat(MAX_PASTE_BYTES)).is_some());
     assert!(paste_event(&"x".repeat(MAX_PASTE_BYTES + 1)).is_none());
+}
+
+#[wasm_bindgen_test]
+fn command_c_and_ctrl_shift_c_are_copy_chords() {
+    let command_c = BrowserKey {
+        meta: true,
+        ..key("c", "KeyC")
+    };
+    assert!(is_copy_chord(&command_c));
+    let ctrl_shift_c = BrowserKey {
+        ctrl: true,
+        shift: true,
+        ..key("C", "KeyC")
+    };
+    assert!(is_copy_chord(&ctrl_shift_c));
+    let ctrl_c = BrowserKey {
+        ctrl: true,
+        ..key("c", "KeyC")
+    };
+    assert!(!is_copy_chord(&ctrl_c), "Ctrl+C stays the interrupt");
 }

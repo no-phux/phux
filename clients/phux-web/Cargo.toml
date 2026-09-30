@@ -67,6 +67,9 @@ web-sys = { version = "0.3", features = [
     "WheelEvent",
     "CustomEvent",
     "CustomEventInit",
+    "HtmlDocument",
+    "MouseEvent",
+    "PointerEvent",
     "Event",
     "EventTarget",
     "Location",
@@ -89,5 +92,6 @@ web-sys = { version = "0.3", features = [
     "ClipboardEventInit",
     "CompositionEventInit",
     "KeyboardEventInit",
+    "PointerEventInit",
     "WheelEventInit",
 ] }
