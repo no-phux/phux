@@ -103,10 +103,20 @@ def run(command, *, cwd, env, timeout, log):
             stop(process)
 
 
-def unused_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+LISTENING = re.compile(r"ws-demo-server listening on wss?://127\.0\.0\.1:(\d+)/")
+
+
+def bound_port(server, log_path):
+    """The port the demo server bound. It is started on port 0 and names the
+    address it actually bound, so no other process can take the port first."""
+    for _ in range(300):
+        if server.poll() is not None:
+            raise RuntimeError("demo server exited before reporting its bound port")
+        match = LISTENING.search(log_path.read_text())
+        if match:
+            return int(match.group(1))
+        time.sleep(0.1)
+    raise TimeoutError("demo server did not report its bound port after 300 bounded probes")
 
 
 def websocket_upgrade(sock, token=None):
@@ -180,20 +190,21 @@ def run_chrome(command, env, logs):
 
 
 def browser_tests(env, logs):
-    port = unused_port()
-    env["PHUX_WS_ADDR"] = f"127.0.0.1:{port}"
-    env["PHUX_TEST_WS_URL"] = f"ws://127.0.0.1:{port}/"
+    env["PHUX_WS_ADDR"] = "127.0.0.1:0"
     command = ["wasm-pack", "test", "--headless", "--chrome", "--locked",
                "--test", "render", "--test", "e2e_browser"]
     # wasm-pack accepts a driver; wasm-bindgen needs capabilities for the binary.
     if env.get("CHROMEDRIVER"):
         command[4:4] = ["--chromedriver", env["CHROMEDRIVER"]]
     server_bin = Path(env["CARGO_TARGET_DIR"]) / "debug/examples/ws_demo_server"
-    with (logs / "server.log").open("w") as server_log:
+    server_log_path = logs / "server.log"
+    with server_log_path.open("w") as server_log:
         server = subprocess.Popen([str(server_bin)], cwd=ROOT, env=env,
                                   stdout=server_log, stderr=subprocess.STDOUT,
                                   start_new_session=True)
         try:
+            port = bound_port(server, server_log_path)
+            env["PHUX_TEST_WS_URL"] = f"ws://127.0.0.1:{port}/"
             wait_ready(server, port)
             # Do not reuse the native target or override the standalone rustflags.
             run_chrome(command, env, logs)
@@ -232,16 +243,14 @@ def write_auth_fixture(directory):
 
 
 def authenticated_fallback_tests(env, logs, directory):
-    port = unused_port()
     cert, key, tokens = write_auth_fixture(directory)
     auth_env = dict(env)
     auth_env.update({
-        "PHUX_WS_ADDR": f"127.0.0.1:{port}",
+        "PHUX_WS_ADDR": "127.0.0.1:0",
         "PHUX_WS_SECURE": "1",
         "PHUX_WS_TLS_CERT": str(cert),
         "PHUX_WS_TLS_KEY": str(key),
         "PHUX_WS_TOKENS": str(tokens),
-        "PHUX_TEST_WSS_URL": f"wss://127.0.0.1:{port}/",
         "PHUX_TEST_TOKEN": TEST_TOKEN,
         "PHUX_TEST_ACCEPT_INSECURE_CERTS": "1",
     })
@@ -254,11 +263,14 @@ def authenticated_fallback_tests(env, logs, directory):
         if auth_env.get("CHROMEDRIVER"):
             command[4:4] = ["--chromedriver", auth_env["CHROMEDRIVER"]]
         server_bin = Path(auth_env["CARGO_TARGET_DIR"]) / "debug/examples/ws_demo_server"
-        with (logs / "auth-server.log").open("w") as server_log:
+        server_log_path = logs / "auth-server.log"
+        with server_log_path.open("w") as server_log:
             server = subprocess.Popen([str(server_bin)], cwd=ROOT, env=auth_env,
                                       stdout=server_log, stderr=subprocess.STDOUT,
                                       start_new_session=True)
             try:
+                port = bound_port(server, server_log_path)
+                auth_env["PHUX_TEST_WSS_URL"] = f"wss://127.0.0.1:{port}/"
                 wait_ready(server, port, tls=True, token=TEST_TOKEN)
                 run_chrome(command, auth_env, logs)
                 require_browser_tests((logs / "chrome.log").read_text(), AUTH_REQUIRED_TESTS)

@@ -167,6 +167,34 @@ class BrowserRunnerTests(unittest.TestCase):
                 browser.wait_ready(server, 1)
         self.assertEqual(probe.call_count, 2)
 
+    def test_bound_port_is_read_from_the_listening_line(self):
+        server = Mock()
+        server.poll.return_value = None
+        with tempfile.TemporaryDirectory() as scratch:
+            log = Path(scratch) / "server.log"
+            log.write_text("ws-demo-server listening on wss://127.0.0.1:43127/  (seed: default)\n")
+            self.assertEqual(browser.bound_port(server, log), 43127)
+
+    def test_bound_port_waits_for_the_line_and_is_bounded(self):
+        server = Mock()
+        server.poll.return_value = None
+        with tempfile.TemporaryDirectory() as scratch:
+            log = Path(scratch) / "server.log"
+            log.write_text("")
+            with patch.object(browser.time, "sleep") as sleep:
+                with self.assertRaises(TimeoutError):
+                    browser.bound_port(server, log)
+        self.assertEqual(sleep.call_count, 300)
+
+    def test_early_server_exit_is_not_a_bound_port(self):
+        server = Mock()
+        server.poll.return_value = 1
+        with tempfile.TemporaryDirectory() as scratch:
+            log = Path(scratch) / "server.log"
+            log.write_text("")
+            with self.assertRaisesRegex(RuntimeError, "exited before"):
+                browser.bound_port(server, log)
+
     def test_command_failure_is_not_masked(self):
         with tempfile.TemporaryFile() as log:
             with self.assertRaises(subprocess.CalledProcessError):

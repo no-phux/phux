@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 import shlex
 import signal
-import socket
 import subprocess
 import tempfile
 import time
@@ -84,14 +83,6 @@ def isolated_env(directory):
     return env
 
 
-def free_port(kind):
-    # The server cannot inherit these descriptors. A bind collision fails the
-    # readiness assertion rather than accidentally passing against another server.
-    with socket.socket(socket.AF_INET, kind) as listener:
-        listener.bind(("127.0.0.1", 0))
-        return listener.getsockname()[1]
-
-
 def wait_path(path, server, seconds=15):
     deadline = time.monotonic() + seconds
     while not path.exists():
@@ -121,9 +112,12 @@ def stop(server):
 
 
 @contextmanager
-def fixture_server(phux, directory, env, port, transport):
-    quic = port if transport == "quic" else free_port(socket.SOCK_DGRAM)
-    wss = port if transport == "wss" else free_port(socket.SOCK_STREAM)
+def fixture_server(phux, directory, env, transport, port=0):
+    # Port 0 lets the kernel pick; `phux pair --json` then names the port the
+    # server bound. A restart passes that port back for `transport`, because
+    # the registry entry already names it.
+    quic = port if transport == "quic" else 0
+    wss = port if transport == "wss" else 0
     # Both listeners MUST be explicit. Omitting either permits auto-binding
     # the detected overlay address, even when PHUX_TAILSCALE names no binary.
     command = [phux, "--socket", "s", "server", "--no-seed",
@@ -196,12 +190,14 @@ def assert_execution_records(directory, expected, secondary=True):
 def exercise(phux, probe, provider_probe, directory, transport, connected=False,
              provider_only=False):
     env = isolated_env(directory)
-    port = free_port({"quic": socket.SOCK_DGRAM, "wss": socket.SOCK_STREAM}[transport])
-    endpoint = f"{transport}://127.0.0.1:{port}"
-    with fixture_server(phux, directory, env, port, transport) as server:
-        # `phux pair` mints only against a live server with a bound listener.
+    with fixture_server(phux, directory, env, transport) as server:
+        # `phux pair` mints only against a live server with a bound listener,
+        # and reports the address that listener bound.
         paired = json.loads(run([phux, "--socket", "s", "pair", "--json"], directory, env,
                                 capture_output=True).stdout)
+        bound = paired["quic_addr" if transport == "quic" else "ws_addr"]
+        port = int(bound.rsplit(":", 1)[1])
+        endpoint = f"{transport}://127.0.0.1:{port}"
         stale = json.loads(run([phux, "--socket", "s", "pair", "--json"], directory, env,
                                capture_output=True).stdout)
         config = registry(directory, endpoint, paired["token"], stale["token"],
@@ -241,7 +237,7 @@ def exercise(phux, probe, provider_probe, directory, transport, connected=False,
         # Stop the actual coordinator before cleanup; its own shutdown ends
         # the PTYs. Reopening must not present a cold server as retained work.
         stop(server)
-    with fixture_server(phux, directory, env, port, transport):
+    with fixture_server(phux, directory, env, transport, port):
         if not provider_only:
             run([probe, config, "loop", "cold"], directory, env)
         inventory = json.loads(run([phux, "ls", "--remote", "loop", "--json"],
