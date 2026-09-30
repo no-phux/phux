@@ -39,7 +39,7 @@ const ogImage = new URL("/og.png", SITE.url).href;
   />
 </noscript>
 <!-- Warm DNS/TLS for the live demo origin; the terminal island dials it on click. -->
-<link rel="preconnect" href="https://shell.phux.sh" crossorigin />
+{origin !== SITE.docsUrl && <link rel="preconnect" href="https://shell.phux.sh" crossorigin />}
 <title>{title}</title>
 <meta name="description" content={description} />
 <link rel="canonical" href={canonical} />
@@ -56,6 +56,11 @@ const ogImage = new URL("/og.png", SITE.url).href;
 <meta name="twitter:title" content={title} />
 <meta name="twitter:description" content={description} />
 <meta name="twitter:image" content={ogImage} />
-<meta name="theme-color" content="#07080b" />
+{origin === SITE.docsUrl ? (
+  <>
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#10151d" media="(prefers-color-scheme: dark)" />
+  </>
+) : <meta name="theme-color" content="#07080b" />}
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 <link rel="sitemap" href="/sitemap-index.xml" />

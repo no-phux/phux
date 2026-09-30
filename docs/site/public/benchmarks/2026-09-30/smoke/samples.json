@@ -1,0 +1,160 @@
+{
+  "generated": "2026-09-30T05:15:49Z",
+  "host": "Darwin 27.0.0 arm64",
+  "cols": 120,
+  "rows": 40,
+  "seq_lines": 1000,
+  "results": {
+    "phux:attach_cold": "88",
+    "tmux:pty_ok": "True",
+    "herdr:cpu_server_ms": "0",
+    "herdr:idle_cputime_pct": "0.19",
+    "tmux:cpu_server_ms": "0",
+    "phux:key_p90": "12",
+    "herdr:pty_max": "395",
+    "phux:key_p99": "12",
+    "phux:pty_p90": "314",
+    "phux:pty_p99": "n/a",
+    "tmux:throughput_ms": "33",
+    "tmux:pty_max": "758",
+    "tmux:key_p50": "29",
+    "tmux:pty_p50": "363",
+    "phux:attach_warm_timeouts": "0",
+    "tmux:idle_cputime_pct": "0.00",
+    "phux:idle_pcpu": "0.00",
+    "phux:resize_ms": "158/137",
+    "phux:rss_client_kb": "16000",
+    "herdr:pty_p50": "322",
+    "tmux:resize_ms": "142/177",
+    "herdr:key_p50": "13",
+    "tmux:rss_client_kb": "5152",
+    "tmux:rss_server_kb": "3968",
+    "phux:handshake_ms": "1.134",
+    "herdr:rss_client_kb": "14896",
+    "phux:pty_max": "314",
+    "herdr:pty_completed": "3",
+    "herdr:rss_server_kb": "25424",
+    "phux:throughput_ms": "23",
+    "phux:pty_timeouts": "0",
+    "tmux:attach_cold": "121",
+    "herdr:attach_cold_timeouts": "0",
+    "herdr:attach_cold": "95",
+    "phux:attach_warm": "69",
+    "phux:attach_cold_timeouts": "0",
+    "phux:cpu_client_ms": "0",
+    "phux:cpu_server_ms": "10",
+    "phux:handshake_pairs": "2",
+    "tmux:pty_completed": "3",
+    "herdr:attach_warm_timeouts": "0",
+    "phux:idle_cputime_pct": "0.00",
+    "tmux:key_p90": "29",
+    "tmux:key_p99": "29",
+    "tmux:attach_cold_timeouts": "0",
+    "herdr:pty_ok": "True",
+    "herdr:cpu_client_ms": "0",
+    "phux:rss_server_kb": "21616",
+    "tmux:pty_p99": "n/a",
+    "phux:key_p50": "12",
+    "tmux:pty_p90": "758",
+    "tmux:pty_timeouts": "0",
+    "herdr:idle_pcpu": "0.00",
+    "herdr:throughput_ms": "44",
+    "tmux:attach_warm_timeouts": "0",
+    "tmux:attach_warm": "162",
+    "tmux:idle_pcpu": "0.00",
+    "tmux:cpu_client_ms": "0",
+    "phux:pty_ok": "True",
+    "herdr:resize_ms": "179/205",
+    "phux:pty_p50": "267",
+    "herdr:pty_p90": "395",
+    "herdr:pty_p99": "n/a",
+    "herdr:pty_timeouts": "0",
+    "herdr:key_p99": "13",
+    "herdr:key_p90": "13",
+    "herdr:attach_warm": "161",
+    "phux:pty_completed": "3"
+  },
+  "raw": {
+    "herdr:key": [
+      13,
+      13
+    ],
+    "phux:attach_cold": [
+      88
+    ],
+    "phux:pty_us": [
+      314,
+      267,
+      239
+    ],
+    "herdr:idle_pcpu_x100": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "tmux:idle_pcpu_x100": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "phux:idle_pcpu_x100": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "tmux:attach_cold": [
+      121
+    ],
+    "herdr:attach_cold": [
+      95
+    ],
+    "phux:attach_warm": [
+      69
+    ],
+    "herdr:pty_us": [
+      322,
+      289,
+      395
+    ],
+    "tmux:pty_us": [
+      758,
+      363,
+      217
+    ],
+    "tmux:attach_warm": [
+      162
+    ],
+    "phux:key": [
+      12,
+      12
+    ],
+    "tmux:key": [
+      27,
+      29
+    ],
+    "herdr:attach_warm": [
+      161
+    ]
+  }
+}

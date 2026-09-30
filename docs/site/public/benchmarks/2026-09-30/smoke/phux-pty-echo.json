@@ -1,0 +1,28 @@
+{
+  "label": "phux",
+  "iters": 3,
+  "ok": true,
+  "command": [
+    "<PHUX_BIN>",
+    "attach",
+    "--socket",
+    "<RUN>/phux/mux.sock",
+    "bench"
+  ],
+  "boundary": "outer PTY write to attach-client output byte",
+  "cols": 120,
+  "rows": 40,
+  "prompt_seen_before_settle": true,
+  "completed": 3,
+  "timeouts": 0,
+  "timeout_iterations": [],
+  "samples_us": [
+    314,
+    267,
+    239
+  ],
+  "p50_us": 267,
+  "p90_us": 314,
+  "p99_us": null,
+  "max_us": 314
+}

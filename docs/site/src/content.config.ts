@@ -26,7 +26,6 @@ const docs = defineCollection({
     summary: z.string().default(""),
     // Short scan-oriented copy for page chrome and metadata.
     description: z.string().default(""),
-    codeLanguages: z.array(z.string()).default([]),
     // Sidebar group label, derived from the public information architecture.
     group: z.string(),
     // Sort order within the group.

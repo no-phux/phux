@@ -27,13 +27,20 @@ npx skills add no-phux/skills                   # agent skills
 
 ## Documentation (docs.phux.sh)
 
-- [Overview](https://docs.phux.sh/overview): what phux is and when to use it.
-- [Quickstart](https://docs.phux.sh/quickstart/install): install and first attach.
-- [Concepts](https://docs.phux.sh/concepts): terminals as objects on a wire.
-- [Consumers](https://docs.phux.sh/consumers): TUI, web, agents, scripts.
-- [Wire protocol](https://docs.phux.sh/wire/proto): the L0/L1/L2/L3 protocol reference.
-- [Architecture](https://docs.phux.sh/architecture): how the substrate fits together.
-- [Decisions (ADRs)](https://docs.phux.sh/decisions): why the design is what it is.
+- [Start here](https://docs.phux.sh/overview): choose a task and understand the shared-terminal model.
+- [Install](https://docs.phux.sh/quickstart/install): supported platforms and installation channels.
+- [Quickstart](https://docs.phux.sh/quickstart): start, split, detach, and inspect your first terminal.
+- [Run coding agents](https://docs.phux.sh/consumers/getting-started): choose an integration and verify it works.
+- [Remote access](https://docs.phux.sh/remote-access): connect machines and repair connections.
+- [Performance](https://docs.phux.sh/performance): measured results, methodology, and reproducible evidence.
+- [Comparisons](https://docs.phux.sh/concepts/when-to-use): phux, tmux, Herdr, and cmux by use case.
+- [Troubleshoot](https://docs.phux.sh/troubleshooting): diagnostics, persistence boundaries, and recovery.
+- [Concepts](https://docs.phux.sh/concepts): running terminals, sessions, and shared control.
+- [Automation reference](https://docs.phux.sh/consumers/agents): selectors, input, waits, and structured results.
+- [Command reference](https://docs.phux.sh/reference/cli): generated CLI documentation.
+- [Wire protocol](https://docs.phux.sh/wire): framing, terminal substrate, and metadata.
+- [Architecture](https://docs.phux.sh/architecture): implementation and contributor reference.
+- [Design decisions](https://docs.phux.sh/decisions): why the design is what it is.
 
 ## Project
 
