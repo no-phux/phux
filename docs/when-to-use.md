@@ -39,19 +39,18 @@ These are starting points, not exclusive capability boxes. tmux has a
 resource boundary and independent consumers, not the claim that other products
 cannot be automated.
 
-## Find yourself
+## Check the workflow, not just the feature list
 
-| You are | phux? | Why |
-|---|---|---|
-| A human who wants their agent to *see and drive the same terminal they do* | **Yes — this is the point** | One server, many consumers; the agent attaches to your live pane, reads its grid, and types into it. |
-| A human who wants a native macOS client on those same terminals | **Yes** | Cockpit ships, independently versioned. Install is in [`INSTALL.md`](./INSTALL.md#cockpit-native-macos). |
-| An agent author who wants structured, scriptable terminal control | **Yes** | `ls`/`snapshot`/`send-keys`/`run`/`wait`/`watch`/`ask`/`agent` with `--json`, plus `phux-mcp`. The CLI + JSON schema is the contract. |
-| A team composing terminal-native coding agents | **Yes** | Public Codex/Claude integration fixtures, plugin workspace profiles, and MCP tools give you a phux-shaped agent bench without an in-process plugin host. |
-| A tmux user who wants other programs to be peer clients | **Yes** | Attach/detach, splits, status bar, keys, and copy/navigation are the on-ramp; the resource wire is the reason to switch. |
-| Someone on one SSH session who just wants splits and persistence | **No clear benefit** | tmux already does this well and phux adds no wire advantage for a single local user. |
-| A fleet operator who wants to drive terminals across machines | **Yes, with a hub-and-spoke limit** | A configured hub aggregates and routes satellite Terminals addressed as `host/@N`; it does not merge remote session/window models or chain satellite routes. |
-| Someone who wants their agent's own event log held next to its terminal, readable by the same tools | **Yes, in this tree** | `phux agent session open` / `close`, `phux agent emit`, `phux agent log`. `%name` resolves an AgentSession. Older brew/curl releases may not advertise it; `phux status --json` is the check. |
-| A Mac user primarily looking for a polished terminal plus an in-app browser | **Compare cmux first** | cmux directly packages that workflow; phux's shared-server model earns its complexity only if you need it. |
+Try the [quickstart](./QUICKSTART.md), then the interface or
+[agent integration](./consumers/getting-started.md) you intend to use. Test
+the whole loop: start work, inspect it from another client, detach, and
+reconnect. Check the guide's version and platform requirements against your
+installed client and server; repository documentation can describe capabilities
+that an older release does not advertise.
+
+For remote fleets, phux's hub-and-spoke routing addresses satellite terminals
+as `host/@N`. It does not merge remote session/window models or chain satellite
+routes. See [remote access](./remote-access.md) before choosing a deployment.
 
 ## Compared with tmux
 
@@ -132,15 +131,16 @@ a PTY-byte round trip is not native GUI input-to-pixel latency.
 
 ## Gaps
 
-[Status table in CONCEPTS](./CONCEPTS.md#status).
+Read the [current capability and persistence limits](./CONCEPTS.md#status).
 
 ## Go deeper
 
-- Translate tmux or screen keys: [`coming-from.md`](./coming-from.md)
-- Compare phux and Herdr's system boundaries: [`architecture/phux-and-herdr.md`](./architecture/phux-and-herdr.md)
-- Inspect measured performance: [`performance.md`](./performance.md)
-- The mental model: [`docs/CONCEPTS.md`](./CONCEPTS.md)
-- Driving phux from an agent: [`docs/consumers/agents.md`](./consumers/agents.md) · [`docs/consumers/mcp.md`](./consumers/mcp.md)
+- [Translate tmux or screen keybindings](./coming-from.md).
+- [Compare phux and Herdr's system boundaries](./architecture/phux-and-herdr.md).
+- [Inspect measured performance and methodology](./performance.md).
+- [Understand terminals, sessions, and shared control](./CONCEPTS.md).
+- [Run a coding agent](./consumers/getting-started.md), or use the
+  [automation reference](./consumers/agents.md) and [MCP adapter](./consumers/mcp.md).
 - Why it's built on a shared engine: [ADR-0030](adr/0030-engine-delegated-wire-and-projection-consumers.md)
 - How it sits next to tmux: [ADR-0009](adr/0009-phux-vs-mux-positioning.md)
-- Where it's going: [`docs/vision.md`](./vision.md)
+- [Read the project direction](./vision.md).

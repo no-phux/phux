@@ -7,8 +7,8 @@ last-reviewed: 2026-09-30
 # Performance
 
 **TL;DR.** Fresh two-run measurements compare real phux, tmux, and Herdr clients
-on one heavily loaded development host. Reversing run order reverses several
-speed results: these are reproducible observations, not an idle-machine ranking.
+on one heavily loaded development host. Results change substantially between
+runs: these are on-host observations, not an idle-machine ranking.
 Raw samples, failures, and exact boundaries are retained. cmux's native GUI
 requires a separate safe test session; it is not assigned a fabricated score.
 
@@ -43,13 +43,59 @@ The load readings are start-of-run snapshots, not continuous measurements.
 
 Tested binaries: **phux `0.46.0+next.c6f83ef` over local UDS**, **tmux `3.7c`**,
 and **Herdr `0.9.0`**. Exact binary hashes and harness revision
-`6ad7bebb6f46558f5db8cd78f8041f5b38eec150` are retained in each run's metadata.
+`6ad7bebb6f46558f5db8cd78f8041f5b38eec150` are retained in each run's metadata;
+the [measured harness snapshot](https://github.com/no-phux/phux/tree/bench/docs-2026-09-30/scripts/bench)
+is preserved separately from later documentation changes.
 No fresh remote-network, WebSocket, QUIC, or native GUI result is implied.
 
 ### Both runs, without selecting a winner
 
 Each cell shows **run 1 / run 2**. Lower timings are shorter observations at the
 stated boundary, not proof of a generally faster product.
+
+<div class="benchmark-charts">
+<figure class="benchmark-chart">
+<figcaption><strong>PTY-byte echo, median</strong><span>Microseconds · 1,000 samples per bar · not pixels</span></figcaption>
+<div class="benchmark-group">
+<p>phux</p>
+<div class="benchmark-measure"><span>Run 1</span><div aria-hidden="true"><i style="width:96.7%"></i></div><span>1,934 µs</span></div>
+<div class="benchmark-measure benchmark-repeat"><span>Run 2</span><div aria-hidden="true"><i style="width:13.9%"></i></div><span>278 µs</span></div>
+</div>
+<div class="benchmark-group">
+<p>tmux</p>
+<div class="benchmark-measure"><span>Run 1</span><div aria-hidden="true"><i style="width:7.25%"></i></div><span>145 µs</span></div>
+<div class="benchmark-measure benchmark-repeat"><span>Run 2</span><div aria-hidden="true"><i style="width:40.35%"></i></div><span>807 µs</span></div>
+</div>
+<div class="benchmark-group">
+<p>Herdr</p>
+<div class="benchmark-measure"><span>Run 1</span><div aria-hidden="true"><i style="width:18.25%"></i></div><span>365 µs</span></div>
+<div class="benchmark-measure benchmark-repeat"><span>Run 2</span><div aria-hidden="true"><i style="width:25.05%"></i></div><span>501 µs</span></div>
+</div>
+<p class="benchmark-scale">Linear scale: 0–2,000 µs. Lower is less delay.</p>
+</figure>
+<figure class="benchmark-chart">
+<figcaption><strong>Warm attach, median</strong><span>Milliseconds · 20 samples per bar</span></figcaption>
+<div class="benchmark-group">
+<p>phux</p>
+<div class="benchmark-measure"><span>Run 1</span><div aria-hidden="true"><i style="width:94%"></i></div><span>188 ms</span></div>
+<div class="benchmark-measure benchmark-repeat"><span>Run 2</span><div aria-hidden="true"><i style="width:29%"></i></div><span>58 ms</span></div>
+</div>
+<div class="benchmark-group">
+<p>tmux</p>
+<div class="benchmark-measure"><span>Run 1</span><div aria-hidden="true"><i style="width:32%"></i></div><span>64 ms</span></div>
+<div class="benchmark-measure benchmark-repeat"><span>Run 2</span><div aria-hidden="true"><i style="width:55.5%"></i></div><span>111 ms</span></div>
+</div>
+<div class="benchmark-group">
+<p>Herdr</p>
+<div class="benchmark-measure"><span>Run 1</span><div aria-hidden="true"><i style="width:79.5%"></i></div><span>159 ms</span></div>
+<div class="benchmark-measure benchmark-repeat"><span>Run 2</span><div aria-hidden="true"><i style="width:84.5%"></i></div><span>169 ms</span></div>
+</div>
+<p class="benchmark-scale">Linear scale: 0–200 ms. Lower is less delay.</p>
+</figure>
+</div>
+
+The same measurements are tabulated below. Both charts retain both runs;
+the change in their ordering is the finding, not a reason to discard a run.
 
 | Measurement | phux | tmux | Herdr |
 |---|---:|---:|---:|

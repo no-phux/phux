@@ -887,6 +887,9 @@ html:has(.docs-navigation-dialog[open]) {
   margin-top: 2.75rem;
   margin-bottom: 1rem;
 }
+#nd-page .prose > astro-slot > :first-child {
+  margin-top: 0;
+}
 #nd-page .prose h3 {
   font-size: 1.1875rem;
   margin-top: 2rem;
@@ -1012,6 +1015,7 @@ html:has(.docs-navigation-dialog[open]) {
 }
 #nd-page .prose .table-region table {
   width: 100%;
+  overflow-wrap: normal;
   margin: 0;
   border: 0;
   font-size: 0.875rem;
@@ -1037,6 +1041,72 @@ html:has(.docs-navigation-dialog[open]) {
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   color: var(--color-muted);
   font-style: normal;
+}
+.benchmark-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+  gap: 16px;
+  margin: 2rem 0;
+}
+#nd-page .benchmark-chart {
+  min-width: 0;
+  margin: 0;
+  padding: 20px;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-soft);
+}
+.benchmark-chart figcaption strong,
+.benchmark-chart figcaption span {
+  display: block;
+}
+.benchmark-chart figcaption strong {
+  color: var(--color-fg);
+  font-size: 1rem;
+}
+.benchmark-chart figcaption span,
+#nd-page .benchmark-scale {
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+.benchmark-group {
+  margin-top: 1.25rem;
+}
+#nd-page .benchmark-group > p {
+  margin: 0 0 0.375rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+.benchmark-measure {
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr) 4.25rem;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+.benchmark-measure > span:last-child {
+  text-align: right;
+  white-space: nowrap;
+}
+.benchmark-measure > div {
+  height: 10px;
+  background: var(--color-rule);
+  border-radius: 2px;
+}
+.benchmark-measure i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-accent);
+}
+.benchmark-repeat i {
+  background: repeating-linear-gradient(135deg, var(--color-muted) 0 3px, var(--color-bg-soft) 3px 5px);
+}
+#nd-page .benchmark-scale {
+  margin: 1.25rem 0 0;
 }
 .docs-provenance {
   display: flex;

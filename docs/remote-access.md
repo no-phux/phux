@@ -1,17 +1,14 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-09-29
+last-reviewed: 2026-09-30
 ---
 
 # Remote access
 
-**TL;DR.** Reach another machine with one command: `phux host add me@mini`
-sets it up over the ssh you already have — confirms phux is there, starts and
-supervises its server, pairs, finds a direct route, registers it — and from
-then on `phux attach mini` dials it directly. A server you stop by hand is
-restarted by the next attach. No account, no hex strings typed by hand; the
-manual, overlay, and relay paths are below for when that command cannot.
+**TL;DR.** Connect another host with `phux host add`, then attach to its
+terminals directly. Start with the SSH-based setup below; use manual
+enrollment, an overlay, or a relay when that route cannot work.
 
 ---
 
@@ -38,6 +35,8 @@ confirm you are on the intended machine. Press `Ctrl-A`, release both keys,
 then `d` to detach; `phux attach mini` returns to the running remote session.
 Detaching leaves work on the remote server; a remote server crash or reboot
 does not preserve live jobs ([continuity boundaries](./operations.md#workspace-continuity-and-update-survival)).
+A later attach also starts the registered host's server if you stopped it
+by hand; it does not recover the jobs that server used to run.
 
 If enrollment fails, follow the named failing step below. If a saved host
 stops connecting, start with [the diagnostic sequence](#troubleshooting);

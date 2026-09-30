@@ -6,10 +6,9 @@ last-reviewed: 2026-09-30
 
 # Quickstart
 
-**TL;DR.** Start a shell in phux, detach, and return to the same running
-terminal. Then use a second terminal to read and drive that pane without
-changing the attached view. This walkthrough ends with a visible success
-marker and a route to your coding agent or remote machine.
+**TL;DR.** Start a shell, detach, and return to the same running terminal.
+Then use a second client to read and drive that pane without disrupting
+your attached view.
 
 ## Before you start
 

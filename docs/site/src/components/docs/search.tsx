@@ -13,7 +13,10 @@ import {
 import { useDocsSearch } from "fumadocs-core/search/client";
 import { staticClient } from "fumadocs-core/search/client/orama-static";
 import type { SortedResult } from "fumadocs-core/search";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+
+// Match the upstream cache lifetime: Astro remounts islands, not modules.
+let latestAttempt = 0;
 
 function normalizedTitle(value: string) {
   return value.replace(/<\/?mark>/g, "").toLocaleLowerCase().trim();
@@ -39,7 +42,8 @@ function rankPages(results: SortedResult[], query: string) {
 }
 
 export default function SearchDialogComponent(props: SharedProps) {
-  const [attempt, setAttempt] = useState(0);
+  const [attempt, setAttempt] = useState(() => latestAttempt);
+  const returnFocus = useRef<HTMLElement | null>(null);
   const client = useMemo(() => {
     // The upstream static client caches rejected loads as well as successes.
     // A user-requested retry needs a fresh cache key, not just a repeated query.
@@ -56,7 +60,23 @@ export default function SearchDialogComponent(props: SharedProps) {
   return (
     <SearchDialog search={search} onSearchChange={setSearch} isLoading={query.isLoading} {...props}>
       <SearchDialogOverlay />
-      <SearchDialogContent>
+      <SearchDialogContent
+        onOpenAutoFocus={() => {
+          returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        }}
+        onCloseAutoFocus={(event) => {
+          const previous = returnFocus.current;
+          // A mobile drawer can close beneath search; its controls are no longer visible.
+          const target = previous && previous !== document.body && previous.isConnected && previous.getClientRects().length
+            ? previous
+            : Array.from(document.querySelectorAll<HTMLButtonElement>("button[data-search], button[data-search-full]"))
+              .find((button) => button.getClientRects().length > 0);
+          if (target) {
+            event.preventDefault();
+            target.focus();
+          }
+        }}
+      >
         <SearchDialogHeader>
           <SearchDialogIcon aria-hidden="true" />
           <SearchDialogInput />
@@ -65,7 +85,7 @@ export default function SearchDialogComponent(props: SharedProps) {
         {query.error && !query.isLoading ? (
           <div className="docs-search-error">
             <p role="alert">Search could not load. Check your connection and try again.</p>
-            <button type="button" onClick={() => setAttempt((value) => value + 1)}>Try again</button>
+            <button type="button" onClick={() => setAttempt(++latestAttempt)}>Try again</button>
             <a href="/docs">Browse all documentation</a>
           </div>
         ) : (

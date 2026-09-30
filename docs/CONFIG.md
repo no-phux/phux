@@ -83,7 +83,7 @@ validation error a client keeps its previous config fully in effect and
 surfaces the error as a dismissable toast — never a half-applied mix. The
 same reload is available inside the TUI as the `reload-config` action: a
 command-palette row ("Reload the config file"), bindable to any chord
-(unbound by default). See [TUI reloading](./consumers/tui.md#reloading)
+(unbound by default). See [TUI reloading](./consumers/tui.md#config-and-reload)
 for the attach-side reload.
 
 A few settings are read once at attach and still need a client restart

@@ -34,9 +34,14 @@ export function ReaderSidebar(props: ComponentProps<typeof Sidebar>) {
     const element = dialog.current;
     if (mode !== "drawer" || !open || searchOpen || !element) return;
     element.showModal();
-    // Focus the close control, not a theme selector or an arbitrary first link.
-    element.querySelector<HTMLButtonElement>('[aria-controls="nd-sidebar-mobile"]')?.focus();
-    return () => element.close();
+    // The framework mounts the drawer contents after its open-state effect.
+    const frame = requestAnimationFrame(() => {
+      element.querySelector<HTMLButtonElement>('[aria-controls="nd-sidebar-mobile"]')?.focus();
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      element.close();
+    };
   }, [mode, open, searchOpen]);
 
   if (mode !== "drawer") return <Sidebar {...props} />;

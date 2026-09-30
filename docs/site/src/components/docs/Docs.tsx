@@ -59,7 +59,7 @@ export function Docs({
         tree={tree}
         tabs={false}
         slots={readerSlots}
-        sidebar={{ defaultOpenLevel: 1 }}
+        sidebar={{ defaultOpenLevel: 0 }}
         nav={{
           title: <span>phux <span className="docs-wordmark">docs</span></span>,
           url: "/overview",
