@@ -9,13 +9,13 @@
 
 use std::collections::HashMap;
 
+use crate::layout::{LayoutNode, SplitDir};
 use libghostty_vt::Terminal as GhosttyTerminal;
 use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
 use phux_client_core::engine::ghostty::GhosttyAdapter;
 use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, KernelInput, SessionKernel};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::FrameKind;
-use phux_protocol::wire::info::{LayoutNode, SplitDir};
 use phux_protocol::{
     BootstrapId, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, StreamId,
 };

@@ -48,14 +48,6 @@ pub(super) struct DividerSegment {
     node_path: NodePath,
 }
 
-/// Wildcard arm for future `#[non_exhaustive]` variants, rejected upstream.
-#[cold]
-#[inline(never)]
-#[allow(clippy::panic)]
-fn unknown_variant() -> ! {
-    panic!("multi_pane: unknown wire-protocol variant (newer than this client)")
-}
-
 /// Recursively split `bounds` by the tree, recording one divider segment
 /// per split and a rect for every leaf (possibly empty), in viewport
 /// coordinates.
@@ -210,9 +202,7 @@ fn walk_layout_at(
                 );
                 path.pop();
             }
-            _ => unknown_variant(),
         },
-        _ => unknown_variant(),
     }
 }
 
@@ -336,7 +326,6 @@ fn lay_down_segment(
     match seg.split {
         SplitDir::Horizontal => lay_down_vertical_line(grid, seg, vcols, vrows),
         SplitDir::Vertical => lay_down_horizontal_line(grid, seg, vcols, vrows),
-        _ => {}
     }
 }
 
@@ -407,7 +396,6 @@ pub(super) fn divider_hits(segments: &[DividerSegment], viewport: (u16, u16)) ->
                         }
                     }
                 }
-                _ => {}
             }
             DividerHit {
                 node_path: seg.node_path.clone(),
@@ -477,10 +465,8 @@ pub(super) fn min_dims(node: &LayoutNode) -> (u16, u16) {
             match dir {
                 SplitDir::Horizontal => (lw.saturating_add(rw).saturating_add(1), lh.max(rh)),
                 SplitDir::Vertical => (lw.max(rw), lh.saturating_add(rh).saturating_add(1)),
-                _ => unknown_variant(),
             }
         }
-        _ => unknown_variant(),
     }
 }
 

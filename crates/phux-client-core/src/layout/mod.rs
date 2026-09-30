@@ -1,12 +1,13 @@
 //! Client-side mirror of the binary split-tree pane layout (ADR-0019).
 //!
-//! The tree is the wire-side [`LayoutNode`]; the operations are free
-//! functions over it. Tiling lives in [`crate::multi_pane::pane_rects`],
+//! The tree is [`LayoutNode`], a consumer convention rather than a wire type
+//! (ADR-0030); the operations are free functions over it. Tiling lives in [`crate::multi_pane::pane_rects`],
 //! the same walk paint uses. The whole [`Workspace`] persists as the v3
 //! CBOR envelope under L3 key `phux.tui.layout/v1` (docs/spec/L3.md §3.2).
 //! Focus fields are non-authoritative (ADR-0049); earlier envelope
 //! versions and missing window identities are refused, never migrated.
-//! The wire types derive no serde, so the envelope uses local shim types.
+//! The envelope uses local serde shim types, so its schema stays pinned
+//! independently of the in-memory tree.
 
 use std::borrow::Cow;
 use std::io::Cursor;
@@ -14,7 +15,36 @@ use std::io::Cursor;
 use phux_protocol::ResourceId;
 use thiserror::Error;
 
-pub use phux_protocol::wire::info::{LayoutNode, SplitDir};
+/// Axis along which a [`LayoutNode::Split`] divides its rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitDir {
+    /// Split side-by-side (a vertical bar between left and right).
+    Horizontal,
+    /// Split stacked (a horizontal bar between top and bottom).
+    Vertical,
+}
+
+/// Binary split tree of a window's panes (ADR-0012); `Split` gives its
+/// left/top child `ratio` of the parent along [`SplitDir`]. It lives in L3
+/// metadata (docs/spec/L3.md §3.2), never on the wire.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LayoutNode {
+    /// A single pane — recursion base.
+    Leaf(ResourceId),
+    /// An interior node that splits its rectangle in two.
+    Split {
+        /// The axis the split is taken along.
+        dir: SplitDir,
+        /// Fraction given to `left`, in the closed interval `0.0..=1.0`; the
+        /// endpoints are admitted because clients bank unapplied resize
+        /// ratios (ADR-0048).
+        ratio: f32,
+        /// Left (for [`SplitDir::Horizontal`]) or top (for [`SplitDir::Vertical`]) child.
+        left: Box<Self>,
+        /// Right (for [`SplitDir::Horizontal`]) or bottom (for [`SplitDir::Vertical`]) child.
+        right: Box<Self>,
+    },
+}
 
 /// Current layout envelope version; readers refuse any other.
 pub(crate) const LAYOUT_ENVELOPE_VERSION: u8 = 3;
@@ -591,25 +621,7 @@ fn set_ratio_inner(node: &LayoutNode, steps: &[NodeStep], ratio: f32) -> Option<
         // Ran off a leaf (or hit a leaf at the path tip) — the path no
         // longer names a split in this tree.
         LayoutNode::Leaf(_) => None,
-        _ => unknown_layout_variant(),
     }
-}
-
-/// Wildcard arm for future `#[non_exhaustive]` [`LayoutNode`] variants,
-/// which wire validation already rejects.
-#[cold]
-#[inline(never)]
-#[allow(clippy::panic)]
-fn unknown_layout_variant() -> ! {
-    panic!("unknown LayoutNode variant — wire-protocol newer than this client")
-}
-
-/// Same role as [`unknown_layout_variant`] for [`SplitDir`].
-#[cold]
-#[inline(never)]
-#[allow(clippy::panic)]
-fn unknown_split_dir() -> ! {
-    panic!("unknown SplitDir variant — wire-protocol newer than this client")
 }
 
 fn split_inner(
@@ -649,10 +661,6 @@ fn split_inner(
                 }
             }
         }
-        // `LayoutNode` is `#[non_exhaustive]`; v0.1 only defines `Leaf`
-        // and `Split`. Future variants would be wire-breaking and would
-        // need to reach this module before being decoded into a tree.
-        _ => unknown_layout_variant(),
     }
 }
 
@@ -676,7 +684,6 @@ pub fn kill_pane(
                 Err(LayoutError::PaneNotInLayout(target.clone()))
             }
         }
-        _ => unknown_layout_variant(),
     }
 }
 
@@ -722,7 +729,6 @@ fn collapse(node: &LayoutNode, target: &ResourceId) -> (LayoutNode, bool) {
                 found_r,
             )
         }
-        _ => unknown_layout_variant(),
     }
 }
 
@@ -751,7 +757,6 @@ fn contains(node: &LayoutNode, target: &ResourceId) -> bool {
     match node {
         LayoutNode::Leaf(p) => p == target,
         LayoutNode::Split { left, right, .. } => contains(left, target) || contains(right, target),
-        _ => unknown_layout_variant(),
     }
 }
 
@@ -770,7 +775,6 @@ fn collect_leaves(node: &LayoutNode, out: &mut Vec<ResourceId>) {
             collect_leaves(left, out);
             collect_leaves(right, out);
         }
-        _ => unknown_layout_variant(),
     }
 }
 
@@ -813,7 +817,6 @@ fn record_path(
             out.pop();
             false
         }
-        _ => unknown_layout_variant(),
     }
 }
 
@@ -887,7 +890,6 @@ fn descend_to_leaf(
                     };
                 }
             }
-            _ => unknown_layout_variant(),
         }
     }
 }

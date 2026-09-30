@@ -545,7 +545,7 @@ fn tree_has_placement(
                 || tree_has_placement(left, target, moved, expected_dir, expected_ratio)
                 || tree_has_placement(right, target, moved, expected_dir, expected_ratio)
         }
-        _ => false,
+        LayoutNode::Leaf(_) => false,
     }
 }
 

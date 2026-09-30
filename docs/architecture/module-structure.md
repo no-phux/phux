@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-22
+last-reviewed: 2026-09-30
 ---
 
 # Module structure
@@ -161,7 +161,8 @@ src/
   grid.rs, grid/  — the one POD cell layout and the GridProjector
   session.rs, session/ — the synchronous session kernel
   handshake.rs, rename.rs, history.rs, perf.rs
-  layout/         — layout tree, split math, persisted CBOR envelope
+  layout/         — the split tree (`LayoutNode`, never on the wire), split
+                    math, persisted L3 CBOR envelope
   multi_pane/     — layout tree to pane rectangles and divider cells
   predict/        — predictive local echo
 ```

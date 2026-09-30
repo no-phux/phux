@@ -1,7 +1,8 @@
 //! Snapshot-graph types delivered with `ATTACHED` (`docs/spec/L1.md` §7).
 //!
-//! Wire mirrors of `phux_core`'s session/window/layout shapes (this crate
-//! cannot depend on `phux-core`): enough to render chrome and layout.
+//! Wire mirrors of `phux_core`'s session/window shapes (this crate cannot
+//! depend on `phux-core`): enough to render chrome. Layout is not here; it
+//! is L3 metadata (`docs/spec/L3.md` §3.2, ADR-0030).
 //! Terminal contents flow through the bootstrap streams.
 
 use bytes::BytesMut;
@@ -17,50 +18,10 @@ use super::frame::{
     encode_terminal_id,
 };
 
-/// Tag byte for [`LayoutNode::Leaf`] on the wire.
-pub(crate) const LAYOUT_TAG_LEAF: u8 = 0;
-/// Tag byte for [`LayoutNode::Split`] on the wire.
-pub(crate) const LAYOUT_TAG_SPLIT: u8 = 1;
-
-/// Tag byte for [`SplitDir::Horizontal`] on the wire.
-pub(crate) const SPLIT_DIR_HORIZONTAL: u8 = 0;
-/// Tag byte for [`SplitDir::Vertical`] on the wire.
-pub(crate) const SPLIT_DIR_VERTICAL: u8 = 1;
-
-/// Axis along which a [`LayoutNode::Split`] divides its rectangle.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum SplitDir {
-    /// Split side-by-side (a vertical bar between left and right).
-    Horizontal = SPLIT_DIR_HORIZONTAL,
-    /// Split stacked (a horizontal bar between top and bottom).
-    Vertical = SPLIT_DIR_VERTICAL,
-}
-
-/// Binary split tree of a window's panes; `Split` gives its left/top child
-/// `ratio` of the parent along [`SplitDir`].
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub enum LayoutNode {
-    /// A single pane — recursion base.
-    Leaf(ResourceId),
-    /// An interior node that splits its rectangle in two.
-    Split {
-        /// The axis the split is taken along.
-        dir: SplitDir,
-        /// Fraction given to `left`, in the closed interval `0.0..=1.0`.
-        ///
-        /// NaN, infinite, and out-of-range ratios are
-        /// [`DecodeError::MalformedLayoutRatio`]. The endpoints are admitted
-        /// because clients bank unapplied resize ratios (ADR-0048).
-        ratio: f32,
-        /// Left (for [`SplitDir::Horizontal`]) or top (for [`SplitDir::Vertical`]) child.
-        left: Box<Self>,
-        /// Right (for [`SplitDir::Horizontal`]) or bottom (for [`SplitDir::Vertical`]) child.
-        right: Box<Self>,
-    },
-}
+/// Tag byte of a leaf in the retired `WindowInfo` layout slot.
+const LAYOUT_TAG_LEAF: u8 = 0;
+/// Tag byte of a split in the retired `WindowInfo` layout slot.
+const LAYOUT_TAG_SPLIT: u8 = 1;
 
 /// One session, sufficient for UI chrome and `phux ls`; its windows are in
 /// [`SessionSnapshot::windows`]. Construct via [`Self::new`] and `with_*`.
@@ -158,12 +119,10 @@ pub struct WindowInfo {
     pub name: String,
     /// Window's remembered focused pane.
     pub active_resource: Option<ResourceId>,
-    /// Pane layout; `None` iff the window has no resources.
-    pub layout: Option<LayoutNode>,
 }
 
 impl WindowInfo {
-    /// A `WindowInfo` at index `0` with no active resource or layout.
+    /// A `WindowInfo` at index `0` with no active resource.
     #[must_use]
     pub fn new(id: WindowId, session_id: SessionId, name: impl Into<String>) -> Self {
         Self {
@@ -172,7 +131,6 @@ impl WindowInfo {
             index: 0,
             name: name.into(),
             active_resource: None,
-            layout: None,
         }
     }
 
@@ -187,13 +145,6 @@ impl WindowInfo {
     #[must_use]
     pub fn with_active_resource(mut self, active_resource: Option<ResourceId>) -> Self {
         self.active_resource = active_resource;
-        self
-    }
-
-    /// Builder setter for [`Self::layout`].
-    #[must_use]
-    pub fn with_layout(mut self, layout: Option<LayoutNode>) -> Self {
-        self.layout = layout;
         self
     }
 }
@@ -744,81 +695,25 @@ impl SessionSnapshot {
 
 // Positional encoding helpers.
 
-pub(super) const fn encode_split_dir(dir: SplitDir) -> u8 {
-    match dir {
-        SplitDir::Horizontal => SPLIT_DIR_HORIZONTAL,
-        SplitDir::Vertical => SPLIT_DIR_VERTICAL,
-    }
-}
-
-pub(super) fn decode_split_dir(tag: u8) -> Result<SplitDir, DecodeError> {
-    match tag {
-        SPLIT_DIR_HORIZONTAL => Ok(SplitDir::Horizontal),
-        SPLIT_DIR_VERTICAL => Ok(SplitDir::Vertical),
-        other => Err(DecodeError::unknown_enum("SplitDir", other)),
-    }
-}
-
-/// Encode a layout subtree (tag, then leaf id or split fields and children).
-pub(super) fn encode_layout_node(node: &LayoutNode, enc: &mut Encoder<'_>) {
-    match node {
-        LayoutNode::Leaf(pane) => {
-            enc.write_u8(LAYOUT_TAG_LEAF);
-            encode_terminal_id(pane, enc);
-        }
-        LayoutNode::Split {
-            dir,
-            ratio,
-            left,
-            right,
-        } => {
-            enc.write_u8(LAYOUT_TAG_SPLIT);
-            enc.write_u8(encode_split_dir(*dir));
-            enc.write_f32_be(*ratio);
-            encode_layout_node(left, enc);
-            encode_layout_node(right, enc);
-        }
-    }
-}
-
-/// Maximum layout-tree depth the decoder follows before
-/// [`DecodeError::LayoutTooDeep`], so hostile nesting cannot overflow the
-/// stack; real layouts nest tens deep at most.
+/// Maximum layout-tree depth the decoder follows while skipping the retired
+/// `WindowInfo` layout slot before [`DecodeError::LayoutTooDeep`], so
+/// hostile nesting cannot overflow the stack.
 pub const MAX_LAYOUT_DEPTH: usize = 64;
 
-/// Decode a layout subtree, validating ratios and bounding depth at
-/// [`MAX_LAYOUT_DEPTH`].
-pub(super) fn decode_layout_node(dec: &mut Decoder<'_>) -> Result<LayoutNode, DecodeError> {
-    decode_layout_node_depth(dec, 0)
-}
-
-fn decode_layout_node_depth(
-    dec: &mut Decoder<'_>,
-    depth: usize,
-) -> Result<LayoutNode, DecodeError> {
+/// Skip a tree in the retired `WindowInfo` layout slot (`docs/spec/L1.md`
+/// §1.1): a sender writes the slot absent, and a receiver discards a present
+/// tree after walking it to its end, bounding depth at [`MAX_LAYOUT_DEPTH`].
+fn skip_layout_tree(dec: &mut Decoder<'_>, depth: usize) -> Result<(), DecodeError> {
     if depth >= MAX_LAYOUT_DEPTH {
         return Err(DecodeError::LayoutTooDeep);
     }
-    let tag = dec.read_u8()?;
-    match tag {
-        LAYOUT_TAG_LEAF => {
-            let pane = decode_terminal_id(dec)?;
-            Ok(LayoutNode::Leaf(pane))
-        }
+    match dec.read_u8()? {
+        LAYOUT_TAG_LEAF => decode_terminal_id(dec).map(drop),
         LAYOUT_TAG_SPLIT => {
-            let dir = decode_split_dir(dec.read_u8()?)?;
-            let ratio = dec.read_f32_be()?;
-            if !ratio.is_finite() || !(0.0..=1.0).contains(&ratio) {
-                return Err(DecodeError::MalformedLayoutRatio { ratio });
-            }
-            let left = Box::new(decode_layout_node_depth(dec, depth + 1)?);
-            let right = Box::new(decode_layout_node_depth(dec, depth + 1)?);
-            Ok(LayoutNode::Split {
-                dir,
-                ratio,
-                left,
-                right,
-            })
+            let _dir = dec.read_u8()?;
+            let _ratio = dec.read_f32_be()?;
+            skip_layout_tree(dec, depth + 1)?;
+            skip_layout_tree(dec, depth + 1)
         }
         other => Err(DecodeError::unknown_enum("LayoutNode", other)),
     }
@@ -858,7 +753,8 @@ pub(super) fn encode_window_info(info: &WindowInfo, enc: &mut Encoder<'_>) {
     enc.write_u16_be(info.index);
     enc.write_str(&info.name);
     encode_option_terminal_id(info.active_resource.as_ref(), enc);
-    enc.write_option(info.layout.as_ref(), |e, n| encode_layout_node(n, e));
+    // The retired layout slot, always written absent.
+    enc.write_option(None::<()>, |_, ()| {});
 }
 
 pub(super) fn decode_window_info(dec: &mut Decoder<'_>) -> Result<WindowInfo, DecodeError> {
@@ -867,14 +763,13 @@ pub(super) fn decode_window_info(dec: &mut Decoder<'_>) -> Result<WindowInfo, De
     let index = dec.read_u16_be()?;
     let name = dec.read_str()?.to_owned();
     let active_resource = decode_option_terminal_id(dec)?;
-    let layout = dec.read_option("Option<LayoutNode> tag", decode_layout_node)?;
+    dec.read_option("Option<LayoutNode> tag", |d| skip_layout_tree(d, 0))?;
     Ok(WindowInfo {
         id,
         session_id,
         index,
         name,
         active_resource,
-        layout,
     })
 }
 

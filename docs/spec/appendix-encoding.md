@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-30
 ---
 
 # Appendix A — Encoding primitives
@@ -106,7 +106,7 @@ with no inner `u32`. Codec round-trip tests in
 Only the **message body** is field-tagged. A field's value MAY itself be a
 nested tagged union or sub-record (`ResourceId`, `ViewportInfo`,
 `AttachTarget`, `Scope`, `Command` / `CommandResult` / `CommandValue`,
-`SpawnResult`, `AgentEvent`, `SessionSnapshot`, `LayoutNode`, ...); these are
+`SpawnResult`, `AgentEvent`, `SessionSnapshot`, ...); these are
 encoded **positionally** inside the field's length-delimited value, with their
 own one-byte discriminant tags where they are tagged unions. A decoder reads
 such a value with a positional decoder bounded by the field's length, so a

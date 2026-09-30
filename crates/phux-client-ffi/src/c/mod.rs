@@ -2107,23 +2107,10 @@ mod tests {
         horizontal: &phux_protocol::ResourceId,
         vertical: &phux_protocol::ResourceId,
     ) -> phux_protocol::wire::info::SessionSnapshot {
-        use phux_protocol::wire::info::{LayoutNode, SplitDir};
-
         let catalog_session = SessionId::new(1);
         let working_session = SessionId::new(2);
         let catalog_window = phux_protocol::WindowId::new(10);
         let working_window = phux_protocol::WindowId::new(20);
-        let layout = LayoutNode::Split {
-            dir: SplitDir::Horizontal,
-            ratio: 0.5,
-            left: Box::new(LayoutNode::Leaf(seed.clone())),
-            right: Box::new(LayoutNode::Split {
-                dir: SplitDir::Vertical,
-                ratio: 0.5,
-                left: Box::new(LayoutNode::Leaf(horizontal.clone())),
-                right: Box::new(LayoutNode::Leaf(vertical.clone())),
-            }),
-        };
         phux_protocol::wire::info::SessionSnapshot::new(
             working_session,
             working_window,
@@ -2136,8 +2123,7 @@ mod tests {
         .with_windows(vec![
             phux_protocol::wire::info::WindowInfo::new(catalog_window, catalog_session, "catalog"),
             phux_protocol::wire::info::WindowInfo::new(working_window, working_session, "working")
-                .with_active_resource(Some(seed.clone()))
-                .with_layout(Some(layout)),
+                .with_active_resource(Some(seed.clone())),
         ])
         .with_resources(vec![
             phux_protocol::wire::info::ResourceInfo::new(

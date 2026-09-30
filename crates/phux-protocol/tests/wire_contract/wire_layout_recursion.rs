@@ -1,4 +1,5 @@
-//! Repro + regression: deeply-nested `LayoutNode::Split` recursion.
+//! Repro + regression: a deeply nested tree in the retired `WindowInfo`
+//! layout slot must error, not overflow the stack, while it is skipped.
 
 use phux_protocol::wire::DecodeError;
 use phux_protocol::wire::frame::FrameKind;
@@ -38,8 +39,8 @@ fn deeply_nested_layout_errors_not_overflows() {
 }
 
 #[test]
-fn shallow_layout_still_round_trips() {
-    // A 4-deep split chain (within MAX_LAYOUT_DEPTH) must still decode OK.
+fn shallow_layout_is_skipped() {
+    // A 4-deep split chain (within MAX_LAYOUT_DEPTH) is skipped, not refused.
     let frame = attached_with_layout(&split_chain(4));
     assert!(FrameKind::decode(&frame).is_ok());
 }

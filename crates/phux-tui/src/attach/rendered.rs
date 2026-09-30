@@ -189,11 +189,11 @@ mod tests {
 
     use crate::attach::paint::{SidebarEdge, SidebarReservation};
     use crate::attach::pane_state::published_test_state;
+    use crate::layout::{LayoutNode, SplitDir};
     use crate::render::Theme;
     use crate::render::chrome::sidebar::SidebarPainter;
     use crate::render::chrome::status_bar::Position;
     use phux_config::widget::WindowInfo;
-    use phux_protocol::wire::info::{LayoutNode, SplitDir};
 
     const STRIP: SidebarReservation = SidebarReservation {
         edge: SidebarEdge::Left,

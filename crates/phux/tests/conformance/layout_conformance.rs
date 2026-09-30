@@ -1,21 +1,24 @@
 //! Conformance: the three split-tree encodings must describe the same tree.
 //!
-//! The ADR-0012 split tree exists as `phux_core::window::LayoutNode` (domain),
-//! `phux_protocol::wire::info::LayoutNode` (wire mirror; the protocol crate
-//! cannot depend on core), and `phux_server::upgrade::blob::LayoutBlob` (the
-//! serde carrier for graceful upgrade, keyed by wire id). Each has its own
-//! round-trip test; this file builds one corpus into all three and projects
-//! them back to a shared normal form so a drift in axis convention, child
-//! order, or ratio domain fails on the commit that caused it.
+//! The ADR-0012 split tree exists as `phux_core::window::LayoutNode` (the
+//! server's domain model), `phux_client::layout::LayoutNode` (the client tree
+//! every consumer persists as the L3 `phux.tui.layout/v1` CBOR envelope,
+//! `docs/spec/L3.md` §3.2), and `phux_server::upgrade::blob::LayoutBlob` (the
+//! serde carrier for graceful upgrade, keyed by wire id). The wire carries no
+//! split tree (ADR-0030). Each has its own round-trip test; this file builds
+//! one corpus into all three and projects them back to a shared normal form
+//! so a drift in axis convention, child order, or ratio domain fails on the
+//! commit that caused it.
 //!
-//! There is no core-to-wire conversion yet (the snapshot ships `layout: None`),
-//! so core and wire are compared as independently built shapes; core-to-blob
+//! There is no core-to-L3 conversion (the server never writes a layout), so
+//! core and L3 are compared as independently built shapes; core-to-blob
 //! drives the real upgrade producer.
 //!
 //! Two asymmetries are structural and asserted, not normalised away: the
-//! encodings accept different ratio domains (core open interval, wire closed,
-//! blob unchecked), and only the wire bounds depth. If a later change unifies
-//! them, update the map in those tests rather than deleting the assertion.
+//! encodings accept different ratio domains (core open interval, L3 closed,
+//! blob unchecked), and none imposes a depth bound of its own. If a later
+//! change unifies them, update the map in those tests rather than deleting
+//! the assertion.
 //! The depth map found a real bug: `serde_json`'s recursion limit made a
 //! 63-pane window's upgrade blob writable but unreadable.
 
@@ -25,17 +28,13 @@
 
 use std::collections::HashMap;
 
+use phux_client::layout::{
+    LayoutDecodeError, LayoutNode as L3Node, SplitDir as L3Dir, Workspace, leaves,
+};
 use phux_core::ids::{ResourceId as CoreResourceId, WindowId as CoreWindowId};
 use phux_core::registry::Registry;
 use phux_core::window::{LayoutError, LayoutNode as CoreNode, SplitDir as CoreDir};
-use phux_protocol::ids::{
-    ClientId, ResourceId as WireResourceId, SessionId as WireSessionId, WindowId as WireWindowId,
-};
-use phux_protocol::wire::error::DecodeError;
-use phux_protocol::wire::frame::FrameKind;
-use phux_protocol::wire::info::{
-    LayoutNode as WireNode, MAX_LAYOUT_DEPTH, SessionSnapshot, SplitDir as WireDir, WindowInfo,
-};
+use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_server::state::ServerState;
 use phux_server::upgrade::blob::{LayoutBlob, SplitDirBlob, StateBlob};
 
@@ -120,9 +119,9 @@ impl Shape {
 }
 
 /// Panes in the deep-spine entry: the registry nests each new pane one level
-/// down the left spine, so `MAX_LAYOUT_DEPTH` panes is the deepest tree the
-/// wire will carry.
-const DEEP_SPINE_PANES: usize = MAX_LAYOUT_DEPTH;
+/// down the left spine, so this is a 64-deep tree, past `serde_json`'s
+/// default recursion limit for the upgrade blob.
+const DEEP_SPINE_PANES: usize = 64;
 
 /// One shape per interesting structural or numeric case. Every entry is fed
 /// through all three encodings.
@@ -251,56 +250,52 @@ fn project_core(node: &CoreNode, index_of: &HashMap<CoreResourceId, u32>) -> Sha
     }
 }
 
-const fn wire_pane_id(index: u32) -> WireResourceId {
+const fn l3_pane_id(index: u32) -> WireResourceId {
     WireResourceId::new(index + 1)
 }
 
-fn build_wire(shape: &Shape) -> WireNode {
+fn build_l3(shape: &Shape) -> L3Node {
     match shape {
-        Shape::Pane(i) => WireNode::Leaf(wire_pane_id(*i)),
+        Shape::Pane(i) => L3Node::Leaf(l3_pane_id(*i)),
         Shape::Divide {
             axis,
             ratio,
             first,
             second,
-        } => WireNode::Split {
+        } => L3Node::Split {
             dir: match axis {
-                Axis::SideBySide => WireDir::Horizontal,
-                Axis::Stacked => WireDir::Vertical,
+                Axis::SideBySide => L3Dir::Horizontal,
+                Axis::Stacked => L3Dir::Vertical,
             },
             ratio: *ratio,
-            left: Box::new(build_wire(first)),
-            right: Box::new(build_wire(second)),
+            left: Box::new(build_l3(first)),
+            right: Box::new(build_l3(second)),
         },
     }
 }
 
-fn project_wire(node: &WireNode) -> Shape {
+fn project_l3(node: &L3Node) -> Shape {
     match node {
-        WireNode::Leaf(tid) => Shape::Pane(
+        L3Node::Leaf(tid) => Shape::Pane(
             tid.local_id()
-                .expect("corpus builds Local wire ids only")
+                .expect("corpus builds Local ids only")
                 .checked_sub(1)
-                .expect("wire pane ids start at 1"),
+                .expect("L3 pane ids start at 1"),
         ),
-        WireNode::Split {
+        L3Node::Split {
             dir,
             ratio,
             left,
             right,
         } => Shape::Divide {
             axis: match dir {
-                WireDir::Horizontal => Axis::SideBySide,
-                WireDir::Vertical => Axis::Stacked,
-                other => panic!("wire SplitDir grew a variant this corpus does not map: {other:?}"),
+                L3Dir::Horizontal => Axis::SideBySide,
+                L3Dir::Vertical => Axis::Stacked,
             },
             ratio: *ratio,
-            first: Box::new(project_wire(left)),
-            second: Box::new(project_wire(right)),
+            first: Box::new(project_l3(left)),
+            second: Box::new(project_l3(right)),
         },
-        // A new `#[non_exhaustive]` variant is a shape the other encodings lack and
-        // needs a decision, not a default.
-        other => panic!("wire LayoutNode grew a variant this corpus does not map: {other:?}"),
     }
 }
 
@@ -377,7 +372,7 @@ fn all_three_encodings_describe_the_same_tree() {
         let index_of_blob = blob_index_map(&shape);
 
         let core = build_core(&shape, &core_ids);
-        let wire = build_wire(&shape);
+        let l3 = build_l3(&shape);
         let blob = build_blob(&shape);
 
         assert_eq!(
@@ -386,9 +381,9 @@ fn all_three_encodings_describe_the_same_tree() {
             "{name}: phux_core encoding does not project back to the corpus shape"
         );
         assert_eq!(
-            project_wire(&wire),
+            project_l3(&l3),
             shape,
-            "{name}: phux_protocol encoding does not project back to the corpus shape"
+            "{name}: L3 client encoding does not project back to the corpus shape"
         );
         assert_eq!(
             project_blob(&blob, &index_of_blob),
@@ -407,18 +402,18 @@ fn all_three_encodings_describe_the_same_tree() {
     }
 }
 
-/// Wire and blob each survive their own round trip and still equal the corpus
+/// L3 and blob each survive their own round trip and still equal the corpus
 /// shape, so a self-consistent codec bug cannot hide (core never serializes).
 #[test]
-fn wire_and_blob_round_trips_land_back_on_the_corpus_shape() {
+fn l3_and_blob_round_trips_land_back_on_the_corpus_shape() {
     for (name, shape) in corpus() {
-        // Wire: encode a real ATTACHED frame and decode it back.
-        let decoded = round_trip_layout_through_a_frame(&build_wire(&shape))
-            .unwrap_or_else(|e| panic!("{name}: ATTACHED frame carrying the layout failed: {e:?}"));
+        // L3: through the CBOR envelope every consumer persists.
+        let decoded = round_trip_layout_through_the_envelope(&build_l3(&shape))
+            .unwrap_or_else(|e| panic!("{name}: layout envelope failed to round-trip: {e:?}"));
         assert_eq!(
-            project_wire(&decoded),
+            project_l3(&decoded),
             shape,
-            "{name}: layout changed crossing the wire"
+            "{name}: layout changed crossing the L3 envelope"
         );
 
         // Blob: through the JSON carrier the upgrade actually writes.
@@ -434,116 +429,19 @@ fn wire_and_blob_round_trips_land_back_on_the_corpus_shape() {
     }
 }
 
-/// Encode `node` into an `ATTACHED` frame and decode the frame back, returning
-/// the layout the decoder produced.
-fn round_trip_layout_through_a_frame(node: &WireNode) -> Result<WireNode, DecodeError> {
-    let snapshot = SessionSnapshot::new(
-        WireSessionId::new(1),
-        WireWindowId::new(1),
-        WireResourceId::new(1),
-    )
-    .with_windows(vec![
-        WindowInfo::new(WireWindowId::new(1), WireSessionId::new(1), "w")
-            .with_layout(Some(node.clone())),
-    ]);
-    let mut buf = bytes::BytesMut::new();
-    FrameKind::Attached {
-        attach_id: 1,
-        snapshot,
-        initial_client_id: ClientId::new(1),
-    }
-    .encode(&mut buf);
-    let (frame, tail) = FrameKind::decode(&buf)?;
-    assert!(tail.is_empty(), "frame should consume its own bytes");
-    let FrameKind::Attached { snapshot, .. } = frame else {
-        panic!("decoded a frame that is not ATTACHED");
-    };
-    Ok(snapshot.windows[0]
-        .layout
+/// Encode `node` as the one window of a v3 layout envelope (L3.md §3.2) and
+/// decode it back, returning the tree the decoder produced.
+fn round_trip_layout_through_the_envelope(node: &L3Node) -> Result<L3Node, LayoutDecodeError> {
+    let first = leaves(node).into_iter().next().expect("a tree has a leaf");
+    let mut workspace = Workspace::single(first);
+    workspace.windows[0].state.tree = Some(node.clone());
+    let bytes = workspace.encode_cbor().expect("envelope encodes");
+    let decoded = Workspace::decode_cbor(&bytes)?;
+    Ok(decoded.windows[0]
+        .state
+        .tree
         .clone()
         .expect("layout survived the round trip"))
-}
-
-/// A golden-byte pin on the wire's tag numbering, which round-trip symmetry
-/// cannot catch.
-#[test]
-fn wire_split_tags_are_pinned_to_their_spec_bytes() {
-    // LAYOUT_TAG_SPLIT = 0x01, SPLIT_DIR_HORIZONTAL = 0x00,
-    // SPLIT_DIR_VERTICAL = 0x01, LAYOUT_TAG_LEAF = 0x00, and a `Local`
-    // ResourceId is tag 0x00 followed by a big-endian u32.
-    const RATIO_HALF_BE: [u8; 4] = [0x3F, 0x00, 0x00, 0x00];
-    const LEAF_ONE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
-    const LEAF_TWO: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x02];
-
-    // Compared as bytes rather than as floats: exact, and it states the thing
-    // being pinned (this byte string *is* how 0.5 goes on the wire) rather
-    // than a numeric equality that would need a tolerance argument.
-    assert_eq!(
-        RATIO_HALF_BE,
-        0.5_f32.to_be_bytes(),
-        "the golden ratio bytes below must really be 0.5"
-    );
-
-    let mut side_by_side = vec![0x01, 0x00];
-    side_by_side.extend_from_slice(&RATIO_HALF_BE);
-    side_by_side.extend_from_slice(&LEAF_ONE);
-    side_by_side.extend_from_slice(&LEAF_TWO);
-
-    let mut stacked = vec![0x01, 0x01];
-    stacked.extend_from_slice(&RATIO_HALF_BE);
-    stacked.extend_from_slice(&LEAF_ONE);
-    stacked.extend_from_slice(&LEAF_TWO);
-
-    let horizontal = encoded_attached_bytes(&build_wire(&Shape::split(
-        Axis::SideBySide,
-        0.5,
-        Shape::Pane(0),
-        Shape::Pane(1),
-    )));
-    let vertical = encoded_attached_bytes(&build_wire(&Shape::split(
-        Axis::Stacked,
-        0.5,
-        Shape::Pane(0),
-        Shape::Pane(1),
-    )));
-
-    assert!(
-        contains(&horizontal, &side_by_side),
-        "a side-by-side split must encode as SPLIT=0x01, dir=0x00; \
-         renumbering these tags breaks every deployed client"
-    );
-    assert!(
-        contains(&vertical, &stacked),
-        "a stacked split must encode as SPLIT=0x01, dir=0x01"
-    );
-    assert!(
-        !contains(&vertical, &side_by_side),
-        "the two axes must not share an encoding"
-    );
-}
-
-fn encoded_attached_bytes(node: &WireNode) -> Vec<u8> {
-    let snapshot = SessionSnapshot::new(
-        WireSessionId::new(1),
-        WireWindowId::new(1),
-        WireResourceId::new(1),
-    )
-    .with_windows(vec![
-        WindowInfo::new(WireWindowId::new(1), WireSessionId::new(1), "w")
-            .with_layout(Some(node.clone())),
-    ]);
-    let mut buf = bytes::BytesMut::new();
-    FrameKind::Attached {
-        attach_id: 1,
-        snapshot,
-        initial_client_id: ClientId::new(1),
-    }
-    .encode(&mut buf);
-    buf.to_vec()
-}
-
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 /// Drives the real core-to-blob conversion: build a window through the
@@ -652,22 +550,22 @@ fn ratio_domains_diverge_by_design_and_here_is_the_map() {
         );
     }
 
-    // --- phux_protocol: closed [0.0, 1.0], finite only; wider than core because
+    // --- L3 envelope: closed [0.0, 1.0], finite only; wider than core because
     // the TUI banks unapplied `resize-pane` ratios (ADR-0048).
     for accepted in [0.0, 1.0, f32::EPSILON, 0.5] {
-        let node = build_wire(&Shape::split(
+        let node = build_l3(&Shape::split(
             Axis::SideBySide,
             accepted,
             Shape::Pane(0),
             Shape::Pane(1),
         ));
         assert!(
-            round_trip_layout_through_a_frame(&node).is_ok(),
-            "the wire must carry ratio {accepted}"
+            round_trip_layout_through_the_envelope(&node).is_ok(),
+            "the envelope must carry ratio {accepted}"
         );
     }
     for rejected in [-0.5, 1.5, f32::NAN, f32::INFINITY] {
-        let node = build_wire(&Shape::split(
+        let node = build_l3(&Shape::split(
             Axis::SideBySide,
             rejected,
             Shape::Pane(0),
@@ -675,10 +573,10 @@ fn ratio_domains_diverge_by_design_and_here_is_the_map() {
         ));
         assert!(
             matches!(
-                round_trip_layout_through_a_frame(&node),
-                Err(DecodeError::MalformedLayoutRatio { .. })
+                round_trip_layout_through_the_envelope(&node),
+                Err(LayoutDecodeError::MalformedRatio(_))
             ),
-            "the wire must reject ratio {rejected}"
+            "the envelope must reject ratio {rejected}"
         );
     }
 
@@ -715,20 +613,18 @@ fn ratio_domains_diverge_by_design_and_here_is_the_map() {
     }
 }
 
-/// The three encodings bound nesting depth three different ways, and only one
-/// of them bounds it deliberately — see the module doc's asymmetry 2.
+/// None of the three encodings imposes a depth bound of its own — see the
+/// module doc's asymmetry 2.
 #[tokio::test(flavor = "current_thread")]
 async fn depth_bounds_diverge_by_design_and_here_is_the_map() {
-    // One pane past the deepest tree the wire will carry.
-    let panes = MAX_LAYOUT_DEPTH + 1;
+    // One pane past the deep-spine corpus entry.
+    let panes = DEEP_SPINE_PANES + 1;
     let too_deep = registry_spine(panes);
 
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            // --- phux_core: no cap at all. The registry builds this happily,
-            // which is the real gap here: a window this deep is already
-            // un-sendable, and core is where a gate would belong.
+            // --- phux_core: no cap at all. The registry builds this happily.
             let (state, wid, index_of_core, index_of_blob) = state_with_one_window(panes);
             let core_layout = state
                 .registry()
@@ -744,20 +640,20 @@ async fn depth_bounds_diverge_by_design_and_here_is_the_map() {
                  where to record it"
             );
 
-            // --- phux_protocol: capped at MAX_LAYOUT_DEPTH, and the cap earns
-            // its keep — the decoder is recursive over bytes from a peer, so
-            // an unbounded tree would overflow the stack.
-            assert!(
-                matches!(
-                    round_trip_layout_through_a_frame(&build_wire(&too_deep)),
-                    Err(DecodeError::LayoutTooDeep)
+            // --- L3 envelope: no cap of its own; the CBOR reader's recursion
+            // limit is what keeps a hostile peer's value off the stack.
+            assert_eq!(
+                project_l3(
+                    &round_trip_layout_through_the_envelope(&build_l3(&too_deep))
+                        .expect("the envelope carries a spine this deep")
                 ),
-                "the wire must refuse a tree deeper than MAX_LAYOUT_DEPTH"
+                too_deep,
+                "the envelope must carry the deep spine unchanged"
             );
 
-            // --- upgrade blob: no cap of its own. It carries trees the wire
-            // would refuse, because it never crosses a trust boundary — the
-            // bytes come from this binary's own predecessor image.
+            // --- upgrade blob: no cap of its own. It never crosses a trust
+            // boundary — the bytes come from this binary's own predecessor
+            // image.
             let blob = state.build_upgrade_blob(7).await;
             let bytes = blob.to_bytes().expect("serializes");
             let restored = StateBlob::from_bytes(&bytes).expect("deserializes");
@@ -770,7 +666,7 @@ async fn depth_bounds_diverge_by_design_and_here_is_the_map() {
                     &index_of_blob,
                 ),
                 too_deep,
-                "the blob must carry trees the wire would refuse"
+                "the blob must carry the deep spine unchanged"
             );
         })
         .await;

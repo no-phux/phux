@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-09-27
+last-reviewed: 2026-09-30
 ---
 
 # Contributing to phux
@@ -184,8 +184,10 @@ prints `SKIPPED` and exits 0; an unlabelled or double-labelled bead exits 1.
   are in scope, import the protocol one with a `Wire` prefix:
   `use phux_protocol::ids::ResourceId as WireResourceId;`. This matters for
   `ClientId` (a `u32` wire identity versus the server's `u64` routing id),
-  `ResourceId`, `SessionId`, `WindowId`, `LayoutNode`, `SplitDir`,
-  `WindowInfo`, and `HistoryRejectionReason`.
+  `ResourceId`, `SessionId`, `WindowId`, `WindowInfo`, and
+  `HistoryRejectionReason`. The split tree is not a wire type: the client's
+  `LayoutNode` and `SplitDir` live in `phux-client-core::layout` (the L3
+  envelope's tree) beside `phux-core`'s server-side ones.
 - **`unsafe` requires justification.** Every `unsafe` block carries a
   `// SAFETY: …` comment naming the invariant it relies on. We prefer
   zero `unsafe` and lint for it (`#![forbid(unsafe_code)]` is the default

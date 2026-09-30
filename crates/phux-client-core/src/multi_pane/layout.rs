@@ -130,7 +130,6 @@ pub fn split_content_span_at(
         let (axis_start, axis_len) = match dir {
             SplitDir::Horizontal => (bounds.x, bounds.w),
             SplitDir::Vertical => (bounds.y, bounds.h),
-            _ => return None,
         };
         match steps.split_first() {
             // The target split. Its content budget is the axis length
@@ -150,7 +149,6 @@ pub fn split_content_span_at(
                 let (min_low, min_high) = match dir {
                     SplitDir::Horizontal => (min_dims(left).0, min_dims(right).0),
                     SplitDir::Vertical => (min_dims(left).1, min_dims(right).1),
-                    _ => return None,
                 };
                 let low = freeze_split_dim(content_len, *ratio, min_low, min_high);
                 let high = content_len - low;
@@ -168,7 +166,6 @@ pub fn split_content_span_at(
                         if has_divider { divider + 1 } else { bounds.y },
                         high,
                     ),
-                    _ => return None,
                 };
                 node = child;
                 bounds = match dir {
@@ -184,7 +181,6 @@ pub fn split_content_span_at(
                         w: bounds.w,
                         h: child_len,
                     },
-                    _ => return None,
                 };
             }
         }

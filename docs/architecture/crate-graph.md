@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-20
+last-reviewed: 2026-09-30
 ---
 
 # Crate dependency graph
@@ -166,4 +166,4 @@ Wire bytes are normative in [`../spec/L1.md`](../spec/L1.md).
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| L1 mountable without the L3 service | One `ServerRuntime` serves both tiers. `GET_STATE` still carries `WindowInfo` and layout. There are no `WINDOW_*`, `LAYOUT_CHANGED`, or `FOCUS_CHANGED` frames. | [ADR-0015](../adr/0015-protocol-layering.md) | not scheduled |
+| L1 mountable without the L3 service | One `ServerRuntime` serves both tiers. `GET_STATE` still carries `SessionInfo` and `WindowInfo` rows; their split-tree slot is retired and always absent (L1.md §1.1). There are no `WINDOW_*`, `LAYOUT_CHANGED`, or `FOCUS_CHANGED` frames. | [ADR-0015](../adr/0015-protocol-layering.md) | not scheduled |

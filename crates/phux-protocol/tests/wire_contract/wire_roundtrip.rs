@@ -40,7 +40,7 @@ use phux_protocol::wire::frame::{
     SpawnResult, StateScope, TerminalSignal, ViewportInfo,
 };
 use phux_protocol::wire::info::{
-    AgentFacet, LayoutNode, ResourceInfo, SessionInfo, SessionSnapshot, SplitDir, WindowInfo,
+    AgentFacet, ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo,
 };
 use phux_protocol::wire::{DecodeError, decode::Decoder, frame::FrameKind};
 use proptest::prelude::*;
@@ -209,26 +209,6 @@ fn arb_viewport_info() -> impl Strategy<Value = ViewportInfo> {
         })
 }
 
-fn arb_split_dir() -> impl Strategy<Value = SplitDir> {
-    prop_oneof![Just(SplitDir::Horizontal), Just(SplitDir::Vertical)]
-}
-
-/// Bounded recursion: at most depth 4 keeps prop-test work tractable while
-/// still exercising recursive split-tree encoding/decoding.
-fn arb_layout_node() -> impl Strategy<Value = LayoutNode> {
-    let leaf = any::<u32>().prop_map(|id| LayoutNode::Leaf(ResourceId::local(id)));
-    leaf.prop_recursive(4, 32, 2, |inner| {
-        (arb_split_dir(), 0.0001f32..0.9999f32, inner.clone(), inner).prop_map(
-            |(dir, ratio, left, right)| LayoutNode::Split {
-                dir,
-                ratio,
-                left: Box::new(left),
-                right: Box::new(right),
-            },
-        )
-    })
-}
-
 fn arb_session_info() -> impl Strategy<Value = SessionInfo> {
     (
         any::<u32>(),
@@ -263,13 +243,11 @@ fn arb_window_info() -> impl Strategy<Value = WindowInfo> {
         any::<u16>(),
         ".{0,32}",
         proptest::option::of(any::<u32>()),
-        proptest::option::of(arb_layout_node()),
     )
-        .prop_map(|(id, session_id, index, name, active_resource, layout)| {
+        .prop_map(|(id, session_id, index, name, active_resource)| {
             WindowInfo::new(WindowId::new(id), SessionId::new(session_id), name)
                 .with_index(index)
                 .with_active_resource(active_resource.map(ResourceId::local))
-                .with_layout(layout)
         })
 }
 
@@ -1295,8 +1273,8 @@ fn error_code_wire_values_match_spec() {
 }
 
 // -----------------------------------------------------------------------------
-// Layout ratio validation — SPEC §13 leaves bounds implicit; phux rejects
-// NaN, infinite, and out-of-range values on decode.
+// The retired `WindowInfo` layout slot (L1.md §1.1, ADR-0030): a present
+// tree is skipped, whatever its ratio, and the fields after it still decode.
 // -----------------------------------------------------------------------------
 
 fn encode_split_with_ratio(ratio: f32) -> Vec<u8> {
@@ -1345,39 +1323,25 @@ fn encode_split_with_ratio(ratio: f32) -> Vec<u8> {
     framed_tlv(0x81, &fields)
 }
 
-/// The layout-ratio bounds table: NaN, infinite, and out-of-[0, 1] ratios are
-/// rejected with `MalformedLayoutRatio`; the inclusive endpoints decode.
-/// Bit-level comparison covers NaN uniformly.
+/// A peer that still writes a tree into the retired slot is tolerated: the
+/// decoder walks past it without validating the ratio (the tree is discarded),
+/// and the positional fields after it land where they belong.
 #[test]
-fn layout_ratio_bounds_are_enforced_on_decode() {
-    for (ratio, accepted) in [
-        (f32::NAN, false),
-        (f32::INFINITY, false),
-        (1.5, false),
-        (-0.1, false),
-        (0.0, true),
-        (1.0, true),
-    ] {
+fn retired_layout_slot_is_skipped_whatever_its_ratio() {
+    for ratio in [f32::NAN, f32::INFINITY, 1.5, -0.1, 0.0, 0.5, 1.0] {
         let bytes = encode_split_with_ratio(ratio);
-        if accepted {
-            let (decoded, _tail) = FrameKind::decode(&bytes).unwrap();
-            let FrameKind::Attached { snapshot, .. } = decoded else {
-                panic!("expected Attached frame for ratio {ratio}");
-            };
-            match snapshot.windows[0].layout.as_ref().unwrap() {
-                LayoutNode::Split { ratio: got, .. } => {
-                    assert_eq!(got.to_bits(), ratio.to_bits());
-                }
-                other => panic!("expected Split, got {other:?}"),
-            }
-        } else {
-            match FrameKind::decode(&bytes).unwrap_err() {
-                DecodeError::MalformedLayoutRatio { ratio: got } => {
-                    assert_eq!(got.to_bits(), ratio.to_bits());
-                }
-                other => panic!("expected MalformedLayoutRatio, got {other:?}"),
-            }
-        }
+        let (decoded, _tail) = FrameKind::decode(&bytes).unwrap();
+        let FrameKind::Attached { snapshot, .. } = decoded else {
+            panic!("expected Attached frame for ratio {ratio}");
+        };
+        assert_eq!(snapshot.windows.len(), 1, "ratio {ratio}");
+        assert_eq!(snapshot.windows[0].name, "w", "ratio {ratio}");
+        assert!(snapshot.resources.is_empty(), "ratio {ratio}");
+        assert_eq!(
+            snapshot.focused_resource,
+            ResourceId::local(1),
+            "ratio {ratio}"
+        );
     }
 }
 
