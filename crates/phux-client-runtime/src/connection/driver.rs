@@ -7,7 +7,8 @@ use tokio::sync::watch;
 
 use super::io::{Io, dial};
 use super::{ConnectOptions, ConnectionEnd, Shared, Signals, Target, Wake, lock};
-use phux_protocol::wire::frame::FrameKind;
+use phux_protocol::wire::frame::{FrameKind, TYPE_PING};
+use phux_protocol::wire::framing::LENGTH_PREFIX_LEN;
 
 use crate::control::{ControlError, InboundDelivery, Status, encode};
 
@@ -423,10 +424,18 @@ impl<'a> Pump<'a> {
 /// Non-Ping frames (and undecodable bytes) stay for the consumer. Ping is
 /// session liveness, not UI state: leaving it behind a stalled drain makes
 /// stall depend on the UI thread for replies.
+///
+/// Only a frame whose type byte says `PING` is decoded: the consumer decodes
+/// everything else itself, and a full decode here would copy every output
+/// payload once more just to discard it.
 fn peel_queued_pings(frames: Vec<Vec<u8>>) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
     let mut keep = Vec::with_capacity(frames.len());
     let mut pongs = Vec::new();
     for frame in frames {
+        if !is_ping_frame(&frame) {
+            keep.push(frame);
+            continue;
+        }
         match FrameKind::decode(&frame) {
             Ok((FrameKind::Ping { nonce }, [])) => {
                 pongs.push(encode(&FrameKind::Pong { nonce }));
@@ -435,6 +444,11 @@ fn peel_queued_pings(frames: Vec<Vec<u8>>) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
         }
     }
     (keep, pongs)
+}
+
+/// Whether a length-prefixed frame's type byte is `PING`.
+fn is_ping_frame(frame: &[u8]) -> bool {
+    frame.get(LENGTH_PREFIX_LEN) == Some(&TYPE_PING)
 }
 
 async fn wait_for_probe(deadline: &mut Option<Pin<Box<tokio::time::Sleep>>>) {
@@ -451,5 +465,30 @@ fn control_error(error: ControlError) -> ConnectionEnd {
         ControlError::Refused(message) => ConnectionEnd::Refused(message),
         ControlError::Resync => ConnectionEnd::Resync,
         ControlError::Closed => ConnectionEnd::Closed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FrameKind, encode, is_ping_frame, peel_queued_pings};
+
+    /// Pings are answered on the driver; every other frame, and a ping that
+    /// does not decode, stays queued for the consumer in order.
+    #[test]
+    fn only_decodable_pings_are_peeled() {
+        let ping = encode(&FrameKind::Ping { nonce: 9 });
+        let other = encode(&FrameKind::Pong { nonce: 3 });
+        let mut truncated_ping = ping.clone();
+        truncated_ping.truncate(ping.len() - 1);
+        let (keep, pongs) = peel_queued_pings(vec![
+            other.clone(),
+            ping.clone(),
+            truncated_ping.clone(),
+            vec![0, 0],
+        ]);
+        assert_eq!(keep, vec![other, truncated_ping, vec![0, 0]]);
+        assert_eq!(pongs, vec![encode(&FrameKind::Pong { nonce: 9 })]);
+        assert!(is_ping_frame(&ping));
+        assert!(!is_ping_frame(&[]));
     }
 }
