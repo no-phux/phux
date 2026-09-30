@@ -228,7 +228,7 @@ async fn host_path_picker_requires_the_negotiated_extension() {
             None,
         )
         .unwrap();
-        assert_eq!(state.path_query_supported, expected);
+        assert_eq!(state.path.supported, expected);
     }
 }
 
