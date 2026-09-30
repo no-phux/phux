@@ -721,6 +721,15 @@ local `--hub` without dropping listeners already baked into the unit.
   Treat `ssh_client` as a label the connecting side reported, not a
   verified address.
 
+A satellite is authoritative for its own Terminals and nothing else. The
+hub re-tags or vets every id a satellite sends before a hub consumer sees
+it (L1 §9.1), so a satellite cannot name a hub window, a hub client, a
+hub approval, or another Terminal's forwarded operation. It can still end
+anything about its own Terminals, including declaring one closed, which
+withdraws hub-held approvals naming it: those only ever refuse the held
+action, never run it, and a satellite could refuse the relayed action
+anyway.
+
 ### Remote consumer trust model (opt-in)
 
 A remote consumer can attach over the network without an SSH tunnel,
