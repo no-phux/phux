@@ -193,6 +193,11 @@ impl Drop for AttachedClient {
 
 impl AttachedClient {
     fn start(server: &ServerGuard, iso: &Isolation) -> Self {
+        Self::start_named(server, iso, SESSION)
+    }
+
+    /// Attach to `session`, which need not exist.
+    fn start_named(server: &ServerGuard, iso: &Isolation, session: &str) -> Self {
         let pty = native_pty_system();
         let pair = pty
             .openpty(PtySize {
@@ -207,7 +212,7 @@ impl AttachedClient {
             "attach",
             "--socket",
             server.socket.to_str().expect("UTF-8 socket path"),
-            SESSION,
+            session,
         ]);
         command.env("SHELL", "/bin/sh");
         command.env("TERM", "xterm-256color");
@@ -401,6 +406,32 @@ fn malformed_chord_keeps_detach_alive() {
         "detach must survive one malformed chord (exit {:?}); output:\n{}",
         status.exit_code(),
         client.output_text(),
+    );
+}
+
+/// Attach is lookup-only on a running server: a missing name exits non-zero
+/// and names `phux new NAME`, the verb that creates it.
+#[test]
+#[ignore = "spawns real phux processes; starves in the full parallel pool. Run via `just e2e`."]
+fn attaching_a_missing_session_names_phux_new() {
+    let iso = Isolation::new();
+    let server = ServerGuard::start(&iso);
+
+    let mut client = AttachedClient::start_named(&server, &iso, "nosuch");
+    let status = client.wait_exit();
+    assert!(
+        !status.success(),
+        "attaching a missing session must fail; output:\n{}",
+        client.output_text(),
+    );
+    client.wait_for_output("no session named \"nosuch\"");
+    client.wait_for_output("phux new nosuch");
+
+    let (code, stdout, stderr) = run_captured(&mut server.cmd(&iso, &["ls", "--json"]));
+    assert_eq!(code, 0, "ls must succeed; stderr:\n{stderr}");
+    assert!(
+        !stdout.contains("nosuch"),
+        "a refused attach must not create the session:\n{stdout}"
     );
 }
 
