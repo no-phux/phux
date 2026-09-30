@@ -96,6 +96,54 @@ async fn exact_wasm_codec_selects_native_and_renders_live_server() {
 }
 
 #[wasm_bindgen_test]
+async fn resize_reflows_the_live_terminal_and_canvas() {
+    let canvas = canvas("resize-canvas");
+    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
+        .await
+        .expect("connect to live phux server");
+    assert!(
+        wait_for_marker(&client).await,
+        "{}",
+        failure_artifact("resize", &client, "seed marker never rendered within 6s")
+    );
+    assert_eq!(
+        canvas
+            .get_attribute(phux_web::client::CONNECTION_ATTRIBUTE)
+            .as_deref(),
+        Some("connected")
+    );
+
+    client.resize(100, 30);
+    let mut reflowed = false;
+    for _ in 0..POLLS {
+        let rows = client.rows_text();
+        if rows.len() == 30 && rows.iter().all(|row| row.chars().count() == 100) {
+            reflowed = true;
+            break;
+        }
+        sleep(POLL).await;
+    }
+    assert!(
+        reflowed,
+        "{}",
+        failure_artifact("resize", &client, "grid never became 100x30")
+    );
+    // Paint lands on the next animation frame.
+    for _ in 0..POLLS {
+        if (canvas.width(), canvas.height()) == (100 * 8, 30 * 16) {
+            break;
+        }
+        sleep(POLL).await;
+    }
+    assert_eq!(
+        (canvas.width(), canvas.height()),
+        (100 * 8, 30 * 16),
+        "the canvas follows the new grid"
+    );
+    client.close();
+}
+
+#[wasm_bindgen_test]
 async fn synthesized_only_browser_remains_compatible_with_native_server() {
     let client =
         phux_web::client::run_synthesized_compat(WS_URL, canvas("synthesized-canvas"), 80, 24)

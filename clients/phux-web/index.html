@@ -26,6 +26,10 @@
         outline: 1px solid #232329;
         image-rendering: pixelated;
       }
+      /* The client marks a dropped connection while it redials. */
+      #phux-term[data-phux-connection="disconnected"] {
+        opacity: 0.45;
+      }
       .hint {
         color: #6a6a73;
       }
