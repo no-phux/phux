@@ -119,6 +119,7 @@ NATIVE_SDK_GPU_SHOT_DIR="${OUT}/shots" \
 NATIVE_SDK_GPU_SHOT_EVERY=1 \
 PHUX_COCKPIT_CONFIG="${OUT}/config" \
 PHUX_COCKPIT_STATE="${OUT}/workspace.state" \
+PHUX_COCKPIT_GHOSTTY_CONFIG= \
     "$APP_PATH" >"${OUT}/app.log" 2>&1 &
 APP_PID=$!
 printf 'launched pid=%s out=%s\n' "$APP_PID" "$OUT"

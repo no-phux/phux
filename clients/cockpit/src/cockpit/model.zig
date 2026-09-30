@@ -7,6 +7,7 @@ const local = @import("../providers/local/provider.zig");
 const topology = @import("topology.zig");
 const layout = @import("layout.zig");
 const config_module = @import("../config/config.zig");
+const ghostty_module = @import("../config/ghostty.zig");
 const session_state = @import("session_state.zig");
 const url_module = @import("../terminal/url.zig");
 
@@ -696,6 +697,9 @@ pub const Model = struct {
     /// Layout and config file destinations; disabled (no disk) by default.
     state: StatePersistence = .{},
     config_file: ConfigFile = .{},
+    /// Where the Ghostty layer under `config` is read from; disabled (no
+    /// disk) by default, set once at startup.
+    ghostty: ghostty_module.Locator = .{},
     /// Observable record of posted desktop notifications.
     notified_title_buf: [max_notification_title_bytes]u8 = undefined,
     notified_title_len: usize = 0,
@@ -1822,11 +1826,11 @@ fn decodeTab(snapshot: *const TopologySnapshot, tab: topology.SnapshotTab) layou
 /// cursor colour (as an override, so tokens do not overwrite it) and cursor
 /// style. Call after `spawnPane`, whose reset would drop them.
 pub fn applySessionConfig(cfg: *const Config, session: *grid.Session) void {
-    for (cfg.palette, 0..) |maybe_color, index| {
-        const color = maybe_color orelse continue;
+    for (0..cfg.palette.len) |index| {
+        const color = cfg.resolvedPalette(index) orelse continue;
         session.term.colors.palette.set(@intCast(index), .{ .r = color.r, .g = color.g, .b = color.b });
     }
-    if (cfg.cursor_color) |color| {
+    if (cfg.resolvedCursorColor()) |color| {
         session.term.colors.cursor.set(.{ .r = color.r, .g = color.g, .b = color.b });
     }
     session.term.setDefaultCursorStyle(switch (cfg.cursor_style) {

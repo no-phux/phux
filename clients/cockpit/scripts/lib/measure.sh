@@ -225,7 +225,9 @@ measure_launch_isolated() {
     # shellcheck disable=SC2034 # output variable consumed by --keep callers
     MEASURE_DROPBOX="${home}/.zig-cache/native-sdk-automation"
 
-    dev_app_launch "$executable" "$home" "$config" "$log"
+    # A measurement must not depend on whoever runs it having a Ghostty
+    # config: an empty value turns the Ghostty font/colour adoption off.
+    dev_app_launch "$executable" "$home" "$config" "$log" PHUX_COCKPIT_GHOSTTY_CONFIG=
     # shellcheck disable=SC2034 # output variable consumed by the caller
     MEASURE_APP_PID="$DEV_APP_PID"
 }

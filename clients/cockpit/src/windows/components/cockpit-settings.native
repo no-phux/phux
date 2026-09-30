@@ -144,6 +144,10 @@
                     <button size="sm" variant="outline" on-press="settings_edit_configuration">Edit Configuration</button>
                     <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="settings_reload">Reload Configuration</button>
                   </row>
+                  <if test="{appearance.ghostty}">
+                    <text wrap="true" foreground="text_muted">{appearance.ghostty}</text>
+                    <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="settings_reload">Re-import from Ghostty</button>
+                  </if>
                 </if>
                 <if test="{settingsSection == 4}">
                   <text wrap="true">{workspaceLabel}</text>

@@ -1254,13 +1254,14 @@ test "appearance save edits only changed keys and keeps a failed save cancellabl
     try std.testing.expectEqualStrings(original, buffer[0..length]);
     state.apply(model, &.{ 1, 7, 0 });
     try std.testing.expectEqual(.saved, state.outcome);
-    try std.testing.expectEqual(@as(f32, 14), model.config.font_size);
+    // One step up from the 14pt default.
+    try std.testing.expectEqual(@as(f32, 15), model.config.font_size);
     try std.testing.expectEqual(@as(f32, 0), model.font_size_offset);
     file = try tmp.dir.openFile(io, "config", .{});
     length = try file.readPositionalAll(io, &buffer, 0);
     file.close(io);
     try std.testing.expect(std.mem.startsWith(u8, buffer[0..length], original));
-    try std.testing.expect(std.mem.indexOf(u8, buffer[0..length], "font-size = 14") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buffer[0..length], "font-size = 15") != null);
     model.config_file.setPath("/dev/null/impossible/config");
     state.apply(model, &.{ 1, 0, 0 });
     state.apply(model, &.{ 1, 2, 0 });
@@ -1268,7 +1269,7 @@ test "appearance save edits only changed keys and keeps a failed save cancellabl
     try std.testing.expectEqual(.refused, state.outcome);
     try std.testing.expect(state.initial != null);
     state.apply(model, &.{ 1, 6, 0 });
-    try std.testing.expectEqual(@as(f32, 14), model.fontSize());
+    try std.testing.expectEqual(@as(f32, 15), model.fontSize());
 }
 
 test "appearance refuses malformed configs and dangling links without replacing them" {
@@ -1299,7 +1300,7 @@ test "appearance refuses malformed configs and dangling links without replacing 
     const link_length = try tmp.dir.readLink(io, "config", &buffer);
     try std.testing.expectEqualStrings("missing-target", buffer[0..link_length]);
     state.apply(engine.model, &.{ 1, 6, 0 });
-    try std.testing.expectEqual(@as(f32, 13), engine.model.fontSize());
+    try std.testing.expectEqual(@as(f32, 14), engine.model.fontSize());
 }
 
 test "appearance creates an absent configuration and restores system-following mode on cancel" {
