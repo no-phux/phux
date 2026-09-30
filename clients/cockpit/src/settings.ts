@@ -36,7 +36,7 @@ function setting(id: number, section: number, label: string, defaults: string, a
 export function settingsCatalog(): readonly Setting[] {
   return [
     setting(0, 0, "Font family", "JetBrains Mono NL Nerd Font Mono (bundled)", "All terminal views. Blank restores the bundled face; Geist Mono selects the other shipped face. Other fonts are unsupported.", "Live preview", true, 2),
-    setting(1, 0, "Font size", "13 pt", "All terminal views. 4 to 72 points.", "Live preview", true, 5),
+    setting(1, 0, "Font size", "14 pt, or your Ghostty font-size", "All terminal views. 4 to 72 points.", "Live preview", true, 5),
     setting(2, 0, "Theme / follow system", "Cockpit default", "Use auto to follow macOS. Explicit foreground/background take precedence.", "Live preview", true, 0),
     setting(3, 0, "Minimum contrast", "3", "All Cockpit terminal views, including Phux. Changes presentation without changing source colors. 1 disables the floor; 21 is maximum.", "Live preview", true, 0),
     setting(4, 1, "Cursor style", "block", "Scratch terminal default: block, bar, underline. Phux and terminal applications own their cursors.", "Live scratch preview", true, 3),

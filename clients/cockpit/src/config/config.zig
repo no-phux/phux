@@ -150,7 +150,7 @@ pub const Diagnostic = struct {
 };
 
 /// A bounded string field that owns its bytes.
-fn Text(comptime capacity: usize) type {
+pub fn Text(comptime capacity: usize) type {
     return struct {
         const Self = @This();
 
@@ -213,7 +213,13 @@ fn truncateUtf8(text: []const u8, limit: usize) []const u8 {
 /// runaway cmd+= cannot wedge the app.
 pub const min_font_size: f32 = 4;
 pub const max_font_size: f32 = 72;
-pub const default_font_size: f32 = 13;
+/// One point above Ghostty's macOS default (13, per `ghostty +show-config
+/// --default`). Measured, not guessed: Cockpit already inks glyphs as heavily
+/// as Ghostty's maximum `font-thicken` (docs/RENDER_FIDELITY.md section 7), so
+/// what made 13 read thin beside the owner's Ghostty was that Ghostty's
+/// `font-size = 14`, not the rasterizer. 14 is the legible size, and a Ghostty
+/// user's own `font-size` replaces it anyway (`ghostty.zig`).
+pub const default_font_size: f32 = 14;
 
 /// Scrollback bounds, in bytes. Ghostty's default is 50 MB and that is what
 /// a daily driver needs; the old 1 MB held only a few hundred rows.
@@ -231,6 +237,35 @@ pub const max_minimum_contrast: f32 = 21;
 /// above it, so 3 lifts exactly the unreadable cells. Not 4.5: the floor
 /// replaces a colour with pure white/black, which would erase de-emphasis greys.
 pub const default_minimum_contrast: f32 = 3;
+
+/// How much of a source path the settings surface quotes back.
+pub const max_inherited_source_bytes: usize = 256;
+pub const InheritedSource = Text(max_inherited_source_bytes);
+
+/// Font and colour defaults adopted from the user's Ghostty config (see
+/// `ghostty.zig`). They sit BELOW every Cockpit setting: an explicit key wins,
+/// and for foreground, background and selection a named Cockpit theme wins
+/// too. Nothing here is ever written back to Cockpit's own file.
+pub const Inherited = struct {
+    /// The Ghostty file they came from, `~`-abbreviated; empty when no
+    /// Ghostty config was found.
+    source: InheritedSource = .{},
+    /// The Cockpit `font-family` value Ghostty's family maps onto; null when
+    /// Ghostty names none, or one Cockpit has no face for.
+    font_family: ?FontFamily = null,
+    /// Ghostty's primary family exactly as written, adopted or not.
+    requested_font: FontFamily = .{},
+    font_size: ?f32 = null,
+    background: ?Rgb = null,
+    foreground: ?Rgb = null,
+    cursor_color: ?Rgb = null,
+    selection_background: ?Rgb = null,
+    palette: [palette_len]?Rgb = [_]?Rgb{null} ** palette_len,
+
+    pub fn found(inherited: *const Inherited) bool {
+        return inherited.source.len != 0;
+    }
+};
 
 pub const Config = struct {
     font_family: FontFamily = FontFamily.init(""),
@@ -291,10 +326,24 @@ pub const Config = struct {
 
     window_padding: f32 = 8,
 
+    /// The Ghostty layer the defaults above were seeded from. Kept so a
+    /// Settings reset returns to it and the colour resolvers fall back to it.
+    inherited: Inherited = .{},
+
     diagnostics: [max_diagnostics]Diagnostic = [_]Diagnostic{.{}} ** max_diagnostics,
     diagnostic_count: usize = 0,
     /// Validation is not capped when the display diagnostic buffer is full.
     has_errors: bool = false,
+
+    /// The defaults a Ghostty user starts from: Cockpit's own with the adopted
+    /// font in place. Colours stay in `inherited`, read through `resolved*`,
+    /// so a Cockpit theme can still outrank them.
+    pub fn seeded(inherited: Inherited) Config {
+        var config: Config = .{ .inherited = inherited };
+        if (inherited.font_size) |size| config.font_size = size;
+        if (inherited.font_family) |family| config.font_family = family;
+        return config;
+    }
 
     pub fn fontSize(config: *const Config) f32 {
         return std.math.clamp(config.font_size, min_font_size, max_font_size);
@@ -311,24 +360,35 @@ pub const Config = struct {
         return theme_module.byName(name);
     }
 
-    /// Colour precedence: explicit key, then the named theme, then null (the
-    /// app's own tokens). Resolved at read time so file order does not matter.
+    /// Colour precedence: explicit key, then the named theme, then the colour
+    /// adopted from Ghostty, then null (the app's own tokens). Resolved at
+    /// read time so file order does not matter.
     pub fn resolvedForeground(config: *const Config) ?Rgb {
         if (config.foreground) |explicit| return explicit;
-        const active = config.resolvedTheme() orelse return null;
-        return fromThemeRgb(active.foreground);
+        if (config.resolvedTheme()) |active| return fromThemeRgb(active.foreground);
+        return config.inherited.foreground;
     }
 
     pub fn resolvedBackground(config: *const Config) ?Rgb {
         if (config.background) |explicit| return explicit;
-        const active = config.resolvedTheme() orelse return null;
-        return fromThemeRgb(active.background);
+        if (config.resolvedTheme()) |active| return fromThemeRgb(active.background);
+        return config.inherited.background;
     }
 
     pub fn resolvedSelectionBackground(config: *const Config) ?Rgb {
         if (config.selection_background) |explicit| return explicit;
-        const active = config.resolvedTheme() orelse return null;
-        return fromThemeRgb(active.selection_background);
+        if (config.resolvedTheme()) |active| return fromThemeRgb(active.selection_background);
+        return config.inherited.selection_background;
+    }
+
+    /// Themes set neither the cursor nor the palette (see `theme.zig`), so
+    /// these fall straight from the explicit key to the adopted one.
+    pub fn resolvedCursorColor(config: *const Config) ?Rgb {
+        return config.cursor_color orelse config.inherited.cursor_color;
+    }
+
+    pub fn resolvedPalette(config: *const Config, index: usize) ?Rgb {
+        return config.palette[index] orelse config.inherited.palette[index];
     }
 
     /// Adopt a known theme by name; false when nothing changed. Naming a theme
@@ -428,7 +488,13 @@ pub fn validPhuxSession(value: []const u8) bool {
 /// diagnostic and the remaining lines still apply. This is deliberate —
 /// a typo in one setting must not drop someone into a default terminal.
 pub fn parse(source: []const u8) Config {
-    var config: Config = .{};
+    return parseOver(.{}, source);
+}
+
+/// `parse` over defaults seeded from an adopted Ghostty layer. Every line of
+/// `source` outranks the layer; diagnostics describe `source` alone.
+pub fn parseOver(inherited: Inherited, source: []const u8) Config {
+    var config = Config.seeded(inherited);
     var line_number: u32 = 0;
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |raw_line| {
@@ -740,7 +806,12 @@ pub fn joinPath(config_dir: []const u8, output: []u8) error{NoSpaceLeft}![]const
 
 /// Parse bytes the caller read, or defaults when there were none.
 pub fn loadOrDefault(bytes: ?[]const u8) Config {
-    return parse(bytes orelse return .{});
+    return loadOver(.{}, bytes);
+}
+
+/// `loadOrDefault` over an adopted Ghostty layer.
+pub fn loadOver(inherited: Inherited, bytes: ?[]const u8) Config {
+    return parseOver(inherited, bytes orelse return Config.seeded(inherited));
 }
 
 test "last explicit theme assignment ends system following" {

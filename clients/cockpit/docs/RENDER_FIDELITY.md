@@ -681,3 +681,12 @@ What does differ from that Ghostty setup is not the rasterizer: it asks for
 Cockpit's `#f4f7fb`), and `minimum-contrast = 1.1` where Cockpit's floor is 3
 (section 3b). Size is the only one of those that makes Cockpit's text read
 smaller, and it is configuration, not rendering.
+
+What was done about it: the default size is now 14pt, and Cockpit adopts a
+Ghostty user's own `font-size`, `font-family`, colours and palette as its
+defaults (README, "Adopted from Ghostty"). `font-thicken` is deliberately not
+adopted: by the table above it could only make Cockpit lighter. Cockpit's own
+default foreground stays the design token `#f4f7fb`; the dimmer `#c5d0cd` is
+the owner's Ghostty choice, and it now arrives with the rest of that config.
+The harness above still measures 13pt, because its pinned numbers are 13pt
+numbers.

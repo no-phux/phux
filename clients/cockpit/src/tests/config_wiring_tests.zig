@@ -11,7 +11,8 @@ const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
 const testing = std.testing;
 
-// Every test below uses `font-size = 26`, never the default 13, and that is
+// Every test below uses `font-size = 26`, never the default (13 when this was
+// written), and that is
 // load-bearing rather than arbitrary. The bug they guard was a pair of
 // hardcoded metric defaults, `cell_width = 8` and `cell_height = 18`. The SDK
 // derives an unmeasured cell as `round(font_size * 0.6)` by
