@@ -21,7 +21,6 @@ use std::time::Duration;
 use phux_client_core::engine::ghostty::GhosttyAdapter;
 use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::session::SessionKernel;
-use phux_protocol::ResourceKind;
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{ClientId, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{
@@ -51,7 +50,9 @@ use crate::attach::pane_state::{AttentionNavigation, VcsIndex, reanchor_predict_
 use crate::attach::path_picker;
 use crate::attach::plugin_actions::{self, PluginRunResult};
 use crate::attach::repaint::{PaintPacer, RepaintAccumulator, RepaintLevel};
-use crate::attach::server_frame::{FrameEnv, FrameOutcome, handle_server_frame};
+use crate::attach::server_frame::{
+    FrameEnv, FrameOutcome, attach_participants, handle_server_frame,
+};
 use crate::attach::session_mirror::SessionMirror;
 use crate::attach::tty_input::TtyInput;
 use crate::predict::{PredictionState, PredictiveConfig};
@@ -1293,10 +1294,8 @@ impl SessionLoop {
         if conn.multistream_enabled()
             && let FrameKind::Attached { snapshot, .. } = &initial_attached
         {
-            for resource in &snapshot.resources {
-                if resource.kind == ResourceKind::Terminal {
-                    conn.bind_terminal(&resource.id).await?;
-                }
+            for terminal_id in attach_participants(snapshot) {
+                conn.bind_terminal(&terminal_id).await?;
             }
         }
         let moment = self
@@ -2139,10 +2138,8 @@ impl SessionLoop {
         }
         match frame {
             FrameKind::Attached { snapshot, .. } => {
-                for resource in &snapshot.resources {
-                    if resource.kind == ResourceKind::Terminal {
-                        conn.bind_terminal(&resource.id).await?;
-                    }
+                for terminal_id in attach_participants(snapshot) {
+                    conn.bind_terminal(&terminal_id).await?;
                 }
             }
             // A local spawn: bind its Terminal stream before the frame's
