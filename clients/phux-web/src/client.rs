@@ -23,15 +23,16 @@ use futures_channel::oneshot;
 use futures_util::future::{Either, select};
 use gloo_timers::future::TimeoutFuture;
 use phux_protocol::BootstrapProfile;
-use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::FrameKind;
 use phux_vt_web::Vt;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
-    BinaryType, CanvasRenderingContext2d, HtmlCanvasElement, KeyboardEvent, MessageEvent,
-    ReadableStreamDefaultReader, WebSocket, WebTransport, WritableStreamDefaultWriter,
+    BinaryType, CanvasRenderingContext2d, ClipboardEvent, CompositionEvent, HtmlCanvasElement,
+    HtmlTextAreaElement, KeyboardEvent, MessageEvent, ReadableStreamDefaultReader, WebSocket,
+    WebTransport, WritableStreamDefaultWriter,
 };
 
 use crate::framing::FrameBuffer;
@@ -227,7 +228,7 @@ pub async fn run_hosted(
     await_protocol_ready(&app, ready, deadline.remaining_ms()).await?;
     ensure_app_live(&app)?;
 
-    install_keyboard(&app)?;
+    install_input(&app)?;
     path_picker::install(&app)?;
     install_cursor_blink(&app)?;
 
@@ -274,7 +275,7 @@ async fn run_websocket(
     await_protocol_ready(&app, ready, deadline.remaining_ms()).await?;
     ensure_app_live(&app)?;
 
-    install_keyboard(&app)?;
+    install_input(&app)?;
     path_picker::install(&app)?;
     install_cursor_blink(&app)?;
 
@@ -394,7 +395,7 @@ async fn run_webtransport_loaded(
     await_protocol_ready(&app, ready, deadline.remaining_ms()).await?;
     ensure_app_live(&app)?;
 
-    install_keyboard(&app)?;
+    install_input(&app)?;
     path_picker::install(&app)?;
     install_cursor_blink(&app)?;
 
@@ -727,7 +728,7 @@ impl OutboundQueue {
 #[derive(Default)]
 struct AppBindings {
     websocket: Option<WebSocketBindings>,
-    keyboard: Option<KeyboardBinding>,
+    input: Option<InputBinding>,
     path_picker: Option<path_picker::PickerBinding>,
     blink: Option<BlinkBinding>,
     bootstrap_expiry: Option<BlinkBinding>,
@@ -739,8 +740,8 @@ impl AppBindings {
         if let Some(websocket) = self.websocket.take() {
             websocket.dispose();
         }
-        if let Some(keyboard) = self.keyboard.take() {
-            keyboard.dispose();
+        if let Some(input) = self.input.take() {
+            input.dispose();
         }
         if let Some(picker) = self.path_picker.take() {
             picker.dispose();
@@ -775,16 +776,46 @@ impl WebSocketBindings {
     }
 }
 
-struct KeyboardBinding {
-    document: web_sys::Document,
-    callback: Closure<dyn FnMut(KeyboardEvent)>,
+/// Class of the hidden `<textarea>` that owns terminal input.
+pub const INPUT_SURFACE_CLASS: &str = "phux-web-input";
+
+/// The input surface and every listener it and the canvas carry.
+struct InputBinding {
+    surface: HtmlTextAreaElement,
+    listeners: Vec<Listener>,
 }
 
-impl KeyboardBinding {
+struct Listener {
+    target: web_sys::EventTarget,
+    kind: &'static str,
+    callback: Closure<dyn FnMut(web_sys::Event)>,
+}
+
+impl InputBinding {
+    fn listen(
+        &mut self,
+        target: &web_sys::EventTarget,
+        kind: &'static str,
+        handler: impl FnMut(web_sys::Event) + 'static,
+    ) -> Result<(), JsValue> {
+        let callback = Closure::<dyn FnMut(web_sys::Event)>::new(handler);
+        target.add_event_listener_with_callback(kind, callback.as_ref().unchecked_ref())?;
+        self.listeners.push(Listener {
+            target: target.clone(),
+            kind,
+            callback,
+        });
+        Ok(())
+    }
+
     fn dispose(self) {
-        let _ = self
-            .document
-            .remove_event_listener_with_callback("keydown", self.callback.as_ref().unchecked_ref());
+        for listener in self.listeners {
+            let _ = listener.target.remove_event_listener_with_callback(
+                listener.kind,
+                listener.callback.as_ref().unchecked_ref(),
+            );
+        }
+        self.surface.remove();
     }
 }
 
@@ -914,6 +945,26 @@ impl App {
             .or_else(|| document.body().map(Into::into))?;
         parent.append_child(&container).ok()?;
         Some(container)
+    }
+
+    /// Move the input surface over the cursor cell, so an IME candidate
+    /// window opens where the text will land.
+    fn place_input_surface(&self) {
+        let bindings = self.bindings.borrow();
+        let Some(input) = bindings.input.as_ref() else {
+            return;
+        };
+        let rect = self.canvas.get_bounding_client_rect();
+        let grid = self.session.grid();
+        // CSS may scale the canvas; map device cells to client pixels.
+        let scale_x = rect.width() / f64::from(self.canvas.width().max(1));
+        let scale_y = rect.height() / f64::from(self.canvas.height().max(1));
+        let left = rect.left() + f64::from(grid.cursor_col) * self.metrics.cell_w * scale_x;
+        let top = rect.top() + f64::from(grid.cursor_row) * self.metrics.cell_h * scale_y;
+        let _ = input.surface.set_attribute(
+            "style",
+            &format!("{INPUT_SURFACE_STYLE}left:{left}px;top:{top}px;"),
+        );
     }
 
     fn paint(&self) {
@@ -1656,46 +1707,211 @@ fn close_webtransport_exit(app: &Rc<RefCell<App>>, message: &str, protocol: bool
     app.fail(message);
 }
 
-/// Keyboard: each keydown becomes an `INPUT_KEY` for the attached terminal.
-fn install_keyboard(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
-    let document = web_sys::window()
-        .and_then(|w| w.document())
+/// Inline style of the input surface: invisible and inert to the pointer,
+/// but a real focusable text control so the browser runs IME composition,
+/// dead keys, mobile keyboards, and clipboard paste against it.
+const INPUT_SURFACE_STYLE: &str = "position:fixed;width:1px;height:1px;padding:0;border:0;\
+margin:0;opacity:0;resize:none;overflow:hidden;white-space:pre;pointer-events:none;\
+caret-color:transparent;";
+
+/// Keyboard, IME, and paste: a hidden `<textarea>` beside the canvas owns
+/// terminal input. Focusing or clicking the canvas focuses it, so only keys
+/// typed at the terminal become `INPUT_KEY`; the embedding page's other
+/// controls keep theirs. Keydowns the terminal encodes are sent and
+/// cancelled; composed text arrives as `compositionend` or `input`, and a
+/// clipboard paste as one `INPUT_PASTE`.
+fn install_input(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
+    let canvas = app.borrow().canvas.clone();
+    let document = canvas
+        .owner_document()
         .ok_or_else(|| JsValue::from_str("no document"))?;
-    let weak = Rc::downgrade(app);
-    let onkey = Closure::<dyn FnMut(KeyboardEvent)>::new(move |e: KeyboardEvent| {
-        if path_picker::is_picker_event(&e) {
-            return;
-        }
-        let Some(app) = weak.upgrade() else {
-            return;
-        };
-        let Some(event) = key_event_from_browser(&e) else {
-            return;
-        };
-        let mut a = app.borrow_mut();
-        if let Some(frame) = a.session.key_frame(event) {
-            if let Err(message) = a.tx.send(&frame) {
-                drop(a);
-                close_with_transport_error(&app, &message);
-                return;
+    let surface = create_input_surface(&document, &canvas)?;
+    let mut binding = InputBinding {
+        surface: surface.clone(),
+        listeners: Vec::new(),
+    };
+    let handlers: [(&str, InputHandler); 5] = [
+        ("keydown", on_keydown),
+        ("compositionstart", |app, _, _| {
+            app.borrow().place_input_surface()
+        }),
+        ("compositionend", on_composition_end),
+        ("input", on_text_input),
+        ("paste", on_paste),
+    ];
+    for (kind, handler) in handlers {
+        let weak = Rc::downgrade(app);
+        let target = surface.clone();
+        binding.listen(&surface, kind, move |event| {
+            if let Some(app) = weak.upgrade() {
+                handler(&app, &event, &target);
             }
-            e.prevent_default();
-        }
-    });
-    document.add_event_listener_with_callback("keydown", onkey.as_ref().unchecked_ref())?;
-    let old = app
-        .borrow()
-        .bindings
-        .borrow_mut()
-        .keyboard
-        .replace(KeyboardBinding {
-            document,
-            callback: onkey,
-        });
+        })?;
+    }
+    for kind in ["focus", "mousedown"] {
+        let target = surface.clone();
+        binding.listen(&canvas, kind, move |event| {
+            if event.type_() == "mousedown" {
+                // Keep the canvas from taking focus back from the surface.
+                event.prevent_default();
+            }
+            let _ = target.focus();
+        })?;
+    }
+
+    let old = app.borrow().bindings.borrow_mut().input.replace(binding);
     if let Some(old) = old {
         old.dispose();
     }
+    if focus_is_idle(&document) {
+        app.borrow().place_input_surface();
+        let _ = surface.focus();
+    }
     Ok(())
+}
+
+type InputHandler = fn(&Rc<RefCell<App>>, &web_sys::Event, &HtmlTextAreaElement);
+
+/// The hidden, focusable text control, mounted beside the canvas.
+fn create_input_surface(
+    document: &web_sys::Document,
+    canvas: &HtmlCanvasElement,
+) -> Result<HtmlTextAreaElement, JsValue> {
+    let surface: HtmlTextAreaElement = document.create_element("textarea")?.dyn_into()?;
+    surface.set_class_name(INPUT_SURFACE_CLASS);
+    for (name, value) in [
+        ("aria-label", "Terminal input"),
+        ("autocomplete", "off"),
+        ("autocorrect", "off"),
+        ("autocapitalize", "off"),
+        ("spellcheck", "false"),
+        ("tabindex", "-1"),
+        ("style", INPUT_SURFACE_STYLE),
+    ] {
+        surface.set_attribute(name, value)?;
+    }
+    let parent = canvas
+        .parent_element()
+        .or_else(|| document.body().map(Into::into))
+        .ok_or_else(|| JsValue::from_str("no element to host the input surface"))?;
+    parent.append_child(&surface)?;
+    Ok(surface)
+}
+
+/// Whether nothing holds focus: a fresh page, or a reconnect whose previous
+/// surface held it. The terminal takes focus then, so typing works without
+/// a click, but never from another control the user is in.
+fn focus_is_idle(document: &web_sys::Document) -> bool {
+    document
+        .active_element()
+        .is_none_or(|active| document.body().is_some_and(|body| active == *body.as_ref()))
+}
+
+/// Send one routed keydown; cancel the browser default only when sent.
+fn on_keydown(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
+    let Some(event) = event.dyn_ref::<KeyboardEvent>() else {
+        return;
+    };
+    let key = event.key();
+    let code = event.code();
+    let routed = crate::input::route_key(&crate::input::BrowserKey {
+        key: &key,
+        code: &code,
+        ctrl: event.ctrl_key(),
+        shift: event.shift_key(),
+        alt: event.alt_key(),
+        meta: event.meta_key(),
+        alt_graph: event.get_modifier_state("AltGraph"),
+        repeat: event.repeat(),
+        // Safari reports the keydown that starts a composition as 229
+        // before `isComposing` turns true.
+        composing: event.is_composing() || event.key_code() == 229,
+    });
+    if let Some(key) = routed
+        && send_input(app, [InputEvent::Key(key)])
+    {
+        event.prevent_default();
+    }
+}
+
+/// An IME or dead-key composition committed its text.
+fn on_composition_end(
+    app: &Rc<RefCell<App>>,
+    event: &web_sys::Event,
+    surface: &HtmlTextAreaElement,
+) {
+    if let Some(text) = event
+        .dyn_ref::<CompositionEvent>()
+        .and_then(CompositionEvent::data)
+    {
+        send_input(app, text_input_events(&text));
+    }
+    surface.set_value("");
+}
+
+/// Text inserted without a composition (mobile keyboards, dictation, an
+/// emoji picker). Composition commits arrive as `compositionend` instead,
+/// whichever order the browser fires the two in.
+fn on_text_input(app: &Rc<RefCell<App>>, event: &web_sys::Event, surface: &HtmlTextAreaElement) {
+    let Some(event) = event.dyn_ref::<web_sys::InputEvent>() else {
+        return;
+    };
+    if event.is_composing() {
+        return;
+    }
+    let plain = matches!(
+        event.input_type().as_str(),
+        "insertText" | "insertReplacementText"
+    );
+    if plain && let Some(text) = event.data() {
+        send_input(app, text_input_events(&text));
+    }
+    surface.set_value("");
+}
+
+/// A clipboard paste becomes one `INPUT_PASTE`; nothing lands in the surface.
+fn on_paste(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
+    event.prevent_default();
+    let text = event
+        .dyn_ref::<ClipboardEvent>()
+        .and_then(ClipboardEvent::clipboard_data)
+        .and_then(|data| data.get_data("text/plain").ok())
+        .unwrap_or_default();
+    match crate::input::paste_event(&text) {
+        Some(paste) => {
+            send_input(app, [InputEvent::Paste(paste)]);
+        }
+        None if !text.is_empty() => web_sys::console::warn_1(&JsValue::from_str(
+            "phux-web: paste larger than the 512 KiB limit was not sent",
+        )),
+        None => {}
+    }
+}
+
+fn text_input_events(text: &str) -> Vec<InputEvent> {
+    crate::input::key_events_for_text(text)
+        .into_iter()
+        .map(InputEvent::Key)
+        .collect()
+}
+
+/// Encode and send input atoms for the focused terminal. Returns whether any
+/// was sent; a transport failure closes the connection.
+fn send_input(app: &Rc<RefCell<App>>, events: impl IntoIterator<Item = InputEvent>) -> bool {
+    let mut sent = false;
+    for event in events {
+        let mut a = app.borrow_mut();
+        let Some(frame) = a.session.input_frame(event) else {
+            return sent;
+        };
+        if let Err(message) = a.tx.send(&frame) {
+            drop(a);
+            close_with_transport_error(app, &message);
+            return false;
+        }
+        sent = true;
+    }
+    sent
 }
 
 /// Cursor blink: toggle the phase and repaint on a fixed cadence.
@@ -1755,92 +1971,6 @@ fn install_bootstrap_expiry(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
             callback,
         });
     Ok(())
-}
-
-/// Map a browser `KeyboardEvent` to a wire `KeyEvent`. Returns `None` for
-/// modifier-only keydowns (which carry no terminal input on their own).
-fn key_event_from_browser(e: &KeyboardEvent) -> Option<KeyEvent> {
-    let key = code_to_physical_key(&e.code());
-
-    let mut mods = ModSet::empty();
-    if e.ctrl_key() {
-        mods |= ModSet::CTRL;
-    }
-    if e.shift_key() {
-        mods |= ModSet::SHIFT;
-    }
-    if e.alt_key() {
-        mods |= ModSet::ALT;
-    }
-    if e.meta_key() {
-        mods |= ModSet::SUPER;
-    }
-
-    // `key()` is the produced character; carry it as text for printable keys
-    // (single char, no Ctrl/Meta). Named keys ("Enter", "Shift", …) are >1 char.
-    let produced = e.key();
-    if produced == "Shift" || produced == "Control" || produced == "Alt" || produced == "Meta" {
-        return None;
-    }
-    let text =
-        (produced.chars().count() == 1 && !e.ctrl_key() && !e.meta_key()).then_some(produced);
-
-    Some(KeyEvent {
-        action: KeyAction::Press,
-        key,
-        mods,
-        consumed_mods: ModSet::empty(),
-        composing: false,
-        text,
-        unshifted_codepoint: None,
-    })
-}
-
-/// Map a W3C `KeyboardEvent.code` to libghostty's physical-key discriminant.
-/// `KeyA`–`KeyZ` and `Digit0`–`Digit9` map arithmetically; the rest by name.
-fn code_to_physical_key(code: &str) -> PhysicalKey {
-    use PhysicalKey as K;
-
-    if let Some(c) = code.strip_prefix("Key").and_then(|s| s.chars().next())
-        && c.is_ascii_uppercase()
-    {
-        return PhysicalKey::try_from(20 + (c as u32 - u32::from(b'A'))).unwrap_or(K::Unidentified);
-    }
-    if let Some(d) = code.strip_prefix("Digit").and_then(|s| s.chars().next())
-        && d.is_ascii_digit()
-    {
-        return PhysicalKey::try_from(6 + (d as u32 - u32::from(b'0'))).unwrap_or(K::Unidentified);
-    }
-
-    match code {
-        "Enter" | "NumpadEnter" => K::Enter,
-        "Backspace" => K::Backspace,
-        "Tab" => K::Tab,
-        "Space" => K::Space,
-        "Escape" => K::Escape,
-        "ArrowUp" => K::ArrowUp,
-        "ArrowDown" => K::ArrowDown,
-        "ArrowLeft" => K::ArrowLeft,
-        "ArrowRight" => K::ArrowRight,
-        "Home" => K::Home,
-        "End" => K::End,
-        "PageUp" => K::PageUp,
-        "PageDown" => K::PageDown,
-        "Delete" => K::Delete,
-        "Insert" => K::Insert,
-        "Minus" => K::Minus,
-        "Equal" => K::Equal,
-        "Period" => K::Period,
-        "Comma" => K::Comma,
-        "Slash" => K::Slash,
-        "Semicolon" => K::Semicolon,
-        "Quote" => K::Quote,
-        "Backslash" => K::Backslash,
-        "BracketLeft" => K::BracketLeft,
-        "BracketRight" => K::BracketRight,
-        "Backquote" => K::Backquote,
-        _ => K::Unidentified,
-    }
 }
 
 #[cfg(test)]
@@ -2314,7 +2444,7 @@ mod tests {
             let (app, _ready) = super::build_app(&vt, tx, test_canvas(), 80, 24, false).unwrap();
             super::install_transport_failure_hook(&app);
             super::install_websocket_handlers(&app, &ws);
-            super::install_keyboard(&app).unwrap();
+            super::install_input(&app).unwrap();
             super::install_cursor_blink(&app).unwrap();
             app.borrow().self_owner.replace(Some(Rc::clone(&app)));
             let weak = Rc::downgrade(&app);
@@ -2326,7 +2456,7 @@ mod tests {
                 let app = app.borrow();
                 let bindings = app.bindings.borrow();
                 assert!(bindings.websocket.is_none());
-                assert!(bindings.keyboard.is_none());
+                assert!(bindings.input.is_none());
                 assert!(bindings.blink.is_none());
                 assert!(bindings.bootstrap_expiry.is_none());
             }

@@ -9,6 +9,7 @@
 
 pub mod client;
 pub mod framing;
+pub mod input;
 pub mod session;
 
 pub use session::{AgentBadge, Outcome, Session};
