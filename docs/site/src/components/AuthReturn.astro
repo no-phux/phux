@@ -14,6 +14,7 @@
       );
       window.close();
     } else {
+      document.documentElement.dataset.nativeAuthResult = result;
       const url = new URL(window.location.href);
       url.searchParams.delete("auth");
       history.replaceState({}, "", url);

@@ -37,8 +37,10 @@ it stays quiet.
 
 ### Shape and spacing
 
-- All radii are zero. Surfaces meet on exact rules; nothing floats in a lozenge.
-- Shadows and ornamental gradients are prohibited.
+- Docs and ordinary page surfaces remain square and rule-aligned.
+- The interactive showcase and live-terminal dialog use rounded frames and a
+  restrained shadow to distinguish the pop-open workspace from the page.
+  The terminal interior remains undecorated; no ornamental gradients.
 - Light rules divide peers. A heavy or accent rule marks focus and ownership.
 - `--page-gutter`: fluid page edge spacing. The canvas is flat; the live
   terminal is the texture, not a page grid.
@@ -51,7 +53,9 @@ it stays quiet.
 - Prose links use accent color and are underlined by default; hover/focus
   strengthens the underline.
 - Focus always has a visible two-pixel square outline.
-- Motion is limited to state changes. No entrance motion or decorative drift.
+- Motion is limited to user-triggered state changes: pane transitions and the
+  terminal dialog opening. Respect reduced motion; no decorative drift or
+  continuously running animation in the multiplexing diagram.
 
 ### Technical text
 

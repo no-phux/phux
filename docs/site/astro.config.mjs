@@ -78,8 +78,8 @@ export default defineConfig({
     "/consumers/agents/json": "/consumers/agents",
     "/consumers/agents/integrations": "/consumers/agents",
   },
-  // The live terminal is a React island (<PhuxTerminal client:idle />), and the
-  // docs chrome is the Fumadocs React island (<Docs client:load />). Host
+  // The showcase is a React island (<MultiplexShowcase client:load />); it loads
+  // the terminal on demand. Docs chrome is <Docs client:load />. Host
   // split (phux.sh vs docs.phux.sh) is the site worker in host/index.ts.
   integrations: [
     react(),

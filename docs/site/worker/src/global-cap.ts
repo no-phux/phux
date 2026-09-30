@@ -91,6 +91,10 @@ export class GlobalCapDO extends DurableObject<Env> {
         CREATE INDEX IF NOT EXISTS native_slots_ip ON native_slots (ip);
         CREATE INDEX IF NOT EXISTS native_launches_principal_ts
           ON native_launches (principal, ts);
+        CREATE INDEX IF NOT EXISTS slots_expires ON slots (expires);
+        CREATE INDEX IF NOT EXISTS native_slots_expires ON native_slots (expires);
+        CREATE INDEX IF NOT EXISTS native_launches_ts ON native_launches (ts);
+        CREATE INDEX IF NOT EXISTS native_usage_day ON native_usage (day);
       `);
       // Rate windows moved to secret-keyed per-IP objects in migration v3.
       // Remove the legacy raw-IP table instead of retaining stale addresses.
@@ -103,11 +107,17 @@ export class GlobalCapDO extends DurableObject<Env> {
           .map((column) => column.name),
       );
       if (!nativeColumns.has("principal"))
-        this.ctx.storage.sql.exec("ALTER TABLE native_slots ADD COLUMN principal TEXT");
+        this.ctx.storage.sql.exec(
+          "ALTER TABLE native_slots ADD COLUMN principal TEXT",
+        );
       if (!nativeColumns.has("admitted"))
-        this.ctx.storage.sql.exec("ALTER TABLE native_slots ADD COLUMN admitted INTEGER");
+        this.ctx.storage.sql.exec(
+          "ALTER TABLE native_slots ADD COLUMN admitted INTEGER",
+        );
       if (!nativeColumns.has("native_until"))
-        this.ctx.storage.sql.exec("ALTER TABLE native_slots ADD COLUMN native_until INTEGER");
+        this.ctx.storage.sql.exec(
+          "ALTER TABLE native_slots ADD COLUMN native_until INTEGER",
+        );
       this.ctx.storage.sql.exec(
         "CREATE INDEX IF NOT EXISTS native_slots_principal ON native_slots (principal)",
       );
@@ -126,7 +136,8 @@ export class GlobalCapDO extends DurableObject<Env> {
 
     if (existing === 0) {
       const live = this.ctx.storage.sql
-        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM slots").one().n;
+        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM slots")
+        .one().n;
       if (live >= cap) return false;
     }
 
@@ -174,7 +185,10 @@ export class GlobalCapDO extends DurableObject<Env> {
       }
 
       const existing = this.ctx.storage.sql
-        .exec<{ n: number }>("SELECT COUNT(*) AS n FROM slots WHERE sid = ?", sid)
+        .exec<{ n: number }>(
+          "SELECT COUNT(*) AS n FROM slots WHERE sid = ?",
+          sid,
+        )
         .one().n;
       if (existing === 0) {
         const live = this.ctx.storage.sql
@@ -204,10 +218,6 @@ export class GlobalCapDO extends DurableObject<Env> {
         }
       }
 
-      this.ctx.storage.sql.exec(
-        "DELETE FROM native_launches WHERE ts <= ?",
-        now - 60 * 60_000,
-      );
       const accountActive = this.ctx.storage.sql
         .exec<{ n: number }>(
           "SELECT COUNT(*) AS n FROM native_slots WHERE principal = ?",
@@ -233,7 +243,8 @@ export class GlobalCapDO extends DurableObject<Env> {
       }
 
       const current =
-        (await this.ctx.storage.get<CircuitState>(CIRCUIT_KEY)) ?? EMPTY_CIRCUIT;
+        (await this.ctx.storage.get<CircuitState>(CIRCUIT_KEY)) ??
+        EMPTY_CIRCUIT;
       const decision = decideCircuit(current, sid, now, circuitConfig);
       await this.ctx.storage.put(CIRCUIT_KEY, decision.state);
       if (!decision.allow) {
@@ -361,7 +372,9 @@ export class GlobalCapDO extends DurableObject<Env> {
   // Diagnostics: current live slot count (used by /healthz-style probes if wired).
   async liveCount(): Promise<number> {
     this.sweepExpired(Date.now());
-    return this.ctx.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM slots").one().n;
+    return this.ctx.storage.sql
+      .exec<{ n: number }>("SELECT COUNT(*) AS n FROM slots")
+      .one().n;
   }
 
   private sweepExpired(now: number): void {

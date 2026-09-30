@@ -1,3 +1,7 @@
+# Astro fingerprints these build assets. Public files and HTML remain mutable.
+/_astro/*
+  Cache-Control: public, max-age=31536000, immutable
+
 # The curl installers. Five minutes of edge cache keeps an installer fix from
 # sitting behind a long TTL while a stranger is running the broken one, and is
 # still long enough that the asset is not fetched fresh on every install.

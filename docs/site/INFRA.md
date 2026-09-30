@@ -42,9 +42,11 @@ only a versioned logical shell checkpoint (viewport, sequence, partial demo
 input, or portfolio selection), then reconstructs the WASM session on the next
 message. One alarm enforces idle and hard deadlines; there are no JavaScript
 timers or reservation heartbeats keeping the object resident.
+Client disconnects explicitly complete the WebSocket close handshake before
+releasing admission; the pinned 2025 compatibility date does not auto-reply.
 
 The native path requires Workers Paid and Cloudflare Containers and is selected
-by `/embed`. The edge path remains the instant graceful fallback.
+by `/embed` or the homepage dialog's Linux tab. Edge remains the fast fallback.
 
 ## The wire contract
 
@@ -155,8 +157,8 @@ retry action the client cannot guarantee.
 
 ## Env / config contract
 
-- Frontend reads `PUBLIC_PHUX_DEMO_WS` (`src/lib/site.ts`). Empty → "coming
-  online" state, never dials. Production uses
+- Frontend reads `PUBLIC_PHUX_DEMO_WS` (`src/lib/site.ts`). Empty → explicit
+  unconfigured state, never dials. Production uses
   `wss://shell.phux.sh/session`; the workers.dev hostname is not a public
   frontend contract.
 - OAuth runs on `https://phux.sh/auth/*` (same Worker as `shell.phux.sh`).
@@ -167,15 +169,28 @@ retry action the client cannot guarantee.
   `email_verified`. Provider tokens are discarded after callback verification.
 - `/embed` sends lifecycle, authoritative backend, expiry, and normalized close
   state only to the exact validated `https://phall.io` parent origin. It never
-  sends user identity or raw close/provider details. `live` waits for both the
-  session envelope and non-uniform terminal pixels.
-- Anonymous visitors see an explicit choice: authenticate with GitHub/Google for
-  native Linux, or launch the always-available edge shell. OAuth runs in the
+  sends user identity or raw close/provider details. `live` requires the
+  accepted session envelope, completed protocol attach, and fresh terminal
+  pixels. Each attempt owns a new canvas and AbortSignal; cancellation also
+  closes the socket before attach completes. No health probe gates launch.
+- The homepage diagram allocates no sessions and downloads no terminal WASM.
+  Its dialog starts the anonymous edge tour on explicit launch. The Linux tab
+  and `/embed` offer GitHub/Google authentication or the edge shell. OAuth runs in the
   same tab against `/auth/{github|google}?return_to=/` or `/embed` on
   `https://phux.sh`. The Worker redirects back to that path with `auth=success`
-  (or `auth=error`); the page strips the query and rechecks the HttpOnly
-  session cookie. The query name is `return_to`; `returnTo` is accepted only as
+  (or `auth=error`); the page strips the query, reopens the native dialog on the
+  homepage, and rechecks the HttpOnly session cookie. The query name is
+  `return_to`; `returnTo` is accepted only as
   a compatibility alias. The flow never sends identity or tokens to JavaScript.
+- Startup timing is measured in the visitor's browser from launch to readiness,
+  not advertised as an edge/network benchmark. Closing the dialog or changing
+  runtime releases its session. Initial geometry fits native 8×16-pixel cells
+  to the available width instead of shrinking a desktop terminal on phones.
+- Fingerprinted `/_astro/` assets are immutable for one year. They bypass
+  dynamic MCP and analytics initialization; HTML still negotiates `Accept`.
+  Fonts load without blocking first paint, with system-font fallbacks.
+  Admission expiry indexes reduce scans; the single global cap remains the
+  strongly consistent admission authority, not an unlimited scaling claim.
 
 ## File ownership
 

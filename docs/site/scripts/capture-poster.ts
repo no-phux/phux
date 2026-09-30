@@ -2,13 +2,12 @@
 /**
  * capture-poster.ts — refresh public/demo-poster.png from a REAL session.
  *
- * Drives the landing's live terminal island in headless Chrome: launch the
- * demo, run `demo all` in the jail, screenshot the canvas at 2x. The poster is
- * therefore an actual frame of the phux-web client rendering the wire — the
- * exact pixels the live demo shows — so the fallback never lies.
+ * Opens the landing's live terminal dialog in headless Chrome, runs the
+ * curated `demo` command, and captures the canvas at 2x. The reusable image
+ * remains an actual frame of the phux-web client, not the explanatory diagram.
  *
  * Usage:
- *   PUBLIC_PHUX_DEMO_WS=wss://phux-demo.phalldev.workers.dev/session bun run dev   # terminal 1
+ *   PUBLIC_PHUX_DEMO_WS=ws://127.0.0.1:8799/session bun run dev                    # terminal 1
  *   bun run scripts/capture-poster.ts [http://localhost:4321]                       # terminal 2
  *
  * Needs Chrome installed (playwright-core channel:"chrome" — no browser download).
@@ -26,7 +25,9 @@ try {
   });
   await page.goto(BASE, { waitUntil: "networkidle" });
 
-  await page.click(".pterm-launch", { timeout: 15_000 });
+  await page
+    .getByRole("button", { name: "Open a live terminal" })
+    .click({ timeout: 15_000 });
   await page.waitForSelector('.pterm[data-status="live"]', { timeout: 30_000 });
 
   // Let the MOTD land, then run the curated gestures.

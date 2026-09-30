@@ -25,7 +25,9 @@ describe("markdown negotiation", () => {
       "text/markdown; charset=utf-8",
     );
     expect(response.headers.get("vary")).toContain("Accept");
-    expect(Number(response.headers.get("x-markdown-tokens"))).toBeGreaterThan(0);
+    expect(Number(response.headers.get("x-markdown-tokens"))).toBeGreaterThan(
+      0,
+    );
     const body = await response.text();
     expect(body).toContain("# phux");
     expect(body).toContain("you and your agents share the same terminals");
@@ -43,7 +45,10 @@ describe("markdown negotiation", () => {
   });
 
   test("no accept header keeps HTML as the default", async () => {
-    const response = await handler.fetch(new Request("https://phux.sh/"), assetsOf(PAGE));
+    const response = await handler.fetch(
+      new Request("https://phux.sh/"),
+      assetsOf(PAGE),
+    );
     expect(response.headers.get("content-type")).toBe("text/html");
   });
 
@@ -94,5 +99,78 @@ describe("telemetry ingest", () => {
       assetsOf(PAGE),
     );
     expect(response.status).toBe(403);
+  });
+});
+
+describe("hosting fast paths", () => {
+  test("fingerprinted assets preserve caching and never emit visitor telemetry", async () => {
+    const pending: Promise<unknown>[] = [];
+    const response = await handler.fetch(
+      new Request("https://docs.phux.sh/_astro/showcase.a1b2c3.js", {
+        headers: { accept: "text/markdown" },
+      }),
+      {
+        ASSETS: {
+          fetch: async () =>
+            new Response("export const ready = true;", {
+              headers: {
+                "content-type": "application/javascript",
+                "cache-control": "public, max-age=31536000, immutable",
+                etag: '"a1b2c3"',
+              },
+            }),
+        },
+        TELEMETRY: {
+          getByName: () => {
+            throw new Error("static assets must not record visitor counters");
+          },
+        },
+        ANALYTICS: {
+          fetch: async () => {
+            throw new Error("static assets must not emit private observations");
+          },
+        },
+      },
+      {
+        waitUntil: (promise) => {
+          pending.push(promise);
+        },
+      },
+    );
+    expect(response.headers.get("cache-control")).toBe(
+      "public, max-age=31536000, immutable",
+    );
+    expect(response.headers.get("etag")).toBe('"a1b2c3"');
+    expect(response.headers.get("vary")).toBeNull();
+    expect(await response.text()).toBe("export const ready = true;");
+    expect(pending).toEqual([]);
+  });
+
+  test("background observation lifetime includes deferred analytics initialization", async () => {
+    const pending: Promise<unknown>[] = [];
+    const events: { path: string; status: number; content_type: string }[] = [];
+    const response = await handler.fetch(
+      new Request("https://phux.sh/?utm_source=showcase"),
+      {
+        ...assetsOf(PAGE),
+        ANALYTICS: {
+          fetch: async (request: Request) => {
+            const batch = (await request.json()) as { events: typeof events };
+            events.push(...batch.events);
+            return new Response(null, { status: 204 });
+          },
+        },
+      },
+      {
+        waitUntil: (promise) => {
+          pending.push(promise);
+        },
+      },
+    );
+    expect(await response.text()).toContain("<main>");
+    await Promise.all(pending);
+    expect(events).toMatchObject([
+      { path: "/", status: 200, content_type: "text/html" },
+    ]);
   });
 });
