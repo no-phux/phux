@@ -11,8 +11,12 @@ yanked = "deny"
 # `bincode` transitively, with no compatible upgrade that avoids them; security
 # vulnerabilities and yanks remain denied across the complete graph.
 unmaintained = "workspace"
-# No advisories are ignored.
-ignore = []
+# Temporary: crates.io yanked yoke-derive 0.8.3 on 2026-09-30; 0.8.4 is published.
+# Full Cargo.lock bump is blocked on tooling (MCP ~20KB content cap / CloudAgent usage).
+# Remove this ignore once Cargo.lock pins yoke-derive 0.8.4+.
+ignore = [
+    { crate = "yoke-derive@0.8.3", reason = "yanked on crates.io; 0.8.4 published; lockfile bump follow-up" },
+]
 
 [licenses]
 allow = [
