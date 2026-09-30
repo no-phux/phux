@@ -42,8 +42,13 @@ pub(super) async fn handle_transcribe(
     }
     let voice = state.with(ServerState::voice);
     let env = state.with(ServerState::server_env);
+    let principal = state.with(|s| super::upload::upload_principal(s, client_id));
     let started = std::time::Instant::now();
-    let (text, transcribe_ms) = match run_transcriber(&voice, &env, upload_id, client_id).await {
+    let clip = ClipRequest {
+        upload_id,
+        principal: &principal,
+    };
+    let (text, transcribe_ms) = match run_transcriber(&voice, &env, &clip, client_id).await {
         Ok(result) => result,
         Err(refusal) => return refusal,
     };
@@ -71,7 +76,7 @@ pub(super) async fn handle_transcribe(
 async fn run_transcriber(
     voice: &phux_config::VoiceCfg,
     env: &super::ServerEnv,
-    upload_id: FileUploadId,
+    request: &ClipRequest<'_>,
     client_id: ClientId,
 ) -> Result<(String, u64), CommandResult> {
     if !voice.is_configured() {
@@ -81,17 +86,7 @@ async fn run_transcriber(
              in the server's config.toml (an argv; `{path}` is replaced by the clip)",
         ));
     }
-    let clip = match super::upload::completed_upload_path(env, upload_id) {
-        Ok(Some(path)) => path,
-        Ok(None) => {
-            return Err(refuse(
-                ErrorCode::InvalidCommand,
-                "no completed upload with that id: send the clip with PUT_FILE \
-                 (final_chunk = true) first",
-            ));
-        }
-        Err(message) => return Err(refuse(ErrorCode::InternalError, &message)),
-    };
+    let clip = resolve_clip(env, request)?;
     let Some(argv) = voice.transcriber_argv(&clip) else {
         return Err(refuse(
             ErrorCode::InvalidCommand,
@@ -146,6 +141,57 @@ async fn run_transcriber(
         ));
     }
     Ok((text, duration_ms))
+}
+
+/// The upload a `TRANSCRIBE` names, and who is asking.
+struct ClipRequest<'a> {
+    upload_id: FileUploadId,
+    /// The requester's upload principal; another principal's upload reads
+    /// as absent.
+    principal: &'a str,
+}
+
+/// Audio container and codec extensions the transcriber may be handed. The
+/// phone clients send `wav`; the rest are the formats common recorders and
+/// ASR tools take. Anything else (a playlist, a subtitle, an image) never
+/// reaches the transcriber: ffmpeg-based tools dereference `m3u8`, `concat`,
+/// and similar formats, which would let an uploader make the server read or
+/// fetch other files.
+pub(super) const TRANSCRIBE_EXTENSIONS: &[&str] = &[
+    "wav", "m4a", "aac", "caf", "mp3", "ogg", "oga", "opus", "webm", "flac",
+];
+
+/// The completed, audio-typed clip `request` names, or the refusal.
+fn resolve_clip(
+    env: &super::ServerEnv,
+    request: &ClipRequest<'_>,
+) -> Result<std::path::PathBuf, CommandResult> {
+    let clip = match super::upload::completed_upload_path(env, request.upload_id, request.principal)
+    {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            return Err(refuse(
+                ErrorCode::InvalidCommand,
+                "no completed upload with that id: send the clip with PUT_FILE \
+                     (final_chunk = true) first",
+            ));
+        }
+        Err(message) => return Err(refuse(ErrorCode::InternalError, &message)),
+    };
+    let extension = clip
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or_default();
+    if !TRANSCRIBE_EXTENSIONS.contains(&extension) {
+        return Err(refuse(
+            ErrorCode::InvalidCommand,
+            &format!(
+                "TRANSCRIBE takes an audio upload ({}); this upload's extension is `{extension}`",
+                TRANSCRIBE_EXTENSIONS.join(", ")
+            ),
+        ));
+    }
+    Ok(clip)
 }
 
 /// Deliver the transcript as one acknowledged paste (or a fire-and-forget

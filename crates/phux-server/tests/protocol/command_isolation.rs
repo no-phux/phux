@@ -387,6 +387,109 @@ fn transcribe_without_a_transcriber_is_refused_with_a_remedy() {
     });
 }
 
+/// Only an audio upload reaches the transcriber: a playlist (which
+/// ffmpeg-based tools dereference) is refused and starts no process, while
+/// the `wav` the phone sends still transcribes.
+#[test]
+fn transcribe_refuses_a_non_audio_upload_without_running_the_transcriber() {
+    run_local(async {
+        let _serial = BULK_TEST_LOCK.acquire().await.unwrap();
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("phux.sock");
+        let upload_root = tmp.path().join("uploads");
+        let ran = tmp.path().join("transcriber-ran");
+        let marker = ran.display().to_string();
+        let (shutdown, server) = cat_server(&socket, move |cfg| {
+            cfg.env.upload_dir = Some(upload_root);
+            cfg.voice.transcriber = Some(vec![
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                "touch \"$2\"; cat \"$1\"".to_owned(),
+                "sh".to_owned(),
+                "{path}".to_owned(),
+                marker,
+            ]);
+        });
+        let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let terminal_id = attach(&mut stream).await;
+
+        let playlist = FileUploadId::new([0x61; 16]).unwrap();
+        let body = b"#EXTM3U\nfile:///etc/passwd\n";
+        let mut put = put_file(playlist, terminal_id.clone(), body);
+        if let Command::PutFile { extension, .. } = &mut put {
+            "m3u8".clone_into(extension);
+        }
+        assert!(matches!(
+            command(&mut stream, 40, put).await,
+            CommandResult::OkWith(CommandValue::FileUpload(_))
+        ));
+        let transcribe = Command::Transcribe {
+            upload_id: playlist,
+            terminal_id: terminal_id.clone(),
+        };
+        let CommandResult::Error { code, message } = command(&mut stream, 41, transcribe).await
+        else {
+            panic!("a playlist must not be transcribed");
+        };
+        assert_eq!(code, ErrorCode::InvalidCommand);
+        assert!(message.contains("audio"), "{message}");
+        assert!(!ran.exists(), "the transcriber must not start");
+
+        let clip = FileUploadId::new([0x62; 16]).unwrap();
+        upload(&mut stream, &terminal_id, 42, clip, b"spoken words").await;
+        let transcribe = Command::Transcribe {
+            upload_id: clip,
+            terminal_id,
+        };
+        assert_eq!(
+            transcript(command(&mut stream, 43, transcribe).await),
+            "spoken words"
+        );
+
+        drop(stream);
+        join_after_shutdown(shutdown, server).await;
+    });
+}
+
+/// The server-wide upload quota (`PHUX_UPLOAD_MAX_FILES`) refuses a new
+/// upload with `RESOURCE_EXHAUSTED` and the remedy.
+#[test]
+fn a_full_upload_quota_refuses_a_new_upload() {
+    run_local(async {
+        let _serial = BULK_TEST_LOCK.acquire().await.unwrap();
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("phux.sock");
+        let upload_root = tmp.path().join("uploads");
+        let (shutdown, server) = cat_server(&socket, move |cfg| {
+            cfg.env.upload_dir = Some(upload_root);
+            cfg.env.upload_max_files = Some(1);
+        });
+        let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let terminal_id = attach(&mut stream).await;
+        upload(
+            &mut stream,
+            &terminal_id,
+            50,
+            FileUploadId::new([0x71; 16]).unwrap(),
+            b"first",
+        )
+        .await;
+        let second = put_file(
+            FileUploadId::new([0x72; 16]).unwrap(),
+            terminal_id,
+            b"second",
+        );
+        let CommandResult::Error { code, message } = command(&mut stream, 51, second).await else {
+            panic!("the quota must refuse the second upload");
+        };
+        assert_eq!(code, ErrorCode::ResourceExhausted);
+        assert!(message.contains("PHUX_UPLOAD_MAX_FILES"), "{message}");
+
+        drop(stream);
+        join_after_shutdown(shutdown, server).await;
+    });
+}
+
 #[test]
 fn stalled_disk_upload_does_not_block_a_new_connection() {
     run_local(async {

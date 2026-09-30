@@ -613,6 +613,12 @@ impl ServerRuntime {
                 spawn_hub_links(&state, hub_table.as_ref(), &root_token);
                 // Live revocation (workload-auth §7).
                 revocation::spawn_revocation_watcher(&state, &root_token);
+                // Off the runtime thread: a large upload directory is a
+                // directory walk.
+                let upload_env = state.with(crate::state::ServerState::server_env);
+                drop(tokio::task::spawn_blocking(move || {
+                    upload::sweep_stale_partials_at_startup(&upload_env);
+                }));
                 spawn_connector_supervisors(
                     connector_specs,
                     connector_consumer_tokens.as_ref(),
