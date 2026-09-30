@@ -1109,11 +1109,16 @@ impl App {
             .map_or(0..0, |selection| selection.cells(cols))
     }
 
-    /// The selected text, if anything is selected. Read from the replica's
-    /// current viewport, which the canvas shows by the next frame.
+    /// The selected text, if anything is selected, as the engine copies it.
+    /// Read from the replica's current viewport, which the canvas shows by
+    /// the next frame.
     fn selected_text(&self) -> Option<String> {
         let selection = self.selection.get().filter(|s| !s.is_click())?;
-        Some(selection.text(&self.session.grid()))
+        let (cols, _) = self.session.dims();
+        let clamp = |(col, row): (u16, u16)| (col.min(cols.saturating_sub(1)), row);
+        self.session
+            .terminal()?
+            .selection_text(clamp(selection.anchor), clamp(selection.head))
     }
 
     /// Drop the selection (it names viewport cells, which input, scrolling,
