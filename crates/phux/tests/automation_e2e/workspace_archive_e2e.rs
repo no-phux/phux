@@ -17,11 +17,15 @@ fn start(session: &str) -> common::ServerGuard {
 }
 
 fn run(args: &[&str]) -> (i32, String, String) {
-    output(Command::new(PHUX).args(args))
+    output(common::phux_cmd(PHUX).args(args))
 }
 
 fn run_with_xdg(args: &[&str], xdg: &std::path::Path) -> (i32, String, String) {
-    output(Command::new(PHUX).env("XDG_CONFIG_HOME", xdg).args(args))
+    output(
+        common::phux_cmd(PHUX)
+            .env("XDG_CONFIG_HOME", xdg)
+            .args(args),
+    )
 }
 
 fn output(cmd: &mut Command) -> (i32, String, String) {

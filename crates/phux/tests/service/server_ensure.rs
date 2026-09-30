@@ -57,7 +57,7 @@ impl Fixture {
     }
 
     fn command(&self) -> Command {
-        let mut cmd = Command::new(PHUX);
+        let mut cmd = common::phux_cmd(PHUX);
         cmd.env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.dir.path())

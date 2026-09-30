@@ -86,7 +86,7 @@ fn legacy_unit(socket: &Path) -> String {
 /// Redirect a child `phux` at a sandboxed home and a pinned profile, so
 /// nothing it writes can land in the developer's real one.
 fn sandboxed(home: &Path) -> Command {
-    let mut cmd = Command::new(PHUX);
+    let mut cmd = common::phux_cmd(PHUX);
     cmd.env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("PHUX_PROFILE", PROFILE);
@@ -105,7 +105,7 @@ fn plant_legacy_unit(home: &Path, socket: &Path) -> PathBuf {
 fn live_server() -> (PathBuf, Cleanup) {
     let dir = tempfile::tempdir().expect("tempdir");
     let socket = dir.path().join("phux.sock");
-    let out = Command::new(PHUX)
+    let out = common::phux_cmd(PHUX)
         .args(["new", "--session", "incumbent", "--json", "--socket"])
         .arg(&socket)
         .output()

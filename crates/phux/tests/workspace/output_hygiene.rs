@@ -27,7 +27,7 @@ const NO_OVERLAY_CLI: &str = "/nonexistent/phux-output-hygiene-no-overlay";
 
 /// The binary under test, with overlay detection off.
 fn phux() -> Command {
-    let mut cmd = Command::new(PHUX);
+    let mut cmd = crate::common::phux_cmd(PHUX);
     cmd.env("PHUX_TAILSCALE", NO_OVERLAY_CLI);
     cmd
 }

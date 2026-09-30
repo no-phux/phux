@@ -4,7 +4,7 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const PLUGIN_ID: &str = "com.phux.demo.agent-tools";
@@ -32,7 +32,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn run_with_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
-    let out = Command::new(PHUX)
+    let out = common::phux_cmd(PHUX)
         // Plugin actions launch nested `phux` commands. CI does not install
         // the just-built binary on PATH, so always pass its exact location.
         .env("PHUX_BIN", PHUX)

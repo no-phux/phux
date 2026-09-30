@@ -11,7 +11,7 @@
 
 use std::io::BufRead as _;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -32,6 +32,13 @@ pub fn wait_until_accepting(socket: &Path) -> bool {
     }
     false
 }
+
+mod ambient;
+#[allow(
+    unused_imports,
+    reason = "re-exported for suites that spawn phux directly; others use ServerGuard"
+)]
+pub use ambient::{ambient_phux_keys, phux_cmd};
 
 mod server_guard;
 #[allow(
@@ -146,7 +153,7 @@ impl AutoSpawnedServer {
             .or_else(|| pid_from_status(&self.phux, &self.socket));
 
         if pid.is_some_and(process_exists) || self.socket.exists() {
-            let _ = Command::new(&self.phux)
+            let _ = ambient::phux_cmd(&self.phux)
                 .args(["kill", "--server", "--socket"])
                 .arg(&self.socket)
                 .stdin(Stdio::null())
@@ -194,7 +201,7 @@ impl Drop for AutoSpawnedServer {
 }
 
 fn pid_from_status(phux: &Path, socket: &Path) -> Option<u32> {
-    let output = Command::new(phux)
+    let output = ambient::phux_cmd(phux)
         .args(["status", "--json", "--socket"])
         .arg(socket)
         .stdin(Stdio::null())
@@ -303,7 +310,7 @@ impl WatchChild {
         poll: Duration,
         deadline: Duration,
     ) -> Self {
-        let mut child = Command::new(phux)
+        let mut child = ambient::phux_cmd(phux)
             .arg("--socket")
             .arg(socket)
             .args(["watch", target, "--json"])
@@ -437,6 +444,9 @@ impl PtyAttach {
             .expect("open attach PTY");
         let config = tempfile::tempdir().expect("isolated config dir");
         let mut command = portable_pty::CommandBuilder::new(env!("CARGO_BIN_EXE_phux"));
+        for key in ambient::ambient_phux_keys() {
+            command.env_remove(key);
+        }
         command.arg("attach");
         command.arg("--socket");
         command.arg(socket);

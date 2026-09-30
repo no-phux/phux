@@ -10,7 +10,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 /// Path to the freshly-built `phux` binary, injected by cargo.
@@ -226,7 +226,7 @@ fn resize_rejects_a_zero_axis_before_it_reaches_a_server() {
     // opens a socket. Pointing it at a path with no server proves that — if
     // the geometry check moved server-side, this would fail with a
     // connection error instead of a usage error.
-    let out = Command::new(PHUX)
+    let out = common::phux_cmd(PHUX)
         .args([
             "resize",
             "--socket",

@@ -13,7 +13,7 @@
 mod common;
 
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -74,7 +74,7 @@ impl Server {
 }
 
 fn phux_at(socket: &Path, args: &[&str]) -> Output {
-    Command::new(PHUX)
+    common::phux_cmd(PHUX)
         .arg("--socket")
         .arg(socket)
         .args(args)

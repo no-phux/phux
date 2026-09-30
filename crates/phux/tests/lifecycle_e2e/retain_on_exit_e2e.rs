@@ -44,7 +44,7 @@ impl Server {
         let socket = dir
             .path()
             .join(format!("retain-{}.sock", std::process::id()));
-        let child = Process::new(PHUX)
+        let child = common::phux_cmd(PHUX)
             .args([
                 "server",
                 "--session",

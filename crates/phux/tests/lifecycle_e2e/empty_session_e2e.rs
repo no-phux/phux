@@ -14,7 +14,7 @@
 mod common;
 
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 
 /// Path to the freshly-built `phux` binary, injected by cargo.
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
@@ -23,7 +23,7 @@ const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 /// daemon this test fails to reap cannot outlive it.
 fn phux(args: &[&str], socket: &Path) -> Output {
     let (key, value) = common::AutoSpawnedServer::IDLE_BACKSTOP;
-    Command::new(PHUX)
+    common::phux_cmd(PHUX)
         .args(args)
         .arg("--socket")
         .arg(socket)

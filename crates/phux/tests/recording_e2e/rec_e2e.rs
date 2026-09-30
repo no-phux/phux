@@ -13,7 +13,7 @@ mod common;
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use phux_record::cast::{EventCode, read_cast};
@@ -80,7 +80,7 @@ impl ServerGuard {
 /// parsed `--json` result object. No server is involved: `--from` re-renders
 /// an existing cast entirely offline.
 fn render(out: &Path, extra: &[&str]) -> serde_json::Value {
-    let output = Command::new(PHUX)
+    let output = common::phux_cmd(PHUX)
         .arg("rec")
         .arg("--from")
         .arg(demo_cast())
@@ -220,7 +220,7 @@ fn rec_does_not_resize_the_recorded_pane() {
 fn rec_from_cast_renders_gif_and_apng_and_emits_one_json_object() {
     let dir = tempfile::tempdir().expect("temp dir");
     let out = dir.path().join("demo.gif");
-    let output = Command::new(PHUX)
+    let output = common::phux_cmd(PHUX)
         .arg("rec")
         .arg("--from")
         .arg(demo_cast())
@@ -316,7 +316,7 @@ fn rec_from_cast_renders_gif_and_apng_and_emits_one_json_object() {
 fn rec_unknown_extension_fails_with_a_nonzero_exit_and_an_actionable_message() {
     let dir = tempfile::tempdir().expect("temp dir");
     let out = dir.path().join("demo.mov");
-    let output = Command::new(PHUX)
+    let output = common::phux_cmd(PHUX)
         .arg("rec")
         .arg("--from")
         .arg(demo_cast())

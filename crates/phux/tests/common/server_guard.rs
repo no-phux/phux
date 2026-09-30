@@ -94,7 +94,7 @@ impl ServerGuard {
     #[must_use]
     pub fn cmd(&self, args: &[&str]) -> Command {
         let (verb, rest) = args.split_first().expect("at least a verb");
-        let mut cmd = Command::new(PHUX);
+        let mut cmd = super::ambient::phux_cmd(PHUX);
         cmd.arg(verb)
             .arg("--socket")
             .arg(&self.socket)
@@ -106,7 +106,7 @@ impl ServerGuard {
     /// `phux --socket <sock> <args...>`. Root-global form (ADR-0065).
     #[must_use]
     pub fn cmd_global(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(PHUX);
+        let mut cmd = super::ambient::phux_cmd(PHUX);
         cmd.arg("--socket")
             .arg(&self.socket)
             .args(args)
@@ -211,7 +211,7 @@ impl ServerSpawn {
     #[must_use]
     pub fn start_with(self, configure: impl FnOnce(&mut Command)) -> ServerGuard {
         let socket = unique_socket(&self.prefix);
-        let mut cmd = Command::new(PHUX);
+        let mut cmd = super::ambient::phux_cmd(PHUX);
         if self.env_clear {
             cmd.env_clear();
         }
