@@ -1070,11 +1070,31 @@ mod canonical_guard_tests {
 
     /// Mechanism proof: `write_all_resilient` alone lets the kernel truncate
     /// an overlong canonical line, which is why the guard sits in front of it.
+    ///
+    /// It measures what the pane's reader receives on the slave side, not
+    /// the master's echo: Linux echoes every byte of an overflowing line
+    /// (each one overwrites the last queue slot), so how much echo one read
+    /// returned depended on scheduling, and hosted CI once read 4120 bytes.
     #[test]
     fn write_all_resilient_alone_truncates_a_canonical_mode_line() {
+        // Linux truncates the line and delivers it at the newline; macOS
+        // drops the overflow and the newline with it, so nothing arrives.
+        const LINE_WAIT: Duration = if cfg!(target_os = "linux") {
+            DELIVERY_DEADLINE
+        } else {
+            NOTHING_ARRIVES_WINDOW
+        };
         let (master, _slave) = open_default_pty();
+        let slave_path = master.tty_name().expect("real pty names its slave");
+        let slave_reader = std::fs::File::from(
+            nix::fcntl::open(
+                &slave_path,
+                nix::fcntl::OFlag::O_RDONLY | nix::fcntl::OFlag::O_NOCTTY,
+                nix::sys::stat::Mode::empty(),
+            )
+            .expect("open the slave for reading"),
+        );
         let mut writer = master.take_writer().expect("take writer");
-        let mut reader = master.try_clone_reader().expect("clone reader");
         let raw_fd = master.as_raw_fd().expect("real pty has a raw fd");
         // SAFETY: `raw_fd` names `master`, which this test keeps alive via
         // the `master` binding for the whole function; the borrow does not
@@ -1082,29 +1102,40 @@ mod canonical_guard_tests {
         let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(raw_fd) };
         let limit = canonical_limit(borrowed);
 
-        // Oversized line plus a terminator so the truncated line is readable.
+        // The pane's side: read until the line completes or the pty closes.
+        let (line_tx, line_rx) = std::sync::mpsc::channel();
+        let slave_thread = std::thread::spawn(move || {
+            let mut slave_reader = slave_reader;
+            let mut line = Vec::new();
+            let mut buf = [0u8; 8192];
+            while !line.contains(&b'\n') {
+                match slave_reader.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => line.extend_from_slice(&buf[..n]),
+                }
+            }
+            let _ = line_tx.send(line);
+        });
+
+        // Oversized line plus a terminator so a truncated line is readable.
         let payload = vec![b'a'; limit + 37];
         write_all_resilient(&mut *writer, &payload)
             .expect("the kernel write(2) itself succeeds regardless");
         write_all_resilient(&mut *writer, b"\n").expect("terminator write succeeds");
         flush_resilient(&mut *writer).expect("flush");
 
-        let mut buf = [0u8; 8192];
-        let n = reader.read(&mut buf).expect("the echoed, completed line");
-        // ECHO reflects what the canonical queue accepted.
+        let line = line_rx.recv_timeout(LINE_WAIT).unwrap_or_default();
+        // Hanging up the master ends a slave read still waiting on a line.
+        drop(writer);
+        drop(master);
+        slave_thread.join().expect("slave reader thread");
         assert!(
-            n <= limit + 1,
-            "expected at most {} bytes (limit + newline) echoed back, got \
-             {n}: the canonical queue did not overflow, so this payload \
-             was too small to reproduce phux-mjmc on this platform",
-            limit + 1
-        );
-        assert!(
-            n < payload.len() + 1,
-            "expected fewer than the {} bytes written to come back; if \
-             this fails, this platform's canonical queue held the whole \
-             oversized line and the guard's premise does not hold here",
-            payload.len() + 1
+            line.len() <= limit,
+            "expected at most {limit} bytes (the canonical limit) to reach \
+             the reader, got {}: the canonical queue did not overflow, so \
+             this payload was too small to reproduce phux-mjmc on this \
+             platform",
+            line.len()
         );
     }
 
