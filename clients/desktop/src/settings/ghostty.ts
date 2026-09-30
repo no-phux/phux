@@ -190,7 +190,45 @@ const KEY_NAMES: Record<string, string> = {
   return: "enter",
   page_up: "pageup",
   page_down: "pagedown",
+  // W3C key codes (`ArrowUp`, `BracketLeft`), which Ghostty also accepts.
+  arrowleft: "left",
+  arrowright: "right",
+  arrowup: "up",
+  arrowdown: "down",
+  bracketleft: "[",
+  bracketright: "]",
 };
+
+/** The named keys the window reports (GPUI's names), besides F1-F35. */
+const NAMED_KEYS = new Set([
+  "backspace",
+  "escape",
+  "tab",
+  "enter",
+  "space",
+  "up",
+  "down",
+  "left",
+  "right",
+  "pageup",
+  "pagedown",
+  "home",
+  "end",
+  "delete",
+  "insert",
+]);
+
+/**
+ * A trigger's key as the window reports it: Ghostty's name, a W3C code
+ * (`KeyA`, `Digit1`) or a `physical:` key all name the same key here.
+ * Undefined for a key the app never receives, so the bind is listed as
+ * skipped rather than kept as a chord that can never fire.
+ */
+function keyName(part: string): string | undefined {
+  const key = own(KEY_NAMES, part) ?? part.replace(/^(digit|key)_?(?=.$)/, "");
+  if (key.length === 1 || NAMED_KEYS.has(key) || /^f([1-9]|[12]\d|3[0-5])$/.test(key)) return key;
+  return undefined;
+}
 
 const MODIFIERS: Record<string, "cmd" | "ctrl" | "alt" | "shift"> = {
   super: "cmd",
@@ -206,12 +244,14 @@ const MODIFIERS: Record<string, "cmd" | "ctrl" | "alt" | "shift"> = {
 
 /**
  * `super+shift+arrow_left` -> `cmd+shift+left`; undefined for sequences,
- * unknown parts, and a bare printable key (binding it would eat typing).
+ * unknown parts and keys, and a bare printable key (binding it would eat
+ * typing).
  */
 export function ghosttyChord(trigger: string): string | undefined {
   const mods = new Set<string>();
   let key: string | undefined;
-  for (const part of trigger.toLowerCase().split("+")) {
+  for (const raw of trigger.toLowerCase().split("+")) {
+    const part = raw.trim().replace(/^physical:/, "");
     const modifier = own(MODIFIERS, part);
     if (modifier) mods.add(modifier);
     else if (key !== undefined || !part) return undefined;
@@ -222,7 +262,8 @@ export function ghosttyChord(trigger: string): string | undefined {
     key = "=";
     mods.add("shift");
   }
-  key = own(KEY_NAMES, key) ?? key.replace(/^(digit|key)_(?=.$)/, "");
+  key = keyName(key);
+  if (key === undefined) return undefined;
   if (mods.size === 0 && key.length === 1) return undefined;
   return [...["cmd", "ctrl", "alt", "shift"].filter((mod) => mods.has(mod)), key].join("+");
 }
