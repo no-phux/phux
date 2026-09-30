@@ -234,55 +234,82 @@ fn parse_ansi_line(line: &str) -> WidgetCells {
     let mut style = CellStyle::default();
     let mut chars = line.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            match chars.peek() {
-                Some('[') => {
-                    chars.next();
-                    // CSI: parameters up to the final byte; apply only SGR.
-                    let mut params = String::new();
-                    let mut is_sgr = false;
-                    for n in chars.by_ref() {
-                        if ('\u{40}'..='\u{7e}').contains(&n) {
-                            is_sgr = n == 'm';
-                            break;
-                        }
-                        params.push(n);
-                    }
-                    if is_sgr {
-                        apply_sgr(&mut style, &params);
-                    }
-                }
-                Some(']') => {
-                    chars.next();
-                    // OSC: skip to BEL or ST (ESC \).
-                    while let Some(n) = chars.next() {
-                        if n == '\u{7}' {
-                            break;
-                        }
-                        if n == '\u{1b}' && chars.peek() == Some(&'\\') {
-                            chars.next();
-                            break;
-                        }
-                    }
-                }
-                _ => {
-                    // Two-char escape; charset designations carry one more.
-                    if let Some(n) = chars.next()
-                        && matches!(n, '(' | ')' | '*' | '+')
-                    {
-                        chars.next();
-                    }
-                }
-            }
-        } else if !c.is_control() {
-            cells.push(Cell {
-                text: smallvec::smallvec![c],
-                style: (!style.is_plain()).then(|| style.clone()),
-                hit: None,
-            });
+        if c == ESC {
+            consume_escape(&mut chars, &mut style);
+            continue;
         }
+        if c.is_control() {
+            continue;
+        }
+        cells.push(Cell {
+            text: smallvec::smallvec![c],
+            style: (!style.is_plain()).then(|| style.clone()),
+            hit: None,
+        });
     }
     WidgetCells { cells }
+}
+
+const ESC: char = '\u{1b}';
+const BEL: char = '\u{7}';
+
+type LineChars<'a> = std::iter::Peekable<std::str::Chars<'a>>;
+
+/// Consume the escape sequence that follows an ESC: an SGR sequence folds
+/// into `style`; anything else is discarded.
+fn consume_escape(chars: &mut LineChars<'_>, style: &mut CellStyle) {
+    match chars.peek() {
+        Some('[') => {
+            chars.next();
+            if let Some(params) = read_csi_sgr_params(chars) {
+                apply_sgr(style, &params);
+            }
+        }
+        Some(']') => {
+            chars.next();
+            skip_osc(chars);
+        }
+        _ => skip_short_escape(chars),
+    }
+}
+
+/// Read a CSI's parameters through its final byte, returning them only when
+/// that final byte is `m` (SGR). An unterminated CSI yields `None`.
+fn read_csi_sgr_params(chars: &mut LineChars<'_>) -> Option<String> {
+    let mut params = String::new();
+    for n in chars.by_ref() {
+        if is_csi_final_byte(n) {
+            return (n == 'm').then_some(params);
+        }
+        params.push(n);
+    }
+    None
+}
+
+fn is_csi_final_byte(c: char) -> bool {
+    ('\u{40}'..='\u{7e}').contains(&c)
+}
+
+/// Skip an OSC body through its terminator: BEL or ST (ESC `\`).
+fn skip_osc(chars: &mut LineChars<'_>) {
+    while let Some(n) = chars.next() {
+        if n == BEL {
+            return;
+        }
+        if n == ESC && chars.peek() == Some(&'\\') {
+            chars.next();
+            return;
+        }
+    }
+}
+
+/// Skip a two-char escape; charset designations carry one more char.
+fn skip_short_escape(chars: &mut LineChars<'_>) {
+    if let Some(n) = chars.next()
+        && matches!(n, '(' | ')' | '*' | '+')
+    {
+        chars.next();
+    }
 }
 
 /// Strip escape sequences and control bytes without interpreting them.
@@ -487,6 +514,22 @@ mod tests {
         let cells = parse_ansi_line("\u{1b}[2Ka\u{1b}]0;title\u{7}b\u{1b}(Bc\td");
         assert_eq!(text_of(&cells), "abcd");
         assert!(cells.cells.iter().all(|c| c.style.is_none()));
+    }
+
+    #[test]
+    fn parse_ansi_handles_st_terminated_osc_and_unterminated_csi() {
+        // An OSC ends at ST (ESC \); an ESC followed by anything else inside
+        // the OSC body does not end it.
+        let cells = parse_ansi_line("a\u{1b}]8;;x\u{1b}yz\u{1b}\\b");
+        assert_eq!(text_of(&cells), "ab");
+        // A CSI with no final byte swallows the rest of the line.
+        let cells = parse_ansi_line("\u{1b}[1mA\u{1b}[31");
+        assert_eq!(text_of(&cells), "A");
+        assert!(cells.cells[0].style.as_ref().unwrap().bold);
+        // A trailing ESC or charset designation at end of line is harmless.
+        assert_eq!(text_of(&parse_ansi_line("x\u{1b}")), "x");
+        assert_eq!(text_of(&parse_ansi_line("x\u{1b}(")), "x");
+        assert_eq!(text_of(&parse_ansi_line("x\u{1b}(By")), "xy");
     }
 
     #[test]
