@@ -56,7 +56,7 @@ time. Ordinary client builds reuse it without Zig. To regenerate the engine
 from verified pinned source:
 
 ```sh
-# from the phux repo root, with the release-pinned Zig (scripts/install-zig.sh) on PATH:
+# from the phux repo root; the script installs and uses the release-pinned Zig itself:
 bash scripts/build-vt-wasm.sh          # → clients/phux-vt-web/vendor/ghostty-vt.wasm
 bash scripts/build-vt-wasm.sh --check  # byte-for-byte regeneration check
 ```
