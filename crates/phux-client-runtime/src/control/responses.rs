@@ -7,8 +7,7 @@ use super::{
     AttachTarget, BootstrapLimits, BootstrapProfile, Command, CommandResult, ControlError,
     ControlPlane, DetachReason, EngineConfig, EngineEvent, EngineHandle, ErrorCode, Event,
     FrameKind, HashSet, Pending, ResourceId, ResourceKind, ServerFeature, ServerInfo,
-    SessionSnapshot, SpawnResult, StateScope, Status, Topology, ViewportInfo, topology,
-    validate_hello_ok,
+    SessionSnapshot, SpawnResult, StateScope, Status, Topology, topology, validate_hello_ok,
 };
 use crate::control::topology::View;
 
@@ -153,11 +152,11 @@ impl ControlPlane {
                     // Creation is a one-shot act; a reconnect re-attaches.
                     self.attach_target = Some(AttachTarget::ByName(name.clone()));
                 }
-                let (cols, rows) = self.options.viewport;
+                self.viewport.pending = false;
                 self.queue_frame(&FrameKind::Attach {
                     attach_id,
                     target,
-                    viewport: ViewportInfo::new(cols, rows),
+                    viewport: self.viewport.desired,
                     request_scrollback: true,
                     scrollback_limit_lines: self.options.scrollback_lines,
                     role_policy: self.options.attach_role,
@@ -279,6 +278,7 @@ impl ControlPlane {
         self.error = None;
         self.set_status(Status::Attached);
         self.push_event(Event::Attached { attach_id });
+        self.publish_viewport();
         self.replay_preserving_subscriptions();
         Ok(())
     }

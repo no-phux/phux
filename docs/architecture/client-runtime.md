@@ -160,6 +160,35 @@ The frame also carries the geometry, cursor, scrollbar, the colors the
 cells were resolved against, and the replica identity (stream, bootstrap,
 last sequence), so a renderer needs no engine type.
 
+## Geometry intent and authoritative readback
+
+Native hosts derive desired cells from the same measured cell metrics their
+renderer uses. The runtime retains a full viewport report, including optional
+pixels, across reconnect. Changes made during session attachment coalesce until
+`ATTACH_READY`; an explicit same-size report reasserts intent rather than treating
+an earlier submission as proof of application. C and UniFFI viewport entry points
+use this control-plane path.
+
+A session viewport vote affects its subscribed session terminals, including
+nonactive panes, under the server's window-size policy. Foreign resource
+subscriptions remain separate: the runtime issues exact per-terminal requests
+only for ordinary subscriptions, not preserving or viewer subscriptions. Exact C
+resizes use the runtime's current-subscription and bootstrap-readiness checks.
+Acceptance means retained or queued intent, never an optimistic local grid update.
+
+The server coalesces pending geometry in one latest-value slot per terminal,
+separate from its bounded targeted-recovery queue. Queue pressure cannot discard
+the final size, pixel donor, or owed live resync. The actor applies geometry before
+new captures and publishes replacement bootstrap generations only when geometry
+actually changes. Clients consume that authoritative readback; they do not retry
+until their own preferred size wins over another client's policy vote.
+
+The TUI retains QUIC's required per-terminal resize stream. Before following a
+control-stream viewport vote with exact pane sizes, its connection waits for an
+ordered `PING`/`PONG` barrier, retaining intervening control frames for the normal
+receive loop. This prevents independent QUIC streams from reversing the vote and
+the chrome-inset layout without changing the negotiated wire contract.
+
 ## What a consumer touches when the binding crate changes
 
 A consumer of the mobile artifact re-pins with a `PHUX_REV` bump

@@ -1,6 +1,6 @@
 use super::*;
 use phux_client_runtime::control::TerminalResizeOutcome as Resize;
-use phux_protocol::wire::frame::RolePolicy;
+use phux_protocol::wire::frame::{RolePolicy, ViewportInfo};
 
 fn browse(options: ControlOptions) -> ControlPlane {
     let mut plane = ControlPlane::new(options);
@@ -107,6 +107,8 @@ fn resize_rejects_invalid_sizes_viewers_and_unready_resources_before_send() {
         Resize::Observer
     );
     assert!(observer.take_outbound().is_empty());
+    observer.resize_viewport(100, 30);
+    assert!(observer.take_outbound().is_empty());
 }
 
 #[test]
@@ -176,13 +178,9 @@ fn global_viewport_fanout_and_existing_default_attach_keep_their_policy() {
     );
     plane.resize_viewport(90, 25);
     let frames = plane.take_outbound();
-    assert_eq!(frames.len(), 2);
-    assert!(matches!(
-        decode(&frames[0]),
-        FrameKind::ViewportResize { .. }
-    ));
+    assert_eq!(frames.len(), 1);
     assert!(
-        matches!(decode(&frames[1]), FrameKind::ResizeTerminal { terminal_id, cols: 90, rows: 25 } if terminal_id == default)
+        matches!(decode(&frames[0]), FrameKind::ResizeTerminal { terminal_id, cols: 90, rows: 25 } if terminal_id == default)
     );
 }
 
@@ -214,6 +212,135 @@ fn manual_reconnect_retains_policy_but_leaves_attach_scheduling_to_embedder() {
         plane.take_outbound().len(),
         2,
         "detach releases preserving policy"
+    );
+}
+
+fn geometry_frames(plane: &mut ControlPlane) -> Vec<FrameKind> {
+    plane
+        .take_outbound()
+        .iter()
+        .map(|frame| decode(frame))
+        .filter(|frame| {
+            matches!(
+                frame,
+                FrameKind::ViewportResize { .. } | FrameKind::ResizeTerminal { .. }
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn viewport_intent_during_attach_flushes_latest_pixels_once_after_ready() {
+    let (mut plane, attach_id) = negotiated();
+    let first = ViewportInfo::new(90, 25).with_pixels(Some(900), Some(500));
+    plane.resize_viewport_info(first);
+    assert!(geometry_frames(&mut plane).is_empty());
+    plane
+        .feed(FrameKind::Attached {
+            attach_id,
+            snapshot: snapshot(),
+            initial_client_id: ClientId::new(1),
+        })
+        .unwrap();
+    bootstrap(&mut plane, &terminal(), 1);
+    let latest = ViewportInfo::new(90, 25).with_pixels(Some(990), Some(550));
+    plane.resize_viewport_info(latest);
+    assert!(geometry_frames(&mut plane).is_empty());
+    plane.feed(FrameKind::AttachReady { attach_id }).unwrap();
+    assert_eq!(
+        geometry_frames(&mut plane),
+        vec![FrameKind::ViewportResize { viewport: latest }]
+    );
+    #[cfg(feature = "engine")]
+    {
+        let published = plane.publication().acquire(&terminal()).unwrap();
+        assert_eq!((published.cols, published.rows), (20, 4));
+    }
+    // Authoritative readback may differ under multi-client policy. It does
+    // not create another request or a retry-until-equal loop.
+    plane
+        .feed(FrameKind::BootstrapTombstone {
+            terminal_id: terminal(),
+            stream_id: StreamId::new(1).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            reason: phux_protocol::wire::frame::TombstoneReason::Resize,
+            last_valid_seq: 0,
+        })
+        .unwrap();
+    bootstrap(&mut plane, &terminal(), 2);
+    assert!(geometry_frames(&mut plane).is_empty());
+    let pixels_changed = ViewportInfo::new(90, 25).with_pixels(Some(1080), Some(600));
+    plane.resize_viewport_info(pixels_changed);
+    assert_eq!(
+        geometry_frames(&mut plane),
+        vec![FrameKind::ViewportResize {
+            viewport: pixels_changed
+        }]
+    );
+}
+
+#[test]
+fn offline_viewport_pixels_replay_in_attach_and_same_size_can_be_reasserted() {
+    let mut plane = ControlPlane::new(ControlOptions {
+        attach: Some(AttachTarget::Last),
+        ..ControlOptions::default()
+    });
+    let first = ViewportInfo::new(90, 25).with_pixels(Some(990), Some(550));
+    plane.resize_viewport_info(first);
+    assert!(plane.take_outbound().is_empty());
+    let opening = reconnect(&mut plane);
+    let attach_id = opening
+        .iter()
+        .find_map(|frame| match frame {
+            FrameKind::Attach {
+                attach_id,
+                viewport,
+                ..
+            } if *viewport == first => Some(*attach_id),
+            _ => None,
+        })
+        .expect("pre-connect viewport is carried by ATTACH");
+    attach(&mut plane, attach_id, b"");
+    assert!(geometry_frames(&mut plane).is_empty());
+    plane.resize_viewport_info(first);
+    assert_eq!(
+        geometry_frames(&mut plane),
+        vec![FrameKind::ViewportResize { viewport: first }]
+    );
+    plane.connection_lost(None);
+    let offline = ViewportInfo::new(100, 30).with_pixels(Some(1200), Some(720));
+    plane.resize_viewport_info(offline);
+    assert!(geometry_frames(&mut plane).is_empty());
+    assert!(
+        reconnect(&mut plane).iter().any(
+            |frame| matches!(frame, FrameKind::Attach { viewport, .. } if *viewport == offline)
+        )
+    );
+}
+
+#[test]
+fn session_viewer_casts_viewport_vote_without_exact_subscription_fanout() {
+    let mut plane = browse(ControlOptions {
+        automatic_lifecycle: false,
+        ..ControlOptions::default()
+    });
+    assert!(plane.attach_explicit(
+        1,
+        AttachTarget::Last,
+        ViewportInfo::new(20, 4),
+        false,
+        0,
+        Some(RolePolicy::VIEWER),
+    ));
+    attach(&mut plane, 1, b"");
+    plane.attach_terminal(&ResourceId::local(8));
+    plane.take_outbound();
+    plane.resize_viewport(90, 25);
+    assert_eq!(
+        geometry_frames(&mut plane),
+        vec![FrameKind::ViewportResize {
+            viewport: ViewportInfo::new(90, 25)
+        }]
     );
 }
 

@@ -29,7 +29,7 @@ use crate::runtime::pump::{self, PumpGeneration};
 use crate::state::{AttachSnapshotPane, ClientId, Outbound, SharedState};
 use crate::terminal_actor::{
     ConsumerAttachRequest, ConsumerDetachRequest, PaneOutput, PwdRequest, ResizeRequest,
-    ResyncAudience, ResyncTarget, SetDefaultColorsRequest, SnapshotRequest,
+    ResizeSender, ResyncAudience, ResyncTarget, SetDefaultColorsRequest, SnapshotRequest,
 };
 
 /// Adapt a broadcast chunk to a client's capabilities: verbatim (no copy)
@@ -545,10 +545,7 @@ async fn send_frames_contiguously(
 /// so other consumers keep their generation. The pump forwards nothing until
 /// the actor accepts it; a closed or persistently full mailbox fails
 /// boundedly.
-pub(crate) async fn enqueue_output_resync(
-    resize: &tokio::sync::mpsc::Sender<ResizeRequest>,
-    pump: ResyncTarget,
-) -> bool {
+pub(crate) async fn enqueue_output_resync(resize: &ResizeSender, pump: ResyncTarget) -> bool {
     matches!(
         tokio::time::timeout(
             std::time::Duration::from_secs(1),
@@ -639,7 +636,7 @@ pub(crate) struct OutputPumpContext {
     pub(crate) out_tx: tokio::sync::mpsc::Sender<Outbound>,
     /// Where a lagged pump asks the actor for an in-band resync addressed to
     /// it ([`Self::resync_target`]).
-    pub(crate) resize: tokio::sync::mpsc::Sender<ResizeRequest>,
+    pub(crate) resize: ResizeSender,
     /// Wire identity of the pane being pumped.
     pub(crate) wire_terminal_id: phux_protocol::ids::ResourceId,
     /// Stream this pump publishes on.
@@ -3575,8 +3572,8 @@ pub(crate) async fn handle_attach(
 
 /// Record the ATTACH viewport and resize every pane to the window-size
 /// policy across its subscribers, so full-screen programs fill the client's
-/// terminal. Zero dimensions are a no-op (SPEC §10.5); the resize is a
-/// fire-and-forget `try_send`.
+/// terminal. Zero dimensions are a no-op (SPEC §10.5); accepted geometry is
+/// coalesced until the actor can apply it before capturing the bootstrap.
 pub(crate) fn apply_attach_viewport(
     state: &SharedState,
     client_id: ClientId,
@@ -3591,14 +3588,13 @@ pub(crate) fn apply_attach_viewport(
     state.with_mut(|s| {
         s.set_client_viewport(client_id, viewport);
         for pane in panes_to_snapshot {
-            let Some((cols, rows)) =
-                s.resolve_terminal_geometry(pane.terminal_id, Some(viewport))
+            if s.retained_exit(pane.terminal_id).is_some() {
+                continue;
+            }
+            let Some((cols, rows)) = s.resolve_terminal_geometry(pane.terminal_id, Some(viewport))
             else {
                 continue;
             };
-            if let Some(pane_entry) = s.registry_mut().terminal_mut(pane.terminal_id) {
-                pane_entry.dims = (cols, rows);
-            }
             // No resync: the attach bootstrap is authoritative, and a resync
             // would race ahead of it.
             let Ok(terminal) = pane.handle.terminal() else {
@@ -3612,18 +3608,14 @@ pub(crate) fn apply_attach_viewport(
                 resync_only: false,
                 resync_for: None,
             }) {
-                Ok(()) => {}
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    warn!(
-                        terminal_id = ?pane.terminal_id,
-                        cols,
-                        rows,
-                        "ATTACH viewport apply: pane resize mailbox full; dropping (next VIEWPORT_RESIZE will retry)",
-                    );
+                Ok(()) => {
+                    if let Some(pane_entry) = s.registry_mut().terminal_mut(pane.terminal_id) {
+                        pane_entry.dims = (cols, rows);
+                    }
                 }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                Err(error) => {
                     debug!(
-                        terminal_id = ?pane.terminal_id,
+                        terminal_id = ?pane.terminal_id, %error,
                         "ATTACH viewport apply: pane actor gone; dropping resize",
                     );
                 }
@@ -4108,7 +4100,7 @@ mod tests {
         published_cut: u64,
         mailbox: usize,
         output: &tokio::sync::broadcast::Sender<PaneOutput>,
-        resize: &tokio::sync::mpsc::Sender<ResizeRequest>,
+        resize: &ResizeSender,
     ) -> TwoPumpConsumer {
         let (out_tx, out_rx) = tokio::sync::mpsc::channel(mailbox);
         let ctx = OutputPumpContext {
@@ -4230,7 +4222,7 @@ mod tests {
     /// Wait for the gap resync request the pump behind `laggard` sends; on
     /// timeout, report what the laggard was sent and whether its pump died.
     async fn resync_request_from(
-        resize_rx: &mut tokio::sync::mpsc::Receiver<ResizeRequest>,
+        resize_rx: &mut crate::terminal_actor::ResizeReceiver,
         laggard: &mut TwoPumpConsumer,
     ) -> ResizeRequest {
         let_pumps_run().await;
@@ -4290,7 +4282,7 @@ mod tests {
         local
             .run_until(async {
                 let (output, _seed) = tokio::sync::broadcast::channel::<PaneOutput>(64);
-                let (resize_tx, mut resize_rx) = tokio::sync::mpsc::channel(8);
+                let (resize_tx, mut resize_rx) = ResizeSender::channel(8);
                 let mut fresh = spawn_two_pump_consumer(1, 2, 64, &output, &resize_tx);
                 let mut stale = spawn_two_pump_consumer(2, 1, 64, &output, &resize_tx);
                 let initial = two_pump_initial_generation();
@@ -4412,7 +4404,7 @@ mod tests {
         local
             .run_until(async {
                 let (output, _seed) = tokio::sync::broadcast::channel::<PaneOutput>(4);
-                let (resize_tx, mut resize_rx) = tokio::sync::mpsc::channel(8);
+                let (resize_tx, mut resize_rx) = ResizeSender::channel(8);
                 let mut fresh = spawn_two_pump_consumer(1, 0, 64, &output, &resize_tx);
                 let mut lagging = spawn_two_pump_consumer(2, 0, 1, &output, &resize_tx);
                 let initial = two_pump_initial_generation();
@@ -4491,13 +4483,13 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn saturated_resync_mailbox_blocks_until_actor_accepts_request() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (tx, mut rx) = ResizeSender::channel(1);
         tx.send(ResizeRequest {
             cols: 80,
             rows: 24,
             cell_px: None,
             resync_clients: false,
-            resync_only: false,
+            resync_only: true,
             resync_for: None,
         })
         .await
@@ -4516,7 +4508,7 @@ mod tests {
             "lagged pump must not resume while the resync mailbox is full"
         );
         assert!(
-            !rx.recv().await.expect("occupied request").resync_only,
+            rx.recv().await.expect("occupied request").resync_only,
             "first request is the existing mailbox occupant"
         );
         assert!(pending.await, "resync queues once capacity is available");
@@ -4778,7 +4770,7 @@ mod tests {
     fn spawn_native_pump(
         terminal: crate::terminal_actor::TerminalHandle,
         output: &tokio::sync::broadcast::Sender<PaneOutput>,
-        resize: tokio::sync::mpsc::Sender<ResizeRequest>,
+        resize: ResizeSender,
     ) -> TwoPumpConsumer {
         let (out_tx, out_rx) = tokio::sync::mpsc::channel(32);
         let ctx = OutputPumpContext {
@@ -4857,7 +4849,7 @@ mod tests {
                 let (handle, _consumer_attach_rx, mut bootstrap_rx, mut publication_rx) =
                     native_attach_handle();
                 let (output, _keepalive) = tokio::sync::broadcast::channel(16);
-                let (resize, mut resize_rx) = tokio::sync::mpsc::channel(4);
+                let (resize, mut resize_rx) = ResizeSender::channel(4);
                 let terminal = handle.terminal().expect("terminal facet").clone();
                 let mut consumer = spawn_native_pump(terminal, &output, resize);
                 let resync = |reason| PaneOutput::Resync {
@@ -4950,7 +4942,7 @@ mod tests {
                 let (handle, _consumer_attach_rx, mut bootstrap_rx, mut publication_rx) =
                     native_attach_handle();
                 let (output, _keepalive) = tokio::sync::broadcast::channel(16);
-                let (resize, _resize_rx) = tokio::sync::mpsc::channel(4);
+                let (resize, _resize_rx) = ResizeSender::channel(4);
                 let terminal = handle.terminal().expect("terminal facet").clone();
                 let mut consumer = spawn_native_pump(terminal, &output, resize);
 

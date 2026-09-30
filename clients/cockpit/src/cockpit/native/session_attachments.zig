@@ -367,8 +367,18 @@ test "selecting another same-machine session preserves the first window connecti
     model.active_window = 1;
     const scene = @import("scene.zig");
     var no_shells: @import("ts_engine.zig").NoShells = .{};
+    const canvas = @import("native_sdk").canvas;
+    const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, canvas.max_display_list_commands);
+    defer std.testing.allocator.free(commands);
+    const builder = try std.testing.allocator.create(canvas.Builder);
+    defer std.testing.allocator.destroy(builder);
+    builder.initAt(commands);
+    try engine.paintWindow(builder, scene.canvasLabelFor(0), 0, .{ .width = 1200, .height = 800 }, .{});
     engine.pumpViewports(&no_shells, .{ .label = scene.canvasLabelFor(0), .size = .{ .width = 1200, .height = 800 }, .scale_factor = 1, .frame_index = 1, .timestamp_ns = 1 });
     const first_viewport = remote.lastViewport(original_owner.terminal_ref).?;
+    model.wsAt(1).?.surface_scale_factor = 2;
+    builder.reset();
+    try engine.paintWindow(builder, scene.canvasLabelFor(1), 0, .{ .width = 800, .height = 600 }, .{});
     engine.pumpViewports(&no_shells, .{ .label = scene.canvasLabelFor(1), .size = .{ .width = 800, .height = 600 }, .scale_factor = 2, .frame_index = 2, .timestamp_ns = 2 });
     try std.testing.expect(remote.lastViewport(original_owner.terminal_ref).?.eql(first_viewport));
     try std.testing.expect(!second.lastViewport(original_owner.terminal_ref).?.eql(first_viewport));

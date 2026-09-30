@@ -364,8 +364,9 @@ capture pageup-after-live
 grep -Eo 'HISTORY-[0-9]{5}' "$RUN_DIR/pageup-after-live.txt" >"$RUN_DIR/pageup-anchor.after" || true
 cmp -s "$RUN_DIR/pageup-anchor.before" "$RUN_DIR/pageup-anchor.after" \
   || fail "PageUp document anchor jumped when live output arrived"
-"${TMUX[@]}" send-keys -t "$SESSION" Escape
-assert_screen_contains "$SESSION" 'Space palette'
+# CSI-u frames Escape unambiguously; a bare ESC followed immediately by C-g
+# can be decoded as one Alt-modified key instead of dismissing copy mode.
+"${TMUX[@]}" send-keys -t "$SESSION" -l $'\033[27u'
 # Copy-mode dismissal preserves the viewport; the next pane-bound key snaps
 # back to live output by design. C-g is harmless at an idle shell.
 "${TMUX[@]}" send-keys -t "$SESSION" C-g
@@ -380,14 +381,22 @@ poll_until "tmux host did not reach 96x28" tmux_size_is "$SESSION" "96x28"
 "${TMUX[@]}" send-keys -t "$SESSION" "%"
 poll_until "client trace did not record a split pane spawn" \
   trace_kind_gt "terminal_spawned" "${SPAWNED_BEFORE:-0}"
-"${TMUX[@]}" send-keys -t "$SESSION" "printf 'SPLIT-PANE-MARKER\\r\\n'" Enter
+"${TMUX[@]}" send-keys -t "$SESSION" "printf '%s%s\\r\\n' SPLIT-PANE- MARKER" Enter
 assert_screen_contains "$SESSION" SPLIT-PANE-MARKER
 "${TMUX[@]}" resize-window -t "$SESSION" -x "$COLS" -y "$ROWS"
 poll_until "tmux host did not return to ${COLS}x${ROWS}" \
   tmux_size_is "$SESSION" "${COLS}x${ROWS}"
-assert_screen_contains "$SESSION" SPLIT-PANE-MARKER
-assert_screen_contains "$SESSION" READY-VISIBLE-MARKER
-capture resize-split-resync
+# Read the markers from the same captured repaint. Separate existence checks
+# can observe the old screen and then capture halfway through its replacement.
+resize_repaint_is_ready() {
+  capture resize-split-resync
+  local ready_count split_count
+  ready_count="$(grep -Fc READY-VISIBLE-MARKER "$RUN_DIR/resize-split-resync.txt" || true)"
+  split_count="$(grep -Fc SPLIT-PANE-MARKER "$RUN_DIR/resize-split-resync.txt" || true)"
+  LAST_OBSERVED="ready=$ready_count split=$split_count"
+  [[ "$ready_count" == 1 && "$split_count" == 1 ]]
+}
+poll_until "resize repaint did not retain each pane marker exactly once" resize_repaint_is_ready
 assert_marker_once "$RUN_DIR/resize-split-resync.txt" READY-VISIBLE-MARKER
 assert_marker_once "$RUN_DIR/resize-split-resync.txt" SPLIT-PANE-MARKER
 

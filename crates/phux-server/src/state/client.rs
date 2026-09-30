@@ -209,10 +209,13 @@ impl ServerState {
     /// state (layers, peer identity) survives until
     /// [`Self::forget_connection`].
     pub fn detach(&mut self, client_id: ClientId) {
-        let detached = self.clients.attached.remove(&client_id).map(|client| {
-            let voted = client.viewport.is_some_and(|v| v.cols > 0 && v.rows > 0);
-            (client.session, voted)
-        });
+        let voted = self
+            .clients
+            .attached
+            .get(&client_id)
+            .is_some_and(|client| client.viewport.is_some_and(|v| v.cols > 0 && v.rows > 0));
+        let geometry_targets = voted.then(|| self.viewport_terminals(client_id));
+        self.clients.attached.remove(&client_id);
         // Drop local and satellite leases; the runtime already broadcast and
         // relayed the releases.
         self.leases.release_all_for(client_id);
@@ -237,8 +240,8 @@ impl ServerState {
         // client that attached without one (a GUI sizing each terminal
         // explicitly) leaves those explicit sizes in place, so quitting and
         // relaunching it does not reflow every shell twice.
-        if let Some((session, true)) = detached {
-            self.restore_session_geometry_after_detach(session);
+        if let Some(terminals) = geometry_targets {
+            self.restore_terminal_geometry_after_detach(terminals);
         }
     }
 

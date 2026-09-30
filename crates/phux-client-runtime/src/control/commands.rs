@@ -51,7 +51,8 @@ impl ControlPlane {
         {
             return false;
         }
-        self.options.viewport = (viewport.cols, viewport.rows);
+        self.viewport.desired = viewport;
+        self.viewport.pending = false;
         self.options.scrollback_lines = scrollback_limit_lines;
         self.options.attach_role = role_policy;
         self.attach_target = Some(target.clone());
@@ -161,38 +162,6 @@ impl ControlPlane {
             .collect()
     }
 
-    /// The client's viewport changed: the attached session's terminals and
-    /// every default-policy per-terminal subscription are resized. Explicit
-    /// preserving subscriptions and viewers skip per-terminal resize fanout.
-    pub fn resize_viewport(&mut self, cols: u16, rows: u16) {
-        let viewport = (cols.max(1), rows.max(1));
-        if self.options.viewport == viewport {
-            return;
-        }
-        self.options.viewport = viewport;
-        if !self.handshake_ready {
-            return;
-        }
-        self.queue_frame(&FrameKind::ViewportResize {
-            viewport: ViewportInfo::new(viewport.0, viewport.1),
-        });
-        // VIEWPORT_RESIZE reaches only the ATTACHed session's terminals; a
-        // per-terminal subscription keeps its geometry without the verb.
-        let foreign: Vec<ResourceId> = self
-            .terminal_attached
-            .iter()
-            .filter(|id| self.follows_global_geometry(id))
-            .cloned()
-            .collect();
-        for terminal_id in foreign {
-            self.queue_frame(&FrameKind::ResizeTerminal {
-                terminal_id,
-                cols: viewport.0,
-                rows: viewport.1,
-            });
-        }
-    }
-
     /// Subscribe to one terminal's stream on the live socket
     /// (`Command::AttachResource`); the reply is [`Event::TerminalAttached`]
     /// with the returned correlation.
@@ -212,7 +181,7 @@ impl ControlPlane {
         self.pending
             .insert(request_id, Pending::AttachTerminal(terminal_id.clone()));
         self.terminal_attached.insert(terminal_id.clone());
-        let (cols, rows) = self.options.viewport;
+        let (cols, rows) = self.viewport();
         self.queue_frame(&FrameKind::Command {
             request_id,
             command: Command::AttachResource {
@@ -238,6 +207,7 @@ impl ControlPlane {
     /// attached session: its stream rides the session pumps.
     pub fn detach_terminal(&mut self, terminal_id: &ResourceId) -> u32 {
         self.preserve_terminal_geometry.remove(terminal_id);
+        self.terminal_roles.remove(terminal_id);
         self.geometry_bootstrapped.remove(terminal_id);
         let request_id = self.next_request_id();
         self.pending
@@ -327,7 +297,7 @@ impl ControlPlane {
             // Without a geometry vote the server's default size applies.
             initial_size: request
                 .initial_size
-                .or_else(|| self.votes_on_geometry().then_some(self.options.viewport)),
+                .or_else(|| self.votes_on_geometry().then_some(self.viewport())),
         });
         request_id
     }

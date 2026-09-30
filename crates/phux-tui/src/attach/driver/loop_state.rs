@@ -1337,19 +1337,17 @@ impl SessionLoop {
         Ok(None)
     }
 
-    /// Size the bootstrap panes' PTYs to the content rect this client paints
-    /// them into. The server sized them from the outer viewport (chrome
-    /// included), so without this the bottom row hides under the status bar.
-    async fn size_bootstrap_panes(
+    /// Size every workspace pane to its current chrome-inset layout. Used
+    /// after bootstrap, late stream binding, and every outer viewport vote.
+    async fn size_workspace_panes(
         &self,
         conn: &mut Connection,
         sidebar: Option<SidebarReservation>,
     ) -> Result<(), AttachError> {
-        emit_view_reflow(
+        emit_bootstrap_workspace_reflow(
             conn,
             &self.mirror.workspace,
             self.mirror.zoomed.as_ref(),
-            &HashMap::new(),
             self.content(sidebar),
         )
         .await
@@ -1422,7 +1420,7 @@ impl SessionLoop {
             return Ok(());
         };
         let sidebar = self.sidebar();
-        self.size_bootstrap_panes(conn, sidebar).await?;
+        self.size_workspace_panes(conn, sidebar).await?;
         self.subscribe_bootstrap(conn, subscribe_layout).await
     }
 
@@ -2926,9 +2924,9 @@ impl SessionLoop {
         // schedules its full paint. Doing it earlier can only see the fallback;
         // doing it on first window selection turns that selection into a
         // corrective resize instead of an ordinary paint.
-        if outcome.layout_get_answered || std::mem::take(&mut self.bind_reflow_owed) {
-            emit_bootstrap_workspace_reflow(conn, &self.mirror.workspace, self.content(sidebar))
-                .await?;
+        let bind_reflow_owed = std::mem::take(&mut self.bind_reflow_owed);
+        if outcome.layout_get_answered || bind_reflow_owed {
+            self.size_workspace_panes(conn, sidebar).await?;
         } else if outcome.reflow_panes
             && let Some(prev_rects) = prev_rects
         {
@@ -2988,30 +2986,14 @@ impl SessionLoop {
         prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
         sidebar: Option<SidebarReservation>,
     ) -> Result<(), AttachError> {
-        let Some(ls) = self
-            .mirror
-            .workspace
-            .render_window(self.mirror.zoomed.as_ref())
-        else {
-            return Ok(());
-        };
-        if ls.tree.is_none() {
-            return Ok(());
-        }
-        let diff =
-            crate::attach::reflow::compute_reflow(ls.as_ref(), prev_rects, self.content(sidebar));
-        for (terminal_id, new_rect) in &diff.changed {
-            send_unless_peer_gone(
-                conn,
-                &FrameKind::ResizeTerminal {
-                    terminal_id: terminal_id.clone(),
-                    cols: new_rect.w,
-                    rows: new_rect.h,
-                },
-            )
-            .await?;
-        }
-        Ok(())
+        emit_view_reflow(
+            conn,
+            &self.mirror.workspace,
+            self.mirror.zoomed.as_ref(),
+            prev_rects,
+            self.content(sidebar),
+        )
+        .await
     }
 
     /// Fold the frame's view-level consequences: a replaced layout, a changed
@@ -3420,7 +3402,6 @@ impl SessionLoop {
         out: &mut W,
         sidebar: Option<SidebarReservation>,
     ) -> Result<(), AttachError> {
-        let prev_dims = self.viewport_dims;
         let viewport = current_viewport_or_default();
         self.viewport_dims = (viewport.cols.max(1), viewport.rows.max(1));
         self.cell_px_dims = host_cell_px(&viewport);
@@ -3433,7 +3414,11 @@ impl SessionLoop {
             .map_or((viewport.cols, viewport.rows), |slot| slot.geometry);
         self.mirror.predict.set_viewport(predict_cols, predict_rows);
         conn.send(&viewport_resize_frame(viewport)).await?;
-        self.emit_resize_reflow(conn, prev_dims, sidebar).await?;
+        // Even a pixel-only SIGWINCH updates the session viewport vote.
+        // Reassert explicit pane targets afterward: they include chrome and
+        // may differ from that policy-resolved outer grid without changing
+        // since the previous frame.
+        self.size_workspace_panes(conn, sidebar).await?;
         // Clear rather than repaint stale pre-resize mirrors; the server's
         // resync snapshot repopulates at the new size.
         let _ = out.write_all(b"\x1b[2J\x1b[H");
@@ -3450,48 +3435,6 @@ impl SessionLoop {
             self.paint_overlay(out, sidebar);
         } else {
             let _ = out.flush();
-        }
-        Ok(())
-    }
-
-    /// Emit one `RESIZE_TERMINAL` per leaf whose size changed, sized to the
-    /// chrome-inset content rect.
-    async fn emit_resize_reflow(
-        &self,
-        conn: &mut Connection,
-        prev_dims: (u16, u16),
-        sidebar: Option<SidebarReservation>,
-    ) -> Result<(), AttachError> {
-        let Some(ls) = self
-            .mirror
-            .workspace
-            .render_window(self.mirror.zoomed.as_ref())
-        else {
-            return Ok(());
-        };
-        if ls.tree.is_none() {
-            return Ok(());
-        }
-        let prev_content = content_rect(prev_dims, self.bar(), sidebar);
-        let new_content = self.content(sidebar);
-        let prev_rects =
-            crate::attach::multi_pane::compute_layout_in(ls.as_ref(), prev_content, prev_dims)
-                .rects;
-        let diff = crate::attach::reflow::compute_reflow(ls.as_ref(), &prev_rects, new_content);
-        if diff.too_small {
-            tracing::warn!(
-                cols = self.viewport_dims.0,
-                rows = self.viewport_dims.1,
-                "viewport too small for current layout; rendering may be garbled",
-            );
-        }
-        for (terminal_id, new_rect) in &diff.changed {
-            conn.send(&FrameKind::ResizeTerminal {
-                terminal_id: terminal_id.clone(),
-                cols: new_rect.w,
-                rows: new_rect.h,
-            })
-            .await?;
         }
         Ok(())
     }
