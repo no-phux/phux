@@ -121,6 +121,65 @@ fn mixed_input_key_and_route_input_preserve_wire_order() {
     });
 }
 
+/// A burst of `INPUT_KEY` frames that lands in one socket read reaches the
+/// PTY whole. Typed text (the desktop's `commitText`, an IME commit) is one
+/// frame per scalar, so a 256-character line arrives as one buffered read.
+/// The server must hand the pane actor a turn between those frames: routing
+/// them all in one poll overflows the actor's 64-deep encoded-input mailbox
+/// and the input lane drops everything past it.
+#[test]
+fn a_buffered_input_key_burst_reaches_the_pty_whole() {
+    const LETTERS: [(char, PhysicalKey); 5] = [
+        ('a', PhysicalKey::A),
+        ('b', PhysicalKey::B),
+        ('c', PhysicalKey::C),
+        ('d', PhysicalKey::D),
+        ('e', PhysicalKey::E),
+    ];
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let ((shutdown, server), mut stream) = seeded(&tmp, CommandBuilder::new("/bin/cat")).await;
+        let pane = attach(&mut stream).await;
+
+        let typed: String = (0..256).map(|i| LETTERS[i % LETTERS.len()].0).collect();
+        let mut burst = Vec::new();
+        for i in 0..typed.len() {
+            let (c, k) = LETTERS[i % LETTERS.len()];
+            burst.extend_from_slice(&phux_server_testkit::encode_frame(&key(&pane, c, k)));
+        }
+        let enter = FrameKind::InputKey {
+            terminal_id: pane.clone(),
+            event: named_key(PhysicalKey::Enter),
+        };
+        burst.extend_from_slice(&phux_server_testkit::encode_frame(&enter));
+        tokio::io::AsyncWriteExt::write_all(&mut stream, &burst)
+            .await
+            .unwrap();
+
+        // Inside `try_recv_typed`'s own per-read timeout, so a lost tail
+        // reports what did arrive rather than a bare read timeout.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let mut acc = Vec::new();
+        while !acc.windows(typed.len()).any(|w| w == typed.as_bytes()) {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let Ok(Some((_, frame))) = timeout(remaining, try_recv_typed(&mut stream)).await else {
+                panic!(
+                    "the {}-key burst did not reach the PTY whole; echoed {} bytes: {:?}",
+                    typed.len(),
+                    acc.len(),
+                    String::from_utf8_lossy(&acc)
+                );
+            };
+            if let FrameKind::ResourceOutput { bytes, .. } = frame {
+                acc.extend_from_slice(&bytes);
+            }
+        }
+
+        drop(stream);
+        join_after_shutdown(shutdown, server).await;
+    });
+}
+
 /// phux-yyex: a wheel `INPUT_MOUSE` must encode to an SGR scroll report once
 /// the pane enables mouse tracking. Before the fix the encoder had no cell
 /// geometry and emitted zero bytes for every mouse event.

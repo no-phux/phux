@@ -234,14 +234,29 @@ pub(crate) struct FrameAssembler {
 impl FrameAssembler {
     /// The next complete frame (prefix included), or `None` at a clean end of
     /// stream on a frame boundary. Cancel-safe.
+    ///
+    /// A frame already buffered by an earlier call is returned only after
+    /// yielding to the scheduler. One read can carry hundreds of frames (a
+    /// typed line is one `INPUT_KEY` per character), and handing them out
+    /// with no await point would dispatch the whole burst in one poll: the
+    /// input lane would fill a pane actor's bounded mailbox while that actor,
+    /// on this same thread, never ran to drain it, and the overflow is
+    /// dropped. The per-frame socket reads this replaced were paced by
+    /// tokio's cooperative budget instead.
     pub(crate) async fn read_frame<R>(&mut self, reader: &mut R) -> io::Result<Option<BytesMut>>
     where
         R: tokio::io::AsyncRead + Unpin,
     {
+        let mut read_this_call = false;
         loop {
-            if let Some(frame) = framing::split_frame(&mut self.buf)? {
-                return Ok(Some(frame));
+            if frame_complete(&self.buf)? {
+                if !read_this_call {
+                    // Before the split, so a cancelled yield loses nothing.
+                    tokio::task::yield_now().await;
+                }
+                return Ok(framing::split_frame(&mut self.buf)?);
             }
+            read_this_call = true;
             self.buf.reserve(READ_CHUNK);
             if reader.read_buf(&mut self.buf).await? == 0 {
                 if self.buf.is_empty() {
@@ -254,6 +269,15 @@ impl FrameAssembler {
             }
         }
     }
+}
+
+/// Whether `buf` starts with one whole frame; a bad length header is the
+/// same framing error [`framing::split_frame`] reports.
+fn frame_complete(buf: &[u8]) -> Result<bool, framing::FramingError> {
+    let Some(header) = buf.first_chunk::<LENGTH_PREFIX>() else {
+        return Ok(false);
+    };
+    Ok(buf.len() >= LENGTH_PREFIX + framing::decode_length(*header)?)
 }
 
 /// UDS read half: reassembles length-prefixed frames off the byte stream.
