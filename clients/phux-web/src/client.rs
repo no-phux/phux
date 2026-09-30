@@ -176,6 +176,10 @@ async fn load_vt() -> Result<Rc<Vt>, JsValue> {
     }
 }
 
+/// Canvas attribute naming the connection state: `connected` once attached,
+/// `disconnected` after the transport or protocol fails.
+pub const CONNECTION_ATTRIBUTE: &str = "data-phux-connection";
+
 /// DOM id of the element that holds the focused pane's agent badges.
 pub const BADGE_CONTAINER_ID: &str = "phux-agent-badges";
 
@@ -409,14 +413,18 @@ pub struct Client {
 }
 
 impl Client {
-    pub(crate) fn enable_auto_reconnect(&self, wt_url: &str, ws_url: &str) {
+    /// Keep this connection alive past transport loss: after a failure, a
+    /// fresh client redials (WebTransport first when `wt_url` is given,
+    /// else the WebSocket) until one attaches, then supervises itself the
+    /// same way. The client is retained by its own handlers from here on.
+    pub fn enable_auto_reconnect(&self, wt_url: Option<&str>, ws_url: &str) {
         let (canvas, cols, rows) = {
             let app = self.app.borrow();
             let grid = app.session.grid();
             (app.canvas.clone(), grid.cols, grid.rows)
         };
         let config = ReconnectConfig {
-            wt_url: wt_url.to_owned(),
+            wt_url: wt_url.map(str::to_owned),
             ws_url: ws_url.to_owned(),
             canvas,
             cols,
@@ -476,6 +484,24 @@ impl Client {
     /// Close the transport and drop browser handlers and timers.
     pub fn close(&self) {
         self.app.borrow_mut().dispose();
+    }
+
+    /// Resize the terminal viewport to `cols`x`rows` cells. The server
+    /// resizes the pane (subject to its multi-client size policy) and the
+    /// canvas follows the replica's new geometry; a reconnect reattaches at
+    /// this size.
+    pub fn resize(&self, cols: u16, rows: u16) {
+        let mut app = self.app.borrow_mut();
+        if let Some(config) = app.reconnect.get_mut().as_mut() {
+            config.cols = cols.max(1);
+            config.rows = rows.max(1);
+        }
+        let Some(frame) = app.session.resize_frame(cols, rows) else {
+            return;
+        };
+        if let Err(message) = app.tx.send(&frame) {
+            app.fail(&message);
+        }
     }
 
     /// Privacy-safe terminal failure reason, if this connection ended.
@@ -859,8 +885,15 @@ impl App {
 
     fn signal_ready(&self) {
         if let Some(ready) = self.ready.borrow_mut().take() {
+            self.mark_connection("connected");
             let _ = ready.send(Ok(()));
         }
+    }
+
+    /// Reflect the connection on the canvas as [`CONNECTION_ATTRIBUTE`], so
+    /// a page can dim or badge a stale terminal while a reconnect is pending.
+    fn mark_connection(&self, state: &str) {
+        let _ = self.canvas.set_attribute(CONNECTION_ATTRIBUTE, state);
     }
 
     fn signal_failed(&self, message: &str) {
@@ -875,6 +908,7 @@ impl App {
         }
         self.failure_reason.replace(Some(message.to_owned()));
         self.session.fail_protocol(message);
+        self.mark_connection("disconnected");
         self.signal_failed(message);
         self.bindings.get_mut().dispose();
         self.tx.close();
@@ -1029,7 +1063,7 @@ fn build_app(
 }
 
 struct ReconnectConfig {
-    wt_url: String,
+    wt_url: Option<String>,
     ws_url: String,
     canvas: HtmlCanvasElement,
     cols: u16,
@@ -1040,17 +1074,17 @@ fn spawn_reconnect(config: ReconnectConfig) {
     wasm_bindgen_futures::spawn_local(async move {
         TimeoutFuture::new(250).await;
         loop {
-            match run_with_fallback(
-                &config.wt_url,
-                &config.ws_url,
-                config.canvas.clone(),
-                config.cols,
-                config.rows,
-            )
-            .await
-            {
+            let canvas = config.canvas.clone();
+            let attempt = match config.wt_url.as_deref() {
+                Some(wt_url) => {
+                    run_with_fallback(wt_url, &config.ws_url, canvas, config.cols, config.rows)
+                        .await
+                }
+                None => run(&config.ws_url, canvas, config.cols, config.rows).await,
+            };
+            match attempt {
                 Ok(client) => {
-                    client.enable_auto_reconnect(&config.wt_url, &config.ws_url);
+                    client.enable_auto_reconnect(config.wt_url.as_deref(), &config.ws_url);
                     return;
                 }
                 Err(_) => TimeoutFuture::new(1_000).await,
@@ -2459,6 +2493,14 @@ mod tests {
             super::send_handshake(&app);
             assert!(app.borrow().session.is_failed());
             assert!(app.borrow().self_owner.borrow().is_none());
+            assert_eq!(
+                app.borrow()
+                    .canvas
+                    .get_attribute(super::CONNECTION_ATTRIBUTE)
+                    .as_deref(),
+                Some("disconnected"),
+                "a failed connection is marked on its canvas"
+            );
             {
                 let app = app.borrow();
                 let bindings = app.bindings.borrow();

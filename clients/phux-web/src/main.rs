@@ -4,9 +4,10 @@
 //! `ws://<host>/session`) and attach the terminal into `#phux-term`. A
 //! `?wt=…` parameter (an `https://` WebTransport session URL, from
 //! `phux server --webtransport`) makes the client try WebTransport first,
-//! falling back to the WebSocket URL.
+//! falling back to the WebSocket URL. Either way the page reconnects after
+//! the server restarts or the network drops.
 
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 
 fn main() {
     wasm_bindgen_futures::spawn_local(async {
@@ -26,7 +27,16 @@ async fn auto_start() -> Result<(), JsValue> {
         Some(wt_url) => {
             phux_web::start_webtransport(wt_url, ws_url, "phux-term".to_owned(), 80, 24).await
         }
-        None => phux_web::start(ws_url, "phux-term".to_owned(), 80, 24).await,
+        None => {
+            let canvas = window
+                .document()
+                .and_then(|document| document.get_element_by_id("phux-term"))
+                .ok_or_else(|| JsValue::from_str("canvas element not found"))?
+                .dyn_into()?;
+            let client = phux_web::client::run(&ws_url, canvas, 80, 24).await?;
+            client.enable_auto_reconnect(None, &ws_url);
+            Ok(())
+        }
     }
 }
 

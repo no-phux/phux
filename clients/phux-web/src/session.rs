@@ -1114,6 +1114,24 @@ impl Session {
             })
     }
 
+    /// Record a new viewport and, once the handshake is done, encode the
+    /// `VIEWPORT_RESIZE` announcing it. Before `HELLO_OK` the `ATTACH`
+    /// carries the new size instead, so no frame is needed; an unchanged
+    /// size sends nothing. The server resizes the pane (subject to its
+    /// multi-client size policy) and the replica follows its re-bootstrap.
+    pub fn resize_frame(&mut self, cols: u16, rows: u16) -> Option<Vec<u8>> {
+        let (cols, rows) = (cols.max(1), rows.max(1));
+        if self.failed || (cols, rows) == (self.cols, self.rows) {
+            return None;
+        }
+        self.cols = cols;
+        self.rows = rows;
+        self.kernel.as_ref()?;
+        Some(encode(&FrameKind::ViewportResize {
+            viewport: ViewportInfo::new(cols, rows),
+        }))
+    }
+
     /// Encode an eligible structured key event for the focused published pane.
     #[must_use]
     pub fn key_frame(&mut self, event: KeyEvent) -> Option<Vec<u8>> {

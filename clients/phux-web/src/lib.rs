@@ -48,6 +48,13 @@ impl HostedClient {
     pub fn close(&self) {
         self.client.close();
     }
+
+    /// Resize the terminal to `cols`x`rows` cells (for example after the
+    /// host element changes size). The canvas follows the server's new
+    /// geometry.
+    pub fn resize(&self, cols: u16, rows: u16) {
+        self.client.resize(cols, rows);
+    }
 }
 
 /// Hosted JS entry point. Unlike [`start`], this requires the hosted session
@@ -134,7 +141,7 @@ pub async fn start_webtransport(
 ) -> Result<(), JsValue> {
     let canvas = canvas_by_id(&canvas_id)?;
     let client = client::run_with_fallback(&wt_url, &ws_url, canvas, cols, rows).await?;
-    client.enable_auto_reconnect(&wt_url, &ws_url);
+    client.enable_auto_reconnect(Some(&wt_url), &ws_url);
     Ok(())
 }
 
