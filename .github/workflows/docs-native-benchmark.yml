@@ -1,10 +1,6 @@
 name: docs-native-benchmark
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/docs-native-benchmark.yml
-      - scripts/bench/cmux-native.py
   workflow_dispatch:
 
 permissions:

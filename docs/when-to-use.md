@@ -124,8 +124,8 @@ every older installed version includes the same commands.
 ## Performance
 
 The [performance page](./performance.md) separates product choice from
-measurement: real phux/tmux/Herdr server-client boundaries, native cmux
-requirements, repeat commands, sample-count rules, and the limitations of the
+measurement: real phux/tmux/Herdr server-client boundaries, separate native cmux
+observations, repeat commands, sample-count rules, and the limitations of the
 historical results. A server-only RSS row is not a complete-app memory ranking;
 a PTY-byte round trip is not native GUI input-to-pixel latency.
 

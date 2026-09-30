@@ -1,0 +1,117 @@
+{
+  "recorded_at": "2026-09-30T07:36:15.143070+00:00",
+  "runner": {
+    "RUNNER_OS": "macOS",
+    "RUNNER_ARCH": "ARM64",
+    "RUNNER_ENVIRONMENT": "github-hosted",
+    "ImageOS": "macos15",
+    "ImageVersion": "20260907.0337.1",
+    "GITHUB_RUN_ID": "36684587739",
+    "GITHUB_SHA": "519ae6ffa9517c79a21c55f96a933f115ecabcf8"
+  },
+  "hardware": {
+    "platform": "macOS-15.7.9-arm64-arm-64bit-Mach-O",
+    "cpu": {
+      "argv": [
+        "/usr/sbin/sysctl",
+        "-n",
+        "machdep.cpu.brand_string"
+      ],
+      "exit_code": 0,
+      "stdout": "Apple M1 (Virtual)",
+      "stderr": ""
+    },
+    "memory": {
+      "argv": [
+        "/usr/sbin/sysctl",
+        "-n",
+        "hw.memsize"
+      ],
+      "exit_code": 0,
+      "stdout": "7516192768",
+      "stderr": ""
+    },
+    "load_start": [
+      7.99169921875,
+      17.98046875,
+      11.40087890625
+    ]
+  },
+  "release": {
+    "version": "0.64.25",
+    "build": "106",
+    "binary_sha256": "b83e415b6309e185fff2044d10b43b2722debcc13082b591fae5455fdfd677e5",
+    "cli": {
+      "argv": [
+        "$RUNNER_TEMP/cmux-native/cmux.app/Contents/Resources/bin/cmux",
+        "--version"
+      ],
+      "exit_code": 0,
+      "stdout": "cmux 0.64.25 (106) [b685a275c]",
+      "stderr": ""
+    }
+  },
+  "configuration": {
+    "state": "fresh disposable runner account; default native window and terminal",
+    "samples_requested": 20,
+    "startup_boundary": "LaunchServices open invocation to first observed completed terminal command; includes CLI startup and polling",
+    "echo_boundary": "CLI send invocation to completion marker returned by CLI read-screen; includes both CLI launches and polling; NOT PTY-byte echo or input-to-pixel"
+  },
+  "samples": [],
+  "ok": false,
+  "display": {
+    "argv": [
+      "/usr/sbin/system_profiler",
+      "SPDisplaysDataType",
+      "-json"
+    ],
+    "exit_code": 0,
+    "stdout": "{\n  \"SPDisplaysDataType\" : [\n\n  ]\n}",
+    "stderr": ""
+  },
+  "initial_screenshot": {
+    "argv": [
+      "/usr/sbin/screencapture",
+      "-x",
+      "$RUNNER_TEMP/cmux-observations/before.png"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "signature": {
+    "argv": [
+      "/usr/bin/codesign",
+      "--verify",
+      "--deep",
+      "--strict",
+      "$RUNNER_TEMP/cmux-native/cmux.app"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "launch": {
+    "argv": [
+      "/usr/bin/open",
+      "-n",
+      "$RUNNER_TEMP/cmux-native/cmux.app",
+      "--env",
+      "CMUX_ALLOW_SOCKET_OVERRIDE=1",
+      "--env",
+      "CMUX_SOCKET_PATH=/tmp/phux-cmux-bench.sock",
+      "--env",
+      "CMUXD_UNIX_PATH=/tmp/phux-cmuxd-bench.sock"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "error": "workspace readiness failed: {'argv': ['$RUNNER_TEMP/cmux-native/cmux.app/Contents/Resources/bin/cmux', 'list-workspaces', '--json'], 'exit_code': 1, 'stdout': '', 'stderr': \"cmux: 'list-workspaces' is now an alias for 'cmux workspace list'. The legacy form keeps working indefinitely; set CMUX_QUIET=1 to silence this notice.\\nError: ERROR: Access denied - only processes started inside cmux can connect\"}",
+  "publication": {
+    "kind": "native-readiness-preflight-not-performance",
+    "run_url": "https://github.com/no-phux/phux/actions/runs/36684587739",
+    "harness_source_commit": "f9c673c6b8ed3468a54923705e50d58392d13ab6",
+    "redaction": "Only runner temporary paths replaced with $RUNNER_TEMP; observations unchanged."
+  }
+}

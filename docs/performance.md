@@ -6,11 +6,11 @@ last-reviewed: 2026-09-30
 
 # Performance
 
-**TL;DR.** Fresh two-run measurements compare real phux, tmux, and Herdr clients
-on one heavily loaded development host. Results change substantially between
-runs: these are on-host observations, not an idle-machine ranking.
-Raw samples, failures, and exact boundaries are retained. cmux's native GUI
-requires a separate safe test session; it is not assigned a fabricated score.
+**TL;DR.** Two runs recorded on September 30, 2026 compare real phux, tmux, and
+Herdr clients on one heavily loaded development host. Results change substantially
+between runs: these are on-host observations, not an idle-machine ranking.
+Native cmux was exercised separately on a disposable macOS runner. Its
+CLI-observed command timings are not PTY-byte echo or input-to-pixel latency.
 
 ## What can be compared fairly?
 
@@ -19,7 +19,7 @@ requires a separate safe test session; it is not assigned a fabricated score.
 | **phux** | Server plus `phux attach`; UDS locally, optional loopback WebSocket and QUIC lanes | Cockpit, desktop, and browser clients are **not measured** by the TUI harness. |
 | **tmux** | Private tmux server plus `tmux attach-session`; no user configuration | The outer terminal application is **not measured**. |
 | **Herdr** | Private Herdr server plus its terminal UI | No GUI timing is inferred from the terminal-client result. |
-| **cmux** | Its native app is **not applicable** to this PTY-client probe. Running its CLI, a bare shell, or its optional tmux owner would measure a different boundary. | Requires an isolated native app, owned workspace, and an explicit completion signal; no input-to-pixel result is currently published here. |
+| **cmux** | Its native app is **not applicable** to this PTY-client probe. Running its CLI, a bare shell, or its optional tmux owner would measure a different boundary. | Native launch, CLI-observed terminal output, and process-tree RSS were recorded on a separate macOS runner. Input-to-pixel latency remains **unmeasured**. |
 
 **Unmeasured is not slow, unsupported, or zero.** Choose a product using
 [When to use phux](./when-to-use.md); use this page to inspect the cost of a
@@ -46,7 +46,7 @@ and **Herdr `0.9.0`**. Exact binary hashes and harness revision
 `6ad7bebb6f46558f5db8cd78f8041f5b38eec150` are retained in each run's metadata;
 the [measured harness snapshot](https://github.com/no-phux/phux/tree/bench/docs-2026-09-30/scripts/bench)
 is preserved separately from later documentation changes.
-No fresh remote-network, WebSocket, QUIC, or native GUI result is implied.
+These terminal-client runs do not measure remote networks, WebSocket, QUIC, or GUI rendering.
 
 ### Both runs, without selecting a winner
 
@@ -318,32 +318,82 @@ same run ID.
 
 cmux's [official documentation](https://cmux.com/docs/getting-started) describes
 a native macOS terminal/browser, not a terminal UI that emits its display on
-stdout. A meaningful native experiment should report **launch to owned-workspace
-readiness**, command-to-observable output, and complete app/process-tree memory
-with the window state and helper-process inclusion specified. These must remain
-separate from PTY-byte echo and server-only RSS. Socket-command acknowledgement
-is not a GPU presentation receipt.
+stdout. We ran the official **cmux 0.64.25, build 106** application on a
+disposable GitHub-hosted macOS runner and observed completed commands through its
+socket API. The [native window screenshot](https://docs.phux.sh/benchmarks/2026-09-30/cmux-ci/native-window.png)
+confirms the terminal displayed the probe output; it is not a timed GPU
+presentation receipt.
 
-Upstream documents [tagged development builds](https://github.com/manaflow-ai/cmux/blob/main/skills/cmux-dev-workflow/references/tagged-builds.md)
-and an [isolated Release staging route](https://github.com/manaflow-ai/cmux/blob/v0.64.25/scripts/reloads.sh).
-A separate bundle identity, socket, configuration/state directories, and a
-non-user workspace are required. A temporary HOME alone is not sufficient for
-macOS app preferences or all cmux state. Do not run a benchmark against a user's
-existing cmux socket, relaunch their app, enable global accessibility settings,
-or steal focus to manufacture a result. A dedicated macOS login/VM or an
-explicitly available GUI test session is the appropriate boundary when startup
-cannot be proven non-activating.
+### One native observation campaign
 
-For the September 30 review, the official cmux `0.64.25` DMG was downloaded,
-its SHA-256 checked against the release digest, and its `Info.plist` inspected
-read-only: build `106`, revision `b685a275c`. It was not launched. The matching
-[startup implementation](https://github.com/manaflow-ai/cmux/blob/v0.64.25/Sources/AppDelegate.swift)
-defaults `shouldActivate` to true, then focuses the first window using
-`activateAllWindows` with activation suppression disabled. The staging script's
-`open -g` is therefore not sufficient evidence of a focus-safe launch.
-The [retained feasibility record](https://docs.phux.sh/benchmarks/2026-09-30/cmux-feasibility.json)
-contains the release provenance and exact prerequisite. No cmux numerical
-ranking is implied by this missing GUI measurement.
+**Do not add these numbers to the PTY charts above.** Both the host and the
+measurement boundary differ. This runner reported an Apple M1 (Virtual),
+7 GiB RAM, macOS 15.7.9 arm64, and starting load averages
+**9.71 / 11.69 / 8.43**. It was not demonstrated to be idle.
+
+| Observation | Recorded result |
+|---|---|
+| Launch to first completed command | **4.853 s**, one launch |
+| Subsequent command observation | **184.8 ms median**, **245.2 ms maximum**; 20 completed commands, zero failures |
+| Main application RSS | **262,736 KiB** |
+| Captured process-tree RSS | **272,288 KiB** (265.9 MiB) |
+
+- **Startup boundary:** before `open -n` until a command's completion marker was
+  returned by `read-screen`; includes application startup, CLI launches, and polling.
+- **Command boundary:** before CLI `send` until `read-screen` returned the
+  completion marker. Includes both CLI launches and one or two reads per command.
+- **Memory boundary:** one snapshot after the command probes: app, `login`, and
+  shell. Excludes shared WindowServer, GPU allocations, and unattributed reparented
+  helpers; shared pages may be counted twice.
+
+Twenty command observations do not justify a p99. One launch and one memory
+snapshot are not distributions. “Fresh runner” does not mean cold storage:
+checksum, signature, and version inspection happened before launch.
+Neither the CLI timing nor the RSS sum measures the whole rendering pipeline
+or physical memory footprint. There is no corresponding phux native-client
+campaign here, so this is not a native-app speed or memory ranking.
+
+The app used its default native window and terminal on a fresh account, with
+private app/daemon sockets. `CMUX_SOCKET_MODE=allowAll` explicitly permitted the
+external benchmark driver on that disposable runner; it was **not** the default
+socket policy. No global accessibility setting was changed.
+
+Retained evidence:
+
+- [All 20 observations, process rows, configuration, and runner metadata](https://docs.phux.sh/benchmarks/2026-09-30/cmux-ci/native-observations.json).
+- [Successful CI run](https://github.com/no-phux/phux/actions/runs/36685005009) and
+  [exact harness/workflow snapshot](https://github.com/no-phux/phux/tree/bench/cmux-docs-2026-09-30).
+- Two unsuccessful setup attempts, not performance samples:
+  [direct executable launch exited with signal 11](https://docs.phux.sh/benchmarks/2026-09-30/cmux-ci/direct-launch.json);
+  [LaunchServices started the app, but its default socket policy rejected the external driver](https://docs.phux.sh/benchmarks/2026-09-30/cmux-ci/launchservices-default-policy.json).
+  The successful attempt used LaunchServices and the explicit automation policy.
+
+To repeat the pinned experiment on a disposable runner, with repository Actions
+permission:
+
+```sh
+gh workflow run docs-native-benchmark.yml \
+  --repo no-phux/phux --ref bench/cmux-docs-2026-09-30
+```
+
+The workflow is manual-only on `main`; it is not an ongoing PR performance gate.
+Its `cmux-native-observations` artifact includes the raw result and screenshots.
+The script refuses to launch outside a GitHub-hosted macOS runner environment.
+
+### Why the user's desktop was not used
+
+The release's [startup implementation](https://github.com/manaflow-ai/cmux/blob/v0.64.25/Sources/AppDelegate.swift)
+activates its first window; the staging script's `open -g` is not sufficient
+evidence of a focus-safe launch. A temporary HOME also does not isolate all
+macOS preferences or cmux discovery state. We inspected the DMG locally without
+launching it, then used the disposable runner instead.
+
+Do not benchmark against an existing user's socket, relaunch their app, or
+change global accessibility settings to manufacture a result. If sharing a
+machine, follow upstream's [tagged build isolation](https://github.com/manaflow-ai/cmux/blob/main/skills/cmux-dev-workflow/references/tagged-builds.md);
+an otherwise empty VM can use the official bundle identity.
+The [feasibility and provenance record](https://docs.phux.sh/benchmarks/2026-09-30/cmux-feasibility.json)
+retains the release digest, local safety boundary, and native experiment links.
 
 ## Interpreting a result
 
