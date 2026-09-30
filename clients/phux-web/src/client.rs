@@ -2004,6 +2004,13 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
+    /// The live `ws_demo_server` the browser lane starts (a fixed default
+    /// for running these by hand).
+    const TEST_WS_URL: &str = match option_env!("PHUX_TEST_WS_URL") {
+        Some(url) => url,
+        None => "ws://127.0.0.1:47654/",
+    };
+
     #[wasm_bindgen_test]
     fn poisoned_framing_stops_pump_and_invokes_close() {
         for length in [0, MAX_FRAME_LEN + 1] {
@@ -2209,7 +2216,7 @@ mod tests {
     }
 
     async fn open_websocket() -> WebSocket {
-        let ws = WebSocket::new("ws://127.0.0.1:47654/").expect("create test WebSocket");
+        let ws = WebSocket::new(TEST_WS_URL).expect("create test WebSocket");
         for _ in 0..200 {
             if ws.ready_state() == WebSocket::OPEN {
                 return ws;
@@ -2246,7 +2253,7 @@ mod tests {
     async fn malformed_token_fails_closed_before_an_available_ws_fallback() {
         let result = super::run_with_fallback(
             "https://127.0.0.1:9/session?token=not-hex",
-            "ws://127.0.0.1:47654/",
+            TEST_WS_URL,
             test_canvas(),
             80,
             24,
@@ -2334,7 +2341,7 @@ mod tests {
         document.body().unwrap().append_child(&canvas).unwrap();
 
         crate::start(
-            "ws://127.0.0.1:47654/".to_owned(),
+            TEST_WS_URL.to_owned(),
             "phux-start-retention-test".to_owned(),
             80,
             24,
