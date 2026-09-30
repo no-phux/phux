@@ -930,12 +930,12 @@ DetachReason = enum {
 }
 ```
 
-<!-- impl-status: partial; probe: AuthorizationRevoked,AuthorizationExpired,AuthenticationFailed -->
-> **Status: partial.** Every reference consumer decodes detach reason values
+<!-- impl-status: shipped; probe: AuthorizationRevoked,AuthorizationExpired,AuthenticationFailed -->
+> **Status: shipped.** Every reference consumer decodes detach reason values
 > 5 through 7. The reference server emits `AUTHORIZATION_REVOKED` and
-> `AUTHORIZATION_EXPIRED` when live revocation ends a connection
-> ([workload-auth.md](./workload-auth.md) §7). It has no post-HELLO
-> authentication outcome, so it never emits `AUTHENTICATION_FAILED`.
+> `AUTHORIZATION_EXPIRED` when live revocation ends a connection, and
+> `AUTHENTICATION_FAILED` when it refuses HELLO for the authenticated peer
+> ([workload-auth.md](./workload-auth.md) §7).
 
 Both fields are optional-absent, which is what makes them additive under
 §6.3: a server that predates `0.7.0-draft.7` encodes an empty `DETACHED`

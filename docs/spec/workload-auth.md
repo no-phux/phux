@@ -596,9 +596,14 @@ AUTHORIZATION_EXPIRED  = 7
 ```
 
 `AUTHENTICATION_FAILED` covers post-HELLO authentication outcomes (a
-pre-HELLO TLS refusal has no DETACHED to carry it). A client that does not
-recognize a detach reason already treats it as unstated, so these values are
-additive.
+pre-HELLO TLS refusal has no DETACHED to carry it): the policy engine refusing
+the peer the transport authenticated, when HELLO is evaluated. That includes
+a TLS peer the `local` mode does not admit, a credential the registry no
+longer holds or has revoked, and a bearer revoked or expired since its
+upgrade. The refused HELLO is answered `ERROR { PERMISSION_DENIED }`, then
+`DETACHED { AUTHENTICATION_FAILED }`, and the transport closes; no grant is
+minted, so no `HELLO_OK` is sent. A client that does not recognize a detach
+reason already treats it as unstated, so these values are additive.
 
 ## 8. Policy modes and secret handling
 

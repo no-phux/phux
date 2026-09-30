@@ -1,6 +1,7 @@
 //! The HELLO authorization seam and policy postures (ADR-0072,
-//! `docs/spec/workload-auth.md` §8): a denying engine refuses HELLO with
-//! `PermissionDenied` before the close; the owner socket keeps all six verbs
+//! `docs/spec/workload-auth.md` §7-§8): a denying engine refuses HELLO with
+//! `PermissionDenied` and `DETACHED { AUTHENTICATION_FAILED }` before the
+//! close; the owner socket keeps all six verbs
 //! at Global under both the default and the `paired` engine; `local` mode
 //! beside a remote listener refuses to start. Posture resolution and the
 //! paired engine's remote refusals are unit-tested in `policy::tests`.
@@ -10,13 +11,14 @@ use std::sync::Arc;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
 use phux_protocol::policy::PeerIdentity;
-use phux_protocol::wire::frame::{ErrorCode, FrameKind, Scope, WHOAMI_KEY};
+use phux_protocol::wire::frame::{DetachReason, ErrorCode, FrameKind, Scope, WHOAMI_KEY};
 use phux_server::ServerError;
 use phux_server::auth::AuthenticatedCredential;
 use phux_server::policy::{GrantFuture, PolicyEngine, PolicyError, PostureError, ScopedPolicy};
 use phux_server::runtime::{ServerConfig, ServerRuntime};
 use phux_server::workload::ReloadingWorkloadRegistry;
 use tempfile::TempDir;
+use tokio::io::AsyncReadExt as _;
 
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, recv_typed, recv_until, run_local, send_frame, wait_for_raw_socket,
@@ -84,6 +86,9 @@ where
     let _ = handle.await;
 }
 
+/// workload-auth §7: a refused HELLO is a post-HELLO authentication outcome,
+/// so the goodbye is `ERROR { PERMISSION_DENIED }`, `DETACHED {
+/// AUTHENTICATION_FAILED }`, and the transport closes.
 #[test]
 fn a_denying_engine_refuses_hello_with_permission_denied() {
     run_local(async {
@@ -109,6 +114,23 @@ fn a_denying_engine_refuses_hello_with_permission_denied() {
                 }
                 other => panic!("expected ERROR after a denied HELLO, got {other:?}"),
             }
+            let (_type_byte, frame) = recv_typed(&mut stream).await;
+            assert!(
+                matches!(
+                    frame,
+                    FrameKind::Detached {
+                        reason: Some(DetachReason::AuthenticationFailed),
+                        ..
+                    }
+                ),
+                "a refused HELLO ends with AUTHENTICATION_FAILED, got {frame:?}",
+            );
+            let mut rest = [0_u8; 1];
+            let read = tokio::time::timeout(SOCKET_CONNECT_DEADLINE, stream.read(&mut rest))
+                .await
+                .expect("the server closes after DETACHED")
+                .expect("clean close");
+            assert_eq!(read, 0, "nothing follows DETACHED");
         })
         .await;
     });

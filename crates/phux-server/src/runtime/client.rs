@@ -103,6 +103,7 @@ fn validate_dispatch_frame(
     {
         return Err(ConnectionClose {
             attached_reason: Some("Terminal frame sent on QUIC control stream"),
+            detach_reason: DetachReason::ProtocolError,
             code: ErrorCode::MalformedMessage,
             message: "Terminal-scoped frame requires a bound QUIC stream".to_owned(),
         });
@@ -2207,6 +2208,10 @@ struct ConnectionClose {
     /// `Some(reason)` when the connection may be attached, so its pumps and
     /// consumer state are torn down first; `None` in the handshake phase.
     attached_reason: Option<&'static str>,
+    /// The `DETACHED` reason: `PROTOCOL_ERROR` for a violation,
+    /// `AUTHENTICATION_FAILED` when HELLO's authentication outcome refused
+    /// the peer (workload-auth §7).
+    detach_reason: DetachReason,
     code: ErrorCode,
     message: String,
 }
@@ -2410,7 +2415,12 @@ impl ClientPlumbing {
             abort_output_pumps(&mut self.output_pumps, client_id, reason).await;
             detach_and_release_consumer_state(state, client_id);
         }
-        let ConnectionClose { code, message, .. } = close;
+        let ConnectionClose {
+            detach_reason,
+            code,
+            message,
+            ..
+        } = close;
         let goodbye = [
             FrameKind::Error {
                 request_id: None,
@@ -2418,7 +2428,7 @@ impl ClientPlumbing {
                 message: message.clone(),
             },
             FrameKind::Detached {
-                reason: Some(DetachReason::ProtocolError),
+                reason: Some(detach_reason),
                 message,
             },
         ];
@@ -2461,6 +2471,7 @@ fn framing_violation_close(err: &io::Error, client_id: ClientId) -> Option<Conne
     warn!(?client_id, error = %framing, "client framing violation; closing");
     Some(ConnectionClose {
         attached_reason: Some("framing violation"),
+        detach_reason: DetachReason::ProtocolError,
         code: ErrorCode::FrameTooLarge,
         message: framing.wire_message(),
     })
@@ -2479,6 +2490,7 @@ fn decode_client_frame(
         warn!("client sent FRAME_COMPRESSED; closing");
         return Err(ConnectionClose {
             attached_reason: Some("client-sent FRAME_COMPRESSED"),
+            detach_reason: DetachReason::ProtocolError,
             code: ErrorCode::MalformedMessage,
             message: "FRAME_COMPRESSED is server-to-client only".to_owned(),
         });
@@ -2493,6 +2505,7 @@ fn decode_client_frame(
             warn!(error = ?err, "client sent undecodable frame; closing");
             Err(ConnectionClose {
                 attached_reason: Some("undecodable frame"),
+                detach_reason: DetachReason::ProtocolError,
                 code: ErrorCode::MalformedMessage,
                 message: format!("could not decode client frame: {err:?}"),
             })
@@ -2512,6 +2525,7 @@ fn reject_frame_before_hello(
     warn!(?client_id, "stateful frame before HELLO; closing");
     Some(ConnectionClose {
         attached_reason: None,
+        detach_reason: DetachReason::ProtocolError,
         code: ErrorCode::VersionIncompatible,
         message: "HELLO required before any stateful frame".to_owned(),
     })
@@ -2550,6 +2564,7 @@ async fn negotiate_hello(
         warn!(?client_id, "duplicate HELLO; closing");
         return Err(ConnectionClose {
             attached_reason: Some("duplicate HELLO"),
+            detach_reason: DetachReason::ProtocolError,
             code: ErrorCode::InvalidCommand,
             message: "HELLO already completed on this connection".to_owned(),
         });
@@ -2568,6 +2583,7 @@ async fn negotiate_hello(
         warn!(?client_id, %message, "HELLO protocol mismatch");
         return Err(ConnectionClose {
             attached_reason: None,
+            detach_reason: DetachReason::ProtocolError,
             code: ErrorCode::VersionIncompatible,
             message,
         });
@@ -2629,7 +2645,9 @@ async fn negotiate_hello(
 
 /// Policy check: authorize HELLO only against the identity authenticated by
 /// the accepting transport. A missing registry entry is never equivalent to a
-/// local root peer.
+/// local root peer. Every refusal here is HELLO's authentication outcome, so
+/// the peer gets `ERROR { PERMISSION_DENIED }` then `DETACHED {
+/// AUTHENTICATION_FAILED }` (workload-auth §7).
 async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(), ConnectionClose> {
     let identity = state.with(|s| {
         let peer = s.peer_identity(client_id).cloned()?;
@@ -2642,6 +2660,7 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
         );
         return Err(ConnectionClose {
             attached_reason: None,
+            detach_reason: DetachReason::AuthenticationFailed,
             code: ErrorCode::PermissionDenied,
             message: "authenticated peer identity missing".to_owned(),
         });
@@ -2656,6 +2675,7 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
         );
         return Err(ConnectionClose {
             attached_reason: None,
+            detach_reason: DetachReason::AuthenticationFailed,
             code: ErrorCode::PermissionDenied,
             message: "policy denied: unauthorized: not authorized".to_owned(),
         });
@@ -2671,6 +2691,7 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
             warn!(?client_id, error = %err, "HELLO denied by policy");
             Err(ConnectionClose {
                 attached_reason: None,
+                detach_reason: DetachReason::AuthenticationFailed,
                 code: ErrorCode::PermissionDenied,
                 message: format!("policy denied: {err}"),
             })
@@ -2702,6 +2723,7 @@ fn select_hello_profile(
         warn!(?client_id, %message, "HELLO codec unavailable");
         return Err(ConnectionClose {
             attached_reason: None,
+            detach_reason: DetachReason::ProtocolError,
             code: ErrorCode::CodecUnavailable,
             message,
         });
@@ -2914,6 +2936,7 @@ where
                 warn!(?client_id, "client did not complete HELLO before deadline; closing");
                 break 'conn ConnectionEnding::Violation(ConnectionClose {
                     attached_reason: None,
+                    detach_reason: DetachReason::ProtocolError,
                     code: ErrorCode::VersionIncompatible,
                     message: "HELLO deadline elapsed".to_owned(),
                 });
@@ -2936,6 +2959,7 @@ where
                 warn!(?client_id, "bulk command worker stopped unexpectedly; closing");
                 break 'conn ConnectionEnding::Violation(ConnectionClose {
                     attached_reason: Some("bulk command worker stopped"),
+                    detach_reason: DetachReason::ProtocolError,
                     code: ErrorCode::InternalError,
                     message: "bulk command worker stopped unexpectedly".to_owned(),
                 });
@@ -3042,6 +3066,7 @@ where
                     AttachIdVerdict::Reserved => {
                         break 'conn ConnectionEnding::Violation(ConnectionClose {
                             attached_reason: Some("zero ATTACH id"),
+                            detach_reason: DetachReason::ProtocolError,
                             code: ErrorCode::MalformedMessage,
                             message: "ATTACH attach_id must be nonzero".to_owned(),
                         });
@@ -3377,6 +3402,7 @@ where
                 warn!(?client_id, kind = ?other, "direction-invalid client frame; closing");
                 break 'conn ConnectionEnding::Violation(ConnectionClose {
                     attached_reason: Some("direction-invalid frame"),
+                    detach_reason: DetachReason::ProtocolError,
                     code: ErrorCode::InvalidCommand,
                     message: format!(
                         "frame is not valid from a client in the negotiated phase: {other:?}"
