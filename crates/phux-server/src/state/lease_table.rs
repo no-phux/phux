@@ -345,6 +345,26 @@ impl LeaseTable {
             .remove(&(host.clone(), terminal));
     }
 
+    /// Forget the mirror-ordering bookkeeping for a satellite terminal that
+    /// closed; no event for it can arrive again. Without this the map keeps
+    /// one entry per satellite terminal that ever held a lease, for the
+    /// hub's lifetime, and a satellite naming fresh ids grows it at will.
+    pub(super) fn forget_satellite_terminal(
+        &mut self,
+        host: &phux_protocol::ids::SatelliteHost,
+        terminal: u32,
+    ) {
+        let key = (host.clone(), terminal);
+        self.satellite_last_mirrored_seq.remove(&key);
+        self.satellite_acquire_pending.remove(&key);
+    }
+
+    /// Entries in the mirror-ordering bookkeeping.
+    #[cfg(test)]
+    pub(super) fn satellite_mirror_entries(&self) -> usize {
+        self.satellite_last_mirrored_seq.len() + self.satellite_acquire_pending.len()
+    }
+
     /// Mirror a satellite `terminal_control` into the hub ledger (the
     /// satellite owns the timer). `is_end` is true for Released/Expired.
     /// Returns the evicted holder when an end was applied.

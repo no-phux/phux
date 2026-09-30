@@ -112,6 +112,22 @@ impl ServerState {
             .mirror_satellite_lease_event(host, terminal, is_end, seq)
     }
 
+    /// Forget the lease-mirror ordering state of a satellite terminal that
+    /// closed.
+    pub fn forget_satellite_lease_terminal(
+        &mut self,
+        host: &phux_protocol::ids::SatelliteHost,
+        terminal: u32,
+    ) {
+        self.leases.forget_satellite_terminal(host, terminal);
+    }
+
+    /// Entries in the satellite lease-mirror ordering state.
+    #[cfg(test)]
+    pub(crate) fn satellite_lease_mirror_entries(&self) -> usize {
+        self.leases.satellite_mirror_entries()
+    }
+
     /// Mark an `ACQUIRE_INPUT` relay in flight; clear on failure, and the
     /// next mirrored event clears it on success.
     pub fn mark_satellite_lease_acquire_pending(
