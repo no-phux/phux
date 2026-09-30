@@ -31,6 +31,7 @@ Addressed to the server or the connection rather than to one resource.
 | `VIEWPORT_RESIZE` | frame `0x20` | BIND | yes | none | shipped |
 | `COMMAND` | frame `0x31` | nested | yes | none | shipped |
 | `LIST_DIRECTORY` | frame `0x55` | INVENTORY | no | `list_directory` | shipped |
+| `PATH_QUERY` | frame `0x56` | INVENTORY | no | none | shipped |
 | `UPGRADE` | command `0x0e` | SIGNAL | yes | none | shipped |
 | `SHUTDOWN` | command `0x16` | SIGNAL (owner socket only) | yes | `shutdown` | shipped |
 | `OPEN_LISTENER` | command `0x1c` | SIGNAL (owner socket only) | yes | `open_listener` | shipped |
@@ -198,6 +199,7 @@ Every client-originated frame lands on exactly one row.
 | Other `SET_METADATA`, `DELETE_METADATA` | BIND | `MetadataScope` |
 | `LIST_METADATA` | INVENTORY | `MetadataScope` |
 | `LIST_DIRECTORY` | INVENTORY | `Global { owner_uds_only: false }` |
+| `PATH_QUERY` | INVENTORY | `Global { owner_uds_only: false }` |
 | Other `SUBSCRIBE_METADATA` | OBSERVE | `MetadataScope` |
 | Unknown, wrong-direction, retired, or otherwise unclassified frame | deny | `None` |
 

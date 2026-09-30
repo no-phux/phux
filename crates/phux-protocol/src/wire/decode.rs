@@ -15,16 +15,18 @@ use super::frame::{
     TYPE_HELLO_OK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST,
     TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE,
     TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_DIRECTORY, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED,
-    TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PING, TYPE_PONG,
-    TYPE_RESIZE_TERMINAL, TYPE_RESOURCE_CLOSED, TYPE_RESOURCE_MOVED, TYPE_RESOURCE_OUTPUT,
-    TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS,
-    TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE, TombstoneReason, decode_actor_ref,
-    decode_agent_event, decode_attach_target, decode_bootstrap_codec, decode_bootstrap_id,
-    decode_bootstrap_profile, decode_bootstrap_stream_profile, decode_command,
-    decode_command_result, decode_directory_listing, decode_env, decode_focus_event,
-    decode_idempotency_key, decode_key_event, decode_list_directory, decode_metadata_scope_key,
-    decode_mouse_event, decode_move_result, decode_paste_event, decode_scope, decode_spawn_result,
-    decode_stream_id, decode_string_list, decode_terminal_id, decode_viewport_info,
+    TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PATH_QUERY,
+    TYPE_PATH_RESULTS, TYPE_PING, TYPE_PONG, TYPE_RESIZE_TERMINAL, TYPE_RESOURCE_CLOSED,
+    TYPE_RESOURCE_MOVED, TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA,
+    TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE,
+    TombstoneReason, decode_actor_ref, decode_agent_event, decode_attach_target,
+    decode_bootstrap_codec, decode_bootstrap_id, decode_bootstrap_profile,
+    decode_bootstrap_stream_profile, decode_command, decode_command_result,
+    decode_directory_listing, decode_env, decode_focus_event, decode_idempotency_key,
+    decode_key_event, decode_list_directory, decode_metadata_scope_key, decode_mouse_event,
+    decode_move_result, decode_paste_event, decode_query, decode_results, decode_scope,
+    decode_spawn_result, decode_stream_id, decode_string_list, decode_terminal_id,
+    decode_viewport_info,
 };
 use super::info::{decode_client_id, decode_session_snapshot};
 use crate::caps::{
@@ -357,6 +359,20 @@ impl<'a> Decoder<'a> {
             TYPE_DIRECTORY_LISTING => {
                 let (request_id, result) = decode_directory_listing(self)?;
                 Ok(FrameKind::DirectoryListing { request_id, result })
+            }
+            TYPE_PATH_QUERY => {
+                let (request_id, root, query, recursive, host) = decode_query(self)?;
+                Ok(FrameKind::PathQuery {
+                    request_id,
+                    root,
+                    query,
+                    recursive,
+                    host,
+                })
+            }
+            TYPE_PATH_RESULTS => {
+                let (request_id, result) = decode_results(self)?;
+                Ok(FrameKind::PathResults { request_id, result })
             }
             TYPE_SPAWN_RESOURCE => self.decode_spawn_terminal(),
             TYPE_RESOURCE_SPAWNED => self.decode_terminal_spawned(),
@@ -1724,6 +1740,11 @@ fn decode_server_capabilities(
     if !d.at_body_end() {
         caps = caps.with_features(crate::caps::ServerFeatureSet::from_wire(d.read_u32_be()?));
     }
+    if !d.at_body_end() {
+        caps = caps.with_features_ext(crate::caps::ServerFeatureExtSet::from_wire(
+            d.read_u32_be()?,
+        ));
+    }
     Ok(caps)
 }
 
@@ -1789,4 +1810,25 @@ fn checked_history_required_rows(required_rows: Option<u32>) -> Result<u32, Deco
         return Err(DecodeError::HistoryRowLimitExceeded);
     }
     Ok(required_rows)
+}
+
+#[cfg(test)]
+mod path_capability_tests {
+    use super::*;
+    use crate::caps::{ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet};
+
+    #[test]
+    fn second_word_preserves_first_and_ignores_unknown_bits() {
+        let legacy =
+            decode_server_capabilities(&mut Decoder::new(&[1, 0, 0, 0, 0])).expect("old caps");
+        assert_eq!(legacy.features, ServerFeatureSet::new());
+        assert_eq!(legacy.features_ext, ServerFeatureExtSet::new());
+        let extended =
+            decode_server_capabilities(&mut Decoder::new(&[1, 0, 0, 0, 0, 0x80, 0, 0, 1]))
+                .expect("extended caps");
+        assert_eq!(extended.features, ServerFeatureSet::new());
+        assert!(extended.features_ext.contains(ServerFeatureExt::PathQuery));
+        assert_eq!(extended.features_ext.as_wire(), 1);
+        assert!(decode_server_capabilities(&mut Decoder::new(&[1, 0, 0, 0, 0, 0])).is_err());
+    }
 }

@@ -426,6 +426,10 @@ ServerFeature = bitset (u32) {
     // 0x00000008 were never assigned and stay unassigned.
 }
 
+ServerFeatureExt = bitset (u32) {
+    PATH_QUERY = 0x00000001, // L3 host path browse + fuzzy search (§5)
+}
+
 EngineFeatureSet = bitset (u32) {
     CONTINUATION            = 0x00000001,
     READY_BOUNDARY          = 0x00000002,
@@ -492,8 +496,15 @@ above the negotiated bound before allocating it; opaque cursors are at most
 4 KiB.
 
 `ServerCapabilities` remains a positional prefix: `layers: u8` followed by
-optional `features: u32`. A one-byte legacy value therefore decodes with an
-empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
+optional `features: u32` and optional `features_ext: u32`. A one-byte legacy
+value decodes with both feature sets empty. The second word follows the first
+even when the first is zero; it is omitted when zero, preserving old
+`HELLO_OK` bytes. Old clients stop after word 0 and ignore word 1; new clients
+ignore unknown bits in either word. Per [ADR-0137](../adr/0137-server-feature-word-extends.md),
+`0x80000000` and the low holes in word 0 are not allocated. The first word-1
+bit is `features_ext.PATH_QUERY = 0x00000001` ([L3.md](./L3.md) §5);
+its absence forbids both `PATH_QUERY` browse and recursive search.
+`ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `MOVE_RESOURCE = 0x40`, `TERMINAL_REPLY = 0x80`, `SHUTDOWN = 0x100`,
 `SPAWN_INITIAL_SIZE = 0x200`, `REPORT_AGENT_STATE = 0x400`,
 `GET_PERF = 0x800`,

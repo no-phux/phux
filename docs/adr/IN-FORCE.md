@@ -38,6 +38,8 @@ by a newer one, the newer line is the operative reading.
 
 ## Wire and codecs
 
+- [0142](./0142-host-path-query-is-separate-from-directory-listing.md) Host path browse and fuzzy search use a new feature-gated L3 frame pair; directory listings do not change.
+
 - [0137](./0137-server-feature-word-extends.md) The `ServerFeature` u32 is closed; the next capability is a trailing `features_ext` word that old clients ignore.
 - [0123](./0123-events-are-journaled.md) Every event is stamped with a server-wide sequence and journaled; a cursor replays it, and every loss is a typed gap.
 - [0086](./0086-shared-render-pool.md) One pooled libghostty render trio lives in `phux-protocol` behind the `server` feature.
