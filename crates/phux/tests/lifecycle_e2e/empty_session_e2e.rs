@@ -89,3 +89,41 @@ fn new_empty_without_a_server_creates_only_the_requested_session() {
 fn new_empty_named_default_without_a_server_succeeds() {
     new_empty_starts_only("default");
 }
+
+/// A second `phux new --json` for a name in use fails with the `--json`
+/// contract: empty stdout and one JSON error line (`session_exists`) on
+/// stderr, for the empty and the seeded create alike.
+#[test]
+#[ignore = "spawns a real phux server; run via `just e2e`."]
+fn new_json_for_a_taken_name_is_a_json_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("phux.sock");
+    let first = phux(&["new", "--empty", "--json", "-s", "taken"], &socket);
+    let mut server = common::AutoSpawnedServer::new(PHUX, socket.clone());
+    assert!(first.status.success(), "{first:?}");
+    server.capture_pid();
+
+    for args in [
+        &["new", "--empty", "--json", "-s", "taken"][..],
+        &["new", "--json", "-s", "taken"][..],
+    ] {
+        let out = phux(args, &socket);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {out:?}");
+        assert!(out.stdout.is_empty(), "{args:?}: {out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let doc: serde_json::Value = serde_json::from_str(stderr.trim()).unwrap_or_else(|err| {
+            panic!("{args:?}: stderr is not one JSON line ({err}): {stderr}")
+        });
+        assert_eq!(doc["error"]["code"], "session_exists", "{doc}");
+        assert_eq!(doc["exit_code"], 1, "{doc}");
+        assert!(
+            doc["remedy"]
+                .as_str()
+                .is_some_and(|r| r.contains("phux attach taken")),
+            "{doc}"
+        );
+    }
+
+    drop(server);
+    drop(dir);
+}

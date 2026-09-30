@@ -848,7 +848,9 @@ Transport: `no_server`, `server_disconnected`, `transport`,
 `server_start_timeout`, `server_start_cancelled`, `server_start_failed`.
 Resolution: `no_such_target`, `partial_view`.
 Sessions: `invalid_session_name` (exit 2: empty, a leading `@`, `#`, or
-`%`, or a `:` or `/@` inside, so no selector could name it).
+`%`, or a `:` or `/@` inside, so no selector could name it),
+`session_exists`, `session_create_failed` (the server did not confirm a
+`new`).
 Local I/O: `io` (a bug-report bundle could not be written under the
 state directory), `json_serialize`.
 Agent lifecycle: `no_agent_record`, `satellite_target`,
