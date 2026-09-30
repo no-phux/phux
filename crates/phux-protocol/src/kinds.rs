@@ -38,9 +38,9 @@ use crate::wire::frame::{
     TYPE_ATTACH, TYPE_COMMAND, TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_FRAME_ACK,
     TYPE_GET_METADATA, TYPE_HELLO, TYPE_HISTORY_REQUEST, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY,
     TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_DIRECTORY,
-    TYPE_LIST_METADATA, TYPE_MOVE_RESOURCE, TYPE_PING, TYPE_RESIZE_TERMINAL, TYPE_SET_METADATA,
-    TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE,
-    WHOAMI_KEY, decode_session_keep_empty,
+    TYPE_LIST_METADATA, TYPE_MOVE_RESOURCE, TYPE_PATH_QUERY, TYPE_PING, TYPE_RESIZE_TERMINAL,
+    TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA,
+    TYPE_VIEWPORT_RESIZE, WHOAMI_KEY, decode_session_keep_empty,
 };
 use crate::wire::frame::{EVENT_TAG_SOURCE_GAP, SESSION_NAME_KEY};
 
@@ -535,6 +535,7 @@ static F_LIST_METADATA: Rule = Rule::verbs(
     Subject::MetadataScope,
 );
 static F_LIST_DIRECTORY: Rule = Rule::verbs("`LIST_DIRECTORY`", &[Verb::Inventory], GLOBAL);
+static F_PATH_QUERY: Rule = Rule::verbs("`PATH_QUERY`", &[Verb::Inventory], GLOBAL);
 static F_SUBSCRIBE_METADATA: Rule = Rule::verbs(
     "Other `SUBSCRIBE_METADATA`",
     &[Verb::Observe],
@@ -547,7 +548,7 @@ static F_UNCLASSIFIED: Rule =
 ///
 /// [`classify_frame`] returns one of these rows for every decoded frame. It
 /// never returns the `COMMAND` row: the nested command decides.
-pub static FRAME_RULES: [&Rule; 39] = [
+pub static FRAME_RULES: [&Rule; 40] = [
     &F_HELLO,
     &F_PING,
     &F_DETACH,
@@ -585,6 +586,7 @@ pub static FRAME_RULES: [&Rule; 39] = [
     &F_METADATA_WRITE,
     &F_LIST_METADATA,
     &F_LIST_DIRECTORY,
+    &F_PATH_QUERY,
     &F_SUBSCRIBE_METADATA,
     &F_UNCLASSIFIED,
 ];
@@ -778,6 +780,7 @@ pub fn frame_rule(frame: &FrameKind) -> &'static Rule {
         FrameKind::DeleteMetadata { key, .. } => delete_metadata_rule(key),
         FrameKind::ListMetadata { .. } => &F_LIST_METADATA,
         FrameKind::ListDirectory { .. } => &F_LIST_DIRECTORY,
+        FrameKind::PathQuery { .. } => &F_PATH_QUERY,
         FrameKind::SubscribeMetadata { key, .. } => subscribe_metadata_rule(key),
         // Server-to-client frames: wrong direction when a client sends them.
         FrameKind::HelloOk { .. }
@@ -799,6 +802,7 @@ pub fn frame_rule(frame: &FrameKind) -> &'static Rule {
         | FrameKind::MetadataValue { .. }
         | FrameKind::MetadataKeys { .. }
         | FrameKind::DirectoryListing { .. }
+        | FrameKind::PathResults { .. }
         | FrameKind::ResourceSpawned { .. }
         | FrameKind::ResourceMoved { .. }
         | FrameKind::ResourceClosed { .. }
@@ -1230,6 +1234,11 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
         Carrier::Frame(TYPE_LIST_DIRECTORY),
         [F_LIST_DIRECTORY],
         Some(FeatureGate::Features(ServerFeature::ListDirectory))
+    ),
+    method!(
+        "PATH_QUERY",
+        Carrier::Frame(TYPE_PATH_QUERY),
+        [F_PATH_QUERY]
     ),
     dangerous(method!(
         "UPGRADE",

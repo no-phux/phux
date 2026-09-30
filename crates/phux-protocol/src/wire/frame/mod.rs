@@ -153,6 +153,8 @@ enum FrameType {
     MetadataKeys = 0xD2,
     ListDirectory = 0x55,
     DirectoryListing = 0xD3,
+    PathQuery = 0x56,
+    PathResults = 0xD4,
     SpawnResource = 0x22,
     ResizeTerminal = 0x23,
     MoveResource = 0x2A,
@@ -416,6 +418,11 @@ pub const TYPE_LIST_DIRECTORY: u8 = FrameType::ListDirectory as u8;
 /// Discriminant for `DIRECTORY_LISTING` (server to client, `docs/spec/L3.md`
 /// §4): the listing or a typed refusal.
 pub const TYPE_DIRECTORY_LISTING: u8 = FrameType::DirectoryListing as u8;
+
+/// `PATH_QUERY` (client to server, L3 §5).
+pub const TYPE_PATH_QUERY: u8 = FrameType::PathQuery as u8;
+/// `PATH_RESULTS` (server to client, L3 §5).
+pub const TYPE_PATH_RESULTS: u8 = FrameType::PathResults as u8;
 }
 
 // L1 resource lifecycle discriminants (SPEC §7.2 / §10.1).
@@ -734,6 +741,7 @@ mod command;
 mod command_codec;
 mod directory;
 mod kind;
+mod path;
 mod payload;
 mod role;
 mod status;
@@ -750,6 +758,11 @@ pub use directory::{
     DirectoryListingResult, MAX_DIRECTORY_ENTRIES,
 };
 pub use kind::FrameKind;
+pub use path::{
+    MAX_PATH_RESULTS, PathErrorCode, PathKind, PathQueryError, PathQueryResult, PathResults,
+    PathRow, PathStatus,
+};
+pub(in crate::wire) use path::{decode_query, decode_results};
 pub use payload::{
     ActorRef, AttachTarget, EventStamp, MoveError, MoveResult, Scope, SpawnError, SpawnResource,
     SpawnResult, ViewportInfo,

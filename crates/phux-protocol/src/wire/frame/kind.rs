@@ -23,6 +23,7 @@ use crate::wire::framing::LENGTH_PREFIX_LEN;
 use crate::wire::info::{SessionSnapshot, encode_client_id, encode_session_snapshot};
 
 use super::directory::{DirectoryListingResult, encode_directory_listing, encode_list_directory};
+use super::path::{PathQueryResult, encode_query, encode_results};
 use super::{
     ActorRef, AgentEvent, AttachTarget, CloseReason, Command, CommandResult, DetachReason,
     ErrorCode, EventStamp, HistoryRejectionReason, HistoryTombstoneReason, MAX_FRAME_LEN,
@@ -34,14 +35,15 @@ use super::{
     TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS,
     TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_INPUT_TERMINAL_REPLY,
     TYPE_LIST_DIRECTORY, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS,
-    TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PING, TYPE_PONG, TYPE_RESIZE_TERMINAL,
-    TYPE_RESOURCE_CLOSED, TYPE_RESOURCE_MOVED, TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED,
-    TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA,
-    TYPE_VIEWPORT_RESIZE, TombstoneReason, ViewportInfo, encode_actor_ref, encode_agent_event,
-    encode_attach_target, encode_bootstrap_codec, encode_bootstrap_profile, encode_command,
-    encode_command_result, encode_env, encode_focus_event, encode_key_event, encode_mouse_event,
-    encode_move_result, encode_paste_event, encode_scope, encode_spawn_result, encode_string_list,
-    encode_terminal_id, encode_viewport_info,
+    TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PATH_QUERY, TYPE_PATH_RESULTS, TYPE_PING,
+    TYPE_PONG, TYPE_RESIZE_TERMINAL, TYPE_RESOURCE_CLOSED, TYPE_RESOURCE_MOVED,
+    TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE,
+    TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE, TombstoneReason,
+    ViewportInfo, encode_actor_ref, encode_agent_event, encode_attach_target,
+    encode_bootstrap_codec, encode_bootstrap_profile, encode_command, encode_command_result,
+    encode_env, encode_focus_event, encode_key_event, encode_mouse_event, encode_move_result,
+    encode_paste_event, encode_scope, encode_spawn_result, encode_string_list, encode_terminal_id,
+    encode_viewport_info,
 };
 
 /// Decoded wire frame (`docs/spec/proto.md` §7).
@@ -475,6 +477,28 @@ pub enum FrameKind {
         result: DirectoryListingResult,
     },
 
+    /// Host-side one-level browse or recursive fuzzy path search (L3 §5).
+    PathQuery {
+        /// Correlates the reply.
+        request_id: u32,
+        /// Absolute directory, `~`, or `~/rest` on the selected host.
+        root: String,
+        /// Browse filter, or fuzzy search term when recursive.
+        query: String,
+        /// False for one-level browse, true for cross-directory search.
+        recursive: bool,
+        /// Satellite host, or serving host when absent.
+        host: Option<SatelliteHost>,
+    },
+
+    /// Correlated path rows, status, or typed refusal (L3 §5).
+    PathResults {
+        /// Correlates a `PATH_QUERY`.
+        request_id: u32,
+        /// Successful search or refusal.
+        result: PathQueryResult,
+    },
+
     /// `SPAWN_RESOURCE` — spawn a new resource under `group`
     /// (`docs/spec/L1.md` §1 / §10.1); answered by `RESOURCE_SPAWNED`.
     SpawnResource {
@@ -666,6 +690,8 @@ impl FrameKind {
             Self::MetadataKeys { .. } => TYPE_METADATA_KEYS,
             Self::ListDirectory { .. } => TYPE_LIST_DIRECTORY,
             Self::DirectoryListing { .. } => TYPE_DIRECTORY_LISTING,
+            Self::PathQuery { .. } => TYPE_PATH_QUERY,
+            Self::PathResults { .. } => TYPE_PATH_RESULTS,
             Self::SpawnResource { .. } => TYPE_SPAWN_RESOURCE,
             Self::MoveResource { .. } => TYPE_MOVE_RESOURCE,
             Self::ResourceMoved { .. } => TYPE_RESOURCE_MOVED,
@@ -1052,6 +1078,18 @@ impl FrameKind {
             Self::DirectoryListing { request_id, result } => {
                 encode_directory_listing(enc, *request_id, result);
             }
+            Self::PathQuery {
+                request_id,
+                root,
+                query,
+                recursive,
+                host,
+            } => {
+                encode_query(enc, *request_id, root, query, *recursive, host.as_ref());
+            }
+            Self::PathResults { request_id, result } => {
+                encode_results(enc, *request_id, result);
+            }
             Self::SpawnResource {
                 request_id,
                 group,
@@ -1227,8 +1265,11 @@ impl FrameKind {
     ) {
         enc.write_field_with(field::hello_ok::SERVER_CAPS, |e| {
             e.write_u8(server_caps.layers.as_wire());
-            if !server_caps.features.is_empty() {
+            if !server_caps.features.is_empty() || !server_caps.features_ext.is_empty() {
                 e.write_u32_be(server_caps.features.as_wire());
+                if !server_caps.features_ext.is_empty() {
+                    e.write_u32_be(server_caps.features_ext.as_wire());
+                }
             }
         });
         // server_id is opaque bytes; the field is already

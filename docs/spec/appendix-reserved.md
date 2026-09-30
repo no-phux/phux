@@ -58,8 +58,9 @@ For implementers extending the protocol:
 - Message IDs `0x50..=0x5F` and `0xD0..=0xDF`: L3
   ([L3.md](./L3.md) §1). `0x50..=0x55` C→S and `0xD0..=0xD3` S→C are
   allocated (the metadata verbs, and the `LIST_DIRECTORY` /
-  `DIRECTORY_LISTING` host query of L3.md §4); `0x56..=0x5F` and
-  `0xD4..=0xDF` remain open. There is no L2 tier, so no L2 range is carved
+  `DIRECTORY_LISTING` host query of L3.md §4); `PATH_QUERY = 0x56` and
+  `PATH_RESULTS = 0xD4` are allocated for L3.md §5. `0x57..=0x5F` and
+  `0xD5..=0xDF` remain open. There is no L2 tier, so no L2 range is carved
   out of this block.
 
 ## 2. Command-tag allocations

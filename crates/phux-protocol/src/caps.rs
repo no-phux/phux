@@ -1046,6 +1046,76 @@ impl ServerFeatureSet {
     }
 }
 
+/// Features in the second, trailing server-capability word (ADR-0137).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum ServerFeatureExt {
+    /// Host-side file/directory browsing and recursive fuzzy path search.
+    PathQuery = 0x0000_0001,
+}
+
+/// Known bits in `HELLO_OK.server_caps.features_ext`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ServerFeatureExtSet(u32);
+
+impl ServerFeatureExtSet {
+    const KNOWN: u32 = ServerFeatureExt::PathQuery as u32;
+
+    /// No extended features.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    /// Every known extended feature.
+    #[must_use]
+    pub const fn all() -> Self {
+        Self(Self::KNOWN)
+    }
+
+    /// Construct a set from known features.
+    #[must_use]
+    pub const fn with(features: &[ServerFeatureExt]) -> Self {
+        let mut bits = 0;
+        let mut i = 0;
+        while i < features.len() {
+            bits |= features[i] as u32;
+            i += 1;
+        }
+        Self(bits)
+    }
+
+    /// Copy with one feature cleared.
+    #[must_use]
+    pub const fn without(self, feature: ServerFeatureExt) -> Self {
+        Self(self.0 & !(feature as u32))
+    }
+
+    /// Whether this set contains a feature.
+    #[must_use]
+    pub const fn contains(self, feature: ServerFeatureExt) -> bool {
+        self.0 & (feature as u32) != 0
+    }
+
+    /// Whether no extended feature is present.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Known bits to write to the second word.
+    #[must_use]
+    pub const fn as_wire(self) -> u32 {
+        self.0 & Self::KNOWN
+    }
+
+    /// Read known bits, ignoring future additions.
+    #[must_use]
+    pub const fn from_wire(bits: u32) -> Self {
+        Self(bits & Self::KNOWN)
+    }
+}
+
 /// One image-transport protocol the client may advertise (SPEC §6.2).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1253,6 +1323,8 @@ pub struct ServerCapabilities {
     pub layers: LayerSet,
     /// Additive server-owned protocol features.
     pub features: ServerFeatureSet,
+    /// Additive features in the second trailing `u32` of the caps record.
+    pub features_ext: ServerFeatureExtSet,
     /// The frame compression this server selected for the connection
     /// (`docs/spec/proto.md` §6.4). Always one the client offered.
     pub compression: Compression,
@@ -1265,6 +1337,7 @@ impl ServerCapabilities {
         Self {
             layers: LayerSet::new(),
             features: ServerFeatureSet::new(),
+            features_ext: ServerFeatureExtSet::new(),
             compression: Compression::None,
         }
     }
@@ -1287,6 +1360,13 @@ impl ServerCapabilities {
     #[must_use]
     pub const fn with_features(mut self, features: ServerFeatureSet) -> Self {
         self.features = features;
+        self
+    }
+
+    /// Builder setter for [`Self::features_ext`].
+    #[must_use]
+    pub const fn with_features_ext(mut self, features: ServerFeatureExtSet) -> Self {
+        self.features_ext = features;
         self
     }
 }

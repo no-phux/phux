@@ -113,6 +113,10 @@ pub enum DecodeError {
     #[error("DIRECTORY_LISTING entry count exceeds protocol limits")]
     DirectoryEntryLimitExceeded,
 
+    /// A `PATH_RESULTS` reply declared more than `MAX_PATH_RESULTS` rows.
+    #[error("PATH_RESULTS row count exceeds protocol limits")]
+    PathResultLimitExceeded,
+
     /// A tree in the retired `WindowInfo` layout slot nested deeper than
     /// [`MAX_LAYOUT_DEPTH`](crate::wire::info::MAX_LAYOUT_DEPTH), which would
     /// otherwise overflow the stack.

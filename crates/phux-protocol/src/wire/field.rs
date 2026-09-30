@@ -419,6 +419,38 @@ pub mod directory_listing {
     pub const MESSAGE: u32 = 7;
 }
 
+/// `PATH_QUERY` body fields (`docs/spec/L3.md` §5).
+pub mod path_query {
+    /// Correlation id (`u32`).
+    pub const REQUEST_ID: u32 = 1;
+    /// Starting directory (`str`).
+    pub const ROOT: u32 = 2;
+    /// Browse filter or fuzzy term (`str`).
+    pub const QUERY: u32 = 3;
+    /// `u8`: 0 = one level, 1 = recursive search.
+    pub const RECURSIVE: u32 = 4;
+    /// Optional satellite host (`str`).
+    pub const HOST: u32 = 5;
+}
+
+/// `PATH_RESULTS` body fields (`docs/spec/L3.md` §5).
+pub mod path_results {
+    /// Correlation id (`u32`).
+    pub const REQUEST_ID: u32 = 1;
+    /// Absolute lexical root (`str`), or attempted root on refusal.
+    pub const ROOT: u32 = 2;
+    /// Lexical parent (`str`), absent at filesystem root.
+    pub const PARENT: u32 = 3;
+    /// Positional `u32` count then `(path: str, kind: u8)` rows.
+    pub const ROWS: u32 = 4;
+    /// `PathStatus` (`u8`), required on success.
+    pub const STATUS: u32 = 5;
+    /// `PathErrorCode` (`u8`), present on refusal only.
+    pub const ERROR: u32 = 6;
+    /// Human-readable diagnostic, present on refusal only.
+    pub const MESSAGE: u32 = 7;
+}
+
 /// `SPAWN_RESOURCE` body fields (`docs/spec/L1.md` §10.1).
 pub mod spawn_terminal {
     /// Correlating `request_id` (`u32`).

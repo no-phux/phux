@@ -280,6 +280,7 @@ const fn client_frame_variant(frame: &FrameKind) -> Option<usize> {
         FrameKind::ResizeTerminal { .. } => Some(20),
         FrameKind::Command { .. } => Some(21),
         FrameKind::SubscribeEvents { .. } => Some(22),
+        FrameKind::PathQuery { .. } => Some(23),
         FrameKind::HelloOk { .. }
         | FrameKind::Pong { .. }
         | FrameKind::ResourceOutput { .. }
@@ -299,6 +300,7 @@ const fn client_frame_variant(frame: &FrameKind) -> Option<usize> {
         | FrameKind::MetadataValue { .. }
         | FrameKind::MetadataKeys { .. }
         | FrameKind::DirectoryListing { .. }
+        | FrameKind::PathResults { .. }
         | FrameKind::ResourceSpawned { .. }
         | FrameKind::ResourceMoved { .. }
         | FrameKind::ResourceClosed { .. }
@@ -307,7 +309,7 @@ const fn client_frame_variant(frame: &FrameKind) -> Option<usize> {
     }
 }
 
-const CLIENT_FRAME_VARIANTS: usize = 23;
+const CLIENT_FRAME_VARIANTS: usize = 24;
 
 fn attach(target: AttachTarget) -> FrameKind {
     FrameKind::Attach {
@@ -722,6 +724,16 @@ fn connection_samples() -> Vec<(FrameKind, &'static Rule)> {
                 host: None,
             },
             &F_LIST_DIRECTORY,
+        ),
+        (
+            FrameKind::PathQuery {
+                request_id: 1,
+                root: "/".to_owned(),
+                query: String::new(),
+                recursive: false,
+                host: None,
+            },
+            &F_PATH_QUERY,
         ),
         // The envelope defers to the nested command's row.
         (
