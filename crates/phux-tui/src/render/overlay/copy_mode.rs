@@ -3,12 +3,18 @@
 //! Selection is a client-local projection (ADR-0030): the overlay tracks a
 //! pane-local rectangle and on commit the dispatcher resolves it against the
 //! pane's own engine and writes the host clipboard via OSC 52.
+//!
+//! Search (`/` forward, `?` backward, `n`/`N` repeat) is typed here and run
+//! by the dispatcher against the pane's loaded history; the overlay keeps the
+//! hits in document rows so they stay put while the viewport scrolls.
 
 use phux_protocol::input::key::{KeyEvent, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
+use super::line_edit::LineEdit;
+use super::selection::SearchMatch;
 use super::{
     CopyRequest, OverlayCommand, RenderOverlay, ScreenSelectionPoint, SelectionGrab, SelectionMode,
     SelectionRect,
@@ -52,6 +58,57 @@ impl CellRange {
     }
 }
 
+/// A search the overlay asks the dispatcher to run: find `needle` after
+/// (or, `backward`, before) the pane-local cursor, wrapping around.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopySearchRequest {
+    /// The text to find (the engine's case policy applies).
+    pub needle: String,
+    /// Search toward older output (`?`, `N` after `/`).
+    pub backward: bool,
+    /// Pane-local cursor row the search starts from.
+    pub cursor_row: u16,
+    /// Pane-local cursor column the search starts from.
+    pub cursor_col: u16,
+    /// The pane's visible rows: a hit outside them scrolls into view.
+    pub pane_rows: u16,
+}
+
+/// What a [`CopySearchRequest`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopySearchResult {
+    /// Every loaded hit in document order, the one jumped to, and the
+    /// document row now at the top of the (possibly scrolled) viewport.
+    Found {
+        /// All hits, oldest first.
+        matches: Vec<SearchMatch>,
+        /// Index of the hit the cursor moved to.
+        current: usize,
+        /// Document row of viewport row 0 after the jump.
+        top: u32,
+    },
+    /// Nothing loaded matches.
+    NotFound,
+}
+
+/// The last search and what it found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SearchState {
+    needle: String,
+    backward: bool,
+    matches: Vec<SearchMatch>,
+    current: Option<usize>,
+}
+
+/// What the painter shows for copy-mode search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CopySearchView<'a> {
+    /// Every hit, oldest first, in document rows.
+    pub matches: &'a [SearchMatch],
+    /// The hit the selection covers, if any.
+    pub current: Option<usize>,
+}
+
 /// Copy-mode overlay state.
 #[derive(Debug)]
 pub struct CopyModeOverlay {
@@ -78,6 +135,10 @@ pub struct CopyModeOverlay {
     /// a wheel-scrolled drag keeps the anchor off screen and only the painted
     /// highlight clamps.
     mouse_anchor_viewport_row: Option<i32>,
+    /// The search being typed after `/` or `?` (`true` for `?`).
+    search_input: Option<(LineEdit, bool)>,
+    /// The last committed search, repeated by `n`/`N`.
+    search: Option<SearchState>,
 }
 
 impl CopyModeOverlay {
@@ -99,6 +160,129 @@ impl CopyModeOverlay {
             selecting_with_mouse: false,
             mouse_anchor_screen: None,
             mouse_anchor_viewport_row: None,
+            search_input: None,
+            search: None,
+        }
+    }
+
+    /// Adopt a search result: jump the cursor to the current hit and select
+    /// it, so Enter copies it and the painter inverts it.
+    pub fn apply_search_result(&mut self, result: CopySearchResult) {
+        let Some(search) = self.search.as_mut() else {
+            return;
+        };
+        let CopySearchResult::Found {
+            matches,
+            current,
+            top,
+        } = result
+        else {
+            search.matches.clear();
+            search.current = None;
+            return;
+        };
+        let Some(hit) = matches.get(current).copied() else {
+            return;
+        };
+        search.matches = matches;
+        search.current = Some(current);
+        let local = |row: u32| u16::try_from(row.saturating_sub(top)).unwrap_or(u16::MAX);
+        let max_row = self.pane_rows.saturating_sub(1);
+        let max_col = self.pane_cols.saturating_sub(1);
+        self.cursor_row = local(hit.start_row).min(max_row);
+        self.cursor_col = hit.start_col.min(max_col);
+        self.anchor_row = local(hit.end_row).min(max_row);
+        self.anchor_col = hit.end_col.min(max_col);
+        self.mode = SelectionMode::Char;
+        self.mouse_anchor_screen = None;
+        self.mouse_anchor_viewport_row = None;
+    }
+
+    /// The search hits for the painter, or `None` before any search.
+    #[must_use]
+    pub fn search_view(&self) -> Option<CopySearchView<'_>> {
+        self.search.as_ref().map(|search| CopySearchView {
+            matches: &search.matches,
+            current: search.current,
+        })
+    }
+
+    /// The search part of the status strip: the line being typed, or the
+    /// last search with its position (`/foo 2/7`, `/foo: no match`).
+    #[must_use]
+    pub fn search_status(&self) -> Option<String> {
+        if let Some((edit, backward)) = &self.search_input {
+            let prompt = if *backward { '?' } else { '/' };
+            return Some(format!("{prompt}{}_", edit.as_str()));
+        }
+        let search = self.search.as_ref()?;
+        let prompt = if search.backward { '?' } else { '/' };
+        Some(search.current.map_or_else(
+            || format!("{prompt}{}: no match", search.needle),
+            |index| {
+                format!(
+                    "{prompt}{} {}/{}",
+                    search.needle,
+                    index + 1,
+                    search.matches.len()
+                )
+            },
+        ))
+    }
+
+    /// A search request for `needle` from the cursor, remembered for `n`/`N`.
+    fn start_search(&mut self, needle: String, backward: bool) -> OverlayCommand {
+        self.search = Some(SearchState {
+            needle: needle.clone(),
+            backward,
+            matches: Vec::new(),
+            current: None,
+        });
+        self.search_request(needle, backward)
+    }
+
+    const fn search_request(&self, needle: String, backward: bool) -> OverlayCommand {
+        OverlayCommand::Search(CopySearchRequest {
+            needle,
+            backward,
+            cursor_row: self.cursor_row,
+            cursor_col: self.cursor_col,
+            pane_rows: self.pane_rows,
+        })
+    }
+
+    /// `n` (`reverse` false) or `N`: the last search again, in its own
+    /// direction or the opposite one. Nothing searched yet is a no-op.
+    fn repeat_search(&self, reverse: bool) -> OverlayCommand {
+        self.search.as_ref().map_or(OverlayCommand::Stay, |search| {
+            self.search_request(search.needle.clone(), search.backward != reverse)
+        })
+    }
+
+    /// A key while the search line is open: edits, Enter runs (an empty
+    /// line repeats the last search), Esc closes the line but not copy-mode.
+    fn handle_search_key(&mut self, key: &KeyEvent) -> OverlayCommand {
+        let Some((edit, backward)) = self.search_input.as_mut() else {
+            return OverlayCommand::Stay;
+        };
+        match key.key {
+            PhysicalKey::Escape => {
+                self.search_input = None;
+                OverlayCommand::Stay
+            }
+            PhysicalKey::Enter | PhysicalKey::NumpadEnter => {
+                let needle = edit.as_str().to_owned();
+                let backward = *backward;
+                self.search_input = None;
+                if needle.is_empty() {
+                    return self.repeat_search(false);
+                }
+                self.start_search(needle, backward)
+            }
+            _ => {
+                edit.handle_key(key);
+                OverlayCommand::Stay
+            }
         }
     }
 
@@ -277,6 +461,25 @@ impl RenderOverlay for CopyModeOverlay {
         self.anchor_col = self.anchor_col.min(max_col);
     }
 
+    fn copy_search_view(&self) -> Option<CopySearchView<'_>> {
+        self.search_view()
+    }
+
+    fn copy_search_status(&self) -> Option<String> {
+        self.search_status()
+    }
+
+    fn apply_copy_search(&mut self, result: CopySearchResult) {
+        self.apply_search_result(result);
+    }
+
+    /// A paste lands in the open search line; otherwise copy-mode ignores it.
+    fn handle_paste(&mut self, text: &str) {
+        if let Some((edit, _)) = self.search_input.as_mut() {
+            edit.insert(text);
+        }
+    }
+
     fn copy_selection(&self) -> Option<SelectionRect> {
         // Same mode-adjusted range the copy request uses (ADR-0045).
         let range = self.visible_effective_range();
@@ -296,9 +499,26 @@ impl RenderOverlay for CopyModeOverlay {
             return OverlayCommand::Stay;
         }
 
+        if self.search_input.is_some() {
+            return self.handle_search_key(key);
+        }
+        match key.text.as_deref() {
+            Some("/") => {
+                self.search_input = Some((LineEdit::default(), false));
+                return OverlayCommand::Stay;
+            }
+            Some("?") => {
+                self.search_input = Some((LineEdit::default(), true));
+                return OverlayCommand::Stay;
+            }
+            _ => {}
+        }
+
         let shift = key.mods.contains(ModSet::SHIFT);
 
         match key.key {
+            // `n` repeats the last search, `N` reverses it (vi, tmux).
+            PhysicalKey::N => self.repeat_search(shift),
             // Arrows move the cursor (shift extends); at the top or bottom
             // edge they scroll the viewport instead.
             PhysicalKey::ArrowUp => {
@@ -637,5 +857,111 @@ mod tests {
         overlay.move_cursor(1, 2);
         overlay.on_viewport_resize(100, 30);
         assert_eq!(corners(&overlay), (2, 3, 3, 5));
+    }
+
+    fn typed(overlay: &mut CopyModeOverlay, text: &str) -> OverlayCommand {
+        let mut last = OverlayCommand::Stay;
+        for ch in text.chars() {
+            last = overlay.handle_key(&KeyEvent {
+                text: Some(ch.to_string()),
+                ..press(PhysicalKey::A, ModSet::empty())
+            });
+        }
+        last
+    }
+
+    fn found(start: (u32, u16), end: (u32, u16)) -> SearchMatch {
+        SearchMatch {
+            start_row: start.0,
+            start_col: start.1,
+            end_row: end.0,
+            end_col: end.1,
+        }
+    }
+
+    /// `/` and `?` open a search line that edits like a prompt; Enter asks the
+    /// dispatcher to search from the cursor, Esc closes only the line.
+    #[test]
+    fn slash_and_question_mark_type_a_search_and_enter_runs_it() {
+        let none = ModSet::empty();
+        let mut overlay = CopyModeOverlay::new(3, 4, 80, 24);
+        assert_eq!(typed(&mut overlay, "/fop"), OverlayCommand::Stay);
+        overlay.handle_key(&press(PhysicalKey::Backspace, none));
+        overlay.handle_paste("o\n");
+        assert_eq!(overlay.search_status().as_deref(), Some("/foo_"));
+        assert_eq!(
+            overlay.handle_key(&press(PhysicalKey::Enter, none)),
+            OverlayCommand::Search(CopySearchRequest {
+                needle: "foo".to_owned(),
+                backward: false,
+                cursor_row: 3,
+                cursor_col: 4,
+                pane_rows: 24,
+            })
+        );
+
+        typed(&mut overlay, "?bar");
+        assert_eq!(overlay.search_status().as_deref(), Some("?bar_"));
+        assert_eq!(
+            overlay.handle_key(&press(PhysicalKey::Escape, none)),
+            OverlayCommand::Stay
+        );
+        assert_eq!(overlay.search_status().as_deref(), Some("/foo: no match"));
+        assert_eq!(
+            overlay.handle_key(&press(PhysicalKey::Escape, none)),
+            OverlayCommand::Dismiss,
+            "a second Esc leaves copy-mode"
+        );
+    }
+
+    /// A result selects the current hit (so Enter copies it); `n` repeats in
+    /// the search's direction from there and `N` reverses it.
+    #[test]
+    fn a_search_result_selects_the_hit_and_n_repeats_it() {
+        let none = ModSet::empty();
+        let mut overlay = CopyModeOverlay::new(0, 0, 80, 24);
+        assert_eq!(
+            overlay.handle_key(&press(PhysicalKey::N, none)),
+            OverlayCommand::Stay
+        );
+        typed(&mut overlay, "?ab");
+        let OverlayCommand::Search(req) = overlay.handle_key(&press(PhysicalKey::Enter, none))
+        else {
+            panic!("expected a search");
+        };
+        assert!(req.backward);
+        overlay.apply_search_result(CopySearchResult::Found {
+            matches: vec![found((100, 2), (100, 3)), found((107, 70), (108, 1))],
+            current: 1,
+            top: 100,
+        });
+        assert_eq!(corners(&overlay), (7, 70, 8, 1));
+        assert_eq!((overlay.cursor_row, overlay.cursor_col), (7, 70));
+        assert_eq!(overlay.search_status().as_deref(), Some("?ab 2/2"));
+        let view = overlay.search_view().expect("searching");
+        assert_eq!((view.matches.len(), view.current), (2, Some(1)));
+
+        for (mods, backward) in [(none, true), (ModSet::SHIFT, false)] {
+            assert_eq!(
+                overlay.handle_key(&press(PhysicalKey::N, mods)),
+                OverlayCommand::Search(CopySearchRequest {
+                    needle: "ab".to_owned(),
+                    backward,
+                    cursor_row: 7,
+                    cursor_col: 70,
+                    pane_rows: 24,
+                }),
+                "{mods:?}"
+            );
+        }
+        // An empty search line repeats the last search.
+        typed(&mut overlay, "/");
+        assert!(matches!(
+            overlay.handle_key(&press(PhysicalKey::Enter, none)),
+            OverlayCommand::Search(CopySearchRequest { ref needle, backward: true, .. })
+                if needle == "ab"
+        ));
+        overlay.apply_search_result(CopySearchResult::NotFound);
+        assert_eq!(overlay.search_status().as_deref(), Some("?ab: no match"));
     }
 }
