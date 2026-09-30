@@ -428,7 +428,7 @@ mod tests {
             );
         }
         for row in [
-            "| `defaults.history-bytes` | `2097152` |",
+            "| `defaults.history-bytes` | `10485760` |",
             "| `defaults.history-limit` | `50000` |",
             "| `keybindings.prefix` | `\"C-a\"` |",
             "| `sidebar.width` | `0` |",

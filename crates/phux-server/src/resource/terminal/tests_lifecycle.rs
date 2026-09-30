@@ -1046,15 +1046,16 @@ fn configured_history_bytes_decides_retained_scrollback() {
         rows
     }
 
-    let shallow = retained_rows(phux_config::DEFAULT_HISTORY_BYTES);
-    let deep = retained_rows(8 * 1024 * 1024);
-    assert!(
-        deep > shallow * 2,
-        "a 4x byte bound must retain materially more history: {shallow} -> {deep}",
-    );
+    let shallow = retained_rows(2 * 1024 * 1024);
+    let shipped = retained_rows(phux_config::DEFAULT_HISTORY_BYTES);
     assert!(
         shallow > 0,
-        "the shipped byte bound must still retain history, saw {shallow}",
+        "a 2 MiB byte bound must still retain history, saw {shallow}",
+    );
+    assert!(
+        shipped > shallow * 4,
+        "the shipped 10 MiB bound (5x) must retain proportionally more history: \
+         {shallow} -> {shipped}",
     );
 }
 

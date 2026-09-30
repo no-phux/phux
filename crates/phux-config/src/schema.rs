@@ -216,8 +216,10 @@ impl Default for ScrollbackLimits {
 
 const DEFAULT_HISTORY_LINES: u32 = 50_000;
 
-/// Shipped `defaults.history-bytes`: 2 MiB per pane.
-pub const DEFAULT_HISTORY_BYTES: u32 = 2 * 1024 * 1024;
+/// Shipped `defaults.history-bytes`: 10 MiB per pane (ADR-0143). Attach
+/// leases history rather than encoding it (ADR-0119), so this prices only
+/// the resident memory of a pane that has filled it.
+pub const DEFAULT_HISTORY_BYTES: u32 = 10 * 1024 * 1024;
 /// Largest accepted `defaults.history-bytes` (64 MiB): a resident-memory
 /// bound, held for the life of the session.
 pub const MAX_HISTORY_BYTES: u32 = 64 * 1024 * 1024;

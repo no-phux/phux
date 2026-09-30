@@ -13,6 +13,7 @@ maximum is a resident-memory bound, not an attach-latency one.
 
 Status: Accepted
 Date: 2026-09-13
+Superseded in part by [ADR-0143](./0143-ship-ten-mib-of-scrollback-per-pane.md): Decision 2 (the 2 MiB default).
 
 ## Context
 

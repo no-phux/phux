@@ -256,8 +256,8 @@ pub const CATALOG: &[SettingSpec] = &[
         detail: "The bound that actually limits a pane's memory. Raising it buys depth and \
                  costs resident memory, roughly this many bytes per pane for the life of \
                  the session; attach is unaffected, because retained pages are leased \
-                 rather than re-encoded. The 2 MiB default keeps about 2,700 rows at 80 \
-                 columns. 67108864 (64 MiB) is the accepted maximum; phux config check \
+                 rather than re-encoded. The 10 MiB default keeps about 14,400 rows at 80 \
+                 columns; a pane that never fills it never pays for it. 67108864 (64 MiB) is the accepted maximum; phux config check \
                  rejects more.",
         applies: Applies::NextSpawn,
     },
@@ -352,8 +352,8 @@ pub const CATALOG: &[SettingSpec] = &[
         },
         summary: "How many exited panes the server retains at once",
         detail: "Retaining one more closes the oldest. Each retained pane holds its grid \
-                 and history until it is purged, up to history-bytes each: about 512 MiB \
-                 at the default 256 with the 2 MiB default history. It holds no PTY or \
+                 and history until it is purged, up to history-bytes each: about 2.5 GiB \
+                 at the default 256 with the 10 MiB default history. It holds no PTY or \
                  descriptor. 0 retains none; 4096 is the accepted maximum; phux config \
                  check rejects more and the server clamps to it.",
         applies: Applies::NextSpawn,
