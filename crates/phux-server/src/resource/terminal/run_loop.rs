@@ -253,10 +253,6 @@ impl TerminalActor {
         clippy::future_not_send,
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
     )]
-    #[allow(
-        clippy::cognitive_complexity,
-        reason = "select! macro expansion inflates the score; every arm body is a single handler call"
-    )]
     async fn drive_run_loop(
         &mut self,
         state: &mut RunLoopState,
@@ -271,8 +267,7 @@ impl TerminalActor {
                 biased;
 
                 () = self.core.token.cancelled() => {
-                    let _ = self.flush_final_gap_resync(&mut state.resync);
-                    self.shutdown_from_cancel().await;
+                    self.shutdown_from_cancel(&mut state.resync).await;
                     return;
                 }
 
@@ -293,20 +288,9 @@ impl TerminalActor {
                     &mut self.native_requests,
                     self.pty_rx.as_mut(),
                     state.prefer_native,
-                ) => {
-                    if self
-                        .service_ingress_turn(
-                            ingress,
-                            &mut state.prefer_native,
-                            &mut state.native_step_due,
-                        )
-                        .await
-                        .is_break()
-                    {
-                        return;
-                    }
-                    self.flush_exit_resync_if_needed(&mut state.resync).await;
-                }
+                ) => if self.service_ingress_turn(ingress, state).await.is_break() {
+                    return;
+                },
 
                 Some(req) = self.snapshot_rx.recv(), if !bootstrap_pending =>
                     self.reply_bounded_snapshot(req),
@@ -365,12 +349,14 @@ impl TerminalActor {
         }
     }
 
-    /// Tear the PTY down after the actor-global cancel token fires.
+    /// Fire any owed gap resync, then tear the PTY down after the
+    /// actor-global cancel token fires.
     #[allow(
         clippy::future_not_send,
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
     )]
-    async fn shutdown_from_cancel(&mut self) {
+    async fn shutdown_from_cancel(&mut self, resync: &mut ResyncDebounce) {
+        let _ = self.flush_final_gap_resync(resync);
         debug!("TerminalActor cancellation token fired");
         self.shutdown_pty().await;
     }
@@ -430,13 +416,38 @@ impl TerminalActor {
         self.broadcast_resync(reason, audience);
     }
 
-    /// Service one combined native-control / PTY-output ingress turn.
+    /// Service one combined native-control / PTY-output ingress turn, then
+    /// publish the exit resync if that turn saw the PTY close.
     /// `Break` means the raw output sequence is exhausted.
     #[allow(
         clippy::future_not_send,
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
     )]
     async fn service_ingress_turn(
+        &mut self,
+        ingress: NativeOrPty,
+        state: &mut RunLoopState,
+    ) -> std::ops::ControlFlow<()> {
+        let flow = self
+            .service_ingress(
+                ingress,
+                &mut state.prefer_native,
+                &mut state.native_step_due,
+            )
+            .await;
+        if flow.is_continue() {
+            self.flush_exit_resync_if_needed(&mut state.resync).await;
+        }
+        flow
+    }
+
+    /// Service the native request or PTY event itself, alternating the
+    /// combined arm's preference.
+    #[allow(
+        clippy::future_not_send,
+        reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
+    )]
+    async fn service_ingress(
         &mut self,
         ingress: NativeOrPty,
         prefer_native: &mut bool,
