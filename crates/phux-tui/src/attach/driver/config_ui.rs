@@ -2,23 +2,13 @@
 //! notice, and the in-place config reload. The config-derived state itself
 //! is `crate::settings::TuiSettings`.
 
-use std::collections::HashMap;
+use std::path::Path;
 use std::time::Duration;
 
-use phux_protocol::ids::{ClientId, ResourceId};
-
-use crate::attach::chrome_ctx::{ChromeCtx, PaneScene};
-use crate::attach::paint::{SidebarReservation, StatusBarPaint, paint_full_frame};
-use crate::attach::pane_state::{AttachKernel, PaneSlot, VcsIndex};
-use crate::attach::server_frame::AgentMetaIndex;
-use crate::layout::Workspace;
 use crate::render::chrome::sidebar::SidebarPainter;
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
 use crate::render::overlay::OverlayState;
 use crate::settings::TuiSettings;
-
-use super::chrome::refresh_window_chrome;
-use super::overlay_paint::paint_active_overlay;
 
 /// (Dis)arm the which-key deadline for one loop pass: armed only while the
 /// resolver is pending at the prefix, the popup is enabled, and no overlay is
@@ -62,38 +52,18 @@ pub(super) fn push_which_key_overlay(
     true
 }
 
-/// Reload the config in place and repaint. On success the reloadable
-/// settings swap and the sidebar painter is rebuilt cache-cold under the new
-/// theme; on any failure the old config stays and a toast shows the error.
-/// Reached from the `reload-config` action and the CLI doorbell.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the settings and the repaint context are driver-loop locals threaded by reference, same shape as the paint helpers"
-)]
-pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
-    out: &mut W,
+/// Reload the config at `path` in place, never half-applied: on success the
+/// reloadable settings swap, the overlay stack adopts the new `[chrome]`
+/// breakpoints and theme, and the sidebar painter is rebuilt cache-cold under
+/// the new theme; on any failure the old config stays and a toast shows the
+/// error. Returns whether the reload took. Repainting is the caller's.
+pub(super) fn adopt_config_reload(
     settings: &mut TuiSettings,
-    sidebar_painter: &mut SidebarPainter,
     overlays: &mut OverlayState,
-    workspace: &Workspace,
-    panes: &mut HashMap<ResourceId, PaneSlot>,
-    engine_kernel: &AttachKernel,
-    focused_resource: Option<&ResourceId>,
-    zoomed: Option<&ResourceId>,
-    own_client_id: Option<ClientId>,
-    agent_meta: &AgentMetaIndex,
-    vcs: &mut VcsIndex,
-    // A reload rebuilds the sidebar painter cache-cold, so the
-    // cross-session zones must be re-projected with it or the strip comes
-    // back with an empty queue and roster until the next peer push.
-    peers: crate::attach::sidebar_zones::PeerInputs<'_>,
-    viewport_dims: (u16, u16),
-    sidebar: Option<SidebarReservation>,
-    session_name: &str,
-) -> StatusBarPaint {
-    let mut painted = StatusBarPaint::NotPublished;
-    let base = workspace.render_window(zoomed);
-    match settings.reload_in_place(&phux_config::loader::config_path()) {
+    sidebar_painter: &mut SidebarPainter,
+    path: &Path,
+) -> bool {
+    match settings.reload_in_place(path) {
         Ok(()) => {
             tracing::info!("config reloaded in place");
             // The new `[chrome]` thresholds reach the overlay
@@ -104,34 +74,7 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
             overlays.set_theme(&settings.theme);
             // A fresh painter carries the new theme and repaints everything.
             *sidebar_painter = SidebarPainter::new(settings.theme);
-            let mut chrome = ChromeCtx::new(
-                settings,
-                sidebar_painter,
-                session_name,
-                viewport_dims,
-                sidebar,
-            );
-            let scene = PaneScene {
-                workspace,
-                panes,
-                focused: focused_resource,
-                zoomed,
-            };
-            refresh_window_chrome(
-                &mut chrome,
-                scene,
-                own_client_id,
-                agent_meta,
-                vcs,
-                &crate::attach::agent_rows::agent_session_rows(engine_kernel),
-                peers,
-            );
-            if !overlays.is_active()
-                && let Some(ls) = base.as_deref()
-            {
-                painted =
-                    paint_full_frame(out, ls, panes, engine_kernel, focused_resource, &mut chrome);
-            }
+            true
         }
         Err(msg) => {
             // Keep the old config and surface the failure as a toast.
@@ -145,27 +88,9 @@ pub(super) fn handle_config_reload<W: crate::attach::RenderSink>(
                 ],
                 &settings.theme,
             )));
+            false
         }
     }
-    if overlays.is_active() {
-        let mut chrome = ChromeCtx::new(
-            settings,
-            sidebar_painter,
-            session_name,
-            viewport_dims,
-            sidebar,
-        );
-        painted = paint_active_overlay(
-            out,
-            overlays,
-            base.as_deref(),
-            panes,
-            engine_kernel,
-            focused_resource,
-            &mut chrome,
-        );
-    }
-    painted
 }
 
 /// Seed the attach-time notice (e.g. "re-attached after server restart");

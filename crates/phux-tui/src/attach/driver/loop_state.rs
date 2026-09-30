@@ -63,7 +63,7 @@ use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layou
 use super::chrome::{mark_focused_seen, refresh_window_chrome};
 
 use super::config_ui::{
-    apply_initial_notice, handle_config_reload, push_which_key_overlay, update_which_key_deadline,
+    adopt_config_reload, apply_initial_notice, push_which_key_overlay, update_which_key_deadline,
 };
 use super::entry::{
     CarriedSidebar, LoopExit, detached_loop_exit, finish_onboarding_claim,
@@ -711,7 +711,24 @@ impl SessionLoop {
         let rows = crate::attach::agent_rows::agent_session_rows(&self.mirror.engine_kernel);
         self.review
             .observe_streams(&rows, self.mirror.focused_resource.as_ref());
-        let sidebar = self.sidebar();
+        let mut changed = self.project_window_chrome(self.sidebar(), &rows);
+        let (tab_drop, sidebar_drop) = self.drag.as_ref().map_or((None, None), |drag| {
+            (drag.tab_drop_at(), drag.sidebar_drop_at())
+        });
+        if let Some(status_bar) = self.settings.status_bar.as_mut() {
+            changed |= status_bar.set_drop_index(tab_drop);
+        }
+        changed |= self.sidebar_painter.set_drop_index(sidebar_drop);
+        changed
+    }
+
+    /// Project the window tabs, agent rows, and peer zones into the chrome
+    /// painters; true when any painter input changed.
+    fn project_window_chrome(
+        &mut self,
+        sidebar: Option<SidebarReservation>,
+        rows: &crate::attach::agent_rows::AgentSessionRows,
+    ) -> bool {
         let mut chrome = ChromeCtx::new(
             &mut self.settings,
             &mut self.sidebar_painter,
@@ -725,23 +742,15 @@ impl SessionLoop {
             focused: self.mirror.focused_resource.as_ref(),
             zoomed: self.mirror.zoomed.as_ref(),
         };
-        let mut changed = refresh_window_chrome(
+        refresh_window_chrome(
             &mut chrome,
             scene,
             self.own_client_id,
             &self.mirror.agent_meta,
             &mut self.vcs,
-            &rows,
+            rows,
             self.peers.inputs(&self.review),
-        );
-        let (tab_drop, sidebar_drop) = self.drag.as_ref().map_or((None, None), |drag| {
-            (drag.tab_drop_at(), drag.sidebar_drop_at())
-        });
-        if let Some(status_bar) = self.settings.status_bar.as_mut() {
-            changed |= status_bar.set_drop_index(tab_drop);
-        }
-        changed |= self.sidebar_painter.set_drop_index(sidebar_drop);
-        changed
+        )
     }
 
     /// Commit attach onboarding once its notice has reached the render sink.
@@ -937,24 +946,33 @@ impl SessionLoop {
         out: &mut W,
         sidebar: Option<SidebarReservation>,
     ) {
-        let painted = handle_config_reload(
-            out,
+        let reloaded = adopt_config_reload(
             &mut self.settings,
-            &mut self.sidebar_painter,
             &mut self.overlays,
-            &self.mirror.workspace,
-            &mut self.mirror.panes,
-            &self.mirror.engine_kernel,
-            self.mirror.focused_resource.as_ref(),
-            self.mirror.zoomed.as_ref(),
-            self.own_client_id,
-            &self.mirror.agent_meta,
-            &mut self.vcs,
-            self.peers.inputs(&self.review),
-            self.viewport_dims,
-            sidebar,
-            &self.mirror.session_name,
+            &mut self.sidebar_painter,
+            &phux_config::loader::config_path(),
         );
+        if reloaded {
+            // A reload rebuilds the sidebar painter cache-cold, so the
+            // cross-session zones must be re-projected with it or the strip
+            // comes back with an empty queue and roster until the next push.
+            let rows = crate::attach::agent_rows::agent_session_rows(&self.mirror.engine_kernel);
+            self.project_window_chrome(sidebar, &rows);
+        }
+        let has_window = self
+            .mirror
+            .workspace
+            .render_window(self.mirror.zoomed.as_ref())
+            .is_some();
+        // A failed reload always leaves its toast on top.
+        let painted = if self.overlays.is_active() {
+            self.paint_overlay_layer(out, sidebar)
+        } else if reloaded && has_window {
+            self.paint_view(out, sidebar, RepaintLevel::Full)
+                .unwrap_or(StatusBarPaint::NotPublished)
+        } else {
+            StatusBarPaint::NotPublished
+        };
         self.finish_paint(painted);
     }
 

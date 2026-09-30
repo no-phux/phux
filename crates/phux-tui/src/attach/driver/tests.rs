@@ -1237,3 +1237,41 @@ fn pointer_motion_does_not_arm_the_reply_grace() {
     assert!(!expects(MouseAction::Motion));
     assert!(expects(MouseAction::Press) && expects(MouseAction::Release));
 }
+
+/// A config reload is never half-applied: a malformed file keeps the old
+/// theme and sidebar painter and stacks one toast; a valid one swaps the theme
+/// into the settings and a fresh sidebar painter and stacks nothing.
+#[test]
+fn config_reload_swaps_whole_or_keeps_the_old_config_and_toasts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let defaults = phux_config::parse_with_defaults("", Path::new("test.toml")).expect("parses");
+    let mut settings = crate::settings::TuiSettings::tolerant_from(&defaults);
+    let old_theme = settings.theme;
+    let mut overlays = OverlayState::new();
+    let mut painter = SidebarPainter::new(old_theme);
+
+    std::fs::write(&path, "this is [not valid toml").expect("write config");
+    assert!(!adopt_config_reload(
+        &mut settings,
+        &mut overlays,
+        &mut painter,
+        &path
+    ));
+    assert_eq!(settings.theme, old_theme);
+    assert_eq!(*painter.theme(), old_theme);
+    assert_eq!(overlays.depth(), 1, "the failure is toasted");
+
+    let mut overlays = OverlayState::new();
+    std::fs::write(&path, "[theme]\naccent = \"#ff0000\"\n").expect("write config");
+    assert!(adopt_config_reload(
+        &mut settings,
+        &mut overlays,
+        &mut painter,
+        &path
+    ));
+    let red = ratatui::style::Color::Rgb(0xff, 0, 0);
+    assert_eq!(settings.theme.accent, red);
+    assert_eq!(painter.theme().accent, red, "the painter is rebuilt");
+    assert!(!overlays.is_active());
+}
