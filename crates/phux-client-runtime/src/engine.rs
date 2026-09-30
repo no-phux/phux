@@ -167,8 +167,8 @@ pub enum EngineEvent {
 }
 
 impl EngineEvent {
-    /// A close the control plane inferred (a pane missing from a fresh
-    /// topology) rather than received.
+    /// A close the control plane inferred (a pane the same snapshot view
+    /// listed before and no longer lists) rather than received.
     #[must_use]
     pub const fn closed_unknown(terminal_id: ResourceId) -> Self {
         Self::Closed {
