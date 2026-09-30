@@ -40,6 +40,57 @@ pub enum RenameRefusal {
         /// The name that collided.
         new_name: String,
     },
+    /// `new_name` could not be typed back as a session selector.
+    #[error(transparent)]
+    InvalidName(#[from] SessionNameError),
+}
+
+/// Why a session name cannot be used.
+///
+/// The selector grammar every CLI verb, hook, and keybinding resolves
+/// (`docs/consumers/tui.md` "Selectors") would read it as something other
+/// than this session, or as nothing.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SessionNameError {
+    /// Empty or only whitespace.
+    #[error("a session name cannot be empty")]
+    Empty,
+    /// `.` (the focused pane) or `=` (the previous pane).
+    #[error("{0:?} is a reserved selector")]
+    Reserved(String),
+    /// Starts with `@` (a pane id), `#` (a tag), or `%` (an agent).
+    #[error("a session name cannot start with `{0}`, which marks a pane id, tag, or agent")]
+    LeadingSigil(char),
+    /// Contains `:`, which separates the session from a window.
+    #[error("a session name cannot contain `:`, which separates the session from a window")]
+    Colon,
+    /// Contains `/@`, which names a satellite pane.
+    #[error("a session name cannot contain `/@`, which names a pane on another host")]
+    SatelliteId,
+}
+
+/// Accept `name` only when the selector `name` would address this session.
+///
+/// # Errors
+///
+/// The first [`SessionNameError`] the name trips.
+pub fn check_session_name(name: &str) -> Result<(), SessionNameError> {
+    if name.trim().is_empty() {
+        return Err(SessionNameError::Empty);
+    }
+    if name == "." || name == "=" {
+        return Err(SessionNameError::Reserved(name.to_owned()));
+    }
+    if let Some(sigil) = name.chars().next().filter(|c| matches!(c, '@' | '#' | '%')) {
+        return Err(SessionNameError::LeadingSigil(sigil));
+    }
+    if name.contains(':') {
+        return Err(SessionNameError::Colon);
+    }
+    if name.contains("/@") {
+        return Err(SessionNameError::SatelliteId);
+    }
+    Ok(())
 }
 
 /// What to do with a rename, judged before any write is sent.
@@ -61,7 +112,8 @@ pub enum RenamePlan {
 
 /// Judge `current` → `new_name` against `sessions`.
 ///
-/// An unknown current name is refused. A new name another session already
+/// An unknown current name is refused. A new name no selector could address
+/// ([`check_session_name`]) is refused. A new name another session already
 /// holds is refused. Renaming a session to the name it already has does not
 /// send. Anything else may be written.
 #[must_use]
@@ -69,6 +121,9 @@ pub fn plan_rename(sessions: &[NamedSession<'_>], current: &str, new_name: &str)
     let Some(session) = sessions.iter().find(|session| session.name == current) else {
         return RenamePlan::Refused(RenameRefusal::NoSuchSession);
     };
+    if let Err(invalid) = check_session_name(new_name) {
+        return RenamePlan::Refused(invalid.into());
+    }
     if current == new_name {
         return RenamePlan::Unchanged {
             session_id: session.id,
@@ -200,6 +255,37 @@ mod tests {
             "\"play\" already exists"
         );
         assert_eq!(RenameRefusal::NoSuchSession.to_string(), "no such session");
+    }
+
+    /// `phux rename work ""` once renamed the session to the empty string,
+    /// and `x:y` or `@3` made a session no selector could reach again.
+    #[test]
+    fn plan_refuses_a_name_no_selector_can_address() {
+        let sessions = roster(&[(1, "work")]);
+        for (new_name, refusal) in [
+            ("", SessionNameError::Empty),
+            ("  ", SessionNameError::Empty),
+            (".", SessionNameError::Reserved(".".to_owned())),
+            ("=", SessionNameError::Reserved("=".to_owned())),
+            ("@3", SessionNameError::LeadingSigil('@')),
+            ("#tag", SessionNameError::LeadingSigil('#')),
+            ("%agent", SessionNameError::LeadingSigil('%')),
+            ("x:y", SessionNameError::Colon),
+            ("devbox/@7", SessionNameError::SatelliteId),
+        ] {
+            assert_eq!(
+                plan_rename(&sessions, "work", new_name),
+                RenamePlan::Refused(RenameRefusal::InvalidName(refusal)),
+                "{new_name:?}"
+            );
+        }
+        assert_eq!(
+            RenameRefusal::from(SessionNameError::Colon).to_string(),
+            "a session name cannot contain `:`, which separates the session from a window"
+        );
+        for fine in [".config", "a.b", "a/b", "a b", "work-2", "x@y", "a=b"] {
+            assert_eq!(check_session_name(fine), Ok(()), "{fine:?}");
+        }
     }
 
     #[test]

@@ -669,6 +669,45 @@ mod tests {
     use phux_protocol::ids::{SessionId, WindowId};
     use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
 
+    /// The session-name rule (`rename::check_session_name`) is exactly "the
+    /// selector parses back to this session": names it accepts round-trip,
+    /// and every non-blank name it refuses parses as something else.
+    #[test]
+    fn session_name_rule_matches_the_selector_grammar() {
+        let names = [
+            "work",
+            ".config",
+            "a.b",
+            "a/b",
+            "a b",
+            "x@y",
+            "a=b",
+            "w-2",
+            ".",
+            "=",
+            "@3",
+            "@x",
+            "#tag",
+            "#",
+            "%agent",
+            "%",
+            "x:y",
+            ":",
+            "a:1.2",
+            "devbox/@7",
+            "/@1",
+        ];
+        for name in names {
+            let addressable =
+                matches!(parse(name), Ok(Selector::Session(ref parsed)) if parsed == name);
+            assert_eq!(
+                crate::rename::check_session_name(name).is_ok(),
+                addressable,
+                "{name:?}"
+            );
+        }
+    }
+
     #[test]
     fn an_explicit_id_is_taken_as_given() {
         assert_eq!(

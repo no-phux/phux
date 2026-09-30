@@ -49,6 +49,11 @@ pub(crate) fn run_new(
         Ok(requested) => requested,
         Err(code) => return code,
     };
+    if let Some(name) = &requested
+        && let Err(invalid) = phux_client::rename::check_session_name(name)
+    {
+        return report_invalid_session_name(json, name, &invalid);
+    }
 
     if !json && let Err(code) = interactive_tty_preflight() {
         return code;
@@ -172,6 +177,25 @@ fn requested_session_name(
         (Some(positional), _) => Ok(Some(positional)),
         (None, flag) => Ok(flag),
     }
+}
+
+/// Refuse a name no selector could reach again (`phux attach x:y` reads a
+/// window of `x`): exit 2, before any server is dialed or spawned.
+fn report_invalid_session_name(
+    json: bool,
+    name: &str,
+    invalid: &phux_client::rename::SessionNameError,
+) -> ExitCode {
+    use crate::commands::json_err::{CliError, codes, emit};
+    emit(
+        json,
+        &CliError::new(
+            codes::INVALID_SESSION_NAME,
+            format!("invalid session name {name:?}: {invalid}"),
+            "pick a non-empty name without a leading `@`, `#`, or `%`, and without `:` or `/@`",
+        ),
+        2,
+    )
 }
 
 /// Resolve the server `phux new` talks to; a socket path too long for

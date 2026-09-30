@@ -1248,6 +1248,22 @@ fn new_session_creates_or_prompts() {
     assert!(f.overlays.is_active());
 }
 
+/// `C-a C` then `x:y` once created a session that `phux attach x:y` reads
+/// as window `y` of `x`: an unaddressable name is refused with a notice.
+#[test]
+fn new_session_refuses_a_name_no_selector_can_address() {
+    let mut f = fx(Workspace::single(tid(1)));
+    let effects = f.run(&act("new-session", &[("name", "x:y".into())]));
+    assert!(effects.reattach.is_none(), "{:?}", effects.reattach);
+    assert_eq!(
+        f.rename_notice.as_deref(),
+        Some(
+            "could not create session x:y: a session name cannot contain `:`, \
+             which separates the session from a window"
+        )
+    );
+}
+
 #[test]
 fn detach_action_requests_detach_effect() {
     let effects = run(&bare_action("detach"), &mut Workspace::default());

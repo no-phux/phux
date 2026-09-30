@@ -610,6 +610,32 @@ fn assert_json_error_contract(
     doc
 }
 
+/// A session name the selector grammar cannot address back (`x:y` reads as
+/// window `y` of `x`) is refused before any server is dialed or spawned.
+#[test]
+fn new_refuses_an_unaddressable_session_name_before_dialing() {
+    let socket = dead_socket();
+    for name in ["x:y", "@3", ""] {
+        let doc = assert_json_error_contract(
+            "new",
+            &["new", "-s", name, "--json", "--socket", &socket],
+            None,
+            "invalid_session_name",
+            2,
+        );
+        assert!(
+            doc["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("invalid session name")),
+            "{doc}"
+        );
+    }
+    assert!(
+        !std::path::Path::new(&socket).exists(),
+        "a refused name must not auto-spawn a server"
+    );
+}
+
 /// One registry-table case: (verb, argv, `XDG_CONFIG_HOME` override,
 /// expected `error.code`, expected exit code).
 type RegistryCase<'a> = (

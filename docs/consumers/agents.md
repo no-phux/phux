@@ -847,6 +847,8 @@ Transport: `no_server`, `server_disconnected`, `transport`,
 `remote_unresolved`. Coordinator startup (`phux server --ensure --json`):
 `server_start_timeout`, `server_start_cancelled`, `server_start_failed`.
 Resolution: `no_such_target`, `partial_view`.
+Sessions: `invalid_session_name` (exit 2: empty, a leading `@`, `#`, or
+`%`, or a `:` or `/@` inside, so no selector could name it).
 Local I/O: `io` (a bug-report bundle could not be written under the
 state directory), `json_serialize`.
 Agent lifecycle: `no_agent_record`, `satellite_target`,
