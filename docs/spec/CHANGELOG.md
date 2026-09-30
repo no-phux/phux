@@ -1,1 +1,1 @@
-WILL_LOAD
+${file:/workspace/push_924_changelog.json}
