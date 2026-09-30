@@ -1,0 +1,31 @@
+{
+  "label": "tmux",
+  "iters": 3,
+  "ok": true,
+  "command": [
+    "<TMUX_BIN>",
+    "-f",
+    "/dev/null",
+    "-S",
+    "<RUN>/tmux/mux.sock",
+    "attach-session",
+    "-t",
+    "bench"
+  ],
+  "boundary": "outer PTY write to attach-client output byte",
+  "cols": 120,
+  "rows": 40,
+  "prompt_seen_before_settle": true,
+  "completed": 3,
+  "timeouts": 0,
+  "timeout_iterations": [],
+  "samples_us": [
+    758,
+    363,
+    217
+  ],
+  "p50_us": 363,
+  "p90_us": 758,
+  "p99_us": null,
+  "max_us": 758
+}

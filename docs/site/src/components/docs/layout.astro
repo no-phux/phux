@@ -14,17 +14,29 @@ const { title, description, origin = SITE.docsUrl } = Astro.props;
 ---
 
 <!doctype html>
-<html lang="en" class="dark" data-design={SITE.designMode}>
+<html lang="en" data-design="reader">
   <head>
     <Head title={title} description={description} type="article" origin={origin} />
+    <script is:inline>
+      // Match next-themes before first paint and before Astro swaps documents.
+      function applyReadingTheme(root) {
+        let theme = "system";
+        try { theme = localStorage.getItem("theme") || theme; } catch {}
+        const dark = theme === "dark" || (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+        root.classList.toggle("dark", dark);
+        root.classList.toggle("light", !dark);
+        root.style.colorScheme = dark ? "dark" : "light";
+      }
+      applyReadingTheme(document.documentElement);
+      document.addEventListener("astro:before-swap", (event) => {
+        if (event.newDocument.documentElement.dataset.design === "reader") {
+          applyReadingTheme(event.newDocument.documentElement);
+        }
+      });
+    </script>
     <ClientRouter />
   </head>
-  <body
-    class="flex min-h-screen flex-col"
-    transition:persist
-    transition:animate="none"
-    transition:name="docs-layout"
-  >
+  <body class="flex min-h-screen flex-col">
     <a class="skip" href="#nd-page">Skip to documentation</a>
     <slot />
 

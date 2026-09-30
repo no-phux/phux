@@ -1,41 +1,46 @@
 ---
-audience: consumers, contributors, agents
+audience: humans, consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-26
+last-reviewed: 2026-09-30
 ---
 
 # Ways to use phux
 
-**TL;DR.** Pick the interface that matches the job: the TUI or Cockpit for a
-person, the CLI and MCP for a script or agent, OpenCode, Pi, or Claude when
-those hosts already run the work, the browser client when the glass
-is not a tty, and recording when you want a cast. They are peers of one
-server and one terminal model.
-
----
+**TL;DR.** Choose the terminal UI or Cockpit for interactive work, a host
+integration or MCP for a coding agent, and the CLI for scripts. The browser
+client is available as a demo and developer integration. Desktop contracts
+and mobile previews are not equivalent to an installable client. All connect
+to the same server-owned terminal model.
 
 ## Choose an interface
 
 | You want to | Start with |
 |---|---|
-| Work interactively in a terminal | [The reference TUI](./tui.md) |
-| Read and drive terminals from a script or coding agent | [Agents and the CLI](./agents.md) |
-| Emit working/blocked/idle from a harness | [Harness authors](./harness.md) |
-| Speak the wire from a new client | [Build a client](./build-a-client.md) |
-| Connect a tool client over MCP | [The MCP adapter](./mcp.md) |
-| Give OpenCode a phux-owned terminal | [The OpenCode plugin](./opencode-v2.md) |
-| Give Pi target persistence and fleet awareness | [The Pi integration](./pi.md) |
-| Run Claude Code against the same terminals | [The Claude Code plugin](./claude.md) |
-| Run the terminal client in a browser | [The web client](./web.md) |
+| Work interactively in a terminal | [Terminal UI](./tui.md) or the [first-run walkthrough](../QUICKSTART.md) |
 | Use the native macOS app | [Cockpit](./cockpit.md) |
-| Understand the accepted GPUIX Solid desktop contract | [Desktop](./desktop.md) (not yet release-verified) |
+| Connect Claude, Pi, OpenCode, or an MCP host | [Coding-agent getting started](./getting-started.md) |
+| Read and drive terminals from a script | [Agent CLI guide](./agents.md) |
 | Record a pane or an attached session | [Recording](./recording.md) |
-| Understand the in-tree Rust client library | [`phux-client`](./sdk.md) |
-| Use phux on [iOS](./ios.md) or [Android](./android.md) | Coming soon |
+| Try the browser demo or build your own browser client | [Web client](./web.md) |
 
-Every interface here is a peer of the others; the TUI has no protocol-level
-standing ([ADR-0017](../adr/0017-tui-not-protocol-privileged.md)).
+### Host integrations
 
-Gaps: [`../CONCEPTS.md`](../CONCEPTS.md#status).
+- [Claude Code](./claude.md): plugin tools and hooks, plus optional launch shim.
+- [Pi](./pi.md): target selection, saved targets, and fleet awareness.
+- [OpenCode V2](./opencode-v2.md): source-loaded plugin; not a published package.
+- [MCP adapter](./mcp.md): registration for other tool hosts.
 
-Each file's frontmatter declares its own `stability`.
+## Build an integration
+
+| You want to | Start with |
+|---|---|
+| Emit lifecycle events from a harness | [Harness author guide](./harness.md) |
+| Speak the wire from a new client | [Build a client](./build-a-client.md) |
+| Use the in-tree Rust library or native bindings | [Client library guide](./sdk.md) |
+| Understand the accepted GPUIX Solid desktop contract | [Desktop contract](./desktop.md), not yet release-verified |
+| Follow mobile client availability | [iOS](./ios.md) and [Android](./android.md) status |
+
+Clients are protocol peers; the TUI has no special protocol privilege
+([the design decision](../adr/0017-tui-not-protocol-privileged.md)). For product
+boundaries, see [current limitations](../CONCEPTS.md#status). Each guide's
+metadata declares its own stability.

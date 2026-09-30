@@ -6,20 +6,31 @@ last-reviewed: 2026-09-27
 
 # Install
 
-**TL;DR.** The curl installer is the universal one-liner. Homebrew is the
-recommended day-to-day path on supported macOS and Linux. Source builds
-use native tools or Nix. `phux update` maintains a direct-release install;
-`phux channel next` tracks green `main`, `phux channel latest` the numbered
-releases. Windows and `cargo install phux` are not supported.
+**TL;DR.** Install official binaries on Apple-silicon macOS or supported
+Linux hosts through Homebrew, the curl installer, or release tarballs.
+Source builds use native tools or Nix. Direct installs use `phux update`;
+package-managed installs use their package manager. Choose numbered
+releases for normal use or opt into the moving `next` prerelease.
+Cockpit has a separate macOS installer.
 
 ---
+
+## Platform support
+
+| Platform | Status |
+|---|---|
+| macOS (Apple Silicon) | Homebrew: yes. Curl/tarball: yes. Source: yes. |
+| macOS (x86_64) | Source build only; no official release artifact. Homebrew and the curl installer refuse. |
+| Linux x86_64 | Curl/tarball: yes. Homebrew: yes where Linuxbrew supports the host. Source: yes. |
+| Linux aarch64 | Curl/tarball: yes. Homebrew: yes where Linuxbrew supports the host. Source: yes. |
+| Windows | No. Windows is not supported and is not on the near roadmap. |
 
 ## Supported install channels
 
 | Channel | Best for | Status |
 |---|---|---|
-| Curl installer | Universal one-liner from GitHub release tarballs | Latest GitHub release by default |
-| Homebrew | Recommended day-to-day on supported Homebrew platforms | Primary binary path where the tap has an artifact |
+| Curl installer | Direct install from GitHub release tarballs on supported platforms | Latest GitHub release by default |
+| Homebrew | Day-to-day use on Apple-silicon macOS or supported Linuxbrew hosts | Primary binary path where the tap has an artifact |
 | Release tarball | Manual install and verification | CI-built tarballs include `phux`, `phux-mcp`, licenses, README, and `.sha256` sidecars |
 | From source | Contributors and source-first users | Clone, build, and install with native tools or Nix |
 | Agent skills | Harnesses that load SKILL.md | `npx skills add no-phux/skills` |
@@ -27,8 +38,9 @@ releases. Windows and `cargo install phux` are not supported.
 The public install page is
 [https://docs.phux.sh/quickstart/install](https://docs.phux.sh/quickstart/install).
 
-Once installed, `phux update` is the one command that moves any of them
-forward; see [Updating](#updating).
+Use the updater that owns your install. `phux update` replaces direct-release
+installs; it refuses to overwrite Homebrew, Cargo, or Nix installs and names
+the native command instead. See [Updating](#updating).
 
 Not supported: `cargo install phux`, Windows, and mise/asdf shims. The
 crates.io package is `phux-protocol`, not the CLI.
@@ -204,14 +216,14 @@ nix develop -c cargo install --locked --path crates/phux
 nix develop -c cargo install --locked --path crates/phux-mcp
 ```
 
-`phux` with no arguments auto-spawns a server and attaches to it. Detach with
-`Ctrl-A d`; run `phux` again to re-attach.
+`phux` with no arguments auto-spawns a server and attaches to it. To detach,
+press `Ctrl-A`, release both keys, then press `d`; run `phux` to reattach.
 Interactive `phux`, `phux attach`, and `phux new` require both stdin and stdout
 to be terminals. Redirected invocations refuse before starting a server or
 emitting terminal control bytes; use the headless verbs for scripts and CI.
 
 If you are developing rather than installing, select the relevant native or
-Nix setup and scoped checks in [`SETUP.md`](./SETUP.md).
+Nix setup and scoped checks in [Contributor setup](./SETUP.md).
 For a checkout you edit continuously, install the current debug build with:
 
 ```sh
@@ -228,7 +240,32 @@ ahead of `~/.local/bin`; leave the repo and `phux` is the user install
 again. `just rebuild` installs the next debug build and hot-swaps the
 dev-profile server.
 
+### Which documentation applies to my install?
+
+Numbered releases are the stable channel. `next` is a moving prerelease built
+from green `main`; a source checkout can contain changes not yet available in
+either published channel. A page labeled **checkout behavior** describes that
+source, not a promised minimum released version.
+
+Check `phux --version` for the binary and `phux status --json` for the running
+server's negotiated capabilities. A newer client does not add capabilities to
+an older server. For example, AgentSession procedures require `RESOURCE_KINDS`
+in the server's `features`; ordinary pane tools do not require an AgentSession.
+Use the [update instructions](#updating) for your install source, and keep
+remote peers on the same release. The full compatibility rule is in
+[workspace continuity](./operations.md#workspace-continuity-and-update-survival).
+
 ## Updating
+
+Choose your install source before running an update:
+
+- **Homebrew:** [upgrade with Homebrew, then hand off the server](#homebrew-1).
+- **Curl or release tarball:** use the commands below.
+- **Nix:** use the [Nix update procedure](#nixos-and-nix-profiles).
+- **Source/Cargo directory:** rebuild from your chosen revision using
+  [the source-install commands](#from-source); do not use `cargo install phux`.
+
+For a direct-release install:
 
 ```sh
 phux update --check     # what is installed, what is published, how it got there
@@ -387,8 +424,10 @@ the curl installer, release tarballs, or a source build.
 
 ## After install
 
-[Quickstart](./QUICKSTART.md) is the first run.
-[Agents](./consumers/agents.md) is the headless contract.
+[Quickstart](./QUICKSTART.md) walks through first launch and detach/reattach.
+[Coding-agent getting started](./consumers/getting-started.md) selects an integration.
+If the binary is missing or the wrong version runs, start with
+[installation recovery](./troubleshooting.md#phux-is-not-found-or-the-wrong-version-runs).
 
 ## Shell completions
 
@@ -411,12 +450,3 @@ phux completion fish > ~/.config/fish/completions/phux.fish
 Regenerate after upgrading phux. A stale script keeps completing verbs the
 new binary may have renamed or dropped.
 
-## Platform support
-
-| Platform | Status |
-|---|---|
-| macOS (Apple Silicon) | Homebrew: yes. Curl/tarball: yes. Source: yes. |
-| macOS (x86_64) | Not supported. No official release artifact; Homebrew and the curl installer both refuse. Source: yes. |
-| Linux x86_64 | Curl/tarball: yes. Homebrew: yes where Linuxbrew supports the host. Source: yes. |
-| Linux aarch64 | Curl/tarball: yes. Homebrew: yes where Linuxbrew supports the host. Source: yes. |
-| Windows | No. Windows is not supported and is not on the near roadmap. |

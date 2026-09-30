@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-09-30",
+  "product": "cmux",
+  "status": "not_measured",
+  "quantitative_ranking": null,
+  "release": {
+    "version": "0.64.25",
+    "build": "106",
+    "source_revision": "b685a275c2e411799857155e37264daf84f7e4d6",
+    "bundle_identifier": "com.cmuxterm.app",
+    "download_url": "https://github.com/manaflow-ai/cmux/releases/download/v0.64.25/cmux-macos.dmg",
+    "download_sha256": "0afb2f8ff9bfef10f03e61ff12e65ce02dbca5c96cb9047118e13483ac5b08ad",
+    "inspection": "Official DMG downloaded, SHA-256 matched release API digest, mounted read-only without opening app, version/build/revision read from Info.plist. Application not launched."
+  },
+  "measurement_boundaries": {
+    "pty_byte_echo": "Not applicable to native GUI; CLI command acknowledgement is not terminal rendering.",
+    "native_startup": "Unmeasured: launch to owned-workspace readiness, not process creation or socket existence.",
+    "native_memory": "Unmeasured: must distinguish main app RSS, helper/process-tree RSS and physical footprint; not comparable to server-only RSS.",
+    "input_to_pixel": "Unmeasured: requires a presentation receipt or controlled visual instrumentation; no timing inferred from socket acknowledgement."
+  },
+  "isolation_review": {
+    "supported_route": "Upstream tagged Release staging changes bundle identity, socket and daemon socket, ad-hoc signs the copied app, then invokes open -g.",
+    "blocker": "The inspected release's startup calls scheduleInitialMainWindowBootstrap -> bootstrapInitialMainWindowIfNeeded with shouldActivate defaulting true. createMainWindow uses runningApplication([activateAllWindows]) and respectActivationSuppression:false. open -g alone therefore does not prove non-activation. No native launch was attempted on the user's active GUI session.",
+    "state_warning": "Upstream staging script resolves account home via getpwuid for discovery markers; changing HOME alone does not isolate all macOS preferences/state.",
+    "required_environment": "Separate macOS login/VM or explicitly available dedicated GUI test session, unique staging bundle identity, owned sockets/state/workspace, no global accessibility changes."
+  },
+  "sources": [
+    "https://api.github.com/repos/manaflow-ai/cmux/releases/latest",
+    "https://github.com/manaflow-ai/cmux/blob/v0.64.25/scripts/reloads.sh",
+    "https://github.com/manaflow-ai/cmux/blob/v0.64.25/Sources/AppDelegate.swift",
+    "https://github.com/manaflow-ai/cmux/blob/main/skills/cmux-dev-workflow/references/tagged-builds.md",
+    "https://cmux.com/docs/api"
+  ]
+}

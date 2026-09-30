@@ -1,98 +1,61 @@
-/** Docs overview body — docs.x.ai/overview IA, phux terminal chrome. */
+const paths = [
+  { href: "/quickstart", title: "Use phux locally", text: "Install, attach, split a pane, and detach without stopping your work.", label: "Start here" },
+  { href: "/consumers/getting-started", title: "Run a coding agent", text: "Choose a harness, connect its tools, and share a terminal you can inspect.", label: "For agent users" },
+  { href: "/remote-access", title: "Connect another machine", text: "Choose a connection path and reach the terminals running on your host.", label: "Work across hosts" },
+  { href: "/concepts/coming-from", title: "Bring your tmux habits", text: "Map sessions, panes, prefix keys, and detach to the phux model.", label: "Make the switch" },
+  { href: "/concepts/when-to-use", title: "Decide if phux fits", text: "Understand the tradeoffs alongside tmux, Herdr, and cmux.", label: "Compare options" },
+  { href: "/troubleshooting", title: "Get unstuck", text: "Recover from connection, installation, and agent-integration problems.", label: "Find a fix" },
+];
+
 export function OverviewBody() {
   return (
     <div className="docs-overview">
-      <p className="overview-lede">
-        Every interface — the TUI, Cockpit, the browser, a script, or an
-        agent — talks to the same live terminals. Nobody screen-scrapes.
-        Nobody holds a second copy.
-      </p>
-
-      <section aria-label="Surfaces">
-        <h2>Surfaces</h2>
-        <p>
-          Same objects, many consumers. Start on the glass you already have.
-        </p>
-        <div className="overview-apps">
-          <a href="/consumers/tui">
-            <small>01</small>
-            <b>CLI</b>
-            <span>The reference TUI. Attach, split, detach. Prefix keys, copy-mode, fleet overlay.</span>
-          </a>
-          <a href="/consumers/cockpit">
-            <small>02</small>
-            <b>Cockpit</b>
-            <span>Native macOS app for the same terminals. Apple silicon, same wire.</span>
-          </a>
-          <a href="/consumers/web">
-            <small>03</small>
-            <b>Web</b>
-            <span>Browser client with its own engine. The live demo on phux.sh is this surface.</span>
-          </a>
-          <a href="/consumers/agents">
-            <small>04</small>
-            <b>Agents</b>
-            <span>CLI, JSON, MCP, OpenCode, Pi, Claude. Read, act, wait on the terminals you see.</span>
-          </a>
-        </div>
-      </section>
-
-      <section aria-label="Pick your path">
-        <h2>Pick your path</h2>
-        <div className="overview-paths">
-          <a href="/quickstart">
-            <b>New here</b>
-            <span>Install, attach, detach, and drive a pane from a second terminal. No protocol required.</span>
-          </a>
-          <a href="/concepts/coming-from">
-            <b>Coming from tmux</b>
-            <span>Translate attach, split, prefix, and detach muscle memory.</span>
-          </a>
-          <a href="/concepts/when-to-use#compared-with-herdr">
-            <b>Comparing Herdr</b>
-            <span>Both keep PTYs alive. See where their durable system boundaries differ.</span>
-          </a>
-          <a href="/consumers/agents">
-            <b>You run agents</b>
-            <span>The loop is read, act, wait. Selectors name panes. Agent sessions are a second resource kind.</span>
-          </a>
-          <a href="/wire">
-            <b>Building a peer</b>
-            <span>Server sends terminal bytes. Client sends structured input. Start at PROTO, then required L1.</span>
-          </a>
-        </div>
-      </section>
-
-      <div className="overview-columns">
-        <section>
-          <h2>Get started</h2>
-          <ul>
-            <li><a href="/quickstart">Quickstart</a></li>
-            <li><a href="/quickstart/install">Install</a></li>
-            <li><a href="/concepts">Concepts</a></li>
-            <li><a href="/concepts/when-to-use">When to use phux</a></li>
-            <li><a href="/performance">Performance</a></li>
-          </ul>
-        </section>
-        <section>
-          <h2>Build</h2>
-          <ul>
-            <li><a href="/consumers/agents">Agent loop</a></li>
-            <li><a href="/consumers/mcp">MCP adapter</a></li>
-            <li><a href="/consumers/cockpit">Cockpit</a></li>
-            <li><a href="/wire/tutorial">Wire tutorial</a></li>
-          </ul>
-        </section>
-        <section>
-          <h2>Resources</h2>
-          <ul>
-            <li><a href="/wire">Protocol</a></li>
-            <li><a href="/reference">Generated reference</a></li>
-            <li><a href="/architecture">Architecture</a></li>
-            <li><a href="/decisions">Decisions</a></li>
-          </ul>
-        </section>
+      <div className="overview-actions">
+        <a className="overview-primary" href="/quickstart">Start the quickstart <span aria-hidden="true">→</span></a>
+        <a href="/performance">Explore the performance evidence <span aria-hidden="true">→</span></a>
       </div>
+
+      <figure className="overview-model" aria-labelledby="terminal-model-caption">
+        <div className="overview-model-clients">
+          <div><strong>You</strong><span>Attach and interact</span></div>
+          <div><strong>Your app</strong><span>Display and control</span></div>
+          <div><strong>Your agent</strong><span>Read, act, and wait</span></div>
+        </div>
+        <div className="overview-model-connectors" aria-hidden="true"><span>↕</span><span>↕</span><span>↕</span></div>
+        <div className="overview-model-terminal">
+          <span className="overview-model-label">One running terminal</span>
+          <code><span aria-hidden="true">$ </span>your shell, editor, or long-running task</code>
+          <span>phux keeps the process running when clients disconnect.</span>
+        </div>
+        <figcaption id="terminal-model-caption">Different interfaces. The same work. A person, an app, and an agent can connect to the same terminal; each sees its output and can send input.</figcaption>
+      </figure>
+
+      <section aria-labelledby="overview-paths-title">
+        <h2 id="overview-paths-title">What do you want to do?</h2>
+        <div className="overview-paths">
+          {paths.map(({ href, title, text, label }) => (
+            <a href={href} key={href}>
+              <span className="overview-path-label">{label}</span>
+              <h3>{title} <span aria-hidden="true">→</span></h3>
+              <p>{text}</p>
+            </a>
+          ))}
+        </div>
+      </section>
+
+      <section className="overview-reference" aria-labelledby="overview-reference-title">
+        <div>
+          <h2 id="overview-reference-title">Go deeper when you need to</h2>
+          <p>You do not need the protocol to get started. These are the maps for understanding, automating, and building on phux.</p>
+        </div>
+        <nav aria-label="Explore the documentation">
+          <a href="/concepts">Core concepts</a>
+          <a href="/reference">Command and configuration reference</a>
+          <a href="/wire">Wire protocol</a>
+          <a href="/architecture">Architecture</a>
+          <a href="/docs">All documentation</a>
+        </nav>
+      </section>
     </div>
   );
 }

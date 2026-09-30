@@ -54,11 +54,10 @@ const pathname = Astro.url.pathname.replace(/\.html$/, "");
     title={page.data.title}
     summary={page.data.summary}
     description={page.data.description}
-    codeLanguages={page.data.codeLanguages}
     stability={page.data.stability}
     protocolVersion={page.data.protocolVersion}
     client:load
   >
-    <Content components={{ ...defaultMdxComponents }} />
+    <Content components={{ ...defaultMdxComponents, pre: "pre", table: "table" }} />
   </Docs>
 </Layout>
