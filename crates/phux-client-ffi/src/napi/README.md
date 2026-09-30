@@ -127,6 +127,10 @@ cargo check --locked -p phux-client-ffi
 cargo check --locked -p phux-client-ffi --no-default-features --features uniffi
 ```
 
+`just desktop-native-client-test` runs the main smoke against the production
+wrapper (`--production-host`) and the fault cases against this fixture
+(`--faults`); with no mode, as above, both run against the fixture.
+
 The host fixture is a separate cdylib consuming the FFI rlib. Its native probe
 resolves the same handle JS created. The smoke fixture starts an isolated
 PTY-backed server, drives real Node exports, and checks topology, attach,

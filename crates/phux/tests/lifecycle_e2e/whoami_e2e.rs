@@ -166,21 +166,25 @@ fn whoami_over_remote_reports_the_bearer_credential() {
     let dir = TempDir::new().expect("tempdir");
     prepare_dirs(dir.path());
 
-    // Mint the credential before the server starts, so its token store
-    // holds it from the first dial.
-    let pair = phux(dir.path(), &["pair", "--json"]);
-    assert!(
-        pair.status.success(),
-        "pair: {}",
-        String::from_utf8_lossy(&pair.stderr)
-    );
-    let paired = json_doc(&pair);
+    // Start the listener first: `phux pair` mints only against a server
+    // with a bound remote listener (ADR-0141), and the server re-reads its
+    // token store at the next dial. Retried until the server answers; a
+    // refused mint writes nothing.
+    let port = free_udp_port();
+    let quic = format!("127.0.0.1:{port}");
+    let _server = start_server(dir.path(), &["--quic", &quic], &[("PHUX_WS_SECURE", "1")]);
+    let socket = dir.path().join("s.sock");
+    let socket = socket.to_str().expect("utf-8 socket path");
+    let paired = json_doc(&await_success(
+        dir.path(),
+        &["--socket", socket, "pair", "--json"],
+    ));
+    assert_eq!(paired["quic_addr"], quic.as_str(), "{paired}");
     let token = paired["token"].as_str().expect("token");
     let credential_id = paired["credential_id"].as_str().expect("credential_id");
     let token_file = dir.path().join("loop.token");
     std::fs::write(&token_file, format!("{token}\n")).expect("write token");
 
-    let port = free_udp_port();
     std::fs::write(
         dir.path().join("config/phux/config.toml"),
         format!(
@@ -190,8 +194,6 @@ fn whoami_over_remote_reports_the_bearer_credential() {
         ),
     )
     .expect("write registry");
-    let quic = format!("127.0.0.1:{port}");
-    let _server = start_server(dir.path(), &["--quic", &quic], &[("PHUX_WS_SECURE", "1")]);
 
     let doc = json_doc(&await_success(
         dir.path(),

@@ -32,6 +32,28 @@ required-features = ["uniffi"]
 name = "rig_seed"
 required-features = ["uniffi"]
 
+# The Cockpit fixture generators and the connected-lane test drive the
+# `extern "C"` surface, so they build only where `c-abi` is on.
+[[example]]
+name = "cockpit_fixture"
+required-features = ["c-abi"]
+
+[[example]]
+name = "cockpit_style_fixture"
+required-features = ["c-abi"]
+
+[[example]]
+name = "session_attachment_fixtures"
+required-features = ["c-abi"]
+
+[[example]]
+name = "workspace_fixtures"
+required-features = ["c-abi"]
+
+[[test]]
+name = "connected"
+required-features = ["c-abi"]
+
 [[example]]
 name = "napi_smoke"
 required-features = ["napi"]

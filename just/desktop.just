@@ -64,9 +64,17 @@ desktop-native-test:
     bash clients/desktop/tests/native/run-smoke.sh
 
 [group('desktop')]
-[doc('Prove the wrapper shares the FFI Client using an isolated real PTY server')]
+[doc('Prove the wrapper shares the FFI Client, then fault-inject input loss and restart, on isolated real PTY servers')]
 desktop-native-client-test:
-    CARGO_TARGET_DIR="$PWD/clients/desktop/.cache/client-test-target" cargo run --locked -p phux-client-ffi --no-default-features --features napi --example napi_smoke -- "$PWD/clients/desktop/.cache/host/phux-desktop-native.darwin-arm64.node" --production-host
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export CARGO_TARGET_DIR="$PWD/clients/desktop/.cache/client-test-target"
+    cargo run --locked -p phux-client-ffi --no-default-features --features napi --example napi_smoke -- "$PWD/clients/desktop/.cache/host/phux-desktop-native.darwin-arm64.node" --production-host
+    # The fault cases need the napi_host fixture's NativeClientLease export,
+    # which the production wrapper deliberately does not ship.
+    cargo build --locked -p phux-client-ffi --no-default-features --features napi --example napi_host
+    cp "$CARGO_TARGET_DIR/debug/examples/libnapi_host.dylib" "$CARGO_TARGET_DIR/debug/examples/napi_host.node"
+    cargo run --locked -p phux-client-ffi --no-default-features --features napi --example napi_smoke -- "$CARGO_TARGET_DIR/debug/examples/napi_host.node" --faults
 
 [group('desktop')]
 [doc('Exercise independent terminal views through the combined native addon')]

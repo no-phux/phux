@@ -228,8 +228,8 @@ pub(crate) enum EnrollEvent {
     /// The service question is settled one way or another.
     ServerReady(Supervision),
     /// Neither the service install nor `phux server --ensure` succeeded.
-    /// Not fatal: pairing is still worth doing, and an `ssh://` attach
-    /// starts a server on its own.
+    /// Pairing is still tried, since a server may be live regardless, but
+    /// `phux pair` mints nothing without a bound listener (ADR-0141).
     ServerStartFailed { error: String },
     /// The host's token store predated versioning; `phux pair` was rerun
     /// with `--migrate-legacy`.
@@ -264,7 +264,7 @@ impl EnrollEvent {
             Self::PhuxFound { version } => format!("{version} found over ssh"),
             Self::ServerReady(supervision) => supervision.describe(),
             Self::ServerStartFailed { error } => format!(
-                "could not start a server there ({error}); pairing anyway, an ssh attach starts one on demand"
+                "could not start a server there ({error}); pairing needs one with a remote listener, trying anyway"
             ),
             Self::LegacyStoreMigrated => {
                 "its token store predates versioning; migrated it (secrets preserved)".to_owned()
@@ -589,32 +589,62 @@ fn pair_over_ssh(
     let stdout = if first.status.success() {
         first.stdout
     } else if first.stderr.contains(LEGACY_TOKEN_STORE) {
-        let mut migrated_argv = pair_argv.clone();
-        migrated_argv.push("--migrate-legacy");
-        let migrated = ssh_run(ssh_host, &migrated_argv).map_err(EnrollFailure::Pair)?;
-        if !migrated.status.success() {
-            return Err(EnrollFailure::Pair(
-                migrated.command_failure(ssh_host, &migrated_argv),
-            ));
-        }
-        on_event(EnrollEvent::LegacyStoreMigrated);
-        // The server disabled its remote listeners when the store failed to
-        // load at boot; only a restart brings them back. `phux upgrade` is
-        // the restart that keeps every pane alive.
-        match ssh_run(ssh_host, &[remote_phux, "upgrade"]) {
-            Ok(upgrade) if upgrade.status.success() => on_event(EnrollEvent::ListenersRestarted),
-            Ok(upgrade) => on_event(EnrollEvent::ListenerRestartFailed {
-                error: upgrade.failure_detail(),
-            }),
-            Err(error) => on_event(EnrollEvent::ListenerRestartFailed { error }),
-        }
-        migrated.stdout
+        migrate_legacy_over_ssh(ssh_host, remote_phux, &pair_argv, on_event)?
     } else {
         return Err(EnrollFailure::Pair(
             first.command_failure(ssh_host, &pair_argv),
         ));
     };
     PairReport::parse(&stdout).map_err(EnrollFailure::Pair)
+}
+
+/// Rerun `phux pair --json` with `--migrate-legacy`, then restart the server
+/// so its listeners re-read the migrated store. A server from before remote
+/// listeners bound ahead of the store disabled them when the legacy store
+/// failed to load at boot, and `phux pair` mints nothing with no listener
+/// bound (ADR-0141); the migration has landed by then, so that refusal is
+/// answered with the restart first and one more `phux pair --json`. Returns
+/// the pairing document's stdout.
+fn migrate_legacy_over_ssh(
+    ssh_host: &str,
+    remote_phux: &str,
+    pair_argv: &[&str],
+    on_event: &mut dyn FnMut(EnrollEvent),
+) -> Result<String, EnrollFailure> {
+    let mut migrated_argv = pair_argv.to_vec();
+    migrated_argv.push("--migrate-legacy");
+    let migrated = ssh_run(ssh_host, &migrated_argv).map_err(EnrollFailure::Pair)?;
+    if migrated.status.success() {
+        on_event(EnrollEvent::LegacyStoreMigrated);
+        restart_listeners(ssh_host, remote_phux, on_event);
+        return Ok(migrated.stdout);
+    }
+    if !migrated.stderr.contains(super::pair::NO_BOUND_LISTENER) {
+        return Err(EnrollFailure::Pair(
+            migrated.command_failure(ssh_host, &migrated_argv),
+        ));
+    }
+    restart_listeners(ssh_host, remote_phux, on_event);
+    let retried = ssh_run(ssh_host, pair_argv).map_err(EnrollFailure::Pair)?;
+    if !retried.status.success() {
+        return Err(EnrollFailure::Pair(
+            retried.command_failure(ssh_host, pair_argv),
+        ));
+    }
+    on_event(EnrollEvent::LegacyStoreMigrated);
+    Ok(retried.stdout)
+}
+
+/// Restart the server with `phux upgrade`, the restart that keeps every pane
+/// alive, so its listeners re-read a migrated store.
+fn restart_listeners(ssh_host: &str, remote_phux: &str, on_event: &mut dyn FnMut(EnrollEvent)) {
+    match ssh_run(ssh_host, &[remote_phux, "upgrade"]) {
+        Ok(upgrade) if upgrade.status.success() => on_event(EnrollEvent::ListenersRestarted),
+        Ok(upgrade) => on_event(EnrollEvent::ListenerRestartFailed {
+            error: upgrade.failure_detail(),
+        }),
+        Err(error) => on_event(EnrollEvent::ListenerRestartFailed { error }),
+    }
 }
 
 /// Write a pairing token owner-only, creating the directory it lives in.

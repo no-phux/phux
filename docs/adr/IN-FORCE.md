@@ -99,9 +99,10 @@ by a newer one, the newer line is the operative reading.
 - [0136](./0136-hub-mirrors-satellite-agent-metadata.md) A hub keeps a read-only mirror of `phux.agent/v1` and `phux.agent.asked/v1` per satellite terminal, retagged `Local` to `Satellite`. Every other L3 key stays server-local.
 - [0108](./0108-a-hub-relays-host-queries-per-request.md) A hub relays a host query that names a satellite (`LIST_DIRECTORY.host`) over that satellite's L3-negotiated link, one request at a time. It does not chain. Routing failure is an `OTHER` refusal naming the host. The agent-metadata mirror is the separate carve-out above.
 - [0107](./0107-satellite-sessions-are-listed-never-adopted.md) A hub lists satellite sessions host-qualified under their own ids; selecting one opens its active pane through the resource relay.
+- [0141](./0141-pair-mints-only-against-a-live-listener.md) `phux pair` mints only after the running server reports a bound remote listener; the connect link names that bind.
 - [0122](./0122-host-add-is-the-front-door.md) `phux host add HOST` is the one front door for a machine: confirm, start and supervise, pair, probe, register; an attach whose saved route stops answering starts the server over ssh before it re-pairs.
 - [0093](./0093-remote-target-as-a-resolution-ladder.md) `--remote user@host` resolves to a `[[remote]]` entry and reuses the existing dial.
-- [0081](./0081-overlay-auto-listen-and-one-command-pairing.md) The server auto-binds its overlay listener at startup; `phux pair` only issues credentials.
+- [0081](./0081-overlay-auto-listen-and-one-command-pairing.md) The server auto-binds its overlay listener at startup; pairing adds a credential without a restart.
 - [0066](./0066-host-namespace.md) `phux host add|ls|rm` with `--role` replaces the split remote and satellite verbs.
 - [0057](./0057-minimal-reference-relay.md) A single-process, single-tenant reference relay ships in-tree as a self-host tool.
 - [0052](./0052-connector-route-identity-and-config.md) Consumers name a tunneled server by TLS SNI; routes bind to tokens at relay enrollment.
