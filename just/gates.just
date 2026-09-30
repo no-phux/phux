@@ -104,6 +104,7 @@ workflow-check: shellcheck
     python3 scripts/mutation/test_recipes.py
     bash scripts/test-dev-setup.sh
     node --test scripts/test-vt-wasm.mjs
+    node --test scripts/test-npm-audit-gate.mjs
     bash scripts/ci/check-classify-changes.sh
     python3 -B -m unittest discover -s scripts/ci -p 'test_*.py'
     bash scripts/check-action-pins.sh

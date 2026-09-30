@@ -1,0 +1,20 @@
+[
+  {
+    "advisory": "GHSA-q2hr-2g5m-vwhr",
+    "inside": "@earendil-works/pi-coding-agent",
+    "expires": "2026-11-15",
+    "reason": "brace-expansion 5.0.9 is pinned by pi-coding-agent's own npm-shrinkwrap in every release through 0.99.1, so no bump or override reaches it; it is a dev-only test harness for integrations/pi and never ships. Drop once upstream shrinkwraps >=5.0.12."
+  },
+  {
+    "advisory": "GHSA-qhr7-859c-m2p7",
+    "inside": "@earendil-works/pi-coding-agent",
+    "expires": "2026-11-15",
+    "reason": "Same shrinkwrapped brace-expansion 5.0.9 as GHSA-q2hr-2g5m-vwhr."
+  },
+  {
+    "advisory": "GHSA-6j4f-fj2g-mc7p",
+    "inside": "@earendil-works/pi-coding-agent",
+    "expires": "2026-11-15",
+    "reason": "Same shrinkwrapped brace-expansion 5.0.9 as GHSA-q2hr-2g5m-vwhr."
+  }
+]
