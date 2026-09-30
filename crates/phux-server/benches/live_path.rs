@@ -15,7 +15,10 @@
 //!
 //! - `state-sync`: one `prepare_tick` render plus one `diff_consumer` per
 //!   consumer ([`SnapshotSynthesizer::synthesize_tick`]), exactly as the
-//!   actor's tick runs it, after `dirty` rows changed.
+//!   actor's tick runs it, after `dirty=N` rows changed in place, or after
+//!   `scroll`: one new line at the bottom, which shifts every row and moves
+//!   the viewport, so libghostty reports a full redraw and the tick renders
+//!   every row (the incremental tick's fallback).
 //! - `wire`: the server writer encoding one `RESOURCE_OUTPUT` per consumer
 //!   into its reused batch buffer, then one client framing that frame off
 //!   its socket buffer and decoding it (`split_frame` + `freeze` +
@@ -98,9 +101,32 @@ const GEOMETRIES: [(u16, u16); 2] = [(80, 24), (200, 60)];
 const CONSUMERS: [usize; 3] = [1, 2, 8];
 const PAYLOADS: [usize; 3] = [1024, 16 * 1024, 48 * 1024];
 
-/// Dirty-row cases for a geometry: one row, a quarter, every row.
-fn dirty_cases(rows: u16) -> [u16; 3] {
-    [1, (rows / 4).max(1), rows]
+/// What changes between two ticks.
+#[derive(Clone, Copy)]
+enum Change {
+    /// The first `n` rows are rewritten in place.
+    Rows(u16),
+    /// One line is appended at the bottom, scrolling every row.
+    Scroll,
+}
+
+impl std::fmt::Display for Change {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rows(n) => write!(f, "dirty={n}"),
+            Self::Scroll => f.write_str("scroll"),
+        }
+    }
+}
+
+/// Change cases for a geometry: one row, a quarter, every row, a scroll.
+fn changes(rows: u16) -> [Change; 4] {
+    [
+        Change::Rows(1),
+        Change::Rows((rows / 4).max(1)),
+        Change::Rows(rows),
+        Change::Scroll,
+    ]
 }
 
 struct Grid {
@@ -133,10 +159,28 @@ impl Grid {
         };
         // Warm the render pool and every scratch buffer to steady capacity.
         for _ in 0..3 {
-            grid.dirty(rows);
+            grid.change(Change::Rows(rows));
             grid.tick();
         }
         grid
+    }
+
+    fn change(&mut self, change: Change) {
+        match change {
+            Change::Rows(n) => self.dirty(n),
+            Change::Scroll => self.scroll(),
+        }
+    }
+
+    /// Append one colored line at the bottom row, scrolling the grid.
+    fn scroll(&mut self) {
+        self.tick += 1;
+        let fg = 16 + self.tick % 216;
+        let line = format!(
+            "\x1b[{};1H\r\n\x1b[38;5;{fg}mscroll tick {:06} \x1b[1mbold\x1b[0m plain text to fill the line",
+            self.rows, self.tick,
+        );
+        self.terminal.vt_write(line.as_bytes());
     }
 
     /// Rewrite the first `rows` rows with colored text unique to this tick.
@@ -199,13 +243,13 @@ fn client_decode(socket: &mut BytesMut, wire: &[u8]) -> FrameKind {
 fn print_table() {
     println!("stage,case,consumers,allocs_per_tick,alloc_bytes_per_tick,out_bytes_per_tick");
     for geometry in GEOMETRIES {
-        for dirty in dirty_cases(geometry.1) {
+        for change in changes(geometry.1) {
             for consumers in CONSUMERS {
                 let mut grid = Grid::new(geometry, consumers);
-                grid.dirty(dirty);
+                grid.change(change);
                 let (out, allocs, bytes) = counted(|| grid.tick());
                 println!(
-                    "state-sync,{}x{} dirty={dirty},{consumers},{allocs},{bytes},{out}",
+                    "state-sync,{}x{} {change},{consumers},{allocs},{bytes},{out}",
                     geometry.0, geometry.1,
                 );
             }
@@ -232,18 +276,19 @@ fn print_table() {
 fn criterion_state_sync(c: &mut Criterion) {
     let mut group = c.benchmark_group("state-sync-tick");
     for geometry in GEOMETRIES {
-        for dirty in dirty_cases(geometry.1) {
+        for change in changes(geometry.1) {
             for consumers in [1, 8] {
                 let mut grid = Grid::new(geometry, consumers);
+                let case = match change {
+                    Change::Rows(n) => format!("dirty{n}"),
+                    Change::Scroll => "scroll".to_owned(),
+                };
                 group.throughput(Throughput::Elements(1));
                 group.bench_function(
-                    BenchmarkId::new(
-                        format!("{}x{}-dirty{dirty}", geometry.0, geometry.1),
-                        consumers,
-                    ),
+                    BenchmarkId::new(format!("{}x{}-{case}", geometry.0, geometry.1), consumers),
                     |b| {
                         b.iter(|| {
-                            grid.dirty(dirty);
+                            grid.change(change);
                             black_box(grid.tick())
                         });
                     },

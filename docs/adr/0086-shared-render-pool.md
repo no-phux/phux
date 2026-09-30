@@ -90,8 +90,10 @@ Dirty policy is excluded because the call sites genuinely disagree, and each
 disagreement is deliberate: `SnapshotSynthesizer::mark_synced` clears both the
 row bits and the snapshot bit; `synthesize_incremental` clears neither,
 because an unacked diff must stay re-emittable
-([ADR-0018](./0018-lazy-state-synchronization.md)); `prepare_tick` bypasses
-the dirty bits entirely in favour of a per-consumer reference diff; and
+([ADR-0018](./0018-lazy-state-synchronization.md)); `prepare_tick`
+re-renders only the rows its pooled state rebuilt and clears exactly those
+flags, while each consumer still diffs against its own reference rather than
+dirty bits; and
 `TerminalRenderer::render_at_inner` clears only the rows it drew. A type that
 unified those four would erase four decisions.
 
