@@ -39,8 +39,10 @@ impl TerminalActor {
                 return Err(crate::grid::SynthesisError::TerminalUnavailable.into());
             };
             // A one-shot render state, so priming below can borrow the
-            // shared synthesizer.
+            // shared synthesizer. It drains the terminal's dirty bits, so the
+            // tick's pool must rebuild.
             let last_cursor_mode = {
+                self.synth.borrow().note_foreign_walk();
                 let mut render_state = RenderState::new()?;
                 let snapshot = render_state.update(terminal)?;
                 LastAckedCursorMode::capture(terminal, &snapshot)

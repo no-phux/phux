@@ -93,6 +93,25 @@ pub fn check_session_name(name: &str) -> Result<(), SessionNameError> {
     Ok(())
 }
 
+/// Rewrite a generated name into one [`check_session_name`] accepts.
+///
+/// For a template render or a directory basename: each `:` becomes `_`,
+/// `/@` becomes `/_`, a leading `@`, `#`, or `%` becomes `_`, and a bare `.`
+/// or `=` becomes `_`. A blank name stays blank so the caller picks its
+/// fallback. An explicit name is refused, never rewritten: only a name
+/// nobody typed may be changed behind the user's back.
+#[must_use]
+pub fn addressable_session_name(name: &str) -> String {
+    if name.trim().is_empty() {
+        return name.to_owned();
+    }
+    let mut out = name.replace(':', "_").replace("/@", "/_");
+    if out == "." || out == "=" || out.starts_with(['@', '#', '%']) {
+        out.replace_range(..1, "_");
+    }
+    out
+}
+
 /// What to do with a rename, judged before any write is sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenamePlan {
@@ -259,6 +278,33 @@ mod tests {
 
     /// `phux rename work ""` once renamed the session to the empty string,
     /// and `x:y` or `@3` made a session no selector could reach again.
+    /// A directory named `@proj` or a template like `work:${cwd-basename}`
+    /// rendered a session no selector could reach; generated names are now
+    /// rewritten until the rule accepts them.
+    #[test]
+    fn generated_names_are_rewritten_to_addressable_ones() {
+        for (generated, addressable) in [
+            ("@proj", "_proj"),
+            ("#tag", "_tag"),
+            ("%agent", "_agent"),
+            ("a:b", "a_b"),
+            ("work:x:y", "work_x_y"),
+            ("devbox/@7", "devbox/_7"),
+            ("@a/@b:c", "_a/_b_c"),
+            (".", "_"),
+            ("=", "_"),
+            ("work", "work"),
+            (".config", ".config"),
+            ("x@y", "x@y"),
+        ] {
+            let got = addressable_session_name(generated);
+            assert_eq!(got, addressable, "{generated:?}");
+            assert_eq!(check_session_name(&got), Ok(()), "{generated:?} -> {got:?}");
+        }
+        assert_eq!(addressable_session_name(""), "");
+        assert_eq!(addressable_session_name("  "), "  ");
+    }
+
     #[test]
     fn plan_refuses_a_name_no_selector_can_address() {
         let sessions = roster(&[(1, "work")]);

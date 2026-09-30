@@ -796,6 +796,10 @@ Attach to a session, here or on a registered host
 Interactive: requires a TTY. With no name, attaches to the most-recently-focused
 session, auto-spawning a server if none is running.
 
+Attach never creates a session on a running server: an unknown name is an error
+(`phux new NAME` creates one). With no server running, the auto-spawned server
+seeds its first session under NAME.
+
 A name registered as a host (`phux host add`) shadows a local session of the
 same name: `phux attach NAME` dials the registered host instead of the local
 socket. Pass `--socket` to force the local reading of the name.
@@ -3264,10 +3268,11 @@ Flags:
                         assembled frame (layout tiling + dividers + status bar)
                         as the human's glass shows it — as dense structured
                         cells. Unlike the default side-effect-free read this
-                        ATTACHES (drives the headless client render path).
-                        Mutually exclusive with `--cells` / `--scrollback` /
-                        `--tail` / `--unwrap`; sizes the composite via `--cols`
-                        / `--rows`.
+                        ATTACHES (drives the headless client render path),
+                        though without a window-size vote, so the session's
+                        panes keep their size. Mutually exclusive with `--cells`
+                        / `--scrollback` / `--tail` / `--unwrap`; sizes the
+                        composite via `--cols` / `--rows`.
       --format <FMT>    Render through the SERVER's libghostty-vt Formatter
                         instead of the lines/cells JSON: `html` for
                         inline-styled markup, `vt` for re-playable VT escape

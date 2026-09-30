@@ -122,6 +122,97 @@ pub struct ScreenSelectionPoint {
     pub row: u32,
 }
 
+/// One copy-mode search hit, inclusive, in the engine's history document
+/// space (rows count from the oldest loaded row, so a hit keeps its place
+/// while the viewport scrolls).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchMatch {
+    /// Document row of the first matched cell.
+    pub start_row: u32,
+    /// Column of the first matched cell.
+    pub start_col: u16,
+    /// Document row of the last matched cell.
+    pub end_row: u32,
+    /// Column of the last matched cell.
+    pub end_col: u16,
+}
+
+impl SearchMatch {
+    /// The part of this match a `cols`x`rows` viewport whose first row is
+    /// document row `top` shows, as a linear pane-local rectangle; `None`
+    /// when it is scrolled out of view.
+    #[must_use]
+    pub fn viewport_rect(self, top: u32, rows: u16, cols: u16) -> Option<SelectionRect> {
+        let bottom = top.checked_add(u32::from(rows))?.checked_sub(1)?;
+        if self.end_row < top || self.start_row > bottom || cols == 0 {
+            return None;
+        }
+        let local = |row: u32| u16::try_from(row - top).ok();
+        let (start_row, start_col) = if self.start_row < top {
+            (0, 0)
+        } else {
+            (local(self.start_row)?, self.start_col)
+        };
+        let (end_row, end_col) = if self.end_row > bottom {
+            (rows - 1, cols - 1)
+        } else {
+            (local(self.end_row)?, self.end_col)
+        };
+        Some(SelectionRect::from_range(
+            start_row,
+            start_col,
+            end_row,
+            end_col,
+            SelectionMode::Char,
+        ))
+    }
+}
+
+/// What copy-mode marks on the focused pane for one paint: the selection
+/// (reverse video) and the other visible search hits (underlined).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CopyMarks {
+    /// The selection, including the current search hit.
+    pub selection: Option<SelectionRect>,
+    /// Visible search hits other than the current one.
+    pub matches: Vec<SelectionRect>,
+}
+
+/// How [`CopyMarks`] restyles one cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CellMark {
+    /// Painted as the terminal has it.
+    #[default]
+    None,
+    /// Inside the selection: reverse video.
+    Selected,
+    /// Inside a search hit: underlined.
+    Matched,
+}
+
+impl CopyMarks {
+    /// Marks carrying only `selection`.
+    #[must_use]
+    pub const fn selection(selection: Option<SelectionRect>) -> Self {
+        Self {
+            selection,
+            matches: Vec::new(),
+        }
+    }
+
+    /// The mark on pane-local cell `(row, col)`; the selection wins.
+    #[must_use]
+    pub fn mark(&self, row: u16, col: u16) -> CellMark {
+        if self.selection.is_some_and(|sel| sel.contains(row, col)) {
+            CellMark::Selected
+        } else if self.matches.iter().any(|hit| hit.contains(row, col)) {
+            CellMark::Matched
+        } else {
+            CellMark::None
+        }
+    }
+}
+
 /// A client-local copy request (ADR-0045): the normalized viewport rectangle,
 /// block-vs-linear, and how `grab` derives the selection (corners for
 /// [`SelectionGrab::Rect`], else the overlay cursor).
@@ -251,5 +342,45 @@ mod tests {
             (r.start_row, r.start_col, r.end_row, r.end_col),
             (0, 0, 2, 4)
         );
+    }
+
+    /// A hit maps into the viewport by its document row, clipped to the
+    /// visible rows, and vanishes when scrolled out.
+    #[test]
+    fn a_search_match_clips_to_the_viewport() {
+        let hit = SearchMatch {
+            start_row: 10,
+            start_col: 5,
+            end_row: 11,
+            end_col: 2,
+        };
+        let rect = |top| {
+            hit.viewport_rect(top, 4, 20)
+                .map(|r| (r.start_row, r.start_col, r.end_row, r.end_col))
+        };
+        assert_eq!(rect(9), Some((1, 5, 2, 2)));
+        assert_eq!(rect(11), Some((0, 0, 0, 2)), "the first row scrolled off");
+        assert_eq!(
+            rect(7),
+            Some((3, 5, 3, 19)),
+            "the last row not yet on screen"
+        );
+        assert_eq!(rect(12), None);
+        assert_eq!(rect(6), None);
+        assert_eq!(hit.viewport_rect(10, 0, 20), None);
+    }
+
+    #[test]
+    fn the_selection_mark_wins_over_a_search_hit() {
+        let rect = |c0, c1| SelectionRect::from_range(0, c0, 0, c1, SelectionMode::Char);
+        let marks = CopyMarks {
+            selection: Some(rect(0, 2)),
+            matches: vec![rect(2, 4)],
+        };
+        assert_eq!(marks.mark(0, 1), CellMark::Selected);
+        assert_eq!(marks.mark(0, 2), CellMark::Selected);
+        assert_eq!(marks.mark(0, 3), CellMark::Matched);
+        assert_eq!(marks.mark(0, 5), CellMark::None);
+        assert_eq!(CopyMarks::default().mark(0, 0), CellMark::None);
     }
 }

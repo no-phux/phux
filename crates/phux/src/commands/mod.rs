@@ -391,6 +391,10 @@ pub(crate) enum Command {
     /// most-recently-focused session, auto-spawning a server if none is
     /// running.
     ///
+    /// Attach never creates a session on a running server: an unknown name
+    /// is an error (`phux new NAME` creates one). With no server running, the
+    /// auto-spawned server seeds its first session under NAME.
+    ///
     /// A name registered as a host (`phux host add`) shadows a local session of the same name: `phux attach
     /// NAME` dials the registered host instead of the local socket.
     /// Pass `--socket` to force the local reading of the name.
@@ -1453,7 +1457,8 @@ pub(crate) enum Command {
         /// frame (layout tiling + dividers + status bar) as the human's glass
         /// shows it — as dense structured cells. Unlike the
         /// default side-effect-free read this ATTACHES (drives the headless
-        /// client render path). Mutually exclusive with `--cells` /
+        /// client render path), though without a window-size vote, so the
+        /// session's panes keep their size. Mutually exclusive with `--cells` /
         /// `--scrollback` / `--tail` / `--unwrap`; sizes the composite via
         /// `--cols` / `--rows`.
         #[usage(long, conflicts("--cells", "--scrollback", "--tail", "--unwrap"))]

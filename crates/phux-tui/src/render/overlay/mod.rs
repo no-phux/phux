@@ -16,6 +16,7 @@ use ratatui::style::Color;
 use crate::render::{ChromeBreakpoints, Theme};
 
 pub mod copy_mode;
+pub mod line_edit;
 pub mod menu;
 pub mod path_picker;
 pub mod pending;
@@ -28,7 +29,7 @@ pub mod toast;
 pub mod which_key;
 pub mod widgets;
 
-pub use copy_mode::CopyModeOverlay;
+pub use copy_mode::{CopyModeOverlay, CopySearchRequest, CopySearchResult, CopySearchView};
 pub use menu::{ContextMenu, MenuRow};
 pub use path_picker::PathPicker;
 pub use pending::PendingOverlay;
@@ -38,7 +39,8 @@ pub use settings::SettingsOverlay;
 // The shared copy-mode selection contract (ADR-0045): the selection UX and
 // the renderer import these from one owner so they cannot disagree.
 pub use selection::{
-    CopyRequest, ScreenSelectionPoint, SelectionGrab, SelectionMode, SelectionRect,
+    CopyMarks, CopyRequest, ScreenSelectionPoint, SearchMatch, SelectionGrab, SelectionMode,
+    SelectionRect,
 };
 pub use toast::ToastOverlay;
 pub use which_key::WhichKeyOverlay;
@@ -91,6 +93,20 @@ pub trait RenderOverlay {
     fn copy_selection(&self) -> Option<SelectionRect> {
         None
     }
+
+    /// Copy-mode search hits to mark on the pane, or `None`.
+    fn copy_search_view(&self) -> Option<CopySearchView<'_>> {
+        None
+    }
+
+    /// Copy-mode search text for the status strip, or `None`.
+    fn copy_search_status(&self) -> Option<String> {
+        None
+    }
+
+    /// Adopt the result of the [`OverlayCommand::Search`] this overlay asked
+    /// for; overlays that never search ignore it.
+    fn apply_copy_search(&mut self, _result: CopySearchResult) {}
 
     /// A display-only overlay (which-key) that never captures input: the
     /// dispatcher dismisses it and processes the event as if it were absent.
@@ -171,6 +187,9 @@ pub enum OverlayCommand {
     /// Keep the overlay and reload the config in place (the settings page
     /// wrote the file, ADR-0101).
     ReloadConfig,
+    /// Keep copy-mode active and search the focused pane's loaded history;
+    /// the dispatcher answers through [`OverlayState::apply_copy_search`].
+    Search(CopySearchRequest),
 }
 
 /// What [`OverlayState::handle_key`] hands back to the dispatcher.
@@ -189,6 +208,8 @@ pub enum OverlayOutcome {
     /// The overlay wrote the config file; run the in-place reload while the
     /// overlay remains active.
     ReloadConfig,
+    /// Search the focused pane for copy-mode and hand the result back.
+    Search(CopySearchRequest),
 }
 
 /// Stacked overlay state: the top captures input; rendering walks the stack
@@ -372,7 +393,27 @@ impl OverlayState {
             }
             OverlayCommand::ScrollViewport(delta) => OverlayOutcome::ScrollViewport(delta),
             OverlayCommand::ReloadConfig => OverlayOutcome::ReloadConfig,
+            OverlayCommand::Search(req) => OverlayOutcome::Search(req),
         }
+    }
+
+    /// Hand a copy-mode search result to the top overlay.
+    pub fn apply_copy_search(&mut self, result: CopySearchResult) {
+        if let Some(top) = self.stack.last_mut() {
+            top.apply_copy_search(result);
+        }
+    }
+
+    /// The top overlay's copy-mode search hits, if it is searching.
+    #[must_use]
+    pub fn copy_search_view(&self) -> Option<CopySearchView<'_>> {
+        self.stack.last().and_then(|o| o.copy_search_view())
+    }
+
+    /// The top overlay's copy-mode search status text.
+    #[must_use]
+    pub fn copy_search_status(&self) -> Option<String> {
+        self.stack.last().and_then(|o| o.copy_search_status())
     }
 
     /// Insert a paste into the top overlay, control characters removed so a

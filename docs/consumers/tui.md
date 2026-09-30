@@ -92,6 +92,12 @@ from the worktree path. That is a CLI composition; attaching to the
 derived name is ordinary TUI attach. See [`agents.md`](./agents.md) for
 the verbs.
 
+**Attach finds; `new` creates.** As with tmux's `attach -t`, `phux attach
+NAME` joins an existing session and never creates one on a running server:
+an unknown name exits 1 and names `phux new NAME`. With no server running,
+the auto-started server seeds its first session under NAME, since a new
+server holds nothing else to join.
+
 **Attach roles.** `phux attach --viewer` attaches to watch: every pane
 renders, and the server refuses this attach's input. `phux attach --take`
 attaches and takes the wheel of every pane it opens in the same step; the
@@ -247,11 +253,11 @@ proportionally. A leaf that hits its minimum (`min_cols = 2`,
 `min_rows = 1` for inner content) freezes; remaining space goes to
 non-frozen leaves. Below the layout's aggregate minimum, freezing
 disengages and panes degrade to sub-viable rectangles rather than
-disappearing. `C-a H/J/K/L` moves the boundary between the focused pane
-and its neighbor left, down, up, or right by changing that node's ratio,
-whichever side the focused pane is on (tmux's `resize-pane`). A resize
-that would push either
-side below 2 cells on that axis is a bell-no-op.
+disappearing. `C-a H/J/K/L` moves the focused pane's own boundary left,
+down, up, or right by that many cells: the divider of the nearest
+enclosing split on that axis, whichever side the focused pane is on
+(tmux's `resize-pane`). A resize that would push either side below 2
+cells on that axis is a bell-no-op.
 
 **Shared geometry.** A Terminal has one `(cols, rows)`. Concurrent views
 letterbox or crop rather than reflowing a second grid.
@@ -477,6 +483,16 @@ One-shot grabs copy-and-exit:
 | `A` | all selectable content |
 | `]` | command-output span; no-op when the pane has no OSC-133 zones |
 
+**Search.** `/` searches forward (toward newer output) and `?` backward;
+the search line edits like the name prompts, Enter runs it, Esc closes it
+without leaving copy-mode. The cursor jumps to the next hit after it,
+wrapping at either end, and scrolls it into view; the hit becomes the
+selection (so Enter copies it) and the other visible hits are underlined.
+`n` repeats the search in its direction and `N` reverses it; an empty search
+line repeats the last one. The strip shows `/needle 2/7` or `no match`.
+Search is case-sensitive and covers the scrollback this client holds, like
+selection.
+
 Enter copies the current selection and exits. Esc exits without copying.
 A left-button drag inside the pane selects and, on release, copies and
 exits; a click with no drag exits, so a mouse-initiated entry cannot
@@ -527,6 +543,12 @@ agent record, subscriptions, and Terminal id stay attached to that identity.
 Focus follows it, including an in-process reattach when it crosses sessions.
 Move, layout, and rollback failures stay in the TUI as a **Pane move failed**
 message rather than silently changing or ending the attach.
+
+The **name prompts** (new session, rename session or window) and the
+copy-mode search line edit like a shell: `C-a`/Home and `C-e`/End jump to
+the ends, `C-b`/`C-f` and the arrows move, `C-u` and `C-k` kill to the start
+or end, `C-w` kills the previous word, `C-h`/Backspace and `C-d`/Delete
+delete a character. Enter commits; Esc cancels.
 
 The **directory picker** (`C-a G`) browses directories on the attached
 server and opens a new window there. Over `phux --remote` it browses the

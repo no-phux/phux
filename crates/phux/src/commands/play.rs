@@ -154,10 +154,7 @@ fn run_launcher(args: &PlayArgs<'_>) -> ExitCode {
     };
     match spawned {
         SpawnResult::Ok(pane) => report(&pane, &file, &loaded, args),
-        SpawnResult::Err(err) => {
-            crate::commands::spawn::report_spawn_error(&err);
-            ExitCode::FAILURE
-        }
+        SpawnResult::Err(err) => crate::commands::spawn::report_spawn_error(args.json, &err),
         // `SpawnResult` is `#[non_exhaustive]`: a kind with no arm here is a
         // vocabulary this client does not have, i.e. version skew.
         _ => {

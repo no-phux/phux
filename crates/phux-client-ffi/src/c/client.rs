@@ -689,7 +689,7 @@ impl Client {
     }
 
     /// Drain the frames a connected driver read since the last poll.
-    pub(crate) fn take_inbound(&self) -> (u64, Vec<Vec<u8>>) {
+    pub(crate) fn take_inbound(&self) -> (u64, Vec<bytes::Bytes>) {
         self.runtime.take_inbound()
     }
 

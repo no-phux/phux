@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use phux_client_core::handshake::validate_hello_ok;
 use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::input_replay::{
@@ -151,6 +151,10 @@ pub enum InboundDelivery {
 /// of growing the queue or failing the connection.
 pub const MAX_QUEUED_INBOUND_FRAMES: usize = 128;
 /// The inbound queue's byte ceiling; see [`MAX_QUEUED_INBOUND_FRAMES`].
+///
+/// It counts frame bytes. A queued frame is a view of the driver's read
+/// buffer, not a copy, so it also pins that read's slab (64 KiB, or one
+/// larger frame) until the consumer drains it.
 pub const MAX_QUEUED_INBOUND_BYTES: usize = 32 * 1024 * 1024;
 
 impl Default for ControlOptions {
@@ -363,7 +367,7 @@ pub struct ControlPlane {
     live_connection_epoch: Option<u64>,
     /// Frames read off the socket and not yet drained, under
     /// [`InboundDelivery::Queued`].
-    inbound: Vec<Vec<u8>>,
+    inbound: Vec<Bytes>,
     inbound_bytes: usize,
     offered_caps: ClientCapabilities,
     status: Status,

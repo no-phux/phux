@@ -424,7 +424,7 @@ pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
     NonPaletteAction {
         name: "copy-mode",
         description: "Enter copy-mode on the focused pane (scrollback \
-                      navigation, selection, yank)",
+                      navigation, search, selection, yank)",
         params: "",
         reason: "a modal input surface entered from its keybinding, not a \
                  one-shot command the palette can commit",

@@ -205,7 +205,7 @@ fn remote_command(remote_phux: &str, udp_ports: Option<&str>) -> String {
 /// Quote `word` for a POSIX shell, leaving it bare when that is already
 /// safe. A leading `~` stays unquoted so `--remote-phux ~/bin/phux` still
 /// expands on the host.
-fn shell_quote(word: &str) -> String {
+pub(crate) fn shell_quote(word: &str) -> String {
     let safe = |c: char| c.is_ascii_alphanumeric() || "_-./:@%+=,~".contains(c);
     if !word.is_empty() && word.chars().all(safe) {
         return word.to_owned();

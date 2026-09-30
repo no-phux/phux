@@ -1193,7 +1193,7 @@ fn copy_mode_status_block_cell_count_differs_from_linear() {
     let theme = crate::render::Theme::default();
     let status_of = |sel: SelectionRect| {
         let mut out: Vec<u8> = Vec::new();
-        paint_copy_mode_status(&mut out, sel, (80, 24), &theme).expect("status");
+        paint_copy_mode_status(&mut out, sel, None, (80, 24), &theme).expect("status");
         String::from_utf8_lossy(&out).into_owned()
     };
     let rect = |start_row, start_col, end_row, end_col, rectangle| SelectionRect {

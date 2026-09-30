@@ -172,6 +172,35 @@ fn spawn_with_a_key_reused_for_another_command_is_an_idempotency_conflict() {
     assert_eq!(server.terminal_count(), 2, "the conflict spawned nothing");
 }
 
+/// `spawn --json` keeps the JSON error contract on every failure: a
+/// `--target` that matches nothing and a command the server cannot spawn
+/// each leave stdout empty and put one error document on stderr.
+#[test]
+#[ignore = "spawns a real phux server; run via `just e2e`."]
+fn spawn_json_failures_keep_the_json_error_contract() {
+    let server = Server::start();
+    for (args, code) in [
+        (
+            &["spawn", "--json", "--target", "@999", "--", "sleep", "600"][..],
+            "no_such_target",
+        ),
+        (
+            &["spawn", "--json", "--", "/nonexistent/phux-e2e-command"][..],
+            "spawn_failed",
+        ),
+    ] {
+        let out = server.phux(args);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {out:?}");
+        assert!(
+            out.stdout.is_empty(),
+            "{args:?}: a failure prints no document"
+        );
+        let doc = last_stderr_json(&out);
+        assert_eq!(doc["error"]["code"], code, "{args:?}: {doc}");
+        assert_eq!(doc["exit_code"], 1, "{args:?}: {doc}");
+    }
+}
+
 #[test]
 #[ignore = "spawns a real phux server; run via `just e2e`."]
 fn new_with_idempotency_key_twice_replays_the_first_create() {

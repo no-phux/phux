@@ -3,6 +3,7 @@
 use std::pin::Pin;
 use std::time::Duration;
 
+use bytes::Bytes;
 use tokio::sync::watch;
 
 use super::io::{Io, dial};
@@ -360,7 +361,7 @@ impl<'a> Pump<'a> {
 
     async fn accept_inbound(
         &mut self,
-        inbound: Result<Option<Vec<Vec<u8>>>, String>,
+        inbound: Result<Option<Vec<Bytes>>, String>,
     ) -> Result<(), ConnectionEnd> {
         // Any inbound traffic, a pong included, proves liveness.
         self.probe_deadline = None;
@@ -428,7 +429,7 @@ impl<'a> Pump<'a> {
 /// Only a frame whose type byte says `PING` is decoded: the consumer decodes
 /// everything else itself, and a full decode here would copy every output
 /// payload once more just to discard it.
-fn peel_queued_pings(frames: Vec<Vec<u8>>) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+fn peel_queued_pings(frames: Vec<Bytes>) -> (Vec<Bytes>, Vec<Vec<u8>>) {
     let mut keep = Vec::with_capacity(frames.len());
     let mut pongs = Vec::new();
     for frame in frames {
@@ -480,12 +481,11 @@ mod tests {
         let other = encode(&FrameKind::Pong { nonce: 3 });
         let mut truncated_ping = ping.clone();
         truncated_ping.truncate(ping.len() - 1);
-        let (keep, pongs) = peel_queued_pings(vec![
-            other.clone(),
-            ping.clone(),
-            truncated_ping.clone(),
-            vec![0, 0],
-        ]);
+        let (keep, pongs) = peel_queued_pings(
+            [&other, &ping, &truncated_ping, &vec![0, 0]]
+                .map(|frame| bytes::Bytes::copy_from_slice(frame))
+                .into(),
+        );
         assert_eq!(keep, vec![other, truncated_ping, vec![0, 0]]);
         assert_eq!(pongs, vec![encode(&FrameKind::Pong { nonce: 9 })]);
         assert!(is_ping_frame(&ping));

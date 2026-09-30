@@ -1,6 +1,8 @@
 //! Prompt overlay: a single-line text input committing `action { arg_key:
 //! <text> }` through `run_action` on Enter ([`OverlayCommand::Commit`]); Esc
 //! cancels.
+//!
+//! Editing is the shared [`LineEdit`] (the readline keys).
 
 use std::collections::BTreeMap;
 
@@ -8,9 +10,10 @@ use phux_config::keybind::ResolvedAction;
 use phux_protocol::input::key::{KeyAction, KeyEvent, PhysicalKey};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::style::Style;
+use ratatui::text::Line;
 
+use super::line_edit::LineEdit;
 use super::widgets::{Modal, centered_panel};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::{ChromeBreakpoints, Theme};
@@ -24,8 +27,8 @@ pub struct PromptOverlay {
     action: String,
     /// The arg key the typed text is bound to (e.g. `"name"`).
     arg_key: String,
-    /// Current input buffer.
-    input: String,
+    /// Current input buffer and cursor.
+    input: LineEdit,
     /// Color slots snapshotted from the active [`Theme`] at construction.
     /// Captured (not borrowed) so the overlay stays `'static`.
     theme: Theme,
@@ -42,7 +45,7 @@ impl PromptOverlay {
             title: title.to_owned(),
             action: action.to_owned(),
             arg_key: arg_key.to_owned(),
-            input: initial.to_owned(),
+            input: LineEdit::new(initial),
             theme: *theme,
             breakpoints: ChromeBreakpoints::default(),
         }
@@ -83,7 +86,7 @@ impl PromptOverlay {
         let mut args = BTreeMap::new();
         args.insert(
             self.arg_key.clone(),
-            toml::Value::String(self.input.clone()),
+            toml::Value::String(self.input.as_str().to_owned()),
         );
         ResolvedAction {
             action: self.action.clone(),
@@ -105,11 +108,7 @@ impl PromptOverlay {
 impl RenderOverlay for PromptOverlay {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let modal_area = Self::modal_area(area, self.breakpoints);
-        // A reverse-video caret (the host cursor is hidden during paint).
-        let line = Line::from(vec![
-            Span::styled(self.input.clone(), Style::default().fg(self.theme.text)),
-            Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
-        ]);
+        let line = Line::from(self.input.spans(Style::default().fg(self.theme.text)));
         Modal::new(&self.theme, self.title.clone(), vec![line]).render_into(modal_area, buf);
     }
 
@@ -122,7 +121,7 @@ impl RenderOverlay for PromptOverlay {
     }
 
     fn handle_paste(&mut self, text: &str) {
-        self.input.push_str(text);
+        self.input.insert(text);
     }
 
     fn handle_key(&mut self, key: &KeyEvent) -> OverlayCommand {
@@ -134,24 +133,15 @@ impl RenderOverlay for PromptOverlay {
             PhysicalKey::Escape => OverlayCommand::Dismiss,
             PhysicalKey::Enter => {
                 // Empty input cancels rather than committing a blank name.
-                if self.input.trim().is_empty() {
+                if self.input.as_str().trim().is_empty() {
                     OverlayCommand::Dismiss
                 } else {
                     OverlayCommand::Commit(self.committed_action())
                 }
             }
-            PhysicalKey::Backspace => {
-                self.input.pop();
-                OverlayCommand::Stay
-            }
+            // Readline edits and typed text; any other key is absorbed.
             _ => {
-                // Append the event's text (the resolved grapheme), if any.
-                // Control keys carry no `text`, so they're absorbed.
-                if let Some(t) = &key.text
-                    && !t.chars().any(char::is_control)
-                {
-                    self.input.push_str(t);
-                }
+                self.input.handle_key(key);
                 OverlayCommand::Stay
             }
         }
@@ -211,6 +201,44 @@ mod tests {
         assert_eq!(
             action.args.get("name"),
             Some(&toml::Value::String("a".to_owned()))
+        );
+    }
+
+    /// The session prompts ignored `C-u`, `C-w`, `C-a`/`C-e`: a pre-filled
+    /// name had to be erased one Backspace at a time.
+    #[test]
+    fn readline_keys_edit_the_prompt() {
+        let ctrl = |key| KeyEvent {
+            mods: ModSet::CTRL,
+            ..press(key, None)
+        };
+        let committed = |p: &mut PromptOverlay| {
+            let OverlayCommand::Commit(action) = p.handle_key(&press(PhysicalKey::Enter, None))
+            else {
+                panic!("expected Commit");
+            };
+            action.args.get("name").cloned()
+        };
+
+        let mut p = PromptOverlay::rename_session("old name", &Theme::default());
+        assert_eq!(p.handle_key(&ctrl(PhysicalKey::U)), OverlayCommand::Stay);
+        for ch in "new".chars() {
+            typ(&mut p, ch);
+        }
+        assert_eq!(
+            committed(&mut p),
+            Some(toml::Value::String("new".to_owned()))
+        );
+
+        let mut p = PromptOverlay::rename_session("work tmp", &Theme::default());
+        p.handle_key(&ctrl(PhysicalKey::W));
+        p.handle_key(&ctrl(PhysicalKey::A));
+        typ(&mut p, 'x');
+        p.handle_key(&ctrl(PhysicalKey::E));
+        typ(&mut p, 'y');
+        assert_eq!(
+            committed(&mut p),
+            Some(toml::Value::String("xwork y".to_owned()))
         );
     }
 
