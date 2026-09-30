@@ -28,17 +28,12 @@ use super::ctx::DispatchCtx;
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
-#[allow(
-    clippy::too_many_arguments,
-    reason = "shares the dispatch loop's transport + render + predict context; phux-7ry0 added the focused-pane map for the predict re-anchor"
-)]
 pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     effects: ActionEffects,
     out: &mut W,
     conn: &mut Connection,
     ctx: &mut DispatchCtx<'_>,
     focused_resource: &mut Option<ResourceId>,
-    detach_pending: &mut bool,
     predict: &mut PredictionState,
     panes: &HashMap<ResourceId, PaneSlot>,
 ) -> Result<bool, AttachError> {
@@ -63,7 +58,7 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
         let _ = out.write_all(&crate::attach::copy::osc52_set_clipboard(&text));
         let _ = out.flush();
     }
-    send_detach(effects.detach, conn, detach_pending).await?;
+    send_detach(effects.detach, conn, ctx.detach_pending).await?;
     send_parked_spawns(
         effects.spawn_terminal,
         effects.spawn_window,
@@ -105,13 +100,13 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
         effects.reattach,
         ctx.switch_request,
         ctx.session_name,
-        ctx.focused_session,
+        ctx.peers.focused_session,
     );
     send_session_rename(
         effects.rename_session,
         conn,
         ctx.session_name,
-        ctx.sessions,
+        ctx.peers.sessions,
         ctx.next_request_id,
         ctx.rename_pending,
         ctx.rename_notice,
@@ -280,7 +275,7 @@ pub(super) async fn broadcast_layout(
     if !ctx.layout_read_complete {
         return Ok(());
     }
-    let Some(session) = ctx.focused_session else {
+    let Some(session) = ctx.peers.focused_session else {
         return Ok(());
     };
     let Some(bytes) = encode_layout_or_log(ctx.workspace) else {
