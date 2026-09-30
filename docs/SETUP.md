@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-26
+last-reviewed: 2026-09-30
 ---
 
 # Contributor setup

@@ -1,8 +1,10 @@
 //! Headless Chrome against the live `ws_demo_server`: keyboard, IME commit,
 //! and clipboard paste reach the terminal through the client's input surface,
 //! and nothing else on the page is captured; the wheel pages scrollback and a
-//! drag selects text to copy; find, mouse reporting, links, and the bell.
-//! The seeded pane runs `cat` on a cooked TTY: the line discipline echoes
+//! drag selects text to copy; find, mouse and focus reporting, the
+//! alternate screen's wheel, links, and the bell. The runner starts the
+//! server with `PHUX_DEMO_PANE=cat`, so the seeded pane runs `cat` on a
+//! cooked TTY: the line discipline echoes
 //! whatever bytes arrive (control bytes as `^X`), and each finished line comes
 //! back raw as program output, which is how these tests make the "program"
 //! enable mouse modes, print OSC 8 links, and ring the bell.

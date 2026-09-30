@@ -73,7 +73,7 @@ await start_webtransport("https://host:4433/session", "wss://host/session",
 const client = await start_hosted(url, "my-canvas", 100, 24, onEvent, signal);
 ```
 
-Input, scrollback, selection, find, mouse reporting, links, the bell and
+Input, scrollback, selection, find, mouse and focus reporting, links, the bell and
 title events, and the connection attribute are described in
 [the web client guide](../../docs/consumers/web.md#in-the-page).
 

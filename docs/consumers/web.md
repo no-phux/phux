@@ -251,7 +251,8 @@ What a page embedding the client can rely on, beyond typing:
 - **Single terminal.** No splits, windows, or layout chrome — that is the TUI's
   job. The web client mirrors one terminal.
 - **Text, color, cursor.** The canvas renderer paints grapheme cells with fg/bg
-  and a blinking block cursor. Images and sixel (which the engine does parse)
+  and a blinking block cursor; a wide (CJK) character paints across its
+  spacer cell. Images and sixel (which the engine does parse)
   are a future renderer pass. Accordingly, the client's `HELLO` advertises **no
   image protocols** (`Session::client_caps`), so the server strips kitty
   graphics, sixel, and iTerm2 image escapes before forwarding (SPEC 6.2,
@@ -279,11 +280,13 @@ lifecycle frames that follow; it adds nothing to the wire and reads no stream
 
 `wasm-pack test --node` in `phux-vt-web` and `phux-web` drives the real
 engine (including its bell, copy formatting, hyperlink, and mouse-mode
-reads), the codec, frame reassembly, key, IME, paste, mouse, and selection
-routing, search, and link detection. `python3 scripts/ci/web-browser.py` (inside `nix develop .#browser`)
+reads), the codec, frame reassembly, the viewport's pixel size, key, IME,
+paste, mouse, wheel, and selection routing, search, and link detection. `python3 scripts/ci/web-browser.py` (inside `nix develop .#browser`)
 starts `ws_demo_server` and runs the headless Chrome suites against it: the
-`src/` unit tests, the canvas pixel test, live connect, input and paste,
-resize, scrollback and copy, find, mouse reporting, links, the bell, wide
+`src/` unit tests, the canvas pixel tests (including a wide character's
+right half), live connect, input and paste, resize, scrollback and copy,
+find, mouse reporting (including after another client reports other cells),
+focus reporting, the alternate screen's wheel, links, the bell, wide
 character copy, and the authenticated WebTransport-to-WebSocket fallback.
 The runner starts the demo server with `PHUX_DEMO_PANE=cat` and strips every
 other inherited `PHUX_*` variable: the pane runs `cat`, so a test makes the
