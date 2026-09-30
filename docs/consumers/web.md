@@ -190,7 +190,11 @@ What a page embedding the client can rely on, beyond typing:
 - **Scrollback.** The wheel over the canvas, and Shift+PageUp/PageDown, page
   through the history the replica holds (including what the bootstrap
   carried from before the attach). Scrolling is local; typing returns to the
-  live screen.
+  live screen. On the alternate screen of a program that does not track the
+  mouse (a pager, an editor), which has no scrollback, the wheel sends that
+  program an arrow key per row instead (at most 30 per wheel event), as the
+  reference TUI and xterm's alternate scroll do, unless the program turned
+  alternate scroll (DECSET 1007) off.
 - **Selection and copy.** Dragging selects screen text; Command+C, or
   Ctrl+Shift+C, copies it as the engine formats a copy: a wide (CJK)
   character without its spacer cell, a soft-wrapped line as one line. A
@@ -250,9 +254,7 @@ What a page embedding the client can rely on, beyond typing:
   renderer pass lands, the advertisement widens with it.
 - **Engine boundary copies.** Bytes cross two wasm linear memories (the Rust
   client and `ghostty-vt.wasm`), which is fine for terminal traffic.
-- **Not yet.** On the alternate screen of a program that does not track
-  the mouse, the wheel does not become arrow keys (the reference TUI's
-  alternate scroll); the web client does not report focus (DEC 1004).
+- **Not yet.** The web client does not report focus (DEC 1004).
 
 ## Agent sessions
 

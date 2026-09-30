@@ -859,6 +859,62 @@ async fn a_double_width_character_copies_without_a_trailing_space() {
     client.close();
 }
 
+/// How many times `needle` shows on screen.
+fn occurrences(client: &phux_web::client::Client, needle: &str) -> usize {
+    screen(client).matches(needle).count()
+}
+
+fn wheel(canvas: &HtmlCanvasElement, delta_y: f64) {
+    let init = WheelEventInit::new();
+    init.set_delta_y(delta_y);
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    let event = WheelEvent::new_with_event_init_dict("wheel", &init).unwrap();
+    canvas.dispatch_event(&event).unwrap();
+    assert!(event.default_prevented(), "the page does not scroll");
+}
+
+#[wasm_bindgen_test]
+async fn the_wheel_on_the_alternate_screen_is_arrow_keys() {
+    let canvas = mounted_canvas("alt-wheel-canvas");
+    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
+        .await
+        .expect("connect to live phux server");
+    canvas.focus().unwrap();
+    let surface = input_surface(&canvas);
+    program_prints(&client, &surface, &["[?1049h"], "ALT_ON", &[]).await;
+
+    // Three rows of travel up, two down: one arrow key each, which the
+    // TTY echoes.
+    wheel(&canvas, -48.0);
+    assert!(
+        wait_for(&client, "^[[A^[[A^[[A").await,
+        "wheel up: {}",
+        screen(&client)
+    );
+    wheel(&canvas, 32.0);
+    assert!(
+        wait_for(&client, "^[[A^[[A^[[A^[[B^[[B").await,
+        "wheel down: {}",
+        screen(&client)
+    );
+
+    // A program that clears alternate scroll (DECSET 1007) gets nothing.
+    program_prints(&client, &surface, &["[?1007l"], "ALT_SCROLL_OFF", &[]).await;
+    let arrows = occurrences(&client, "^[[A");
+    wheel(&canvas, -48.0);
+    sleep(Duration::from_millis(300)).await;
+    assert_eq!(occurrences(&client, "^[[A"), arrows, "{}", screen(&client));
+
+    // Back to the primary screen, where the wheel is scrollback again.
+    program_prints(&client, &surface, &["[?1007h", "[?1049l"], "ALT_OFF", &[]).await;
+    let arrows = occurrences(&client, "^[[A");
+    wheel(&canvas, -48.0);
+    sleep(Duration::from_millis(300)).await;
+    assert_eq!(occurrences(&client, "^[[A"), arrows, "{}", screen(&client));
+    client.close();
+}
+
 /// A second connection that attaches reporting `cell_px` cells, as another
 /// client (a desktop or TUI at another font size) does, then stays.
 async fn attach_with_cells(cell_px: (u16, u16)) -> web_sys::WebSocket {
