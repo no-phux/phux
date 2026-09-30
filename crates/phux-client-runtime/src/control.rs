@@ -350,6 +350,8 @@ pub struct ControlPlane {
     /// per-connection state on its own client's identity uses this instead
     /// once the runtime owns the reconnect.
     connection_epoch: u64,
+    /// The epoch authorized to deliver inbound frames; absent after loss.
+    live_connection_epoch: Option<u64>,
     /// Frames read off the socket and not yet drained, under
     /// [`InboundDelivery::Queued`].
     inbound: Vec<Vec<u8>>,
@@ -414,6 +416,7 @@ impl ControlPlane {
             options,
             offered_caps,
             connection_epoch: 0,
+            live_connection_epoch: None,
             inbound: Vec::new(),
             inbound_bytes: 0,
             status: Status::Idle,
@@ -476,6 +479,13 @@ impl ControlPlane {
     #[must_use]
     pub const fn connection_epoch(&self) -> u64 {
         self.connection_epoch
+    }
+
+    /// Whether a drained queued batch still belongs to the active transport.
+    /// Check while holding the same control guard used to feed its frame.
+    #[must_use]
+    pub const fn accepts_inbound(&self, epoch: u64) -> bool {
+        matches!(self.live_connection_epoch, Some(current) if current == epoch)
     }
 
     /// The options this plane was built with.
@@ -710,6 +720,7 @@ impl ControlPlane {
         self.roster = roster::RosterRecovery::default();
         self.geometry_bootstrapped.clear();
         self.connection_epoch = self.connection_epoch.saturating_add(1);
+        self.live_connection_epoch = Some(self.connection_epoch);
         self.outbound.clear();
         // Anything the consumer has not drained belongs to the connection
         // that just ended, and feeding it against fresh per-connection
@@ -738,6 +749,8 @@ impl ControlPlane {
 
     /// The transport dropped; the driver will walk the ladder.
     pub fn connection_lost(&mut self, message: Option<String>) {
+        self.live_connection_epoch = None;
+        let _ = self.take_inbound();
         self.handshake_ready = false;
         self.input_replay.connection_lost();
         self.reset_extension_correlations("the connection ended before the server answered");
@@ -752,6 +765,8 @@ impl ControlPlane {
 
     /// The session ends in failure: no retry can help.
     pub fn fail(&mut self, message: impl Into<String>) {
+        self.live_connection_epoch = None;
+        let _ = self.take_inbound();
         self.handshake_ready = false;
         self.error = Some(message.into());
         self.strand_durable("the connection failed before the operation completed");
@@ -762,6 +777,7 @@ impl ControlPlane {
 
     /// The session ends at the consumer's request.
     pub fn close(&mut self) {
+        self.live_connection_epoch = None;
         self.handshake_ready = false;
         let _ = self.take_inbound();
         self.strand_durable("the client closed before the operation completed");

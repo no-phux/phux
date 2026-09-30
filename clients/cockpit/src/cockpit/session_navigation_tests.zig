@@ -95,7 +95,6 @@ fn begin(engine: *engine_module.Engine, terminal: ?contract.TerminalRef) !void {
     remote.stop();
     try testing.expectEqual(@as(usize, 1), engine.creation.count());
     try remote.host.reconnect("session-command-test");
-    remote.attach_queued = false;
     try testing.expect(engine.creation.bindSessionConnection(model, 91));
     try testing.expect(!engine.creation.bindSessionConnection(model, 91));
     try fixture.stageFixture(remote.bridge, "hello.bin");

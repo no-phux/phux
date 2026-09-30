@@ -113,7 +113,7 @@ test('an empty host is prompted for instead of sent', () => {
   assert.match(text(model.hostNotice), /registered host/);
 });
 
-test('connecting, then connected, closes the panel and names the host in the status bar', () => {
+test('connecting, then connected, closes the panel and names the host in header status', () => {
   let model = { ...opened(), hostQuery: bytes('mini') };
   let cmd;
   [model] = step(model, { kind: 'host_submit' });

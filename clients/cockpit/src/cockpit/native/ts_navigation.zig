@@ -15,9 +15,10 @@ pub const page_size = 4;
 pub const max_label_bytes = 240;
 pub const max_detail_bytes = 160;
 pub const max_host_bytes = support.RemoteResourceId.max_host_bytes;
-pub const Scope = enum(u8) { all = 0, sessions = 1, known_hosts = 2, exact_host = 3, captured_machine = 5 };
+pub const Scope = enum(u8) { all = 0, sessions = 1, known_hosts = 2, exact_host = 3, captured_machine = 5, connected_hosts = 6, captured_host = 7 };
 pub const max_bytes = 4096;
 pub const Error = error{ InvalidRequest, StaleRevision, BufferTooSmall, CatalogTooLarge, UnavailableContext };
+const connected_hosts = @import("connected_hosts.zig");
 const empty_workspace: model_module.Workspace = .{};
 
 pub const Connection = enum(u8) { local = 0, connecting = 1, connected = 2, offline = 3, workspace_unavailable = 4 };
@@ -339,6 +340,8 @@ fn readScope(bytes: []const u8, at: usize, request: *Request) Error!void {
     request.host = bytes[at + 2 ..];
     if (request.scope == .captured_machine) {
         if (request.host.len != 12) return error.InvalidRequest;
+    } else if (request.scope == .captured_host) {
+        if (request.host.len != connected_hosts.target_len) return error.InvalidRequest;
     } else if (request.scope != .exact_host and request.host.len != 0) return error.InvalidRequest;
 }
 
@@ -375,6 +378,16 @@ fn scopeIncludes(model: *const Model, entry: Entry, index: usize, request: Reque
             return std.mem.eql(u8, host, request.host);
         },
         .captured_machine => return capturedSessionMatches(model, entry, request.attachments),
+        .connected_hosts => return false, // Projected from held providers, not the catalog.
+        .captured_host => {
+            if (request.attachments.len != 1) return false;
+            if (request.attachments[0] != 0) return capturedSessionMatches(model, entry, request.attachments);
+            return switch (entry) {
+                .placed_terminal => |placed| placed.terminal_ref.provider_id == .local,
+                .available_terminal => |ref| ref.provider_id == .local,
+                else => false,
+            };
+        },
     }
 }
 
@@ -415,8 +428,14 @@ pub fn encode(model: *const Model, revision: u64, request: []const u8, out: []u8
     // Agent inspection owns kind 5: upstream kind 4 now carries scoped
     // navigation requests, so the identity-bound roster moved off it.
     if (request.len >= 2 and request[1] == 5) return @import("ts_agents.zig").encode(model, revision, request, out);
-    const parsed = try validateRequest(revision, request);
+    var parsed = try validateRequest(revision, request);
     if (parsed.scope == .captured_machine) return error.UnavailableContext;
+    if (parsed.scope == .connected_hosts) return connected_hosts.encode(model, request, parsed.offset, out);
+    if (parsed.scope == .captured_host) {
+        const id = connected_hosts.resolve(model, parsed.host) orelse return error.UnavailableContext;
+        parsed.attachments = &.{id};
+        return encodePage(model, request, parsed, out);
+    }
     return encodePage(model, request, parsed, out);
 }
 

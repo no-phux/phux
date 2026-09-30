@@ -18,6 +18,10 @@ export const SESSION_KIND_DISMISS = 5;
 /// it against the coordinator that listed the row, never another.
 export const SESSION_KIND_DESCRIBE_ROW = 6;
 export const SESSION_KIND_RENAME_ROW = 7;
+export const SESSION_KIND_DESCRIBE_TAB = 8;
+export const SESSION_KIND_RENAME_TAB = 9;
+export const SESSION_KIND_TAB_STATUS = 10;
+export const SESSION_KIND_TAB_CANCEL = 11;
 
 export const SESSION_PHASE_READY = 0;
 export const SESSION_PHASE_PENDING = 1;

@@ -99,6 +99,11 @@ impl SharedWorkspace {
 
     pub(crate) fn disconnect(&mut self) {
         self.subscriptions.clear();
+        // Retain the last publication's identity and arrays for frozen display.
+        // Revoking its authority must not require consumers to allocate a new
+        // copy just to observe an interrupted transaction's unknown outcome.
+        self.state = 0;
+        self.authoritative = false;
         if self.pending.take().is_some() {
             self.status = 4;
             self.message = b"connection ended; workspace transaction outcome unknown".to_vec();

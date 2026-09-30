@@ -195,7 +195,10 @@ fn invoke_failure(client: *mut PhuxClient, result: PhuxClientResult) -> PhuxClie
 pub(crate) fn invoke_attached(client: *mut PhuxClient) -> PhuxClientResult {
     let (callback, userdata) = {
         let client_ref = unsafe { &mut *client };
-        if client_ref.inner.attached_notified {
+        if client_ref.inner.attached_notified
+            || !client_ref.inner.attached
+            || client_ref.inner.state() != PhuxClientState::Attached
+        {
             return PhuxClientResult::Ok;
         }
         client_ref.inner.attached_notified = true;
@@ -565,7 +568,7 @@ pub unsafe extern "C" fn phux_client_feed_frame(
         }
         let data = unsafe { bytes_in(data, len) }?;
         let frame = decode_server_frame(client, data)?;
-        notify_attached = apply_server_frame(client, frame)?;
+        notify_attached = apply_server_frame(client, frame, None)?;
         Ok(())
     });
     if result == PhuxClientResult::Ok && notify_attached {
@@ -579,13 +582,28 @@ pub unsafe extern "C" fn phux_client_feed_frame(
 ///
 /// Each frame walks the same path `phux_client_feed_frame` walks, so the
 /// retired-close, profile-validation and agent-generation hooks keep running
-/// on the owning thread. The trailing event drain is what surfaces a status
-/// change or a connection loss that carried no frame.
+/// on the owning thread. Drain lifecycle events after taking the batch but
+/// before decoding it: a loss and the replacement socket's `HELLO_OK` may have
+/// accumulated between polls, and old subscription tombstones must not filter
+/// frames from that replacement connection.
 pub(crate) fn poll_connected(client: &mut Client) -> Result<bool, BridgeError> {
-    let mut attached = false;
-    for frame in client.take_inbound() {
-        let decoded = decode_server_frame(client, &frame)?;
-        attached |= apply_server_frame(client, decoded)?;
+    let (epoch, frames) = client.take_inbound();
+    let mut attached = client.process_runtime_events()?;
+    for frame in frames {
+        let decoded = {
+            let control = client.control();
+            if !control.accepts_inbound(epoch) {
+                break;
+            }
+            decode_server_frame_with_limits(
+                &frame,
+                control.decode_limits().unwrap_or_else(|| {
+                    BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
+                        .unwrap_or_default()
+                }),
+            )?
+        };
+        attached |= apply_server_frame(client, decoded, Some(epoch))?;
     }
     attached |= client.process_runtime_events()?;
     Ok(attached)
@@ -596,6 +614,13 @@ fn decode_server_frame(client: &Client, data: &[u8]) -> Result<FrameKind, Bridge
         BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
             .unwrap_or_default()
     });
+    decode_server_frame_with_limits(data, limits)
+}
+
+fn decode_server_frame_with_limits(
+    data: &[u8],
+    limits: BootstrapLimits,
+) -> Result<FrameKind, BridgeError> {
     let (frame, tail) = FrameKind::decode_with_limits(data, limits)
         .map_err(|error| BridgeError::protocol(error.to_string()))?;
     if !tail.is_empty() {
@@ -606,13 +631,32 @@ fn decode_server_frame(client: &Client, data: &[u8]) -> Result<FrameKind, Bridge
     Ok(frame)
 }
 
-fn apply_server_frame(client: &mut Client, frame: FrameKind) -> Result<bool, BridgeError> {
+fn apply_server_frame(
+    client: &mut Client,
+    frame: FrameKind,
+    epoch: Option<u64>,
+) -> Result<bool, BridgeError> {
+    if epoch.is_some_and(|epoch| !client.control().accepts_inbound(epoch)) {
+        return Ok(false);
+    }
     if consume_retired_close(client, &frame) {
         return Ok(false);
     }
     let agent_generation = agent_generation(&frame);
-    validate_runtime_frame(client, &frame)?;
-    let runtime_result = client.control().feed(frame).map_err(control_error);
+    let validation = validate_runtime_frame(client, &frame);
+    let runtime_result = {
+        let mut control = client.control();
+        if epoch.is_some_and(|epoch| !control.accepts_inbound(epoch)) {
+            return Ok(false);
+        }
+        validation?;
+        let result = control.feed(frame);
+        if let Err(phux_client_runtime::control::ControlError::Refused(message)) = &result {
+            control.fail(message.clone());
+        }
+        drop(control);
+        result.map_err(control_error)
+    };
     record_agent_generation(client, runtime_result.is_ok(), agent_generation);
     let attached = client.process_runtime_events()?;
     runtime_result?;
@@ -1604,7 +1648,6 @@ mod tests {
     struct CallbackContext {
         client: *mut PhuxClient,
         calls: usize,
-        staged_before_call: bool,
         reentry_result: PhuxClientResult,
         failure_result: PhuxClientResult,
         failure_message: Vec<u8>,
@@ -1613,7 +1656,6 @@ mod tests {
     unsafe extern "C-unwind" fn attached_callback(userdata: *mut c_void) {
         let context = unsafe { &mut *userdata.cast::<CallbackContext>() };
         context.calls += 1;
-        context.staged_before_call = unsafe { (*context.client).inner.owned_effects.len() == 1 };
         context.reentry_result = unsafe { phux_client_outgoing_clear(context.client) };
     }
 
@@ -1675,11 +1717,10 @@ mod tests {
 
     #[test]
     fn attached_callback_runs_after_staging_once_and_rejects_reentry() {
-        let client = new_client();
+        let client = attaching(&[], 7);
         let mut context = CallbackContext {
             client,
             calls: 0,
-            staged_before_call: false,
             reentry_result: PhuxClientResult::Ok,
             failure_result: PhuxClientResult::Ok,
             failure_message: Vec::new(),
@@ -1690,16 +1731,16 @@ mod tests {
                 on_attached: Some(attached_callback),
                 ..PhuxClientCallbacks::default()
             };
-            (*client).inner.owned_effects.push(OwnedEffect::simple(
-                1,
-                1,
-                phux_protocol::ResourceId::local(7),
-            ));
         }
-        assert_eq!(invoke_attached(client), PhuxClientResult::Ok);
-        assert_eq!(invoke_attached(client), PhuxClientResult::Ok);
+        complete_resource_attach(
+            client,
+            single_terminal_snapshot(phux_protocol::ResourceId::local(7), 80, 24),
+        );
+        assert_eq!(
+            feed(client, &FrameKind::Pong { nonce: 1 }),
+            PhuxClientResult::Ok
+        );
         assert_eq!(context.calls, 1);
-        assert!(context.staged_before_call);
         assert_eq!(context.reentry_result, PhuxClientResult::InvalidState);
         unsafe { phux_client_free(client) };
     }
@@ -1710,7 +1751,6 @@ mod tests {
         let mut context = CallbackContext {
             client,
             calls: 0,
-            staged_before_call: false,
             reentry_result: PhuxClientResult::Ok,
             failure_result: PhuxClientResult::Ok,
             failure_message: Vec::new(),
@@ -1740,7 +1780,7 @@ mod tests {
             )
             .args([
                 "--exact",
-                "tests::callback_panic_is_contained_and_clears_reentry_guard",
+                "c::tests::callback_panic_is_contained_and_clears_reentry_guard",
             ])
             .env(CHILD, "1")
             .status()
@@ -1749,15 +1789,26 @@ mod tests {
             return;
         }
 
-        let client = new_client();
+        let client = attaching(&[], 7);
         unsafe {
             (*client).inner.callbacks = PhuxClientCallbacks {
                 on_attached: Some(panic_callback),
                 ..PhuxClientCallbacks::default()
             };
         }
-        assert_eq!(invoke_attached(client), PhuxClientResult::Panic);
-        assert!(!unsafe { (*client).inner.in_callback });
+        let terminal = phux_protocol::ResourceId::local(7);
+        assert_eq!(
+            feed(
+                client,
+                &attached_frame(7, single_terminal_snapshot(terminal.clone(), 80, 24))
+            ),
+            PhuxClientResult::Ok
+        );
+        feed_bootstrap(client, &terminal, (1, 1), (80, 24), b"");
+        assert_eq!(
+            feed(client, &FrameKind::AttachReady { attach_id: 7 }),
+            PhuxClientResult::Panic
+        );
         assert_eq!(
             unsafe { phux_client_outgoing_clear(client) },
             PhuxClientResult::Ok

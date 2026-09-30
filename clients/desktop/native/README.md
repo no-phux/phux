@@ -22,8 +22,8 @@ view/registry is created. No GPUI objects become `Send`.
 
 The host manifest is a package-local Cargo workspace with its own lockfile, so
 the GPUI/Zed graph stays out of other phux consumers. Its path dependencies are
-root phux crates, so a root dependency bump can strand that lock:
-`just desktop-check` runs `scripts/check-desktop-host-lock.py`; repair with
+root phux crates, so a root dependency bump or a new unconditional root
+dependency can strand that lock: `just desktop-check` runs `scripts/check-desktop-host-lock.py`; repair with
 `just desktop-lock-fix` or `just desktop-lock-refresh`. The FFI dependency keeps
 its C ABI disabled and owns the sole Client registry. Do not add another.
 

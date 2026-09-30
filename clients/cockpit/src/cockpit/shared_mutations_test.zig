@@ -117,6 +117,21 @@ test "creation waits behind refresh then submits captured split once and waits f
     try testing.expect(queue.takeCompletion(ticket) == null);
 }
 
+test "rename retains its name and reports only the matching durable confirmation" {
+    var queue: mutations.Coordinator = .{};
+    var model: Model = .{};
+    var name = "release".*;
+    const ticket = try queue.requestRename(&model, second_id, &name);
+    @memset(&name, 'x');
+    try testing.expectEqualStrings("release", model.remote.sent.?.name);
+    try testing.expectEqual(second_id, model.remote.sent.?.window_id);
+    try testing.expectEqual(.rename, model.remote.sent.?.kind);
+    try testing.expect(queue.takeCompletion(ticket) == null);
+    model.remote.finish(.confirmed);
+    try testing.expect(queue.pump(&model));
+    try testing.expectEqual(.confirmed, queue.takeCompletion(ticket).?);
+}
+
 test "queued creation cannot follow a later session or connection epoch" {
     for ([_]bool{ false, true }) |new_epoch| {
         var queue: mutations.Coordinator = .{};

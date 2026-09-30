@@ -98,9 +98,15 @@ what it reads and `poll` feeds it, because the ABI's per-frame behavior
 reads state only that thread may touch.
 
 - The runtime queues `HELLO` on every connection it opens. `ATTACH` stays
-  explicit, and Cockpit re-sends it when `phux_client_connection_epoch`
-  changes -- that epoch replaces "a new client per connection" as the
-  reconnect fence, because one client now outlives every socket.
+  explicit. Both a changed `phux_client_connection_epoch` and replacement
+  of the ABI handle retire Cockpit's connection generation and clear its
+  attach/catalog-request latches. Header Reconnect may replace the handle;
+  automatic reconnect normally retains it.
+- Cockpit retains the selected session's confirmed name and server identity.
+  It reuses a numeric ID only on the same server incarnation; after server
+  replacement it attaches that exact name, never a recycled ID or an implicit
+  new session. Frozen pixels do not grant input authority, and held input is
+  not replayed into the replacement coordinator.
 - A bare `host:port` endpoint has no lane and is refused: the registry is
   what carries the certificate pin and token a routable dial needs.
 

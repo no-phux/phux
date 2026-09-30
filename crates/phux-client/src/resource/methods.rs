@@ -6,9 +6,11 @@
 
 use std::path::Path;
 
-use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
+use phux_protocol::caps::ServerFeatureSet;
 use phux_protocol::ids::{ResourceId, ResourceKind};
-use phux_protocol::kinds::{KINDS, KindSpec, MethodSpec, SUBSTRATE_METHODS, Verb, Verbs};
+use phux_protocol::kinds::{
+    FeatureGate, KINDS, KindSpec, MethodSpec, SUBSTRATE_METHODS, Verb, Verbs,
+};
 use serde_json::{Value, json};
 
 use super::LookupError;
@@ -151,8 +153,14 @@ fn judge(
     None
 }
 
-const fn advertised(features: ServerFeatureSet, gate: ServerFeature) -> bool {
-    features.contains(gate)
+/// Whether the server advertised `gate`. This client negotiates no
+/// `features_ext` word yet, so a gate there reads as unadvertised: the method
+/// is not safe to send until the word is read from `HELLO_OK`.
+const fn advertised(features: ServerFeatureSet, gate: FeatureGate) -> bool {
+    match gate {
+        FeatureGate::Features(feature) => features.contains(feature),
+        FeatureGate::FeaturesExt { .. } => false,
+    }
 }
 
 /// The catalog as it applies to one resource.
@@ -213,7 +221,9 @@ pub async fn methods(socket: &Path, resource: &ResourceId) -> Result<ResourceMet
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
+    use phux_protocol::caps::ServerFeature;
     use phux_protocol::ids::{SessionId, WindowId};
+    use phux_protocol::kinds::{Carrier, SERVER_METHODS};
     use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 
     use super::*;
@@ -273,6 +283,37 @@ mod tests {
         let advertised =
             methods_against(ServerFeatureSet::with(&[ServerFeature::MoveResource])).await;
         assert_eq!(entry(&advertised, "MOVE_RESOURCE")["available"], true);
+    }
+
+    /// A `features_ext` gate is never read as advertised from the `features`
+    /// word, even when every word-0 bit is set.
+    #[test]
+    fn an_extended_feature_gate_is_unadvertised_without_its_word() {
+        let template = SERVER_METHODS
+            .iter()
+            .find(|method| method.name == "LIST_DIRECTORY")
+            .expect("LIST_DIRECTORY");
+        let extended = MethodSpec {
+            name: "SYNTHETIC_EXT",
+            carrier: Carrier::Frame(0xfe),
+            gate: Some(FeatureGate::FeaturesExt {
+                mask: 0x1,
+                wire_name: "SYNTHETIC_EXT",
+            }),
+            ..*template
+        };
+        let everything = Negotiated {
+            features: ServerFeatureSet::with(ServerFeature::ALL),
+            owner_uds: true,
+        };
+        assert_eq!(
+            judge(template, None, ResourceKind::Terminal, everything),
+            None
+        );
+        assert_eq!(
+            judge(&extended, None, ResourceKind::Terminal, everything),
+            Some(Unavailable::FeatureUnadvertised)
+        );
     }
 
     #[test]

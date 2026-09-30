@@ -43,6 +43,16 @@ pub const Target = struct {
     }
 };
 
+pub fn decodeCaptured(bytes: []const u8) ?Target {
+    if (bytes.len != target_len or bytes[0] != 1 or bytes[1] >= model_module.max_windows) return null;
+    return .{
+        .window = bytes[1],
+        .window_epoch = std.mem.readInt(u64, bytes[2..10], .little),
+        .tab_generation = std.mem.readInt(u64, bytes[10..18], .little),
+        .tab_id = std.mem.readInt(u32, bytes[18..22], .little),
+    };
+}
+
 fn findTab(workspace: *const model_module.Workspace, tab_id: u32) ?u8 {
     for (workspace.tab_ids[0..workspace.tab_count], 0..) |id, index| {
         if (id != 0 and id == tab_id) return @intCast(index);
@@ -114,13 +124,7 @@ fn decodeOperation(bytes: []const u8) ?protocol.Intent {
 
 fn decodeTab(bytes: []const u8) ?Target {
     if (bytes.len != request_len) return null;
-    if (bytes[10] != 1 or bytes[11] >= model_module.max_windows) return null;
-    return .{
-        .window = bytes[11],
-        .window_epoch = std.mem.readInt(u64, bytes[12..20], .little),
-        .tab_generation = std.mem.readInt(u64, bytes[20..28], .little),
-        .tab_id = std.mem.readInt(u32, bytes[28..32], .little),
-    };
+    return decodeCaptured(bytes[10..]);
 }
 
 pub const Reason = enum(u8) { none = 0, invalid_command = 1, stale_target = 2, unavailable = 3 };

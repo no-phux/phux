@@ -1018,6 +1018,77 @@ pub enum Carrier {
     Metadata(&'static str),
 }
 
+/// The `HELLO_OK.server_caps` word a feature bit lives in. Word 0 is closed
+/// (ADR-0137), so a new feature lands in a trailing word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FeatureWord {
+    /// `server_caps.features`, the original word.
+    Features,
+    /// `server_caps.features_ext`, the first trailing word.
+    FeaturesExt,
+}
+
+impl FeatureWord {
+    /// The caps record field name, as `phux --capabilities --json` prints it.
+    #[must_use]
+    pub const fn field_name(self) -> &'static str {
+        match self {
+            Self::Features => "features",
+            Self::FeaturesExt => "features_ext",
+        }
+    }
+}
+
+/// The feature bit a client must see advertised before relying on a method
+/// or kind: which caps word it lives in, its mask there, and its name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FeatureGate {
+    /// A bit in `server_caps.features`.
+    Features(ServerFeature),
+    /// A bit in `server_caps.features_ext`.
+    FeaturesExt {
+        /// The bit's value in the word (a mask, not an index).
+        mask: u32,
+        /// The spec constant, e.g. `"PATH_QUERY"`.
+        wire_name: &'static str,
+    },
+}
+
+impl FeatureGate {
+    /// The caps word the bit lives in.
+    #[must_use]
+    pub const fn word(self) -> FeatureWord {
+        match self {
+            Self::Features(_) => FeatureWord::Features,
+            Self::FeaturesExt { .. } => FeatureWord::FeaturesExt,
+        }
+    }
+
+    /// The bit's value in its word (a mask, not an index).
+    #[must_use]
+    pub const fn mask(self) -> u32 {
+        match self {
+            Self::Features(feature) => feature as u32,
+            Self::FeaturesExt { mask, .. } => mask,
+        }
+    }
+
+    /// The spec constant, e.g. `"LIST_DIRECTORY"`.
+    #[must_use]
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Features(feature) => feature.wire_name(),
+            Self::FeaturesExt { wire_name, .. } => wire_name,
+        }
+    }
+
+    /// [`Self::wire_name`] lower-cased, as `phux status --json` lists it.
+    #[must_use]
+    pub fn snake_name(self) -> String {
+        self.wire_name().to_ascii_lowercase()
+    }
+}
+
 /// One catalog method: a client-originated frame, a nested command, or a
 /// server-interpreted metadata key.
 #[derive(Debug, Clone, Copy)]
@@ -1030,8 +1101,8 @@ pub struct MethodSpec {
     /// payload picks one.
     pub rules: &'static [&'static Rule],
     /// The feature bit a client must see in `HELLO_OK` before relying on the
-    /// method, if any.
-    pub gate: Option<ServerFeature>,
+    /// method, if any, in whichever caps word it lives.
+    pub gate: Option<FeatureGate>,
     /// Whether the codec and reference server implement it. `false` marks a
     /// spec-only allocation.
     pub shipped: bool,
@@ -1097,7 +1168,7 @@ pub struct KindSpec {
     /// The spec's name for the kind, e.g. `TERMINAL`.
     pub name: &'static str,
     /// The feature bit that says the server serves this kind, if any.
-    pub gate: Option<ServerFeature>,
+    pub gate: Option<FeatureGate>,
     /// The facet methods.
     pub methods: &'static [MethodSpec],
     /// The facet events.
@@ -1158,7 +1229,7 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
         "LIST_DIRECTORY",
         Carrier::Frame(TYPE_LIST_DIRECTORY),
         [F_LIST_DIRECTORY],
-        Some(ServerFeature::ListDirectory)
+        Some(FeatureGate::Features(ServerFeature::ListDirectory))
     ),
     dangerous(method!(
         "UPGRADE",
@@ -1169,13 +1240,13 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
         "SHUTDOWN",
         Carrier::Command(COMMAND_TAG_SHUTDOWN),
         [C_SHUTDOWN],
-        Some(ServerFeature::Shutdown)
+        Some(FeatureGate::Features(ServerFeature::Shutdown))
     )),
     dangerous(method!(
         "OPEN_LISTENER",
         Carrier::Command(COMMAND_TAG_OPEN_LISTENER),
         [C_OPEN_LISTENER],
-        Some(ServerFeature::OpenListener)
+        Some(FeatureGate::Features(ServerFeature::OpenListener))
     )),
     dangerous(method!(
         "DETACH_CLIENTS",
@@ -1186,7 +1257,7 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
         "GET_PERF",
         Carrier::Command(COMMAND_TAG_GET_PERF),
         [C_GET_PERF, C_GET_PERF_RESET],
-        Some(ServerFeature::GetPerf)
+        Some(FeatureGate::Features(ServerFeature::GetPerf))
     ),
     method!(
         SESSION_CREATE_KEY,
@@ -1204,7 +1275,7 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
         SESSION_KEEP_EMPTY_KEY,
         Carrier::Metadata(SESSION_KEEP_EMPTY_KEY),
         [F_KEEP_EMPTY_MARK, F_KEEP_EMPTY_CLEAR, F_KEEP_EMPTY_OTHER],
-        Some(ServerFeature::KeepEmptySessions)
+        Some(FeatureGate::Features(ServerFeature::KeepEmptySessions))
     ),
     // A TUI doorbell: the server stores the nonce like any value, and §6
     // classifies the write as SIGNAL because it makes consumers reload.
@@ -1220,13 +1291,13 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
         APPROVAL_DECIDE_KEY_PREFIX,
         Carrier::Metadata(APPROVAL_DECIDE_KEY_PREFIX),
         [F_APPROVAL_DECIDE, F_APPROVAL_DECIDE_OTHER],
-        Some(ServerFeature::Approvals)
+        Some(FeatureGate::Features(ServerFeature::Approvals))
     )),
     method!(
         WHOAMI_KEY,
         Carrier::Metadata(WHOAMI_KEY),
         [F_WHOAMI],
-        Some(ServerFeature::Whoami)
+        Some(FeatureGate::Features(ServerFeature::Whoami))
     ),
 ];
 
@@ -1266,7 +1337,7 @@ pub static SUBSTRATE_METHODS: &[MethodSpec] = &[
         "KILL_RESOURCE_IF",
         Carrier::Command(COMMAND_TAG_KILL_RESOURCE_IF),
         [C_KILL_RESOURCE_IF],
-        Some(ServerFeature::ConditionalKill)
+        Some(FeatureGate::Features(ServerFeature::ConditionalKill))
     )),
     dangerous(method!(
         "KILL_RESOURCES",
@@ -1277,7 +1348,7 @@ pub static SUBSTRATE_METHODS: &[MethodSpec] = &[
         "CLOSE_TAB_RESOURCES",
         Carrier::Command(COMMAND_TAG_CLOSE_TAB_RESOURCES),
         [C_CLOSE_TAB_RESOURCES],
-        Some(ServerFeature::CloseTabResources)
+        Some(FeatureGate::Features(ServerFeature::CloseTabResources))
     )),
     method!(
         "SUBSCRIBE_RESOURCE_EVENTS",
@@ -1397,7 +1468,7 @@ pub static KINDS: [KindSpec; 2] = [
                 "INPUT_TERMINAL_REPLY",
                 Carrier::Frame(TYPE_INPUT_TERMINAL_REPLY),
                 [F_INPUT],
-                Some(ServerFeature::TerminalReply)
+                Some(FeatureGate::Features(ServerFeature::TerminalReply))
             ),
             method!(
                 "RESIZE_TERMINAL",
@@ -1414,7 +1485,7 @@ pub static KINDS: [KindSpec; 2] = [
                 "MOVE_RESOURCE",
                 Carrier::Frame(TYPE_MOVE_RESOURCE),
                 [F_MOVE_RESOURCE],
-                Some(ServerFeature::MoveResource)
+                Some(FeatureGate::Features(ServerFeature::MoveResource))
             ),
             method!(
                 "GET_SCREEN",
@@ -1430,19 +1501,19 @@ pub static KINDS: [KindSpec; 2] = [
                 "APPLY_INPUT",
                 Carrier::Command(COMMAND_TAG_APPLY_INPUT),
                 [C_INPUT],
-                Some(ServerFeature::AcknowledgedInput)
+                Some(FeatureGate::Features(ServerFeature::AcknowledgedInput))
             ),
             method!(
                 "PUT_FILE",
                 Carrier::Command(COMMAND_TAG_PUT_FILE),
                 [C_PUT_FILE],
-                Some(ServerFeature::FileUpload)
+                Some(FeatureGate::Features(ServerFeature::FileUpload))
             ),
             method!(
                 "TRANSCRIBE",
                 Carrier::Command(COMMAND_TAG_TRANSCRIBE),
                 [C_TRANSCRIBE],
-                Some(ServerFeature::Transcribe)
+                Some(FeatureGate::Features(ServerFeature::Transcribe))
             ),
             method!(
                 "GET_TERMINAL_STATE",
@@ -1473,7 +1544,7 @@ pub static KINDS: [KindSpec; 2] = [
                 "REPORT_AGENT_STATE",
                 Carrier::Command(COMMAND_TAG_REPORT_AGENT_STATE),
                 [C_AGENT_REPORT],
-                Some(ServerFeature::ReportAgentState)
+                Some(FeatureGate::Features(ServerFeature::ReportAgentState))
             ),
         ],
         events: &[
@@ -1525,12 +1596,12 @@ pub static KINDS: [KindSpec; 2] = [
     KindSpec {
         kind: ResourceKind::AgentSession,
         name: "AGENT_SESSION",
-        gate: Some(ServerFeature::ResourceKinds),
+        gate: Some(FeatureGate::Features(ServerFeature::ResourceKinds)),
         methods: &[method!(
             "APPEND_RESOURCE_OUTPUT",
             Carrier::Command(COMMAND_TAG_APPEND_RESOURCE_OUTPUT),
             [C_APPEND_RESOURCE_OUTPUT],
-            Some(ServerFeature::ResourceKinds)
+            Some(FeatureGate::Features(ServerFeature::ResourceKinds))
         )],
         events: &[],
         metadata_keys: &[],

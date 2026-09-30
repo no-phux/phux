@@ -13,6 +13,7 @@ pub const max_agent_fixture_rows: usize = 30;
 /// the three UTF-8 spans.
 pub const AgentSessionFixture = struct {
     id: u32,
+    host: []const u8 = "",
     parent: ?u32 = null,
     provider_name: []const u8 = "",
     native_id: []const u8 = "",
@@ -38,7 +39,7 @@ pub fn adoptAgentSessions(host: anytype, rows: []const AgentSessionFixture) !voi
     var entries: [max_agent_fixture_rows]agent_sessions.Entry = undefined;
     for (rows, entries[0..rows.len]) |row, *entry| {
         entry.* = .{
-            .id = try provider.RemoteResourceId.fromPhux(0, row.id, ""),
+            .id = try provider.RemoteResourceId.fromPhux(0, row.id, row.host),
             .parent = if (row.parent) |parent| try provider.RemoteResourceId.fromPhux(0, parent, "") else null,
             .provider_name = row.provider_name,
             .native_id = row.native_id,

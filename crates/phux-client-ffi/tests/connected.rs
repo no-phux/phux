@@ -20,14 +20,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use phux_client_ffi::{
-    ABI_VERSION, PhuxAttachOptions, PhuxBytes, PhuxClient, PhuxClientOptions, PhuxClientResult,
-    PhuxClientState, PhuxConnectOptions, phux_client_connect, phux_client_connection_epoch,
+    ABI_VERSION, PhuxAttachOptions, PhuxBytes, PhuxCatalogTerminal, PhuxClient, PhuxClientOptions,
+    PhuxClientResult, PhuxClientState, PhuxConnectOptions, PhuxResourceId, PhuxSessionInfo,
+    PhuxTerminalGridView, PhuxWorkspaceInfo, PhuxWorkspaceMutation, PhuxWorkspaceWindow,
+    phux_client_catalog_terminal_get, phux_client_connect, phux_client_connection_epoch,
     phux_client_connection_error, phux_client_feed_frame, phux_client_free,
     phux_client_is_connected, phux_client_new, phux_client_outgoing_count, phux_client_poll,
     phux_client_poll_pending, phux_client_queue_attach, phux_client_resource_count,
-    phux_client_state,
+    phux_client_send_paste, phux_client_session_get, phux_client_state, phux_client_terminal_grid,
+    phux_client_workspace_info, phux_client_workspace_mutate, phux_client_workspace_refresh,
+    phux_client_workspace_window_get,
 };
-use phux_server_testkit::{run_local, spawn_server};
+use phux_server_testkit::{run_local, spawn_server, spawn_server_with_seed_cmd};
 use tempfile::TempDir;
 
 /// Generous, like the testkit's own deadlines: this drives a real server
@@ -332,6 +336,232 @@ async fn connected_lane() {
     unsafe { phux_client_free(client) };
     drop(shutdown);
     server.await.unwrap().unwrap();
+}
+
+fn workspace_info(client: *mut PhuxClient) -> PhuxWorkspaceInfo {
+    let mut info = PhuxWorkspaceInfo::default();
+    // SAFETY: owning-thread live client and initialized, disjoint output.
+    assert_eq!(
+        unsafe { phux_client_workspace_info(client, &raw mut info) },
+        PhuxClientResult::Ok
+    );
+    info
+}
+
+fn workspace_window(client: *mut PhuxClient) -> PhuxWorkspaceWindow {
+    let mut window = PhuxWorkspaceWindow::default();
+    // SAFETY: owning-thread live client and initialized, disjoint output.
+    assert_eq!(
+        unsafe { phux_client_workspace_window_get(client, 0, &raw mut window) },
+        PhuxClientResult::Ok
+    );
+    window
+}
+
+fn copy_span(bytes: PhuxBytes) -> String {
+    if bytes.len == 0 {
+        return String::new();
+    }
+    // SAFETY: the tests copy a borrowed ABI span before any mutable client call.
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(bytes.data, bytes.len) })
+        .into_owned()
+}
+
+fn grid_text(client: *mut PhuxClient, terminal: &PhuxResourceId) -> String {
+    let mut grid = PhuxTerminalGridView::default();
+    // SAFETY: client, ID and initialized output are live and disjoint.
+    let result = unsafe { phux_client_terminal_grid(client, terminal, &raw mut grid) };
+    if result == PhuxClientResult::NoValue {
+        return String::new();
+    }
+    assert_eq!(result, PhuxClientResult::Ok);
+    // SAFETY: successful grid acquisition owns these spans until the next
+    // mutable client call; copy all text before returning.
+    let cells = unsafe { std::slice::from_raw_parts(grid.cells, grid.cell_count) };
+    let arena = if grid.utf8.len == 0 {
+        &[]
+    } else {
+        // SAFETY: as above.
+        unsafe { std::slice::from_raw_parts(grid.utf8.data, grid.utf8.len) }
+    };
+    let mut text = String::new();
+    for row in cells.chunks(usize::from(grid.cols)) {
+        for cell in row {
+            let start = cell.utf8_offset as usize;
+            let end = start + usize::from(cell.utf8_len);
+            text.push_str(&String::from_utf8_lossy(&arena[start..end]));
+        }
+        text.push('\n');
+    }
+    text
+}
+
+fn paste(client: *mut PhuxClient, terminal: &PhuxResourceId, text: &str) -> PhuxClientResult {
+    // SAFETY: owning-thread live client, readable ID and text for this call.
+    unsafe { phux_client_send_paste(client, terminal, text.as_ptr(), text.len(), true) }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one retained-handle server-restart scenario"
+)]
+fn retained_handle_recovers_workspace_catalog_and_seed_terminal_after_restart() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("phux.sock");
+        let socket_text = socket.to_str().unwrap();
+        let mut client = ConnectedClientGuard(std::ptr::null_mut());
+        let mut previous_epoch = 0;
+        let mut previous_terminal = None;
+        let mut previous_revision = 0;
+
+        for (generation, session) in [(1, "before"), (2, "after")] {
+            let (shutdown, server) = spawn_server_with_seed_cmd(
+                socket.clone(),
+                session,
+                portable_pty::CommandBuilder::new("/bin/sh"),
+            );
+            if generation == 1 {
+                let options = PhuxConnectOptions {
+                    size: std::mem::size_of::<PhuxConnectOptions>(),
+                    version: ABI_VERSION,
+                    base: base_options(),
+                    target: PhuxBytes::default(),
+                    socket_path: span(socket_text),
+                    config_path: PhuxBytes::default(),
+                    client_name: span("ffi-restart"),
+                    wake: None,
+                    wake_context: std::ptr::null_mut(),
+                };
+                // SAFETY: readable options and spans, writable client output.
+                assert_eq!(
+                    unsafe { phux_client_connect(&raw const options, &raw mut client.0) },
+                    PhuxClientResult::Ok
+                );
+            }
+            poll_until(client.0, "replacement negotiation", || {
+                // SAFETY: live client on its owning thread.
+                unsafe {
+                    phux_client_connection_epoch(client.0) > previous_epoch
+                        && phux_client_state(client.0) == PhuxClientState::Negotiated
+                }
+            })
+            .await;
+            // SAFETY: live client.
+            previous_epoch = unsafe { phux_client_connection_epoch(client.0) };
+            let attach = PhuxAttachOptions {
+                size: std::mem::size_of::<PhuxAttachOptions>(),
+                version: ABI_VERSION,
+                attach_id: generation,
+                target_kind: 1,
+                session_id: 0,
+                name: span(session),
+                cols: 80,
+                rows: 24,
+                has_pixel_size: false,
+                pixel_width: 0,
+                pixel_height: 0,
+                request_scrollback: false,
+                scrollback_limit_lines: 0,
+            };
+            // SAFETY: live client and readable attach options.
+            assert_eq!(
+                unsafe { phux_client_queue_attach(client.0, &raw const attach) },
+                PhuxClientResult::Ok
+            );
+            poll_until(client.0, "fresh workspace metadata and catalog", || {
+                let info = workspace_info(client.0);
+                info.revision > previous_revision && info.state == 1 && info.status == 2
+            })
+            .await;
+            let info = workspace_info(client.0);
+            assert_eq!((info.window_count, info.terminal_count), (1, 1));
+            let mut catalog = PhuxCatalogTerminal::default();
+            let mut listed_session = PhuxSessionInfo::default();
+            // SAFETY: live client and initialized disjoint outputs.
+            unsafe {
+                assert_eq!(
+                    phux_client_catalog_terminal_get(client.0, 0, &raw mut catalog),
+                    PhuxClientResult::Ok
+                );
+                assert_eq!(
+                    phux_client_session_get(client.0, 0, &raw mut listed_session),
+                    PhuxClientResult::Ok
+                );
+            }
+            assert_eq!(copy_span(listed_session.name), session);
+            let terminal = catalog.terminal_id;
+            assert_eq!(terminal.kind, 0);
+            if let Some(previous) = previous_terminal {
+                assert_eq!(terminal.id, previous, "restart reuses the seed resource ID");
+                assert_ne!(copy_span(workspace_window(client.0).name), "retired-layout");
+            }
+            let marker = format!("FFI_RECOVERY_{generation}");
+            // The full marker is absent from the shell command itself, so
+            // observing it proves shell execution, not merely PTY input echo.
+            let command = format!("printf '%s%s\\n' 'FFI_RECOVERY_' '{generation}'\r");
+            assert_eq!(paste(client.0, &terminal, &command), PhuxClientResult::Ok);
+            poll_until(client.0, "fresh seed terminal input/output", || {
+                grid_text(client.0, &terminal).contains(&marker)
+            })
+            .await;
+
+            if generation == 1 {
+                let window = workspace_window(client.0);
+                let mutation = PhuxWorkspaceMutation {
+                    request_id: 1,
+                    expected_revision: info.revision,
+                    session_id: info.session_id,
+                    kind: 6,
+                    window_id: window.window_id,
+                    name: span("retired-layout"),
+                    ..PhuxWorkspaceMutation::default()
+                };
+                // SAFETY: readable mutation and live exclusively accessed client.
+                assert_eq!(
+                    unsafe { phux_client_workspace_mutate(client.0, &raw const mutation) },
+                    PhuxClientResult::Ok
+                );
+                poll_until(client.0, "confirmed old-server workspace", || {
+                    let info = workspace_info(client.0);
+                    info.state == 2 && info.status == 2
+                })
+                .await;
+                assert_eq!(copy_span(workspace_window(client.0).name), "retired-layout");
+            }
+            if generation == 1 {
+                // Never poll this read's replies. Even if they reach the socket,
+                // the binding transaction is interrupted across server restart.
+                // SAFETY: live client on its owning thread.
+                assert_eq!(
+                    unsafe { phux_client_workspace_refresh(client.0, 2) },
+                    PhuxClientResult::Ok
+                );
+            }
+            previous_revision = workspace_info(client.0).revision;
+            previous_terminal = Some(terminal.id);
+            drop(shutdown);
+            tokio::time::timeout(DEADLINE, server)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            poll_until(
+                client.0,
+                "transport loss without freeing the client",
+                || {
+                    // SAFETY: live client.
+                    unsafe { phux_client_state(client.0) != PhuxClientState::Attached }
+                },
+            )
+            .await;
+            assert_eq!(
+                paste(client.0, &terminal, "stale\r"),
+                PhuxClientResult::InvalidState
+            );
+        }
+    });
 }
 
 /// Counts wakes for the free-while-dialing test.

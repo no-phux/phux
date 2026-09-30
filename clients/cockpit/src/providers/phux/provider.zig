@@ -100,12 +100,25 @@ const Retarget = struct {
     label: ?[]u8,
 };
 
+/// Numeric session IDs are scoped to one coordinator incarnation. Retain
+/// the last authoritative name as reconnect intent, never as create authority.
+const SessionIntent = struct {
+    id: u32,
+    server: []u8,
+    name: ?[]u8,
+
+    fn deinit(self: *SessionIntent, gpa: std.mem.Allocator) void {
+        gpa.free(self.server);
+        if (self.name) |name| gpa.free(name);
+    }
+};
+
 pub const PhuxProvider = struct {
     pub const test_support = host_mod.test_support;
     pub const SessionSummary = host_mod.SessionSummary;
     pub const OperationResult = host_mod.OperationResult;
-pub const AgentSession = host_mod.AgentSession;
-pub const AgentIdentity = host_mod.AgentIdentity;
+    pub const AgentSession = host_mod.AgentSession;
+    pub const AgentIdentity = host_mod.AgentIdentity;
     pub const AgentState = host_mod.AgentState;
     context_id: u64,
     gpa: std.mem.Allocator,
@@ -125,6 +138,7 @@ pub const AgentIdentity = host_mod.AgentIdentity;
     /// server's current session. Neither path has create authority.
     session: ?[]u8,
     session_id: ?u32 = null,
+    session_intent: ?SessionIntent = null,
     client_name: []u8,
     attach_viewport: provider.Viewport = .{ .cols = 80, .rows = 24 },
     attach_queued: bool = false,
@@ -256,6 +270,7 @@ pub const AgentIdentity = host_mod.AgentIdentity;
         self.clearPendingRetarget();
         if (self.remote_label) |label| self.gpa.free(label);
         if (self.session) |session| self.gpa.free(session);
+        self.clearSessionIntent();
         self.gpa.free(self.client_name);
         self.gpa.destroy(self);
     }
@@ -324,6 +339,7 @@ pub const AgentIdentity = host_mod.AgentIdentity;
     }
 
     pub fn stop(self: *PhuxProvider) void {
+        self.captureAttachedSession() catch {};
         self.cancelCapturedTunnel();
         // Freeing the connected client joins the runtime's driver, so no
         // wake can reach `wake_context` after this returns.
@@ -331,6 +347,8 @@ pub const AgentIdentity = host_mod.AgentIdentity;
         self.wake_context.stopped.store(true, .release);
         self.host.stopConnected();
         self.host.disconnect();
+        self.attach_queued = false;
+        self.standby_query_epoch = 0;
         // A standby's list described the connection that just ended.
         if (self.standby) self.host.forgetSessions();
     }
@@ -346,6 +364,7 @@ pub const AgentIdentity = host_mod.AgentIdentity;
         var found = false;
         for (self.host.sessionCatalog()) |session| {
             if (session.id == session_id) {
+                try self.rememberCatalogSession(session_id, session.name);
                 found = true;
                 break;
             }
@@ -364,6 +383,7 @@ pub const AgentIdentity = host_mod.AgentIdentity;
     /// needs a new session: tear the old one down and connect again.
     fn restartConnection(self: *PhuxProvider, handle: native_sdk.ChannelHandle) !void {
         errdefer self.cancelCapturedTunnel();
+        try self.captureAttachedSession();
         // Never opened, or already torn down: there is no connection to
         // retire, so this is an open. The previous generation still freezes,
         // because a refused open must leave its canvas rather than drop it.
@@ -427,6 +447,7 @@ pub const AgentIdentity = host_mod.AgentIdentity;
     /// GET_STATE and never attaches (see `standby`).
     pub fn standBy(self: *PhuxProvider) void {
         self.standby = true;
+        self.clearSessionIntent();
         self.session_id = null;
     }
 
@@ -442,6 +463,12 @@ pub const AgentIdentity = host_mod.AgentIdentity;
     /// a pane shows it. Takes effect when the connection restarts.
     pub fn show(self: *PhuxProvider, session_id: u32) !void {
         if (session_id == 0) return error.InvalidIdentity;
+        for (self.host.sessionCatalog()) |entry| {
+            if (entry.id == session_id) {
+                try self.rememberCatalogSession(session_id, entry.name);
+                break;
+            }
+        }
         self.standby = false;
         self.session_id = session_id;
         self.attach_queued = false;
@@ -497,6 +524,7 @@ pub const AgentIdentity = host_mod.AgentIdentity;
         if (self.remote_label) |text| self.gpa.free(text);
         self.remote_label = next.label;
         self.session_id = null;
+        self.clearSessionIntent();
         if (self.host.state() != .new) self.host.clearSessionReplicas();
         // Replicas are gone, so no terminal keeps the old coordinator's id.
         self.host.setProviderId(coordinatorId(self.endpoint.borrowed()));
@@ -660,9 +688,14 @@ pub const AgentIdentity = host_mod.AgentIdentity;
             return err;
         };
         self.recordRemoteFailure();
-        // The runtime redialed underneath us. The connection that queued the
-        // last ATTACH is gone, so the next negotiation has to queue its own.
-        if (self.host.takeConnectionRetired()) self.attach_queued = false;
+        // Poll may have consumed the wake carrying a new epoch. Schedule one
+        // more UI drain of its retained records; never redial from this layer.
+        if (self.host.poll_unsettled) connectedWake(&self.wake_context);
+        // Handle replacement and runtime redial share one retirement signal.
+        if (self.host.takeConnectionRetired()) {
+            self.attach_queued = false;
+            self.standby_query_epoch = 0;
+        }
         if (self.host.state() == .detached) {
             self.attach_queued = false;
             return delta;
@@ -673,19 +706,89 @@ pub const AgentIdentity = host_mod.AgentIdentity;
             return delta;
         }
         try self.queueNegotiatedAttach();
-        if (self.host.state() == .attached and self.session_id == null) {
-            self.session_id = self.host.selectedSessionId();
-        }
+        if (delta.ready_published) self.session_id = self.host.selectedSessionId();
+        try self.captureAttachedSession();
         return delta;
     }
 
     fn queueNegotiatedAttach(self: *PhuxProvider) !void {
         if (self.attach_queued or self.host.state() != .negotiated) return;
-        if (self.session_id) |session_id|
-            try self.host.attachSessionId(session_id, self.attach_viewport)
-        else
+        if (self.session_id) |session_id| {
+            try self.attachSelectedSession(session_id);
+        } else {
             try self.host.attachExisting(self.session, self.attach_viewport);
+        }
         self.attach_queued = true;
+    }
+
+    fn attachSelectedSession(self: *PhuxProvider, id: u32) !void {
+        const server = self.serverId() orelse return error.InvalidIdentity;
+        const intent = self.session_intent orelse {
+            // A first explicit selection (including a new showing peer) has
+            // no previous incarnation. Qualify it before the first ATTACH.
+            // A failed copy of an old attachment's identity is not permission
+            // to treat its retained number as a first selection.
+            if (self.host.selectedSessionId() != null) return error.InvalidIdentity;
+            try self.rememberSession(id, null);
+            return self.host.attachSessionId(id, self.attach_viewport);
+        };
+        if (intent.id != id) return error.InvalidIdentity;
+        if (std.mem.eql(u8, intent.server, server))
+            return self.host.attachSessionId(id, self.attach_viewport);
+        // Never send a recycled ID to another coordinator, or fall back to
+        // LAST/the configured startup session when the intended name is gone.
+        self.host.freezePublished();
+        const name = intent.name orelse return error.InvalidIdentity;
+        try self.host.attachExisting(name, self.attach_viewport);
+    }
+
+    fn captureAttachedSession(self: *PhuxProvider) !void {
+        if (self.standby or self.host.state() != .attached) return;
+        const id = self.host.selectedSessionId() orelse return;
+        if (self.session_id != null and self.session_id != id) return;
+        self.session_id = id;
+        var name: ?[]const u8 = null;
+        if (self.host.sessions_generation == self.connectionEpoch()) {
+            for (self.host.sessionCatalog()) |entry| {
+                if (entry.id == id) {
+                    name = entry.name;
+                    break;
+                }
+            }
+        }
+        try self.rememberSession(id, name);
+    }
+
+    fn rememberCatalogSession(self: *PhuxProvider, id: u32, name: []const u8) !void {
+        if (self.host.sessions_generation != self.connectionEpoch()) {
+            // Retained rows may still identify a pending same-server switch,
+            // but HELLO from a replacement cannot requalify their old IDs.
+            const intent = self.session_intent orelse return error.InvalidIdentity;
+            const server = self.serverId() orelse return error.InvalidIdentity;
+            if (!std.mem.eql(u8, intent.server, server)) return error.InvalidIdentity;
+        }
+        try self.rememberSession(id, name);
+    }
+
+    fn rememberSession(self: *PhuxProvider, id: u32, catalog_name: ?[]const u8) !void {
+        const server = self.serverId() orelse return;
+        var name = catalog_name;
+        if (self.session_intent) |intent| {
+            if (intent.id == id and std.mem.eql(u8, intent.server, server)) {
+                if (name == null) name = intent.name;
+                if (std.mem.eql(u8, name orelse "", intent.name orelse "")) return;
+            }
+        }
+        const owned_server = try self.gpa.dupe(u8, server);
+        errdefer self.gpa.free(owned_server);
+        const owned_name = if (name) |value| try self.gpa.dupe(u8, value) else null;
+        self.clearSessionIntent();
+        self.session_intent = .{ .id = id, .server = owned_server, .name = owned_name };
+    }
+
+    fn clearSessionIntent(self: *PhuxProvider) void {
+        if (self.session_intent) |*intent| intent.deinit(self.gpa);
+        self.session_intent = null;
     }
 
     pub fn state(self: *const PhuxProvider) State {
@@ -1083,7 +1186,6 @@ test "pending session switch back to attached session replaces the requested des
 fn restartFixtureConnection(self: *PhuxProvider) !void {
     self.prepareSessionSwitch();
     try self.host.reconnect(self.client_name);
-    self.attach_queued = false;
     try host_mod.test_support.stageFixture(self.bridge, "hello.bin");
     _ = try self.drainReadiness();
 }
@@ -1347,4 +1449,321 @@ test "a provider that never opened tears down without a connection" {
     try std.testing.expectEqual(host_mod.Lane.embedded, self.host.lane);
     self.stop();
     try std.testing.expectEqual(host_mod.Lane.embedded, self.host.lane);
+}
+
+/// A real connected handle, driven by canonical server frames on a disposable
+/// UDS. In particular, no helper clears the provider's scheduling latches.
+const ConnectedFixture = struct {
+    paths: extension.startup.TestFixture,
+    listener: c_int,
+    client: c_int = -1,
+    frame: [65536]u8 = undefined,
+
+    fn init() !ConnectedFixture {
+        var paths = try extension.startup.TestFixture.init();
+        errdefer paths.deinit();
+        var address = std.mem.zeroes(std.posix.sockaddr.un);
+        address.len = @intCast(@offsetOf(std.posix.sockaddr.un, "path") + paths.socket.len + 1);
+        address.family = std.posix.AF.UNIX;
+        @memcpy(address.path[0..paths.socket.len], paths.socket);
+        const listener = std.c.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0);
+        try std.testing.expect(listener >= 0);
+        errdefer _ = std.c.close(listener);
+        try std.testing.expectEqual(@as(c_int, 0), std.c.bind(listener, @ptrCast(&address), address.len));
+        try std.testing.expectEqual(@as(c_int, 0), std.c.listen(listener, 8));
+        return .{ .paths = paths, .listener = listener };
+    }
+
+    fn deinit(self: *ConnectedFixture) void {
+        if (self.client >= 0) _ = std.c.close(self.client);
+        _ = std.c.close(self.listener);
+        self.paths.deinit();
+    }
+
+    fn readable(fd: c_int) !void {
+        var polls = [_]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
+        if (try std.posix.poll(&polls, 10000) != 1) return error.ConnectedFixtureTimedOut;
+    }
+
+    fn readAll(fd: c_int, buffer: []u8) !void {
+        var offset: usize = 0;
+        while (offset < buffer.len) {
+            try readable(fd);
+            const count = std.c.read(fd, buffer[offset..].ptr, buffer.len - offset);
+            if (count == 0) return error.EndOfStream;
+            if (count < 0) return error.SocketRead;
+            offset += @intCast(count);
+        }
+    }
+
+    fn readFrame(self: *ConnectedFixture) ![]const u8 {
+        try readAll(self.client, self.frame[0..4]);
+        const size = std.mem.readInt(u32, self.frame[0..4], .big);
+        if (size == 0 or size > self.frame.len - 4) return error.InvalidFixtureFrame;
+        try readAll(self.client, self.frame[4..][0..size]);
+        return self.frame[0 .. 4 + size];
+    }
+
+    fn acceptClient(self: *ConnectedFixture) !void {
+        if (self.client >= 0) _ = std.c.close(self.client);
+        self.client = -1;
+        // Local startup probes the listener once before the runtime dials.
+        // That connection closes without HELLO; it is not the client.
+        while (true) {
+            try readable(self.listener);
+            self.client = std.c.accept(self.listener, null, null);
+            try std.testing.expect(self.client >= 0);
+            const frame = self.readFrame() catch |err| {
+                _ = std.c.close(self.client);
+                self.client = -1;
+                if (err == error.EndOfStream) continue;
+                return err;
+            };
+            try std.testing.expectEqual(@as(u8, 0x01), frame[4]);
+            return;
+        }
+    }
+
+    fn send(self: *ConnectedFixture, value: []const u8) !void {
+        var offset: usize = 0;
+        while (offset < value.len) {
+            const count = std.c.write(self.client, value[offset..].ptr, value.len - offset);
+            if (count <= 0) return error.SocketWrite;
+            offset += @intCast(count);
+        }
+    }
+
+    fn fixture(self: *ConnectedFixture, name: []const u8) !void {
+        const value = try host_mod.test_support.readFixture(name);
+        defer std.testing.allocator.free(value);
+        try self.send(value);
+    }
+
+    fn hello(self: *ConnectedFixture, foreign: bool) !void {
+        const value = try host_mod.test_support.readFixture("hello.bin");
+        defer std.testing.allocator.free(value);
+        if (foreign) {
+            const offset = std.mem.indexOf(u8, value, "cockpit-fixture") orelse return error.MissingServerIdentity;
+            @memcpy(value[offset..][0.."foreign-server!".len], "foreign-server!");
+        }
+        try self.send(value);
+    }
+
+    fn until(self: *ConnectedFixture, kind: u8) ![]const u8 {
+        for (0..32) |_| {
+            const frame = try self.readFrame();
+            if (frame[4] == kind) return frame;
+        }
+        return error.MissingExpectedFrame;
+    }
+
+    fn expectAttach(self: *ConnectedFixture, kind: u8, id: u32, name: []const u8) !void {
+        const frame = try self.until(0x02);
+        // ATTACH's first TLV is TARGET: id 1, BYTES, one-byte length for
+        // these small targets. Inspect the target, not a substring in a frame.
+        try std.testing.expectEqualSlices(u8, &.{ 1, 4 }, frame[5..7]);
+        try std.testing.expectEqual(kind, frame[8]);
+        switch (kind) {
+            1 => {
+                try std.testing.expectEqual(name.len, std.mem.readInt(u32, frame[9..13], .big));
+                try std.testing.expectEqualStrings(name, frame[13..][0..name.len]);
+            },
+            2 => try std.testing.expectEqual(id, std.mem.readInt(u32, frame[9..13], .big)),
+            else => try std.testing.expectEqual(@as(u8, 0), kind),
+        }
+    }
+
+    fn expectQuery(self: *ConnectedFixture) !void {
+        for (0..32) |_| {
+            const frame = try self.readFrame();
+            try std.testing.expect(frame[4] != 0x02);
+            // COMMAND's request-id TLV precedes its command TLV.
+            if (frame[4] == 0x31 and frame.len > 15 and frame[15] == 0x05) return;
+        }
+        return error.MissingSessionQuery;
+    }
+
+    const Await = enum { negotiated, attached, catalog, workspace };
+
+    fn awaitProvider(_: *ConnectedFixture, remote: *PhuxProvider, target: Await) !void {
+        const started = std.Io.Clock.awake.now(std.testing.io);
+        while (true) {
+            _ = try remote.drainReadiness();
+            const ready = switch (target) {
+                .negotiated => remote.state() == .negotiated,
+                .attached => remote.state() == .attached,
+                .catalog => remote.standbyCatalog().len != 0,
+                .workspace => remote.workspaceSnapshot().status == .confirmed,
+            };
+            if (ready) return;
+            if (started.durationTo(std.Io.Clock.awake.now(std.testing.io)).toMilliseconds() >= 10000)
+                return error.ProviderRecoveryTimedOut;
+            try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
+        }
+    }
+
+    fn finishAttach(self: *ConnectedFixture, remote: *PhuxProvider) !void {
+        try self.fixture("attached.bin");
+        try self.awaitProvider(remote, .attached);
+        for ([_][]const u8{ "workspace_initial_metadata.bin", "workspace_initial_state.bin" }, 0..) |name, index| {
+            const path = try std.fmt.allocPrint(std.testing.allocator, "src/providers/phux/fixtures/{s}", .{name});
+            defer std.testing.allocator.free(path);
+            const value = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, std.testing.allocator, .limited(65536));
+            defer std.testing.allocator.free(value);
+            // A retained ABI handle keeps request IDs monotonic. Reply to the
+            // current read, not the first connection's fixture correlation.
+            const request = try self.until(if (index == 0) 0x50 else 0x31);
+            try std.testing.expect(request.len >= 12 and value.len >= 12);
+            try std.testing.expectEqualSlices(u8, &.{ 1, 4, 4 }, request[5..8]);
+            try std.testing.expectEqualSlices(u8, &.{ 1, 4, 4 }, value[5..8]);
+            @memcpy(value[8..12], request[8..12]);
+            try self.send(value);
+        }
+        try self.awaitProvider(remote, .workspace);
+    }
+};
+
+test "connected stop open retires once and recovers attachment workspace and input" {
+    var wire = try ConnectedFixture.init();
+    defer wire.deinit();
+    const self = try PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = wire.paths.socket }, null, "replacement");
+    defer self.destroy();
+    try self.open(.{});
+    try wire.acceptClient();
+    try wire.hello(false);
+    try wire.awaitProvider(self, .negotiated);
+    try wire.expectAttach(0, 0, "");
+    try wire.finishAttach(self);
+    var refs: [1]provider.TerminalRef = undefined;
+    try std.testing.expectEqual(@as(usize, 1), self.terminalRefs(&refs));
+    const old_owner = self.owner(refs[0]).?;
+    const generation = self.connectionEpoch();
+    const old_canvas = try self.gpa.dupe(u8, self.presentation(refs[0]).?.grid.screen_text);
+    defer self.gpa.free(old_canvas);
+    try std.testing.expect(std.mem.startsWith(u8, old_canvas, "COCKPIT FIXTURE"));
+
+    self.stop();
+    self.stop(); // Engine close continuations can stop an already stopped host.
+    try std.testing.expectEqual(generation + 1, self.connectionEpoch());
+    try std.testing.expect(!self.ownerIsCurrent(old_owner));
+    try std.testing.expectEqualStrings(old_canvas, self.presentation(refs[0]).?.grid.screen_text);
+    try std.testing.expectEqual(@as(usize, 0), self.standbyCatalog().len);
+    try self.open(.{});
+    try wire.acceptClient();
+    try wire.hello(false);
+    try wire.awaitProvider(self, .negotiated);
+    try std.testing.expectEqual(generation + 1, self.connectionEpoch());
+    try std.testing.expect(!self.ownerIsCurrent(old_owner));
+    try wire.expectAttach(2, 1, "");
+    try wire.finishAttach(self);
+    try std.testing.expectEqualStrings("fixture", self.sessionCatalog()[0].name);
+    try std.testing.expectEqual(@as(?u32, 1), self.selectedSessionId());
+    const current = self.owner(refs[0]).?;
+    try std.testing.expect(self.ownerIsCurrent(current));
+    try std.testing.expect(!self.ownerIsCurrent(old_owner));
+    try self.sendPaste(current, "after replacement", true);
+    const input = try wire.until(0x11);
+    try std.testing.expect(std.mem.indexOf(u8, input, "after replacement") != null);
+
+    // Same-handle resync retires immediately too: a drain before the runtime
+    // processes it must not publish the old C client's READY a second time.
+    try self.reconnect(.{});
+    try std.testing.expect(self.state() != .attached);
+    const waiting = try self.drainReadiness();
+    try std.testing.expect(!waiting.ready_published);
+    try std.testing.expect(!self.ownerIsCurrent(current));
+    try wire.acceptClient();
+    try wire.hello(false);
+    try wire.awaitProvider(self, .negotiated);
+    try std.testing.expectEqual(generation + 2, self.connectionEpoch());
+    try wire.expectAttach(2, 1, "");
+    try wire.finishAttach(self);
+    try std.testing.expect(self.ownerIsCurrent(self.owner(refs[0]).?));
+}
+
+test "connected standby stop open lists again and showing peer reattaches by incarnation" {
+    var wire = try ConnectedFixture.init();
+    defer wire.deinit();
+    const self = try PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = wire.paths.socket }, null, "standby-replacement");
+    defer self.destroy();
+    self.standBy();
+    for (0..2) |cycle| {
+        try self.open(.{});
+        try wire.acceptClient();
+        try wire.hello(false);
+        try wire.awaitProvider(self, .negotiated);
+        try wire.expectQuery();
+        try wire.fixture("standby_state.bin");
+        try wire.awaitProvider(self, .catalog);
+        try std.testing.expectEqual(@as(usize, 2), self.standbyCatalog().len);
+        try std.testing.expectEqualStrings("build", self.standbyCatalog()[0].name);
+        if (cycle == 0) {
+            self.stop();
+            try std.testing.expectEqual(@as(usize, 0), self.standbyCatalog().len);
+        }
+    }
+    // Showing peers use the same owner, not an Engine-only latch reset.
+    try self.show(1);
+    self.stop();
+    try self.open(.{});
+    try wire.acceptClient();
+    try wire.hello(true);
+    try wire.awaitProvider(self, .negotiated);
+    // On the replacement server ID 1 may name an unrelated session. The
+    // request must select the previously listed logical name instead.
+    try wire.expectAttach(1, 0, "build");
+}
+
+test "replacement server cannot reuse selected id or invent unnamed recovery intent" {
+    const self = try PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = "/unused" }, "startup-is-not-a-fallback", "incarnation");
+    defer self.destroy();
+    try host_mod.test_support.attachHost(self.host);
+    _ = try self.drainReadiness();
+    // A rename observed after attachment is the logical reconnect name.
+    try host_mod.test_support.stageFixture(self.bridge, "session_renamed.bin");
+    _ = try self.drainReadiness();
+    var refs: [1]provider.TerminalRef = undefined;
+    try std.testing.expectEqual(@as(usize, 1), self.terminalRefs(&refs));
+    const old_owner = self.owner(refs[0]).?;
+    try self.host.reconnect(self.client_name);
+    try self.host.sendKey(old_owner, &.{ .action = .press, .physical = @enumFromInt(0), .text = "blind typing" });
+    const hello = try host_mod.test_support.readFixture("hello.bin");
+    defer std.testing.allocator.free(hello);
+    const offset = std.mem.indexOf(u8, hello, "cockpit-fixture") orelse return error.MissingServerIdentity;
+    @memcpy(hello[offset..][0.."foreign-server!".len], "foreign-server!");
+    try std.testing.expect(self.bridge.incoming.stage(hello));
+    _ = try self.drainReadiness();
+    try std.testing.expectError(error.InvalidState, self.host.sendKey(old_owner, &.{ .action = .press, .physical = @enumFromInt(0), .text = "stale input" }));
+    var attached = false;
+    while (self.bridge.outgoing.take()) |frame| {
+        defer self.bridge.outgoing.release(frame);
+        if (frame[4] != 0x02) continue;
+        attached = true;
+        try std.testing.expectEqual(@as(u8, 1), frame[8]);
+        try std.testing.expectEqualStrings("renamed", frame[13..][0..7]);
+    }
+    try std.testing.expect(attached);
+    try host_mod.test_support.stageFixture(self.bridge, "attached.bin");
+    _ = try self.drainReadiness();
+    while (self.bridge.outgoing.take()) |frame| {
+        defer self.bridge.outgoing.release(frame);
+        try std.testing.expect(frame[4] != 0x10);
+    }
+
+    // A known ID with no authoritative name cannot become LAST, a configured
+    // startup name, or a numeric request to the foreign coordinator.
+    const unnamed = try PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = "/unused" }, "not-a-fallback", "unnamed");
+    defer unnamed.destroy();
+    try unnamed.show(1);
+    try unnamed.host.start(unnamed.client_name);
+    try host_mod.test_support.stageFixture(unnamed.bridge, "hello.bin");
+    _ = try unnamed.drainReadiness();
+    try unnamed.host.reconnect(unnamed.client_name);
+    unnamed.bridge.outgoing.reset();
+    try std.testing.expect(unnamed.bridge.incoming.stage(hello));
+    try std.testing.expectError(error.InvalidIdentity, unnamed.drainReadiness());
+    while (unnamed.bridge.outgoing.take()) |frame| {
+        defer unnamed.bridge.outgoing.release(frame);
+        try std.testing.expect(frame[4] != 0x02);
+    }
 }

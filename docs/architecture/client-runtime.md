@@ -56,18 +56,29 @@ it read. `Fed`, the default, applies it to the plane on the driver's thread;
 that is phux-mobile's lane, and the consumer observes only events and the
 published grid.
 
-`Queued` retains it instead, for `Client::take_inbound` to drain and the
-consumer to feed on its own thread. `phux-client-ffi` takes that lane
-because its per-frame behavior — retired-close suppression,
-bootstrap-profile validation, agent-generation tracking — reads
+`Queued` retains it instead. `Client::take_inbound` atomically drains
+`(connection_epoch, frames)` for the consumer to feed on its owning thread.
+The consumer checks `ControlPlane::accepts_inbound(epoch)` under the same
+control lock used to feed each frame: transport loss can invalidate a batch
+after it was drained, even before a replacement socket opens.
+`phux-client-ffi` takes this lane because its per-frame behavior — retired-close
+suppression, bootstrap-profile validation, agent-generation tracking — reads
 workspace-subscription state only its owning thread may touch (ADR-0133
-decision 6). The binding sheds the dialer, the ladder and the framing
-without moving its decode point. The queue is bounded at
-`MAX_QUEUED_INBOUND_FRAMES` and `MAX_QUEUED_INBOUND_BYTES`, mirroring the
-bounds a socket-owning embedder enforced for itself; overflowing either
-fails the connection, and `connection_opened` discards whatever the
-consumer never drained, because those frames were built against the
-connection that ended.
+decision 6). It processes lifecycle events before decoding the batch, retiring
+pending workspace reads, subscriptions and attach bookkeeping while keeping
+the last-good publication available for frozen display, not input authority.
+
+The queue is bounded at `MAX_QUEUED_INBOUND_FRAMES` and
+`MAX_QUEUED_INBOUND_BYTES`; overflowing either fails the connection.
+Loss, failure and replacement discard undrained frames. Already-drained
+frames remain subject to the epoch fence.
+
+Automatic attach intent also respects server incarnation. A numeric session
+target survives a reconnect to the same server; a replacement server is
+addressed by the previously confirmed session name instead. Without that
+name, recovery refuses rather than attaching a recycled number or creating
+a session. An attach refusal ends the attempt instead of leaving it waiting
+for `ATTACH_READY`.
 
 ## Thread model
 
