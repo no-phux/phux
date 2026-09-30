@@ -414,7 +414,7 @@ fn writeSummary(inherited: *const Inherited, writer: *std.Io.Writer) std.Io.Writ
     if (inherited.selection_background != null) try item(writer, &items, "selection colour", .{});
     var palette: usize = 0;
     for (inherited.palette) |entry| palette += @intFromBool(entry != null);
-    if (palette != 0) try item(writer, &items, "{d} palette colours", .{palette});
+    if (palette != 0) try item(writer, &items, "{d} palette {s}", .{ palette, if (palette == 1) "colour" else "colours" });
     if (items == 0) try writer.writeAll(" nothing Cockpit uses");
     try writer.writeAll(".");
     if (inherited.font_family == null and inherited.requested_font.len != 0) {
