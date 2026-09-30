@@ -227,6 +227,33 @@ async function main() {
   assert.equal(client.commitText(second, "printf 'TYPED-%s\\n' ok"), true);
   assert.equal(client.typeText(second, '\r'), true);
   await until(() => client.searchView(second, 'TYPED-ok', true).length === 1, 'typeText Enter');
+  // Ghostty's jump_to_prompt, select_all and write_*_file readers over real
+  // PTY output: two OSC 133 prompts a hundred rows apart.
+  assert.equal(client.commitText(second, "printf '\\033]133;A\\007MARK-%s\\n' A; seq 1 100; printf '\\033]133;A\\007MARK-%s\\n' B"), true);
+  assert.equal(client.typeText(second, '\r'), true);
+  await until(() => client.searchView(second, 'MARK-B', true).length === 1, 'prompt marks');
+  client.followLiveView(second);
+  for (const bad of [NaN, Infinity, 0.5, 2 ** 53]) {
+    assert.throws(() => client.jumpToPromptView(second, bad), /InvalidInteger/);
+  }
+  client.jumpToPromptView(second, -1);
+  assert.equal(client.viewInfo(second).atTail, false);
+  assert.equal(selectRow(second, 0).text, 'MARK-A');
+  client.jumpToPromptView(second, -1);
+  assert.equal(selectRow(second, 0).text, 'MARK-A', 'no earlier prompt: the view stays');
+  client.jumpToPromptView(second, 1);
+  assert.equal(client.viewInfo(second).atTail, true, 'a prompt in the active area follows the tail');
+  assert.equal(client.selectAllView(second), true);
+  const all = client.viewSelectionText(second);
+  const marks = /MARK-A\n1\n2\n[\s\S]*\n100\nMARK-B/;
+  assert.match(all, marks);
+  const screen = client.viewDocumentText(second, false);
+  const history = client.viewDocumentText(second, true);
+  assert.match(screen, marks);
+  assert.ok(history.includes('MARK-A\n1\n') && screen.startsWith(history) && screen.length > history.length);
+  client.clearViewSelection(second);
+  assert.equal(client.viewDocumentText(second, false), screen, 'reading selects nothing');
+  assert.throws(() => client.viewSelectionText(second), /SelectionUnavailable/);
   const replacement = client.createView(pane.terminalId);
   assert.notEqual(replacement, first);
   assert.notEqual(replacement, second);
@@ -237,7 +264,7 @@ async function main() {
   closed = true;
   client.close();
   assert.throws(() => client.viewInfo(second), /StaleHandle/);
-  console.log('NAPI view smoke passed: shared PTY views, independent scroll/selection/search/gestures, input, bounded copy, stale handles, sibling lifetime, targeted two-PTY geometry, preserving subscription and observer refusal');
+  console.log('NAPI view smoke passed: shared PTY views, independent scroll/selection/search/gestures, prompt jumps, select-all and document text, input, bounded copy, stale handles, sibling lifetime, targeted two-PTY geometry, preserving subscription and observer refusal');
 }
 
 main().catch(error => {

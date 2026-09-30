@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-23
+last-reviewed: 2026-09-29
 ---
 
 # Desktop NAPI binding
@@ -96,6 +96,15 @@ Search accepts at most 4096 query bytes and returns at most 4096 matches. Copy
 currently limits the returned JS text to one MiB **after** native formatting;
 native allocation and traversal bounds remain an open integration requirement.
 
+Three view operations back Ghostty keybind actions. `jumpToPromptView(view, n)`
+scrolls to the `n`th row the engine marked as a primary shell prompt (OSC 133)
+above (negative) or below the viewport's top row; a prompt in the active area
+follows live output. `selectAllView` selects Ghostty's select-all span as an
+ordinary view selection. `viewDocumentText(view, historyOnly)` formats the
+loaded document (or only its scrollback) as plain text for `write_*_file`,
+refusing more than 32 MiB instead of truncating, without touching the view's
+selection or viewport.
+
 `commitText`, `typeText`, `keyEvent`, `mouseEvent` and `focusView` return whether
 input was queued, not whether it was delivered. `commitText` refuses controls;
 `typeText` is the keybinding path (Ghostty `text:`, a Ctrl-L clear): each C0
@@ -110,7 +119,8 @@ event is rejected rather than transmitted as committed text.
 
 Run `just desktop-native-view-test` after building the combined desktop addon.
 Its isolated real-PTY fixture verifies two views of one terminal, independent
-scroll/selection/search, cross-view handle rejection, input receipts and sibling
+scroll/selection/search, cross-view handle rejection, input receipts, prompt
+jumps over real OSC 133 output, select-all and document text, and sibling
 survival after view destruction. Unit regressions also exercise disconnect at
 the admission boundary, same-terminal engine replacement and refusal wakes.
 

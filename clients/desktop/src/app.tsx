@@ -30,7 +30,7 @@ import { Sidebar, paneTitle, shortPath } from "./shell/sidebar";
 import { TabBar, type TabView } from "./shell/tabbar";
 import { FindBar } from "./terminal/find";
 import { Pane, quotePaths } from "./terminal/pane";
-import type { TerminalTheme } from "./terminal-element";
+import type { HostAction, TerminalTheme } from "./terminal-element";
 import { PaletteContext } from "./ui/controls";
 import type { IconName } from "./ui/icons";
 import { palette, themeById, themes, type Theme } from "./ui/theme";
@@ -70,6 +70,8 @@ interface AppProps {
   readGhostty?: (() => string | undefined) | undefined;
   /** Start the server (and home session) if it is gone; returns the failure, if any. */
   ensureServer?: (() => string | undefined) | undefined;
+  /** Write `text` to a new private temporary file named `name`; returns its path. */
+  writeTempFile?: ((name: string, text: string) => string) | undefined;
   /** This window's key router; the app installs its shortcut handler here. */
   keys: WindowKeys;
   /** Open another window on the same server (Command-N), optionally showing one terminal. */
@@ -124,6 +126,25 @@ interface Drag {
 
 const TOAST_LIMIT = 4;
 
+type WriteRegion = "screen" | "scrollback" | "selection";
+type WriteMode = "copy" | "paste" | "open";
+const WRITE_REGIONS: readonly WriteRegion[] = ["screen", "scrollback", "selection"];
+const WRITE_MODES: readonly WriteMode[] = ["copy", "paste", "open"];
+const WRITE_TITLES: Record<WriteRegion, string> = {
+  screen: "Screen and Scrollback",
+  scrollback: "Scrollback",
+  selection: "Selection",
+};
+
+/** `write-file:<region>:<mode>` (from a Ghostty `write_*_file` bind), parsed. */
+function writeAction(id: string): [WriteRegion, WriteMode] | undefined {
+  const [kind, region, mode] = id.split(":");
+  if (kind !== "write-file") return undefined;
+  const knownRegion = WRITE_REGIONS.find((item) => item === region);
+  const knownMode = WRITE_MODES.find((item) => item === mode);
+  return knownRegion && knownMode ? [knownRegion, knownMode] : undefined;
+}
+
 function DesktopApp(props: AppProps): JSX.Element {
   const gpuix = useGpuix();
   // Mount-time inputs: the window serves one server socket and session for life.
@@ -134,6 +155,7 @@ function DesktopApp(props: AppProps): JSX.Element {
   let lastSaved: SavedLayout | undefined = initial;
   const readGhostty = untrack(() => props.readGhostty);
   const ensureServer = untrack(() => props.ensureServer);
+  const writeTempFile = untrack(() => props.writeTempFile);
   const ghosttyText = readGhostty?.();
   const startGhostty = parseGhostty(ghosttyText ?? "");
   const [ghostty, setGhostty] = createSignal(startGhostty);
@@ -153,6 +175,8 @@ function DesktopApp(props: AppProps): JSX.Element {
   const [toasts, setToasts] = createSignal<Toast[]>([]);
   const [now, setNow] = createSignal(Date.now());
   const [drag, setDrag] = createSignal<Drag | undefined>();
+  const [hostAction, setHostAction] = createSignal<{ placementId: string; action: HostAction }>();
+  let hostActionId = 0;
   const tabElements = new Map<string, number>();
   const agentStates = new Map<string, string>();
   let toastId = 0;
@@ -466,6 +490,67 @@ function DesktopApp(props: AppProps): JSX.Element {
     } catch (error) {
       toast({ kind: "error", title: "Could not send keys", body: String(error) });
     }
+  }
+
+  // ── Ghostty terminal actions ───────────────────────────────────
+
+  /** A platform request (clipboard, open) the focused terminal runs natively once. */
+  function requestHost(make: (id: string) => HostAction): void {
+    const focus = workspace.focused();
+    if (!focus) return;
+    hostActionId += 1;
+    setHostAction({ placementId: focus.id, action: make(String(hostActionId)) });
+  }
+
+  function selectAll(): void {
+    const focus = workspace.focused();
+    if (focus) safe(() => bridge.client().selectAllView(focus.viewId), false);
+  }
+
+  /** Ghostty's jump_to_prompt: needs the shell to mark prompts (OSC 133). */
+  function jumpToPrompt(prompts: number): void {
+    const focus = workspace.focused();
+    if (focus) safe(() => bridge.client().jumpToPromptView(focus.viewId, prompts), undefined);
+  }
+
+  /** Ghostty's selection clipboard is the view's own selection: paste it, as a middle click would. */
+  function pasteSelection(): void {
+    const focus = workspace.focused();
+    if (!focus) return;
+    const text = safe(() => bridge.client().viewSelectionText(focus.viewId), "");
+    if (text) safe(() => bridge.client().pasteView(focus.viewId, text), "");
+  }
+
+  /**
+   * Ghostty's write_screen_file, write_scrollback_file and
+   * write_selection_file: the text goes to a private temporary file whose
+   * path is then copied, pasted, or opened in its default app.
+   */
+  function writeFile(region: WriteRegion, mode: WriteMode): void {
+    const focus = workspace.focused();
+    if (!focus || !writeTempFile) return;
+    let path: string;
+    try {
+      const client = bridge.client();
+      const text =
+        region === "selection"
+          ? safe(() => client.viewSelectionText(focus.viewId), "")
+          : client.viewDocumentText(focus.viewId, region === "scrollback");
+      if (!text) {
+        toast({
+          kind: "info",
+          title: region === "selection" ? "Nothing selected" : "Nothing to write",
+        });
+        return;
+      }
+      path = writeTempFile(`${region}.txt`, text);
+    } catch (error) {
+      toast({ kind: "error", title: "Could not write the file", body: String(error) });
+      return;
+    }
+    if (mode === "paste")
+      safe(() => bridge.client().pasteView(focus.viewId, quotePaths([path])), "");
+    else requestHost((id) => ({ id, kind: mode === "open" ? "open" : "copyText", text: path }));
   }
 
   function reloadGhostty(): void {
@@ -908,6 +993,47 @@ function DesktopApp(props: AppProps): JSX.Element {
       run: clearScreen,
     },
     {
+      id: "select-all",
+      title: "Select All",
+      group: "Terminal",
+      chord: "cmd+a",
+      run: selectAll,
+    },
+    {
+      id: "copy",
+      title: "Copy",
+      group: "Terminal",
+      icon: "copy",
+      run: () => requestHost((id) => ({ id, kind: "copy" })),
+    },
+    {
+      id: "paste",
+      title: "Paste",
+      group: "Terminal",
+      run: () => requestHost((id) => ({ id, kind: "paste" })),
+    },
+    { id: "paste-selection", title: "Paste Selection", group: "Terminal", run: pasteSelection },
+    {
+      id: "prompt-prev",
+      title: "Jump to Previous Prompt",
+      group: "Terminal",
+      chord: "cmd+up",
+      run: () => jumpToPrompt(-1),
+    },
+    {
+      id: "prompt-next",
+      title: "Jump to Next Prompt",
+      group: "Terminal",
+      chord: "cmd+down",
+      run: () => jumpToPrompt(1),
+    },
+    ...WRITE_REGIONS.map((region): Command => ({
+      id: `write-file:${region}:open`,
+      title: `Open ${WRITE_TITLES[region]} as a File`,
+      group: "Terminal",
+      run: () => writeFile(region, "open"),
+    })),
+    {
       id: "quick-terminal",
       title: "Toggle Quick Terminal",
       group: "View",
@@ -984,6 +1110,14 @@ function DesktopApp(props: AppProps): JSX.Element {
       const text = id.slice("send:".length);
       return { id, title: `Send ${JSON.stringify(text)}`, group, run: () => sendText(text) };
     }
+    const write = writeAction(id);
+    if (write) {
+      const [region, mode] = write;
+      const verb =
+        mode === "copy" ? "Copy Its Path" : mode === "paste" ? "Paste Its Path" : "Open It";
+      const title = `Write ${WRITE_TITLES[region]} to a File and ${verb}`;
+      return { id, title, group, run: () => writeFile(region, mode) };
+    }
     const [name, value = ""] = id.split(":");
     const number = Number(value);
     if (value === "" || !Number.isFinite(number)) return undefined;
@@ -996,6 +1130,8 @@ function DesktopApp(props: AppProps): JSX.Element {
       };
     if (name === "scroll-lines")
       return { id, title: `Scroll ${number} Lines`, group, run: () => scrollLines(number) };
+    if (name === "prompt-jump")
+      return { id, title: `Jump ${number} Prompts`, group, run: () => jumpToPrompt(number) };
     return undefined;
   }
 
@@ -1043,6 +1179,8 @@ function DesktopApp(props: AppProps): JSX.Element {
     }
     const command = keymap().get(chord);
     if (!command) return;
+    // A text field (a dialog, the palette, the find bar) keeps its own Select All.
+    if (command.id === "select-all" && (modal().kind !== "none" || find())) return;
     const open = modal().kind;
     if (open !== "none") {
       setModal({ kind: "none" });
@@ -1265,6 +1403,7 @@ function DesktopApp(props: AppProps): JSX.Element {
         theme={terminalTheme()}
         optionAsAlt={prefs().optionAsAlt}
         appChords={appChords()}
+        hostAction={hostAction()?.placementId === placement.id ? hostAction()?.action : undefined}
         padding={{ x: prefs().paddingX, y: prefs().paddingY }}
         dim={
           !selected() && placements(tab()?.root ?? { kind: "leaf", placement }).length > 1
@@ -1586,11 +1725,13 @@ export interface MountOptions {
   quickLayouts?: LayoutStore | undefined;
   /** Runs `phux server --ensure` and the home session; returns the failure, if any. */
   ensureServer?: (() => string | undefined) | undefined;
+  /** Writes a private temporary file for Ghostty's `write_*_file` actions; returns its path. */
+  writeTempFile?: ((name: string, text: string) => string) | undefined;
 }
 
 export function mount(host: DesktopHost, options: MountOptions): void {
   const { socketPath, sessionName, layouts, startupError, readGhostty, quickLayouts } = options;
-  const ensureServer = options.ensureServer;
+  const { ensureServer, writeTempFile } = options;
   const mainKeys: WindowKeys = { run: () => {} };
   const quick: { close?: () => void } = {};
 
@@ -1631,6 +1772,7 @@ export function mount(host: DesktopHost, options: MountOptions): void {
         layouts={store}
         readGhostty={readGhostty}
         ensureServer={ensureServer}
+        writeTempFile={writeTempFile}
         keys={keys}
         newWindow={newWindow}
         toggleQuick={toggleQuick}
@@ -1684,6 +1826,7 @@ export function mount(host: DesktopHost, options: MountOptions): void {
         startupError={startupError}
         readGhostty={readGhostty}
         ensureServer={ensureServer}
+        writeTempFile={writeTempFile}
         keys={mainKeys}
         newWindow={newWindow}
         toggleQuick={toggleQuick}

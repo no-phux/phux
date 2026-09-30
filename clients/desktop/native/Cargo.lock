@@ -4740,6 +4740,7 @@ name = "phux-config"
 version = "0.46.0"
 dependencies = [
  "chrono",
+ "nix",
  "phux-protocol",
  "serde",
  "serde_path_to_error",

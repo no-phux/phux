@@ -13,6 +13,10 @@ pub mod session;
 
 pub use session::{AgentBadge, Outcome, Session};
 
+use std::cell::RefCell;
+
+use futures_channel::oneshot;
+use futures_util::future::{Either, select};
 use phux_vt_web::{Grid, Rgb};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -47,7 +51,8 @@ impl HostedClient {
 
 /// Hosted JS entry point. Unlike [`start`], this requires the hosted session
 /// control preamble before accepting binary phux wire frames and reports safe,
-/// structured lifecycle events through `callback`.
+/// structured lifecycle events through `callback`. An optional `signal` cancels
+/// establishment, releasing the socket even before the attach completes.
 ///
 /// # Errors
 /// Fails if the canvas element is missing or the connection can't be set up.
@@ -58,10 +63,55 @@ pub async fn start_hosted(
     cols: u16,
     rows: u16,
     callback: js_sys::Function,
+    signal: Option<web_sys::AbortSignal>,
 ) -> Result<HostedClient, JsValue> {
     let canvas = canvas_by_id(&canvas_id)?;
-    let client = client::run_hosted(&ws_url, canvas, cols, rows, callback).await?;
+    let client = with_abort(
+        client::run_hosted(&ws_url, canvas, cols, rows, callback),
+        signal,
+    )
+    .await?;
     Ok(HostedClient { client })
+}
+
+struct AbortBinding {
+    signal: web_sys::AbortSignal,
+    callback: Closure<dyn FnMut()>,
+}
+
+impl Drop for AbortBinding {
+    fn drop(&mut self) {
+        let _ = self
+            .signal
+            .remove_event_listener_with_callback("abort", self.callback.as_ref().unchecked_ref());
+    }
+}
+
+async fn with_abort<T>(
+    future: impl Future<Output = Result<T, JsValue>>,
+    signal: Option<web_sys::AbortSignal>,
+) -> Result<T, JsValue> {
+    let Some(signal) = signal else {
+        return future.await;
+    };
+    if signal.aborted() {
+        return Err(JsValue::from_str("hosted connection aborted"));
+    }
+    let (sender, receiver) = oneshot::channel();
+    let sender = RefCell::new(Some(sender));
+    let callback = Closure::<dyn FnMut()>::new(move || {
+        if let Some(sender) = sender.borrow_mut().take() {
+            let _ = sender.send(());
+        }
+    });
+    signal.add_event_listener_with_callback("abort", callback.as_ref().unchecked_ref())?;
+    let _binding = AbortBinding { signal, callback };
+    // Dropping the losing establishment future runs AppEstablishment's disposal
+    // guard, closing its transport and removing the browser handlers.
+    match select(Box::pin(future), receiver).await {
+        Either::Left((result, _)) => result,
+        Either::Right(_) => Err(JsValue::from_str("hosted connection aborted")),
+    }
 }
 
 /// JS entry point for the WebTransport-first path: try HTTP/3-over-QUIC at

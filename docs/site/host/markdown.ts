@@ -24,7 +24,8 @@ export function wantsMarkdown(accept: string | null): boolean {
   if (!accept) return false;
   return accept.split(",").some((entry) => {
     const [mediaType, ...params] = entry.trim().split(";");
-    if ((mediaType ?? "").trim().toLowerCase() !== "text/markdown") return false;
+    if ((mediaType ?? "").trim().toLowerCase() !== "text/markdown")
+      return false;
     const q = params
       .map((param) => param.trim())
       .find((param) => param.toLowerCase().startsWith("q="));
@@ -73,7 +74,9 @@ export function frontmatter(html: string): string {
     /<title[^>]*>([^<]*)<\/title>/i.exec(html)?.[1]?.trim() ??
     null;
   const description =
-    metaName(html, "description") ?? metaProperty(html, "og:description") ?? null;
+    metaName(html, "description") ??
+    metaProperty(html, "og:description") ??
+    null;
   const image = metaProperty(html, "og:image") ?? null;
 
   const fields: string[] = [];
@@ -86,6 +89,12 @@ export function frontmatter(html: string): string {
 /** Full document: frontmatter + markdown converted from the content slice. */
 export function htmlToMarkdown(html: string): string {
   const matter = frontmatter(html);
+  converter ??= new NodeHtmlMarkdown({
+    codeBlockStyle: "fenced",
+    bulletMarker: "-",
+    emDelimiter: "*",
+    maxConsecutiveNewlines: 2,
+  });
   const body = converter.translate(extractContent(html)).trim();
   return matter ? `${matter}\n\n${body}\n` : `${body}\n`;
 }
@@ -98,15 +107,13 @@ export function estimateTokens(markdown: string): number {
   return Math.max(1, Math.ceil(markdown.length / 4));
 }
 
-const converter = new NodeHtmlMarkdown({
-  codeBlockStyle: "fenced",
-  bulletMarker: "-",
-  emDelimiter: "*",
-  maxConsecutiveNewlines: 2,
-});
+// Browser HTML and static assets never need a converter instance.
+let converter: NodeHtmlMarkdown | undefined;
 
 function pickSection(html: string, tag: string): string | null {
-  const match = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, "i").exec(html);
+  const match = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, "i").exec(
+    html,
+  );
   return match?.[1] ?? null;
 }
 

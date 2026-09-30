@@ -6,7 +6,7 @@
 # can't be built in Cloudflare Pages' build image (no Rust/Zig/nix), so we build
 # it here and commit the output. Re-run this whenever the phux client changes.
 #
-# Requires rustc + wasm32, wasm-pack, wasm-bindgen-cli 0.2.128, and the committed
+# Requires rustc + wasm32, wasm-pack, wasm-bindgen-cli 0.2.129, and the committed
 # ghostty-vt.wasm engine (see docs/SETUP.md § Browser client).
 set -euo pipefail
 

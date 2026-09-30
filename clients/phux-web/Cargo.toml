@@ -33,6 +33,7 @@ gloo-timers = { version = "0.4", features = ["futures"] }
 # (ReadableStream & co.) are stable; they drive the WebTransport read/write
 # pumps in client.rs.
 web-sys = { version = "0.3", features = [
+    "AbortSignal",
     "Window",
     "Document",
     "Element",

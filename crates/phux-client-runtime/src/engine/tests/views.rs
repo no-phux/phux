@@ -618,3 +618,61 @@ fn failed_reveal_preserves_the_physical_and_published_viewport() {
         .unwrap();
     assert_eq!(owner.selection_text(&terminal).unwrap(), b"o");
 }
+
+#[test]
+fn prompt_jumps_select_all_and_region_text_stay_in_one_view() {
+    let (owner, publication) = owner();
+    let terminal = id(131);
+    attach(&owner, &terminal, b"");
+    let a = owner.create_view(&terminal).unwrap();
+    let b = owner.create_view(&terminal).unwrap();
+    // Rows 0, 3 and 6 carry OSC 133 prompts; the 4-row viewport shows 3..=6.
+    output(
+        &owner,
+        &terminal,
+        1,
+        b"\x1b]133;A\x07$ one\r\nout1\r\nout1b\r\n\x1b]133;A\x07$ two\r\nout2\r\nout2b\r\n\x1b]133;A\x07$ three",
+    );
+    let b_generation = publication.view_generation(b).unwrap();
+    let top = |view| publication.acquire_view(view).unwrap().row_text(0);
+    assert_eq!(top(a), "$ two");
+
+    owner.scroll_view(a, Scroll::Prompt(-1)).unwrap();
+    assert_eq!(top(a), "$ one");
+    // No prompt above row 0: the viewport stays.
+    owner.scroll_view(a, Scroll::Prompt(-1)).unwrap();
+    assert_eq!(top(a), "$ one");
+    // The next prompt is in the active area, so the view follows the tail.
+    owner.scroll_view(a, Scroll::Prompt(1)).unwrap();
+    assert!(publication.acquire_view(a).unwrap().scrollbar.at_tail());
+    // Fewer prompts than asked for: the farthest one found.
+    owner.scroll_view(a, Scroll::Prompt(-5)).unwrap();
+    assert_eq!(top(a), "$ one");
+    owner.scroll_view(a, Scroll::Prompt(0)).unwrap();
+    assert_eq!(top(a), "$ one");
+    assert_eq!(publication.view_generation(b), Some(b_generation));
+
+    assert!(owner.select_all_view(a).unwrap());
+    assert_eq!(
+        String::from_utf8(owner.view_selection_text(a).unwrap()).unwrap(),
+        "$ one\nout1\nout1b\n$ two\nout2\nout2b\n$ three"
+    );
+    assert!(owner.view_selection_text(b).is_err());
+
+    let region = |region, max| owner.view_region_text_bounded(b, region, max).unwrap();
+    assert_eq!(
+        region(TextRegion::History, 1024),
+        BoundedSelectionText::Text(b"$ one\nout1\nout1b".to_vec())
+    );
+    assert_eq!(
+        region(TextRegion::Screen, 1024),
+        BoundedSelectionText::Text(b"$ one\nout1\nout1b\n$ two\nout2\nout2b\n$ three".to_vec())
+    );
+    assert_eq!(
+        region(TextRegion::Screen, 8),
+        BoundedSelectionText::ByteLimitExceeded
+    );
+    // Reading a region neither selects nor republishes the reading view.
+    assert!(owner.view_selection_text(b).is_err());
+    assert_eq!(publication.view_generation(b), Some(b_generation));
+}

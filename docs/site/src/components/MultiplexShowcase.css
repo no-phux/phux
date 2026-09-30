@@ -1,0 +1,526 @@
+.mux-showcase {
+  min-width: 0;
+  scroll-margin-top: 24px;
+}
+.mux-window {
+  overflow: hidden;
+  border: 1px solid #354260;
+  border-radius: 18px;
+  background: var(--color-surface);
+  box-shadow: 0 24px 80px -42px #5275c866;
+}
+.mux-titlebar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 17px 20px;
+  border-bottom: 1px solid var(--color-rule);
+}
+.mux-brand {
+  font: 600 13px var(--font-code);
+  color: var(--color-fg);
+}
+.mux-brand span {
+  font-weight: 400;
+  color: var(--color-muted);
+}
+.mux-diagram-label {
+  color: var(--color-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.mux-tabs {
+  display: flex;
+  padding: 8px 12px;
+  gap: 6px;
+  background: var(--color-surface-raised);
+  border-bottom: 1px solid var(--color-rule);
+}
+.mux-tabs button,
+.mux-mode-row button {
+  flex: 1;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--color-muted);
+  background: transparent;
+  font: 500 12px var(--font-reading);
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
+}
+.mux-tabs button span {
+  margin-right: 6px;
+  font: 10px var(--font-code);
+  opacity: 0.75;
+}
+.mux-tabs button:hover,
+.mux-mode-row button:hover {
+  color: var(--color-fg);
+  background: #192239;
+}
+.mux-tabs button[aria-pressed="true"],
+.mux-mode-row button[aria-pressed="true"] {
+  color: #c5d6ff;
+  border-color: #35496f;
+  background: #18243c;
+}
+.mux-views {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 20px 20px 0;
+}
+.mux-pane {
+  min-width: 0;
+  border: 1px solid var(--color-rule);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0c0f17;
+}
+.mux-pane header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-rule);
+  color: var(--color-muted);
+  font: 10px var(--font-code);
+}
+.mux-pane header b {
+  font-weight: 400;
+  color: var(--color-accent);
+}
+.mux-code {
+  min-height: 123px;
+  padding: 18px 12px 12px;
+  font: 11px/1.9 var(--font-code);
+}
+.mux-code p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.mux-code i {
+  color: var(--color-accent);
+  font-style: normal;
+}
+.mux-output {
+  color: var(--color-muted);
+}
+.mux-success {
+  color: var(--color-signal);
+}
+.mux-accent {
+  color: var(--color-accent);
+}
+.mux-caret {
+  display: inline-block;
+  margin-left: 5px;
+  width: 6px;
+  height: 11px;
+  background: currentColor;
+  opacity: 0.7;
+  vertical-align: -1px;
+}
+.mux-pane footer {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-height: 34px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--color-rule);
+  color: var(--color-muted);
+  font: 9px/1.5 var(--font-code);
+}
+.mux-dot {
+  flex: 0 0 5px;
+  height: 5px;
+  background: var(--color-signal);
+  border-radius: 50%;
+}
+.mux-pane-secondary {
+  animation: mux-pane-in 200ms ease-out both;
+}
+.mux-views[data-view="mirror"] .mux-pane {
+  border-color: #3d5981;
+}
+.mux-detached {
+  min-height: 210px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 7px;
+  padding: 14px;
+  box-sizing: border-box;
+  color: var(--color-muted);
+  font-size: 11px;
+}
+.mux-detached b {
+  color: var(--color-fg);
+  font-size: 13px;
+}
+.mux-detached-icon {
+  font-size: 26px;
+  color: var(--color-accent);
+}
+.mux-detached button {
+  padding: 8px 10px;
+  min-height: 44px;
+  margin-top: 4px;
+  border: 1px solid #35496f;
+  border-radius: 6px;
+  background: #18243c;
+  color: #c5d6ff;
+  font: 11px var(--font-reading);
+  cursor: pointer;
+}
+.mux-wire {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 17px 50px;
+  color: var(--color-cyan);
+  font: 10px var(--font-code);
+}
+.mux-wire-line {
+  height: 1px;
+  flex: 1;
+  background: #35496f;
+}
+.mux-server {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 20px;
+  padding: 12px 15px;
+  border: 1px solid #35496f;
+  border-radius: 8px;
+  background: #101828;
+}
+.mux-server-icon {
+  color: var(--color-accent);
+  font-size: 28px;
+  line-height: 1;
+}
+.mux-server div {
+  display: grid;
+  gap: 2px;
+}
+.mux-server b {
+  font-size: 12px;
+  font-weight: 600;
+}
+.mux-server div span {
+  color: var(--color-muted);
+  font-size: 11px;
+}
+.mux-resource {
+  margin-left: auto;
+  color: var(--color-cyan);
+  white-space: nowrap;
+  font: 11px var(--font-code);
+}
+.mux-explanation {
+  min-height: 111px;
+  box-sizing: border-box;
+  padding: 20px;
+}
+.mux-explanation b {
+  font-size: 14px;
+  font-weight: 600;
+}
+.mux-explanation p {
+  margin: 5px 0 0;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+.mux-launch-row {
+  padding: 0 20px 20px;
+}
+.mux-launch {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 68px;
+  padding: 13px 16px;
+  text-align: left;
+  border: 1px solid #577cca;
+  border-radius: 10px;
+  background: #1b2e53;
+  color: #d4e2ff;
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    transform 140ms ease;
+  font: 600 15px var(--font-reading);
+}
+.mux-launch:hover {
+  background: #253e6c;
+  transform: translateY(-1px);
+}
+.mux-launch small {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: #a9bce0;
+  font-weight: 400;
+}
+.mux-launch-symbol {
+  font: 20px var(--font-code);
+  color: var(--color-accent);
+}
+.mux-launch > span:last-child {
+  margin-left: auto;
+  font-size: 23px;
+}
+.mux-caption {
+  margin: 12px 5px 0;
+  color: var(--color-muted);
+  font-size: 12px;
+  text-align: center;
+}
+.mux-dialog {
+  width: min(980px, calc(100vw - 40px));
+  max-width: none;
+  max-height: calc(100dvh - 40px);
+  padding: 0;
+  margin: auto;
+  border: 1px solid #3b4d6e;
+  border-radius: 18px;
+  background: #0b0e15;
+  color: var(--color-fg);
+  box-shadow: 0 30px 140px #000a;
+  overflow: auto;
+}
+.mux-dialog[open] {
+  animation: mux-open 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.mux-dialog::backdrop {
+  background: #03060dda;
+}
+.mux-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 24px 16px;
+}
+.mux-eyebrow {
+  color: var(--color-cyan);
+  font: 10px var(--font-code);
+  letter-spacing: 0.12em;
+}
+.mux-dialog h2 {
+  margin: 5px 0 0;
+  font: 600 clamp(20px, 3vw, 28px)/1.2 var(--font-reading);
+  letter-spacing: -0.035em;
+}
+.mux-close {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-rule);
+  border-radius: 8px;
+  background: #151c2b;
+  color: var(--color-fg);
+  cursor: pointer;
+  font: 12px var(--font-reading);
+}
+.mux-close span {
+  font-size: 22px;
+  line-height: 1;
+}
+.mux-close:hover {
+  border-color: var(--color-accent);
+}
+.mux-mode-row {
+  display: flex;
+  gap: 8px;
+  margin: 0 24px;
+  max-width: 430px;
+}
+.mux-mode-row button {
+  border-color: var(--color-rule);
+  font-size: 13px;
+}
+.mux-mode-row small {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-muted);
+  font-size: 10px;
+}
+.mux-dialog-description {
+  min-height: 44px;
+  padding: 0 24px;
+  margin: 14px 0;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+.mux-dialog-description :is(code, kbd) {
+  color: var(--color-fg);
+  font: 12px var(--font-code);
+}
+.mux-dialog .pterm {
+  width: 100%;
+  max-width: 100%;
+  border-inline: 0;
+}
+.mux-dialog-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 24px;
+  color: var(--color-muted);
+  font-size: 11px;
+}
+.mux-dialog-foot a {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+.mux-loading {
+  min-height: 300px;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  color: var(--color-muted);
+  font-size: 14px;
+}
+.mux-loading button {
+  min-height: 44px;
+  border: 1px solid var(--color-accent);
+  background: #18243c;
+  color: var(--color-fg);
+  cursor: pointer;
+}
+@keyframes mux-open {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes mux-pane-in {
+  from {
+    opacity: 0.4;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (max-width: 600px) {
+  .mux-titlebar {
+    padding: 13px;
+  }
+  .mux-brand {
+    font-size: 12px;
+  }
+  .mux-brand span:last-child {
+    display: none;
+  }
+  .mux-tabs {
+    padding: 6px;
+    gap: 3px;
+  }
+  .mux-tabs button {
+    padding: 7px 4px;
+    font-size: 11px;
+  }
+  .mux-tabs button span {
+    margin-right: 3px;
+  }
+  .mux-views {
+    gap: 7px;
+    padding: 12px 12px 0;
+  }
+  .mux-pane header {
+    padding: 8px;
+    font-size: 9px;
+  }
+  .mux-code {
+    padding: 12px 8px;
+    font-size: 9px;
+    min-height: 120px;
+  }
+  .mux-pane footer {
+    padding: 6px 8px;
+    font-size: 8px;
+  }
+  .mux-server {
+    margin-inline: 12px;
+    padding: 11px;
+    gap: 8px;
+  }
+  .mux-server div span {
+    font-size: 10px;
+  }
+  .mux-explanation {
+    min-height: 135px;
+    padding: 16px 12px;
+  }
+  .mux-launch-row {
+    padding: 0 12px 12px;
+  }
+  .mux-launch {
+    gap: 10px;
+    padding: 12px;
+    font-size: 13px;
+  }
+  .mux-launch small {
+    font-size: 10px;
+  }
+  .mux-dialog {
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+    border-radius: 12px;
+  }
+  .mux-dialog-head {
+    padding: 16px 12px;
+    gap: 10px;
+  }
+  .mux-close {
+    padding: 6px 8px;
+    gap: 6px;
+  }
+  .mux-mode-row {
+    margin-inline: 12px;
+  }
+  .mux-dialog-description {
+    padding-inline: 12px;
+  }
+  .mux-dialog-foot {
+    padding: 12px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mux-dialog[open],
+  .mux-pane-secondary {
+    animation: none;
+  }
+  .mux-launch,
+  .mux-tabs button,
+  .mux-mode-row button {
+    transition: none;
+  }
+  .mux-launch:hover {
+    transform: none;
+  }
+}
