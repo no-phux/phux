@@ -48,6 +48,8 @@ chords belong to the app; everything else reaches the terminal.
 | ⌘F, ⌘G / ⇧⌘G     | Find in the terminal, next / previous match                                 |
 | ⌘E               | Find the selected text                                                      |
 | ⌘L               | Scroll back to live output                                                  |
+| ⌘↑ / ⌘↓          | Jump to the previous / next shell prompt (needs OSC 133 prompt marks)       |
+| ⌘A               | Select everything, scrollback included                                      |
 | ⇧⌘A              | Jump to the agent that most needs you                                       |
 | ⌘B, ⌘,           | Toggle the sidebar, open Settings                                           |
 | ⌘= ⌘- ⌘0         | Font size                                                                   |
@@ -70,15 +72,24 @@ fonts, scrolling and search, that covers `text:` and `esc:` (typed as keys:
 each control byte as its Control chord, `\n` as Ctrl-J, and ESC before a key
 as Alt on it, so `shift+enter=text:\x1b\r` gives Alt-Enter; raw escape
 sequences such as `csi:` are not sent), `ignore`, `move_tab`, `new_split:left/up`,
-`prompt_surface_title`, `set_font_size`, `scroll_page_lines`, `toggle_maximize`
-and the search actions. A `global:` bind to `toggle_quick_terminal` becomes a
+`prompt_surface_title`, `set_font_size`, `scroll_page_lines`, `toggle_maximize`,
+the search actions, `jump_to_prompt` (it needs your shell to mark prompts with
+OSC 133, as Ghostty's shell integration does), `select_all`, and
+`copy_to_clipboard`, `paste_from_clipboard` and `paste_from_selection` on any
+chord (the selection clipboard is the pane's own selection; copies are plain
+text). `write_screen_file`, `write_scrollback_file` and `write_selection_file`
+write plain text to a private file under `$TMPDIR`, then copy or paste its
+path or open it; the palette's **Open … as a File** commands do the last. A `global:` bind to `toggle_quick_terminal` becomes a
 system-wide hotkey for a quick-terminal window that keeps its own terminal
 between toggles. If Ghostty is still running it holds that hotkey too, so quit it
 or rebind one of them. Settings > Ghostty re-applies the config, reloads it,
 switches keybind import off (the global hotkey too, from the next launch), and
 lists the binds it skipped: key sequences,
-bare letters, and actions with no equivalent yet (`jump_to_prompt`,
-`select_all`, `reset`, `write_*_file`, clipboard actions off ⌘C/⌘V).
+bare letters, and actions with no equivalent yet. `reset` is one: the
+terminal's state belongs to the server, and resetting only this window's copy
+would leave input encoding and every other client on the old state, so it
+waits for a protocol request. `vt` and `html` copy and write formats are
+another.
 
 Drag split dividers, the sidebar edge, or tabs to rearrange; double-click a tab
 to rename it and a pane header to zoom. Dropping files onto a terminal pastes
