@@ -14,14 +14,15 @@ use phux_protocol::ids::{ResourceId, SatelliteHost};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::PhysicalKey;
+use phux_protocol::wire::RemoteListenerTransport;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ControlAction, ErrorCode, FrameKind,
     InputMode, Scope, SpawnError, SpawnResource, SpawnResult, StateScope,
 };
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
 use phux_server_testkit::{
-    Spawn, ascii_key, encode_frame, recv_typed, send_frame, spawn_resource, wait_for_raw_socket,
-    wait_for_socket,
+    Spawn, ascii_key, bound_listener_addr, encode_frame, recv_typed, send_frame, spawn_resource,
+    wait_for_raw_socket, wait_for_socket,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -48,8 +49,9 @@ const WS_CONNECT_HANG_GUARD: Duration = Duration::from_secs(60);
 type ServerTask = JoinHandle<Result<(), ServerError>>;
 
 /// A loopback port held for the test's lifetime by a listener that accepts
-/// and immediately drops every connection. Unlike a `free_port()` number, no
-/// neighbour (or a later satellite) can bind it and answer as the "dead" host.
+/// and immediately drops every connection. Unlike a reserved-then-released
+/// number, no neighbour (or a later satellite) can bind it and answer as the
+/// "dead" host.
 struct DeadEndpoint {
     port: u16,
     accept: JoinHandle<()>,
@@ -89,36 +91,35 @@ fn satellite_entry(name: &str, port: u16) -> SatelliteConfigEntry {
 }
 
 /// Spawn a satellite with session `sat-session` (PTY-backed when `seed` is
-/// given), listening on loopback WebSocket as well as its UDS. The WS port is
-/// held bound until immediately before `listen_ws`, so nothing can steal it.
-fn spawn_satellite_runtime(
+/// given), listening on loopback WebSocket as well as its UDS. The WS
+/// listener binds port 0 and the returned port is the one it reports bound,
+/// so no neighbour can take it first.
+async fn spawn_satellite_runtime(
     socket_path: PathBuf,
     seed: Option<CommandBuilder>,
 ) -> (u16, oneshot::Sender<()>, ServerTask) {
-    let hold = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let ws_addr = hold.local_addr().unwrap();
     let (tx, rx) = oneshot::channel::<()>();
     let cfg = ServerConfig {
-        socket_path,
+        socket_path: socket_path.clone(),
         pre_seeded_session: Some("sat-session".to_owned()),
         seed_with_pty: seed.is_some(),
         seed_command: seed,
         ..ServerConfig::with_default_socket()
     };
     let handle = tokio::task::spawn_local(async move {
-        drop(hold);
         ServerRuntime::new(cfg)
-            .listen_ws(ws_addr)
+            .listen_ws("127.0.0.1:0".parse().unwrap())
             .run_async(async move {
                 let _ = rx.await;
             })
             .await
     });
+    let ws_addr = bound_listener_addr(&socket_path, RemoteListenerTransport::Wss).await;
     (ws_addr.port(), tx, handle)
 }
 
-fn spawn_satellite(socket_path: PathBuf) -> (u16, oneshot::Sender<()>, ServerTask) {
-    spawn_satellite_runtime(socket_path, None)
+async fn spawn_satellite(socket_path: PathBuf) -> (u16, oneshot::Sender<()>, ServerTask) {
+    spawn_satellite_runtime(socket_path, None).await
 }
 
 /// Spawn a hub dialing `satellites`, optionally pre-seeding a local session.
@@ -253,7 +254,7 @@ impl Fed {
     async fn boot_with(seed: Option<CommandBuilder>, hub_session: Option<&str>) -> Self {
         let tmp = TempDir::new().unwrap();
         let (ws_port, sat_shutdown, sat_task) =
-            spawn_satellite_runtime(tmp.path().join("sat.sock"), seed);
+            spawn_satellite_runtime(tmp.path().join("sat.sock"), seed).await;
         let hub = spawn_hub_with_session(
             tmp.path().join("hub.sock"),
             vec![satellite_entry("sat", ws_port)],
@@ -677,7 +678,7 @@ fn aggregated_list_merges_local_and_satellite_terminals_and_degrades() {
         let tmp = TempDir::new().unwrap();
         // Reserve the dead port first so the live draw cannot collide with it.
         let down = DeadEndpoint::reserve().await;
-        let (ws_port, sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"));
+        let (ws_port, sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock")).await;
         let (hub_shutdown, hub_task) = spawn_hub_with_session(
             tmp.path().join("hub.sock"),
             vec![
@@ -819,7 +820,7 @@ fn ssh_stub_link_relays_commands_end_to_end() {
 
     phux_server_testkit::run_local(async move {
         let sat_sock = tmp.path().join("sat.sock");
-        let (ws_port, sat_shutdown, sat_task) = spawn_satellite(sat_sock.clone());
+        let (ws_port, sat_shutdown, sat_task) = spawn_satellite(sat_sock.clone()).await;
         let bridge = tokio::task::spawn_local(run_stub_bridge(c2s, s2c, sat_sock));
         let (hub_shutdown, hub_task) = spawn_hub_with_env(
             tmp.path().join("hub.sock"),

@@ -2,16 +2,18 @@
 //! binary message, HELLO -> ATTACH -> ATTACHED + bootstrap, a PING/PONG round
 //! trip, and the fatal close for a zero `attach_id`.
 
-use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
+use phux_protocol::wire::RemoteListenerTransport;
 use phux_protocol::wire::frame::{AttachTarget, ErrorCode, FrameKind};
 use phux_server::{ServerConfig, ServerRuntime};
 use phux_server_testkit::{
-    WIRE_RECV_TIMEOUT, assert_protocol_error_detach, encode_frame_vec, run_local,
+    WIRE_RECV_TIMEOUT, assert_protocol_error_detach, bound_listener_addr, encode_frame_vec,
+    run_local,
 };
 use tempfile::TempDir;
 use tokio::net::TcpStream;
@@ -72,29 +74,27 @@ async fn connect(addr: SocketAddr) -> Ws {
 
 #[test]
 fn ws_hello_attach_receives_attached_and_snapshot() {
-    // Hold the port until the server binds so no neighbour can take it.
-    let hold = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let addr = hold.local_addr().unwrap();
     run_local(async move {
         let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
         let cfg = ServerConfig {
-            socket_path: tmp.path().join("phux.sock"),
+            socket_path: socket_path.clone(),
             pre_seeded_session: Some("default".to_owned()),
             seed_with_pty: false,
             seed_command: None,
             ..ServerConfig::with_default_socket()
         };
         let (_shutdown, stop) = oneshot::channel::<()>();
-        drop(hold);
         let _server = tokio::task::spawn_local(async move {
             ServerRuntime::new(cfg)
-                .listen_ws(addr)
+                .listen_ws((Ipv4Addr::LOCALHOST, 0).into())
                 .run_async(async move {
                     let _ = stop.await;
                 })
                 .await
         });
 
+        let addr = bound_listener_addr(&socket_path, RemoteListenerTransport::Wss).await;
         let mut ws = connect(addr).await;
         send(&mut ws, &hello()).await;
         send(
