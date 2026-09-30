@@ -987,7 +987,10 @@ impl FarHost {
     /// A fake `ssh` that logs its argv to `ssh-calls` and its stdin to
     /// `ssh-stdin`, and runs `phux` on this far host with that stdin:
     /// `ssh -G -- HOST` names loopback, and `ssh -o BatchMode=yes HOST phux
-    /// ARGS...` runs the real binary.
+    /// ARGS...` runs the real binary. While a `tamper-add-key` file exists
+    /// beside it, `workload add-key` still enrolls on the far host but its
+    /// reply arrives with the leaf relabelled as a private key, which the
+    /// client must refuse after the far host committed.
     fn fake_ssh(&self, dir: &Path) -> PathBuf {
         use std::fmt::Write as _;
         let exports = self
@@ -1003,9 +1006,12 @@ impl FarHost {
              if [ \"$1\" = \"-G\" ]; then echo 'hostname 127.0.0.1'; exit 0; fi\n\
              shift 4\n\
              {exports}\
+             case \"$*\" in *'workload add-key'*) if [ -f '{tamper}' ]; then \
+               tee -a '{stdin}' | '{PHUX}' \"$@\" | sed 's/-----BEGIN CERTIFICATE-----/-----BEGIN PRIVATE KEY-----/'; exit 0; fi ;; esac\n\
              tee -a '{stdin}' | '{PHUX}' \"$@\"\n",
             calls = dir.join("ssh-calls").display(),
             stdin = dir.join("ssh-stdin").display(),
+            tamper = dir.join("tamper-add-key").display(),
         );
         let path = dir.join("fake-ssh");
         std::fs::write(&path, script).expect("write fake ssh");
@@ -1358,4 +1364,371 @@ fn assert_revoked(live: &mut RawSession) {
             );
         }
     }
+}
+
+/// A far host with a paired listener and the first `host add` done: the
+/// sandbox, the fake ssh, the server, the `host add --json` argv, and the
+/// first credential.
+struct Enrolled {
+    dir: TempDir,
+    far: FarHost,
+    ssh: PathBuf,
+    _server: Server,
+    add: Vec<String>,
+    first: String,
+}
+
+impl Enrolled {
+    fn start() -> Self {
+        let dir = TempDir::new().expect("tempdir");
+        prepare_dirs(&dir.path().join("client"));
+        let far = FarHost::new(dir.path());
+        let ssh = far.fake_ssh(dir.path());
+        let port = free_udp_port();
+        let server = far.serve(&format!("0.0.0.0:{port}"));
+        let quic = format!("127.0.0.1:{port}");
+        let add: Vec<String> = [
+            "host",
+            "add",
+            "me@127.0.0.1",
+            "--name",
+            REMOTE,
+            "--endpoint",
+            quic.as_str(),
+            "--no-service",
+            "--json",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let argv: Vec<&str> = add.iter().map(String::as_str).collect();
+        let (_, first) = assert_first_enrollment(dir.path(), &far, &ssh, &argv, &quic);
+        Self {
+            dir,
+            far,
+            ssh,
+            _server: server,
+            add,
+            first,
+        }
+    }
+
+    fn client(&self, args: &[&str]) -> Output {
+        client_phux(self.dir.path(), &self.ssh, args)
+    }
+
+    /// `host add` again, as a JSON document; it must succeed.
+    fn add_again(&self) -> serde_json::Value {
+        let argv: Vec<&str> = self.add.iter().map(String::as_str).collect();
+        let out = self.client(&argv);
+        assert!(out.status.success(), "host add: {}", text(&out.stderr));
+        json_doc(&out)
+    }
+
+    fn entry(&self) -> toml::Value {
+        remote_entry(self.dir.path(), REMOTE)
+    }
+
+    /// The credential the entry's certificate authenticates as, per the far
+    /// server.
+    fn whoami(&self) -> String {
+        let out = self.client(&["whoami", "--remote", REMOTE, "--json"]);
+        assert!(out.status.success(), "whoami: {}", text(&out.stderr));
+        json_doc(&out)["credential_id"]
+            .as_str()
+            .expect("credential_id")
+            .to_owned()
+    }
+
+    fn status(&self, id: &str) -> serde_json::Value {
+        self.far
+            .credentials()
+            .iter()
+            .find(|credential| credential["credential_id"] == id)
+            .map(|credential| credential["status"].clone())
+            .unwrap_or_default()
+    }
+
+    /// Make the saved route unusable so `host add` re-pairs.
+    fn drop_token(&self) {
+        std::fs::remove_file(entry_path(&self.entry(), "token-file")).expect("drop token");
+    }
+
+    fn calls(&self) -> String {
+        std::fs::read_to_string(self.dir.path().join("ssh-calls")).unwrap_or_default()
+    }
+
+    fn clear_calls(&self) {
+        std::fs::write(self.dir.path().join("ssh-calls"), "").expect("clear ssh calls");
+    }
+
+    fn config_path(&self) -> PathBuf {
+        self.dir.path().join("client/config/phux/config.toml")
+    }
+
+    /// Drop one key from the `[[remote]]` entry, leaving half an identity.
+    fn forget(&self, key: &str) {
+        let raw = std::fs::read_to_string(self.config_path()).expect("client config");
+        let prefix = format!("{key} =");
+        let kept: Vec<&str> = raw
+            .lines()
+            .filter(|line| !line.trim_start().starts_with(&prefix))
+            .collect();
+        assert_ne!(kept.len(), raw.lines().count(), "{key} was in the entry");
+        std::fs::write(self.config_path(), kept.join("\n") + "\n").expect("rewrite config");
+    }
+}
+
+/// The `enrollment` object's credential moved from `previous` to a new one,
+/// and the far host revoked `previous` only after enrolling its successor.
+/// Returns the new credential id.
+fn assert_rolled_forward(host: &Enrolled, doc: &serde_json::Value, previous: &str) -> String {
+    let enrollment = &doc["enrollment"];
+    assert_eq!(enrollment["status"], "enrolled", "{doc}");
+    assert_eq!(enrollment["error"], serde_json::Value::Null, "{doc}");
+    assert_eq!(enrollment["previous_credential_id"], previous, "{doc}");
+    assert_eq!(enrollment["previous_revoked"], true, "{doc}");
+    assert_eq!(enrollment["warnings"], serde_json::json!([]), "{doc}");
+    let current = enrollment["credential_id"]
+        .as_str()
+        .expect("credential_id")
+        .to_owned();
+    assert_ne!(current, previous);
+    assert!(enrollment["expires_at"].is_i64(), "{doc}");
+    assert_eq!(host.status(previous), "revoked");
+    assert_eq!(host.status(&current), "active");
+    assert_eq!(host.whoami(), current);
+    // The far host enrolled first and revoked after: never `--replace`.
+    let calls = host.calls();
+    let enrolled_at = calls.find("workload add-key").expect("add-key ran");
+    let revoked_at = calls
+        .find(&format!("workload revoke {previous}"))
+        .expect("the previous credential was revoked");
+    assert!(enrolled_at < revoked_at, "{calls}");
+    assert!(!calls.contains("--replace "), "{calls}");
+    current
+}
+
+/// ADR-0116 two-phase re-enrollment. A reply the client refuses after the
+/// far host committed leaves the entry on its working certificate and
+/// revokes only the orphan; a good one rewrites the entry first and revokes
+/// the old credential after. An entry naming only its certificate, or only
+/// its key, still revokes the credential it held, through the enrolled pair
+/// on disk, and leaves neither file behind.
+#[test]
+#[ignore = "spawns a real server with a paired QUIC listener; runs in the e2e lane"]
+fn reenrollment_revokes_the_old_certificate_only_after_the_entry_moves() {
+    let host = Enrolled::start();
+    let entry = host.entry();
+    let (cert, key) = (
+        entry_path(&entry, "client-cert"),
+        entry_path(&entry, "client-key"),
+    );
+
+    // The far host enrolls, the client refuses the reply: nothing moves.
+    let tamper = host.dir.path().join("tamper-add-key");
+    std::fs::write(&tamper, "").expect("tamper");
+    host.drop_token();
+    let doc = host.add_again();
+    std::fs::remove_file(&tamper).expect("untamper");
+    let enrollment = &doc["enrollment"];
+    assert_eq!(enrollment["status"], "failed", "{doc}");
+    assert!(
+        enrollment["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("private key")),
+        "{doc}"
+    );
+    assert_eq!(enrollment["credential_id"], host.first.as_str(), "{doc}");
+    assert_eq!(enrollment["previous_revoked"], serde_json::Value::Null);
+    assert_eq!(entry_path(&host.entry(), "client-cert"), cert);
+    assert!(cert.exists() && key.exists(), "the working pair is kept");
+    assert_eq!(host.status(&host.first), "active");
+    let credentials = host.far.credentials();
+    assert_eq!(credentials.len(), 2, "{credentials:?}");
+    assert!(
+        credentials.iter().any(
+            |credential| credential["credential_id"] != host.first.as_str()
+                && credential["status"] == "revoked"
+        ),
+        "the orphaned credential is revoked: {credentials:?}"
+    );
+    assert_eq!(host.whoami(), host.first, "still admitted as before");
+
+    // The same re-enrollment untampered: entry first, revocation after.
+    host.clear_calls();
+    host.drop_token();
+    let doc = host.add_again();
+    let second = assert_rolled_forward(&host, &doc, &host.first);
+    assert!(!cert.exists() && !key.exists(), "the old pair is removed");
+
+    // Half an identity: only the certificate named.
+    let entry = host.entry();
+    let (cert, key) = (
+        entry_path(&entry, "client-cert"),
+        entry_path(&entry, "client-key"),
+    );
+    host.forget("client-key");
+    host.clear_calls();
+    let doc = host.add_again();
+    let third = assert_rolled_forward(&host, &doc, &second);
+    assert!(!cert.exists() && !key.exists(), "both halves are removed");
+
+    // Only the key named: the enrolled certificate beside it names the
+    // credential.
+    let entry = host.entry();
+    let (cert, key) = (
+        entry_path(&entry, "client-cert"),
+        entry_path(&entry, "client-key"),
+    );
+    host.forget("client-cert");
+    host.clear_calls();
+    let doc = host.add_again();
+    assert_rolled_forward(&host, &doc, &third);
+    assert!(!cert.exists() && !key.exists(), "both halves are removed");
+}
+
+/// Renewal: a certificate inside the renewal window makes every dial warn
+/// and `phux doctor` report it; `host add` on a host that answers renews it
+/// instead of calling it done, and `host renew` replaces a certificate on
+/// demand without touching the rest of the entry.
+#[test]
+#[ignore = "spawns a real server with a paired QUIC listener; runs in the e2e lane"]
+fn a_certificate_due_for_renewal_warns_and_is_renewed() {
+    let host = Enrolled::start();
+    let short = install_short_lived_identity(&host, 5);
+
+    let whoami = host.client(&["whoami", "--remote", REMOTE, "--json"]);
+    assert!(whoami.status.success(), "{}", text(&whoami.stderr));
+    assert_eq!(json_doc(&whoami)["credential_id"], short.as_str());
+    let warned = text(&whoami.stderr);
+    assert!(
+        warned.contains("expires on") && warned.contains("phux host renew loop"),
+        "{warned}"
+    );
+    let doctor = host.client(&["doctor", "--json"]);
+    let doctor: serde_json::Value = serde_json::from_slice(&doctor.stdout).expect("doctor json");
+    let check = doctor["checks"]
+        .as_array()
+        .expect("checks")
+        .iter()
+        .find(|check| check["name"] == "client-certs")
+        .expect("the client-certs check")
+        .clone();
+    assert_eq!(check["status"], "warn", "{check}");
+    assert!(
+        check["hint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("phux host renew loop")),
+        "{check}"
+    );
+
+    // The saved route answers, but the certificate is due: renewed.
+    host.clear_calls();
+    let doc = host.add_again();
+    let renewed = assert_rolled_forward(&host, &doc, &short);
+    let quiet = host.client(&["whoami", "--remote", REMOTE, "--json"]);
+    assert!(
+        !text(&quiet.stderr).contains("phux host renew"),
+        "{}",
+        text(&quiet.stderr)
+    );
+
+    // On demand: only the identity changes.
+    let before = host.entry();
+    host.clear_calls();
+    let out = host.client(&["host", "renew", REMOTE, "--json"]);
+    assert!(out.status.success(), "host renew: {}", text(&out.stderr));
+    let doc = json_doc(&out);
+    let newest = assert_rolled_forward(&host, &doc, &renewed);
+    let after = host.entry();
+    for key in ["endpoint", "token-file", "cert-fingerprint", "ssh"] {
+        assert_eq!(before.get(key), after.get(key), "{key}");
+    }
+    assert!(
+        !host.calls().contains("phux pair"),
+        "renew does not re-pair"
+    );
+    assert!(!entry_path(&before, "client-cert").exists());
+    assert!(!entry_path(&before, "client-key").exists());
+    assert_eq!(
+        doc["host"]["client_cert"],
+        after["client-cert"].as_str().expect("path")
+    );
+    let key_pem = std::fs::read_to_string(entry_path(&after, "client-key")).expect("key");
+    assert_no_key_bytes(&out, &key_needles(&key_pem));
+    assert_eq!(host.whoami(), newest);
+
+    let missing = host.client(&["host", "renew", "nosuch", "--json"]);
+    assert!(!missing.status.success());
+}
+
+/// Swap the entry's identity for one the far host issued for `days`: a
+/// client key and CSR made here, signed by `add-key --expires-in`, stored
+/// under the names `host add` gives an enrolled pair. Returns its id.
+fn install_short_lived_identity(host: &Enrolled, days: i64) -> String {
+    let client = client_key();
+    let chain = host.far.root.join("short.pem");
+    let seconds = (days * 86_400).to_string();
+    let mut far = common::phux_cmd(PHUX)
+        .envs(host.far.env())
+        .current_dir(&host.far.root)
+        .args([
+            "workload",
+            "add-key",
+            "--json",
+            "--scope",
+            "inventory,observe,create,bind,input,signal@global",
+            "--expires-in",
+            &seconds,
+            "--cert-out",
+            chain.to_str().expect("utf-8"),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("far add-key");
+    far.stdin
+        .take()
+        .expect("stdin")
+        .write_all(client.csr_pem.as_bytes())
+        .expect("csr");
+    let out = far.wait_with_output().expect("far add-key");
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let id = json_doc(&out)["credential_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let entry = host.entry();
+    let (old_cert, old_key) = (
+        entry_path(&entry, "client-cert"),
+        entry_path(&entry, "client-key"),
+    );
+    let remotes = old_cert.parent().expect("remotes dir");
+    let digest = id.strip_prefix("sha256:").expect("canonical id");
+    let stem = format!("{REMOTE}.client.{}", &digest[..16]);
+    let (cert, key) = (
+        remotes.join(format!("{stem}.pem")),
+        remotes.join(format!("{stem}.key")),
+    );
+    for (path, bytes) in [
+        (&cert, std::fs::read(&chain).expect("chain")),
+        (&key, client.key_pem.into_bytes()),
+    ] {
+        std::fs::write(path, bytes).expect("write identity");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+    }
+    let raw = std::fs::read_to_string(host.config_path()).expect("config");
+    let raw = raw
+        .replace(
+            old_cert.to_str().expect("utf-8"),
+            cert.to_str().expect("utf-8"),
+        )
+        .replace(
+            old_key.to_str().expect("utf-8"),
+            key.to_str().expect("utf-8"),
+        );
+    std::fs::write(host.config_path(), raw).expect("rewrite config");
+    id
 }

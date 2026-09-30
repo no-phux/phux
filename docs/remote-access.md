@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-09-29
+last-reviewed: 2026-09-30
 ---
 
 # Remote access
@@ -65,19 +65,74 @@ Each step prints one line as it happens; each failure names the next command.
 Running it again on a registered host is safe: if the saved route answers it
 says so and changes nothing; if not, it sets the host up again.
 
+### Client certificates and renewal
+
+A host with a direct route also gets a workload client certificate
+([workload-auth.md](spec/workload-auth.md) §8.1): the key is generated on
+this machine, only its signing request crosses ssh, and the entry names the
+key and certificate files (`client-cert`, `client-key`) under
+`<state-dir>/remotes/`. Every direct dial presents them, which a server in
+`[policy] mode = "paired"` requires.
+
+Certificates are issued for 90 days. Nothing renews one behind your back;
+instead:
+
+- `phux host renew mini` enrolls a fresh certificate over the entry's ssh
+  destination and changes nothing else (no re-pairing, no service install).
+- `phux host add me@mini` on a registered host renews a certificate that
+  expires within 14 days, has expired, or cannot be read, even when the
+  route still answers.
+- A dial to such a remote (`phux attach mini`, `phux ls --remote mini`, and
+  the other remote verbs) warns once with the `phux host renew` command, and
+  `phux doctor` reports it as `client-certs`.
+
+Replacing a certificate is two-phase: the new one is enrolled, checked, and
+recorded in the entry first, and only then is the old one revoked on the
+host. A failure before that point leaves the entry on the certificate that
+still works (and revokes the new credential nobody holds); a failed
+revocation prints the `ssh ... phux workload revoke sha256:...` that
+finishes it. An entry that names only one of `client-cert` and `client-key`
+is re-enrolled the same way, revoking the credential its enrolled
+certificate names, or warning when none can be named.
+
+`phux host add --json` and `phux host renew --json` report the outcome
+beside the `"host"` object:
+
+```json
+"enrollment": {
+  "status": "enrolled",
+  "error": null,
+  "credential_id": "sha256:...",
+  "expires_at": 1767225600,
+  "previous_credential_id": "sha256:...",
+  "previous_revoked": true,
+  "warnings": []
+}
+```
+
+`status` is `enrolled`, `kept` (the previous certificate still works and is
+not due), `failed` (with `error`; the entry keeps the previous certificate,
+or none), or `skipped` (a satellite, `--ssh-only`, the manual form, or no
+direct route). `credential_id` and `expires_at` (Unix seconds; the day
+admission is expected to end) describe the certificate the entry names now,
+`null` for none. `previous_revoked` is `null` when nothing was superseded.
+`warnings` carries anything left to do by hand. Paths appear in `"host"`;
+key bytes never appear anywhere.
+
 ### Managing many hosts
 
 ```sh
 phux host ls                         # remotes and satellites together
 phux host show mini                  # inspect its route and auth references
 phux host attach mini                # same repair-aware path as phux attach mini
+phux host renew mini                 # replace its workload client certificate
 phux host rename mini desk           # rename the local label, keep credentials
 phux host disable edge               # pause a satellite without forgetting it
 phux host enable edge                # resume it
 phux host rm desk                    # forget the entry; token file stays put
 ```
 
-`ls`, `show`, `rename`, `enable`, `disable`, and `rm` accept `--json` for
+`ls`, `show`, `rename`, `renew`, `enable`, `disable`, and `rm` accept `--json` for
 scripts (except `attach`, which is interactive). `show`, `rename`, and `rm`
 accept `--role remote|satellite` when the same name exists in both registries;
 without it they refuse to guess. Enable/disable apply only to satellites.

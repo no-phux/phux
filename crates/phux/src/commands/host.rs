@@ -33,8 +33,17 @@
 //!
 //! `enabled` is `null` for remotes; `session`, `ssh`, `direct`, `client_cert`,
 //! and `client_key` are `null` for satellites. The client identity is named
-//! by path only; the key bytes never appear. `host add --json` wraps one such object under `"host"`;
+//! by path only; the key bytes never appear. `host add --json` and `host
+//! renew --json` wrap one such object under `"host"`, beside an
+//! `"enrollment"` object (`status`, `error`, `credential_id`, `expires_at`,
+//! `previous_credential_id`, `previous_revoked`, `warnings`; documented in
+//! `docs/remote-access.md`) saying what happened to the workload client
+//! certificate.
 //! `host rm --json` emits `{"schema_version":1,"removed":{"name":..,"role":..}}`.
+//!
+//! `phux host renew NAME` enrolls a fresh workload client certificate for a
+//! registered remote over ssh; like a re-enrolling `host add`, it records
+//! the new pair before revoking the old credential ([`enroll::settle_identity`]).
 //! Failures follow the shared JSON error contract in [`super::json_err`].
 
 use std::path::{Path, PathBuf};
@@ -45,8 +54,8 @@ use usage::{Args, Subcommands, ValueEnum};
 
 use super::JsonOpt;
 use super::enroll::{
-    self, ClientIdentityFiles, EnrollEvent, EnrollFailure, EnrollRequest, ServicePolicy,
-    WorkloadEnrollment,
+    self, CertificateStatus, ClientIdentityFiles, EnrollEvent, EnrollFailure, EnrollRequest,
+    FarHost, HeldIdentity, ServicePolicy, Settlement, WorkloadEnrollment,
 };
 use super::json_err::{self, CliError, codes};
 use super::remote::{self, Endpoint, RemoteEntry};
@@ -236,6 +245,27 @@ pub(crate) enum HostAction {
         json: JsonOpt,
     },
 
+    /// Renew a remote's workload client certificate over ssh.
+    ///
+    /// Enrolls a fresh certificate the way `phux host add` does (the key is
+    /// generated here; only its CSR crosses ssh), records it in the entry,
+    /// and only then revokes the one it replaces on the far host. Nothing
+    /// else about the entry changes: no re-pairing, no service install.
+    /// Certificates are issued for 90 days; dials warn and `phux doctor`
+    /// reports one within 14 days of expiry.
+    Renew {
+        /// Registered remote name.
+        name: String,
+
+        /// The `phux` to run on the host, for when a non-interactive ssh
+        /// shell's `PATH` does not find it.
+        #[usage(long, value_name = "PATH", default = "phux")]
+        remote_phux: String,
+
+        #[usage(flatten)]
+        json: JsonOpt,
+    },
+
     /// Attach to a registered remote host (same as `phux attach NAME`).
     Attach {
         /// Registered remote name.
@@ -275,6 +305,11 @@ pub(crate) fn run_host(action: &HostAction) -> ExitCode {
             role,
             json,
         } => run_rename(name, new_name, *role, json.json),
+        HostAction::Renew {
+            name,
+            remote_phux,
+            json,
+        } => run_renew(name, remote_phux, json.json),
         HostAction::Attach { name } => run_attach(name),
         HostAction::Enable { name, json } => run_enabled(name, true, json.json),
         HostAction::Disable { name, json } => run_enabled(name, false, json.json),
@@ -515,7 +550,14 @@ fn run_add_manual(name: &str, endpoint: &str, opts: &AddOpts) -> ExitCode {
         (_, true) => "rides your ssh trust",
         (_, false) => "credentials as given",
     };
-    report_registered(&row, how, &[], opts.json.json, None)
+    report_registered(
+        &row,
+        how,
+        &[],
+        opts.json.json,
+        None,
+        &EnrollmentReport::new(CertificateStatus::Skipped),
+    )
 }
 
 /// A rejected field (bad endpoint scheme, missing pin, sigil name): the
@@ -610,36 +652,27 @@ fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
         return run_add_ssh_only(&name, &ssh_host, opts);
     }
 
-    let narrate = |event: &EnrollEvent| {
+    let mut warnings = Vec::new();
+    let mut narrate = |event: &EnrollEvent| {
+        if event.is_warning() {
+            warnings.push(event.describe());
+        }
         if !json {
             eprintln!("{name}: {}", event.describe());
         }
     };
 
-    // Already registered, answering, and holding a workload client
-    // certificate: say so and stop, rather than re-pairing a machine that
-    // needs nothing. One without a certificate goes on to enroll one.
     if opts.role == HostRole::Remote
-        && let Some(entry) = remote::find(&name)
-        && entry.client_identity_paths().is_some()
+        && let Some(row) = already_current(&name, &mut narrate)
     {
-        match saved_route_answers(&entry) {
-            Some(Ok(())) => {
-                let row = HostRow::from_remote(entry);
-                return report_registered(
-                    &row,
-                    "already registered and answering; nothing to do",
-                    &[],
-                    json,
-                    None,
-                );
-            }
-            Some(Err(reason)) => narrate(&EnrollEvent::DirectUnreachable {
-                endpoint: entry.endpoint.clone(),
-                reason: format!("{reason}; setting the machine up again over ssh"),
-            }),
-            None => {}
-        }
+        return report_registered(
+            &row,
+            "already registered and answering; nothing to do",
+            &[],
+            json,
+            None,
+            &EnrollmentReport::new(CertificateStatus::Kept),
+        );
     }
 
     // Prefer credentials already on file for this name when re-enrolling so
@@ -674,15 +707,46 @@ fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
     let registered = register_enrollment(
         opts.role,
         &name,
+        &req,
         &outcome,
         opts.session.as_deref(),
-        Some(&ssh_host),
-        previous.identity.as_ref(),
+        &previous.held,
+        &mut narrate,
     );
     match registered {
-        Ok(row) => report_ssh_add(&row, &outcome, &ssh_host, quic_port, opts),
+        Ok((row, settlement)) => {
+            let enrollment = EnrollmentReport {
+                status: outcome.certificate.clone(),
+                settlement,
+                warnings,
+            };
+            report_ssh_add(&row, &outcome, &enrollment, &ssh_host, quic_port, opts)
+        }
         Err(err) => json_err::emit(json, &err, 1),
     }
+}
+
+/// A registered remote whose saved route answers and whose workload client
+/// certificate is not due for renewal needs nothing: its row, so `host add`
+/// can say so and stop rather than re-pair it. One without a certificate,
+/// with one due, or whose route does not answer is narrated and set up
+/// again (`None`).
+fn already_current(name: &str, narrate: &mut dyn FnMut(&EnrollEvent)) -> Option<HostRow> {
+    let entry = remote::find(name)?;
+    let (cert, _) = entry.client_identity_paths()?;
+    let renewal = enroll::renewal_due(cert, chrono::Utc::now().timestamp());
+    match (saved_route_answers(&entry), renewal) {
+        (Some(Ok(())), None) => return Some(HostRow::from_remote(entry)),
+        (Some(Ok(())), Some(detail)) => {
+            narrate(&EnrollEvent::CertificateRenewalDue { detail });
+        }
+        (Some(Err(reason)), _) => narrate(&EnrollEvent::DirectUnreachable {
+            endpoint: entry.endpoint.clone(),
+            reason: format!("{reason}; setting the machine up again over ssh"),
+        }),
+        (None, _) => {}
+    }
+    None
 }
 
 /// `--ssh-only` skips the host entirely: no pairing, no service, no
@@ -704,6 +768,7 @@ fn run_add_ssh_only(name: &str, ssh_host: &str, opts: &AddOpts) -> ExitCode {
             &[],
             json,
             local_hub_for(opts.role).as_ref(),
+            &EnrollmentReport::new(CertificateStatus::Skipped),
         ),
         Err(err) => json_err::emit(json, &err, 1),
     }
@@ -714,6 +779,7 @@ fn run_add_ssh_only(name: &str, ssh_host: &str, opts: &AddOpts) -> ExitCode {
 fn report_ssh_add(
     row: &HostRow,
     outcome: &enroll::EnrollOutcome,
+    enrollment: &EnrollmentReport,
     ssh_host: &str,
     quic_port: u16,
     opts: &AddOpts,
@@ -744,6 +810,7 @@ fn report_ssh_add(
         &notes,
         opts.json.json,
         local_hub_for(opts.role).as_ref(),
+        enrollment,
     )
 }
 
@@ -770,18 +837,25 @@ fn saved_route_answers(entry: &RemoteEntry) -> Option<Result<(), String>> {
 pub(crate) struct PreviousEnrollment {
     pub(crate) token: Option<String>,
     pub(crate) fingerprint: Option<String>,
+    /// The whole pair, presented on the reuse probe and kept when it works.
     pub(crate) identity: Option<ClientIdentityFiles>,
+    /// Every client identity file the entry names, whole or half: what a
+    /// new pair supersedes.
+    pub(crate) held: HeldIdentity,
 }
 
 impl PreviousEnrollment {
     /// What `entry` holds.
     pub(crate) fn of(entry: &RemoteEntry) -> Self {
+        let held = HeldIdentity {
+            certificate: entry.client_cert.clone(),
+            private_key: entry.client_key.clone(),
+        };
         Self {
             token: remote::read_token(entry).ok().flatten(),
             fingerprint: entry.cert_fingerprint.clone(),
-            identity: entry
-                .client_identity_paths()
-                .map(|(cert, key)| ClientIdentityFiles::existing(cert, key)),
+            identity: held.pair(),
+            held,
         }
     }
 }
@@ -801,6 +875,7 @@ pub(crate) fn enroll_remote_over_ssh(
     name: &str,
     req: &EnrollRequest<'_>,
     session: Option<&str>,
+    held: &HeldIdentity,
     narrate: &mut dyn FnMut(&EnrollEvent),
 ) -> Result<(RemoteEntry, enroll::EnrollOutcome), CliError> {
     let outcome = enroll::enroll_over_ssh(req, &mut |event| narrate(&event))
@@ -808,10 +883,11 @@ pub(crate) fn enroll_remote_over_ssh(
     register_enrollment(
         HostRole::Remote,
         name,
+        req,
         &outcome,
         session,
-        Some(req.ssh_host),
-        req.previous_identity,
+        held,
+        narrate,
     )?;
     let entry = remote::find(name)
         .ok_or_else(|| registry_failure(format!("{name:?} was written but cannot be read back")))?;
@@ -826,43 +902,50 @@ fn local_hub_for(role: HostRole) -> Option<service::LocalHub> {
 }
 
 /// Register what the ssh middle produced, then settle the workload client
-/// identity files: a fresh identity the entry did not record is removed, and
-/// once the entry names a new identity the previous one's files go, when an
-/// enrollment wrote them (never files the operator named themselves). The
-/// registry write is the one switch between the two pairs, so a reader
-/// always sees a whole old pair or a whole new one.
+/// identity ([`enroll::settle_identity`]): once the entry names a new pair,
+/// the credential it held is revoked on the far host and its enrolled files
+/// go (never files the operator named themselves); a new pair the entry did
+/// not record is removed and its credential revoked instead. The registry
+/// write is the one switch between the two pairs, so a reader always sees a
+/// whole old pair or a whole new one, and the old credential is never
+/// revoked before the entry stops naming it.
 fn register_enrollment(
     role: HostRole,
     name: &str,
+    req: &EnrollRequest<'_>,
     outcome: &enroll::EnrollOutcome,
     session: Option<&str>,
-    ssh: Option<&str>,
-    previous: Option<&ClientIdentityFiles>,
-) -> Result<HostRow, CliError> {
+    held: &HeldIdentity,
+    narrate: &mut dyn FnMut(&EnrollEvent),
+) -> Result<(HostRow, Settlement), CliError> {
     let route = Route {
         endpoint: &outcome.endpoint,
         pairing: Some(&outcome.report),
         direct: outcome.direct.as_deref(),
         identity: outcome.identity.as_ref(),
     };
-    let registered = finish_enroll(role, name, &route, session, ssh);
+    let registered = finish_enroll(role, name, &route, session, Some(req.ssh_host));
     let recorded = registered
         .as_ref()
         .ok()
         .and_then(|row| row.client_cert.as_deref());
-    if let Some(identity) = &outcome.identity
-        && recorded != Some(identity.certificate.as_path())
-    {
-        identity.discard_if_fresh();
-    }
-    let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
-    if let (Ok(_), Some(previous)) = (&registered, previous)
-        && recorded != Some(previous.certificate.as_path())
-        && previous.enrolled_under(&remotes_dir, name)
-    {
-        phux_server::workload::remove_identity_files(&previous.private_key, &previous.certificate);
-    }
-    registered
+    // A role that enrolls no certificate (a satellite) has nothing to settle.
+    let Some(workload) = &req.workload else {
+        return registered.map(|row| (row, Settlement::default()));
+    };
+    let fresh = outcome.identity.as_ref();
+    let settlement = enroll::settle_identity(
+        &FarHost {
+            ssh_host: req.ssh_host,
+            remote_phux: req.remote_phux,
+        },
+        fresh,
+        fresh.is_some_and(|identity| recorded == Some(identity.certificate.as_path())),
+        held,
+        workload,
+        &mut |event| narrate(&event),
+    );
+    registered.map(|row| (row, settlement))
 }
 
 /// Where an enrolled entry points and what it authenticates with.
@@ -1001,11 +1084,13 @@ fn report_registered(
     notes: &[String],
     json: bool,
     hub: Option<&service::LocalHub>,
+    enrollment: &EnrollmentReport,
 ) -> ExitCode {
     if json {
         let mut doc = serde_json::json!({
             "schema_version": 1,
             "host": row_json(row),
+            "enrollment": enrollment.to_json(row.client_cert.as_deref()),
         });
         if let Some(hub) = hub {
             doc["hub_service"] = serde_json::Value::String(hub.as_json_str().to_owned());
@@ -1045,6 +1130,43 @@ fn report_registered(
         HostRole::Satellite => report_local_hub(hub),
     }
     ExitCode::SUCCESS
+}
+
+/// What `host add` or `host renew` did about the workload client
+/// certificate: the `enrollment` object of their `--json` documents.
+struct EnrollmentReport {
+    status: CertificateStatus,
+    settlement: Settlement,
+    /// Every warning narrated along the way, in order.
+    warnings: Vec<String>,
+}
+
+impl EnrollmentReport {
+    const fn new(status: CertificateStatus) -> Self {
+        Self {
+            status,
+            settlement: Settlement {
+                previous_credential_id: None,
+                previous_revoked: None,
+            },
+            warnings: Vec::new(),
+        }
+    }
+
+    /// The document. `credential_id` and `expires_at` describe the
+    /// certificate the entry names now (`client_cert`), public material read
+    /// from it; `null` when it names none.
+    fn to_json(&self, client_cert: Option<&Path>) -> serde_json::Value {
+        serde_json::json!({
+            "status": self.status.as_str(),
+            "error": self.status.error(),
+            "credential_id": client_cert.and_then(phux_server::workload::stored_credential_id),
+            "expires_at": client_cert.and_then(enroll::admission_ends),
+            "previous_credential_id": self.settlement.previous_credential_id,
+            "previous_revoked": self.settlement.previous_revoked,
+            "warnings": self.warnings,
+        })
+    }
 }
 
 fn report_local_hub(hub: Option<&service::LocalHub>) {
@@ -1322,6 +1444,132 @@ fn run_show(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
     if let Some(cert) = row.client_cert {
         outln!("  Client certificate: {}", cert.display());
     }
+    ExitCode::SUCCESS
+}
+
+/// `phux host renew NAME`: a fresh workload client certificate for a
+/// registered remote, over the ssh destination it was enrolled through.
+/// Two-phase like `host add`: the entry is rewritten to the new pair first,
+/// then the credential it held is revoked on the far host; any failure
+/// before the rewrite leaves the entry on its current certificate.
+fn run_renew(name: &str, remote_phux: &str, json: bool) -> ExitCode {
+    if let Err((err, code)) = find_host(name, Some(HostRole::Remote), "renew") {
+        return json_err::emit(json, &err, code);
+    }
+    let Some(entry) = remote::find(name) else {
+        return json_err::emit(
+            json,
+            &registry_failure(format!("{name:?} vanished from the registry")),
+            1,
+        );
+    };
+    let held = PreviousEnrollment::of(&entry).held;
+    if held.is_empty() {
+        return json_err::emit(
+            json,
+            &CliError::new(
+                codes::REGISTRY,
+                format!("{name} has no workload client certificate to renew"),
+                format!(
+                    "`phux host add {}` sets the machine up and enrolls one",
+                    entry.ssh_destination()
+                ),
+            ),
+            2,
+        );
+    }
+    let ssh_host = entry.ssh_destination();
+    let far = FarHost {
+        ssh_host: &ssh_host,
+        remote_phux,
+    };
+    let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
+    let workload = WorkloadEnrollment {
+        dir: &remotes_dir,
+        name,
+    };
+    let mut warnings = Vec::new();
+    let mut narrate = |event: EnrollEvent| {
+        if event.is_warning() {
+            warnings.push(event.describe());
+        }
+        if !json {
+            eprintln!("{name}: {}", event.describe());
+        }
+    };
+
+    let fresh = match enroll::enroll_client_certificate(&far, &workload, &mut narrate) {
+        Ok(fresh) => fresh,
+        Err(reason) => {
+            let err = CliError::new(
+                codes::WORKLOAD,
+                format!("could not renew the workload client certificate for {name}: {reason}"),
+                format!(
+                    "the entry still presents its current certificate; check `ssh {ssh_host} {remote_phux} --version` and rerun `phux host renew {name}`"
+                ),
+            );
+            return json_err::emit(json, &err, 1);
+        }
+    };
+    narrate(EnrollEvent::CertificateEnrolled {
+        credential_id: fresh.credential_id.clone().unwrap_or_default(),
+    });
+    let written = remote::NewRemote::from_entry(&entry)
+        .and_then(|new| {
+            new.with_client_identity(Some((
+                fresh.certificate.as_path(),
+                fresh.private_key.as_path(),
+            )))
+        })
+        .map_err(reject_enrollment)
+        .and_then(|new| {
+            remote::add_or_update(&new)
+                .map(|()| new)
+                .map_err(registry_failure)
+        });
+    let settlement = enroll::settle_identity(
+        &far,
+        Some(&fresh),
+        written.is_ok(),
+        &held,
+        &workload,
+        &mut narrate,
+    );
+    let row = match written {
+        Ok(new) => HostRow::from_new_remote(new),
+        Err(err) => return json_err::emit(json, &err, 1),
+    };
+    let enrollment = EnrollmentReport {
+        status: CertificateStatus::Enrolled,
+        settlement,
+        warnings,
+    };
+    report_renewed(&row, &enrollment, json)
+}
+
+/// The summary after `host renew`: the `"host"` and `"enrollment"` document
+/// under `--json`, one line otherwise.
+fn report_renewed(row: &HostRow, enrollment: &EnrollmentReport, json: bool) -> ExitCode {
+    if json {
+        return crate::output::json(&serde_json::json!({
+            "schema_version": 1,
+            "host": row_json(row),
+            "enrollment": enrollment.to_json(row.client_cert.as_deref()),
+        }));
+    }
+    let cert = row.client_cert.as_deref();
+    let id = cert
+        .and_then(phux_server::workload::stored_credential_id)
+        .unwrap_or_default();
+    let until = cert
+        .and_then(enroll::admission_ends)
+        .map_or_else(String::new, |ends| {
+            format!(", admitted until {}", enroll::calendar_date(ends))
+        });
+    outln!(
+        "Renewed the workload client certificate for {}: {id}{until}",
+        row.name
+    );
     ExitCode::SUCCESS
 }
 

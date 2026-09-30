@@ -541,6 +541,7 @@ fn register_over_ssh(
         &name,
         &req,
         existing.and_then(|entry| entry.session.as_deref()),
+        &previous.held,
         &mut |event| eprintln!("phux: {name}: {}", event.describe()),
     )?;
 

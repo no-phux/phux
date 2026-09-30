@@ -692,7 +692,7 @@ crypto API permits.
 
 ### 8.1 Client enrollment over ssh
 
-<!-- impl-status: shipped; probe: ClientRequest,IssuedIdentity,register_replacing,HOST_ADD_WORKLOAD_SCOPE -->
+<!-- impl-status: shipped; probe: ClientRequest,IssuedIdentity,settle_identity,RENEW_WITHIN_SECONDS,HOST_ADD_WORKLOAD_SCOPE -->
 > **Status: shipped.** `phux host add` (and the attach repair rung that
 > re-pairs over ssh) enrolls a CLI or desktop client. Mobile enrollment,
 > which has no ssh channel, needs its own authorizer and is not specified
@@ -721,16 +721,35 @@ that channel; enrollment grants no authority ssh did not already grant.
    `client-cert` and `client-key`. Every TLS dial to that remote presents
    them; an entry with neither presents no certificate, and an entry with
    one but not the other is refused rather than dialed without it.
-5. Re-enrollment passes `--replace <previous id>`: the serving host enrolls
-   the new credential and revokes the previous one in one registry
-   generation, so no snapshot admits both. The client then rewrites its
-   entry to the new paths in one write and removes the previous files it
-   enrolled (never files the operator named in the entry themselves). A
-   failure at any step leaves the previous entry in place; if the far host
-   already revoked the previous credential, that failure is fail-closed.
+5. Re-enrollment is two-phase. The client enrolls the new credential
+   (step 2, without `--replace`), validates and stores it (steps 3 and 4),
+   and rewrites its entry to the new paths in one write. Only then does it
+   run `phux workload revoke <previous id>` over ssh and remove the
+   previous files it enrolled (never files the operator named in the
+   entry themselves). The previous id is read from the certificate the
+   entry names or, for an entry that names only its key, from the enrolled
+   certificate beside that key; with neither, the client warns that the
+   previous credential cannot be named and revokes nothing. A failure
+   before the entry is rewritten leaves the previous entry in place and
+   still admitted; a credential the far host enrolled that the client then
+   refused or could not record is revoked by the client's own request id,
+   never by an id the reply named. A failed revocation of the previous
+   credential is reported with the command that completes it; that
+   credential stays admitted until it expires. Between the two ssh calls
+   both credentials of this one client are admitted; no failure strands the
+   entry on a revoked credential.
+6. Renewal re-runs steps 2 to 5 for the same entry. `phux host renew
+   NAME` does so on demand, over the entry's ssh destination, and changes
+   nothing else in the entry. `phux host add` does so instead of reusing a
+   certificate whose admission ends within 14 days, or that is expired or
+   unreadable; a client dialing such an entry warns once per process, and
+   `phux doctor` reports it. Admission is taken to end one day before the
+   leaf's `notAfter`, since issuance rounds the registry expiry up to the
+   next midnight after a day of slack. Nothing renews in the background.
 
 A failed enrollment does not fail pairing: the host is registered, and its
-dials present the previous identity, or none. A private key SHALL NOT
+dials present the previous identity, or none; `phux host add --json`
+reports the outcome in its `enrollment` object. A private key SHALL NOT
 appear in a QR code, connect link, `phux pair --json`, a log, or an ssh
 argument. `phux pair revoke` and `phux workload revoke` both accept an
 enrolled certificate's `sha256:` id; revocation follows §7.

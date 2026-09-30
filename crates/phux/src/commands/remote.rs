@@ -84,6 +84,32 @@ impl RemoteEntry {
         }))
     }
 
+    /// Warn on stderr, once per process and remote, when the enrolled
+    /// workload client certificate is due for renewal (expired, unreadable,
+    /// or within [`super::enroll::RENEW_WITHIN_SECONDS`] of expiry). The dial
+    /// goes ahead regardless: the far host decides admission.
+    pub(crate) fn warn_if_renewal_due(&self) {
+        use std::sync::{Mutex, PoisonError};
+        static WARNED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+        let Some(cert) = self.client_cert.as_deref() else {
+            return;
+        };
+        let Some(detail) = super::enroll::renewal_due(cert, chrono::Utc::now().timestamp()) else {
+            return;
+        };
+        let first = WARNED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(self.name.clone());
+        if first {
+            eprintln!(
+                "phux: warning: {}: the workload client certificate {detail}; renew it with `phux host renew {}`",
+                self.name, self.name
+            );
+        }
+    }
+
     /// The enrolled identity's paths, for carrying it into a rewritten entry.
     pub(crate) fn client_identity_paths(&self) -> Option<(&Path, &Path)> {
         self.client_cert.as_deref().zip(self.client_key.as_deref())
@@ -200,6 +226,21 @@ pub(crate) struct NewRemote {
 }
 
 impl NewRemote {
+    /// Every field of a registered entry, revalidated, so one field can be
+    /// replaced without dropping the others (`add_or_update` writes the
+    /// whole entry). The client identity is not carried: the caller sets it.
+    pub(crate) fn from_entry(entry: &RemoteEntry) -> Result<Self, String> {
+        Self::new(
+            &entry.name,
+            &entry.endpoint,
+            entry.token_file.as_deref(),
+            entry.cert_fingerprint.as_deref(),
+            entry.session.as_deref(),
+        )?
+        .with_ssh(entry.ssh.as_deref())
+        .with_direct(entry.direct.as_deref())
+    }
+
     /// Record the enrolled workload client identity (both absolute paths),
     /// or none. Half an identity is refused like any other invalid field.
     pub(crate) fn with_client_identity(

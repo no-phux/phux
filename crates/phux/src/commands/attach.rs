@@ -878,6 +878,7 @@ pub(crate) fn run_attach_remote_outcome(
             return RemoteAttachOutcome::repairable(ExitCode::FAILURE);
         }
     };
+    entry.warn_if_renewal_due();
     let credentials = RemoteCredentials {
         token,
         cert_fingerprint: entry.cert_fingerprint.clone(),
