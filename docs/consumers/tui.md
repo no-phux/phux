@@ -162,8 +162,9 @@ action a keybinding produces. The generated catalog is
 live chords.
 
 At attach, a bad binding disables exactly that binding: a chord that
-fails to parse, or a sequence that is a strict prefix of another (the
-later one in table-key order loses), is skipped. Everything else,
+fails to parse, a binding to an unknown action, or a sequence that is a
+strict prefix of another (the later one in table-key order loses), is
+skipped. Everything else,
 including `detach`, keeps working. Each skip is named on the status-bar
 error line and points at `phux config check`. A `prefix` string that
 fails to parse falls back to `C-a`. Reload is the exception: it is

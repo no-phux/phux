@@ -74,8 +74,9 @@ phux config reload       # apply edits to running clients in place
 
 The edit loop is edit, `phux config check`, `phux config reload`.
 
-`phux config reload` validates the layered config locally first — a broken
-file fails right there with the parse error and signals nothing — then
+`phux config reload` validates the layered config locally first, with the
+same checks a client applies on reload — a broken file, a bad widget, or a
+binding to an unknown action fails right there and signals nothing — then
 rings a reload doorbell on the server so every attached client re-reads
 its own config file and atomically rebuilds keybindings, the theme, the
 status-bar composition, and plugin palette rows. On any parse or

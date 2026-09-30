@@ -91,7 +91,7 @@ fn parse_errors_for_malformed_specs() {
 
 #[test]
 fn resolver_rejects_a_global_binding_on_the_prefix_chord() {
-    let c = cfg("C-b", &[("c", "new-window")], &[("C-b", "global-action")]);
+    let c = cfg("C-b", &[("c", "new-window")], &[("C-b", "kill-pane")]);
     assert!(matches!(
         Resolver::new(&c),
         Err(KeybindError::AmbiguousPrefix(ref s)) if s == "C-b"
@@ -104,7 +104,7 @@ fn resolver_walks_prefix_tables_and_globals() {
     let c = cfg(
         "C-b",
         &[("c", "new-window"), ("d", "detach")],
-        &[("M-q", "quit")],
+        &[("M-q", "toggle-zoom")],
     );
     let mut r = Resolver::new(&c).unwrap();
     let resolved = |feed: Feed| match feed {
@@ -116,7 +116,7 @@ fn resolver_walks_prefix_tables_and_globals() {
     assert_eq!(resolved(r.feed(ck("c"))), "new-window");
     assert_eq!(r.feed(ck("C-b")), Feed::Partial);
     assert_eq!(resolved(r.feed(ck("d"))), "detach");
-    assert_eq!(resolved(r.feed(ck("M-q"))), "quit");
+    assert_eq!(resolved(r.feed(ck("M-q"))), "toggle-zoom");
 
     assert_eq!(r.feed(ck("M-z")), Feed::NoMatch);
     assert_eq!(r.feed(ck("C-b")), Feed::Partial);
@@ -133,8 +133,8 @@ fn resolver_walks_prefix_tables_and_globals() {
 fn pending_at_prefix_tracks_only_the_prefix_state() {
     let c = cfg(
         "C-b",
-        &[("c", "new-window"), ("n x", "nested")],
-        &[("M-g g", "global-seq")],
+        &[("c", "new-window"), ("n x", "kill-window")],
+        &[("M-g g", "next-window")],
     );
     let mut r = Resolver::new(&c).unwrap();
     let state = |r: &Resolver| (r.is_pending(), r.pending_at_prefix());
