@@ -233,6 +233,20 @@ pub fn stored_certificate_expiry(cert_path: &Path) -> Option<i64> {
     Some(parsed.validity().not_after.timestamp())
 }
 
+/// The `sha256:` fingerprint of the CA certificate stored after the leaf in
+/// the client chain at `cert_path` (the second PEM certificate), in the
+/// spelling [`IssuedIdentity::ca_fingerprint`] uses.
+///
+/// `None` when the file is missing or holds no second certificate (an
+/// operator's own leaf-only file). Public material: it tells whether two
+/// enrollments came from the same authority.
+#[must_use]
+pub fn stored_chain_authority(cert_path: &Path) -> Option<String> {
+    let bytes = std::fs::read(cert_path).ok()?;
+    let ca = CertificateDer::pem_slice_iter(&bytes).nth(1)?.ok()?;
+    Some(credential_id(ca.as_ref()))
+}
+
 const fn mismatch(reason: &'static str) -> WorkloadError {
     WorkloadError::IssuedMismatch(reason)
 }

@@ -728,6 +728,11 @@ fn a_client_request_accepts_its_own_issued_chain_and_stores_it_owner_only() {
         None,
         "a key is no certificate"
     );
+    assert_eq!(
+        stored_chain_authority(&cert).as_deref(),
+        Some(identity.ca_fingerprint())
+    );
+    assert_eq!(stored_chain_authority(&key), None);
     for needle in key_needles(&key_pem) {
         assert!(!rendered.contains(&needle), "{rendered}");
     }

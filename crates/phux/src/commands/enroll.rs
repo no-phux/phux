@@ -297,6 +297,9 @@ pub(crate) enum EnrollEvent {
         reason: String,
         remedy: String,
     },
+    /// The far host holds no credential with the superseded id: the entry
+    /// may have pointed at another host, where it stays admitted.
+    CertificateNotHeld { credential_id: String },
     /// The entry named a client key without its certificate (or a
     /// certificate that does not read), so the far-host credential it
     /// supersedes cannot be named and is not revoked.
@@ -328,7 +331,9 @@ impl EnrollEvent {
     pub(crate) const fn is_warning(&self) -> bool {
         matches!(
             self,
-            Self::CertificateNotRevoked { .. } | Self::PreviousCertificateUnidentified { .. }
+            Self::CertificateNotRevoked { .. }
+                | Self::CertificateNotHeld { .. }
+                | Self::PreviousCertificateUnidentified { .. }
         )
     }
 
@@ -383,6 +388,9 @@ impl EnrollEvent {
             } => format!(
                 "could not revoke {} {credential_id} ({reason}); it stays admitted until it expires or you run `{remedy}`",
                 retired.describe()
+            ),
+            Self::CertificateNotHeld { credential_id } => format!(
+                "this host holds no credential {credential_id}, the certificate the entry named before; if the entry used to reach another host, revoke it there with `phux workload revoke {credential_id}`"
             ),
             Self::PreviousCertificateUnidentified { remedy } => format!(
                 "the entry named a client key without a readable certificate, so the credential it replaces cannot be named or revoked; find it with `{remedy}` and revoke it there"
@@ -559,8 +567,10 @@ pub(crate) fn renewal_due(cert: &Path, now: i64) -> Option<String> {
     Some(if remaining <= 0 {
         format!("expired on {date}")
     } else {
-        let days = remaining / SECONDS_PER_DAY;
-        format!("expires on {date} (in {days} day(s))")
+        match remaining / SECONDS_PER_DAY {
+            0 => format!("expires on {date} (in less than a day)"),
+            days => format!("expires on {date} (in {days} day(s))"),
+        }
     })
 }
 
@@ -602,7 +612,24 @@ impl HeldIdentity {
     /// neither reads: a key alone cannot name it without reading private
     /// bytes.
     pub(crate) fn credential_id(&self, dir: &Path, name: &str) -> Option<String> {
-        let read = phux_server::workload::stored_credential_id;
+        self.read_certificate(dir, name, phux_server::workload::stored_credential_id)
+    }
+
+    /// The `sha256:` fingerprint of the CA that issued the held
+    /// certificate, from the chain stored with it (found as for
+    /// [`Self::credential_id`]). `None` for a leaf-only or unreadable file.
+    pub(crate) fn authority(&self, dir: &Path, name: &str) -> Option<String> {
+        self.read_certificate(dir, name, phux_server::workload::stored_chain_authority)
+    }
+
+    /// `read` over the certificate the entry names, else the enrolled
+    /// certificate beside an enrolled key the entry names alone.
+    fn read_certificate(
+        &self,
+        dir: &Path,
+        name: &str,
+        read: fn(&Path) -> Option<String>,
+    ) -> Option<String> {
         self.certificate.as_deref().and_then(read).or_else(|| {
             self.enrolled_files(dir, name)
                 .iter()
@@ -889,10 +916,12 @@ impl FarHost<'_> {
         )
     }
 
-    /// Revoke `credential_id` on the far host. A credential the host does
-    /// not hold is already not admitted, so that is not a failure. The id
-    /// is public (a hash of a public key); nothing secret enters argv.
-    fn revoke(&self, credential_id: &str) -> Result<(), String> {
+    /// Revoke `credential_id` on the far host: `Ok(true)` once it is
+    /// revoked (now or before), `Ok(false)` when the host holds no such
+    /// credential (it admits nothing there, but it may still be live on
+    /// another host). The id is public (a hash of a public key); nothing
+    /// secret enters argv.
+    fn revoke(&self, credential_id: &str) -> Result<bool, String> {
         let out = ssh_run(
             self.ssh_host,
             &[
@@ -903,28 +932,40 @@ impl FarHost<'_> {
                 "--json",
             ],
         )?;
-        if out.status.success() || out.stderr.contains(NO_SUCH_CREDENTIAL) {
-            return Ok(());
+        if out.status.success() {
+            return Ok(true);
+        }
+        if out.stderr.contains(NO_SUCH_CREDENTIAL) {
+            return Ok(false);
         }
         Err(out.failure_detail())
     }
 
-    /// Revoke `credential_id`, narrating the result; `true` when it is no
-    /// longer admitted.
+    /// Revoke `credential_id`, narrating the result: `Some(true)` when it
+    /// is revoked, `Some(false)` when the revocation failed, `None` when
+    /// this host never held it. A superseded credential this host does not
+    /// hold is reported (the entry may have pointed at another host); an
+    /// unrecorded one it does not hold was never enrolled, so says nothing.
     fn retire(
         &self,
         credential_id: &str,
         retired: Retired,
         on_event: &mut dyn FnMut(EnrollEvent),
-    ) -> bool {
+    ) -> Option<bool> {
         let credential_id = credential_id.to_owned();
         match self.revoke(&credential_id) {
-            Ok(()) => {
+            Ok(true) => {
                 on_event(EnrollEvent::CertificateRevoked {
                     credential_id,
                     retired,
                 });
-                true
+                Some(true)
+            }
+            Ok(false) => {
+                if retired == Retired::Superseded {
+                    on_event(EnrollEvent::CertificateNotHeld { credential_id });
+                }
+                None
             }
             Err(reason) => {
                 on_event(EnrollEvent::CertificateNotRevoked {
@@ -933,7 +974,7 @@ impl FarHost<'_> {
                     retired,
                     reason,
                 });
-                false
+                Some(false)
             }
         }
     }
@@ -949,7 +990,7 @@ pub(crate) struct Settlement {
     /// could be read and differs from the new one.
     pub(crate) previous_credential_id: Option<String>,
     /// Whether that credential is revoked now; `None` when there was none
-    /// to revoke (or it could not be named).
+    /// to revoke, it could not be named, or this host does not hold it.
     pub(crate) previous_revoked: Option<bool>,
 }
 
@@ -984,8 +1025,7 @@ pub(crate) fn settle_identity(
     let mut settlement = Settlement::default();
     match held.credential_id(workload.dir, workload.name) {
         Some(previous) if fresh.credential_id.as_deref() != Some(previous.as_str()) => {
-            let revoked = far.retire(&previous, Retired::Superseded, on_event);
-            settlement.previous_revoked = Some(revoked);
+            settlement.previous_revoked = far.retire(&previous, Retired::Superseded, on_event);
             settlement.previous_credential_id = Some(previous);
         }
         Some(_) => {}
@@ -1044,6 +1084,12 @@ pub(crate) fn enroll_client_certificate(
     ];
     let added = ssh_run_with_stdin(ssh_host, &argv, request.csr_pem().as_bytes())?;
     if !added.status.success() {
+        // ssh itself failed: the far host may have committed before the
+        // channel dropped, so retire this request's own id (a host that
+        // never enrolled it answers "not held", which says nothing).
+        if added.status.code() == Some(SSH_FAILED) {
+            far.retire(&request.credential_id(), Retired::Unrecorded, on_event);
+        }
         return Err(format!(
             "`phux workload add-key` failed there: {}",
             added.failure_detail()
