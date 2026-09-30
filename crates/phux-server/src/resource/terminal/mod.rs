@@ -729,6 +729,9 @@ pub struct TerminalActor {
     consumer_tick_emits: bool,
     /// PTY output from the reader thread; `None` for the no-PTY test actor.
     pty_rx: Option<mpsc::Receiver<PtyEvent>>,
+    /// Chunks drained behind the first one of a PTY burst, reused across
+    /// bursts so coalescing sizes its one join allocation exactly.
+    pty_burst: Vec<Bytes>,
     /// Input bytes for the PTY writer thread; `None` without a PTY.
     pty_tx: Option<mpsc::Sender<EncodedInputRequest>>,
     /// PTY resources; dropped on shutdown to send EOF and stop the threads.
