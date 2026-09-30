@@ -46,6 +46,32 @@ pub(super) async fn emit_view_reflow(
     emit_layout_reflow(conn, ls.as_ref(), prev_rects, content).await
 }
 
+/// Emit `RESIZE_TERMINAL` for each pane whose painted tile changed size
+/// between two [`view_rects`] of the same window (a `resize-pane`, divider
+/// drag, or swap). Both sides come from the one tiling, so a viewport too
+/// small to tile cannot read as a change.
+pub(super) async fn emit_moved_tiles(
+    conn: &mut Connection,
+    prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
+    rects: &HashMap<ResourceId, crate::layout::Rect>,
+) -> Result<(), AttachError> {
+    for (terminal_id, rect) in rects {
+        let moved = prev_rects
+            .get(terminal_id)
+            .is_none_or(|prev| (prev.w, prev.h) != (rect.w, rect.h));
+        if !moved || rect.w == 0 || rect.h == 0 || !conn.can_route_terminal(terminal_id) {
+            continue;
+        }
+        conn.send(&FrameKind::ResizeTerminal {
+            terminal_id: terminal_id.clone(),
+            cols: rect.w,
+            rows: rect.h,
+        })
+        .await?;
+    }
+    Ok(())
+}
+
 /// Size every window of a just-restored workspace before its first full
 /// paint (ATTACHED only carried a one-pane fallback).
 pub(super) async fn emit_bootstrap_workspace_reflow(
