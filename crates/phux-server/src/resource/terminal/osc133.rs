@@ -36,6 +36,9 @@ pub(super) enum OscMark {
 /// Longest OSC payload buffered; recognised marks are a few bytes.
 const MAX_OSC_LEN: usize = 64;
 
+const ESC: u8 = 0x1b;
+const BEL: u8 = 0x07;
+
 /// Scanner state between chunks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -84,65 +87,79 @@ impl Osc133Scanner {
         let mut index = 0;
         while index < chunk.len() {
             if matches!(self.state, State::Ground) {
-                let Some(escape) = memchr::memchr(0x1b, &chunk[index..]) else {
+                let Some(escape) = memchr::memchr(ESC, &chunk[index..]) else {
                     return;
                 };
                 index += escape;
             }
-            let byte = chunk[index];
+            self.step(chunk[index], marks);
             index += 1;
-            // An aborted OSC's aborting byte may start something new, so it
-            // can be processed twice.
-            loop {
-                match self.state {
-                    State::Ground => {
-                        if byte == 0x1b {
-                            self.state = State::Escape;
-                        }
-                    }
-                    State::Escape => match byte {
-                        b']' => {
-                            self.state = State::Collect;
-                            self.buf.clear();
-                            self.overflow = false;
-                        }
-                        // ESC ESC stays in Escape; other sequences are ignored.
-                        0x1b => {}
-                        _ => self.state = State::Ground,
-                    },
-                    State::Collect => match byte {
-                        // BEL terminator.
-                        0x07 => {
-                            if let Some(mark) = self.finish() {
-                                marks.push(mark);
-                            }
-                        }
-                        0x1b => self.state = State::CollectEscape,
-                        _ => {
-                            if self.buf.len() < MAX_OSC_LEN {
-                                self.buf.push(byte);
-                            } else {
-                                self.overflow = true;
-                            }
-                        }
-                    },
-                    State::CollectEscape => {
-                        if byte == b'\\' {
-                            // ST terminator.
-                            if let Some(mark) = self.finish() {
-                                marks.push(mark);
-                            }
-                        } else {
-                            // ESC not forming ST aborts the OSC and starts a
-                            // new sequence: re-process this byte.
-                            self.buf.clear();
-                            self.state = State::Escape;
-                            continue;
-                        }
-                    }
-                }
-                break;
+        }
+    }
+
+    /// Advance the state machine by one byte.
+    fn step(&mut self, byte: u8, marks: &mut Vec<OscMark>) {
+        match self.state {
+            State::Ground => self.on_ground(byte),
+            State::Escape => self.on_escape(byte),
+            State::Collect => self.on_collect(byte, marks),
+            State::CollectEscape => self.on_collect_escape(byte, marks),
+        }
+    }
+
+    const fn on_ground(&mut self, byte: u8) {
+        if byte == ESC {
+            self.state = State::Escape;
+        }
+    }
+
+    fn on_escape(&mut self, byte: u8) {
+        match byte {
+            b']' => {
+                self.state = State::Collect;
+                self.buf.clear();
+                self.overflow = false;
             }
+            // ESC ESC stays in Escape; other sequences are ignored.
+            ESC => {}
+            _ => self.state = State::Ground,
+        }
+    }
+
+    fn on_collect(&mut self, byte: u8, marks: &mut Vec<OscMark>) {
+        match byte {
+            BEL => self.finish_into(marks),
+            ESC => self.state = State::CollectEscape,
+            _ => self.collect(byte),
+        }
+    }
+
+    fn on_collect_escape(&mut self, byte: u8, marks: &mut Vec<OscMark>) {
+        if byte == b'\\' {
+            // ST terminator.
+            self.finish_into(marks);
+            return;
+        }
+        // ESC not forming ST aborts the OSC, and the aborting byte may start
+        // a new sequence: re-process it from Escape.
+        self.buf.clear();
+        self.state = State::Escape;
+        self.on_escape(byte);
+    }
+
+    /// Buffer one payload byte, or mark the OSC overflowed past
+    /// [`MAX_OSC_LEN`].
+    fn collect(&mut self, byte: u8) {
+        if self.buf.len() < MAX_OSC_LEN {
+            self.buf.push(byte);
+        } else {
+            self.overflow = true;
+        }
+    }
+
+    fn finish_into(&mut self, marks: &mut Vec<OscMark>) {
+        if let Some(mark) = self.finish() {
+            marks.push(mark);
         }
     }
 
@@ -247,6 +264,10 @@ mod tests {
             (&[b"abc\x1b]13", b"3;D;", b"42\x07xyz"], end(Some(42))),
             // An OSC interrupted by a CSI yields nothing; a later mark parses.
             (&[b"\x1b]133;D\x1b[31m\x1b]133;D;3\x07"], end(Some(3))),
+            // The aborting byte is re-processed: `ESC ]` both aborts the
+            // open OSC and opens the next one, even split across chunks.
+            (&[b"\x1b]133;D\x1b]133;D;5\x07"], end(Some(5))),
+            (&[b"\x1b]133;D\x1b", b"]133;D;6\x07"], end(Some(6))),
             (
                 &[b"\x1b]133;A;aid=7\x07\x1b]133;B;k=i\x1b\\"],
                 vec![OscMark::PromptStart, OscMark::InputStart],
