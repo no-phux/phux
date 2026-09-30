@@ -1,8 +1,9 @@
 //! Explicit-view requests reuse the default-view operation implementation.
 
 use super::{
-    Command, EngineDocumentPoint, EngineError, EngineHandle, EngineOutcome, Query, ReplicaInfo,
-    ResourceId, Scroll, SearchMatch, SelectionGestureEvent, SelectionGestureResult, Sender,
+    BoundedSelectionText, Command, EngineDocumentPoint, EngineError, EngineHandle, EngineOutcome,
+    Query, ReplicaInfo, ResourceId, Scroll, SearchMatch, SelectionGestureEvent,
+    SelectionGestureResult, Sender, TextRegion,
 };
 use crate::ViewId;
 
@@ -156,5 +157,26 @@ impl EngineHandle {
         event: SelectionGestureEvent,
     ) -> Result<SelectionGestureResult, EngineError> {
         self.request_view(view, move |id, reply| Query::Gesture(id, event, reply))?
+    }
+
+    /// Select everything this view's screen holds (loaded scrollback and the
+    /// active area), as Ghostty's `select_all`. Returns false, clearing the
+    /// selection, when there is nothing to select.
+    pub fn select_all_view(&self, view: ViewId) -> Result<bool, EngineError> {
+        self.request_view(view, Query::SelectAll)?
+    }
+
+    /// Format one whole region as plain text, refusing (never truncating)
+    /// output over `max_bytes`. The region is bounded by the loaded history
+    /// budget; it neither changes nor needs this view's selection.
+    pub fn view_region_text_bounded(
+        &self,
+        view: ViewId,
+        region: TextRegion,
+        max_bytes: usize,
+    ) -> Result<BoundedSelectionText, EngineError> {
+        self.request_view(view, move |id, reply| {
+            Query::RegionText(id, region, max_bytes, reply)
+        })?
     }
 }
