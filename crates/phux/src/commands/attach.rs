@@ -159,14 +159,18 @@ pub(crate) fn configured_session_name_template() -> String {
 }
 
 /// Render `template` against `cwd` with `rng` for `${random-name}`,
-/// falling back to [`DEFAULT_SESSION_NAME`] when it renders empty.
+/// rewritten so a selector can address it (a directory named `@proj` must
+/// not name a session every verb reads as a pane id), falling back to
+/// [`DEFAULT_SESSION_NAME`] when it renders empty.
 pub(crate) fn render_default_session_name(
     template: &str,
     cwd: &std::path::Path,
     rng: &mut phux_config::NameRng,
 ) -> String {
-    let name = phux_config::render_session_name_template_with(template, cwd, rng);
-    if name.is_empty() {
+    let name = phux_client::rename::addressable_session_name(
+        &phux_config::render_session_name_template_with(template, cwd, rng),
+    );
+    if name.trim().is_empty() {
         DEFAULT_SESSION_NAME.to_owned()
     } else {
         name
