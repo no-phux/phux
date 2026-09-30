@@ -96,7 +96,9 @@ These tools still run the `phux` binary as a subprocess, bounded in time and out
 Agent-facing verbs in the JSON index of `docs/consumers/agents.md` that have no MCP tool yet:
 
 - `phux config agents`: local config inventory of declared agent integrations; `phux_agent_list` covers the live agents.
+- `phux host add`: operator host-registry enrollment, not an agent action.
 - `phux host ls`: operator inventory of the host registry, not an agent action.
+- `phux host renew`: operator host-registry certificate renewal, not an agent action.
 - `phux pair`: mints a pairing secret; credential handling stays outside the model-facing set.
 - `phux mcp`: launches this adapter itself.
 - `phux deny`: `phux_approve` decides both ways: `decision: deny` is `phux deny` (ADR-0128).
