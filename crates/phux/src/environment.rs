@@ -44,6 +44,14 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
         ],
     },
     EnvVarSpec {
+        name: "PHUX_WS_ALLOWED_ORIGINS",
+        lines: &[
+            "Browser origins a plaintext loopback --listen address admits",
+            "beyond loopback pages: comma-separated exact origins, or `*`",
+            "behind a proxy that checks origins itself.",
+        ],
+    },
+    EnvVarSpec {
         name: "PHUX_WS_TLS_CERT",
         lines: &["Operator-supplied server certificate (PEM), instead of the"],
     },

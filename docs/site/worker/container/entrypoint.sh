@@ -18,6 +18,7 @@ proxy_pid=$!
   XDG_CONFIG_HOME=/tmp/.config \
   XDG_RUNTIME_DIR=/tmp \
   PHUX_WS_ADDR=127.0.0.1:8081 \
+  PHUX_WS_ALLOWED_ORIGINS='*' \
   /usr/local/bin/phux server --session default &
 server_pid=$!
 

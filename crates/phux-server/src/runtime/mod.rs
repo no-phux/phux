@@ -1397,7 +1397,8 @@ async fn build_ws_listener(
     };
 
     if !secure_bind(addr, env) && workload.is_none() {
-        return match crate::transport::WsListener::bind(addr).await {
+        let origins = crate::transport::AllowedOrigins::parse(env.ws_allowed_origins.as_deref());
+        return match crate::transport::WsListener::bind(addr, origins).await {
             Ok(ws) => {
                 let bound = ws.local_addr().map_or(addr_s, |a| a.to_string());
                 info!(addr = %bound, "WebSocket listening (plaintext, loopback)");

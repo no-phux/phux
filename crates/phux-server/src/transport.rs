@@ -389,6 +389,8 @@ pub(crate) struct WsListener {
     workload: Option<std::sync::Arc<crate::workload::ReloadingWorkloadRegistry>>,
     rejection_warnings: Mutex<PeerRejectionWarnLimiter>,
     admissions: Admissions<WsAccepted>,
+    /// Browser origins the anonymous listener admits; unused with tokens.
+    origins: std::sync::Arc<AllowedOrigins>,
 }
 
 type WsAccepted = (WsReader, WsWriter, crate::auth::ConnectionIdentity);
@@ -407,6 +409,7 @@ impl WsListener {
             workload,
             rejection_warnings: Mutex::new(PeerRejectionWarnLimiter::new()),
             admissions: Admissions::new(),
+            origins: std::sync::Arc::new(AllowedOrigins::default()),
         }
     }
 
@@ -420,14 +423,12 @@ impl WsListener {
         Ok(Self::from_parts(tcp, None, Some(tokens), None))
     }
 
-    /// Bind a plaintext, unauthenticated listener (loopback browser client).
-    pub(crate) async fn bind(addr: SocketAddr) -> io::Result<Self> {
-        Ok(Self::from_parts(
-            TcpListener::bind(addr).await?,
-            None,
-            None,
-            None,
-        ))
+    /// Bind a plaintext, unauthenticated listener (loopback browser client)
+    /// that admits browser pages only from `origins`.
+    pub(crate) async fn bind(addr: SocketAddr, origins: AllowedOrigins) -> io::Result<Self> {
+        let mut listener = Self::from_parts(TcpListener::bind(addr).await?, None, None, None);
+        listener.origins = std::sync::Arc::new(origins);
+        Ok(listener)
     }
 
     /// Bind a TLS-terminated, token-authenticated listener. The only
@@ -527,6 +528,7 @@ impl Incoming for WsListener {
                     self.tls.clone(),
                     self.tokens.clone(),
                     self.workload.clone(),
+                    std::sync::Arc::clone(&self.origins),
                 );
                 Ok(Box::pin(async move { Some(admission.await) }) as Admission<WsAccepted>)
             })
@@ -572,6 +574,7 @@ async fn ws_admit(
     tls: Option<tokio_rustls::TlsAcceptor>,
     tokens: Option<std::sync::Arc<crate::auth::ReloadingTokenStore>>,
     workload: Option<std::sync::Arc<crate::workload::ReloadingWorkloadRegistry>>,
+    origins: std::sync::Arc<AllowedOrigins>,
 ) -> io::Result<WsAccepted> {
     // Only the source IP is retained; the ephemeral port identifies nothing.
     let source_ip = peer.ip();
@@ -616,10 +619,12 @@ async fn ws_admit(
         let admitted = captured.borrow_mut().take();
         (ws, admitted)
     } else {
-        (
-            ws_upgrade(stream, source_ip, anonymous_ws_upgrade).await?,
-            None,
-        )
+        #[allow(
+            clippy::result_large_err,
+            reason = "tokio-tungstenite fixes the HTTP rejection response type for its handshake callback"
+        )]
+        let callback = move |req: &Request, resp| anonymous_ws_upgrade(req, resp, &origins);
+        (ws_upgrade(stream, source_ip, callback).await?, None)
     };
     // The connection's credential (the workload's under workload mTLS)
     // and the pairing-store bearer, kept so its revocation ends the
@@ -926,16 +931,103 @@ fn select_ws_protocol(req: &Request, mut response: Response) -> Response {
 }
 
 /// A browser asking for paired authentication must not accidentally establish
-/// an anonymous connection when the listener has no authority store.
+/// an anonymous connection when the listener has no authority store, and a
+/// page from an origin the listener does not admit is refused outright.
 #[allow(
     clippy::result_large_err,
     reason = "tungstenite fixes the HTTP upgrade callback error type"
 )]
-fn anonymous_ws_upgrade(req: &Request, response: Response) -> Result<Response, ErrorResponse> {
+fn anonymous_ws_upgrade(
+    req: &Request,
+    response: Response,
+    origins: &AllowedOrigins,
+) -> Result<Response, ErrorResponse> {
+    if !origins.admits_request(req) {
+        return Err(forbidden_origin_response());
+    }
     match browser_auth_protocols(req) {
         Some((_, None)) => Ok(select_ws_protocol(req, response)),
         _ => Err(unauthorized_response()),
     }
+}
+
+/// Browser origins the anonymous WebSocket listener admits.
+///
+/// Browsers attach `Origin` to every WebSocket handshake but do not hold it
+/// to the same-origin policy, so without this any web page the user visits
+/// could open `ws://127.0.0.1:PORT` and drive a shell (cross-site WebSocket
+/// hijacking). A request with no `Origin` (a native client) or a loopback one
+/// (a locally served page) is admitted, plus whatever
+/// `PHUX_WS_ALLOWED_ORIGINS` names: a comma-separated list of exact origins,
+/// or `*` for a listener fronted by a proxy that checks origins itself.
+/// `null` (sandboxed frames, `file:` pages) is never loopback.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AllowedOrigins {
+    any: bool,
+    exact: Vec<String>,
+}
+
+impl AllowedOrigins {
+    /// Parse `PHUX_WS_ALLOWED_ORIGINS`; unset admits loopback origins only.
+    #[must_use]
+    pub(crate) fn parse(raw: Option<&str>) -> Self {
+        let mut origins = Self::default();
+        for entry in raw.unwrap_or_default().split(',').map(str::trim) {
+            if entry == "*" {
+                origins.any = true;
+            } else if !entry.is_empty() {
+                origins
+                    .exact
+                    .push(entry.trim_end_matches('/').to_ascii_lowercase());
+            }
+        }
+        origins
+    }
+
+    fn admits_request(&self, req: &Request) -> bool {
+        let mut values = req.headers().get_all("origin").iter();
+        let Some(value) = values.next() else {
+            return true;
+        };
+        if values.next().is_some() {
+            return false;
+        }
+        value.to_str().is_ok_and(|origin| self.admits(origin))
+    }
+
+    fn admits(&self, origin: &str) -> bool {
+        let origin = origin.trim().to_ascii_lowercase();
+        self.any || self.exact.contains(&origin) || is_loopback_origin(&origin)
+    }
+}
+
+/// Whether a serialized origin (`scheme://host[:port]`) names this machine.
+fn is_loopback_origin(origin: &str) -> bool {
+    let Some(rest) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    if rest.contains(['/', '@', '?', '#']) {
+        return false;
+    }
+    let host = match rest.strip_prefix('[') {
+        Some(bracketed) => match bracketed.split_once(']') {
+            Some((host, tail)) if tail.is_empty() || tail.starts_with(':') => host,
+            _ => return false,
+        },
+        None => rest.split_once(':').map_or(rest, |(host, _)| host),
+    };
+    host == "localhost" || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// The HTTP 403 for a browser page from an origin the listener refuses.
+fn forbidden_origin_response() -> ErrorResponse {
+    use tokio_tungstenite::tungstenite::http::StatusCode;
+    let mut resp = ErrorResponse::new(Some("origin not allowed".to_owned()));
+    *resp.status_mut() = StatusCode::FORBIDDEN;
+    resp
 }
 
 /// The generic HTTP 401 for any pairing failure, leaking nothing about which
@@ -1147,7 +1239,7 @@ mod tests {
 
     #[tokio::test]
     async fn anonymous_listener_refuses_browser_credentials_but_accepts_public_protocol() {
-        let listener = WsListener::bind("127.0.0.1:0".parse().unwrap())
+        let listener = WsListener::bind("127.0.0.1:0".parse().unwrap(), AllowedOrigins::default())
             .await
             .unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1164,6 +1256,82 @@ mod tests {
             exchange(&listener, addr, browser_request(addr, "phux.v1"), &[]).await;
         assert!(identity.credential.is_none());
         assert_eq!(response.headers()["sec-websocket-protocol"], "phux.v1");
+    }
+
+    /// A web page the user happens to visit cannot drive the anonymous
+    /// loopback listener: its handshake carries a foreign `Origin` and is
+    /// refused. Native clients (no `Origin`) and locally served pages still
+    /// connect, and an operator can name extra origins.
+    #[tokio::test]
+    async fn anonymous_listener_refuses_foreign_browser_origins() {
+        let with_origin = |addr: SocketAddr, origin: &str| {
+            let mut req = request(addr);
+            req.headers_mut().insert("origin", origin.parse().unwrap());
+            req
+        };
+        let listener = WsListener::bind("127.0.0.1:0".parse().unwrap(), AllowedOrigins::default())
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        for origin in [
+            "https://evil.example",
+            "null",
+            "http://127.0.0.1.evil.example",
+        ] {
+            let (_, error) = refused_handshake(&listener, addr, with_origin(addr, origin)).await;
+            let WebSocketError::Http(response) = error else {
+                panic!("{origin}: expected an HTTP refusal");
+            };
+            assert_eq!(
+                response.status(),
+                tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN,
+                "{origin}"
+            );
+        }
+        for origin in [
+            "http://127.0.0.1:4321",
+            "http://localhost:8080",
+            "https://[::1]",
+        ] {
+            exchange(&listener, addr, with_origin(addr, origin), &[]).await;
+        }
+        exchange(&listener, addr, request(addr), &[]).await;
+
+        let fronted = WsListener::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            AllowedOrigins::parse(Some("https://phux.sh")),
+        )
+        .await
+        .unwrap();
+        let addr = fronted.local_addr().unwrap();
+        exchange(&fronted, addr, with_origin(addr, "https://phux.sh"), &[]).await;
+    }
+
+    #[test]
+    fn origin_policy_parses_lists_wildcards_and_loopback_forms() {
+        let policy = AllowedOrigins::parse(Some(" https://a.example/ , https://B.example"));
+        assert!(policy.admits("https://a.example"));
+        assert!(policy.admits("https://b.example"));
+        assert!(!policy.admits("https://c.example"));
+        assert!(AllowedOrigins::parse(Some("*")).admits("https://c.example"));
+        let loopback = AllowedOrigins::default();
+        for admitted in [
+            "http://localhost",
+            "http://127.0.0.2:9",
+            "https://[::1]:443",
+        ] {
+            assert!(loopback.admits(admitted), "{admitted}");
+        }
+        for refused in [
+            "null",
+            "file://",
+            "http://localhost.evil.example",
+            "http://evil.example#@127.0.0.1",
+            "http://[::1].evil.example",
+            "ws://127.0.0.1",
+        ] {
+            assert!(!loopback.admits(refused), "{refused}");
+        }
     }
 
     /// One mTLS WebSocket attempt: the admitted identity, or `None` when the

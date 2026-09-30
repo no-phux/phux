@@ -29,6 +29,10 @@ pub struct ServerEnv {
     pub wt_addr: Option<SocketAddr>,
     /// `PHUX_WS_SECURE` (non-empty): force TLS and token auth on loopback.
     pub ws_secure: bool,
+    /// `PHUX_WS_ALLOWED_ORIGINS`: browser origins the plaintext loopback
+    /// WebSocket listener admits beyond loopback ones (comma-separated, or
+    /// `*`).
+    pub ws_allowed_origins: Option<String>,
     /// `PHUX_WS_TOKENS`: the bearer-token store, instead of the default.
     pub ws_tokens: Option<PathBuf>,
     /// `PHUX_WS_TLS_CERT`: the operator's certificate, instead of the
@@ -71,6 +75,8 @@ impl ServerEnv {
             quic_addr: socket_addr(&lookup, "PHUX_QUIC_ADDR"),
             wt_addr: socket_addr(&lookup, "PHUX_WT_ADDR"),
             ws_secure: non_empty("PHUX_WS_SECURE").is_some(),
+            ws_allowed_origins: non_empty("PHUX_WS_ALLOWED_ORIGINS")
+                .map(|value| value.to_string_lossy().into_owned()),
             ws_tokens: path("PHUX_WS_TOKENS"),
             tls_cert: path("PHUX_WS_TLS_CERT"),
             tls_key: path("PHUX_WS_TLS_KEY"),
@@ -150,6 +156,10 @@ mod tests {
         assert!(!env.ws_secure, "an empty PHUX_WS_SECURE does not force TLS");
         assert_eq!(env.upload_dir, None, "an empty PHUX_UPLOAD_DIR is unset");
         assert_eq!(env.tls_cert, Some(PathBuf::from("/x/PHUX_WS_TLS_CERT")));
+        assert_eq!(
+            env.ws_allowed_origins.as_deref(),
+            Some("/x/PHUX_WS_ALLOWED_ORIGINS")
+        );
         assert_eq!(env.tokens_path(), PathBuf::from("/x/PHUX_WS_TOKENS"));
         assert!(env.workload_mtls && env.no_auto_listen);
         assert_eq!(env.ssh_program(), OsString::from("/x/PHUX_SSH"));

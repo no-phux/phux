@@ -21,6 +21,7 @@ Every environment variable the `phux` binary reads, from the canonical in-code t
 | `PHUX_SOCKET` | Server socket for the CLI verbs and the server. `--socket` overrides it. Default: $XDG_RUNTIME_DIR/phux/phux.sock, or /tmp/phux-$USER/phux.sock when XDG_RUNTIME_DIR is unset. |
 | `PHUX_WS_ADDR` | Also accept WebSocket clients on HOST:PORT. Equivalent to `phux server --listen`, which overrides it. |
 | `PHUX_WS_SECURE` | Force TLS and token auth on a loopback --listen address, to exercise the remote path locally. |
+| `PHUX_WS_ALLOWED_ORIGINS` | Browser origins a plaintext loopback --listen address admits beyond loopback pages: comma-separated exact origins, or `*` behind a proxy that checks origins itself. |
 | `PHUX_WS_TLS_CERT` | Operator-supplied server certificate (PEM), instead of the |
 | `PHUX_WS_TLS_KEY` | auto-provisioned self-signed pair used off-loopback. |
 | `PHUX_WS_TOKENS` | Pairing-token store the server reads and `phux pair` writes. |

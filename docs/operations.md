@@ -699,7 +699,12 @@ behind TLS plus a bearer pairing token
 address is the toggle:
 
 - **Loopback address → plaintext, unauthenticated.** The historical
-  browser-client dev path; zero config.
+  browser-client dev path; zero config. Browsers do not hold WebSocket
+  handshakes to the same-origin policy, so the upgrade is refused (HTTP 403)
+  when it carries an `Origin` that is not a loopback page: otherwise any site
+  the user visits could drive this listener. Native clients send no `Origin`
+  and are unaffected. `PHUX_WS_ALLOWED_ORIGINS` names more origins
+  (comma-separated), or `*` behind a proxy that checks origins itself.
 - **Routable address → TLS + token, auto-provisioned.** Binding
   off-loopback is treated as exposing the server: phux generates and
   persists a self-signed certificate (under the state dir) if none is
