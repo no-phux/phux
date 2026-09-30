@@ -203,11 +203,13 @@ brew install binaryen
 manifests; `doctor web` checks this. Browser-rendering tests need Chrome and a
 compatible chromedriver. Node-only tests do not.
 
-Regenerating or `--check`ing the engine (`bash scripts/build-vt-wasm.sh`) needs
-the official Zig release binary from `bash scripts/install-zig.sh` ahead of any
-other Zig on PATH: nixpkgs' `zig_0_16` on x86_64 Linux links a different LLVM
-and compiles one function differently, so the Nix shell's Zig does not
-reproduce the committed engine there.
+Regenerating or `--check`ing the engine (`bash scripts/build-vt-wasm.sh`)
+installs the official Zig release binary with `scripts/install-zig.sh` under
+`PHUX_TOOLCHAIN_DIR` (default `${XDG_DATA_HOME:-$HOME/.local/share}/phux/toolchains`)
+and runs it by absolute path, ignoring any Zig on PATH: nixpkgs' `zig_0_16`
+links a different LLVM and compiles one function differently. Even the official
+compiler occasionally emits different code from identical inputs, so `--check`
+retries up to three fresh builds and a regeneration needs two that agree.
 
 ```sh
 just doctor web

@@ -241,26 +241,42 @@ rm -f "$SETUP_TEST_DOWNLOADS"
 expect_pass "$repo/scripts/install-zig.sh" "$scratch/toolchains"
 [[ ! -e "$SETUP_TEST_DOWNLOADS" ]]
 # Engine regeneration rejects corrupt source before building, preserves the
-# old artifact on ABI failure, and never replaces it in comparison mode.
+# old artifact on ABI failure, and never replaces it in comparison mode. It
+# builds only with the digest-verified Zig it installs, never a Zig on PATH,
+# and tolerates the compiler's occasional nondeterministic build.
 cp "$root/scripts/build-vt-wasm.sh" "$repo/scripts/"
 ln -s "$(command -v cmp)" "$bin/cmp"
 ln -s "$(command -v du)" "$bin/du"
 ln -s "$(command -v cut)" "$bin/cut"
+export PHUX_TOOLCHAIN_DIR="$scratch/toolchains"
 engine="$repo/clients/phux-vt-web/vendor/ghostty-vt.wasm"
 printf old >"$engine"
 printf corrupt >"$SETUP_TEST_ARCHIVE"
+cat >"$bin/zig" <<'SH'
+#!/bin/sh
+echo 'decoy zig on PATH was used'
+exit 1
+SH
 expect_fail 'source checksum mismatch' "$repo/scripts/build-vt-wasm.sh"
 [[ "$(cat "$engine")" = old ]]
 export GHOSTTY_SRC="$scratch/local-engine"
 mkdir -p "$GHOSTTY_SRC"
 touch "$GHOSTTY_SRC/build.zig"
-cat >"$bin/zig" <<SH
+# Each build emits the next line of SETUP_TEST_BUILDS, or "rebuilt".
+export SETUP_TEST_BUILDS="$scratch/builds"
+cat >"$PHUX_TOOLCHAIN_DIR/zig-aarch64-macos-$ZIG_VERSION/zig" <<SH
 #!/bin/sh
 if [ "\$1" = version ]; then echo '$ZIG_VERSION'; exit; fi
+bytes=rebuilt
+if [ -s "\$SETUP_TEST_BUILDS" ]; then
+  bytes="\$(head -n 1 "\$SETUP_TEST_BUILDS")"
+  sed 1d "\$SETUP_TEST_BUILDS" >"\$SETUP_TEST_BUILDS.next"
+  mv "\$SETUP_TEST_BUILDS.next" "\$SETUP_TEST_BUILDS"
+fi
 while [ "\$#" -gt 0 ]; do
   if [ "\$1" = --prefix ]; then
     mkdir -p "\$2/bin"
-    printf rebuilt >"\$2/bin/ghostty-vt.wasm"
+    printf '%s' "\$bytes" >"\$2/bin/ghostty-vt.wasm"
     exit
   fi
   shift
@@ -275,10 +291,19 @@ SH
 expect_fail 'ABI rejected' "$repo/scripts/build-vt-wasm.sh"
 [[ "$(cat "$engine")" = old ]]
 cp "$bin/npm" "$bin/node"
-expect_fail 'engine differs' "$repo/scripts/build-vt-wasm.sh" --check
+expect_fail 'engine differs in 3 rebuilds' "$repo/scripts/build-vt-wasm.sh" --check
+[[ "$(grep -c '^attempt [123]: rebuilt sha256' "$scratch/output")" = 3 ]]
 [[ "$(cat "$engine")" = old ]]
 expect_pass "$repo/scripts/build-vt-wasm.sh"
 [[ "$(cat "$engine")" = rebuilt ]]
 expect_pass "$repo/scripts/build-vt-wasm.sh" --check
-unset GHOSTTY_SRC
+# One divergent build is retried from fresh caches; two that disagree never
+# become the committed engine.
+printf 'variant\nrebuilt\n' >"$SETUP_TEST_BUILDS"
+expect_pass "$repo/scripts/build-vt-wasm.sh" --check
+grep -Fq 'matches the verified source rebuild (attempt 2)' "$scratch/output"
+printf 'variant\nrebuilt\n' >"$SETUP_TEST_BUILDS"
+expect_fail 'two rebuilds differ' "$repo/scripts/build-vt-wasm.sh"
+[[ "$(cat "$engine")" = rebuilt ]]
+unset GHOSTTY_SRC SETUP_TEST_BUILDS PHUX_TOOLCHAIN_DIR
 echo 'dev setup tests passed (scoped PATH, version/SDK errors, opt-in components, checksum rejection, idempotence)'
