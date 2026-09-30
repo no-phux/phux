@@ -13,7 +13,7 @@
 mod common;
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 /// Path to the freshly-built `phux` binary, injected by cargo.
@@ -69,7 +69,7 @@ impl ServerGuard {
     /// The verbs used here all take `--socket` as a per-verb flag (no
     /// trailing positional swallows it), so appending is safe.
     fn run(&self, args: &[&str], envs: &[(&str, &std::path::Path)]) -> String {
-        let mut cmd = Command::new(PHUX);
+        let mut cmd = common::phux_cmd(PHUX);
         cmd.args(args).arg("--socket").arg(&self.socket);
         for (key, value) in envs {
             cmd.env(key, value);
@@ -88,7 +88,7 @@ impl ServerGuard {
     /// `agent`'s subcommands take `--socket` as a per-verb flag (no
     /// trailing positional swallows it), so appending is safe here.
     fn agent(&self, args: &[&str]) -> String {
-        let out = Command::new(PHUX)
+        let out = common::phux_cmd(PHUX)
             .arg("agent")
             .args(args)
             .arg("--socket")
@@ -110,7 +110,7 @@ impl ServerGuard {
     /// `--socket` goes BEFORE the subcommand: `spawn`'s trailing positional
     /// would otherwise swallow it as part of the command line.
     fn spawn_pane(&self, command: &std::path::Path) -> u32 {
-        let out = Command::new(PHUX)
+        let out = common::phux_cmd(PHUX)
             .arg("--socket")
             .arg(&self.socket)
             .args(["spawn", "--json", "--"])
@@ -361,7 +361,7 @@ fn write_fake_claude(dir: &std::path::Path) -> PathBuf {
 /// <event>`) with a pane's environment. `PHUX_AGENT_PHUX_BIN` is unset: the
 /// wrapper must reach the binary baked in at install.
 fn run_hook(shim: &std::path::Path, event: &str, terminal_id: u32, socket: &std::path::Path) {
-    let out = Command::new(shim)
+    let out = common::phux_cmd(shim)
         .args(["--phux-hook", event])
         .env("PHUX_TERMINAL_ID", terminal_id.to_string())
         .env("PHUX_SOCKET", socket)
@@ -400,7 +400,7 @@ fn the_generated_claude_shim_leaves_the_detector_armed_on_a_live_pane() {
 
     // Install through the real verb, so what runs below is the shipped
     // generator's output and not a fixture that resembles it.
-    let install = Command::new(PHUX)
+    let install = common::phux_cmd(PHUX)
         .args(["agent", "install-claude", "--shell", "bash", "--real"])
         .arg(&fake_claude)
         .env("HOME", home.path())
@@ -496,7 +496,7 @@ fn run_hook_with_payload(
 ) {
     use std::io::Write as _;
 
-    let mut child = Command::new(shim)
+    let mut child = common::phux_cmd(shim)
         .args(["--phux-hook", event])
         .env("PHUX_TERMINAL_ID", terminal_id.to_string())
         .env("PHUX_SOCKET", socket)
@@ -590,7 +590,7 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
     let fake_claude = write_quiet_claude(&bin);
     let data = home.path().join("data");
 
-    let install = Command::new(PHUX)
+    let install = common::phux_cmd(PHUX)
         .args(["agent", "install-claude", "--shell", "bash", "--real"])
         .arg(&fake_claude)
         .env("HOME", home.path())
@@ -818,7 +818,7 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
         std::thread::sleep(RECORD_POLL);
     }
     // And the closed session's stream is no longer readable through the pane.
-    let out = Command::new(PHUX)
+    let out = common::phux_cmd(PHUX)
         .arg("agent")
         .args(["log", &target, "--json", "--socket"])
         .arg(&server.socket)

@@ -2,8 +2,10 @@
 #![cfg(unix)]
 #![allow(clippy::unwrap_used, reason = "test fixture assertions")]
 
+#[path = "common/ambient.rs"]
+mod common;
+
 use std::os::unix::net::UnixListener;
-use std::process::Command;
 
 #[test]
 fn runtime_info_does_not_dial_write_logs_or_read_broken_config() {
@@ -16,7 +18,7 @@ fn runtime_info_does_not_dial_write_logs_or_read_broken_config() {
     let listener = UnixListener::bind(&socket).unwrap();
     listener.set_nonblocking(true).unwrap();
 
-    let result = Command::new(env!("CARGO_BIN_EXE_phux"))
+    let result = common::phux_cmd(env!("CARGO_BIN_EXE_phux"))
         .args(["runtime-info", "--json"])
         .env("HOME", temp.path())
         .env("XDG_CONFIG_HOME", temp.path())
@@ -47,7 +49,7 @@ fn runtime_info_does_not_dial_write_logs_or_read_broken_config() {
 
 #[test]
 fn runtime_info_refuses_explicit_socket_rather_than_pretend_it_probed_that_server() {
-    let result = Command::new(env!("CARGO_BIN_EXE_phux"))
+    let result = common::phux_cmd(env!("CARGO_BIN_EXE_phux"))
         .args(["--socket", "/unused-fixture.sock", "runtime-info", "--json"])
         .output()
         .unwrap();

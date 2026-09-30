@@ -141,7 +141,7 @@ impl ServerGuard {
     /// `phux <verb> --socket <sock> <rest...>` inside `iso`.
     fn cmd(&self, iso: &Isolation, args: &[&str]) -> Command {
         let (verb, rest) = args.split_first().expect("at least a verb");
-        let mut cmd = Command::new(PHUX);
+        let mut cmd = common::phux_cmd(PHUX);
         cmd.arg(verb)
             .arg("--socket")
             .arg(&self.socket)
@@ -327,7 +327,7 @@ fn broken_config_makes_server_start_loud() {
 
     let dir = tempfile::tempdir().expect("socket tempdir");
     let socket = dir.path().join("fx-broken.sock");
-    let mut cmd = Command::new(PHUX);
+    let mut cmd = common::phux_cmd(PHUX);
     cmd.args(["server", "--session", SESSION, "--socket"])
         .arg(&socket)
         .args(["--exit-after-idle", "30"])
@@ -462,7 +462,7 @@ fn status_logs_doctor_name_real_paths() {
     );
 
     // Bare `phux logs` prints the inventory — every path, no server needed.
-    let mut logs_cmd = Command::new(PHUX);
+    let mut logs_cmd = common::phux_cmd(PHUX);
     logs_cmd.arg("logs").stdin(Stdio::null());
     iso.apply(&mut logs_cmd);
     let (code, stdout, stderr) = run_captured(&mut logs_cmd);

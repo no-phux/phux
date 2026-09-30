@@ -41,7 +41,7 @@ fn unit_paths_under(home: &Path) -> [std::path::PathBuf; 4] {
 /// state (where `--adopt` writes its marker) all point into the tempdir, and a
 /// nonexistent `PHUX_TAILSCALE` keeps `doctor` off the network.
 fn sandboxed(home: &Path) -> Command {
-    let mut cmd = Command::new(PHUX);
+    let mut cmd = common::phux_cmd(PHUX);
     cmd.env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("XDG_STATE_HOME", home.join(".local/state"))
@@ -58,7 +58,7 @@ fn install_refuses_while_a_server_holds_the_socket() {
     let dir = tempfile::tempdir().expect("tempdir");
     let socket = dir.path().join("phux.sock");
 
-    let out = Command::new(PHUX)
+    let out = common::phux_cmd(PHUX)
         .args(["new", "--session", "incumbent", "--json", "--socket"])
         .arg(&socket)
         .output()
@@ -119,7 +119,7 @@ fn print_still_renders_while_a_server_holds_the_socket() {
     let dir = tempfile::tempdir().expect("tempdir");
     let socket = dir.path().join("phux.sock");
 
-    let out = Command::new(PHUX)
+    let out = common::phux_cmd(PHUX)
         .args(["new", "--session", "incumbent", "--json", "--socket"])
         .arg(&socket)
         .output()
@@ -167,7 +167,7 @@ fn adopt_installs_over_a_live_server_without_stopping_it() {
     let dir = tempfile::tempdir().expect("tempdir");
     let socket = dir.path().join("phux.sock");
 
-    let out = Command::new(PHUX)
+    let out = common::phux_cmd(PHUX)
         .args(["new", "--session", "incumbent", "--json", "--socket"])
         .arg(&socket)
         .output()

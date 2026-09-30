@@ -13,7 +13,7 @@ mod common;
 
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -198,7 +198,7 @@ impl AutoSpawned {
         // `--json` because a bare `phux new` attaches, and attaching refuses
         // without a tty on both ends. The document is unread here; what
         // matters is that the verb auto-spawns a server and returns.
-        let mut cmd = Command::new(PHUX);
+        let mut cmd = common::phux_cmd(PHUX);
         cmd.args(["new", "--session", SESSION, "--json", "--socket"])
             .arg(&socket);
         match idle_secs {

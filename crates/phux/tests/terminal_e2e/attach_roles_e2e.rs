@@ -15,7 +15,7 @@
 mod common;
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use phux_client::attach::connection::Connection;
@@ -50,7 +50,7 @@ impl ServerGuard {
 
     /// The seed pane's screen text, as `phux snapshot` renders it.
     fn screen(&self) -> String {
-        let out = Command::new(PHUX)
+        let out = common::phux_cmd(PHUX)
             .args(["snapshot", "--socket"])
             .arg(&self.socket)
             .arg(SESSION)

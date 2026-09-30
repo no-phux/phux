@@ -133,7 +133,7 @@ impl Harness {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(&self.phux);
+        let mut command = common::phux_cmd(&self.phux);
         command.args(args);
         self.apply_command_env(&mut command);
         command

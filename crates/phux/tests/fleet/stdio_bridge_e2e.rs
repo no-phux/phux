@@ -32,7 +32,7 @@ async fn bridge_splices_frame_shaped_bytes_both_ways_unmodified() {
     let socket = dir.path().join("phux.sock");
     let listener = tokio::net::UnixListener::bind(&socket).expect("bind uds");
 
-    let mut child = tokio::process::Command::new(phux_bin())
+    let mut child = tokio::process::Command::from(crate::common::phux_cmd(phux_bin()))
         .args(["stdio-bridge", "--socket"])
         .arg(&socket)
         .stdin(Stdio::piped())
@@ -91,7 +91,7 @@ async fn bridge_stamps_the_ssh_connection_on_the_relayed_hello() {
     let socket = dir.path().join("phux.sock");
     let listener = tokio::net::UnixListener::bind(&socket).expect("bind uds");
 
-    let mut child = tokio::process::Command::new(phux_bin())
+    let mut child = tokio::process::Command::from(crate::common::phux_cmd(phux_bin()))
         .args(["stdio-bridge", "--socket"])
         .arg(&socket)
         .env("SSH_CONNECTION", "203.0.113.5 52144 198.51.100.7 22")
@@ -169,7 +169,7 @@ async fn bridge_exits_cleanly_when_the_remote_peer_hangs_up_stdin() {
     let socket = dir.path().join("phux.sock");
     let listener = tokio::net::UnixListener::bind(&socket).expect("bind uds");
 
-    let mut child = tokio::process::Command::new(phux_bin())
+    let mut child = tokio::process::Command::from(crate::common::phux_cmd(phux_bin()))
         .args(["stdio-bridge", "--socket"])
         .arg(&socket)
         .stdin(Stdio::piped())
@@ -196,7 +196,7 @@ async fn bridge_fails_fast_with_a_diagnostic_when_the_socket_is_missing() {
     let dir = tempfile::tempdir().expect("tempdir");
     let socket = dir.path().join("no-server-here.sock");
 
-    let output = tokio::process::Command::new(phux_bin())
+    let output = tokio::process::Command::from(crate::common::phux_cmd(phux_bin()))
         .args(["stdio-bridge", "--socket"])
         .arg(&socket)
         .stdin(Stdio::null())

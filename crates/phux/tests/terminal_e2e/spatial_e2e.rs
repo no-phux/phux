@@ -11,7 +11,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use phux_client::attach::connection::Connection;
@@ -63,7 +63,7 @@ impl ServerGuard {
 
     fn command(&self, args: &[&str]) -> std::process::Output {
         let (verb, rest) = args.split_first().expect("verb");
-        Command::new(PHUX)
+        common::phux_cmd(PHUX)
             .arg(verb)
             .arg("--socket")
             .arg(&self.socket)

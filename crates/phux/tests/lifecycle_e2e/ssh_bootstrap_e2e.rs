@@ -10,10 +10,13 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
+#[path = "../common/ambient.rs"]
+mod common;
+
 use std::io::Read as _;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -119,6 +122,9 @@ impl Home {
             })
             .expect("openpty");
         let mut cmd = CommandBuilder::new(PHUX);
+        for key in common::ambient_phux_keys() {
+            cmd.env_remove(key);
+        }
         cmd.args(args);
         for (key, value) in self.env() {
             cmd.env(key, value);
@@ -168,7 +174,7 @@ impl Home {
 impl Drop for Home {
     /// Stop the server `phux bootstrap` auto-spawned, if any.
     fn drop(&mut self) {
-        let _ = Command::new(PHUX)
+        let _ = common::phux_cmd(PHUX)
             .envs(self.env())
             .args(["kill", "--server"])
             .stdin(Stdio::null())
@@ -192,7 +198,7 @@ fn unhex(text: &str) -> Vec<u8> {
 #[ignore = "spawns a real server; runs in the e2e lane"]
 fn bootstrap_prints_one_line_that_is_enough_to_dial() {
     let home = Home::new(Remote::Current, "127.0.0.1");
-    let out = Command::new(PHUX)
+    let out = common::phux_cmd(PHUX)
         .envs(home.env())
         .args([
             "bootstrap",

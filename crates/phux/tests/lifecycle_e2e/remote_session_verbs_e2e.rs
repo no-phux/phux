@@ -6,8 +6,11 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
+#[path = "../common/ambient.rs"]
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
@@ -36,7 +39,7 @@ impl LoopbackRemote {
         let dir = TempDir::new().expect("tempdir");
         let port = free_udp_port();
         write_registry(dir.path(), port);
-        let server = Command::new(PHUX)
+        let server = common::phux_cmd(PHUX)
             .envs(hermetic_env(dir.path()))
             .arg("server")
             .arg("--socket")
@@ -58,7 +61,7 @@ impl LoopbackRemote {
     /// Run `phux <args...>` as a separate client process. It is never handed
     /// the server's socket: `--remote` is the only way it can reach it.
     fn phux(&self, args: &[&str]) -> Output {
-        Command::new(PHUX)
+        common::phux_cmd(PHUX)
             .envs(hermetic_env(self.dir.path()))
             .args(args)
             .stdin(Stdio::null())

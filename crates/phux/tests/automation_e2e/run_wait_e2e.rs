@@ -122,7 +122,7 @@ impl ServerGuard {
 /// swallow it.
 fn phux_command(socket: &Path, args: &[&str]) -> Command {
     let (verb, rest) = args.split_first().expect("at least a verb");
-    let mut command = Command::new(PHUX);
+    let mut command = common::phux_cmd(PHUX);
     command
         .arg(verb)
         .arg("--socket")

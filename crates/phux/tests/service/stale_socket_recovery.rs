@@ -9,7 +9,6 @@ mod common;
 
 use std::os::unix::net::UnixListener;
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
@@ -53,7 +52,7 @@ fn auto_spawn_reaps_a_stale_socket_instead_of_wedging() {
     let socket = dir.path().join("phux.sock");
     leave_stale_socket(&socket);
 
-    let out = Command::new(PHUX)
+    let out = common::phux_cmd(PHUX)
         .args(["new", "--session", "revived", "--json", "--socket"])
         .arg(&socket)
         .output()
@@ -90,7 +89,7 @@ fn a_second_invocation_reuses_the_live_server() {
     let socket = dir.path().join("phux.sock");
     leave_stale_socket(&socket);
 
-    let first = Command::new(PHUX)
+    let first = common::phux_cmd(PHUX)
         .args(["new", "--session", "first", "--json", "--socket"])
         .arg(&socket)
         .output()
@@ -104,7 +103,7 @@ fn a_second_invocation_reuses_the_live_server() {
         _dir: dir,
     };
 
-    let second = Command::new(PHUX)
+    let second = common::phux_cmd(PHUX)
         .args(["new", "--session", "second", "--json", "--socket"])
         .arg(&socket)
         .output()
@@ -117,7 +116,7 @@ fn a_second_invocation_reuses_the_live_server() {
 
     // Both sessions live on ONE server — proof the second run reused it
     // rather than reaping the socket and starting a replacement.
-    let listed = Command::new(PHUX)
+    let listed = common::phux_cmd(PHUX)
         .args(["ls", "--socket"])
         .arg(&socket)
         .output()
@@ -140,7 +139,7 @@ fn sigterm_unlinks_the_socket_instead_of_leaving_a_stale_entry() {
     // assertion that fails before the SIGTERM would otherwise leak a daemon
     // holding a PTY (phux-whhd). It is idempotent against an already-stopped
     // server -- `status` then reports no pid and the guard returns.
-    let out = Command::new(PHUX)
+    let out = common::phux_cmd(PHUX)
         .args(["new", "--session", "graceful", "--json", "--socket"])
         .arg(&socket)
         .output()

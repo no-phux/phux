@@ -9,7 +9,6 @@
 mod common;
 
 use std::path::Path;
-use std::process::Command;
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 
@@ -20,7 +19,7 @@ struct Cleanup {
 }
 
 fn spawn_session(socket: &Path, session: &str) {
-    let out = Command::new(PHUX)
+    let out = common::phux_cmd(PHUX)
         .args(["new", "--session", session, "--json", "--socket"])
         .arg(socket)
         .output()
@@ -43,7 +42,7 @@ fn start_server(socket: &Path, session: &str) -> common::AutoSpawnedServer {
 }
 
 fn status_pid(socket: &Path) -> u32 {
-    let output = Command::new(PHUX)
+    let output = common::phux_cmd(PHUX)
         .args(["status", "--json", "--socket"])
         .arg(socket)
         .output()
@@ -70,7 +69,7 @@ fn kill_server_stops_the_server_and_frees_the_socket() {
         _dir: dir,
     };
 
-    let killed = Command::new(PHUX)
+    let killed = common::phux_cmd(PHUX)
         .args(["kill", "--server", "--socket"])
         .arg(&socket)
         .output()
@@ -107,7 +106,7 @@ fn kill_server_is_idempotent() {
     };
 
     for attempt in 1..=2 {
-        let killed = Command::new(PHUX)
+        let killed = common::phux_cmd(PHUX)
             .args(["kill", "--server", "--socket"])
             .arg(&socket)
             .output()
@@ -132,7 +131,7 @@ fn kill_server_reaps_a_stale_socket() {
     drop(listener);
     assert!(socket.exists());
 
-    let killed = Command::new(PHUX)
+    let killed = common::phux_cmd(PHUX)
         .args(["kill", "--server", "--socket"])
         .arg(&socket)
         .output()
@@ -152,7 +151,7 @@ fn kill_server_reaps_a_stale_socket() {
 /// `phux kill` must not become an exit-0 no-op.
 #[test]
 fn kill_requires_exactly_one_of_target_or_server() {
-    let bare = Command::new(PHUX)
+    let bare = common::phux_cmd(PHUX)
         .args(["kill"])
         .output()
         .expect("run phux kill");
@@ -161,7 +160,7 @@ fn kill_requires_exactly_one_of_target_or_server() {
         "a bare `phux kill` must still be a usage error, not a silent no-op"
     );
 
-    let both = Command::new(PHUX)
+    let both = common::phux_cmd(PHUX)
         .args(["kill", "--server", "somesession"])
         .output()
         .expect("run phux kill --server somesession");
