@@ -379,10 +379,7 @@ pub(crate) async fn create_empty_session_via_metadata(
     // The capability check runs before the duplicate-name `GET_STATE`, so an
     // unsupporting server costs exactly one round trip.
     if !phux_client::session::keep_empty_supported(&conn) {
-        eprintln!(
-            "phux: create-session failed: the server does not support empty sessions; upgrade it"
-        );
-        return Err(ExitCode::FAILURE);
+        return Err(report_empty_unsupported(json));
     }
     reject_duplicate_session_name(&mut conn, server, name, json).await?;
     let mut notices = Vec::new();
@@ -394,18 +391,51 @@ pub(crate) async fn create_empty_session_via_metadata(
     let outcome = result.map_err(|err| report_create_session_error(server, json, err))?;
     match outcome {
         CreateEmptyOutcome::Created => Ok(()),
-        CreateEmptyOutcome::Unsupported => {
-            eprintln!(
-                "phux: create-session failed: the server does not support empty sessions; upgrade it"
-            );
-            Err(ExitCode::FAILURE)
-        }
-        CreateEmptyOutcome::ReadRefused(refusal) => {
-            eprintln!("phux: create-session failed: server refused the read-back: {refusal}");
-            Err(ExitCode::FAILURE)
-        }
-        CreateEmptyOutcome::NotRegistered => Err(report_session_not_registered(name)),
+        CreateEmptyOutcome::Unsupported => Err(report_empty_unsupported(json)),
+        CreateEmptyOutcome::ReadRefused(refusal) => Err(report_create_failed(
+            json,
+            format!("server refused the read-back: {refusal}"),
+        )),
+        CreateEmptyOutcome::NotRegistered => Err(report_session_not_registered(json, name)),
     }
+}
+
+/// The server cannot create a session with no terminal (ADR-0105).
+fn report_empty_unsupported(json: bool) -> ExitCode {
+    use crate::commands::json_err::{CliError, codes, emit};
+    emit(
+        json,
+        &CliError::new(
+            codes::UNSUPPORTED_SERVER,
+            "create-session failed: the server does not support empty sessions",
+            "upgrade the server (`phux upgrade`), or create the session without --empty",
+        ),
+        1,
+    )
+}
+
+/// A create the server did not confirm, as prose or the `--json` error
+/// object (`session_create_failed`, exit 1).
+fn report_create_failed(json: bool, detail: impl std::fmt::Display) -> ExitCode {
+    report_create_failed_with(
+        json,
+        detail,
+        "run `phux ls` to see whether the session exists; the server log has the cause",
+    )
+}
+
+/// [`report_create_failed`] with a specific remedy.
+fn report_create_failed_with(json: bool, detail: impl std::fmt::Display, remedy: &str) -> ExitCode {
+    use crate::commands::json_err::{CliError, codes, emit};
+    emit(
+        json,
+        &CliError::new(
+            codes::SESSION_CREATE_FAILED,
+            format!("create-session failed: {detail}"),
+            remedy,
+        ),
+        1,
+    )
 }
 
 /// Ask the connected server whether it supports atomic agent-session
@@ -425,18 +455,14 @@ async fn require_atomic_agent_session_create(
     let outcome = result.map_err(|err| server.report_unreachable(json, &err, "new"))?;
     match outcome {
         AtomicPreflightOutcome::Supported => Ok(()),
-        AtomicPreflightOutcome::Unsupported => {
-            eprintln!(
-                "phux: create-session failed: server does not support atomic agent-session restore"
-            );
-            Err(ExitCode::FAILURE)
-        }
-        AtomicPreflightOutcome::Refused(refusal) => {
-            eprintln!(
-                "phux: create-session failed: server refused the agent-session capability probe: {refusal}"
-            );
-            Err(ExitCode::FAILURE)
-        }
+        AtomicPreflightOutcome::Unsupported => Err(report_create_failed(
+            json,
+            "server does not support atomic agent-session restore",
+        )),
+        AtomicPreflightOutcome::Refused(refusal) => Err(report_create_failed(
+            json,
+            format!("server refused the agent-session capability probe: {refusal}"),
+        )),
     }
 }
 
@@ -510,30 +536,26 @@ pub(crate) async fn create_session_via_metadata(
     let outcome = result.map_err(|err| report_create_session_error(server, json, err))?;
     match outcome {
         CreateOutcome::Created(id) => Ok(id),
-        CreateOutcome::AtomicRestoreUnsupported => {
-            eprintln!(
-                "phux: create-session failed: server does not support atomic agent-session restore"
-            );
-            Err(ExitCode::FAILURE)
-        }
-        CreateOutcome::ProbeRefused(refusal) => {
-            eprintln!(
-                "phux: create-session failed: server refused the agent-session capability probe: {refusal}"
-            );
-            Err(ExitCode::FAILURE)
-        }
-        CreateOutcome::ReadRefused(refusal) => {
-            eprintln!("phux: create-session failed: server refused the read-back: {refusal}");
-            Err(ExitCode::FAILURE)
-        }
-        CreateOutcome::LegacyReadRefused(refusal) => {
-            eprintln!("phux: create-session failed: server refused legacy read-back: {refusal}");
-            Err(ExitCode::FAILURE)
-        }
+        CreateOutcome::AtomicRestoreUnsupported => Err(report_create_failed(
+            json,
+            "server does not support atomic agent-session restore",
+        )),
+        CreateOutcome::ProbeRefused(refusal) => Err(report_create_failed(
+            json,
+            format!("server refused the agent-session capability probe: {refusal}"),
+        )),
+        CreateOutcome::ReadRefused(refusal) => Err(report_create_failed(
+            json,
+            format!("server refused the read-back: {refusal}"),
+        )),
+        CreateOutcome::LegacyReadRefused(refusal) => Err(report_create_failed(
+            json,
+            format!("server refused legacy read-back: {refusal}"),
+        )),
         CreateOutcome::NotRegistered if idempotency_key.is_some() => {
-            Err(report_keyed_session_not_registered(name))
+            Err(report_keyed_session_not_registered(json, name))
         }
-        CreateOutcome::NotRegistered => Err(report_session_not_registered(name)),
+        CreateOutcome::NotRegistered => Err(report_session_not_registered(json, name)),
     }
 }
 
@@ -546,10 +568,10 @@ fn report_create_session_error(
 ) -> ExitCode {
     match err {
         CreateSessionError::Attach(err) => server.report_unreachable(json, &err, "new"),
-        CreateSessionError::Encode(err) => {
-            eprintln!("phux: failed to serialize create request: {err}");
-            ExitCode::FAILURE
-        }
+        CreateSessionError::Encode(err) => report_create_failed(
+            json,
+            format!("failed to serialize the create request: {err}"),
+        ),
         CreateSessionError::Layout(err) => crate::commands::json_err::emit(
             json,
             &crate::commands::json_err::CliError::new(
@@ -576,8 +598,16 @@ async fn reject_duplicate_session_name(
         .into_parts();
     partial::warn_partial_view("new", &degradation);
     if pre.sessions.iter().any(|s| s.name == name) {
-        eprintln!("phux: session '{name}' already exists");
-        return Err(ExitCode::FAILURE);
+        use crate::commands::json_err::{CliError, codes, emit};
+        return Err(emit(
+            json,
+            &CliError::new(
+                codes::SESSION_EXISTS,
+                format!("session '{name}' already exists"),
+                format!("attach it with `phux attach {name}`, or pick another name"),
+            ),
+            1,
+        ));
     }
     Ok(())
 }
@@ -603,21 +633,20 @@ fn warn_partial_results(notices: &[String]) {
 }
 
 /// The failure reported when no create result names the requested session.
-fn report_session_not_registered(name: &str) -> ExitCode {
-    eprintln!("phux: create-session failed: server did not register session '{name}'");
-    ExitCode::FAILURE
+fn report_session_not_registered(json: bool, name: &str) -> ExitCode {
+    report_create_failed(json, format!("server did not register session '{name}'"))
 }
 
 /// A keyed create that registered nothing: a key reused for a different
 /// request (ADR-0126) and a name already in use read the same.
-fn report_keyed_session_not_registered(name: &str) -> ExitCode {
-    eprintln!("phux: create-session failed: server did not register session '{name}'");
-    eprintln!(
-        "  with --idempotency-key: the key may already belong to a different create \
+fn report_keyed_session_not_registered(json: bool, name: &str) -> ExitCode {
+    report_create_failed_with(
+        json,
+        format!("server did not register session '{name}'"),
+        "with --idempotency-key: the key may already belong to a different create \
          request, or the name may be in use; reuse a key only to retry the identical \
-         create, and draw a fresh one for a new request"
-    );
-    ExitCode::FAILURE
+         create, and draw a fresh one for a new request",
+    )
 }
 
 /// The seed pane's working directory: an explicit `--cwd`, else the client's

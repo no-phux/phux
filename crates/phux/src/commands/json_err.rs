@@ -46,6 +46,11 @@ pub(crate) mod codes {
     /// A session name the selector grammar could not address (empty, a
     /// leading `@`/`#`/`%`, or a `:` or `/@` inside).
     pub(crate) const INVALID_SESSION_NAME: &str = "invalid_session_name";
+    /// `phux new` named a session that already exists.
+    pub(crate) const SESSION_EXISTS: &str = "session_exists";
+    /// The server did not confirm a session create (refused read-back, no
+    /// registered result, or a missing capability for the requested shape).
+    pub(crate) const SESSION_CREATE_FAILED: &str = "session_create_failed";
     // The spatial edits' refusal codes live in `phux_client::spatial::codes`.
     /// A selector matched several panes where exactly one is required.
     pub(crate) const SELECTOR_NOT_SINGLE: &str = "selector_not_single";
