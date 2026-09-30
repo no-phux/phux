@@ -138,6 +138,13 @@ async function main() {
     () => events.some((e) => e.kind === "InputDelivery" && e.outcome === "Delivered"),
     "sole owner delivery receipt",
   );
+  // The shell's Paste command reaches the terminal while an overlay such as
+  // the find bar holds the keyboard; Command-V itself still needs focus.
+  command("active", "", { enabled: false });
+  const beforeRequest = bytes();
+  command("requestPaste", "Q");
+  await until(() => bytes() === beforeRequest + "Q", "requested paste without keyboard focus");
+  command("active", "", { enabled: true });
   command("paste", "unsafe\n");
   await until(
     () => events.some((e) => e.kind === "InputDelivery" && e.outcome === "Refused"),
