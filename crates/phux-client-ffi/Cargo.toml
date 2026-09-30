@@ -54,6 +54,10 @@ required-features = ["c-abi"]
 name = "connected"
 required-features = ["c-abi"]
 
+[[test]]
+name = "connected_flood"
+required-features = ["c-abi"]
+
 [[example]]
 name = "napi_smoke"
 required-features = ["napi"]

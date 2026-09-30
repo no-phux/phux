@@ -105,8 +105,8 @@ impl TerminalActor {
     }
 
     /// Right-trimmed live-viewport rows: the detector's only grid read.
-    /// Uses the fresh-render-state projection so it never consumes the
-    /// shared dirty bits the tick needs.
+    /// Uses the fresh-render-state projection, which drains the terminal's
+    /// dirty bits; the synthesizer marks the tick's pool for a rebuild.
     pub(super) fn viewport_lines(&self) -> Option<Vec<String>> {
         let canonical = self.terminal.borrow();
         let terminal = canonical.try_terminal()?;

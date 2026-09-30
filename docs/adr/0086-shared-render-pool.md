@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-09-22
+last-reviewed: 2026-09-30
 ---
 
 # 0086 — The pooled libghostty render trio lives in `phux-protocol`
@@ -56,7 +56,10 @@ The token is a **required** argument of the one entry point rather than a
 second `begin_generation` method. A walker whose terminal is fixed for the
 pool's life — the server synthesizer walks one PTY-backed `Terminal` per pane
 for the pane's whole life — passes a constant, which is exactly "a generation
-that never changes", so behaviour is identical either way. Two entry points
+that never changes", so behaviour is identical either way. (The synthesizer
+does bump its token for one other reason: after one of its fresh-state walks
+drained the terminal's dirty bits, the pooled rows may be stale, so the next
+tick rebuilds; `phux-69pq.13`.) Two entry points
 would mean one of them was always the wrong one to reach for, and the cost of
 reaching for it was silent grid corruption that only manifests when a
 replacement terminal's pages recycle the freed allocation. On the client, the
@@ -87,8 +90,10 @@ Dirty policy is excluded because the call sites genuinely disagree, and each
 disagreement is deliberate: `SnapshotSynthesizer::mark_synced` clears both the
 row bits and the snapshot bit; `synthesize_incremental` clears neither,
 because an unacked diff must stay re-emittable
-([ADR-0018](./0018-lazy-state-synchronization.md)); `prepare_tick` bypasses
-the dirty bits entirely in favour of a per-consumer reference diff; and
+([ADR-0018](./0018-lazy-state-synchronization.md)); `prepare_tick`
+re-renders only the rows its pooled state rebuilt and clears exactly those
+flags, while each consumer still diffs against its own reference rather than
+dirty bits; and
 `TerminalRenderer::render_at_inner` clears only the rows it drew. A type that
 unified those four would erase four decisions.
 

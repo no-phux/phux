@@ -1,5 +1,7 @@
 //! Inbound frame decoding and dispatch.
 
+use bytes::Bytes;
+
 use super::{
     ControlError, ControlPlane, EngineEvent, Event, FrameKind, HistoryRejectionReason,
     HistoryUnavailableReason, WireRejection, WireTombstone,
@@ -26,8 +28,8 @@ impl ControlPlane {
 
     /// Retain one frame for the consumer to feed itself, under
     /// [`InboundDelivery::Queued`](super::InboundDelivery::Queued).
-    pub fn queue_inbound(&mut self, frame: Vec<u8>) -> Result<(), ControlError> {
-        self.queue_inbound_batch(vec![frame])
+    pub fn queue_inbound(&mut self, frame: impl Into<Bytes>) -> Result<(), ControlError> {
+        self.queue_inbound_batch(vec![frame.into()])
     }
 
     /// Retain one transport read's frames whole.
@@ -37,7 +39,7 @@ impl ControlPlane {
     /// there was room always lands, and the queue stays within the
     /// ceilings plus one read. Queueing past a full queue is a
     /// protocol-level failure: that caller ignored the backpressure.
-    pub fn queue_inbound_batch(&mut self, frames: Vec<Vec<u8>>) -> Result<(), ControlError> {
+    pub fn queue_inbound_batch(&mut self, frames: Vec<Bytes>) -> Result<(), ControlError> {
         if !self.has_inbound_room() {
             return Err(ControlError::Protocol(
                 "inbound frame queue overflowed; the consumer stopped draining".to_owned(),
@@ -59,7 +61,7 @@ impl ControlPlane {
 
     /// Drain the retained inbound frames.
     #[must_use]
-    pub fn take_inbound(&mut self) -> Vec<Vec<u8>> {
+    pub fn take_inbound(&mut self) -> Vec<Bytes> {
         self.inbound_bytes = 0;
         std::mem::take(&mut self.inbound)
     }
@@ -81,11 +83,11 @@ impl ControlPlane {
 
     /// Decode a transport read's complete frames in order, applying each
     /// contiguous run of engine events as one projection batch.
-    pub fn feed_bytes_batch(&mut self, frames: &[Vec<u8>]) -> Result<(), ControlError> {
+    pub fn feed_bytes_batch(&mut self, frames: &[impl AsRef<[u8]>]) -> Result<(), ControlError> {
         let mut engine_events = Vec::new();
         let mut deferred_error = None;
         for bytes in frames {
-            let frame = match self.decode_frame(bytes) {
+            let frame = match self.decode_frame(bytes.as_ref()) {
                 Ok(frame) => frame,
                 Err(error) => {
                     return self.error_after_engine_batch(
@@ -97,6 +99,31 @@ impl ControlPlane {
             };
             self.queue_or_feed_frame(frame, &mut engine_events, &mut deferred_error)?;
         }
+        self.finish_batch(engine_events, deferred_error)
+    }
+
+    /// Feed already-decoded frames in order, applying each contiguous run
+    /// of engine events as one projection batch: one owner-thread round trip
+    /// and one publication per damaged terminal, however many frames the run
+    /// carried. [`Self::feed_bytes_batch`] without the decode, for a binding
+    /// that decodes on its own thread to run per-frame hooks first.
+    pub fn feed_batch(
+        &mut self,
+        frames: impl IntoIterator<Item = FrameKind>,
+    ) -> Result<(), ControlError> {
+        let mut engine_events = Vec::new();
+        let mut deferred_error = None;
+        for frame in frames {
+            self.queue_or_feed_frame(frame, &mut engine_events, &mut deferred_error)?;
+        }
+        self.finish_batch(engine_events, deferred_error)
+    }
+
+    fn finish_batch(
+        &mut self,
+        mut engine_events: Vec<EngineEvent>,
+        mut deferred_error: Option<ControlError>,
+    ) -> Result<(), ControlError> {
         Self::continue_after_nonfatal(
             &mut deferred_error,
             self.flush_engine_batch(&mut engine_events),

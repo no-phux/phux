@@ -5,6 +5,7 @@
 //! deltas (wide-cell tails skipped, soft wraps preserved), then cursor and
 //! mode bits. OSC 8 hyperlinks are not re-emitted.
 
+use std::cell::Cell;
 use std::io::Write as _;
 
 use base64::Engine as _;
@@ -15,14 +16,16 @@ use phux_core::screen::{
 };
 use phux_protocol::{
     kitty_replay,
-    render_pool::{RenderPool, RenderWalk},
+    render_pool::{RenderPool, RenderWalk, TerminalGeneration},
     sgr::{write_reset_and_sgr, write_reset_and_sgr_unresolved},
 };
 
 use libghostty_vt::{
     RenderState, Terminal as GhosttyTerminal,
     fmt::{Format, Formatter, FormatterOptions},
-    render::{CellIteration, CellIterator, CursorVisualStyle, RowIteration, RowIterator, Snapshot},
+    render::{
+        CellIteration, CellIterator, CursorVisualStyle, Dirty, RowIteration, RowIterator, Snapshot,
+    },
     screen::{CellSemanticContent, CellWide, GridRef},
     selection::Selection,
     style::{RgbColor, Style, StyleColor},
@@ -143,13 +146,36 @@ impl std::io::Write for BoundedSnapshotBytes {
 /// The free [`synthesize`] function is the one-shot wrapper. Per-tick diffs compare
 /// rendered rows against per-consumer references rather than libghostty's
 /// shared dirty bits (ADR-0086).
+///
+/// `prepare_tick` re-renders only the rows the pooled render state
+/// rebuilt since the previous tick (its per-row dirty flags, which this type
+/// alone clears), so a tick costs in proportion to damage. Any walk of the
+/// same terminal through another render state drains the terminal's dirty
+/// bits and would leave the pooled rows stale, so every such walk here marks
+/// the pool for a rebuild (`note_foreign_walk`).
 #[derive(Debug)]
 pub struct SnapshotSynthesizer<'alloc> {
     /// Pooled render state + row/cell iterators, rebuilt on a geometry
-    /// change (`phux-5pyx`; the rebuild now lives in [`RenderPool::begin`]).
+    /// change (`phux-5pyx`; the rebuild now lives in [`RenderPool::begin`])
+    /// or a [`Self::pool_generation`] bump.
     pool: RenderPool<'alloc>,
-    /// Per-tick rendered row bodies, rendered once by [`Self::prepare_tick`]
-    /// and shared by every consumer's diff.
+    /// Generation handed to [`RenderPool::begin`]; bumped to force a rebuild
+    /// after a foreign render state consumed the terminal's dirty bits.
+    pool_generation: TerminalGeneration,
+    /// Set by any walk of a terminal through a render state other than
+    /// [`Self::pool`]; the next [`Self::prepare_tick`] rebuilds the pool.
+    foreign_walk: Cell<bool>,
+    /// Whether [`Self::tick_rows`] holds every row of the pool's current
+    /// render state, so clean rows may be kept. Cleared while a render is
+    /// in flight so a failed tick falls back to a full render.
+    tick_rows_valid: bool,
+    /// Width [`Self::tick_rows`] was rendered at.
+    tick_cols: u16,
+    /// Rows the last [`Self::prepare_tick`] rendered (test observability).
+    #[cfg(test)]
+    last_rendered_rows: usize,
+    /// Per-tick rendered row bodies, rendered by [`Self::prepare_tick`]
+    /// (dirty rows only) and shared by every consumer's diff.
     tick_rows: Vec<Vec<u8>>,
     /// Cursor/mode epilogue for the current tick (consumer-independent).
     tick_epilogue: Vec<u8>,
@@ -163,6 +189,12 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     pub fn new() -> Result<Self, SynthesisError> {
         Ok(Self {
             pool: RenderPool::new()?,
+            pool_generation: 0,
+            foreign_walk: Cell::new(false),
+            tick_rows_valid: false,
+            tick_cols: 0,
+            #[cfg(test)]
+            last_rendered_rows: 0,
             tick_rows: Vec::new(),
             tick_epilogue: Vec::new(),
             tick_screen_toggle: Vec::new(),
@@ -171,16 +203,14 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
 
     /// Emit a VT sequence that reproduces `terminal`'s viewport on a fresh
     /// terminal, plus the queried `(cols, rows)`.
-    #[allow(
-        clippy::unused_self,
-        reason = "a full snapshot is intentionally stateless — it builds a fresh \
-                  RenderState each call (phux-uow0) — but stays a method on \
-                  SnapshotSynthesizer for API symmetry with the incremental paths"
-    )]
+    ///
+    /// A full snapshot builds a fresh render state each call (phux-uow0), so
+    /// it marks the tick's pool for a rebuild.
     pub fn synthesize(
         &self,
         terminal: &GhosttyTerminal<'alloc, '_>,
     ) -> Result<SnapshotBytes, SynthesisError> {
+        self.note_foreign_walk();
         Self::synthesize_bounded(terminal, usize::MAX)
     }
 
@@ -231,16 +261,13 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     }
 
     /// Synthesize viewport and scrollback within one aggregate byte ceiling.
-    #[allow(
-        clippy::unused_self,
-        reason = "the public receiver is retained for semver compatibility; bounded full snapshots are stateless"
-    )]
     pub fn synthesize_with_scrollback_bounded(
         &self,
         terminal: &GhosttyTerminal<'alloc, '_>,
         scrollback: Option<u32>,
         max_bytes: usize,
     ) -> Result<SnapshotBytes, SynthesisError> {
+        self.note_foreign_walk();
         let mut snap = Self::synthesize_bounded(terminal, max_bytes)?;
         let Some(want) = scrollback else {
             return Ok(snap);
@@ -306,13 +333,9 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     ///
     /// With `cells`, also collects a sparse [`ScreenState::cells`] of
     /// non-default-style or OSC-133-marked cells (see `collect_cell`).
-    #[allow(
-        clippy::unused_self,
-        reason = "intentionally stateless — reads through a fresh RenderState \
-                  each call (the pooled cache served stale rows after a resize; \
-                  see `project_viewport`) — but stays a method on \
-                  SnapshotSynthesizer for API symmetry, matching `synthesize`"
-    )]
+    ///
+    /// Reads through a fresh render state (see `project_viewport`), so it
+    /// marks the tick's pool for a rebuild.
     pub fn screen_state_with_scrollback(
         &self,
         terminal: &GhosttyTerminal<'alloc, '_>,
@@ -328,6 +351,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         };
 
         let title = pane_title(terminal);
+        self.note_foreign_walk();
         let view = Self::project_viewport(terminal, cells)?;
 
         Ok(ScreenState {
@@ -599,46 +623,85 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         &mut self,
         terminal: &GhosttyTerminal<'alloc, '_>,
     ) -> Result<Snapshot<'alloc, '_>, SynthesisError> {
-        Ok(self.pool.begin(terminal, 0)?.snapshot)
+        Ok(self.pool.begin(terminal, self.pool_generation)?.snapshot)
     }
 
     /// Render the grid once per tick into the shared `tick_*` buffers and
     /// return `(cols, rows, live_cm)`. Each consumer's
     /// [`Self::diff_consumer`] then diffs against them, so N consumers cost
     /// one render and one set of cursor/mode FFI reads.
+    ///
+    /// Only rows the pooled render state rebuilt since the last tick are
+    /// re-rendered; the rest keep last tick's bodies, which are byte-identical
+    /// because a clean row's cached cells are unchanged. A full render runs
+    /// instead whenever that cannot be trusted: the first tick, a pool rebuild
+    /// (geometry change, or a foreign walk drained the dirty bits), a
+    /// libghostty full redraw (screen switch, viewport move, palette or other
+    /// terminal-wide change), or a previous tick that failed midway.
     pub(crate) fn prepare_tick(
         &mut self,
         terminal: &GhosttyTerminal<'alloc, '_>,
     ) -> Result<(u16, u16, ReferenceCursorMode), SynthesisError> {
-        let _span = tracing::debug_span!("prepare_tick").entered();
+        let span = tracing::debug_span!(
+            "prepare_tick",
+            full = tracing::field::Empty,
+            rendered_rows = tracing::field::Empty,
+        )
+        .entered();
+        if self.foreign_walk.replace(false) {
+            self.pool_generation = self.pool_generation.wrapping_add(1);
+        }
         let RenderWalk {
             snapshot,
             rows,
             cells,
-        } = self.pool.begin(terminal, 0)?;
+        } = self.pool.begin(terminal, self.pool_generation)?;
         let (cols, rows_n) = grid_dims(&snapshot)?;
-
-        // Clear every in-range buffer so a row the iterator skips cannot
-        // leave stale content from a prior tick.
+        let dirty = snapshot.dirty()?;
         let rows_usize = usize::from(rows_n);
-        if self.tick_rows.len() < rows_usize {
-            self.tick_rows.resize_with(rows_usize, Vec::new);
-        } else {
-            self.tick_rows.truncate(rows_usize);
-        }
-        for body in &mut self.tick_rows {
-            body.clear();
-        }
+        let full = !self.tick_rows_valid
+            || dirty == Dirty::Full
+            || self.tick_cols != cols
+            || self.tick_rows.len() != rows_usize;
+        span.record("full", full);
 
-        // Fresh pen per row keeps each row body self-contained and
-        // comparable across ticks.
-        {
+        // Invalid until every dirty row is rendered and its flag cleared: an
+        // error below leaves a partial state the next tick must not trust.
+        self.tick_rows_valid = false;
+        if full {
+            // Clear every in-range buffer so a row the iterator skips cannot
+            // leave stale content from a prior tick.
+            self.tick_rows.resize_with(rows_usize, Vec::new);
+            for body in &mut self.tick_rows {
+                body.clear();
+            }
+        }
+        let mut rendered_rows: usize = 0;
+        if full || dirty != Dirty::Clean {
+            // Fresh pen per row keeps each row body self-contained and
+            // comparable across ticks.
             let tick_rows = &mut self.tick_rows;
             walk_viewport_rows(rows, &snapshot, rows_n, |row_index, row| {
+                if !full && !row.dirty()? {
+                    return Ok(());
+                }
                 let body = &mut tick_rows[usize::from(row_index)];
-                render_row_body(cells, row, body)
+                body.clear();
+                render_row_body(cells, row, body)?;
+                row.set_dirty(false)?;
+                rendered_rows += 1;
+                Ok(())
             })?;
         }
+        span.record("rendered_rows", rendered_rows);
+        #[cfg(test)]
+        {
+            self.last_rendered_rows = rendered_rows;
+        }
+        // The global flag is independent of the row flags cleared above.
+        snapshot.set_dirty(Dirty::Clean)?;
+        self.tick_cols = cols;
+        self.tick_rows_valid = true;
 
         // Cursor/mode + epilogue + screen toggle: consumer-independent, so
         // capture/precompute them once while the snapshot is live.
@@ -648,6 +711,14 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         self.tick_screen_toggle.clear();
         emit_screen_mode(&mut self.tick_screen_toggle, terminal)?;
         Ok((cols, rows_n, live_cm))
+    }
+
+    /// Record that `terminal` was walked through a render state other than
+    /// the pool. That walk drained the terminal's dirty bits, so the pool's
+    /// cached rows may be stale; the next [`Self::prepare_tick`] rebuilds the
+    /// pool and renders in full.
+    pub(crate) fn note_foreign_walk(&self) {
+        self.foreign_walk.set(true);
     }
 
     /// Diff one consumer against the shared tick buffers from
@@ -804,7 +875,6 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     /// bytes, so the first diff after attach reports only later changes.
     #[allow(
         clippy::needless_pass_by_ref_mut,
-        clippy::unused_self,
         reason = "`&mut self` is retained for semver compatibility of this externally visible method"
     )]
     pub fn prime_reference(
@@ -814,7 +884,9 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     ) -> Result<(), SynthesisError> {
         // The attach snapshot just walked with a fresh render state and
         // consumed the terminal's dirty bits, so the pool may hold older
-        // rows. Prime from another fresh walk to match the snapshot's cut.
+        // rows. Prime from another fresh walk to match the snapshot's cut;
+        // the next tick rebuilds the pool for the same reason.
+        self.note_foreign_walk();
         let (mut render_state, mut rows, mut cells) = fresh_render_trio()?;
         let snapshot = render_state.update(terminal)?;
         let (cols, rows_n) = grid_dims(&snapshot)?;
@@ -2719,4 +2791,66 @@ mod tests {
         assert_eq!(rendered.format, RENDERED_FORMAT_HTML);
         assert!(rendered.data.contains("hi"));
     }
+
+    /// Every fresh-render-state walk drains the terminal's dirty bits; the
+    /// next tick must rebuild the pool rather than serve its cached rows.
+    #[test]
+    fn prepare_tick_serves_rows_a_foreign_walk_drained() {
+        type ForeignWalk =
+            fn(&mut SnapshotSynthesizer<'static>, &GhosttyTerminal<'static, 'static>);
+        let walks: [(&str, ForeignWalk); 4] = [
+            ("screen_state", |s, t| {
+                drop(s.screen_state(t, 0).expect("walk"));
+            }),
+            ("synthesize", |s, t| drop(s.synthesize(t).expect("walk"))),
+            ("synthesize_with_scrollback", |s, t| {
+                drop(s.synthesize_with_scrollback(t, Some(1)).expect("walk"));
+            }),
+            ("prime_reference", |s, t| {
+                s.prime_reference(t, &mut ConsumerReference::new())
+                    .expect("walk");
+            }),
+        ];
+        for (name, walk) in walks {
+            let mut t = fresh(10, 3);
+            t.vt_write(b"AA");
+            let mut synth = SnapshotSynthesizer::new().expect("synth");
+            synth.prepare_tick(&t).expect("tick0");
+            t.vt_write(b"\x1b[2;1HZZ");
+            walk(&mut synth, &t);
+            synth.prepare_tick(&t).expect("tick1");
+            assert!(
+                synth.tick_rows[1].contains(&b'Z'),
+                "{name}: the tick served the pool's stale row 1: {:?}",
+                String::from_utf8_lossy(&synth.tick_rows[1]),
+            );
+            assert_eq!(synth.last_rendered_rows, 3, "{name}: a full render");
+        }
+    }
+
+    /// A tick after a one-row write re-renders that row only, and a clean
+    /// terminal re-renders nothing, while the metadata reader sharing the
+    /// pool leaves the row flags for the tick.
+    #[test]
+    fn prepare_tick_renders_only_rows_the_pool_rebuilt() {
+        let mut t = fresh(10, 4);
+        // Park the cursor on row 1 first: moving it dirties the row it leaves.
+        t.vt_write(b"one\r\ntwo\r\nthree\x1b[2;1H");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
+        synth.prepare_tick(&t).expect("first tick");
+        assert_eq!(synth.last_rendered_rows, 4, "the first tick is full");
+
+        synth.prepare_tick(&t).expect("clean tick");
+        assert_eq!(synth.last_rendered_rows, 0, "a clean tick renders nothing");
+
+        t.vt_write(b"TWO");
+        let _ = synth.metadata_snapshot(&t).expect("metadata read");
+        synth.prepare_tick(&t).expect("partial tick");
+        assert_eq!(synth.last_rendered_rows, 1, "only the written row");
+        assert!(synth.tick_rows[1].starts_with(b"\x1b[0mTWO"));
+        assert!(synth.tick_rows[0].starts_with(b"\x1b[0mone"), "kept row 0");
+    }
 }
+
+#[cfg(test)]
+mod differential_tests;
