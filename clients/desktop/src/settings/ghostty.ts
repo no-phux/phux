@@ -212,7 +212,7 @@ export function ghosttyChord(trigger: string): string | undefined {
   const mods = new Set<string>();
   let key: string | undefined;
   for (const part of trigger.toLowerCase().split("+")) {
-    const modifier = MODIFIERS[part];
+    const modifier = own(MODIFIERS, part);
     if (modifier) mods.add(modifier);
     else if (key !== undefined || !part) return undefined;
     else key = part;
@@ -222,7 +222,7 @@ export function ghosttyChord(trigger: string): string | undefined {
     key = "=";
     mods.add("shift");
   }
-  key = KEY_NAMES[key] ?? key.replace(/^(digit|key)_(?=.$)/, "");
+  key = own(KEY_NAMES, key) ?? key.replace(/^(digit|key)_(?=.$)/, "");
   if (mods.size === 0 && key.length === 1) return undefined;
   return [...["cmd", "ctrl", "alt", "shift"].filter((mod) => mods.has(mod)), key].join("+");
 }
@@ -300,7 +300,7 @@ function parameterized(name: string, argument: string): string | undefined {
   // and `mixed` (plain plus rich text) copies its plain half.
   if (name === "copy_to_clipboard")
     return ["", "plain", "mixed"].includes(argument.trim()) ? "copy" : undefined;
-  const region = WRITE_REGIONS[name];
+  const region = own(WRITE_REGIONS, name);
   if (region) {
     const [mode = "", format = "plain"] = argument.split(",").map((part) => part.trim());
     return ["copy", "paste", "open"].includes(mode) && format === "plain"
@@ -329,7 +329,17 @@ export function ghosttyAction(action: string): string | undefined {
   const name = colon < 0 ? trimmed : trimmed.slice(0, colon);
   const argument = colon < 0 ? "" : trimmed.slice(colon + 1);
   const direction = argument.split(",")[0] ?? "";
-  return ACTIONS[`${name}:${direction}`] ?? ACTIONS[name] ?? parameterized(name, argument);
+  return (
+    own(ACTIONS, `${name}:${direction}`) ?? own(ACTIONS, name) ?? parameterized(name, argument)
+  );
+}
+
+/**
+ * A table entry by the user's word: only the table's own keys, so a name like
+ * `toString` or `constructor` is unknown rather than an `Object` built-in.
+ */
+function own(table: Record<string, string>, key: string): string | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
 }
 
 /**
