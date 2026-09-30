@@ -16,6 +16,7 @@ mod connect;
 mod directory;
 mod error;
 mod grid_metadata;
+mod inbound;
 mod log;
 mod operations;
 mod pointer;
@@ -35,6 +36,7 @@ use std::ptr;
 
 use client::{Client, Limits};
 use error::{BridgeError, bytes_in, check_struct, outbound_bytes_in, terminal_id_in};
+pub(crate) use inbound::poll_connected;
 #[cfg(test)]
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::ResourceKind;
@@ -576,37 +578,6 @@ pub unsafe extern "C" fn phux_client_feed_frame(
     } else {
         result
     }
-}
-
-/// The connected lane's tick: feed what the driver read, then publish.
-///
-/// Each frame walks the same path `phux_client_feed_frame` walks, so the
-/// retired-close, profile-validation and agent-generation hooks keep running
-/// on the owning thread. Drain lifecycle events after taking the batch but
-/// before decoding it: a loss and the replacement socket's `HELLO_OK` may have
-/// accumulated between polls, and old subscription tombstones must not filter
-/// frames from that replacement connection.
-pub(crate) fn poll_connected(client: &mut Client) -> Result<bool, BridgeError> {
-    let (epoch, frames) = client.take_inbound();
-    let mut attached = client.process_runtime_events()?;
-    for frame in frames {
-        let decoded = {
-            let control = client.control();
-            if !control.accepts_inbound(epoch) {
-                break;
-            }
-            decode_server_frame_with_limits(
-                &frame,
-                control.decode_limits().unwrap_or_else(|| {
-                    BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
-                        .unwrap_or_default()
-                }),
-            )?
-        };
-        attached |= apply_server_frame(client, decoded, Some(epoch))?;
-    }
-    attached |= client.process_runtime_events()?;
-    Ok(attached)
 }
 
 fn decode_server_frame(client: &Client, data: &[u8]) -> Result<FrameKind, BridgeError> {
