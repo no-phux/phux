@@ -1,1 +1,1 @@
-${file:/workspace/push_924_changelog.json}
+${file:/workspace/merged_924_changelog.md}
