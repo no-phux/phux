@@ -20,9 +20,6 @@
 // built on it.
 mod engine;
 
-// Mobile text commits adapted onto the canonical shared predictor.
-mod predict;
-
 // The remote bridge: one `RemoteClient` object over a runtime session.
 mod wire;
 
