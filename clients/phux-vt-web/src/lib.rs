@@ -131,8 +131,45 @@ const TERMINAL_DATA_CURSOR_Y: f64 = 4.0;
 const TERMINAL_DATA_CURSOR_VISIBLE: f64 = 7.0;
 const TERMINAL_DATA_TITLE: f64 = 12.0;
 const TERMINAL_DATA_VIEWPORT_ACTIVE: f64 = 32.0;
+const TERMINAL_DATA_SCROLLBAR: f64 = 9.0;
+const TERMINAL_DATA_MOUSE_TRACKING: f64 = 11.0;
+const TERMINAL_OPT_BELL: f64 = 2.0;
 /// Longest title read back; OSC 0/2 titles are short, a hostile one is not.
 const MAX_TITLE_BYTES: u32 = 1024;
+/// Longest OSC 8 URI read back; a longer one is not offered as a link.
+const MAX_HYPERLINK_BYTES: u32 = 8 * 1024;
+const GHOSTTY_OUT_OF_SPACE: i32 = -3;
+// `GhosttyPoint`: a u32 tag, then an 8-aligned coordinate `{ x: u16, y: u32 }`;
+// passed by pointer on wasm32.
+const POINT_SIZE: u32 = 24;
+const POINT_TAG_VIEWPORT: u32 = 1;
+// `GhosttyGridRef`: `{ size: u32, node: ptr, x: u16, y: u16 }`.
+const GRID_REF_SIZE: u32 = 12;
+// `GhosttySelection`: `{ size, start: GridRef, end: GridRef, rectangle: bool }`.
+const SELECTION_SIZE: u32 = 32;
+// `GhosttyTerminalSelectionFormatOptions`:
+// `{ size, emit, unwrap: bool, trim: bool, selection: ptr }`.
+const SELECTION_FORMAT_SIZE: u32 = 16;
+// `GhosttyFormatterTerminalOptions`: `{ size, emit, unwrap, trim, extra:
+// GhosttyFormatterTerminalExtra (24 bytes, whose own `screen` extra is 12
+// bytes at offset 12), selection: ptr }`.
+const FORMATTER_OPTIONS_SIZE: u32 = 40;
+const FORMATTER_EXTRA_OFFSET: u32 = 12;
+const FORMATTER_EXTRA_SIZE: u32 = 24;
+const FORMATTER_SCREEN_EXTRA_OFFSET: u32 = 24;
+const FORMATTER_SCREEN_EXTRA_SIZE: u32 = 12;
+const SCROLL_VIEWPORT_TOP: u32 = 0;
+/// A one-function module that re-exports its imported JS function as a wasm
+/// function, the only kind a `funcref` table accepts: the engine's bell
+/// option takes an indirect-function-table index, not a JS callback.
+/// `(module (type (func (param i32 i32))) (import "e" "f" (func (type 0)))
+/// (export "f" (func 0)))`.
+const BELL_TRAMPOLINE_WASM: [u8; 32] = [
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic, version
+    0x01, 0x06, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x00, // type: (i32, i32) -> ()
+    0x02, 0x07, 0x01, 0x01, 0x65, 0x01, 0x66, 0x00, 0x00, // import "e" "f"
+    0x07, 0x05, 0x01, 0x01, 0x66, 0x00, 0x00, // export "f"
+];
 // `GhosttyTerminalScrollViewport`: a u32 tag, then an 8-aligned value union
 // whose `delta` is a wasm32 isize; passed by pointer on wasm32.
 const SCROLL_VIEWPORT_SIZE: u32 = 24;
@@ -254,9 +291,81 @@ pub struct Vt {
     cells_free: Function,
     cells_next: Function,
     cells_get: Function,
+    grid_ref: Function,
+    hyperlink_uri: Function,
+    selection_format: Function,
+    formatter_new: Function,
+    formatter_format: Function,
+    formatter_free: Function,
+    ghostty_free: Function,
+    mode_get: Function,
+    codepoint_width: Function,
     native: Option<NativeAbi>,
     native_capabilities: Option<IncrementalCapabilities>,
+    bell: Option<BellHook>,
     _entropy: Closure<dyn FnMut(u32, u32) -> i32>,
+}
+
+/// The engine's bell callback: a table slot calling back into Rust, which
+/// records the handle of each terminal that rang until it is taken.
+struct BellHook {
+    table_index: u32,
+    rang: Rc<RefCell<Vec<u32>>>,
+    _callback: Closure<dyn FnMut(u32, u32)>,
+}
+
+impl BellHook {
+    /// Install the callback in the engine's function table. `None` when the
+    /// host cannot (the table does not grow): terminals then never ring.
+    fn install(exports: &JsValue) -> Option<Self> {
+        let table: WebAssembly::Table = Reflect::get(exports, &"__indirect_function_table".into())
+            .ok()?
+            .dyn_into()
+            .ok()?;
+        let rang = Rc::new(RefCell::new(Vec::new()));
+        let record = Rc::clone(&rang);
+        let callback = Closure::<dyn FnMut(u32, u32)>::new(move |terminal: u32, _userdata: u32| {
+            let mut rang = record.borrow_mut();
+            if !rang.contains(&terminal) {
+                rang.push(terminal);
+            }
+        });
+        let host = Object::new();
+        Reflect::set(&host, &"f".into(), callback.as_ref().unchecked_ref()).ok()?;
+        let imports = Object::new();
+        Reflect::set(&imports, &"e".into(), &host).ok()?;
+        let module = WebAssembly::Module::new(&Uint8Array::from(&BELL_TRAMPOLINE_WASM[..])).ok()?;
+        let instance = WebAssembly::Instance::new(&module, &imports).ok()?;
+        let function: Function = Reflect::get(&instance.exports(), &"f".into())
+            .ok()?
+            .dyn_into()
+            .ok()?;
+        let table_index = table.grow(1).ok()?;
+        table.set(table_index, &function).ok()?;
+        Some(Self {
+            table_index,
+            rang,
+            _callback: callback,
+        })
+    }
+
+    fn take(&self, terminal: u32) -> bool {
+        let mut rang = self.rang.borrow_mut();
+        let before = rang.len();
+        rang.retain(|&handle| handle != terminal);
+        rang.len() != before
+    }
+}
+
+/// The viewport's place in the scrollable screen, in rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Scrollbar {
+    /// Rows in the screen: scrollback plus the active area.
+    pub total: u64,
+    /// Screen row at the top of the viewport.
+    pub offset: u64,
+    /// Rows the viewport shows.
+    pub len: u64,
 }
 
 impl Vt {
@@ -340,6 +449,16 @@ impl Vt {
             cells_free: f("ghostty_render_state_row_cells_free")?,
             cells_next: f("ghostty_render_state_row_cells_next")?,
             cells_get: f("ghostty_render_state_row_cells_get")?,
+            grid_ref: f("ghostty_terminal_grid_ref")?,
+            hyperlink_uri: f("ghostty_grid_ref_hyperlink_uri")?,
+            selection_format: f("ghostty_terminal_selection_format_alloc")?,
+            formatter_new: f("ghostty_formatter_terminal_new")?,
+            formatter_format: f("ghostty_formatter_format_alloc")?,
+            formatter_free: f("ghostty_formatter_free")?,
+            ghostty_free: f("ghostty_free")?,
+            mode_get: f("ghostty_terminal_mode_get")?,
+            codepoint_width: f("ghostty_unicode_codepoint_width")?,
+            bell: BellHook::install(&exports),
             native,
             // Vendored ghostty-vt.wasm still speaks the fork incremental
             // snapshot ABI. Official GHOSTSNP on the server would be selected
@@ -442,6 +561,16 @@ impl Vt {
     }
 
     fn terminal_from_handle(self: &Rc<Self>, term: u32) -> Terminal {
+        if let Some(bell) = &self.bell {
+            let _ = self.call(
+                &self.terminal_set,
+                &[
+                    f64::from(term),
+                    TERMINAL_OPT_BELL,
+                    f64::from(bell.table_index),
+                ],
+            );
+        }
         let state_out = self.wasm_alloc(4);
         let _ = self.call(&self.rs_new, &[0.0, f64::from(state_out)]);
         let state = self.r_u32(state_out);
@@ -459,6 +588,28 @@ impl Vt {
             scratch: self.wasm_alloc(8),
             grapheme_buf: self.wasm_alloc(256),
         }
+    }
+
+    /// Grid cells `ch` occupies, from the engine's own width table: 2 for a
+    /// wide (CJK) character, 0 for a combining mark.
+    #[must_use]
+    pub fn codepoint_width(&self, ch: char) -> u8 {
+        self.call(&self.codepoint_width, &[f64::from(u32::from(ch))]) as u8
+    }
+
+    /// Run an engine call that allocates its output (`out_ptr`, `out_len`
+    /// slots), copy the bytes out as text, and free the engine's buffer.
+    fn allocated_output(&self, call: impl FnOnce(u32, u32) -> i32) -> Option<String> {
+        let slots = self.alloc_zeroed(8).ok()?;
+        let status = call(slots, slots + 4);
+        let (ptr, len) = (self.r_u32(slots), self.r_u32(slots + 4));
+        self.wasm_free(slots, 8);
+        if ptr == 0 {
+            return (status == GHOSTTY_SUCCESS).then(String::new);
+        }
+        let bytes = self.bytes().subarray(ptr, ptr + len).to_vec();
+        let _ = self.call(&self.ghostty_free, &[0.0, f64::from(ptr), f64::from(len)]);
+        (status == GHOSTTY_SUCCESS).then(|| String::from_utf8_lossy(&bytes).into_owned())
     }
 
     // ── call + memory marshalling ────────────────────────────────────────────
@@ -999,6 +1150,242 @@ impl Terminal {
         self.term_u32(TERMINAL_DATA_VIEWPORT_ACTIVE) == 0
     }
 
+    /// Where the viewport sits in the scrollable screen.
+    #[must_use]
+    pub fn scrollbar(&self) -> Scrollbar {
+        let vt = &*self.vt;
+        let mut bar = Scrollbar {
+            total: 0,
+            offset: 0,
+            len: 0,
+        };
+        // GhosttyTerminalScrollbar: three u64 fields.
+        let Ok(out) = vt.alloc_zeroed(24) else {
+            return bar;
+        };
+        let status = vt.call(
+            &vt.terminal_get,
+            &[
+                f64::from(self.term),
+                TERMINAL_DATA_SCROLLBAR,
+                f64::from(out),
+            ],
+        ) as i32;
+        if status == GHOSTTY_SUCCESS {
+            let read =
+                |at: u32| u64::from(vt.r_u32(out + at)) | u64::from(vt.r_u32(out + at + 4)) << 32;
+            bar = Scrollbar {
+                total: read(0),
+                offset: read(8),
+                len: read(16),
+            };
+        }
+        vt.wasm_free(out, 24);
+        bar
+    }
+
+    /// Scroll so screen row `row` (0 is the oldest scrollback row) is the
+    /// viewport's top row. The engine stops at the live screen.
+    pub fn scroll_to_row(&self, row: u64) {
+        self.scroll(SCROLL_VIEWPORT_TOP, 0);
+        let delta = i32::try_from(row).unwrap_or(i32::MAX);
+        if delta > 0 {
+            self.scroll(SCROLL_VIEWPORT_DELTA, delta);
+        }
+    }
+
+    /// Whether a BEL rang since the last call. A BEL that terminates an OSC
+    /// string is not a bell. Always `false` when the host could not install
+    /// the engine's bell callback.
+    pub fn take_bell(&self) -> bool {
+        self.vt
+            .bell
+            .as_ref()
+            .is_some_and(|bell| bell.take(self.term))
+    }
+
+    /// Whether the program enabled any mouse tracking mode (DECSET 9, 1000,
+    /// 1002, or 1003).
+    #[must_use]
+    pub fn mouse_tracking(&self) -> bool {
+        self.term_u32(TERMINAL_DATA_MOUSE_TRACKING) != 0
+    }
+
+    /// Whether DEC private mode `mode` (for example 1003) is set.
+    #[must_use]
+    pub fn dec_mode(&self, mode: u16) -> bool {
+        let vt = &*self.vt;
+        vt.w_u32(self.scratch, 0);
+        let status = vt.call(
+            &vt.mode_get,
+            &[
+                f64::from(self.term),
+                f64::from(mode & 0x7fff),
+                f64::from(self.scratch),
+            ],
+        ) as i32;
+        status == GHOSTTY_SUCCESS && vt.r_u8(self.scratch) != 0
+    }
+
+    /// Plain text of every row of the active screen, oldest scrollback row
+    /// first: one entry per row, soft wraps not joined, trailing blanks and
+    /// trailing blank rows dropped. The engine's own formatter writes it in
+    /// one call, which is what makes searching the whole history cheap.
+    #[must_use]
+    pub fn screen_rows(&self) -> Vec<String> {
+        let vt = &*self.vt;
+        let Ok(options) = vt.alloc_zeroed(FORMATTER_OPTIONS_SIZE) else {
+            return Vec::new();
+        };
+        vt.w_u32(options, FORMATTER_OPTIONS_SIZE);
+        // emit = plain (0), unwrap = false, trim = true.
+        vt.bytes().set_index(options + 9, 1);
+        vt.w_u32(options + FORMATTER_EXTRA_OFFSET, FORMATTER_EXTRA_SIZE);
+        vt.w_u32(
+            options + FORMATTER_SCREEN_EXTRA_OFFSET,
+            FORMATTER_SCREEN_EXTRA_SIZE,
+        );
+        let Ok(slot) = vt.alloc_zeroed(4) else {
+            vt.wasm_free(options, FORMATTER_OPTIONS_SIZE);
+            return Vec::new();
+        };
+        let status = vt.call(
+            &vt.formatter_new,
+            &[
+                0.0,
+                f64::from(slot),
+                f64::from(self.term),
+                f64::from(options),
+            ],
+        ) as i32;
+        let formatter = vt.r_u32(slot);
+        vt.wasm_free(slot, 4);
+        vt.wasm_free(options, FORMATTER_OPTIONS_SIZE);
+        if status != GHOSTTY_SUCCESS || formatter == 0 {
+            return Vec::new();
+        }
+        let text = vt.allocated_output(|out_ptr, out_len| {
+            vt.call(
+                &vt.formatter_format,
+                &[
+                    f64::from(formatter),
+                    0.0,
+                    f64::from(out_ptr),
+                    f64::from(out_len),
+                ],
+            ) as i32
+        });
+        let _ = vt.call(&vt.formatter_free, &[f64::from(formatter)]);
+        match text {
+            Some(text) if !text.is_empty() => text.split('\n').map(str::to_owned).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The text between two viewport cells `(col, row)`, both included and
+    /// in either order, as the engine copies it: wide characters without
+    /// their spacer cells, soft-wrapped rows joined, trailing blanks trimmed.
+    /// `None` when a cell is outside the viewport or nothing is there.
+    #[must_use]
+    pub fn selection_text(&self, anchor: (u16, u16), head: (u16, u16)) -> Option<String> {
+        let vt = &*self.vt;
+        let selection = vt.alloc_zeroed(SELECTION_SIZE).ok()?;
+        let Ok(options) = vt.alloc_zeroed(SELECTION_FORMAT_SIZE) else {
+            vt.wasm_free(selection, SELECTION_SIZE);
+            return None;
+        };
+        vt.w_u32(selection, SELECTION_SIZE);
+        vt.w_u32(options, SELECTION_FORMAT_SIZE);
+        // emit = plain (0), unwrap = true, trim = true.
+        vt.bytes().set_index(options + 8, 1);
+        vt.bytes().set_index(options + 9, 1);
+        vt.w_u32(options + 12, selection);
+        let resolved = self.viewport_ref(anchor, selection + 4)
+            && self.viewport_ref(head, selection + 4 + GRID_REF_SIZE);
+        let text = resolved
+            .then(|| {
+                vt.allocated_output(|out_ptr, out_len| {
+                    vt.call(
+                        &vt.selection_format,
+                        &[
+                            f64::from(self.term),
+                            0.0,
+                            f64::from(options),
+                            f64::from(out_ptr),
+                            f64::from(out_len),
+                        ],
+                    ) as i32
+                })
+            })
+            .flatten();
+        vt.wasm_free(options, SELECTION_FORMAT_SIZE);
+        vt.wasm_free(selection, SELECTION_SIZE);
+        text.filter(|text| !text.is_empty())
+    }
+
+    /// The OSC 8 hyperlink URI of the viewport cell `(col, row)`, if the
+    /// program linked it.
+    #[must_use]
+    pub fn hyperlink_at(&self, col: u16, row: u16) -> Option<String> {
+        let vt = &*self.vt;
+        let grid_ref = vt.alloc_zeroed(GRID_REF_SIZE).ok()?;
+        let uri = self.hyperlink_of(grid_ref, (col, row));
+        vt.wasm_free(grid_ref, GRID_REF_SIZE);
+        uri
+    }
+
+    fn hyperlink_of(&self, grid_ref: u32, cell: (u16, u16)) -> Option<String> {
+        let vt = &*self.vt;
+        if !self.viewport_ref(cell, grid_ref) {
+            return None;
+        }
+        // A null buffer asks for the size: success means no link.
+        vt.w_u32(self.scratch, 0);
+        let status = vt.call(
+            &vt.hyperlink_uri,
+            &[f64::from(grid_ref), 0.0, 0.0, f64::from(self.scratch)],
+        ) as i32;
+        let needed = vt.r_u32(self.scratch);
+        if status != GHOSTTY_OUT_OF_SPACE || needed == 0 || needed > MAX_HYPERLINK_BYTES {
+            return None;
+        }
+        let buf = vt.alloc_zeroed(needed).ok()?;
+        let status = vt.call(
+            &vt.hyperlink_uri,
+            &[
+                f64::from(grid_ref),
+                f64::from(buf),
+                f64::from(needed),
+                f64::from(self.scratch),
+            ],
+        ) as i32;
+        let written = vt.r_u32(self.scratch).min(needed);
+        let uri = (status == GHOSTTY_SUCCESS && written > 0).then(|| {
+            String::from_utf8_lossy(&vt.bytes().subarray(buf, buf + written).to_vec()).into_owned()
+        });
+        vt.wasm_free(buf, needed);
+        uri
+    }
+
+    /// Resolve the viewport cell `(col, row)` into the `GhosttyGridRef` at
+    /// `out`. Returns whether the cell exists.
+    fn viewport_ref(&self, (col, row): (u16, u16), out: u32) -> bool {
+        let vt = &*self.vt;
+        let Ok(point) = vt.alloc_zeroed(POINT_SIZE) else {
+            return false;
+        };
+        vt.w_u32(point, POINT_TAG_VIEWPORT);
+        vt.w_u32(point + 8, u32::from(col));
+        vt.w_u32(point + 12, u32::from(row));
+        vt.w_u32(out, GRID_REF_SIZE);
+        let status = vt.call(
+            &vt.grid_ref,
+            &[f64::from(self.term), f64::from(point), f64::from(out)],
+        ) as i32;
+        vt.wasm_free(point, POINT_SIZE);
+        status == GHOSTTY_SUCCESS
+    }
+
     fn scroll(&self, tag: u32, delta: i32) {
         let vt = &*self.vt;
         let behavior = vt.wasm_alloc(SCROLL_VIEWPORT_SIZE);
@@ -1216,6 +1603,8 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
+        // The allocator may hand this handle to a later terminal.
+        let _ = self.take_bell();
         let row_iterator = self.vt.r_u32(self.iter_slot);
         let cells = self.vt.r_u32(self.cells_slot);
         let _ = self
