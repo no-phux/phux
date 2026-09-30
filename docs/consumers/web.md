@@ -192,7 +192,36 @@ What a page embedding the client can rely on, beyond typing:
   carried from before the attach). Scrolling is local; typing returns to the
   live screen.
 - **Selection and copy.** Dragging selects screen text; Command+C, or
-  Ctrl+Shift+C, copies it. A click clears it; Ctrl+C stays the interrupt.
+  Ctrl+Shift+C, copies it as the engine formats a copy: a wide (CJK)
+  character without its spacer cell, a soft-wrapped line as one line. A
+  click clears it; Ctrl+C stays the interrupt.
+- **Find.** Command+F, or Ctrl+Shift+F, typed at the terminal opens a find
+  bar after the canvas (class `phux-find`); the same chord elsewhere on the
+  page stays the browser's. It searches the whole history the replica
+  holds, ignoring ASCII case, and highlights every match on screen. Enter
+  steps to the next older match and Shift+Enter to the next newer one,
+  scrolling it into view; Escape closes the bar and returns the keys to the
+  terminal. A match does not span a soft-wrapped line break, and one search
+  keeps at most 1,000 matches. The native clients' anchor-based search needs
+  the native engine, so the browser searches the engine's plain-text
+  rendering of its screen instead.
+- **Mouse reporting.** While the program tracks the mouse (DECSET 9, 1000,
+  1002, or 1003, in any report format such as SGR 1006), presses, releases,
+  the wheel (as buttons 4 and 5), and the motion its mode asks for reach it
+  as structured `INPUT_MOUSE` events, and the right-click menu is its.
+  Shift+drag and Shift+wheel stay local (select, scroll back), as does the
+  pointer while the view is scrolled back. Positions are canvas pixels on
+  the 8x16 cell grid, the cell size the server assumes when no client
+  reports one.
+- **Links.** Command+click, or Ctrl+click, opens the program's OSC 8
+  hyperlink under the pointer, or a plain URL in that row, in a new tab
+  with no opener or referrer. Only `http`, `https`, and `mailto` links open;
+  an OSC 8 link with another scheme opens nothing. The pointer turns into a
+  hand over a link while the modifier is held.
+- **Bell.** A BEL from the program dispatches a bubbling `phux-bell`
+  `CustomEvent` on the canvas and flashes the canvas for 150 ms; with
+  `prefers-reduced-motion: reduce` the page gets the event and no flash. A
+  burst of bells rings once.
 - **Resize.** `HostedClient.resize(cols, rows)` (Rust: `Client::resize`)
   announces a new viewport; the canvas follows the pane's new geometry.
 - **Title.** The program's OSC 0/2 title is mirrored onto the canvas as
@@ -216,8 +245,9 @@ What a page embedding the client can rely on, beyond typing:
   renderer pass lands, the advertisement widens with it.
 - **Engine boundary copies.** Bytes cross two wasm linear memories (the Rust
   client and `ghostty-vt.wasm`), which is fine for terminal traffic.
-- **Not yet.** Mouse reporting to programs (a drag always selects), search,
-  clickable OSC 8 links, and the bell.
+- **Not yet.** On the alternate screen of a program that does not track
+  the mouse, the wheel does not become arrow keys (the reference TUI's
+  alternate scroll); the web client does not report focus (DEC 1004).
 
 ## Agent sessions
 
@@ -237,10 +267,13 @@ lifecycle frames that follow; it adds nothing to the wire and reads no stream
 ## Verification
 
 `wasm-pack test --node` in `phux-vt-web` and `phux-web` drives the real
-engine, the codec, frame reassembly, and key, IME, paste, and selection
-routing. `python3 scripts/ci/web-browser.py` (inside `nix develop .#browser`)
+engine (including its bell, copy formatting, hyperlink, and mouse-mode
+reads), the codec, frame reassembly, key, IME, paste, mouse, and selection
+routing, search, and link detection. `python3 scripts/ci/web-browser.py` (inside `nix develop .#browser`)
 starts `ws_demo_server` and runs the headless Chrome suites against it: the
 `src/` unit tests, the canvas pixel test, live connect, input and paste,
-resize, scrollback and copy, and the authenticated WebTransport-to-WebSocket
-fallback. The server's attach and `transport::webtransport` tests cover the
+resize, scrollback and copy, find, mouse reporting, links, the bell, wide
+character copy, and the authenticated WebTransport-to-WebSocket fallback.
+The demo server's pane runs `cat`, so a test makes the "program" emit mouse
+modes, OSC 8 links, and BEL by typing them. The server's attach and `transport::webtransport` tests cover the
 bootstrap sequence and the WebTransport handshake and token gate.

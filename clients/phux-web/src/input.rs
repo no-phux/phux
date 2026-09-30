@@ -1,5 +1,5 @@
-//! Browser keyboard, IME, and paste routing, free of the DOM so it runs under
-//! the node test harness.
+//! Browser keyboard, IME, paste, and mouse routing, free of the DOM so it runs
+//! under the node test harness.
 //!
 //! The browser delivers terminal input three ways: a `keydown` for a key the
 //! terminal encodes itself, committed text (an IME composition, a dead-key
@@ -11,6 +11,7 @@
 use std::ops::RangeInclusive;
 
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+use phux_protocol::input::mouse::MouseButton;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 
 pub use phux_client_core::keys::key_events_for_text;
@@ -152,6 +153,69 @@ pub fn is_copy_chord(key: &BrowserKey<'_>) -> bool {
     let command_c = key.meta && !key.ctrl && !key.alt && key.code == "KeyC";
     let ctrl_shift_c = key.ctrl && key.shift && !key.alt && !key.meta && key.code == "KeyC";
     command_c || ctrl_shift_c
+}
+
+/// Command+F, or Ctrl+Shift+F where there is no Command key: find in the
+/// terminal. Only a keystroke aimed at the terminal reaches this, so the
+/// browser keeps its own find everywhere else on the page.
+#[must_use]
+pub fn is_find_chord(key: &BrowserKey<'_>) -> bool {
+    let command_f = key.meta && !key.ctrl && !key.alt && !key.shift && key.code == "KeyF";
+    let ctrl_shift_f = key.ctrl && key.shift && !key.alt && !key.meta && key.code == "KeyF";
+    command_f || ctrl_shift_f
+}
+
+/// The wire button for a DOM `MouseEvent.button`: 0 primary, 1 middle,
+/// 2 secondary, 3 back, 4 forward (xterm's buttons 8 and 9). `None` for
+/// `-1` (no button changed: a move) and anything else.
+#[must_use]
+pub const fn mouse_button(button: i16) -> Option<MouseButton> {
+    Some(match button {
+        0 => MouseButton::Left,
+        1 => MouseButton::Middle,
+        2 => MouseButton::Right,
+        3 => MouseButton::Eight,
+        4 => MouseButton::Nine,
+        _ => return None,
+    })
+}
+
+/// The held button a drag reports, from a DOM `MouseEvent.buttons` mask
+/// (1 primary, 2 secondary, 4 middle, 8 back, 16 forward): the lowest set
+/// bit, or `None` when nothing is held.
+#[must_use]
+pub const fn held_button(buttons: u16) -> Option<MouseButton> {
+    Some(match buttons.isolate_lowest_one() {
+        1 => MouseButton::Left,
+        2 => MouseButton::Right,
+        4 => MouseButton::Middle,
+        8 => MouseButton::Eight,
+        16 => MouseButton::Nine,
+        _ => return None,
+    })
+}
+
+/// The wheel "button" xterm reports for scrolling `rows` rows: 4 up, 5 down.
+#[must_use]
+pub const fn wheel_button(rows: i32) -> MouseButton {
+    if rows < 0 {
+        MouseButton::Four
+    } else {
+        MouseButton::Five
+    }
+}
+
+/// Rows of wheel travel that make one reported wheel click: programs scroll
+/// about three lines per click, so a mouse notch reads the same in a
+/// program as in the local scrollback.
+pub const WHEEL_ROWS_PER_CLICK: f64 = 3.0;
+
+/// Whether pointer motion reaches the program: any-event tracking (DECSET
+/// 1003) reports every move, button-event tracking (1002) only drags, and
+/// normal tracking (1000) none.
+#[must_use]
+pub const fn reports_motion(any_event: bool, button_event: bool, button_held: bool) -> bool {
+    any_event || (button_event && button_held)
 }
 
 /// Shift+PageUp / Shift+PageDown page the local scrollback (as in ghostty

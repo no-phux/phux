@@ -1,7 +1,8 @@
 //! Standalone seeded WebSocket server, for the phux-web browser e2e.
 //!
 //! Runs a real phux server with a PTY-backed `default` session that prints a
-//! deterministic marker (`PHUX_WEB_OK`) then idles, listening for WebSocket
+//! deterministic marker (`PHUX_WEB_OK`) then runs `cat` (each typed line comes
+//! back as program output), listening for WebSocket
 //! clients on `PHUX_WS_ADDR` (default `127.0.0.1:47654`). Blocks forever.
 //! Port 0 lets the kernel pick; the `listening on` line on stderr names the
 //! address actually bound, which is how the browser e2e learns it.
@@ -32,9 +33,11 @@ fn main() {
 
     let socket_path = std::env::temp_dir().join(format!("phux-e2e-{}.sock", std::process::id()));
 
-    // A PTY session that emits a deterministic marker, then stays alive.
+    // A PTY session that emits a deterministic marker, then stays alive
+    // echoing each typed line back as program output, so a browser test can
+    // make the "program" emit escape sequences (mouse modes, OSC 8, BEL).
     let mut cmd = CommandBuilder::new("sh");
-    cmd.args(["-c", "printf 'PHUX_WEB_OK\\r\\n'; sleep 3600"]);
+    cmd.args(["-c", "printf 'PHUX_WEB_OK\\r\\n'; exec cat"]);
 
     // Standalone process binary: snapshot PHUX_* the same way `phux server`
     // does. `with_default_socket()` leaves env empty for hermetic in-process

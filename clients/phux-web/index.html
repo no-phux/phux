@@ -50,6 +50,23 @@
       .phux-agent-badge[data-state="blocked"] {
         color: #e6b450;
       }
+      /* The find bar the client mounts after the canvas (Command+F). */
+      .phux-find {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .phux-find[hidden] { display: none; }
+      .phux-find input, .phux-find button {
+        font: inherit;
+        background: #17171e;
+        color: #d7d7dd;
+        border: 1px solid #525260;
+        border-radius: 4px;
+        padding: 4px 8px;
+      }
+      .phux-find button { cursor: pointer; }
+      .phux-find-count { color: #a9a9b3; min-width: 7em; }
       #phux-path-picker {
         width: min(640px, 95vw);
       }

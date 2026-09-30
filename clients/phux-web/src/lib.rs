@@ -10,6 +10,8 @@
 pub mod client;
 pub mod framing;
 pub mod input;
+pub mod links;
+pub mod search;
 pub mod selection;
 pub mod session;
 
@@ -184,22 +186,56 @@ impl Default for Metrics {
 /// When `cursor_on` is true and the grid's cursor is visible, an inverted block
 /// cursor is drawn over the cursor cell (the caller toggles `cursor_on` to blink).
 pub fn render(ctx: &CanvasRenderingContext2d, grid: &Grid, m: &Metrics, cursor_on: bool) {
-    render_selected(ctx, grid, m, cursor_on, &(0..0));
+    render_selected(ctx, grid, m, cursor_on, &Overlay::default());
 }
 
-/// [`render`], drawing the row-major cell indices in `selected` inverted.
+/// A highlighted run of row-major cells: a search match.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mark {
+    /// Row-major cell indices.
+    pub cells: Range<usize>,
+    /// Whether this is the current match.
+    pub current: bool,
+}
+
+/// What is drawn over the grid's own colors: the selection (inverted) and
+/// search matches.
+#[derive(Clone, Debug, Default)]
+pub struct Overlay<'a> {
+    /// Row-major indices of the selected cells.
+    pub selected: Range<usize>,
+    /// Search matches on screen.
+    pub marks: &'a [Mark],
+}
+
+/// Background of a search match, and of the current one; both draw their
+/// text in [`MARK_TEXT`].
+const MARK_BG: Rgb = Rgb {
+    r: 0x8a,
+    g: 0x72,
+    b: 0x1c,
+};
+const CURRENT_MARK_BG: Rgb = Rgb {
+    r: 0xf2,
+    g: 0xb1,
+    b: 0x3a,
+};
+const MARK_TEXT: Rgb = Rgb { r: 0, g: 0, b: 0 };
+
+/// [`render`] with an [`Overlay`]: selected cells inverted, search matches
+/// highlighted.
 pub fn render_selected(
     ctx: &CanvasRenderingContext2d,
     grid: &Grid,
     m: &Metrics,
     cursor_on: bool,
-    selected: &Range<usize>,
+    overlay: &Overlay<'_>,
 ) {
     ctx.set_font(&m.font);
     ctx.set_text_baseline("top");
     for row in 0..grid.rows {
         for col in 0..grid.cols {
-            draw_cell(ctx, grid, m, col, row, selected);
+            draw_cell(ctx, grid, m, col, row, overlay);
         }
     }
     if cursor_on {
@@ -215,11 +251,11 @@ pub fn render_cursor_cell(
     grid: &Grid,
     m: &Metrics,
     cursor_on: bool,
-    selected: &Range<usize>,
+    overlay: &Overlay<'_>,
 ) {
     ctx.set_font(&m.font);
     ctx.set_text_baseline("top");
-    draw_cell(ctx, grid, m, grid.cursor_col, grid.cursor_row, selected);
+    draw_cell(ctx, grid, m, grid.cursor_col, grid.cursor_row, overlay);
     if cursor_on {
         draw_cursor(ctx, grid, m);
     }
@@ -231,7 +267,7 @@ fn draw_cell(
     m: &Metrics,
     col: u16,
     row: u16,
-    selected: &Range<usize>,
+    overlay: &Overlay<'_>,
 ) {
     let index = usize::from(row) * usize::from(grid.cols) + usize::from(col);
     let Some(cell) = grid.cells.get(index).filter(|_| col < grid.cols) else {
@@ -243,8 +279,19 @@ fn draw_cell(
         cell.fg.unwrap_or(grid.default_fg),
         cell.bg.unwrap_or(grid.default_bg),
     );
-    if selected.contains(&index) {
+    if overlay.selected.contains(&index) {
         std::mem::swap(&mut fg, &mut bg);
+    } else if let Some(mark) = overlay
+        .marks
+        .iter()
+        .find(|mark| mark.cells.contains(&index))
+    {
+        bg = if mark.current {
+            CURRENT_MARK_BG
+        } else {
+            MARK_BG
+        };
+        fg = MARK_TEXT;
     }
     ctx.set_fill_style_str(&css(bg));
     ctx.fill_rect(x, y, m.cell_w, m.cell_h);
