@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { rank } from "../../src/shell/filter";
-import { chordOf, displayChord, textFieldHasKeys } from "../../src/shell/keymap";
+import { chordOf, displayChord, textFieldHasKeys, yieldsToTextField } from "../../src/shell/keymap";
 import { quotePaths } from "../../src/terminal/pane";
 import { mix, palette, readableOn, themes } from "../../src/ui/theme";
 
@@ -35,6 +35,15 @@ describe("text fields", () => {
     expect(textFieldHasKeys(false, "a", "b")).toBe(false);
     expect(textFieldHasKeys(false, "a", undefined)).toBe(false);
     expect(textFieldHasKeys(false, undefined, "a")).toBe(false);
+  });
+
+  test("keys typed as text belong to the field, never to the shell behind it", () => {
+    expect(yieldsToTextField("select-all")).toBe(true);
+    // A Ghostty `super+backspace=text:\x15` pressed in the find field must
+    // not erase the shell's command line.
+    expect(yieldsToTextField("send:\u0015")).toBe(true);
+    expect(yieldsToTextField("palette")).toBe(false);
+    expect(yieldsToTextField("new")).toBe(false);
   });
 });
 

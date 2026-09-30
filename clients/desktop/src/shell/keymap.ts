@@ -111,3 +111,12 @@ export function textFieldHasKeys(
 ): boolean {
   return modalOpen || (findPlacementId !== undefined && findPlacementId === focusedPlacementId);
 }
+
+/**
+ * Commands that edit text, which a text field that has the keys keeps for
+ * itself: Select All, and Ghostty `text:`/`esc:` binds (`send:`), which would
+ * otherwise type into the shell behind the field.
+ */
+export function yieldsToTextField(commandId: string): boolean {
+  return commandId === "select-all" || commandId.startsWith("send:");
+}
