@@ -338,6 +338,8 @@ mod tests {
             session: Some("main".to_owned()),
             ssh: Some("me@mini".to_owned()),
             direct: None,
+            client_cert: Some(PathBuf::from("/state/remotes/mini.client.pem")),
+            client_key: Some(PathBuf::from("/state/remotes/mini.client.key")),
         }];
         config
             .theme

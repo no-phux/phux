@@ -9,9 +9,12 @@
 //! public material ([`ClientMaterial`]), and no diagnostic names the CA key
 //! path.
 
+mod client;
 mod material;
 mod reload;
 mod store;
+
+pub use client::{ClientRequest, IssuedIdentity, remove_identity_files, stored_credential_id};
 
 pub use material::{ClientMaterial, MAX_MATERIAL_BYTES, MaterialError};
 pub use phux_protocol::scope::ScopeGrammarError;
@@ -24,7 +27,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Datelike, Utc};
 use rcgen::{
     BasicConstraints, CertificateParams, CertificateSigningRequestParams, DnType,
-    ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose,
+    ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose, PublicKeyData, SanType,
 };
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, CertificateSigningRequestDer, UnixTime};
@@ -125,6 +128,13 @@ pub enum WorkloadError {
     /// ([`phux_config::production::refuse_dev_on_production_state`]).
     #[error("{0}")]
     ProductionState(String),
+    /// An authority's reply to a client CSR was refused
+    /// ([`ClientRequest::accept`]); the reply is never echoed.
+    #[error("the issued client certificate was refused: {0}")]
+    IssuedMismatch(&'static str),
+    /// A client identity file already exists where a new one would go.
+    #[error("a client identity file already exists; a new identity is never written over one")]
+    AlreadyStored,
 }
 
 /// Where workload authority material lives. `PHUX_WORKLOAD_CA`,
@@ -260,6 +270,10 @@ pub struct RegisteredCredential {
     pub id: String,
     /// The registry generation the commit produced.
     pub generation: u64,
+    /// Whether the commit also revoked the credential it replaced
+    /// ([`WorkloadRegistry::register_replacing`]); `false` when none was named,
+    /// or the named one was absent or already revoked.
+    pub replaced: bool,
 }
 
 /// The result of [`WorkloadRegistry::revoke`].
@@ -416,6 +430,29 @@ impl WorkloadRegistry {
         scopes: Vec<String>,
         expires_at: Option<i64>,
     ) -> Result<RegisteredCredential, WorkloadError> {
+        Self::register_replacing(path, public_key, scopes, expires_at, None)
+    }
+
+    /// [`Self::register`], and in the same locked write revoke `replaces`:
+    /// re-enrollment swaps a client's credential in one registry generation,
+    /// so no snapshot admits both keys or neither. A `replaces` the registry
+    /// does not hold (or already revoked) is not an error: there is nothing
+    /// left to swap out.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::register`], and [`WorkloadError::InvalidCredentialId`] for
+    /// a `replaces` not in the canonical spelling.
+    pub fn register_replacing(
+        path: &Path,
+        public_key: &[u8],
+        scopes: Vec<String>,
+        expires_at: Option<i64>,
+        replaces: Option<&str>,
+    ) -> Result<RegisteredCredential, WorkloadError> {
+        if replaces.is_some_and(|id| !is_canonical_credential_id(id)) {
+            return Err(WorkloadError::InvalidCredentialId);
+        }
         if public_key.is_empty() {
             return Err(WorkloadError::Malformed(
                 "public key must be non-empty".to_owned(),
@@ -435,6 +472,16 @@ impl WorkloadRegistry {
             {
                 return Err(WorkloadError::AlreadyRegistered(id.clone()));
             }
+            let now = Utc::now().timestamp();
+            let revoked_predecessor = replaces
+                .and_then(|old| {
+                    registry
+                        .credentials
+                        .iter_mut()
+                        .find(|credential| credential.id == old && credential.revoked_at.is_none())
+                })
+                .map(|old| old.revoked_at = Some(now))
+                .is_some();
             registry.credentials.push(WorkloadCredential {
                 id: id.clone(),
                 public_key: public_key.to_vec(),
@@ -446,6 +493,7 @@ impl WorkloadRegistry {
             Ok(RegisteredCredential {
                 id: id.clone(),
                 generation: registry.generation,
+                replaced: revoked_predecessor,
             })
         })
     }
@@ -822,7 +870,29 @@ impl PreparedEnrollment {
         scopes: Vec<String>,
         expires_at: i64,
     ) -> Result<RegisteredCredential, WorkloadError> {
-        WorkloadRegistry::register(registry, &self.public_key, scopes, Some(expires_at))
+        self.commit_replacing(registry, scopes, expires_at, None)
+    }
+
+    /// [`Self::commit`], revoking `replaces` in the same registry write
+    /// ([`WorkloadRegistry::register_replacing`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`WorkloadRegistry::register_replacing`].
+    pub fn commit_replacing(
+        &self,
+        registry: &Path,
+        scopes: Vec<String>,
+        expires_at: i64,
+        replaces: Option<&str>,
+    ) -> Result<RegisteredCredential, WorkloadError> {
+        WorkloadRegistry::register_replacing(
+            registry,
+            &self.public_key,
+            scopes,
+            Some(expires_at),
+            replaces,
+        )
     }
 }
 
@@ -891,21 +961,44 @@ fn sign_request(
     let requested = CertificateSigningRequestParams::from_der(request)
         .map_err(|_| MaterialError::InvalidRequest)?;
     let issuer = Issuer::from_ca_cert_der(ca_certificate, load_authority_key(ca_key_path)?)?;
+    // The SubjectPublicKeyInfo the certificate will carry is serialized from
+    // exactly this key, so its id is the credential id the registry records.
+    let id = credential_id(&requested.public_key.subject_public_key_info());
     // Only the public key is taken from the request; every other field is
-    // this authority's choice, so a request cannot ask to become a CA.
+    // this authority's choice, so a request cannot ask to become a CA or
+    // name itself.
     let certified = CertificateSigningRequestParams {
-        params: client_certificate_params(expires_at)?,
+        params: client_certificate_params(expires_at, &id)?,
         public_key: requested.public_key,
     };
-    Ok(certified.signed_by(&issuer)?)
+    let certificate = certified.signed_by(&issuer)?;
+    // Fail closed if the issued key ever differs from the name it carries.
+    if credential_id(&subject_public_key_info(certificate.der().as_ref())?) != id {
+        return Err(WorkloadError::MalformedAuthority(
+            "the issued certificate's key does not match its credential id",
+        ));
+    }
+    Ok(certificate)
 }
 
-fn client_certificate_params(expires_at: i64) -> Result<CertificateParams, WorkloadError> {
+/// A client certificate's fields. ADR-0116: the subject names the credential
+/// id, as the common name and as a URI subject alternative name (the
+/// canonical `sha256:` spelling is a valid URI). Admission never reads either:
+/// it derives the id from the verified key, so a certificate issued before
+/// the id was written into it (named `phux-workload-client`) admits exactly
+/// as before.
+fn client_certificate_params(
+    expires_at: i64,
+    credential_id: &str,
+) -> Result<CertificateParams, WorkloadError> {
     let expiry = DateTime::from_timestamp(expires_at, 0).ok_or(WorkloadError::InvalidExpiry)?;
-    let mut params = CertificateParams::new(vec!["phux-workload-client".to_owned()])?;
+    let mut params = CertificateParams::default();
+    params.subject_alt_names = vec![SanType::URI(rcgen::string::Ia5String::try_from(
+        credential_id,
+    )?)];
     params
         .distinguished_name
-        .push(DnType::CommonName, "phux workload client");
+        .push(DnType::CommonName, credential_id);
     params.is_ca = IsCa::ExplicitNoCa;
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];

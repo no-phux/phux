@@ -871,33 +871,34 @@ pub(crate) fn run_attach_remote_outcome(
             return RemoteAttachOutcome::repairable(ExitCode::FAILURE);
         }
     };
+    let identity = match entry.client_identity() {
+        Ok(identity) => identity,
+        Err(err) => {
+            eprintln!("phux: {err}");
+            return RemoteAttachOutcome::repairable(ExitCode::FAILURE);
+        }
+    };
+    let credentials = RemoteCredentials {
+        token,
+        cert_fingerprint: entry.cert_fingerprint.clone(),
+        identity,
+    };
 
     match endpoint {
-        Endpoint::Quic(target) => run_attach_quic_outcome(
-            session,
-            target,
-            token,
-            entry.cert_fingerprint.clone(),
-            None,
-            rec,
-        ),
-        Endpoint::Ws(url) => run_attach_ws_outcome(
-            session,
-            url,
-            token,
-            entry.cert_fingerprint.clone(),
-            None,
-            rec,
-        ),
+        Endpoint::Quic(target) => run_attach_quic_outcome(session, target, credentials, None, rec),
+        Endpoint::Ws(url) => run_attach_ws_outcome(session, url, credentials, None, rec),
         // ADR-0120: bootstrap a direct QUIC attach over ssh first, and only
         // fall back to `exec`ing `ssh -t HOST phux attach` when that cannot
         // work. Only the direct path can carry a recording.
+        // The bootstrapped listener is the host's own server, so it admits
+        // the workload certificate `host add` enrolled there (ADR-0116).
         Endpoint::Ssh(host) => RemoteAttachOutcome::terminal(super::ssh_bootstrap::run(
             super::ssh_bootstrap::SshAttach {
                 destination: host,
                 session,
                 remote_phux: "phux".to_owned(),
                 udp_ports: None,
+                identity: credentials.identity,
                 rec,
             },
         )),
@@ -1117,9 +1118,23 @@ pub(crate) fn run_attach_quic(
     token: Option<String>,
     cert_fingerprint: Option<String>,
     server_name: Option<String>,
+    identity: Option<phux_dial::TlsClientIdentity>,
     rec: Option<&RecordSpec>,
 ) -> ExitCode {
-    run_attach_quic_outcome(session, target, token, cert_fingerprint, server_name, rec).code
+    let credentials = RemoteCredentials {
+        token,
+        cert_fingerprint,
+        identity,
+    };
+    run_attach_quic_outcome(session, target, credentials, server_name, rec).code
+}
+
+/// What a remote dial authenticates with: the bearer token, the server pin,
+/// and the workload client identity (`None` reads the environment).
+struct RemoteCredentials {
+    token: Option<String>,
+    cert_fingerprint: Option<String>,
+    identity: Option<phux_dial::TlsClientIdentity>,
 }
 
 #[allow(
@@ -1129,11 +1144,15 @@ pub(crate) fn run_attach_quic(
 fn run_attach_quic_outcome(
     session: Option<String>,
     target: String,
-    token: Option<String>,
-    cert_fingerprint: Option<String>,
+    credentials: RemoteCredentials,
     server_name: Option<String>,
     rec: Option<&RecordSpec>,
 ) -> RemoteAttachOutcome {
+    let RemoteCredentials {
+        token,
+        cert_fingerprint,
+        identity,
+    } = credentials;
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1147,7 +1166,7 @@ fn run_attach_quic_outcome(
 
     let DialPlan { dial, loopback } =
         match plan_quic_dial(&rt, &target, token, cert_fingerprint, server_name) {
-            Ok(plan) => plan,
+            Ok(plan) => plan.with_identity(identity),
             Err(refusal) => {
                 return RemoteAttachOutcome::repairable(refusal.report_for_attach());
             }
@@ -1196,6 +1215,20 @@ fn run_attach_quic_outcome(
 pub(crate) struct DialPlan {
     pub(crate) dial: Dial,
     pub(crate) loopback: bool,
+}
+
+impl DialPlan {
+    /// Present `identity` on this dial's TLS handshake: a registry entry's
+    /// enrolled workload certificate. `None` leaves the dial reading
+    /// `PHUX_WORKLOAD_CERT` / `PHUX_WORKLOAD_KEY` as it always has.
+    pub(crate) fn with_identity(mut self, identity: Option<phux_dial::TlsClientIdentity>) -> Self {
+        match &mut self.dial {
+            Dial::Quic(quic) => quic.identity = identity,
+            Dial::Ws(ws) => ws.identity = identity,
+            Dial::Uds(_) => {}
+        }
+        self
+    }
 }
 
 /// Why a remote dial could not be planned; each caller words its own
@@ -1295,6 +1328,7 @@ pub(crate) fn plan_quic_dial(
             server_name: server_name.unwrap_or(default_server_name),
             token,
             trust,
+            identity: None,
         }),
         loopback,
     })
@@ -1345,6 +1379,7 @@ pub(crate) fn plan_ws_dial(
             token,
             trust,
             tls_server_name,
+            identity: None,
         }),
         loopback: target.is_loopback(),
     })
@@ -1359,20 +1394,29 @@ pub(crate) fn run_attach_ws(
     tls_server_name: Option<String>,
     rec: Option<&RecordSpec>,
 ) -> ExitCode {
-    run_attach_ws_outcome(session, url, token, cert_fingerprint, tls_server_name, rec).code
+    let credentials = RemoteCredentials {
+        token,
+        cert_fingerprint,
+        identity: None,
+    };
+    run_attach_ws_outcome(session, url, credentials, tls_server_name, rec).code
 }
 
 fn run_attach_ws_outcome(
     session: Option<String>,
     url: String,
-    token: Option<String>,
-    cert_fingerprint: Option<String>,
+    credentials: RemoteCredentials,
     tls_server_name: Option<String>,
     rec: Option<&RecordSpec>,
 ) -> RemoteAttachOutcome {
+    let RemoteCredentials {
+        token,
+        cert_fingerprint,
+        identity,
+    } = credentials;
     let DialPlan { dial, loopback } =
         match plan_ws_dial(url, token, cert_fingerprint, tls_server_name) {
-            Ok(plan) => plan,
+            Ok(plan) => plan.with_identity(identity),
             Err(refusal) => {
                 return RemoteAttachOutcome::repairable(refusal.report_for_attach());
             }
@@ -1640,6 +1684,7 @@ mod tests {
             server_name: "localhost".to_owned(),
             token: None,
             trust: CertTrust::SkipVerify,
+            identity: None,
         })
     }
 
@@ -1649,6 +1694,7 @@ mod tests {
             token: None,
             trust: CertTrust::SkipVerify,
             tls_server_name: None,
+            identity: None,
         })
     }
 
@@ -1776,6 +1822,7 @@ mod tests {
             token: None,
             trust: CertTrust::SkipVerify,
             tls_server_name: None,
+            identity: None,
         });
         let policy = ReconnectPolicy {
             deadline: Duration::from_millis(300),
@@ -1814,6 +1861,7 @@ mod tests {
             token: None,
             trust: CertTrust::SkipVerify,
             tls_server_name: None,
+            identity: None,
         });
         let peer = tokio::spawn(async move {
             let mut offers = Vec::new();
@@ -1929,6 +1977,7 @@ mod tests {
             token: None,
             trust: CertTrust::SkipVerify,
             tls_server_name: None,
+            identity: None,
         })
     }
 
@@ -2061,12 +2110,14 @@ mod tests {
             token: None,
             trust: CertTrust::SkipVerify,
             tls_server_name: None,
+            identity: None,
         }));
         let quic = reconnect_policy(&Dial::Quic(QuicDial {
             addr: "127.0.0.1:8788".parse().expect("addr"),
             server_name: "localhost".to_owned(),
             token: None,
             trust: CertTrust::SkipVerify,
+            identity: None,
         }));
 
         assert_eq!(ws, quic, "the two remote lanes share one policy");

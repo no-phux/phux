@@ -103,6 +103,9 @@ impl RemoteClient {
             cert_fingerprint: self.fingerprint.clone(),
             token_file: None,
             token: self.token.clone(),
+            // Mobile enrollment is its own ADR; until then the phone
+            // presents no client certificate.
+            client_identity: phux_client_runtime::TlsClientIdentity::None,
         };
         let options = ClientOptions {
             control: phux_client_runtime::control::ControlOptions {

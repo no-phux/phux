@@ -292,6 +292,7 @@ impl PhuxMachineRegistry {
             transport,
             token_file: entry.token_file.clone(),
             cert_fingerprint: entry.cert_fingerprint.clone(),
+            client_identity: target::entry_identity(entry).map_err(BridgeError::state)?,
         };
         Ok(PhuxRemoteTunnel {
             name: entry.name.clone(),

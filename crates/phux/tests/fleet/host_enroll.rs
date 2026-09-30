@@ -797,12 +797,15 @@ fn add_json_emits_the_documented_host_document() {
     assert_eq!(host["session"], serde_json::Value::Null);
     assert_eq!(host["ssh"], "me@mini");
     assert_eq!(host["direct"], serde_json::Value::Null);
+    // `--ssh-only` touches nothing on the host, so no certificate is enrolled.
+    assert_eq!(host["client_cert"], serde_json::Value::Null);
+    assert_eq!(host["client_key"], serde_json::Value::Null);
     assert_eq!(
         doc.as_object().map(serde_json::Map::len),
         Some(2),
         "exactly the two documented top-level keys; document: {doc}"
     );
-    assert_eq!(host.len(), 9, "exactly the nine documented host keys");
+    assert_eq!(host.len(), 11, "exactly the eleven documented host keys");
 
     // The full ssh path under --json: progress is suppressed, the document
     // carries the candidate the probe could not reach.

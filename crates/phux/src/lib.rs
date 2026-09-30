@@ -870,6 +870,7 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
             session,
             remote_phux,
             udp_ports,
+            identity: None,
             rec: rec_spec,
         });
     }
@@ -883,6 +884,7 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
             token,
             cert_fingerprint,
             tls_server_name,
+            None,
             rec_spec,
         ),
         (None, Some(url)) => commands::attach::run_attach_ws(

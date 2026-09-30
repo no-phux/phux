@@ -1310,6 +1310,7 @@ impl LinkTransport for NetLinkTransport {
                     server_name: bare.to_owned(),
                     token,
                     trust: trust.clone(),
+                    identity: None,
                 };
                 let (endpoint, connection, send, recv) = phux_dial::quic::dial(&dial)
                     .await
@@ -1329,6 +1330,7 @@ impl LinkTransport for NetLinkTransport {
                     token,
                     trust: trust.clone(),
                     tls_server_name: None,
+                    identity: None,
                 };
                 let ws = phux_dial::ws::dial(&dial)
                     .await

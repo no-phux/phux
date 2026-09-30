@@ -1,14 +1,15 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-15
+last-reviewed: 2026-09-30
 ---
 
 # Workload authority over mTLS — authentication and scoped authority
 
 **TL;DR.** Phux endpoints authenticate workloads with mutual TLS, not a
 bespoke handshake. The server mints a CA on first routable listen;
-`phux pair` enrolls client certificates; the TLS handshake proves the
+`phux host add` enrolls a client certificate over ssh (§8.1); the TLS
+handshake proves the
 peer holds the private key on that channel, and the registry maps the
 client identity to a closed scope ceiling enforced before dispatch.
 Expiry and revocation terminate live connections. Owner UDS keeps
@@ -56,6 +57,15 @@ Three identities remain separate:
 | CA fingerprint | SHA-256 of the DER CA certificate | stable across restart and endpoint; the durable value a client pins; rotation is explicit re-pairing |
 | Server identity | server certificate issued by the CA | proves the endpoint to the client at handshake; rotation is transparent while the CA stands |
 | Workload credential id | SHA-256 of the raw client public key | registry lookup and live-revocation handle |
+
+A client certificate the authority issues for a CSR names its credential
+id twice: as the subject common name and as a URI subject alternative
+name (the canonical `sha256:` spelling below is a valid URI). The name is
+informative. Admission SHALL derive the credential id from the verified
+certificate's public key and SHALL NOT read the subject or its
+alternative names, so a certificate issued before issuance named the id
+(the reference authority once wrote the constant `phux-workload-client`)
+admits exactly as a new one does.
 
 The canonical human/CLI form for either digest is `sha256:` followed by
 exactly 64 lowercase hexadecimal digits. Parsers SHALL reject uppercase,
@@ -640,16 +650,17 @@ CA or registry material is a startup error. Runtime corruption after a
 successful start applies the empty-snapshot revocation rule in §7.
 
 <!-- impl-status: partial; probe: PolicyPosture,warns_remote_owner_grant -->
-> **Status: partial (2026-09-15).** The reference server reads the mode from
+> **Status: partial (2026-09-30).** The reference server reads the mode from
 > `[policy] mode`, enforces `local`, `paired`, and their startup errors, and
 > treats `PHUX_WORKLOAD_MTLS` with no mode as `paired`. It keeps one
 > transitional posture the table above does not name: no mode beside a
 > non-UDS listener or relay connector starts, logs a warning once, and gives
 > every admitted connection the owner's full grant, as before enforcement
-> existed. Paired phones and `phux host add` remotes keep working until
-> workload mTLS covers WebSocket consumers, WebTransport, and mobile
-> enrollment (PHA-406 decision H1); the posture ends, and this marker goes,
-> when that follow-up lands. Under `local` the server never auto-binds the
+> existed. `phux host add` remotes now enroll and present a client
+> certificate (§8.1), but paired phones keep working only through this
+> posture until workload mTLS covers WebSocket consumers, WebTransport, and
+> mobile enrollment (PHA-406 decision H1); the posture ends, and this marker
+> goes, when that follow-up lands. Under `local` the server never auto-binds the
 > overlay listener and refuses `OPEN_LISTENER`. One further gap: a
 > configured CA or registry path with no mode is ignored rather than
 > refused.
@@ -662,7 +673,11 @@ Plaintext remote transport is forbidden in every mode.
 `phux workload authority --init` is the only CLI path that creates a missing
 CA and prints only its fingerprint. `phux workload add-key` accepts only a
 client certificate or CSR from stdin or an explicitly opened file and writes
-the registry. `list`, `revoke`, and `authority` display only credential ids,
+the registry. For a CSR it writes the issued chain (leaf, then CA) to a new
+`--cert-out` file or, with `--cert-stdout`, to stdout (as the `--json`
+document's `certificate_chain`); the chain is public. `--replace <id>`
+revokes that credential in the same registry write that enrolls the new
+one. `list`, `revoke`, and `authority` display only credential ids,
 public keys where requested, scope ceilings, expiries, revocation state, and
 the CA fingerprint. Their diagnostics SHALL not contain secret material.
 
@@ -674,6 +689,51 @@ key bytes. Private client or CA bytes SHALL never enter argv,
 environment values, the public registry, stdout, stderr, panic text, tracing,
 metrics, or `Debug`; buffers are bounded, redacted, and zeroized when their
 crypto API permits.
+
+### 8.1 Client enrollment over ssh
+
+<!-- impl-status: shipped; probe: ClientRequest,IssuedIdentity,register_replacing,HOST_ADD_WORKLOAD_SCOPE -->
+> **Status: shipped.** `phux host add` (and the attach repair rung that
+> re-pairs over ssh) enrolls a CLI or desktop client. Mobile enrollment,
+> which has no ssh channel, needs its own authorizer and is not specified
+> here.
+
+A client that already holds ssh access to the serving host enrolls over
+that channel; enrollment grants no authority ssh did not already grant.
+
+1. The client generates a fresh private key and a CSR for it. The key
+   never leaves the client.
+2. Over ssh, the client runs `phux workload authority --init` (idempotent)
+   and then `phux workload add-key --json --cert-stdout --scope <ceiling>`,
+   passing the CSR on stdin. Neither the CSR nor any key material appears
+   in the remote command line. The reference client asks for every verb at
+   `global`, the authority an ssh login already has.
+3. The client SHALL treat the reply as untrusted and refuse it, storing
+   nothing, unless: the reply names a canonical credential id equal to
+   `sha256:` of its own key; the chain is exactly two PEM certificates, the
+   issued leaf then the CA, and carries no private key; the leaf carries the
+   client's own public key, is not a CA, and verifies against that CA as a
+   client-authentication certificate valid now.
+4. The client stores the key and chain as owner-only (`0600`) files under
+   new names in its state directory, obeying the same no-follow,
+   owner-controlled-directory, and atomic-write rules as §2, and records
+   their paths (never their bytes) in its `[[remote]]` entry as
+   `client-cert` and `client-key`. Every TLS dial to that remote presents
+   them; an entry with neither presents no certificate, and an entry with
+   one but not the other is refused rather than dialed without it.
+5. Re-enrollment passes `--replace <previous id>`: the serving host enrolls
+   the new credential and revokes the previous one in one registry
+   generation, so no snapshot admits both. The client then rewrites its
+   entry to the new paths in one write and removes the previous files it
+   enrolled (never files the operator named in the entry themselves). A
+   failure at any step leaves the previous entry in place; if the far host
+   already revoked the previous credential, that failure is fail-closed.
+
+A failed enrollment does not fail pairing: the host is registered, and its
+dials present the previous identity, or none. A private key SHALL NOT
+appear in a QR code, connect link, `phux pair --json`, a log, or an ssh
+argument. `phux pair revoke` and `phux workload revoke` both accept an
+enrolled certificate's `sha256:` id; revocation follows §7.
 
 ## 9. Conformance cases
 

@@ -321,6 +321,7 @@ async fn supervise(
                 server_name: spec.host.clone(),
                 token,
                 trust: spec.trust.clone(),
+                identity: None,
             };
             phux_dial::quic::dial_with_alpn(&dial, QUIC_RELAY_ALPN)
                 .await

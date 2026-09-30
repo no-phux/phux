@@ -51,4 +51,67 @@ pub struct RemoteConfigEntry {
     /// and promoted to `endpoint` once it answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direct: Option<String>,
+
+    /// The workload client certificate chain (PEM, leaf first) this client
+    /// presents to the remote over TLS, as `phux host add` enrolled it
+    /// (ADR-0116). Set together with [`Self::client_key`].
+    #[serde(
+        default,
+        rename = "client-cert",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub client_cert: Option<PathBuf>,
+
+    /// The private key for [`Self::client_cert`]: an owner-only file whose
+    /// path is recorded here and whose bytes never are.
+    #[serde(
+        default,
+        rename = "client-key",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub client_key: Option<PathBuf>,
+}
+
+impl RemoteConfigEntry {
+    /// The enrolled client identity as `(certificate, private_key)` paths, or
+    /// `None` when the entry has none.
+    ///
+    /// # Errors
+    ///
+    /// Half an identity, or a relative path: a dial that silently went
+    /// without the certificate the operator enrolled would hide the mistake
+    /// until a paired server refused it.
+    pub fn client_identity(&self) -> Result<Option<(PathBuf, PathBuf)>, String> {
+        client_identity_paths(
+            &self.name,
+            self.client_cert.as_deref(),
+            self.client_key.as_deref(),
+        )
+    }
+}
+
+/// [`RemoteConfigEntry::client_identity`] over the two optional paths, for
+/// callers that hold them outside the schema type.
+///
+/// # Errors
+///
+/// As [`RemoteConfigEntry::client_identity`].
+pub fn client_identity_paths(
+    name: &str,
+    cert: Option<&std::path::Path>,
+    key: Option<&std::path::Path>,
+) -> Result<Option<(PathBuf, PathBuf)>, String> {
+    match (cert, key) {
+        (None, None) => Ok(None),
+        (Some(cert), Some(key)) if cert.is_absolute() && key.is_absolute() => {
+            Ok(Some((cert.to_path_buf(), key.to_path_buf())))
+        }
+        (Some(_), Some(_)) => Err(format!(
+            "remote {name:?}: client-cert and client-key must be absolute paths"
+        )),
+        _ => Err(format!(
+            "remote {name:?}: client-cert and client-key must be set together; \
+             re-enroll with `phux host add {name}`"
+        )),
+    }
 }

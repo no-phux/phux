@@ -10,6 +10,11 @@
 //! `ssh://HOST` with the first candidate kept as `direct`. A host with nothing
 //! dialable is not an error.
 //!
+//! A remote also gets a workload client certificate (ADR-0116): the key is
+//! generated here, only its CSR crosses ssh (on stdin, never argv) to
+//! `phux workload add-key --cert-stdout`, and the returned chain is checked
+//! against the key before both are stored owner-only. The probes present it.
+//!
 //! Nothing here prints or writes a registry: callers render the events, and
 //! the role-specific tails in `host` own the token path and the entry.
 
@@ -19,6 +24,8 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use phux_client::attach::connection::Connection;
+use phux_dial::TlsClientIdentity;
+use phux_server::workload::ClientRequest;
 
 /// Default QUIC port for an enrolled server. Matches the port
 /// `docs/remote-access.md` uses throughout.
@@ -99,7 +106,17 @@ impl PairReport {
 /// possibly after shell startup noise). Only an object with a `token` key
 /// counts.
 fn pair_document_in(stdout: &str) -> Option<serde_json::Value> {
-    let is_document = |value: &serde_json::Value| value.get("token").is_some();
+    json_document_in(stdout, |value| value.get("token").is_some())
+}
+
+/// The JSON object `is_document` accepts wherever it sits in a remote
+/// command's stdout: the whole output, a one-line document after banner
+/// lines, or a pretty-printed one between the outermost braces.
+fn json_document_in(
+    stdout: &str,
+    is_document: impl Fn(&serde_json::Value) -> bool,
+) -> Option<serde_json::Value> {
+    let is_document = |value: &serde_json::Value| is_document(value);
     if let Some(value) = serde_json::from_str::<serde_json::Value>(stdout.trim())
         .ok()
         .filter(is_document)
@@ -254,6 +271,15 @@ pub(crate) enum EnrollEvent {
     DirectReachable { endpoint: String },
     /// A direct route did not answer within the deadline.
     DirectUnreachable { endpoint: String, reason: String },
+    /// A workload client certificate was enrolled; `replaced` when the far
+    /// host revoked the previous one in the same write.
+    CertificateEnrolled {
+        credential_id: String,
+        replaced: bool,
+    },
+    /// No workload client certificate was enrolled. Not fatal: the host is
+    /// paired, and dials fall back to the previous identity or none.
+    CertificateNotEnrolled { reason: String },
 }
 
 impl EnrollEvent {
@@ -287,6 +313,20 @@ impl EnrollEvent {
             Self::DirectUnreachable { endpoint, reason } => {
                 format!("{endpoint} did not answer ({reason})")
             }
+            Self::CertificateEnrolled {
+                credential_id,
+                replaced,
+            } => {
+                let replaced = if *replaced {
+                    "; the previous one is revoked"
+                } else {
+                    ""
+                };
+                format!("enrolled workload client certificate {credential_id}{replaced}")
+            }
+            Self::CertificateNotEnrolled { reason } => format!(
+                "no workload client certificate enrolled ({reason}); direct dials present none until `phux host add` runs again"
+            ),
         }
     }
 }
@@ -332,6 +372,83 @@ pub(crate) struct EnrollRequest<'a> {
     /// Certificate fingerprint saved with [`Self::previous_token`], required
     /// to probe a previous credential (ADR-0031 refuses an unpinned dial).
     pub(crate) previous_fingerprint: Option<&'a str>,
+    /// The workload client certificate already held for this name, presented
+    /// on the reuse probe and kept when the previous credential still works.
+    pub(crate) previous_identity: Option<&'a ClientIdentityFiles>,
+    /// Enroll a workload client certificate over the same ssh trust
+    /// (ADR-0116); `None` for a role that presents none (a satellite).
+    pub(crate) workload: Option<WorkloadEnrollment<'a>>,
+}
+
+/// Where and as what a workload client certificate is enrolled.
+pub(crate) struct WorkloadEnrollment<'a> {
+    /// The directory the key and certificate land in (`<state>/remotes`).
+    pub(crate) dir: &'a Path,
+    /// The registry name, which prefixes the two file names.
+    pub(crate) name: &'a str,
+}
+
+/// A stored workload client identity: its two owner-only files and the
+/// credential id the far host recorded for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClientIdentityFiles {
+    /// The certificate chain (PEM, leaf then CA).
+    pub(crate) certificate: PathBuf,
+    /// The private key (PEM). Named here, read only by the TLS stack.
+    pub(crate) private_key: PathBuf,
+    /// `sha256:` of the key: the far host's registry id for it.
+    pub(crate) credential_id: Option<String>,
+    /// Whether this enrollment minted it (and so owns its cleanup).
+    pub(crate) fresh: bool,
+}
+
+impl ClientIdentityFiles {
+    /// An identity already on disk, as a registry entry names it.
+    pub(crate) fn existing(certificate: &Path, private_key: &Path) -> Self {
+        Self {
+            credential_id: phux_server::workload::stored_credential_id(certificate),
+            certificate: certificate.to_path_buf(),
+            private_key: private_key.to_path_buf(),
+            fresh: false,
+        }
+    }
+
+    /// The identity a dial presents.
+    pub(crate) fn tls(&self) -> TlsClientIdentity {
+        TlsClientIdentity::PemFiles {
+            certificate: self.certificate.clone(),
+            private_key: self.private_key.clone(),
+        }
+    }
+
+    /// Whether these are a pair `phux host add` enrolled for `name` in
+    /// `dir`: both directly in `dir` and named `<name>.client.<digest>` with
+    /// the extensions [`identity_stem`] gives them. Only such a pair is
+    /// removed when a re-enrollment supersedes it; a `client-cert` or
+    /// `client-key` the operator pointed at their own files is left alone.
+    pub(crate) fn enrolled_under(&self, dir: &Path, name: &str) -> bool {
+        let prefix = format!("{name}.client.");
+        let is_ours = |path: &Path, extension: &str| {
+            path.parent() == Some(dir)
+                && path
+                    .file_name()
+                    .and_then(|file| file.to_str())
+                    .and_then(|file| file.strip_prefix(&prefix))
+                    .and_then(|rest| rest.strip_suffix(extension))
+                    .is_some_and(|digest| {
+                        !digest.is_empty() && digest.bytes().all(|b| b.is_ascii_hexdigit())
+                    })
+        };
+        is_ours(&self.certificate, ".pem") && is_ours(&self.private_key, ".key")
+    }
+
+    /// Remove the two files, when this enrollment minted them and nothing
+    /// will record them.
+    pub(crate) fn discard_if_fresh(&self) {
+        if self.fresh {
+            phux_server::workload::remove_identity_files(&self.private_key, &self.certificate);
+        }
+    }
 }
 
 /// What the shared ssh middle produced.
@@ -349,10 +466,14 @@ pub(crate) struct EnrollOutcome {
     pub(crate) report: PairReport,
     /// How the remote server is kept alive.
     pub(crate) supervision: Option<Supervision>,
+    /// The workload client identity to register: freshly enrolled, the
+    /// previous one kept, or none.
+    pub(crate) identity: Option<ClientIdentityFiles>,
 }
 
 /// The shared middle of every ssh enrollment. Role-agnostic: nothing here
-/// touches a registry or writes a token.
+/// touches a registry or writes a token; a workload client identity, when
+/// requested, is written to its own new files and handed back.
 pub(crate) fn enroll_over_ssh(
     req: &EnrollRequest<'_>,
     on_event: &mut dyn FnMut(EnrollEvent),
@@ -380,9 +501,9 @@ pub(crate) fn enroll_over_ssh(
 
     // Reuse the credential already held before minting another live bearer
     // (ADR-0122).
-    let report = if let Some(report) = try_reuse_previous_credential(req, on_event) {
+    let (report, reused) = if let Some(report) = try_reuse_previous_credential(req, on_event) {
         on_event(EnrollEvent::CredentialReused);
-        report
+        (report, true)
     } else {
         let report = pair_over_ssh(req.ssh_host, req.remote_phux, req.previous_token, on_event)?;
         if req.previous_token.is_some() {
@@ -390,7 +511,7 @@ pub(crate) fn enroll_over_ssh(
         } else {
             on_event(EnrollEvent::Paired);
         }
-        report
+        (report, false)
     };
 
     let ssh_target_host = ssh_hostname(req.ssh_host);
@@ -400,35 +521,63 @@ pub(crate) fn enroll_over_ssh(
         req.endpoint_override,
         req.quic_port,
     );
+    // Only a host with a dialable route has anything to present a
+    // certificate to.
+    let identity = if candidates.is_empty() {
+        req.previous_identity.cloned()
+    } else {
+        client_identity_for(req, reused, on_event)
+    };
+    let (endpoint, direct, tried) = first_answering_route(
+        req.ssh_host,
+        &candidates,
+        &report,
+        identity.as_ref(),
+        on_event,
+    );
+    Ok(EnrollOutcome {
+        endpoint,
+        direct,
+        tried,
+        report,
+        supervision,
+        identity,
+    })
+}
+
+/// Dial each candidate in turn; the first that answers is the endpoint.
+/// Nothing answering registers `ssh://HOST` with the first candidate kept as
+/// the direct route to promote later. Returns `(endpoint, direct, tried)`.
+fn first_answering_route(
+    ssh_host: &str,
+    candidates: &[String],
+    report: &PairReport,
+    identity: Option<&ClientIdentityFiles>,
+    on_event: &mut dyn FnMut(EnrollEvent),
+) -> (String, Option<String>, Vec<String>) {
+    let presented = identity.map(ClientIdentityFiles::tls);
     let mut tried = Vec::new();
-    for candidate in &candidates {
+    for candidate in candidates {
         // Only QUIC can be probed here; a `wss://` override is registered
         // as the operator wrote it, as it always was.
         let Some(target) = candidate.strip_prefix("quic://") else {
-            return Ok(EnrollOutcome {
-                endpoint: candidate.clone(),
-                direct: None,
-                tried,
-                report,
-                supervision,
-            });
+            return (candidate.clone(), None, tried);
         };
         on_event(EnrollEvent::Probing {
             endpoint: candidate.clone(),
         });
         tried.push(candidate.clone());
-        match probe(target, &report.token, report.cert_fingerprint.as_deref()) {
+        match probe(
+            target,
+            &report.token,
+            report.cert_fingerprint.as_deref(),
+            presented.clone(),
+        ) {
             Ok(()) => {
                 on_event(EnrollEvent::DirectReachable {
                     endpoint: candidate.clone(),
                 });
-                return Ok(EnrollOutcome {
-                    endpoint: candidate.clone(),
-                    direct: None,
-                    tried,
-                    report,
-                    supervision,
-                });
+                return (candidate.clone(), None, tried);
             }
             Err(reason) => on_event(EnrollEvent::DirectUnreachable {
                 endpoint: candidate.clone(),
@@ -436,13 +585,172 @@ pub(crate) fn enroll_over_ssh(
             }),
         }
     }
-    Ok(EnrollOutcome {
-        endpoint: format!("ssh://{}", req.ssh_host),
-        direct: candidates.first().cloned(),
+    (
+        format!("ssh://{ssh_host}"),
+        candidates.first().cloned(),
         tried,
-        report,
-        supervision,
-    })
+    )
+}
+
+/// The scope `phux host add` enrolls with: every verb on the whole host.
+/// Enrollment grants no authority ssh did not already grant, and an operator
+/// who can run `phux` over ssh there already holds all of it. Spelled out
+/// rather than `*`, which the far host's shell would glob.
+pub(crate) const HOST_ADD_WORKLOAD_SCOPE: &str =
+    "inventory,observe,create,bind,input,signal@global";
+
+/// The workload identity to register: the previous one when its bearer
+/// still worked (nothing was re-minted), otherwise a fresh enrollment that
+/// replaces it on the far host. A failed enrollment is a warning, never a
+/// failed `host add`: the host is paired either way, and the previous
+/// identity (if any) is kept.
+fn client_identity_for(
+    req: &EnrollRequest<'_>,
+    reused: bool,
+    on_event: &mut dyn FnMut(EnrollEvent),
+) -> Option<ClientIdentityFiles> {
+    if reused && let Some(previous) = req.previous_identity {
+        return Some(previous.clone());
+    }
+    let workload = req.workload.as_ref()?;
+    let replaces = req
+        .previous_identity
+        .and_then(|previous| previous.credential_id.clone());
+    match enroll_client_certificate(req.ssh_host, req.remote_phux, workload, replaces.as_deref()) {
+        Ok((identity, revoked_previous)) => {
+            on_event(EnrollEvent::CertificateEnrolled {
+                credential_id: identity.credential_id.clone().unwrap_or_default(),
+                replaced: revoked_previous,
+            });
+            Some(identity)
+        }
+        Err(reason) => {
+            on_event(EnrollEvent::CertificateNotEnrolled { reason });
+            req.previous_identity.cloned()
+        }
+    }
+}
+
+/// Enroll a workload client certificate on `ssh_host` (ADR-0116): generate
+/// the key here, send only its CSR over ssh stdin to `phux workload add-key
+/// --cert-stdout`, validate the returned chain against the key, and store
+/// both owner-only under new names. `replaces` is revoked on the far host in
+/// the same registry write. Returns the identity and whether a predecessor
+/// was revoked.
+fn enroll_client_certificate(
+    ssh_host: &str,
+    remote_phux: &str,
+    workload: &WorkloadEnrollment<'_>,
+    replaces: Option<&str>,
+) -> Result<(ClientIdentityFiles, bool), String> {
+    // The name becomes a file name: refuse one the registry would refuse
+    // before anything is written here or changed on the far host.
+    if super::remote::validate_name(workload.name).as_deref() != Ok(workload.name) {
+        return Err(format!("{:?} is not a valid remote name", workload.name));
+    }
+    let authority = ssh_run(
+        ssh_host,
+        &[remote_phux, "workload", "authority", "--init", "--json"],
+    )?;
+    if !authority.status.success() {
+        return Err(format!(
+            "the host could not initialize its workload authority: {}",
+            authority.failure_detail()
+        ));
+    }
+    let request = ClientRequest::generate()
+        .map_err(|err| format!("could not generate a client key: {err}"))?;
+    let mut argv = vec![
+        remote_phux,
+        "workload",
+        "add-key",
+        "--json",
+        "--cert-stdout",
+        "--scope",
+        HOST_ADD_WORKLOAD_SCOPE,
+    ];
+    if let Some(replaces) = replaces {
+        argv.extend(["--replace", replaces]);
+    }
+    let added = ssh_run_with_stdin(ssh_host, &argv, request.csr_pem().as_bytes())?;
+    if !added.status.success() {
+        return Err(format!(
+            "`phux workload add-key` failed there: {}",
+            added.failure_detail()
+        ));
+    }
+    let reply = AddKeyReply::parse(&added.stdout)?;
+    if reply.credential_id != request.credential_id() {
+        return Err("the host recorded a different credential than the key sent".to_owned());
+    }
+    let issued = request
+        .accept(&reply.certificate_chain)
+        .map_err(|err| err.to_string())?;
+    let stem = identity_stem(workload.name, issued.credential_id());
+    let files = ClientIdentityFiles {
+        certificate: workload.dir.join(format!("{stem}.pem")),
+        private_key: workload.dir.join(format!("{stem}.key")),
+        credential_id: Some(issued.credential_id().to_owned()),
+        fresh: true,
+    };
+    issued
+        .store(&files.private_key, &files.certificate)
+        .map_err(|err| format!("could not store the client identity: {err}"))?;
+    Ok((files, reply.replaced))
+}
+
+/// `<name>.client.<first 16 hex digits of the credential id>`: one pair of
+/// files per enrollment, so a re-enrollment never overwrites the pair the
+/// registry still names.
+fn identity_stem(name: &str, credential_id: &str) -> String {
+    let digest = credential_id
+        .strip_prefix("sha256:")
+        .unwrap_or(credential_id);
+    let short = digest.get(..16).unwrap_or(digest);
+    format!("{name}.client.{short}")
+}
+
+/// What `phux workload add-key --json --cert-stdout` reported on the far
+/// host. Untrusted: every field is checked here or by
+/// [`ClientRequest::accept`].
+#[derive(Debug)]
+struct AddKeyReply {
+    credential_id: String,
+    certificate_chain: String,
+    replaced: bool,
+}
+
+impl AddKeyReply {
+    fn parse(stdout: &str) -> Result<Self, String> {
+        let is_document = |value: &serde_json::Value| {
+            value.get("operation").and_then(serde_json::Value::as_str) == Some("add-key")
+        };
+        let document = json_document_in(stdout, is_document)
+            .ok_or_else(|| "`phux workload add-key` reported no document".to_owned())?;
+        let field = |name: &str| {
+            document
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    format!(
+                        "`phux workload add-key` reported no {name}; is phux on the host older than this one?"
+                    )
+                })
+        };
+        let credential_id = field("credential_id")?;
+        if !phux_server::workload::is_canonical_credential_id(&credential_id) {
+            return Err("the host reported a malformed credential id".to_owned());
+        }
+        Ok(Self {
+            credential_id,
+            certificate_chain: field("certificate_chain")?,
+            replaced: document
+                .get("replaced")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        })
+    }
 }
 
 /// Make sure a server is running on `ssh_host` and, under
@@ -535,6 +843,7 @@ fn try_reuse_previous_credential(
         cert_fingerprint: Some(fingerprint.to_owned()),
         overlay_addresses: Vec::new(),
     };
+    let presented = req.previous_identity.map(ClientIdentityFiles::tls);
     let ssh_target_host = ssh_hostname(req.ssh_host);
     let candidates = candidate_endpoints(
         &ssh_target_host,
@@ -551,7 +860,12 @@ fn try_reuse_previous_credential(
         on_event(EnrollEvent::Probing {
             endpoint: candidate.clone(),
         });
-        match probe(target, &report.token, report.cert_fingerprint.as_deref()) {
+        match probe(
+            target,
+            &report.token,
+            report.cert_fingerprint.as_deref(),
+            presented.clone(),
+        ) {
             Ok(()) => {
                 on_event(EnrollEvent::DirectReachable {
                     endpoint: candidate.clone(),
@@ -732,19 +1046,61 @@ impl SshOutput {
 /// could not run at all.
 pub(crate) fn ssh_run(ssh_host: &str, argv: &[&str]) -> Result<SshOutput, String> {
     let program = ssh_program();
-    let output = Command::new(&program)
-        .arg("-o")
-        .arg("BatchMode=yes")
-        .arg(ssh_host)
-        .args(argv)
+    let output = ssh_command(&program, ssh_host, argv)
         .stdin(Stdio::null())
         .output()
         .map_err(|err| format!("could not run {}: {err}", program.to_string_lossy()))?;
-    Ok(SshOutput {
-        status: output.status,
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    })
+    Ok(SshOutput::from(output))
+}
+
+/// [`ssh_run`] with `stdin` piped to the remote command: how public
+/// enrollment material (a CSR) reaches the far host without entering argv.
+pub(crate) fn ssh_run_with_stdin(
+    ssh_host: &str,
+    argv: &[&str],
+    stdin: &[u8],
+) -> Result<SshOutput, String> {
+    use std::io::Write as _;
+
+    let program = ssh_program();
+    let mut child = ssh_command(&program, ssh_host, argv)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("could not run {}: {err}", program.to_string_lossy()))?;
+    // The input is a few hundred bytes, well under a pipe buffer, so the
+    // write cannot block on output the child has not drained. A remote that
+    // exits without reading is reported by its status, not the broken pipe.
+    if let Some(mut pipe) = child.stdin.take() {
+        let _ = pipe.write_all(stdin);
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|err| format!("could not run {}: {err}", program.to_string_lossy()))?;
+    Ok(SshOutput::from(output))
+}
+
+/// `ssh -o BatchMode=yes HOST ARGV...`, so a missing key errors instead of
+/// prompting.
+fn ssh_command(program: &OsString, ssh_host: &str, argv: &[&str]) -> Command {
+    let mut command = Command::new(program);
+    command
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg(ssh_host)
+        .args(argv);
+    command
+}
+
+impl From<std::process::Output> for SshOutput {
+    fn from(output: std::process::Output) -> Self {
+        Self {
+            status: output.status,
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        }
+    }
 }
 
 /// The ssh program: `$PHUX_SSH` when set, otherwise `ssh`.
@@ -826,6 +1182,7 @@ pub(crate) fn probe(
     target: &str,
     token: &str,
     cert_fingerprint: Option<&str>,
+    identity: Option<TlsClientIdentity>,
 ) -> Result<(), String> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -838,7 +1195,8 @@ pub(crate) fn probe(
         cert_fingerprint.map(str::to_owned),
         None,
     )
-    .map_err(|refusal| format!("{refusal:?}"))?;
+    .map_err(|refusal| format!("{refusal:?}"))?
+    .with_identity(identity);
     let deadline = probe_deadline();
     rt.block_on(async {
         match tokio::time::timeout(deadline, Connection::connect_dial(&plan.dial)).await {
@@ -860,10 +1218,96 @@ pub(crate) const fn default_quic_port() -> u16 {
 #[cfg(test)]
 mod tests {
     use super::{
-        PairReport, authority, candidate_endpoints, destination_host, parse_ssh_g_hostname,
-        token_path, write_token,
+        AddKeyReply, ClientIdentityFiles, PairReport, authority, candidate_endpoints,
+        destination_host, identity_stem, parse_ssh_g_hostname, token_path, write_token,
     };
     use std::path::Path;
+
+    const ID: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// The far host's `add-key` reply is read past shell noise, and every
+    /// field it must carry is checked before the chain is even parsed.
+    #[test]
+    fn the_add_key_reply_is_untrusted_and_checked() {
+        let doc = serde_json::json!({
+            "schema_version": 1,
+            "operation": "add-key",
+            "credential_id": ID,
+            "certificate_chain": "-----BEGIN CERTIFICATE-----",
+            "replaced": true,
+        });
+        let pretty = serde_json::to_string_pretty(&doc).expect("json");
+        let reply = AddKeyReply::parse(&format!("Welcome to box\n{pretty}\n")).expect("parse");
+        assert_eq!(reply.credential_id, ID);
+        assert!(reply.replaced);
+
+        let mut no_chain = doc.clone();
+        no_chain
+            .as_object_mut()
+            .expect("object")
+            .remove("certificate_chain");
+        let older = AddKeyReply::parse(&no_chain.to_string()).expect_err("an older phux");
+        assert!(older.contains("certificate_chain"), "{older}");
+
+        let mut bad_id = doc.clone();
+        bad_id["credential_id"] = serde_json::json!("sha256:ABC");
+        assert!(AddKeyReply::parse(&bad_id.to_string()).is_err());
+
+        let mut other = doc;
+        other["operation"] = serde_json::json!("revoke");
+        assert!(AddKeyReply::parse(&other.to_string()).is_err());
+        assert!(AddKeyReply::parse("not json").is_err());
+    }
+
+    /// One pair of files per enrollment, named by the registry name and the
+    /// credential, so a re-enrollment never overwrites the pair in use.
+    #[test]
+    fn identity_files_are_named_per_credential() {
+        assert_eq!(identity_stem("mini", ID), "mini.client.0123456789abcdef");
+        assert_ne!(
+            identity_stem("mini", ID),
+            identity_stem("mini", &ID.replace("0123", "fedc"))
+        );
+    }
+
+    /// Only a pair enrolled under this name in this directory is ever
+    /// cleaned up; files the operator named themselves are not.
+    #[test]
+    fn only_an_enrolled_pair_is_ours_to_remove() {
+        let dir = Path::new("/state/remotes");
+        let pair = |cert: &str, key: &str| ClientIdentityFiles {
+            certificate: Path::new(cert).to_path_buf(),
+            private_key: Path::new(key).to_path_buf(),
+            credential_id: None,
+            fresh: false,
+        };
+        let stem = identity_stem("mini", ID);
+        let ours = pair(
+            &format!("/state/remotes/{stem}.pem"),
+            &format!("/state/remotes/{stem}.key"),
+        );
+        assert!(ours.enrolled_under(dir, "mini"));
+        assert!(!ours.enrolled_under(dir, "mini2"), "another name's pair");
+        assert!(!ours.enrolled_under(Path::new("/elsewhere"), "mini"));
+        for (cert, key) in [
+            ("/home/me/client.pem", "/home/me/client.key"),
+            ("/state/remotes/mini.pem", "/state/remotes/mini.key"),
+            (
+                &*format!("/state/remotes/sub/{stem}.pem"),
+                &*format!("/state/remotes/sub/{stem}.key"),
+            ),
+            (
+                &*format!("/state/remotes/{stem}.pem"),
+                "/home/me/client.key",
+            ),
+            (
+                "/state/remotes/mini.client.not-hex.pem",
+                "/state/remotes/mini.client.not-hex.key",
+            ),
+        ] {
+            assert!(!pair(cert, key).enrolled_under(dir, "mini"), "{cert}");
+        }
+    }
 
     fn report(fp: Option<&str>, overlay: &[&str]) -> PairReport {
         PairReport {

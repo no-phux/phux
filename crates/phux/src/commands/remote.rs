@@ -4,8 +4,10 @@
 //! [`super::host`].
 //!
 //! An entry may also remember `ssh` (the destination it was enrolled through,
-//! used to restart a stopped server) and `direct` (a paired `quic://` endpoint
-//! kept beside an `ssh://` one, tried first and promoted once it answers).
+//! used to restart a stopped server), `direct` (a paired `quic://` endpoint
+//! kept beside an `ssh://` one, tried first and promoted once it answers), and
+//! `client-cert` / `client-key` (the workload client certificate `phux host
+//! add` enrolled, ADR-0116, presented on every TLS dial to this remote).
 //!
 //! Endpoint schemes: `ssh://HOST` (no pairing; attach re-execs `ssh -t HOST phux
 //! attach`), `quic://HOST:PORT` (token and pin, ADR-0031), and `wss://HOST:PORT`
@@ -16,6 +18,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use phux_config::loader as config_loader;
+use phux_dial::TlsClientIdentity;
 use toml_edit::{Table, value};
 
 use super::toml_registry;
@@ -42,9 +45,50 @@ pub(crate) struct RemoteEntry {
     /// A paired direct endpoint kept beside an `ssh://` route, when the
     /// direct route did not answer at enrollment.
     pub(crate) direct: Option<String>,
+    /// The enrolled workload client certificate chain. Public; a path.
+    pub(crate) client_cert: Option<PathBuf>,
+    /// Its private key: the path is displayable, the bytes behind it are the
+    /// secret and are read only by the TLS stack at dial time.
+    pub(crate) client_key: Option<PathBuf>,
 }
 
 impl RemoteEntry {
+    /// The TLS client identity to present when dialing this remote: the
+    /// enrolled certificate, required-paired when `PHUX_WORKLOAD_REQUIRE_PAIRED`
+    /// is set, or `None` when the entry enrolled none (the dialer then reads
+    /// `PHUX_WORKLOAD_CERT` / `PHUX_WORKLOAD_KEY` as before).
+    ///
+    /// # Errors
+    ///
+    /// Half an identity or a relative path, which would otherwise dial
+    /// without the certificate the operator enrolled.
+    pub(crate) fn client_identity(&self) -> Result<Option<TlsClientIdentity>, String> {
+        let paths = phux_config::remote::client_identity_paths(
+            &self.name,
+            self.client_cert.as_deref(),
+            self.client_key.as_deref(),
+        )?;
+        let require_paired = std::env::var_os(phux_dial::tls::REQUIRE_PAIRED_ENV).is_some();
+        Ok(paths.map(|(certificate, private_key)| {
+            if require_paired {
+                TlsClientIdentity::RequirePaired {
+                    certificate,
+                    private_key,
+                }
+            } else {
+                TlsClientIdentity::PemFiles {
+                    certificate,
+                    private_key,
+                }
+            }
+        }))
+    }
+
+    /// The enrolled identity's paths, for carrying it into a rewritten entry.
+    pub(crate) fn client_identity_paths(&self) -> Option<(&Path, &Path)> {
+        self.client_cert.as_deref().zip(self.client_key.as_deref())
+    }
+
     /// The destination to hand `ssh` when this entry's server needs starting:
     /// the enrolled one, else an `ssh://` endpoint's host, else the entry name.
     pub(crate) fn ssh_destination(&self) -> String {
@@ -124,6 +168,8 @@ pub(crate) fn load_registry() -> Result<Vec<RemoteEntry>, String> {
             session: remote.session,
             ssh: remote.ssh,
             direct: remote.direct,
+            client_cert: remote.client_cert,
+            client_key: remote.client_key,
         });
     }
     Ok(entries)
@@ -149,9 +195,26 @@ pub(crate) struct NewRemote {
     pub(crate) session: Option<String>,
     pub(crate) ssh: Option<String>,
     pub(crate) direct: Option<String>,
+    pub(crate) client_cert: Option<PathBuf>,
+    pub(crate) client_key: Option<PathBuf>,
 }
 
 impl NewRemote {
+    /// Record the enrolled workload client identity (both absolute paths),
+    /// or none. Half an identity is refused like any other invalid field.
+    pub(crate) fn with_client_identity(
+        mut self,
+        identity: Option<(&Path, &Path)>,
+    ) -> Result<Self, String> {
+        let paths = phux_config::remote::client_identity_paths(
+            &self.name,
+            identity.map(|(cert, _)| cert),
+            identity.map(|(_, key)| key),
+        )?;
+        (self.client_cert, self.client_key) = paths.unzip();
+        Ok(self)
+    }
+
     /// Remember the ssh destination the entry was enrolled through.
     pub(crate) fn with_ssh(mut self, ssh: Option<&str>) -> Self {
         self.ssh = ssh
@@ -214,6 +277,8 @@ impl NewRemote {
                 .map(str::to_owned),
             ssh: None,
             direct: None,
+            client_cert: None,
+            client_key: None,
         })
     }
 }
@@ -320,6 +385,19 @@ fn fill_table(table: &mut Table, new: &NewRemote) {
             table.remove("direct");
         }
     }
+    for (key, path) in [
+        ("client-cert", &new.client_cert),
+        ("client-key", &new.client_key),
+    ] {
+        match path {
+            Some(path) => {
+                table.insert(key, value(path.display().to_string()));
+            }
+            None => {
+                table.remove(key);
+            }
+        }
+    }
 }
 
 /// Read the bearer token for an entry, if it declares a token file.
@@ -354,6 +432,8 @@ mod tests {
             session: None,
             ssh: None,
             direct: None,
+            client_cert: None,
+            client_key: None,
         }
     }
 
@@ -399,6 +479,47 @@ mod tests {
                 .expect("wss")
                 .needs_pairing()
         );
+    }
+
+    /// An enrolled identity is two absolute paths or nothing; half of one
+    /// is refused at registration and at dial time alike.
+    #[test]
+    fn a_client_identity_is_whole_and_absolute() {
+        let fp = "ab".repeat(32);
+        let new = || NewRemote::new("mini", "quic://mini:8788", None, Some(&fp), None);
+        let cert = Path::new("/state/remotes/mini.client.pem");
+        let key = Path::new("/state/remotes/mini.client.key");
+        let whole = new()
+            .expect("entry")
+            .with_client_identity(Some((cert, key)))
+            .expect("whole identity");
+        assert_eq!(whole.client_cert.as_deref(), Some(cert));
+        assert_eq!(whole.client_key.as_deref(), Some(key));
+        let none = new()
+            .expect("entry")
+            .with_client_identity(None)
+            .expect("no identity");
+        assert!(none.client_cert.is_none() && none.client_key.is_none());
+        assert!(
+            new()
+                .expect("entry")
+                .with_client_identity(Some((Path::new("rel.pem"), key)))
+                .is_err()
+        );
+
+        let mut entry = entry_with_token(None);
+        assert_eq!(entry.client_identity(), Ok(None));
+        entry.client_cert = Some(cert.to_path_buf());
+        let half = entry.client_identity().expect_err("half an identity");
+        assert!(half.contains("together"), "{half}");
+        entry.client_key = Some(key.to_path_buf());
+        assert!(matches!(
+            entry.client_identity(),
+            Ok(Some(
+                phux_dial::TlsClientIdentity::PemFiles { .. }
+                    | phux_dial::TlsClientIdentity::RequirePaired { .. }
+            ))
+        ));
     }
 
     #[test]

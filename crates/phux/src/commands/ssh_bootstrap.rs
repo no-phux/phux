@@ -38,6 +38,10 @@ pub(crate) struct SshAttach<'a> {
     pub(crate) remote_phux: String,
     /// `MIN-MAX` UDP port range for the host's listener, unparsed.
     pub(crate) udp_ports: Option<String>,
+    /// The workload client certificate a registered remote enrolled
+    /// (ADR-0116), presented on the probe and the attach; `None` reads the
+    /// environment, as an unregistered `--ssh` destination does.
+    pub(crate) identity: Option<phux_dial::TlsClientIdentity>,
     /// Recording spec for the attach that follows.
     pub(crate) rec: Option<&'a RecordSpec>,
 }
@@ -91,9 +95,12 @@ pub(crate) fn run(args: SshAttach<'_>) -> ExitCode {
 
     let host = ssh_hostname(&args.destination);
     let target = authority(&host, report.port);
-    if let Err(reason) =
-        super::enroll::probe(&target, &report.token, Some(&report.cert_fingerprint))
-    {
+    if let Err(reason) = super::enroll::probe(
+        &target,
+        &report.token,
+        Some(&report.cert_fingerprint),
+        args.identity.clone(),
+    ) {
         return fall_back(
             &args,
             &format!("QUIC to {target} did not connect: {reason}"),
@@ -106,6 +113,7 @@ pub(crate) fn run(args: SshAttach<'_>) -> ExitCode {
         Some(report.token),
         Some(report.cert_fingerprint),
         None,
+        args.identity,
         args.rec,
     )
 }

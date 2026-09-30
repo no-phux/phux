@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use phux_dial::TlsClientIdentity;
 use tokio::sync::{Notify, watch};
 
 use crate::control::ControlPlane;
@@ -57,6 +58,10 @@ pub struct Target {
     /// An in-memory bearer token supplied by an embedder such as a Keychain
     /// consumer. Takes precedence over `token_file` and is never logged.
     pub token: Option<String>,
+    /// The workload client certificate to present over TLS (ADR-0116):
+    /// what a registry entry enrolled, else [`TlsClientIdentity::None`].
+    /// Never read from the environment.
+    pub client_identity: TlsClientIdentity,
 }
 
 impl Target {
@@ -70,6 +75,7 @@ impl Target {
             cert_fingerprint: None,
             token_file: None,
             token: None,
+            client_identity: TlsClientIdentity::None,
         }
     }
 
@@ -83,6 +89,7 @@ impl Target {
             cert_fingerprint: None,
             token_file: None,
             token: None,
+            client_identity: TlsClientIdentity::None,
         }
     }
 
@@ -96,6 +103,7 @@ impl Target {
             cert_fingerprint: None,
             token_file: None,
             token: None,
+            client_identity: TlsClientIdentity::None,
         }
     }
 
@@ -121,6 +129,7 @@ impl Target {
             transport,
             token_file: self.token_file.clone(),
             cert_fingerprint: self.cert_fingerprint.clone(),
+            client_identity: self.client_identity.clone(),
         })
     }
 }
@@ -137,6 +146,7 @@ impl From<Resolved> for Target {
             cert_fingerprint: resolved.cert_fingerprint,
             token_file: resolved.token_file,
             token: None,
+            client_identity: resolved.client_identity,
         }
     }
 }

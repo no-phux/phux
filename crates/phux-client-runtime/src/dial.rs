@@ -3,9 +3,12 @@
 //! The CLI's trust rules apply (a routable host needs a pin; a routable
 //! WebSocket also needs `wss://` and a token), with operator-facing wording
 //! for every failure and the SPEC §5 frame cutting the WebSocket lane needs.
-//! The token is read just before the dial and dropped after it; client TLS
-//! identity is always [`phux_dial::TlsClientIdentity::None`], so an embedder
-//! never inherits a launcher shell's workload certificate.
+//! The token is read just before the dial and dropped after it. The client
+//! TLS identity is the one the registry entry enrolled
+//! ([`crate::target::Resolved::client_identity`]), else
+//! [`phux_dial::TlsClientIdentity::None`]; it is never read from the
+//! environment, so an embedder never inherits a launcher shell's workload
+//! certificate.
 
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
@@ -57,6 +60,8 @@ pub async fn plan_quic_with_token(
         server_name: quic_server_name(bare),
         token,
         trust,
+        // Explicit, so the plan never falls back to the environment.
+        identity: Some(resolved.client_identity.clone()),
     })
 }
 
@@ -136,6 +141,8 @@ pub fn plan_ws(resolved: &Resolved, url: &str, token: Option<String>) -> Result<
             .clone()
             .map_or(CertTrust::SkipVerify, CertTrust::Pinned),
         tls_server_name: None,
+        // Explicit, so the plan never falls back to the environment.
+        identity: Some(resolved.client_identity.clone()),
     })
 }
 
@@ -305,6 +312,7 @@ mod tests {
             transport: Transport::Ws(url.to_owned()),
             token_file: Some(PathBuf::from("/secret/mini.token")),
             cert_fingerprint: pin.map(str::to_owned),
+            client_identity: phux_dial::TlsClientIdentity::None,
         }
     }
 
