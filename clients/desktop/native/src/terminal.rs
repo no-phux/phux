@@ -1,5 +1,6 @@
 //! Native terminal surface. Publications and glyphs never enter the retained JS tree.
 
+mod actions;
 #[cfg(feature = "terminal-fixtures")]
 pub mod fixtures;
 pub mod geometry;
@@ -47,6 +48,7 @@ impl CustomElementFactory for TerminalFactory {
             input: None,
             rebind: Arc::new(AtomicBool::new(false)),
             was_focused: false,
+            actions: actions::HostActions::default(),
         })
     }
 }
@@ -61,6 +63,7 @@ struct Terminal {
     input: Option<BoundInput>,
     rebind: Arc<AtomicBool>,
     was_focused: bool,
+    actions: actions::HostActions,
 }
 
 struct BoundInput {
@@ -147,6 +150,9 @@ impl CustomElement for Terminal {
         let settings = self.settings.clone();
         let observation = Arc::downgrade(&self.observation);
         let input = self.ensure_input(window, cx);
+        // Taken either way: a request with no bound input is dropped, not
+        // replayed whenever a view next binds.
+        let action = self.actions.take();
         let rebind = Arc::clone(&self.rebind);
         let mut surface =
             custom_surface(gpui::div().id(self.element_id.clone()), &ctx).overflow_hidden();
@@ -165,6 +171,9 @@ impl CustomElement for Terminal {
                 window.blur();
             }
             self.was_focused = self.settings.focused;
+            if let Some(action) = action {
+                actions::run(action, &input, window, cx);
+            }
             let down = input.clone();
             let app_chords = self.settings.app_chords.clone();
             let up = input.clone();
@@ -219,6 +228,7 @@ impl CustomElement for Terminal {
         }
         let painted = input;
         let size_owner = self.settings.size_owner;
+        self.actions.arm();
         surface
             .child(
                 gpui::canvas(
@@ -256,6 +266,10 @@ impl CustomElement for Terminal {
     }
 
     fn set_prop(&mut self, key: &str, value: serde_json::Value) {
+        if key == "hostAction" {
+            self.actions.offer(&value);
+            return;
+        }
         if matches!(key, "clientHandle" | "terminalId" | "viewId") {
             self.surface.invalidate();
         }
@@ -276,6 +290,7 @@ impl CustomElement for Terminal {
             "paintRevision",
             "sizeOwner",
             "appChords",
+            "hostAction",
         ]
     }
 

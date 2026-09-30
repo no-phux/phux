@@ -39,7 +39,11 @@ shell can track the chosen pane and paste dropped paths. Its `theme.palette`
 maps the 16 ANSI colours: foregrounds by their palette index, backgrounds and
 underlines by matching the frame's own palette. `font.cellWidth`/`cellHeight`
 scale the measured cell. `appChords` lists non-Command chords the shell binds,
-which then bubble to the window instead of reaching the PTY. A Command-click
+which then bubble to the window instead of reaching the PTY. `hostAction`
+(`{ id, kind, text? }`) runs one platform request per new `id` on the next
+render: `copy` and `paste` through the same clipboard path as Command-C and
+Command-V, `copyText` onto the clipboard, and `open` a path with its default
+app; a request present when the element is created is dropped. A Command-click
 opens the cell's OSC 8 link, or a URL in the row's text, for an allowlisted set
 of schemes. `GlobalHotkeys` registers system-wide chords through
 `global-hotkey` (Carbon hotkeys; no Accessibility permission). `phux-drag-region`
