@@ -16,6 +16,7 @@ use ratatui::style::Color;
 use crate::render::{ChromeBreakpoints, Theme};
 
 pub mod copy_mode;
+pub mod line_edit;
 pub mod menu;
 pub mod pending;
 pub mod prompt;
