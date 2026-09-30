@@ -1660,6 +1660,38 @@ fn a_certificate_due_for_renewal_warns_and_is_renewed() {
 
     let missing = host.client(&["host", "renew", "nosuch", "--json"]);
     assert!(!missing.status.success());
+
+    // The destination now reaches a host with another authority (here the
+    // same host with a fresh CA): the new certificate is refused before the
+    // entry moves, and its orphaned credential is revoked.
+    for file in ["workload-ca.pem", "workload-ca.key"] {
+        std::fs::remove_file(host.far.root.join("state/phux").join(file)).expect("drop CA");
+    }
+    let reinit = host.far.phux(&["workload", "authority", "--init"]);
+    assert!(reinit.status.success(), "{}", text(&reinit.stderr));
+    let pinned = host.entry();
+    let out = host.client(&["host", "renew", REMOTE, "--json"]);
+    assert!(!out.status.success(), "{}", text(&out.stdout));
+    assert!(
+        text(&out.stderr).contains("different workload authority"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert_eq!(host.entry(), pinned, "the entry is unchanged");
+    assert!(entry_path(&pinned, "client-cert").exists());
+    assert_eq!(host.status(&newest), "active");
+    // `first` was swapped out of the entry by hand, never revoked.
+    let mut active: Vec<String> = host
+        .far
+        .credentials()
+        .into_iter()
+        .filter(|credential| credential["status"] == "active")
+        .filter_map(|credential| credential["credential_id"].as_str().map(str::to_owned))
+        .collect();
+    active.sort();
+    let mut expected = vec![host.first, newest];
+    expected.sort();
+    assert_eq!(active, expected, "the orphan is revoked");
 }
 
 /// Swap the entry's identity for one the far host issued for `days`: a
