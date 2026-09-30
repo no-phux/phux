@@ -12,10 +12,13 @@ use libghostty_vt::{
     fmt::Format,
     screen::GridRef,
     selection::{FormatOptions, SelectLineOptions, SelectWordOptions, Selection},
-    terminal::{Point, PointCoordinate},
+    terminal::{Point, PointCoordinate, PointSpace},
 };
+use phux_client_core::engine::DocumentSpace;
+use phux_protocol::ids::ResourceId;
 
-use crate::render::overlay::{CopyRequest, ScreenSelectionPoint, SelectionGrab};
+use super::pane_state::AttachKernel;
+use crate::render::overlay::{CopyRequest, ScreenSelectionPoint, SearchMatch, SelectionGrab};
 
 /// Base64 alphabet (RFC 4648 §4, standard, with `+`/`/` and `=` padding).
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -151,6 +154,77 @@ fn viewport_grid_ref<'t>(
         .ok()
 }
 
+/// The most hits one copy-mode search registers; the history cache's anchor
+/// budget may cap it lower.
+const MAX_SEARCH_MATCHES: usize = 4096;
+
+/// The document (history-space) row shown on viewport row 0, the offset
+/// between a [`SearchMatch`] row and a pane-local one.
+#[must_use]
+pub fn viewport_top(terminal: &GhosttyTerminal<'_, '_>) -> Option<u32> {
+    let cell = viewport_grid_ref(terminal, 0, 0)?;
+    terminal
+        .point_from_grid_ref(&cell, PointSpace::History)
+        .ok()?
+        .map(|point| point.y)
+}
+
+/// Every hit for `needle` in `terminal_id`'s loaded history, oldest first,
+/// through the kernel's document search (the engine's case policy and wrap
+/// handling). The engine anchors are released before returning: copy-mode
+/// keeps plain document rows, valid until history is trimmed.
+pub(crate) fn search_loaded(
+    kernel: &mut AttachKernel,
+    terminal_id: &ResourceId,
+    needle: &str,
+) -> Vec<SearchMatch> {
+    let Ok(found) = kernel.search_loaded_history(terminal_id, needle, MAX_SEARCH_MATCHES) else {
+        return Vec::new();
+    };
+    let point = |kernel: &AttachKernel, anchor| {
+        kernel
+            .document_anchor_point(terminal_id, anchor, DocumentSpace::History)
+            .ok()
+            .flatten()
+    };
+    let hits = found
+        .matches
+        .iter()
+        .filter_map(|hit| {
+            let (start, end) = (point(kernel, hit.start)?, point(kernel, hit.end)?);
+            Some(SearchMatch {
+                start_row: start.y,
+                start_col: start.x,
+                end_row: end.y,
+                end_col: end.x,
+            })
+        })
+        .collect();
+    for hit in found.matches {
+        let _ = kernel.release_document_anchor(terminal_id, hit.start);
+        let _ = kernel.release_document_anchor(terminal_id, hit.end);
+    }
+    hits
+}
+
+/// The hit a search from document cell `from` lands on: the first one after
+/// it, or (`backward`) the last one before it, wrapping around the ends.
+#[must_use]
+pub fn pick_match(matches: &[SearchMatch], from: (u32, u16), backward: bool) -> Option<usize> {
+    let start = |hit: &SearchMatch| (hit.start_row, hit.start_col);
+    let found = if backward {
+        matches.iter().rposition(|hit| start(hit) < from)
+    } else {
+        matches.iter().position(|hit| start(hit) > from)
+    };
+    let wrapped = if backward {
+        matches.len().checked_sub(1)
+    } else {
+        (!matches.is_empty()).then_some(0)
+    };
+    found.or(wrapped)
+}
+
 /// An OSC 52 "set clipboard" sequence: `ESC ] 52 ; c ; <base64> BEL`.
 /// Whether the host honors it is up to the host.
 #[must_use]
@@ -214,10 +288,7 @@ fn base64_encode(input: &[u8]) -> String {
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
-    use libghostty_vt::{
-        Terminal as GhosttyTerminal,
-        terminal::{PointSpace, ScrollViewport},
-    };
+    use libghostty_vt::{Terminal as GhosttyTerminal, terminal::ScrollViewport};
 
     fn fresh(cols: u16, rows: u16) -> GhosttyTerminal<'static, 'static> {
         {
@@ -475,5 +546,40 @@ mod tests {
         t.vt_write(b"plain text");
         let req = grab_req(SelectionGrab::Output, 0, 2);
         assert_eq!(extract_selection_text(&t, req), None);
+    }
+
+    /// Search picks the next hit after the cursor, or the previous one, and
+    /// wraps at either end (vi, tmux).
+    #[test]
+    fn pick_match_steps_and_wraps() {
+        let hit = |row, col| SearchMatch {
+            start_row: row,
+            start_col: col,
+            end_row: row,
+            end_col: col + 1,
+        };
+        let hits = [hit(2, 0), hit(5, 3), hit(5, 9)];
+        assert_eq!(pick_match(&hits, (5, 3), false), Some(2));
+        assert_eq!(pick_match(&hits, (5, 3), true), Some(0));
+        assert_eq!(pick_match(&hits, (5, 9), false), Some(0), "wraps forward");
+        assert_eq!(pick_match(&hits, (2, 0), true), Some(2), "wraps backward");
+        assert_eq!(pick_match(&[], (0, 0), false), None);
+        assert_eq!(pick_match(&[], (0, 0), true), None);
+    }
+
+    /// `viewport_top` counts in the same history space the document search
+    /// reports hits in: the live bottom sits past the scrollback, and
+    /// scrolling up moves it.
+    #[test]
+    fn viewport_top_tracks_the_scrolled_viewport() {
+        let mut terminal = fresh(10, 4);
+        for n in 0..20 {
+            terminal.vt_write(format!("row{n:02}\r\n").as_bytes());
+        }
+        assert_eq!(viewport_top(&terminal), Some(17));
+        terminal.scroll_viewport(ScrollViewport::Delta(-5));
+        assert_eq!(viewport_top(&terminal), Some(12));
+        terminal.scroll_viewport(ScrollViewport::Top);
+        assert_eq!(viewport_top(&terminal), Some(0));
     }
 }

@@ -139,6 +139,7 @@ fn read_row<'alloc, 'buf>(
 /// by `render::overlay::selection` (ADR-0045) so the renderer and the copy
 /// UX agree on what a selection covers.
 pub use crate::render::overlay::selection::SelectionRect;
+use crate::render::overlay::selection::{CellMark, CopyMarks};
 
 /// One pane's published replica `Terminal` paired with its generation token.
 ///
@@ -190,9 +191,9 @@ pub struct TerminalRenderer<'alloc> {
     /// Outer-viewport origin `(x, y)` of the last paint, added to pane-local
     /// predictions by the echo overlay.
     last_origin: (u16, u16),
-    /// Copy-mode selection to reverse-video on the next render; set just
-    /// before a copy-mode repaint and cleared right after.
-    selection: Option<SelectionRect>,
+    /// Copy-mode marks (selection and search hits) for the next render; set
+    /// just before a copy-mode repaint and cleared right after.
+    marks: CopyMarks,
     /// Per-frame emission buffers (see [`CellScratch`]).
     scratch: CellScratch,
     /// What this pane last emitted, cell by cell (see [`FrontBuffer`]).
@@ -359,7 +360,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
             last_cursor: None,
             last_cursor_local: None,
             last_origin: (0, 0),
-            selection: None,
+            marks: CopyMarks::default(),
             scratch: CellScratch::default(),
             front: FrontBuffer::default(),
         })
@@ -368,10 +369,16 @@ impl<'alloc> TerminalRenderer<'alloc> {
     /// Set (or clear) the copy-mode selection for the next render. A change
     /// forgets the front buffer.
     pub fn set_selection(&mut self, selection: Option<SelectionRect>) {
-        if self.selection != selection {
+        self.set_copy_marks(CopyMarks::selection(selection));
+    }
+
+    /// Set the copy-mode selection and search hits for the next render. A
+    /// change forgets the front buffer.
+    pub fn set_copy_marks(&mut self, marks: CopyMarks) {
+        if self.marks != marks {
             self.front.invalidate_all();
         }
-        self.selection = selection;
+        self.marks = marks;
     }
 
     /// Forget what this pane last emitted, so each row's next paint rewrites
@@ -656,7 +663,7 @@ impl<'alloc> TerminalRenderer<'alloc> {
             dirty,
             origin,
             extent,
-            self.selection,
+            &self.marks,
             !force_full,
         )?;
 
@@ -737,7 +744,7 @@ fn paint_dirty_rows<'alloc>(
     dirty: Dirty,
     origin: (u16, u16),
     extent: (u16, u16),
-    selection: Option<SelectionRect>,
+    marks: &CopyMarks,
     record: bool,
 ) -> Result<(), RenderError> {
     let (cols_total, rows_total) = extent;
@@ -746,7 +753,7 @@ fn paint_dirty_rows<'alloc>(
     // last emitted. From here on nothing else writes until the paint ends, so
     // the pen each span leaves carries to the next, across jumps and rows.
     let mut pass = PaintPass {
-        selection,
+        marks,
         record,
         pen: SpanPen::UNKNOWN,
     };
@@ -771,12 +778,12 @@ fn paint_dirty_rows<'alloc>(
     Ok(())
 }
 
-/// What one pane paint threads across its rows: the copy-mode selection,
+/// What one pane paint threads across its rows: the copy-mode marks,
 /// whether rows are recorded into the front buffer, and the outer terminal's
 /// pen as the paint has left it so far.
 #[derive(Debug)]
-struct PaintPass {
-    selection: Option<SelectionRect>,
+struct PaintPass<'m> {
+    marks: &'m CopyMarks,
     record: bool,
     pen: SpanPen,
 }
@@ -813,7 +820,7 @@ fn paint_row<'alloc>(
     row: &RowIteration<'alloc, '_>,
     cells: &mut CellIterator<'alloc>,
     at: RowAt,
-    pass: &mut PaintPass,
+    pass: &mut PaintPass<'_>,
 ) -> Result<(), RenderError> {
     let CellScratch {
         row: buf,
@@ -851,7 +858,7 @@ fn emit_and_record(
     next: &mut FrontRow,
     batch: &RowCells<'_>,
     at: RowAt,
-    pass: &mut PaintPass,
+    pass: &mut PaintPass<'_>,
 ) -> Result<bool, RenderError> {
     // Run indices belong to one row read, so the run memory starts empty on
     // every row; the outer pen itself carries over.
@@ -867,11 +874,11 @@ fn emit_and_record(
     }
     let painted = batch.len().min(usize::from(at.cols_total));
     if front_row.known && front_row.cells.len() == painted {
-        record_row(next, batch, at, pass.selection, None)?;
+        record_row(next, batch, at, pass.marks, None)?;
         emit_row_diff(buf, front_row, next, at, &mut pass.pen)?;
     } else {
         begin_full_row(buf, at, &mut pass.pen)?;
-        record_row(next, batch, at, pass.selection, Some((buf, &mut pass.pen)))?;
+        record_row(next, batch, at, pass.marks, Some((buf, &mut pass.pen)))?;
     }
     std::mem::swap(front_row, next);
     front_row.known = false;
@@ -888,23 +895,23 @@ fn emit_unrecorded_row(
     buf: &mut Vec<u8>,
     batch: &RowCells<'_>,
     at: RowAt,
-    pass: &mut PaintPass,
+    pass: &mut PaintPass<'_>,
 ) -> Result<(), RenderError> {
     let mut prev: Option<PenKey> = None;
     walk_row_cells(batch, at.cols_total, |col, cell| {
         if matches!(cell.wide, CellWide::SpacerTail) {
             return Ok(());
         }
-        let inverted = selection_covers_cell(pass.selection, at.row_index, col, cell.wide);
+        let mark = cell_mark(pass.marks, at.row_index, col, cell.wide);
         let key = PenKey {
             style_index: cell.style_index,
             fg: cell.fg,
             bg: cell.bg,
-            inverted,
+            mark,
         };
         if prev != Some(key) {
             let mut style = batch.style(cell.style_index)?;
-            style.inverse ^= inverted;
+            apply_mark(&mut style, mark);
             emit_sgr_if_changed(buf, &mut pass.pen.emitted, style, cell.fg, cell.bg);
             prev = Some(key);
         }
@@ -924,20 +931,13 @@ fn record_row(
     next: &mut FrontRow,
     batch: &RowCells<'_>,
     at: RowAt,
-    selection: Option<SelectionRect>,
+    marks: &CopyMarks,
     mut emit: Option<(&mut Vec<u8>, &mut SpanPen)>,
 ) -> Result<(), RenderError> {
     next.clear();
     let mut prev_pen: Option<PenKey> = None;
     walk_row_cells(batch, at.cols_total, |col, cell| {
-        let run = record_pen(
-            next,
-            batch,
-            cell,
-            (at.row_index, col),
-            selection,
-            &mut prev_pen,
-        )?;
+        let run = record_pen(next, batch, cell, (at.row_index, col), marks, &mut prev_pen)?;
         let tail = matches!(cell.wide, CellWide::SpacerTail);
         if !tail && let Some((buf, pen)) = &mut emit {
             if let Some((style, fg, bg)) = run {
@@ -957,19 +957,23 @@ fn record_pen(
     batch: &RowCells<'_>,
     cell: &RowCell<'_>,
     at: (u16, u16),
-    selection: Option<SelectionRect>,
+    marks: &CopyMarks,
     prev: &mut Option<PenKey>,
 ) -> Result<Option<EmittedStyle>, RenderError> {
     let tail = matches!(cell.wide, CellWide::SpacerTail);
     if tail && !next.pens.is_empty() {
         return Ok(None);
     }
-    let inverted = !tail && selection_covers_cell(selection, at.0, at.1, cell.wide);
+    let mark = if tail {
+        CellMark::None
+    } else {
+        cell_mark(marks, at.0, at.1, cell.wide)
+    };
     let key = PenKey {
         style_index: cell.style_index,
         fg: cell.fg,
         bg: cell.bg,
-        inverted,
+        mark,
     };
     let opens_run = *prev != Some(key) || next.pens.is_empty();
     if !tail {
@@ -979,7 +983,7 @@ fn record_pen(
         return Ok(None);
     }
     let mut style = batch.style(cell.style_index)?;
-    style.inverse ^= inverted;
+    apply_mark(&mut style, mark);
     let pen = (style, cell.fg, cell.bg);
     next.pens.push(pen);
     Ok(Some(pen))
@@ -1729,8 +1733,8 @@ struct PenKey {
     fg: Option<RgbColor>,
     /// The cell's resolved background.
     bg: Option<RgbColor>,
-    /// Whether a copy-mode selection flips this cell's inverse attribute.
-    inverted: bool,
+    /// How copy-mode restyles this cell (selection or search hit).
+    mark: CellMark,
 }
 
 /// Whether a `(style, fg, bg)` triple renders as the terminal default — no
@@ -1769,16 +1773,23 @@ fn emit_sgr_if_changed(
     *emitted = Some(key);
 }
 
-fn selection_covers_cell(
-    selection: Option<SelectionRect>,
-    row: u16,
-    col: u16,
-    wide: CellWide,
-) -> bool {
-    selection.is_some_and(|selection| {
-        selection.contains(row, col)
-            || matches!(wide, CellWide::Wide) && selection.contains(row, col.saturating_add(1))
-    })
+/// The copy-mode mark on a cell; a wide cell takes its spacer column's mark
+/// when its own column carries none.
+fn cell_mark(marks: &CopyMarks, row: u16, col: u16, wide: CellWide) -> CellMark {
+    match marks.mark(row, col) {
+        CellMark::None if matches!(wide, CellWide::Wide) => marks.mark(row, col.saturating_add(1)),
+        mark => mark,
+    }
+}
+
+/// Restyle a cell for its copy-mode mark: a selected cell flips reverse
+/// video, a search hit is underlined.
+const fn apply_mark(style: &mut Style, mark: CellMark) {
+    match mark {
+        CellMark::None => {}
+        CellMark::Selected => style.inverse ^= true,
+        CellMark::Matched => style.underline = Underline::Single,
+    }
 }
 
 /// Write `\x1b[0m` followed by the SGR set for `(style, fg, bg)`.
@@ -1930,6 +1941,31 @@ mod tests {
         assert!(block.contains("\x1b[0mab"), "{block:?}");
         assert!(!linear.contains("\x1b[0mab"), "{linear:?}");
         assert!(block.contains("cdef") && linear.contains("cdef"));
+    }
+
+    /// Copy-mode search underlines the other visible hits and leaves the
+    /// current one to the reverse-video selection.
+    #[test]
+    fn search_hits_are_underlined_and_the_selection_still_inverts() {
+        let t = pane(12, 1, b"foo bar foo");
+        let mut r = renderer();
+        r.set_copy_marks(CopyMarks {
+            selection: Some(sel((0, 0), (0, 2), false)),
+            matches: vec![sel((0, 8), (0, 10), false)],
+        });
+        let s = full(&mut r, &t, (0, 0), (12, 1));
+        let inverse = s.find("\x1b[7").expect("the current hit inverts");
+        let underline = s.find("\x1b[4").expect("the other hit underlines");
+        assert!(
+            inverse < s.find(" bar").expect("plain text") && underline > inverse,
+            "{s:?}"
+        );
+        r.set_copy_marks(CopyMarks::default());
+        let plain = full(&mut r, &t, (0, 0), (12, 1));
+        assert!(
+            !plain.contains("\x1b[4") && !plain.contains("\x1b[7"),
+            "{plain:?}"
+        );
     }
 
     #[test]
@@ -2429,6 +2465,7 @@ mod tests {
         selection: Option<SelectionRect>,
         record: bool,
     ) -> Vec<u8> {
+        let marks = CopyMarks::selection(selection);
         let mut state = RenderState::new().expect("RenderState");
         let mut rows_it = RowIterator::new().expect("RowIterator");
         let mut cells_it = CellIterator::new().expect("CellIterator");
@@ -2454,7 +2491,7 @@ mod tests {
             Dirty::Full,
             (0, 0),
             extent,
-            selection,
+            &marks,
             record,
         )
         .expect("paint");

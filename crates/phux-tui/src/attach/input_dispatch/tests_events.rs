@@ -136,6 +136,96 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
     );
 }
 
+/// Copy-mode search end to end through the dispatcher: `/needle` Enter
+/// searches the pane's own loaded history, scrolls the hit into view, and
+/// selects it; `n` wraps to the next hit and `N` goes back.
+#[tokio::test]
+async fn copy_mode_search_jumps_between_hits_in_scrollback() {
+    let mut replay = Vec::new();
+    for n in 0..30 {
+        let word = if n == 3 || n == 12 { "needle" } else { "line" };
+        replay.extend_from_slice(format!("{word}{n:02}\r\n").as_bytes());
+    }
+    let mut env = Env::new(CtxFixture::default()).published(&[(&tid(1), 10, 5, &replay)]);
+    env.fx.viewport = (10, 5);
+    let top_line = |env: &mut Env<'_>| -> String {
+        let terminal = super::super::pane_state::published_terminal(&env.fx.engine_kernel, &tid(1))
+            .expect("published");
+        let slot = env.panes.get_mut(&tid(1)).expect("pane");
+        (0..8)
+            .filter_map(|col| {
+                slot.renderer
+                    .read_grapheme_string_at(ReplicaWalk::for_test(terminal), 0, col)
+                    .expect("read cell")
+            })
+            .collect()
+    };
+    env.fx
+        .overlays
+        .push(Box::new(crate::render::overlay::CopyModeOverlay::new(
+            4, 0, 10, 5,
+        )));
+    let typed = |text: &str| -> Vec<InputEvent> {
+        text.chars()
+            .map(|ch| press(PhysicalKey::A, Some(&ch.to_string())))
+            .collect()
+    };
+
+    let mut search = typed("/needle");
+    search.push(press(PhysicalKey::Enter, None));
+    let sent = env.dispatch(search).await;
+    assert!(sent.repainted, "a search moves the cursor: repaint");
+    // From the live bottom, forward wraps to the oldest hit (row 3) and
+    // centers it: rows 1..=5 show, the hit on row 2.
+    assert_eq!(
+        env.fx.overlays.copy_search_status().as_deref(),
+        Some("/needle 1/2")
+    );
+    assert_eq!(top_line(&mut env), "line01");
+    let sel = env.fx.overlays.copy_selection().expect("copy-mode");
+    assert_eq!(
+        (sel.start_row, sel.start_col, sel.end_row, sel.end_col),
+        (2, 0, 2, 5)
+    );
+
+    env.dispatch(vec![press(PhysicalKey::N, Some("n"))]).await;
+    assert_eq!(
+        env.fx.overlays.copy_search_status().as_deref(),
+        Some("/needle 2/2")
+    );
+    assert_eq!(top_line(&mut env), "line10");
+
+    env.dispatch(vec![InputEvent::Key(KeyEvent {
+        mods: ModSet::SHIFT,
+        ..key_event(PhysicalKey::N, Some("N"))
+    })])
+    .await;
+    assert_eq!(
+        env.fx.overlays.copy_search_status().as_deref(),
+        Some("/needle 1/2")
+    );
+
+    env.dispatch(typed("/nothing-here")).await;
+    env.dispatch(vec![press(PhysicalKey::Enter, None)]).await;
+    assert_eq!(
+        env.fx.overlays.copy_search_status().as_deref(),
+        Some("/nothing-here: no match")
+    );
+    assert!(env.fx.overlays.is_active(), "a miss keeps copy-mode open");
+}
+
+fn key_event(key: PhysicalKey, text: Option<&str>) -> KeyEvent {
+    KeyEvent {
+        action: KeyAction::Press,
+        key,
+        mods: ModSet::empty(),
+        consumed_mods: ModSet::empty(),
+        composing: false,
+        text: text.map(ToOwned::to_owned),
+        unshifted_codepoint: None,
+    }
+}
+
 /// Bracketed paste into a prompt or picker fills its text (controls
 /// stripped) without submitting, dismissing, or reaching the pane.
 #[tokio::test]

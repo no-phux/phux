@@ -1,5 +1,5 @@
 //! A single-line text field with the readline keys a shell user expects:
-//! the shared editor behind the prompt modals.
+//! the shared editor behind the prompt modals and copy-mode search.
 //!
 //! `C-a`/`Home` and `C-e`/`End` jump to the ends, `C-b`/`C-f` and the arrows
 //! move a character, `C-u` and `C-k` kill to the start or end, `C-w` kills

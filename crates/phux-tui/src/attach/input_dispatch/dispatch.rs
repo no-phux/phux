@@ -24,7 +24,10 @@ use crate::attach::pane_state::{
 use crate::layout::Workspace;
 use crate::predict::{Overlay, PredictionState};
 use crate::render::chrome::sidebar::{SidebarHit, hit_test};
-use crate::render::overlay::{ContextMenu, OverlayOutcome, OverlayState, ScreenSelectionPoint};
+use crate::render::overlay::{
+    ContextMenu, CopySearchRequest, CopySearchResult, OverlayOutcome, OverlayState,
+    ScreenSelectionPoint,
+};
 
 use super::args::switch_session_args;
 use super::chrome_drag;
@@ -402,6 +405,17 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                 *self.ctx.reload_request = true;
                 Ok(false)
             }
+            OverlayOutcome::Search(req) => {
+                let result = copy_search(
+                    self.ctx.engine_kernel,
+                    self.panes,
+                    self.focused_resource.as_ref(),
+                    &req,
+                );
+                self.ctx.overlays.apply_copy_search(result);
+                // The cursor, selection, or viewport moved: repaint.
+                Ok(true)
+            }
             // Overlay consumed the event but nothing else to do.
             OverlayOutcome::None => Ok(false),
         }
@@ -670,6 +684,50 @@ pub(super) fn scroll_focused_pane_viewport(
         slot.viewport_scrolled = true;
     }
     true
+}
+
+/// Run a copy-mode search on the focused pane: find the hit after (or
+/// before) the cursor, scroll it into view when it is off screen, and report
+/// every hit with the viewport's new top row.
+pub(super) fn copy_search(
+    kernel: &mut crate::attach::pane_state::AttachKernel,
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    focused_resource: Option<&ResourceId>,
+    req: &CopySearchRequest,
+) -> CopySearchResult {
+    use crate::attach::copy::{pick_match, search_loaded, viewport_top};
+    use crate::attach::pane_state::published_terminal;
+
+    let Some(fid) = focused_resource else {
+        return CopySearchResult::NotFound;
+    };
+    let Some(top) = published_terminal(kernel, fid).and_then(viewport_top) else {
+        return CopySearchResult::NotFound;
+    };
+    let matches = search_loaded(kernel, fid, &req.needle);
+    let from = (
+        top.saturating_add(u32::from(req.cursor_row)),
+        req.cursor_col,
+    );
+    let Some(current) = pick_match(&matches, from, req.backward) else {
+        return CopySearchResult::NotFound;
+    };
+    let hit = matches[current];
+    let rows = u32::from(req.pane_rows.max(1));
+    if hit.start_row < top || hit.end_row >= top.saturating_add(rows) {
+        // Center the hit, as far as the scrollback allows.
+        let want = i64::from(hit.start_row.saturating_sub(rows / 2));
+        let delta = isize::try_from(want - i64::from(top)).unwrap_or_default();
+        scroll_focused_pane_viewport(kernel, panes, Some(fid), delta);
+    }
+    let top = published_terminal(kernel, fid)
+        .and_then(viewport_top)
+        .unwrap_or(top);
+    CopySearchResult::Found {
+        matches,
+        current,
+        top,
+    }
 }
 
 /// Snap `focused_resource`'s viewport back to the live screen if a wheel /

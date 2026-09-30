@@ -12,6 +12,7 @@ use crate::attach::pane_state::{AttachKernel, PaneSlot};
 use crate::attach::render::{SelectionRect, write_cup};
 use crate::layout::LayoutState;
 use crate::render::chrome::status_bar::Position;
+use crate::render::overlay::CopyMarks;
 use crate::render::overlay::OverlayState;
 
 /// Paint the active overlay layer. Copy mode repaints the focused pane with
@@ -32,7 +33,15 @@ pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
     chrome: &mut ChromeCtx<'_>,
 ) -> StatusBarPaint {
     if let Some(sel) = overlays.copy_selection() {
-        return paint_copy_mode(out, sel, base, panes, engine_kernel, focused, chrome);
+        return paint_copy_mode(
+            out,
+            sel,
+            overlays,
+            base,
+            panes,
+            engine_kernel,
+            (focused, chrome),
+        );
     }
     // Modals center in the pane content rect, never over the sidebar.
     let overlay_content = {
@@ -61,28 +70,34 @@ pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
 }
 
 /// Copy mode: repaint the base frame with the focused pane's selection
-/// inverted, then the copy-mode status strip over the bottom row.
+/// inverted and its other visible search hits underlined, then the copy-mode
+/// status strip over the bottom row.
 fn paint_copy_mode<W: crate::attach::RenderSink>(
     out: &mut W,
     sel: SelectionRect,
+    overlays: &OverlayState,
     base: Option<&LayoutState>,
     panes: &mut HashMap<ResourceId, PaneSlot>,
     engine_kernel: &AttachKernel,
-    focused: Option<&ResourceId>,
-    chrome: &mut ChromeCtx<'_>,
+    (focused, chrome): (Option<&ResourceId>, &mut ChromeCtx<'_>),
 ) -> StatusBarPaint {
     let (Some(base), Some(fid)) = (base, focused) else {
         return StatusBarPaint::NotPublished;
     };
-    // Set the selection for this one zoom-honoring paint, then clear it.
+    // Set the marks for this one zoom-honoring paint, then clear them.
     if let Some(slot) = panes.get_mut(fid) {
-        slot.renderer.set_selection(Some(sel));
+        let matches = visible_search_hits(overlays, engine_kernel, fid);
+        slot.renderer.set_copy_marks(CopyMarks {
+            selection: Some(sel),
+            matches,
+        });
     }
     let painted = paint_full_frame(out, base, panes, engine_kernel, focused, chrome);
     if let Some(slot) = panes.get_mut(fid) {
-        slot.renderer.set_selection(None);
+        slot.renderer.set_copy_marks(CopyMarks::default());
     }
-    let _ = paint_copy_mode_status(out, sel, chrome.viewport, chrome.theme);
+    let search = overlays.copy_search_status();
+    let _ = paint_copy_mode_status(out, sel, search.as_deref(), chrome.viewport, chrome.theme);
     // The strip lands on the bottom viewport row, which is a
     // pane row under a top-docked bar or no bar at all.
     crate::attach::pane_state::invalidate_all_fronts(panes);
@@ -93,11 +108,41 @@ fn paint_copy_mode<W: crate::attach::RenderSink>(
     }
 }
 
+/// The copy-mode search hits on screen in `fid`'s pane, as pane-local
+/// rectangles, minus the current one (the selection already inverts it).
+fn visible_search_hits(
+    overlays: &OverlayState,
+    engine_kernel: &AttachKernel,
+    fid: &ResourceId,
+) -> Vec<SelectionRect> {
+    let Some(view) = overlays.copy_search_view() else {
+        return Vec::new();
+    };
+    let Some(terminal) = crate::attach::pane_state::published_terminal(engine_kernel, fid) else {
+        return Vec::new();
+    };
+    let (Some(top), Ok(cols), Ok(rows)) = (
+        crate::attach::copy::viewport_top(terminal),
+        terminal.cols(),
+        terminal.rows(),
+    ) else {
+        return Vec::new();
+    };
+    view.matches
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != view.current)
+        .filter_map(|(_, hit)| hit.viewport_rect(top, rows, cols))
+        .collect()
+}
+
 /// Emit the copy-mode status strip over the bottom viewport row, then hide the
 /// hardware cursor (the reverse-video selection is the position indicator).
+/// `search` is the search line being typed or the last search's position.
 pub(super) fn paint_copy_mode_status<W: Write>(
     out: &mut W,
     sel: SelectionRect,
+    search: Option<&str>,
     viewport_dims: (u16, u16),
     theme: &crate::render::Theme,
 ) -> io::Result<()> {
@@ -119,7 +164,10 @@ pub(super) fn paint_copy_mode_status<W: Write>(
     };
     // Block vs linear, cycled by `Tab` (ADR-0045).
     let geom = if sel.rectangle { "block" } else { "linear" };
-    let status = format!(" copy-mode · {geom} · {cell_count} ");
+    let status = search.map_or_else(
+        || format!(" copy-mode · {geom} · {cell_count} "),
+        |search| format!(" copy-mode · {geom} · {cell_count} · {search} "),
+    );
     write_cup(out, rows - 1, 0)?;
     // Selection strip from the theme (`selection_bg`/`selection_fg`). `\x1b[K`
     // fills the rest of the row with the strip bg; then reset + hide the cursor.

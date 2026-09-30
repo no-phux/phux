@@ -482,6 +482,16 @@ One-shot grabs copy-and-exit:
 | `A` | all selectable content |
 | `]` | command-output span; no-op when the pane has no OSC-133 zones |
 
+**Search.** `/` searches forward (toward newer output) and `?` backward;
+the search line edits like the name prompts, Enter runs it, Esc closes it
+without leaving copy-mode. The cursor jumps to the next hit after it,
+wrapping at either end, and scrolls it into view; the hit becomes the
+selection (so Enter copies it) and the other visible hits are underlined.
+`n` repeats the search in its direction and `N` reverses it; an empty search
+line repeats the last one. The strip shows `/needle 2/7` or `no match`.
+Search is case-sensitive and covers the scrollback this client holds, like
+selection.
+
 Enter copies the current selection and exits. Esc exits without copying.
 A left-button drag inside the pane selects and, on release, copies and
 exits; a click with no drag exits, so a mouse-initiated entry cannot
@@ -533,8 +543,8 @@ Focus follows it, including an in-process reattach when it crosses sessions.
 Move, layout, and rollback failures stay in the TUI as a **Pane move failed**
 message rather than silently changing or ending the attach.
 
-The **name prompts** (new session, rename session or window) edit like a
-shell: `C-a`/Home and `C-e`/End jump to
+The **name prompts** (new session, rename session or window) and the
+copy-mode search line edit like a shell: `C-a`/Home and `C-e`/End jump to
 the ends, `C-b`/`C-f` and the arrows move, `C-u` and `C-k` kill to the start
 or end, `C-w` kills the previous word, `C-h`/Backspace and `C-d`/Delete
 delete a character. Enter commits; Esc cancels.
