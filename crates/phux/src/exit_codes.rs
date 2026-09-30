@@ -77,24 +77,6 @@ pub(crate) const EXIT_CODES: &[ExitCodeSpec] = &[
     },
 ];
 
-/// The EXIT STATUS help section as a `&'static str`: the fixed-width
-/// layout the `phux help exit-codes` topic prints. [`exit_status_section`]
-/// renders the same text from [`EXIT_CODES`]; a unit test holds the two in
-/// lockstep.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const EXIT_STATUS_HELP: &str = "\
-EXIT STATUS
-  0     Success.
-  1     Failure: no server, no such target, or the verb itself failed.
-  2     Usage error, or the server refused the request.
-  3     Unanswerable: the selector was resolved against a partial view
-        of the fleet (a federation satellite was unreachable). Retry
-        once the link is back — unlike 1, the target may exist.
-  124   `phux wait` gave up because `--timeout` expired.
-  125   `phux run` gave up because `--timeout` expired; otherwise
-        `run` mirrors the exit code of the command it ran, so
-        `phux run … && next` composes like a shell.";
-
 /// Render the EXIT STATUS help section from [`EXIT_CODES`] — the exact
 /// block `phux help exit-codes` prints.
 pub(crate) fn exit_status_section() -> String {
@@ -144,10 +126,22 @@ mod tests {
         );
     }
 
-    /// The const epilogue usage-rs can embed must match the table renderer,
-    /// so `--help` and `docs/reference/exit-codes.md` cannot drift.
+    /// The exact block `phux help exit-codes` prints, pinned so a table
+    /// edit that shifts the layout is a visible diff here.
     #[test]
-    fn exit_status_help_const_matches_the_table() {
-        assert_eq!(super::EXIT_STATUS_HELP, exit_status_section());
+    fn exit_status_section_matches_the_pinned_layout() {
+        const EXPECTED: &str = "\
+EXIT STATUS
+  0     Success.
+  1     Failure: no server, no such target, or the verb itself failed.
+  2     Usage error, or the server refused the request.
+  3     Unanswerable: the selector was resolved against a partial view
+        of the fleet (a federation satellite was unreachable). Retry
+        once the link is back — unlike 1, the target may exist.
+  124   `phux wait` gave up because `--timeout` expired.
+  125   `phux run` gave up because `--timeout` expired; otherwise
+        `run` mirrors the exit code of the command it ran, so
+        `phux run … && next` composes like a shell.";
+        assert_eq!(exit_status_section(), EXPECTED);
     }
 }

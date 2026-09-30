@@ -10,7 +10,8 @@ const fn mcp_executable_name() -> &'static str {
     }
 }
 
-fn is_executable(path: &Path) -> bool {
+/// Whether `path` is a regular file with an execute bit (any file off Unix).
+pub(crate) fn is_executable(path: &Path) -> bool {
     let Ok(metadata) = path.metadata() else {
         return false;
     };
