@@ -13,6 +13,9 @@ pub mod wire_type {
     pub const BYTES: u8 = 4;
 }
 
+/// Initial capacity of the nested-field scratch buffer.
+const FIELD_SCRATCH_CAPACITY: usize = 64;
+
 /// Primitive encoder over a borrowed `BytesMut`.
 #[derive(Debug)]
 pub struct Encoder<'a> {
@@ -141,7 +144,12 @@ impl<'a> Encoder<'a> {
     {
         // Move scratch out so recursive field builders get their own buffer,
         // and a panicking builder cannot publish a partial field to `buf`.
-        let mut scratch = self.field_scratch.take().unwrap_or_default();
+        // One right-sized buffer up front: a small nested value (a key
+        // event) then costs one allocation, not a chain of regrowths.
+        let mut scratch = self
+            .field_scratch
+            .take()
+            .unwrap_or_else(|| BytesMut::with_capacity(FIELD_SCRATCH_CAPACITY));
         scratch.clear();
         {
             let mut sub = Encoder::new(&mut scratch);

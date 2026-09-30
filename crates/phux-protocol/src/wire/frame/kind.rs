@@ -7,7 +7,9 @@ use crate::caps::{
     BootstrapCodec, BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ClientCapabilities,
     Compression, OutputMode, ServerCapabilities,
 };
-use crate::ids::{BootstrapId, ClientId, GroupId, ResourceId, SatelliteHost, StreamId};
+use crate::ids::{
+    BootstrapId, ClientId, GroupId, RESOURCE_ID_TAG_LOCAL, ResourceId, SatelliteHost, StreamId,
+};
 use crate::input::InputEvent;
 use crate::input::focus::FocusEvent;
 use crate::input::key::KeyEvent;
@@ -1849,9 +1851,21 @@ impl FrameKind {
     }
 }
 
-/// Write one tagged `ResourceId` field.
+/// Write one tagged `ResourceId` field. A local id (every id on the live
+/// path) is a fixed five bytes written straight into the frame; only a
+/// satellite id, with its host string, goes through the scratch builder.
 fn id_field(enc: &mut Encoder<'_>, field_id: u32, id: &ResourceId) {
-    enc.write_field_with(field_id, |e| encode_terminal_id(id, e));
+    match id {
+        ResourceId::Local { id } => {
+            let mut value = [0_u8; 5];
+            value[0] = RESOURCE_ID_TAG_LOCAL;
+            value[1..].copy_from_slice(&id.to_be_bytes());
+            enc.write_field(field_id, &value);
+        }
+        ResourceId::Satellite { .. } => {
+            enc.write_field_with(field_id, |e| encode_terminal_id(id, e));
+        }
+    }
 }
 
 /// Write fields 1-3 (resource, stream, generation) that open every
@@ -1873,22 +1887,22 @@ fn generation_fields(
 
 /// Write one fixed-width `u8` field.
 fn u8_field(enc: &mut Encoder<'_>, field_id: u32, value: u8) {
-    enc.write_field_with(field_id, |e| e.write_u8(value));
+    enc.write_field(field_id, &value.to_be_bytes());
 }
 
 /// Write one fixed-width `u16` field.
 fn u16_field(enc: &mut Encoder<'_>, field_id: u32, value: u16) {
-    enc.write_field_with(field_id, |e| e.write_u16_be(value));
+    enc.write_field(field_id, &value.to_be_bytes());
 }
 
 /// Write one fixed-width `u32` field.
 fn u32_field(enc: &mut Encoder<'_>, field_id: u32, value: u32) {
-    enc.write_field_with(field_id, |e| e.write_u32_be(value));
+    enc.write_field(field_id, &value.to_be_bytes());
 }
 
 /// Write one fixed-width `u64` field.
 fn u64_field(enc: &mut Encoder<'_>, field_id: u32, value: u64) {
-    enc.write_field_with(field_id, |e| e.write_u64_be(value));
+    enc.write_field(field_id, &value.to_be_bytes());
 }
 
 /// Write one field whose value is an `i32` as its two's-complement `u32`.
