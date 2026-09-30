@@ -54,6 +54,7 @@ web-sys = { version = "0.3", features = [
     "DataTransfer",
     "HtmlTextAreaElement",
     "DomRect",
+    "WheelEvent",
     "Event",
     "EventTarget",
     "Location",
@@ -76,4 +77,5 @@ web-sys = { version = "0.3", features = [
     "ClipboardEventInit",
     "CompositionEventInit",
     "KeyboardEventInit",
+    "WheelEventInit",
 ] }

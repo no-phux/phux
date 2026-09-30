@@ -10,7 +10,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 use web_sys::{
     ClipboardEvent, ClipboardEventInit, CompositionEvent, CompositionEventInit, DataTransfer,
-    Document, Element, HtmlCanvasElement, KeyboardEvent, KeyboardEventInit,
+    Document, Element, HtmlCanvasElement, KeyboardEvent, KeyboardEventInit, WheelEvent,
+    WheelEventInit,
 };
 
 wasm_bindgen_test_configure!(run_in_browser);
@@ -165,4 +166,86 @@ async fn keys_ime_commits_and_paste_reach_the_terminal_and_nothing_else_is_captu
             .is_none(),
         "closing the client removes its input surface"
     );
+}
+
+fn shift_keydown(target: &Element, key: &str) -> bool {
+    let init = KeyboardEventInit::new();
+    init.set_key(key);
+    init.set_code(key);
+    init.set_shift_key(true);
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    let event = KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+    target.dispatch_event(&event).unwrap();
+    event.default_prevented()
+}
+
+async fn wait_until(client: &phux_web::client::Client, visible: bool, needle: &str) -> bool {
+    for _ in 0..POLLS {
+        if client.rows_text().iter().any(|row| row.contains(needle)) == visible {
+            return true;
+        }
+        sleep(POLL).await;
+    }
+    false
+}
+
+#[wasm_bindgen_test]
+async fn wheel_and_shift_page_up_scroll_back_and_typing_returns_to_live() {
+    let canvas = mounted_canvas("scrollback-canvas");
+    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
+        .await
+        .expect("connect to live phux server");
+    let marker = "PHUX_WEB_OK";
+    assert!(
+        wait_until(&client, true, marker).await,
+        "{}",
+        screen(&client)
+    );
+    let surface = input_surface(&canvas);
+
+    // The tty echoes each Enter as a newline: push the marker off screen.
+    for _ in 0..40 {
+        assert!(keydown(&surface, "Enter", "Enter", false));
+    }
+    assert!(
+        wait_until(&client, false, marker).await,
+        "marker scrolled away: {}",
+        screen(&client)
+    );
+
+    let init = WheelEventInit::new();
+    init.set_delta_y(-4_000.0);
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    let wheel = WheelEvent::new_with_event_init_dict("wheel", &init).unwrap();
+    canvas.dispatch_event(&wheel).unwrap();
+    assert!(wheel.default_prevented(), "the page does not scroll too");
+    assert!(
+        wait_until(&client, true, marker).await,
+        "wheel reached the marker in scrollback: {}",
+        screen(&client)
+    );
+
+    // Typing returns to the live screen.
+    assert!(keydown(&surface, "Enter", "Enter", false));
+    assert!(
+        wait_until(&client, false, marker).await,
+        "typing returned to live: {}",
+        screen(&client)
+    );
+
+    // Shift+PageUp pages the local scrollback and never reaches the app.
+    for _ in 0..4 {
+        assert!(
+            shift_keydown(&surface, "PageUp"),
+            "Shift+PageUp is consumed"
+        );
+    }
+    assert!(
+        wait_until(&client, true, marker).await,
+        "Shift+PageUp reached the marker: {}",
+        screen(&client)
+    );
+    client.close();
 }

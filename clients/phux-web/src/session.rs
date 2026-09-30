@@ -1114,6 +1114,36 @@ impl Session {
             })
     }
 
+    /// Scroll the focused replica's viewport `rows` rows (negative is up,
+    /// into scrollback). Local only: the server's pane never moves. Returns
+    /// whether a published replica took the scroll.
+    pub fn scroll_viewport(&self, rows: i32) -> bool {
+        let Some(terminal) = self.published_terminal() else {
+            return false;
+        };
+        terminal.scroll_viewport(rows);
+        true
+    }
+
+    /// Return a scrolled-back viewport to the live screen. Returns whether
+    /// it moved (and so needs a repaint).
+    pub fn scroll_to_bottom(&self) -> bool {
+        match self.published_terminal() {
+            Some(terminal) if terminal.viewport_scrolled() => {
+                terminal.scroll_to_bottom();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the focused replica's viewport is scrolled back.
+    #[must_use]
+    pub fn viewport_scrolled(&self) -> bool {
+        self.published_terminal()
+            .is_some_and(Terminal::viewport_scrolled)
+    }
+
     /// Record a new viewport and, once the handshake is done, encode the
     /// `VIEWPORT_RESIZE` announcing it. Before `HELLO_OK` the `ATTACH`
     /// carries the new size instead, so no frame is needed; an unchanged

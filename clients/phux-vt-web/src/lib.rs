@@ -129,6 +129,13 @@ const RENDER_STATE_ROW_DATA_CELLS: f64 = 3.0;
 const TERMINAL_DATA_CURSOR_X: f64 = 3.0;
 const TERMINAL_DATA_CURSOR_Y: f64 = 4.0;
 const TERMINAL_DATA_CURSOR_VISIBLE: f64 = 7.0;
+const TERMINAL_DATA_VIEWPORT_ACTIVE: f64 = 32.0;
+// `GhosttyTerminalScrollViewport`: a u32 tag, then an 8-aligned value union
+// whose `delta` is a wasm32 isize; passed by pointer on wasm32.
+const SCROLL_VIEWPORT_SIZE: u32 = 24;
+const SCROLL_VIEWPORT_VALUE_OFFSET: u32 = 8;
+const SCROLL_VIEWPORT_BOTTOM: u32 = 1;
+const SCROLL_VIEWPORT_DELTA: u32 = 2;
 // RenderStateRowCellsData (per-cell reads via ghostty_render_state_row_cells_get)
 const ROW_CELLS_DATA_GRAPHEMES_LEN: f64 = 3.0;
 const ROW_CELLS_DATA_GRAPHEMES_BUF: f64 = 4.0;
@@ -231,6 +238,7 @@ pub struct Vt {
     terminal_set: Function,
     vt_write: Function,
     resize: Function,
+    scroll_viewport: Function,
     rs_new: Function,
     rs_free: Function,
     rs_update: Function,
@@ -316,6 +324,7 @@ impl Vt {
             terminal_set: f("ghostty_terminal_set")?,
             vt_write: f("ghostty_terminal_vt_write")?,
             resize: f("ghostty_terminal_resize")?,
+            scroll_viewport: f("ghostty_terminal_scroll_viewport")?,
             rs_new: f("ghostty_render_state_new")?,
             rs_free: f("ghostty_render_state_free")?,
             rs_update: f("ghostty_render_state_update")?,
@@ -941,6 +950,41 @@ impl Terminal {
                 f64::from(cell_h_px),
             ],
         );
+    }
+
+    /// Scroll the viewport `rows` rows (negative is up, into scrollback).
+    /// The engine clamps at both ends; [`Self::grid`] and
+    /// [`Self::rows_text`] read the viewport, and new output leaves a
+    /// scrolled viewport where it is.
+    pub fn scroll_viewport(&self, rows: i32) {
+        self.scroll(SCROLL_VIEWPORT_DELTA, rows);
+    }
+
+    /// Return the viewport to the active area (the live screen).
+    pub fn scroll_to_bottom(&self) {
+        self.scroll(SCROLL_VIEWPORT_BOTTOM, 0);
+    }
+
+    /// Whether the viewport is scrolled back from the active area.
+    #[must_use]
+    pub fn viewport_scrolled(&self) -> bool {
+        self.term_u32(TERMINAL_DATA_VIEWPORT_ACTIVE) == 0
+    }
+
+    fn scroll(&self, tag: u32, delta: i32) {
+        let vt = &*self.vt;
+        let behavior = vt.wasm_alloc(SCROLL_VIEWPORT_SIZE);
+        if behavior == 0 {
+            return;
+        }
+        vt.w_bytes(behavior, &[0; SCROLL_VIEWPORT_SIZE as usize]);
+        vt.w_u32(behavior, tag);
+        vt.w_u32(behavior + SCROLL_VIEWPORT_VALUE_OFFSET, delta as u32);
+        let _ = vt.call(
+            &vt.scroll_viewport,
+            &[f64::from(self.term), f64::from(behavior)],
+        );
+        vt.wasm_free(behavior, SCROLL_VIEWPORT_SIZE);
     }
 
     /// Read the visible grid back as one `String` per row (text only; styling
