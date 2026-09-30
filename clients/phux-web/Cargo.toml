@@ -12,6 +12,16 @@ publish = false
 # Standalone workspace (wasm-only); excluded from the native phux workspace.
 [workspace]
 
+# The shipped module is downloaded on every visit, and its runtime cost is
+# canvas and engine calls, not Rust codegen: a paint measured the same
+# (~7 ms at 120x40) at opt-level 3 and "z". Whole-program, size-first
+# optimization cuts the Rust code by 30% (2,151,881 -> 1,965,110 bytes raw,
+# 641,377 -> 583,335 gzipped, of which the embedded engine is 1.53 MB raw).
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "z"
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
@@ -48,6 +58,18 @@ web-sys = { version = "0.3", features = [
     "CloseEvent",
     "BinaryType",
     "KeyboardEvent",
+    "CompositionEvent",
+    "InputEvent",
+    "ClipboardEvent",
+    "DataTransfer",
+    "HtmlTextAreaElement",
+    "DomRect",
+    "WheelEvent",
+    "CustomEvent",
+    "CustomEventInit",
+    "HtmlDocument",
+    "MouseEvent",
+    "PointerEvent",
     "Event",
     "EventTarget",
     "Location",
@@ -65,3 +87,11 @@ web-sys = { version = "0.3", features = [
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
+# Event constructors the browser tests dispatch; the library needs none.
+web-sys = { version = "0.3", features = [
+    "ClipboardEventInit",
+    "CompositionEventInit",
+    "KeyboardEventInit",
+    "PointerEventInit",
+    "WheelEventInit",
+] }
