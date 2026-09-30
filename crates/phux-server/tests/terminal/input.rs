@@ -195,23 +195,28 @@ fn input_to_a_stalled_pane_waits_and_arrives_whole() {
     ];
     run_local(async {
         let tmp = TempDir::new().unwrap();
+        let ready = tmp.path().join("ready");
         let go = tmp.path().join("go");
         let out = tmp.path().join("out");
         // Raw and silent, so bytes reach `cat` unedited and nothing echoes;
-        // `R` says the tty is set. `cat` writes to a file, not the terminal,
-        // so the output path cannot be what loses a byte.
+        // `ready` says the tty is set. `cat` writes to a file, not the
+        // terminal, so the output path cannot be what loses a byte.
         let script = format!(
-            "stty raw -echo; printf R; while [ ! -e '{go}' ]; do sleep 0.02; done; exec cat > '{out}'",
+            "stty raw -echo; : > '{ready}'; while [ ! -e '{go}' ]; do sleep 0.02; done; exec cat > '{out}'",
+            ready = ready.display(),
             go = go.display(),
             out = out.display(),
         );
         let ((shutdown, server), mut stream) = seeded(&tmp, sh(&script)).await;
         let pane = attach(&mut stream).await;
-        recv_until(&mut stream, |_, frame| match frame {
-            FrameKind::ResourceOutput { bytes, .. } if bytes.contains(&b'R') => Some(()),
-            _ => None,
-        })
-        .await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while !ready.exists() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the pane never set its tty raw"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
 
         let mut expected = Vec::new();
         let mut burst = Vec::new();
