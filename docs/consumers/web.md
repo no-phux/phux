@@ -53,7 +53,7 @@ x86_64 Linux `zig_0_16` compiles one function differently and fails `--check`.
 ## Running it locally
 
 ```sh
-# A standalone seeded server to point a build at:
+# A standalone seeded server to point a build at; its pane is a shell:
 PHUX_WS_ADDR=127.0.0.1:47654 cargo run -p phux-server --example ws_demo_server
 ```
 
@@ -274,6 +274,7 @@ starts `ws_demo_server` and runs the headless Chrome suites against it: the
 `src/` unit tests, the canvas pixel test, live connect, input and paste,
 resize, scrollback and copy, find, mouse reporting, links, the bell, wide
 character copy, and the authenticated WebTransport-to-WebSocket fallback.
-The demo server's pane runs `cat`, so a test makes the "program" emit mouse
-modes, OSC 8 links, and BEL by typing them. The server's attach and `transport::webtransport` tests cover the
+The runner starts the demo server with `PHUX_DEMO_PANE=cat` and strips every
+other inherited `PHUX_*` variable: the pane runs `cat`, so a test makes the
+"program" emit mouse modes, OSC 8 links, and BEL by typing them. The server's attach and `transport::webtransport` tests cover the
 bootstrap sequence and the WebTransport handshake and token gate.

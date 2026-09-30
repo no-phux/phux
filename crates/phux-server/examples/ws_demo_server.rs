@@ -1,9 +1,15 @@
 //! Standalone seeded WebSocket server, for the phux-web browser e2e.
 //!
 //! Runs a real phux server with a PTY-backed `default` session that prints a
-//! deterministic marker (`PHUX_WEB_OK`) then runs `cat` (each typed line comes
-//! back as program output), listening for WebSocket
-//! clients on `PHUX_WS_ADDR` (default `127.0.0.1:47654`). Blocks forever.
+//! deterministic marker (`PHUX_WEB_OK`) then runs an interactive `sh`,
+//! listening for WebSocket clients on `PHUX_WS_ADDR` (default
+//! `127.0.0.1:47654`). Blocks forever.
+//!
+//! `PHUX_DEMO_PANE=cat` runs `cat` instead of the shell: each typed line
+//! comes back as program output, which is how the browser e2e makes the
+//! "program" emit escape sequences (mouse modes, OSC 8, BEL). A person
+//! trying the client wants the shell, where a typed line shows once.
+//!
 //! Port 0 lets the kernel pick; the `listening on` line on stderr names the
 //! address actually bound, which is how the browser e2e learns it.
 //!
@@ -33,11 +39,12 @@ fn main() {
 
     let socket_path = std::env::temp_dir().join(format!("phux-e2e-{}.sock", std::process::id()));
 
-    // A PTY session that emits a deterministic marker, then stays alive
-    // echoing each typed line back as program output, so a browser test can
-    // make the "program" emit escape sequences (mouse modes, OSC 8, BEL).
+    // A PTY session that emits a deterministic marker, then stays alive.
     let mut cmd = CommandBuilder::new("sh");
-    cmd.args(["-c", "printf 'PHUX_WEB_OK\\r\\n'; exec cat"]);
+    cmd.args([
+        "-c",
+        pane_script(std::env::var("PHUX_DEMO_PANE").ok().as_deref()),
+    ]);
 
     // Standalone process binary: snapshot PHUX_* the same way `phux server`
     // does. `with_default_socket()` leaves env empty for hermetic in-process
@@ -70,4 +77,12 @@ fn main() {
         eprintln!("ws-demo-server listening on {scheme}://{bound}/  (seed: default)");
         server.await.expect("server task").expect("server run");
     });
+}
+
+/// The seeded pane's `sh -c` script: the marker, then the pane program.
+fn pane_script(program: Option<&str>) -> &'static str {
+    match program {
+        Some("cat") => "printf 'PHUX_WEB_OK\\r\\n'; exec cat",
+        _ => "printf 'PHUX_WEB_OK\\r\\n'; exec sh -i",
+    }
 }

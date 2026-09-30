@@ -216,8 +216,9 @@ wasm-pack build --target web --release --out-dir pkg
 wasm-pack test --node
 ```
 
-For browser rendering/e2e tests, start `cargo run --locked -p phux-server
---example ws_demo_server` from the repository root in a second terminal.
+For browser rendering/e2e tests, start `PHUX_DEMO_PANE=cat cargo run --locked
+-p phux-server --example ws_demo_server` from the repository root in a second
+terminal (without `PHUX_DEMO_PANE`, its pane is a shell for trying the client).
 `clients/phux-vt-web/vendor/ghostty-vt.wasm` is committed; rebuild it with
 `bash scripts/build-vt-wasm.sh` (or `--check`). `GHOSTTY_SRC=...` selects local
 source and bypasses archive verification but still runs ABI tests.
