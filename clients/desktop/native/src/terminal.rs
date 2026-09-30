@@ -96,11 +96,13 @@ impl Terminal {
 }
 
 impl Terminal {
+    /// The bound input entity, and whether it is new this render: a new
+    /// entity brings a new focus handle that nothing has focused yet.
     fn ensure_input(
         &mut self,
         window: &mut gpui::Window,
         cx: &mut gpui::Context<GpuixView>,
-    ) -> Option<gpui::Entity<crate::input::TerminalInput>> {
+    ) -> Option<(gpui::Entity<crate::input::TerminalInput>, bool)> {
         let view = self.settings.view_id?;
         let terminal = phux_client_ffi::projection::id::parse(&self.settings.terminal_id)?;
         let handle = self.settings.client_handle.clone();
@@ -111,7 +113,10 @@ impl Terminal {
             bound.handle == handle && bound.view == view && bound.terminal == terminal
         });
         if same && !input_host::note_rebind(&self.rebind) {
-            return self.input.as_ref().map(|bound| bound.entity.clone());
+            return self
+                .input
+                .as_ref()
+                .map(|bound| (bound.entity.clone(), false));
         }
         let entity = cx.new(|cx| {
             crate::input::TerminalInput::new(
@@ -132,7 +137,7 @@ impl Terminal {
             terminal,
             entity: entity.clone(),
         });
-        Some(entity)
+        Some((entity, true))
     }
 }
 
@@ -149,7 +154,9 @@ impl CustomElement for Terminal {
         let scheduled = Rc::new(RefCell::new(recovery));
         let settings = self.settings.clone();
         let observation = Arc::downgrade(&self.observation);
-        let input = self.ensure_input(window, cx);
+        let bound = self.ensure_input(window, cx);
+        let rebound = bound.as_ref().is_some_and(|(_, fresh)| *fresh);
+        let input = bound.map(|(input, _)| input);
         // Taken either way: a request with no bound input is dropped, not
         // replayed whenever a view next binds.
         let action = self.actions.take();
@@ -161,14 +168,18 @@ impl CustomElement for Terminal {
                 state.set_option_as_alt(self.settings.option_as_alt);
             });
             let focus = input.read(cx).focus_handle().clone();
-            if self.settings.focused && !self.was_focused && !focus.is_focused(window) {
-                focus.focus(window, cx);
-            }
-            // The shell withdrew input (a modal or find field took over). Give
-            // the keyboard back to the window so keys cannot reach the PTY
-            // behind an overlay that has no text field of its own.
-            if !self.settings.focused && self.was_focused && focus.is_focused(window) {
-                window.blur();
+            match focus_step(
+                self.settings.focused,
+                self.was_focused,
+                rebound,
+                focus.is_focused(window),
+            ) {
+                FocusStep::Focus => focus.focus(window, cx),
+                // The shell withdrew input (a modal or find field took over).
+                // Give the keyboard back to the window so keys cannot reach
+                // the PTY behind an overlay that has no text field of its own.
+                FocusStep::Blur => window.blur(),
+                FocusStep::Keep => (),
             }
             self.was_focused = self.settings.focused;
             if let Some(action) = action {
@@ -309,6 +320,51 @@ impl CustomElement for Terminal {
     }
 }
 
+/// What a render does with its terminal's focus handle.
+#[derive(Debug, PartialEq, Eq)]
+enum FocusStep {
+    Focus,
+    Blur,
+    Keep,
+}
+
+/// `wanted` is the shell's `focused` prop and `was` its value last render.
+/// Focus follows the prop's edges, so a click elsewhere in the window is not
+/// undone every frame. A `rebound` input (a new presentation identity after a
+/// reconnect or re-bootstrap) has a new focus handle nothing has focused yet:
+/// a terminal the shell still wants focused takes it, or keys would reach no
+/// terminal until the user clicked it.
+fn focus_step(wanted: bool, was: bool, rebound: bool, has_focus: bool) -> FocusStep {
+    if wanted && (!was || rebound) && !has_focus {
+        return FocusStep::Focus;
+    }
+    if !wanted && was && has_focus {
+        return FocusStep::Blur;
+    }
+    FocusStep::Keep
+}
+
 pub(super) fn parse_view(value: &str) -> Option<ViewId> {
     value.parse::<u64>().ok().and_then(ViewId::from_raw)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FocusStep, focus_step};
+
+    #[test]
+    fn focus_follows_the_shell_prop_edges() {
+        assert_eq!(focus_step(true, false, false, false), FocusStep::Focus);
+        assert_eq!(focus_step(true, true, false, false), FocusStep::Keep);
+        assert_eq!(focus_step(false, true, false, true), FocusStep::Blur);
+        assert_eq!(focus_step(false, false, false, true), FocusStep::Keep);
+    }
+
+    #[test]
+    fn a_rebound_input_takes_focus_the_shell_still_wants() {
+        // A new presentation identity rebuilt the input and its focus handle.
+        assert_eq!(focus_step(true, true, true, false), FocusStep::Focus);
+        assert_eq!(focus_step(true, true, true, true), FocusStep::Keep);
+        assert_eq!(focus_step(false, false, true, false), FocusStep::Keep);
+    }
 }

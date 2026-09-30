@@ -17,10 +17,8 @@ export function FindBar(props: {
   close: () => void;
 }): JSX.Element {
   const colors = usePalette();
-  function keyDown(event: KeyLike & { modifiers?: { shift: boolean } }): void {
-    const key = plainKey(event);
-    if (key === "escape") props.close();
-    else if (key === "enter") props.step(event.modifiers?.shift ? -1 : 1);
+  function keyDown(event: KeyLike): void {
+    if (plainKey(event) === "escape") props.close();
   }
   return (
     <div
@@ -47,6 +45,9 @@ export function FindBar(props: {
         placeholder="Find in terminal"
         onChange={(event) => props.setQuery(event.value ?? "")}
         onKeyDown={keyDown}
+        // A single-line input turns Enter into `submit` (and Shift-Enter into
+        // a newline it drops); keyDown never sees either. ⇧⌘G steps back.
+        onSubmit={() => props.step(1)}
         style={{
           flexGrow: 1,
           height: 26,

@@ -20,6 +20,7 @@ gpuix-native = { path = "../toolchain/gpuix/packages/native" }
 phux-client-core = { path = "../../../crates/phux-client-core" }
 phux-client-runtime = { path = "../../../crates/phux-client-runtime" }
 phux-client-ffi = { path = "../../../crates/phux-client-ffi", default-features = false, features = ["napi"] }
+phux-perf = { path = "../../../crates/phux-perf" }
 phux-protocol = { path = "../../../crates/phux-protocol" }
 unicode-segmentation = "1"
 napi = { version = "=3.12.7", features = ["napi8", "serde-json"] }

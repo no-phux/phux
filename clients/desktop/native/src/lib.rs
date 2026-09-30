@@ -6,6 +6,7 @@
 mod chrome;
 mod hotkeys;
 pub mod input;
+mod perf;
 mod presentation;
 #[cfg_attr(
     test,
@@ -25,6 +26,10 @@ use napi_derive::napi;
 #[napi]
 pub fn initialize_desktop_host() -> napi::Result<()> {
     let _ = phux_client_ffi::napi::initialize();
+    perf::mark_started();
+    // Command-W closes a pane (the shell's chord), never the whole window:
+    // GPUIX's standard binding would close it before the shell saw the key.
+    native_extensions::release_standard_key("cmd-w");
     native_extensions::install(|registry| {
         probe::install(registry);
         terminal::install(registry);

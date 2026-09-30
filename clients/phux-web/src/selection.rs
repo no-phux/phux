@@ -1,12 +1,13 @@
-//! Mouse selection over the painted viewport, and the text it copies.
+//! Mouse selection over the painted viewport.
 //!
 //! A selection is two cells of the viewport grid, in either order, covering
 //! the row-major run between them (a stream selection, as terminals make by
-//! dragging). It is local: the server and the program never see it.
+//! dragging). It is local: the server and the program never see it. The
+//! engine formats the text it copies
+//! ([`phux_vt_web::Terminal::selection_text`]), so a wide character copies
+//! without its spacer cell and a soft-wrapped line copies as one line.
 
 use std::ops::Range;
-
-use phux_vt_web::Grid;
 
 /// A selection between two viewport cells, each `(col, row)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,28 +43,6 @@ impl Selection {
         };
         let (a, b) = (index(self.anchor), index(self.head));
         a.min(b)..a.max(b) + 1
-    }
-
-    /// The selected text of `grid`: one line per row, trailing blanks
-    /// trimmed, joined with `\n`.
-    #[must_use]
-    pub fn text(&self, grid: &Grid) -> String {
-        let cols = usize::from(grid.cols.max(1));
-        let cells = self.cells(grid.cols);
-        let end = cells.end.min(grid.cells.len());
-        let mut lines = Vec::new();
-        let mut start = cells.start;
-        while start < end {
-            let row_end = ((start / cols) + 1) * cols;
-            let stop = row_end.min(end);
-            let line: String = grid.cells[start..stop]
-                .iter()
-                .map(|cell| if cell.ch == '\0' { ' ' } else { cell.ch })
-                .collect();
-            lines.push(line.trim_end().to_owned());
-            start = stop;
-        }
-        lines.join("\n")
     }
 }
 
