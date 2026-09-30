@@ -330,6 +330,14 @@ fn run_config_init(force: bool, distro: Option<&str>) -> ExitCode {
     }
 }
 
+/// Why an attached TUI would refuse to reload `path`, judged by the same
+/// strict build it runs (layered loader, status-bar widgets, and every
+/// binding), so the CLI never reports "config OK" for a file the clients
+/// then reject.
+fn reload_refusal(path: &Path) -> Option<String> {
+    phux_tui::settings::TuiSettings::load_strict(path).err()
+}
+
 /// `phux config reload`: validate the config locally (a broken file fails
 /// here and signals nothing), then ring the `phux.config.reload/v1` doorbell
 /// with a fresh nonce; each client re-reads its own file.
@@ -337,10 +345,11 @@ fn run_config_reload(socket: Option<PathBuf>) -> ExitCode {
     use phux_client::attach::connection::Connection;
     use phux_protocol::wire::frame::{CONFIG_RELOAD_KEY, FrameKind, Scope};
 
-    // 1. Validate locally with the full layered loader (extends stacks).
+    // 1. Validate locally with the build the clients run on reload.
     let config_path = config_loader::config_path();
-    if let Err(err) = config_loader::load_from(&config_path) {
+    if let Some(err) = reload_refusal(&config_path) {
         eprintln!("phux: config invalid, not signalling reload: {err}");
+        eprintln!("  run `phux config check` to list every problem");
         return ExitCode::FAILURE;
     }
 
@@ -570,5 +579,30 @@ fn action_exit_code(output: &phux_plugin::PluginActionOutput) -> ExitCode {
             // `run`'s timeout convention (canonical table: exit_codes.rs).
             ExitCode::from(crate::exit_codes::EXIT_RUN_TIMEOUT)
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests")]
+mod tests {
+    /// `config reload` judges the file the way the attached clients will: a
+    /// binding to a misspelled action parses fine but is refused on reload,
+    /// so the CLI must refuse it too instead of printing "config OK".
+    #[test]
+    fn reload_refusal_matches_the_clients_strict_build() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+
+        std::fs::write(&path, "[keybindings.prefix-table]\nc = \"new-windoww\"\n")
+            .expect("write config");
+        let refusal = super::reload_refusal(&path).expect("unknown action refused");
+        assert!(
+            refusal.contains("unknown action `new-windoww`"),
+            "{refusal}"
+        );
+
+        std::fs::write(&path, "[keybindings.prefix-table]\nc = \"new-window\"\n")
+            .expect("write config");
+        assert_eq!(super::reload_refusal(&path), None);
     }
 }

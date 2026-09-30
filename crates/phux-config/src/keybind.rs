@@ -42,6 +42,30 @@ pub enum KeybindError {
     /// could never fire.
     #[error("ambiguous prefix: '{0}' is both a binding and a prefix")]
     AmbiguousPrefix(String),
+
+    /// The binding names an action outside [`crate::vocab::ACTION_NAMES`]:
+    /// no dispatcher runs it, so the chord would do nothing.
+    #[error(
+        "unknown action `{name}`{}",
+        suggestion.map(|hit| format!(" (did you mean `{hit}`?)")).unwrap_or_default()
+    )]
+    UnknownAction {
+        /// The action name as written.
+        name: String,
+        /// The closest known action, when one is near.
+        suggestion: Option<&'static str>,
+    },
+}
+
+/// Refuse an action name no dispatcher knows, naming the nearest known one.
+fn known_action(name: &str) -> Result<(), KeybindError> {
+    if crate::vocab::ACTION_NAMES.contains(&name) {
+        return Ok(());
+    }
+    Err(KeybindError::UnknownAction {
+        name: name.to_owned(),
+        suggestion: crate::vocab::did_you_mean(name, crate::vocab::ACTION_NAMES),
+    })
 }
 
 /// A single modifier-key combination.
@@ -385,8 +409,11 @@ impl TrieNode {
         diagnostics: &mut Vec<BindingDiagnostic>,
     ) {
         for (binding, action) in table {
-            let result = parse_chord_sequence(binding)
-                .and_then(|seq| self.insert(&seq, ResolvedAction::from(action), binding));
+            let action = ResolvedAction::from(action);
+            let result = parse_chord_sequence(binding).and_then(|seq| {
+                known_action(&action.action)?;
+                self.insert(&seq, action, binding)
+            });
             if let Err(error) = result {
                 diagnostics.push(BindingDiagnostic {
                     binding: binding.clone(),
@@ -442,7 +469,8 @@ impl Resolver {
     /// 2. An unparseable binding is skipped.
     /// 3. A global binding at exactly the prefix chord is dropped (it could
     ///    never fire); the prefix table survives.
-    /// 4. A binding ambiguous with an earlier one (in key order) is dropped.
+    /// 4. A binding naming an unknown action is skipped.
+    /// 5. A binding ambiguous with an earlier one (in key order) is dropped.
     #[must_use]
     pub fn new_lenient(cfg: &KeybindingsCfg) -> (Self, Vec<BindingDiagnostic>) {
         let mut diagnostics = Vec::new();
@@ -642,6 +670,12 @@ mod tests {
                 &["C-a", "d"],
                 "detach",
             ),
+            (
+                "[keybindings.prefix-table]\nc = \"new-windoww\"\nd = \"detach\"\n",
+                "c",
+                &["C-a", "d"],
+                "detach",
+            ),
         ];
         for &(toml, bad, chords, action) in cases {
             let (mut resolver, diags) = Resolver::new_lenient(&cfg_from(toml).keybindings);
@@ -659,6 +693,22 @@ mod tests {
         let (mut resolver, _) = Resolver::new_lenient(&cfg.keybindings);
         assert_eq!(resolver.feed(ck("C-a")), Feed::Partial);
         assert_eq!(resolver.feed(ck("q")), Feed::NoMatch);
+    }
+
+    /// A binding to an action no dispatcher knows is a diagnostic that names
+    /// the nearest real action, so a strict build (reload) refuses it rather
+    /// than installing a chord that silently does nothing.
+    #[test]
+    fn an_unknown_action_is_a_diagnostic_with_a_suggestion() {
+        let cfg = cfg_from("[keybindings.prefix-table]\nc = \"new-windoww\"\n");
+        let err = Resolver::new(&cfg.keybindings).expect_err("unknown action refused");
+        assert_eq!(
+            err.to_string(),
+            "unknown action `new-windoww` (did you mean `new-window`?)"
+        );
+        let cfg = cfg_from("[keybindings.prefix-table]\nc = \"zzzzzzzzzz\"\n");
+        let err = Resolver::new(&cfg.keybindings).expect_err("unknown action refused");
+        assert_eq!(err.to_string(), "unknown action `zzzzzzzzzz`");
     }
 
     /// Strict `new` fails with exactly the first lenient diagnostic.

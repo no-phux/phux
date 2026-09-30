@@ -228,8 +228,12 @@ impl TuiSettings {
         let plugin_actions = plugin_actions::entries_from_manifests(&manifests);
         let plugin_panes = plugin_panes::entries_from_manifests(&manifests);
         let keybindings = merged_keybindings(cfg, &plugin_actions);
-        // Strict on purpose: reload is all-or-nothing.
-        let resolver = Resolver::new(&keybindings).map_err(|err| err.to_string())?;
+        // Strict on purpose: reload is all-or-nothing. The refusal names the
+        // binding, so the toast says which line of the file to fix.
+        let (resolver, diagnostics) = Resolver::new_lenient(&keybindings);
+        if let Some(diagnostic) = diagnostics.first() {
+            return Err(diagnostic.to_string());
+        }
         Ok(Self::assemble(
             cfg,
             keybindings,
@@ -494,6 +498,37 @@ mod tests {
         );
         assert_eq!(settings.which_key.delay, Duration::from_millis(123));
         assert_eq!(settings.sidebar.width, 41);
+    }
+
+    /// Reloading a file that binds `c` to a misspelled action must not
+    /// replace the working `new-window` binding with one that does nothing:
+    /// the reload is refused, the toast names the binding and the fix, and
+    /// the previous bindings stay.
+    #[test]
+    fn reload_refuses_an_unknown_action_and_keeps_the_working_binding() {
+        let mut settings = TuiSettings::tolerant_from(&parse(""));
+        let (_dir, path) = config_file(
+            r#"
+            [keybindings.prefix-table]
+            c = "new-windoww"
+            "#,
+        );
+        let err = settings
+            .reload_in_place(&path)
+            .expect_err("an unknown action must fail the reload");
+        assert_eq!(
+            err,
+            "keybinding \"c\": unknown action `new-windoww` (did you mean `new-window`?)"
+        );
+        let mut resolver = settings.resolver.expect("previous resolver kept");
+        assert_eq!(
+            resolver.feed(parse_chord("C-a").expect("prefix parses")),
+            Feed::Partial
+        );
+        match resolver.feed(parse_chord("c").expect("chord parses")) {
+            Feed::Resolved(action) => assert_eq!(action.action, "new-window"),
+            other => panic!("the shipped binding must survive, got {other:?}"),
+        }
     }
 
     #[test]
