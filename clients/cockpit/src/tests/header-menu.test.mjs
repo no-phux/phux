@@ -106,3 +106,56 @@ test('header recovery cannot reconnect another window or an already recovered pr
   const [, recovered] = step({ ...opened, canReconnect: false }, { kind: 'header_reconnect' });
   assert.equal(intents(recovered).length, 0);
 });
+
+test('workspace menu reaches the window overview and closes before opening it', () => {
+  const [opened] = step({ ...initialModel()[0], engineConnected: true }, { kind: 'header_menu_toggle' });
+  const [windows, command] = step(opened, { kind: 'header_windows' });
+  assert.equal(windows.headerMenuWindow, -1);
+  assert.equal(windows.paletteOpen, true);
+  assert.equal(windows.navigatorView, 3);
+  assert.equal(windows.paletteScope, 4);
+  assert.ok(command.cmds.some(effect => effect.name === 'cockpit.navigation'));
+  // A closed menu cannot open it from a held item.
+  const [closed] = step(initialModel()[0], { kind: 'header_windows' });
+  assert.equal(closed.paletteOpen, false);
+});
+
+test('the location trigger menu reaches Sessions as well as Machines', () => {
+  const [opened] = step({ ...initialModel()[0], engineConnected: true }, { kind: 'header_hosts_toggle' });
+  const [sessions] = step(opened, { kind: 'header_sessions' });
+  assert.equal(sessions.headerMenuWindow, -1);
+  assert.equal(sessions.paletteOpen, true);
+  assert.equal(sessions.navigatorView, 1);
+});
+
+const windowTarget = (window, tab) => tab === undefined
+  ? new Uint8Array([4, window, 1, 0, 0, 0, 0, 0, 0, 0])
+  : new Uint8Array([5, window, 1, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, tab, 0, 0, 0]);
+
+const windowsReply = (model, rows) => {
+  const header = navigationScopedRequest(model.engineRevision, 0, new Uint8Array(0), 4, new Uint8Array(0));
+  const encoder = new TextEncoder();
+  const records = rows.flatMap((row, index) => {
+    const label = encoder.encode(row.label);
+    return [index, 0, label.length, row.target.length, 0, ...row.target, ...label];
+  });
+  const metadata = rows.flatMap(row => {
+    const detail = encoder.encode(row.detail);
+    return [row.target[0], 1 | (row.current ? 2 : 0), detail.length, ...detail];
+  });
+  return new Uint8Array([...header, rows.length, 0, rows.length, ...records, 0x4e, ...metadata]);
+};
+
+test('window overview marks exactly the rows the engine calls current, tabs included', () => {
+  let [model] = step({ ...initialModel()[0], engineConnected: true }, { kind: 'windows_open' });
+  [model] = step(model, { kind: 'navigation_loaded', body: windowsReply(model, [
+    { target: windowTarget(0), label: 'Window 1', detail: 'work · This Mac · 2 tabs', current: true },
+    { target: windowTarget(0, 11), label: 'build', detail: 'Tab 1 of 2 · Window 1 · work · This Mac', current: false },
+    { target: windowTarget(0, 12), label: 'build', detail: 'Tab 2 of 2 · Window 1 · work · This Mac', current: true },
+    { target: windowTarget(1), label: 'Window 2', detail: 'work · This Mac · 1 tab', current: false },
+  ]) });
+  assert.deepEqual(model.paletteRows.map(row => row.kind), [4, 5, 5, 4]);
+  assert.deepEqual(model.paletteRows.map(row => row.current), [true, false, true, false]);
+  // Two tabs with the same title stay distinguishable by their placement.
+  assert.notDeepEqual(model.paletteRows[1].detail, model.paletteRows[2].detail);
+});

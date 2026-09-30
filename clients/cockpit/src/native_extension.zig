@@ -2528,7 +2528,7 @@ const test_views = [_]native_sdk.ShellView{
 };
 const test_windows = [_]native_sdk.ShellWindow{.{
     .label = "main",
-    .title = "Phux Cockpit TS",
+    .title = "Phux Cockpit",
     .width = 1100,
     .height = 640,
     .views = &test_views,
@@ -9336,7 +9336,7 @@ test "compiled titlebar chrome starts after the declared traffic-light reserve a
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
-    const labels = [_][]const u8{ "New Tab", "Workspace actions" };
+    const labels = [_][]const u8{ "Session and machine", "New Tab", "Workspace actions" };
     for (parity_sizes) |size| {
         var built = try measureWindow(&rig.app_state.model, 0, size);
         defer built.arena.deinit();
@@ -9358,6 +9358,38 @@ test "compiled titlebar chrome starts after the declared traffic-light reserve a
             try std.testing.expectApproxEqAbs(cockpit.projection.header_height * 0.5, frame.y + frame.height * 0.5, 0.01);
         }
     }
+}
+
+test "header location trigger names the window's session and machine at a fixed width" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    for (parity_sizes) |size| {
+        var built = try measureWindow(&rig.app_state.model, 0, size);
+        defer built.arena.deinit();
+        const trigger = for (built.measured.nodes) |entry| {
+            if (entry.widget.kind == .button and std.mem.eql(u8, entry.widget.semantics.label, "Session and machine")) break entry;
+        } else return error.TestExpectedLocationTrigger;
+        // Session names never move the chrome: core.ts elides the text instead.
+        try std.testing.expectApproxEqAbs(@as(f32, 216), trigger.frame.width, 0.01);
+        const context = rig.app_state.model.mainContext;
+        try std.testing.expect(context.location.len > 0);
+        try std.testing.expectEqualStrings(context.location, trigger.widget.text);
+    }
+}
+
+test "the Show All Windows chord opens the window overview" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    // Installed chords carry registry ids; the chord itself is the contract.
+    const shortcut = for (rig.harness.null_platform.configuredShortcuts()) |item| {
+        if (std.mem.eql(u8, item.key, "a") and item.modifiers.shift) break item;
+    } else return error.TestExpectedWindowsShortcut;
+    try std.testing.expect(!rig.app_state.model.paletteOpen);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = .{ .id = shortcut.id, .key = shortcut.key, .modifiers = shortcut.modifiers, .window_id = 1 } });
+    try std.testing.expect(rig.app_state.model.paletteOpen);
+    try std.testing.expectEqual(@as(i64, 3), rig.app_state.model.navigatorView);
 }
 
 test "shipping menus cap every group at seven and name navigator destinations consistently" {
@@ -9493,6 +9525,7 @@ test "shipping empty session stays inline in terminal space without modal semant
         .emptyDetail = "This Mac",
         .emptyPicked = true,
         .emptyOpening = empty.mainContext.emptyOpening,
+        .location = empty.mainContext.location,
     };
     empty.mainContext = &empty_context;
     empty.mainEmptyOpen = true;

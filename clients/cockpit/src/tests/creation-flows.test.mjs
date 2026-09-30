@@ -18,6 +18,11 @@ test('Add Machine retains destination through dedicated local setup and explicit
   assert.equal(cmd.cmds[1].name, 'cockpit.local-tools');
   assert.equal(cmd.cmds[1].payload[1], 1, 'describe captures an invoking window before setup');
   [model] = step(model, { kind: 'local_tool_loaded', body: toolReply(0) });
+  // The shared describe answer is about the editor; Add Machine never shows it.
+  assert.equal(text(model.hostNotice), '');
+  const [missingEditor] = step(step(initialModel()[0], { kind: 'add_machine_open' })[0], { kind: 'local_tool_loaded', body: toolReply(3) });
+  assert.equal(text(missingEditor.hostNotice), '');
+  assert.deepEqual(missingEditor.toolToken, token, 'a missing editor never blocks adding a machine');
   [model] = step(model, { kind: 'host_edit', edit: { kind: 'insert_text', text: bytes('alice@mini') } });
   [model] = step(model, { kind: 'host_name_edit', edit: { kind: 'insert_text', text: bytes('Build machine') } });
   [model, cmd] = step(model, { kind: 'tool_submit' });

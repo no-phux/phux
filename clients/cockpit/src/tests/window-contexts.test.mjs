@@ -296,5 +296,34 @@ test('every window template binds its own context, not the ambient primary label
     const source = readFileSync(new URL(file, import.meta.url), 'utf8');
     assert.match(source, new RegExp(`title="\\{${prefix}Context\\.title\\}" detail="\\{${prefix}Context\\.detail\\}"`), file);
     assert.match(source, new RegExp(`emptyname="\\{${prefix}Context\\.emptyName\\}" emptydetail="\\{${prefix}Context\\.emptyDetail\\}"`), file);
+    assert.match(source, new RegExp(`location="\\{${prefix}Context\\.location\\}"`), file);
   }
+});
+
+test('each window header names its own session and machine, eliding the session first', () => {
+  const model = loaded({
+    secondary: [1],
+    extensions: [navigation('primary', 'This Mac'), contextsRecord([
+      { window: 0, session: 'build', host: 'This Mac' },
+      { window: 1, session: 'a-very-long-session-name-for-release', host: 'gpu-box' },
+    ])],
+  });
+  assert.equal(text(model.mainContext.location), 'build · This Mac');
+  const long = text(model.window1Context.location);
+  // The machine survives whole; the session gives up characters for it.
+  assert.ok(long.endsWith(' · gpu-box'), long);
+  assert.equal(long, 'a-very-long-s\u2026 · gpu-box');
+  assert.ok(long.includes('…'), long);
+  assert.ok([...long].length <= 24, long);
+  // A state word travels with the machine, not in place of it.
+  const offline = loaded({ extensions: [navigation('primary', 'This Mac'), contextsRecord([
+    { window: 0, connection: 3, session: 'build', host: 'mini' },
+  ])] });
+  assert.equal(text(offline.mainContext.location), 'build · mini · Offline');
+  // Multi-byte names elide on a character boundary.
+  const wide = loaded({ extensions: [navigation('primary', 'This Mac'), contextsRecord([
+    { window: 0, session: 'é'.repeat(30), host: 'This Mac' },
+  ])] });
+  assert.equal(validUtf8(wide.mainContext.location), true);
+  assert.ok([...text(wide.mainContext.location)].length <= 24);
 });

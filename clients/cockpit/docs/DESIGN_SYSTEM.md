@@ -43,19 +43,25 @@ The 640pt Settings/picker maximum is a composition choice on the same grid;
 the compiled layout audit verifies it at 900×420, 1100×640 and 1680×1000.
 Terminal geometry remains fixed beneath the header and beside the optional rail.
 Connection changes and command outcomes never insert a footer or resize that
-space. Status, retained command feedback and Reconnect live in Connected hosts;
+space. Status, retained command feedback and Reconnect live in the host menu;
 its fixed-size header trigger indicates attention without changing chrome bounds.
 
-The top header is tab-first: traffic-light reserve, equal-width tabs, a compact
-Connected hosts trigger, New Tab, and Workspace actions. Each trailing trigger
-uses the 32pt small register; the remaining measured strip belongs to tabs.
-The host dropdown lists real local/remote attachments, marks the opening
-window's current host, and exposes connection state without a permanent host
-label consuming title width. Host selection opens that captured attachment's
-sessions; Connect to Host and machine management remain directly available.
-Workspace actions groups session/machine/agent navigation, window/layout
-actions, and Commands/Settings. Both menus name the current window's session
-and connection. Side-tab mode uses the freed header space for the session title.
+The top header is tab-first: traffic-light reserve, equal-width tabs, the
+location trigger, New Tab, and Workspace actions. Each trailing trigger uses
+the 32pt small register; the remaining measured strip belongs to tabs. The
+location trigger is the one exception to icon-only width: a fixed 184pt
+(46 × 4) ghost button reading `session · machine` for its own window, so a
+person can always tell where they are and where a new tab will run. It elides
+rather than grows, so a long session name never moves the chrome; attention
+swaps its trailing chevron for the leading warning icon at the same width.
+It opens the host menu, which lists real local/remote attachments, marks the
+opening window's current host, and exposes connection state. Host selection
+opens that captured attachment's sessions; Connect to Host, Machines and
+Sessions remain directly available. Workspace actions (an ellipsis, so it
+never reads as a second copy of the location chevron) groups
+session/machine/agent navigation, window/layout actions including Show all
+windows, and Commands/Settings. Side-tab mode leaves the freed header band to
+the window drag; the location trigger names the session in both modes.
 
 Top-tab titles are direct SDK tab triggers inside the native Tabs focus group:
 Left/Right and Home/End move keyboard focus; Enter/Space activates the focused tab.
@@ -90,7 +96,7 @@ are SDK menu primitives. The open menu owns input; Escape, outside dismissal,
 action handoff and native window changes release that ownership. Layout tests
 cover the open menu at the same declared sizes and densities as the chrome.
 
-Connected hosts shares that menu register and input owner, with a 128pt
+The host menu shares that menu register and input owner, with a 128pt
 scrolling list and paging for additional attachments.
 It projects held provider contexts, including restored alias-backed peers,
 rather than inferring a connection from saved machine registrations. Selection

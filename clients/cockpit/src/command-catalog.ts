@@ -34,7 +34,7 @@ export const COMMAND_CATALOG: readonly CommandDefinition[] = [
   { index: 22, name: "window.minimize", label: utf8Bytes("Minimize"), shortcut: asciiBytes("Cmd+M") },
   { index: 23, name: "navigator.sessions", label: utf8Bytes("Sessions"), shortcut: asciiBytes("Cmd+K") },
   { index: 24, name: "navigator.machines", label: utf8Bytes("Machines"), shortcut: asciiBytes("Cmd+Shift+O") },
-  { index: 25, name: "navigator.windows", label: utf8Bytes("Show All Windows"), shortcut: asciiBytes("") },
+  { index: 25, name: "navigator.windows", label: utf8Bytes("Show All Windows"), shortcut: asciiBytes("Cmd+Shift+A") },
   { index: 26, name: "tabs.palette", label: utf8Bytes("Go to Terminal"), shortcut: asciiBytes("") },
   { index: 27, name: "directory.open", label: utf8Bytes("Go to Directory"), shortcut: asciiBytes("Cmd+Shift+J") },
   { index: 28, name: "path.insert", label: utf8Bytes("Insert Path"), shortcut: asciiBytes("Cmd+Shift+I") },

@@ -6,7 +6,7 @@
 <import src="cockpit-agents.native" />
 <import src="cockpit-chrome-recipes.native" />
 <import src="cockpit-connected-hosts.native" />
-<template name="cockpit-window" args="tabs rail width more cue menuopen status title detail emptyopen emptyname emptydetail emptypicked">
+<template name="cockpit-window" args="tabs rail width more cue menuopen status title detail location emptyopen emptyname emptydetail emptypicked">
   <stack>
     <column>
       <!-- Hidden-inset chrome: this header row is the window-drag surface.
@@ -42,14 +42,16 @@
             <if test="{more}"><stack width="32"><button size="sm" width="32" variant="ghost" label="Tabs not shown" on-press="palette_open">{cue}</button><tooltip anchor="below">Show hidden tabs</tooltip></stack></if>
           </tabs>
         </if>
-        <else><text grow="1" foreground="text_muted" overflow="ellipsis">{title}</text></else>
-        <use template="cockpit-connected-hosts" menuopen="{menuopen}" title="{title}" detail="{detail}" status="{status}" />
+        <!-- Side tabs leave the band to the window drag; the session and
+             machine live in the trailing location trigger in both modes. -->
+        <else><spacer grow="1" /></else>
+        <use template="cockpit-connected-hosts" menuopen="{menuopen}" title="{title}" detail="{detail}" location="{location}" status="{status}" />
         <stack width="32">
           <button size="sm" variant="ghost" icon="plus" label="New Tab" on-press="new_terminal" />
           <tooltip anchor="below">New tab</tooltip>
         </stack>
         <stack width="32">
-          <button size="sm" variant="ghost" icon="chevron-down" label="Workspace actions" selected="{menuopen and headerHosts == false}" on-press="header_menu_toggle" />
+          <button size="sm" variant="ghost" icon="ellipsis" label="Workspace actions" selected="{menuopen and headerHosts == false}" on-press="header_menu_toggle" />
           <tooltip anchor="below">Workspace actions</tooltip>
           <if test="{menuopen and headerHosts == false}">
             <dropdown-menu width="280" anchor="below" anchor-alignment="end" anchor-offset="8" on-dismiss="header_menu_close" label="Workspace actions">
@@ -58,11 +60,12 @@
                 <text foreground="text_muted" overflow="ellipsis">{detail}</text>
               </column>
               <separator />
-              <menu-item icon="folder" autofocus="true" on-press="header_sessions">Sessions</menu-item>
-              <menu-item icon="external-link" on-press="header_machines">Machines</menu-item>
+              <menu-item icon="folder" autofocus="true" on-press="header_sessions">Sessions…</menu-item>
+              <menu-item icon="external-link" on-press="header_machines">Machines…</menu-item>
               <menu-item icon="terminal" on-press="header_agents">Inspect agents</menu-item>
               <separator />
               <menu-item icon="external-link" on-press="header_new_window">New window</menu-item>
+              <menu-item icon="panel-right" on-press="header_windows">Show all windows…</menu-item>
               <if test="{tabPlacement == 'top'}"><menu-item icon="panel-left" on-press="header_tab_placement">Move tabs to side</menu-item></if>
               <else><menu-item icon="panel-left" on-press="header_tab_placement">Move tabs to top</menu-item></else>
               <separator />

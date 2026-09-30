@@ -177,10 +177,21 @@ fn encodeMetadata(model: anytype, target: Target, out: []u8, at: usize, labels: 
     const end = at + 3 + detail.len;
     if (end > out.len) return error.BufferTooSmall;
     out[at] = if (target.tab == null) 4 else 5;
-    out[at + 1] = @as(u8, @intFromBool(target.resolve(model) != null)) | (@as(u8, @intFromBool(target.window == model.active_window)) << 1);
+    out[at + 1] = @as(u8, @intFromBool(target.resolve(model) != null)) | (@as(u8, @intFromBool(current(model, target))) << 1);
     out[at + 2] = @intCast(detail.len);
     @memcpy(out[at + 3 ..][0..detail.len], detail);
     return end;
+}
+
+/// "Current" names where the person is: the focused window, and within it
+/// only the tab it is showing. Background windows' visible tabs are not
+/// current, and no tab is while the window shows web content.
+pub fn current(model: anytype, target: Target) bool {
+    if (target.window != model.active_window) return false;
+    const selected = target.resolve(model) orelse return false;
+    const tab = selected.tab orelse return true;
+    const ws = model.wsAtConst(target.window) orelse return false;
+    return !ws.web_selected and ws.selected_tab == tab;
 }
 
 pub fn display(text: []const u8, out: []u8) []const u8 {
@@ -247,6 +258,28 @@ test "empty minimized window activation raises exact identity even when already 
     model.window_epochs[1] += 1; // close and reopen the same SDK slot
     try std.testing.expect(!activate(&engine, target, .{}));
     try std.testing.expectEqual(@as(usize, 2), engine.calls);
+}
+
+test "current marks the focused window and only the tab it shows" {
+    var model: Fixture = .{};
+    const window: Target = .{ .window = 0, .epoch = 1 };
+    const shown: Target = .{ .window = 0, .epoch = 1, .tab = .{ .generation = 7, .id = 11 } };
+    const hidden: Target = .{ .window = 0, .epoch = 1, .tab = .{ .generation = 7, .id = 12 } };
+    const background: Target = .{ .window = 2, .epoch = 3, .tab = .{ .generation = 7, .id = 11 } };
+    try std.testing.expect(current(&model, window));
+    try std.testing.expect(current(&model, shown));
+    try std.testing.expect(!current(&model, hidden));
+    // A background window's visible tab is not where the person is.
+    try std.testing.expect(!current(&model, background));
+    try std.testing.expect(!current(&model, .{ .window = 2, .epoch = 3 }));
+    model.workspaces[0].selected_tab = 1;
+    try std.testing.expect(!current(&model, shown));
+    try std.testing.expect(current(&model, hidden));
+    model.workspaces[0].web_selected = true;
+    try std.testing.expect(!current(&model, hidden));
+    try std.testing.expect(current(&model, window));
+    // A stale identity is never current, even in the focused window.
+    try std.testing.expect(!current(&model, .{ .window = 0, .epoch = 9 }));
 }
 
 test "tab activation follows identity through reorder but refuses removed and replaced tabs" {

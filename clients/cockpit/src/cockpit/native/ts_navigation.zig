@@ -141,14 +141,51 @@ fn coordinatorLabel(model: *const Model, host: []const u8) []const u8 {
     return hostLabel(host);
 }
 
-/// The active coordinator's host group: the registered host's label, or
-/// "This Mac" once a peer makes the grouping visible. A keep-empty session
-/// with no windows reads "Empty session" (ADR-0105), never as broken.
+/// The active coordinator's machine: the registered host's label, else
+/// "This Mac". A session row always names where it runs, so a person never
+/// has to infer the machine from which coordinator happens to be active. A
+/// keep-empty session with no windows reads "Empty session" (ADR-0105).
 fn sessionDetail(model: *const Model, id: u32, out: []u8) []const u8 {
     const kind = if (activeSessionEmpty(model, id)) "Empty session" else "Phux session";
-    const host = remoteHost(model) orelse
-        (if (model.phuxPeerConst() != null) "This Mac" else return kind);
+    const host = remoteHost(model) orelse "This Mac";
     return std.fmt.bufPrint(out, "{s} · {s}", .{ kind, host }) catch kind;
+}
+
+/// The Phux session the focused window is showing: the selected tab's session
+/// on the coordinator that minted its terminal, or the window's picked empty
+/// session. Null for a local PTY, web content, or an unknown session.
+pub const ShownSession = struct { coordinator: support.ProviderId, id: u32 };
+
+pub fn shownSession(model: *const Model) ?ShownSession {
+    if (comptime !support.phux_enabled) return null;
+    const window = model.active_window;
+    const ws = model.wsAtConst(window) orelse return null;
+    if (ws.tab_count == 0) {
+        const pick = model.empty_pick orelse return null;
+        if (pick.window != window) return null;
+        return .{ .coordinator = pick.coordinator, .id = pick.session };
+    }
+    const ref = ws.focusedTerminalRef() orelse return null;
+    const remote = model.phuxForRefConst(ref) orelse return null;
+    const id = remote.terminalSession(ref) orelse return null;
+    return .{ .coordinator = remote.providerId(), .id = id };
+}
+
+/// Whether a session row names the session the focused window is showing.
+fn currentSession(model: *const Model, row: *const Row) bool {
+    if (row.is_host) return false;
+    const shown = shownSession(model) orelse return false;
+    return switch (row.entry) {
+        .session => |id| id == shown.id and activeCoordinator(model, shown.coordinator),
+        .peer_session => |target| target.id == shown.id and target.coordinator == shown.coordinator,
+        else => false,
+    };
+}
+
+fn activeCoordinator(model: *const Model, coordinator: support.ProviderId) bool {
+    if (comptime !support.phux_enabled) return false;
+    const remote = model.phuxConst() orelse return false;
+    return remote.providerId() == coordinator;
 }
 
 fn activeSessionEmpty(model: *const Model, id: u32) bool {
@@ -303,7 +340,8 @@ fn encodeMetadata(model: *const Model, row: *const Row, out: []u8, start: usize)
     const end = start + 3 + detail.len;
     if (end > out.len) return error.BufferTooSmall;
     out[start] = rowKind(row);
-    out[start + 1] = @intFromBool(selectable(model, row));
+    // Bit 1 marks the session the focused window is showing ("Current").
+    out[start + 1] = @as(u8, @intFromBool(selectable(model, row))) | (@as(u8, @intFromBool(currentSession(model, row))) << 1);
     out[start + 2] = @intCast(detail.len);
     @memcpy(out[start + 3 ..][0..detail.len], detail);
     return end;
@@ -671,4 +709,48 @@ test "navigation scoped requests preserve every raw host byte and reject malform
     try std.testing.expectError(error.InvalidRequest, encode(engine.model, 7, &request, &buffer));
     request[13] = 2;
     try std.testing.expectError(error.InvalidRequest, encode(engine.model, 7, &request, &buffer));
+}
+
+test "session rows name their machine and mark the session the focused window shows" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine_module = @import("ts_engine.zig");
+    const engine = try engine_module.Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const remote = try model_module.PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = "/navigation-current-unused" }, null, "navigation-current");
+    engine.model.phux_provider = remote;
+    for ([_]u32{ 41, 42 }) |id| {
+        try remote.host.sessions.append(std.testing.allocator, .{
+            .id = id,
+            .name = try std.fmt.allocPrint(std.testing.allocator, "work-{d}", .{id}),
+            .created_at_unix_secs = 0,
+            .window_count = 1,
+            .attached_client_count = 0,
+            .focused = false,
+        });
+    }
+    var detail: [1024]u8 = undefined;
+    const sessions = try collectPage(engine.model, .{ .scope = .sessions, .query = "", .offset = 0 });
+    try std.testing.expectEqual(@as(usize, 2), sessions.count);
+    // Assert absent first: the primary window shows a local PTY, no session.
+    try std.testing.expect(shownSession(engine.model) == null);
+    for (sessions.rows[0..sessions.count]) |*row| try std.testing.expect(!currentSession(engine.model, row));
+    try std.testing.expectEqualStrings("Phux session · This Mac", rowDetail(engine.model, &sessions.rows[1], &detail));
+
+    // Show session 42's terminal in the primary window's selected tab.
+    const ref = try testRemoteRef(900, "");
+    const workspace = @import("provider_contract").workspace;
+    remote.host.workspace_store.catalog = try std.testing.allocator.alloc(workspace.CatalogTerminal, 1);
+    remote.host.workspace_store.catalog[0] = .{ .terminal_ref = ref, .session_id = 42, .title = try workspace.Text.init("shell"), .cwd = try workspace.Text.init("/work") };
+    const ws = engine.model.wsAt(0).?;
+    const saved = ws.tabs[ws.selected_tab];
+    defer ws.tabs[ws.selected_tab] = saved;
+    ws.tabs[ws.selected_tab] = @import("../layout.zig").Tree.initLeaf(ref);
+    try std.testing.expectEqual(@as(u32, 42), (shownSession(engine.model) orelse return error.NoShownSession).id);
+    var marked: usize = 0;
+    for (sessions.rows[0..sessions.count]) |*row| {
+        const current = currentSession(engine.model, row);
+        try std.testing.expectEqual(row.entry.session == 42, current);
+        marked += @intFromBool(current);
+    }
+    try std.testing.expectEqual(@as(usize, 1), marked);
 }

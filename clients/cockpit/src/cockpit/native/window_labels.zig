@@ -42,17 +42,22 @@ pub const Labels = struct {
         return windows.display(tabTitle(model, ws, tab, &full), out);
     }
 
+    /// A window row summarizes what the window holds (its shown tab's session
+    /// and machine, and how many tabs); a tab row places itself (position,
+    /// owning window, session and machine). The tab's title is the row's
+    /// label, so the detail never repeats it.
     pub fn detail(_: Labels, model: *const Model, target: windows.Target, out: []u8) []const u8 {
         const ws = model.wsAtConst(target.window) orelse return "Window unavailable";
         if (ws.tab_count == 0) return emptyDetail(model, target.window, out);
         const selected = target.resolve(model) orelse return "Window unavailable";
-        const tab = selected.tab orelse ws.selected_tab;
-        var full: [1024]u8 = undefined;
-        var bounded: [48]u8 = undefined;
         var context_buffer: [70]u8 = undefined;
-        const title = windows.display(tabTitle(model, ws, tab, &full), &bounded);
+        const tab = selected.tab orelse {
+            const context = tabContext(model, ws, ws.selected_tab, &context_buffer);
+            const noun = if (ws.tab_count == 1) "tab" else "tabs";
+            return std.fmt.bufPrint(out, "{s} · {d} {s}", .{ context, ws.tab_count, noun }) catch "Open window";
+        };
         const context = tabContext(model, ws, tab, &context_buffer);
-        return std.fmt.bufPrint(out, "Window {d} · Tab {d} · {s} · {s}", .{ target.window + 1, tab + 1, context, title }) catch "Open window";
+        return std.fmt.bufPrint(out, "Tab {d} of {d} · Window {d} · {s}", .{ tab + 1, ws.tab_count, target.window + 1, context }) catch "Open tab";
     }
 };
 
