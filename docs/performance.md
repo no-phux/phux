@@ -324,19 +324,29 @@ socket API. The [native window screenshot](https://docs.phux.sh/benchmarks/2026-
 confirms the terminal displayed the probe output; it is not a timed GPU
 presentation receipt.
 
-### One native observation campaign
+### Four native observation campaigns
 
 **Do not add these numbers to the PTY charts above.** Both the host and the
-measurement boundary differ. This runner reported an Apple M1 (Virtual),
-7 GiB RAM, macOS 15.7.9 arm64, and starting load averages
-**9.71 / 11.69 / 8.43**. It was not demonstrated to be idle.
+measurement boundary differ. All four runners reported Apple M1 (Virtual),
+7 GiB RAM, and arm64. Each campaign completed 20 command probes with zero
+failures. The operating systems and starting load averages were:
 
-| Observation | Recorded result |
+- **A — macOS 15.7.9:** 9.71 / 11.69 / 8.43.
+- **B — macOS 27.0:** 4.13 / 3.12 / 7.05.
+- **C — macOS 27.0:** 11.87 / 15.43 / 9.25.
+- **D — macOS 27.0:** 4.45 / 1.63 / 1.03.
+
+None was demonstrated to be idle. B, C, and D used the repository's approved
+`xcode-27` runner after the initial `macos-15` experiment. The different OS and
+load prevent attributing the change to cmux itself. Each result cell is **A / B / C / D**:
+
+| Observation | A / B / C / D |
 |---|---|
-| Launch to first completed command | **4.853 s**, one launch |
-| Subsequent command observation | **184.8 ms median**, **245.2 ms maximum**; 20 completed commands, zero failures |
-| Main application RSS | **262,736 KiB** |
-| Captured process-tree RSS | **272,288 KiB** (265.9 MiB) |
+| Launch to first command, seconds | **4.853 / 6.534 / 9.265 / 8.067** |
+| Command observation median, ms | **184.8 / 148.4 / 199.4 / 191.8** |
+| Command observation maximum, ms | **245.2 / 571.9 / 1,276.4 / 1,025.4** |
+| Main application RSS, KiB | **262,736 / 223,136 / 228,976 / 228,400** |
+| Captured process-tree RSS, KiB | **272,288 / 235,056 / 240,464 / 240,640** |
 
 - **Startup boundary:** before `open -n` until a command's completion marker was
   returned by `read-screen`; includes application startup, CLI launches, and polling.
@@ -346,8 +356,8 @@ measurement boundary differ. This runner reported an Apple M1 (Virtual),
   shell. Excludes shared WindowServer, GPU allocations, and unattributed reparented
   helpers; shared pages may be counted twice.
 
-Twenty command observations do not justify a p99. One launch and one memory
-snapshot are not distributions. “Fresh runner” does not mean cold storage:
+Twenty command observations per campaign do not justify a p99. Each campaign has
+only one launch and one memory snapshot. “Fresh runner” does not mean cold storage:
 checksum, signature, and version inspection happened before launch.
 Neither the CLI timing nor the RSS sum measures the whole rendering pipeline
 or physical memory footprint. There is no corresponding phux native-client
@@ -360,20 +370,34 @@ socket policy. No global accessibility setting was changed.
 
 Retained evidence:
 
-- [All 20 observations, process rows, configuration, and runner metadata](https://docs.phux.sh/benchmarks/2026-09-30/cmux-ci/native-observations.json).
-- [Successful CI run](https://github.com/no-phux/phux/actions/runs/36685005009) and
-  [exact harness/workflow snapshot](https://github.com/no-phux/phux/tree/bench/cmux-docs-2026-09-30).
+- **A:** [samples and metadata](https://docs.phux.sh/benchmarks/2026-09-30/cmux-ci/native-observations.json),
+  [window](https://docs.phux.sh/benchmarks/2026-09-30/cmux-ci/native-window.png),
+  [source](https://github.com/no-phux/phux/tree/bench/cmux-docs-2026-09-30).
+- **B:** [samples and metadata](https://docs.phux.sh/benchmarks/2026-09-30/cmux-ci/macos27-a.json),
+  [window](https://docs.phux.sh/benchmarks/2026-09-30/cmux-ci/macos27-a.png),
+  [source](https://github.com/no-phux/phux/tree/bench/cmux-docs-2026-09-30-macos27-a).
+- **C:** [samples and metadata](https://docs.phux.sh/benchmarks/2026-09-30/cmux-ci/macos27-b.json),
+  [window](https://docs.phux.sh/benchmarks/2026-09-30/cmux-ci/macos27-b.png),
+  [source](https://github.com/no-phux/phux/tree/bench/cmux-docs-2026-09-30-macos27-b).
+- **D:** [samples and metadata](https://docs.phux.sh/benchmarks/2026-09-30/cmux-ci/macos27-c.json),
+  [window](https://docs.phux.sh/benchmarks/2026-09-30/cmux-ci/macos27-c.png),
+  [source](https://github.com/no-phux/phux/tree/bench/cmux-docs-2026-09-30-macos27-c).
 - Two unsuccessful setup attempts, not performance samples:
   [direct executable launch exited with signal 11](https://docs.phux.sh/benchmarks/2026-09-30/cmux-ci/direct-launch.json);
   [LaunchServices started the app, but its default socket policy rejected the external driver](https://docs.phux.sh/benchmarks/2026-09-30/cmux-ci/launchservices-default-policy.json).
-  The successful attempt used LaunchServices and the explicit automation policy.
+  The successful campaigns used LaunchServices and the explicit automation policy.
 
-To repeat the pinned experiment on a disposable runner, with repository Actions
-permission:
+Each record includes its CI run link and captured process rows. D's workflow
+was cancelled as a redundant automatic repeat, but its measurement and artifact
+upload had already succeeded. All 20 observations are retained rather than
+discarding the run because of its workflow status.
+
+To repeat the pinned macOS 27 experiment on a disposable runner, with repository
+Actions permission:
 
 ```sh
 gh workflow run docs-native-benchmark.yml \
-  --repo no-phux/phux --ref bench/cmux-docs-2026-09-30
+  --repo no-phux/phux --ref bench/cmux-docs-2026-09-30-macos27-b
 ```
 
 The workflow is manual-only on `main`; it is not an ongoing PR performance gate.

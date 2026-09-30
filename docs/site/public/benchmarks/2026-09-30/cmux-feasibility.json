@@ -15,8 +15,8 @@
   },
   "measurement_boundaries": {
     "pty_byte_echo": "Not applicable to native GUI; CLI command acknowledgement is not terminal rendering.",
-    "native_startup": "One LaunchServices invocation to a command completion marker returned by read-screen; includes CLI startup and polling, not a cold-cache boot.",
-    "native_memory": "Main-app and captured process-tree RSS recorded after 20 commands; excludes shared WindowServer, GPU allocations and unattributed helpers, may double-count shared pages, and is not physical footprint or server-only RSS.",
+    "native_startup": "One LaunchServices invocation per campaign to a command completion marker returned by read-screen; includes CLI startup and polling, not a cold-cache boot.",
+    "native_memory": "Main-app and captured process-tree RSS recorded after the command probes; excludes shared WindowServer, GPU allocations and unattributed helpers, may double-count shared pages, and is not physical footprint or server-only RSS.",
     "input_to_pixel": "Unmeasured: requires a presentation receipt or controlled visual instrumentation; no timing inferred from socket acknowledgement."
   },
   "isolation_review": {
@@ -31,6 +31,11 @@
     "result": "cmux-ci/native-observations.json",
     "screenshot": "cmux-ci/native-window.png",
     "preflight_attempts": ["cmux-ci/direct-launch.json", "cmux-ci/launchservices-default-policy.json"],
+    "macos27_repeats": [
+      {"result": "cmux-ci/macos27-a.json", "screenshot": "cmux-ci/macos27-a.png", "source": "https://github.com/no-phux/phux/tree/bench/cmux-docs-2026-09-30-macos27-a"},
+      {"result": "cmux-ci/macos27-b.json", "screenshot": "cmux-ci/macos27-b.png", "source": "https://github.com/no-phux/phux/tree/bench/cmux-docs-2026-09-30-macos27-b"},
+      {"result": "cmux-ci/macos27-c.json", "screenshot": "cmux-ci/macos27-c.png", "source": "https://github.com/no-phux/phux/tree/bench/cmux-docs-2026-09-30-macos27-c"}
+    ],
     "comparison_limit": "Different host and CLI-observation boundary from the phux/tmux/Herdr PTY campaign; no cross-product numerical ranking."
   },
   "sources": [
