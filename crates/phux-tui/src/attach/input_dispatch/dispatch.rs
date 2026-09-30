@@ -106,7 +106,6 @@ struct EventEnv<'a, 'c, W: crate::attach::RenderSink> {
     out: &'a mut W,
     conn: &'a mut Connection,
     focused_resource: &'a mut Option<ResourceId>,
-    detach_pending: &'a mut bool,
     predict: &'a mut PredictionState,
     panes: &'a mut HashMap<ResourceId, PaneSlot>,
     ctx: &'a mut DispatchCtx<'c>,
@@ -117,10 +116,6 @@ struct EventEnv<'a, 'c, W: crate::attach::RenderSink> {
 /// resolves runs its action and is not forwarded (tmux's prefix table).
 /// Predictions paint once per batch.
 #[allow(
-    clippy::too_many_arguments,
-    reason = "the driver owns each piece separately and lends them flat"
-)]
-#[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
@@ -129,9 +124,7 @@ pub(in crate::attach) async fn dispatch_input_events<W: crate::attach::RenderSin
     conn: &mut Connection,
     events: &mut Vec<InputEvent>,
     focused_resource: &mut Option<ResourceId>,
-    detach_pending: &mut bool,
     predict: &mut PredictionState,
-    overlay: &Overlay,
     panes: &mut HashMap<ResourceId, PaneSlot>,
     ctx: &mut DispatchCtx<'_>,
 ) -> Result<bool, AttachError> {
@@ -140,7 +133,6 @@ pub(in crate::attach) async fn dispatch_input_events<W: crate::attach::RenderSin
             out,
             conn,
             focused_resource,
-            detach_pending,
             predict,
             panes,
             ctx,
@@ -158,7 +150,7 @@ pub(in crate::attach) async fn dispatch_input_events<W: crate::attach::RenderSin
         // keystrokes produces a single positioned write run, not one per
         // event. The overlay is a no-op on an empty queue.
         if predicted_any {
-            env.paint_predictions(overlay);
+            env.paint_predictions();
         }
         layout_changed
     };
@@ -288,7 +280,6 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             self.conn,
             self.ctx,
             self.focused_resource,
-            self.detach_pending,
             self.predict,
             self.panes,
         )
@@ -539,7 +530,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
 
     /// Paint queued predictions at the focused pane's origin when the
     /// ADR-0090 display policy allows.
-    fn paint_predictions(&mut self, overlay: &Overlay) {
+    fn paint_predictions(&mut self) {
         if !self.predict.should_display(predict_now_ms()) {
             return;
         }
@@ -551,7 +542,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let origin = focused
             .and_then(|fid| self.panes.get(fid))
             .map_or((0, 0), |s| s.renderer.last_origin());
-        let _ = overlay.render(self.predict, origin, self.out);
+        let _ = Overlay.render(self.predict, origin, self.out);
         // The guesses now sit over the focused pane's cells; its
         // front buffer must not keep claiming what was there before them.
         if let Some(slot) = focused.and_then(|fid| self.panes.get_mut(fid)) {

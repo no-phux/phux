@@ -19,7 +19,7 @@ use crate::attach::pane_state::{AttachKernel, AttentionNavigation, PaneSlot, Vcs
 use crate::attach::plugin_actions::PluginActionEntry;
 use crate::attach::plugin_panes::PluginPaneEntry;
 use crate::layout::{SplitDir, Workspace};
-use crate::predict::{Overlay, PredictionState, PredictiveConfig};
+use crate::predict::{PredictionState, PredictiveConfig};
 use crate::render::chrome::sidebar::SidebarTargets;
 use crate::render::chrome::status_bar::{Position, StatusBarPainter};
 use crate::render::overlay::OverlayState;
@@ -79,10 +79,12 @@ pub(super) struct CtxFixture {
     pub(super) foreign_agents: HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
     pub(super) foreign_attention: HashSet<ResourceId>,
     pub(super) focused_session: Option<phux_protocol::ids::SessionId>,
+    pub(super) review: crate::attach::review::ReviewIndex,
     pub(super) session_name: String,
     pub(super) rename_pending: Option<PendingSessionRename>,
     pub(super) rename_notice: Option<String>,
     pub(super) switch_request: Option<ReattachTarget>,
+    pub(super) detach_pending: bool,
     pub(super) zoomed: Option<ResourceId>,
     pub(super) sidebar: Option<SidebarReservation>,
     pub(super) sidebar_enabled: bool,
@@ -133,10 +135,12 @@ impl Default for CtxFixture {
             foreign_agents: HashMap::new(),
             foreign_attention: HashSet::new(),
             focused_session: None,
+            review: crate::attach::review::ReviewIndex::new(),
             session_name: String::new(),
             rename_pending: None,
             rename_notice: None,
             switch_request: None,
+            detach_pending: false,
             zoomed: None,
             sidebar: None,
             sidebar_enabled: false,
@@ -187,17 +191,26 @@ impl CtxFixture {
             overlays: &mut self.overlays,
             keybindings: None,
             theme: &self.theme,
-            sessions: &self.sessions,
-            hosts: &self.hosts,
+            peers: crate::attach::sidebar_zones::PeerInputs {
+                serving_host: None,
+                origin: None,
+                remote_hosts: &[],
+                hosts: &self.hosts,
+                sessions: &self.sessions,
+                focused_session: self.focused_session,
+                windows: &[],
+                resources: &[],
+                foreign_layouts: &self.foreign_layouts,
+                foreign_agents: &self.foreign_agents,
+                foreign_attention: &self.foreign_attention,
+                review: &self.review,
+            },
             host_refresh_request: &mut self.host_refresh_request,
-            foreign_layouts: &self.foreign_layouts,
-            foreign_agents: &self.foreign_agents,
-            foreign_attention: &self.foreign_attention,
-            focused_session: self.focused_session,
             session_name: &mut self.session_name,
             rename_pending: &mut self.rename_pending,
             rename_notice: &mut self.rename_notice,
             switch_request: &mut self.switch_request,
+            detach_pending: &mut self.detach_pending,
             zoomed: &mut self.zoomed,
             sidebar: self.sidebar,
             sidebar_enabled: &mut self.sidebar_enabled,
@@ -250,7 +263,6 @@ impl CtxFixture {
                 &mut conn,
                 &mut ctx,
                 &mut None,
-                &mut false,
                 &mut predict,
                 &HashMap::new(),
             )
@@ -258,6 +270,8 @@ impl CtxFixture {
             .expect("apply effects");
         }
         drop(conn);
+        // Each applied batch starts with no detach in flight.
+        self.detach_pending = false;
         drain(Connection::from_stream(b)).await
     }
 }
@@ -338,7 +352,6 @@ impl Env<'_> {
     pub(super) async fn dispatch(&mut self, mut events: Vec<InputEvent>) -> Sent {
         let (a, b) = tokio::net::UnixStream::pair().expect("uds pair");
         let mut conn = Connection::from_stream(a);
-        let mut detach = false;
         let repainted = {
             let mut ctx = self.fx.ctx();
             ctx.resolver = self.resolver.as_mut();
@@ -349,9 +362,7 @@ impl Env<'_> {
                 &mut conn,
                 &mut events,
                 &mut self.focused,
-                &mut detach,
                 &mut self.predict,
-                &Overlay,
                 &mut self.panes,
                 &mut ctx,
             )
@@ -359,6 +370,8 @@ impl Env<'_> {
             .expect("dispatch")
         };
         drop(conn);
+        // Per batch, as the driver's flag is per attach: the next starts clear.
+        let detach = std::mem::take(&mut self.fx.detach_pending);
         Sent {
             frames: drain(Connection::from_stream(b)).await,
             detach,

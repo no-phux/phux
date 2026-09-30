@@ -11,6 +11,7 @@ use crate::attach::paint::SidebarReservation;
 use crate::attach::pane_state::AttentionNavigation;
 use crate::attach::plugin_actions::{PluginActionEntry, PluginRunResult};
 use crate::attach::plugin_panes::PluginPaneEntry;
+use crate::attach::sidebar_zones::PeerInputs;
 use crate::layout::{SplitDir, Workspace};
 use crate::render::overlay::OverlayState;
 use crate::render::{ChromeBreakpoints, Theme};
@@ -80,20 +81,12 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub keybindings: Option<&'a phux_config::KeybindingsCfg>,
     /// Chrome and overlay theme.
     pub theme: &'a Theme,
-    /// The server's session graph from the latest snapshot.
-    pub sessions: &'a [phux_protocol::wire::info::SessionInfo],
-    /// The federation host inventory (empty without host sessions).
-    pub hosts: &'a [phux_protocol::wire::info::HostInventory],
+    /// The peer-wide view: the server's session graph (and which session is
+    /// ours), the federation host inventory, and the peer layouts, agent
+    /// records, and asks the pickers and the fleet list.
+    pub peers: PeerInputs<'a>,
     /// Set when an action wants a fresher host inventory.
     pub host_refresh_request: &'a mut bool,
-    /// Peer sessions' persisted layouts, for one-step picker rows.
-    pub foreign_layouts: &'a HashMap<phux_protocol::ids::SessionId, Workspace>,
-    /// `phux.agent/v1` records of foreign panes, for the fleet.
-    pub foreign_agents: &'a HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
-    /// Satellite terminals whose mirrored asked flag is set (ADR-0136).
-    pub foreign_attention: &'a std::collections::HashSet<ResourceId>,
-    /// The attached session's id.
-    pub focused_session: Option<phux_protocol::ids::SessionId>,
     /// The attached session's name; changed only by a confirmed rename.
     pub session_name: &'a mut String,
     /// In-flight `rename-session` confirmation, parked by
@@ -106,6 +99,9 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub rename_notice: &'a mut Option<String>,
     /// Out-channel for a committed re-attach.
     pub switch_request: &'a mut Option<ReattachTarget>,
+    /// A `DETACH` is in flight; set by the first detach so a second is not
+    /// re-sent.
+    pub detach_pending: &'a mut bool,
     /// The driver's pane-zoom state.
     pub zoomed: &'a mut Option<ResourceId>,
     /// The active sidebar reservation, `None` when disabled.

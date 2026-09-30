@@ -324,6 +324,21 @@ pub struct SearchMatch {
     pub end: u64,
 }
 
+/// The most matches one search registers; each match holds two anchors.
+#[cfg(feature = "engine")]
+pub const SEARCH_MATCH_LIMIT: usize = 4096;
+
+/// One bounded search: its matches and whether a bound hid more.
+#[cfg(feature = "engine")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchResults {
+    /// Matches in document order.
+    pub matches: Vec<SearchMatch>,
+    /// The requested bound, [`SEARCH_MATCH_LIMIT`], or the replica's anchor
+    /// budget hid at least one more match.
+    pub truncated: bool,
+}
+
 /// Provider-owned pointer gesture input. Positions and geometry share units.
 #[cfg(feature = "engine")]
 #[derive(Debug, Clone, Copy)]
@@ -378,6 +393,10 @@ pub enum EngineError {
     /// The engine refused a render or a viewport operation.
     #[error("engine: {0}")]
     Engine(String),
+    /// A document-anchor handle no longer resolves: it was released, its
+    /// history row was evicted, or a new replica generation invalidated it.
+    #[error("engine: {0}")]
+    AnchorUnavailable(String),
 }
 
 /// The complete result of a bounded selection copy.
@@ -480,8 +499,11 @@ enum Query {
         ResourceId,
         String,
         bool,
-        Sender<Result<Vec<SearchMatch>, EngineError>>,
+        usize,
+        Sender<Result<SearchResults, EngineError>>,
     ),
+    #[cfg(feature = "engine")]
+    ClearSearch(ResourceId, Sender<Result<(), EngineError>>),
     #[cfg(feature = "engine")]
     Gesture(
         ResourceId,
@@ -770,14 +792,36 @@ impl EngineHandle {
         query: String,
         case_sensitive: bool,
     ) -> Result<Vec<SearchMatch>, EngineError> {
+        self.search_bounded(terminal_id, query, case_sensitive, SEARCH_MATCH_LIMIT)
+            .map(|found| found.matches)
+    }
+
+    /// [`Self::search`] returning at most `max_matches` (capped at
+    /// [`SEARCH_MATCH_LIMIT`]) and whether a bound hid more.
+    #[cfg(feature = "engine")]
+    pub fn search_bounded(
+        &self,
+        terminal_id: &ResourceId,
+        query: String,
+        case_sensitive: bool,
+        max_matches: usize,
+    ) -> Result<SearchResults, EngineError> {
         self.request(|reply| {
             Command::Query(Query::Search(
                 terminal_id.clone(),
                 query,
                 case_sensitive,
+                max_matches.min(SEARCH_MATCH_LIMIT),
                 reply,
             ))
         })?
+    }
+
+    /// Release the default view's search handles without moving its
+    /// viewport. Endpoints its active selection uses stay valid.
+    #[cfg(feature = "engine")]
+    pub fn clear_search(&self, terminal_id: &ResourceId) -> Result<(), EngineError> {
+        self.request(|reply| Command::Query(Query::ClearSearch(terminal_id.clone(), reply)))?
     }
 
     /// Apply one provider-owned selection gesture.

@@ -20,10 +20,10 @@ use std::time::Duration;
 
 use phux_client_core::engine::ghostty::GhosttyAdapter;
 use phux_client_core::history::HistoryCacheConfig;
-use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, SessionKernel};
+use phux_client_core::session::SessionKernel;
 use phux_protocol::ResourceKind;
 use phux_protocol::caps::ServerFeature;
-use phux_protocol::ids::{ClientId, ResourceId, SatelliteHost, SessionId};
+use phux_protocol::ids::{ClientId, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{
     AttachTarget, CONFIG_RELOAD_KEY, Command, CommandResult, CommandValue, FrameKind,
     SESSION_NAME_KEY, Scope,
@@ -47,29 +47,26 @@ use crate::attach::paint::{
     SidebarReservation, StatusBarPaint, content_rect, paint_chrome_in_place, paint_full_frame,
     sidebar_reservation,
 };
-use crate::attach::pane_state::{
-    AttentionNavigation, PaneSlot, VcsIndex, reanchor_predict_to_pane,
-};
+use crate::attach::pane_state::{AttentionNavigation, VcsIndex, reanchor_predict_to_pane};
 use crate::attach::plugin_actions::{self, PluginRunResult};
 use crate::attach::repaint::{PaintPacer, RepaintAccumulator, RepaintLevel};
-use crate::attach::server_frame::{AgentMetaIndex, FrameOutcome, handle_server_frame};
+use crate::attach::server_frame::{FrameEnv, FrameOutcome, handle_server_frame};
+use crate::attach::session_mirror::SessionMirror;
 use crate::attach::tty_input::TtyInput;
-use crate::layout::Workspace;
-use crate::predict::{Overlay, PredictionState, PredictiveConfig};
+use crate::predict::{PredictionState, PredictiveConfig};
 use crate::render::chrome::sidebar::SidebarPainter;
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
 use crate::render::overlay::{OverlayState, ToastOverlay};
 use crate::settings::TuiSettings;
-use phux_client::agent_meta::AgentRecord;
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
 use super::chrome::{mark_focused_seen, refresh_window_chrome};
 
 use super::config_ui::{
-    apply_initial_notice, handle_config_reload, push_which_key_overlay, update_which_key_deadline,
+    adopt_config_reload, apply_initial_notice, push_which_key_overlay, update_which_key_deadline,
 };
 use super::entry::{
-    CarriedSidebar, LoopExit, detached_loop_exit, finish_onboarding_claim,
+    CarriedSidebar, EntryPick, LoopExit, detached_loop_exit, finish_onboarding_claim,
     finish_return_onboarding_after_paint, seed_sidebar_enabled,
 };
 use super::main_loop::{
@@ -80,10 +77,7 @@ use super::session_io::{
     send_attach, send_terminal_replies, send_unless_peer_gone, should_emit_frame_ack,
     take_terminal_replies,
 };
-use super::subscriptions::{
-    apply_foreign_agent_reply, apply_foreign_layout_reply, prune_foreign_agents,
-    sync_agent_meta_subscriptions, sync_foreign_agent_ids, sync_foreign_layout_subscriptions,
-};
+use super::subscriptions::{PeerWatch, sync_agent_meta_subscriptions};
 use super::terminal::{
     desired_mouse_capture, sync_hover_tracking, sync_mouse_capture, terminal_reset_on_signal,
 };
@@ -249,100 +243,6 @@ enum FrameStep {
     Exit(LoopExit),
 }
 
-/// The peer-session caches the roster, the window picker, and the
-/// The peer-session caches the roster, window picker, and fleet dashboard
-/// project from. Written by the same peer sweep, reset together.
-#[derive(Default)]
-struct PeerCaches {
-    /// Identity of the serving machine, read once through the whoami key.
-    serving_host: Option<String>,
-    serving_host_pending: Option<u32>,
-    serving_host_attempted: bool,
-    /// Rebuild the sidebar projection once at the burst drain.
-    chrome_dirty: bool,
-    /// ADR-0140: which machine this process attached to, when the CLI
-    /// recorded one. `None` runs no hosts provider.
-    origin: Option<crate::attach::hosts::AttachOrigin>,
-    /// ADR-0140: the hosts provider's latest `phux.hosts/v1` rows. The
-    /// attached machine's row is filtered out at projection time.
-    remote_hosts: Vec<phux_core::host_list::HostJson>,
-    /// phux-4li.20: cache of the server's session graph, refreshed from
-    /// every ATTACHED snapshot. The `<leader> a` session picker reads
-    /// this to list peer sessions; `focused_session` marks the row the
-    /// client is currently attached to (excluded from the picker).
-    sessions: Vec<phux_protocol::wire::info::SessionInfo>,
-    /// Windows from the same graph; the sidebar falls back to these when a
-    /// peer has no persisted TUI layout.
-    windows: Vec<phux_protocol::wire::info::WindowInfo>,
-    /// Resources from the same graph, joined via `ResourceInfo::window_id`.
-    resources: Vec<phux_protocol::wire::info::ResourceInfo>,
-    /// The session this client is attached to, once ATTACHED has named it.
-    focused_session: Option<SessionId>,
-    /// Peer sessions' persisted layouts (one `GET_METADATA` per peer), for
-    /// one-step cross-session window rows in the picker.
-    foreign_layouts: HashMap<SessionId, Workspace>,
-    /// In-flight peer-layout GETs, by request id.
-    foreign_layout_pending: HashMap<u32, SessionId>,
-    /// `phux.agent/v1` records of foreign panes, so the fleet dashboard and
-    /// Agents list show peer agents without attaching. Pruned to the live
-    /// foreign terminal set on each fold.
-    foreign_agents: HashMap<ResourceId, AgentRecord>,
-    /// In-flight foreign agent-record GETs, by request id.
-    foreign_agent_pending: HashMap<u32, ResourceId>,
-    /// In-flight `phux.agent.asked/v1` GETs for satellite terminals, kept
-    /// apart so the byte `1` is not parsed as an agent record.
-    foreign_asked_pending: HashMap<u32, ResourceId>,
-    /// Peer layout keys already subscribed. L3 has no unsubscribe, so a
-    /// subscription lives as long as the connection.
-    foreign_layout_subscribed: HashSet<SessionId>,
-    /// The per-pane half of the same send-once bookkeeping.
-    foreign_agent_subscribed: HashSet<ResourceId>,
-    /// The federation host inventory from the latest `GET_STATE`: one row per
-    /// satellite, with its sessions or why it could not be listed. Empty
-    /// without `ServerFeature::HostSessions`.
-    hosts: Vec<phux_protocol::wire::info::HostInventory>,
-    /// The request id of the in-flight host-inventory `GET_STATE`, if any.
-    hosts_pending: Option<u32>,
-    /// When that request was sent, bounding how long notices are held.
-    hosts_pending_since: Option<std::time::Instant>,
-    /// `SatelliteUnreachable` notices that arrived while the inventory was in
-    /// flight. The reply drops only the ones it explains
-    /// ([`unexplained_unreachable_notices`]); a refusal or missed deadline
-    /// surfaces all of them.
-    held_unreachable: Vec<String>,
-    /// Peer panes whose agent asked for a human; a foreign pane has no
-    /// `PaneSlot::attention` to carry the flag.
-    foreign_attention: HashSet<ResourceId>,
-    /// The peer sweep waits for the first paint: set at construction and
-    /// consumed at the first frame-burst drain, so a bootstrap (including a
-    /// session switch, which drops all subscriptions) does not queue peer
-    /// GET/SUBSCRIBE traffic ahead of the snapshot burst that paints.
-    sweep_pending: bool,
-}
-
-impl PeerCaches {
-    /// The peer-wide projection the sidebar strip renders from.
-    fn inputs<'a>(
-        &'a self,
-        review: &'a crate::attach::review::ReviewIndex,
-    ) -> crate::attach::sidebar_zones::PeerInputs<'a> {
-        crate::attach::sidebar_zones::PeerInputs {
-            serving_host: self.serving_host.as_deref(),
-            origin: self.origin.as_ref(),
-            remote_hosts: &self.remote_hosts,
-            hosts: &self.hosts,
-            sessions: &self.sessions,
-            focused_session: self.focused_session,
-            windows: &self.windows,
-            resources: &self.resources,
-            foreign_layouts: &self.foreign_layouts,
-            foreign_agents: &self.foreign_agents,
-            foreign_attention: &self.foreign_attention,
-            review,
-        }
-    }
-}
-
 /// A `sleep_until` future for an armed deadline, or a never-resolving one.
 fn sleep_until_or_pending(
     deadline: Option<tokio::time::Instant>,
@@ -467,24 +367,14 @@ pub(super) struct SessionLoop {
     /// A QUIC stream is never bound before the server registers membership.
     pending_stream_binds: HashMap<u32, ResourceId>,
 
-    /// The client-side terminal engine every pane's replica lives in.
-    engine_kernel: SessionKernel<GhosttyAdapter>,
-    /// Scratch buffer the kernel drains its effects into.
-    kernel_effects: KernelEffectBuffer,
-    /// The per-pane mirrors, keyed by `ResourceId`.
-    panes: HashMap<ResourceId, PaneSlot>,
-    /// Source of truth for which leaves are live and where they sit.
-    workspace: Workspace,
-    /// The pane keystrokes route to.
-    focused_resource: Option<ResourceId>,
+    /// The attached session as this client mirrors it: the kernel, pane
+    /// slots, layout, focus, and the frame-correlated bookkeeping.
+    mirror: SessionMirror,
     /// One-entry focus MRU, deliberately outside Workspace so focus history
     /// never persists (ADR-0019).
     focus_history: crate::attach::focus::FocusHistory,
     /// This client's `ClientId` from ATTACHED, for the supervisory badge.
     own_client_id: Option<ClientId>,
-    /// Zoomed pane: render/reflow use `workspace.render_window(zoomed)`
-    /// while the real tree stays untouched.
-    zoomed: Option<ResourceId>,
     /// The in-flight layout GET's request id.
     layout_get_request_id: Option<u32>,
     /// Shared writes remain fenced until the initial correlated GET succeeds.
@@ -495,11 +385,6 @@ pub(super) struct SessionLoop {
     bootstrap_outbound: Option<bool>,
     /// Request-id allocator for L3 GET correlation.
     next_request_id: u32,
-    /// In-flight `split-pane` spawns parked by request id until
-    /// `ResourceSpawned` arrives.
-    pending_splits: HashMap<u32, PendingSplit>,
-    /// In-flight `new-window` spawns, same lifecycle as `pending_splits`.
-    pending_windows: HashMap<u32, PendingWindow>,
     /// Kills in flight for spawned satellite panes whose attach was refused.
     orphan_kills: super::orphans::OrphanKills,
     /// Per-identity review status; survives session switches.
@@ -510,15 +395,6 @@ pub(super) struct SessionLoop {
     /// The `LIST_DIRECTORY` the directory picker is waiting on, with the host
     /// it reads; a reply with any other id is stale and dropped.
     pending_directory: Option<crate::attach::directory_picker::PendingDirectory>,
-    /// Terminals whose close this client requested; their `ResourceClosed`
-    /// raises no pane-exit notice.
-    expected_closes: HashSet<ResourceId>,
-    /// `request_id` -> Terminal for commands whose `TERMINAL_NOT_FOUND`
-    /// refusal is the only evidence a stale leaf should leave the layout.
-    pending_resource_ops: HashMap<u32, ResourceId>,
-    /// ADR-0040 agent-identity index (`phux.agent/v1` per pane), feeding the
-    /// window labels; the OSC title is the fallback.
-    agent_meta: AgentMetaIndex,
     /// Pane cwd + branch memo behind the sidebar's branch line.
     vcs: VcsIndex,
     /// Everything derived from the config file; the reloadable subset is
@@ -564,30 +440,18 @@ pub(super) struct SessionLoop {
     /// Host per-cell pixel size for `INPUT_MOUSE` pixel scaling, refreshed
     /// with `viewport_dims`.
     cell_px_dims: (u16, u16),
-    /// The attached session's name, from ATTACHED and confirmed rename broadcasts.
-    session_name: String,
     /// In-flight `rename-session` waiting on its `GET_STATE` barrier.
     rename_pending: Option<PendingSessionRename>,
     /// A rename refused by the shared policy before a write was sent.
     /// Drained onto the status bar at the end of the input batch.
     rename_notice: Option<String>,
-    /// ADR-0105: whether the attached session is keep-empty, from ATTACHED
-    /// and `phux.session.keep_empty/v1` broadcasts.
-    keep_empty_session: bool,
     /// The peer-session caches the roster and window picker read.
-    peers: PeerCaches,
-    /// Deferred window select of a one-step cross-session pick.
-    pending_window: Option<usize>,
-    /// Leaf ordinal focused after that window select resolves.
-    pending_pane: Option<usize>,
-    /// Pane focused after re-attach, even without a persisted layout.
-    pending_resource: Option<ResourceId>,
+    peers: PeerWatch,
+    /// A one-step cross-session pick, resolved once the layout lands (the
+    /// resource even without a persisted layout).
+    pick: EntryPick,
     /// The outer terminal's key/mouse decoder.
     parser: StdinParser,
-    /// Predictive local echo; inert when disabled.
-    predict: PredictionState,
-    /// The predictive-echo overlay renderer.
-    overlay: Overlay,
     /// The outer terminal's stdin (see [`crate::attach::tty_input`]).
     stdin: TtyInput,
     /// One read's worth of stdin bytes.
@@ -674,7 +538,6 @@ impl SessionLoop {
     /// `carried_sidebar` is the sidebar state carried by a `switch-session`.
     #[allow(
         clippy::too_many_lines,
-        clippy::too_many_arguments,
         reason = "single constructor keeps all session-loop ownership visible"
     )]
     pub(super) fn new(
@@ -682,9 +545,7 @@ impl SessionLoop {
         predict_cfg: PredictiveConfig,
         wants_state_sync: bool,
         onboarding_claim: Option<AttachClaim>,
-        initial_window: Option<usize>,
-        initial_pane: Option<usize>,
-        initial_resource: Option<ResourceId>,
+        initial_pick: EntryPick,
         carried_sidebar: Option<CarriedSidebar>,
     ) -> Result<Self, AttachError> {
         let history_config = HistoryCacheConfig {
@@ -732,31 +593,24 @@ impl SessionLoop {
             wants_state_sync,
             pending_attach_ready: None,
             pending_stream_binds: HashMap::new(),
-            engine_kernel: SessionKernel::with_history_config(
-                GhosttyAdapter::new(negotiated.limits),
-                negotiated.profile,
-                history_config,
+            mirror: SessionMirror::new(
+                SessionKernel::with_history_config(
+                    GhosttyAdapter::new(negotiated.limits),
+                    negotiated.profile,
+                    history_config,
+                ),
+                PredictionState::new(predict_cfg, 80, 24),
             ),
-            kernel_effects: KernelEffectBuffer::new(),
-            panes: HashMap::new(),
-            workspace: Workspace::default(),
-            focused_resource: None,
             focus_history: crate::attach::focus::FocusHistory::default(),
             own_client_id: None,
-            zoomed: None,
             layout_get_request_id: None,
             layout_read_complete: false,
             bootstrap_outbound: None,
             next_request_id: 1,
-            pending_splits: HashMap::new(),
-            pending_windows: HashMap::new(),
             orphan_kills,
             review: crate::attach::review::ReviewIndex::new(),
             conditional_kill_supported,
             pending_directory: None,
-            expected_closes: HashSet::new(),
-            pending_resource_ops: HashMap::new(),
-            agent_meta: AgentMetaIndex::default(),
             vcs: VcsIndex::default(),
             sidebar_painter: SidebarPainter::new(settings.theme),
             plugin_tx,
@@ -776,11 +630,9 @@ impl SessionLoop {
             ),
             viewport_dims,
             cell_px_dims,
-            session_name: String::new(),
             rename_pending: None,
             rename_notice: None,
-            keep_empty_session: false,
-            peers: PeerCaches {
+            peers: PeerWatch {
                 sweep_pending: true,
                 remote_hosts: if origin.is_some() {
                     crate::attach::hosts::last_known()
@@ -788,14 +640,10 @@ impl SessionLoop {
                     Vec::new()
                 },
                 origin,
-                ..PeerCaches::default()
+                ..PeerWatch::default()
             },
-            pending_window: initial_window,
-            pending_pane: initial_pane,
-            pending_resource: initial_resource,
+            pick: initial_pick,
             parser: StdinParser::new(),
-            predict: PredictionState::new(predict_cfg, 80, 24),
-            overlay: Overlay,
             stdin: TtyInput::open(),
             stdin_buf: [0u8; 4096],
             input_events: Vec::new(),
@@ -852,32 +700,10 @@ impl SessionLoop {
 
     /// The single chrome-refresh chokepoint, with this driver's inputs bound.
     fn refresh_chrome(&mut self) -> bool {
-        let rows = crate::attach::agent_rows::agent_session_rows(&self.engine_kernel);
+        let rows = crate::attach::agent_rows::agent_session_rows(&self.mirror.engine_kernel);
         self.review
-            .observe_streams(&rows, self.focused_resource.as_ref());
-        let sidebar = self.sidebar();
-        let mut chrome = ChromeCtx::new(
-            &mut self.settings,
-            &mut self.sidebar_painter,
-            &self.session_name,
-            self.viewport_dims,
-            sidebar,
-        );
-        let scene = PaneScene {
-            workspace: &self.workspace,
-            panes: &self.panes,
-            focused: self.focused_resource.as_ref(),
-            zoomed: self.zoomed.as_ref(),
-        };
-        let mut changed = refresh_window_chrome(
-            &mut chrome,
-            scene,
-            self.own_client_id,
-            &self.agent_meta,
-            &mut self.vcs,
-            &rows,
-            self.peers.inputs(&self.review),
-        );
+            .observe_streams(&rows, self.mirror.focused_resource.as_ref());
+        let mut changed = self.project_window_chrome(self.sidebar(), &rows);
         let (tab_drop, sidebar_drop) = self.drag.as_ref().map_or((None, None), |drag| {
             (drag.tab_drop_at(), drag.sidebar_drop_at())
         });
@@ -886,6 +712,37 @@ impl SessionLoop {
         }
         changed |= self.sidebar_painter.set_drop_index(sidebar_drop);
         changed
+    }
+
+    /// Project the window tabs, agent rows, and peer zones into the chrome
+    /// painters; true when any painter input changed.
+    fn project_window_chrome(
+        &mut self,
+        sidebar: Option<SidebarReservation>,
+        rows: &crate::attach::agent_rows::AgentSessionRows,
+    ) -> bool {
+        let mut chrome = ChromeCtx::new(
+            &mut self.settings,
+            &mut self.sidebar_painter,
+            &self.mirror.session_name,
+            self.viewport_dims,
+            sidebar,
+        );
+        let scene = PaneScene {
+            workspace: &self.mirror.workspace,
+            panes: &self.mirror.panes,
+            focused: self.mirror.focused_resource.as_ref(),
+            zoomed: self.mirror.zoomed.as_ref(),
+        };
+        refresh_window_chrome(
+            &mut chrome,
+            scene,
+            self.own_client_id,
+            &self.mirror.agent_meta,
+            &mut self.vcs,
+            rows,
+            self.peers.inputs(&self.review),
+        )
     }
 
     /// Commit attach onboarding once its notice has reached the render sink.
@@ -924,27 +781,31 @@ impl SessionLoop {
         sidebar: Option<SidebarReservation>,
         level: RepaintLevel,
     ) -> Option<StatusBarPaint> {
-        let Some(ls) = self.workspace.render_window(self.zoomed.as_ref()) else {
+        let Some(ls) = self
+            .mirror
+            .workspace
+            .render_window(self.mirror.zoomed.as_ref())
+        else {
             return self.paint_empty_state(out, sidebar, level);
         };
         let mut chrome = ChromeCtx::new(
             &mut self.settings,
             &mut self.sidebar_painter,
-            &self.session_name,
+            &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
         );
-        let focused = self.focused_resource.as_ref();
+        let focused = self.mirror.focused_resource.as_ref();
         Some(match level {
             RepaintLevel::None => StatusBarPaint::NotPublished,
             RepaintLevel::Chrome => {
-                paint_chrome_in_place(out, ls.as_ref(), &self.panes, focused, &mut chrome)
+                paint_chrome_in_place(out, ls.as_ref(), &self.mirror.panes, focused, &mut chrome)
             }
             RepaintLevel::Full => paint_full_frame(
                 out,
                 ls.as_ref(),
-                &mut self.panes,
-                &self.engine_kernel,
+                &mut self.mirror.panes,
+                &self.mirror.engine_kernel,
                 focused,
                 &mut chrome,
             ),
@@ -958,7 +819,7 @@ impl SessionLoop {
         sidebar: Option<SidebarReservation>,
         level: RepaintLevel,
     ) -> Option<StatusBarPaint> {
-        let showing = self.keep_empty_session && self.workspace.windows.is_empty();
+        let showing = self.mirror.keep_empty_session && self.mirror.workspace.windows.is_empty();
         if !showing || matches!(level, RepaintLevel::None) {
             return None;
         }
@@ -974,7 +835,7 @@ impl SessionLoop {
         let mut chrome = ChromeCtx::new(
             &mut self.settings,
             &mut self.sidebar_painter,
-            &self.session_name,
+            &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
         );
@@ -1002,11 +863,14 @@ impl SessionLoop {
         out: &mut W,
         sidebar: Option<SidebarReservation>,
     ) -> StatusBarPaint {
-        let base = self.workspace.render_window(self.zoomed.as_ref());
+        let base = self
+            .mirror
+            .workspace
+            .render_window(self.mirror.zoomed.as_ref());
         let mut chrome = ChromeCtx::new(
             &mut self.settings,
             &mut self.sidebar_painter,
-            &self.session_name,
+            &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
         );
@@ -1014,9 +878,9 @@ impl SessionLoop {
             out,
             &self.overlays,
             base.as_deref(),
-            &mut self.panes,
-            &self.engine_kernel,
-            self.focused_resource.as_ref(),
+            &mut self.mirror.panes,
+            &self.mirror.engine_kernel,
+            self.mirror.focused_resource.as_ref(),
             &mut chrome,
         )
     }
@@ -1074,24 +938,33 @@ impl SessionLoop {
         out: &mut W,
         sidebar: Option<SidebarReservation>,
     ) {
-        let painted = handle_config_reload(
-            out,
+        let reloaded = adopt_config_reload(
             &mut self.settings,
-            &mut self.sidebar_painter,
             &mut self.overlays,
-            &self.workspace,
-            &mut self.panes,
-            &self.engine_kernel,
-            self.focused_resource.as_ref(),
-            self.zoomed.as_ref(),
-            self.own_client_id,
-            &self.agent_meta,
-            &mut self.vcs,
-            self.peers.inputs(&self.review),
-            self.viewport_dims,
-            sidebar,
-            &self.session_name,
+            &mut self.sidebar_painter,
+            &phux_config::loader::config_path(),
         );
+        if reloaded {
+            // A reload rebuilds the sidebar painter cache-cold, so the
+            // cross-session zones must be re-projected with it or the strip
+            // comes back with an empty queue and roster until the next push.
+            let rows = crate::attach::agent_rows::agent_session_rows(&self.mirror.engine_kernel);
+            self.project_window_chrome(sidebar, &rows);
+        }
+        let has_window = self
+            .mirror
+            .workspace
+            .render_window(self.mirror.zoomed.as_ref())
+            .is_some();
+        // A failed reload always leaves its toast on top.
+        let painted = if self.overlays.is_active() {
+            self.paint_overlay_layer(out, sidebar)
+        } else if reloaded && has_window {
+            self.paint_view(out, sidebar, RepaintLevel::Full)
+                .unwrap_or(StatusBarPaint::NotPublished)
+        } else {
+            StatusBarPaint::NotPublished
+        };
         self.finish_paint(painted);
     }
 
@@ -1100,8 +973,8 @@ impl SessionLoop {
     async fn sync_agent_meta(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
         sync_agent_meta_subscriptions(
             conn,
-            self.panes.keys().cloned().collect(),
-            &mut self.agent_meta,
+            self.mirror.panes.keys().cloned().collect(),
+            &mut self.mirror.agent_meta,
             &mut self.next_request_id,
         )
         .await
@@ -1111,15 +984,9 @@ impl SessionLoop {
     /// picker's one-step rows and the live roster), then the peer agent
     /// records, serving host, and host inventory. Fire-and-forget.
     async fn sweep_peer_layouts(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
-        sync_foreign_layout_subscriptions(
-            conn,
-            &self.peers.sessions,
-            self.peers.focused_session,
-            &mut self.next_request_id,
-            &mut self.peers.foreign_layout_pending,
-            &mut self.peers.foreign_layout_subscribed,
-        )
-        .await?;
+        self.peers
+            .sweep_layouts(conn, &mut self.next_request_id)
+            .await?;
         // Agent watches must not wait for a persisted TUI layout.
         self.reconcile_peer_agents(conn).await?;
         // The fleet's other half. Rides the same deferred
@@ -1297,7 +1164,7 @@ impl SessionLoop {
                         })
                         .collect();
                     if let Some(info) = snapshot.sessions.iter().find(|session| session.id == id) {
-                        self.session_name.clone_from(&info.name);
+                        self.mirror.session_name.clone_from(&info.name);
                     }
                     if let Some(reason) =
                         phux_client::rename::barrier_verdict(&roster, id, &pending.new_name)
@@ -1363,32 +1230,16 @@ impl SessionLoop {
             FrameKind::ResourceClosed { terminal_id, .. } => Some(terminal_id.clone()),
             _ => None,
         };
-        let mut outcome = handle_server_frame(
-            &mut self.engine_kernel,
-            &mut self.kernel_effects,
-            out,
-            frame,
-            &mut self.panes,
-            &mut self.workspace,
-            &mut self.focused_resource,
-            &mut self.zoomed,
-            &mut self.session_name,
-            &mut self.keep_empty_session,
-            self.peers.focused_session,
-            self.settings.status_bar.as_mut(),
+        let env = FrameEnv {
+            focused_session: self.peers.focused_session,
+            status_bar: self.settings.status_bar.as_mut(),
             sidebar,
-            self.viewport_dims,
-            &mut self.predict,
-            &self.overlay,
-            self.layout_get_request_id,
-            &mut self.pending_splits,
-            &mut self.pending_windows,
-            &mut self.expected_closes,
-            &mut self.pending_resource_ops,
-            &mut self.agent_meta,
-            self.overlays.is_active(),
+            viewport_dims: self.viewport_dims,
+            pending_layout_request: self.layout_get_request_id,
+            overlay_active: self.overlays.is_active(),
             defer_paint,
-        )?;
+        };
+        let mut outcome = handle_server_frame(&mut self.mirror, env, out, frame)?;
         for terminal_id in &outcome.authoritative_damage {
             let fenced = self
                 .input_replay
@@ -1490,8 +1341,8 @@ impl SessionLoop {
     ) -> Result<(), AttachError> {
         emit_view_reflow(
             conn,
-            &self.workspace,
-            self.zoomed.as_ref(),
+            &self.mirror.workspace,
+            self.mirror.zoomed.as_ref(),
             &HashMap::new(),
             self.content(sidebar),
         )
@@ -1688,14 +1539,15 @@ impl SessionLoop {
         // Capture follows focus. Closed panes are pruned so a
         // recycled ResourceId can never inherit a stale opt-out.
         if !self.mouse_optout.is_empty() {
-            self.mouse_optout.retain(|id| self.panes.contains_key(id));
+            self.mouse_optout
+                .retain(|id| self.mirror.panes.contains_key(id));
         }
         self.settle_focus_seen(out, sidebar);
         // Re-derive outer mouse tracking from the focused pane's opt-out every
         // iteration; a no-op when nothing changed.
         let want_capture = desired_mouse_capture(
             self.settings.mouse_capture,
-            self.focused_resource.as_ref(),
+            self.mirror.focused_resource.as_ref(),
             &self.mouse_optout,
         );
         sync_mouse_capture(out, want_capture).map_err(AttachError::Io)?;
@@ -1715,9 +1567,9 @@ impl SessionLoop {
         sidebar: Option<SidebarReservation>,
     ) {
         if !mark_focused_seen(
-            &mut self.panes,
+            &mut self.mirror.panes,
             &mut self.review,
-            self.focused_resource.as_ref(),
+            self.mirror.focused_resource.as_ref(),
         ) {
             return;
         }
@@ -1738,7 +1590,7 @@ impl SessionLoop {
         }
         // The writer dropped bytes the renderers believe landed,
         // so no front buffer describes the screen any more.
-        crate::attach::pane_state::invalidate_all_fronts(&mut self.panes);
+        crate::attach::pane_state::invalidate_all_fronts(&mut self.mirror.panes);
         if self.overlays.is_active() {
             self.paint_overlay(out, sidebar);
         } else {
@@ -1786,7 +1638,8 @@ impl SessionLoop {
         // The pacer's settle deadline, armed only while a paint is owed.
         let paint_sleep = sleep_until_or_pending(self.pacer.deadline());
         let sync_output_sleep = sleep_until_or_pending(
-            self.panes
+            self.mirror
+                .panes
                 .values()
                 .filter_map(|slot| slot.sync_output_since)
                 .map(|since| since + SYNC_OUTPUT_WATCHDOG)
@@ -1930,10 +1783,10 @@ impl SessionLoop {
         // the pane focus landed on.
         let expects_reply = events.iter().any(input_expects_a_reply);
         // Pre-dispatch view, so zoom and sidebar toggles can reflow PTYs.
-        let prev_zoomed = self.zoomed.clone();
+        let prev_zoomed = self.mirror.zoomed.clone();
         let prev_sidebar = sidebar;
         let prev_view_rects = view_rects(
-            &self.workspace,
+            &self.mirror.workspace,
             prev_zoomed.as_ref(),
             self.content(sidebar),
             self.viewport_dims,
@@ -1949,8 +1802,10 @@ impl SessionLoop {
         // Reply grace keyed to the focused pane only, so a flood elsewhere
         // stays paced. Cleared by time, never by a paint.
         if expects_reply {
-            self.pacer
-                .note_input(self.focused_resource.as_ref(), tokio::time::Instant::now());
+            self.pacer.note_input(
+                self.mirror.focused_resource.as_ref(),
+                tokio::time::Instant::now(),
+            );
         }
         // A `toggle-sidebar` in this batch takes effect this iteration.
         let sidebar = self.sidebar();
@@ -1968,11 +1823,11 @@ impl SessionLoop {
             }));
         }
         // Resize PTYs only when client-local geometry (zoom, sidebar) changed.
-        if self.zoomed != prev_zoomed || sidebar != prev_sidebar {
+        if self.mirror.zoomed != prev_zoomed || sidebar != prev_sidebar {
             emit_view_reflow(
                 conn,
-                &self.workspace,
-                self.zoomed.as_ref(),
+                &self.mirror.workspace,
+                self.mirror.zoomed.as_ref(),
                 &prev_view_rects,
                 self.content(sidebar),
             )
@@ -2030,36 +1885,32 @@ impl SessionLoop {
         };
         let mut ctx = DispatchCtx {
             control_dial: self.control_dial.as_deref(),
-            engine_kernel: &mut self.engine_kernel,
+            engine_kernel: &mut self.mirror.engine_kernel,
             resolver: self.settings.resolver.as_mut(),
             focus_history: self.focus_history.clone(),
-            workspace: &mut self.workspace,
+            workspace: &mut self.mirror.workspace,
             layout_read_complete: self.layout_read_complete,
             viewport: self.viewport_dims,
             cell_px: self.cell_px_dims,
             next_request_id: &mut self.next_request_id,
             spawn_initial_size_supported: self.spawn_initial_size_supported,
-            pending_splits: &mut self.pending_splits,
-            pending_windows: &mut self.pending_windows,
+            pending_splits: &mut self.mirror.pending_splits,
+            pending_windows: &mut self.mirror.pending_windows,
             directory_support: self.directory_support,
             pending_directory: &mut self.pending_directory,
-            expected_closes: &mut self.expected_closes,
-            pending_kills: &mut self.pending_resource_ops,
+            expected_closes: &mut self.mirror.expected_closes,
+            pending_kills: &mut self.mirror.pending_resource_ops,
             overlays: &mut self.overlays,
             keybindings: self.settings.keybindings.as_ref(),
             theme: &self.settings.theme,
-            sessions: &self.peers.sessions,
-            hosts: &self.peers.hosts,
+            peers: self.peers.inputs(&self.review),
             host_refresh_request: &mut self.host_refresh_request,
-            foreign_layouts: &self.peers.foreign_layouts,
-            foreign_agents: &self.peers.foreign_agents,
-            foreign_attention: &self.peers.foreign_attention,
-            focused_session: self.peers.focused_session,
-            session_name: &mut self.session_name,
+            session_name: &mut self.mirror.session_name,
             rename_pending: &mut self.rename_pending,
             rename_notice: &mut self.rename_notice,
             switch_request: &mut self.switch_request,
-            zoomed: &mut self.zoomed,
+            detach_pending: &mut self.detach_pending,
+            zoomed: &mut self.mirror.zoomed,
             sidebar,
             sidebar_enabled: &mut self.sidebar_enabled,
             sidebar_width: &mut self.settings.sidebar.width,
@@ -2079,7 +1930,7 @@ impl SessionLoop {
             plugin_tx: Some(&self.plugin_tx),
             reload_request: &mut self.reload_request,
             host_switch_request: &mut self.host_switch_request,
-            agent_meta: &self.agent_meta.records,
+            agent_meta: &self.mirror.agent_meta.records,
             vcs: &mut self.vcs,
             input_replay: self.input_replay.as_deref(),
         };
@@ -2087,11 +1938,9 @@ impl SessionLoop {
             out,
             conn,
             events,
-            &mut self.focused_resource,
-            &mut self.detach_pending,
-            &mut self.predict,
-            &self.overlay,
-            &mut self.panes,
+            &mut self.mirror.focused_resource,
+            &mut self.mirror.predict,
+            &mut self.mirror.panes,
             &mut ctx,
         )
         .await?;
@@ -2175,7 +2024,7 @@ impl SessionLoop {
                 FrameStep::Exit(exit) => return Ok(Step::Exit(exit)),
             }
             if self.pending_attach_ready.is_some()
-                && self.engine_kernel.attach_ready_pending() == Some(0)
+                && self.mirror.engine_kernel.attach_ready_pending() == Some(0)
                 && let Some(ready) = self.pending_attach_ready.take()
             {
                 match self
@@ -2225,7 +2074,7 @@ impl SessionLoop {
             self.pending_stream_binds.clear();
             // Replies to the retired generation's commands can no longer be
             // attributed; a stale entry would fold a live leaf.
-            self.pending_resource_ops.clear();
+            self.mirror.pending_resource_ops.clear();
         }
         if let FrameKind::Error {
             request_id: Some(request_id),
@@ -2261,8 +2110,8 @@ impl SessionLoop {
             // A local spawn: bind its Terminal stream before the frame's
             // reflow. Satellite spawns bind after their ATTACH_RESOURCE reply.
             FrameKind::ResourceSpawned { request_id, result }
-                if self.pending_splits.contains_key(request_id)
-                    || self.pending_windows.contains_key(request_id) =>
+                if self.mirror.pending_splits.contains_key(request_id)
+                    || self.mirror.pending_windows.contains_key(request_id) =>
             {
                 if let Some(terminal_id) = result.spawned_id()
                     && terminal_id.is_local()
@@ -2272,6 +2121,7 @@ impl SessionLoop {
             }
             FrameKind::AttachReady { .. } => {
                 return Ok(self
+                    .mirror
                     .engine_kernel
                     .attach_ready_pending()
                     .is_some_and(|pending| pending > 0));
@@ -2426,7 +2276,7 @@ impl SessionLoop {
                 Ok(None)
             }
             // Un-correlated `SatelliteUnreachable` pushes while our inventory is
-            // in flight are held (see `PeerCaches::held_unreachable`).
+            // in flight are held (see `PeerWatch::held_unreachable`).
             FrameKind::Error {
                 request_id: None,
                 code: phux_protocol::wire::frame::ErrorCode::SatelliteUnreachable,
@@ -2434,8 +2284,10 @@ impl SessionLoop {
             } if self.peers.hosts_pending.is_some() => {
                 // Grey the panes now. The inventory reply still
                 // decides the notice, but the layout slot is already down.
-                if crate::attach::pane_state::note_satellite_unreachable(&mut self.panes, &message)
-                {
+                if crate::attach::pane_state::note_satellite_unreachable(
+                    &mut self.mirror.panes,
+                    &message,
+                ) {
                     self.peers.chrome_dirty = true;
                 }
                 self.peers.held_unreachable.push(message);
@@ -2467,7 +2319,7 @@ impl SessionLoop {
         let Some(session) = self.peers.foreign_layout_pending.remove(&request_id) else {
             return Ok(());
         };
-        apply_foreign_layout_reply(&mut self.peers.foreign_layouts, session, value);
+        self.peers.apply_layout_reply(session, value);
         self.reconcile_peer_agents(conn).await?;
         self.peers.chrome_dirty = true;
         repaint.raise_fleet();
@@ -2477,26 +2329,9 @@ impl SessionLoop {
     /// Prune and re-sync the foreign agent watches against the live foreign
     /// terminal set (from persisted layouts, or the server graph).
     async fn reconcile_peer_agents(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
-        let live =
-            crate::attach::sidebar_zones::foreign_terminal_ids(&self.peers.inputs(&self.review));
-        prune_foreign_agents(
-            &mut self.peers.foreign_agents,
-            &mut self.peers.foreign_agent_subscribed,
-            &live,
-        );
-        self.peers.foreign_attention.retain(|id| live.contains(id));
         self.peers
-            .foreign_asked_pending
-            .retain(|_, id| live.contains(id));
-        sync_foreign_agent_ids(
-            conn,
-            live.into_iter().collect(),
-            &mut self.next_request_id,
-            &mut self.peers.foreign_agent_pending,
-            &mut self.peers.foreign_agent_subscribed,
-            &mut self.peers.foreign_asked_pending,
-        )
-        .await
+            .sweep_agents(conn, &mut self.next_request_id, &self.review)
+            .await
     }
 
     /// Hand one frame to the server-frame handler and act on everything its
@@ -2513,7 +2348,7 @@ impl SessionLoop {
         // Pre-frame, zoom-honoring leaf rects, so a close/spawn can resize
         // survivors whose dims changed.
         let prev_rects = self.leaf_rects(sidebar);
-        let focused_before_frame = self.focused_resource.clone();
+        let focused_before_frame = self.mirror.focused_resource.clone();
         let mut outcome = self.handle_frame(out, frame, sidebar, defer_paint)?;
         send_terminal_replies(
             conn,
@@ -2521,9 +2356,11 @@ impl SessionLoop {
         )
         .await?;
         self.focus_history
-            .observe(focused_before_frame, self.focused_resource.as_ref());
-        self.focus_history
-            .repair(self.focused_resource.as_ref(), &self.workspace);
+            .observe(focused_before_frame, self.mirror.focused_resource.as_ref());
+        self.focus_history.repair(
+            self.mirror.focused_resource.as_ref(),
+            &self.mirror.workspace,
+        );
         if outcome.exit {
             let end = outcome
                 .exit_reason
@@ -2536,6 +2373,24 @@ impl SessionLoop {
         if outcome.resync_required {
             return self.request_rebootstrap(conn).await;
         }
+        self.fold_frame_outcome(conn, out, sidebar, outcome, prev_rects.as_ref(), repaint)
+            .await?;
+        Ok(FrameStep::Done)
+    }
+
+    /// Fold one non-terminal frame outcome into the loop: attach what it
+    /// discovered, fold peer, rename, watch, and chrome changes, send the
+    /// requests it owes, and raise (never paint) what the burst drain must
+    /// repaint. `prev_rects` is the pre-frame leaf geometry a reflow diffs.
+    async fn fold_frame_outcome<W: crate::attach::RenderSink>(
+        &mut self,
+        conn: &mut Connection,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+        mut outcome: FrameOutcome,
+        prev_rects: Option<&HashMap<ResourceId, crate::layout::Rect>>,
+        repaint: &mut RepaintAccumulator,
+    ) -> Result<(), AttachError> {
         self.attach_discovered_panes(conn, &outcome.attach_panes)
             .await?;
         let answered = spawned_satellite_panes(&outcome.adopt_spawned);
@@ -2549,10 +2404,10 @@ impl SessionLoop {
         self.resync_watches(conn, &mut outcome).await?;
         self.fold_chrome_and_notices(&mut outcome, repaint);
         self.open_directory_picker(out, sidebar, outcome.directory_listing.take());
-        self.emit_outcome_requests(conn, &mut outcome, sidebar, prev_rects.as_ref())
+        self.emit_outcome_requests(conn, &mut outcome, sidebar, prev_rects)
             .await?;
         self.settle_frame_view(out, &outcome, sidebar, fleet_dirty, repaint);
-        Ok(FrameStep::Done)
+        Ok(())
     }
 
     /// The per-leaf rect map of the zoom- and sidebar-honoring view, or
@@ -2561,7 +2416,10 @@ impl SessionLoop {
         &self,
         sidebar: Option<SidebarReservation>,
     ) -> Option<HashMap<ResourceId, crate::layout::Rect>> {
-        let ls = self.workspace.render_window(self.zoomed.as_ref())?;
+        let ls = self
+            .mirror
+            .workspace
+            .render_window(self.mirror.zoomed.as_ref())?;
         ls.tree.as_ref().map(|_| {
             crate::attach::multi_pane::compute_layout_in(
                 ls.as_ref(),
@@ -2578,17 +2436,18 @@ impl SessionLoop {
         &mut self,
         conn: &mut Connection,
     ) -> Result<FrameStep, AttachError> {
-        if self.session_name.is_empty() {
+        if self.mirror.session_name.is_empty() {
             return Err(AttachError::Protocol(
                 "engine requested rebootstrap before ATTACHED named the session".to_owned(),
             ));
         }
         conn.unbind_all_terminals();
         self.pending_stream_binds.clear();
-        let attach_id = send_attach(conn, AttachTarget::ByName(self.session_name.clone())).await?;
+        let attach_id =
+            send_attach(conn, AttachTarget::ByName(self.mirror.session_name.clone())).await?;
         tracing::warn!(
             attach_id,
-            session = %self.session_name,
+            session = %self.mirror.session_name,
             "engine generation rejected; requested replacement bootstrap"
         );
         Ok(FrameStep::Rebootstrap)
@@ -2619,7 +2478,8 @@ impl SessionLoop {
             let request_id = self.take_request_id();
             // Correlate the refusal: it is the only evidence a restored leaf
             // names a resource that died with a previous server.
-            self.pending_resource_ops
+            self.mirror
+                .pending_resource_ops
                 .insert(request_id, terminal_id.clone());
             self.send_attach_resource(conn, request_id, terminal_id)
                 .await?;
@@ -2720,13 +2580,15 @@ impl SessionLoop {
     ) -> Result<(), AttachError> {
         let mut changed = false;
         for host in &answers.unreachable {
-            changed |=
-                crate::attach::pane_state::mark_satellite_down(&mut self.panes, host.as_str());
+            changed |= crate::attach::pane_state::mark_satellite_down(
+                &mut self.mirror.panes,
+                host.as_str(),
+            );
         }
         let mut replay = Vec::new();
         for host in &answers.reachable {
             replay.extend(crate::attach::pane_state::satellite_panes_returned(
-                &mut self.panes,
+                &mut self.mirror.panes,
                 host.as_str(),
             ));
         }
@@ -2741,7 +2603,7 @@ impl SessionLoop {
     fn arm_satellite_probe(&mut self, now: tokio::time::Instant) {
         if self.host_sessions_supported
             && self.peers.hosts_pending.is_none()
-            && self.panes.values().any(|slot| slot.satellite_down)
+            && self.mirror.panes.values().any(|slot| slot.satellite_down)
         {
             self.satellite_probe_at
                 .get_or_insert(now + SATELLITE_PROBE_INTERVAL);
@@ -2799,9 +2661,9 @@ impl SessionLoop {
             .filter(|stray| {
                 let pane = stray.pane();
                 let adopted = crate::attach::server_frame::pane_is_referenced(
-                    &self.workspace,
-                    &self.pending_windows,
-                    &self.pending_splits,
+                    &self.mirror.workspace,
+                    &self.mirror.pending_windows,
+                    &self.mirror.pending_splits,
                     pane,
                 );
                 if adopted {
@@ -2828,12 +2690,11 @@ impl SessionLoop {
     /// Fold a foreign agent record into the fleet cache and review index;
     /// true when either moved.
     fn fold_foreign_agent(&mut self, id: &ResourceId, value: Option<&[u8]>) -> bool {
-        let cache_changed =
-            apply_foreign_agent_reply(&mut self.peers.foreign_agents, id.clone(), value);
+        let cache_changed = self.peers.apply_agent_reply(id.clone(), value);
         let review_changed = self.review.observe_record(
             id,
             self.peers.foreign_agents.get(id),
-            self.focused_resource.as_ref(),
+            self.mirror.focused_resource.as_ref(),
         );
         cache_changed || review_changed
     }
@@ -2843,8 +2704,8 @@ impl SessionLoop {
     fn orphans_for_switch(&mut self) -> super::orphans::OrphanKills {
         let mut kills = std::mem::take(&mut self.orphan_kills);
         kills.park_for_switch(
-            parked_spawned_panes(&self.pending_windows, &self.pending_splits),
-            unanswered_spawns(&self.pending_windows, &self.pending_splits),
+            parked_spawned_panes(&self.mirror.pending_windows, &self.mirror.pending_splits),
+            unanswered_spawns(&self.mirror.pending_windows, &self.mirror.pending_splits),
             std::time::Instant::now(),
         );
         kills
@@ -2855,10 +2716,10 @@ impl SessionLoop {
     fn park_adopt(&mut self, request_id: u32, adopt: ParkedAdopt) {
         match adopt {
             ParkedAdopt::Window(window) => {
-                self.pending_windows.insert(request_id, window);
+                self.mirror.pending_windows.insert(request_id, window);
             }
             ParkedAdopt::Split(split) => {
-                self.pending_splits.insert(request_id, split);
+                self.mirror.pending_splits.insert(request_id, split);
             }
         }
     }
@@ -2872,7 +2733,7 @@ impl SessionLoop {
         repaint: &mut RepaintAccumulator,
     ) -> Result<(), AttachError> {
         let layout_folded = if let Some((session, value)) = outcome.foreign_layout.take() {
-            apply_foreign_layout_reply(&mut self.peers.foreign_layouts, session, value.as_deref());
+            self.peers.apply_layout_reply(session, value.as_deref());
             self.reconcile_peer_agents(conn).await?;
             true
         } else {
@@ -2916,7 +2777,8 @@ impl SessionLoop {
     ) -> Result<(), AttachError> {
         // Keep a `phux.agent/v1` watch per live pane, once bootstrap outbound
         // has gone (see `bootstrap_outbound`).
-        if self.bootstrap_outbound.is_none() && self.panes.len() != self.agent_meta.subscribed.len()
+        if self.bootstrap_outbound.is_none()
+            && self.mirror.panes.len() != self.mirror.agent_meta.subscribed.len()
         {
             self.sync_agent_meta(conn).await?;
         }
@@ -3021,7 +2883,8 @@ impl SessionLoop {
         // doing it on first window selection turns that selection into a
         // corrective resize instead of an ordinary paint.
         if outcome.layout_get_answered || std::mem::take(&mut self.bind_reflow_owed) {
-            emit_bootstrap_workspace_reflow(conn, &self.workspace, self.content(sidebar)).await?;
+            emit_bootstrap_workspace_reflow(conn, &self.mirror.workspace, self.content(sidebar))
+                .await?;
         } else if outcome.reflow_panes
             && let Some(prev_rects) = prev_rects
         {
@@ -3039,7 +2902,7 @@ impl SessionLoop {
         let Some(session) = self.peers.focused_session else {
             return Ok(());
         };
-        let Some(bytes) = encode_layout_or_log(&self.workspace) else {
+        let Some(bytes) = encode_layout_or_log(&self.mirror.workspace) else {
             return Ok(());
         };
         let request_id = self.take_request_id();
@@ -3081,7 +2944,11 @@ impl SessionLoop {
         prev_rects: &HashMap<ResourceId, crate::layout::Rect>,
         sidebar: Option<SidebarReservation>,
     ) -> Result<(), AttachError> {
-        let Some(ls) = self.workspace.render_window(self.zoomed.as_ref()) else {
+        let Some(ls) = self
+            .mirror
+            .workspace
+            .render_window(self.mirror.zoomed.as_ref())
+        else {
             return Ok(());
         };
         if ls.tree.is_none() {
@@ -3126,8 +2993,8 @@ impl SessionLoop {
         let review_changed = outcome.agent_meta_terminal.as_ref().is_some_and(|id| {
             self.review.observe_record(
                 id,
-                self.agent_meta.records.get(id),
-                self.focused_resource.as_ref(),
+                self.mirror.agent_meta.records.get(id),
+                self.mirror.focused_resource.as_ref(),
             )
         });
         if outcome.agent_meta_changed || review_changed {
@@ -3163,34 +3030,35 @@ impl SessionLoop {
     /// Apply a one-step cross-session pick: a `ResourceId` from the server
     /// graph, else the layout-backed window/pane indices.
     fn resolve_cross_session_pick(&mut self) {
-        if let Some(id) = self.pending_resource.take() {
-            self.pending_window = None;
-            self.pending_pane = None;
+        if let Some(id) = self.pick.resource.take() {
+            self.pick.window = None;
+            self.pick.pane = None;
             self.focus_pending_resource(&id);
             return;
         }
-        let Some(idx) = self.pending_window.take() else {
+        let Some(idx) = self.pick.window.take() else {
             return;
         };
-        if !self.workspace.select(idx) {
+        if !self.mirror.workspace.select(idx) {
             tracing::warn!(
                 index = idx,
-                windows = self.workspace.windows.len(),
+                windows = self.mirror.workspace.windows.len(),
                 "cross-session window pick out of range; keeping restored focus",
             );
             return;
         }
         let next_focus = self
+            .mirror
             .workspace
             .active_window()
             .and_then(|ls| ls.focus.clone());
         self.focus_history
-            .transition(&mut self.focused_resource, next_focus);
-        if let Some(ord) = self.pending_pane.take() {
+            .transition(&mut self.mirror.focused_resource, next_focus);
+        if let Some(ord) = self.pick.pane.take() {
             self.focus_picked_leaf(idx, ord);
         }
-        if let Some(fid) = self.focused_resource.as_ref() {
-            reanchor_predict_to_pane(&mut self.predict, &self.panes, fid);
+        if let Some(fid) = self.mirror.focused_resource.as_ref() {
+            reanchor_predict_to_pane(&mut self.mirror.predict, &self.mirror.panes, fid);
         }
     }
 
@@ -3216,7 +3084,7 @@ impl SessionLoop {
     }
 
     fn focus_resource_in_workspace(&mut self, id: &ResourceId) -> bool {
-        let Some(idx) = self.workspace.windows.iter().position(|window| {
+        let Some(idx) = self.mirror.workspace.windows.iter().position(|window| {
             window
                 .state
                 .tree
@@ -3225,13 +3093,13 @@ impl SessionLoop {
         }) else {
             return false;
         };
-        let _ = self.workspace.select(idx);
-        if let Some(ls) = self.workspace.active_window_mut() {
+        let _ = self.mirror.workspace.select(idx);
+        if let Some(ls) = self.mirror.workspace.active_window_mut() {
             ls.focus = Some(id.clone());
         }
         self.focus_history
-            .transition(&mut self.focused_resource, Some(id.clone()));
-        reanchor_predict_to_pane(&mut self.predict, &self.panes, id);
+            .transition(&mut self.mirror.focused_resource, Some(id.clone()));
+        reanchor_predict_to_pane(&mut self.mirror.predict, &self.mirror.panes, id);
         true
     }
 
@@ -3254,8 +3122,8 @@ impl SessionLoop {
             .unwrap_or_else(|| crate::layout::LayoutNode::Leaf(id.clone()));
         let name = window.name.clone();
         let inventory_leaves = crate::layout::leaves(&layout);
-        if self.workspace.windows.len() == 1 {
-            let bootstrap = self.workspace.windows[0]
+        if self.mirror.workspace.windows.len() == 1 {
+            let bootstrap = self.mirror.workspace.windows[0]
                 .state
                 .tree
                 .as_ref()
@@ -3263,16 +3131,16 @@ impl SessionLoop {
                 .unwrap_or_default();
             if bootstrap.len() == 1 && inventory_leaves.iter().any(|leaf| bootstrap.contains(leaf))
             {
-                let w = &mut self.workspace.windows[0];
+                let w = &mut self.mirror.workspace.windows[0];
                 w.name = name;
                 w.state.tree = Some(layout);
                 w.state.focus = Some(id.clone());
-                self.workspace.active = 0;
+                self.mirror.workspace.active = 0;
                 return true;
             }
         }
-        self.workspace.add_window(name, id.clone());
-        if let Some(ls) = self.workspace.active_window_mut() {
+        self.mirror.workspace.add_window(name, id.clone());
+        if let Some(ls) = self.mirror.workspace.active_window_mut() {
             ls.tree = Some(layout);
             ls.focus = Some(id.clone());
         }
@@ -3283,6 +3151,7 @@ impl SessionLoop {
     /// restored focus.
     fn focus_picked_leaf(&mut self, idx: usize, ord: usize) {
         let picked = self
+            .mirror
             .workspace
             .active_window()
             .and_then(|ls| ls.tree.as_ref())
@@ -3296,11 +3165,11 @@ impl SessionLoop {
             );
             return;
         };
-        if let Some(ls) = self.workspace.active_window_mut() {
+        if let Some(ls) = self.mirror.workspace.active_window_mut() {
             ls.focus = Some(leaf.clone());
         }
         self.focus_history
-            .transition(&mut self.focused_resource, Some(leaf));
+            .transition(&mut self.mirror.focused_resource, Some(leaf));
     }
 
     /// ADR-0029 §2: the ONE drain. Every loop-level repaint trigger in this
@@ -3351,7 +3220,8 @@ impl SessionLoop {
         let live: Vec<ResourceId> = owed
             .into_iter()
             .filter(|id| {
-                self.panes
+                self.mirror
+                    .panes
                     .get(id)
                     .is_some_and(|slot| slot.sync_output_since.is_none())
             })
@@ -3362,22 +3232,22 @@ impl SessionLoop {
         let painted = crate::attach::server_frame::paint_output_frame(
             crate::attach::server_frame::OutputFrame {
                 out,
-                kernel: &self.engine_kernel,
-                panes: &mut self.panes,
-                workspace: &self.workspace,
-                zoomed: self.zoomed.as_ref(),
-                focused_resource: self.focused_resource.as_ref(),
+                kernel: &self.mirror.engine_kernel,
+                panes: &mut self.mirror.panes,
+                workspace: &self.mirror.workspace,
+                zoomed: self.mirror.zoomed.as_ref(),
+                focused_resource: self.mirror.focused_resource.as_ref(),
                 status_bar: self.settings.status_bar.as_mut(),
                 sidebar,
                 viewport_dims: self.viewport_dims,
-                session_name: &self.session_name,
-                predict: &mut self.predict,
-                overlay: &self.overlay,
+                session_name: &self.mirror.session_name,
+                predict: &mut self.mirror.predict,
             },
             &live,
         );
         self.finish_paint(painted);
         if self
+            .mirror
             .focused_resource
             .as_ref()
             .is_some_and(|focused| live.contains(focused))
@@ -3387,14 +3257,18 @@ impl SessionLoop {
     }
 
     fn clear_focused_delivery_fence_after_paint(&mut self) {
-        let Some(terminal_id) = self.focused_resource.clone() else {
+        let Some(terminal_id) = self.mirror.focused_resource.clone() else {
             return;
         };
         self.clear_delivery_fence_after_paint(&terminal_id);
     }
 
     fn clear_visible_delivery_fences_after_paint(&mut self) {
-        let Some(layout) = self.workspace.render_window(self.zoomed.as_ref()) else {
+        let Some(layout) = self
+            .mirror
+            .workspace
+            .render_window(self.mirror.zoomed.as_ref())
+        else {
             return;
         };
         let visible = layout
@@ -3428,7 +3302,7 @@ impl SessionLoop {
             &self.peers.sessions,
             self.peers.focused_session,
             &self.peers.hosts,
-            &self.workspace,
+            &self.mirror.workspace,
         );
         let key = crate::attach::input_dispatch::SESSION_PICKER_LIVE_KEY;
         self.refresh_live_overlay(out, sidebar, key, &items);
@@ -3444,10 +3318,10 @@ impl SessionLoop {
             return;
         }
         let items = crate::attach::fleet::live_fleet_items(
-            &self.workspace,
-            &self.panes,
-            &crate::attach::agent_rows::agent_session_rows(&self.engine_kernel),
-            &self.agent_meta.records,
+            &self.mirror.workspace,
+            &self.mirror.panes,
+            &crate::attach::agent_rows::agent_session_rows(&self.mirror.engine_kernel),
+            &self.mirror.agent_meta.records,
             &mut self.vcs,
             &self.peers.inputs(&self.review),
         );
@@ -3465,7 +3339,7 @@ impl SessionLoop {
     ) {
         let now = tokio::time::Instant::now();
         let mut expired = false;
-        for slot in self.panes.values_mut() {
+        for slot in self.mirror.panes.values_mut() {
             if slot.sync_output_dirty
                 && slot.sync_output_since.is_some_and(|since| {
                     now.saturating_duration_since(since) >= SYNC_OUTPUT_WATCHDOG
@@ -3512,17 +3386,18 @@ impl SessionLoop {
         self.cell_px_dims = host_cell_px(&viewport);
         // Predictions are pane-local: bound them to the focused pane's grid.
         let (predict_cols, predict_rows) = self
+            .mirror
             .focused_resource
             .as_ref()
-            .and_then(|fid| self.panes.get(fid))
+            .and_then(|fid| self.mirror.panes.get(fid))
             .map_or((viewport.cols, viewport.rows), |slot| slot.geometry);
-        self.predict.set_viewport(predict_cols, predict_rows);
+        self.mirror.predict.set_viewport(predict_cols, predict_rows);
         conn.send(&viewport_resize_frame(viewport)).await?;
         self.emit_resize_reflow(conn, prev_dims, sidebar).await?;
         // Clear rather than repaint stale pre-resize mirrors; the server's
         // resync snapshot repopulates at the new size.
         let _ = out.write_all(b"\x1b[2J\x1b[H");
-        crate::attach::pane_state::invalidate_all_fronts(&mut self.panes);
+        crate::attach::pane_state::invalidate_all_fronts(&mut self.mirror.panes);
         // A pointer-pinned overlay (context menu) is stale now: drop it before
         // the repaint so it cannot capture keys invisibly.
         if self.overlays.dismiss_stale_on_resize() {
@@ -3547,7 +3422,11 @@ impl SessionLoop {
         prev_dims: (u16, u16),
         sidebar: Option<SidebarReservation>,
     ) -> Result<(), AttachError> {
-        let Some(ls) = self.workspace.render_window(self.zoomed.as_ref()) else {
+        let Some(ls) = self
+            .mirror
+            .workspace
+            .render_window(self.mirror.zoomed.as_ref())
+        else {
             return Ok(());
         };
         if ls.tree.is_none() {
@@ -3582,9 +3461,9 @@ impl SessionLoop {
         let bar = self.bar();
         sync_overlays_to_focused_pane(
             &mut self.overlays,
-            &self.workspace,
-            self.zoomed.as_ref(),
-            self.focused_resource.as_ref(),
+            &self.mirror.workspace,
+            self.mirror.zoomed.as_ref(),
+            self.mirror.focused_resource.as_ref(),
             self.viewport_dims,
             bar,
             sidebar,
@@ -3611,12 +3490,13 @@ impl SessionLoop {
         // Restore the cursor to wherever the focused pane left it
         // so an idle tick doesn't strand the cursor in the bar.
         let focused_cursor = self
+            .mirror
             .focused_resource
             .as_ref()
-            .and_then(|fid| self.panes.get(fid))
+            .and_then(|fid| self.mirror.panes.get(fid))
             .and_then(|slot| slot.renderer.last_cursor());
         tracing::trace!(
-            focused_pane_set = self.focused_resource.is_some(),
+            focused_pane_set = self.mirror.focused_resource.is_some(),
             has_cursor = focused_cursor.is_some(),
             "status_tick: repaint bar"
         );
@@ -3626,7 +3506,7 @@ impl SessionLoop {
         let mut chrome = ChromeCtx::new(
             &mut self.settings,
             &mut self.sidebar_painter,
-            &self.session_name,
+            &self.mirror.session_name,
             self.viewport_dims,
             sidebar,
         );
@@ -3645,11 +3525,13 @@ impl SessionLoop {
     /// else (0, 0), so it is never stranded in the bar.
     fn bar_fallback_origin(&self, sidebar: Option<SidebarReservation>) -> (u16, u16) {
         let content = self.content(sidebar);
-        self.focused_resource
+        self.mirror
+            .focused_resource
             .as_ref()
             .and_then(|fid| {
-                self.workspace
-                    .render_window(self.zoomed.as_ref())
+                self.mirror
+                    .workspace
+                    .render_window(self.mirror.zoomed.as_ref())
                     .and_then(|ls| {
                         crate::attach::paint::tiled_rect(
                             ls.as_ref(),

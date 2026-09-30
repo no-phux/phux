@@ -1,6 +1,10 @@
 use super::*;
+use crate::attach::pane_state::PaneSlot;
+use crate::layout::Workspace;
+use phux_client::agent_meta::AgentRecord;
 use phux_protocol::WindowId;
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ServerFeatureSet};
+use phux_protocol::ids::SessionId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
@@ -66,7 +70,7 @@ async fn queued_rename_cannot_write_before_initial_metadata_is_processed() {
         let (mut state, mut client, mut server, mut out) =
             bootstrapped_loop_with(ServerFeatureSet::new()).await;
         let request_id = state.layout_get_request_id.unwrap();
-        let before = state.workspace.clone();
+        let before = state.mirror.workspace.clone();
         let unsupported = metadata.is_some();
         server
             .send(&FrameKind::MetadataValue {
@@ -79,7 +83,7 @@ async fn queued_rename_cannot_write_before_initial_metadata_is_processed() {
         rename_from_prompt(&mut state, &mut client, &mut out).await;
         state.broadcast_layout(&mut client).await.unwrap();
         assert_no_layout_write(&mut client, &mut server).await;
-        assert_eq!(state.workspace, before);
+        assert_eq!(state.mirror.workspace, before);
         assert!(!state.layout_read_complete);
         let reply = client.recv().await.unwrap();
         let result = state
@@ -96,7 +100,7 @@ async fn queued_rename_cannot_write_before_initial_metadata_is_processed() {
             assert!(
                 matches!(result, Err(AttachError::Protocol(message)) if message.contains("stored metadata was preserved"))
             );
-            assert_eq!(state.workspace, before);
+            assert_eq!(state.mirror.workspace, before);
             assert!(!state.layout_read_complete);
             assert_no_layout_write(&mut client, &mut server).await;
         } else {
@@ -140,7 +144,7 @@ async fn loop_with_window_on(
     instance: Option<phux_protocol::ids::ServerInstance>,
 ) -> (SessionLoop, Connection, Connection, Vec<u8>) {
     let (mut state, client, server, out) = Box::pin(bootstrapped_loop_with(features)).await;
-    state.pending_windows.insert(
+    state.mirror.pending_windows.insert(
         900,
         PendingWindow {
             name: "2".to_owned(),
@@ -173,9 +177,7 @@ async fn loop_before_drain(
         PredictiveConfig::disabled(),
         false,
         None,
-        None,
-        None,
-        None,
+        EntryPick::default(),
         None,
     )
     .unwrap();
@@ -417,6 +419,7 @@ fn seed_cached_peer(state: &mut SessionLoop, peer_id: &ResourceId) {
     // ATTACHED can seed mirror slots for resources outside this workspace.
     // Such a slot must not turn a peer metadata broadcast into a local update.
     state
+        .mirror
         .panes
         .insert(peer_id.clone(), PaneSlot::new_with_size(100, 24).unwrap());
     state
@@ -643,7 +646,7 @@ async fn a_refused_spawned_attach_sends_one_kill_for_its_pane() {
         pane.host().map(phux_protocol::ids::SatelliteHost::as_str),
         Some("edge")
     );
-    assert_eq!(state.workspace.windows.len(), 1, "no window opened");
+    assert_eq!(state.mirror.workspace.windows.len(), 1, "no window opened");
     let refused_kill = FrameKind::Error {
         request_id: Some(*kill_id),
         code: ErrorCode::SatelliteUnreachable,
@@ -669,7 +672,7 @@ async fn an_unreachable_satellite_refusal_sends_no_kill() {
     .await;
 
     assert_eq!(kills_sent(&mut client, &mut server).await, Vec::new());
-    assert_eq!(state.workspace.windows.len(), 1, "no window opened");
+    assert_eq!(state.mirror.workspace.windows.len(), 1, "no window opened");
 }
 
 /// A successful attach opens the window and kills nothing.
@@ -694,7 +697,7 @@ async fn a_successful_spawned_attach_sends_no_kill() {
         .unwrap();
 
     assert_eq!(kills_sent(&mut client, &mut server).await, Vec::new());
-    assert_eq!(state.workspace.windows.len(), 2, "the window opened");
+    assert_eq!(state.mirror.workspace.windows.len(), 2, "the window opened");
 }
 
 // ---- phux-c2td.23: retried kills for stray satellite panes ---------------
@@ -826,13 +829,13 @@ async fn a_down_satellite_pane_keeps_its_slot_and_replays_on_return() {
 
     let local = ResourceId::local(1);
     let sat = ResourceId::satellite(SatelliteHost::new("devbox"), 7);
-    state.workspace = Workspace::single(local.clone());
-    let tree = state
-        .workspace
+    let workspace = &mut state.mirror.workspace;
+    *workspace = Workspace::single(local.clone());
+    let tree = workspace
         .active_window()
         .and_then(|window| window.tree.clone())
         .expect("tree");
-    state.workspace.active_window_mut().expect("window").tree = Some(
+    workspace.active_window_mut().expect("window").tree = Some(
         crate::layout::split_at(
             &tree,
             &local,
@@ -844,16 +847,11 @@ async fn a_down_satellite_pane_keeps_its_slot_and_replays_on_return() {
     );
     let mut slot = PaneSlot::new().expect("slot");
     slot.satellite_down = true;
-    state.panes.insert(sat.clone(), slot);
+    state.mirror.panes.insert(sat.clone(), slot);
 
     let leaves = |state: &SessionLoop| {
-        crate::layout::leaves(
-            state
-                .workspace
-                .active_window()
-                .and_then(|window| window.tree.as_ref())
-                .expect("tree"),
-        )
+        let window = state.mirror.workspace.active_window();
+        crate::layout::leaves(window.and_then(|w| w.tree.as_ref()).expect("tree"))
     };
 
     answer_inventory(
@@ -876,7 +874,7 @@ async fn a_down_satellite_pane_keeps_its_slot_and_replays_on_return() {
         )),
         "an unreachable host is not reattached: {sent:?}"
     );
-    assert!(state.panes[&sat].satellite_down);
+    assert!(state.mirror.panes[&sat].satellite_down);
     assert_eq!(leaves(&state), vec![local.clone(), sat.clone()]);
 
     answer_inventory(
@@ -897,7 +895,7 @@ async fn a_down_satellite_pane_keeps_its_slot_and_replays_on_return() {
         _ => None,
     });
     let attach = attach.expect("the returned host is reattached");
-    assert!(!state.panes[&sat].satellite_down);
+    assert!(!state.mirror.panes[&sat].satellite_down);
     assert_eq!(leaves(&state), vec![local.clone(), sat.clone()]);
 
     let mut out = Vec::new();
@@ -919,7 +917,7 @@ async fn a_down_satellite_pane_keeps_its_slot_and_replays_on_return() {
         .await
         .unwrap();
     assert!(
-        state.panes[&sat].satellite_down,
+        state.mirror.panes[&sat].satellite_down,
         "a refused replay marks the pane down again"
     );
     assert_eq!(leaves(&state), vec![local, sat]);
@@ -1027,10 +1025,11 @@ async fn an_adopted_stray_is_not_killed_on_retry() {
         let (mut state, mut client, mut server) = Box::pin(loop_with_switch_stray()).await;
         if adopted_by_window {
             state
+                .mirror
                 .workspace
                 .add_window("edge".to_owned(), spawned_edge_pane());
         } else {
-            state.pending_windows.insert(
+            state.mirror.pending_windows.insert(
                 901,
                 PendingWindow {
                     name: "edge/build".to_owned(),
@@ -1052,7 +1051,7 @@ async fn an_adopted_stray_is_not_killed_on_retry() {
 async fn answer_edge_spawn(state: &mut SessionLoop, client: &mut Connection, id: u32) {
     use phux_protocol::wire::frame::SpawnResult;
 
-    state.pending_windows.insert(
+    state.mirror.pending_windows.insert(
         901,
         PendingWindow {
             name: "3".to_owned(),
@@ -1294,6 +1293,7 @@ async fn an_adopted_bound_stray_is_not_killed_conditionally() {
     ))
     .await;
     state
+        .mirror
         .workspace
         .add_window("edge".to_owned(), spawned_edge_pane());
     answer_inventory(&mut state, &mut client, vec![edge_row(true)]).await;
@@ -1381,7 +1381,7 @@ async fn session_rename_broadcast_updates_peer_roster_without_reattach() {
         .await
         .unwrap();
     assert_eq!(
-        state.session_name, "test",
+        state.mirror.session_name, "test",
         "a peer rename must not overwrite this client's status name"
     );
     let peer = state
@@ -1445,7 +1445,7 @@ async fn refused_rename_barrier_keeps_the_current_status_name() {
     .await;
     assert!(state.rename_pending.is_none());
     assert_eq!(
-        state.session_name, "test",
+        state.mirror.session_name, "test",
         "a refused rename must leave the current status name authoritative"
     );
     let names: Vec<&str> = state
@@ -1471,7 +1471,7 @@ async fn confirmed_rename_barrier_applies_the_new_name() {
     )
     .await;
     assert!(state.rename_pending.is_none());
-    assert_eq!(state.session_name, "notes");
+    assert_eq!(state.mirror.session_name, "notes");
     let ours = state
         .peers
         .sessions
@@ -1499,7 +1499,7 @@ async fn rename_barrier_error_keeps_the_current_status_name() {
         .unwrap();
     assert!(passed.is_none());
     assert!(state.rename_pending.is_none());
-    assert_eq!(state.session_name, "test");
+    assert_eq!(state.mirror.session_name, "test");
 }
 
 /// A CLI-created peer with an agent record but no TUI layout
@@ -1608,24 +1608,24 @@ async fn resource_pick_focuses_inventory_pane_without_a_tui_layout() {
         .peers
         .resources
         .push(ResourceInfo::new(target.clone(), WindowId::new(10), 80, 24));
-    state.pending_resource = Some(target.clone());
+    state.pick.resource = Some(target.clone());
     state.resolve_cross_session_pick();
-    assert_eq!(state.focused_resource.as_ref(), Some(&target));
+    assert_eq!(state.mirror.focused_resource.as_ref(), Some(&target));
     assert!(
-        state.workspace.windows.iter().any(|window| window
+        state.mirror.workspace.windows.iter().any(|window| window
             .state
             .tree
             .as_ref()
             .is_some_and(|tree| crate::layout::leaves(tree).contains(&target))),
         "inventory window is adopted: {:?}",
-        state.workspace.windows
+        state.mirror.workspace.windows
     );
-    state.pending_resource = Some(target.clone());
-    state.workspace = Workspace::single(target.clone());
-    state.workspace.windows[0].name = "review".into();
+    state.pick.resource = Some(target.clone());
+    state.mirror.workspace = Workspace::single(target.clone());
+    state.mirror.workspace.windows[0].name = "review".into();
     state.resolve_cross_session_pick();
-    assert_eq!(state.focused_resource.as_ref(), Some(&target));
-    assert_eq!(state.workspace.windows.len(), 1);
+    assert_eq!(state.mirror.focused_resource.as_ref(), Some(&target));
+    assert_eq!(state.mirror.workspace.windows.len(), 1);
 }
 
 fn wide_sidebar() -> SidebarReservation {
@@ -1644,20 +1644,28 @@ fn done_reviewer() -> AgentRecord {
 }
 
 fn seed_local_agent(state: &mut SessionLoop, id: &ResourceId, record: &AgentRecord) {
-    if !state.workspace.windows.iter().any(|window| {
+    if !state.mirror.workspace.windows.iter().any(|window| {
         window
             .state
             .tree
             .as_ref()
             .is_some_and(|tree| crate::layout::leaves(tree).contains(id))
     }) {
-        state.workspace.add_window("agent".to_owned(), id.clone());
+        state
+            .mirror
+            .workspace
+            .add_window("agent".to_owned(), id.clone());
     }
     state
+        .mirror
         .panes
         .entry(id.clone())
         .or_insert_with(|| PaneSlot::new_with_size(80, 24).unwrap());
-    state.agent_meta.records.insert(id.clone(), record.clone());
+    state
+        .mirror
+        .agent_meta
+        .records
+        .insert(id.clone(), record.clone());
 }
 
 fn agent_line(bytes: &[u8], name: &str) -> String {
@@ -1761,7 +1769,7 @@ async fn a_reviewed_done_survives_rebuild_in_peer_and_local_chrome() {
 
     let (mut session_a, _, _, _) = loop_wide().await;
     seed_local_agent(&mut session_a, &done_id, &done);
-    session_a.focused_resource = Some(done_id.clone());
+    session_a.mirror.focused_resource = Some(done_id.clone());
     assert!(
         session_a
             .review
@@ -1773,7 +1781,7 @@ async fn a_reviewed_done_survives_rebuild_in_peer_and_local_chrome() {
     session_b.set_review(std::mem::take(&mut session_a.review));
     seed_cached_peer(&mut session_b, &done_id);
     assert_eq!(
-        session_b.focused_resource.as_ref(),
+        session_b.mirror.focused_resource.as_ref(),
         Some(&ResourceId::local(1))
     );
 
@@ -1799,7 +1807,11 @@ async fn a_reviewed_done_survives_rebuild_in_peer_and_local_chrome() {
     snapshot_sidebar(&mut session_a2, &mut out, sidebar);
     assert_reviewed_row(&out, "reviewer");
 
-    session_a2.agent_meta.pending.insert(42, done_id.clone());
+    session_a2
+        .mirror
+        .agent_meta
+        .pending
+        .insert(42, done_id.clone());
     let mut repaint = RepaintAccumulator::default();
     session_a2
         .apply_server_frame(
@@ -1884,11 +1896,7 @@ async fn confirmed_death_clears_review_and_locality_does_not() {
         .observe_record(&done_id, Some(&done), Some(&done_id));
     seed_cached_peer(&mut state, &done_id);
     state.peers.foreign_agents.insert(done_id.clone(), done);
-    prune_foreign_agents(
-        &mut state.peers.foreign_agents,
-        &mut state.peers.foreign_agent_subscribed,
-        &std::collections::HashSet::new(),
-    );
+    state.peers.prune_agents(&std::collections::HashSet::new());
     assert!(
         state.review.is_seen(&done_id),
         "pruning a peer cache is a locality change, not death"
@@ -1952,4 +1960,168 @@ async fn stream_completion_invalidates_after_rebuild_without_retracting_on_gap()
     assert!(!session_b.review.is_seen(&pane));
     snapshot_sidebar(&mut session_b, &mut out, sidebar);
     assert_unread_done_row(&out, "reviewer");
+}
+
+// ---- the per-frame fold's raise matrix (phux-jx39.5) ------------------------
+//
+// `fold_frame_outcome` never paints: it raises what the burst drain owes.
+// Peer-side changes defer the chrome refresh to the drain (`peers.chrome_dirty`,
+// which `drain_repaint` turns into an in-place chrome paint) and raise the
+// fleet; local changes raise chrome only when a painter input moved.
+
+/// Fold `outcome` into `state` with no pre-frame geometry; returns the raised
+/// repaint.
+async fn fold_into(
+    state: &mut SessionLoop,
+    client: &mut Connection,
+    outcome: FrameOutcome,
+) -> RepaintAccumulator {
+    state.peers.chrome_dirty = false;
+    let mut repaint = RepaintAccumulator::default();
+    state
+        .fold_frame_outcome(client, &mut Vec::new(), None, outcome, None, &mut repaint)
+        .await
+        .unwrap();
+    repaint
+}
+
+/// Fold one synthetic outcome into a fresh bootstrapped loop; returns the
+/// raised repaint and the loop, whose `peers.chrome_dirty` says whether the
+/// drain owes a peer-chrome refresh.
+fn fold(
+    outcome: FrameOutcome,
+) -> std::pin::Pin<Box<impl Future<Output = (RepaintAccumulator, SessionLoop)>>> {
+    Box::pin(async move {
+        let (mut state, mut client, _server, _) =
+            bootstrapped_loop_with(ServerFeatureSet::new()).await;
+        let repaint = fold_into(&mut state, &mut client, outcome).await;
+        (repaint, state)
+    })
+}
+
+fn working(name: &str) -> AgentRecord {
+    AgentRecord {
+        name: name.to_owned(),
+        state: phux_client::agent_meta::AgentMetaState::Working,
+        ..AgentRecord::default()
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fold_of_an_empty_outcome_raises_nothing() {
+    let (repaint, state) = fold(FrameOutcome::default()).await;
+    assert_eq!(repaint, RepaintAccumulator::default());
+    assert!(!state.peers.chrome_dirty);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fold_of_a_foreign_agent_record_raises_the_fleet_and_the_drain_chrome() {
+    let peer = ResourceId::local(9);
+    let (repaint, state) = fold(FrameOutcome {
+        foreign_agent: Some((peer.clone(), Some(working("peer").encode()))),
+        ..FrameOutcome::default()
+    })
+    .await;
+    assert!(repaint.fleet_dirty);
+    assert_eq!(
+        repaint.level,
+        RepaintLevel::None,
+        "chrome waits for the drain"
+    );
+    assert!(
+        state.peers.chrome_dirty,
+        "the drain owes the strip a refresh"
+    );
+    assert_eq!(state.peers.foreign_agents[&peer].name, "peer");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fold_of_a_foreign_layout_raises_the_fleet_and_the_drain_chrome() {
+    let peer_session = SessionId::new(2);
+    let layout = Workspace::single(ResourceId::local(9))
+        .encode_cbor()
+        .unwrap();
+    let (repaint, state) = fold(FrameOutcome {
+        foreign_layout: Some((peer_session, Some(layout))),
+        ..FrameOutcome::default()
+    })
+    .await;
+    assert!(repaint.fleet_dirty);
+    assert_eq!(
+        repaint.level,
+        RepaintLevel::None,
+        "chrome waits for the drain"
+    );
+    assert!(state.peers.chrome_dirty);
+    assert!(state.peers.foreign_layouts.contains_key(&peer_session));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fold_of_a_new_foreign_ask_raises_but_a_repeat_does_not() {
+    let (mut state, mut client, _server, _) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    let asked = || FrameOutcome {
+        foreign_attention: Some(ResourceId::local(9)),
+        ..FrameOutcome::default()
+    };
+    let first = fold_into(&mut state, &mut client, asked()).await;
+    assert!(first.fleet_dirty && state.peers.chrome_dirty);
+    assert_eq!(first.level, RepaintLevel::None);
+
+    let repeat = fold_into(&mut state, &mut client, asked()).await;
+    assert_eq!(
+        repeat,
+        RepaintAccumulator::default(),
+        "a repeated ask is not news"
+    );
+    assert!(!state.peers.chrome_dirty);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fold_of_chrome_dirty_with_unchanged_painters_raises_only_the_fleet() {
+    let (repaint, state) = fold(FrameOutcome {
+        chrome_dirty: true,
+        ..FrameOutcome::default()
+    })
+    .await;
+    assert!(repaint.fleet_dirty);
+    assert_eq!(
+        repaint.level,
+        RepaintLevel::None,
+        "unchanged painter inputs owe no paint"
+    );
+    assert!(!state.peers.chrome_dirty);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fold_of_a_moved_local_agent_record_raises_chrome_in_place_and_the_fleet() {
+    let (mut state, mut client, _server, _) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    let pane = ResourceId::local(1);
+    state
+        .mirror
+        .agent_meta
+        .records
+        .insert(pane.clone(), working("builder"));
+    let repaint = fold_into(
+        &mut state,
+        &mut client,
+        FrameOutcome {
+            agent_meta_changed: true,
+            agent_meta_terminal: Some(pane),
+            ..FrameOutcome::default()
+        },
+    )
+    .await;
+    assert!(repaint.fleet_dirty);
+    assert_eq!(repaint.level, RepaintLevel::Chrome);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fold_of_a_replaced_layout_raises_a_full_repaint_and_the_fleet() {
+    let (repaint, _) = fold(FrameOutcome {
+        layout_replaced: true,
+        ..FrameOutcome::default()
+    })
+    .await;
+    assert!(repaint.fleet_dirty);
+    assert_eq!(repaint.level, RepaintLevel::Full);
 }

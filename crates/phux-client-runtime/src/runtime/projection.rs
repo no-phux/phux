@@ -140,6 +140,42 @@ impl Client {
             .with(|control| control.scroll(terminal_id, scroll))
     }
 
+    /// Search the terminal's loaded history, replacing its previous search
+    /// handles. At most `max_matches` (capped at
+    /// [`crate::engine::SEARCH_MATCH_LIMIT`]) come back, in document order.
+    #[cfg(feature = "engine")]
+    pub fn search(
+        &self,
+        terminal_id: &ResourceId,
+        query: String,
+        case_sensitive: bool,
+        max_matches: usize,
+    ) -> Result<crate::engine::SearchResults, crate::engine::EngineError> {
+        self.engine()
+            .ok_or(crate::engine::EngineError::Stopped)?
+            .search_bounded(terminal_id, query, case_sensitive, max_matches)
+    }
+
+    /// Release the terminal's search handles; the viewport stays put.
+    #[cfg(feature = "engine")]
+    pub fn clear_search(&self, terminal_id: &ResourceId) -> Result<(), crate::engine::EngineError> {
+        self.engine()
+            .ok_or(crate::engine::EngineError::Stopped)?
+            .clear_search(terminal_id)
+    }
+
+    /// Pin the terminal's viewport at one of its document anchors (a search
+    /// match endpoint, say); the new frame is published before this returns.
+    #[cfg(feature = "engine")]
+    pub fn pin_viewport(
+        &self,
+        terminal_id: &ResourceId,
+        anchor: u64,
+    ) -> Result<(), crate::engine::EngineError> {
+        self.inner
+            .with(|control| control.pin_viewport(terminal_id, anchor))
+    }
+
     /// Keep the final replica after the terminal closes.
     #[cfg(feature = "engine")]
     pub fn set_retain_on_close(&self, terminal_id: &ResourceId, retain: bool) {
