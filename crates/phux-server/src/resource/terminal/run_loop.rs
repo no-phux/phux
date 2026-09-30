@@ -253,6 +253,10 @@ impl TerminalActor {
         clippy::future_not_send,
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
     )]
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "one biased select! whose arms are each a single handler call; the macro expansion and the per-arm bootstrap guards carry the score, and splitting the select would break its priority order"
+    )]
     async fn drive_run_loop(
         &mut self,
         state: &mut RunLoopState,

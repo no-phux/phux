@@ -286,6 +286,10 @@ fn resource_named<'a>(
     clippy::too_many_lines,
     reason = "one linear open-emit-observe scenario"
 )]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "one linear open-emit-observe scenario; every assert! scores as a branch"
+)]
 fn an_agent_session_is_opened_streamed_replayed_and_inventoried() {
     let fixtures = tempfile::tempdir().expect("create temp dir for the fixture");
     let claude = write_quiet_claude(fixtures.path());

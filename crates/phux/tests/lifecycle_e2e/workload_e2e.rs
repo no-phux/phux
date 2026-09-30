@@ -1592,6 +1592,10 @@ fn reenrollment_revokes_the_old_certificate_only_after_the_entry_moves() {
 /// demand without touching the rest of the entry.
 #[test]
 #[ignore = "spawns a real server with a paired QUIC listener; runs in the e2e lane"]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "one linear warn-then-renew scenario; every assert! scores as a branch"
+)]
 fn a_certificate_due_for_renewal_warns_and_is_renewed() {
     let host = Enrolled::start();
     let short = install_short_lived_identity(&host, 5);

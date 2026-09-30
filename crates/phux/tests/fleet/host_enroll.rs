@@ -771,6 +771,10 @@ fn flags_from_the_other_form_are_refused() {
 /// wrapper the manual form emits, with stdout carrying nothing else and no
 /// progress narration anywhere.
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "one assertion per documented field; every assert! scores as a branch"
+)]
 fn add_json_emits_the_documented_host_document() {
     // The ssh-only remote shape: null auth material, null session.
     let home = EnrollHome::new();
