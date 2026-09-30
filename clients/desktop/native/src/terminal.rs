@@ -172,7 +172,7 @@ impl CustomElement for Terminal {
             }
             self.was_focused = self.settings.focused;
             if let Some(action) = action {
-                actions::run(action, &input, window, cx);
+                actions::run(action, &input, cx);
             }
             let down = input.clone();
             let app_chords = self.settings.app_chords.clone();

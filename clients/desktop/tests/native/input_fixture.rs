@@ -230,6 +230,10 @@ fn run_command(
                 .expect("paste correlation");
         }
         "copy" => state.copy_selection(window, cx).expect("copy"),
+        "requestPaste" => {
+            state.paste_requested(text).expect("paste correlation");
+        }
+        "requestCopy" => state.copy_requested(cx).expect("requested copy"),
         "cancel" => state.cancel(),
         "option" => state.set_option_as_alt(command["enabled"].as_bool().expect("enabled")),
         "active" => {
