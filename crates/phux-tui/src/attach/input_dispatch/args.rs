@@ -108,13 +108,7 @@ pub(super) fn resource_id_arg(
     resolved: &phux_config::keybind::ResolvedAction,
 ) -> Option<ResourceId> {
     let raw = str_arg(resolved, "resource")?;
-    match phux_client::selector::parse(&raw) {
-        Ok(phux_client::selector::Selector::ResourceId(id)) => Some(ResourceId::local(id)),
-        Ok(phux_client::selector::Selector::SatelliteResourceId { host, id }) => {
-            Some(ResourceId::satellite(host, id))
-        }
-        _ => None,
-    }
+    phux_client::selector::parse(&raw).ok()?.explicit_id()
 }
 
 /// `switch-session` args for a local session: the display name plus the

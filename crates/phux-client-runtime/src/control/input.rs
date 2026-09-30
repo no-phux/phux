@@ -6,6 +6,7 @@ use super::{
     MAX_APPLY_INPUT_COMMAND_BODY, MouseEvent, PasteEvent, PasteTrust, Pending, ReplayDisposition,
     ReplayReport, ResourceId, ServerFeature, Status, keys,
 };
+use phux_client_core::input_replay::operation_id_hex;
 
 impl ControlPlane {
     /// Send one structured key event on the raw input path.
@@ -360,15 +361,4 @@ fn new_operation_id() -> InputOperationId {
             return id;
         }
     }
-}
-
-fn operation_id_hex(operation_id: &InputOperationId) -> String {
-    use std::fmt::Write as _;
-    operation_id
-        .as_bytes()
-        .iter()
-        .fold(String::with_capacity(32), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
 }

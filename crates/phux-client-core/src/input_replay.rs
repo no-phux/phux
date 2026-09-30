@@ -789,7 +789,9 @@ const fn operation_expired(op: &PendingOp, now_ms: u64) -> bool {
     now_ms.saturating_sub(op.created_at_ms) >= INPUT_RETRY_HORIZON_MS
 }
 
-fn operation_id_hex(operation_id: &InputOperationId) -> String {
+/// Hex of an operation id, for correlation in diagnostics and `--json`.
+#[must_use]
+pub fn operation_id_hex(operation_id: &InputOperationId) -> String {
     use std::fmt::Write as _;
     operation_id
         .as_bytes()
