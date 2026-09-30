@@ -31,6 +31,9 @@ pub enum RenameError {
         /// The name that collided.
         new_name: String,
     },
+    /// `new_name` could not be typed back as a session selector.
+    #[error(transparent)]
+    InvalidName(#[from] crate::rename::SessionNameError),
     /// The barrier snapshot no longer lists the session.
     #[error("the session no longer exists")]
     SessionGone,
@@ -47,6 +50,7 @@ impl From<RenameRefusal> for RenameError {
         match refusal {
             RenameRefusal::NoSuchSession => Self::NoSuchSession,
             RenameRefusal::AlreadyExists { new_name } => Self::AlreadyExists { new_name },
+            RenameRefusal::InvalidName(invalid) => Self::InvalidName(invalid),
         }
     }
 }
@@ -59,7 +63,9 @@ impl RenameError {
         match self {
             Self::NoSuchSession => "no such session".to_owned(),
             Self::AlreadyExists { new_name } => format!("{new_name:?} already exists"),
-            Self::SessionGone | Self::NotApplied | Self::Attach(_) => self.to_string(),
+            Self::InvalidName(_) | Self::SessionGone | Self::NotApplied | Self::Attach(_) => {
+                self.to_string()
+            }
         }
     }
 }

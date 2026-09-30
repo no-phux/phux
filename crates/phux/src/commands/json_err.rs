@@ -43,6 +43,9 @@ pub(crate) mod codes {
     pub(crate) const PARTIAL_VIEW: &str = "partial_view";
     /// A selector that does not parse under the target grammar.
     pub(crate) const INVALID_SELECTOR: &str = "invalid_selector";
+    /// A session name the selector grammar could not address (empty, a
+    /// leading `@`/`#`/`%`, or a `:` or `/@` inside).
+    pub(crate) const INVALID_SESSION_NAME: &str = "invalid_session_name";
     // The spatial edits' refusal codes live in `phux_client::spatial::codes`.
     /// A selector matched several panes where exactly one is required.
     pub(crate) const SELECTOR_NOT_SINGLE: &str = "selector_not_single";

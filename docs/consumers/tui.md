@@ -120,6 +120,10 @@ against a snapshot.
 | `=` | attached TUI only: previous pane (`C-a =`) |
 | `#tag` | every Terminal carrying L3 tag `tag` |
 
+A session name must read back as itself: `new`, `rename`, and the TUI
+prompts refuse an empty name, `.` and `=`, a leading `@`, `#`, or `%`,
+and a `:` or `/@` anywhere in it.
+
 `=` is TUI-only. Headless CLI and MCP reject it: they have no focus
 history, so an explicit `=` is an error rather than a silent alias of
 `.`. In the attached TUI, `C-a =` is `last-pane` against a one-entry,

@@ -1176,14 +1176,20 @@ fn satellite_session_pane(
         .clone()
 }
 
-/// Create-or-switch to a named session, or prompt for a name.
+/// Create-or-switch to a named session, or prompt for a name. A name no
+/// selector could address again is refused with a notice, not created.
 fn new_session(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
     effects: &mut ActionEffects,
 ) {
     match name_arg(resolved) {
-        Some(name) => effects.reattach = Some(ReattachTarget::Create(name)),
+        Some(name) => match phux_client::rename::check_session_name(&name) {
+            Ok(()) => effects.reattach = Some(ReattachTarget::Create(name)),
+            Err(invalid) => {
+                *ctx.rename_notice = Some(format!("could not create session {name}: {invalid}"));
+            }
+        },
         None => ctx
             .overlays
             .push(Box::new(PromptOverlay::new_session(ctx.theme))),

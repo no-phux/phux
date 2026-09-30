@@ -93,9 +93,9 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// [`apply_action_effects`] until the driver consumes the `GET_STATE`
     /// barrier. `None` when no rename is outstanding.
     pub rename_pending: &'a mut Option<super::effects::PendingSessionRename>,
-    /// A rename the shared policy refused before any write. The driver
-    /// surfaces it on the status bar after this batch. `None` when the
-    /// batch did not refuse a rename.
+    /// A session rename or create the shared name policy refused before any
+    /// write. The driver surfaces it on the status bar after this batch.
+    /// `None` when the batch refused neither.
     pub rename_notice: &'a mut Option<String>,
     /// Out-channel for a committed re-attach.
     pub switch_request: &'a mut Option<ReattachTarget>,
