@@ -1766,7 +1766,7 @@ mod tests {
             AttachEnd::LastPaneClosed { exit_status: None }
                 .explanation()
                 .as_deref(),
-            Some("phux: session ended: the last pane killed (signal or unknown)"),
+            Some("phux: session ended: the last pane was killed"),
         );
     }
 
