@@ -290,12 +290,22 @@ fn checked_fanout_gates() {
 async fn native_warm_attach(socket: &std::path::Path) -> Duration {
     let started = Instant::now();
     let mut stream = common::wait_for_raw_socket(socket, common::SOCKET_CONNECT_DEADLINE).await;
+    negotiate_native_hello(&mut stream).await;
+    attach_until_ready(&mut stream).await;
+    let ready = started.elapsed();
+    detach(&mut stream).await;
+    ready
+}
+
+/// HELLO with native bootstrap capabilities; the server must select the
+/// native-state profile.
+async fn negotiate_native_hello(stream: &mut tokio::net::UnixStream) {
     let native = BootstrapCapabilities::new().with_native(
         EngineCodec::LibghosttySnapshotV1,
         EngineFeatureSet::required_native(),
     );
     common::send_frame(
-        &mut stream,
+        stream,
         &FrameKind::Hello {
             client_name: "phux-native-ready-benchmark".to_owned(),
             protocol_major: PROTOCOL_VERSION.major,
@@ -307,7 +317,7 @@ async fn native_warm_attach(socket: &std::path::Path) -> Duration {
         },
     )
     .await;
-    let (kind, hello) = common::recv_typed(&mut stream).await;
+    let (kind, hello) = common::recv_typed(stream).await;
     assert_eq!(kind, TYPE_HELLO_OK);
     assert!(matches!(
         hello,
@@ -316,8 +326,12 @@ async fn native_warm_attach(socket: &std::path::Path) -> Duration {
             ..
         }
     ));
+}
+
+/// ATTACH the benchmark session and read through `ATTACH_READY`.
+async fn attach_until_ready(stream: &mut tokio::net::UnixStream) {
     common::send_frame(
-        &mut stream,
+        stream,
         &FrameKind::Attach {
             attach_id: 1,
             target: AttachTarget::ByName("benchmark".to_owned()),
@@ -328,31 +342,38 @@ async fn native_warm_attach(socket: &std::path::Path) -> Duration {
         },
     )
     .await;
-    let (kind, _) = common::recv_typed(&mut stream).await;
+    let (kind, _) = common::recv_typed(stream).await;
     assert_eq!(kind, TYPE_ATTACHED);
-    let (kind, begin) = common::recv_typed(&mut stream).await;
+    let (kind, begin) = common::recv_typed(stream).await;
     assert_eq!(kind, TYPE_BOOTSTRAP_BEGIN);
     assert!(matches!(begin, FrameKind::BootstrapBegin { .. }));
+    drain_bootstrap_chunks(stream).await;
+    let (kind, attached) = common::recv_typed(stream).await;
+    assert_eq!(kind, TYPE_ATTACH_READY);
+    assert!(matches!(attached, FrameKind::AttachReady { .. }));
+}
+
+/// Read `BOOTSTRAP_CHUNK`s through `BOOTSTRAP_READY`.
+async fn drain_bootstrap_chunks(stream: &mut tokio::net::UnixStream) {
     loop {
-        let (kind, frame) = common::recv_typed(&mut stream).await;
+        let (kind, frame) = common::recv_typed(stream).await;
         match frame {
             FrameKind::BootstrapChunk { .. } => assert_eq!(kind, TYPE_BOOTSTRAP_CHUNK),
             FrameKind::BootstrapReady { .. } => {
                 assert_eq!(kind, TYPE_BOOTSTRAP_READY);
-                break;
+                return;
             }
             other => panic!("unexpected warm native attach frame: {other:?}"),
         }
     }
-    let (kind, attached) = common::recv_typed(&mut stream).await;
-    assert_eq!(kind, TYPE_ATTACH_READY);
-    assert!(matches!(attached, FrameKind::AttachReady { .. }));
-    let ready = started.elapsed();
-    common::send_frame(&mut stream, &FrameKind::Detach).await;
-    let (kind, detached) = common::recv_typed(&mut stream).await;
+}
+
+/// Session DETACH, answered by `DETACHED`.
+async fn detach(stream: &mut tokio::net::UnixStream) {
+    common::send_frame(stream, &FrameKind::Detach).await;
+    let (kind, detached) = common::recv_typed(stream).await;
     assert_eq!(kind, TYPE_DETACHED);
     assert!(matches!(detached, FrameKind::Detached { .. }));
-    ready
 }
 
 fn checked_warm_uds_and_resync_gate() {
