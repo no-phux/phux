@@ -1383,8 +1383,8 @@ impl Enrolled {
         prepare_dirs(&dir.path().join("client"));
         let far = FarHost::new(dir.path());
         let ssh = far.fake_ssh(dir.path());
-        let port = free_udp_port();
-        let server = far.serve(&format!("0.0.0.0:{port}"));
+        let server = far.serve("0.0.0.0:0");
+        let port = bound_quic_port(&far.root.join("s.sock"));
         let quic = format!("127.0.0.1:{port}");
         let add: Vec<String> = [
             "host",

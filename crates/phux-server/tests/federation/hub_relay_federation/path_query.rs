@@ -59,7 +59,7 @@ fn satellite_search_remaps_correlation_and_refuses_unknown_hosts() {
         let tree = tmp.path().join("sat-tree");
         std::fs::create_dir_all(tree.join("nested")).unwrap();
         std::fs::write(tree.join("nested/file name.txt"), "test").unwrap();
-        let (port, sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"));
+        let (port, sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock")).await;
         let (hub_shutdown, hub_task) = spawn_hub(
             tmp.path().join("hub.sock"),
             vec![satellite_entry("sat", port)],
