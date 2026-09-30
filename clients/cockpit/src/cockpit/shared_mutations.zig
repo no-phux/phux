@@ -13,6 +13,9 @@ const Pending = struct {
     ticket: u64,
     epoch: u64,
     mutation: workspace.Mutation,
+    // Never retain the caller's borrowed name across a provider wake.
+    name: [255]u8 = undefined,
+    name_len: u8 = 0,
     stage: Stage,
     request: u32 = 0,
     retained: bool,
@@ -174,6 +177,19 @@ pub const Coordinator = struct {
         try self.requestDirect(model, mutation, command_id, origin);
     }
 
+    /// Retain the authoritative outcome for the Rename Tab dialog.
+    pub fn requestRename(self: *Coordinator, model: anytype, id: WindowId, name: []const u8) !u64 {
+        var mutation = try currentMutation(model);
+        mutation.kind = .rename;
+        mutation.window_id = id;
+        mutation.name = name;
+        if (self.firstPending() != null or model.phux().?.workspaceSnapshot().status == .pending) return error.WorkspaceBusy;
+        try validateTarget(model.phux().?.workspaceSnapshot(), mutation);
+        const ticket = try self.enqueue(mutation, model.phux().?.connectionEpoch(), true, .mutation, null, .ui);
+        _ = self.pump(model);
+        return ticket;
+    }
+
     pub fn requestReorder(self: *Coordinator, model: anytype, id: WindowId, index: usize) !void {
         return self.reorderRequest(model, id, index, null, .ui);
     }
@@ -234,14 +250,15 @@ pub const Coordinator = struct {
     }
 
     fn enqueue(self: *Coordinator, mutation: workspace.Mutation, epoch: u64, retained: bool, stage: Stage, command_id: ?u64, origin: results.Origin) !u64 {
-        // Names borrow caller memory in the provider API. This queue supports
-        // unnamed add and identity-only edits; rename needs owned text first.
-        if (mutation.name.len != 0) return error.UnsupportedMutation;
+        if (mutation.name.len > 255) return error.TextTooLong;
         if (origin == .ui) try self.requireUniqueCommand(command_id);
         for (&self.pending) |*slot| {
             if (slot.* != null) continue;
             self.next_ticket = try std.math.add(u64, self.next_ticket, 1);
             slot.* = .{ .ticket = self.next_ticket, .epoch = epoch, .mutation = mutation, .retained = retained, .stage = stage, .refresh_creation = stage == .refresh, .command_id = if (origin == .native) self.next_ticket else command_id, .origin = origin };
+            @memcpy(slot.*.?.name[0..mutation.name.len], mutation.name);
+            slot.*.?.name_len = @intCast(mutation.name.len);
+            slot.*.?.mutation.name = "";
             return self.next_ticket;
         }
         return error.OperationCapacity;
@@ -403,7 +420,9 @@ fn beginMutation(remote: anytype, snapshot: workspace.Snapshot, entry: *Pending)
     // edits (especially paths). Dispatch now, before the next idle refresh.
     if (entry.refresh_creation) entry.mutation.expected_revision = snapshot.revision;
     try validateTarget(snapshot, entry.mutation);
-    entry.request = try remote.requestWorkspaceMutation(entry.mutation);
+    var mutation = entry.mutation;
+    mutation.name = entry.name[0..entry.name_len];
+    entry.request = try remote.requestWorkspaceMutation(mutation);
     entry.mutation_request = entry.request;
     entry.stage = .mutating;
 }
@@ -435,7 +454,7 @@ fn validateWindowMutation(snapshot: workspace.Snapshot, window: workspace.Window
         },
         .resize => try validateResize(snapshot, window.root, mutation),
         .reorder => if (mutation.index >= snapshot.windows.len) return error.StaleTarget,
-        .remove_window => {},
+        .remove_window, .rename => {},
         else => return error.UnsupportedMutation,
     }
 }

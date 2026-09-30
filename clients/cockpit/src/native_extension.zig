@@ -350,6 +350,8 @@ const Bridge = struct {
     pending_ok: bool = false,
     pending_len: usize = 0,
     buffer: [cockpit.snapshot.max_bytes]u8 = undefined,
+    /// Separate from a pending host reply: channel posts copy immediately.
+    event_buffer: [cockpit.snapshot.max_bytes]u8 = undefined,
     navigation_pending: bool = false,
     navigation_key: u64 = 0,
     navigation_ok: bool = false,
@@ -442,6 +444,7 @@ const Bridge = struct {
     fn commitInteraction(self: *Bridge, model: *const core.Model) void {
         self.interaction_mode = interactionMode(model);
         const engine = self.engine orelse return;
+        cockpit.session_commands.syncTabRename(engine, model.renameOpen, model.renameTabTarget);
         const fx = engineFx() orelse return;
         engine.setInputSuspended(fx, self.interaction_mode != .terminal);
     }
@@ -495,10 +498,10 @@ const Bridge = struct {
         engine.spawnShells(fx, shellEvent);
     }
 
-    /// Tell the core that state moved. Silence when the channel is not open
-    /// yet is correct: the core requests a snapshot at boot regardless, and
-    /// an intent it sent before opening the channel cannot exist.
-    fn announce(self: *Bridge, engine: *const Engine) void {
+    /// Publish the already-authoritative projection on the journaled core
+    /// channel when it fits. Larger workspaces retain the invalidation/read
+    /// path; neither shape reruns provider callbacks during native replay.
+    fn announce(self: *Bridge, engine: *Engine) void {
         const channels = self.channels orelse {
             self.posts_unroutable += 1;
             return;
@@ -507,8 +510,16 @@ const Bridge = struct {
             self.posts_unroutable += 1;
             return;
         };
-        const bytes = engine.invalidation();
-        switch (handle.post(&bytes)) {
+        // Encode at the normal snapshot capacity first: agent rows use the
+        // remaining room for a drawn prefix, so a smaller buffer could silently
+        // publish less state instead of reporting BufferTooSmall.
+        const encoded: ?[]const u8 = engine.snapshot(&self.event_buffer) catch null;
+        const bytes = if (encoded != null and encoded.?.len <= native_sdk.max_effect_channel_bytes) encoded.? else fallback: {
+            const invalidated = engine.invalidation();
+            @memcpy(self.event_buffer[0..invalidated.len], &invalidated);
+            break :fallback self.event_buffer[0..invalidated.len];
+        };
+        switch (handle.post(bytes)) {
             .accepted => self.posts_accepted += 1,
             else => self.posts_unroutable += 1,
         }
@@ -2556,6 +2567,7 @@ const window_sources = [_]canvas.ui_markup.SourceFile{
     .{ .path = "components/cockpit-settings.native", .source = @embedFile("windows/components/cockpit-settings.native") },
     .{ .path = "components/cockpit-navigator.native", .source = @embedFile("windows/components/cockpit-navigator.native") },
     .{ .path = "components/cockpit-host.native", .source = @embedFile("windows/components/cockpit-host.native") },
+    .{ .path = "components/cockpit-connected-hosts.native", .source = @embedFile("windows/components/cockpit-connected-hosts.native") },
     .{ .path = "components/cockpit-directory.native", .source = @embedFile("windows/components/cockpit-directory.native") },
     .{ .path = "components/cockpit-rename.native", .source = @embedFile("windows/components/cockpit-rename.native") },
     .{ .path = "components/cockpit-agents.native", .source = @embedFile("windows/components/cockpit-agents.native") },
@@ -2827,7 +2839,8 @@ const Rig = struct {
     fn settleAppearance(self: *Rig) !void {
         for (0..8) |_| {
             const model = self.app_state.model;
-            if (!model.appearanceBusy and model.engineConnected and model.engineSequence.lo == bridge.engine.?.sequence) return;
+            if (!model.appearanceBusy and !model.appearanceClosing and !model.bindingsPending and
+                model.engineConnected and model.engineSequence.lo == bridge.engine.?.sequence) return;
             try self.harness.runtime.dispatchPlatformEvent(self.decorated, .wake);
         }
         return error.TestAppearanceDidNotComplete;
@@ -3014,7 +3027,7 @@ test "TypeScript engine startup restores topology and cwd while applying config 
     try std.testing.expectEqual(.top, overridden.model.tab_placement);
 }
 
-test "an intent moves the engine and the core resyncs to the new revision" {
+test "tab opening and closing publish the confirmed model in one channel drain" {
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
@@ -3024,14 +3037,54 @@ test "an intent moves the engine and the core resyncs to the new revision" {
     try std.testing.expectEqual(before + 1, bridge.posts_accepted);
     try std.testing.expectEqual(@as(usize, 2), bridge.engine.?.model.wsConst().tab_count);
 
-    // The announcement, the re-request and the completion each ride one
-    // drain; the status walks SYNCING back to READY as they land.
-    try rig.settle(1, "READY");
+    // The recorded channel carries the authoritative snapshot itself: the
+    // visible tab must appear without another host-request completion.
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
     const model = rig.app_state.model;
     try std.testing.expectEqual(@as(usize, 2), model.tabs.len);
     try std.testing.expectEqual(@as(i64, 1), model.selectedTab);
     try std.testing.expectEqual(@as(i64, 2), model.engineRevision.lo);
     try std.testing.expect(model.tabs[0].id != model.tabs[1].id);
+
+    try rig.dispatch(.close_selected_tab);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.tabs.len);
+    try std.testing.expectEqual(@as(i64, 2), rig.app_state.model.engineSequence.lo);
+    try std.testing.expectEqualStrings("READY", rig.app_state.model.status);
+}
+
+test "oversized channel snapshots fall back without shortening the visible agent inventory" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const parent = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    try rig.settle(@intCast(engine.sequence), "READY");
+    const remote = engine.model.phux().?;
+    const fixture = @TypeOf(remote.*).test_support;
+    var agents: [24]fixture.AgentSessionFixture = undefined;
+    for (&agents, 0..) |*agent, index| agent.* = .{
+        .id = @intCast(9001 + index),
+        .host = "h" ** 200,
+        .parent = parent.terminal_id.phux.id,
+        .provider_name = "claude",
+        .state = "working",
+    };
+    try fixture.adoptAgentSessions(remote.host, &agents);
+    var bytes: [cockpit.snapshot.max_bytes]u8 = undefined;
+    const full = try engine.snapshot(&bytes);
+    try std.testing.expect(full.len > native_sdk.max_effect_channel_bytes);
+
+    try rig.dispatch(.toggle_tab_placement);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    // The oversized publication is an invalidation, not a silently truncated
+    // snapshot. Its full host reply arrives on the next completion drain.
+    try std.testing.expect(!rig.app_state.model.engineConnected);
+    try rig.settle(@intCast(engine.sequence), "READY");
+    const rows = rig.app_state.model.tabs[0].agents;
+    try std.testing.expectEqual(@as(usize, 24), rows.len);
+    try std.testing.expect(std.mem.indexOf(u8, rows[23].resource, "h" ** 200) != null);
 }
 
 test "native menu commands split and close the focused pane through the engine seam" {
@@ -3158,8 +3211,8 @@ const topology_replay_path = "/tmp/phux-cockpit-tests/ts-replay-workspace.state"
 const RecordedPersistence = struct { fingerprint: u64, sequence: i64 };
 
 /// Record the shipping order: shortcut makes a tab, the debounce timer fires,
-/// the topology write publishes, and the core requests a snapshot. Only
-/// platform events and effect results are journaled.
+/// the topology write publishes, and the core consumes the pushed snapshot.
+/// Only platform events and effect results are journaled.
 fn recordTopologyPersistence(recorder: *native_sdk.runtime.SessionRecorder) !RecordedPersistence {
     var rig = try Rig.create(false, false, recorder);
     defer rig.stop();
@@ -3216,6 +3269,8 @@ test "shipping replay owns the topology timer and file write before a core snaps
     const report = try native_sdk.runtime.replaySession(&rig.harness.runtime, rig.decorated, journal.journal(), .{ .require_same_platform = false });
     try std.testing.expectEqual(@as(usize, 0), report.mismatch_count);
     try std.testing.expectEqual(recorded.sequence, rig.app_state.model.engineSequence.lo);
+    try std.testing.expectEqual(@as(usize, 2), rig.app_state.model.tabs.len);
+    try std.testing.expectEqual(@as(i64, 1), rig.app_state.model.selectedTab);
     try std.testing.expectEqualStrings("READY", rig.app_state.model.status);
     // The end fingerprint is not compared: skipping the recorded timer event
     // omits drain work the live run folded in (native_effect_replay_tests
@@ -3437,16 +3492,23 @@ const TabMenuHost = struct {
     frame: native_sdk.geometry.RectF,
     window_id: native_sdk.platform.WindowId,
     label: []const u8,
+    move_next_item: u32,
+    close_item: u32,
 };
 
+fn tabMenuItem(menu: []const canvas.WidgetContextMenuItem, label: []const u8) ?u32 {
+    for (menu, 0..) |item, index| {
+        if (!item.separator and std.mem.eql(u8, item.label, label)) return @intCast(index + 1);
+    }
+    return null;
+}
+
 fn matchesTabMenu(menu: []const canvas.WidgetContextMenuItem, previous_disabled: bool, next_disabled: bool) bool {
-    if (menu.len != 4) return false;
-    if (!std.mem.eql(u8, menu[0].label, "Move Left")) return false;
-    if (previous_disabled != !menu[0].enabled) return false;
-    if (next_disabled != !menu[1].enabled) return false;
-    if (!std.mem.eql(u8, menu[1].label, "Move Right")) return false;
-    if (!menu[2].separator) return false;
-    return std.mem.eql(u8, menu[3].label, "Close Tab");
+    const previous = tabMenuItem(menu, "Move Left") orelse return false;
+    const next = tabMenuItem(menu, "Move Right") orelse return false;
+    if (previous_disabled != !menu[previous - 1].enabled) return false;
+    if (next_disabled != !menu[next - 1].enabled) return false;
+    return tabMenuItem(menu, "Close Tab") != null;
 }
 
 fn tabMenuHost(rig: *Rig, previous_disabled: bool, next_disabled: bool) !TabMenuHost {
@@ -3459,7 +3521,14 @@ fn tabMenuHostIn(rig: *Rig, window_id: native_sdk.platform.WindowId, label: []co
     const layout = try rig.harness.runtime.canvasWidgetLayout(window_id, label);
     for (layout.nodes) |node| {
         if (!matchesTabMenu(node.widget.context_menu, previous_disabled, next_disabled)) continue;
-        return .{ .id = node.widget.id, .frame = node.frame, .window_id = window_id, .label = label };
+        return .{
+            .id = node.widget.id,
+            .frame = node.frame,
+            .window_id = window_id,
+            .label = label,
+            .move_next_item = tabMenuItem(node.widget.context_menu, "Move Right").?,
+            .close_item = tabMenuItem(node.widget.context_menu, "Close Tab").?,
+        };
     }
     return error.TestExpectedTabMenu;
 }
@@ -3573,7 +3642,7 @@ test "shipping background peer tab action keeps primary selected and completes t
     try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
     const token = try openTabMenu(&rig, peer_menu);
     try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
-    try chooseTabMenuItem(&rig, peer_menu, token, 4);
+    try chooseTabMenuItem(&rig, peer_menu, token, peer_menu.close_item);
     try std.testing.expectEqual(@as(u8, 0), bridge.command_buffer[2]);
     try std.testing.expectEqual(@as(u8, 3), bridge.command_buffer[1]);
     try std.testing.expectEqual(@as(i64, 7), rig.app_state.model.tabCommands.outcome);
@@ -3701,7 +3770,7 @@ test "shipping tab context menu retains a background target across rebuild move 
         try rig.dispatch(.engine_wake);
         try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
     }
-    try chooseTabMenuItem(&rig, first_menu, move_token, 2);
+    try chooseTabMenuItem(&rig, first_menu, move_token, first_menu.move_next_item);
     try std.testing.expectEqual(@as(usize, 1), engine.model.wsConst().tabOfTerminal(first).?);
     try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().selected_tab);
     try std.testing.expect(selected.eql(engine.model.focusedTerminalRef().?));
@@ -3709,7 +3778,7 @@ test "shipping tab context menu retains a background target across rebuild move 
 
     const middle_menu = try tabMenuHost(&rig, false, false);
     const close_token = try openTabMenu(&rig, middle_menu);
-    try chooseTabMenuItem(&rig, middle_menu, close_token, 4);
+    try chooseTabMenuItem(&rig, middle_menu, close_token, middle_menu.close_item);
     try std.testing.expect(engine.model.locateTerminal(first) == null);
     try std.testing.expectEqual(@as(usize, 2), engine.model.wsConst().tab_count);
     try std.testing.expect(selected.eql(engine.model.focusedTerminalRef().?));
@@ -3830,8 +3899,10 @@ test "tab command receipt survives snapshot and navigation requests and rejects 
     try std.testing.expectEqual(@as(u64, 9001), result.key);
     try std.testing.expectEqual(@as(u8, 1), result.bytes[1]);
     try std.testing.expectEqual(id, std.mem.readInt(u64, result.bytes[3..11], .little));
-    try std.testing.expectEqual(@as(u64, 9002), host.poll_fn.?(host.context).?.key);
-    try std.testing.expectEqual(@as(u64, 9003), host.poll_fn.?(host.context).?.key);
+    const snapshot_reply = try pollBoundReply(host, 9002);
+    try std.testing.expect(snapshot_reply.ok);
+    const navigation_reply = try pollBoundReply(host, 9003);
+    try std.testing.expect(!navigation_reply.ok);
 
     engine.model.closeWindow(1);
     const reopened = engine.model.openWindow(1).?;
@@ -6682,6 +6753,7 @@ const main_sources = [_]canvas.ui_markup.SourceFile{
     .{ .path = "windows/components/cockpit-settings.native", .source = @embedFile("windows/components/cockpit-settings.native") },
     .{ .path = "windows/components/cockpit-navigator.native", .source = @embedFile("windows/components/cockpit-navigator.native") },
     .{ .path = "windows/components/cockpit-host.native", .source = @embedFile("windows/components/cockpit-host.native") },
+    .{ .path = "windows/components/cockpit-connected-hosts.native", .source = @embedFile("windows/components/cockpit-connected-hosts.native") },
     .{ .path = "windows/components/cockpit-directory.native", .source = @embedFile("windows/components/cockpit-directory.native") },
     .{ .path = "windows/components/cockpit-rename.native", .source = @embedFile("windows/components/cockpit-rename.native") },
     .{ .path = "windows/components/cockpit-agents.native", .source = @embedFile("windows/components/cockpit-agents.native") },
@@ -7095,7 +7167,6 @@ test "top tabs use native sibling arrow and edge traversal without selecting on 
         if (node.widget.semantics.role != .tab) continue;
         if (count == ids.len) return error.TooManyTabs;
         try std.testing.expectEqual(.segmented_control, node.widget.kind);
-        try std.testing.expectEqual(.tabs, layout.nodes[node.parent_index.?].widget.kind);
         try std.testing.expectApproxEqAbs(@as(f32, 32), node.frame.height, 0.01);
         ids[count] = node.widget.id;
         count += 1;
@@ -7211,6 +7282,8 @@ test "connection recovery stays available alongside retained command feedback" {
     defer rig.stop();
     try rig.settle(0, "READY");
     var model = rig.app_state.model;
+    model.headerHosts = true;
+    model.mainHeaderMenuOpen = true;
     model.canReconnect = true;
     try std.testing.expect(try compiledViewHasText(&model, "Reconnect"));
     model.commandNotice = "Outcome unknown; check the session before retrying.";
@@ -7481,6 +7554,64 @@ test "crowded tab strip holds its anchor when selecting a visible earlier tab" {
     try std.testing.expectEqual(before.first - 1, engine.currentRun().first);
 }
 
+test "long sidebar tab titles stay between their icon and identity-bound close target" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const title = "A very long terminal title that must elide instead of covering its icon or close control";
+    var row = rig.app_state.model.railRows[0].*;
+    row.label = title;
+    row.closeLabel = "Close tab: A very long terminal title";
+    const rows = [_]*const core.RailRow{&row};
+    var model = rig.app_state.model;
+    model.tabPlacement = .side;
+    model.railRows = &rows;
+    for (parity_sizes) |size| {
+        var built = try measureWindow(&model, 0, size);
+        defer built.arena.deinit();
+        const tab = labeledWidget(built.measured, .list_item, title) orelse return error.MissingTab;
+        const close = labeledWidget(built.measured, .button, row.closeLabel) orelse return error.MissingClose;
+        var icon: ?native_sdk.geometry.RectF = null;
+        var label: ?native_sdk.geometry.RectF = null;
+        for (built.measured.nodes) |node| {
+            const parent = node.parent_index orelse continue;
+            if (built.measured.nodes[parent].widget.id != tab.widget.id) continue;
+            if (node.widget.kind == .icon) icon = node.frame;
+            if (node.widget.kind == .text and std.mem.eql(u8, node.widget.text, title)) {
+                label = node.frame;
+                try std.testing.expectEqual(.ellipsis, node.widget.text_overflow);
+            }
+        }
+        const title_frame = label orelse return error.MissingTitle;
+        try std.testing.expect((icon orelse return error.MissingIcon).maxX() <= title_frame.x);
+        try std.testing.expect(title_frame.maxX() <= close.frame.x);
+        try std.testing.expect(title_frame.width > 32);
+        try std.testing.expect(close.frame.maxX() <= tab.frame.maxX());
+        try std.testing.expectApproxEqAbs(@as(f32, 32), close.frame.width, 0.01);
+        const action = built.tree.msgForPointer(close.widget.id, .up) orelse return error.MissingCloseAction;
+        try std.testing.expectEqualSlices(u8, row.target, action.close_tab_target);
+    }
+}
+
+test "top title and close affordance remain one adjacent tab unit" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.reach(.{ .label = "unified tabs", .tabs = 3 });
+    for (parity_sizes) |size| {
+        try rig.resize(size);
+        var built = try measureWindow(&rig.app_state.model, 0, size);
+        defer built.arena.deinit();
+        for (rig.app_state.model.visibleTabs) |tab| {
+            const trigger = labeledWidget(built.measured, .segmented_control, tab.accessibilityLabel) orelse return error.MissingTab;
+            const close = labeledWidget(built.measured, .button, tab.closeLabel) orelse return error.MissingClose;
+            try std.testing.expectApproxEqAbs(trigger.frame.maxX() + 1, close.frame.x, 0.01);
+            try std.testing.expectApproxEqAbs(trigger.frame.y, close.frame.y, 0.01);
+            try std.testing.expectApproxEqAbs(@as(f32, 32), close.frame.height, 0.01);
+        }
+    }
+}
+
 test "shipping chrome keeps command access and elided tab titles discoverable" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -7545,7 +7676,7 @@ test "Commands menu action is pointer reachable in primary and secondary chrome"
     try std.testing.expectEqual(@as(i64, 4), rig.app_state.model.navigatorView);
 }
 
-test "terminal ground stays opaque inside measured content and leaves material chrome exposed" {
+test "lone terminal ground stays opaque inside measured content and leaves material chrome exposed" {
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
@@ -7567,6 +7698,82 @@ test "terminal ground stays opaque inside measured content and leaves material c
             else => return error.TestExpectedOpaqueContentGround,
         };
         try std.testing.expectEqualDeep(space, ground.rect);
+        try std.testing.expectEqual(@as(f32, 1), ground.fill.color.a);
+    }
+}
+
+test "split terminal cards leave material gaps exposed through the shipping chrome" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, canvas.max_display_list_commands);
+    defer std.testing.allocator.free(commands);
+    const builder = try std.testing.allocator.create(canvas.Builder);
+    defer std.testing.allocator.destroy(builder);
+    const render_commands = try std.testing.allocator.alloc(canvas.RenderCommand, canvas.max_display_list_commands);
+    defer std.testing.allocator.free(render_commands);
+    const pixels = try std.testing.allocator.alloc(u8, 900 * 420 * 4);
+    defer std.testing.allocator.free(pixels);
+    const surface = try canvas.ReferenceRenderSurface.init(900, 420, pixels);
+    const size: native_sdk.geometry.SizeF = .init(900, 420);
+    const engine = bridge.engine.?;
+    for ([_][]const u8{ "pane.split-right", "pane.split-down" }) |split| {
+        try rig.dispatch(core.commandMsg(split).?);
+        try rig.settleCurrent();
+        for ([_]bool{ false, true }) |side| {
+            if ((rig.app_state.model.tabPlacement == .side) != side)
+                try rig.dispatch(.toggle_tab_placement);
+            try rig.resize(size);
+            const tokens = cockpit.projection.cockpitTokens(engine.model);
+            var panes: [cockpit.layout.max_panes]cockpit.layout.Pane = undefined;
+            const count = cockpit.projection.resolvePanes(engine.model, size, &panes);
+            try std.testing.expectEqual(@as(usize, 2), count);
+            builder.initAt(commands);
+            try engine.paint(builder, size, tokens);
+            // Include the actual markup/interaction layer: a second opaque
+            // container above the painter must not cover the material either.
+            var window = try measureWindow(&rig.app_state.model, 0, size);
+            defer window.arena.deinit();
+            try canvas.emitWidgetLayout(builder, window.measured, tokens);
+            const plan = try builder.displayList().renderPlan(render_commands);
+            // This proves canvas alpha/coverage, not AppKit material composition
+            // or CoreText glyph fidelity; those require the real host capture.
+            try surface.renderPass(.{
+                .commands = plan.commands,
+                .surface_size = size,
+                .full_repaint = true,
+            }, canvas.Color.rgba(0, 0, 0, 0));
+            const gap: native_sdk.geometry.PointF = if (std.mem.eql(u8, split, "pane.split-right"))
+                .init((panes[0].rect.x + panes[0].rect.width + panes[1].rect.x) / 2, panes[0].rect.y + panes[0].rect.height / 2)
+            else
+                .init(panes[0].rect.x + panes[0].rect.width / 2, (panes[0].rect.y + panes[0].rect.height + panes[1].rect.y) / 2);
+            try std.testing.expectEqual(@as(u8, 0), surface.pixelRgba8(@intFromFloat(gap.x), @intFromFloat(gap.y))[3]);
+            for (panes[0..count]) |pane| {
+                const middle_y: usize = @intFromFloat(pane.rect.y + pane.rect.height / 2);
+                // Both the cell grid and the card shoulder remain opaque.
+                try std.testing.expectEqual(@as(u8, 255), surface.pixelRgba8(@intFromFloat(pane.rect.x + pane.rect.width / 2), middle_y)[3]);
+                try std.testing.expectEqual(@as(u8, 255), surface.pixelRgba8(@intFromFloat(pane.rect.x + 2), middle_y)[3]);
+                // The focused pane's floating ring can cross its corner;
+                // the unfocused card has only its rounded border/dim scrim.
+                if (pane.node != engine.model.selectedTreeConst().?.focus)
+                    try std.testing.expectEqual(@as(u8, 0), surface.pixelRgba8(@intFromFloat(pane.rect.x), @intFromFloat(pane.rect.y))[3]);
+            }
+        }
+        // Retained/non-markup callers have no host-material slot and keep
+        // their full-window ground even with multiple panes.
+        const space = engine.model.ws().shipping_terminal_space;
+        engine.model.ws().shipping_terminal_space = null;
+        builder.initAt(commands);
+        try engine.paint(builder, size, cockpit.projection.cockpitTokens(engine.model));
+        try std.testing.expectEqualDeep(native_sdk.geometry.RectF.init(0, 0, size.width, size.height), builder.displayList().commands[0].fill_rect.rect);
+        engine.model.ws().shipping_terminal_space = space;
+        try rig.dispatch(core.commandMsg("terminal.close").?);
+        try rig.settleCurrent();
+        try rig.resize(size);
+        builder.initAt(commands);
+        try engine.paint(builder, size, cockpit.projection.cockpitTokens(engine.model));
+        const ground = builder.displayList().commands[0].fill_rect;
+        try std.testing.expectEqualDeep(engine.model.wsConst().shipping_terminal_space.?, ground.rect);
         try std.testing.expectEqual(@as(f32, 1), ground.fill.color.a);
     }
 }
@@ -8147,6 +8354,9 @@ test "remote presentation Clear blanks the current replica without execution inp
     try std.testing.expect(remotePresentationCommand(engine, .find, &fx));
     engine.onText(&fx, .{ .phase = .text_input, .text = "COCKPIT" });
     try std.testing.expectEqual(@as(usize, 1), engine.model.remoteUi(ref).?.search.count);
+    // This setup bypasses the native input wrapper, so publish its completed
+    // search change explicitly rather than borrowing a later snapshot read.
+    bridge.announce(engine);
     try rig.settle(@intCast(engine.sequence), "READY");
     const sequence = engine.sequence;
     try rig.dispatch(core.commandMsg("terminal.clear").?);
@@ -8549,10 +8759,11 @@ test "shipping OS close cancels an actually captured pre-close snapshot" {
     const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
     _ = shellEvent(.{ .key = pane.pty_key, .kind = .output, .bytes = "\x1b]2;title churn\x07" });
     try std.testing.expect(engine.revision != @as(u64, @intCast(rig.app_state.model.engineRevision.lo)));
-    // Dispatch the real invalidation through the SDK, capturing its host
-    // request before the OS close. Merely posting the channel event leaves
-    // the request uncaptured and cannot exercise a stale completion.
-    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    // Exercise the fallback read path explicitly: ordinary title updates now
+    // push their snapshots. Capture a genuine host reply before the OS close,
+    // while the title publication is also still queued on the core channel.
+    const invalidated = engine.invalidation();
+    try rig.dispatch(.{ .engine_event = .{ .key = protocol.event_channel_key, .state = .data, .bytes = &invalidated, .droppedPending = 0, .droppedTotal = 0 } });
     try std.testing.expect(bridge.pending);
     const errors = rig.harness.runtime.dispatchErrorTotal();
     const close = rig.harness.null_platform.userCloseWindow(id) orelse return error.TestExpectedWindowClose;
@@ -9083,16 +9294,17 @@ test "compiled top strip and side rail tabs share one control register and rende
     var attention_tab = rig.app_state.model.visibleTabs[0].*;
     attention_tab.attention = true;
     attention_tab.attentionLabel = "Needs attention";
+    attention_tab.accessibilityLabel = "Needs attention";
+    attention_tab.icon = "alert";
     const attention_tabs = [_]*const core.Tab{&attention_tab};
     var attention_model = rig.app_state.model;
     attention_model.visibleTabs = &attention_tabs;
     var attention = try measureWindow(&attention_model, 0, .init(1100, 640));
     defer attention.arena.deinit();
-    const marker = labeledWidget(attention.measured, .text, attention_tab.attentionLabel) orelse
+    const marker = labeledWidget(attention.measured, .segmented_control, attention_tab.attentionLabel) orelse
         return error.TestExpectedAttentionMarker;
-    try std.testing.expectEqualStrings("●", marker.widget.text);
-    try std.testing.expectEqual(tokens.colors.warning, marker.widget.style.foreground orelse
-        return error.TestExpectedAttentionColor);
+    try std.testing.expectEqualStrings("alert", marker.widget.icon);
+    try std.testing.expectApproxEqAbs(top_tab.frame.width, marker.frame.width, 0.01);
     try std.testing.expect(!std.meta.eql(tokens.colors.warning, cockpit.projection.semantic_theme.palette.accent));
 }
 
@@ -9501,28 +9713,41 @@ test "configured shortcuts stay armed in a non-owner window while another window
     try std.testing.expectEqual(before + 1, engine.model.wsAt(0).?.tab_count);
 }
 
-test "healthy canvas gives the footer space to the terminal" {
+test "connection and command feedback never resize any window's terminal canvas" {
     var rig = try Rig.start();
     defer rig.stop();
     try rig.settle(0, "READY");
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var ui = Adapter.Ui.init(arena.allocator());
-    const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
-    const tree = try ui.finalizeWithTokens(mainView(&ui, &rig.app_state.model), tokens);
-    const nodes = try arena.allocator().alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
-    const measured = try canvas.layoutWidgetTreeWithTokens(tree.root, .init(0, 0, 1100, 640), tokens, nodes);
-    var header_bottom: f32 = 0;
-    var status_top: f32 = 640;
-    for (measured.nodes) |entry| {
-        if (std.mem.eql(u8, entry.widget.semantics.label, "Terminal tabs")) header_bottom = entry.frame.y + entry.frame.height;
-        if (entry.widget.kind == .status_bar) status_top = entry.frame.y;
+    const states = [_]struct { status: []const u8, reconnect: bool = false, notice: []const u8 = "" }{
+        .{ .status = "Local terminals" },
+        .{ .status = "Connecting to build…" },
+        .{ .status = "build / Phux connected" },
+        .{ .status = "Connection lost", .reconnect = true },
+        .{ .status = "Phux connected", .notice = "Outcome unknown; check the session before retrying." },
+    };
+    inline for (.{ core.TabPlacement.top, core.TabPlacement.side }) |placement| {
+        for ([_]native_sdk.geometry.SizeF{ .init(900, 420), .init(1100, 640) }) |size| {
+            for (states) |state| {
+                var model = rig.app_state.model;
+                model.tabPlacement = placement;
+                model.connectionStatus = state.status;
+                model.window1Status = state.status;
+                model.window2Status = state.status;
+                model.window3Status = state.status;
+                model.window4Status = state.status;
+                model.canReconnect = state.reconnect;
+                model.commandNotice = state.notice;
+                for (0..5) |window| {
+                    var built = try measureWindow(&model, window, size);
+                    defer built.arena.deinit();
+                    const frame = for (built.measured.nodes) |entry| {
+                        if (std.mem.eql(u8, entry.widget.semantics.label, "phux-terminal-space")) break entry.frame;
+                    } else return error.MissingTerminalSpace;
+                    const left: f32 = if (placement == .side) 224 else 0;
+                    try std.testing.expectEqualDeep(native_sdk.geometry.RectF.init(left, 50, size.width - left, size.height - 50), frame);
+                }
+            }
+        }
     }
-    try std.testing.expect(header_bottom > 0);
-    try std.testing.expectEqual(@as(f32, 640), status_top);
-    const content = cockpit.projection.workspaceChrome(bridge.engine.?.model, .init(1100, 640)).content;
-    try std.testing.expect(content.y >= header_bottom);
-    try std.testing.expect(content.y + content.height <= status_top);
 }
 
 test "shipping unchanged GPU frames reuse compiled terminal geometry" {

@@ -5,6 +5,7 @@
 <import src="cockpit-rename.native" />
 <import src="cockpit-agents.native" />
 <import src="cockpit-chrome-recipes.native" />
+<import src="cockpit-connected-hosts.native" />
 <template name="cockpit-window" args="tabs rail width more cue menuopen status title detail emptyopen emptyname emptydetail emptypicked">
   <stack>
     <column>
@@ -16,39 +17,41 @@
       <row height="50" padding="4" gap="8" cross="center" window-drag="true">
         <spacer width="78" />
         <if test="{tabPlacement == 'top'}">
-          <tabs height="32" grow="1" gap="4" cross="center" label="Terminal tabs">
+          <tabs height="32" grow="1" gap="1" label="Terminal tabs">
             <for each="tabs" key="id" as="tab">
-              <!-- Direct buttons become native tab triggers: sibling arrow,
-                   Home/End focus and the selected underline belong to the SDK.
-                   Fixed attention/close slots keep all titles equal in width. -->
-              <button width="0" grow="1" height="32" size="sm" variant="ghost" role="tab" label="{tab.title}" selected="{tab.selected}" on-press="select_target:{tab.target}">{tab.title}
+              <!-- Native Tabs owns sibling arrow/Home/End traversal.
+                   The 1pt title/close seam and trailing spacer distinguish
+                   each tab without admitting close buttons to its focus group. -->
+              <segmented-control width="0" grow="1" height="32" size="sm" variant="ghost" role="tab" icon="{tab.icon}" label="{tab.accessibilityLabel}" selected="{tab.selected}" on-press="select_target:{tab.target}">{tab.title}
                 <context-menu>
+                  <menu-item on-press="rename_tab:{tab.target}">Rename Tab…</menu-item>
+                  <separator />
                   <menu-item disabled="{tab.movePreviousDisabled}" on-press="move_tab_previous_target:{tab.target}">Move Left</menu-item>
                   <menu-item disabled="{tab.moveNextDisabled}" on-press="move_tab_next_target:{tab.target}">Move Right</menu-item>
                   <separator />
                   <menu-item on-press="close_tab_target:{tab.target}">Close Tab</menu-item>
                 </context-menu>
-              </button>
-              <if test="{tab.attention}"><text width="16" foreground="warning" label="{tab.attentionLabel}">●</text></if>
-              <else><spacer width="16" /></else>
+              </segmented-control>
               <!-- Wrapping only the close control keeps it out of tab traversal. -->
               <stack width="32" height="32">
-                <button size="sm" variant="ghost" icon="x" label="{tab.closeLabel}" on-press="close_tab_target:{tab.target}" />
+                <button size="sm" width="32" height="32" variant="ghost" icon="x" foreground="text_muted" label="{tab.closeLabel}" on-press="close_tab_target:{tab.target}" />
                 <if test="{tab.selected}"><tooltip anchor="below">Close {tab.title}</tooltip></if>
               </stack>
+              <spacer width="4" />
             </for>
             <if test="{more}"><stack width="32"><button size="sm" width="32" variant="ghost" label="Tabs not shown" on-press="palette_open">{cue}</button><tooltip anchor="below">Show hidden tabs</tooltip></stack></if>
           </tabs>
         </if>
         <else><text grow="1" foreground="text_muted" overflow="ellipsis">{title}</text></else>
+        <use template="cockpit-connected-hosts" menuopen="{menuopen}" title="{title}" detail="{detail}" status="{status}" />
         <stack width="32">
           <button size="sm" variant="ghost" icon="plus" label="New Tab" on-press="new_terminal" />
           <tooltip anchor="below">New tab</tooltip>
         </stack>
         <stack width="32">
-          <button size="sm" variant="ghost" icon="chevron-down" label="Workspace actions" selected="{menuopen}" on-press="header_menu_toggle" />
+          <button size="sm" variant="ghost" icon="chevron-down" label="Workspace actions" selected="{menuopen and headerHosts == false}" on-press="header_menu_toggle" />
           <tooltip anchor="below">Workspace actions</tooltip>
-          <if test="{menuopen}">
+          <if test="{menuopen and headerHosts == false}">
             <dropdown-menu width="280" anchor="below" anchor-alignment="end" anchor-offset="8" on-dismiss="header_menu_close" label="Workspace actions">
               <column padding="8" gap="4">
                 <text overflow="ellipsis">{title}</text>
@@ -91,25 +94,26 @@
                     </row>
                   </if>
                   <else>
-                    <row gap="4" cross="center">
-                      <if test="{row.selected}"><spacer width="2" height="24" background="accent" /></if>
-                      <else><spacer width="2" height="24" /></else>
-                      <list-item grow="1" height="32" icon="terminal" role="tab" label="{row.label}" selected="{row.selected}" accent="surface_pressed" accent-foreground="text" on-press="select_target:{row.target}">
-                        <text overflow="ellipsis">{row.label}</text>
-                        <context-menu>
+                    <!-- All visible content uses real flow slots. Never mix
+                         the SDK's painted icon= slot with custom text children. -->
+                    <list-item height="32" gap="8" cross="center" role="tab" label="{row.label}" selected="{row.selected}" accent="surface_pressed" accent-foreground="text" on-press="select_target:{row.target}">
+                      <spacer width="4" />
+                      <if test="{row.mark}"><icon name="alert" width="16" height="16" foreground="warning" label="{row.attentionLabel}" /></if>
+                      <else><icon name="terminal" width="16" height="16" foreground="text_muted" /></else>
+                      <text width="0" grow="1" overflow="ellipsis">{row.label}</text>
+                      <stack width="32" height="32">
+                        <button size="sm" width="32" height="32" variant="ghost" icon="x" foreground="text_muted" label="{row.closeLabel}" on-press="close_tab_target:{row.target}" />
+                        <if test="{row.selected}"><tooltip anchor="below">Close {row.label}</tooltip></if>
+                      </stack>
+                      <context-menu>
+                          <menu-item on-press="rename_tab:{row.target}">Rename Tab…</menu-item>
+                          <separator />
                           <menu-item disabled="{row.movePreviousDisabled}" on-press="move_tab_previous_target:{row.target}">Move Up</menu-item>
                           <menu-item disabled="{row.moveNextDisabled}" on-press="move_tab_next_target:{row.target}">Move Down</menu-item>
                           <separator />
                           <menu-item on-press="close_tab_target:{row.target}">Close Tab</menu-item>
-                        </context-menu>
-                      </list-item>
-                      <if test="{row.mark}"><text width="16" foreground="warning" label="{row.attentionLabel}">{row.mark}</text></if>
-                      <else><spacer width="16" /></else>
-                      <stack width="32" height="32">
-                        <button size="sm" variant="ghost" icon="x" label="{row.closeLabel}" on-press="close_tab_target:{row.target}" />
-                        <if test="{row.selected}"><tooltip anchor="below">Close {row.label}</tooltip></if>
-                      </stack>
-                    </row>
+                      </context-menu>
+                    </list-item>
                   </else>
                 </for>
               </column>
@@ -143,21 +147,6 @@
               <spacer grow="1" />
             </else>
           </stack>
-          <if test="{canReconnect}">
-            <row height="40" gap="8" padding="4" cross="center" background="surface">
-              <icon name="alert" width="16" height="16" foreground="warning" />
-              <text grow="1">{status}</text>
-              <button size="sm" variant="ghost" on-press="reconnect">Reconnect</button>
-            </row>
-          </if>
-          <else>
-            <if test="{commandNotice}"><status-bar>{commandNotice}</status-bar></if>
-            <else>
-              <if test="{status != 'Local terminals'}">
-                <if test="{status != 'Phux connected'}"><status-bar height="24">{status}</status-bar></if>
-              </if>
-            </else>
-          </else>
         </column>
       </row>
     </column>

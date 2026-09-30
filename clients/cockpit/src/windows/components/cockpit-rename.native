@@ -5,9 +5,10 @@
         <column gap="8">
           <row cross="center" gap="8">
             <text grow="1" overflow="ellipsis">{renameTitle}</text>
-            <button size="sm" variant="ghost" icon="x" label="Close Rename Session" on-press="rename_close" />
+            <button size="sm" variant="ghost" icon="x" label="Close naming dialog" on-press="rename_close" />
           </row>
-          <input text="{renameQuery}" placeholder="New session name" autofocus="true" on-input="rename_edit" on-submit="rename_submit" label="New session name" />
+          <if test="{renameTabTarget}"><input text="{renameQuery}" placeholder="New tab name" autofocus="true" on-input="rename_edit" on-submit="rename_submit" label="New tab name" /></if>
+          <else><input text="{renameQuery}" placeholder="New session name" autofocus="true" on-input="rename_edit" on-submit="rename_submit" label="New session name" /></else>
           <text wrap="true" foreground="text_muted">{renameNotice}</text>
           <row gap="8" cross="center">
             <spacer grow="1" />

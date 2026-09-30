@@ -186,19 +186,21 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
     // colors); everything else on this surface is chrome and keeps the app's
     // own register. See `projection.terminalTokens`.
     const grid_tokens = projection.terminalTokensFrom(tokens, model);
-    // The measured terminal space includes its gutters, but excludes native
-    // material chrome. Keep that entire content region opaque: neither cell
-    // backgrounds nor gaps between panes should sample the desktop. Older
-    // non-markup callers retain their full-window ground until measured.
-    try builder.fillRect(.{
-        .id = window_ground_command_id,
-        .rect = ws.shipping_terminal_space orelse geometry.RectF.init(0, 0, size.width, size.height),
-        .fill = .{ .color = grid_tokens.colors.background },
-    });
-    try search_painter.paintWorkspace(model, builder, ws, size, tokens, window_active);
-
     var panes: [layout.max_panes]layout.Pane = undefined;
     const count = projection.resolvePanesIn(model, ws, size, &panes);
+    // Split cards own their opaque backgrounds. Leave their gutters and
+    // rounded corners clear so the host material beneath the canvas shows
+    // through. A lone pane stays full-bleed; non-markup callers retain their
+    // full-window ground because they have no measured material boundary.
+    if (ws.shipping_terminal_space == null or count < 2) {
+        try builder.fillRect(.{
+            .id = window_ground_command_id,
+            .rect = ws.shipping_terminal_space orelse geometry.RectF.init(0, 0, size.width, size.height),
+            .fill = .{ .color = grid_tokens.colors.background },
+        });
+    }
+    try search_painter.paintWorkspace(model, builder, ws, size, tokens, window_active);
+
     if (count == 0) return;
     const tree = ws.selectedTreeConst() orelse return;
     try paintTerminalContents(model, builder, tree, panes[0..count], tokens, window_active);

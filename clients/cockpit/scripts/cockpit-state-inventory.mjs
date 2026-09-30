@@ -30,7 +30,7 @@ export const shippingStateInventory = Object.freeze([
   Object.freeze({ state: 'disabled', file: 'windows/components/cockpit-settings.native',
     pattern: 'disabled="{appearanceBusy}"', evidence: 'pending Settings transaction' }),
   Object.freeze({ state: 'attention', file: 'windows/components/cockpit-window.native',
-    pattern: '<if test="{tab.attention}">', evidence: 'provider-backed tab attention' }),
+    pattern: null, evidence: 'provider-backed inline icon and accessibility label are projected state; native attention fixtures cover their identity and geometry' }),
   Object.freeze({ state: 'loading', file: 'windows/components/cockpit-navigator.native',
     pattern: '{palettenotice}', evidence: 'navigator loading notice from the public model' }),
   Object.freeze({ state: 'empty', file: 'windows/components/cockpit-window.native',

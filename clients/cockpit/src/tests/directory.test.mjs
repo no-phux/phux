@@ -182,6 +182,45 @@ test('a pending listing is polled on each invalidation until it settles into lab
   assert.equal(directoryCommand(cmd), undefined);
 });
 
+test('a published snapshot continues a pending directory listing without rereading the snapshot', () => {
+  let [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body: snapshotBytes() });
+  [model] = step(model, { kind: 'dir_open' });
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ status: 1, path: '' }) });
+  const body = snapshotBytes();
+  body[2] = 1;
+  let command;
+  [model, command] = step(model, { kind: 'engine_event', key: 0, state: 'data', bytes: body, droppedPending: 0, droppedTotal: 0 });
+  assertDirectoryRequest(command, request(2, 1, 0, 0));
+  const requests = command.op === 'batch' ? command.cmds : [command];
+  assert.equal(requests.some(item => item.name === 'cockpit.snapshot'), false);
+  [model] = step(model, { kind: 'directory_loaded', body: LISTED });
+  assert.deepEqual(model.dirRows.map(row => text(row.label)), ['Open a new tab here', '..', '.config/', 'cockpit/']);
+  assert.equal(model.dirAwaiting, false);
+});
+
+test('reconnecting through a pushed snapshot relists before polling the old directory request', () => {
+  let [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body: snapshotBytes() });
+  [model] = step(model, { kind: 'dir_open' });
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ status: 1, path: '' }) });
+  const offline = snapshotBytes();
+  offline[2] = 1; offline[23] = 3;
+  const event = { kind: 'engine_event', key: 0, state: 'data', bytes: offline, droppedPending: 0, droppedTotal: 0 };
+  [model] = step(model, event);
+  const online = snapshotBytes();
+  online[2] = 2;
+  let command;
+  [model, command] = step(model, { ...event, bytes: online });
+  const requests = command.op === 'batch' ? command.cmds : [command];
+  const directory = requests.filter(item => item.name === 'cockpit.directory');
+  assert.equal(directory.length, 1);
+  assert.equal(directory[0].payload[1], 1); // OPEN, not PAGE for the old request.
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ request: 2, status: 1, path: '' }) });
+  [model] = step(model, { kind: 'directory_loaded', body: reply({ request: 2, total: 1, rows: [[DIR_HERE, '']], path: '/new-home' }) });
+  assert.equal(text(model.dirPath), '/new-home');
+  assert.equal(model.dirAwaiting, false);
+  assert.equal(text(model.dirRows[0].label), 'Open a new tab here');
+});
+
 test('Enter on a directory descends with the listing it came from; the next reply names the new one', () => {
   let model = listed();
   let cmd;

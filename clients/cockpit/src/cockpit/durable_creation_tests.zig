@@ -41,6 +41,75 @@ fn startOn(endpoint: support.PhuxEndpoint) !*engine_module.Engine {
     return engine;
 }
 
+fn tabRenameRequest(engine: *engine_module.Engine, kind: @import("native/session_commands.zig").Kind, target: []const u8, name: []const u8, out: []u8) ![]const u8 {
+    const session = @import("native/session_commands.zig");
+    var bytes: [3 + 255 + 1 + 22]u8 = undefined;
+    bytes[0] = 1;
+    bytes[1] = @intFromEnum(kind);
+    bytes[2] = @intCast(name.len);
+    @memcpy(bytes[3..][0..name.len], name);
+    bytes[3 + name.len] = @intCast(target.len);
+    @memcpy(bytes[4 + name.len ..][0..target.len], target);
+    return session.handle(engine, &engine_module.NoShells{}, bytes[0 .. 4 + name.len + target.len], out);
+}
+
+test "tab rename changes durable workspace title only after confirmation and survives reprojection" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const session = @import("native/session_commands.zig");
+    const tabs = @import("native/tab_commands.zig");
+    const engine = try start();
+    defer engine.destroy();
+    const remote = engine.model.phux().?;
+    _ = try remote.requestWorkspaceRefresh();
+    try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 3);
+    try workspaceReply(engine, "workspace_refresh_state.bin", 2, 2);
+    try drain(engine);
+    const target = tabs.capture(engine.model, 0, 0).?.encode();
+    var out: [session.max_bytes]u8 = undefined;
+    const before = try tabRenameRequest(engine, .describe_tab, &target, "", &out);
+    try testing.expectEqual(@as(u8, 0), before[1]);
+    try testing.expect(before[2] > 0);
+    const shared_id = engine.model.primary.shared_ids[0].?;
+    const selected = engine.model.focusedTerminalRef().?;
+    const sent = try tabRenameRequest(engine, .rename_tab, &target, "renamed", &out);
+    try testing.expectEqual(@as(u8, 1), sent[1]);
+    try testing.expect(!std.mem.eql(u8, "renamed", remote.workspaceSnapshot().windows[0].name.slice()));
+    try workspaceReply(engine, "workspace_rename_metadata.bin", 5, 5);
+    try workspaceReply(engine, "workspace_rename_state.bin", 4, 4);
+    try drain(engine);
+    const settled = try tabRenameRequest(engine, .tab_status, &target, "", &out);
+    try testing.expectEqual(@as(u8, 2), settled[1]);
+    try testing.expect(selected.eql(engine.model.focusedTerminalRef().?));
+    try testing.expectEqualStrings("renamed", remote.workspaceSnapshot().windows[0].name.slice());
+    _ = try engine.model.shared_workspace.apply(engine.model, remote.workspaceSnapshot(), remote.connectionEpoch());
+    try testing.expectEqual(shared_id, engine.model.primary.shared_ids[0].?);
+    var title: [240]u8 = undefined;
+    try testing.expectEqualStrings("renamed", @import("native/workspace_projection.zig").tabTitleInto(engine.model, &engine.model.primary, 0, &title));
+}
+
+test "tab rename refuses a replaced presentation identity and cancel sends no workspace edit" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const session = @import("native/session_commands.zig");
+    const tabs = @import("native/tab_commands.zig");
+    const engine = try start();
+    defer engine.destroy();
+    const remote = engine.model.phux().?;
+    const target = tabs.capture(engine.model, 0, 0).?.encode();
+    var out: [session.max_bytes]u8 = undefined;
+    try testing.expectEqual(@as(u8, 0), (try tabRenameRequest(engine, .describe_tab, &target, "", &out))[1]);
+    remote.bridge.outgoing.reset();
+    _ = try tabRenameRequest(engine, .tab_cancel, &target, "", &out);
+    try fixture.expectOutgoingCount(remote.bridge, 0);
+    const late = try tabRenameRequest(engine, .rename_tab, &target, "wrong", &out);
+    try testing.expectEqual(@as(u8, 3), late[1]);
+    try fixture.expectOutgoingCount(remote.bridge, 0);
+    try testing.expectEqual(@as(u8, 0), (try tabRenameRequest(engine, .describe_tab, &target, "", &out))[1]);
+    engine.model.window_epochs[0] += 1;
+    const replaced = try tabRenameRequest(engine, .rename_tab, &target, "wrong", &out);
+    try testing.expectEqual(@as(u8, 3), replaced[1]);
+    try fixture.expectOutgoingCount(remote.bridge, 0);
+}
+
 test "a Connect-to-Host remote endpoint projects the attached session and admits New Window" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const engine = try startOn(.{ .remote = .{ .target = "mini" } });
@@ -104,6 +173,41 @@ fn confirmCreation(engine: *engine_module.Engine, kind: enum { add, split }) !vo
     }
     try drain(engine);
     try testing.expectEqual(@as(usize, 0), engine.creation.count());
+}
+
+test "confirmed placement starts the next queued creation without a timer or terminal output" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try start();
+    defer engine.destroy();
+    const model = engine.model;
+    const remote = model.phux().?;
+    try engine.creation.requestCorrelated(model, .tab, 71);
+    try feed(engine, "spawn-local.bin");
+    try feed(engine, "local-ready.bin");
+    try workspaceReply(engine, "workspace_refresh_metadata.bin", 3, 3);
+    try workspaceReply(engine, "workspace_refresh_state.bin", 2, 2);
+    try drain(engine);
+
+    // Another placement can queue while the first awaits its confirming read.
+    // Its refresh must start on that confirmation's drain, not the 1s poll.
+    const successor = try model.shared_mutations.requestCreation(model, .{
+        .expected_revision = remote.workspaceSnapshot().revision,
+        .session_id = remote.selectedSessionId().?,
+        .kind = .add,
+        .terminal_ref = refFor(9),
+    }, remote.connectionEpoch());
+    remote.bridge.outgoing.reset();
+    try workspaceReply(engine, "workspace_add_metadata.bin", 14, 5);
+    try workspaceReply(engine, "workspace_add_state.bin", 13, 4);
+    try drain(engine);
+
+    const completed = engine.creation.completionFor(71).?;
+    try testing.expectEqual(.placed, completed.placement);
+    try testing.expect(model.locateTerminal(refFor(8)) != null);
+    try testing.expect(model.locateTerminal(refFor(9)) == null);
+    try testing.expectEqual(.pending, remote.workspaceSnapshot().status);
+    try testing.expect(remote.workspaceSnapshot().request_id != completed.placement_request_id);
+    try testing.expect(model.shared_mutations.takeCompletion(successor) == null);
 }
 
 pub fn tabPublication() !void {

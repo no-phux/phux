@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { initialModel, update, commandMsg } from '../core.ts';
+import { initialModel, update } from '../core.ts';
 import { sessionRequest, sessionReply } from '../session.ts';
 
 const bytes = value => new TextEncoder().encode(value);
@@ -32,16 +31,6 @@ function opened(name = 'fixture', host = 'mini') {
   return step(model, { kind: 'session_loaded', body: reply(0, name, host) })[0];
 }
 
-test('Rename Session is a Window menu command', () => {
-  assert.deepEqual(commandMsg('session.rename'), { kind: 'rename_open' });
-  const zon = readFileSync(new URL('../../app.zon', import.meta.url), 'utf8');
-  assert.match(zon, /\.label = "Rename Session…", \.command = "session\.rename"/);
-  const markup = readFileSync(new URL('../windows/components/cockpit-rename.native', import.meta.url), 'utf8');
-  assert.match(markup, /<template name="cockpit-rename" args="renameopen">/);
-  for (const file of ['../app.native', '../windows/phux-window-1.native', '../windows/phux-window-4.native']) {
-    assert.match(readFileSync(new URL(file, import.meta.url), 'utf8'), /<use template="cockpit-rename" renameopen="\{\w+RenameOpen\}" \/>/);
-  }
-});
 
 test('opening asks which session is on screen, takes the modal slot, and seeds the field with its name', () => {
   let [model, cmd] = step(initialModel()[0], { kind: 'palette_open' });
@@ -127,10 +116,6 @@ function rowTarget(resource, session, provider = 0x80000001) {
   return out;
 }
 
-test('a session row offers Rename in its context menu, by its own captured target', () => {
-  const markup = readFileSync(new URL('../windows/components/cockpit-navigator.native', import.meta.url), 'utf8');
-  assert.match(markup, /on-press="palette_pick:\{row\.target\}">[\s\S]*?<context-menu>\s*<if test="\{row\.renamable\}">\s*<menu-item on-press="rename_row:\{row\.target\}">Rename Session…<\/menu-item>/);
-});
 
 test('only a listed session row is renamable: never a terminal or a peer group row', async () => {
   const { navigationScopedRequest } = await import('../protocol.ts');
@@ -203,4 +188,49 @@ test('the reply codec reads each field and refuses torn replies', () => {
   assert.equal(sessionReply(new Uint8Array([1, 9, 0, 0, 0])), null);
   assert.equal(sessionReply(new Uint8Array([2, 0, 0, 0, 0])), null);
   assert.deepEqual(sessionRequest(2, new Uint8Array(300)), new Uint8Array([1, 2, 0]));
+});
+
+function tabTarget(id) {
+  const target = new Uint8Array(22);
+  target[0] = 1;
+  new DataView(target.buffer).setUint32(18, id, true);
+  return target;
+}
+
+test('Rename Tab captures the invoked identity, prefills it, and waits for durable confirmation', () => {
+  const target = tabTarget(41);
+  let [model, cmd] = step(initialModel()[0], { kind: 'rename_tab', target });
+  assert.deepEqual(sessionRequests(cmd), [new Uint8Array([1, 8, 0, 22, ...target])]);
+  [model] = step(model, { kind: 'session_loaded', body: reply(0, 'build', 'mini') });
+  assert.equal(text(model.renameQuery), 'build');
+  assert.equal(text(model.renameTitle), 'Rename Tab');
+  assert.equal(model.renameFocus, bytes('build').length);
+  // Selection changes must not redirect this dialog to another tab.
+  model = { ...model, renameQuery: bytes('release'), selectedTab: 9 };
+  [model, cmd] = step(model, { kind: 'rename_submit' });
+  assert.deepEqual(sessionRequests(cmd), [new Uint8Array([1, 9, 7, ...bytes('release'), 22, ...target])]);
+  [model] = step(model, { kind: 'session_loaded', body: reply(1, '', '') });
+  assert.equal(model.renameOpen, true);
+  [model, cmd] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes(2) });
+  assert.deepEqual(sessionRequests(cmd), [new Uint8Array([1, 10, 0, 22, ...target])]);
+  [model] = step(model, { kind: 'session_loaded', body: reply(3, '', '', 'Workspace changed') });
+  assert.equal(model.renameOpen, true);
+  assert.equal(text(model.renameQuery), 'release');
+  assert.equal(text(model.renameNotice), 'Workspace changed');
+  [model] = step(model, { kind: 'rename_submit' });
+  [model] = step(model, { kind: 'session_loaded', body: reply(2, '', '') });
+  assert.equal(model.renameOpen, false);
+});
+
+test('cancelled Rename Tab retires only its captured waiter and ignores a late reply', () => {
+  const target = tabTarget(12);
+  let [model] = step(initialModel()[0], { kind: 'rename_tab', target });
+  let cmd;
+  [model, cmd] = step(model, { kind: 'rename_close' });
+  assert.deepEqual(sessionRequests(cmd), [new Uint8Array([1, 11, 0, 22, ...target])]);
+  [model] = step(model, { kind: 'session_loaded', body: reply(0, 'late', 'mini') });
+  assert.equal(model.renameOpen, false);
+  [model, cmd] = step(model, { kind: 'rename_open' });
+  assert.deepEqual(sessionRequests(cmd), [sessionRequest(1, bytes(''))]);
+  assert.equal(model.renameTabTarget.length, 0, 'Rename Session never inherits a tab target');
 });

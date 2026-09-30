@@ -30,6 +30,12 @@
 //! retargeted or reconnected since, or no longer listing that session, names
 //! nothing and nothing is sent. A listing peer's row is renamed on that peer's listing connection:
 //! the write is metadata, so the peer still never attaches.
+//!
+//! Kinds 8/9/10/11 describe, rename, poll and retire a captured tab editor.
+//! They carry the process-local tab target after the name. Description captures
+//! the exact provider attachment/epoch, session and shared window; submission
+//! uses its existing workspace mutation queue. Only a confirmed workspace
+//! snapshot changes the name; retiring the editor never rolls back a write.
 
 const std = @import("std");
 const support = @import("../phux_support.zig");
@@ -45,7 +51,7 @@ pub const max_bytes: usize = 5 + 3 * max_text_bytes;
 /// 4 and 5 serve the Empty session state (empty_session.zig): New Tab in
 /// the empty session a window shows, and dismissing a picked one. 6 and 7
 /// are 1 and 2 for the session a switcher row names (below).
-pub const Kind = enum(u8) { describe = 1, rename = 2, status = 3, new_tab = 4, dismiss = 5, describe_row = 6, rename_row = 7 };
+pub const Kind = enum(u8) { describe = 1, rename = 2, status = 3, new_tab = 4, dismiss = 5, describe_row = 6, rename_row = 7, describe_tab = 8, rename_tab = 9, tab_status = 10, tab_cancel = 11 };
 /// `unavailable`: nothing on screen can be renamed. `refused`: this rename
 /// changed nothing; the reason says why.
 pub const Phase = enum(u8) { ready = 0, pending = 1, renamed = 2, refused = 3, unavailable = 4 };
@@ -101,8 +107,8 @@ pub fn decode(bytes: []const u8) Error!Request {
     const name = bytes[3..name_end];
     const target = try decodeTarget(kind, bytes, name_end);
     switch (kind) {
-        .rename, .rename_row => if (name.len == 0 or !std.unicode.utf8ValidateSlice(name)) return error.InvalidRequest,
-        .describe, .status, .new_tab, .dismiss, .describe_row => if (name.len != 0) return error.InvalidRequest,
+        .rename, .rename_row, .rename_tab => if (name.len == 0 or !std.unicode.utf8ValidateSlice(name)) return error.InvalidRequest,
+        .describe, .status, .new_tab, .dismiss, .describe_row, .describe_tab, .tab_status, .tab_cancel => if (name.len != 0) return error.InvalidRequest,
     }
     return .{ .kind = kind, .name = name, .target = target };
 }
@@ -110,7 +116,7 @@ pub fn decode(bytes: []const u8) Error!Request {
 /// A row kind's captured target follows its name; every other kind ends at
 /// its name.
 fn decodeTarget(kind: Kind, bytes: []const u8, at: usize) Error![]const u8 {
-    if (kind != .describe_row and kind != .rename_row) {
+    if (kind != .describe_row and kind != .rename_row and kind != .describe_tab and kind != .rename_tab and kind != .tab_status and kind != .tab_cancel) {
         return if (at == bytes.len) "" else error.InvalidRequest;
     }
     if (at >= bytes.len) return error.InvalidRequest;
@@ -158,6 +164,13 @@ pub fn handle(engine: anytype, fx: anytype, payload: []const u8, out: []u8) Erro
         .rename => rename(engine, request.name, &scratch),
         .describe_row => if (rowTarget(engine, request.target)) |target| describeTarget(engine, target) else row_gone,
         .rename_row => if (rowTarget(engine, request.target)) |target| renameTarget(engine, target, request.name, &scratch) else row_gone,
+        .describe_tab => describeTab(engine, request.target),
+        .rename_tab => renameTab(engine, request.target, request.name),
+        .tab_status => tabStatus(engine, request.target),
+        .tab_cancel => blk: {
+            if (engine.tab_rename.matches(request.target)) retireTabRename(engine);
+            break :blk Reply{ .phase = .ready };
+        },
         .status => status(engine, &scratch),
         .new_tab => newTab(engine, fx),
         .dismiss => blk: {
@@ -323,6 +336,130 @@ fn sessionName(owner: anytype, id: u32) []const u8 {
 fn hostLabel(model: anytype, owner: anytype) []const u8 {
     if (model.phuxConst()) |active| if (active.providerId() == owner.providerId()) return active.remoteLabel() orelse "This Mac";
     return projection.peerHostLabel(model, owner.providerId());
+}
+
+const tab_commands = @import("tab_commands.zig");
+const shared_mutations = @import("../shared_mutations.zig");
+
+/// The dialog owns a captured attachment, session and shared window, not the
+/// current selection. Closing the dialog retires only its waiter, never the SET.
+pub const TabRename = struct {
+    target: ?tab_commands.Target = null,
+    attachment: u64 = 0,
+    epoch: u64 = 0,
+    session: u32 = 0,
+    window: [16]u8 = @splat(0),
+    ticket: ?u64 = null,
+    phase: Phase = .unavailable,
+    name: [max_text_bytes]u8 = undefined,
+    name_len: usize = 0,
+
+    fn matches(self: *const TabRename, bytes: []const u8) bool {
+        const target = self.target orelse return false;
+        const received = tab_commands.decodeCaptured(bytes) orelse return false;
+        return std.meta.eql(target, received);
+    }
+};
+
+const tab_unavailable: Reply = .{ .phase = .unavailable, .reason = "This tab has no connected, durable workspace to rename." };
+const tab_changed: Reply = .{ .phase = .refused, .reason = "That tab or its connection changed. Close Rename and try again." };
+const tab_unknown: Reply = .{ .phase = .refused, .reason = "The rename could not be confirmed. Refresh the workspace before trying again." };
+
+fn tabRenameQueue(engine: anytype) ?*shared_mutations.Coordinator {
+    if (comptime !support.phux_enabled) return null;
+    if (engine.model.phux()) |remote| {
+        if (remote.context_id == engine.tab_rename.attachment) return &engine.model.shared_mutations;
+    }
+    return engine.peer_edits.renameQueueForAttachment(engine.model, engine.tab_rename.attachment);
+}
+
+fn retireTabRename(engine: anytype) void {
+    if (engine.tab_rename.ticket) |ticket| {
+        if (tabRenameQueue(engine)) |queue| queue.forget(ticket);
+    }
+    engine.tab_rename = .{};
+}
+
+/// Modal displacement also abandons its waiter (without cancelling the write).
+pub fn syncTabRename(engine: anytype, open: bool, target: []const u8) void {
+    if (!open or !engine.tab_rename.matches(target)) retireTabRename(engine);
+}
+
+fn describeTab(engine: anytype, bytes: []const u8) Reply {
+    retireTabRename(engine);
+    if (comptime !support.phux_enabled) return tab_unavailable;
+    const target = tab_commands.decodeCaptured(bytes) orelse return tab_changed;
+    const index = target.resolve(engine.model) orelse return tab_changed;
+    const ws = engine.model.wsAtConst(target.window) orelse return tab_changed;
+    const tree = ws.treeConst(index) orelse return tab_changed;
+    const remote = engine.model.phuxForTree(tree) orelse return tab_unavailable;
+    const attachment = tree.attachment_id orelse return tab_unavailable;
+    const id = ws.shared_ids[index] orelse return tab_unavailable;
+    const snapshot = remote.workspaceSnapshot();
+    if (remote.context_id != attachment or remote.state() != .attached) return tab_unavailable;
+    const window = shared_mutations.findWindow(snapshot, id) orelse return tab_changed;
+    if (window.name.len > max_text_bytes) return .{ .phase = .unavailable, .reason = "This tab name is too long to edit here." };
+    engine.tab_rename = .{ .target = target, .attachment = attachment, .epoch = remote.connectionEpoch(), .session = snapshot.session_id, .window = id, .phase = .ready };
+    const length = if (window.name.len > 0) blk: {
+        const name = window.name.slice();
+        @memcpy(engine.tab_rename.name[0..name.len], name);
+        break :blk name.len;
+    } else projection.tabTitleInto(engine.model, ws, index, &engine.tab_rename.name).len;
+    engine.tab_rename.name_len = length;
+    return .{ .phase = .ready, .name = engine.tab_rename.name[0..length], .host = hostLabel(engine.model, remote) };
+}
+
+fn tabRenameOwner(engine: anytype, bytes: []const u8) ?*support.PhuxProvider {
+    if (comptime !support.phux_enabled) return null;
+    const held = &engine.tab_rename;
+    if (!held.matches(bytes)) return null;
+    const index = held.target.?.resolve(engine.model) orelse return null;
+    const ws = engine.model.wsAtConst(held.target.?.window) orelse return null;
+    const tree = ws.treeConst(index) orelse return null;
+    if (tree.attachment_id != held.attachment) return null;
+    const id = ws.shared_ids[index] orelse return null;
+    if (!std.mem.eql(u8, &id, &held.window)) return null;
+    const remote = engine.model.phuxForTree(tree) orelse return null;
+    if (remote.context_id != held.attachment or remote.connectionEpoch() != held.epoch) return null;
+    if (remote.workspaceSnapshot().session_id != held.session or remote.state() != .attached) return null;
+    return remote;
+}
+
+fn renameTab(engine: anytype, bytes: []const u8, name: []const u8) Reply {
+    if (comptime !support.phux_enabled) return tab_unavailable;
+    const remote = tabRenameOwner(engine, bytes) orelse return tab_changed;
+    if (engine.tab_rename.ticket != null) return tabStatus(engine, bytes);
+    if (std.mem.trim(u8, name, " \t\r\n").len == 0) return .{ .phase = .refused, .reason = "Enter a name for this tab." };
+    for (name) |byte| if (byte < 0x20 or byte == 0x7f) return .{ .phase = .refused, .reason = "A tab name cannot contain control characters." };
+    const ticket = requestTabRename(engine, remote, name) catch |err| return .{
+        .phase = .refused,
+        .reason = if (err == error.WorkspaceBusy) "The workspace is changing. Try again when it settles." else "Could not rename this tab on its owning host.",
+    };
+    engine.tab_rename.ticket = ticket;
+    engine.tab_rename.phase = .pending;
+    return tabStatus(engine, bytes);
+}
+
+fn requestTabRename(engine: anytype, remote: *support.PhuxProvider, name: []const u8) !u64 {
+    if (engine.model.phux()) |primary| {
+        if (primary == remote) return engine.model.shared_mutations.requestRename(engine.model, engine.tab_rename.window, name);
+    }
+    return engine.peer_edits.renameForAttachment(engine.model, remote.context_id, engine.tab_rename.window, name);
+}
+
+fn tabStatus(engine: anytype, bytes: []const u8) Reply {
+    if (!engine.tab_rename.matches(bytes)) return tab_changed;
+    if (engine.tab_rename.phase != .pending) return .{ .phase = engine.tab_rename.phase, .reason = if (engine.tab_rename.phase == .refused) tab_unknown.reason else "" };
+    _ = tabRenameOwner(engine, bytes) orelse {
+        retireTabRename(engine);
+        return tab_unknown;
+    };
+    const queue = tabRenameQueue(engine) orelse return tab_unknown;
+    const ticket = engine.tab_rename.ticket orelse return tab_unknown;
+    const completion = queue.takeCompletion(ticket) orelse return .{ .phase = .pending };
+    engine.tab_rename.ticket = null;
+    engine.tab_rename.phase = if (completion == .confirmed) .renamed else .refused;
+    return .{ .phase = engine.tab_rename.phase, .reason = if (completion == .confirmed) "" else tab_unknown.reason };
 }
 
 test "a rename request names its session; malformed requests are refused" {

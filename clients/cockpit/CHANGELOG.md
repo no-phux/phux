@@ -3,6 +3,25 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Features
+
+* **cockpit:** add an identity-bound Rename Tab action and a connected-host
+  dropdown that opens the selected attachment's sessions.
+
+### Bug Fixes
+
+* **cockpit:** publish confirmed pane changes without an extra snapshot
+  roundtrip, and advance queued creation without waiting for terminal output.
+* **cockpit:** expose native window material between split terminal cards while
+  keeping terminal grids opaque.
+* **cockpit:** group tab titles and close controls, preserve native keyboard
+  traversal, and keep sidebar titles clear of icons and close targets.
+* **cockpit:** keep terminal canvas geometry stable through connection changes
+  and command feedback; show status and Reconnect in the fixed header instead
+  of inserting bottom bars.
+
 ## [0.31.0](https://github.com/no-phux/phux/compare/cockpit-v0.30.0...cockpit-v0.31.0) (2026-09-26)
 
 

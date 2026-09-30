@@ -25,11 +25,11 @@ function committedCommand(cmd) {
   assert.deepEqual(cmd.cmds[0], { op: 'host_bytes', name: 'cockpit.committed', payload: new Uint8Array() });
   return cmd.cmds[1];
 }
-function page(query = '', offset = 0, indices = [0, 1, 2, 3], total = 10, rev = revision) {
+function page(query = '', offset = 0, indices = [0, 1, 2, 3], total = 10, rev = revision, resourceOffset = 0) {
   const head = navigationRequest(rev, offset, bytes(query));
   const rows = indices.map(index => {
     const label = bytes(`Window 2 · Phux · terminal ${index}`);
-    const identity = target(index);
+    const identity = target(index + resourceOffset);
     return [index % 256, Math.floor(index / 256), label.length, identity.length, 0, ...identity, ...label];
   }).flat();
   return new Uint8Array([...head, total % 256, Math.floor(total / 256), indices.length, ...rows]);
@@ -214,6 +214,55 @@ function tabbedSnapshotBytes(title = 'Terminal 1', extension = []) {
   const trailer = [0, 255, 0, 0, 0, 0, 0, 0, 0, 0];
   return new Uint8Array([...head, ...tab, ...trailer, ...extension]);
 }
+
+test('published snapshots show confirmed tabs without another snapshot host request', () => {
+  const body = tabbedSnapshotBytes('Confirmed pane');
+  body[2] = 1;
+  const event = { kind: 'engine_event', key: 0, state: 'data', bytes: body, droppedPending: 0, droppedTotal: 0 };
+  // Complete boot's result read so this publication starts a fresh one.
+  let [model] = step(initialModel()[0], { kind: 'command_result_loaded', body: new Uint8Array([1, 0]) });
+  let command;
+  [model, command] = step(model, event);
+  assert.equal(text(model.tabs[0].title), 'Confirmed pane');
+  assert.equal(model.engineConnected, true);
+  const requests = command.op === 'batch' ? command.cmds : [command];
+  assert.equal(requests.some(item => item.name === 'cockpit.snapshot'), false);
+  assert.equal(requests.some(item => item.name === 'cockpit.command-results'), true);
+
+  // A queued older host completion or channel publication cannot restore
+  // an obsolete topology after the direct publication.
+  const stale = tabbedSnapshotBytes('Obsolete pane');
+  [model, command] = step(model, { ...event, bytes: stale });
+  assert.equal(text(model.tabs[0].title), 'Confirmed pane');
+  assert.equal(command, null);
+  [model, command] = step(model, { kind: 'snapshot_loaded', body: stale });
+  assert.equal(text(model.tabs[0].title), 'Confirmed pane');
+  assert.equal(command, null);
+});
+
+test('a pushed snapshot refreshes open navigation and preserves an in-flight result read', () => {
+  let [model] = step(open(), { kind: 'navigation_loaded', body: page() });
+  const body = snapshotBytes(2);
+  body[2] = 1; body[10] = 8;
+  const event = { kind: 'engine_event', key: 0, state: 'data', bytes: body, droppedPending: 0, droppedTotal: 0 };
+  let command;
+  [model, command] = step(model, event);
+  const requests = command.op === 'batch' ? command.cmds : [command];
+  const navigation = requests.find(item => item.name === 'cockpit.navigation');
+  assert.deepEqual(navigation.payload, navigationRequest({ hi: 0, lo: 8 }, 0, bytes('')));
+  assert.equal(model.paletteLoading, true);
+  // A complete one-row page whose stable resource differs from the old row.
+  [model] = step(model, { kind: 'navigation_loaded', body: page('', 0, [0], 1, { hi: 0, lo: 8 }, 4) });
+  assert.deepEqual(model.paletteRows[0].target, target(4));
+
+  body[2] = 2;
+  [model, command] = step(model, event);
+  const pending = command.op === 'batch' ? command.cmds : [command];
+  assert.equal(pending.some(item => item.name === 'cockpit.command-results'), false);
+  [model, command] = step(model, { kind: 'command_result_loaded', body: new Uint8Array([1, 0]) });
+  assert.equal(command.name, 'cockpit.command-results');
+  assert.equal(model.commandResults.loading, true);
+});
 
 // `[kind][u16 length][payload]`, the framing ts_snapshot.zig writes.
 function extensionRecord(kind, payload) {

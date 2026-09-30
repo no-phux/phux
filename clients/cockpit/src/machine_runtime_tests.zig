@@ -229,6 +229,45 @@ test "machine runtime aggregates actual captured connections without joining edi
     try std.testing.expectEqual(machines.Connection.failed, adapter.status(identity).state);
 }
 
+test "connected host menu captures legacy peers separately and fences window lifetime" {
+    if (comptime !@import("cockpit/phux_support.zig").phux_enabled) return error.SkipZigTest;
+    const hosts = @import("cockpit/native/connected_hosts.zig");
+    const fixture = try Fixture.create();
+    defer fixture.destroy();
+    const model = fixture.engine.model;
+    // A retained local provider without placed terminals is not a host row.
+    model.primary.tab_count = 0;
+    // Connect to Host and restored peers may be alias-backed. They must appear
+    // without pretending that their alias proves a current registry identity.
+    const legacy = try Provider.create(gpa, std.testing.io, .{ .remote = .{ .target = "mini" } }, "work", "legacy");
+    model.phux_provider = legacy;
+    const sibling = try fixture.add(identity);
+    try Fixture.negotiate(legacy);
+    try Fixture.negotiate(sibling);
+    _ = model.openWindow(1) orelse return error.OutOfMemory;
+    model.bindWindowAttachment(1, sibling.context_id);
+    model.active_window = 1;
+    var buffer: [4096]u8 = undefined;
+    const reply = try hosts.encode(model, &.{ 1, 4 }, 0, &buffer);
+    try std.testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, reply[2..4], .little));
+    var at: usize = 5;
+    const first: [hosts.target_len]u8 = reply[at + 5 ..][0..hosts.target_len].*;
+    at += 5 + reply[at + 2] + std.mem.readInt(u16, reply[at + 3 ..][0..2], .little);
+    const second: [hosts.target_len]u8 = reply[at + 5 ..][0..hosts.target_len].*;
+    try std.testing.expectEqual(legacy.context_id, hosts.resolve(model, &first).?);
+    try std.testing.expectEqual(sibling.context_id, hosts.resolve(model, &second).?);
+    try std.testing.expect(!std.mem.eql(u8, &first, &second));
+    model.active_window = 0;
+    try std.testing.expectEqual(sibling.context_id, hosts.resolve(model, &second).?);
+    var reconnected = second;
+    std.mem.writeInt(u64, reconnected[26..34], sibling.connectionEpoch() + 1, .little);
+    try std.testing.expect(hosts.resolve(model, &reconnected) == null);
+    model.closeWindow(1);
+    _ = model.openWindow(1) orelse return error.OutOfMemory;
+    model.bindWindowAttachment(1, sibling.context_id);
+    try std.testing.expect(hosts.resolve(model, &second) == null);
+}
+
 test "machine runtime consumes rejected and deduplicated real FFI tunnels exactly once" {
     if (comptime !@import("cockpit/phux_support.zig").phux_enabled) return error.SkipZigTest;
     const fixture = try Fixture.create();
