@@ -42,19 +42,22 @@ const AUTH_FAILED_CODE: u32 = 0x01;
 /// above panes-per-attach, far below task exhaustion. quinn enforces it.
 const MAX_CONCURRENT_BIDI_STREAMS: u64 = 128;
 
-/// Bound on each admission step (handshake, first stream, preamble). The
-/// accept loop is sequential, so an un-timed stalled peer would stop the
-/// listener accepting anyone else.
-const ADMISSION_DEADLINE: Duration = Duration::from_secs(10);
+/// Bound on each admission step (handshake, first stream, preamble), so a
+/// stalled peer frees its admission slot.
+const ADMISSION_DEADLINE: Duration = super::HANDSHAKE_DEADLINE;
+
+type QuicAccepted = (QuicMuxReader, QuicWriter, crate::auth::ConnectionIdentity);
 
 /// A QUIC listener: a quinn endpoint bound to a UDP socket.
 pub(crate) struct QuicListener {
     endpoint: quinn::Endpoint,
     admission: QuicAdmission,
     workload_registry: Option<Arc<crate::workload::ReloadingWorkloadRegistry>>,
+    admissions: super::Admissions<QuicAccepted>,
 }
 
 /// Whom a [`QuicListener`] admits.
+#[derive(Clone)]
 pub(crate) enum QuicAdmission {
     /// Anyone who completes the TLS handshake; no preamble (loopback/dev).
     Open,
@@ -82,6 +85,7 @@ impl QuicListener {
             endpoint: server_endpoint(addr, tls, Some(MAX_CONCURRENT_BIDI_STREAMS))?,
             admission: tokens.map_or(QuicAdmission::Open, QuicAdmission::Store),
             workload_registry,
+            admissions: super::Admissions::new(),
         })
     }
 
@@ -161,18 +165,22 @@ fn workload_credential(
 /// QUIC read half: length-prefixed frames off one receive stream.
 pub(crate) struct QuicReader {
     recv: quinn::RecvStream,
+    frames: super::FrameAssembler,
 }
 
 impl QuicReader {
     /// Wrap one already-authenticated QUIC receive stream in phux framing.
-    pub(crate) const fn from_stream(recv: quinn::RecvStream) -> Self {
-        Self { recv }
+    pub(crate) fn from_stream(recv: quinn::RecvStream) -> Self {
+        Self {
+            recv,
+            frames: super::FrameAssembler::default(),
+        }
     }
 }
 
 impl FrameReader for QuicReader {
     async fn read_frame(&mut self) -> io::Result<Option<BytesMut>> {
-        read_framed(&mut self.recv).await
+        self.frames.read_frame(&mut self.recv).await
     }
 }
 
@@ -285,17 +293,21 @@ impl Incoming for QuicListener {
 
     /// One endpoint multiplexes many connections, so a failed or refused
     /// connection is logged and skipped; only endpoint closure ends the loop.
-    async fn accept(
-        &self,
-    ) -> io::Result<(QuicMuxReader, QuicWriter, crate::auth::ConnectionIdentity)> {
-        loop {
-            let incoming = self.endpoint.accept().await.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotConnected, "quic endpoint closed")
-            })?;
-            if let Some(accepted) = self.admit_connection(incoming).await {
-                return Ok(accepted);
-            }
-        }
+    async fn accept(&self) -> io::Result<QuicAccepted> {
+        self.admissions
+            .next(|| async {
+                let incoming = self.endpoint.accept().await.ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotConnected, "quic endpoint closed")
+                })?;
+                let admission = admit_connection(
+                    incoming,
+                    self.admission.clone(),
+                    self.workload_registry.clone(),
+                );
+                Ok(Box::pin(async move { admission.await.map(Ok) })
+                    as super::Admission<QuicAccepted>)
+            })
+            .await
     }
 
     fn kind(&self) -> &'static str {
@@ -303,96 +315,94 @@ impl Incoming for QuicListener {
     }
 }
 
-impl QuicListener {
-    /// Handshake, first stream, preamble, then workload certificate, each
-    /// bounded by [`ADMISSION_DEADLINE`]. `None` means refused or failed.
-    async fn admit_connection(
-        &self,
-        incoming: quinn::Incoming,
-    ) -> Option<(QuicMuxReader, QuicWriter, crate::auth::ConnectionIdentity)> {
-        let remote = incoming.remote_address();
-        let conn = match tokio::time::timeout(ADMISSION_DEADLINE, incoming).await {
-            Ok(Ok(conn)) => conn,
-            Ok(Err(err)) => {
-                debug!(%remote, error = %err, "quic handshake failed");
-                return None;
-            }
-            Err(_) => {
-                debug!(%remote, "quic handshake timed out");
-                return None;
-            }
-        };
-        let (send, mut recv) =
-            match tokio::time::timeout(ADMISSION_DEADLINE, conn.accept_bi()).await {
-                Ok(Ok(pair)) => pair,
-                Ok(Err(err)) => {
-                    debug!(%remote, error = %err, "quic stream accept failed");
-                    return None;
+/// Handshake, first stream, preamble, then workload certificate, each
+/// bounded by [`ADMISSION_DEADLINE`]. `None` means refused or failed.
+async fn admit_connection(
+    incoming: quinn::Incoming,
+    admission: QuicAdmission,
+    workload_registry: Option<Arc<crate::workload::ReloadingWorkloadRegistry>>,
+) -> Option<QuicAccepted> {
+    let remote = incoming.remote_address();
+    let conn = match tokio::time::timeout(ADMISSION_DEADLINE, incoming).await {
+        Ok(Ok(conn)) => conn,
+        Ok(Err(err)) => {
+            debug!(%remote, error = %err, "quic handshake failed");
+            return None;
+        }
+        Err(_) => {
+            debug!(%remote, "quic handshake timed out");
+            return None;
+        }
+    };
+    let (send, mut recv) = match tokio::time::timeout(ADMISSION_DEADLINE, conn.accept_bi()).await {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(err)) => {
+            debug!(%remote, error = %err, "quic stream accept failed");
+            return None;
+        }
+        Err(_) => {
+            debug!(%remote, "quic stream accept timed out");
+            conn.close(AUTH_FAILED_CODE.into(), b"stream timeout");
+            return None;
+        }
+    };
+
+    let credential = match &admission {
+        QuicAdmission::Open => None,
+        admission => {
+            let preamble =
+                tokio::time::timeout(ADMISSION_DEADLINE, admit(&mut recv, admission)).await;
+            let Ok(Some(credential)) = preamble else {
+                if preamble.is_err() {
+                    debug!(%remote, "quic auth preamble timed out");
+                } else {
+                    warn!(%remote, "quic consumer refused: missing or invalid token");
                 }
-                Err(_) => {
-                    debug!(%remote, "quic stream accept timed out");
-                    conn.close(AUTH_FAILED_CODE.into(), b"stream timeout");
-                    return None;
-                }
+                conn.close(AUTH_FAILED_CODE.into(), b"unauthorized");
+                return None;
             };
+            Some(credential)
+        }
+    };
 
-        let credential = match &self.admission {
-            QuicAdmission::Open => None,
-            admission => {
-                let preamble =
-                    tokio::time::timeout(ADMISSION_DEADLINE, admit(&mut recv, admission)).await;
-                let Ok(Some(credential)) = preamble else {
-                    if preamble.is_err() {
-                        debug!(%remote, "quic auth preamble timed out");
-                    } else {
-                        warn!(%remote, "quic consumer refused: missing or invalid token");
-                    }
-                    conn.close(AUTH_FAILED_CODE.into(), b"unauthorized");
-                    return None;
-                };
-                Some(credential)
-            }
-        };
+    // One refusal for every workload failure; the peer learns only that
+    // it was refused (`workload-auth.md` §7).
+    let workload_credential = match &workload_registry {
+        Some(registry) => {
+            let Some(credential) = workload_credential(&conn, registry) else {
+                debug!(%remote, "quic mTLS client identity refused");
+                conn.close(AUTH_FAILED_CODE.into(), b"unauthorized");
+                return None;
+            };
+            Some(credential)
+        }
+        None => None,
+    };
+    let bearer = bearer_admission(&admission, credential.as_ref());
+    let credential = workload_credential.or(credential);
+    let peer = PeerIdentity {
+        uid: 0,
+        pid: None,
+        exe_path: None,
+        mcp_host_key: credential.as_ref().map(|credential| credential.id.clone()),
+        transport: TransportType::Quic,
+        source_addr: Some(remote.ip()),
+    };
 
-        // One refusal for every workload failure; the peer learns only that
-        // it was refused (`workload-auth.md` §7).
-        let workload_credential = match &self.workload_registry {
-            Some(registry) => {
-                let Some(credential) = workload_credential(&conn, registry) else {
-                    debug!(%remote, "quic mTLS client identity refused");
-                    conn.close(AUTH_FAILED_CODE.into(), b"unauthorized");
-                    return None;
-                };
-                Some(credential)
-            }
-            None => None,
-        };
-        let bearer = bearer_admission(&self.admission, credential.as_ref());
-        let credential = workload_credential.or(credential);
-        let peer = PeerIdentity {
-            uid: 0,
-            pid: None,
-            exe_path: None,
-            mcp_host_key: credential.as_ref().map(|credential| credential.id.clone()),
-            transport: TransportType::Quic,
-            source_addr: Some(remote.ip()),
-        };
-
-        let window = SendWindow::new(conn.clone());
-        let writer = QuicWriter::from_stream(send, window.clone());
-        let mut reader = QuicMuxReader::new(recv, conn, window);
-        reader.diagnostics = Some(writer.diagnostic_tracker());
-        Some((
-            reader,
-            writer,
-            crate::auth::ConnectionIdentity {
-                peer,
-                credential,
-                ssh_origin: None,
-                bearer,
-            },
-        ))
-    }
+    let window = SendWindow::new(conn.clone());
+    let writer = QuicWriter::from_stream(send, window.clone());
+    let mut reader = QuicMuxReader::new(recv, conn, window);
+    reader.diagnostics = Some(writer.diagnostic_tracker());
+    Some((
+        reader,
+        writer,
+        crate::auth::ConnectionIdentity {
+            peer,
+            credential,
+            ssh_origin: None,
+            bearer,
+        },
+    ))
 }
 
 /// Read the token preamble and verify it against the pairing store.
@@ -948,23 +958,6 @@ async fn read_exact_quic(recv: &mut quinn::RecvStream, buf: &mut [u8]) -> io::Re
     }
 }
 
-/// Read one length-prefixed frame off a QUIC receive stream (also the
-/// WebTransport reader's framing).
-pub(super) async fn read_framed(recv: &mut quinn::RecvStream) -> io::Result<Option<BytesMut>> {
-    let mut header = [0u8; LENGTH_PREFIX];
-    if !read_exact_quic(recv, &mut header).await? {
-        return Ok(None);
-    }
-    let mut framed = framing::frame_buffer(header)?;
-    if !read_exact_quic(recv, &mut framed[LENGTH_PREFIX..]).await? {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "stream finished mid-frame",
-        ));
-    }
-    Ok(Some(framed))
-}
-
 fn budget_closed(what: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::NotConnected,
@@ -1249,28 +1242,64 @@ mod tests {
         }
     }
 
+    /// A peer that completes the handshake and then says nothing holds one
+    /// admission slot, not the listener: a healthy peer behind it is
+    /// admitted at once instead of after the silent one's deadline.
+    #[tokio::test]
+    async fn a_silent_connection_does_not_delay_other_admissions() {
+        let (_tokens, store) = token_store();
+        let (_dir, listener, addr) = listener(Some(store));
+        let silent_endpoint = client_endpoint();
+        let healthy_endpoint = client_endpoint();
+        let server = async {
+            let (mut reader, _writer, _peer) = listener.accept().await.unwrap();
+            reader.read_frame().await.unwrap()
+        };
+        let client = async {
+            let silent = silent_endpoint
+                .connect(addr, "localhost")
+                .unwrap()
+                .await
+                .unwrap();
+            let (_conn, mut send, _recv) = open_control(&healthy_endpoint, addr).await;
+            send.write_all(&token_preamble(&TEST_TOKEN)).await.unwrap();
+            send.write_all(&FRAME).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            silent
+        };
+        let (got, _silent) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(server, client)
+        })
+        .await
+        .expect("the healthy peer is admitted without waiting on the silent one");
+        assert_eq!(got.unwrap().as_ref(), &FRAME);
+    }
+
     #[tokio::test]
     async fn invalid_token_preamble_is_refused() {
         let (_tokens, store) = token_store();
         let (_dir, listener, addr) = listener(Some(store));
-        // The listener loops on refusals, so assert from the client side.
-        let server = tokio::spawn(async move {
-            let _ = listener.accept().await;
-        });
-        let (conn, mut send, _recv) = open_control(&client_endpoint(), addr).await;
-        let _ = send
-            .write_all(&token_preamble(&[0x22u8; crate::auth::TOKEN_LEN]))
-            .await;
-        let closed = tokio::time::timeout(Duration::from_secs(5), conn.closed())
-            .await
-            .expect("server must refuse promptly, not hang");
+        // The listener loops on refusals, so assert from the client side
+        // while it runs.
+        let client = async {
+            let (conn, mut send, _recv) = open_control(&client_endpoint(), addr).await;
+            let _ = send
+                .write_all(&token_preamble(&[0x22u8; crate::auth::TOKEN_LEN]))
+                .await;
+            tokio::time::timeout(Duration::from_secs(5), conn.closed())
+                .await
+                .expect("server must refuse promptly, not hang")
+        };
+        let closed = tokio::select! {
+            closed = client => closed,
+            _ = listener.accept() => panic!("a refused peer was admitted"),
+        };
         match closed {
             quinn::ConnectionError::ApplicationClosed(close) => {
                 assert_eq!(u64::from(AUTH_FAILED_CODE), close.error_code.into_inner());
             }
             other => panic!("expected application close on auth failure, got {other:?}"),
         }
-        server.abort();
     }
 
     /// A CSR-enrolled workload client: its identity files and credential.
@@ -1338,9 +1367,6 @@ mod tests {
 
         let refusing = door();
         let refusing_addr = refusing.local_addr().unwrap();
-        let driver = tokio::spawn(async move {
-            let _ = refusing.accept().await;
-        });
         let anonymous = client_endpoint();
         let refused = async {
             let conn = anonymous
@@ -1353,14 +1379,14 @@ mod tests {
             let mut byte = [0u8; 1];
             recv.read_exact(&mut byte).await.ok()
         };
+        let refused = tokio::select! {
+            refused = tokio::time::timeout(Duration::from_secs(10), refused) => refused,
+            _ = refusing.accept() => panic!("a dial without a certificate was admitted"),
+        };
         assert!(
-            tokio::time::timeout(Duration::from_secs(10), refused)
-                .await
-                .expect("a refusal settles")
-                .is_none(),
+            refused.expect("a refusal settles").is_none(),
             "a dial without a workload certificate is refused"
         );
-        driver.abort();
 
         let listener = door();
         let addr = listener.local_addr().unwrap();

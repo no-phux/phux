@@ -96,6 +96,12 @@ fn validate_dispatch_frame(
     origin: FrameOrigin,
     client_id: ClientId,
 ) -> Result<FrameKind, ConnectionClose> {
+    // Before HELLO only HELLO and PING are legal. Refuse anything else by its
+    // type byte, so an unauthenticated peer never reaches the other body
+    // decoders (server-to-client snapshots and lists included).
+    if negotiated.is_none() && !is_pre_hello_type(framed) {
+        return Err(before_hello_close(client_id));
+    }
     let frame = decode_client_frame(framed, negotiated)?;
     if negotiated.is_some_and(|selection| selection.quic_streams())
         && origin == FrameOrigin::Control
@@ -535,6 +541,28 @@ mod negotiated_feature_tests {
         assert!(!validate(&multistream, FrameOrigin::Control));
         assert!(validate(&multistream, FrameOrigin::Terminal));
         assert!(validate(&legacy, FrameOrigin::Control));
+    }
+
+    /// Before HELLO a frame is refused by its type byte, before its body is
+    /// decoded: a peer that has not said HELLO never reaches the other body
+    /// decoders (here a server-to-client snapshot declaring a huge list).
+    #[test]
+    fn pre_hello_frames_are_refused_before_body_decode() {
+        let client_id = ClientId(1);
+        let mut attached = BytesMut::new();
+        attached.extend_from_slice(&6_u32.to_be_bytes());
+        attached.extend_from_slice(&[phux_protocol::wire::frame::TYPE_ATTACHED, 1, 4, 4]);
+        attached.extend_from_slice(&[0xFF, 0xFF]);
+        let code = |bytes: &BytesMut| {
+            validate_dispatch_frame(bytes, None, FrameOrigin::Control, client_id)
+                .err()
+                .map(|close| close.code)
+        };
+        assert_eq!(code(&attached), Some(ErrorCode::VersionIncompatible));
+
+        let mut ping = BytesMut::new();
+        FrameKind::Ping { nonce: 1 }.encode(&mut ping);
+        assert_eq!(code(&ping), None, "PING stays legal before HELLO");
     }
 
     /// Every known bit but `QUIC_STREAMS` is advertised; an old peer without
@@ -1996,6 +2024,9 @@ pub(crate) async fn accept_loop<L: Incoming>(
                 }
                 return Ok(());
             }
+            // Reap finished connections, or the set keeps one entry per
+            // connection for the server's lifetime.
+            Some(_) = clients.join_next(), if !clients.is_empty() => {}
             accept = listener.accept() => {
                 match accept {
                     Ok((reader, writer, connection_identity)) => {
@@ -2522,13 +2553,26 @@ fn reject_frame_before_hello(
     if negotiated || matches!(frame, FrameKind::Hello { .. } | FrameKind::Ping { .. }) {
         return None;
     }
+    Some(before_hello_close(client_id))
+}
+
+/// Whether a framed message's type byte is one `PRE_HELLO` admits.
+fn is_pre_hello_type(framed: &[u8]) -> bool {
+    use phux_protocol::wire::frame::{TYPE_HELLO, TYPE_PING};
+    matches!(
+        framed.get(phux_protocol::wire::LENGTH_PREFIX_LEN),
+        Some(&(TYPE_HELLO | TYPE_PING))
+    )
+}
+
+fn before_hello_close(client_id: ClientId) -> ConnectionClose {
     warn!(?client_id, "stateful frame before HELLO; closing");
-    Some(ConnectionClose {
+    ConnectionClose {
         attached_reason: None,
         detach_reason: DetachReason::ProtocolError,
         code: ErrorCode::VersionIncompatible,
         message: "HELLO required before any stateful frame".to_owned(),
-    })
+    }
 }
 
 /// The HELLO frame's payload.
