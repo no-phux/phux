@@ -6,6 +6,7 @@
 mod chrome;
 mod hotkeys;
 pub mod input;
+mod perf;
 mod presentation;
 #[cfg_attr(
     test,
@@ -25,6 +26,7 @@ use napi_derive::napi;
 #[napi]
 pub fn initialize_desktop_host() -> napi::Result<()> {
     let _ = phux_client_ffi::napi::initialize();
+    perf::mark_started();
     native_extensions::install(|registry| {
         probe::install(registry);
         terminal::install(registry);

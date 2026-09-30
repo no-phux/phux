@@ -97,6 +97,9 @@ pub struct TerminalInput {
     /// A capacity waiting to hold still for `FIT_SETTLE`.
     settling: Option<((u16, u16), Instant)>,
     fit_active: bool,
+    /// Output sequence of the last frame painted, and the key-to-paint probe.
+    painted_seq: u64,
+    key_probe: crate::perf::KeyProbe,
     #[cfg(feature = "input-fixture")]
     test_window_active: bool,
 }
@@ -129,6 +132,8 @@ impl TerminalInput {
             fitted: None,
             settling: None,
             fit_active: false,
+            painted_seq: 0,
+            key_probe: crate::perf::KeyProbe::default(),
             #[cfg(feature = "input-fixture")]
             test_window_active: false,
         }
@@ -185,9 +190,12 @@ impl TerminalInput {
             self.cancel();
             self.metrics = None;
             self.fitted = None;
+            self.key_probe.forget();
             return Err(InputError::StalePresentation);
         }
         self.identity = Some(identity);
+        self.painted_seq = frame.last_seq;
+        self.key_probe.painted(frame.last_seq);
         self.metrics = Some(metrics);
         self.dimensions = (frame.cols, frame.rows);
         Ok(())
@@ -395,11 +403,13 @@ impl TerminalInput {
         if keys::uses_text(down, self.option_as_alt) {
             self.with_current(true, |_| Ok(()))?;
             self.pending_key = Some(event);
+            self.key_probe.arm(self.painted_seq);
             return Ok(KeyDisposition::Platform);
         }
         self.with_current(true, |control| {
             queued(control.send_key(&self.terminal, event.clone()))
         })?;
+        self.key_probe.arm(self.painted_seq);
         self.pressed.insert(event.key, event);
         Ok(KeyDisposition::Consumed)
     }
