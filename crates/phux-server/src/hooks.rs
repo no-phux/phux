@@ -313,23 +313,7 @@ fn offending_config_hooks(hooks: &BTreeMap<String, Vec<HookEntry>>) -> Vec<HookC
             continue;
         };
         for (index, entry) in entries.iter().enumerate() {
-            let mut details = Vec::new();
-            for key in entry.when.keys() {
-                let base = key.strip_suffix("-startswith").unwrap_or(key);
-                if !context_keys.contains(&base) {
-                    details.push(format!(
-                        "when key `{key}` can never match (`{event}` context keys: {})",
-                        context_keys.join(", "),
-                    ));
-                }
-            }
-            let name = config_action_name(&entry.action);
-            if name != "noop" && !vocab::hook_action_is_executable(&entry.action) {
-                details.push(format!(
-                    "action `{name}` never executes server-side (only `run` with a usable \
-                     `command` does); a match still consumes the event"
-                ));
-            }
+            let details = hook_entry_problems(event, context_keys, entry);
             if !details.is_empty() {
                 problems.push(HookConfigProblem {
                     label: format!("hooks.{event}[{index}]"),
@@ -341,12 +325,23 @@ fn offending_config_hooks(hooks: &BTreeMap<String, Vec<HookEntry>>) -> Vec<HookC
     problems
 }
 
-/// The action name a config hook entry invokes.
-fn config_action_name(action: &Action) -> &str {
-    match action {
-        Action::Bare(name) => name,
-        Action::Parameterized(parameterized) => &parameterized.action,
+/// Every reason one entry of a known `event` can never act.
+fn hook_entry_problems(event: &str, context_keys: &[&str], entry: &HookEntry) -> Vec<String> {
+    let mut details: Vec<String> = vocab::unknown_hook_when_keys(context_keys, &entry.when)
+        .map(|key| {
+            format!(
+                "when key `{key}` can never match (`{event}` context keys: {})",
+                context_keys.join(", "),
+            )
+        })
+        .collect();
+    if let Some(name) = vocab::dead_hook_action(&entry.action) {
+        details.push(format!(
+            "action `{name}` never executes server-side (only `run` with a usable \
+             `command` does); a match still consumes the event"
+        ));
     }
+    details
 }
 
 /// Whether the current OS is allowed (`None` means every platform).

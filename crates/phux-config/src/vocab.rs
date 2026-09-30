@@ -115,6 +115,42 @@ pub fn hook_action_is_executable(action: &Action) -> bool {
     }
 }
 
+/// The action name a hook or binding entry invokes.
+#[must_use]
+pub fn action_name(action: &Action) -> &str {
+    match action {
+        Action::Bare(name) => name,
+        Action::Parameterized(parameterized) => &parameterized.action,
+    }
+}
+
+/// A hook action that consumes the event yet never runs anything: anything
+/// but the deliberate `noop` that [`hook_action_is_executable`] rejects.
+/// Returns the action's name when dead.
+#[must_use]
+pub fn dead_hook_action(action: &Action) -> Option<&str> {
+    let name = action_name(action);
+    (name != "noop" && !hook_action_is_executable(action)).then_some(name)
+}
+
+/// The context key a `when` key tests: the key itself, or its base for a
+/// `-startswith` prefix match.
+#[must_use]
+pub fn hook_when_key_base(key: &str) -> &str {
+    key.strip_suffix("-startswith").unwrap_or(key)
+}
+
+/// The `when` keys that name no key in `context_keys` (from
+/// [`hook_context_keys`]), in key order. Such a clause can never match.
+pub fn unknown_hook_when_keys<'a, V>(
+    context_keys: &'a [&'a str],
+    when: &'a std::collections::BTreeMap<String, V>,
+) -> impl Iterator<Item = &'a str> + 'a {
+    when.keys()
+        .map(String::as_str)
+        .filter(|key| !context_keys.contains(&hook_when_key_base(key)))
+}
+
 /// Largest Levenshtein distance still offered as a suggestion: covers the
 /// common typo shapes without suggesting for garbage.
 const MAX_SUGGESTION_DISTANCE: usize = 2;
