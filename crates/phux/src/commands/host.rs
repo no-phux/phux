@@ -716,8 +716,14 @@ fn run_add_over_ssh(raw_target: &str, opts: &AddOpts) -> ExitCode {
     );
     match registered {
         Ok((row, settlement)) => {
+            // A kept identity the entry could not record (nothing
+            // dialable) is not presented: nothing was kept.
+            let status = match &outcome.certificate {
+                CertificateStatus::Kept if row.client_cert.is_none() => CertificateStatus::Skipped,
+                status => status.clone(),
+            };
             let enrollment = EnrollmentReport {
-                status: outcome.certificate.clone(),
+                status,
                 settlement,
                 warnings,
             };
@@ -1452,34 +1458,15 @@ fn run_show(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
 /// registered remote, over the ssh destination it was enrolled through.
 /// Two-phase like `host add`: the entry is rewritten to the new pair first,
 /// then the credential it held is revoked on the far host; any failure
-/// before the rewrite leaves the entry on its current certificate.
+/// before the rewrite leaves the entry on its current certificate. The new
+/// certificate must come from the authority that issued the held one, so a
+/// destination that reaches a different machine changes nothing.
 fn run_renew(name: &str, remote_phux: &str, json: bool) -> ExitCode {
-    if let Err((err, code)) = find_host(name, Some(HostRole::Remote), "renew") {
-        return json_err::emit(json, &err, code);
-    }
-    let Some(entry) = remote::find(name) else {
-        return json_err::emit(
-            json,
-            &registry_failure(format!("{name:?} vanished from the registry")),
-            1,
-        );
+    let plan = match RenewPlan::for_entry(name) {
+        Ok(plan) => plan,
+        Err((err, code)) => return json_err::emit(json, &err, code),
     };
-    let held = PreviousEnrollment::of(&entry).held;
-    if held.is_empty() {
-        return json_err::emit(
-            json,
-            &CliError::new(
-                codes::REGISTRY,
-                format!("{name} has no workload client certificate to renew"),
-                format!(
-                    "`phux host add {}` sets the machine up and enrolls one",
-                    entry.ssh_destination()
-                ),
-            ),
-            2,
-        );
-    }
-    let ssh_host = entry.ssh_destination();
+    let ssh_host = plan.entry.ssh_destination();
     let far = FarHost {
         ssh_host: &ssh_host,
         remote_phux,
@@ -1515,24 +1502,12 @@ fn run_renew(name: &str, remote_phux: &str, json: bool) -> ExitCode {
     narrate(EnrollEvent::CertificateEnrolled {
         credential_id: fresh.credential_id.clone().unwrap_or_default(),
     });
-    let written = remote::NewRemote::from_entry(&entry)
-        .and_then(|new| {
-            new.with_client_identity(Some((
-                fresh.certificate.as_path(),
-                fresh.private_key.as_path(),
-            )))
-        })
-        .map_err(reject_enrollment)
-        .and_then(|new| {
-            remote::add_or_update(&new)
-                .map(|()| new)
-                .map_err(registry_failure)
-        });
+    let written = plan.record(&fresh, &ssh_host);
     let settlement = enroll::settle_identity(
         &far,
         Some(&fresh),
         written.is_ok(),
-        &held,
+        &plan.held,
         &workload,
         &mut narrate,
     );
@@ -1546,6 +1521,98 @@ fn run_renew(name: &str, remote_phux: &str, json: bool) -> ExitCode {
         warnings,
     };
     report_renewed(&row, &enrollment, json)
+}
+
+/// What `host renew` checked before touching the far host: the entry, the
+/// identity it holds, and the authority that issued it.
+struct RenewPlan {
+    entry: RemoteEntry,
+    /// The entry revalidated, so a bad field refuses before any ssh.
+    rewritten: remote::NewRemote,
+    held: HeldIdentity,
+    /// The CA fingerprint of the held certificate's chain, when it has one.
+    authority: Option<String>,
+}
+
+impl RenewPlan {
+    fn for_entry(name: &str) -> Result<Self, (CliError, u8)> {
+        find_host(name, Some(HostRole::Remote), "renew")?;
+        let entry = remote::find(name).ok_or_else(|| {
+            (
+                registry_failure(format!("{name:?} vanished from the registry")),
+                1,
+            )
+        })?;
+        let held = PreviousEnrollment::of(&entry).held;
+        let refuse = |message: String, remedy: String| {
+            Err((CliError::new(codes::REGISTRY, message, remedy), 2))
+        };
+        let add = format!("phux host add {}", entry.ssh_destination());
+        if held.is_empty() {
+            return refuse(
+                format!("{name} has no workload client certificate to renew"),
+                format!("`{add}` sets the machine up and enrolls one"),
+            );
+        }
+        let remotes_dir = phux_server::telemetry::state_dir().join("remotes");
+        let authority = held.authority(&remotes_dir, name);
+        // With no issuing CA to compare against, only a destination the
+        // entry recorded (or its ssh:// endpoint) says which host to ask.
+        if authority.is_none()
+            && entry.ssh.is_none()
+            && !matches!(Endpoint::parse(&entry.endpoint), Ok(Endpoint::Ssh(_)))
+        {
+            return refuse(
+                format!(
+                    "{name} records no ssh destination and its certificate names no issuing authority, so renewing could enroll with the wrong host"
+                ),
+                format!("`{add}` sets it up again through the destination you name"),
+            );
+        }
+        let rewritten =
+            remote::NewRemote::from_entry(&entry).map_err(|err| (reject_enrollment(err), 2))?;
+        Ok(Self {
+            entry,
+            rewritten,
+            held,
+            authority,
+        })
+    }
+
+    /// Rewrite the entry to `fresh`, refusing a certificate from another
+    /// authority than the held one's. Nothing is written on refusal.
+    fn record(
+        &self,
+        fresh: &ClientIdentityFiles,
+        ssh_host: &str,
+    ) -> Result<remote::NewRemote, CliError> {
+        let issued_by = phux_server::workload::stored_chain_authority(&fresh.certificate);
+        if let Some(held) = &self.authority
+            && issued_by.as_ref() != Some(held)
+        {
+            return Err(CliError::new(
+                codes::WORKLOAD,
+                format!(
+                    "{ssh_host} issued the new certificate from a different workload authority than the one {} holds; the entry is unchanged",
+                    self.entry.name
+                ),
+                format!(
+                    "check that `{ssh_host}` reaches the machine {} dials, or set it up again with `phux host add`",
+                    self.entry.name
+                ),
+            ));
+        }
+        let new = self
+            .rewritten
+            .clone()
+            .with_client_identity(Some((
+                fresh.certificate.as_path(),
+                fresh.private_key.as_path(),
+            )))
+            .map_err(reject_enrollment)?;
+        remote::add_or_update(&new).map_err(registry_failure)?;
+        Ok(new)
+    }
 }
 
 /// The summary after `host renew`: the `"host"` and `"enrollment"` document

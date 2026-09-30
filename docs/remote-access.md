@@ -99,6 +99,9 @@ instead:
 
 - `phux host renew mini` enrolls a fresh certificate over the entry's ssh
   destination and changes nothing else (no re-pairing, no service install).
+  A certificate from a different workload CA than the one it replaces is
+  refused, so a destination that now reaches another machine changes
+  nothing.
 - `phux host add me@mini` on a registered host renews a certificate that
   expires within 14 days, has expired, or cannot be read, even when the
   route still answers.
@@ -111,7 +114,8 @@ recorded in the entry first, and only then is the old one revoked on the
 host. A failure before that point leaves the entry on the certificate that
 still works (and revokes the new credential nobody holds); a failed
 revocation prints the `ssh ... phux workload revoke sha256:...` that
-finishes it. An entry that names only one of `client-cert` and `client-key`
+finishes it, and a host that never held the old credential (the entry used
+to point elsewhere) is reported rather than counted as revoked. An entry that names only one of `client-cert` and `client-key`
 is re-enrolled the same way, revoking the credential its enrolled
 certificate names, or warning when none can be named.
 

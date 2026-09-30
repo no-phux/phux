@@ -736,12 +736,16 @@ that channel; enrollment grants no authority ssh did not already grant.
    refused or could not record is revoked by the client's own request id,
    never by an id the reply named. A failed revocation of the previous
    credential is reported with the command that completes it; that
-   credential stays admitted until it expires. Between the two ssh calls
+   credential stays admitted until it expires. A host that holds no
+   credential with the previous id (the entry used to reach another host)
+   is reported as such, never as a revocation. Between the two ssh calls
    both credentials of this one client are admitted; no failure strands the
    entry on a revoked credential.
 6. Renewal re-runs steps 2 to 5 for the same entry. `phux host renew
    NAME` does so on demand, over the entry's ssh destination, and changes
-   nothing else in the entry. `phux host add` does so instead of reusing a
+   nothing else in the entry; it refuses, leaving the entry unchanged, a
+   certificate issued by another CA than the held chain's, and an entry
+   with neither a recorded ssh destination nor a held CA to compare. `phux host add` does so instead of reusing a
    certificate whose admission ends within 14 days, or that is expired or
    unreadable; a client dialing such an entry warns once per process, and
    `phux doctor` reports it. Admission is taken to end one day before the
