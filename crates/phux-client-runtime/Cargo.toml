@@ -77,3 +77,5 @@ unicode-segmentation.workspace = true
 tempfile.workspace = true
 # The real server the end-to-end tests attach to over a Unix socket.
 phux-server-testkit.workspace = true
+# Its policy seam, for a scoped-grant server (already built by the testkit).
+phux-server.workspace = true
