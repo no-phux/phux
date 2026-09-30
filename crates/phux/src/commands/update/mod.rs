@@ -977,15 +977,9 @@ fn shadowing_phux(install: &Install, path: &std::ffi::OsStr) -> Option<PathBuf> 
     let ours = std::fs::canonicalize(&install.executable).ok()?;
     let first = std::env::split_paths(path)
         .map(|dir| dir.join("phux"))
-        .find(|candidate| is_executable(candidate))?;
+        .find(|candidate| crate::companion::is_executable(candidate))?;
     let resolved = std::fs::canonicalize(&first).ok()?;
     (resolved != ours).then_some(first)
-}
-
-fn is_executable(path: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 fn shadow_warning(shadow: &std::path::Path, ours: &std::path::Path) -> String {

@@ -9,6 +9,8 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use crate::companion::is_executable;
+
 const BLOCK_BEGIN: &str = "# >>> phux agent shims >>>";
 const BLOCK_END: &str = "# <<< phux agent shims <<<";
 const MANIFEST: &str = "claude-install.json";
@@ -324,11 +326,6 @@ fn validate_executable(path: &Path, shim_dir: &Path) -> Result<PathBuf, String> 
         ));
     }
     Ok(path.to_path_buf())
-}
-
-fn is_executable(path: &Path) -> bool {
-    std::fs::metadata(path)
-        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
 fn read_manifest(path: &Path) -> Result<Option<serde_json::Value>, String> {
