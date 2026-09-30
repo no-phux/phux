@@ -119,9 +119,10 @@ only by a solid-versus-hollow cursor. The accent edge is what survives the case
 the scrim still cannot serve: a terminal configured black, or put there by an
 application's OSC 11, has no luminance left to take away.
 
-The Connected hosts menu combines connection state with the focused terminal's
-recovery or history-loading state without resizing the canvas. Each window reports
-its own focused terminal. Detailed byte counts and I/O-loss information remain
+The header's location trigger names each window's session and machine
+(`session · machine`). Its Connected hosts menu combines connection state with
+the focused terminal's recovery or history-loading state without resizing the
+canvas. Each window reports its own focused terminal. Detailed byte counts and I/O-loss information remain
 in surface accessibility labels.
 
 **An ephemeral local shell that ends closes its pane, at any exit status**,
@@ -172,9 +173,11 @@ thread before connection. A failed attachment stays a recovery state rather
 than starting replacement local shells. Startup ownership is described in the
 [process model](../../docs/architecture/process-model.md).
 
-**Remote hosts.** Connect to Host (`cmd+shift+O`, or the Connect to Host
-button in the switcher) attaches a host registered with `phux host add` or
-`phux host add`, the same registry `phux --remote HOST` uses. Enter its
+**Remote hosts.** Machines… (`cmd+shift+O`, Window menu, or the header's
+location trigger) lists every saved machine with its state and Connect, Retry
+or Browse Sessions. Connect to Host (the header location menu) attaches a
+host registered with `phux host add`, the same registry `phux --remote HOST`
+uses. Enter its
 registry name or `[user@]host[:port]`. `phux-remote = NAME` in the config, or
 `PHUX_REMOTE=NAME`, selects one at launch. Connected hosts names the host
 while connecting, connected, reconnecting, or failed, and gives the reason

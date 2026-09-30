@@ -1,10 +1,15 @@
-<template name="cockpit-connected-hosts" args="menuopen title detail status">
-  <stack width="32">
+<template name="cockpit-connected-hosts" args="menuopen title detail location status">
+  <!-- The header's "where am I": this window's session and machine, always
+       visible, at a fixed width; core.ts elides the text to that width, so
+       a long session name never moves the chrome or clips.
+       It opens the host menu, which holds connection state, the connected
+       machines, Connect to Host and Machines. -->
+  <stack width="216">
     <if test="{canReconnect or commandNotice != ''}">
-      <button size="sm" variant="ghost" icon="alert" foreground="warning" label="Connected hosts" selected="{menuopen and headerHosts}" on-press="header_hosts_toggle" />
+      <button width="216" size="sm" variant="ghost" icon="alert" foreground="warning" label="Session and machine" selected="{menuopen and headerHosts}" on-press="header_hosts_toggle">{location}</button>
     </if>
     <else>
-      <button size="sm" variant="ghost" icon="external-link" label="Connected hosts" selected="{menuopen and headerHosts}" on-press="header_hosts_toggle" />
+      <button width="216" size="sm" variant="ghost" icon="chevron-down" icon-placement="trailing" label="Session and machine" selected="{menuopen and headerHosts}" on-press="header_hosts_toggle">{location}</button>
     </else>
     <if test="{commandNotice != '' and canReconnect == false}"><tooltip anchor="below">{commandNotice}</tooltip></if>
     <else><tooltip anchor="below">{status}</tooltip></else>
@@ -37,8 +42,9 @@
         </else>
         <separator />
         <menu-item icon="plus" on-press="header_host_connect">Connect to Host…</menu-item>
-        <menu-item icon="external-link" on-press="header_machines">Manage machines…</menu-item>
-        <menu-item disabled="{paletteLoading}" on-press="header_hosts_refresh">Refresh hosts</menu-item>
+        <menu-item icon="external-link" on-press="header_machines">Machines…</menu-item>
+        <menu-item icon="folder" on-press="header_sessions">Sessions…</menu-item>
+        <menu-item icon="refresh-cw" disabled="{paletteLoading}" on-press="header_hosts_refresh">Refresh hosts</menu-item>
       </dropdown-menu>
     </if>
   </stack>

@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { initialMachines, requestMachines, machineRequest, machinePage, receiveMachines, moveMachine, capturedMachine, filterMachines } from '../machines.ts';
+import { initialMachines, requestMachines, machineRequest, machinePage, receiveMachines, moveMachine, capturedMachine, filterMachines, sshDestination } from '../machines.ts';
+import { initialModel, update } from '../core.ts';
+
+const step = (model, message) => {
+  const result = update(model, message);
+  return Array.isArray(result) ? result : [result, null];
+};
 
 const bytes = text => new TextEncoder().encode(text);
 const u32 = value => [value & 255, value >>> 8 & 255, value >>> 16 & 255, value >>> 24 & 255];
@@ -61,4 +67,34 @@ test('filtering out the captured machine clears keyboard authority', () => {
   assert.equal(filtered.visible.length, 1);
   assert.equal(filtered.selected.length, 0);
   assert.equal(capturedMachine(filtered, filtered.selected), null);
+});
+
+/// One remote row with an explicit route and endpoint (route 2: SSH needs setup).
+function routedPage(state, route, name, endpoint) {
+  const row = [...u32(1), 1, route, 0, ...field(name), ...field(endpoint), ...field(''), ...field('SSH route requires setup in a local terminal')];
+  return new Uint8Array([1, 0, ...u32(state.requestId), ...u32(5), ...u32(1), ...u32(0), 1, 0, ...field(''), ...row]);
+}
+
+test('an SSH-only machine offers Set Up and opens the setup terminal for its destination', () => {
+  const text = value => new TextDecoder().decode(value);
+  assert.equal(text(sshDestination(bytes('ssh://me@mini.local:2222/'))), 'me@mini.local:2222');
+  assert.equal(text(sshDestination(bytes('quic://mini:8788'))), 'quic://mini:8788');
+  const pending = requestMachines(initialMachines(), 0);
+  const listed = receiveMachines(pending, routedPage(pending, 2, 'mini', 'ssh://mini.local'), bytes(''));
+  assert.equal(text(listed.rows[0].action), 'Set Up…');
+  assert.equal(listed.rows[0].disabled, false);
+  // A direct route keeps Connect.
+  const direct = receiveMachines(pending, routedPage(pending, 1, 'mini', 'quic://mini:8788'), bytes(''));
+  assert.equal(text(direct.rows[0].action), 'Connect');
+
+  let [model] = step(initialModel()[0], { kind: 'machines_open' });
+  [model] = step(model, { kind: 'machines_loaded', body: routedPage(model.machines, 2, 'mini', 'ssh://mini.local') });
+  const [setup, command] = step(model, { kind: 'machine_pick', target: model.machines.rows[0].target });
+  assert.equal(setup.paletteOpen, false);
+  assert.equal(setup.hostOpen, true);
+  assert.equal(setup.toolPurpose, 1, 'Add Machine, not Connect to Host');
+  assert.equal(text(setup.hostQuery), 'mini.local');
+  assert.equal(text(setup.hostFriendlyName), 'mini');
+  assert.ok(command.cmds.some(effect => effect.name === 'cockpit.local-tools'));
+  assert.ok(!command.cmds.some(effect => effect.name === 'cockpit.machines'), 'no dial is attempted');
 });

@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: evolving
-last-reviewed: 2026-09-11
+last-reviewed: 2026-09-30
 ---
 
 # Shipping navigation seam
@@ -94,7 +94,18 @@ host denotes the coordinator. Local ephemeral PTYs do not appear in host lists.
 Responses append marker `0x4e` after the records, followed by one metadata
 record per row: `kind:u8, selectable:u8, detail_length:u8`, then at most 160
 detail bytes. Kinds distinguish open terminals (0), available terminals (1),
-sessions (2), and hosts (3).
+sessions (2), and hosts (3). In the flags byte, bit 0 is selectable and bit 1
+is current: the session the focused window shows (its selected tab's session
+on the coordinator that minted it, or its picked empty session). The chrome
+draws exactly the rows the engine marks; it never infers "current" itself.
+
+The native window scope (4) uses kinds 4 (window) and 5 (tab) with the same
+flags: the focused window and only the tab it shows are current. A window
+row's detail summarizes it (`session · machine · N tabs`); a tab row's detail
+places it (`Tab i of N · Window k · session · machine`) and never repeats its
+title, which is the row label, so similar titles stay distinguishable. Tab rows
+indent under their window. Secondary OS windows are titled
+`Phux Cockpit — Window N` to match.
 
 Terminal and session rows carry a captured catalog target (tag 2); only those
 rows enqueue a catalog command. A known-host row instead carries the filter
@@ -134,10 +145,11 @@ The switcher also offers Connect to Host, which hands its modal slot to the
 host panel. While the provider dials a registered remote host, the detail
 line of a coordinator row names that host's registry label where a local
 coordinator's reads `Coordinator`, the coordinator's known-host row carries
-the same label, and session rows read `Phux session · host`. Satellite hosts
-keep their own names. The host panel talks to the engine over its
-own `cockpit.remote` request and completion slot, never through catalog
-pages; see [Remote hosts](REMOTE_HOSTS.md).
+the same label, and session rows read `Phux session · host`. With no remote
+host a session row reads `Phux session · This Mac`: every session row names
+its machine. Satellite hosts keep their own names. The host panel talks to the
+engine over its own `cockpit.remote` request and completion slot, never
+through catalog pages; see [Remote hosts](REMOTE_HOSTS.md).
 
 When peer coordinators are held beside the active one, each lists its
 sessions as its own host group, with this Mac's group always first. Rows
