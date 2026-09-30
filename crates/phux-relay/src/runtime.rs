@@ -24,6 +24,14 @@ use crate::{
 /// their handshake and are closed with [`crate::OVER_CAP_CODE`].
 pub const DEFAULT_MAX_CONNS: usize = 64;
 
+/// Handshakes in flight per connection slot. A handshake takes no connection
+/// slot until it completes, so peers that start one and stall cannot lock
+/// out connectors and consumers; they only fill this separate, larger pool.
+const HANDSHAKES_PER_SLOT: usize = 4;
+
+/// How long a peer has to complete the QUIC/TLS handshake.
+const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
+
 /// QUIC idle timeout, matching the server listener and phux-dial.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -208,28 +216,28 @@ impl BoundRelay {
         let endpoint = self.endpoint;
         let registry: TunnelRegistry<quinn::Connection> = TunnelRegistry::new();
         let slots = Arc::new(Semaphore::new(self.max_conns));
+        let max_handshakes = self.max_conns.max(1).saturating_mul(HANDSHAKES_PER_SLOT);
+        let handshakes = Arc::new(Semaphore::new(max_handshakes));
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
                 () = &mut shutdown => break,
                 incoming = endpoint.accept() => {
                     let Some(incoming) = incoming else { break };
-                    // No free slot: finish the handshake, close OVER_CAP.
-                    match Arc::clone(&slots).try_acquire_owned() {
-                        Ok(permit) => {
-                            tokio::spawn(handle_connection(
-                                incoming,
-                                Arc::clone(&self.tunnel_config),
-                                registry.clone(),
-                                self.tokens_path.clone(),
-                                self.preamble_deadline,
-                                permit,
-                            ));
-                        }
-                        Err(_) => {
-                            tokio::spawn(refuse_over_cap(incoming));
-                        }
-                    }
+                    let Some(handshake) = admit_handshake(incoming, &handshakes, max_handshakes)
+                    else {
+                        continue;
+                    };
+                    let (incoming, permit) = handshake;
+                    tokio::spawn(handle_connection(
+                        incoming,
+                        Arc::clone(&self.tunnel_config),
+                        registry.clone(),
+                        self.tokens_path.clone(),
+                        self.preamble_deadline,
+                        permit,
+                        Arc::clone(&slots),
+                    ));
                 }
             }
         }
@@ -239,26 +247,42 @@ impl BoundRelay {
     }
 }
 
-/// Complete the handshake for an over-cap connection and refuse it with
-/// [`OVER_CAP_CODE`] (an application close requires a finished handshake).
-async fn refuse_over_cap(incoming: quinn::Incoming) {
-    let Ok(conn) = incoming.await else { return };
-    tracing::warn!(remote = %conn.remote_address(), "refused: relay at connection cap");
-    conn.close(OVER_CAP_CODE.into(), b"relay at connection capacity");
+/// Take a handshake slot for `incoming`, or turn it away without spawning
+/// anything: a stateless refusal when every slot is busy, and a Retry (proof
+/// the source address is real) once half of them are, so spoofed Initials
+/// can never occupy more than half.
+fn admit_handshake(
+    incoming: quinn::Incoming,
+    handshakes: &Arc<Semaphore>,
+    max_handshakes: usize,
+) -> Option<(quinn::Incoming, OwnedSemaphorePermit)> {
+    let loaded = handshakes.available_permits() <= max_handshakes / 2;
+    if loaded && !incoming.remote_address_validated() && incoming.may_retry() {
+        let _ = incoming.retry();
+        return None;
+    }
+    let Ok(permit) = Arc::clone(handshakes).try_acquire_owned() else {
+        tracing::debug!(remote = %incoming.remote_address(), "refused: handshakes at capacity");
+        incoming.refuse();
+        return None;
+    };
+    Some((incoming, permit))
 }
 
 /// Drive one accepted connection to its leg by negotiated ALPN, never by
-/// what it sends (ADR-0051 invariant 7), holding its cap permit throughout.
-/// The flow-control config is chosen first from the connection-ID tag.
+/// what it sends (ADR-0051 invariant 7). The handshake runs under its own
+/// slot and deadline; the connection slot is taken only once it completes
+/// and is held throughout. The flow-control config is chosen first from the
+/// connection-ID tag.
 async fn handle_connection(
     incoming: quinn::Incoming,
     tunnel_config: Arc<quinn::ServerConfig>,
     registry: TunnelRegistry<quinn::Connection>,
     tokens_path: PathBuf,
     preamble_deadline: Duration,
-    permit: OwnedSemaphorePermit,
+    handshake_permit: OwnedSemaphorePermit,
+    slots: Arc<Semaphore>,
 ) {
-    let _permit = permit;
     let tagged = is_tunnel_cid(&incoming.orig_dst_cid());
     let connecting = if tagged {
         incoming.accept_with(tunnel_config)
@@ -266,9 +290,12 @@ async fn handle_connection(
         incoming.accept()
     };
     let handshake = match connecting {
-        Ok(connecting) => connecting.await,
+        Ok(connecting) => tokio::time::timeout(HANDSHAKE_DEADLINE, connecting)
+            .await
+            .unwrap_or(Err(quinn::ConnectionError::TimedOut)),
         Err(err) => Err(err),
     };
+    drop(handshake_permit);
     let conn = match handshake {
         Ok(conn) => conn,
         Err(err) => {
@@ -276,6 +303,12 @@ async fn handle_connection(
             tracing::debug!(%err, "handshake failed");
             return;
         }
+    };
+    // No free slot: an application close needs the finished handshake.
+    let Ok(_permit) = slots.try_acquire_owned() else {
+        tracing::warn!(remote = %conn.remote_address(), "refused: relay at connection cap");
+        conn.close(OVER_CAP_CODE.into(), b"relay at connection capacity");
+        return;
     };
     let Some((alpn, server_name)) = handshake_identity(&conn) else {
         conn.close(PROTOCOL_VIOLATION_CODE.into(), b"unreadable handshake data");
