@@ -10,7 +10,7 @@ fn output(owner: &EngineHandle, terminal: &ResourceId, seq: u64, bytes: &[u8]) {
             stream_id: stream(1),
             bootstrap_id: bootstrap(1),
             seq,
-            bytes: bytes.to_vec(),
+            bytes: bytes.to_vec().into(),
         },
     );
 }
@@ -432,7 +432,7 @@ fn replica_replacement_keeps_view_identity_but_rejects_old_handles() {
             stream_id: stream(1),
             bootstrap_id: bootstrap(2),
             chunk_seq: 0,
-            payload: b"new".to_vec(),
+            payload: b"new".to_vec().into(),
         },
     );
     apply_ok(

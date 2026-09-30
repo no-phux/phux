@@ -105,7 +105,7 @@ fn attach_many_history(
                 stream_id: stream(1),
                 bootstrap_id: bootstrap(1),
                 chunk_seq: 0,
-                payload: bytes.to_vec(),
+                payload: bytes.to_vec().into(),
             },
         );
         apply_ok(
@@ -146,7 +146,7 @@ fn a_published_replica_is_projected_and_generations_advance_on_output() {
             stream_id: stream(1),
             bootstrap_id: bootstrap(1),
             seq: 1,
-            bytes: b"\x1b[3;1Hthird".to_vec(),
+            bytes: b"\x1b[3;1Hthird".to_vec().into(),
         },
     );
     let second = publication.acquire(&terminal).expect("published");
@@ -173,14 +173,14 @@ fn an_output_burst_projects_once_without_losing_event_outcomes() {
             stream_id: stream(1),
             bootstrap_id: bootstrap(1),
             seq: 1,
-            bytes: b"\x1b[1;1Htop".to_vec(),
+            bytes: b"\x1b[1;1Htop".to_vec().into(),
         },
         EngineEvent::Output {
             terminal_id: terminal.clone(),
             stream_id: stream(1),
             bootstrap_id: bootstrap(1),
             seq: 2,
-            bytes: b"\x1b[3;1Hthird".to_vec(),
+            bytes: b"\x1b[3;1Hthird".to_vec().into(),
         },
     ];
 
@@ -216,14 +216,14 @@ fn a_fatal_event_stops_the_batch_before_later_terminals_mutate() {
                 stream_id: stream(1),
                 bootstrap_id: bootstrap(1),
                 seq: 2,
-                bytes: b"gap".to_vec(),
+                bytes: b"gap".to_vec().into(),
             },
             EngineEvent::Output {
                 terminal_id: second.clone(),
                 stream_id: stream(1),
                 bootstrap_id: bootstrap(1),
                 seq: 1,
-                bytes: b"late".to_vec(),
+                bytes: b"late".to_vec().into(),
             },
         ])
         .expect("owner response");
@@ -285,7 +285,9 @@ fn scrolling_toward_uncached_history_emits_a_prefetch_request() {
             stream_id: stream(1),
             bootstrap_id: bootstrap(1),
             chunk_seq: 0,
-            payload: b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix".to_vec(),
+            payload: b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix"
+                .to_vec()
+                .into(),
         },
     );
     apply_ok(
@@ -350,7 +352,7 @@ fn a_frame_queued_after_close_cannot_recreate_the_projection() {
                 stream_id: stream(1),
                 bootstrap_id: bootstrap(1),
                 seq: 1,
-                bytes: b"stale".to_vec(),
+                bytes: b"stale".to_vec().into(),
             },
         ],
     );
@@ -391,7 +393,7 @@ fn the_headless_replica_keeps_bytes_until_taken() {
             stream_id: stream(1),
             bootstrap_id: bootstrap(1),
             seq: 1,
-            bytes: b"more".to_vec(),
+            bytes: b"more".to_vec().into(),
         },
     );
     assert_eq!(owner.take_output(&terminal), b"more");

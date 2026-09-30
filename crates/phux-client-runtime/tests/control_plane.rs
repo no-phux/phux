@@ -692,14 +692,14 @@ fn a_batch_cannot_hide_a_fatal_error_behind_an_earlier_stale_generation() {
                 stream_id: StreamId::new(2).expect("stale stream"),
                 bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
                 seq: 1,
-                bytes: b"stale".to_vec(),
+                bytes: b"stale".to_vec().into(),
             },
             EngineEvent::Output {
                 terminal_id: terminal(),
                 stream_id: StreamId::new(1).expect("stream"),
                 bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
                 seq: 2,
-                bytes: b"gap".to_vec(),
+                bytes: b"gap".to_vec().into(),
             },
         ])
         .expect_err("the current generation has a fatal sequence gap");

@@ -342,7 +342,7 @@ fn classify_engine_frame(frame: FrameKind) -> Result<ClassifiedFrame, ControlErr
             stream_id,
             bootstrap_id,
             chunk_seq,
-            payload: payload.to_vec(),
+            payload,
         },
         FrameKind::BootstrapReady {
             terminal_id,
@@ -379,7 +379,7 @@ fn classify_engine_frame(frame: FrameKind) -> Result<ClassifiedFrame, ControlErr
             stream_id,
             bootstrap_id,
             seq,
-            bytes: bytes.to_vec(),
+            bytes,
         },
         other => return classify_history_frame(other),
     };
@@ -405,7 +405,7 @@ fn classify_history_frame(frame: FrameKind) -> Result<ClassifiedFrame, ControlEr
             rows,
             cursor: cursor.to_vec(),
             next_cursor: next_cursor.map(|cursor| cursor.to_vec()),
-            payload: payload.to_vec(),
+            payload,
         },
         FrameKind::HistoryTombstone {
             terminal_id,
@@ -473,4 +473,60 @@ fn history_rejection_reason(reason: WireRejection) -> Result<HistoryRejectionRea
             ));
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ClassifiedFrame, EngineEvent, FrameKind, classify_engine_frame};
+    use phux_protocol::ResourceId;
+    use phux_protocol::ids::{BootstrapId, StreamId};
+
+    /// The decoded payload moves into the engine event: an output flood, a
+    /// bootstrap, or a history page is not copied a second time on its way
+    /// to the replica.
+    #[test]
+    fn engine_payloads_share_the_decoded_buffer() {
+        let payload = bytes::Bytes::from(vec![b'x'; 4096]);
+        let terminal_id = ResourceId::Local { id: 7 };
+        let stream_id = StreamId::new(1).expect("stream");
+        let bootstrap_id = BootstrapId::new(1).expect("generation");
+        let frames = [
+            FrameKind::ResourceOutput {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                seq: 1,
+                bytes: payload.clone(),
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: payload.clone(),
+            },
+            FrameKind::HistoryPage {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                page_seq: 1,
+                cursor: bytes::Bytes::from_static(b"c"),
+                next_cursor: None,
+                payload: payload.clone(),
+                rows: 1,
+            },
+        ];
+        for frame in frames {
+            let Ok(ClassifiedFrame::Engine(event)) = classify_engine_frame(frame) else {
+                panic!("a stream frame classifies as an engine event");
+            };
+            let shared = match &event {
+                EngineEvent::Output { bytes, .. } => bytes,
+                EngineEvent::BootstrapChunk { payload, .. }
+                | EngineEvent::HistoryPage { payload, .. } => payload,
+                other => panic!("unexpected event {other:?}"),
+            };
+            assert_eq!(shared.as_ptr(), payload.as_ptr(), "{event:?} copied");
+        }
+    }
 }

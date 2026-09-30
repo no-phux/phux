@@ -108,7 +108,7 @@ fn several_megabytes_are_refused_before_formatting_and_sibling_stays_intact() {
             stream_id: stream(1),
             bootstrap_id: bootstrap(1),
             seq: 1,
-            bytes,
+            bytes: bytes.into(),
         },
     );
     let huge = owner.create_view(&terminal).unwrap();
