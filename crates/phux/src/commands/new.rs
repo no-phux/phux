@@ -830,6 +830,24 @@ mod tests {
         assert!(!existing.contains(&name));
     }
 
+    /// A generated name obeys the rule an explicit one does: `phux new` run
+    /// in a directory named `@proj` made a session `@proj`, which every
+    /// selector reads as a pane id.
+    #[test]
+    fn fresh_session_name_is_addressable_whatever_the_directory() {
+        let mut rng = NameRng::seeded(4);
+        for (dir, template, expected) in [
+            ("/work/@proj", "${cwd-basename}", "_proj"),
+            ("/work/#notes", "${cwd-basename}", "_notes"),
+            ("/work/a:b", "${cwd-basename}", "a_b"),
+            ("/work/proj", "main:${cwd-basename}", "main_proj"),
+        ] {
+            let name = fresh_session_name(&[], template, Path::new(dir), &mut rng);
+            assert_eq!(name, expected, "{dir} {template}");
+            assert_eq!(phux_client::rename::check_session_name(&name), Ok(()));
+        }
+    }
+
     /// A deterministic template keeps the historical `base`, `base-2` shape.
     #[test]
     fn fresh_session_name_suffixes_a_deterministic_template() {
