@@ -1919,13 +1919,14 @@ fn install_input(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         ("paste", on_paste),
         ("copy", on_copy),
     ];
-    let canvas_handlers: [(&str, InputHandler); 6] = [
+    let canvas_handlers: [(&str, InputHandler); 7] = [
         ("focus", focus_surface),
         ("mousedown", focus_surface),
         ("wheel", on_wheel),
         ("pointerdown", on_pointer),
         ("pointermove", on_pointer),
         ("pointerup", on_pointer),
+        ("pointercancel", on_pointer),
     ];
     let targets: [(&web_sys::EventTarget, &[(&str, InputHandler)]); 2] = [
         (surface.as_ref(), &handlers),
@@ -2024,7 +2025,8 @@ fn on_pointer(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaEl
                 app.request_paint();
             }
         }
-        "pointerup" => {
+        // A cancelled pointer (a touch taken for panning) ends the drag too.
+        "pointerup" | "pointercancel" => {
             let dragging = app.selecting.replace(false);
             if dragging && app.selection.get().is_some_and(|s| s.is_click()) {
                 app.clear_selection();
