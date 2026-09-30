@@ -46,7 +46,11 @@ export interface Bridge {
   topology: Accessor<DesktopTopology | undefined>;
   server: Accessor<DesktopServerInfo | undefined>;
   agents: Accessor<Record<string, AgentInfo>>;
-  /** Bumps on every drained wake; read it to re-evaluate native snapshots. */
+  /**
+   * Bumps on every drained wake; read it to re-evaluate per-terminal native
+   * state (readiness, delivery fences, paint). Topology, status and server
+   * refresh only on wakes whose events can change them.
+   */
   revision: Accessor<number>;
   handle: Accessor<string>;
   target: ConnectTarget;
@@ -70,6 +74,20 @@ export interface Bridge {
  * draining and applying them (including the Solid updates they trigger).
  */
 export const drainStats = { wakes: 0, events: 0, ms: 0, maxMs: 0 };
+
+/**
+ * Whether an event can change the topology, status or server snapshot. Frame
+ * damage, delivery receipts and agent badges cannot: the runtime queues a
+ * topology, status or lifecycle event for every change to those (and a
+ * `TopologyChanged` when it drops events on overflow).
+ */
+export function structural(event: DesktopEvent): boolean {
+  return !(
+    event.kind === "TerminalChanged" ||
+    event.kind === "InputDelivery" ||
+    event.kind === "AgentBadge"
+  );
+}
 
 export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
   const [status, setStatus] = createSignal("Connecting");
@@ -128,7 +146,6 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
       setTopology(next);
       const info = native.serverInfo();
       if (info) setServer(info);
-      setRevision((value) => value + 1);
     });
   }
 
@@ -143,7 +160,11 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
     batch(() => {
       accept(events);
       if (answers.length > 0) pathListener(answers);
-      snapshot();
+      // A new topology object re-renders every row derived from it, so read
+      // one only when an event can have changed it: output, receipts and
+      // agent badges cannot, and under a flood they are nearly every wake.
+      if (events.some(structural)) snapshot();
+      setRevision((value) => value + 1);
     });
     const elapsed = performance.now() - started;
     drainStats.wakes += 1;
