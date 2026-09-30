@@ -73,6 +73,8 @@ pub struct Connection {
     next_attach_id: u32,
     /// Per-Terminal QUIC stream state (proto.md §4.2); QUIC only.
     multistream: Option<Multistream>,
+    /// A write found the server already gone (see [`Self::write_hit_closed_peer`]).
+    write_hit_closed_peer: bool,
 }
 
 /// QUIC multi-stream state (proto.md §4.2, ADR-0115): each bound Terminal
@@ -457,6 +459,7 @@ impl Connection {
             server_id: None,
             next_attach_id: 1,
             multistream,
+            write_hit_closed_peer: false,
         }
     }
 
@@ -777,6 +780,39 @@ impl Connection {
     }
     /// Encode `frame` and write it to the server.
     pub async fn send(&mut self, frame: &FrameKind) -> Result<(), AttachError> {
+        let sent = self.send_frame(frame).await;
+        self.note_write(sent)
+    }
+
+    /// Whether a write on this connection failed because the server had
+    /// already closed it (`BrokenPipe`, `ConnectionReset`,
+    /// `ConnectionAborted`).
+    ///
+    /// Such a write is not why the session ended: the read side still holds
+    /// whatever the server sent before it went (an explained exit, or the EOF
+    /// a reconnect keys on), so a caller that sees this lets `recv` name the
+    /// ending instead of failing on the write.
+    #[must_use]
+    pub const fn write_hit_closed_peer(&self) -> bool {
+        self.write_hit_closed_peer
+    }
+
+    /// Record a write that failed on a closed peer, then pass the result on.
+    fn note_write(&mut self, result: Result<(), AttachError>) -> Result<(), AttachError> {
+        if let Err(AttachError::Io(err)) = &result
+            && matches!(
+                err.kind(),
+                io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+            )
+        {
+            self.write_hit_closed_peer = true;
+        }
+        result
+    }
+
+    async fn send_frame(&mut self, frame: &FrameKind) -> Result<(), AttachError> {
         if let Some(terminal_id) = terminal_target(frame)
             && self.multistream_enabled()
         {
@@ -944,7 +980,8 @@ impl Connection {
     /// Ship everything corked since [`Self::cork`], in send order, in one
     /// write. A no-op if nothing was sent or the transport does not cork.
     pub async fn uncork(&mut self) -> Result<(), AttachError> {
-        self.writer.uncork().await
+        let shipped = self.writer.uncork().await;
+        self.note_write(shipped)
     }
 
     /// Read the next frame from the server.
@@ -2032,6 +2069,35 @@ mod tests {
                 FrameKind::BootstrapReady { .. }
             ]
         ));
+    }
+
+    /// A write into a server that already hung up is recorded as such, so the
+    /// attach loop can let the read side name the ending; the read side then
+    /// reports the EOF the reconnect path keys on.
+    #[test]
+    fn a_write_into_a_closed_peer_is_recorded_and_recv_reports_the_eof() {
+        block_on(async {
+            let (client_stream, server) = UnixStream::pair().expect("pair");
+            let mut client = Connection::from_stream(client_stream);
+            drop(server);
+            assert!(!client.write_hit_closed_peer());
+            let resize = FrameKind::ResizeTerminal {
+                terminal_id: ResourceId::local(1),
+                cols: 80,
+                rows: 24,
+            };
+            let err = client.send(&resize).await.expect_err("peer is gone");
+            assert!(
+                matches!(&err, AttachError::Io(io) if io.kind() == io::ErrorKind::BrokenPipe),
+                "{err:?}"
+            );
+            assert!(client.write_hit_closed_peer());
+            assert!(matches!(
+                client.recv().await,
+                Err(AttachError::Disconnected)
+            ));
+            drop(client);
+        });
     }
 
     /// The correlation id comes from the frame, so a non-spawn frame has no
