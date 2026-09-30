@@ -99,6 +99,26 @@ export function displayChord(chord: string): string {
 }
 
 /**
+ * The chord to show for each command id in the effective `keymap`: a chord
+ * the user bound (one `defaults` does not give that command) wins over the
+ * built-in chord and its aliases; otherwise the first built-in one, which is
+ * the command's own chord before any alias.
+ */
+export function shownChords<C extends { id: string }>(
+  keymap: ReadonlyMap<string, C>,
+  defaults: ReadonlyMap<string, C>,
+): Map<string, string> {
+  const builtIn = (chord: string, command: C): boolean => defaults.get(chord) === command;
+  const shown = new Map<string, string>();
+  for (const [chord, command] of keymap) {
+    const existing = shown.get(command.id);
+    if (!existing || (!builtIn(chord, command) && builtIn(existing, command)))
+      shown.set(command.id, chord);
+  }
+  return shown;
+}
+
+/**
  * Whether a text field has the keyboard, so its own editing keys (Select All)
  * win over the terminal's chords: an open dialog or palette, or a find bar on
  * the focused pane. A find bar left open on another pane or tab does not: the
