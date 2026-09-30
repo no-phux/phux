@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { leaf, splitAt, type DeskTab } from "../../src/workspace/layout";
 import {
   defaultDisplay,
+  loadLayoutStore,
   parseLayout,
   sanitizeDisplay,
   saveLayout,
@@ -25,8 +26,8 @@ describe("layout snapshot", () => {
       kind: "split",
       axis: "column",
       ratio: 0.5,
-      first: { kind: "leaf", terminalId: "local:1" },
-      second: { kind: "leaf", terminalId: "local:2" },
+      first: { kind: "leaf", id: "p1", terminalId: "local:1" },
+      second: { kind: "leaf", id: "p2", terminalId: "local:2" },
     });
   });
 
@@ -45,7 +46,7 @@ describe("layout snapshot", () => {
     expect(root?.kind === "split" && root.second.kind === "split" && root.second.ratio).toBe(0.5);
   });
 
-  test("damaged values degrade instead of throwing", () => {
+  test("refuses damaged trees instead of silently discarding their leaves", () => {
     expect(parseLayout(undefined)).toBeUndefined();
     expect(parseLayout({ version: 9, serverId: "s", tabs: [] })).toBeUndefined();
     const parsed = parseLayout({
@@ -61,9 +62,55 @@ describe("layout snapshot", () => {
       ],
       display: "nope",
     });
-    expect(parsed?.tabs.map((tab) => tab.id)).toEqual(["ok"]);
-    expect(parsed?.tabs[0]?.root).toEqual({ kind: "leaf", terminalId: "a" });
-    expect(parsed?.display).toEqual(defaultDisplay);
+    expect(parsed).toBeUndefined();
+  });
+
+  test("unreadable stored layouts survive both workspace and preference writes", () => {
+    const unreadable: unknown[] = [
+      { version: 99, serverId: "s", tabs: [] },
+      {
+        version: 2,
+        serverId: "s",
+        tabs: [{ id: "old-shell", placements: [{ id: "p", terminalId: "local:1" }] }],
+      },
+      { version: 2, serverId: "s", tabs: [{ id: "t", root: { kind: "leaf" } }] },
+      null,
+      "{broken json",
+    ];
+    for (const raw of unreadable) {
+      let stored = raw;
+      const store = loadLayoutStore({
+        read: () => stored,
+        write: (layout) => {
+          stored = layout;
+        },
+      });
+      store.write(saveLayout("s", [], defaultDisplay));
+      store.write(saveLayout("s", [], { ...defaultDisplay, fontSize: 20 }));
+      expect(stored).toBe(raw);
+    }
+  });
+
+  test("an absent store and valid old v2 snapshots remain writable", () => {
+    const legacy = {
+      version: 2,
+      serverId: "s",
+      tabs: [
+        { id: "t", root: { kind: "leaf", terminalId: "local:1" }, focusedTerminal: "local:1" },
+      ],
+    };
+    for (const raw of [undefined, legacy]) {
+      let stored: unknown = raw;
+      const store = loadLayoutStore({
+        read: () => stored,
+        write: (layout) => {
+          stored = layout;
+        },
+      });
+      const next = saveLayout("s", [], defaultDisplay);
+      store.write(next);
+      expect(stored).toEqual(next);
+    }
   });
 
   test("display prefs are bounded and unknown themes fall back", () => {

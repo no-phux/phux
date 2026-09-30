@@ -56,6 +56,7 @@ import {
 } from "./workspace/layout";
 import {
   defaultDisplay,
+  loadLayoutStore,
   parseLayout,
   saveLayout,
   sanitizeDisplay,
@@ -161,10 +162,10 @@ function writeAction(id: string): [WriteRegion, WriteMode] | undefined {
 function DesktopApp(props: AppProps): JSX.Element {
   const gpuix = useGpuix();
   // Mount-time inputs: the window serves one server socket and session for life.
-  const layouts = untrack(() => props.layouts);
+  const layouts = loadLayoutStore(untrack(() => props.layouts));
   const socketPath = untrack(() => props.socketPath);
   const sessionName = untrack(() => props.sessionName);
-  const initial = parseLayout(layouts.read());
+  const initial = layouts.initial;
   let lastSaved: SavedLayout | undefined = initial;
   const readGhostty = untrack(() => props.readGhostty);
   const ensureServer = untrack(() => props.ensureServer);
@@ -219,7 +220,7 @@ function DesktopApp(props: AppProps): JSX.Element {
 
   function persist(): void {
     const info = bridge.server();
-    if (info && bridge.status() === "Attached") {
+    if (info && bridge.status() === "Attached" && workspace.serverId() === info.serverId) {
       lastSaved = saveLayout(info.serverId, workspace.tabs(), prefs(), workspace.activeId());
     } else if (lastSaved) {
       lastSaved = { ...lastSaved, display: prefs() };
@@ -373,7 +374,7 @@ function DesktopApp(props: AppProps): JSX.Element {
   function findSelection(): void {
     const focus = workspace.focused();
     if (!focus) return;
-    const selected = safe(() => bridge.client().viewSelectionText(focus.viewId), "");
+    const selected = safe(() => bridge.client().viewSelectionText(requireView(focus)), "");
     const query = (selected.split(/\r?\n/).find((line) => line.trim()) ?? "").slice(0, 512);
     if (!query) {
       openFind();
@@ -389,7 +390,7 @@ function DesktopApp(props: AppProps): JSX.Element {
     const placement = placementById(state?.placementId);
     if (!state || !placement) return;
     const matches = query
-      ? safe(() => bridge.client().searchView(placement.viewId, query, caseSensitive), [])
+      ? safe(() => bridge.client().searchView(requireView(placement), query, caseSensitive), [])
       : [];
     setFind({ ...state, query, caseSensitive, matches, index: 0 });
     showMatch(placement, matches, 0);
@@ -411,18 +412,19 @@ function DesktopApp(props: AppProps): JSX.Element {
   function showMatch(placement: Placement, matches: DesktopSearchMatch[], index: number): void {
     const match = matches[index];
     if (!match) {
-      safe(() => bridge.client().clearViewSelection(placement.viewId), undefined);
+      safe(() => bridge.client().clearViewSelection(requireView(placement)), undefined);
       return;
     }
     safe(() => {
-      bridge.client().setViewSelection(placement.viewId, match.start, match.end, false);
-      bridge.client().pinViewportView(placement.viewId, match.start);
+      bridge.client().setViewSelection(requireView(placement), match.start, match.end, false);
+      bridge.client().pinViewportView(requireView(placement), match.start);
     }, undefined);
   }
 
   function closeFind(): void {
     const placement = placementById(find()?.placementId);
-    if (placement) safe(() => bridge.client().clearViewSelection(placement.viewId), undefined);
+    if (placement)
+      safe(() => bridge.client().clearViewSelection(requireView(placement)), undefined);
     setFind(undefined);
   }
 
@@ -460,7 +462,7 @@ function DesktopApp(props: AppProps): JSX.Element {
 
   function scrollLines(rows: number): void {
     const focus = workspace.focused();
-    if (focus) safe(() => bridge.client().scrollView(focus.viewId, rows), undefined);
+    if (focus) safe(() => bridge.client().scrollView(requireView(focus), rows), undefined);
   }
 
   /** Move the active tab one place, wrapping like Ghostty's move_tab. */
@@ -475,8 +477,8 @@ function DesktopApp(props: AppProps): JSX.Element {
     const focus = workspace.focused();
     if (!focus) return;
     safe(() => {
-      const rows = bridge.client().viewInfo(focus.viewId).rows;
-      bridge.client().scrollView(focus.viewId, direction * Math.max(1, rows - 1));
+      const rows = bridge.client().viewInfo(requireView(focus)).rows;
+      bridge.client().scrollView(requireView(focus), direction * Math.max(1, rows - 1));
     }, undefined);
   }
 
@@ -484,10 +486,10 @@ function DesktopApp(props: AppProps): JSX.Element {
     const focus = workspace.focused();
     if (!focus) return;
     safe(() => {
-      const total = Number(bridge.client().viewInfo(focus.viewId).scrollTotal);
+      const total = Number(bridge.client().viewInfo(requireView(focus)).scrollTotal);
       bridge
         .client()
-        .scrollView(focus.viewId, -Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, total)));
+        .scrollView(requireView(focus), -Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, total)));
     }, undefined);
   }
 
@@ -505,7 +507,7 @@ function DesktopApp(props: AppProps): JSX.Element {
     const focus = workspace.focused();
     if (!focus) return;
     try {
-      bridge.client().typeText(focus.viewId, text);
+      bridge.client().typeText(requireView(focus), text);
     } catch (error) {
       toast({ kind: "error", title: "Could not send keys", body: String(error) });
     }
@@ -516,28 +518,28 @@ function DesktopApp(props: AppProps): JSX.Element {
   /** A platform request (clipboard, open) the focused terminal runs natively once. */
   function requestHost(make: (id: string) => HostAction): void {
     const focus = workspace.focused();
-    if (!focus) return;
+    if (!focus?.viewId) return;
     hostActionId += 1;
     setHostAction({ placementId: focus.id, action: make(String(hostActionId)) });
   }
 
   function selectAll(): void {
     const focus = workspace.focused();
-    if (focus) safe(() => bridge.client().selectAllView(focus.viewId), false);
+    if (focus) safe(() => bridge.client().selectAllView(requireView(focus)), false);
   }
 
   /** Ghostty's jump_to_prompt: needs the shell to mark prompts (OSC 133). */
   function jumpToPrompt(prompts: number): void {
     const focus = workspace.focused();
-    if (focus) safe(() => bridge.client().jumpToPromptView(focus.viewId, prompts), undefined);
+    if (focus) safe(() => bridge.client().jumpToPromptView(requireView(focus), prompts), undefined);
   }
 
   /** Ghostty's selection clipboard is the view's own selection: paste it, as a middle click would. */
   function pasteSelection(): void {
     const focus = workspace.focused();
     if (!focus) return;
-    const text = safe(() => bridge.client().viewSelectionText(focus.viewId), "");
-    if (text) safe(() => bridge.client().pasteView(focus.viewId, text), "");
+    const text = safe(() => bridge.client().viewSelectionText(requireView(focus)), "");
+    if (text) safe(() => bridge.client().pasteView(requireView(focus), text), "");
   }
 
   /**
@@ -553,8 +555,8 @@ function DesktopApp(props: AppProps): JSX.Element {
       const client = bridge.client();
       const text =
         region === "selection"
-          ? safe(() => client.viewSelectionText(focus.viewId), "")
-          : client.viewDocumentText(focus.viewId, region === "scrollback");
+          ? safe(() => client.viewSelectionText(requireView(focus)), "")
+          : client.viewDocumentText(requireView(focus), region === "scrollback");
       if (!text) {
         toast({
           kind: "info",
@@ -568,7 +570,7 @@ function DesktopApp(props: AppProps): JSX.Element {
       return;
     }
     if (mode === "paste")
-      safe(() => bridge.client().pasteView(focus.viewId, quotePaths([path])), "");
+      safe(() => bridge.client().pasteView(requireView(focus), quotePaths([path])), "");
     else requestHost((id) => ({ id, kind: mode === "open" ? "open" : "copyText", text: path }));
   }
 
@@ -585,7 +587,7 @@ function DesktopApp(props: AppProps): JSX.Element {
 
   function follow(): void {
     const focus = workspace.focused();
-    if (focus) safe(() => bridge.client().followLiveView(focus.viewId), undefined);
+    if (focus) safe(() => bridge.client().followLiveView(requireView(focus)), undefined);
   }
 
   function openFolder(): void {
@@ -636,7 +638,7 @@ function DesktopApp(props: AppProps): JSX.Element {
     if (!pane?.cwd) return;
     const focus = workspace.focused();
     if (focus)
-      safe(() => bridge.client().pasteView(focus.viewId, quotePaths([pane.cwd ?? ""])), "");
+      safe(() => bridge.client().pasteView(requireView(focus), quotePaths([pane.cwd ?? ""])), "");
   }
 
   // ── Insert Path (host PATH_QUERY) ──────────────────────────────
@@ -714,7 +716,7 @@ function DesktopApp(props: AppProps): JSX.Element {
     }
     // pasteView is the acknowledged untrusted paste: text only, no Return.
     const queued = safe(() => {
-      bridge.client().pasteView(focus.viewId, text);
+      bridge.client().pasteView(requireView(focus), text);
       return true;
     }, false);
     if (queued) closePathPicker();
@@ -1430,7 +1432,9 @@ function DesktopApp(props: AppProps): JSX.Element {
   const statusInfo = createMemo<StatusInfo>(() => {
     bridge.revision();
     const focus = workspace.focused();
-    const info = focus ? safe(() => bridge.client().viewInfo(focus.viewId), undefined) : undefined;
+    const info = focus
+      ? safe(() => bridge.client().viewInfo(requireView(focus)), undefined)
+      : undefined;
     const counts: Record<string, number> = {};
     for (const agent of Object.values(bridge.agents()))
       counts[agent.state] = (counts[agent.state] ?? 0) + 1;
@@ -1466,6 +1470,12 @@ function DesktopApp(props: AppProps): JSX.Element {
     const startupError = untrack(() => props.startupError);
     if (startupError)
       toast({ kind: "error", title: "Could not start the phux server", body: startupError });
+    if (layouts.blocked)
+      toast({
+        kind: "error",
+        title: "Saved layout preserved",
+        body: "This layout is invalid or from an unsupported version. Layout and settings changes will not be saved.",
+      });
     bridge.connect();
     const timer = setInterval(() => {
       const at = Date.now();
@@ -1555,7 +1565,7 @@ function DesktopApp(props: AppProps): JSX.Element {
         }}
         drop={(paths) => {
           if (paths.length > 0)
-            safe(() => bridge.client().pasteView(placement.viewId, quotePaths(paths)), "");
+            safe(() => bridge.client().pasteView(requireView(placement), quotePaths(paths)), "");
         }}
       >
         <Show when={find()?.placementId === placement.id}>
@@ -1844,6 +1854,12 @@ function safe<T>(run: () => T, fallback: T): T {
   }
 }
 
+/** All callers are inside the shell's native-error boundary. */
+function requireView(placement: Placement): string {
+  if (!placement.viewId) throw new Error("This terminal is not ready yet.");
+  return placement.viewId;
+}
+
 const WINDOW = {
   title: "phux",
   appName: "phux",
@@ -2040,7 +2056,9 @@ function registerGlobalHotkeys(
 function quickStore(quick: LayoutStore, main: LayoutStore): LayoutStore {
   return {
     read: () => {
-      const saved = parseLayout(quick.read());
+      const raw = quick.read();
+      const saved = parseLayout(raw);
+      if (raw !== undefined && !saved) return raw;
       const display = parseLayout(main.read())?.display;
       if (!saved && !display) return undefined;
       const prefs = { ...(display ?? saved?.display ?? defaultDisplay), sidebarVisible: false };

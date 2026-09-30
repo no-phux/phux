@@ -26,6 +26,8 @@ export interface DesktopStart {
  * reported rather than dialled. Returns the failure for the shell to show.
  */
 function restartServer(start: DesktopStart): string | undefined {
+  if (process.env.PHUX_DESKTOP_DEMO === "1")
+    return "The private demo server stopped. Relaunch the demo to start a new sandbox.";
   const phux = findPhux(process.env.PHUX_BIN);
   if (!phux) return "Install the phux CLI (~/.local/bin/phux) so the desktop can start a server.";
   try {

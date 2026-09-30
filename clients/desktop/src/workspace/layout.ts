@@ -6,7 +6,8 @@
 export interface Placement {
   id: string;
   terminalId: string;
-  viewId: string;
+  /** Absent while a restored terminal has no renderable replica yet. */
+  viewId?: string;
 }
 
 export type Axis = "row" | "column";

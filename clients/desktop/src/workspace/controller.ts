@@ -29,7 +29,7 @@ import {
   type LayoutNode,
   type Placement,
 } from "./layout";
-import type { SavedLayout, SavedNode } from "./persist";
+import type { SavedLayout, SavedNode, SavedTab } from "./persist";
 
 /** Where a terminal that is not yet ready will be placed. */
 export type Destination =
@@ -68,6 +68,8 @@ export interface Workspace {
   settle(): void;
   restore(layout: SavedLayout | undefined): void;
   snapshot(): { tabs: DeskTab[]; activeId: string };
+  /** Incarnation that owns the current tabs, not merely the latest bridge snapshot. */
+  serverId(): string | undefined;
   releaseAll(): void;
   viewsOf(terminalId: string): number;
   /** Whether this visible placement proposes its terminal's PTY size. */
@@ -102,6 +104,10 @@ export function createWorkspace(
   const [owners, setOwners] = createSignal<Record<string, string>>({});
   let restoring: SavedLayout | undefined;
   let restored = false;
+  let serverId: string | undefined;
+  const unresolved = new Set<string>();
+  const attaching = new Set<string>();
+  const closedTerminals = new Set<string>();
 
   function activeTab(): DeskTab | undefined {
     return tabs().find((tab) => tab.id === activeId()) ?? tabs()[0];
@@ -125,12 +131,18 @@ export function createWorkspace(
     commit(tabs().map((tab) => (tab.id === id ? refocus(change(tab)) : tab)));
   }
 
-  function place(terminalId: string): Placement {
-    return { id: newId("place"), terminalId, viewId: bridge.client().createView(terminalId) };
+  function place(terminalId: string, id = newId("place")): Placement {
+    if (bridge.ready(terminalId)) {
+      return { id, terminalId, viewId: bridge.client().createView(terminalId) };
+    }
+    unresolved.add(id);
+    return { id, terminalId };
   }
 
   function release(items: Placement[]): void {
     for (const placement of items) {
+      unresolved.delete(placement.id);
+      if (!placement.viewId) continue;
       try {
         bridge.client().destroyView(placement.viewId);
       } catch {
@@ -272,7 +284,7 @@ export function createWorkspace(
   function predictedSize(destination: Destination): { cols: number; rows: number } | undefined {
     if (!bridge.server()?.features.includes("spawn_initial_size")) return undefined;
     const placement = focused();
-    if (!placement) return undefined;
+    if (!placement?.viewId) return undefined;
     let info: { cols: number; rows: number };
     try {
       info = bridge.client().viewInfo(placement.viewId);
@@ -394,6 +406,7 @@ export function createWorkspace(
   }
 
   function handle(events: DesktopEvent[]): void {
+    syncServer();
     for (const event of events) {
       if (event.kind === "SpawnAnswered") answered(event.requestId, event.terminalId, event.error);
       if (event.kind === "AttachAnswered" && event.error) {
@@ -420,6 +433,7 @@ export function createWorkspace(
   }
 
   function closed(terminalId: string): void {
+    closedTerminals.add(terminalId);
     awaiting.delete(terminalId);
     const doomed = tabs().flatMap((tab) =>
       placements(tab.root).filter((placement) => placement.terminalId === terminalId),
@@ -431,6 +445,7 @@ export function createWorkspace(
 
   /** After every drain: place ready terminals and finish a pending restore. */
   function settle(): void {
+    syncServer();
     if (bridge.status() !== "Attached") return;
     for (const [terminalId, destination] of awaiting) {
       if (!bridge.ready(terminalId)) continue;
@@ -439,6 +454,7 @@ export function createWorkspace(
     }
     setPending(spawns.size + awaiting.size);
     if (!restored) finishRestore();
+    resolveRestored();
   }
 
   function finishRestore(): void {
@@ -447,22 +463,30 @@ export function createWorkspace(
     restored = true;
     const layout = restoring?.serverId === server.serverId ? restoring : undefined;
     restoring = undefined;
-    const live = new Set(bridge.panes().map((pane) => pane.terminalId));
-    const next = (layout?.tabs ?? []).flatMap((saved): DeskTab[] => {
-      const root = rebuild(saved.root, live);
-      if (!root) return [];
-      const focus =
-        placements(root).find((placement) => placement.terminalId === saved.focusedTerminal) ??
-        placements(root)[0];
-      const tab: DeskTab = { id: saved.id, root, focusedId: focus?.id ?? "" };
-      if (saved.title) tab.title = saved.title;
-      return [tab];
-    });
-    if (next.length > 0) {
+    const next = (layout?.tabs ?? []).flatMap(restoreTab);
+    if (layout) {
       const active = next.find((tab) => tab.id === layout?.activeTab)?.id ?? next[0]?.id ?? "";
       commit(next, active);
       return;
     }
+    openInitial();
+  }
+
+  function restoreTab(saved: SavedTab): DeskTab[] {
+    const root = rebuild(saved.root);
+    if (!root) return [];
+    const items = placements(root);
+    const focus =
+      items.find((placement) => placement.id === saved.focusedId) ??
+      items.find((placement) => placement.terminalId === saved.focusedTerminal) ??
+      items[0];
+    claim(focus);
+    const tab: DeskTab = { id: saved.id, root, focusedId: focus?.id ?? "" };
+    if (saved.title) tab.title = saved.title;
+    return [tab];
+  }
+
+  function openInitial(): void {
     const initial = bridge.panes().find((pane) => pane.terminalId === options.initialTerminal);
     if (initial) {
       open(initial);
@@ -478,24 +502,61 @@ export function createWorkspace(
     else request({ kind: "tab" });
   }
 
-  function rebuild(node: SavedNode, live: Set<string>): LayoutNode | undefined {
+  function rebuild(node: SavedNode): LayoutNode | undefined {
     if (node.kind === "leaf") {
-      if (!live.has(node.terminalId)) return undefined;
-      if (!bridge.ready(node.terminalId)) {
-        // A pane from another session is live but not subscribed yet. Attach
-        // it and bring it back as its own tab once ready, rather than lose it.
-        if (!awaiting.has(node.terminalId)) {
-          bridge.client().attachTerminalPreservingGeometry(node.terminalId);
-          awaiting.set(node.terminalId, { kind: "tab" });
-        }
-        return undefined;
-      }
-      return leaf(place(node.terminalId));
+      if (closedTerminals.has(node.terminalId)) return undefined;
+      return leaf(place(node.terminalId, node.id));
     }
-    const first = rebuild(node.first, live);
-    const second = rebuild(node.second, live);
+    const first = rebuild(node.first);
+    const second = rebuild(node.second);
     if (!first || !second) return first ?? second;
     return { kind: "split", id: newId("split"), axis: node.axis, ratio: node.ratio, first, second };
+  }
+
+  /** Missing is not Closed: keep the leaf and fill only its runtime handle later. */
+  function resolveNode(node: LayoutNode, live: Set<string>): LayoutNode {
+    if (node.kind === "leaf") {
+      const placement = node.placement;
+      if (!unresolved.has(placement.id)) return node;
+      if (!bridge.ready(placement.terminalId)) {
+        attachRestored(placement.terminalId, live);
+        return node;
+      }
+      const ready = place(placement.terminalId, placement.id);
+      unresolved.delete(placement.id);
+      return leaf(ready);
+    }
+    const first = resolveNode(node.first, live);
+    const second = resolveNode(node.second, live);
+    return first === node.first && second === node.second ? node : { ...node, first, second };
+  }
+
+  function attachRestored(terminalId: string, live: Set<string>): void {
+    if (!live.has(terminalId) || attaching.has(terminalId)) return;
+    attaching.add(terminalId);
+    bridge.client().attachTerminalPreservingGeometry(terminalId);
+  }
+
+  function resolveRestored(): void {
+    if (unresolved.size === 0) return;
+    const live = new Set(bridge.panes().map((pane) => pane.terminalId));
+    setTabs((current) =>
+      current.map((tab) => {
+        const root = resolveNode(tab.root, live);
+        return root === tab.root ? tab : { ...tab, root };
+      }),
+    );
+  }
+
+  function syncServer(): void {
+    const current = bridge.server()?.serverId;
+    if (!current || current === serverId) return;
+    if (serverId !== undefined) {
+      releaseAll();
+      restoring = undefined;
+      restored = false;
+    }
+    serverId = current;
   }
 
   function restore(layout: SavedLayout | undefined): void {
@@ -507,8 +568,13 @@ export function createWorkspace(
     release(tabs().flatMap((tab) => placements(tab.root)));
     spawns.clear();
     awaiting.clear();
+    unresolved.clear();
+    attaching.clear();
+    closedTerminals.clear();
     batch(() => {
       setTabs([]);
+      setActiveId("");
+      setOwners({});
       setPending(0);
     });
   }
@@ -569,6 +635,7 @@ export function createWorkspace(
     settle,
     restore,
     snapshot: () => ({ tabs: tabs(), activeId: activeId() }),
+    serverId: () => serverId,
     releaseAll,
     sizeOwner,
     viewsOf: (terminalId) =>

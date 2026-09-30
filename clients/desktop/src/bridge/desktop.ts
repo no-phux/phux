@@ -110,6 +110,7 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
   const [handle, setHandle] = createSignal("");
   let owner: DesktopClient | undefined;
   let closed = false;
+  const knownTerminals = new Set<string>();
   let listener: (events: DesktopEvent[]) => void = () => {};
   let pathListener: (answers: DesktopPathAnswer[]) => void = () => {};
 
@@ -151,6 +152,8 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
     const native = client();
     const failure = native.lastError();
     const next = native.topology() ?? undefined;
+    knownTerminals.clear();
+    for (const pane of next?.panes ?? []) knownTerminals.add(pane.terminalId);
     batch(() => {
       setStatus(native.status());
       if (failure) setError(failure);
@@ -169,12 +172,13 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
     // queue refuses the next query.
     const answers = owner.takePathAnswers();
     batch(() => {
-      accept(events);
-      if (answers.length > 0) pathListener(answers);
       // A new topology object re-renders every row derived from it, so read
       // one only when an event can have changed it: output, receipts and
       // agent badges cannot, and under a flood they are nearly every wake.
       if (events.some(structural)) snapshot();
+      // Subscribers must see the identity belonging to this event batch.
+      accept(events);
+      if (answers.length > 0) pathListener(answers);
       setRevision((value) => value + 1);
     });
     const elapsed = performance.now() - started;
@@ -241,11 +245,21 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
     close,
     ready: (terminalId) => {
       revision();
-      return !closed && !!owner && owner.inputReadiness(terminalId).ready;
+      return (
+        !closed &&
+        !!owner &&
+        knownTerminals.has(terminalId) &&
+        owner.inputReadiness(terminalId).ready
+      );
     },
     fenced: (terminalId) => {
       revision();
-      return !closed && !!owner && owner.inputReadiness(terminalId).deliveryFenced;
+      return (
+        !closed &&
+        !!owner &&
+        knownTerminals.has(terminalId) &&
+        owner.inputReadiness(terminalId).deliveryFenced
+      );
     },
     homeSession,
     panes: () => topology()?.panes ?? [],
