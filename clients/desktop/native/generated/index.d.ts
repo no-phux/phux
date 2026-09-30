@@ -801,6 +801,13 @@ export declare class DesktopClient {
   destroyView(view: string): void
   /** Relative rows; negative scrolls toward history. Safe integers only. */
   scrollView(view: string, rows: number): void
+  /**
+   * Ghostty's `jump_to_prompt`: bring the `prompts`th shell prompt (OSC
+   * 133) above (negative) or below the viewport's top row to the top. A
+   * prompt in the active area follows live output; with no prompt in that
+   * direction the view stays put. Safe integers only.
+   */
+  jumpToPromptView(view: string, prompts: number): void
   followLiveView(view: string): void
   /**
    * Explicitly request canonical PTY geometry for this view's terminal.
@@ -821,6 +828,19 @@ export declare class DesktopClient {
    * Unsupported or over-budget copies fail without an unbounded fallback.
    */
   viewSelectionText(view: string): string
+  /**
+   * Select the view's whole screen, loaded scrollback included (Ghostty's
+   * `select_all`). False, with the selection cleared, when it is empty.
+   */
+  selectAllView(view: string): boolean
+  /**
+   * The view's whole document as plain text, at most 32 MiB: loaded
+   * scrollback plus the active screen (Ghostty's `write_screen_file`), or
+   * with `history_only` the scrollback alone (`write_scrollback_file`,
+   * empty on the alternate screen). Neither selects nor scrolls the view;
+   * an oversized document fails without truncating.
+   */
+  viewDocumentText(view: string, historyOnly: boolean): string
   /**
    * Search at most 4096 query bytes. The runtime caps results at 4096 and
    * replaces previous search handles, preserving active selection endpoints.

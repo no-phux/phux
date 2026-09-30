@@ -608,6 +608,7 @@ impl Client {
                 u64::try_from(value)
                     .map_err(|_| BridgeError::invalid("scroll row must be non-negative"))?,
             ),
+            4 => Scroll::Prompt(value),
             _ => return Err(BridgeError::invalid("unknown viewport scroll kind")),
         };
         self.control().scroll(id, scroll).map_err(engine_bridge)?;
