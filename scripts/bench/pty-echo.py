@@ -4,8 +4,8 @@
 Runs the command under test on a real pty of a fixed size, waits for the shell
 prompt, then measures the round trip of a single typed byte: write one byte to
 the master, then select() until that byte comes back out of the master. The
-measurement never goes through a screen scrape, so its floor is the pty and the
-process under test rather than a polling interval.
+measurement ends at client output bytes, not a displayed GPU frame. Its floor
+is the PTY and process under test rather than a screen-capture polling interval.
 
 Stdlib only. Usage:
 
@@ -175,6 +175,7 @@ def measure(args, fd, extra_fds):
     """One typed byte per iteration; returns per-iteration microseconds."""
     samples = []
     spikes = []
+    timeouts = []
     interfere_pid = None
     for i in range(args.iters):
         if args.interfere and i == args.interfere_at:
@@ -197,10 +198,12 @@ def measure(args, fd, extra_fds):
             samples.append(elapsed)
             if interfere_pid is not None and i >= args.interfere_at:
                 spikes.append(elapsed)
+        else:
+            timeouts.append(i)
         os.write(fd, b"\x15")
     if interfere_pid is not None:
         kill_quietly(interfere_pid)
-    return samples, spikes
+    return samples, spikes, timeouts
 
 
 def main():
@@ -224,25 +227,34 @@ def main():
     if not argv:
         print("no command given", file=sys.stderr)
         return 2
+    if args.iters <= 0 or args.cols <= 0 or args.rows <= 0:
+        ap.error("iters, cols and rows must be positive")
     args.interfere = shlex.split(args.interfere) if args.interfere else None
 
     token = "P%d" % os.getpid()
     pid, fd = spawn_pty(argv, args.cols, args.rows)
     extra_fds = []
-    result = {"label": args.label, "iters": args.iters, "ok": False}
+    result = {
+        "label": args.label, "iters": args.iters, "ok": False,
+        "command": argv, "boundary": "outer PTY write to attach-client output byte",
+        "cols": args.cols, "rows": args.rows,
+    }
     try:
         found, _ = wait_for(fd, args.prompt.encode(), extra_fds, min(args.attach_timeout, 8.0))
         result["prompt_seen_before_settle"] = found
         if not settle(fd, extra_fds, args.prompt, token, args.settle_timeout):
             result["error"] = "pane never answered a probe command"
         else:
-            samples, spikes = measure(args, fd, extra_fds)
+            samples, spikes, timeouts = measure(args, fd, extra_fds)
             result.update(
-                ok=bool(samples),
+                ok=len(samples) == args.iters,
+                completed=len(samples),
+                timeouts=len(timeouts),
+                timeout_iterations=timeouts,
                 samples_us=samples,
                 p50_us=percentile(samples, 50),
                 p90_us=percentile(samples, 90),
-                p99_us=percentile(samples, 99),
+                p99_us=percentile(samples, 99) if len(samples) >= 1000 else None,
                 max_us=max(samples) if samples else None,
             )
             if spikes:
