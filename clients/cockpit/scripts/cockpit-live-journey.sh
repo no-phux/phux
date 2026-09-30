@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# PID-bound presentation journey over the isolated dev bundle. It never opens,
-# activates, inspects, or kills /Applications/Phux Cockpit.app.
+# PID-bound presentation and navigation journey over the isolated dev bundle.
+# It never opens, activates, inspects, or kills /Applications/Phux Cockpit.app.
+# --shots DIR saves reference-renderer PNGs of each navigation step there.
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,14 +12,16 @@ export PHUX_COCKPIT_PROCESS_NAME=phux-cockpit-dev
 EXPECT_KNOWN_RED=0
 KEEP=0
 NO_BUILD=0
+SHOTS=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --expect-known-red) EXPECT_KNOWN_RED=1 ;;
         --keep) KEEP=1 ;;
         --no-build) NO_BUILD=1 ;;
+        --shots) shift; SHOTS="${1:?--shots needs a directory}" ;;
         -h|--help)
-            sed -n '2,4p' "$0"
-            printf 'usage: %s [--expect-known-red] [--no-build] [--keep]\n' "$0"
+            sed -n '2,5p' "$0"
+            printf 'usage: %s [--expect-known-red] [--no-build] [--keep] [--shots DIR]\n' "$0"
             exit 0
             ;;
         *) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
@@ -204,3 +207,90 @@ if [[ "$transition_red" == 1 ]]; then
 fi
 (( transition_red == 0 ))
 printf 'PASS: live Agents -> Sessions replacement holds in pid %s\n' "$APP_PID"
+
+# ---------------------------------------------------------------- navigation
+# Where am I, what is open, and where are my machines: each step asserts the
+# destination absent, acts through visible chrome, then asserts it present.
+
+automate() {
+    (cd "$DEV_HOME" && "$NATIVE" automate "$@")
+}
+
+shot() {
+    [[ -n "$SHOTS" ]] || return 0
+    local view="$1" name="$2"
+    mkdir -p -- "$SHOTS"
+    automate screenshot "$view" >/dev/null
+    cp -f -- "${DEV_HOME}/.zig-cache/native-sdk-automation/screenshot-${view}.png" "${SHOTS}/${name}.png"
+}
+
+# Click the one widget with ROLE and NAME inside OS window W (w1, w2, ...).
+click_in() {
+    local window="$1" view="$2" role="$3" name="$4" snapshot matches count
+    snapshot="$(app_instance_snapshot)" || return 1
+    matches="$(grep -F "@${window}/" <<<"$snapshot" | grep -F "role=${role} name=\"${name}\"" || true)"
+    count="$(grep -c . <<<"$matches" || true)"
+    if [[ "$count" != 1 ]]; then
+        printf 'FAILED: expected one role=%s name=%q in %s, found %s.\n' "$role" "$name" "$window" "$count" >&2
+        return 1
+    fi
+    if [[ ! "$matches" =~ \#([0-9]+)\ role= ]]; then
+        printf 'FAILED: could not parse widget identity from: %s\n' "$matches" >&2
+        return 1
+    fi
+    app_instance_assert
+    automate widget-click "$view" "${BASH_REMATCH[1]}" >/dev/null
+}
+
+# Leave the Sessions navigator from the step above.
+click_in w1 phux-cockpit-canvas button 'Close navigator'
+automate assert --absent --timeout-ms 5000 'role=dialog name="Navigator"' >/dev/null
+
+# 1. The header names this window's session and machine at a fixed width.
+automate assert --timeout-ms 5000 \
+    '@w1/[^ ]* role=button name="Session and machine" bounds=\([0-9.]+,[0-9.]+ 216x32\)' >/dev/null
+shot phux-cockpit-canvas nav-01-header
+printf '  ok: header location trigger names session and machine\n'
+
+# 2. Its menu reaches Machines and Sessions without shortcut knowledge.
+automate assert --absent 'role=menuitem name="Machines…"' >/dev/null
+click_in w1 phux-cockpit-canvas button 'Session and machine'
+automate assert --timeout-ms 5000 'role=menuitem name="Machines…"' \
+    'role=menuitem name="Sessions…"' 'role=menuitem name="Connect to Host…"' >/dev/null
+shot phux-cockpit-canvas nav-02-location-menu
+click_in w1 phux-cockpit-canvas menuitem 'Machines…'
+automate assert --timeout-ms 5000 'role=tab name="Machines" [^\n]*state=\[selected\]' \
+    'role=button name="Add Machine…"' >/dev/null
+shot phux-cockpit-canvas nav-03-machines
+printf '  ok: location menu -> Machines lists saved machines with Add Machine\n'
+click_in w1 phux-cockpit-canvas button 'Close navigator'
+automate assert --absent --timeout-ms 5000 'role=dialog name="Navigator"' >/dev/null
+
+# 3. A second window gets a distinguishable OS title.
+automate assert --absent '^window @w2 ' >/dev/null
+automate native-command window.new phux-cockpit-canvas >/dev/null
+automate assert --timeout-ms 10000 '^window @w2 "Phux Cockpit — Window 2"' >/dev/null
+printf '  ok: New Window is titled "Phux Cockpit — Window 2"\n'
+
+# 4. Workspace actions -> Show all windows lists both windows as a hierarchy,
+#    with this window and its shown tab marked current.
+automate assert --timeout-ms 10000 '@w2/[^ ]* role=button name="Workspace actions"' >/dev/null
+click_in w2 phux-cockpit-canvas-1 button 'Workspace actions'
+click_in w2 phux-cockpit-canvas-1 menuitem 'Show all windows…'
+automate assert --timeout-ms 5000 '@w2/[^ ]* role=tab name="Windows" [^\n]*state=\[selected\]' \
+    '@w2/[^ ]* role=listitem name="Window 1"' '@w2/[^ ]* role=listitem name="Window 2"' \
+    '@w2/[^ ]* role=text name="Tab 1 of 1 · Window 2 · ' >/dev/null
+current="$(app_instance_snapshot | grep -F '@w2/' | grep -Fc 'role=text name="Current"' || true)"
+if [[ "$current" != 2 ]]; then
+    printf 'FAILED: expected Window 2 and its shown tab marked Current, found %s marks.\n' "$current" >&2
+    exit 1
+fi
+shot phux-cockpit-canvas-1 nav-04-windows
+printf '  ok: Show all windows lists both windows; Window 2 and its tab are current\n'
+
+# 5. Choosing Window 1 brings existing work forward without a new window.
+click_in w2 phux-cockpit-canvas-1 listitem 'Window 1'
+automate assert --absent --timeout-ms 5000 '@w2/[^ ]* role=dialog name="Navigator"' >/dev/null
+automate assert --absent '^window @w3 ' >/dev/null
+printf '  ok: activating Window 1 closes the overview and opens nothing new\n'
+printf 'PASS: live navigation journey holds in pid %s\n' "$APP_PID"

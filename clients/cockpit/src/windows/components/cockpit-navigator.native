@@ -62,7 +62,10 @@
                           <text foreground="text_muted" overflow="ellipsis">{machine.endpoint}</text>
                           <if test="{machine.message}"><text wrap="true" foreground="warning">{machine.message}</text></if>
                           <row gap="8" cross="center">
-                            <text foreground="text_muted">{machine.action}</text>
+                            <!-- The row's own action is a real control, not a caption:
+                                 Connect, Retry or Browse Sessions reads as pressable. -->
+                            <if test="{machine.disabled}"><text foreground="text_muted">{machine.action}</text></if>
+                            <else><button size="sm" on-press="machine_pick:{machine.target}">{machine.action}</button></else>
                             <spacer grow="1" />
                             <if test="{machine.canDisconnect}"><button size="sm" variant="ghost" on-press="machine_disconnect:{machine.target}">Disconnect</button></if>
                             <if test="{machine.canForget}"><button size="sm" variant="ghost" on-press="machine_forget:{machine.target}">Forget…</button></if>
@@ -82,6 +85,8 @@
                   <row grow="1" gap="8" cross="center">
                     <if test="{row.highlighted}"><spacer width="2" height="24" background="accent" /></if>
                     <else><spacer width="2" height="24" /></else>
+                    <!-- Windows view: a tab row nests under its window row. -->
+                    <if test="{row.kind == 5}"><spacer width="16" /></if>
                     <column grow="1" gap="0">
                       <text overflow="ellipsis">{row.label}</text>
                       <if test="{row.detail}"><text foreground="text_muted" overflow="ellipsis">{row.detail}</text></if>

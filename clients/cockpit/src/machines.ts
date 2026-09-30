@@ -1,4 +1,4 @@
-import { asciiBytes } from "@native-sdk/core";
+import { asciiBytes, utf8Bytes } from "@native-sdk/core";
 import { containsQuery } from "./commands.ts";
 import { sameBytes } from "./protocol.ts";
 
@@ -120,6 +120,21 @@ function statusLabel(state: number): Uint8Array {
   return asciiBytes("Not connected");
 }
 
+/// An SSH-only saved machine cannot be dialed until `phux host add` sets it
+/// up over ssh; its row offers that instead of a Connect that cannot work.
+const SET_UP = utf8Bytes("Set Up\u2026");
+
+/// The ssh destination a saved `ssh://HOST[:PORT]` endpoint names, for the
+/// setup terminal's `phux host add`.
+export function sshDestination(endpoint: Uint8Array): Uint8Array {
+  const scheme = asciiBytes("ssh://");
+  if (endpoint.length <= scheme.length) return endpoint;
+  for (let at = 0; at < scheme.length; at += 1) if (endpoint[at] !== scheme[at]) return endpoint;
+  let end = endpoint.length;
+  while (end > scheme.length && endpoint[end - 1] === 47) end -= 1;
+  return endpoint.slice(scheme.length, end);
+}
+
 function actionLabel(state: number): Uint8Array {
   if (state === 2) return asciiBytes("Browse Sessions");
   if (state === 4) return asciiBytes("Retry");
@@ -176,7 +191,7 @@ function machineRecord(bytes: Uint8Array, at: number, generation: number): Machi
         state: state >= 0 && state <= 9007199254740991 ? Math.trunc(state) : 0,
         name: fields[0], endpoint: fields[1], session: fields[2], message,
         target, status: statusLabel(state),
-        action: route >= 3 ? asciiBytes("Edit Configuration to repair this route") : actionLabel(state),
+        action: route >= 3 ? asciiBytes("Edit Configuration to repair this route") : route === 2 && !connected && !busy ? SET_UP : actionLabel(state),
         highlighted: false, connected,
         canDisconnect: role !== 0 && connected,
         height: message.length > 0 ? 128 : 96,

@@ -25,7 +25,7 @@ import {
 } from "./presentation.ts";
 import { newSessionRequest, newSessionReply } from "./new-session.ts";
 import { localToolRequest, localToolReply } from "./local-tools.ts";
-import { type MachineState, type MachineRow, initialMachines, requestMachines, machineRequest, machineStatusRequest, receiveMachines, filterMachines, moveMachine, capturedMachine } from "./machines.ts";
+import { type MachineState, type MachineRow, initialMachines, requestMachines, machineRequest, machineStatusRequest, receiveMachines, filterMachines, moveMachine, capturedMachine, sshDestination } from "./machines.ts";
 import {
   REMOTE_KIND_STATUS,
   REMOTE_KIND_CONNECT,
@@ -220,6 +220,8 @@ export interface WindowChromeContext {
   readonly emptyDetail: Uint8Array;
   readonly emptyPicked: boolean;
   readonly emptyOpening: boolean;
+  /// The header location trigger's text, `session · machine`, elided to fit.
+  readonly location: Uint8Array;
 }
 
 export interface Model {
@@ -560,6 +562,7 @@ export type Msg =
   | { readonly kind: "header_hosts_more" }
   | { readonly kind: "header_sessions" }
   | { readonly kind: "header_machines" }
+  | { readonly kind: "header_windows" }
   | { readonly kind: "header_agents" }
   | { readonly kind: "header_new_window" }
   | { readonly kind: "header_tab_placement" }
@@ -1116,6 +1119,8 @@ function receiveNavigation(model: Model, body: Uint8Array): Model {
 }
 
 
+/// `current` is the engine's claim, per row kind: the focused window, the tab
+/// that window shows, the session it shows, or the opening window's host.
 function switcherRows(rows: readonly NavigationRow[]): readonly SwitcherRow[] {
   const result: SwitcherRow[] = [];
   for (const row of rows) {
@@ -1124,7 +1129,7 @@ function switcherRows(rows: readonly NavigationRow[]): readonly SwitcherRow[] {
     const index = rawIndex >= 0 && rawIndex <= 65535 ? Math.trunc(rawIndex) : 0;
     const kind = rawKind >= 0 && rawKind <= 5 ? Math.trunc(rawKind) : 0;
     result.push({ id: index, index, kind, label: row.label, detail: row.detail, host: row.host,
-      highlighted: row.highlighted, current: row.current && row.kind !== 5, selectable: row.selectable, disabled: !row.selectable, target: row.target,
+      highlighted: row.highlighted, current: row.current, selectable: row.selectable, disabled: !row.selectable, target: row.target,
       renamable: kind === 2 && row.selectable && sessionRowTarget(row.target),
       resource: row.resource, parent: row.parent, nativeId: row.nativeId, evidence: row.evidence });
   }
@@ -1818,8 +1823,47 @@ function windowStatus(connection: number, terminal: number, refused: boolean): U
 const MIDDLE_DOT = utf8Bytes(" \u00b7 ");
 const NO_WINDOW_CONTEXT: WindowChromeContext = {
   title: NO_BYTES, detail: NO_BYTES, emptyName: NO_BYTES, emptyDetail: NO_BYTES,
-  emptyPicked: false, emptyOpening: false,
+  emptyPicked: false, emptyOpening: false, location: NO_BYTES,
 };
+
+/// What the header location trigger's fixed 216pt (54 x 4) width shows at the
+/// small register. Checked on the dev build (`native automate screenshot`,
+/// 1100x640): "release-cand… · This Mac", 24 characters, draws in about 150pt
+/// of the ~176pt left after insets, chevron and gap. Mostly-capital names run
+/// wider; the elision still bounds them to the same count.
+const LOCATION_CHARACTERS = 24;
+/// The machine is never the part that disappears: a long session elides first.
+const LOCATION_TITLE_MINIMUM = 8;
+const ELLIPSIS = utf8Bytes("\u2026");
+
+function characterCount(bytes: Uint8Array): number {
+  let count = 0;
+  for (let at = 0; at < bytes.length; at += 1) {
+    if ((bytes[at] & 192) !== 128) count += 1;
+  }
+  return count;
+}
+
+/// At most `limit` characters, the last an ellipsis when anything was cut,
+/// always on a UTF-8 boundary.
+function elideCharacters(bytes: Uint8Array, limit: number): Uint8Array {
+  if (characterCount(bytes) <= limit) return bytes;
+  let count = 0;
+  for (let at = 0; at < bytes.length; at += 1) {
+    if ((bytes[at] & 192) === 128) continue;
+    if (count === limit - 1) return joinBytes(bytes.slice(0, at), ELLIPSIS, NO_BYTES);
+    count += 1;
+  }
+  return bytes;
+}
+
+/// `session · machine` for the header trigger. The session gives up
+/// characters before the machine does, so "where is this running" survives.
+function locationText(title: Uint8Array, detail: Uint8Array): Uint8Array {
+  const room = LOCATION_CHARACTERS - 3 - characterCount(detail);
+  const session = elideCharacters(title, room > LOCATION_TITLE_MINIMUM ? room : LOCATION_TITLE_MINIMUM);
+  return elideCharacters(joinBytes(session, MIDDLE_DOT, detail), LOCATION_CHARACTERS);
+}
 
 function findWindowContext(records: readonly WindowContext[], window: number): WindowContext | null {
   for (const record of records) {
@@ -1853,14 +1897,18 @@ function unknownWindowContext(): WindowChromeContext {
     emptyDetail: NO_BYTES,
     emptyPicked: false,
     emptyOpening: false,
+    location: locationText(asciiBytes("Session unknown"), asciiBytes("Window context unavailable")),
   };
 }
 
 function chromeFromWindowContext(record: WindowContext): WindowChromeContext {
   const host = record.host.length > 0 ? record.host : asciiBytes("Machine not yet known");
+  const title = record.session.length > 0 ? record.session : asciiBytes("Sessions");
+  const detail = windowContextDetail(host, record);
   return {
-    title: record.session.length > 0 ? record.session : asciiBytes("Sessions"),
-    detail: windowContextDetail(host, record),
+    title,
+    detail,
+    location: locationText(title, detail),
     emptyName: record.empty ? record.session : NO_BYTES,
     emptyDetail: record.empty ? joinBytes(asciiBytes("Empty session on "), host, NO_BYTES) : NO_BYTES,
     emptyPicked: record.empty && record.picked,
@@ -1877,9 +1925,12 @@ function legacyWindowContext(
 ): WindowChromeContext {
   if (!open) return NO_WINDOW_CONTEXT;
   const shown = (empty.windows & bit) !== 0;
+  const title = session.length > 0 ? session : asciiBytes("Sessions");
+  const detail = host.length > 0 ? host : asciiBytes("Machine not yet known");
   return {
-    title: session.length > 0 ? session : asciiBytes("Sessions"),
-    detail: host.length > 0 ? host : asciiBytes("Machine not yet known"),
+    title,
+    detail,
+    location: locationText(title, detail),
     emptyName: shown ? empty.name : NO_BYTES,
     emptyDetail: shown ? joinBytes(asciiBytes("Empty session on "), empty.host, NO_BYTES) : NO_BYTES,
     emptyPicked: shown && empty.picked,
@@ -2003,6 +2054,7 @@ function headerMenuAction(msg: Msg): Msg | null {
   switch (msg.kind) {
     case "header_sessions": return { kind: "sessions_open" };
     case "header_machines": return { kind: "machines_open" };
+    case "header_windows": return { kind: "windows_open" };
     case "header_host_connect": return { kind: "host_open" };
     case "header_reconnect": return { kind: "reconnect" };
     case "header_agents": return { kind: "agents_open" };
@@ -2269,12 +2321,14 @@ function windowState(index: number, section: SecondaryWindow | null, agents: rea
 }
 
 // Each slot's descriptor spells its labels literally: the compiled subset
-// binds `src/windows/<label>.native` to the literal at build time.
+// binds `src/windows/<label>.native` to the literal at build time. The OS
+// title names the window as the Windows navigator does ("Window 2" is slot 1),
+// so Mission Control, the Dock menu and Cmd-` tell the windows apart.
 function describeWindow1(): WindowDescriptor {
   return windowDescriptor({
     label: asciiBytes("phux-window-1"),
     canvasLabel: asciiBytes("phux-cockpit-canvas-1"),
-    title: asciiBytes("Phux Cockpit TS"),
+    title: utf8Bytes("Phux Cockpit — Window 2"),
     width: 1100,
     height: 640,
     minWidth: 900,
@@ -2289,7 +2343,7 @@ function describeWindow2(): WindowDescriptor {
   return windowDescriptor({
     label: asciiBytes("phux-window-2"),
     canvasLabel: asciiBytes("phux-cockpit-canvas-2"),
-    title: asciiBytes("Phux Cockpit TS"),
+    title: utf8Bytes("Phux Cockpit — Window 3"),
     width: 1100,
     height: 640,
     minWidth: 900,
@@ -2304,7 +2358,7 @@ function describeWindow3(): WindowDescriptor {
   return windowDescriptor({
     label: asciiBytes("phux-window-3"),
     canvasLabel: asciiBytes("phux-cockpit-canvas-3"),
-    title: asciiBytes("Phux Cockpit TS"),
+    title: utf8Bytes("Phux Cockpit — Window 4"),
     width: 1100,
     height: 640,
     minWidth: 900,
@@ -2319,7 +2373,7 @@ function describeWindow4(): WindowDescriptor {
   return windowDescriptor({
     label: asciiBytes("phux-window-4"),
     canvasLabel: asciiBytes("phux-cockpit-canvas-4"),
-    title: asciiBytes("Phux Cockpit TS"),
+    title: utf8Bytes("Phux Cockpit — Window 5"),
     width: 1100,
     height: 640,
     minWidth: 900,
@@ -2503,6 +2557,7 @@ export function initialModel(): [Model, Cmd<Msg>] {
         emptyDetail: NO_BYTES,
         emptyPicked: false,
         emptyOpening: false,
+        location: locationText(asciiBytes("Sessions"), asciiBytes("Machine not yet known")),
       },
       window1Context: NO_WINDOW_CONTEXT,
       window2Context: NO_WINDOW_CONTEXT,
@@ -3225,9 +3280,22 @@ function openNavigator(model: Model, view: number): NavigatorDecision {
   return navigatorDecision(loading, 3, scopedNavigationRequest(loading));
 }
 
+function setUpMachine(model: Model, row: MachineRow): NavigatorDecision {
+  const destination = sshDestination(row.endpoint);
+  const hostLength = destination.length;
+  const nameLength = row.name.length;
+  const hostEnd = hostLength >= 0 && hostLength <= 255 ? Math.trunc(hostLength) : 0;
+  const nameEnd = nameLength >= 0 && nameLength <= 255 ? Math.trunc(nameLength) : 0;
+  return describeLocalTool({ ...model, hostQuery: destination, hostAnchor: hostEnd, hostFocus: hostEnd,
+    hostFriendlyName: row.name, friendlyAnchor: nameEnd, friendlyFocus: nameEnd }, 1);
+}
+
 function machineAction(model: Model, target: Uint8Array): NavigatorDecision {
   const row = capturedMachine(model.machines, target);
   if (row === null || row.disabled) return navigatorDecision(model, 0, NO_BYTES);
+  // An SSH-only machine is set up, not dialed: hand Add Machine its
+  // destination and name so the setup terminal repairs the saved entry.
+  if (row.route === 2 && !row.connected) return setUpMachine(model, row);
   const operation = row.connected ? 7 : row.state === 4 ? 3 : 2;
   return requestMachineOperation(model, operation, target);
 }
@@ -3815,7 +3883,11 @@ function receiveLocalTool(model: Model, body: Uint8Array): NavigatorDecision {
   const reply = localToolReply(body);
   if (reply === null) return navigatorDecision({ ...model, hostBusy: false, hostNotice: asciiBytes("Local setup status unavailable. Try again.") }, 0, NO_BYTES);
   if (model.toolToken.length > 0 && !sameBytes(model.toolToken, reply.token)) return navigatorDecision(model, 0, NO_BYTES);
-  const next = { ...model, hostBusy: false, toolToken: reply.token, toolTarget: reply.target, hostNotice: reply.message };
+  // The shared describe answer names the configured editor (ready, 0) or asks
+  // for one (editor_required, 3). Neither is about adding a machine, so Add
+  // Machine keeps only the capture token and shows its own guidance.
+  const editorFact = model.toolPurpose === 1 && model.toolOperationId === 0 && (reply.phase === 0 || reply.phase === 3);
+  const next = { ...model, hostBusy: false, toolToken: reply.token, toolTarget: reply.target, hostNotice: editorFact ? NO_BYTES : reply.message };
   if (reply.phase === 0 && model.toolPurpose === 2) return launchLocalTool(next);
   return navigatorDecision(next, 0, NO_BYTES);
 }

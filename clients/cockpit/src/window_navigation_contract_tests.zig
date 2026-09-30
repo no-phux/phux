@@ -31,6 +31,32 @@ test "window navigator projects real model tabs and empty windows" {
     try std.testing.expect(std.mem.indexOf(u8, reply, "Empty window") != null);
 }
 
+test "window rows summarize their tabs and tab rows place themselves without repeating the title" {
+    const engine = try engine_module.Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    _ = engine.model.openWindow(1) orelse return error.OutOfMemory;
+    const ws = engine.model.wsAtConst(0).?;
+    const window: windows.Target = .{ .window = 0, .epoch = engine.model.window_epochs[0] };
+    var tab = window;
+    tab.tab = .{ .generation = ws.tab_generation, .id = ws.tab_ids[0] };
+    const empty: windows.Target = .{ .window = 1, .epoch = engine.model.window_epochs[1] };
+    var out: [160]u8 = undefined;
+    const text: labels.Labels = .{};
+    try std.testing.expectEqualStrings("Local PTY · 1 tab", text.detail(engine.model, window, &out));
+    try std.testing.expectEqualStrings("Tab 1 of 1 · Window 1 · Local PTY", text.detail(engine.model, tab, &out));
+    try std.testing.expectEqualStrings("Window 2", text.label(engine.model, empty, &out));
+
+    // The focused window and its shown tab are current; the other window is not.
+    engine.model.active_window = 0;
+    try std.testing.expect(windows.current(engine.model, window));
+    try std.testing.expect(windows.current(engine.model, tab));
+    try std.testing.expect(!windows.current(engine.model, empty));
+    engine.model.active_window = 1;
+    try std.testing.expect(!windows.current(engine.model, window));
+    try std.testing.expect(!windows.current(engine.model, tab));
+    try std.testing.expect(windows.current(engine.model, empty));
+}
+
 test "window navigator finds full terminal title and directory beyond presentation limits" {
     const engine = try engine_module.Engine.create(std.testing.allocator, std.testing.io);
     defer engine.destroy();

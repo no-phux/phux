@@ -1,16 +1,17 @@
 ---
 audience: agents, contributors
 stability: evolving
-last-reviewed: 2026-09-13
+last-reviewed: 2026-09-30
 ---
 
 # Remote hosts
 
-**TL;DR.** Connected hosts in the window header lists live local and remote
-attachments, their connection state, and the current window's host. Selecting
-one browses its sessions without disconnecting or retargeting another host.
-Connect to Host (`cmd+shift+O`, Window > Connect to Host…, or the header
-dropdown's Connect to Host action) points Cockpit's active Phux provider
+**TL;DR.** The window header's location trigger (`session · machine`) opens
+the Connected hosts menu: live local and remote attachments, their connection
+state, and the current window's host. Selecting one browses its sessions
+without disconnecting or retargeting another host. Machines… (`cmd+shift+O`)
+lists every saved machine, connected or not. Connect to Host (the header
+menu's Connect to Host action) points Cockpit's active Phux provider
 at a host in the phux CLI's own `[[remote]]` registry, resolved the way
 `phux --remote HOST` resolves it. phux-client-ffi's remote tunnel dials QUIC
 or TLS WebSocket with the pinned certificate and bearer token, then relays
