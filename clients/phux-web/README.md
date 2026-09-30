@@ -57,7 +57,7 @@ terminal traffic). See [ADR-0024]/[ADR-0025] for why this beats linking them.
 
 ## Public API
 
-Two `#[wasm_bindgen]` entry points, designed to be driven from JS:
+`#[wasm_bindgen]` entry points, designed to be driven from JS:
 
 ```js
 import init, { start, start_webtransport } from "./pkg/phux_web.js";
@@ -69,7 +69,12 @@ await start("wss://host/session", "my-canvas", /*cols*/ 100, /*rows*/ 24);
 // Fallback carries that token in Sec-WebSocket-Protocol, never the WSS URL:
 await start_webtransport("https://host:4433/session", "wss://host/session",
                          "my-canvas", 100, 24);
+// the hosted live-demo entry returns a controller: close() and resize(cols, rows)
+const client = await start_hosted(url, "my-canvas", 100, 24, onEvent, signal);
 ```
+
+Input, scrollback, selection, the title event, and the connection attribute
+are described in [the web client guide](../../docs/consumers/web.md#in-the-page).
 
 ## Building
 
@@ -80,7 +85,8 @@ Rust/WASM tools:
 ```sh
 # build this client to a web package using the committed engine:
 cd clients/phux-web && wasm-pack build --target web --release --out-dir pkg
-#    → pkg/phux_web.js + pkg/phux_web_bg.wasm  (~6 MB; engine included)
+#    → pkg/phux_web.js + pkg/phux_web_bg.wasm  (~2 MB, ~600 KB gzipped;
+#      the embedded engine is 1.5 MB of it)
 ```
 
 Tool versions and installation commands live in the setup guide;
@@ -91,8 +97,10 @@ verified source acquisition and the byte-for-byte regeneration check.
 ## Tests
 
 ```sh
-wasm-pack test --node                 # session/codec → engine → ack
-wasm-pack test --headless --chrome    # render + live connect-to-server e2e
+wasm-pack test --node                 # session/codec, input and selection routing
+# headless Chrome suites against a fresh ws_demo_server, as CI runs them
+# (from the repository root):
+nix develop .#browser -c python3 scripts/ci/web-browser.py
 ```
 
 ## Scope
