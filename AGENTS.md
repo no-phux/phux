@@ -37,7 +37,9 @@ actual validation. Project architecture lives in CLAUDE.md; setup is one guide.
 - The user's installed `phux` and its server are production. Never copy a
   build over an installed binary (`~/.local/bin/phux`, Homebrew, and so on),
   never aim a build at the production socket (`--socket`, `PHUX_SOCKET`,
-  `PHUX_PROFILE=default`), and never `phux upgrade` the production server.
+  `PHUX_PROFILE=default`) or its state (an inherited `PHUX_WS_TOKENS` /
+  `PHUX_WS_TLS_*` from a phux pane), and never `phux upgrade` the
+  production server.
 - Verify fixes against the dev-profile server (`just rebuild`), or an
   explicit temp socket. Shipping a fix to the user's machine means a release
   they install, not a hand-deployed build. See

@@ -116,6 +116,17 @@ impl Manager {
                 .join(systemd_unit_for(profile))),
         }
     }
+
+    /// [`Self::unit_path`] for a caller about to write, remove, load, or
+    /// unload the unit: a development build is refused the production unit
+    /// (`phux_config::production::refuse_dev_on_production_state`), so a
+    /// dev `phux service install` can never put a dev binary under the
+    /// day-to-day server's launchd or systemd entry.
+    pub(crate) fn writable_unit_path(self, profile: Option<&str>) -> Result<PathBuf, String> {
+        let path = self.unit_path(profile)?;
+        phux_config::production::refuse_dev_on_production_state(&path)?;
+        Ok(path)
+    }
 }
 
 /// Everything the unit renderers need, resolved once at install time so the
@@ -664,7 +675,7 @@ pub(crate) fn ensure_local_hub() -> LocalHub {
     let Some(manager) = Manager::host() else {
         return LocalHub::Skipped("no unit generator for this platform".to_owned());
     };
-    let unit_path = match manager.unit_path(profile_suffix().as_deref()) {
+    let unit_path = match manager.writable_unit_path(profile_suffix().as_deref()) {
         Ok(path) => path,
         Err(err) => return LocalHub::Skipped(err),
     };
@@ -889,7 +900,7 @@ pub(crate) fn run_reconcile(print: bool) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let unit_path = match manager.unit_path(profile_suffix().as_deref()) {
+    let unit_path = match manager.writable_unit_path(profile_suffix().as_deref()) {
         Ok(path) => path,
         Err(err) => {
             eprintln!("phux service: {err}");
@@ -1044,7 +1055,7 @@ pub(crate) fn reconcile_after_update(print: bool) {
     let Some(manager) = Manager::host() else {
         return;
     };
-    let Ok(unit_path) = manager.unit_path(profile_suffix().as_deref()) else {
+    let Ok(unit_path) = manager.writable_unit_path(profile_suffix().as_deref()) else {
         return;
     };
     let Ok(original) = std::fs::read_to_string(&unit_path) else {
@@ -1251,6 +1262,16 @@ fn resolve_plan(
     })
 }
 
+/// A dev unit must not bake in production credentials, which an inherited
+/// `PHUX_WS_TOKENS` / `PHUX_WS_TLS_*` (a production pane exports them) would
+/// otherwise put in its environment.
+fn refuse_dev_on_production_credentials(plan: &ServicePlan) -> Result<(), String> {
+    for path in [&plan.tokens, &plan.cert, &plan.key] {
+        phux_config::production::refuse_dev_on_production_state(path)?;
+    }
+    Ok(())
+}
+
 /// Render the unit for a manager, so callers do not match on it twice.
 fn render_unit(manager: Manager, plan: &ServicePlan) -> String {
     match manager {
@@ -1366,7 +1387,7 @@ pub(crate) fn run_install(
         return ExitCode::FAILURE;
     }
 
-    let unit_path = match manager.unit_path(profile_suffix().as_deref()) {
+    let unit_path = match manager.writable_unit_path(profile_suffix().as_deref()) {
         Ok(path) => path,
         Err(err) => {
             eprintln!("phux service: {err}");
@@ -1704,6 +1725,7 @@ fn report_adopt(manager: Manager, plan: &ServicePlan, unit_path: &Path) {
 /// Write the unit file (and the wrapper, when `--restore` is on), creating
 /// the directories the init system expects.
 fn write_unit_files(manager: Manager, plan: &ServicePlan, unit_path: &Path) -> Result<(), String> {
+    refuse_dev_on_production_credentials(plan)?;
     if let Some(parent) = unit_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
@@ -1878,6 +1900,16 @@ pub(crate) fn run_uninstall() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
+    // Resolved (and refused to a dev build aimed at production) before the
+    // unload, which is itself a production mutation.
+    let unit_path = match manager.writable_unit_path(profile_suffix().as_deref()) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("phux service: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     // Unload before deleting: removing the file out from under a loaded job
     // leaves the init system supervising a unit nothing can address.
     let unloaded = match manager {
@@ -1898,13 +1930,6 @@ pub(crate) fn run_uninstall() -> ExitCode {
         eprintln!("phux service: note: {err}");
     }
 
-    let unit_path = match manager.unit_path(profile_suffix().as_deref()) {
-        Ok(path) => path,
-        Err(err) => {
-            eprintln!("phux service: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
     match std::fs::remove_file(&unit_path) {
         Ok(()) => outln!("Removed {}", unit_path.display()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -2700,6 +2725,22 @@ WantedBy=default.target
         assert!(default_systemd.ends_with("systemd/user/phux.service"));
         assert!(dev_systemd.ends_with("phux-dev.service"));
         assert_eq!(default_systemd.parent(), dev_systemd.parent());
+    }
+
+    /// Tests are dev builds: the production unit is refused to every writer,
+    /// the dev profile's unit beside it is not.
+    #[test]
+    fn a_dev_build_is_refused_the_production_unit() {
+        for manager in [Manager::Launchd, Manager::Systemd] {
+            let default = manager.unit_path(None).expect("HOME is set");
+            assert_eq!(
+                manager.writable_unit_path(None).is_err(),
+                phux_config::production::is_production_state(&default),
+                "{}",
+                default.display()
+            );
+            assert!(manager.writable_unit_path(Some("dev")).is_ok());
+        }
     }
 
     /// The plist label follows the plan's profile.

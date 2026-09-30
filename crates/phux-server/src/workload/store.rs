@@ -138,6 +138,11 @@ pub(super) fn probe(path: &Path, role: FileRole) -> Result<Option<Stamp>, Worklo
 /// a buffer sized from the recorded length. Any size change is unstable and
 /// the buffer is scrubbed.
 fn read_owner_file(path: &Path, role: FileRole) -> Result<Option<(Stamp, Vec<u8>)>, WorkloadError> {
+    // The CA key is the one secret here: a dev build holding production's
+    // could issue credentials the production server trusts.
+    if matches!(role, FileRole::CaPrivateKey) {
+        refuse_production(path)?;
+    }
     let Some(before) = probe(path, role)? else {
         return Ok(None);
     };
@@ -238,6 +243,9 @@ fn validate_owner_dir(meta: &fs::Metadata) -> Result<(), WorkloadError> {
 /// Create (mode 0700) or open the directory that holds `path`, and check
 /// that its owner alone can change it.
 pub(super) fn open_owner_dir(path: &Path) -> Result<File, WorkloadError> {
+    // Every write (the lock, the CA pair, the registry) opens its directory
+    // here first, so this is the store's one production guard.
+    refuse_production(path)?;
     let dir = parent_of(path);
     fs::DirBuilder::new()
         .recursive(true)
@@ -255,6 +263,11 @@ pub(super) fn open_owner_dir(path: &Path) -> Result<File, WorkloadError> {
         return Err(WorkloadError::Unstable);
     }
     Ok(handle)
+}
+
+fn refuse_production(path: &Path) -> Result<(), WorkloadError> {
+    phux_config::production::refuse_dev_on_production_state(path)
+        .map_err(WorkloadError::ProductionState)
 }
 
 /// Holds an exclusive `flock` on a directory; unlocks on drop.

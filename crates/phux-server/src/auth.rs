@@ -127,6 +127,10 @@ pub enum AuthError {
     /// Credential stores must be regular, owner-only files owned by this user.
     #[error("insecure credential store: {0}")]
     InsecureStore(String),
+    /// A development build aimed at the production credential store
+    /// ([`phux_config::production::refuse_dev_on_production_state`]).
+    #[error("{0}")]
+    ProductionStore(String),
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -643,7 +647,7 @@ enum StoreCondition {
 impl StoreCondition {
     const fn of(error: &AuthError) -> Self {
         match error {
-            AuthError::InsecureStore(_) => Self::Insecure,
+            AuthError::InsecureStore(_) | AuthError::ProductionStore(_) => Self::Insecure,
             AuthError::Io(_) | AuthError::UnstableStore => Self::Unreadable,
             _ => Self::Unparseable,
         }
@@ -1432,6 +1436,10 @@ fn with_store_lock<T>(
     path: &Path,
     operation: impl FnOnce() -> Result<T, AuthError>,
 ) -> Result<T, AuthError> {
+    // Every mutation of a store (mint, rotate, revoke, prune, last-seen,
+    // migration) takes this lock first, so this is the store's one guard.
+    phux_config::production::refuse_dev_on_production_state(path)
+        .map_err(AuthError::ProductionStore)?;
     let parent = credential_parent(path);
     let parent_lock = open_lock_parent(parent)?;
     rustix::fs::flock(&parent_lock, rustix::fs::FlockOperation::LockExclusive)

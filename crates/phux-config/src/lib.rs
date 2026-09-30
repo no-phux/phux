@@ -19,6 +19,7 @@ mod layer;
 pub mod loader;
 pub mod overlay;
 pub mod plugin;
+pub mod production;
 pub mod remote;
 pub mod satellite;
 pub mod scaffold;

@@ -175,7 +175,9 @@ AgentSession has no replica and derives state from its records.
 
 ```
 src/
-  schema.rs, loader.rs, layer.rs, check.rs, error.rs, vocab.rs, socket.rs
+  schema.rs, loader.rs, layer.rs, check.rs, error.rs, vocab.rs
+  instance.rs     — profiles and build kind; socket.rs, production.rs — the
+                    dev-never-reaches-production guards (operations.md)
   keybind.rs      — keybind parser and trie resolver
   connector.rs, remote.rs, satellite.rs — machine-registry schema
   plugin.rs, plugin/ — plugin manifests: load, link, validate, version

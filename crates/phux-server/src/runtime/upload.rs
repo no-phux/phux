@@ -192,7 +192,15 @@ pub(super) fn completed_upload_path(upload_id: FileUploadId) -> Result<Option<Pa
     Ok(None)
 }
 
+/// The upload directory, refused to a development build when it is the
+/// production one (it is not profile-scoped).
 fn upload_dir() -> Result<PathBuf, String> {
+    let dir = unguarded_upload_dir()?;
+    phux_config::production::refuse_dev_on_production_state(&dir)?;
+    Ok(dir)
+}
+
+fn unguarded_upload_dir() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("PHUX_UPLOAD_DIR").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(path));
     }

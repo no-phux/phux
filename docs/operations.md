@@ -403,12 +403,47 @@ walk past a default. So the boundary is also enforced, with no override:
   artifacts are stamped by `scripts/build-release-binaries.sh`
   (`PHUX_RELEASE_ARTIFACT=1`), the only script the release workflows
   build with. Switching builds on purpose is a restart, not an upgrade.
+- **Production state.** A development build refuses to write production
+  phux state, or to read a production secret. A production pane exports
+  `PHUX_WS_TOKENS`, `PHUX_WS_TLS_CERT`, and `PHUX_WS_TLS_KEY`, so anything
+  run from one inherits the operator's credential store and certificate;
+  this guard is what stops a dev build from minting into them. Production
+  means the default profile's real locations: `phux` (never `phux-dev`)
+  under `~/.local/state`, `~/.config`, and `~/.local/share`, the
+  `com.phux.server` launchd plist and the `phux.service` systemd unit. The
+  home directory is the account's (from the password database) whatever
+  `$HOME` says, plus `$HOME` and `$XDG_STATE_HOME` / `$XDG_CONFIG_HOME` /
+  `$XDG_DATA_HOME` unless they sit inside the temp directory, where test
+  harnesses pin the released layout. Paths are compared after resolving
+  symlinks, and nothing overrides the refusal. Every writer goes through
+  `phux_config::production::refuse_dev_on_production_state`:
+  - `phux` itself, at startup, when the state directory is production
+    (`PHUX_PROFILE=default` outside a sandbox): nothing runs;
+  - the credential store (`pair` mint, rotate, revoke, prune, migrate; the
+    server's last-seen writes), the TLS pair (provisioning, and a server
+    presenting it: its remote listeners stay off), workload authority
+    material (every write, and reading the CA key), and a connector's
+    consumer tokens;
+  - `phux relay` state, which is not profile-scoped;
+  - the `[[remote]]` / `[[satellites]]` and plugin registries in
+    `config.toml`, and the plugin directory (other settings in the shared
+    `config.toml` stay writable, since profiles do not split it);
+  - service units (`phux service install`, `uninstall`, `reconcile`, and a
+    hub patch), including a dev unit that would carry production
+    credential paths;
+  - the server's upload directory, also not profile-scoped.
+
+  `phux update` needs no entry: it already refuses a binary under a Cargo
+  `target/` directory, and its server hand-off goes through the socket
+  guard.
 
 For contributors and agents: test a fix against a dev server (`just
 rebuild` hot-swaps the dev-profile server only). Never copy a build into an
 install location such as `~/.local/bin`, and never point a build at the
-production socket. The guards refuse both, and trying to route around them
-is the failure they exist to prevent.
+production socket or state. Tests that spawn `phux` start from a scrubbed
+`PHUX_*` environment (`crates/phux/tests/common/ambient.rs`). The guards
+refuse all of it, and trying to route around them is the failure they exist
+to prevent.
 
 ## Restart policy and crash-loop visibility
 

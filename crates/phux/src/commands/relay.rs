@@ -64,6 +64,19 @@ pub(crate) enum RelayAction {
 
 /// Dispatch a `phux relay` action.
 pub(crate) fn run_relay(action: RelayAction) -> ExitCode {
+    // The relay's state is not profile-scoped (`phux_relay` cannot see the
+    // profile), so a dev build's relay would otherwise run on, and mint
+    // into, the production relay's certificate and route tokens.
+    for path in [
+        phux_relay::default_relay_cert_path(),
+        phux_relay::default_relay_key_path(),
+        phux_relay::default_relay_tokens_path(),
+    ] {
+        if let Err(refusal) = phux_config::production::refuse_dev_on_production_state(&path) {
+            eprintln!("phux relay: {refusal}");
+            return ExitCode::FAILURE;
+        }
+    }
     match action {
         RelayAction::Run { listen, max_conns } => run_relay_run(listen, max_conns),
         RelayAction::Pair { route } => run_relay_pair(&route),

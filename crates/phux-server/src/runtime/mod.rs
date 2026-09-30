@@ -723,6 +723,12 @@ fn load_connector_consumer_tokens(
         return Ok(None);
     }
     let path = tokens_path();
+    if let Err(refusal) = phux_config::production::refuse_dev_on_production_state(&path) {
+        return Err(ServerError::ConnectorTokenStore {
+            path,
+            source: crate::auth::AuthError::ProductionStore(refusal),
+        });
+    }
     let store = crate::auth::ReloadingTokenStore::load(path.clone()).map_err(|source| {
         ServerError::ConnectorTokenStore {
             path: path.clone(),
@@ -1516,6 +1522,10 @@ fn remote_certificate(addr: SocketAddr, transport: &str) -> Option<(PathBuf, Pat
     let operator_cert = cert_env.is_some() || key_env.is_some();
     let cert_path = cert_env.unwrap_or_else(crate::transport::tls::default_cert_path);
     let key_path = key_env.unwrap_or_else(crate::transport::tls::default_key_path);
+    if let Err(refusal) = refuse_dev_on_production_credentials(&cert_path, &key_path) {
+        error!(transport, "{refusal}; listener disabled");
+        return None;
+    }
     let advertised = crate::transport::tls::advertised_for_bind(addr);
     if !operator_cert
         && let Err(err) =
@@ -1526,6 +1536,17 @@ fn remote_certificate(addr: SocketAddr, transport: &str) -> Option<(PathBuf, Pat
     }
     warn_if_cert_omits_bind(&cert_path, &advertised, transport);
     Some((cert_path, key_path))
+}
+
+/// A development build never presents the production certificate or admits
+/// against the production credential store, which an inherited
+/// `PHUX_WS_TLS_*` / `PHUX_WS_TOKENS` (a production pane exports them) would
+/// otherwise hand it. Every remote listener resolves its certificate through
+/// [`remote_certificate`], so this gates them all.
+fn refuse_dev_on_production_credentials(cert_path: &Path, key_path: &Path) -> Result<(), String> {
+    crate::transport::tls::refuse_dev_on_production_tls(cert_path, key_path)
+        .map_err(|err| err.to_string())?;
+    phux_config::production::refuse_dev_on_production_state(&tokens_path())
 }
 
 /// Bearer-token store for a QUIC-class listener: required on a secure bind,

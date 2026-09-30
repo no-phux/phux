@@ -60,6 +60,8 @@ pub(super) fn read_config_document(config_path: &Path) -> Result<DocumentMut, St
 }
 
 pub(super) fn write_config_document(config_path: &Path, doc: &DocumentMut) -> Result<(), String> {
+    // The plugin registry decides what code the production server runs.
+    phux_config::production::refuse_dev_on_production_state(config_path)?;
     reject_symlinked_config(config_path)?;
     let parent = config_path
         .parent()
