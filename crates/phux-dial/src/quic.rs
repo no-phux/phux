@@ -384,6 +384,47 @@ mod tests {
         assert!(!classified.to_string().contains("connection lost"));
     }
 
+    /// workload-auth §3 over QUIC: a client requiring paired authority fails
+    /// the handshake against a listener that does not request a client
+    /// certificate, so no bearer preamble and no phux frame is ever sent.
+    #[tokio::test]
+    async fn require_paired_refuses_a_quic_listener_that_did_not_ask() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let endpoint = crate::testing::quic_server(dir.path(), QUIC_ALPN);
+        let addr = endpoint.local_addr().expect("local");
+        let server = tokio::spawn(async move {
+            let incoming = endpoint.accept().await.expect("incoming");
+            incoming.await.is_ok()
+        });
+        let (certificate, private_key) = (dir.path().join("client.pem"), dir.path().join("c.key"));
+        crate::cert::ensure_self_signed(&certificate, &private_key).expect("client pair");
+
+        let dialed = dial_with_identity(
+            &QuicDial {
+                addr,
+                server_name: "localhost".to_owned(),
+                token: Some(vec![0xAB; 32]),
+                trust: CertTrust::SkipVerify,
+            },
+            &TlsClientIdentity::RequirePaired {
+                certificate,
+                private_key,
+            },
+        )
+        .await;
+        let Err(err) = dialed else {
+            panic!("a listener that did not ask for the certificate was accepted");
+        };
+        assert!(
+            err.to_string().contains(crate::tls::DOWNGRADE_REFUSED),
+            "got {err:?}"
+        );
+        assert!(
+            !server.await.expect("server"),
+            "the server never completes the handshake"
+        );
+    }
+
     #[tokio::test]
     async fn graceful_close_is_not_credential_refusal() {
         let classified = dial_and_get_closed(0, b"bye").await;
