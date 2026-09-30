@@ -15,7 +15,7 @@ use super::{
     Arc, CanonicalGeometry, ClosedReplica, DocumentAnchorId, DocumentPoint, DocumentSpace,
     EngineDocumentPoint, EngineDocumentSelection, EngineError, GhosttyAdapter, GhosttyReplica,
     GridBuffer, GridDamage, GridFrame, GridProjector, HashMap, MouseMode, Publication, ReplicaInfo,
-    Rgb, Scroll, ScrollViewport, Scrollbar, SearchMatch, SelectionGestureEvent,
+    Rgb, Scroll, ScrollViewport, Scrollbar, SearchMatch, SearchResults, SelectionGestureEvent,
     SelectionGestureResult,
 };
 #[cfg(feature = "engine")]
@@ -335,8 +335,11 @@ impl Owner {
             Query::SelectionTextBounded(id, max_bytes, reply) => {
                 let _ = reply.send(self.selection_text_bounded(&id, max_bytes));
             }
-            Query::Search(id, query, case_sensitive, reply) => {
-                let _ = reply.send(self.search(&id, &query, case_sensitive));
+            Query::Search(id, query, case_sensitive, max_matches, reply) => {
+                let _ = reply.send(self.search(&id, &query, case_sensitive, max_matches));
+            }
+            Query::ClearSearch(id, reply) => {
+                let _ = reply.send(self.clear_search_handles(&id));
             }
             Query::Gesture(id, event, reply) => {
                 let _ = reply.send(self.selection_gesture(&id, event));
@@ -702,7 +705,9 @@ impl Owner {
     ) -> Result<DocumentAnchorId, EngineError> {
         let anchor = self.owned_anchor(id, handle)?;
         if self.anchor_point(id, anchor)?.is_none() {
-            return Err(engine_error("document anchor was pruned or invalidated"));
+            return Err(anchor_unavailable(
+                "document anchor was pruned or invalidated",
+            ));
         }
         Ok(anchor)
     }
@@ -712,7 +717,7 @@ impl Owner {
         let (owner, view, anchor) = self
             .anchors
             .get(&handle)
-            .ok_or_else(|| engine_error("document anchor is stale or unknown"))?;
+            .ok_or_else(|| anchor_unavailable("document anchor is stale or unknown"))?;
         if owner != id || *view != self.active_view {
             return Err(engine_error("document anchor belongs to another view"));
         }
@@ -758,7 +763,7 @@ impl Owner {
             .kernel
             .document_anchor_point(id, anchor, DocumentSpace::History)
             .map_err(|error| engine_error(error.to_string()))?
-            .ok_or_else(|| engine_error("viewport anchor is no longer available"))?;
+            .ok_or_else(|| anchor_unavailable("viewport anchor is no longer available"))?;
         self.scroll(id, Scroll::Row(u64::from(point.y)))
     }
 
@@ -837,7 +842,8 @@ impl Owner {
         id: &ResourceId,
         query: &str,
         case_sensitive: bool,
-    ) -> Result<Vec<SearchMatch>, EngineError> {
+        max_matches: usize,
+    ) -> Result<SearchResults, EngineError> {
         if query.is_empty() {
             return Err(engine_error("search query is empty"));
         }
@@ -845,11 +851,11 @@ impl Owner {
         self.kernel
             .adapter_mut()
             .set_search_case_sensitive(case_sensitive);
-        let result = self.kernel.search_loaded_history(id, query, 4096);
+        let result = self.kernel.search_loaded_history(id, query, max_matches);
         self.kernel.adapter_mut().set_search_case_sensitive(true);
-        let matches = result.map_err(|error| engine_error(error.to_string()))?;
-        let mut found = Vec::with_capacity(matches.len());
-        for matched in matches {
+        let result = result.map_err(|error| engine_error(error.to_string()))?;
+        let mut found = Vec::with_capacity(result.matches.len());
+        for matched in result.matches {
             let start = self.register_anchor(id, matched.start)?;
             let end = match self.register_anchor(id, matched.end) {
                 Ok(end) => end,
@@ -861,7 +867,10 @@ impl Owner {
             found.push(SearchMatch { start, end });
             self.presentation_mut(id)?.search.extend([start, end]);
         }
-        Ok(found)
+        Ok(SearchResults {
+            matches: found,
+            truncated: result.truncated,
+        })
     }
 
     #[cfg(feature = "engine")]
@@ -1171,6 +1180,11 @@ const fn apply_default_colors(
 #[cfg(feature = "engine")]
 fn engine_error(message: impl Into<String>) -> EngineError {
     EngineError::Engine(message.into())
+}
+
+#[cfg(feature = "engine")]
+fn anchor_unavailable(message: &str) -> EngineError {
+    EngineError::AnchorUnavailable(message.to_owned())
 }
 
 #[cfg(feature = "engine")]

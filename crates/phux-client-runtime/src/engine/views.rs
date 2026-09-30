@@ -144,8 +144,9 @@ impl EngineHandle {
         case_sensitive: bool,
     ) -> Result<Vec<SearchMatch>, EngineError> {
         self.request_view(view, move |id, reply| {
-            Query::Search(id, query, case_sensitive, reply)
+            Query::Search(id, query, case_sensitive, super::SEARCH_MATCH_LIMIT, reply)
         })?
+        .map(|found| found.matches)
     }
 
     /// Apply a gesture whose handle and coordinates belong to this view.

@@ -11,6 +11,10 @@ use phux_client_runtime::control::SpawnRequest;
 
 use crate::uniffi::engine;
 
+mod search;
+#[allow(unused_imports)]
+pub use search::*;
+
 const SCROLLBACK_LINES: u32 = 1000;
 
 #[uniffi::export(with_foreign)]
