@@ -110,7 +110,7 @@ pub(super) async fn handle_put_file(state: &SharedState, chunk: PutFileChunk) ->
         Some(true) => {}
     }
 
-    let root = match upload_dir() {
+    let root = match upload_dir(&state.with(crate::state::ServerState::server_env)) {
         Ok(root) => root,
         Err(message) => return error(ErrorCode::InternalError, message),
     };
@@ -175,8 +175,11 @@ fn error(code: ErrorCode, message: impl Into<String>) -> CommandResult {
 /// Looked up by id rather than by a client-supplied path so a caller can
 /// never name a file outside the sandbox: the id is hex-encoded server-side
 /// and matched against `phux-upload-<hex>.<ext>` in the upload root.
-pub(super) fn completed_upload_path(upload_id: FileUploadId) -> Result<Option<PathBuf>, String> {
-    let root = upload_dir()?;
+pub(super) fn completed_upload_path(
+    env: &super::ServerEnv,
+    upload_id: FileUploadId,
+) -> Result<Option<PathBuf>, String> {
+    let root = upload_dir(env)?;
     let prefix = format!("phux-upload-{}.", hex::encode(upload_id.as_bytes()));
     let entries = match fs::read_dir(&root) {
         Ok(entries) => entries,
@@ -194,15 +197,17 @@ pub(super) fn completed_upload_path(upload_id: FileUploadId) -> Result<Option<Pa
 
 /// The upload directory, refused to a development build when it is the
 /// production one (it is not profile-scoped).
-fn upload_dir() -> Result<PathBuf, String> {
-    let dir = unguarded_upload_dir()?;
+fn upload_dir(env: &super::ServerEnv) -> Result<PathBuf, String> {
+    let dir = unguarded_upload_dir(env)?;
     phux_config::production::refuse_dev_on_production_state(&dir)?;
     Ok(dir)
 }
 
-fn unguarded_upload_dir() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("PHUX_UPLOAD_DIR").filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(path));
+/// `PHUX_UPLOAD_DIR` ([`super::ServerEnv::upload_dir`]), else the data
+/// directory's `phux/uploads`.
+fn unguarded_upload_dir(env: &super::ServerEnv) -> Result<PathBuf, String> {
+    if let Some(path) = &env.upload_dir {
+        return Ok(path.clone());
     }
     if let Some(path) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(path).join("phux").join("uploads"));

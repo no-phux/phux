@@ -162,16 +162,29 @@ impl std::fmt::Debug for WorkloadPaths {
 
 impl WorkloadPaths {
     /// The configured locations: each environment override, else the
-    /// default under the state directory.
+    /// default under the state directory. For the CLI verbs; the server
+    /// runtime resolves them through its [`crate::runtime::ServerEnv`].
     #[must_use]
     pub fn from_env() -> Self {
-        let path = |var: &str, default: fn() -> PathBuf| {
-            std::env::var_os(var).map_or_else(default, PathBuf::from)
-        };
+        let path = |var: &str| std::env::var_os(var).map(PathBuf::from);
+        Self::with_overrides(
+            path("PHUX_WORKLOAD_CA"),
+            path("PHUX_WORKLOAD_CA_KEY"),
+            path("PHUX_WORKLOAD_KEYS"),
+        )
+    }
+
+    /// The given locations, each defaulting under the state directory.
+    #[must_use]
+    pub fn with_overrides(
+        ca_cert: Option<PathBuf>,
+        ca_key: Option<PathBuf>,
+        registry: Option<PathBuf>,
+    ) -> Self {
         Self {
-            ca_cert: path("PHUX_WORKLOAD_CA", default_ca_cert_path),
-            ca_key: path("PHUX_WORKLOAD_CA_KEY", default_ca_key_path),
-            registry: path("PHUX_WORKLOAD_KEYS", default_registry_path),
+            ca_cert: ca_cert.unwrap_or_else(default_ca_cert_path),
+            ca_key: ca_key.unwrap_or_else(default_ca_key_path),
+            registry: registry.unwrap_or_else(default_registry_path),
         }
     }
 }

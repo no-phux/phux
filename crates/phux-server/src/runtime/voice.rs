@@ -41,8 +41,9 @@ pub(super) async fn handle_transcribe(
         );
     }
     let voice = state.with(ServerState::voice);
+    let env = state.with(ServerState::server_env);
     let started = std::time::Instant::now();
-    let (text, transcribe_ms) = match run_transcriber(&voice, upload_id, client_id).await {
+    let (text, transcribe_ms) = match run_transcriber(&voice, &env, upload_id, client_id).await {
         Ok(result) => result,
         Err(refusal) => return refusal,
     };
@@ -69,6 +70,7 @@ pub(super) async fn handle_transcribe(
 )]
 async fn run_transcriber(
     voice: &phux_config::VoiceCfg,
+    env: &super::ServerEnv,
     upload_id: FileUploadId,
     client_id: ClientId,
 ) -> Result<(String, u64), CommandResult> {
@@ -79,7 +81,7 @@ async fn run_transcriber(
              in the server's config.toml (an argv; `{path}` is replaced by the clip)",
         ));
     }
-    let clip = match super::upload::completed_upload_path(upload_id) {
+    let clip = match super::upload::completed_upload_path(env, upload_id) {
         Ok(Some(path)) => path,
         Ok(None) => {
             return Err(refuse(

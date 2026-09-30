@@ -1144,8 +1144,9 @@ pub(crate) fn spawn_links(
     relays: &super::relay::HubRelays,
     cancel: &CancellationToken,
     journal: &crate::state::SharedState,
+    ssh_program: std::ffi::OsString,
 ) {
-    let transport = NetLinkTransport::from_env();
+    let transport = NetLinkTransport::new(ssh_program);
     for (host, entry) in table.iter() {
         let (handle, mut mailbox) = super::relay::RelayHandle::new(host.clone());
         mailbox.journal = Some(journal.clone());
@@ -1169,11 +1170,11 @@ pub(crate) struct NetLinkTransport {
 }
 
 impl NetLinkTransport {
-    /// Build the production transport, honoring `$PHUX_SSH`.
-    pub(crate) fn from_env() -> Self {
-        Self {
-            ssh_program: std::env::var_os("PHUX_SSH").unwrap_or_else(|| "ssh".into()),
-        }
+    /// Build the production transport dialing SSH satellites with
+    /// `ssh_program` (`ssh`, or `$PHUX_SSH` via the server's
+    /// [`crate::runtime::ServerEnv`]).
+    pub(crate) const fn new(ssh_program: std::ffi::OsString) -> Self {
+        Self { ssh_program }
     }
 }
 
@@ -1871,7 +1872,7 @@ mod tests {
                         Some(token_file.to_str().expect("utf8 path")),
                         None,
                     ),
-                    NetLinkTransport::from_env(),
+                    NetLinkTransport::new("ssh".into()),
                     statuses.clone(),
                     relay_rx,
                     cancel.child_token(),
@@ -3021,7 +3022,7 @@ mod tests {
                 tokio::task::spawn_local(run_link(
                     host.clone(),
                     entry(&format!("ws://127.0.0.1:{}", addr.port()), None, None),
-                    NetLinkTransport::from_env(),
+                    NetLinkTransport::new("ssh".into()),
                     statuses.clone(),
                     relay_rx,
                     cancel.child_token(),

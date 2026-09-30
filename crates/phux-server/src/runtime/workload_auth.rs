@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use rustls::pki_types::CertificateDer;
 
-use crate::workload::{ReloadingWorkloadRegistry, WorkloadError, WorkloadPaths};
+use crate::workload::{ReloadingWorkloadRegistry, WorkloadError};
 
 pub(super) struct WorkloadAuth {
     /// The workload CA certificate, read once through the workload store's
@@ -27,19 +27,22 @@ impl WorkloadAuth {
     /// The authority a listener needs under its posture: `None` unless the
     /// `paired` posture requires workload mTLS (`[policy] mode = "paired"`,
     /// or `PHUX_WORKLOAD_MTLS` with no mode). It applies even on loopback.
-    pub(super) fn for_posture(required: bool) -> Result<Option<Self>, WorkloadError> {
+    pub(super) fn for_posture(
+        required: bool,
+        env: &super::ServerEnv,
+    ) -> Result<Option<Self>, WorkloadError> {
         if !required {
             return Ok(None);
         }
-        Self::configured().map(Some)
+        Self::configured(env).map(Some)
     }
 
     /// Load the authority from its configured locations. The
     /// `PHUX_WORKLOAD_*` path variables select locations and do not enable
     /// anything; provisioning those paths before opting in remains
     /// supported.
-    pub(super) fn configured() -> Result<Self, WorkloadError> {
-        let paths = WorkloadPaths::from_env();
+    pub(super) fn configured(env: &super::ServerEnv) -> Result<Self, WorkloadError> {
+        let paths = env.workload_paths();
         Self::load(&paths.ca_cert, &paths.ca_key, &paths.registry)
     }
 
@@ -50,11 +53,6 @@ impl WorkloadAuth {
             registry: Arc::new(ReloadingWorkloadRegistry::load(registry.to_owned())?),
         })
     }
-}
-
-/// Whether workload mode is requested (`PHUX_WORKLOAD_MTLS`).
-pub(super) fn workload_mode() -> bool {
-    std::env::var_os("PHUX_WORKLOAD_MTLS").is_some()
 }
 
 /// Refuse to start workload mode beside a remote entry point that cannot
@@ -167,31 +165,10 @@ mod tests {
         assert!(auth.registry.current().is_empty());
     }
 
-    /// Use subprocess-local environment overrides: the production factory reads
-    /// environment configuration and Rust tests otherwise share that process.
+    /// A configured authority that cannot load disables the QUIC listener,
+    /// never falling back to bearer or anonymous admission.
     #[test]
     fn configured_workload_failure_disables_quic() {
-        if std::env::var_os("PHUX_TEST_WORKLOAD_FAILURE").is_some() {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            let _entered = runtime.enter();
-            let (listener, slot) = super::super::build_quic_listener_for(
-                "127.0.0.1:0".parse().unwrap(),
-                workload_mode(),
-            );
-            assert!(
-                listener.is_none(),
-                "failed explicit mTLS must never fall back to bearer or anonymous QUIC"
-            );
-            assert!(slot.is_unhealthy());
-            assert_eq!(
-                slot.disabled_reason,
-                Some(super::super::ListenerDisabledReason::TlsSetupFailed)
-            );
-            return;
-        }
         for (malformed_registry, secure) in
             [(false, false), (true, false), (false, true), (true, true)]
         {
@@ -213,28 +190,35 @@ mod tests {
             }
             let tokens = dir.path().join("tokens.json");
             crate::auth::write_test_credential(&tokens, &[0x11; crate::auth::TOKEN_LEN]);
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "runtime::workload_auth::tests::configured_workload_failure_disables_quic",
-                    "--nocapture",
-                ])
-                .env("PHUX_TEST_WORKLOAD_FAILURE", "1")
-                .env("PHUX_WORKLOAD_MTLS", "1")
-                .env("PHUX_WORKLOAD_CA", ca)
-                .env("PHUX_WORKLOAD_CA_KEY", dir.path().join("ca-key.pem"))
-                .env("PHUX_WORKLOAD_KEYS", registry)
-                .env("PHUX_WS_TLS_CERT", leaf)
-                .env("PHUX_WS_TLS_KEY", leaf_key)
-                .env("PHUX_WS_TOKENS", tokens)
-                .env("PHUX_WS_SECURE", if secure { "1" } else { "" })
-                .output()
+            let env = super::super::ServerEnv {
+                workload_mtls: true,
+                workload_ca: Some(ca),
+                workload_ca_key: Some(dir.path().join("ca-key.pem")),
+                workload_keys: Some(registry),
+                tls_cert: Some(leaf),
+                tls_key: Some(leaf_key),
+                ws_tokens: Some(tokens),
+                ws_secure: secure,
+                ..super::super::ServerEnv::default()
+            };
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
                 .unwrap();
+            let _entered = runtime.enter();
+            let (listener, slot) = super::super::build_quic_listener_for(
+                "127.0.0.1:0".parse().unwrap(),
+                env.workload_mtls,
+                &env,
+            );
             assert!(
-                output.status.success(),
-                "child failed: {}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
+                listener.is_none(),
+                "failed explicit mTLS must never fall back to bearer or anonymous QUIC"
+            );
+            assert!(slot.is_unhealthy());
+            assert_eq!(
+                slot.disabled_reason,
+                Some(super::super::ListenerDisabledReason::TlsSetupFailed)
             );
         }
     }
