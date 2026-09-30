@@ -1707,6 +1707,21 @@ mod tests {
         assert!(!page.contains("Learn more:"));
     }
 
+    /// A bare `phux kill` names nothing to kill: it is a usage error at parse
+    /// time, not a silent exit 1 from the dispatcher.
+    #[test]
+    fn kill_requires_a_target_or_server() {
+        let err = crate::parse_cli(["phux", "kill"]).expect_err("bare `phux kill` must not parse");
+        assert!(err.contains("TARGET"), "{err}");
+        for argv in [
+            &["phux", "kill", "work"][..],
+            &["phux", "kill", "--server"][..],
+        ] {
+            crate::parse_cli(argv).unwrap_or_else(|err| panic!("{argv:?}: {err}"));
+        }
+        assert!(crate::parse_cli(["phux", "kill", "work", "--server"]).is_err());
+    }
+
     /// `phux new <NAME>` must read the bare positional as the SESSION NAME,
     /// not as a command to spawn (the phux-new-foo bug: `phux new foo` tried
     /// to exec `foo` in an auto-named "0" session). The seed command is only

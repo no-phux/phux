@@ -32,8 +32,8 @@ pub(crate) fn run(
     if stop_server {
         return run_kill_server_spec(server);
     }
-    // No target and no `--server` is unreachable: clap's `kill_what` group
-    // is `required(true)`.
+    // No target and no `--server` is unreachable: TARGET is
+    // `required_unless = "--server"`, so the parser refuses it first.
     target.map_or(ExitCode::FAILURE, |target| {
         run_kill(&target, key, server, |action| {
             confirm::confirmed(yes, action)
