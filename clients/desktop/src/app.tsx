@@ -24,7 +24,7 @@ import {
   type StatusInfo,
   type Toast,
 } from "./shell/chrome";
-import { keyChord, textFieldHasKeys } from "./shell/keymap";
+import { keyChord, textFieldHasKeys, yieldsToTextField } from "./shell/keymap";
 import { CommandPalette, type PaletteItem } from "./shell/palette";
 import { Sidebar, paneTitle, shortPath } from "./shell/sidebar";
 import { TabBar, type TabView } from "./shell/tabbar";
@@ -1179,13 +1179,14 @@ function DesktopApp(props: AppProps): JSX.Element {
     }
     const command = keymap().get(chord);
     if (!command) return;
-    // A text field (a dialog, the palette, this pane's find bar) keeps its own Select All.
+    // A text field (a dialog, the palette, this pane's find bar) keeps its
+    // own Select All, and text binds never type into the shell behind it.
     const typing = textFieldHasKeys(
       modal().kind !== "none",
       find()?.placementId,
       workspace.focused()?.id,
     );
-    if (command.id === "select-all" && typing) return;
+    if (typing && yieldsToTextField(command.id)) return;
     const open = modal().kind;
     if (open !== "none") {
       setModal({ kind: "none" });
