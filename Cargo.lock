@@ -2505,11 +2505,9 @@ dependencies = [
 name = "phux-crash"
 version = "0.46.0"
 dependencies = [
- "backtrace",
  "libc",
  "tempfile",
  "tokio",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

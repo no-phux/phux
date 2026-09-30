@@ -4,7 +4,7 @@
 ///   request  version=1, kind, target_len, target
 ///   reply    version=1, phase, host_len, host, reason_len, reason
 /// Hosts are names from the phux CLI's own registry (`phux host add`,
-/// `phux host enroll`, `phux --remote`); Cockpit never pairs one itself.
+/// `phux host add`, `phux --remote`); Cockpit never pairs one itself.
 import { asciiBytes } from "@native-sdk/core";
 
 export const REMOTE_KIND_STATUS = 1;

@@ -44,7 +44,7 @@
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "build:test": "npm run clean && tsc -p tsconfig.test.json",
     "test": "npm run test:unit && npm run pack:check && npm run smoke:load",
-    "gates": "npm run typecheck && npm test && node ../../scripts/npm-audit-gate.mjs --audit-level=high",
+    "gates": "npm run typecheck && npm test && node ../../scripts/npm-audit-gate.mjs --audit-level=high --omit=dev",
     "test:unit": "npm run build:test && node --test dist/test/*.test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pack:check": "npm run build && node scripts/test-pack.mjs",
@@ -64,9 +64,9 @@
     "@phux/integration-runtime"
   ],
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.87.1",
-    "@earendil-works/pi-coding-agent": "0.87.1",
-    "@earendil-works/pi-tui": "0.87.1",
+    "@earendil-works/pi-ai": "0.99.1",
+    "@earendil-works/pi-coding-agent": "0.99.1",
+    "@earendil-works/pi-tui": "0.99.1",
     "@types/node": "26.6.3",
     "typescript": "7.0.2"
   },

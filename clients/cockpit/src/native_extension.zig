@@ -7974,6 +7974,53 @@ test "a bell while the app is deactivated notifies once, on its rising edge" {
     try std.testing.expectEqual(@as(usize, 0), quiet.notifications);
 }
 
+test "a local pane on screen has its bell and loss acknowledged; a backgrounded app keeps both" {
+    const engine = try engineWithText("prompt$ ");
+    defer engine.destroy();
+    var fx = Recorder{};
+    const pane = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+
+    engine.setFocused(&fx, false);
+    pane.write_refusals += 1;
+    _ = engine.onShellEvent(&fx, .{ .key = pane.pty_key, .kind = .output, .bytes = "\x07" });
+    try std.testing.expect(pane.bellRung());
+    try std.testing.expect(pane.hasUnacknowledgedLoss());
+    try std.testing.expect(cockpit.projection.terminalNeedsAttention(engine.model, pane.id));
+
+    // Coming back to the window is looking at the pane.
+    engine.setFocused(&fx, true);
+    try std.testing.expect(!pane.bellRung());
+    try std.testing.expect(!pane.hasUnacknowledgedLoss());
+    try std.testing.expect(!cockpit.projection.terminalNeedsAttention(engine.model, pane.id));
+    // The counters stay cumulative evidence.
+    try std.testing.expectEqual(@as(u32, 1), pane.write_refusals);
+
+    // A bell on the pane in front of a focused app is not news.
+    _ = engine.onShellEvent(&fx, .{ .key = pane.pty_key, .kind = .output, .bytes = "\x07" });
+    try std.testing.expect(!pane.bellRung());
+}
+
+test "a local bell on a hidden tab stands until that tab is selected" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    engine.setFocused(EngineFx{ .effects = &rig.app_state.effects }, true);
+    const hidden = engine.model.provider.terminal(engine.model.focusedTerminalRef().?).?;
+    const before = rig.app_state.model.engineSequence.lo;
+    try rig.dispatch(.new_terminal);
+    try rig.settle(before + 1, "READY");
+    try std.testing.expect(!hidden.id.eql(engine.model.focusedTerminalRef().?));
+
+    _ = shellEvent(.{ .key = hidden.pty_key, .kind = .output, .bytes = "\x07" });
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expect(hidden.bellRung());
+    try rig.dispatch(.{ .select_tab = 0 });
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expect(hidden.id.eql(engine.model.focusedTerminalRef().?));
+    try std.testing.expect(!hidden.bellRung());
+}
+
 test "select all and cmd+C put the scrollback on the clipboard through the seam" {
     const engine = try engineWithText("hello world\r\n");
     defer engine.destroy();

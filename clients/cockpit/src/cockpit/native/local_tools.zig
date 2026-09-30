@@ -264,10 +264,10 @@ fn existingConfigFile(io: std.Io, path: []const u8) !void {
 pub fn enrollmentArgv(gpa: std.mem.Allocator, cli: []const u8, destination: []const u8, name: []const u8) ![]const []const u8 {
     try validateRequest(.{ .kind = .add_machine, .token = 0, .destination = destination, .name = name });
     if (!std.fs.path.isAbsolute(cli)) return error.LocalRuntimeNotReady;
-    // host enroll is intentionally socketless. The runtime pins the PTY to the
+    // host add is intentionally socketless. The runtime pins the PTY to the
     // selected local socket; this command uses the CLI's existing SSH trust flow.
-    if (name.len == 0) return gpa.dupe([]const u8, &.{ cli, "host", "enroll", "--", destination });
-    return gpa.dupe([]const u8, &.{ cli, "host", "enroll", "--name", name, "--", destination });
+    if (name.len == 0) return gpa.dupe([]const u8, &.{ cli, "host", "add", "--", destination });
+    return gpa.dupe([]const u8, &.{ cli, "host", "add", "--name", name, "--", destination });
 }
 
 pub fn editorArgv(gpa: std.mem.Allocator, io: std.Io, explicit: []const u8, visual: ?[]const u8, editor: ?[]const u8, path_env: ?[]const u8, config: []const u8) ![]const []const u8 {
@@ -435,7 +435,7 @@ test "enrollment is structured argv on existing CLI trust path and never execute
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const argv = try enrollmentArgv(arena.allocator(), "/bundle with spaces/phux", "me@host", "Studio Mac");
-    const expected = [_][]const u8{ "/bundle with spaces/phux", "host", "enroll", "--name", "Studio Mac", "--", "me@host" };
+    const expected = [_][]const u8{ "/bundle with spaces/phux", "host", "add", "--name", "Studio Mac", "--", "me@host" };
     try std.testing.expectEqual(expected.len, argv.len);
     for (expected, argv) |want, actual| try std.testing.expectEqualStrings(want, actual);
     try std.testing.expectError(error.InvalidRequest, enrollmentArgv(arena.allocator(), "/phux", "-oProxyCommand=bad", ""));

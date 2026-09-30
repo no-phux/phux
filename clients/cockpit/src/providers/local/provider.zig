@@ -195,6 +195,14 @@ pub const Pane = struct {
             pane.native_delivery_failures > pane.acknowledged_delivery_failures;
     }
 
+    /// Mark every loss counted so far as seen; the counters stay cumulative.
+    pub fn acknowledgeLoss(pane: *Pane) void {
+        pane.acknowledged_outbound_dropped = pane.outbound_dropped;
+        pane.acknowledged_response_dropped = pane.session.response_bytes_dropped;
+        pane.acknowledged_write_refusals = pane.write_refusals;
+        pane.acknowledged_delivery_failures = pane.native_delivery_failures;
+    }
+
     pub fn acceptsInput(pane: *const Pane) bool {
         return pane.phase == .starting or pane.phase == .live;
     }
@@ -217,6 +225,11 @@ pub const Pane = struct {
     /// it. `clearBell` is the acknowledgement.
     pub fn bellRung(pane: *const Pane) bool {
         return pane.session.bell_rung;
+    }
+
+    /// Acknowledge the bell. The latch lives on the heap-owned session.
+    pub fn clearBell(pane: *const Pane) void {
+        pane.session.bell_rung = false;
     }
 
     /// Whether the cursor sits at a shell prompt rather than mid-output.

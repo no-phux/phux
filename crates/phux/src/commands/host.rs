@@ -176,16 +176,6 @@ pub(crate) enum HostAction {
         opts: AddOpts,
     },
 
-    /// Former spelling of `phux host add HOST`.
-    #[usage(hide)]
-    Enroll {
-        /// ssh destination, exactly as you would type it after `ssh`.
-        host: String,
-
-        #[usage(flatten)]
-        opts: AddOpts,
-    },
-
     /// List registered machines from both registries.
     ///
     /// With no `--role`, remotes and satellites are merged into one table
@@ -263,18 +253,6 @@ pub(crate) enum HostAction {
     },
 }
 
-/// The deprecated spelling's one-line note, read from the table so the
-/// audit, the generated page, and the warning agree.
-fn enroll_deprecation_note() -> &'static str {
-    crate::deprecations::DEPRECATED
-        .iter()
-        .find(|row| row.old == "phux host enroll")
-        .map_or(
-            "phux: `phux host enroll` is deprecated and will be removed; use `phux host add`",
-            |row| row.note,
-        )
-}
-
 pub(crate) fn run_host(action: &HostAction) -> ExitCode {
     match action {
         HostAction::Add {
@@ -282,13 +260,6 @@ pub(crate) fn run_host(action: &HostAction) -> ExitCode {
             endpoint,
             opts,
         } => run_add(target, endpoint.as_deref(), opts),
-        HostAction::Enroll { host, opts } => {
-            // `--json` keeps stdout the document and stderr the error line.
-            if !opts.json.json {
-                eprintln!("{}", enroll_deprecation_note());
-            }
-            run_add(host, None, opts)
-        }
         HostAction::List { role, json } => run_list(*role, json.json),
         HostAction::Remove { name, role, json } => run_remove(name, *role, json.json),
         HostAction::Show { name, role, json } => run_show(name, *role, json.json),

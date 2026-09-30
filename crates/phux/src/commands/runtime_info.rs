@@ -12,7 +12,7 @@ fn document() -> serde_json::Value {
             "server-ensure-v1",
             "server-ensure-json-v1",
             "structured-spawn-v1",
-            "host-enroll-v1"
+            "host-add-v1"
         ]
     })
 }

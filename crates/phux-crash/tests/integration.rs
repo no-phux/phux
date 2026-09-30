@@ -1,8 +1,9 @@
 //! Integration tests for phux-crash.
 //!
-//! These tests verify that installing the crash handler does not interfere
-//! with normal program operation (tokio runtime, signal handling, I/O),
-//! and that it correctly captures crash data when a fatal signal fires.
+//! These tests verify that installing the handler does not interfere with
+//! normal program operation (tokio runtime, signal handling, I/O), that a
+//! fatal signal still kills the process with that signal after the handler
+//! runs, and that the terminal restore bytes reach stderr only while armed.
 //!
 //! Tests that send fatal signals use subprocess isolation: the test process
 //! re-executes itself with an env var that selects the crash scenario, so
@@ -10,16 +11,14 @@
 
 #![cfg(unix)]
 
-use std::path::Path;
 use std::process::Command;
 
 /// Re-invoke the current test binary as a subprocess with the given scenario.
 /// Returns (exit status, stdout, stderr).
-fn run_scenario(scenario: &str, crash_dir: &Path) -> (std::process::ExitStatus, String, String) {
+fn run_scenario(scenario: &str) -> (std::process::ExitStatus, String, String) {
     let exe = std::env::current_exe().expect("current_exe");
     let output = Command::new(exe)
         .env("CRASH_TEST_SCENARIO", scenario)
-        .env("CRASH_TEST_DIR", crash_dir.as_os_str())
         .arg("--ignored")
         .arg("--exact")
         .arg("--nocapture")
@@ -45,15 +44,9 @@ fn subprocess_entry() {
         Ok(s) => s,
         Err(_) => return, // not a subprocess invocation
     };
-    let crash_dir = std::env::var("CRASH_TEST_DIR").expect("CRASH_TEST_DIR");
-    let crash_dir = std::path::PathBuf::from(crash_dir);
 
-    // Install the crash handler before anything else.
-    let config = phux_crash::CrashHandlerConfig {
-        app_version: "0.0.0-test".to_string(),
-        crash_dir,
-    };
-    phux_crash::install(config);
+    // Install the handler before anything else.
+    phux_crash::install_terminal_restore_only();
 
     match scenario.as_str() {
         // Scenario 1: install handler, run tokio runtime with concurrent work, exit cleanly.
@@ -99,22 +92,23 @@ fn subprocess_entry() {
             eprintln!("sync_normal: 50 files written and read back");
         }
 
-        // Scenario 3: install handler, send ourselves SIGBUS, verify crash file written.
+        // Scenario 3: install handler, send ourselves SIGBUS.
         "sigbus" => {
-            // Give the handler a moment to be fully installed, then crash.
+            // SAFETY: raising a signal has no memory-safety preconditions.
             unsafe { libc::raise(libc::SIGBUS) };
         }
 
         // Scenario 4: install handler, send ourselves SIGSEGV.
         "sigsegv" => {
+            // SAFETY: raising a signal has no memory-safety preconditions.
             unsafe { libc::raise(libc::SIGSEGV) };
         }
 
         // Scenario 4b (ADDED FOR PHUX): arm escape-code restoration the way
-        // `RawModeGuard` does, then crash. This is the behaviour phux depends
-        // on — upstream only asserted that the crash *blob* is written.
+        // `RawModeGuard` does, then crash.
         "sigsegv_tui" => {
             phux_crash::enable_terminal_escape_restore();
+            // SAFETY: raising a signal has no memory-safety preconditions.
             unsafe { libc::raise(libc::SIGSEGV) };
         }
 
@@ -124,6 +118,7 @@ fn subprocess_entry() {
         "sigsegv_after_disable" => {
             phux_crash::enable_terminal_escape_restore();
             phux_crash::disable_terminal_escape_restore();
+            // SAFETY: raising a signal has no memory-safety preconditions.
             unsafe { libc::raise(libc::SIGSEGV) };
         }
 
@@ -145,6 +140,7 @@ fn subprocess_entry() {
 
                 // Send ourselves SIGUSR1 and verify tokio receives it
                 // (proves our SIGBUS/SIGSEGV handler doesn't clobber other signals).
+                // SAFETY: raising a signal has no memory-safety preconditions.
                 unsafe { libc::raise(libc::SIGUSR1) };
                 tokio::time::timeout(std::time::Duration::from_secs(2), usr1.recv())
                     .await
@@ -165,8 +161,7 @@ fn subprocess_entry() {
 
 #[test]
 fn handler_does_not_interfere_with_tokio_runtime() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let (status, _stdout, stderr) = run_scenario("tokio_normal", tmp.path());
+    let (status, _stdout, stderr) = run_scenario("tokio_normal");
     assert!(
         status.success(),
         "tokio_normal should exit 0, got {status:?}\nstderr: {stderr}"
@@ -175,20 +170,11 @@ fn handler_does_not_interfere_with_tokio_runtime() {
         stderr.contains("all tasks completed"),
         "should see completion message\nstderr: {stderr}"
     );
-    // No crash file should exist.
-    assert!(
-        !tmp.path().join("last-crash.bin").exists()
-            || std::fs::metadata(tmp.path().join("last-crash.bin"))
-                .map(|m| m.len() == 0)
-                .unwrap_or(true),
-        "crash file should not contain data after clean exit"
-    );
 }
 
 #[test]
 fn handler_does_not_interfere_with_sync_io() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let (status, _stdout, stderr) = run_scenario("sync_normal", tmp.path());
+    let (status, _stdout, stderr) = run_scenario("sync_normal");
     assert!(
         status.success(),
         "sync_normal should exit 0, got {status:?}\nstderr: {stderr}"
@@ -201,8 +187,7 @@ fn handler_does_not_interfere_with_sync_io() {
 
 #[test]
 fn handler_does_not_clobber_other_signal_handlers() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let (status, _stdout, stderr) = run_scenario("tokio_signals", tmp.path());
+    let (status, _stdout, stderr) = run_scenario("tokio_signals");
     assert!(
         status.success(),
         "tokio_signals should exit 0, got {status:?}\nstderr: {stderr}"
@@ -213,92 +198,41 @@ fn handler_does_not_clobber_other_signal_handlers() {
     );
 }
 
-#[test]
-fn sigbus_produces_valid_crash_blob() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let (status, _stdout, _stderr) = run_scenario("sigbus", tmp.path());
+/// Run `scenario` and assert the child died of `expected` — the handler must
+/// restore `SIG_DFL` and re-raise, not exit or swallow the signal.
+fn assert_killed_by(scenario: &str, expected: libc::c_int) {
+    use std::os::unix::process::ExitStatusExt;
 
-    // Process should have been killed by a signal.
-    // We expect SIGBUS, but the frame-pointer walker may hit unmapped memory
-    // and cause a secondary SIGSEGV (SA_RESETHAND ensures it terminates).
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        let sig = status.signal();
-        assert!(
-            sig == Some(libc::SIGBUS) || sig == Some(libc::SIGSEGV),
-            "process should be killed by SIGBUS or SIGSEGV, got signal={sig:?} status={status:?}"
-        );
-    }
-
-    // The crash file should be parseable.
-    let crash_file = tmp.path().join("last-crash.bin");
-    assert!(crash_file.exists(), "crash file should exist after SIGBUS");
-    let data = std::fs::read(&crash_file).expect("read crash file");
-    assert!(
-        data.len() > 4,
-        "crash file should have data, got {} bytes",
-        data.len()
-    );
-
-    let blob = phux_crash::format::CrashBlob::parse(&data).expect("crash blob should parse");
-
-    // On macOS SIGBUS=10, on Linux SIGBUS=7, SIGSEGV=11 on both.
-    // The frame-pointer walker may cause a secondary SIGSEGV.
-    assert!(
-        blob.signal == 7 || blob.signal == 10 || blob.signal == 11,
-        "signal should be SIGBUS or SIGSEGV, got {}",
-        blob.signal
-    );
-    assert_eq!(blob.app_version, "0.0.0-test");
-    assert!(blob.pid > 0, "PID should be nonzero");
-    assert!(blob.timestamp > 0, "timestamp should be nonzero");
-
-    // check_previous_crash should produce a report.
-    let report =
-        phux_crash::check_previous_crash(tmp.path()).expect("should produce a crash report");
-    assert!(report.signal_name.contains("SIGBUS"));
-    assert_eq!(report.app_version, "0.0.0-test");
-    assert!(report.report_path.exists(), "report file should be written");
-
-    // Crash blob should be consumed (deleted).
-    assert!(
-        !crash_file.exists(),
-        "crash file should be deleted after processing"
+    let (status, _stdout, stderr) = run_scenario(scenario);
+    assert_eq!(
+        status.signal(),
+        Some(expected),
+        "{scenario}: process should be killed by signal {expected}, got {status:?}\nstderr: {stderr}"
     );
 }
 
 #[test]
-fn sigsegv_produces_valid_crash_blob() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let (status, _stdout, _stderr) = run_scenario("sigsegv", tmp.path());
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        let sig = status.signal();
-        assert_eq!(
-            sig,
-            Some(libc::SIGSEGV),
-            "process should be killed by SIGSEGV, got signal={sig:?} status={status:?}"
-        );
-    }
-
-    let crash_file = tmp.path().join("last-crash.bin");
-    assert!(crash_file.exists(), "crash file should exist after SIGSEGV");
-    let data = std::fs::read(&crash_file).expect("read crash file");
-    let blob = phux_crash::format::CrashBlob::parse(&data).expect("crash blob should parse");
-    assert_eq!(blob.signal, 11, "signal should be SIGSEGV (11)");
-    assert_eq!(blob.app_version, "0.0.0-test");
+fn sigbus_is_reraised_with_default_disposition() {
+    assert_killed_by("sigbus", libc::SIGBUS);
 }
 
-/// ADDED FOR PHUX. The whole reason phux vendors this crate: when the client
+#[test]
+fn sigsegv_is_reraised_with_default_disposition() {
+    assert_killed_by("sigsegv", libc::SIGSEGV);
+}
+
+/// `panic = "abort"` release builds die through this path.
+#[test]
+fn sigabrt_is_reraised_with_default_disposition() {
+    assert_killed_by("sigabrt", libc::SIGABRT);
+}
+
+/// ADDED FOR PHUX. The whole reason this crate exists: when the client
 /// dies on a fatal signal with the alt screen up, the terminal must be handed
 /// back usable. Asserts the real bytes reach fd 2 from signal context.
 #[test]
 fn fatal_signal_writes_restore_sequence_to_stderr() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let (_status, _stdout, stderr) = run_scenario("sigsegv_tui", tmp.path());
+    let (_status, _stdout, stderr) = run_scenario("sigsegv_tui");
 
     let restore = phux_crash::terminal::RESTORE_SEQ;
     let restore_str = std::str::from_utf8(restore).expect("RESTORE_SEQ is UTF-8");
@@ -329,72 +263,11 @@ fn fatal_signal_writes_restore_sequence_to_stderr() {
 /// disarmed escape restoration, a crash must leave the normal screen alone.
 #[test]
 fn fatal_signal_after_disable_writes_no_escape_codes() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let (_status, _stdout, stderr) = run_scenario("sigsegv_after_disable", tmp.path());
+    let (_status, _stdout, stderr) = run_scenario("sigsegv_after_disable");
 
     assert!(
         !stderr.contains("\x1b[?1049l"),
         "with escape restore disarmed, a crash must not emit DECSET resets; \
          got {stderr:?}"
     );
-}
-
-#[test]
-fn sigabrt_produces_valid_crash_blob() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let (status, _stdout, _stderr) = run_scenario("sigabrt", tmp.path());
-
-    // The handler must re-raise with default disposition so the process
-    // still dies with SIGABRT semantics. The frame-pointer walker may hit
-    // unmapped memory and cause a secondary SIGSEGV (as in the SIGBUS test).
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        let sig = status.signal();
-        assert!(
-            sig == Some(libc::SIGABRT) || sig == Some(libc::SIGSEGV),
-            "process should be killed by SIGABRT (or a secondary SIGSEGV), got signal={sig:?} status={status:?}"
-        );
-    }
-
-    let crash_file = tmp.path().join("last-crash.bin");
-    assert!(crash_file.exists(), "crash file should exist after abort()");
-    let data = std::fs::read(&crash_file).expect("read crash file");
-    let blob = phux_crash::format::CrashBlob::parse(&data).expect("crash blob should parse");
-    assert_eq!(
-        blob.signal, 6,
-        "signal should be SIGABRT (6), got {}",
-        blob.signal
-    );
-    assert_eq!(blob.app_version, "0.0.0-test");
-    assert!(blob.pid > 0, "PID should be nonzero");
-    assert!(blob.timestamp > 0, "timestamp should be nonzero");
-
-    // check_previous_crash should produce a SIGABRT-labelled report.
-    let report =
-        phux_crash::check_previous_crash(tmp.path()).expect("should produce a crash report");
-    assert!(
-        report.signal_name.contains("SIGABRT"),
-        "report should name SIGABRT, got {}",
-        report.signal_name
-    );
-    assert_eq!(report.app_version, "0.0.0-test");
-    assert!(report.report_path.exists(), "report file should be written");
-    assert!(
-        !crash_file.exists(),
-        "crash file should be deleted after processing"
-    );
-}
-
-#[test]
-fn clean_exit_does_not_produce_crash_report() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    // Run both scenarios and verify no crash artifacts.
-    for scenario in &["tokio_normal", "sync_normal", "tokio_signals"] {
-        let (status, _stdout, stderr) = run_scenario(scenario, tmp.path());
-        assert!(status.success(), "{scenario} failed: {stderr}");
-    }
-    // check_previous_crash should return None.
-    let report = phux_crash::check_previous_crash(tmp.path());
-    assert!(report.is_none(), "no crash report after clean exits");
 }

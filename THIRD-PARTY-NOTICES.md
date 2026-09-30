@@ -48,8 +48,8 @@ Source: https://www.cambus.net/spleen-monospaced-bitmap-fonts/
 
 ## phux-crash (Apache-2.0)
 
-`crates/phux-crash` is vendored from `xai-crash-handler` in xAI's
-`grok-build` repository.
+`crates/phux-crash` is a trimmed derivative of `xai-crash-handler` in xAI's
+`grok-build` repository, keeping only the fatal-signal terminal restore.
 
     Copyright 2023-2026 SpaceXAI
     Licensed under the Apache License, Version 2.0
