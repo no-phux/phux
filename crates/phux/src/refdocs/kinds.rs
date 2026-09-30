@@ -5,9 +5,9 @@
 
 use std::fmt::Write as _;
 
-use phux_protocol::caps::ServerFeature;
 use phux_protocol::kinds::{
-    self, COMMAND_RULES, Carrier, EventSpec, FRAME_RULES, KindSpec, MethodSpec, Rule, Verb,
+    self, COMMAND_RULES, Carrier, EventSpec, FRAME_RULES, FeatureGate, FeatureWord, KindSpec,
+    MethodSpec, Rule, Verb,
 };
 
 use super::Page;
@@ -27,10 +27,15 @@ pub(crate) fn page() -> Page {
          change server state; a method no row admits by verb (the `COMMAND` \
          envelope, a denied method) counts as mutating. A gate is the \
          `HELLO_OK` feature bit a client must see before relying on the \
-         method, named as `phux status --json` names it under `features`. \
-         In `phux --capabilities --json` a gate is `{ \"feature\": name, \
-         \"mask\": value }`, where `mask` is the bit's value in \
-         `HELLO_OK.server_caps.features`, not a bit index.\n",
+         method, named as `phux status --json` names it; a gate in the \
+         trailing `features_ext` word (ADR-0137) is marked `(features_ext)`, \
+         and any other lives in `features`. In `phux --capabilities --json` \
+         every gate is `feature_gate: { \"word\": \"features\" | \
+         \"features_ext\", \"feature\": name, \"mask\": value }`, where \
+         `mask` is the bit's value in that word of `HELLO_OK.server_caps`, \
+         not a bit index. The older `gate: { \"feature\", \"mask\" }` field \
+         covers only the `features` word and is `null` for a \
+         `features_ext` gate.\n",
     );
     push_methods(
         &mut body,
@@ -176,16 +181,37 @@ fn requires(method: &MethodSpec) -> String {
     label
 }
 
-fn gate(gate: Option<ServerFeature>) -> String {
-    let name = gate.map(phux_protocol::caps::ServerFeature::snake_name);
-    name.map_or_else(|| "none".to_owned(), |name| format!("`{name}`"))
+fn gate(gate: Option<FeatureGate>) -> String {
+    let Some(gate) = gate else {
+        return "none".to_owned();
+    };
+    match gate.word() {
+        FeatureWord::Features => format!("`{}`", gate.snake_name()),
+        FeatureWord::FeaturesExt => format!("`{}` (features_ext)", gate.snake_name()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use phux_protocol::kinds::{self, COMMAND_RULES, FRAME_RULES};
+    use phux_protocol::caps::ServerFeature;
+    use phux_protocol::kinds::{self, COMMAND_RULES, FRAME_RULES, FeatureGate};
 
-    use super::page;
+    use super::{gate, page};
+
+    /// A gate names its caps word, so an extended feature is not "none".
+    #[test]
+    fn gate_cell_names_the_caps_word() {
+        assert_eq!(gate(None), "none");
+        assert_eq!(
+            gate(Some(FeatureGate::Features(ServerFeature::ListDirectory))),
+            "`list_directory`"
+        );
+        let ext = FeatureGate::FeaturesExt {
+            mask: 0x1,
+            wire_name: "PATH_QUERY",
+        };
+        assert_eq!(gate(Some(ext)), "`path_query` (features_ext)");
+    }
 
     /// Every catalog method and every classification row appears on the page.
     #[test]
