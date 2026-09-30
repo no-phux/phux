@@ -61,6 +61,17 @@ async fn reads_truecolor_grid() {
 }
 
 #[wasm_bindgen_test]
+async fn osc_title_reads_back() {
+    let vt = Vt::load().await.expect("load ghostty-vt engine");
+    let term = vt.terminal(20, 3);
+    assert_eq!(term.title(), "", "no title yet");
+    term.write(b"\x1b]2;build: ok \xe2\x9c\x93\x07");
+    assert_eq!(term.title(), "build: ok \u{2713}");
+    term.write(b"\x1b]0;second\x1b\\");
+    assert_eq!(term.title(), "second", "OSC 0 with an ST terminator");
+}
+
+#[wasm_bindgen_test]
 async fn viewport_scrolls_into_scrollback_and_back() {
     let vt = Vt::load().await.expect("load ghostty-vt engine");
     let term = vt.terminal(20, 5);

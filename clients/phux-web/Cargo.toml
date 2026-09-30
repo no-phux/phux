@@ -65,6 +65,8 @@ web-sys = { version = "0.3", features = [
     "HtmlTextAreaElement",
     "DomRect",
     "WheelEvent",
+    "CustomEvent",
+    "CustomEventInit",
     "Event",
     "EventTarget",
     "Location",

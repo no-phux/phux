@@ -1137,6 +1137,14 @@ impl Session {
         }
     }
 
+    /// The title the focused replica's program set (OSC 0/2), empty if none.
+    #[must_use]
+    pub fn title(&self) -> String {
+        self.published_terminal()
+            .map(Terminal::title)
+            .unwrap_or_default()
+    }
+
     /// Whether the focused replica's viewport is scrolled back.
     #[must_use]
     pub fn viewport_scrolled(&self) -> bool {
