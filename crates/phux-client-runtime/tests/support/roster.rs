@@ -437,3 +437,28 @@ fn a_failed_read_is_retried_by_the_next_inventory() {
     assert_eq!(declarations(&mut plane), vec![Some(b"declared".to_vec())]);
     assert!(refresh_after_settling(&mut plane, snapshot()).is_empty());
 }
+
+#[test]
+fn a_denied_read_is_a_stable_answer_that_recovery_does_not_repeat() {
+    let (mut plane, read) = discovered();
+    plane
+        .feed(FrameKind::Error {
+            request_id: Some(read),
+            code: ErrorCode::PermissionDenied,
+            message: "policy denied".into(),
+        })
+        .unwrap();
+    assert!(
+        plane.take_events().is_empty(),
+        "the grant's answer to the runtime's own read is not a consumer error"
+    );
+    for _ in 0..3 {
+        journal_gap(&mut plane);
+        let request_id = state_id(&outbound(&mut plane));
+        answer_state(&mut plane, request_id, snapshot());
+        assert!(
+            outbound(&mut plane).is_empty(),
+            "a grant does not change on a live connection, so neither does its refusal"
+        );
+    }
+}

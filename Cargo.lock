@@ -2459,6 +2459,7 @@ dependencies = [
  "phux-dial",
  "phux-perf",
  "phux-protocol",
+ "phux-server",
  "phux-server-testkit",
  "quinn",
  "serde_json",

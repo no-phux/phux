@@ -35,6 +35,9 @@ mod geometry_live;
 #[path = "support/roster_live.rs"]
 mod roster_live;
 
+#[path = "support/scoped_live.rs"]
+mod scoped_live;
+
 fn options() -> ClientOptions {
     ClientOptions {
         control: ControlOptions {
