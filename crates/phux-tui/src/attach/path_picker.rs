@@ -2,9 +2,50 @@
 
 use phux_protocol::caps::{ServerFeatureExt, ServerFeatureExtSet};
 use phux_protocol::ids::{ClientId, ResourceId, SatelliteHost};
+use phux_protocol::wire::frame::PathQueryResult;
+
+use crate::render::overlay::OverlayState;
 
 use super::pane_state::{PaneSlot, pane_exited, pane_satellite_down};
 use std::collections::HashMap;
+
+/// The picker's per-connection state, owned by the attach loop.
+#[derive(Debug)]
+pub(super) struct PickerState {
+    /// Whether the server negotiated `PATH_QUERY`.
+    pub supported: bool,
+    /// The query in flight; a reply with any other id is stale.
+    pub pending: Option<PendingPath>,
+}
+
+impl PickerState {
+    pub(super) const fn new(features: ServerFeatureExtSet) -> Self {
+        Self {
+            supported: supported(features),
+            pending: None,
+        }
+    }
+}
+
+/// Apply a `PATH_RESULTS` reply to the open picker when it still answers the
+/// request in flight; `true` when the overlay changed and needs a repaint.
+pub(super) fn accept_reply(
+    pending: Option<&PendingPath>,
+    overlays: &mut OverlayState,
+    reply: Option<(u32, PathQueryResult)>,
+) -> bool {
+    let (Some((request_id, result)), Some(pending)) = (reply, pending) else {
+        return false;
+    };
+    let Some((root, query)) = overlays.path_search() else {
+        return false;
+    };
+    if !reply_matches(pending, request_id, root, query) {
+        tracing::debug!(request_id, "dropping stale PATH_RESULTS");
+        return false;
+    }
+    overlays.update_paths(&result)
+}
 
 /// A target is captured on opening, never inferred from focus at commit.
 #[derive(Debug, Clone)]
