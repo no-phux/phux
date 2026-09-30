@@ -176,7 +176,7 @@ be recorded with the implementation.
 
 | Setting/control | Default/source | Owner and applicability | Editing and application |
 |---|---|---|---|
-| Font family / size | Resolved platform font / 13pt | Cockpit, all terminal views | Editable, live preview; derive actual font when family is empty. |
+| Font family / size | Resolved platform font / 14pt, or the user's Ghostty `font-family` and `font-size` (changed from 13pt with phux-cockpit-aht) | Cockpit, all terminal views | Editable, live preview; derive actual font when family is empty. |
 | Theme / follow system | Current resolved theme; follow-system false | Cockpit presentation | Editable live; explicit foreground/background precedence remains visible. |
 | Contrast | 3 | Cockpit rendering | Editable live; preserve source colors and engine state. |
 | Cursor style / blink | Block / true | Local terminal defaults; remote application may own cursor | Editable with applicability; remote behavior cannot be claimed until its owner supports it. |

@@ -220,6 +220,36 @@ inherit-working-directory = true
 tab-placement = top
 ```
 
+### Adopted from Ghostty
+
+If you use Ghostty, Cockpit starts from your Ghostty font and colours. It reads
+the same file Ghostty does, in Ghostty's order: `$XDG_CONFIG_HOME/ghostty/config`
+(or `~/.config/…`, then `config.ghostty`), then
+`~/Library/Application Support/com.mitchellh.ghostty/config`. It follows that
+file's `config-file` includes one level deep and resolves a named `theme` from
+`~/.config/ghostty/themes` or Ghostty.app's bundled set, taking the dark half of
+a `light:…,dark:…` pair. These are the rules the desktop client uses, so the
+two clients read one file the same way.
+
+Adopted: `font-size`, `font-family` when it names a face Cockpit ships (any
+spelling of JetBrains Mono is the bundled face), `foreground`, `background`,
+`cursor-color`, `selection-background`, and `palette = 0` through `15`. They
+are defaults, never written into Cockpit's file: any key in Cockpit's config,
+and a Cockpit `theme` for the colours it sets, outranks them. Settings >
+Appearance names what was adopted and from where, and **Re-import from
+Ghostty** (or Reload Configuration) reads the file again.
+
+Not adopted: `font-thicken` (Cockpit already inks as heavily as Ghostty's
+strongest setting, so the knob could only thin it; see
+[Render fidelity](docs/RENDER_FIDELITY.md) section 7), `adjust-cell-*` (the grid
+has no cell adjustment) and `minimum-contrast` (Cockpit keeps its own floor,
+below). `PHUX_COCKPIT_GHOSTTY_CONFIG=/path` reads that file instead, and an
+empty value turns adoption off; the measurement scripts set it empty.
+
+Without a Ghostty config the terminal is **14pt**. Ghostty's own macOS default
+is 13, and at 13 Cockpit read thin beside a Ghostty set to 14; the rasterizer
+was measured and was not the difference.
+
 ### Minimum contrast
 
 `minimum-contrast` is a WCAG contrast ratio, 1 to 21, that every cell's text

@@ -140,9 +140,11 @@
                   </grid>
                   <if test="{appearance.overrides}"><text wrap="true" foreground="warning">Explicit foreground or background overrides this theme. Edit Configuration to change those keys.</text></if>
                   <text wrap="true" foreground="text_muted">{confignotice}</text>
+                  <if test="{appearance.ghostty}"><text wrap="true" foreground="text_muted">{appearance.ghostty}</text></if>
                   <row gap="8">
                     <button size="sm" variant="outline" on-press="settings_edit_configuration">Edit Configuration</button>
                     <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="settings_reload">Reload Configuration</button>
+                    <if test="{appearance.ghostty}"><button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="settings_reload">Re-import from Ghostty</button></if>
                   </row>
                 </if>
                 <if test="{settingsSection == 4}">

@@ -82,6 +82,18 @@ test('settings response round trips values and rejects truncated or reordered re
   assert.equal(appearanceResponse(wrong), null);
 });
 
+test('an optional twelfth record carries the Ghostty adoption line, not a setting', () => {
+  assert.equal(appearanceResponse(reply()).ghostty.length, 0);
+  const line = bytes('From Ghostty (~/.config/ghostty/config): 14 pt, colours. Anything set here takes precedence.');
+  const wire = new Uint8Array([...reply(), 11, line.length, 0, ...line]);
+  const appearance = appearanceResponse(wire);
+  assert.equal(text(appearance.ghostty), text(line));
+  assert.equal(appearance.values.length, 11);
+  // Row 11 (keyboard shortcuts) must not read the Ghostty line as its value.
+  assert.equal(settingsRows(appearance, bytes('Keyboard shortcuts'), 0)[0].available, false);
+  assert.equal(appearanceResponse(new Uint8Array([...wire, 12, 0, 0])), null);
+});
+
 test('editor requests preserve Unicode arguments without a shell string interpolation', () => {
   const value = bytes('"/Applications/My Editor/bin/edit" --wait café');
   assert.deepEqual(settingRequest(10, value), new Uint8Array([2, 8, 10, ...value]));

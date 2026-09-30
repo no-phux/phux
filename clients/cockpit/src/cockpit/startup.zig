@@ -10,6 +10,7 @@ const topology = @import("topology.zig");
 const model_module = @import("model.zig");
 const session_state = @import("session_state.zig");
 const config_module = @import("../config/config.zig");
+const ghostty = @import("../config/ghostty.zig");
 const scene = @import("native/scene.zig");
 const remote_memory = @import("remote_memory.zig");
 
@@ -299,6 +300,9 @@ pub fn resolveDotfileConfigPath(env: native_sdk.app_dirs.Env, path_storage: []u8
 /// failure lands on defaults.
 pub const LoadedConfig = struct {
     config: Config,
+    /// Where the Ghostty layer under `config` was looked for; kept so a
+    /// Settings reload re-imports from the same places.
+    ghostty: ghostty.Locator = .{},
     path_storage: [std.fs.max_path_bytes]u8 = undefined,
     path_len: usize = 0,
 
@@ -323,19 +327,24 @@ fn loadUserConfig(io: std.Io, init: std.process.Init) LoadedConfig {
     const env = native_sdk.debug.envFromMap(init.environ_map);
     const override = init.environ_map.get("PHUX_COCKPIT_CONFIG");
 
-    var loaded: LoadedConfig = .{ .config = .{} };
+    // The user's Ghostty font and colours are the defaults every Cockpit key
+    // below then overrides.
+    const locator = ghostty.Locator.fromEnv(env.home, env.xdg_config_home, init.environ_map.get("PHUX_COCKPIT_GHOSTTY_CONFIG"));
+    const inherited = ghostty.load(io, &locator);
+    reportInherited(&inherited);
+    var loaded: LoadedConfig = .{ .config = Config.seeded(inherited), .ghostty = locator };
 
     // An explicit override answers on its own — including for WRITING. A
     // wrapper or a test that named a file is naming the file the app should
     // edit too, whether or not it exists yet.
     if (override) |explicit| {
         loaded.setPath(explicit);
-        if (readConfig(io, explicit)) |parsed| loaded.config = parsed;
+        if (readConfig(io, explicit, inherited)) |parsed| loaded.config = parsed;
         return loaded;
     }
     // Dotfile first, then the platform path; the first file that opens wins.
     if (resolveDotfileConfigPath(env, &dotfile_storage)) |dotfile| {
-        if (readConfig(io, dotfile)) |parsed| {
+        if (readConfig(io, dotfile, inherited)) |parsed| {
             loaded.config = parsed;
             loaded.setPath(dotfile);
             return loaded;
@@ -348,7 +357,7 @@ fn loadUserConfig(io: std.Io, init: std.process.Init) LoadedConfig {
         if (resolveDotfileConfigPath(env, &dotfile_storage)) |dotfile| loaded.setPath(dotfile);
         return loaded;
     };
-    if (readConfig(io, path)) |parsed| {
+    if (readConfig(io, path, inherited)) |parsed| {
         loaded.config = parsed;
         loaded.setPath(path);
         return loaded;
@@ -365,13 +374,19 @@ fn loadUserConfig(io: std.Io, init: std.process.Init) LoadedConfig {
 /// Read and parse one candidate. Null means "there was no usable file here",
 /// which is the normal case for every location but one and must never be an
 /// error.
-fn readConfig(io: std.Io, path: []const u8) ?Config {
+fn readConfig(io: std.Io, path: []const u8, inherited: config_module.Inherited) ?Config {
     var bytes: [config_module.max_config_bytes]u8 = undefined;
     var file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return null;
     defer file.close(io);
     // An over-long config is truncated, not refused, keeping earlier lines.
     const read = file.readPositionalAll(io, &bytes, 0) catch return null;
-    return config_module.loadOrDefault(bytes[0..read]);
+    return config_module.loadOver(inherited, bytes[0..read]);
+}
+
+fn reportInherited(inherited: *const config_module.Inherited) void {
+    var buffer: [1024]u8 = undefined;
+    const line = ghostty.summary(inherited, &buffer);
+    if (line.len != 0) std.log.info("config: {s}", .{line});
 }
 
 /// Where the workspace layout is written: the platform state directory,
@@ -656,6 +671,7 @@ pub fn initializeModel(gpa: std.mem.Allocator, init: std.process.Init) !Initiali
     );
     errdefer std.heap.page_allocator.destroy(initialized.model);
     errdefer model_module.deinitModel(initialized.model);
+    initialized.model.ghostty = loaded_config.ghostty;
     const remote_provider = try createConfiguredPhuxProvider(init, &user_config);
     attachPhuxProvider(initialized.model, remote_provider);
     if (remote_provider != null) {

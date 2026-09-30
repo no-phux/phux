@@ -305,7 +305,7 @@ fn paintPane(model: *const Model, tree: *const layout.Tree, builder: *canvas.Bui
         try paintLocalPane(terminal, builder, index, tokens, options);
     } else {
         const remote = model.phuxForTreeConst(tree) orelse return false;
-        @import("remote_color_policy.zig").sync(remote, options.tokens, model.config.cursor_color);
+        @import("remote_color_policy.zig").sync(remote, options.tokens, model.config.resolvedCursorColor());
         const presentation = model.remotePaintPresentationIn(tree, pane.terminal) orelse return false;
         options.running = presentation.phase == .live;
         options.selecting = if (model.remoteUiForOwnerConst(presentation.owner)) |state| state.selecting else false;

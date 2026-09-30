@@ -13,6 +13,8 @@ export interface Appearance {
   readonly notice: Uint8Array;
   readonly values: readonly Uint8Array[];
   readonly followSystem: boolean;
+  /** What was adopted from the user's Ghostty config; empty when nothing was. */
+  readonly ghostty: Uint8Array;
 }
 
 const NO_VALUES: readonly Uint8Array[] = [];
@@ -20,7 +22,7 @@ const NO_VALUES: readonly Uint8Array[] = [];
 export function initialAppearance(): Appearance {
   return { active: false, dirty: false, outcome: 0, theme: 255, cursor: 0, placement: 0,
     overrides: false, fontLabel: asciiBytes("Loading..."), contrastLabel: new Uint8Array(0), notice: new Uint8Array(0),
-    values: NO_VALUES, followSystem: false };
+    values: NO_VALUES, followSystem: false, ghostty: new Uint8Array(0) };
 }
 
 export function appearanceRequest(action: number, argument: number): Uint8Array {
@@ -50,25 +52,37 @@ function validResponse(bytes: Uint8Array): boolean {
   return end < bytes.length;
 }
 
-function readValues(bytes: Uint8Array, start: number): readonly Uint8Array[] | null {
+interface Records {
+  readonly values: readonly Uint8Array[];
+  readonly ghostty: Uint8Array;
+}
+
+const NO_RECORDS: Records = { values: NO_VALUES, ghostty: new Uint8Array(0) };
+
+/** Eleven setting records, then an optional twelfth: the Ghostty adoption line. */
+function readValues(bytes: Uint8Array, start: number): Records | null {
   const values: Uint8Array[] = [];
+  let ghostty = new Uint8Array(0);
+  let count = 0;
   let at = start;
   while (at < bytes.length) {
     if (at + 3 > bytes.length) return null;
     const id = bytes[at];
     const length = bytes[at + 1] + bytes[at + 2] * 256;
-    if (id !== values.length || id > 10) return null;
+    if (id !== count || id > 11) return null;
     at += 3;
     if (at + length > bytes.length) return null;
-    values.push(bytes.slice(at, at + length));
+    if (id === 11) ghostty = bytes.slice(at, at + length);
+    else values.push(bytes.slice(at, at + length));
+    count += 1;
     at += length;
   }
-  return values.length === 11 ? values : null;
+  return count === 11 || count === 12 ? { values, ghostty } : null;
 }
 
 // The AOT boundary needs local wholeness proofs, even for validated byte input.
 function decodedAppearance(bytes: Uint8Array, fontEnd: number, contrastEnd: number,
-  values: readonly Uint8Array[], followSystem: boolean): Appearance {
+  values: readonly Uint8Array[], followSystem: boolean, ghostty: Uint8Array): Appearance {
   const theme = bytes[4];
   const cursor = bytes[5];
   const placement = bytes[6];
@@ -80,7 +94,7 @@ function decodedAppearance(bytes: Uint8Array, fontEnd: number, contrastEnd: numb
     outcome: outcome >= 0 && outcome <= 7 ? Math.trunc(outcome) : 5,
     active: bytes[1] === 1, dirty: bytes[3] === 1, overrides: bytes[7] === 1,
     fontLabel: bytes.slice(10, fontEnd), contrastLabel: bytes.slice(fontEnd, contrastEnd), notice: outcomeNotice(bytes[2]),
-    values, followSystem,
+    values, followSystem, ghostty,
   };
 }
 
@@ -89,8 +103,8 @@ export function appearanceResponse(bytes: Uint8Array): Appearance | null {
   const fontEnd = 10 + bytes[8];
   const contrastEnd = fontEnd + bytes[9];
   if (bytes[0] === 2 && bytes[contrastEnd] > 1) return null;
-  const values = bytes[0] === 2 ? readValues(bytes, contrastEnd + 1) : NO_VALUES;
-  if (values === null) return null;
+  const records = bytes[0] === 2 ? readValues(bytes, contrastEnd + 1) : NO_RECORDS;
+  if (records === null) return null;
   const followSystem = bytes[0] === 2 && bytes[contrastEnd] === 1;
-  return decodedAppearance(bytes, fontEnd, contrastEnd, values, followSystem);
+  return decodedAppearance(bytes, fontEnd, contrastEnd, records.values, followSystem, records.ghostty);
 }
