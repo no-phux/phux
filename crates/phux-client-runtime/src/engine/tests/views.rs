@@ -545,3 +545,76 @@ fn default_view_returns_to_tail_when_its_anchor_is_evicted() {
         assert!(evicted, "must exercise actual Ghostty page eviction");
     }
 }
+
+#[test]
+fn saturated_search_reserves_viewport_pins_for_every_existing_view() {
+    let (owner, publication) = owner();
+    let terminal = id(120);
+    attach(&owner, &terminal, "needle\r\n".repeat(80).as_bytes());
+    let views: Vec<_> = (0..4)
+        .map(|_| owner.create_view(&terminal).unwrap())
+        .collect();
+    let found = owner.search(&terminal, "needle".into(), true).unwrap();
+    assert!(!found.is_empty());
+    for view in &views {
+        owner.scroll_view(*view, Scroll::Top).unwrap();
+        assert_eq!(
+            publication.acquire_view(*view).unwrap().row_text(0),
+            "needle"
+        );
+    }
+    for matched in found.iter().take(3) {
+        owner.pin_viewport(&terminal, matched.start).unwrap();
+        for view in &views {
+            owner.scroll_view(*view, Scroll::Delta(1)).unwrap();
+        }
+    }
+    // A search scoped to a view must also preserve headroom in the shared
+    // terminal budget, including the temporarily swapped default state.
+    owner.clear_search(&terminal).unwrap();
+    owner.scroll(&terminal, Scroll::Bottom).unwrap();
+    owner.scroll_view(views[1], Scroll::Bottom).unwrap();
+    let found = owner.search_view(views[0], "needle".into(), true).unwrap();
+    assert!(!found.is_empty());
+    owner.scroll(&terminal, Scroll::Top).unwrap();
+    owner.scroll_view(views[1], Scroll::Top).unwrap();
+    for matched in found.iter().take(3) {
+        owner.pin_view(views[0], matched.start).unwrap();
+        owner.scroll(&terminal, Scroll::Delta(1)).unwrap();
+        owner.scroll_view(views[1], Scroll::Delta(1)).unwrap();
+    }
+}
+
+#[test]
+fn failed_reveal_preserves_the_physical_and_published_viewport() {
+    let (owner, publication) = owner();
+    let terminal = id(121);
+    attach(
+        &owner,
+        &terminal,
+        b"zero\r\none\r\ntwo\r\nthree\r\nfour\r\nfive",
+    );
+    owner.scroll(&terminal, Scroll::Top).unwrap();
+    let target = owner.track_anchor(&terminal, point(0, 0)).unwrap();
+    owner.scroll(&terminal, Scroll::Row(1)).unwrap();
+    let before = publication.acquire(&terminal).unwrap();
+    assert_eq!(before.row_text(0), "one");
+    let mut held = Vec::new();
+    while let Ok(anchor) = owner.track_anchor(&terminal, point(0, 0)) {
+        held.push(anchor);
+    }
+    assert!(owner.pin_viewport(&terminal, target).is_err());
+    let after = publication.acquire(&terminal).unwrap();
+    assert_eq!(after.generation, before.generation);
+    assert_eq!(after.row_text(0), "one");
+
+    // Read the actual engine viewport, not only the last published frame.
+    owner
+        .release_anchor(&terminal, held.pop().unwrap())
+        .unwrap();
+    let current = owner.track_anchor(&terminal, point(0, 0)).unwrap();
+    owner
+        .set_selection(&terminal, current, current, false)
+        .unwrap();
+    assert_eq!(owner.selection_text(&terminal).unwrap(), b"o");
+}
