@@ -3128,7 +3128,7 @@ pub(crate) async fn handle_get_state_federated(
     });
     let mut hosts = Vec::new();
     for (host, result) in futures_util::future::join_all(queries).await {
-        hosts.push(fold_satellite_state(&mut snapshot, host, result, out_tx).await);
+        hosts.push(fold_satellite_state(state, &mut snapshot, host, result, out_tx).await);
     }
     hosts.sort_by(|a, b| a.host.as_str().cmp(b.host.as_str()));
     mirror_federated_agent_metadata(state, &snapshot);
@@ -3169,6 +3169,7 @@ fn mirror_federated_agent_metadata(
 /// answer becomes an unreachable row plus the un-correlated degradation
 /// `ERROR` pushed ahead of the `COMMAND_RESULT` (L1 §9.1).
 async fn fold_satellite_state(
+    state: &SharedState,
     snapshot: &mut phux_protocol::wire::info::SessionSnapshot,
     host: phux_protocol::ids::SatelliteHost,
     result: CommandResult,
@@ -3177,7 +3178,17 @@ async fn fold_satellite_state(
     match result {
         CommandResult::OkWith(CommandValue::State(sat)) => {
             let inventory = satellite_host_inventory(&host, &sat);
-            merge_satellite_resources(snapshot, &host, sat.resources);
+            let holders = state.with(|s| {
+                sat.resources
+                    .iter()
+                    .filter_map(|pane| pane.id.local_id())
+                    .filter_map(|id| {
+                        s.satellite_lease_holder(&host, id)
+                            .map(|holder| (id, holder))
+                    })
+                    .collect::<std::collections::HashMap<_, _>>()
+            });
+            merge_satellite_resources(snapshot, &host, sat.resources, &holders);
             inventory
         }
         CommandResult::Error { code, message } => {
@@ -3214,12 +3225,19 @@ async fn fold_satellite_state(
 }
 
 /// Append a satellite's resources to the hub's aggregate, re-tagged into the
-/// hub's id space. A Satellite-tagged id is dropped (no chaining).
+/// hub's id space (L1 §9.1). A Satellite-tagged id is dropped (no chaining).
+/// The satellite's window and client ids are its own: `window_id` becomes
+/// `WindowId(0)` (no hub window owns the row; the satellite's windows are not
+/// aggregated), the input-lease holder becomes the hub consumer in
+/// `holders` (the hub's lease ledger) or a foreign id, and viewers become
+/// foreign ids, so none can match a hub window or impersonate a hub client.
 fn merge_satellite_resources(
     snapshot: &mut phux_protocol::wire::info::SessionSnapshot,
     host: &phux_protocol::ids::SatelliteHost,
     resources: Vec<phux_protocol::wire::info::ResourceInfo>,
+    holders: &std::collections::HashMap<u32, ClientId>,
 ) {
+    use crate::hub::relay::foreign_client;
     for mut pane in resources {
         let Some(id) = retag_satellite_resource_id(host, Some(&pane.id)) else {
             warn!(
@@ -3229,9 +3247,20 @@ fn merge_satellite_resources(
             );
             continue;
         };
+        let holder = pane
+            .id
+            .local_id()
+            .and_then(|local| holders.get(&local).copied());
         pane.id = id;
         // ADR-0104: a parent retags by the same rule; a chained one drops.
         pane.parent = retag_satellite_resource_id(host, pane.parent.as_ref());
+        pane.window_id = phux_protocol::WindowId::new(0);
+        pane.input_holder = pane
+            .input_holder
+            .map(|reported| holder.map_or_else(|| foreign_client(reported), super::wire_client));
+        for viewer in &mut pane.viewers {
+            *viewer = foreign_client(*viewer);
+        }
         snapshot.resources.push(pane);
     }
 }
@@ -5061,6 +5090,46 @@ mod host_inventory_tests {
             logs.active_resource,
             Some(ResourceId::satellite(host, 200)),
             "no remembered focus falls back to the first window's first terminal"
+        );
+    }
+
+    /// L1 §9.1: a satellite's window and client ids are its own. A merged
+    /// row names no hub window (so `window:N` selectors never reach it) and
+    /// no hub client: the input holder is the hub's lease-ledger holder or a
+    /// foreign id, and viewers are foreign ids.
+    #[test]
+    fn merged_satellite_rows_carry_no_satellite_window_or_client_ids() {
+        use phux_protocol::ClientId as WireClientId;
+        let host = SatelliteHost::from("edge");
+        let mut aggregate =
+            SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1));
+        let mut held = ResourceInfo::new(ResourceId::local(100), WindowId::new(1), 80, 24)
+            .with_viewers(vec![WireClientId::new(2)]);
+        held.input_holder = Some(WireClientId::new(3));
+        let mut foreign = ResourceInfo::new(ResourceId::local(101), WindowId::new(1), 80, 24);
+        foreign.input_holder = Some(WireClientId::new(3));
+        let holders = std::collections::HashMap::from([(100, crate::state::ClientId(7))]);
+        super::merge_satellite_resources(&mut aggregate, &host, vec![held, foreign], &holders);
+
+        let [held, foreign] = aggregate.resources.as_slice() else {
+            panic!("two merged rows: {:?}", aggregate.resources);
+        };
+        for row in [held, foreign] {
+            assert_eq!(row.window_id, WindowId::new(0), "no hub window owns it");
+        }
+        assert_eq!(
+            held.input_holder,
+            Some(WireClientId::new(7)),
+            "the ledger holder"
+        );
+        assert_eq!(
+            held.viewers,
+            vec![crate::hub::relay::foreign_client(WireClientId::new(2))]
+        );
+        assert_eq!(
+            foreign.input_holder,
+            Some(crate::hub::relay::foreign_client(WireClientId::new(3))),
+            "a satellite-local holder never reads as hub client 3"
         );
     }
 

@@ -1401,12 +1401,15 @@ impl RelaySession {
     /// earlier incarnation is refused `INCARNATION_CHANGED`; a new id is
     /// recorded with `actor`.
     fn fence_rejection(&self, command: &Command, actor: ClientId) -> Option<CommandResult> {
-        use super::operation_fence::{FenceVerdict, fenced_key};
+        use super::operation_fence::{FenceVerdict, fenced_key, fenced_terminals};
         let key = fenced_key(command)?;
-        match self
-            .operations
-            .admit(key, self.incarnation, actor, std::time::Instant::now())
-        {
+        match self.operations.admit(
+            key,
+            self.incarnation,
+            actor,
+            fenced_terminals(command),
+            std::time::Instant::now(),
+        ) {
             FenceVerdict::Forward => None,
             FenceVerdict::IncarnationChanged => Some(CommandResult::Error {
                 code: ErrorCode::IncarnationChanged,
@@ -1921,14 +1924,15 @@ impl RelaySession {
         };
         satellite_gap_as_source_gap(&mut event);
         self.mirror_satellite_lease_state(id, &event, stamp.as_deref().map(|s| s.seq));
+        // L1 §9.1: a keyed operation's event names the consumer that sent
+        // it, and only on a terminal that operation targeted.
+        let (stamp, actor) = self.vet_event_stamp(id, stamp);
+        let Some(event) = self.retag_event_ids(id, event, actor) else {
+            return;
+        };
         if let (Some(journal), Some(scope)) = (self.journal.clone(), terminal.clone()) {
-            // L1 §9.1: a keyed operation's event names the consumer that sent it.
-            let actor = stamp
-                .as_deref()
-                .and_then(|stamp| stamp.operation_id.as_ref())
-                .and_then(|key| self.operations.actor_for_event(key));
             let _ = journal
-                .with_mut(|s| s.record_relayed_event_as(scope, event, stamp.as_deref(), actor));
+                .with_mut(|s| s.record_relayed_event_as(scope, event, stamp.as_ref(), actor));
             return;
         }
         let unstamped = FrameKind::Event {
@@ -1937,6 +1941,121 @@ impl RelaySession {
             stamp: None,
         };
         self.fan_out(id, &unstamped);
+    }
+
+    /// The satellite's stamp with every id the hub cannot vouch for removed,
+    /// and the hub consumer the event belongs to. An `operation_id` a hub
+    /// consumer forwarded for another terminal is dropped (the satellite may
+    /// not claim it here); one this link never forwarded is kept but names no
+    /// hub consumer; the satellite's own `actor` names its connections, never
+    /// the hub's, and never survives.
+    fn vet_event_stamp(
+        &self,
+        terminal: u32,
+        stamp: Option<Box<phux_protocol::wire::frame::EventStamp>>,
+    ) -> (
+        Option<phux_protocol::wire::frame::EventStamp>,
+        Option<ClientId>,
+    ) {
+        use super::operation_fence::EventOperation;
+        let Some(mut stamp) = stamp.map(|stamp| *stamp) else {
+            return (None, None);
+        };
+        stamp.actor = None;
+        let verdict = stamp
+            .operation_id
+            .map(|key| self.operations.event_operation(&key, terminal));
+        let actor = match verdict {
+            Some(EventOperation::Forwarded(actor)) => Some(actor),
+            Some(EventOperation::Misattributed) => {
+                warn!(
+                    satellite = %self.host,
+                    terminal,
+                    "satellite stamped a forwarded operation id on another terminal's event; dropping the id"
+                );
+                stamp.operation_id = None;
+                None
+            }
+            Some(EventOperation::Unknown) | None => None,
+        };
+        (Some(stamp), actor)
+    }
+
+    /// Re-tag the ids inside a satellite event into the hub's id space
+    /// (L1 §9.1), or `None` to drop an event naming an id the hub cannot
+    /// represent: a resource parent is re-tagged `Satellite { host, id }`
+    /// (a chained one drops the event); a client id becomes the hub
+    /// consumer the hub knows for it (the lease holder, the operation's
+    /// sender) or a [`foreign_client`] id; an approval event naming one of
+    /// the hub's own pending approvals is dropped, since approval ids share
+    /// one namespace and the satellite's must never decide or shadow the
+    /// hub's.
+    fn retag_event_ids(
+        &self,
+        terminal: u32,
+        event: AgentEvent,
+        operation_actor: Option<ClientId>,
+    ) -> Option<AgentEvent> {
+        match event {
+            AgentEvent::ResourceSpawned { kind, parent } => {
+                let parent = match parent {
+                    None => None,
+                    Some(ResourceId::Local { id }) => {
+                        Some(ResourceId::satellite(self.host.clone(), id))
+                    }
+                    Some(ResourceId::Satellite { .. }) => {
+                        warn!(
+                            satellite = %self.host,
+                            terminal,
+                            "satellite reported a Satellite-tagged parent; hub-and-spoke does not chain — dropping"
+                        );
+                        return None;
+                    }
+                };
+                Some(AgentEvent::ResourceSpawned { kind, parent })
+            }
+            AgentEvent::TerminalControl {
+                lifecycle,
+                exit_status,
+                input_holder,
+                action,
+                actor,
+            } => {
+                let holder = self.journal.as_ref().and_then(|journal| {
+                    journal.with(|s| s.satellite_lease_holder(&self.host, terminal))
+                });
+                Some(AgentEvent::TerminalControl {
+                    lifecycle,
+                    exit_status,
+                    input_holder: input_holder.map(|id| {
+                        holder.map_or_else(|| foreign_client(id), crate::runtime::wire_client)
+                    }),
+                    action,
+                    actor: actor.map(|id| {
+                        operation_actor
+                            .map_or_else(|| foreign_client(id), crate::runtime::wire_client)
+                    }),
+                })
+            }
+            AgentEvent::ApprovalRequested { id } | AgentEvent::ApprovalDecided { id, .. }
+                if self.names_hub_approval(id) =>
+            {
+                warn!(
+                    satellite = %self.host,
+                    terminal,
+                    "satellite event named one of the hub's pending approvals; dropping"
+                );
+                None
+            }
+            other => Some(other),
+        }
+    }
+
+    /// Whether `id` is one of the hub's own pending approvals.
+    fn names_hub_approval(&self, id: phux_protocol::ids::ApprovalId) -> bool {
+        self.journal
+            .as_ref()
+            .is_some_and(|journal| journal.with(|s| s.pending_approval(id).is_some()))
     }
 
     /// Mirror a satellite lease transition into the hub's ledger (ADR-0033):
@@ -3439,6 +3558,19 @@ fn retag_spawn_result(host: &SatelliteHost, result: SpawnResult) -> SpawnResult 
         (false, Some(instance)) => SpawnResult::OkBound { id, instance },
         (false, None) => SpawnResult::Ok(id),
     }
+}
+
+/// The high bit a [`foreign_client`] id carries. Hub consumers' wire ids are
+/// allocated upward from 1 and never reach it.
+const FOREIGN_CLIENT_BIT: u32 = 1 << 31;
+
+/// A client id a satellite reported (one of its own connections, often the
+/// hub's link itself), moved into a range hub client ids never reach, so it
+/// can neither collide with nor impersonate a hub consumer.
+pub(crate) const fn foreign_client(
+    id: phux_protocol::ids::ClientId,
+) -> phux_protocol::ids::ClientId {
+    phux_protocol::ids::ClientId::new(FOREIGN_CLIENT_BIT | id.get())
 }
 
 /// Split a satellite-tagged wire id into its host and satellite-local id.
@@ -5069,8 +5201,8 @@ mod tests {
         assert!(older.pending.is_empty());
         let key = phux_protocol::ids::IdempotencyKey::new([3; 16]).expect("key");
         assert_eq!(
-            fence.actor_for_event(&key),
-            None,
+            fence.event_operation(&key, 9),
+            super::super::operation_fence::EventOperation::Unknown,
             "a refused operation leaves nothing in the fence"
         );
         let unkeyed = Command::KillResource {
@@ -5179,6 +5311,166 @@ mod tests {
         assert_eq!(
             theirs.actor, None,
             "an operation this hub never forwarded names no actor"
+        );
+    }
+
+    /// L1 §9.1: every id inside a satellite's event is re-tagged or vetted
+    /// before a hub consumer sees it. An operation id a consumer forwarded
+    /// for one terminal cannot be claimed on another (neither the id nor
+    /// the consumer survives); the satellite's client ids become the hub's
+    /// lease holder or a foreign id; a resource parent is re-tagged; and an
+    /// approval event naming a hub approval is dropped.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one relayed-event scenario per id kind"
+    )]
+    #[test]
+    fn satellite_event_ids_are_retagged_or_vetted_before_hub_consumers_see_them() {
+        let journal = crate::state::SharedState::new();
+        let consumer = journal.with_mut(crate::state::ServerState::new_client_id);
+        let (registry_tx, mut registry_rx) = mpsc::channel(32);
+        for terminal in [5, 9] {
+            journal.with_mut(|s| {
+                s.subscribe_satellite_events(
+                    consumer,
+                    ResourceId::satellite("devbox", terminal),
+                    crate::state::EventFilter::all(),
+                    None,
+                    registry_tx.clone(),
+                );
+            });
+        }
+        let fence = super::super::operation_fence::OperationFence::default();
+        let mut session = keyed_session(&[ServerFeature::KeyedSignal], [1; 16], &fence);
+        session.set_journal(Some(journal.clone()));
+        let (proxy_tx, _proxy_rx) = mpsc::channel(8);
+        subscribe(&mut session, 9, consumer, proxy_tx.clone());
+        subscribe(&mut session, 5, consumer, proxy_tx);
+        let (wire, _rx) = send_keyed(&mut session, keyed_kill(7), consumer);
+        assert!(wire.is_some(), "the kill for terminal 9 is forwarded");
+        let mut relay = |terminal: u32, event: AgentEvent, stamp: Option<Box<_>>| {
+            session
+                .handle_inbound(&encode(&FrameKind::Event {
+                    terminal: Some(ResourceId::local(terminal)),
+                    event,
+                    stamp,
+                }))
+                .expect("valid satellite frame");
+            std::iter::from_fn(|| registry_rx.try_recv().ok())
+                .filter_map(|out| match out {
+                    Outbound::Frame(FrameKind::Event { event, stamp, .. }) => Some((event, stamp)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let control = |holder: u32| AgentEvent::TerminalControl {
+            lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
+            exit_status: None,
+            input_holder: Some(phux_protocol::ids::ClientId::new(holder)),
+            action: ControlAction::Interrupted,
+            actor: Some(phux_protocol::ids::ClientId::new(holder)),
+        };
+        let wire_consumer = crate::runtime::wire_client(consumer);
+
+        // The kill's key, claimed on terminal 5: dropped with its consumer.
+        let key = phux_protocol::ids::IdempotencyKey::new([7; 16]);
+        let stamp = phux_protocol::wire::frame::EventStamp::new(1, 1).with_operation_id(key);
+        let got = relay(5, control(wire_consumer.get()), Some(Box::new(stamp)));
+        let [(event, Some(stamp))] = got.as_slice() else {
+            panic!("one relayed event: {got:?}");
+        };
+        assert_eq!(
+            stamp.operation_id, None,
+            "the id is not the satellite's to claim"
+        );
+        assert_eq!(stamp.actor, None);
+        let AgentEvent::TerminalControl {
+            input_holder,
+            actor,
+            ..
+        } = event
+        else {
+            panic!("expected terminal_control: {event:?}");
+        };
+        assert_ne!(
+            *input_holder,
+            Some(wire_consumer),
+            "a satellite client id never reads as a hub consumer"
+        );
+        assert_eq!(*input_holder, Some(foreign_client(wire_consumer)));
+        assert_eq!(*actor, Some(foreign_client(wire_consumer)));
+
+        // On terminal 9 the same key is the consumer's own operation, and
+        // the hub's lease ledger names the holder.
+        let (lease_tx, _lease_rx) = mpsc::channel(1);
+        journal.with_mut(|s| {
+            s.set_satellite_lease(host(), 9, consumer, lease_tx);
+        });
+        let stamp = phux_protocol::wire::frame::EventStamp::new(2, 1).with_operation_id(key);
+        let got = relay(9, control(1), Some(Box::new(stamp)));
+        let [(event, Some(stamp))] = got.as_slice() else {
+            panic!("one relayed event: {got:?}");
+        };
+        assert_eq!(stamp.operation_id, key);
+        assert!(stamp.actor.is_some(), "the consumer's own kill names it");
+        let AgentEvent::TerminalControl {
+            input_holder,
+            actor,
+            ..
+        } = event
+        else {
+            panic!("expected terminal_control: {event:?}");
+        };
+        assert_eq!(
+            *input_holder,
+            Some(wire_consumer),
+            "the hub's ledger holder"
+        );
+        assert_eq!(*actor, Some(wire_consumer), "the operation's sender");
+
+        // A child's parent is re-tagged into the hub's id space.
+        let got = relay(
+            5,
+            AgentEvent::ResourceSpawned {
+                kind: phux_protocol::ids::ResourceKind::AgentSession,
+                parent: Some(ResourceId::local(9)),
+            },
+            None,
+        );
+        assert!(
+            matches!(
+                got.as_slice(),
+                [(AgentEvent::ResourceSpawned { parent: Some(parent), .. }, _)]
+                    if *parent == ResourceId::satellite(host(), 9)
+            ),
+            "{got:?}"
+        );
+
+        // An approval event naming the hub's own pending approval is dropped.
+        let held = Command::KillResource {
+            terminal_id: ResourceId::satellite(host(), 9),
+            operation_id: None,
+        };
+        let approval = journal
+            .with_mut(|s| s.open_approval(consumer, &held))
+            .expect("hold opened")
+            .id;
+        let got = relay(
+            9,
+            AgentEvent::ApprovalDecided {
+                id: approval,
+                outcome: phux_protocol::wire::frame::ApprovalOutcome::Denied,
+            },
+            None,
+        );
+        assert!(
+            !got.iter()
+                .any(|(event, _)| matches!(event, AgentEvent::ApprovalDecided { .. })),
+            "{got:?}"
+        );
+        assert!(
+            journal.with(|s| s.pending_approval(approval).is_some()),
+            "the hub's approval is untouched"
         );
     }
 

@@ -5,7 +5,9 @@
 //! `HELLO_OK.server_id`), which a consumer behind the hub cannot see. The
 //! hub records the incarnation each operation id was forwarded to and
 //! answers a retry across a restart with `INCARNATION_CHANGED`. The record
-//! also names the consumer that sent the operation, for re-stamped events.
+//! also names the consumer that sent the operation and the satellite
+//! terminals it targets, for re-stamped events: a satellite may attribute an
+//! event to a forwarded operation only on a terminal that operation named.
 //! Bounded like the dedupe record (ten-minute horizon, entry cap; full
 //! refuses rather than evicts) and shared across the link's reconnects.
 
@@ -40,6 +42,8 @@ pub(crate) enum FenceVerdict {
 struct FencedOperation {
     incarnation: Incarnation,
     actor: ClientId,
+    /// The satellite-local terminals the operation targets.
+    terminals: Vec<u32>,
     admitted_at: Instant,
 }
 
@@ -71,6 +75,7 @@ impl FenceStore {
         key: OperationKey,
         incarnation: Incarnation,
         actor: ClientId,
+        terminals: Vec<u32>,
         now: Instant,
     ) -> FenceVerdict {
         self.prune_expired(now);
@@ -81,6 +86,7 @@ impl FenceStore {
             // A retry from a reconnected consumer arrives under a new
             // connection; the events still to come are its.
             entry.actor = actor;
+            entry.terminals = terminals;
             return FenceVerdict::Forward;
         }
         if self.entries.len() >= DEDUPE_MAX_ENTRIES {
@@ -91,6 +97,7 @@ impl FenceStore {
             FencedOperation {
                 incarnation,
                 actor,
+                terminals,
                 admitted_at: now,
             },
         );
@@ -110,24 +117,72 @@ impl OperationFence {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Admit forwarding the operation `key` from hub consumer `actor` to the
-    /// satellite incarnation the link is connected to.
+    /// Admit forwarding the operation `key` from hub consumer `actor`,
+    /// targeting satellite `terminals`, to the satellite incarnation the
+    /// link is connected to.
     pub(crate) fn admit(
         &self,
         key: OperationKey,
         incarnation: Incarnation,
         actor: ClientId,
+        terminals: Vec<u32>,
         now: Instant,
     ) -> FenceVerdict {
-        self.lock().admit(key, incarnation, actor, now)
+        self.lock().admit(key, incarnation, actor, terminals, now)
     }
 
-    /// The hub consumer whose keyed operation stamped `operation_id` on an
-    /// event the satellite sent, while the record still holds it.
-    pub(crate) fn actor_for_event(&self, operation_id: &IdempotencyKey) -> Option<ClientId> {
-        let key = OperationKey::new(OperationDomain::Signal, *operation_id.as_bytes());
-        self.lock().entries.get(&key).map(|entry| entry.actor)
+    /// What the `operation_id` a satellite stamped on an event for its
+    /// terminal `terminal` means to the hub, while the record holds it.
+    pub(crate) fn event_operation(
+        &self,
+        operation_id: &IdempotencyKey,
+        terminal: u32,
+    ) -> EventOperation {
+        let store = self.lock();
+        let forwarded = [OperationDomain::Signal, OperationDomain::Input]
+            .into_iter()
+            .find_map(|domain| {
+                store
+                    .entries
+                    .get(&OperationKey::new(domain, *operation_id.as_bytes()))
+            });
+        match forwarded {
+            None => EventOperation::Unknown,
+            Some(entry) if entry.terminals.contains(&terminal) => {
+                EventOperation::Forwarded(entry.actor)
+            }
+            Some(_) => EventOperation::Misattributed,
+        }
     }
+}
+
+/// How the hub treats the `operation_id` a satellite stamped on an event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EventOperation {
+    /// A keyed operation a hub consumer forwarded for this terminal: the
+    /// event is that consumer's.
+    Forwarded(ClientId),
+    /// An id this link never forwarded (one of the satellite's own
+    /// clients, or a spawn key): kept, attributed to no hub consumer.
+    Unknown,
+    /// An id a hub consumer forwarded for another terminal: the satellite
+    /// may not claim it here, so the hub drops it from the event.
+    Misattributed,
+}
+
+/// The satellite-local terminals a fenced command targets.
+pub(crate) fn fenced_terminals(command: &Command) -> Vec<u32> {
+    let ids: Vec<&phux_protocol::ids::ResourceId> = match command {
+        Command::ApplyInput { terminal_id, .. }
+        | Command::KillResource { terminal_id, .. }
+        | Command::KillResourceIf { terminal_id, .. }
+        | Command::SignalTerminal { terminal_id, .. } => vec![terminal_id],
+        Command::KillResources { ids, .. } => ids.iter().collect(),
+        _ => Vec::new(),
+    };
+    ids.into_iter()
+        .filter_map(phux_protocol::ids::ResourceId::local_id)
+        .collect()
 }
 
 /// The key the fence records a forwarded command under: an `APPLY_INPUT`'s
@@ -165,20 +220,20 @@ mod tests {
         let fence = OperationFence::default();
         let now = Instant::now();
         assert_eq!(
-            fence.admit(key(1), A, ClientId(7), now),
+            fence.admit(key(1), A, ClientId(7), vec![1], now),
             FenceVerdict::Forward
         );
         assert_eq!(
-            fence.admit(key(1), A, ClientId(8), now),
+            fence.admit(key(1), A, ClientId(8), vec![1], now),
             FenceVerdict::Forward,
             "a retry to the same satellite process is the satellite's to dedupe"
         );
         assert_eq!(
-            fence.admit(key(1), B, ClientId(8), now),
+            fence.admit(key(1), B, ClientId(8), vec![1], now),
             FenceVerdict::IncarnationChanged
         );
         assert_eq!(
-            fence.admit(key(2), B, ClientId(8), now),
+            fence.admit(key(2), B, ClientId(8), vec![1], now),
             FenceVerdict::Forward,
             "a new id is new to the new incarnation too"
         );
@@ -190,11 +245,72 @@ mod tests {
         let now = Instant::now();
         let id = IdempotencyKey::new([9; 16]).expect("non-zero");
         let key = OperationKey::new(OperationDomain::Signal, [9; 16]);
-        assert_eq!(fence.actor_for_event(&id), None);
-        fence.admit(key, A, ClientId(3), now);
-        assert_eq!(fence.actor_for_event(&id), Some(ClientId(3)));
-        fence.admit(key, A, ClientId(4), now);
-        assert_eq!(fence.actor_for_event(&id), Some(ClientId(4)));
+        assert_eq!(fence.event_operation(&id, 5), EventOperation::Unknown);
+        fence.admit(key, A, ClientId(3), vec![5], now);
+        assert_eq!(
+            fence.event_operation(&id, 5),
+            EventOperation::Forwarded(ClientId(3))
+        );
+        fence.admit(key, A, ClientId(4), vec![5], now);
+        assert_eq!(
+            fence.event_operation(&id, 5),
+            EventOperation::Forwarded(ClientId(4))
+        );
+    }
+
+    /// A satellite cannot attribute an event on one of its terminals to an
+    /// operation a hub consumer sent for another: the id is misattributed,
+    /// in either dedupe domain.
+    #[test]
+    fn a_forwarded_id_names_only_the_terminals_it_targeted() {
+        let fence = OperationFence::default();
+        let now = Instant::now();
+        let signal = Command::SignalTerminal {
+            terminal_id: phux_protocol::ids::ResourceId::local(5),
+            signal: phux_protocol::wire::frame::TerminalSignal::Interrupt,
+            operation_id: IdempotencyKey::new([1; 16]),
+        };
+        let batch = Command::KillResources {
+            ids: vec![
+                phux_protocol::ids::ResourceId::local(6),
+                phux_protocol::ids::ResourceId::local(7),
+            ],
+            operation_id: IdempotencyKey::new([2; 16]),
+        };
+        let apply = Command::ApplyInput {
+            operation_id: phux_protocol::InputOperationId::new([3; 16]).expect("non-zero"),
+            terminal_id: phux_protocol::ids::ResourceId::local(8),
+            events: Vec::new(),
+        };
+        for command in [&signal, &batch, &apply] {
+            let key = fenced_key(command).expect("keyed");
+            fence.admit(key, A, ClientId(9), fenced_terminals(command), now);
+        }
+        let id = |byte: u8| IdempotencyKey::new([byte; 16]).expect("non-zero");
+        assert_eq!(
+            fence.event_operation(&id(1), 5),
+            EventOperation::Forwarded(ClientId(9))
+        );
+        assert_eq!(
+            fence.event_operation(&id(1), 6),
+            EventOperation::Misattributed
+        );
+        assert_eq!(
+            fence.event_operation(&id(2), 7),
+            EventOperation::Forwarded(ClientId(9))
+        );
+        assert_eq!(
+            fence.event_operation(&id(2), 5),
+            EventOperation::Misattributed
+        );
+        assert_eq!(
+            fence.event_operation(&id(3), 5),
+            EventOperation::Misattributed
+        );
+        assert_eq!(
+            fence.event_operation(&id(3), 8),
+            EventOperation::Forwarded(ClientId(9))
+        );
     }
 
     #[test]
@@ -203,13 +319,13 @@ mod tests {
         let start = Instant::now();
         for value in 0..u64::try_from(DEDUPE_MAX_ENTRIES).expect("fits") {
             assert_eq!(
-                store.admit(key(value), A, ClientId(1), start),
+                store.admit(key(value), A, ClientId(1), Vec::new(), start),
                 FenceVerdict::Forward
             );
         }
         let extra = u64::try_from(DEDUPE_MAX_ENTRIES).expect("fits");
         assert_eq!(
-            store.admit(key(extra), A, ClientId(1), start),
+            store.admit(key(extra), A, ClientId(1), Vec::new(), start),
             FenceVerdict::Full,
             "a full fence refuses a new id instead of evicting a live one"
         );
@@ -218,13 +334,13 @@ mod tests {
                 .checked_sub(Duration::from_secs(1))
                 .expect("retention exceeds one second");
         assert_eq!(
-            store.admit(key(0), B, ClientId(1), inside),
+            store.admit(key(0), B, ClientId(1), Vec::new(), inside),
             FenceVerdict::IncarnationChanged,
             "inside the horizon the old incarnation still fences"
         );
         let past = start + DEDUPE_RETENTION;
         assert_eq!(
-            store.admit(key(0), B, ClientId(1), past),
+            store.admit(key(0), B, ClientId(1), Vec::new(), past),
             FenceVerdict::Forward,
             "past the horizon the id is unknown, as it is to the dedupe record"
         );
