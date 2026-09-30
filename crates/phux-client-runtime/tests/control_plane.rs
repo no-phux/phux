@@ -289,6 +289,54 @@ fn embedded_with_history(history_cursor: Option<Vec<u8>>) -> phux_client_runtime
     client
 }
 
+/// The delivery shape sets the owner-thread cost, and the `runtime.*`
+/// counters show it: a transport read fed as one batch is one apply round
+/// trip and one grid publication; the same frames fed one at a time are one
+/// of each per frame.
+#[cfg(feature = "engine")]
+#[test]
+fn a_batched_read_publishes_once_and_frame_at_a_time_publishes_per_frame() {
+    use phux_client_runtime::perf::{APPLY_BATCHES, PUBLISHED};
+    const FRAMES: u64 = 8;
+    let client = embedded_with_history(None);
+    let frame = |seq: u64| {
+        let mut encoded = BytesMut::new();
+        FrameKind::ResourceOutput {
+            terminal_id: terminal(),
+            stream_id: StreamId::new(1).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            seq,
+            bytes: format!("\r\nline {seq}").into_bytes().into(),
+        }
+        .encode(&mut encoded);
+        encoded.to_vec()
+    };
+
+    let (batches, published) = (APPLY_BATCHES.get(), PUBLISHED.get());
+    let read: Vec<_> = (1..=FRAMES).map(frame).collect();
+    client
+        .with_control(|plane| plane.feed_bytes_batch(&read))
+        .unwrap();
+    assert_eq!(APPLY_BATCHES.get() - batches, 1, "one round trip per read");
+    assert_eq!(PUBLISHED.get() - published, 1, "one publication per read");
+
+    let (batches, published) = (APPLY_BATCHES.get(), PUBLISHED.get());
+    for seq in FRAMES + 1..=2 * FRAMES {
+        client
+            .with_control(|plane| plane.feed_bytes(&frame(seq)))
+            .unwrap();
+    }
+    assert_eq!(APPLY_BATCHES.get() - batches, FRAMES);
+    assert_eq!(PUBLISHED.get() - published, FRAMES);
+    assert!(
+        client
+            .acquire(&terminal())
+            .unwrap()
+            .row_text(3)
+            .starts_with("line 16")
+    );
+}
+
 #[cfg(feature = "engine")]
 #[test]
 fn client_clones_share_the_default_but_explicit_views_are_local_without_wire_operations() {

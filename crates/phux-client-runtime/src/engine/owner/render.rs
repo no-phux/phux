@@ -17,10 +17,13 @@ impl Owner {
         let Some(mut slot) = self.projectors.remove(id) else {
             return Ok(false);
         };
+        let started = std::time::Instant::now();
         let result = self.project_frame(id, &mut slot, full, (stream, bootstrap, sequence));
         self.projectors.insert(id.clone(), slot);
         let frame = result?;
         self.publish_frame(id, frame)?;
+        crate::perf::PROJECT.record_elapsed(started);
+        crate::perf::PUBLISHED.incr();
         Ok(true)
     }
 

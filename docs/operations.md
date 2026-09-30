@@ -156,6 +156,14 @@ trip, `vt_apply` and `paint.full` percentiles, frame counts, pacer waits, and
 stdout drops. Degradations such as a full consumer mailbox or a dropped
 stdout backlog warn at most once per ten seconds with a `suppressed` count.
 
+A native embedder such as Cockpit reads its client's table with
+`phux_client_perf_json`: the kernel's `kernel.*` rows (frames and bytes
+applied, `kernel.apply`, `kernel.echo.rtt`) and the runtime's `runtime.*`
+rows (`runtime.apply_batches` owner-thread round trips, `runtime.publish`
+grid publications, `runtime.project` projection time). `kernel.frames`
+divided by `runtime.publish` is how many output frames one publication
+absorbed; near 1 under a flood means frames are being fed one at a time.
+
 For a reproducible number rather than a live one, `just perf-echo` runs
 the byte-level echo probe against an isolated server at a chosen size
 with a flooding sibling pane, and `just profile` records a CPU profile of

@@ -8,6 +8,7 @@
 //! - [`tunnel`]: the byte relay for a socket-owning embedder.
 //! - [`control`]: the sans-IO control plane over `SessionKernel`.
 //! - [`engine`]: the owner thread hosting the kernel and every replica.
+//! - [`perf`]: owner-thread apply and publication telemetry.
 //! - `publication` (feature `engine`): the double-buffered grid.
 //! - [`connection`]: the async driver (dial, framing, keepalive, reconnect).
 //! - [`runtime`]: [`runtime::Runtime::connect`] and the thread-safe
@@ -24,6 +25,7 @@ pub mod connection;
 pub mod control;
 pub mod dial;
 pub mod engine;
+pub mod perf;
 #[cfg(feature = "engine")]
 pub mod publication;
 pub mod reconnect;

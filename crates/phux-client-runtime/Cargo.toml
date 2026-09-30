@@ -43,6 +43,8 @@ phux-protocol.workspace = true
 # The sans-IO session kernel the control plane drives and the one cell
 # layout the owner thread projects (ADR-0133 decisions 1, 3, 4).
 phux-client-core.workspace = true
+# Always-on owner-thread metrics (`perf`), reported beside the kernel table.
+phux-perf.workspace = true
 # The engine the owner thread hosts; optional so the headless lane links no
 # Zig (see the `engine` feature).
 libghostty-vt = { workspace = true, optional = true }
