@@ -175,6 +175,7 @@ column is the base status word plus at most one relationship clause, about
 | [0141](./0141-pair-mints-only-against-a-live-listener.md) | Pair mints only against a live listener | Accepted (amends [0081](./0081-overlay-auto-listen-and-one-command-pairing.md)) |
 | [0142](./0142-host-path-query-is-separate-from-directory-listing.md) | Host path queries do not change directory listings | Accepted (builds on [0137](./0137-server-feature-word-extends.md), [0108](./0108-a-hub-relays-host-queries-per-request.md)) |
 | [0143](./0143-ship-ten-mib-of-scrollback-per-pane.md) | Ship 10 MiB of scrollback per pane | Accepted (supersedes in part [0094](./0094-explicit-per-pane-scrollback-byte-ceiling.md), [0119](./0119-attach-leases-retained-history.md)) |
+| [0144](./0144-input-credits-backpressure-instead-of-drop.md) | Input credits: backpressure instead of drop | Accepted (supersedes in part [0044](./0044-dedicated-input-lane.md)) |
 
 ## When to write an ADR
 

@@ -238,11 +238,11 @@ impl FrameAssembler {
     /// A frame already buffered by an earlier call is returned only after
     /// yielding to the scheduler. One read can carry hundreds of frames (a
     /// typed line is one `INPUT_KEY` per character), and handing them out
-    /// with no await point would dispatch the whole burst in one poll: the
-    /// input lane would fill a pane actor's bounded mailbox while that actor,
-    /// on this same thread, never ran to drain it, and the overflow is
-    /// dropped. The per-frame socket reads this replaced were paced by
-    /// tokio's cooperative budget instead.
+    /// with no await point would dispatch the whole burst in one poll while
+    /// pane actors and other connections on this thread wait. Input credits
+    /// (ADR-0144) keep such a burst lossless; this keeps it fair, as the
+    /// per-frame socket reads it replaced were under tokio's cooperative
+    /// budget.
     pub(crate) async fn read_frame<R>(&mut self, reader: &mut R) -> io::Result<Option<BytesMut>>
     where
         R: tokio::io::AsyncRead + Unpin,

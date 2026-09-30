@@ -735,7 +735,7 @@ fn start_pty_bridge(
 
     let (pty_tx_to_actor, pty_rx_for_actor) = mpsc::channel::<PtyEvent>(PTY_CHANNEL_DEPTH);
     let (input_tx_to_writer, mut input_rx_for_writer) =
-        mpsc::channel::<EncodedInputRequest>(super::DEFAULT_INPUT_MAILBOX);
+        mpsc::channel::<EncodedInputRequest>(super::PTY_WRITER_QUEUE);
 
     let reader_thread = std::thread::Builder::new()
         .name("phux-pty-reader".to_owned())

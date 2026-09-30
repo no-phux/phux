@@ -43,6 +43,8 @@ pub static ECHO_SERVER: Histogram = Histogram::new();
 pub static INPUT_EVENTS: Counter = Counter::new();
 /// Microseconds for the writer thread's `write(2)` plus flush of one request.
 pub static INPUT_PTY_WRITE: Histogram = Histogram::new();
+/// Input events that waited for a saturated pane to drain (ADR-0144).
+pub static INPUT_CREDIT_WAITS: Counter = Counter::new();
 
 // --- tick: state-sync fanout ----------------------------------------------
 
@@ -118,6 +120,7 @@ pub static TABLE: &[Metric] = &[
     Metric::histogram("echo.server", Unit::Micros, &ECHO_SERVER),
     Metric::counter("input.events", Unit::Count, &INPUT_EVENTS),
     Metric::histogram("input.pty_write", Unit::Micros, &INPUT_PTY_WRITE),
+    Metric::counter("input.credit_waits", Unit::Count, &INPUT_CREDIT_WAITS),
     Metric::histogram("tick.emit", Unit::Micros, &TICK_EMIT),
     Metric::histogram("tick.synth", Unit::Micros, &TICK_SYNTH),
     Metric::histogram("tick.out_bytes", Unit::Bytes, &TICK_OUT_BYTES),

@@ -10,6 +10,7 @@ last-reviewed: 2026-07-15
 
 Status: Accepted
 Date: 2026-07-11
+Superseded in part by [ADR-0144](./0144-input-credits-backpressure-instead-of-drop.md): input is no longer dropped when the lane queue or pane mailbox is full.
 
 ## Context
 

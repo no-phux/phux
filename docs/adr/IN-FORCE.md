@@ -86,6 +86,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Input authority
 
+- [0144](./0144-input-credits-backpressure-instead-of-drop.md) Typed input waits for per-Terminal credits instead of being dropped; a pane stalled past five seconds refuses input explicitly.
 - [0053](./0053-acknowledged-idempotent-input.md) `APPLY_INPUT` is one bounded, acknowledged, idempotent input batch under the command envelope.
 - [0044](./0044-dedicated-input-lane.md) Input routing and encoding run on a dedicated thread from published mode snapshots.
 - [0127](./0127-attach-roles-are-lease-intent.md) An attach may declare `VIEWER` (observe-only, input refused) or `PRIMARY` with `DELIBERATE` takeover (attach and seize); the lease and the grant stay the only arbiters.
