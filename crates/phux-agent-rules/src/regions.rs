@@ -243,54 +243,60 @@ fn after_last_rule(lines: &[String]) -> Vec<&str> {
 /// [`PROMPT_BOX_TRAILING_SLACK`] status rows; the first border or rule
 /// decides the form. Empty when no box is found.
 fn prompt_box(lines: &[String]) -> Vec<&str> {
-    let mut end: Option<usize> = None;
+    let Some(end) = prompt_box_bottom(lines) else {
+        return Vec::new();
+    };
+    // A box before a rule: a box's bottom border is all rule characters, and
+    // treating it as a fence would climb past the box into the transcript
+    // (a false `blocked` on a printed question).
+    let body = if is_box_line(&lines[end]) {
+        Some(box_run_ending_at(lines, end))
+    } else {
+        rule_fenced_body(lines, end)
+    };
+    body.map_or_else(Vec::new, |body| {
+        body.iter().map(|l| strip_borders(l)).collect()
+    })
+}
+
+/// The bottom-most border or rule row, found scanning up past blanks and at
+/// most [`PROMPT_BOX_TRAILING_SLACK`] other rows.
+fn prompt_box_bottom(lines: &[String]) -> Option<usize> {
     let mut slack = PROMPT_BOX_TRAILING_SLACK;
     for (idx, line) in lines.iter().enumerate().rev() {
         if line.trim().is_empty() {
             continue;
         }
         if is_rule(line) || is_box_line(line) {
-            end = Some(idx);
-            break;
+            return Some(idx);
         }
         if slack == 0 {
-            break;
+            return None;
         }
         slack -= 1;
     }
-    let Some(end) = end else { return Vec::new() };
+    None
+}
 
-    // A box before a rule: a box's bottom border is all rule characters, and
-    // treating it as a fence would climb past the box into the transcript
-    // (a false `blocked` on a printed question).
-    if is_box_line(&lines[end]) {
-        let mut start = end;
-        while start > 0 && is_box_line(&lines[start - 1]) {
-            start -= 1;
-        }
-        return lines[start..=end]
-            .iter()
-            .map(|l| strip_borders(l))
-            .collect();
-    }
-
-    // Rule-delimited: the body runs up to an opening fence. A box line on the
-    // way, or no opening fence (a lone separator), means no box at all.
-    let mut open = None;
-    for idx in (0..end).rev() {
-        if is_box_line(&lines[idx]) {
-            return Vec::new();
-        }
-        if is_rule(&lines[idx]) {
-            open = Some(idx);
-            break;
-        }
-    }
-    let Some(open) = open else { return Vec::new() };
-    lines[open + 1..end]
+/// The contiguous run of box-drawn rows ending at `end`, inclusive.
+fn box_run_ending_at(lines: &[String], end: usize) -> &[String] {
+    let start = lines[..end]
         .iter()
-        .map(|l| strip_borders(l))
-        .collect()
+        .rposition(|l| !is_box_line(l))
+        .map_or(0, |above| above + 1);
+    &lines[start..=end]
+}
+
+/// The rows between the rule at `end` and the opening rule above it. A box
+/// line on the way, or no opening fence (a lone separator), means no box.
+fn rule_fenced_body(lines: &[String], end: usize) -> Option<&[String]> {
+    let open = lines[..end]
+        .iter()
+        .rposition(|l| is_box_line(l) || is_rule(l))?;
+    if is_box_line(&lines[open]) {
+        return None;
+    }
+    Some(&lines[open + 1..end])
 }
 
 #[cfg(test)]
