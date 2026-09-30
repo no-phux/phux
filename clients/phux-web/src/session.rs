@@ -1326,6 +1326,19 @@ impl Session {
             .cloned()
     }
 
+    /// The focused pane's published replica: what the canvas shows, and
+    /// what search, copy, links, and mouse-mode checks read.
+    #[must_use]
+    pub fn terminal(&self) -> Option<&Terminal> {
+        self.published_terminal()
+    }
+
+    /// The engine instance every replica of this session runs on.
+    #[must_use]
+    pub fn vt(&self) -> &Rc<Vt> {
+        &self.vt
+    }
+
     fn published_terminal(&self) -> Option<&Terminal> {
         let terminal_id = self.first_published_terminal()?;
         let kernel = self.kernel.as_ref()?;
