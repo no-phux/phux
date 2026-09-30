@@ -468,9 +468,17 @@ impl TerminalInput {
         })
     }
 
-    /// The sole FFI event owner receives InputDelivery for this correlation.
-    /// Neither the native adapter nor its caller may auto-retry Unknown.
-    pub fn paste_text(&mut self, text: &str, window: &Window, cx: &App) -> Result<u64, InputError> {
+    /// The user's own clipboard paste, trusted (the runtime's
+    /// `apply_user_paste`). The sole FFI event owner receives InputDelivery
+    /// for a returned correlation; `None` is one atomic paste event too large
+    /// for acknowledged input, with no receipt. Neither the native adapter nor
+    /// its caller may auto-retry Unknown.
+    pub fn paste_text(
+        &mut self,
+        text: &str,
+        window: &Window,
+        cx: &App,
+    ) -> Result<Option<u64>, InputError> {
         self.cancel();
         let client = self.client()?;
         let focused = self.focused(window, cx);
@@ -482,7 +490,7 @@ impl TerminalInput {
             };
             admission.map(|()| {
                 let had_events = control.has_events();
-                let delivery = control.apply_paste(&self.terminal, text);
+                let delivery = control.apply_user_paste(&self.terminal, text);
                 (delivery, !had_events && control.has_events())
             })
         });
@@ -490,7 +498,7 @@ impl TerminalInput {
         // reconnect. Admission and successful enqueue above share one lock.
         let (delivery, resolved) = delivery.unwrap_or_else(|error| {
             (
-                client.refuse_acknowledged_input(&format!("native paste refused: {error:?}")),
+                Some(client.refuse_acknowledged_input(&format!("native paste refused: {error:?}"))),
                 false,
             )
         });

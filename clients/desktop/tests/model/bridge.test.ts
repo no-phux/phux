@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createRoot } from "solid-js";
 import type { DesktopEvent } from "../../native/generated/index";
-import { createBridge, structural, type DesktopHost } from "../../src/bridge/desktop";
+import { createBridge, refusedInput, structural, type DesktopHost } from "../../src/bridge/desktop";
 
 /** A native client that records which snapshots a wake read. */
 class FakeClient {
@@ -90,5 +90,21 @@ describe("bridge wakes", () => {
       expect(client.topologyReads).toBe(2);
       dispose();
     });
+  });
+
+  test("a refused paste has a reason to show; other receipts do not", () => {
+    const receipt = (outcome: string, message: string): DesktopEvent => {
+      const event: unknown = { kind: "InputDelivery", deliveryId: "7", outcome, message };
+      // SAFETY: the literal matches the InputDelivery variant; its const-enum
+      // outcome is a plain string at runtime.
+      return event as DesktopEvent;
+    };
+    expect(refusedInput(receipt("Refused", "input exceeds the limit"))).toBe(
+      "input exceeds the limit",
+    );
+    expect(refusedInput(receipt("Refused", ""))).toBe("The terminal did not accept the input.");
+    expect(refusedInput(receipt("Delivered", ""))).toBeUndefined();
+    expect(refusedInput(receipt("Unknown", "lost"))).toBeUndefined();
+    expect(refusedInput({ kind: "TopologyChanged" })).toBeUndefined();
   });
 });
