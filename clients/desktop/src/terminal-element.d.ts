@@ -17,8 +17,9 @@ export interface TerminalTheme {
 
 /**
  * A request the focused terminal runs natively once per new `id`: `copy` its
- * selection and `paste` the clipboard (the Command-C / Command-V path),
- * `copyText` onto the clipboard, or `open` a path with its default app.
+ * selection and `paste` the clipboard (the Command-C / Command-V path, even
+ * while the find bar holds the keyboard), `copyText` onto the clipboard, or
+ * `open` a path with its default app.
  */
 export type HostAction =
   | { id: string; kind: "copy" | "paste" }
