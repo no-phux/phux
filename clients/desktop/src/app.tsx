@@ -24,7 +24,7 @@ import {
   type StatusInfo,
   type Toast,
 } from "./shell/chrome";
-import { keyChord, textFieldHasKeys, yieldsToTextField } from "./shell/keymap";
+import { keyChord, shownChords, textFieldHasKeys, yieldsToTextField } from "./shell/keymap";
 import { CommandPalette, type PaletteItem } from "./shell/palette";
 import { Sidebar, paneTitle, shortPath } from "./shell/sidebar";
 import { TabBar, type TabView } from "./shell/tabbar";
@@ -1155,16 +1155,7 @@ function DesktopApp(props: AppProps): JSX.Element {
   });
 
   /** The chord to show for a command: the user's Ghostty bind wins. */
-  const displayChords = createMemo(() => {
-    const shown = new Map<string, string>();
-    for (const [chord, command] of keymap()) {
-      if (!shown.has(command.id) || command.chord !== chord) {
-        const existing = shown.get(command.id);
-        if (!existing || existing === command.chord) shown.set(command.id, chord);
-      }
-    }
-    return shown;
-  });
+  const displayChords = createMemo(() => shownChords(keymap(), defaultChords));
 
   /** Chords without Command that the terminal must hand to the window. */
   const appChords = createMemo(() =>
