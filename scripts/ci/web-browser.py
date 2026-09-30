@@ -27,6 +27,10 @@ REQUIRED_TESTS = (
     "exact_wasm_codec_selects_native_and_renders_live_server",
     "synthesized_only_browser_remains_compatible_with_native_server",
     "keys_ime_commits_and_paste_reach_the_terminal_and_nothing_else_is_captured",
+    # Unit tests in src/ that need a DOM and the live server.
+    "exported_start_retains_live_client_until_transport_failure",
+    "closed_ws_send_and_repeated_reconnect_teardown_release_every_app",
+    "dropping_polled_establishment_disposes_app_reader_and_transport",
 )
 AUTH_REQUIRED_TESTS = ("blackholed_wt_falls_back_to_authenticated_wss",)
 TEST_TOKEN = "11" * 32
@@ -192,7 +196,7 @@ def run_chrome(command, env, logs):
 
 def browser_tests(env, logs):
     env["PHUX_WS_ADDR"] = "127.0.0.1:0"
-    command = ["wasm-pack", "test", "--headless", "--chrome", "--locked",
+    command = ["wasm-pack", "test", "--headless", "--chrome", "--locked", "--lib",
                "--test", "render", "--test", "e2e_browser", "--test", "e2e_input"]
     # wasm-pack accepts a driver; wasm-bindgen needs capabilities for the binary.
     if env.get("CHROMEDRIVER"):
