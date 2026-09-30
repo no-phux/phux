@@ -10,7 +10,6 @@
 #[cfg(feature = "engine")]
 use std::collections::HashMap;
 use std::collections::HashSet;
-#[cfg(feature = "engine")]
 use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
 
@@ -39,7 +38,7 @@ use phux_protocol::wire::frame::{AgentEvent, CloseReason, TombstoneReason};
 
 #[cfg(feature = "engine")]
 use crate::publication::{
-    FrameColors, GridBuffer, GridDamage, GridFrame, Publication, Rgb, Scrollbar,
+    CatchUp, FrameColors, FrameKey, GridBuffer, GridDamage, GridFrame, Publication, Rgb, Scrollbar,
 };
 
 #[cfg(feature = "engine")]
@@ -451,6 +450,10 @@ enum Command {
     Query(Query),
     #[cfg(feature = "engine")]
     View(views::ViewCommand),
+    /// An acquire found a deferred presentation: project it and hand the
+    /// frame back.
+    #[cfg(feature = "engine")]
+    CatchUp(FrameKey, Sender<Option<Arc<GridFrame>>>),
 }
 
 enum Lifecycle {
@@ -544,7 +547,9 @@ enum Query {
 /// thread; dropping the last clone stops it.
 #[derive(Clone, Debug)]
 pub struct EngineHandle {
-    commands: Sender<Command>,
+    /// Shared so the publication's catch-up can hold it weakly: a consumer's
+    /// acquire must not keep a dropped owner thread alive.
+    commands: Arc<Sender<Command>>,
 }
 
 impl EngineHandle {
@@ -555,6 +560,9 @@ impl EngineHandle {
         #[cfg(feature = "engine")] publication: Arc<Publication>,
     ) -> Result<Self, EngineError> {
         let (commands, receiver) = mpsc::channel();
+        let commands = Arc::new(commands);
+        #[cfg(feature = "engine")]
+        publication.install_catch_up(catch_up(Arc::downgrade(&commands)));
         let history = config.history();
         let profile = config.profile;
         #[cfg(feature = "engine")]
@@ -875,6 +883,20 @@ impl EngineHandle {
             .map_err(|_| EngineError::Stopped)?;
         response.recv().map_err(|_| EngineError::Stopped)
     }
+}
+
+/// The acquire-side catch-up for a deferred presentation: one owner round
+/// trip, and `None` once the owner is gone.
+#[cfg(feature = "engine")]
+fn catch_up(commands: std::sync::Weak<Sender<Command>>) -> CatchUp {
+    Arc::new(move |key: &FrameKey| {
+        let (reply, response) = mpsc::channel();
+        commands
+            .upgrade()?
+            .send(Command::CatchUp(key.clone(), reply))
+            .ok()?;
+        response.recv().ok().flatten()
+    })
 }
 
 #[cfg(test)]

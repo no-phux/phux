@@ -6,10 +6,14 @@
 //! delivery shape shows up. `runtime.apply_batches` against `kernel.frames`
 //! is how many output frames each owner-thread round trip carried, and
 //! `runtime.publish` counts grid publications (one projection of every dirty
-//! row each). A binding that feeds frames one at a time publishes once per
-//! frame; one that feeds a transport read as a batch publishes once per read.
-//! Everything is a `static` from [`phux_perf`], always on, one relaxed atomic
-//! add per sample.
+//! row each). Publication is paced by reads (see `publication`): a batch
+//! publishes a presentation whose current frame a consumer has acquired and
+//! defers one whose frame is unread (`runtime.publish_deferred`); the next
+//! `runtime.acquire` of a deferred presentation pulls one projection
+//! (`runtime.catch_up`, also counted in `runtime.publish`). Under an output
+//! flood `runtime.publish` therefore tracks `runtime.acquire`, not
+//! `runtime.apply_batches`. Everything is a `static` from [`phux_perf`],
+//! always on, one relaxed atomic add per sample.
 
 use phux_perf::{Counter, Histogram, Metric, MetricSnapshot, Unit};
 
@@ -19,14 +23,23 @@ pub static APPLY_BATCHES: Counter = Counter::new();
 pub static PUBLISHED: Counter = Counter::new();
 /// Microseconds to project and publish one terminal's grid.
 pub static PROJECT: Histogram = Histogram::new();
+/// Damaged presentations a batch left unprojected because nobody had read
+/// their current frame.
+pub static DEFERRED: Counter = Counter::new();
+/// Frames consumers acquired from the publication table.
+pub static ACQUIRED: Counter = Counter::new();
+/// Projections an acquire pulled from the owner for a deferred presentation.
+pub static CAUGHT_UP: Counter = Counter::new();
 
 /// The runtime's metric table, in render order.
 pub static TABLE: &[Metric] = &[
     Metric::counter("runtime.apply_batches", Unit::Count, &APPLY_BATCHES),
     Metric::counter("runtime.publish", Unit::Count, &PUBLISHED),
     Metric::histogram("runtime.project", Unit::Micros, &PROJECT),
+    Metric::counter("runtime.publish_deferred", Unit::Count, &DEFERRED),
+    Metric::counter("runtime.acquire", Unit::Count, &ACQUIRED),
+    Metric::counter("runtime.catch_up", Unit::Count, &CAUGHT_UP),
 ];
-
 /// Snapshot every runtime metric, for a binding to append to the kernel's
 /// report.
 pub fn snapshot() -> impl Iterator<Item = MetricSnapshot> {

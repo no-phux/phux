@@ -676,3 +676,47 @@ fn prompt_jumps_select_all_and_region_text_stay_in_one_view() {
     assert!(owner.view_selection_text(b).is_err());
     assert_eq!(publication.view_generation(b), Some(b_generation));
 }
+
+/// The desktop's shape: the window reads a view and nobody reads the
+/// terminal's default presentation. The view publishes every batch; the
+/// default projects once, when something finally reads it.
+#[test]
+fn an_unread_default_is_deferred_while_a_read_view_publishes_every_batch() {
+    let (owner, publication) = owner();
+    let terminal = id(131);
+    attach(&owner, &terminal, b"first\r\nsecond");
+    let view = owner.create_view(&terminal).unwrap();
+    let default = publication.generation(&terminal).unwrap();
+    for seq in 1..=3 {
+        let generation = publication.acquire_view(view).unwrap().generation;
+        output(&owner, &terminal, seq, format!("\x1b[1;1H{seq}").as_bytes());
+        assert_eq!(publication.view_generation(view), Some(generation + 1));
+    }
+    assert_eq!(publication.generation(&terminal), Some(default));
+
+    let caught_up = publication.acquire(&terminal).unwrap();
+    assert_eq!(caught_up.generation, default + 1);
+    assert_eq!(caught_up.row_text(0), "3irst");
+    assert_eq!(caught_up.damage, GridDamage::Full);
+}
+
+/// Row damage is relative to the projector's previous projection. Once a
+/// default presentation has fallen behind a view, its next frame cannot be
+/// incremental, even after the view is gone.
+#[test]
+fn a_presentation_behind_another_reader_republishes_in_full() {
+    let (owner, publication) = owner();
+    let terminal = id(141);
+    attach(&owner, &terminal, b"first\r\nsecond\r\nthird");
+    let view = owner.create_view(&terminal).unwrap();
+    let _ = publication.acquire_view(view).unwrap();
+    output(&owner, &terminal, 1, b"\x1b[1;1HX");
+    owner.destroy_view(view).unwrap();
+    output(&owner, &terminal, 2, b"\x1b[3;1HY");
+
+    let frame = publication.acquire(&terminal).unwrap();
+    assert_eq!(frame.row_text(0), "Xirst");
+    assert_eq!(frame.row_text(2), "Yhird");
+    assert_eq!(frame.damage, GridDamage::Full);
+    assert_eq!(frame.dirty_rows().count(), usize::from(frame.rows));
+}
