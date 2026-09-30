@@ -61,8 +61,11 @@ fn wt_hello_attach_receives_attached_and_snapshot() {
         let url = format!("https://127.0.0.1:{port}/session");
         let mut connection = None;
         for _ in 0..40 {
+            // IPv4 loopback like the server, not the dual-stack default:
+            // macOS can hand a dual-stack socket an ephemeral port another
+            // IPv4 socket already owns, and that socket then eats replies.
             let config = ClientConfig::builder()
-                .with_bind_default()
+                .with_bind_address(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
                 .with_no_cert_validation()
                 .build();
             if let Ok(conn) = wtransport::Endpoint::client(config)
