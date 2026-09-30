@@ -836,6 +836,33 @@ proptest! {
         let _ = Decoder::new(&bytes).read_frame();
     }
 
+    /// Mutating a valid encoding of any catalog frame never panics the
+    /// decoder. Random bytes rarely get past the header, so this reaches
+    /// every body decoder with input one edit away from well formed. The
+    /// header is re-stamped after the edits so the body is what is fuzzed.
+    #[test]
+    fn mutated_catalog_frames_never_panic(
+        frame in arb_frame_kind(),
+        edits in proptest::collection::vec((any::<usize>(), any::<u8>(), 0_u8..4), 1..6),
+    ) {
+        let mut bytes = common::encode(&frame);
+        for (at, byte, op) in edits {
+            if bytes.len() <= 5 {
+                break;
+            }
+            let at = 5 + at % (bytes.len() - 5);
+            match op {
+                0 => bytes[at] = byte,
+                1 => bytes[at] ^= 1 << (byte % 8),
+                2 => bytes.insert(at, byte),
+                _ => bytes.truncate(at),
+            }
+        }
+        let body_len = u32::try_from(bytes.len() - 4).unwrap();
+        bytes[..4].copy_from_slice(&body_len.to_be_bytes());
+        let _ = Decoder::new(&bytes).read_frame();
+    }
+
     #[test]
     fn opaque_bootstrap_lifecycle_round_trips_arbitrary_bytes(
         terminal_id in arb_terminal_id(),
