@@ -95,7 +95,10 @@ socket on its own thread. Cockpit is woken and calls `phux_client_poll`.
 
 Frames are still decoded on Cockpit's owning thread: the runtime queues
 what it reads and `poll` feeds it, because the ABI's per-frame behavior
-reads state only that thread may touch.
+reads state only that thread may touch. One `poll` feeds one snapshot of
+that bounded queue, and a contiguous run of terminal output in it reaches the
+engine as one batch (cut at 256 frames or 1 MiB), so an output flood
+publishes each grid once per batch rather than once per frame.
 
 - The runtime queues `HELLO` on every connection it opens. `ATTACH` stays
   explicit. Both a changed `phux_client_connection_epoch` and replacement

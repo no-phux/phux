@@ -1534,6 +1534,9 @@ PhuxClientResult phux_client_connect(const PhuxConnectOptions *options, PhuxClie
 /** Feed everything the driver has read since the last poll, then publish the
  * resulting effects, exactly as feed_frame does per frame. Call it on the
  * wake, or on a timer. PHUX_CLIENT_INVALID_STATE on an embedded client.
+ * A contiguous run of terminal output is applied as one batch (at most 256
+ * frames or 1 MiB), so a flood publishes each grid once per run, not once
+ * per frame; effects and their order are those of per-frame feeding.
  * A protocol error in any frame stops that batch and returns; frames after
  * it are discarded with the connection. */
 PhuxClientResult phux_client_poll(PhuxClient *client);
