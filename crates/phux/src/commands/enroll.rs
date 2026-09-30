@@ -14,6 +14,10 @@
 //! generated here, only its CSR crosses ssh (on stdin, never argv) to
 //! `phux workload add-key --cert-stdout`, and the returned chain is checked
 //! against the key before both are stored owner-only. The probes present it.
+//! Replacing a certificate is two-phase ([`settle_identity`]): the credential
+//! it supersedes is revoked on the far host only after the registry entry
+//! names the new pair, and a new credential nothing recorded is revoked
+//! instead, so no failure strands the entry on a revoked certificate.
 //!
 //! Nothing here prints or writes a registry: callers render the events, and
 //! the role-specific tails in `host` own the token path and the entry.
@@ -271,18 +275,63 @@ pub(crate) enum EnrollEvent {
     DirectReachable { endpoint: String },
     /// A direct route did not answer within the deadline.
     DirectUnreachable { endpoint: String, reason: String },
-    /// A workload client certificate was enrolled; `replaced` when the far
-    /// host revoked the previous one in the same write.
-    CertificateEnrolled {
-        credential_id: String,
-        replaced: bool,
-    },
+    /// A workload client certificate was enrolled. Any credential it
+    /// supersedes is still live until the entry names the new one.
+    CertificateEnrolled { credential_id: String },
     /// No workload client certificate was enrolled. Not fatal: the host is
     /// paired, and dials fall back to the previous identity or none.
     CertificateNotEnrolled { reason: String },
+    /// The held certificate is inside the renewal window (or unreadable), so
+    /// it is replaced rather than kept.
+    CertificateRenewalDue { detail: String },
+    /// A credential was revoked on the far host: the one the entry named
+    /// before, or a new one nothing here recorded.
+    CertificateRevoked {
+        credential_id: String,
+        retired: Retired,
+    },
+    /// That revocation did not happen; `remedy` is the command that does it.
+    CertificateNotRevoked {
+        credential_id: String,
+        retired: Retired,
+        reason: String,
+        remedy: String,
+    },
+    /// The entry named a client key without its certificate (or a
+    /// certificate that does not read), so the far-host credential it
+    /// supersedes cannot be named and is not revoked.
+    PreviousCertificateUnidentified { remedy: String },
+}
+
+/// Why a credential is revoked on the far host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Retired {
+    /// The entry named it before; the new pair superseded it.
+    Superseded,
+    /// It was enrolled, but no entry here records it, so no one holds its
+    /// key.
+    Unrecorded,
+}
+
+impl Retired {
+    const fn describe(self) -> &'static str {
+        match self {
+            Self::Superseded => "the superseded client certificate",
+            Self::Unrecorded => "the client certificate nothing here recorded",
+        }
+    }
 }
 
 impl EnrollEvent {
+    /// Whether this event leaves something for the operator to do about the
+    /// client certificate: reported in `enrollment.warnings` under `--json`.
+    pub(crate) const fn is_warning(&self) -> bool {
+        matches!(
+            self,
+            Self::CertificateNotRevoked { .. } | Self::PreviousCertificateUnidentified { .. }
+        )
+    }
+
     /// The progress line for this event, without a prefix: callers add the
     /// host name or `phux:` as their contract wants.
     pub(crate) fn describe(&self) -> String {
@@ -313,19 +362,30 @@ impl EnrollEvent {
             Self::DirectUnreachable { endpoint, reason } => {
                 format!("{endpoint} did not answer ({reason})")
             }
-            Self::CertificateEnrolled {
-                credential_id,
-                replaced,
-            } => {
-                let replaced = if *replaced {
-                    "; the previous one is revoked"
-                } else {
-                    ""
-                };
-                format!("enrolled workload client certificate {credential_id}{replaced}")
+            Self::CertificateEnrolled { credential_id } => {
+                format!("enrolled workload client certificate {credential_id}")
             }
             Self::CertificateNotEnrolled { reason } => format!(
-                "no workload client certificate enrolled ({reason}); direct dials present none until `phux host add` runs again"
+                "no workload client certificate enrolled ({reason}); dials keep the previous one, or present none, until `phux host add` runs again"
+            ),
+            Self::CertificateRenewalDue { detail } => {
+                format!("the workload client certificate {detail}; enrolling a new one")
+            }
+            Self::CertificateRevoked {
+                credential_id,
+                retired,
+            } => format!("revoked {} {credential_id}", retired.describe()),
+            Self::CertificateNotRevoked {
+                credential_id,
+                retired,
+                reason,
+                remedy,
+            } => format!(
+                "could not revoke {} {credential_id} ({reason}); it stays admitted until it expires or you run `{remedy}`",
+                retired.describe()
+            ),
+            Self::PreviousCertificateUnidentified { remedy } => format!(
+                "the entry named a client key without a readable certificate, so the credential it replaces cannot be named or revoked; find it with `{remedy}` and revoke it there"
             ),
         }
     }
@@ -422,24 +482,11 @@ impl ClientIdentityFiles {
     }
 
     /// Whether these are a pair `phux host add` enrolled for `name` in
-    /// `dir`: both directly in `dir` and named `<name>.client.<digest>` with
-    /// the extensions [`identity_stem`] gives them. Only such a pair is
-    /// removed when a re-enrollment supersedes it; a `client-cert` or
-    /// `client-key` the operator pointed at their own files is left alone.
+    /// `dir` (see [`is_enrolled_file`]).
+    #[cfg(test)]
     pub(crate) fn enrolled_under(&self, dir: &Path, name: &str) -> bool {
-        let prefix = format!("{name}.client.");
-        let is_ours = |path: &Path, extension: &str| {
-            path.parent() == Some(dir)
-                && path
-                    .file_name()
-                    .and_then(|file| file.to_str())
-                    .and_then(|file| file.strip_prefix(&prefix))
-                    .and_then(|rest| rest.strip_suffix(extension))
-                    .is_some_and(|digest| {
-                        !digest.is_empty() && digest.bytes().all(|b| b.is_ascii_hexdigit())
-                    })
-        };
-        is_ours(&self.certificate, ".pem") && is_ours(&self.private_key, ".key")
+        is_enrolled_file(&self.certificate, dir, name, CERT_EXTENSION)
+            && is_enrolled_file(&self.private_key, dir, name, KEY_EXTENSION)
     }
 
     /// Remove the two files, when this enrollment minted them and nothing
@@ -448,6 +495,144 @@ impl ClientIdentityFiles {
         if self.fresh {
             phux_server::workload::remove_identity_files(&self.private_key, &self.certificate);
         }
+    }
+
+    /// Why this identity should be replaced now, or `None` while it is good
+    /// for more than [`RENEW_WITHIN_SECONDS`].
+    pub(crate) fn renewal_due(&self, now: i64) -> Option<String> {
+        renewal_due(&self.certificate, now)
+    }
+}
+
+/// The extension of an enrolled certificate chain file.
+const CERT_EXTENSION: &str = ".pem";
+/// The extension of an enrolled private key file.
+const KEY_EXTENSION: &str = ".key";
+
+/// Whether `path` is a file `phux host add` enrolled for `name` in `dir`:
+/// directly in `dir` and named `<name>.client.<hex digest><extension>`, as
+/// [`identity_stem`] names them. Only such files are removed when a
+/// re-enrollment supersedes them; a `client-cert` or `client-key` the
+/// operator pointed at their own files is left alone.
+fn is_enrolled_file(path: &Path, dir: &Path, name: &str, extension: &str) -> bool {
+    let prefix = format!("{name}.client.");
+    path.parent() == Some(dir)
+        && path
+            .file_name()
+            .and_then(|file| file.to_str())
+            .and_then(|file| file.strip_prefix(&prefix))
+            .and_then(|rest| rest.strip_suffix(extension))
+            .is_some_and(|digest| {
+                !digest.is_empty() && digest.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+}
+
+/// How long before a client certificate stops admitting `phux host add`
+/// replaces it, dials warn, and `phux doctor` reports it: 14 days.
+pub(crate) const RENEW_WITHIN_SECONDS: i64 = 14 * SECONDS_PER_DAY;
+
+const SECONDS_PER_DAY: i64 = 24 * 60 * 60;
+
+/// When the far host stops admitting the client certificate at `cert`, as
+/// Unix seconds. The registry expiry is authoritative (workload-auth §7)
+/// and issuance rounds the certificate's `notAfter` up to the next midnight
+/// after it, so admission ends within the day before `notAfter`; this
+/// answers the start of that day. `None` when the file does not read as a
+/// certificate.
+pub(crate) fn admission_ends(cert: &Path) -> Option<i64> {
+    phux_server::workload::stored_certificate_expiry(cert)
+        .map(|not_after| not_after.saturating_sub(SECONDS_PER_DAY))
+}
+
+/// Why the client certificate at `cert` should be renewed at `now`
+/// (unreadable, expired, or within [`RENEW_WITHIN_SECONDS`]), in words that
+/// follow "the workload client certificate"; `None` while it is good.
+pub(crate) fn renewal_due(cert: &Path, now: i64) -> Option<String> {
+    let Some(ends) = admission_ends(cert) else {
+        return Some(format!("at {} cannot be read", cert.display()));
+    };
+    let remaining = ends.saturating_sub(now);
+    if remaining > RENEW_WITHIN_SECONDS {
+        return None;
+    }
+    let date = calendar_date(ends);
+    Some(if remaining <= 0 {
+        format!("expired on {date}")
+    } else {
+        let days = remaining / SECONDS_PER_DAY;
+        format!("expires on {date} (in {days} day(s))")
+    })
+}
+
+/// `YYYY-MM-DD` in UTC, or the raw seconds when out of range.
+pub(crate) fn calendar_date(seconds: i64) -> String {
+    chrono::DateTime::from_timestamp(seconds, 0).map_or_else(
+        || seconds.to_string(),
+        |at| at.format("%Y-%m-%d").to_string(),
+    )
+}
+
+/// The client identity files an entry names, whole or half, before a
+/// (re-)enrollment replaces them: what [`settle_identity`] retires once the
+/// entry names the new pair.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct HeldIdentity {
+    /// `client-cert`, when the entry names one.
+    pub(crate) certificate: Option<PathBuf>,
+    /// `client-key`, when the entry names one.
+    pub(crate) private_key: Option<PathBuf>,
+}
+
+impl HeldIdentity {
+    /// Both halves, as the pair a dial presents; `None` for half or none.
+    pub(crate) fn pair(&self) -> Option<ClientIdentityFiles> {
+        let certificate = self.certificate.as_deref()?;
+        let private_key = self.private_key.as_deref()?;
+        Some(ClientIdentityFiles::existing(certificate, private_key))
+    }
+
+    /// Whether the entry names neither half.
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.certificate.is_none() && self.private_key.is_none()
+    }
+
+    /// The far host's id for the held credential, read from a certificate
+    /// (public material): the one the entry names, else the enrolled
+    /// certificate beside an enrolled key the entry names alone. `None` when
+    /// neither reads: a key alone cannot name it without reading private
+    /// bytes.
+    pub(crate) fn credential_id(&self, dir: &Path, name: &str) -> Option<String> {
+        let read = phux_server::workload::stored_credential_id;
+        self.certificate.as_deref().and_then(read).or_else(|| {
+            self.enrolled_files(dir, name)
+                .iter()
+                .filter(|path| is_enrolled_file(path, dir, name, CERT_EXTENSION))
+                .find_map(|path| read(path))
+        })
+    }
+
+    /// The files an enrollment wrote for `name` under `dir` that this
+    /// identity names: each enrolled half, with the other half of its pair
+    /// beside it, since an entry that lost one half still left both files
+    /// on disk. Files the operator named themselves are never included.
+    fn enrolled_files(&self, dir: &Path, name: &str) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        for (path, extension) in [
+            (self.certificate.as_deref(), CERT_EXTENSION),
+            (self.private_key.as_deref(), KEY_EXTENSION),
+        ] {
+            let Some(path) = path.filter(|path| is_enrolled_file(path, dir, name, extension))
+            else {
+                continue;
+            };
+            for sibling in [CERT_EXTENSION, KEY_EXTENSION] {
+                let sibling = path.with_extension(sibling.trim_start_matches('.'));
+                if !files.contains(&sibling) {
+                    files.push(sibling);
+                }
+            }
+        }
+        files
     }
 }
 
@@ -469,6 +654,45 @@ pub(crate) struct EnrollOutcome {
     /// The workload client identity to register: freshly enrolled, the
     /// previous one kept, or none.
     pub(crate) identity: Option<ClientIdentityFiles>,
+    /// What happened to the workload client certificate, for the report.
+    pub(crate) certificate: CertificateStatus,
+}
+
+/// What an enrollment did about the workload client certificate: the
+/// `enrollment.status` of `phux host add --json` and `phux host renew
+/// --json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CertificateStatus {
+    /// A new certificate was enrolled.
+    Enrolled,
+    /// The previous certificate still works and is not due for renewal.
+    Kept,
+    /// Enrollment was tried and failed; the entry keeps the previous
+    /// certificate, or none.
+    Failed(String),
+    /// Nothing was tried: a satellite, `--ssh-only`, the manual form, or a
+    /// host with no direct route to present a certificate to.
+    Skipped,
+}
+
+impl CertificateStatus {
+    /// The stable `enrollment.status` string.
+    pub(crate) const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Enrolled => "enrolled",
+            Self::Kept => "kept",
+            Self::Failed(_) => "failed",
+            Self::Skipped => "skipped",
+        }
+    }
+
+    /// Why enrollment failed, when it did.
+    pub(crate) fn error(&self) -> Option<&str> {
+        match self {
+            Self::Failed(reason) => Some(reason),
+            Self::Enrolled | Self::Kept | Self::Skipped => None,
+        }
+    }
 }
 
 /// The shared middle of every ssh enrollment. Role-agnostic: nothing here
@@ -523,8 +747,14 @@ pub(crate) fn enroll_over_ssh(
     );
     // Only a host with a dialable route has anything to present a
     // certificate to.
-    let identity = if candidates.is_empty() {
-        req.previous_identity.cloned()
+    let (identity, certificate) = if candidates.is_empty() {
+        let kept = req.previous_identity.cloned();
+        let status = if kept.is_some() {
+            CertificateStatus::Kept
+        } else {
+            CertificateStatus::Skipped
+        };
+        (kept, status)
     } else {
         client_identity_for(req, reused, on_event)
     };
@@ -542,6 +772,7 @@ pub(crate) fn enroll_over_ssh(
         report,
         supervision,
         identity,
+        certificate,
     })
 }
 
@@ -600,49 +831,191 @@ pub(crate) const HOST_ADD_WORKLOAD_SCOPE: &str =
     "inventory,observe,create,bind,input,signal@global";
 
 /// The workload identity to register: the previous one when its bearer
-/// still worked (nothing was re-minted), otherwise a fresh enrollment that
-/// replaces it on the far host. A failed enrollment is a warning, never a
-/// failed `host add`: the host is paired either way, and the previous
-/// identity (if any) is kept.
+/// still worked (nothing was re-minted) and it is not due for renewal,
+/// otherwise a fresh enrollment. The previous credential stays live on the
+/// far host until [`settle_identity`] runs after the registry write. A
+/// failed enrollment is a warning, never a failed `host add`: the host is
+/// paired either way, and the previous identity (if any) is kept.
 fn client_identity_for(
     req: &EnrollRequest<'_>,
     reused: bool,
     on_event: &mut dyn FnMut(EnrollEvent),
-) -> Option<ClientIdentityFiles> {
+) -> (Option<ClientIdentityFiles>, CertificateStatus) {
     if reused && let Some(previous) = req.previous_identity {
-        return Some(previous.clone());
+        match previous.renewal_due(chrono::Utc::now().timestamp()) {
+            None => return (Some(previous.clone()), CertificateStatus::Kept),
+            Some(detail) => on_event(EnrollEvent::CertificateRenewalDue { detail }),
+        }
     }
-    let workload = req.workload.as_ref()?;
-    let replaces = req
-        .previous_identity
-        .and_then(|previous| previous.credential_id.clone());
-    match enroll_client_certificate(req.ssh_host, req.remote_phux, workload, replaces.as_deref()) {
-        Ok((identity, revoked_previous)) => {
+    let Some(workload) = req.workload.as_ref() else {
+        return (None, CertificateStatus::Skipped);
+    };
+    let far = FarHost {
+        ssh_host: req.ssh_host,
+        remote_phux: req.remote_phux,
+    };
+    match enroll_client_certificate(&far, workload, on_event) {
+        Ok(identity) => {
             on_event(EnrollEvent::CertificateEnrolled {
                 credential_id: identity.credential_id.clone().unwrap_or_default(),
-                replaced: revoked_previous,
             });
-            Some(identity)
+            (Some(identity), CertificateStatus::Enrolled)
         }
         Err(reason) => {
-            on_event(EnrollEvent::CertificateNotEnrolled { reason });
-            req.previous_identity.cloned()
+            on_event(EnrollEvent::CertificateNotEnrolled {
+                reason: reason.clone(),
+            });
+            (
+                req.previous_identity.cloned(),
+                CertificateStatus::Failed(reason),
+            )
         }
     }
 }
 
-/// Enroll a workload client certificate on `ssh_host` (ADR-0116): generate
-/// the key here, send only its CSR over ssh stdin to `phux workload add-key
-/// --cert-stdout`, validate the returned chain against the key, and store
-/// both owner-only under new names. `replaces` is revoked on the far host in
-/// the same registry write. Returns the identity and whether a predecessor
-/// was revoked.
-fn enroll_client_certificate(
-    ssh_host: &str,
-    remote_phux: &str,
+/// The far end of an enrollment: where ssh goes and which `phux` runs there.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FarHost<'a> {
+    pub(crate) ssh_host: &'a str,
+    pub(crate) remote_phux: &'a str,
+}
+
+impl FarHost<'_> {
+    /// The command an operator runs to revoke `credential_id` by hand.
+    fn revoke_command(&self, credential_id: &str) -> String {
+        format!(
+            "ssh {} {} workload revoke {credential_id}",
+            self.ssh_host, self.remote_phux
+        )
+    }
+
+    /// Revoke `credential_id` on the far host. A credential the host does
+    /// not hold is already not admitted, so that is not a failure. The id
+    /// is public (a hash of a public key); nothing secret enters argv.
+    fn revoke(&self, credential_id: &str) -> Result<(), String> {
+        let out = ssh_run(
+            self.ssh_host,
+            &[
+                self.remote_phux,
+                "workload",
+                "revoke",
+                credential_id,
+                "--json",
+            ],
+        )?;
+        if out.status.success() || out.stderr.contains(NO_SUCH_CREDENTIAL) {
+            return Ok(());
+        }
+        Err(out.failure_detail())
+    }
+
+    /// Revoke `credential_id`, narrating the result; `true` when it is no
+    /// longer admitted.
+    fn retire(
+        &self,
+        credential_id: &str,
+        retired: Retired,
+        on_event: &mut dyn FnMut(EnrollEvent),
+    ) -> bool {
+        let credential_id = credential_id.to_owned();
+        match self.revoke(&credential_id) {
+            Ok(()) => {
+                on_event(EnrollEvent::CertificateRevoked {
+                    credential_id,
+                    retired,
+                });
+                true
+            }
+            Err(reason) => {
+                on_event(EnrollEvent::CertificateNotRevoked {
+                    remedy: self.revoke_command(&credential_id),
+                    credential_id,
+                    retired,
+                    reason,
+                });
+                false
+            }
+        }
+    }
+}
+
+/// `phux workload revoke`'s refusal for an id its registry does not hold.
+const NO_SUCH_CREDENTIAL: &str = "no workload credential";
+
+/// What [`settle_identity`] did with the credential the new pair replaced.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Settlement {
+    /// The far-host id of the credential the entry named before, when it
+    /// could be read and differs from the new one.
+    pub(crate) previous_credential_id: Option<String>,
+    /// Whether that credential is revoked now; `None` when there was none
+    /// to revoke (or it could not be named).
+    pub(crate) previous_revoked: Option<bool>,
+}
+
+/// The second phase of a (re-)enrollment, run after the registry write.
+///
+/// When the entry now names `fresh` (`recorded`), the credential `held`
+/// named is revoked on the far host and the files an enrollment wrote for
+/// it are removed. When it does not, `fresh` is the orphan: its files are
+/// removed and its credential revoked, and the entry keeps what it held.
+/// Revoking only after the entry moved means no failure leaves the entry
+/// on a credential the far host already refused; the cost is a window,
+/// between the two ssh calls, in which both credentials of this one client
+/// are admitted.
+pub(crate) fn settle_identity(
+    far: &FarHost<'_>,
+    fresh: Option<&ClientIdentityFiles>,
+    recorded: bool,
+    held: &HeldIdentity,
     workload: &WorkloadEnrollment<'_>,
-    replaces: Option<&str>,
-) -> Result<(ClientIdentityFiles, bool), String> {
+    on_event: &mut dyn FnMut(EnrollEvent),
+) -> Settlement {
+    let Some(fresh) = fresh.filter(|identity| identity.fresh) else {
+        return Settlement::default();
+    };
+    if !recorded {
+        fresh.discard_if_fresh();
+        if let Some(id) = &fresh.credential_id {
+            far.retire(id, Retired::Unrecorded, on_event);
+        }
+        return Settlement::default();
+    }
+    let mut settlement = Settlement::default();
+    match held.credential_id(workload.dir, workload.name) {
+        Some(previous) if fresh.credential_id.as_deref() != Some(previous.as_str()) => {
+            let revoked = far.retire(&previous, Retired::Superseded, on_event);
+            settlement.previous_revoked = Some(revoked);
+            settlement.previous_credential_id = Some(previous);
+        }
+        Some(_) => {}
+        None if held.is_empty() => {}
+        None => on_event(EnrollEvent::PreviousCertificateUnidentified {
+            remedy: format!("ssh {} {} workload list", far.ssh_host, far.remote_phux),
+        }),
+    }
+    for path in held.enrolled_files(workload.dir, workload.name) {
+        if path != fresh.certificate && path != fresh.private_key {
+            phux_server::workload::remove_owned_file(&path);
+        }
+    }
+    settlement
+}
+
+/// Enroll a workload client certificate on the far host (ADR-0116):
+/// generate the key here, send only its CSR over ssh stdin to `phux
+/// workload add-key --cert-stdout`, validate the returned chain against the
+/// key, and store both owner-only under new names. Nothing is revoked here:
+/// the credential this one supersedes goes in [`settle_identity`], once the
+/// entry names the new pair. If the far host enrolled the key but a check
+/// or the store fails here, that new credential (whose key is then gone) is
+/// revoked before the error returns.
+pub(crate) fn enroll_client_certificate(
+    far: &FarHost<'_>,
+    workload: &WorkloadEnrollment<'_>,
+    on_event: &mut dyn FnMut(EnrollEvent),
+) -> Result<ClientIdentityFiles, String> {
+    let (ssh_host, remote_phux) = (far.ssh_host, far.remote_phux);
     // The name becomes a file name: refuse one the registry would refuse
     // before anything is written here or changed on the far host.
     if super::remote::validate_name(workload.name).as_deref() != Ok(workload.name) {
@@ -660,7 +1033,7 @@ fn enroll_client_certificate(
     }
     let request = ClientRequest::generate()
         .map_err(|err| format!("could not generate a client key: {err}"))?;
-    let mut argv = vec![
+    let argv = [
         remote_phux,
         "workload",
         "add-key",
@@ -669,9 +1042,6 @@ fn enroll_client_certificate(
         "--scope",
         HOST_ADD_WORKLOAD_SCOPE,
     ];
-    if let Some(replaces) = replaces {
-        argv.extend(["--replace", replaces]);
-    }
     let added = ssh_run_with_stdin(ssh_host, &argv, request.csr_pem().as_bytes())?;
     if !added.status.success() {
         return Err(format!(
@@ -679,7 +1049,22 @@ fn enroll_client_certificate(
             added.failure_detail()
         ));
     }
-    let reply = AddKeyReply::parse(&added.stdout)?;
+    accept_and_store(&request, &added.stdout, workload).inspect_err(|_| {
+        // The far host may hold a credential for a key that is gone now.
+        // Only this request's own id is revoked, never one the untrusted
+        // reply named.
+        far.retire(&request.credential_id(), Retired::Unrecorded, on_event);
+    })
+}
+
+/// The local half of [`enroll_client_certificate`]: check the reply, bind it
+/// to the key, and store both owner-only.
+fn accept_and_store(
+    request: &ClientRequest,
+    stdout: &str,
+    workload: &WorkloadEnrollment<'_>,
+) -> Result<ClientIdentityFiles, String> {
+    let reply = AddKeyReply::parse(stdout)?;
     if reply.credential_id != request.credential_id() {
         return Err("the host recorded a different credential than the key sent".to_owned());
     }
@@ -688,15 +1073,15 @@ fn enroll_client_certificate(
         .map_err(|err| err.to_string())?;
     let stem = identity_stem(workload.name, issued.credential_id());
     let files = ClientIdentityFiles {
-        certificate: workload.dir.join(format!("{stem}.pem")),
-        private_key: workload.dir.join(format!("{stem}.key")),
+        certificate: workload.dir.join(format!("{stem}{CERT_EXTENSION}")),
+        private_key: workload.dir.join(format!("{stem}{KEY_EXTENSION}")),
         credential_id: Some(issued.credential_id().to_owned()),
         fresh: true,
     };
     issued
         .store(&files.private_key, &files.certificate)
         .map_err(|err| format!("could not store the client identity: {err}"))?;
-    Ok((files, reply.replaced))
+    Ok(files)
 }
 
 /// `<name>.client.<first 16 hex digits of the credential id>`: one pair of
@@ -717,7 +1102,6 @@ fn identity_stem(name: &str, credential_id: &str) -> String {
 struct AddKeyReply {
     credential_id: String,
     certificate_chain: String,
-    replaced: bool,
 }
 
 impl AddKeyReply {
@@ -745,10 +1129,6 @@ impl AddKeyReply {
         Ok(Self {
             credential_id,
             certificate_chain: field("certificate_chain")?,
-            replaced: document
-                .get("replaced")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false),
         })
     }
 }
@@ -1218,10 +1598,141 @@ pub(crate) const fn default_quic_port() -> u16 {
 #[cfg(test)]
 mod tests {
     use super::{
-        AddKeyReply, ClientIdentityFiles, PairReport, authority, candidate_endpoints,
-        destination_host, identity_stem, parse_ssh_g_hostname, token_path, write_token,
+        AddKeyReply, CertificateStatus, ClientIdentityFiles, HeldIdentity, PairReport,
+        RENEW_WITHIN_SECONDS, admission_ends, authority, candidate_endpoints, destination_host,
+        identity_stem, parse_ssh_g_hostname, renewal_due, token_path, write_token,
     };
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+
+    /// A self-signed certificate valid until `days` from now (day
+    /// granularity), written as PEM to `path`.
+    fn certificate_until(path: &Path, days: i64) {
+        use chrono::Datelike as _;
+        let key = rcgen::KeyPair::generate().expect("key");
+        let mut params = rcgen::CertificateParams::new(vec!["client".to_owned()]).expect("params");
+        let at = chrono::Utc::now() + chrono::Duration::days(days);
+        let narrow = |value: u32| u8::try_from(value).expect("fits");
+        params.not_after = rcgen::date_time_ymd(at.year(), narrow(at.month()), narrow(at.day()));
+        let pem = params.self_signed(&key).expect("self-signed").pem();
+        std::fs::write(path, pem).expect("write certificate");
+    }
+
+    /// A certificate is due for renewal when admission ends within the
+    /// window, has ended, or cannot be read; admission is taken to end the
+    /// day before `notAfter`, where issuance rounds the registry expiry.
+    #[test]
+    fn renewal_is_due_inside_the_window_expired_or_unreadable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let now = chrono::Utc::now().timestamp();
+        let path = |name: &str| dir.path().join(name);
+        certificate_until(&path("long.pem"), 60);
+        certificate_until(&path("edge.pem"), 16);
+        certificate_until(&path("soon.pem"), 10);
+        certificate_until(&path("gone.pem"), -2);
+        std::fs::write(path("junk.pem"), "not a certificate").expect("junk");
+
+        assert_eq!(renewal_due(&path("long.pem"), now), None);
+        assert_eq!(
+            renewal_due(&path("edge.pem"), now),
+            None,
+            "16 days is outside"
+        );
+        let ends = admission_ends(&path("long.pem")).expect("reads");
+        assert!(
+            ends - now > 58 * 86_400 && ends - now < 60 * 86_400,
+            "{}",
+            ends - now
+        );
+        let soon = renewal_due(&path("soon.pem"), now).expect("inside the window");
+        assert!(soon.starts_with("expires on "), "{soon}");
+        assert!(soon.contains("day(s)"), "{soon}");
+        let gone = renewal_due(&path("gone.pem"), now).expect("expired");
+        assert!(gone.starts_with("expired on "), "{gone}");
+        for unreadable in ["junk.pem", "missing.pem"] {
+            let why = renewal_due(&path(unreadable), now).expect("unreadable");
+            assert!(why.contains("cannot be read"), "{why}");
+        }
+        assert!(
+            renewal_due(&path("long.pem"), now + 60 * 86_400 - RENEW_WITHIN_SECONDS).is_some(),
+            "the same certificate falls due as time passes"
+        );
+    }
+
+    /// The `enrollment.status` vocabulary is stable, and only a failure
+    /// carries an error.
+    #[test]
+    fn certificate_status_strings_are_stable() {
+        let failed = CertificateStatus::Failed("no phux".to_owned());
+        assert_eq!(failed.as_str(), "failed");
+        assert_eq!(failed.error(), Some("no phux"));
+        for (status, text) in [
+            (CertificateStatus::Enrolled, "enrolled"),
+            (CertificateStatus::Kept, "kept"),
+            (CertificateStatus::Skipped, "skipped"),
+        ] {
+            assert_eq!(status.as_str(), text);
+            assert_eq!(status.error(), None);
+        }
+    }
+
+    /// A half-named identity still names the credential it replaces when an
+    /// enrollment wrote it: from the certificate the entry names, or from
+    /// the enrolled certificate beside a lone enrolled key. Both files of
+    /// an enrolled pair are cleaned up; files the operator named are not.
+    #[test]
+    fn a_half_named_identity_is_retired_through_its_enrolled_pair() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stem = identity_stem("mini", ID);
+        let (cert, key) = (
+            dir.path().join(format!("{stem}.pem")),
+            dir.path().join(format!("{stem}.key")),
+        );
+        certificate_until(&cert, 30);
+        let id = phux_server::workload::stored_credential_id(&cert).expect("id");
+        let held = |certificate: Option<&PathBuf>, private_key: Option<&PathBuf>| HeldIdentity {
+            certificate: certificate.cloned(),
+            private_key: private_key.cloned(),
+        };
+        let both = vec![cert.clone(), key.clone()];
+
+        let whole = held(Some(&cert), Some(&key));
+        assert!(whole.pair().is_some());
+        assert_eq!(
+            whole.credential_id(dir.path(), "mini").as_deref(),
+            Some(id.as_str())
+        );
+        assert_eq!(whole.enrolled_files(dir.path(), "mini"), both);
+
+        let cert_only = held(Some(&cert), None);
+        assert!(cert_only.pair().is_none() && !cert_only.is_empty());
+        assert_eq!(
+            cert_only.credential_id(dir.path(), "mini").as_deref(),
+            Some(id.as_str())
+        );
+        assert_eq!(cert_only.enrolled_files(dir.path(), "mini"), both);
+
+        let key_only = held(None, Some(&key));
+        assert_eq!(
+            key_only.credential_id(dir.path(), "mini").as_deref(),
+            Some(id.as_str()),
+            "the enrolled certificate beside the key names it"
+        );
+        assert_eq!(key_only.enrolled_files(dir.path(), "mini"), both);
+        assert_eq!(
+            key_only.credential_id(dir.path(), "other"),
+            None,
+            "not ours"
+        );
+
+        std::fs::remove_file(&cert).expect("lose the certificate");
+        assert_eq!(key_only.credential_id(dir.path(), "mini"), None);
+
+        let theirs = dir.path().join("mine.key");
+        let operator = held(None, Some(&theirs));
+        assert_eq!(operator.credential_id(dir.path(), "mini"), None);
+        assert!(operator.enrolled_files(dir.path(), "mini").is_empty());
+        assert!(held(None, None).is_empty());
+    }
 
     const ID: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -1239,7 +1750,6 @@ mod tests {
         let pretty = serde_json::to_string_pretty(&doc).expect("json");
         let reply = AddKeyReply::parse(&format!("Welcome to box\n{pretty}\n")).expect("parse");
         assert_eq!(reply.credential_id, ID);
-        assert!(reply.replaced);
 
         let mut no_chain = doc.clone();
         no_chain

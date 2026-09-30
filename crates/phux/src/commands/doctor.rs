@@ -104,6 +104,7 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
         check_remote_cert(),
         check_token_store(),
         check_workload_authority(),
+        check_client_certs(),
         check_remote_listeners(&socket_path),
         check_remote_reachable(&socket_path),
         check_logs(),
@@ -641,6 +642,79 @@ fn workload_authority_check(ca_cert: &std::path::Path, registry: &std::path::Pat
                 registry.display()
             ),
             "a running server admits no workload credential until the registry loads; restore it (owner-only, mode 0600) or re-enroll with `phux workload add-key`",
+        ),
+    }
+}
+
+/// Are the workload client certificates `phux host add` enrolled for this
+/// machine's remotes good for a while yet (ADR-0116)? Reads only the public
+/// certificates the `[[remote]]` entries name, never a key.
+fn check_client_certs() -> Check {
+    match crate::commands::remote::load_registry() {
+        Ok(entries) => client_certs_check(&entries, chrono::Utc::now().timestamp()),
+        Err(err) => Check::warn(
+            "client-certs",
+            format!("could not read the remote registry ({err})"),
+            "fix the config (`phux config check`), then rerun `phux doctor`",
+        ),
+    }
+}
+
+/// The pure half of [`check_client_certs`]: a remote naming half an
+/// identity, or a certificate that is unreadable, expired, or within the
+/// renewal window, warns with the command that fixes it.
+fn client_certs_check(entries: &[crate::commands::remote::RemoteEntry], now: i64) -> Check {
+    use crate::commands::enroll::{admission_ends, calendar_date, renewal_due};
+    let mut due = Vec::new();
+    let mut soonest: Option<i64> = None;
+    let mut enrolled = 0_usize;
+    for entry in entries {
+        let name = &entry.name;
+        match (entry.client_cert.as_deref(), entry.client_key.as_deref()) {
+            (None, None) => {}
+            (Some(cert), Some(_)) => {
+                enrolled += 1;
+                if let Some(detail) = renewal_due(cert, now) {
+                    due.push((
+                        format!("{name}: {detail}"),
+                        format!("phux host renew {name}"),
+                    ));
+                } else if let Some(ends) = admission_ends(cert) {
+                    soonest = Some(soonest.map_or(ends, |soonest| soonest.min(ends)));
+                }
+            }
+            _ => due.push((
+                format!("{name}: names only one of client-cert and client-key"),
+                format!("phux host add {}", entry.ssh_destination()),
+            )),
+        }
+    }
+    if !due.is_empty() {
+        let (details, remedies): (Vec<_>, Vec<_>) = due.into_iter().unzip();
+        return Check::warn(
+            "client-certs",
+            format!("workload client certificate: {}", details.join("; ")),
+            format!(
+                "run `{}`; a paired server refuses an expired certificate",
+                remedies.join("`, `")
+            ),
+        );
+    }
+    match soonest {
+        None if enrolled == 0 => Check::pass(
+            "client-certs",
+            "no remote presents an enrolled workload client certificate",
+        ),
+        None => Check::pass(
+            "client-certs",
+            format!("{enrolled} remote(s) present a workload client certificate"),
+        ),
+        Some(ends) => Check::pass(
+            "client-certs",
+            format!(
+                "{enrolled} remote(s) present a workload client certificate; the first expires {}",
+                calendar_date(ends)
+            ),
         ),
     }
 }
@@ -1896,5 +1970,85 @@ mod tests {
             Reconcile::Current,
             "reconcile still wants to converge on the exact current throttle value"
         );
+    }
+
+    /// A self-signed certificate whose `notAfter` is `days` from now, as
+    /// PEM in `dir`; the doctor reads only its validity.
+    fn cert_expiring_in(dir: &std::path::Path, file: &str, days: i64) -> PathBuf {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["client".to_owned()]).unwrap();
+        let at = chrono::Utc::now() + chrono::Duration::days(days);
+        params.not_after = rcgen::date_time_ymd(
+            chrono::Datelike::year(&at),
+            u8::try_from(chrono::Datelike::month(&at)).unwrap(),
+            u8::try_from(chrono::Datelike::day(&at)).unwrap(),
+        );
+        let path = dir.join(file);
+        std::fs::write(&path, params.self_signed(&key).unwrap().pem()).unwrap();
+        path
+    }
+
+    fn remote(
+        name: &str,
+        cert: Option<PathBuf>,
+        key: Option<&str>,
+    ) -> crate::commands::remote::RemoteEntry {
+        crate::commands::remote::RemoteEntry {
+            index: 0,
+            name: name.to_owned(),
+            endpoint: format!("quic://{name}:8788"),
+            token_file: None,
+            cert_fingerprint: None,
+            session: None,
+            ssh: Some(format!("me@{name}")),
+            direct: None,
+            client_cert: cert,
+            client_key: key.map(PathBuf::from),
+        }
+    }
+
+    /// Client certificates pass while good for more than the renewal
+    /// window, and one inside it, expired, unreadable, or half-named warns
+    /// with the command that fixes that remote.
+    #[test]
+    fn client_certificates_due_for_renewal_warn_with_the_remedy() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let fresh = cert_expiring_in(dir.path(), "fresh.pem", 80);
+        let soon = cert_expiring_in(dir.path(), "soon.pem", 5);
+        let gone = cert_expiring_in(dir.path(), "gone.pem", -3);
+
+        let none = client_certs_check(&[remote("bare", None, None)], now);
+        assert_eq!(none.status, Status::Pass, "{none:?}");
+
+        let good = client_certs_check(&[remote("mini", Some(fresh.clone()), Some("/k"))], now);
+        assert_eq!(good.status, Status::Pass, "{good:?}");
+        assert!(good.detail.contains("first expires"), "{good:?}");
+
+        let due = client_certs_check(
+            &[
+                remote("mini", Some(fresh), Some("/k")),
+                remote("soon", Some(soon), Some("/k")),
+                remote("gone", Some(gone), Some("/k")),
+                remote("lost", Some(dir.path().join("missing.pem")), Some("/k")),
+                remote("half", None, Some("/k")),
+            ],
+            now,
+        );
+        assert_eq!(due.status, Status::Warn, "{due:?}");
+        assert!(due.detail.contains("soon: expires on"), "{due:?}");
+        assert!(due.detail.contains("gone: expired on"), "{due:?}");
+        assert!(due.detail.contains("lost: at"), "{due:?}");
+        assert!(due.detail.contains("half: names only one"), "{due:?}");
+        assert!(!due.detail.contains("mini"), "{due:?}");
+        let hint = due.hint.unwrap_or_default();
+        for remedy in [
+            "phux host renew soon",
+            "phux host renew gone",
+            "phux host renew lost",
+            "phux host add me@half",
+        ] {
+            assert!(hint.contains(remedy), "{hint}");
+        }
     }
 }

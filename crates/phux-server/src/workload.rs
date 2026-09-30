@@ -14,7 +14,10 @@ mod material;
 mod reload;
 mod store;
 
-pub use client::{ClientRequest, IssuedIdentity, remove_identity_files, stored_credential_id};
+pub use client::{
+    ClientRequest, IssuedIdentity, remove_identity_files, remove_owned_file,
+    stored_certificate_expiry, stored_credential_id,
+};
 
 pub use material::{ClientMaterial, MAX_MATERIAL_BYTES, MaterialError};
 pub use phux_protocol::scope::ScopeGrammarError;

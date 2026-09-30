@@ -193,9 +193,16 @@ impl IssuedIdentity {
 /// already gone.
 pub fn remove_identity_files(key_path: &Path, cert_path: &Path) {
     for path in [key_path, cert_path] {
-        if store::is_owned_regular_file(path) {
-            let _ = std::fs::remove_file(path);
-        }
+        remove_owned_file(path);
+    }
+}
+
+/// Remove one half of a stored client identity, best effort, on the same
+/// terms as [`remove_identity_files`]: an entry that named only one half
+/// leaves only one file to remove.
+pub fn remove_owned_file(path: &Path) {
+    if store::is_owned_regular_file(path) {
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -210,6 +217,20 @@ pub fn stored_credential_id(cert_path: &Path) -> Option<String> {
     super::subject_public_key_info(leaf.as_ref())
         .ok()
         .map(|key| credential_id(&key))
+}
+
+/// When the stored client certificate at `cert_path` stops being valid, as
+/// Unix seconds (its leaf's `notAfter`).
+///
+/// `None` when the file is missing or its first PEM section is not a
+/// readable certificate. Public material: it is how a client knows its
+/// enrollment is due for renewal.
+#[must_use]
+pub fn stored_certificate_expiry(cert_path: &Path) -> Option<i64> {
+    let bytes = std::fs::read(cert_path).ok()?;
+    let leaf = CertificateDer::pem_slice_iter(&bytes).next()?.ok()?;
+    let (_, parsed) = x509_parser::parse_x509_certificate(leaf.as_ref()).ok()?;
+    Some(parsed.validity().not_after.timestamp())
 }
 
 const fn mismatch(reason: &'static str) -> WorkloadError {

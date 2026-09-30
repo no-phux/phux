@@ -1327,6 +1327,7 @@ Commands:
   ls       List registered machines from both registries. [aliases: list]
   rename   Rename a registered machine without changing its route or
            credentials.
+  renew    Renew a remote's workload client certificate over ssh.
   rm       Remove a registered machine. Its token file is left in place.
            [aliases: remove]
   show     Show a registered machine, including its route and credential
@@ -1508,6 +1509,35 @@ Flags:
 
 Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux host renew`
+
+```text
+Renew a remote's workload client certificate over ssh.
+
+Enrolls a fresh certificate the way `phux host add` does (the key is generated
+here; only its CSR crosses ssh), records it in the entry, and only then revokes
+the one it replaces on the far host. Nothing else about the entry changes: no
+re-pairing, no service install. Certificates are issued for 90 days; dials warn
+and `phux doctor` reports one within 14 days of expiry.
+
+Usage: phux host renew [--remote-phux <PATH>] [--json] <NAME>
+
+Arguments:
+  <NAME>  Registered remote name.
+
+Flags:
+      --remote-phux <PATH>  The `phux` to run on the host, for when a
+                            non-interactive ssh shell's `PATH` does not find it.
+                            (default: phux)
+      --json                Emit stable, versioned JSON on stdout instead of the
+                            human view. On failure, stdout stays empty and
+                            stderr carries one JSON error object.
+  -h, --help                Print help
+
+Global flags:
+      --socket <PATH>       Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux host rm`
