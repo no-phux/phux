@@ -466,45 +466,10 @@ async fn drive(
     selector: &phux_client::selector::Selector,
     socket_path: &Path,
 ) -> ExitCode {
-    let terminal = match resolve_target(socket_path, selector, "agent start", req.json).await {
-        Ok(id) => id,
+    let (terminal, mut conn) = match open_target(req, plan, selector, socket_path).await {
+        Ok(opened) => opened,
         Err(code) => return code,
     };
-    // APPLY_INPUT is local-only and `phux.agent/v1` does not federate.
-    if !matches!(terminal, ResourceId::Local { .. }) {
-        return emit(
-            req.json,
-            &Refusal::new(
-                json_err::codes::SATELLITE_TARGET,
-                format!(
-                    "{} is a satellite pane; acknowledged input and agent metadata are \
-                     hub-local",
-                    phux_client::selector::format_terminal_id(&terminal)
-                ),
-                "run `phux agent start` against the satellite's own server",
-                EXIT_USAGE,
-            ),
-        );
-    }
-
-    if let Err(refusal) = check_preconditions(req, plan, &terminal, socket_path).await {
-        return emit(req.json, &refusal);
-    }
-
-    let mut conn = match Connection::connect(socket_path).await {
-        Ok(conn) => conn,
-        Err(err) => return json_err::report_no_server(req.json, &err, socket_path, "agent start"),
-    };
-    if let Err(refusal) = acknowledged_input_available(&conn) {
-        return emit(req.json, &refusal);
-    }
-    match recheck_occupant(&mut conn, &terminal).await {
-        Ok(()) => {}
-        Err(Ok(refusal)) => return emit(req.json, &refusal),
-        Err(Err(err)) => {
-            return json_err::report_no_server(req.json, &err, socket_path, "agent start");
-        }
-    }
 
     // Bind the name only, never `kind`: the server fills `kind` only when the
     // record has none, so the readiness check compares against the detector's
@@ -519,24 +484,94 @@ async fn drive(
     }
 
     let started = Instant::now();
-    let events = submit_events(&plan.line);
-    let operation_id = new_operation_id();
-    if let Err(failure) = apply_input(&mut conn, &terminal, operation_id, events).await {
-        // Roll the name back only when provably nothing was typed; otherwise a
-        // running agent would be left without a handle.
-        if failure.wrote_nothing {
-            rollback_bind(&mut conn, &terminal, &bound_bytes).await;
-        }
-        return emit(req.json, &failure.refusal);
+    if let Err(refusal) = submit_line(plan, &mut conn, &terminal, &bound_bytes).await {
+        return emit(req.json, &refusal);
     }
-
     if req.no_wait {
         return report_submitted(req, plan, &terminal);
     }
+    await_ready(req, plan, &terminal, socket_path, started).await
+}
 
+/// Resolve the target pane and open the connection that will type into it,
+/// refusing (as an emitted exit code) a satellite pane, a failed
+/// precondition, a server without acknowledged input, or an occupied pane.
+#[allow(
+    clippy::future_not_send,
+    reason = "same current-thread CLI future as `drive`"
+)]
+async fn open_target(
+    req: &StartRequest<'_>,
+    plan: &Plan,
+    selector: &phux_client::selector::Selector,
+    socket_path: &Path,
+) -> Result<(ResourceId, Connection), ExitCode> {
+    let terminal = resolve_target(socket_path, selector, "agent start", req.json).await?;
+    // APPLY_INPUT is local-only and `phux.agent/v1` does not federate.
+    if !matches!(terminal, ResourceId::Local { .. }) {
+        return Err(emit(req.json, &satellite_refusal(&terminal)));
+    }
+    check_preconditions(req, plan, &terminal, socket_path)
+        .await
+        .map_err(|refusal| emit(req.json, &refusal))?;
+
+    let no_server = |err| json_err::report_no_server(req.json, &err, socket_path, "agent start");
+    let mut conn = Connection::connect(socket_path).await.map_err(no_server)?;
+    acknowledged_input_available(&conn).map_err(|refusal| emit(req.json, &refusal))?;
+    match recheck_occupant(&mut conn, &terminal).await {
+        Ok(()) => Ok((terminal, conn)),
+        Err(Ok(refusal)) => Err(emit(req.json, &refusal)),
+        Err(Err(err)) => Err(no_server(err)),
+    }
+}
+
+fn satellite_refusal(terminal: &ResourceId) -> Refusal {
+    Refusal::new(
+        json_err::codes::SATELLITE_TARGET,
+        format!(
+            "{} is a satellite pane; acknowledged input and agent metadata are hub-local",
+            phux_client::selector::format_terminal_id(terminal)
+        ),
+        "run `phux agent start` against the satellite's own server",
+        EXIT_USAGE,
+    )
+}
+
+/// Type the launch line with acknowledged input. On failure the name bind
+/// is rolled back only when provably nothing was typed; otherwise a running
+/// agent would be left without a handle.
+async fn submit_line(
+    plan: &Plan,
+    conn: &mut Connection,
+    terminal: &ResourceId,
+    bound_bytes: &[u8],
+) -> Result<(), Refusal> {
+    let events = submit_events(&plan.line);
+    let operation_id = new_operation_id();
+    let Err(failure) = apply_input(conn, terminal, operation_id, events).await else {
+        return Ok(());
+    };
+    if failure.wrote_nothing {
+        rollback_bind(conn, terminal, bound_bytes).await;
+    }
+    Err(failure.refusal)
+}
+
+/// Wait for the agent to reach a ready state and report the outcome.
+#[allow(
+    clippy::future_not_send,
+    reason = "inherited from `wait_for_agent_state`; see `drive`"
+)]
+async fn await_ready(
+    req: &StartRequest<'_>,
+    plan: &Plan,
+    terminal: &ResourceId,
+    socket_path: &Path,
+    started: Instant,
+) -> ExitCode {
     let outcome = wait_for_agent_state(
         socket_path,
-        &terminal,
+        terminal,
         READY_STATES,
         Some(plan.timeout),
         POLL_INTERVAL,
@@ -545,10 +580,10 @@ async fn drive(
     let latency = started.elapsed();
     match outcome {
         Ok(result) if result.satisfied() => {
-            report_ready(req, plan, &terminal, &result, latency, socket_path).await
+            report_ready(req, plan, terminal, &result, latency, socket_path).await
         }
-        Ok(result) => report_timeout(req, plan, &terminal, &result),
-        Err(err) => emit(req.json, &wait_refusal(&terminal, err)),
+        Ok(result) => report_timeout(req, plan, terminal, &result),
+        Err(err) => emit(req.json, &wait_refusal(terminal, err)),
     }
 }
 
