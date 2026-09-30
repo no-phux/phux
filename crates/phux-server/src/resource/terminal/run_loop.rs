@@ -660,29 +660,20 @@ impl TerminalActor {
     /// A lone chunk is copy-free; the drain stops at the chunk cap, EOF, or
     /// before a chunk that would cross `MAX_PTY_COALESCE_BYTES`.
     fn coalesce_pty_burst(&mut self, first: Bytes) -> PtyBurst {
-        let mut coalesced: Vec<u8> = Vec::new();
+        let mut queued = std::mem::take(&mut self.pty_burst);
+        let mut total = first.len();
         let mut saw_eof = false;
         let mut hit_byte_cap = false;
-        let mut chunks: u64 = 1;
         for _ in 0..MAX_PTY_COALESCE {
             // The first chunk always lands; only coalescing is capped.
-            let current_len = if coalesced.is_empty() {
-                first.len()
-            } else {
-                coalesced.len()
-            };
-            if current_len >= MAX_PTY_COALESCE_BYTES {
+            if total >= MAX_PTY_COALESCE_BYTES {
                 hit_byte_cap = true;
                 break;
             }
             match self.pty_rx.as_mut().map(mpsc::Receiver::try_recv) {
                 Some(Ok(PtyEvent::Bytes { chunk: more, .. })) => {
-                    if coalesced.is_empty() {
-                        coalesced.reserve(first.len() + more.len());
-                        coalesced.extend_from_slice(&first);
-                    }
-                    coalesced.extend_from_slice(&more);
-                    chunks += 1;
+                    total += more.len();
+                    queued.push(more);
                 }
                 // Flush coalesced bytes, then handle EOF.
                 Some(Ok(PtyEvent::Eof)) => {
@@ -693,13 +684,10 @@ impl TerminalActor {
                 _ => break,
             }
         }
-        // A lone chunk moves through as-is; bursts (every burst on macOS,
-        // where reads cap at 1 KiB) join into one buffer.
-        let payload: Bytes = if coalesced.is_empty() {
-            first
-        } else {
-            Bytes::from(coalesced)
-        };
+        let chunks = 1 + queued.len() as u64;
+        let payload = join_pty_burst(first, &queued, total);
+        queued.clear();
+        self.pty_burst = queued;
         PtyBurst {
             payload,
             chunks,
@@ -1184,6 +1172,23 @@ fn record_pending_ref(
     }
 }
 
+/// Join one burst into a single payload. A lone chunk moves through as-is;
+/// a burst (every burst on macOS, where reads cap at 1 KiB) is copied once
+/// into a buffer sized to exactly `total` bytes, so there is no regrowth and
+/// the broadcast ring retains no spare capacity.
+fn join_pty_burst(first: Bytes, rest: &[Bytes], total: usize) -> Bytes {
+    if rest.is_empty() {
+        return first;
+    }
+    let mut joined = Vec::with_capacity(total);
+    joined.extend_from_slice(&first);
+    for chunk in rest {
+        joined.extend_from_slice(chunk);
+    }
+    debug_assert_eq!(joined.len(), total, "burst total was exact");
+    Bytes::from(joined)
+}
+
 /// A `MissedTickBehavior::Delay` interval with its immediate first tick
 /// consumed. `Delay` spaces late ticks instead of bursting to catch up.
 async fn armed_interval(period: std::time::Duration) -> tokio::time::Interval {
@@ -1224,6 +1229,24 @@ mod tick_rearm_tests {
             "re-arming a long-disarmed tick must yield one catch-up tick, not one per \
              missed period",
         );
+    }
+}
+
+#[cfg(test)]
+mod pty_burst_tests {
+    use super::{Bytes, join_pty_burst};
+
+    /// A lone chunk is forwarded without a copy; a burst joins in order into
+    /// one buffer.
+    #[test]
+    fn a_burst_joins_in_order_and_a_lone_chunk_is_not_copied() {
+        let first = Bytes::from_static(b"abc");
+        let lone = join_pty_burst(first.clone(), &[], first.len());
+        assert_eq!(lone.as_ptr(), first.as_ptr(), "a lone chunk moves through");
+
+        let rest = [Bytes::from_static(b"de"), Bytes::from_static(b"fghi")];
+        let joined = join_pty_burst(first, &rest, 9);
+        assert_eq!(&joined[..], b"abcdefghi");
     }
 }
 

@@ -242,6 +242,7 @@ impl TerminalActor {
             // latency and lose byte-exact styling. Tests opt in.
             consumer_tick_emits: false,
             pty_rx,
+            pty_burst: Vec::new(),
             pty_tx,
             pty,
             event_sink: None,
