@@ -18,7 +18,9 @@
 //!   actor's tick runs it, after `dirty=N` rows changed in place, or after
 //!   `scroll`: one new line at the bottom, which shifts every row and moves
 //!   the viewport, so libghostty reports a full redraw and the tick renders
-//!   every row (the incremental tick's fallback).
+//!   every row (the incremental tick's fallback). `dirty=1+detect` also
+//!   runs the agent detector's viewport read (`screen_state`, phux-69pq.14)
+//!   between the write and the tick, which must leave the tick incremental.
 //! - `wire`: the server writer encoding one `RESOURCE_OUTPUT` per consumer
 //!   into its reused batch buffer, then one client framing that frame off
 //!   its socket buffer and decoding it (`split_frame` + `freeze` +
@@ -37,7 +39,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::hint::black_box;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 use criterion::{BenchmarkId, Criterion, Throughput};
@@ -108,6 +110,9 @@ enum Change {
     Rows(u16),
     /// One line is appended at the bottom, scrolling every row.
     Scroll,
+    /// The first `n` rows are rewritten, then the agent detector reads the
+    /// viewport before the tick.
+    Detect(u16),
 }
 
 impl std::fmt::Display for Change {
@@ -115,17 +120,20 @@ impl std::fmt::Display for Change {
         match self {
             Self::Rows(n) => write!(f, "dirty={n}"),
             Self::Scroll => f.write_str("scroll"),
+            Self::Detect(n) => write!(f, "dirty={n}+detect"),
         }
     }
 }
 
-/// Change cases for a geometry: one row, a quarter, every row, a scroll.
-fn changes(rows: u16) -> [Change; 4] {
+/// Change cases for a geometry: one row, a quarter, every row, a scroll,
+/// and one row followed by the agent detector's read.
+fn changes(rows: u16) -> [Change; 5] {
     [
         Change::Rows(1),
         Change::Rows((rows / 4).max(1)),
         Change::Rows(rows),
         Change::Scroll,
+        Change::Detect(1),
     ]
 }
 
@@ -169,6 +177,15 @@ impl Grid {
         match change {
             Change::Rows(n) => self.dirty(n),
             Change::Scroll => self.scroll(),
+            Change::Detect(n) => {
+                self.dirty(n);
+                // The detector's `viewport_lines` read, as the actor runs it.
+                black_box(
+                    self.synth
+                        .screen_state(&self.terminal, 0)
+                        .expect("detect read"),
+                );
+            }
         }
     }
 
@@ -282,14 +299,23 @@ fn criterion_state_sync(c: &mut Criterion) {
                 let case = match change {
                     Change::Rows(n) => format!("dirty{n}"),
                     Change::Scroll => "scroll".to_owned(),
+                    Change::Detect(n) => format!("dirty{n}-detect"),
                 };
                 group.throughput(Throughput::Elements(1));
                 group.bench_function(
                     BenchmarkId::new(format!("{}x{}-{case}", geometry.0, geometry.1), consumers),
                     |b| {
-                        b.iter(|| {
-                            grid.change(change);
-                            black_box(grid.tick())
+                        // Time the tick only: the change (and the detector's
+                        // read) is setup, so cases compare tick cost alone.
+                        b.iter_custom(|iters| {
+                            let mut spent = Duration::ZERO;
+                            for _ in 0..iters {
+                                grid.change(change);
+                                let start = Instant::now();
+                                black_box(grid.tick());
+                                spent += start.elapsed();
+                            }
+                            spent
                         });
                     },
                 );

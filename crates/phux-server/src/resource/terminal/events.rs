@@ -105,12 +105,13 @@ impl TerminalActor {
     }
 
     /// Right-trimmed live-viewport rows: the detector's only grid read.
-    /// Uses the fresh-render-state projection, which drains the terminal's
-    /// dirty bits; the synthesizer marks the tick's pool for a rebuild.
+    /// Reads through the state-sync tick's pooled render state without
+    /// clearing its dirty flags, so an agent pane's next tick stays
+    /// incremental (phux-69pq.14).
     pub(super) fn viewport_lines(&self) -> Option<Vec<String>> {
         let canonical = self.terminal.borrow();
         let terminal = canonical.try_terminal()?;
-        let synth = self.synth.borrow();
+        let mut synth = self.synth.borrow_mut();
         match synth.screen_state_with_scrollback(terminal, 0, None, false) {
             Ok(state) => Some(state.lines),
             Err(err) => {

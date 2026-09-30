@@ -278,7 +278,7 @@ fn client_frame(case: &Case) -> RenderedFrame {
 /// Projection 2: the server's sparse `ScreenState` (`snapshot --cells`).
 fn server_state(case: &Case) -> ScreenState {
     let term = fed_terminal(case);
-    let synth = SnapshotSynthesizer::new().expect("snapshot synthesizer");
+    let mut synth = SnapshotSynthesizer::new().expect("snapshot synthesizer");
     synth
         .screen_state_with_scrollback(&term, 0, None, true)
         .expect("screen_state_with_scrollback")

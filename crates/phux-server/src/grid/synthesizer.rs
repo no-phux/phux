@@ -319,7 +319,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     /// Project the viewport into a structured [`ScreenState`] (ADR-0022 §2)
     /// for agents: text rows and cursor, no VT bytes, no side effects.
     pub fn screen_state(
-        &self,
+        &mut self,
         terminal: &GhosttyTerminal<'alloc, '_>,
         pane: u32,
     ) -> Result<ScreenState, SynthesisError> {
@@ -334,10 +334,11 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     /// With `cells`, also collects a sparse [`ScreenState::cells`] of
     /// non-default-style or OSC-133-marked cells (see `collect_cell`).
     ///
-    /// Reads through a fresh render state (see `project_viewport`), so it
-    /// marks the tick's pool for a rebuild.
+    /// Reads through the tick's pooled render state without clearing its
+    /// dirty flags (see `project_viewport`), so the next tick stays
+    /// incremental.
     pub fn screen_state_with_scrollback(
-        &self,
+        &mut self,
         terminal: &GhosttyTerminal<'alloc, '_>,
         pane: u32,
         scrollback: Option<u32>,
@@ -351,8 +352,7 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         };
 
         let title = pane_title(terminal);
-        self.note_foreign_walk();
-        let view = Self::project_viewport(terminal, cells)?;
+        let view = self.project_viewport(terminal, cells)?;
 
         Ok(ScreenState {
             schema_version: SCHEMA_VERSION,
@@ -493,14 +493,23 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
     /// Walk the live viewport into the projection
     /// [`Self::screen_state_with_scrollback`] reports.
     ///
-    /// Uses a fresh render state, not the pool: after a resize raced a
-    /// snapshot, the pooled cache could keep serving pre-write rows.
+    /// Walks the tick's pool, which is a correct live copy: it rebuilds on a
+    /// geometry change or after a foreign walk ([`Self::pool_walk_generation`]).
+    /// It clears no dirty flag, row or global, so what the walk pulled from
+    /// the terminal is still pending for the next [`Self::prepare_tick`]
+    /// (phux-69pq.14: the agent detector's periodic scan no longer turns
+    /// the next tick into a full render).
     fn project_viewport(
+        &mut self,
         terminal: &GhosttyTerminal<'alloc, '_>,
         cells: bool,
     ) -> Result<ViewportProjection, SynthesisError> {
-        let (mut render_state, mut rows_pool, mut cells_pool) = fresh_render_trio()?;
-        let snapshot = render_state.update(terminal)?;
+        let generation = self.pool_walk_generation();
+        let RenderWalk {
+            snapshot,
+            rows: rows_pool,
+            cells: cells_pool,
+        } = self.pool.begin(terminal, generation)?;
         let (cols, rows_n) = grid_dims(&snapshot)?;
 
         let cursor = snapshot.cursor_viewport()?.map(|c| CursorState {
@@ -517,12 +526,12 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         // Soft-wrap bits (ADR-0077 §2), always reported so a consumer can
         // tell "nothing wraps" from "older server".
         let mut wrapped_lines: Vec<u32> = Vec::new();
-        walk_viewport_rows(&mut rows_pool, &snapshot, rows_n, |row_index, row| {
+        walk_viewport_rows(rows_pool, &snapshot, rows_n, |row_index, row| {
             if viewport_row_is_wrapped(row)? {
                 wrapped_lines.push(u32::from(row_index));
             }
             lines.push(project_row_text(
-                &mut cells_pool,
+                cells_pool,
                 row,
                 cols,
                 row_index,
@@ -623,7 +632,20 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         &mut self,
         terminal: &GhosttyTerminal<'alloc, '_>,
     ) -> Result<Snapshot<'alloc, '_>, SynthesisError> {
-        Ok(self.pool.begin(terminal, self.pool_generation)?.snapshot)
+        let generation = self.pool_walk_generation();
+        Ok(self.pool.begin(terminal, generation)?.snapshot)
+    }
+
+    /// The generation every pooled walk passes to [`RenderPool::begin`],
+    /// bumped first (forcing a rebuild) if a foreign walk drained the
+    /// terminal's dirty bits since the last pooled walk. Every pooled reader
+    /// goes through here so none serves stale rows; only
+    /// [`Self::prepare_tick`] clears the dirty flags a walk accumulates.
+    const fn pool_walk_generation(&mut self) -> TerminalGeneration {
+        if self.foreign_walk.replace(false) {
+            self.pool_generation = self.pool_generation.wrapping_add(1);
+        }
+        self.pool_generation
     }
 
     /// Render the grid once per tick into the shared `tick_*` buffers and
@@ -648,14 +670,12 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
             rendered_rows = tracing::field::Empty,
         )
         .entered();
-        if self.foreign_walk.replace(false) {
-            self.pool_generation = self.pool_generation.wrapping_add(1);
-        }
+        let generation = self.pool_walk_generation();
         let RenderWalk {
             snapshot,
             rows,
             cells,
-        } = self.pool.begin(terminal, self.pool_generation)?;
+        } = self.pool.begin(terminal, generation)?;
         let (cols, rows_n) = grid_dims(&snapshot)?;
         let dirty = snapshot.dirty()?;
         let rows_usize = usize::from(rows_n);
@@ -1728,7 +1748,7 @@ mod tests {
         // that consumes the terminal's per-row dirty bits.
         term.resize(10, 4, 0, 0).expect("resize");
         term.vt_write(b"\x1b[1;1HZZ");
-        let _ = synth.screen_state(&term, 0).expect("fresh walk");
+        let _ = synth.synthesize(&term).expect("fresh walk");
 
         let (c1, r1, _) = synth.prepare_tick(&term).expect("tick1");
         assert_eq!((c1, r1), (10, 4), "second tick must observe the new dims");
@@ -1777,7 +1797,7 @@ mod tests {
         assert_eq!(render_grid(&client), render_grid(&source));
 
         // History matches, row for row, with nothing dropped.
-        let sb_synth = SnapshotSynthesizer::new().expect("synth2");
+        let mut sb_synth = SnapshotSynthesizer::new().expect("synth2");
         let source_hist = sb_synth
             .screen_state_with_scrollback(&source, 0, Some(SCROLLBACK_ALL), false)
             .expect("source history")
@@ -1812,7 +1832,7 @@ mod tests {
         client.vt_write(&snap.scrollback);
         client.vt_write(&snap.bytes);
 
-        let sb_synth = SnapshotSynthesizer::new().expect("synth2");
+        let mut sb_synth = SnapshotSynthesizer::new().expect("synth2");
         let client_hist = sb_synth
             .screen_state_with_scrollback(&client, 0, Some(SCROLLBACK_ALL), false)
             .expect("client history")
@@ -1946,7 +1966,7 @@ mod tests {
         // The agent-surface read path: walk the grid into structured text.
         let mut t = fresh(20, 5);
         t.vt_write(b"hello\r\nworld");
-        let synth = SnapshotSynthesizer::new().expect("synth");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
         let screen = synth.screen_state(&t, 7).expect("screen_state");
 
         assert_eq!(screen.schema_version, SCHEMA_VERSION);
@@ -1968,7 +1988,7 @@ mod tests {
         // cells projection — back-compat with the pre-phux-8yl shape.
         let mut t = fresh(20, 3);
         t.vt_write(b"hello");
-        let synth = SnapshotSynthesizer::new().expect("synth");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
         let screen = synth.screen_state(&t, 1).expect("screen_state");
         assert!(screen.cells.is_none(), "cells = false leaves cells None");
     }
@@ -1980,7 +2000,7 @@ mod tests {
         // ESC[1;31m = bold + red fg; "HI"; ESC[0m reset; " ok".
         t.vt_write(b"\x1b[1;31mHI\x1b[0m ok");
 
-        let synth = SnapshotSynthesizer::new().expect("synth");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
         let screen = synth
             .screen_state_with_scrollback(&t, 1, None, true)
             .expect("screen_state_with_scrollback");
@@ -2019,7 +2039,7 @@ mod tests {
         // OSC 133 ; B  -> command (input) start. Then "ls" is input.
         t.vt_write(b"\x1b]133;B\x07ls");
 
-        let synth = SnapshotSynthesizer::new().expect("synth");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
         let screen = synth
             .screen_state_with_scrollback(&t, 1, None, true)
             .expect("screen_state_with_scrollback");
@@ -2049,7 +2069,7 @@ mod tests {
         t.vt_write("你".as_bytes());
         t.vt_write(b"\x1b[1mX");
 
-        let synth = SnapshotSynthesizer::new().expect("synth");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
         let screen = synth
             .screen_state_with_scrollback(&t, 1, None, true)
             .expect("screen_state_with_scrollback");
@@ -2077,7 +2097,7 @@ mod tests {
         t.vt_write(b"\x1b[1m");
         t.vt_write("abc你d".as_bytes());
 
-        let synth = SnapshotSynthesizer::new().expect("synth");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
         let screen = synth
             .screen_state_with_scrollback(&t, 1, None, true)
             .expect("screen_state_with_scrollback");
@@ -2110,7 +2130,7 @@ mod tests {
         // Sanity: libghostty must actually be retaining the two scrolled rows.
         assert_eq!(t.scrollback_rows().expect("scrollback_rows"), 2);
 
-        let synth = SnapshotSynthesizer::new().expect("synth");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
         let screen = synth
             .screen_state_with_scrollback(&t, 7, Some(SCROLLBACK_ALL), false)
             .expect("screen_state_with_scrollback");
@@ -2136,7 +2156,7 @@ mod tests {
         t.vt_write(b"line1\r\nline2\r\nline3\r\nline4\r\nline5");
         assert_eq!(t.scrollback_rows().expect("scrollback_rows"), 3);
 
-        let synth = SnapshotSynthesizer::new().expect("synth");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
         let screen = synth
             .screen_state_with_scrollback(&t, 1, Some(2), false)
             .expect("screen_state_with_scrollback");
@@ -2155,7 +2175,7 @@ mod tests {
         t.vt_write(b"a\r\nb\r\nc\r\nd\r\ne");
         assert!(t.scrollback_rows().expect("scrollback_rows") > 0);
 
-        let synth = SnapshotSynthesizer::new().expect("synth");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
         let none = synth
             .screen_state_with_scrollback(&t, 0, None, false)
             .expect("with None");
@@ -2174,7 +2194,7 @@ mod tests {
         t.vt_write(b"only one line");
         assert_eq!(t.scrollback_rows().expect("scrollback_rows"), 0);
 
-        let synth = SnapshotSynthesizer::new().expect("synth");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
         let screen = synth
             .screen_state_with_scrollback(&t, 0, Some(SCROLLBACK_ALL), false)
             .expect("screen_state_with_scrollback");
@@ -2189,7 +2209,7 @@ mod tests {
         let mut t = fresh(10, 4);
         t.vt_write(b"abcdefghijklmnop");
 
-        let synth = SnapshotSynthesizer::new().expect("synth");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
         let screen = synth.screen_state(&t, 1).expect("screen_state");
 
         let wrap = screen.soft_wrap.as_ref().expect("wrap info is reported");
@@ -2218,7 +2238,7 @@ mod tests {
         let mut t = fresh(4, 3);
         t.vt_write("abc你d".as_bytes());
 
-        let synth = SnapshotSynthesizer::new().expect("synth");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
         let screen = synth.screen_state(&t, 1).expect("screen_state");
 
         let wrap = screen.soft_wrap.as_ref().expect("wrap info is reported");
@@ -2244,7 +2264,7 @@ mod tests {
         t.vt_write(b"abcdefghijklmnop\r\nsecond\r\nthird\r\nfourth\r\nfifth");
         assert!(t.scrollback_rows().expect("scrollback_rows") >= 2);
 
-        let synth = SnapshotSynthesizer::new().expect("synth");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
         let screen = synth
             .screen_state_with_scrollback(&t, 1, Some(SCROLLBACK_ALL), false)
             .expect("screen_state_with_scrollback");
@@ -2269,7 +2289,7 @@ mod tests {
         // 5 lines, 2-row viewport -> 3 rows of history.
         t.vt_write(b"line1\r\nline2\r\nline3\r\nline4\r\nline5");
         assert_eq!(t.scrollback_rows().expect("scrollback_rows"), 3);
-        let synth = SnapshotSynthesizer::new().expect("synth");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
 
         let clipped = synth
             .screen_state_with_scrollback(&t, 1, Some(2), false)
@@ -2308,7 +2328,7 @@ mod tests {
     #[test]
     fn screen_state_reports_the_osc_title_when_set() {
         let mut t = fresh(20, 2);
-        let synth = SnapshotSynthesizer::new().expect("synth");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
         assert!(
             synth
                 .screen_state(&t, 0)
@@ -2392,7 +2412,7 @@ mod tests {
 
         // Client 2's register_consumer primes a SEPARATE per-consumer reference,
         // whose update consumes the Terminal's freshly-set dirty bits.
-        let other = SnapshotSynthesizer::new().expect("other");
+        let mut other = SnapshotSynthesizer::new().expect("other");
         let _ = other.screen_state(&t, 0).expect("other screen_state");
 
         // Client 2's snapshot via the SHARED synthesizer must still carry MARKER.
@@ -2798,10 +2818,7 @@ mod tests {
     fn prepare_tick_serves_rows_a_foreign_walk_drained() {
         type ForeignWalk =
             fn(&mut SnapshotSynthesizer<'static>, &GhosttyTerminal<'static, 'static>);
-        let walks: [(&str, ForeignWalk); 4] = [
-            ("screen_state", |s, t| {
-                drop(s.screen_state(t, 0).expect("walk"));
-            }),
+        let walks: [(&str, ForeignWalk); 3] = [
             ("synthesize", |s, t| drop(s.synthesize(t).expect("walk"))),
             ("synthesize_with_scrollback", |s, t| {
                 drop(s.synthesize_with_scrollback(t, Some(1)).expect("walk"));
@@ -2849,6 +2866,44 @@ mod tests {
         assert_eq!(synth.last_rendered_rows, 1, "only the written row");
         assert!(synth.tick_rows[1].starts_with(b"\x1b[0mTWO"));
         assert!(synth.tick_rows[0].starts_with(b"\x1b[0mone"), "kept row 0");
+    }
+
+    /// The agent detector's and `GET_SCREEN`'s viewport projection reads the
+    /// pool without clearing its flags (phux-69pq.14): it sees the live
+    /// write, and the next tick still re-renders exactly the written row.
+    #[test]
+    fn screen_state_leaves_the_next_tick_incremental() {
+        let mut t = fresh(10, 4);
+        t.vt_write(b"one\r\ntwo\r\nthree\x1b[2;1H");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
+        synth.prepare_tick(&t).expect("first tick");
+
+        t.vt_write(b"TWO");
+        let screen = synth.screen_state(&t, 0).expect("projection");
+        assert_eq!(screen.lines[1], "TWO", "the projection sees the write");
+        // Twice: a clean re-read must not lose the pending row either.
+        let _ = synth.screen_state(&t, 0).expect("second projection");
+        synth.prepare_tick(&t).expect("partial tick");
+        assert_eq!(synth.last_rendered_rows, 1, "only the written row");
+        assert!(synth.tick_rows[1].starts_with(b"\x1b[0mTWO"));
+    }
+
+    /// A projection after a foreign walk honours the pending rebuild, so it
+    /// cannot serve the rows that walk drained, and the rebuild's full
+    /// redraw still reaches the next tick.
+    #[test]
+    fn screen_state_after_a_foreign_walk_serves_live_rows() {
+        let mut t = fresh(10, 3);
+        t.vt_write(b"AA");
+        let mut synth = SnapshotSynthesizer::new().expect("synth");
+        synth.prepare_tick(&t).expect("tick0");
+        t.vt_write(b"\x1b[2;1HZZ");
+        drop(synth.synthesize(&t).expect("foreign walk"));
+        let screen = synth.screen_state(&t, 0).expect("projection");
+        assert_eq!(screen.lines[1], "ZZ", "the projection served a stale row");
+        synth.prepare_tick(&t).expect("tick1");
+        assert!(synth.tick_rows[1].contains(&b'Z'));
+        assert_eq!(synth.last_rendered_rows, 3, "the rebuild renders in full");
     }
 }
 

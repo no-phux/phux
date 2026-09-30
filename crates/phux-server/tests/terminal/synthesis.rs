@@ -75,7 +75,7 @@ fn scrollback_projection_is_bounded_by_retained_history() {
         t.vt_write(format!("L{i}\r\n").as_bytes());
     }
     let total = t.scrollback_rows().unwrap();
-    let synth = SnapshotSynthesizer::new().unwrap();
+    let mut synth = SnapshotSynthesizer::new().unwrap();
     for want in [SCROLLBACK_ALL, u32::MAX] {
         let screen = synth
             .screen_state_with_scrollback(&t, 0, Some(want), false)
