@@ -6,7 +6,7 @@
 //! A child of `dispatch` so it can extend [`EventEnv`] and read the stage
 //! types without widening their visibility.
 
-use super::super::args::{bare_action, select_window_action};
+use super::super::args::{bare_action, select_window_action, switch_host_action};
 use super::super::effects::broadcast_layout;
 use super::{
     AttachError, ContextMenu, DispatchCtx, DividerGrab, DragGrab, EventEnv, InputEvent, ModSet,
@@ -642,14 +642,7 @@ fn sidebar_session_action(
     target: &crate::render::chrome::sidebar::SessionRosterTarget,
 ) -> phux_config::keybind::ResolvedAction {
     if let Some(machine) = &target.switch_host {
-        let args = std::collections::BTreeMap::from([
-            ("host".to_owned(), toml::Value::String(machine.clone())),
-            ("name".to_owned(), toml::Value::String(target.name.clone())),
-        ]);
-        return phux_config::keybind::ResolvedAction {
-            action: "switch-host".to_owned(),
-            args,
-        };
+        return switch_host_action(machine.clone(), target.name.clone());
     }
     let mut args = switch_session_args(target.name.clone(), target.id);
     if let Some(host) = &target.host {
