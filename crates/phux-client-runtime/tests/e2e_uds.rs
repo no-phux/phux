@@ -155,7 +155,7 @@ fn taking_inbound_rearms_a_coalesced_wake() {
     client.wake();
     assert_eq!(wakes.count.load(Ordering::SeqCst), 2, "first frame wakes");
 
-    assert_eq!(client.take_inbound(), vec![vec![1]], "drain first frame");
+    assert_eq!(client.take_inbound().1, vec![vec![1]], "drain first frame");
     client.with_control(|control| {
         control.queue_inbound(vec![2]).expect("queue later frame");
     });
@@ -366,9 +366,16 @@ fn switches_sessions_and_picks_up_a_foreign_pane_without_redialing() {
 
 /// Feed what a queued-delivery driver retained, as a binding does.
 fn feed_queued(client: &Client) {
-    for frame in client.take_inbound() {
+    let (epoch, frames) = client.take_inbound();
+    for frame in frames {
         client
-            .with_control(|control| control.feed_bytes(&frame))
+            .with_control(|control| {
+                if control.accepts_inbound(epoch) {
+                    control.feed_bytes(&frame)
+                } else {
+                    Ok(())
+                }
+            })
             .expect("feed a queued frame");
     }
 }

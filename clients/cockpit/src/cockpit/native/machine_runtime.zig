@@ -233,14 +233,14 @@ pub fn AdapterWithRelease(comptime release: fn (machines.Tunnel) void) type {
     };
 }
 
-const Entry = struct { provider: *const Provider, failed: bool, reopening: bool };
+pub const Entry = struct { provider: *const Provider, failed: bool, reopening: bool };
 const Summary = struct { state: machines.Connection = .not_connected, best: ?Entry = null, failed: usize = 0 };
 
-const Iterator = struct {
+pub const Iterator = struct {
     model: *const Model,
     position: usize = 0,
 
-    fn next(self: *Iterator) ?Entry {
+    pub fn next(self: *Iterator) ?Entry {
         if (self.position == 0) {
             self.position = 1;
             if (self.model.phuxConst()) |provider| return .{ .provider = provider, .failed = self.model.phux_connection_unavailable, .reopening = self.model.phux_reconnect_after_close };
@@ -325,7 +325,7 @@ const failure_categories = [_]FailureCategory{
     .{ .needles = &.{ "did not answer", "stopped answering", "could not resolve", "resolved to no addresses" }, .message = "Machine did not answer; check that it is up and on the network" },
 };
 
-fn connection(entry: Entry) machines.Connection {
+pub fn connection(entry: Entry) machines.Connection {
     if (entry.reopening) return .reconnecting;
     if (entry.failed) return .failed;
     return switch (entry.provider.state()) {

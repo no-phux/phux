@@ -338,19 +338,22 @@ impl Client {
             .map_err(PumpError::Control)
     }
 
-    /// Drain the frames a connected driver retained under
-    /// [`InboundDelivery::Queued`](crate::control::InboundDelivery::Queued),
-    /// for the consumer to feed on its own thread. This acknowledges the
-    /// queued activity and re-arms the listener before the snapshot, so a
-    /// frame queued concurrently cannot be stranded behind its wake.
+    /// Drain the current connection epoch and its retained queued frames
+    /// atomically. Before feeding each frame, check `ControlPlane::accepts_inbound`
+    /// under the same control guard: a transport may end after this drain.
+    /// Re-arms the listener before the snapshot so concurrently queued activity
+    /// cannot be stranded behind its wake.
     #[must_use]
-    pub fn take_inbound(&self) -> Vec<Vec<u8>> {
+    pub fn take_inbound(&self) -> (u64, Vec<Vec<u8>>) {
         self.inner.wake_pending.store(false, Ordering::Release);
-        let frames = lock(&self.inner.control).take_inbound();
+        let batch = {
+            let mut control = lock(&self.inner.control);
+            (control.connection_epoch(), control.take_inbound())
+        };
         // A driver paused on a full queue re-checks for room on this
         // permit; with nothing outbound its flush is a no-op.
         self.inner.outbound.notify_one();
-        frames
+        batch
     }
 
     /// Whether a drain would find anything: a retained inbound frame, or an

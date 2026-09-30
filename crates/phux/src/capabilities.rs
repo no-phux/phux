@@ -3,8 +3,9 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use phux_protocol::caps::ServerFeature;
-use phux_protocol::kinds::{self, Carrier, EventSpec, KindSpec, MethodSpec, Verb};
+use phux_protocol::kinds::{
+    self, Carrier, EventSpec, FeatureGate, FeatureWord, KindSpec, MethodSpec, Verb,
+};
 use serde_json::{Value, json};
 
 const CAPABILITIES_SCHEMA_VERSION: u8 = 1;
@@ -28,7 +29,8 @@ fn kind_json(kind: &KindSpec) -> Value {
     json!({
         "name": kind.name,
         "tag": kind.kind.as_wire(),
-        "gate": kind.gate.map(gate_json),
+        "gate": kind.gate.and_then(gate_json),
+        "feature_gate": kind.gate.map(feature_gate_json),
         "methods": methods_json(kind.methods),
         "events": events_json(kind.events),
         "metadata_keys": kind.metadata_keys,
@@ -52,7 +54,8 @@ fn method_json(method: &MethodSpec) -> Value {
         "mutating": method.mutating(),
         "dangerous": method.dangerous,
         "owner_uds_only": method.owner_uds_only(),
-        "gate": method.gate.map(gate_json),
+        "gate": method.gate.and_then(gate_json),
+        "feature_gate": method.gate.map(feature_gate_json),
         "shipped": method.shipped,
         "rules": rules,
     })
@@ -66,13 +69,28 @@ fn carrier_json(carrier: Carrier) -> Value {
     }
 }
 
-/// A gate as `{ feature, mask }`: `feature` is the name `phux status --json`
-/// lists under `features`, and `mask` is the feature's bit value in
-/// `HELLO_OK.server_caps.features` (a mask, not a bit index).
-fn gate_json(feature: ServerFeature) -> Value {
+/// The original `gate` field, `{ feature, mask }`: `feature` is the name
+/// `phux status --json` lists under `features`, and `mask` is the feature's
+/// bit value in `HELLO_OK.server_caps.features` (a mask, not a bit index).
+/// Its meaning is fixed to that word, so a gate in another word is `null`
+/// here and appears only in [`feature_gate_json`].
+fn gate_json(gate: FeatureGate) -> Option<Value> {
+    (gate.word() == FeatureWord::Features).then(|| {
+        json!({
+            "feature": gate.snake_name(),
+            "mask": gate.mask(),
+        })
+    })
+}
+
+/// A gate in any caps word, `{ word, feature, mask }`: `word` names the
+/// `HELLO_OK.server_caps` field (`features` or `features_ext`) and `mask` is
+/// the bit value in that word.
+fn feature_gate_json(gate: FeatureGate) -> Value {
     json!({
-        "feature": feature.snake_name(),
-        "mask": feature as u32,
+        "word": gate.word().field_name(),
+        "feature": gate.snake_name(),
+        "mask": gate.mask(),
     })
 }
 
@@ -249,6 +267,12 @@ mod tests {
         assert_eq!(shutdown["owner_uds_only"], true);
         assert_eq!(shutdown["gate"]["feature"], "shutdown");
         assert_eq!(shutdown["gate"]["mask"], 0x100);
+        assert_eq!(
+            shutdown["feature_gate"],
+            json!({ "word": "features", "feature": "shutdown", "mask": 0x100 })
+        );
+        assert!(kinds[0]["feature_gate"].is_null());
+        assert_eq!(kinds[1]["feature_gate"]["word"], "features");
 
         let append = named(&kinds[1]["methods"], "APPEND_RESOURCE_OUTPUT");
         assert_eq!(append["verbs"], json!(["BIND", "INPUT"]));
@@ -261,6 +285,31 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|event| event["name"] == "pane_closed")
+        );
+    }
+
+    /// A `features_ext` gate appears in the additive `feature_gate` field
+    /// with its word; the older `gate` field keeps meaning the `features`
+    /// word only, so it stays `null` rather than carrying a foreign mask.
+    #[test]
+    fn extended_feature_gate_names_its_word() {
+        let template = kinds::SERVER_METHODS
+            .iter()
+            .find(|method| method.name == "LIST_DIRECTORY")
+            .unwrap();
+        let extended = MethodSpec {
+            name: "SYNTHETIC_EXT",
+            gate: Some(FeatureGate::FeaturesExt {
+                mask: 0x1,
+                wire_name: "PATH_QUERY",
+            }),
+            ..*template
+        };
+        let row = method_json(&extended);
+        assert!(row["gate"].is_null());
+        assert_eq!(
+            row["feature_gate"],
+            json!({ "word": "features_ext", "feature": "path_query", "mask": 1 })
         );
     }
 

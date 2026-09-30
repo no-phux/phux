@@ -1,0 +1,45 @@
+<template name="cockpit-connected-hosts" args="menuopen title detail status">
+  <stack width="32">
+    <if test="{canReconnect or commandNotice != ''}">
+      <button size="sm" variant="ghost" icon="alert" foreground="warning" label="Connected hosts" selected="{menuopen and headerHosts}" on-press="header_hosts_toggle" />
+    </if>
+    <else>
+      <button size="sm" variant="ghost" icon="external-link" label="Connected hosts" selected="{menuopen and headerHosts}" on-press="header_hosts_toggle" />
+    </else>
+    <if test="{commandNotice != '' and canReconnect == false}"><tooltip anchor="below">{commandNotice}</tooltip></if>
+    <else><tooltip anchor="below">{status}</tooltip></else>
+    <if test="{menuopen and headerHosts}">
+      <dropdown-menu width="280" anchor="below" anchor-alignment="end" anchor-offset="8" on-dismiss="header_menu_close" label="Connected hosts">
+        <column padding="8" gap="4">
+          <text overflow="ellipsis">{title}</text>
+          <text foreground="text_muted" overflow="ellipsis">{detail}</text>
+          <text foreground="text_muted" overflow="ellipsis">{status}</text>
+          <if test="{commandNotice}"><text foreground="warning" overflow="ellipsis">{commandNotice}</text></if>
+        </column>
+        <separator />
+        <if test="{canReconnect}"><menu-item on-press="header_reconnect">Reconnect</menu-item></if>
+        <if test="{paletteLoading}">
+          <column padding="8"><text foreground="text_muted">Updating hosts…</text></column>
+        </if>
+        <else>
+          <if test="{paletteTotal > 0}">
+            <scroll height="128">
+              <column>
+                <for each="paletteRows" key="id" as="host">
+                  <menu-item selected="{host.current}" disabled="{host.disabled}" autofocus="{host.id == 0}" on-press="header_host_pick:{host.target}">{host.label}</menu-item>
+                  <text padding="8" foreground="text_muted" overflow="ellipsis">{host.detail}</text>
+                </for>
+              </column>
+            </scroll>
+            <if test="{paletteNext}"><menu-item on-press="header_hosts_more">Show more hosts</menu-item></if>
+          </if>
+          <if test="{paletteNotice}"><column padding="8"><text wrap="true" foreground="text_muted">{paletteNotice}</text></column></if>
+        </else>
+        <separator />
+        <menu-item icon="plus" on-press="header_host_connect">Connect to Host…</menu-item>
+        <menu-item icon="external-link" on-press="header_machines">Manage machines…</menu-item>
+        <menu-item disabled="{paletteLoading}" on-press="header_hosts_refresh">Refresh hosts</menu-item>
+      </dropdown-menu>
+    </if>
+  </stack>
+</template>

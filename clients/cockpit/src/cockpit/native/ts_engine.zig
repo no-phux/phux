@@ -319,6 +319,7 @@ pub const Engine = struct {
     /// coordinator, so a rename on one never refuses a rename on another.
     /// Each outcome is read from its own coordinator only.
     rename_flights: @import("session_commands.zig").Flights = .{},
+    tab_rename: @import("session_commands.zig").TabRename = .{},
     /// Exact bound-spawn owner installed by the process composition root.
     /// It gets first refusal on operation results before ordinary creators.
     local_tool_sink: ?local_tool_launch.Sink = null,
@@ -700,6 +701,10 @@ pub const Engine = struct {
         self.admitDesiredTerminal();
         if (self.creation.count() == 0 and remote.workspaceSnapshot().status != .pending) model.shared_workspace.releaseUnused(model);
         model.shared_workspace.subscribe(model);
+        // A completion may have unblocked another creation. Start its refresh
+        // only after the winning snapshot and its placement were consumed;
+        // waiting for another provider wake strands quiet queues until polling.
+        changed = model.shared_mutations.pump(model) or changed;
         return changed;
     }
 
@@ -1883,6 +1888,9 @@ pub const Engine = struct {
         // must not be detached as unused before its placement lands.
         if (published.status != .pending and self.peer_edits.pendingCreations(slot) == 0) state.releaseUnused(model);
         state.subscribe(model);
+        // As on the primary attachment, a settled edit must hand the queue to
+        // its successor without depending on unrelated output or the timer.
+        changed = self.peer_edits.pump(model, slot) or changed;
         return projected or changed;
     }
 

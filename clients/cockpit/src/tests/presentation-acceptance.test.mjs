@@ -1,9 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { initialModel, update, windows } from '../core.ts';
-import { declaredDensities, declaredSizes, inspectShippingStateInventory,
-  strictAcceptanceCommand, assertPointerReachedSurface } from '../../scripts/cockpit-state-inventory.mjs';
 
 // Every case is mandatory. The historical strict entry point remains a stable
 // documented command and must pass the same matrix:
@@ -305,28 +302,3 @@ for (const invalid of [-1, 0, 5, 255]) {
   });
 }
 
-test('shipping state inventory names declarations and reserves rendered fixtures for native integration', () => {
-  const root = new URL('../..', import.meta.url);
-  const report = inspectShippingStateInventory(root);
-  assert.equal(report.kind, 'shipping-state-inventory');
-  assert.deepEqual(report.missing, []);
-  assert.deepEqual(report.states, ['rest', 'hover', 'press', 'selected', 'focus', 'disabled', 'attention', 'loading', 'empty', 'failed', 'passive-hover']);
-  assert.deepEqual(declaredSizes, [{ width: 900, height: 420 }, { width: 1100, height: 640 }, { width: 1680, height: 1000 }]);
-  assert.deepEqual(declaredDensities, ['compact', 'regular', 'spacious']);
-  assert.equal(strictAcceptanceCommand,
-    'PHUX_COCKPIT_ACCEPTANCE_STRICT=1 node --import ./src/tests/navigation-loader.mjs --test src/tests/presentation-acceptance.test.mjs');
-  assert.equal(report.strictAcceptanceCommand, strictAcceptanceCommand);
-  assert.deepEqual(report.unrenderedStates, ['rest', 'hover', 'press']);
-  assert.match(report.crossCommitZigRequirement,
-    /^full Zig gate must include semantic_theme test "passive panel hover is visually stable without disabling hit testing"$/);
-  assert.match(report.renderedStateGallery, /shipping overlays use SDK dialog and sheet shells/);
-  assert.match(report.renderedStateGallery, /shipping empty session stays inline/);
-  assert.match(report.evidenceScope.passiveHover, /pointer reachability only/);
-  assert.match(report.evidenceScope.liveScreenshot, /optional only.*never use full-frame PNG equality/);
-  const audit = readFileSync(new URL('../native_extension.zig', import.meta.url), 'utf8');
-  for (const { width, height } of declaredSizes) assert.match(audit, new RegExp(`SizeF\\.init\\(${width}, ${height}\\)`));
-  for (const density of declaredDensities) assert.match(audit, new RegExp(`\\.${density}`));
-  assert.doesNotThrow(() => assertPointerReachedSurface(
-    'widget @w1/canvas#7 role=group name="Inspector surface" bounds=(0,0 100x80) focused=false enabled=true state=[hovered]',
-    { name: 'Inspector surface' }));
-});

@@ -35,6 +35,9 @@ mod geometry;
 #[path = "support/roster.rs"]
 mod roster;
 
+#[path = "support/recovery.rs"]
+mod recovery;
+
 #[cfg(feature = "engine")]
 #[test]
 fn replacing_an_engine_synchronously_retires_all_outgoing_view_slots() {

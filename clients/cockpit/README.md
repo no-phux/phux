@@ -79,7 +79,8 @@ is documented in [Design System](docs/DESIGN_SYSTEM.md).
 The toolbar and side rail use host-native materials: Liquid Glass on macOS 26
 and later, with an AppKit visual-effect fallback on older supported macOS.
 Chrome follows system appearance; terminal colors remain independently
-configured. Terminal cells and gutters stay opaque above the material.
+configured. Terminal cells and pane interiors stay opaque; split-pane gaps and
+rounded corners reveal the native material. A lone pane remains full-bleed.
 The Commands toolbar button opens the command navigator; Escape returns to the
 terminal, and clicking outside dismisses without activating a control beneath it.
 
@@ -118,9 +119,10 @@ only by a solid-versus-hollow cursor. The accent edge is what survives the case
 the scrim still cannot serve: a terminal configured black, or put there by an
 application's OSC 11, has no luminance left to take away.
 
-The status bar combines connection state with the focused terminal's recovery
-or history-loading state. Each window reports its own focused terminal. Detailed
-byte counts and I/O-loss information remain in surface accessibility labels.
+The Connected hosts menu combines connection state with the focused terminal's
+recovery or history-loading state without resizing the canvas. Each window reports
+its own focused terminal. Detailed byte counts and I/O-loss information remain
+in surface accessibility labels.
 
 **An ephemeral local shell that ends closes its pane, at any exit status**,
 and its sibling reclaims the rect. Exit code is the child's answer about the last command it
@@ -174,7 +176,7 @@ than starting replacement local shells. Startup ownership is described in the
 button in the switcher) attaches a host registered with `phux host add` or
 `phux host add`, the same registry `phux --remote HOST` uses. Enter its
 registry name or `[user@]host[:port]`. `phux-remote = NAME` in the config, or
-`PHUX_REMOTE=NAME`, selects one at launch. The status bar names the host
+`PHUX_REMOTE=NAME`, selects one at launch. Connected hosts names the host
 while connecting, connected, reconnecting, or failed, and gives the reason
 when it fails. A failure keeps the entered host so a retry is one keystroke.
 Cockpit holds up to four coordinators at once, this Mac and registered

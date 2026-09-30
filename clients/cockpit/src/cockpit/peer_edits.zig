@@ -418,6 +418,18 @@ pub const Edits = struct {
         try self.states.items[target.slot].mutations.requestReorderCorrelated(&target.view, id, target_index, command_id);
     }
 
+    pub fn renameForAttachment(self: *Edits, model: *Model, attachment: u64, id: WindowId, name: []const u8) !u64 {
+        var target = try viewForAttachment(model, attachment);
+        try self.ensure(target.slot);
+        return self.states.items[target.slot].mutations.requestRename(&target.view, id, name);
+    }
+
+    pub fn renameQueueForAttachment(self: *Edits, model: *Model, attachment: u64) ?*shared_mutations.Coordinator {
+        const slot = model.peerSlotForAttachment(attachment) orelse return null;
+        if (slot >= self.states.items.len) return null;
+        return &self.states.items[slot].mutations;
+    }
+
     pub fn peekCompletion(self: *const Edits) ?@import("command_results.zig").Result {
         for (self.states.items) |state| if (state.mutations.peekCompletion()) |result| return result;
         return null;

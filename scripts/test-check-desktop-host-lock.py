@@ -7,6 +7,8 @@ import unittest
 
 CHECK = runpy.run_path(str(Path(__file__).with_name("check-desktop-host-lock.py")))
 COMPARE = CHECK["compare"]
+REQUIRED = CHECK["required_dependencies"]
+REQUIRED_PACKAGE = CHECK["required_package"]
 
 
 def lock(*packages: str) -> str:
@@ -80,6 +82,63 @@ class HostLockDriftTests(unittest.TestCase):
         )
         host = lock(path_crate("0.46.0", "sha2 0.11.0"), registry("sha2", "0.11.0"))
         self.assertEqual(COMPARE(root, host), [])
+
+    def test_missing_required_edge_is_reported_and_fixed(self) -> None:
+        # The #904 shape: a root crate gains a dependency whose package the host
+        # lock already carries through another crate, but not as this edge.
+        root = lock(
+            path_crate("0.46.0", "chrono", "nix", "serde"),
+            registry("chrono", "0.4.44"),
+            registry("nix", "0.31.2"),
+            registry("serde", "1.0.228"),
+        )
+        host = lock(
+            path_crate("0.46.0", "chrono", "serde"),
+            registry("chrono", "0.4.44"),
+            registry("nix", "0.31.2"),
+            registry("serde", "1.0.228"),
+        )
+        required = {"root-path": {"chrono", "nix", "serde"}}
+        findings = COMPARE(root, host, required)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("depends on nix", findings[0].message)
+        fixed = findings[0].fix(host)
+        self.assertIn(' "chrono",\n "nix",\n "serde",\n', fixed)
+        self.assertEqual(COMPARE(root, fixed, required), [])
+
+    def test_missing_edge_to_an_unresolved_package_needs_a_refresh(self) -> None:
+        root = lock(path_crate("0.46.0", "nix"), registry("nix", "0.31.2"))
+        host = lock(path_crate("0.46.0"))
+        findings = COMPARE(root, host, {"root-path": {"nix"}})
+        self.assertEqual(len(findings), 1)
+        self.assertIsNone(findings[0].fix)
+
+    def test_unrequired_root_only_edge_is_ignored(self) -> None:
+        # Optional (feature-gated) and dev edges are in the root lock's union only.
+        root = lock(path_crate("0.46.0", "sha2 0.11.0", "uniffi"), registry("sha2", "0.11.0"))
+        host = lock(path_crate("0.46.0", "sha2 0.11.0"), registry("sha2", "0.11.0"))
+        self.assertEqual(COMPARE(root, host, {"root-path": {"sha2"}}), [])
+
+
+class RequiredDependencyTests(unittest.TestCase):
+    def test_manifest_entries_resolve_to_package_names(self) -> None:
+        inherited = {"usage": {"package": "usage-rs", "version": "6"}, "serde": "1"}
+        for key_spec, expected in [
+            (("serde", "1"), "serde"),
+            (("serde", {"workspace": True, "features": ["derive"]}), "serde"),
+            (("usage", {"workspace": True}), "usage-rs"),
+            (("alias", {"package": "real", "version": "1"}), "real"),
+            (("uniffi", {"version": "0.32", "optional": True}), None),
+            (("serde", {"workspace": True, "optional": True}), None),
+        ]:
+            with self.subTest(key_spec=key_spec):
+                self.assertEqual(REQUIRED_PACKAGE(*key_spec, inherited), expected)
+
+    def test_repository_manifests_require_unconditional_dependencies_only(self) -> None:
+        required = REQUIRED(Path(__file__).resolve().parent.parent)
+        self.assertIn("nix", required["phux-config"])
+        self.assertNotIn("insta", required["phux-config"])  # dev-dependency
+        self.assertNotIn("uniffi", required["phux-client-ffi"])  # optional
 
 
 if __name__ == "__main__":

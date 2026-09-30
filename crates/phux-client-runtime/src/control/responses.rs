@@ -40,6 +40,7 @@ impl ControlPlane {
             self.error = Some(message.clone());
             return Err(ControlError::Refused(message));
         }
+        self.requalify_attach_target(server_id)?;
         self.server = Some(ServerInfo {
             id: server_id.to_vec(),
             features,
@@ -67,6 +68,39 @@ impl ControlPlane {
         }
         self.queue_durable_frames();
         self.queue_next_upload();
+        Ok(())
+    }
+
+    /// Session numbers are local to a server incarnation. Recover the same
+    /// logical session by its last authoritative name, never by a recycled ID.
+    fn requalify_attach_target(&mut self, server_id: &[u8]) -> Result<(), ControlError> {
+        let Some(AttachTarget::ById(id)) = &self.attach_target else {
+            return Ok(());
+        };
+        if self
+            .server
+            .as_ref()
+            .is_none_or(|previous| previous.id == server_id)
+        {
+            return Ok(());
+        }
+        let name = self
+            .topology
+            .as_ref()
+            .and_then(|topology| {
+                topology
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == id.get())
+            })
+            .map(|session| session.name.clone())
+            .ok_or_else(|| {
+                ControlError::Refused(format!(
+                    "cannot recover session {}: its previous name is unavailable",
+                    id.get()
+                ))
+            })?;
+        self.attach_target = Some(AttachTarget::ByName(name));
         Ok(())
     }
 
@@ -243,6 +277,10 @@ impl ControlPlane {
         Ok(())
     }
 
+    fn is_attach_refusal(&self, request_id: Option<u32>) -> bool {
+        self.status == Status::Negotiated && self.active_attach_id.is_some() && request_id.is_none()
+    }
+
     pub(super) fn server_error(
         &mut self,
         request_id: Option<u32>,
@@ -250,6 +288,19 @@ impl ControlPlane {
         message: String,
     ) -> Result<(), ControlError> {
         let rendered = format!("server error {code:?}: {message}");
+        // ATTACH uses attach_id, not the command request_id namespace. Its
+        // refusals are uncorrelated; a correlated error belongs to a command,
+        // even when its request_id numerically equals the active attach_id.
+        // End this attempt instead of waiting forever for ATTACH_READY.
+        if self.is_attach_refusal(request_id) {
+            self.error = Some(rendered.clone());
+            self.push_event(Event::ServerError {
+                code,
+                message,
+                request_id,
+            });
+            return Err(ControlError::Refused(rendered));
+        }
         if request_id.is_some_and(|id| self.agent_metadata_error(id)) {
             self.push_event(Event::ServerError {
                 code,

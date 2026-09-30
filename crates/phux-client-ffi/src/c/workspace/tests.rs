@@ -211,6 +211,175 @@ fn initial_attachment_waits_for_confirmed_metadata_before_publishing_topology() 
 }
 
 #[test]
+fn reconnect_retires_interrupted_workspace_read_before_coalesced_frames() {
+    let mut client = attached_harness();
+    release_attach(&mut client);
+    let interrupted = client.inner.workspace.pending.as_ref().unwrap().metadata_id;
+    // Numeric IDs and closure tombstones are scoped to the old connection.
+    client
+        .inner
+        .workspace
+        .subscriptions
+        .mark_closed(&ResourceId::local(1));
+    let hello = test_support::hello_ok(
+        test_support::caps(&[]),
+        phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+    );
+    let mut encoded = bytes::BytesMut::new();
+    hello.encode(&mut encoded);
+    {
+        let mut control = client.inner.control();
+        control.connection_lost(None);
+        control.connection_opened();
+        control.queue_inbound(encoded.to_vec()).unwrap();
+    }
+    // This is the connected owning-thread pump: loss and replacement greeting
+    // arrive in one turn, with the old workspace read still outstanding.
+    assert!(!poll_connected(&mut client.inner).unwrap());
+    assert_eq!(client.inner.state(), PhuxClientState::Negotiated);
+    assert_eq!(client.inner.workspace.status, 4);
+    assert!(
+        !client
+            .inner
+            .workspace
+            .subscriptions
+            .was_closed(&ResourceId::local(1))
+    );
+    assert!(!client.inner.detached);
+
+    test_support::queue_attach(&raw mut *client, 1);
+    feed(
+        &mut client,
+        test_support::attached_frame(1, registry(1, true)),
+    );
+    test_support::feed_bootstrap(
+        &raw mut *client,
+        &ResourceId::local(3),
+        (3, 1),
+        (80, 24),
+        b"",
+    );
+    release_attach(&mut client);
+    assert_ne!(
+        client.inner.workspace.pending.as_ref().unwrap().metadata_id,
+        interrupted
+    );
+    finish(
+        &mut client,
+        registry(1, true),
+        Some(split_workspace().encode_cbor().unwrap()),
+    );
+    let mut info = PhuxWorkspaceInfo::default();
+    // SAFETY: owned client and disjoint initialized output.
+    assert_eq!(
+        unsafe { phux_client_workspace_info(&raw const *client, &raw mut info) },
+        PhuxClientResult::Ok
+    );
+    assert_eq!((info.state, info.status, info.terminal_count), (2, 2, 4));
+    assert!(
+        client
+            .inner
+            .resources
+            .iter()
+            .any(|resource| resource.id == ResourceId::local(1))
+    );
+    assert!(client.inner.input_ready(&ResourceId::local(1)));
+}
+
+#[test]
+fn queued_attach_refusal_is_terminal_and_cannot_authorize_workspace() {
+    let raw = test_support::attaching(&[], 1);
+    // SAFETY: the fixture transfers unique ownership of its heap client.
+    let mut client = unsafe { Box::from_raw(raw) };
+    let mut encoded = bytes::BytesMut::new();
+    FrameKind::Error {
+        code: phux_protocol::wire::frame::ErrorCode::SessionNotFound,
+        request_id: None,
+        message: "the selected session no longer exists".into(),
+    }
+    .encode(&mut encoded);
+    client
+        .inner
+        .control()
+        .queue_inbound(encoded.to_vec())
+        .unwrap();
+    assert!(poll_connected(&mut client.inner).is_err());
+    assert_eq!(client.inner.state(), PhuxClientState::Failed);
+    // SAFETY: live exclusively owned client.
+    assert_eq!(
+        unsafe { phux_client_workspace_refresh(&raw mut *client, 1) },
+        PhuxClientResult::InvalidState
+    );
+}
+
+#[test]
+fn drained_old_connection_batch_cannot_mutate_loss_or_replacement() {
+    let mut client = harness();
+    let terminal = ResourceId::local(1);
+    let frame = FrameKind::ResourceClosed {
+        terminal_id: terminal.clone(),
+        exit_status: None,
+        signal: None,
+        reason: phux_protocol::CloseReason::Exited,
+    };
+    let mut encoded = bytes::BytesMut::new();
+    frame.encode(&mut encoded);
+    client
+        .inner
+        .control()
+        .queue_inbound(encoded.to_vec())
+        .unwrap();
+    let (old_epoch, frames) = client.inner.take_inbound();
+    assert_eq!(frames.len(), 1);
+    let decoded = decode_server_frame(&client.inner, &frames[0]).unwrap();
+    client.inner.control().connection_lost(None);
+    client.inner.process_runtime_events().unwrap();
+    assert!(!apply_server_frame(&mut client.inner, decoded.clone(), Some(old_epoch)).unwrap());
+    assert!(!client.inner.workspace.subscriptions.was_closed(&terminal));
+
+    client.inner.control().connection_opened();
+    feed(
+        &mut client,
+        test_support::hello_ok(
+            test_support::caps(&[]),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        ),
+    );
+    test_support::queue_attach(&raw mut *client, 1);
+    feed(
+        &mut client,
+        test_support::attached_frame(1, registry(1, false)),
+    );
+    release_attach(&mut client);
+    finish(&mut client, registry(1, false), None);
+    assert!(!apply_server_frame(&mut client.inner, decoded, Some(old_epoch)).unwrap());
+    assert!(client.inner.input_ready(&terminal));
+    assert!(
+        client
+            .inner
+            .resources
+            .iter()
+            .any(|resource| resource.id == terminal)
+    );
+
+    // The same resource close from the replacement transport must be applied.
+    client
+        .inner
+        .control()
+        .queue_inbound(encoded.to_vec())
+        .unwrap();
+    poll_connected(&mut client.inner).unwrap();
+    assert!(
+        !client
+            .inner
+            .resources
+            .iter()
+            .any(|resource| resource.id == terminal)
+    );
+    assert!(!client.inner.input_ready(&terminal));
+}
+
+#[test]
 fn persisted_old_schema_is_refused_without_fallback_or_overwrite() {
     let mut client = harness();
     let before = client.inner.workspace.topology.clone();

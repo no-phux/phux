@@ -329,13 +329,16 @@ pub const Host = struct {
     /// handle that outlives every socket, so client identity stops marking
     /// a new connection; `phux_client_connection_epoch` does.
     connection_epoch: u64 = 0,
-    /// Set when a drain retired a connection the runtime replaced on its
-    /// own. The provider consumes it to re-queue the ATTACH that belonged
-    /// to the connection that ended.
+    /// Set whenever the binding retires a connection, including replacement
+    /// of the ABI handle. The provider consumes it to re-queue connection-
+    /// scoped ATTACH and catalog requests.
     connection_retired: bool = false,
     /// An explicit reconnect already retired the current connection, so the
     /// epoch change it causes must not retire a second time.
     retired_ahead: bool = false,
+    /// A socket epoch changed during poll. Retain the C records, but do not
+    /// publish them until a subsequent stable-epoch drain.
+    poll_unsettled: bool = false,
     /// Test seam only. The runtime owns the socket in production, so nothing
     /// fills this queue there; it is how a fixture stages exact frames --
     /// malformed ones, retired generations, protocol violations -- that no
@@ -436,7 +439,7 @@ pub const Host = struct {
     }
 
     pub fn state(host: *const Host) State {
-        return switch (c.phux_client_state(host.client)) {
+        const current: State = switch (c.phux_client_state(host.client)) {
             c.PHUX_CLIENT_STATE_NEW => .new,
             c.PHUX_CLIENT_STATE_HELLO_QUEUED => .hello_queued,
             c.PHUX_CLIENT_STATE_NEGOTIATED => .negotiated,
@@ -444,6 +447,14 @@ pub const Host = struct {
             c.PHUX_CLIENT_STATE_DETACHED => .detached,
             else => .failed,
         };
+        // Resync is asynchronous. Hide only stale success, never a terminal
+        // refusal from the runtime while the next connection is opening.
+        if (host.awaitingConnectionPublication() and (current == .attached or current == .negotiated)) return .hello_queued;
+        return current;
+    }
+
+    fn awaitingConnectionPublication(host: *const Host) bool {
+        return host.lane == .connected and (host.retired_ahead or host.poll_unsettled);
     }
 
     /// Hand the socket to `phux-client-runtime` (the connected lane). `wake`
@@ -499,17 +510,25 @@ pub const Host = struct {
             try resultError(c.phux_client_connect(&options, &raw));
         }
         const replacement = raw orelse return error.InvalidState;
+        errdefer c.phux_client_free(replacement);
+        // The runtime queues HELLO. Rename-following is idempotent even
+        // before HELLO_OK, and must succeed before ownership transfers.
+        try resultError(c.phux_client_follow_session_names(replacement));
+        // Most replacements follow stopConnected, which already retired the
+        // binding. An embedded attachment can also hand ownership to the
+        // runtime directly; it has the same retirement boundary.
+        if (!host.retired_ahead and host.state() != .new) {
+            const generation = try host.nextGeneration();
+            host.disconnect();
+            host.retirePreviousConnection(generation);
+        }
         c.phux_client_free(host.client);
         host.client = replacement;
         host.lane = .connected;
+        host.poll_unsettled = false;
         host.connection_epoch = 0;
-        host.connection_retired = false;
         host.retired_ahead = false;
         host.disconnected = false;
-        // The runtime queues HELLO on every connection it opens, so this
-        // lane never calls `start`. Rename-following still has to be armed
-        // once, and it is idempotent before HELLO_OK.
-        try resultError(c.phux_client_follow_session_names(host.client));
     }
 
     /// Give the socket back: freeing the connected client joins the runtime's
@@ -517,6 +536,12 @@ pub const Host = struct {
     /// its place. Infallible; a no-op on the embedded lane.
     pub fn stopConnected(host: *Host) void {
         if (host.lane != .connected) return;
+        host.disconnect();
+        if (!host.retired_ahead) {
+            const generation = host.nextGeneration() catch return;
+            host.retirePreviousConnection(generation);
+            host.retired_ahead = true;
+        }
         const replacement = newClient() catch {
             // Out of memory for the placeholder. Detach what we have rather
             // than leak a live connection; `destroy` still frees it.
@@ -528,8 +553,8 @@ pub const Host = struct {
         host.client = replacement;
         host.lane = .embedded;
         host.connection_epoch = 0;
-        host.connection_retired = false;
-        host.retired_ahead = false;
+        // Keep the retirement signal across the placeholder and the next
+        // adoptConnected. Repeated stop/close callbacks must not retire twice.
         host.disconnected = true;
     }
 
@@ -539,7 +564,7 @@ pub const Host = struct {
     pub fn hasReadiness(host: *const Host) bool {
         return switch (host.lane) {
             .embedded => host.bridge.incoming.hasReadiness(),
-            .connected => c.phux_client_poll_pending(host.client),
+            .connected => host.poll_unsettled or c.phux_client_poll_pending(host.client),
         };
     }
 
@@ -561,8 +586,10 @@ pub const Host = struct {
     /// epoch change from retiring twice.
     pub fn reconnectConnected(host: *Host) !void {
         if (host.lane != .connected) return error.InvalidState;
-        host.retirePreviousConnection(try host.nextGeneration());
-        host.retired_ahead = true;
+        if (!host.retired_ahead) {
+            host.retirePreviousConnection(try host.nextGeneration());
+            host.retired_ahead = true;
+        }
         host.resync();
     }
 
@@ -1044,6 +1071,8 @@ pub const Host = struct {
     /// identity, terminal order and the last complete canvas. Reached by a
     /// client replacement (embedded lane) or an epoch change (connected).
     fn retirePreviousConnection(host: *Host, next_generation: u64) void {
+        host.operation_ledger.disconnect(host.client_generation);
+        host.ended.clearRetainingCapacity();
         host.clearSearchResults(null);
         host.workspace_store.deinit(host.gpa);
         host.client_generation = next_generation;
@@ -1052,6 +1081,8 @@ pub const Host = struct {
         host.operation_ledger.last_id = 0;
         host.disconnected = false;
         host.attach_barrier_seen = false;
+        host.connection_retired = true;
+        host.workspace_changed = true;
         for (host.terminals.items) |*terminal| {
             terminal.phase = if (terminal.published) .reconnecting else .attaching;
             terminal.seen_in_attach = false;
@@ -1066,7 +1097,18 @@ pub const Host = struct {
     /// Feed what the runtime's driver read since the last drain, retiring
     /// the previous connection first when the driver redialed underneath us.
     fn pollConnected(host: *Host) !void {
-        const epoch = c.phux_client_connection_epoch(host.client);
+        const before = c.phux_client_connection_epoch(host.client);
+        try host.observeConnectionEpoch(before);
+        try resultErrorWithContext(host.client, "poll", c.phux_client_poll(host.client));
+        const after = c.phux_client_connection_epoch(host.client);
+        host.poll_unsettled = before != after;
+        if (host.poll_unsettled) try host.observeConnectionEpoch(after);
+        // Loss is observable before the next socket opens. Revoke live
+        // terminal authority without closing the reconnecting runtime.
+        if (host.attach_barrier_seen and host.state() != .attached) host.freezePublished();
+    }
+
+    fn observeConnectionEpoch(host: *Host, epoch: u64) !void {
         if (epoch != host.connection_epoch) {
             // Only a connection after the first retires anything; the first
             // one has no predecessor to fence, and an explicit reconnect has
@@ -1074,15 +1116,12 @@ pub const Host = struct {
             if (host.connection_epoch != 0 and !host.retired_ahead) {
                 host.freezePublished();
                 host.retirePreviousConnection(try host.nextGeneration());
-                // The runtime redialed on its own, so nothing above has
-                // re-queued ATTACH for the new connection. `ATTACH` stays
-                // explicit on this ABI; the provider owns sending it.
-                host.connection_retired = true;
+                // ATTACH stays explicit on this ABI; retirement tells the
+                // provider to schedule it for the new connection.
             }
             host.retired_ahead = false;
             host.connection_epoch = epoch;
         }
-        try resultErrorWithContext(host.client, "poll", c.phux_client_poll(host.client));
     }
 
     /// Only for an explicit different-session selection. Same-session reconnect
@@ -1100,6 +1139,11 @@ pub const Host = struct {
 
     pub fn freezePublished(host: *Host) void {
         for (host.terminals.items) |*terminal| {
+            // Frozen display is not recovery authority. In particular, a
+            // replacement coordinator must never receive blind typing held
+            // for the previous incarnation's numerically identical terminal.
+            terminal.held_keys.clearRetainingCapacity();
+            terminal.held_text.clearRetainingCapacity();
             if (terminal.published and terminal.phase != .ended and terminal.phase != .failed)
                 terminal.phase = .frozen;
         }
@@ -1120,8 +1164,11 @@ pub const Host = struct {
         const directory_before = host.directoryStatusRaw();
         const query_before = host.sessionQueryStatus();
         try host.feedReadinessFrames(frame_limit);
+        // Do not re-publish the old C snapshot/READY while an explicit resync
+        // is still crossing the runtime thread. The epoch releases this gate.
+        if (host.awaitingConnectionPublication()) return delta;
         delta.directory_changed = host.directoryStatusRaw() != directory_before;
-        if (query_before == session_query_pending and host.sessionQueryStatus() == session_query_ok)
+        if ((query_before == session_query_pending or host.sessions_generation != host.client_generation) and host.sessionQueryStatus() == session_query_ok)
             delta.sessions_listed = try host.adoptListedSessions();
         delta.sessions_renamed = try host.adoptRenamedSessions();
         host.captureWorkspace();

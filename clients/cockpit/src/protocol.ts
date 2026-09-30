@@ -597,7 +597,7 @@ function readExtensions(bytes: Uint8Array, start: number): SnapshotExtensions | 
     if (at + 3 > bytes.length) return null;
     const kind = bytes[at];
     const length = bytes[at + 1] + bytes[at + 2] * 256;
-    if (!(length >= 0 && length <= 4096) || at + 3 + length > bytes.length) return null;
+    if (!(length >= 0 && length <= SNAPSHOT_MAX_BYTES) || at + 3 + length > bytes.length) return null;
     const updated = snapshotExtension(result, kind, bytes.subarray(at + 3, at + 3 + length));
     if (updated === null) return null;
     result = updated;
@@ -772,7 +772,7 @@ export interface NavigationRow {
 }
 
 /// 0 all work, 1 sessions, 2 known terminal hosts, 3 exact raw host, 4 native windows,
-/// 5 captured machine sessions (host field is opaque request-id/generation/row).
+/// 5 captured machine sessions, 6 live connected hosts, 7 captured live-host sessions.
 export type NavigationScope = number;
 
 export interface NavigationPage {
@@ -825,13 +825,14 @@ export function navigationScopedRequest(revision: WireU64, offset: number, query
 
 function validNavigationRequest(offset: number, query: Uint8Array, scope: number, host: Uint8Array): boolean {
   if (offset < 0 || offset > 65535 || offset !== Math.trunc(offset)) return false;
-  if (scope < 0 || scope > 5 || scope !== Math.trunc(scope)) return false;
+  if (scope < 0 || scope > 7 || scope !== Math.trunc(scope)) return false;
   if (query.length > 64 || host.length > 255) return false;
   return validNavigationFilter(scope, host.length);
 }
 
 function validNavigationFilter(scope: number, length: number): boolean {
   if (scope === 5) return length === 12;
+  if (scope === 7) return length === 34;
   return scope === 3 || length === 0;
 }
 
@@ -860,6 +861,7 @@ export function navigationHostFilter(target: Uint8Array): Uint8Array | null {
 function validNavigationTarget(target: Uint8Array): boolean {
   if (target.length === 10 && target[0] === 4) return true;
   if (target.length === 22 && target[0] === 5) return true;
+  if (target.length === 34 && target[0] === 6) return true;
   if (navigationHostFilter(target) !== null) return true;
   return target.length >= 38 && target.length <= 298 && target[0] === 2;
 }
@@ -906,7 +908,7 @@ function navigationRowMetadata(bytes: Uint8Array, at: number, row: NavigationRow
   if (end > bytes.length) return null;
   // Exactly the host rows carry a filter token instead of catalog authority.
   const host = navigationHostFilter(row.target);
-  if (!navigationKindMatchesTarget(kind, row.target, host !== null)) return null;
+  if (!navigationKindMatchesTarget(kind, row.target, host !== null || (row.target.length === 34 && row.target[0] === 6))) return null;
   return { ...row, kind: Math.trunc(kind), selectable: (selectable & 1) !== 0, current: (selectable & 2) !== 0, detail: bytes.subarray(at + 3, end), host: host ?? new Uint8Array(0) };
 }
 
@@ -1028,7 +1030,7 @@ function navigationContext(bytes: Uint8Array, at: number): NavigationContext | n
   if (at + 2 > bytes.length) return null;
   const scope = bytes[at];
   const length = bytes[at + 1];
-  if (!(scope >= 0 && scope <= 5)) return null;
+  if (!(scope >= 0 && scope <= 7)) return null;
   if (at + 5 + length > bytes.length) return null;
   if (!validNavigationFilter(scope, length)) return null;
   return { scope: Math.trunc(scope), host: bytes.subarray(at + 2, at + 2 + length), at: at + 2 + length };

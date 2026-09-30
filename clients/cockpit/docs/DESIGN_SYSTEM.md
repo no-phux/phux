@@ -41,32 +41,42 @@ ladder. The 224pt workspace rail is a deliberate 4pt-grid composition: 24pt
 horizontal padding leaves 200pt for terminal labels and agent summaries.
 The 640pt Settings/picker maximum is a composition choice on the same grid;
 the compiled layout audit verifies it at 900×420, 1100×640 and 1680×1000.
-Healthy windows give footer space back to the terminal. Failure notices retain
-their measured band, and terminal geometry is measured from the compiled tree.
-Connection recovery takes precedence over retained command feedback: an old
-command outcome must never hide the Reconnect action.
+Terminal geometry remains fixed beneath the header and beside the optional rail.
+Connection changes and command outcomes never insert a footer or resize that
+space. Status, retained command feedback and Reconnect live in Connected hosts;
+its fixed-size header trigger indicates attention without changing chrome bounds.
 
-The top header is tab-first: traffic-light reserve, equal-width tabs, New Tab,
-and one Workspace actions trigger. Tabs divide the measured strip without a
-maximum width; the readable minimum still determines overflow. The actions
-menu groups session/machine/agent navigation, window/layout actions, and
-Commands/Settings. It names the current window's session and connection inside
-the menu rather than charging every tab for a permanent session chip. Side-tab
-mode uses the freed header space for the session title.
+The top header is tab-first: traffic-light reserve, equal-width tabs, a compact
+Connected hosts trigger, New Tab, and Workspace actions. Each trailing trigger
+uses the 32pt small register; the remaining measured strip belongs to tabs.
+The host dropdown lists real local/remote attachments, marks the opening
+window's current host, and exposes connection state without a permanent host
+label consuming title width. Host selection opens that captured attachment's
+sessions; Connect to Host and machine management remain directly available.
+Workspace actions groups session/machine/agent navigation, window/layout
+actions, and Commands/Settings. Both menus name the current window's session
+and connection. Side-tab mode uses the freed header space for the session title.
 
-Top-tab titles are direct SDK tab triggers: Left/Right and Home/End move
-keyboard focus among visible tabs, and Enter/Space activates the focused tab.
+Top-tab titles are direct SDK tab triggers inside the native Tabs focus group:
+Left/Right and Home/End move keyboard focus; Enter/Space activates the focused tab.
 The SDK paints their selected underline within the shared 32pt header-control
-height. Each tab has a separate 32pt close target and a fixed 16pt attention
-slot; neither participates in arrow traversal. The shipping tab floor is 156pt:
-the existing 120pt readable floor plus the 32pt close target and its 4pt gap.
-The strip overflows before titles collapse into control furniture. Closing a
+height. The title trigger and its 32pt close target form one tab unit with a
+1pt internal seam and 6pt between units. A fixed inline terminal icon
+becomes an attention icon without changing label geometry; attention is also
+named to assistive technology. The shipping tab floor remains 156pt, so the
+strip overflows before titles collapse into control furniture. Closing a
 background tab uses its captured identity and preserves the selected terminal.
-Every close action
-has a full-title accessible name; the selected tab also has a full-title close
-tooltip. Limiting that transient surface to selection keeps a crowded rail
-within the SDK's anchored-surface budget. Side tabs use the same close target
-and identity contract.
+Every close action has a full-title accessible name; the selected tab also has
+a full-title close tooltip. Side tabs compose the icon, eliding title and close
+control inside one selected row, never overlaying the SDK's painted icon slot.
+
+Both tab context menus offer Rename Tab, movement and Close Tab. Rename captures
+the invoked tab, prefills its current name, and writes the shared workspace
+window name on that tab's owning attachment. It never renames the session or
+speculates local success. Confirmation comes from the durable workspace mutation;
+changed targets, unavailable connections and unconfirmed writes remain visible
+errors. Cancel closes the editor without rolling back an already submitted write.
+Ephemeral scratch tabs report that they have no durable workspace to rename.
 
 An empty session uses a quiet inline group: session heading, machine/status
 detail, and New Tab. It sits below the header and beside the side rail, retaining
@@ -79,6 +89,13 @@ trailing trigger with an 8pt token gap. Its rows, separators, corners and shadow
 are SDK menu primitives. The open menu owns input; Escape, outside dismissal,
 action handoff and native window changes release that ownership. Layout tests
 cover the open menu at the same declared sizes and densities as the chrome.
+
+Connected hosts shares that menu register and input owner, with a 128pt
+scrolling list and paging for additional attachments.
+It projects held provider contexts, including restored alias-backed peers,
+rather than inferring a connection from saved machine registrations. Selection
+retains provider/source context, connection epoch, and originating window
+lifetime; closing or switching windows cannot retarget a held host action.
 
 The navigator is a semantic SDK dialog with a preferred 640×640pt frame. The
 width reuses the picker maximum; the square preferred envelope is a composition
@@ -101,8 +118,9 @@ Native window materials are implemented in the SDK host, underneath the canvas
 content. Chrome uses the manifest's Geist theme and accent, following macOS
 appearance, contrast and reduced motion rather than forcing a dark token set.
 The native material and its foreground controls therefore share one appearance.
-The header and rail leave their background transparent; the terminal
-painter fills the independently measured terminal space, including all gutters,
+The header and rail leave their background transparent. Split panes keep opaque
+terminal cells and rounded card interiors, while their gaps and outer corners
+reveal the same host material. A lone pane fills the measured terminal space
 with its opaque configured background. Material geometry therefore follows the
 window while terminal geometry continues to follow the compiled markup slot.
 Neither path derives chrome spacing from terminal cell metrics.
