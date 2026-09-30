@@ -83,7 +83,9 @@ export async function buildSearchIndex(distDir) {
   }
 
   const source = loader({ source: { files }, baseUrl: "/" });
-  const server = createFromSource(source);
+  // Results use relevance and page-group ranking, never field-based sorting.
+  // Do not ship a second copy of every document in unused sorting indexes.
+  const server = createFromSource(source, { sort: { enabled: false } });
   const exported = await server.export();
 
   await mkdir(join(distDir, "api"), { recursive: true });
