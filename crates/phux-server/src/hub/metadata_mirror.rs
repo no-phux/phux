@@ -41,9 +41,10 @@ pub(crate) fn publish_asked_flag(state: &mut ServerState, wire: &ResourceId, ask
 
 /// Retag a satellite-local metadata scope and store it on the hub.
 ///
-/// `value: None` is a tombstone. Returns `false` when `key` is not
-/// allowlisted or `scope` is not a `Local` terminal (including a
-/// `Satellite` scope, which would chain).
+/// `value: None` is a tombstone, and so is a value over the hub's
+/// `metadata_value_bytes`, the cap a client write is held to. Returns
+/// `false` when `key` is not allowlisted or `scope` is not a `Local`
+/// terminal (including a `Satellite` scope, which would chain).
 pub(crate) fn apply_mirrored(
     state: &mut ServerState,
     host: &SatelliteHost,
@@ -57,6 +58,8 @@ pub(crate) fn apply_mirrored(
     let Some(retagged) = retag_local_scope(host, scope) else {
         return false;
     };
+    let cap = usize::try_from(state.metadata_value_bytes()).unwrap_or(usize::MAX);
+    let value = value.filter(|bytes| bytes.len() <= cap);
     match value {
         Some(bytes) => {
             state.metadata_set(&retagged, key, bytes);
