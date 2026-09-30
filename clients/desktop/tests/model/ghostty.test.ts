@@ -39,6 +39,12 @@ keybind = super+plus=increase_font_size:1
 keybind = super+3=goto_tab:3
 keybind = ctrl+shift+tab=previous_tab
 keybind = super+shift+arrow_up=jump_to_prompt:-1
+keybind = super+shift+arrow_down=jump_to_prompt:3
+keybind = ctrl+shift+c=copy_to_clipboard:mixed
+keybind = ctrl+shift+v=paste_from_clipboard
+keybind = super+alt+a=select_all
+keybind = super+alt+s=write_scrollback_file:open
+keybind = super+alt+v=write_selection_file:copy,html
 keybind = super+t=unbind
 keybind = shift+enter=text:\\x1b\\r
 keybind = super+alt+t=text:a=b
@@ -86,7 +92,7 @@ describe("ghostty config", () => {
     expect(config.keybinds.get("ctrl+`")).toBe("quick-terminal");
     expect(config.keybinds.get("cmd+t")).toBe("");
     expect(config.unmapped).toEqual([
-      "super+shift+arrow_up = jump_to_prompt:-1",
+      "super+alt+v = write_selection_file:copy,html",
       "ctrl+a>c = new_tab",
       "x = new_tab",
       "super+k = reset",
@@ -102,6 +108,12 @@ describe("ghostty config", () => {
     expect(config.keybinds.get("cmd+e")).toBe("find-selection");
     expect(config.keybinds.get("cmd+alt+h")).toBe("split-left");
     expect(config.keybinds.get("f12")).toBe("font-size:15");
+    expect(config.keybinds.get("cmd+shift+up")).toBe("prompt-prev");
+    expect(config.keybinds.get("cmd+shift+down")).toBe("prompt-jump:3");
+    expect(config.keybinds.get("ctrl+shift+c")).toBe("copy");
+    expect(config.keybinds.get("ctrl+shift+v")).toBe("paste");
+    expect(config.keybinds.get("cmd+alt+a")).toBe("select-all");
+    expect(config.keybinds.get("cmd+alt+s")).toBe("write-file:scrollback:open");
     // Copy stays the terminal's own; an unsupported rebind drops no built-in.
     expect(config.keybinds.has("cmd+c")).toBe(false);
     expect(config.keybinds.has("cmd+k")).toBe(false);
@@ -166,7 +178,17 @@ describe("ghostty config", () => {
     expect(ghosttyAction("new_split:down")).toBe("split-down");
     expect(ghosttyAction("resize_split:left,20")).toBe("resize-left");
     expect(ghosttyAction("goto_tab:9")).toBe("tab-9");
-    expect(ghosttyAction("write_screen_file:paste")).toBeUndefined();
+    expect(ghosttyAction("write_screen_file:paste")).toBe("write-file:screen:paste");
+    expect(ghosttyAction("write_selection_file:copy,plain")).toBe("write-file:selection:copy");
+    expect(ghosttyAction("write_screen_file:open,vt")).toBeUndefined();
+    expect(ghosttyAction("write_screen_file:print")).toBeUndefined();
+    expect(ghosttyAction("jump_to_prompt:1")).toBe("prompt-next");
+    expect(ghosttyAction("jump_to_prompt:0")).toBeUndefined();
+    expect(ghosttyAction("jump_to_prompt:1.5")).toBeUndefined();
+    expect(ghosttyAction("copy_to_clipboard")).toBe("copy");
+    expect(ghosttyAction("copy_to_clipboard:vt")).toBeUndefined();
+    expect(ghosttyAction("paste_from_selection")).toBe("paste-selection");
+    expect(ghosttyAction("reset")).toBeUndefined();
   });
 });
 

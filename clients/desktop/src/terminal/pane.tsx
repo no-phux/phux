@@ -2,7 +2,7 @@ import { Show, type JSX, type Accessor } from "solid-js";
 import type { DesktopPane } from "../../native/generated/index";
 import type { AgentInfo } from "../bridge/desktop";
 import { paneTitle, shortPath } from "../shell/sidebar";
-import type { TerminalTheme } from "../terminal-element";
+import type { HostAction, TerminalTheme } from "../terminal-element";
 import { IconButton, Label, Pill, StatusDot, row, usePalette } from "../ui/controls";
 import { agentColors, uiFont } from "../ui/theme";
 import type { Placement } from "../workspace/layout";
@@ -26,6 +26,8 @@ export interface PaneProps {
   font: { family: string; size: number; lineHeight: number; cellWidth: number; cellHeight: number };
   /** Non-Command chords the shell binds; the terminal lets them through. */
   appChords: string[];
+  /** A clipboard or open request for this terminal, run once per new id. */
+  hostAction?: HostAction | undefined;
   padding: { x: number; y: number };
   /** 0 for none, else how strongly an unfocused pane is dimmed. */
   dim: number;
@@ -160,6 +162,7 @@ export function Pane(props: PaneProps): JSX.Element {
           sizeOwner={props.sizeOwner}
           optionAsAlt={props.optionAsAlt}
           appChords={props.appChords}
+          hostAction={props.hostAction}
           font={props.font}
           theme={props.theme}
           onClick={() => props.focus()}
