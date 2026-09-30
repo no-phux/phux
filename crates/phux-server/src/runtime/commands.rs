@@ -1715,7 +1715,7 @@ impl AttachResourceSession<'_> {
             cursor,
         )
         .await
-        .map_err(|()| {
+        .map_err(|_| {
             AttachResourceFailure::internal("pane actor unavailable at native publication fence")
         })?;
         let Some(publication_gate) = generation.native_publication_gate.take() else {

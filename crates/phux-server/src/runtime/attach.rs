@@ -263,15 +263,26 @@ const fn publishes_native_checkpoints(profile: BootstrapStreamProfile) -> bool {
     )
 }
 
-/// Why a native checkpoint request produced no reply.
+/// Why a native checkpoint or publication request produced no reply.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-enum NativeCaptureFailure {
+#[derive(Debug)]
+pub(crate) enum NativeRequestFailure {
     /// The actor mailbox is closed.
     Unsent,
     /// The actor dropped the reply.
     Dropped,
-    /// The actor refused the capture.
+    /// The actor refused the request.
     Refused(crate::native_state::NativeStateError),
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+impl NativeRequestFailure {
+    /// The pane's actor is gone: the pane exited, and `RESOURCE_CLOSED` is
+    /// its end. No generation of it can be published, and that is no fault
+    /// of the connection.
+    const fn actor_gone(&self) -> bool {
+        matches!(self, Self::Unsent | Self::Dropped)
+    }
 }
 
 /// Send the native checkpoint request `make` builds and await its reply.
@@ -286,17 +297,17 @@ async fn request_native_checkpoint(
             >,
         >,
     ) -> crate::terminal_actor::NativeBootstrapRequest,
-) -> Result<crate::terminal_actor::NativeBootstrapReply, NativeCaptureFailure> {
+) -> Result<crate::terminal_actor::NativeBootstrapReply, NativeRequestFailure> {
     let (reply_tx, reply_rx) = oneshot::channel();
     terminal
         .native_bootstrap
         .send(make(reply_tx))
         .await
-        .map_err(|_| NativeCaptureFailure::Unsent)?;
+        .map_err(|_| NativeRequestFailure::Unsent)?;
     reply_rx
         .await
-        .map_err(|_| NativeCaptureFailure::Dropped)?
-        .map_err(NativeCaptureFailure::Refused)
+        .map_err(|_| NativeRequestFailure::Dropped)?
+        .map_err(NativeRequestFailure::Refused)
 }
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -320,7 +331,7 @@ pub(crate) async fn activate_native_publication(
     stream_id: StreamId,
     bootstrap_id: BootstrapId,
     cursor: crate::native_state::OpaqueHistoryCursor,
-) -> Result<crate::terminal_actor::NativePublicationReply, ()> {
+) -> Result<crate::terminal_actor::NativePublicationReply, NativeRequestFailure> {
     let (reply, publication) = oneshot::channel();
     handle
         .native_publication
@@ -333,8 +344,11 @@ pub(crate) async fn activate_native_publication(
             reply,
         })
         .await
-        .map_err(|_| ())?;
-    publication.await.map_err(|_| ())?.map_err(|_| ())
+        .map_err(|_| NativeRequestFailure::Unsent)?;
+    publication
+        .await
+        .map_err(|_| NativeRequestFailure::Dropped)?
+        .map_err(NativeRequestFailure::Refused)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -838,17 +852,17 @@ impl OutputPumpContext {
         .await;
         let reply = match captured {
             Ok(reply) => reply,
-            Err(NativeCaptureFailure::Unsent | NativeCaptureFailure::Dropped) => {
+            Err(NativeRequestFailure::Unsent | NativeRequestFailure::Dropped) => {
                 return Err(PumpFault::PaneGone);
             }
-            Err(NativeCaptureFailure::Refused(crate::native_state::NativeStateError::Resize)) => {
+            Err(NativeRequestFailure::Refused(crate::native_state::NativeStateError::Resize)) => {
                 debug!(
                     terminal_id = ?self.wire_terminal_id,
                     "native checkpoint invalidated mid-capture; awaiting the resync"
                 );
                 return Ok(None);
             }
-            Err(NativeCaptureFailure::Refused(error)) => {
+            Err(NativeRequestFailure::Refused(error)) => {
                 warn!(
                     terminal_id = ?self.wire_terminal_id,
                     %error,
@@ -913,7 +927,16 @@ impl OutputPumpContext {
             cursor,
         )
         .await
-        .map_err(|()| PumpFault::PublicationNotActivated)?;
+        .map_err(|failure| {
+            // The pane exited while this pump was blocked publishing its
+            // replacement to a slow consumer: the pane ended, the client
+            // did not.
+            if failure.actor_gone() {
+                PumpFault::PaneGone
+            } else {
+                PumpFault::PublicationNotActivated
+            }
+        })?;
         // Unfence before the replay so it passes the same `forwards` gate as
         // live output: a replay entry at or behind the cut is already in the
         // checkpoint, and resending it is a `DuplicateSequence` the client
@@ -2430,7 +2453,7 @@ impl SpawnPublication<'_> {
             }
         })
         .await;
-        if let Err(NativeCaptureFailure::Refused(error)) = &captured {
+        if let Err(NativeRequestFailure::Refused(error)) = &captured {
             let core_terminal_id = self.core_terminal_id;
             warn!(?core_terminal_id, %error, "native spawn preflight failed");
         }
@@ -3046,15 +3069,15 @@ impl PaneCaptureContext<'_> {
         .await;
         let mut reply = match captured {
             Ok(reply) => reply,
-            Err(NativeCaptureFailure::Refused(error)) => {
+            Err(NativeRequestFailure::Refused(error)) => {
                 warn!(?terminal_id, %error, "native checkpoint failed before attach publication");
                 return Err("native checkpoint capture failed".to_owned());
             }
-            Err(NativeCaptureFailure::Unsent) => {
+            Err(NativeRequestFailure::Unsent) => {
                 warn!(?terminal_id, "pane actor dropped before native bootstrap");
                 return Err("pane actor dropped native bootstrap request".to_owned());
             }
-            Err(NativeCaptureFailure::Dropped) => {
+            Err(NativeRequestFailure::Dropped) => {
                 warn!(?terminal_id, "pane actor dropped native checkpoint reply");
                 return Err("pane actor dropped native checkpoint reply".to_owned());
             }
@@ -3297,7 +3320,7 @@ impl AttachPublication<'_> {
             };
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             if let Some(cursor) = gate.native_cursor {
-                let Ok(publication) = activate_native_publication(
+                let publication = match activate_native_publication(
                     &gate.terminal,
                     self.client_id.0,
                     gate.wire_terminal_id,
@@ -3306,13 +3329,20 @@ impl AttachPublication<'_> {
                     cursor,
                 )
                 .await
-                else {
-                    crate::runtime::client::detach_and_release_consumer_state(
-                        self.state,
-                        self.client_id,
-                    );
-                    self.connection_token.cancel();
-                    return;
+                {
+                    Ok(publication) => publication,
+                    // The pane exited after its capture: dropping the gate
+                    // ends its pump quietly, and `RESOURCE_CLOSED` tells the
+                    // client. The rest of the attach is unaffected.
+                    Err(failure) if failure.actor_gone() => continue,
+                    Err(_) => {
+                        crate::runtime::client::detach_and_release_consumer_state(
+                            self.state,
+                            self.client_id,
+                        );
+                        self.connection_token.cancel();
+                        return;
+                    }
                 };
                 start.replay = publication.replay;
                 start.live = Some(publication.live);
@@ -4902,6 +4932,50 @@ mod tests {
                 assert_quiet(&mut consumer, "the resynced pump").await;
                 assert!(!consumer.task.is_finished(), "the client stays attached");
                 consumer.task.abort();
+            })
+            .await;
+    }
+
+    /// A pane that exits while its pump is blocked publishing a replacement
+    /// generation to a slow consumer ends that pump as `PaneGone`, not as a
+    /// connection fault: the client learns of the exit from
+    /// `RESOURCE_CLOSED` and keeps its connection. Hosted CI saw the old
+    /// mapping disconnect `a_consumer_that_falls_behind...` mid-flood.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_pane_gone_before_its_replacement_publication_is_not_a_connection_fault() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (handle, _consumer_attach_rx, mut bootstrap_rx, mut publication_rx) =
+                    native_attach_handle();
+                let (output, _keepalive) = tokio::sync::broadcast::channel(16);
+                let (resize, _resize_rx) = tokio::sync::mpsc::channel(4);
+                let terminal = handle.terminal().expect("terminal facet").clone();
+                let mut consumer = spawn_native_pump(terminal, &output, resize);
+
+                output
+                    .send(PaneOutput::Resync {
+                        cols: 80,
+                        rows: 24,
+                        reason: crate::terminal_actor::ResyncReason::Resize,
+                        audience: ResyncAudience::Everyone,
+                        base_seq: 0,
+                        bytes: bytes::Bytes::new(),
+                    })
+                    .expect("pump subscribed");
+                let capture = bootstrap_rx.recv().await.expect("replacement capture");
+                let reply = empty_native_checkpoint(&capture);
+                capture.reply.send(Ok(reply)).expect("pump awaits capture");
+                assert_eq!(frames_seen(&mut consumer, 3).await.len(), 3);
+                // The actor exits with the request in its mailbox.
+                drop(publication_rx.recv().await.expect("publication request"));
+
+                let fault = consumer.task.await.expect("pump task");
+                assert!(
+                    matches!(fault, Some(PumpFault::PaneGone)),
+                    "a gone pane must not close the client: {fault:?}"
+                );
             })
             .await;
     }
