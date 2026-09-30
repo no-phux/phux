@@ -131,8 +131,13 @@ pub(super) fn apply_resize(
     if total_cells == 0 {
         return Err(ActionError::NoResizableBoundary);
     }
-    let delta = f32::from(amount) / f32::from(total_cells);
-    let (new_tree, applied) = resize_along_axis(tree, focused, target_axis, dir, delta);
+    let resize = AxisResize {
+        focused,
+        axis: target_axis,
+        dir,
+        cells: f32::from(amount),
+    };
+    let (new_tree, applied) = resize.apply(tree, f32::from(total_cells));
     if !applied {
         return Err(ActionError::NoResizableBoundary);
     }
@@ -146,72 +151,70 @@ pub(super) fn apply_resize(
     Ok(Some(candidate))
 }
 
-/// Adjust the first split on `axis` that contains `focused`, returning
-/// `(new_tree, applied)`: its boundary moves `delta` toward `dir`.
-fn resize_along_axis(
-    node: &LayoutNode,
-    focused: &ResourceId,
+/// One `resize-pane`: move the divider of the split on `axis` nearest to
+/// `focused` by `cells` toward `dir` (tmux's `resize-pane -L/-R/-U/-D`).
+struct AxisResize<'a> {
+    focused: &'a ResourceId,
     axis: SplitDir,
     dir: Direction,
-    delta: f32,
-) -> (LayoutNode, bool) {
-    match node {
-        LayoutNode::Leaf(p) => (LayoutNode::Leaf(p.clone()), false),
-        LayoutNode::Split {
+    cells: f32,
+}
+
+impl AxisResize<'_> {
+    /// Rebuild `node` (spanning `extent` cells on the axis) with the nearest
+    /// enclosing split on the axis moved, returning `(new_tree, applied)`.
+    fn apply(&self, node: &LayoutNode, extent: f32) -> (LayoutNode, bool) {
+        let LayoutNode::Split {
             dir: sd,
             ratio,
             left,
             right,
-        } => {
-            if *sd == axis {
-                let left_has = tree_contains(left, focused);
-                let right_has = tree_contains(right, focused);
-                if left_has || right_has {
-                    // The boundary moves toward `dir` whichever side holds
-                    // focus, as tmux's `resize-pane -L/-R/-U/-D` do: a right
-                    // or lower pane grows toward `dir`, a left or upper one
-                    // gives way. `ratio` is the left (upper) child's share.
-                    let signed_delta = match dir {
-                        Direction::Right | Direction::Down => delta,
-                        Direction::Left | Direction::Up => -delta,
-                    };
-                    let new_ratio = clamp_ratio(*ratio + signed_delta);
-                    return (
-                        LayoutNode::Split {
-                            dir: *sd,
-                            ratio: new_ratio,
-                            left: left.clone(),
-                            right: right.clone(),
-                        },
-                        true,
-                    );
-                }
-            }
-            if tree_contains(left, focused) {
-                let (new_left, applied) = resize_along_axis(left, focused, axis, dir, delta);
-                (
-                    LayoutNode::Split {
-                        dir: *sd,
-                        ratio: *ratio,
-                        left: Box::new(new_left),
-                        right: right.clone(),
-                    },
-                    applied,
-                )
-            } else if tree_contains(right, focused) {
-                let (new_right, applied) = resize_along_axis(right, focused, axis, dir, delta);
-                (
-                    LayoutNode::Split {
-                        dir: *sd,
-                        ratio: *ratio,
-                        left: left.clone(),
-                        right: Box::new(new_right),
-                    },
-                    applied,
-                )
-            } else {
-                (node.clone(), false)
-            }
+        } = node
+        else {
+            return (node.clone(), false);
+        };
+        let on_axis = *sd == self.axis;
+        // A child's extent on the axis: its share when this split divides
+        // the axis, the whole extent when it stacks across it.
+        let (left_extent, right_extent) = if on_axis {
+            (extent * *ratio, extent * (1.0 - *ratio))
+        } else {
+            (extent, extent)
+        };
+        // A deeper split on the axis is the pane's own border; try it first.
+        let (new_left, new_right, applied) = if tree_contains(left, self.focused) {
+            let (new_left, applied) = self.apply(left, left_extent);
+            (Box::new(new_left), right.clone(), applied)
+        } else if tree_contains(right, self.focused) {
+            let (new_right, applied) = self.apply(right, right_extent);
+            (left.clone(), Box::new(new_right), applied)
+        } else {
+            return (node.clone(), false);
+        };
+        let rebuilt = move |ratio| LayoutNode::Split {
+            dir: *sd,
+            ratio,
+            left: new_left,
+            right: new_right,
+        };
+        if applied || !on_axis || extent <= 0.0 {
+            return (rebuilt(*ratio), applied);
+        }
+        (
+            rebuilt(clamp_ratio(*ratio + self.signed_delta(extent))),
+            true,
+        )
+    }
+
+    /// The ratio step for `cells` of a split spanning `extent` cells. The
+    /// boundary moves toward `dir` whichever side holds focus: a right or
+    /// lower pane grows toward `dir`, a left or upper one gives way. `ratio`
+    /// is the left (upper) child's share.
+    fn signed_delta(&self, extent: f32) -> f32 {
+        let delta = self.cells / extent;
+        match self.dir {
+            Direction::Right | Direction::Down => delta,
+            Direction::Left | Direction::Up => -delta,
         }
     }
 }
@@ -684,6 +687,68 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(ratio(&up) < 0.5, "{}", ratio(&up));
+    }
+
+    /// In `(1 | (2 | 3))` the `2|3` divider is pane 3's own border, but
+    /// `resize-pane` moved the outer `1|23` one. As tmux does, the nearest
+    /// enclosing split on the axis moves, by cells of that split's extent.
+    #[test]
+    fn resize_moves_the_nearest_split_on_the_axis() {
+        let outer = two_pane(SplitDir::Horizontal).tree.unwrap();
+        let nested = split_at(&outer, &t(2), &t(3), SplitDir::Horizontal, 0.5).unwrap();
+        let inner_ratio = |state: &LayoutState| {
+            let Some(LayoutNode::Split { right, .. }) = state.tree.as_ref() else {
+                panic!("expected split");
+            };
+            let LayoutNode::Split { ratio, .. } = right.as_ref() else {
+                panic!("expected nested split");
+            };
+            *ratio
+        };
+        for focus in [t(2), t(3)] {
+            let state = LayoutState {
+                tree: Some(nested.clone()),
+                focus: Some(focus.clone()),
+            };
+            // 4 cells of the inner split's ~40-cell extent is ~0.1.
+            let moved = apply_resize(&state, Direction::Left, 4, (80, 24), None)
+                .unwrap()
+                .unwrap();
+            assert!((ratio(&moved) - 0.5).abs() < 1e-4, "{focus:?}: outer moved");
+            assert!(
+                (inner_ratio(&moved) - 0.4).abs() < 0.01,
+                "{focus:?}: inner at {}",
+                inner_ratio(&moved)
+            );
+        }
+        // Pane 1's nearest horizontal split is the outer one.
+        let state = LayoutState {
+            tree: Some(nested),
+            focus: Some(t(1)),
+        };
+        let moved = apply_resize(&state, Direction::Right, 8, (80, 24), None)
+            .unwrap()
+            .unwrap();
+        assert!((ratio(&moved) - 0.6).abs() < 1e-4);
+        assert!((inner_ratio(&moved) - 0.5).abs() < 1e-4);
+    }
+
+    /// A vertical resize from inside a horizontal split still finds the
+    /// enclosing vertical split, however deep the pane sits.
+    #[test]
+    fn resize_skips_splits_on_the_other_axis() {
+        let state = three_pane_mixed();
+        let moved = apply_resize(&state, Direction::Down, 3, (80, 24), None)
+            .unwrap()
+            .unwrap();
+        let LayoutNode::Split { dir, ratio, .. } = moved.tree.as_ref().unwrap() else {
+            panic!("expected split");
+        };
+        assert_eq!(*dir, SplitDir::Horizontal);
+        assert!(
+            (*ratio - 0.5).abs() < 1e-4,
+            "the horizontal root is untouched"
+        );
     }
 
     #[test]
