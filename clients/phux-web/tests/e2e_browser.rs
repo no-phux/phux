@@ -128,6 +128,13 @@ async fn resize_reflows_the_live_terminal_and_canvas() {
         "{}",
         failure_artifact("resize", &client, "grid never became 100x30")
     );
+    // Paint lands on the next animation frame.
+    for _ in 0..POLLS {
+        if (canvas.width(), canvas.height()) == (100 * 8, 30 * 16) {
+            break;
+        }
+        sleep(POLL).await;
+    }
     assert_eq!(
         (canvas.width(), canvas.height()),
         (100 * 8, 30 * 16),

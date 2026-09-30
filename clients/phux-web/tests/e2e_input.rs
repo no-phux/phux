@@ -247,5 +247,19 @@ async fn wheel_and_shift_page_up_scroll_back_and_typing_returns_to_live() {
         "Shift+PageUp reached the marker: {}",
         screen(&client)
     );
+
+    // The Enters pushed the seeded marker off the live screen of the shared
+    // pane; echo it back so suites that run later against the same server
+    // still find it.
+    let init = CompositionEventInit::new();
+    init.set_data(marker);
+    let retype = CompositionEvent::new_with_event_init_dict("compositionend", &init).unwrap();
+    surface.dispatch_event(&retype).unwrap();
+    assert!(keydown(&surface, "Enter", "Enter", false));
+    assert!(
+        wait_until(&client, true, marker).await,
+        "{}",
+        screen(&client)
+    );
     client.close();
 }
