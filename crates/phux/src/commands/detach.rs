@@ -9,7 +9,8 @@ use crate::commands::warn_interleaved_degradation;
 
 /// `phux detach [SESSION]` — force-detach every client of `SESSION` (or of
 /// the server) from outside the attach UI; each receives `DETACHED` and exits.
-/// Exit 0 (even when nobody was attached), 1 no server, 2 refusal. Dangerous
+/// Exit 0 (even when nobody was attached), 1 no server or no such session,
+/// 2 refusal. Dangerous
 /// (ADR-0128): needs `yes` or a terminal "y", checked before any dial.
 pub(crate) fn run_detach(session: Option<String>, yes: bool, server: ServerSpec) -> ExitCode {
     let (rt, target) = match server.prepare("detach", false) {
@@ -40,6 +41,13 @@ pub(crate) fn run_detach(session: Option<String>, yes: bool, server: ServerSpec)
                     None => outln!("phux: detached {n} client(s)"),
                 }
                 ExitCode::SUCCESS
+            }
+            Ok((DetachOutcome::NoSuchSession, degradation)) => {
+                warn_interleaved_degradation(&degradation);
+                let name = session.as_deref().unwrap_or_default();
+                eprintln!("phux: no such session: {name}");
+                eprintln!("  run `phux ls` to see live sessions");
+                ExitCode::FAILURE
             }
             Ok((DetachOutcome::Malformed(count), degradation)) => {
                 warn_interleaved_degradation(&degradation);

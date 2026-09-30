@@ -566,6 +566,10 @@ async fn phux_detach(args: &Value) -> Result<Value, ToolError> {
         Ok((DetachOutcome::Detached(detached), _)) => {
             Ok(json!({ "schema_version": 1, "detached": detached, "session": session }))
         }
+        Ok((DetachOutcome::NoSuchSession, _)) => Err(ToolError::new(format!(
+            "no such session: {}",
+            session.as_deref().unwrap_or_default()
+        ))),
         Ok((DetachOutcome::Malformed(count), _)) => Err(ToolError::new(format!(
             "phux detach returned a malformed count: {count:?}"
         ))),
