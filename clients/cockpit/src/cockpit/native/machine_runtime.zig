@@ -319,8 +319,8 @@ const FailureCategory = struct { needles: []const []const u8, message: []const u
 // Ordered: credential and registration problems outrank the reachability words
 // a combined message might also contain. Needles follow phux-client-ffi wording.
 const failure_categories = [_]FailureCategory{
-    .{ .needles = &.{"token"}, .message = "Access token is missing or unreadable; re-pair this machine with phux host enroll" },
-    .{ .needles = &.{ "certificate", "fingerprint" }, .message = "Certificate pin is missing or does not match; re-pair this machine with phux host enroll" },
+    .{ .needles = &.{"token"}, .message = "Access token is missing or unreadable; re-pair this machine with phux host add" },
+    .{ .needles = &.{ "certificate", "fingerprint" }, .message = "Certificate pin is missing or does not match; re-pair this machine with phux host add" },
     .{ .needles = &.{ "not a registered host", "not a host name", "phux config" }, .message = "This machine is not registered correctly; check Phux configuration" },
     .{ .needles = &.{ "did not answer", "stopped answering", "could not resolve", "resolved to no addresses" }, .message = "Machine did not answer; check that it is up and on the network" },
 };

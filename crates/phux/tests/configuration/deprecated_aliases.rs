@@ -134,7 +134,7 @@ fn every_table_row_parses_and_warns_once() {
 
 /// Row by row: the old spelling is absent from help. Verb rows must not be
 /// listed by their parent's `--help` (`phux --help` for a top-level verb,
-/// `phux host --help` for `phux host enroll`); flag rows must not show
+/// `phux host --help` for a `phux host` subverb); flag rows must not show
 /// their boolean in the carrying verb's own `--help`.
 #[test]
 fn no_table_row_surfaces_in_help() {

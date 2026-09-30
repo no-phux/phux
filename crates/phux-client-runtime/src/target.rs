@@ -121,7 +121,7 @@ fn parse_port(raw: &str) -> Result<u16, String> {
 
 /// The registry entry that describes `target`.
 ///
-/// Matched as exact `user@host`, then the bare host (what `phux host enroll`
+/// Matched as exact `user@host`, then the bare host (what `phux host add`
 /// registers), then any entry whose endpoint addresses that host. Same
 /// order as the CLI's `find_entry`.
 #[must_use]
@@ -210,7 +210,7 @@ pub fn classify(endpoint: &str, target: &RemoteTarget) -> Result<(String, Transp
     if trimmed.starts_with("ssh://") {
         return Err(format!(
             "{trimmed} rides ssh, which needs a terminal; run `phux --remote NAME` in one, \
-             or give the host a direct listener with `phux host enroll`"
+             or give the host a direct listener with `phux host add`"
         ));
     }
     Err(format!(
@@ -322,7 +322,7 @@ fn unregistered(target: &RemoteTarget) -> String {
     let name = target.registry_name();
     format!(
         "{name} is not a registered host; pair it once in a terminal with \
-         `phux --remote {name}` or `phux host enroll {name}`"
+         `phux --remote {name}` or `phux host add {name}`"
     )
 }
 
@@ -397,7 +397,7 @@ mod tests {
             find_entry(&entries, &target("phall@studio")).map(|e| e.name.as_str()),
             Some("phall@studio")
         );
-        // `enroll` registers the bare host; `me@mini` still finds it.
+        // `host add` registers the bare host; `me@mini` still finds it.
         assert_eq!(
             find_entry(&entries, &target("me@mini")).map(|e| e.name.as_str()),
             Some("mini")

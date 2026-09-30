@@ -1,8 +1,9 @@
 //! Terminal restore sequences for signal handler context.
 //!
 //! MODIFIED FROM UPSTREAM (`xai-crash-handler`): the mode table below was
-//! retargeted from grok's crossterm call sites to phux's hand-written DECSETs.
-//! The byte constants themselves are unchanged.
+//! retargeted from grok's crossterm call sites to phux's hand-written DECSETs,
+//! and the unused mouse-only constants and Windows writer were removed.
+//! [`RESTORE_SEQ`] itself is unchanged.
 //!
 //! See <https://invisible-island.net/xterm/ctlseqs/ctlseqs.html> (DEC
 //! Private Mode Reset / "Mouse Tracking" section) for the full spec.
@@ -42,18 +43,6 @@
 // armed by something else before phux started.
 // -----------------------------------------------------------------------
 
-/// Raw CSI sequences to disable every mouse-tracking mode in the table above
-/// (`?1000/?1002/?1003/?1015/?1006`) — the mouse subset of [`MOUSE_PASTE_RESET`],
-/// without the bracketed-paste (`?2004l`) reset.
-///
-/// Use this to assert mouse tracking OFF without disturbing paste — e.g. to
-/// clear a terminal left reporting by a prior run.
-pub const MOUSE_TRACKING_RESET: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1015l\x1b[?1006l";
-
-/// Raw CSI sequences to disable mouse tracking and bracketed paste.
-pub const MOUSE_PASTE_RESET: &[u8] =
-    b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1015l\x1b[?1006l\x1b[?2004l";
-
 /// Full escape sequence to restore the terminal to a sane state.
 ///
 /// The kitty CSI-u pop precedes `?1049l` per spec (the protocol stack
@@ -64,40 +53,18 @@ pub const RESTORE_SEQ: &[u8] =
 /// Write terminal restore sequences to stderr using raw `libc::write`.
 ///
 /// This is async-signal-safe: it only calls `write(2)` on fd 2 (stderr).
-/// Called from the signal handler after writing the crash blob.
 #[cfg(unix)]
-pub fn restore_in_signal_handler() {
+pub(crate) fn restore_in_signal_handler() {
+    // SAFETY: `write(2)` is async-signal-safe and reads exactly
+    // `RESTORE_SEQ.len()` bytes from a `'static` slice. A short or failed
+    // write is ignored: there is nothing useful to do about it while dying.
     unsafe {
         libc::write(
             2, // stderr
-            RESTORE_SEQ.as_ptr() as *const libc::c_void,
+            RESTORE_SEQ.as_ptr().cast::<libc::c_void>(),
             RESTORE_SEQ.len(),
         );
     }
-}
-
-#[cfg(windows)]
-pub fn restore_in_signal_handler() {
-    unsafe {
-        let stderr = windows_sys::Win32::System::Console::GetStdHandle(
-            windows_sys::Win32::System::Console::STD_ERROR_HANDLE,
-        );
-        if !stderr.is_null() && stderr != -1isize as *mut std::ffi::c_void {
-            let mut written: u32 = 0;
-            windows_sys::Win32::Storage::FileSystem::WriteFile(
-                stderr,
-                RESTORE_SEQ.as_ptr(),
-                RESTORE_SEQ.len() as u32,
-                &mut written,
-                std::ptr::null_mut(),
-            );
-        }
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-pub fn restore_in_signal_handler() {
-    // No-op on unsupported platforms.
 }
 
 #[cfg(test)]

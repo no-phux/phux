@@ -711,21 +711,16 @@ fn ssh_only_registers_ssh_endpoint_without_contacting_the_host() {
     );
 }
 
-/// `phux host enroll` still works as a hidden alias of the ssh form, and
-/// `phux machine` is a visible alias of `phux host` — the word people reach
-/// for.
+/// `phux machine` is a visible alias of `phux host`, the word people reach
+/// for, and `phux host enroll` is gone.
 #[test]
-fn enroll_and_machine_spellings_reach_the_same_verb() {
+fn machine_spelling_reaches_the_same_verb() {
     let never_ssh = Path::new("/nonexistent/phux-test-ssh");
 
     let home = EnrollHome::new();
-    let (code, _stdout, stderr) = home.run(&["host", "enroll", "me@mini", "--ssh-only"], never_ssh);
-    assert_eq!(code, 0, "stderr={stderr}");
-    assert!(
-        stderr.contains("`phux host enroll` is deprecated") && stderr.contains("phux host add"),
-        "the alias warns toward its replacement: {stderr}"
-    );
-    assert!(home.config().contains("endpoint = \"ssh://me@mini\""));
+    let (code, _stdout, _stderr) =
+        home.run(&["host", "enroll", "me@mini", "--ssh-only"], never_ssh);
+    assert_ne!(code, 0, "the retired `host enroll` spelling must not parse");
 
     let home = EnrollHome::new();
     let (code, stdout, stderr) = home.run(&["machine", "add", "me@mini", "--ssh-only"], never_ssh);

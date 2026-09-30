@@ -1622,7 +1622,7 @@ function openHost(model: Model): Model {
   const length = base.hostQuery.length;
   const end = length >= 0 && length <= 255 ? Math.trunc(length) : 0;
   return scopeOverlays({ ...base, hostOpen: true, settingsOpen: false, hostAnchor: end, hostFocus: end,
-    hostNotice: base.remoteLine.length > 0 ? base.remoteLine : asciiBytes("A host registered with phux host add or phux host enroll") });
+    hostNotice: base.remoteLine.length > 0 ? base.remoteLine : asciiBytes("A host registered with phux host add") });
 }
 
 /// Apply one engine answer. A failure keeps the panel and the typed host;

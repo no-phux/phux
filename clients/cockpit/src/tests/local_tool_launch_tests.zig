@@ -201,7 +201,7 @@ test "localtool setup argv uses a dedicated spawn and unknown disconnect never r
     defer arena.deinit();
     const argv = try tools.enrollmentArgv(arena.allocator(), "/fixture/phux", "me@fixture", "Fixture Mac");
     _ = try adapter.launch(&h, {}, 0, h.model.window_epochs[0], argv, "/local cwd", "Add Machine");
-    try expectSpawn(h.local, &.{ "/fixture/phux", "host", "enroll", "--name", "Fixture Mac", "--", "me@fixture" }, "/local cwd");
+    try expectSpawn(h.local, &.{ "/fixture/phux", "host", "add", "--name", "Fixture Mac", "--", "me@fixture" }, "/local cwd");
     h.local.host.disconnect();
     const result = h.local.takeOperationResult().?;
     try testing.expectEqual(.unknown_outcome, result.status);

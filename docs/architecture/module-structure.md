@@ -229,7 +229,8 @@ features: `dhat-heap` here, `tokio-console` via `phux-server`.
   `docs/reference/parity.md`.
 - **`phux-plugin`** — argv plugin execution shared by `config run` and the
   server's hook dispatcher.
-- **`phux-crash`** — vendored fatal-signal handler (Apache-2.0 only) that
+- **`phux-crash`** — fatal-signal handler trimmed from an upstream crate
+  (Apache-2.0 only) that
   restores the terminal from an alternate signal stack before re-raising.
 - **`phux-perf`** — lock-free telemetry primitives and the `PerfReport`
   behind `GET_PERF` (ADR-0096); no workspace dependencies.
