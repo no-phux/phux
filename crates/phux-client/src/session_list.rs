@@ -13,9 +13,63 @@ use phux_protocol::wire::info::{
     ExitFacet, HostInventory, HostSessionInfo, SessionInfo, SessionSnapshot,
 };
 
+use crate::attach::AttachError;
+use crate::attach::connection::Connection;
+use crate::layout_ops::{LayoutOps, LayoutOpsError};
 use crate::resource;
 use crate::selector::format_terminal_id;
-use crate::state::Degradation;
+use crate::state::{Degradation, StateView};
+
+/// The `GET_STATE` view a session listing (`phux ls`, `phux status`, MCP
+/// `phux_ls`) is built from, with window counts as a TUI shows them
+/// ([`count_layout_windows`]).
+///
+/// # Errors
+///
+/// [`crate::state::get_state_on`]'s errors, or a transport failure while
+/// reading layouts.
+pub async fn listing_view(conn: &mut Connection) -> Result<StateView, AttachError> {
+    let mut view = crate::state::get_state_on(conn).await?;
+    count_layout_windows(conn, &mut view).await?;
+    Ok(view)
+}
+
+/// First request id [`count_layout_windows`] reads layouts with; clear of
+/// the `GET_STATE` that fetched the snapshot.
+const LAYOUT_READ_FIRST_REQUEST_ID: u32 = 0x4c00;
+
+/// Count each local session's windows the way a TUI or Cockpit shows them.
+///
+/// Windows are consumer vocabulary (ADR-0017): the tabs live in the
+/// session's `phux.tui.layout/v1/<id>` envelope, while the server's own
+/// `window_count` stays at one per session however many tabs exist. Each
+/// session with a stored envelope takes that envelope's window count; a
+/// session never laid out (created headless and not yet attached), or
+/// whose layout this connection may not read, keeps the server's count.
+/// Use a dedicated, unsubscribed connection.
+///
+/// # Errors
+///
+/// Transport failures only; every other layout read failure keeps the
+/// server's count.
+pub async fn count_layout_windows(
+    conn: &mut Connection,
+    view: &mut StateView,
+) -> Result<(), AttachError> {
+    let mut request_id = LAYOUT_READ_FIRST_REQUEST_ID;
+    for session in &mut view.snapshot_mut().sessions {
+        let read = LayoutOps::new(conn, session.id, request_id).read().await;
+        request_id = request_id.wrapping_add(1);
+        match read {
+            Ok(workspace) => {
+                session.window_count = u16::try_from(workspace.windows.len()).unwrap_or(u16::MAX);
+            }
+            Err(LayoutOpsError::Transport(err)) => return Err(err),
+            Err(_) => {}
+        }
+    }
+    Ok(())
+}
 
 /// The stable `phux ls --json` document for one fetched view.
 ///
@@ -195,6 +249,51 @@ mod tests {
         SessionInfo::new(SessionId::new(1), name)
             .with_window_count(windows)
             .with_attached_client_count(clients)
+    }
+
+    /// `phux ls` said "1 window" while the TUI showed two tabs: the server
+    /// holds one registry window per session, and the tabs live in the
+    /// layout envelope. A laid-out session reports its envelope's windows;
+    /// one never laid out keeps the server's count.
+    #[tokio::test]
+    async fn listing_counts_windows_from_the_layout_envelope() {
+        use crate::layout::{LayoutState, WindowState, Workspace};
+        use crate::layout_ops::{DEFAULT_LAYOUT_GROUP_ID, layout_key};
+        use crate::testkit::{ScriptSpec, ScriptedServer};
+        use phux_protocol::wire::frame::Scope;
+
+        let tabs = Workspace {
+            windows: vec![
+                WindowState::new("0".to_owned(), LayoutState::single(ResourceId::local(1))),
+                WindowState::new("1".to_owned(), LayoutState::single(ResourceId::local(2))),
+            ],
+            active: 1,
+        };
+        let (tabbed, headless) = (SessionId::new(1), SessionId::new(2));
+        let snapshot = SessionSnapshot::new(tabbed, WindowId::new(1), ResourceId::local(1))
+            .with_sessions(vec![
+                SessionInfo::new(tabbed, "tabbed").with_window_count(1),
+                SessionInfo::new(headless, "headless").with_window_count(1),
+            ]);
+        let spec = ScriptSpec::new().state(snapshot).stored_metadata(
+            Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
+            &layout_key(tabbed),
+            tabs.encode_cbor().expect("encode"),
+        );
+        let (client, server) = tokio::net::UnixStream::pair().expect("pair");
+        let server = tokio::spawn(ScriptedServer::on_stream(server, spec).run());
+        let mut conn = Connection::from_stream(client);
+
+        let view = listing_view(&mut conn).await.expect("listing");
+        drop(conn);
+        server.await.expect("scripted server task");
+        let counts: Vec<(&str, u16)> = view
+            .snapshot()
+            .sessions
+            .iter()
+            .map(|s| (s.name.as_str(), s.window_count))
+            .collect();
+        assert_eq!(counts, [("tabbed", 2), ("headless", 1)]);
     }
 
     /// A snapshot from a hub: one local session, a live satellite with one

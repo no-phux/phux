@@ -92,7 +92,7 @@ async fn collect(socket_path: &Path) -> Result<StatusReport, AttachError> {
     let features = phux_client::state::probe_hello_features(&mut conn)
         .await?
         .unwrap_or_default();
-    let view = phux_client::state::get_state_on(&mut conn).await?;
+    let view = phux_client::session_list::listing_view(&mut conn).await?;
     drop(conn);
     let (snapshot, degradation) = view.into_parts();
     Ok(build_report(
