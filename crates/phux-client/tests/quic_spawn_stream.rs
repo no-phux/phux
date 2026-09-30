@@ -20,7 +20,7 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, SpawnResult, ViewportInfo};
 use phux_server::DEFAULT_GROUP_ID;
-use support::{STEP_DEADLINE, Server, dial, free_udp_addr, quic_env, seeded_config};
+use support::{STEP_DEADLINE, Server, dial, quic_env, seeded_config};
 use tempfile::TempDir;
 use tokio::time::{Instant, timeout};
 
@@ -161,11 +161,10 @@ async fn prove_spawned_pane_binds() {
     let tmp = TempDir::new().unwrap();
     let cert = tmp.path().join("cert.pem");
     let key = tmp.path().join("key.pem");
-    let quic_addr = free_udp_addr();
     let mut config = seeded_config(tmp.path().join("phux.sock"), SESSION);
     config.env = quic_env(&cert, &key, None);
-    let server = Server::start(config, quic_addr);
-    let mut connection = dial(quic_addr).await;
+    let server = Server::start(config).await;
+    let mut connection = dial(server.quic_addr).await;
     assert!(
         connection.multistream_enabled(),
         "QUIC_STREAMS must be negotiated"
