@@ -199,22 +199,20 @@ fn resolve_loaded(
     workspace_cwd: &Path,
 ) -> Result<ResolvedLaunch, LaunchError> {
     let mut available: Vec<String> = Vec::new();
-    let mut matched_owner: Option<String> = None;
-    let mut resolved: Option<ResolvedLaunch> = None;
-    let mut missing_requirements: Option<Vec<String>> = None;
+    // The plugin owning the requested id, and the launch its template
+    // resolves to (or why it cannot).
+    let mut matched: Option<(String, Result<ResolvedLaunch, LaunchError>)> = None;
     for entry in loaded {
         let template = match entry.template {
             Ok(template) => template,
-            Err(source) => {
-                // A broken sibling must not block a healthy launch.
-                if entry.path.file_stem().and_then(|s| s.to_str()) == Some(integration_id) {
-                    return Err(LaunchError::Template {
-                        path: entry.path,
-                        source,
-                    });
-                }
-                continue;
+            Err(source) if template_file_names(&entry.path, integration_id) => {
+                return Err(LaunchError::Template {
+                    path: entry.path,
+                    source,
+                });
             }
+            // A broken sibling must not block a healthy launch.
+            Err(_) => continue,
         };
         let missing = template
             .launch
@@ -227,42 +225,30 @@ fn resolve_loaded(
         if template.id != integration_id {
             continue;
         }
-        if let Some(first) = &matched_owner {
+        if let Some((first, _)) = matched {
             return Err(LaunchError::DuplicateIntegrationId {
                 id: integration_id.to_owned(),
-                first: first.clone(),
+                first,
                 second: entry.plugin_id,
             });
         }
-        matched_owner = Some(entry.plugin_id.clone());
-        if let Some(launch) = template.launch.clone()
-            && missing.is_empty()
-        {
-            resolved = Some(build_resolved(
+        let name = integration_id.to_owned();
+        let outcome = match (&template.launch, missing.is_empty()) {
+            (Some(launch), true) => Ok(build_resolved(
                 &entry.plugin_id,
                 &entry.plugin_root,
                 &template,
-                &launch,
+                launch,
                 extra_args,
                 workspace_cwd,
-            ));
-        } else if !missing.is_empty() {
-            missing_requirements = Some(missing);
-        }
+            )),
+            (_, false) => Err(LaunchError::MissingExecutables { name, missing }),
+            (None, true) => Err(LaunchError::NoLaunchCommand { name }),
+        };
+        matched = Some((entry.plugin_id, outcome));
     }
-    if let Some(resolved) = resolved {
-        return Ok(resolved);
-    }
-    if matched_owner.is_some() {
-        if let Some(missing) = missing_requirements {
-            return Err(LaunchError::MissingExecutables {
-                name: integration_id.to_owned(),
-                missing,
-            });
-        }
-        return Err(LaunchError::NoLaunchCommand {
-            name: integration_id.to_owned(),
-        });
+    if let Some((_, outcome)) = matched {
+        return outcome;
     }
     available.sort();
     available.dedup();
@@ -270,6 +256,12 @@ fn resolve_loaded(
         name: integration_id.to_owned(),
         available,
     })
+}
+
+/// Whether a template file's stem is `integration_id`, so its parse error
+/// belongs to the requested launch.
+fn template_file_names(path: &Path, integration_id: &str) -> bool {
+    path.file_stem().and_then(|s| s.to_str()) == Some(integration_id)
 }
 
 /// Resolve the integration a `--kind` starts, in one walk of the plugin tree.
