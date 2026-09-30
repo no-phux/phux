@@ -121,12 +121,6 @@ fn current_layout() -> Layout {
     })
 }
 
-/// The production locations on this machine, for diagnostics and docs.
-#[must_use]
-pub fn production_roots() -> Vec<PathBuf> {
-    current_layout().roots()
-}
-
 /// Whether `path` is (inside) the day-to-day installation's state, config,
 /// data, or service unit. Classification only; see
 /// [`refuse_dev_on_production_state`] for the guard.

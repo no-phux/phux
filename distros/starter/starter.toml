@@ -3,7 +3,7 @@
 # This file used to carry phux's opinions: the which-key delay, the
 # split/palette/tab chords, the status lineup, the theme. All of that is
 # now the SHIPPED DEFAULT — `crates/phux-config/src/default.toml` plus
-# `crates/phux-client/src/render/theme.rs` — so naked `phux` already
+# `crates/phux-tui/src/render/theme.rs` — so naked `phux` already
 # looks and behaves the way this distro used to make it behave. Nothing
 # was dropped; it moved one layer down, where everyone gets it.
 #
