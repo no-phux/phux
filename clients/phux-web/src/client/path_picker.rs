@@ -6,7 +6,7 @@ use std::rc::Rc;
 use phux_protocol::wire::frame::{PathKind, PathStatus};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-use web_sys::{Element, Event, HtmlInputElement, KeyboardEvent};
+use web_sys::{Element, Event, HtmlInputElement};
 
 use super::App;
 
@@ -76,13 +76,6 @@ pub(super) fn install(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         });
     paint(&app.borrow());
     Ok(())
-}
-
-pub(super) fn is_picker_event(event: &KeyboardEvent) -> bool {
-    event
-        .target()
-        .and_then(|target| target.dyn_into::<Element>().ok())
-        .is_some_and(|target| target.closest("#phux-path-picker").ok().flatten().is_some())
 }
 
 fn click(app: &Rc<RefCell<App>>, action: &str, index: Option<String>) {

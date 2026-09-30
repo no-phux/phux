@@ -1062,3 +1062,48 @@ async fn agent_sessions_become_badges_and_never_panes() {
     assert!(session.render_visible());
     assert!(session.key_frame(key()).is_some());
 }
+
+fn decode_one(frame: &[u8]) -> FrameKind {
+    let (decoded, rest) = FrameKind::decode(frame).expect("decodable client frame");
+    assert!(rest.is_empty());
+    decoded
+}
+
+#[wasm_bindgen_test]
+async fn resize_rides_the_attach_before_hello_ok_and_viewport_resize_after() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Session::new(&vt, 80, 24);
+    assert!(
+        session.resize_frame(100, 30).is_none(),
+        "no stateful frame before HELLO_OK"
+    );
+    let attach = session.on_frame(hello_ok(
+        BootstrapProfile::SynthesizedVtRaw,
+        BootstrapLimits::default(),
+    ));
+    let FrameKind::Attach { viewport, .. } = decode_one(&attach.send[0]) else {
+        panic!("HELLO_OK is answered by ATTACH");
+    };
+    assert_eq!((viewport.cols, viewport.rows), (100, 30));
+
+    let frame = session.resize_frame(120, 40).expect("VIEWPORT_RESIZE");
+    let FrameKind::ViewportResize { viewport } = decode_one(&frame) else {
+        panic!("resize encodes VIEWPORT_RESIZE");
+    };
+    assert_eq!((viewport.cols, viewport.rows), (120, 40));
+    assert!(
+        session.resize_frame(120, 40).is_none(),
+        "an unchanged size sends nothing"
+    );
+    let clamped = session.resize_frame(0, 0).expect("clamped resize");
+    let FrameKind::ViewportResize { viewport } = decode_one(&clamped) else {
+        panic!("resize encodes VIEWPORT_RESIZE");
+    };
+    assert_eq!((viewport.cols, viewport.rows), (1, 1));
+
+    session.fail_protocol("closed");
+    assert!(
+        session.resize_frame(90, 20).is_none(),
+        "a failed session is inert"
+    );
+}
