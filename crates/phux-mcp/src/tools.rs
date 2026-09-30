@@ -266,7 +266,9 @@ pub(crate) async fn dispatch(name: &str, args: &Value) -> Result<Value, ToolErro
 async fn phux_ls(args: &Value) -> Result<Value, ToolError> {
     strict_object(args, &["socket"], &[])?;
     let socket = socket_arg(args)?;
-    let view = state::get_state(&socket).await?;
+    let mut conn = Connection::connect(&socket).await?;
+    let view = phux_client::session_list::listing_view(&mut conn).await?;
+    drop(conn);
     let hosts_complete = view.host_sessions_complete();
     let (snapshot, degradation) = view.into_parts();
     let list = phux_client::session_list::document(&snapshot, &degradation, hosts_complete);

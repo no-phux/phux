@@ -20,7 +20,11 @@ pub(crate) fn run_ls(json: bool, server: ServerSpec) -> ExitCode {
         Ok(prepared) => prepared,
         Err(code) => return code,
     };
-    match rt.block_on(target.get_state()) {
+    let listing = rt.block_on(async {
+        let mut conn = target.connect().await?;
+        phux_client::session_list::listing_view(&mut conn).await
+    });
+    match listing {
         Ok(view) => render_listing(json, view),
         Err(err) => target.report_unreachable(json, &err, "ls"),
     }
@@ -125,7 +129,11 @@ impl HostProbe {
                 return row;
             }
         };
-        match tokio::time::timeout(HOST_DEADLINE, target.get_state()).await {
+        let listing = async {
+            let mut conn = target.connect().await?;
+            phux_client::session_list::listing_view(&mut conn).await
+        };
+        match tokio::time::timeout(HOST_DEADLINE, listing).await {
             Ok(Ok(view)) => {
                 let (snapshot, _) = view.into_parts();
                 let mut sessions: Vec<_> = snapshot

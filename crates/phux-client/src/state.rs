@@ -116,6 +116,13 @@ impl StateView {
         &self.snapshot
     }
 
+    /// Mutably borrow the merged snapshot, for a listing that refines it
+    /// from other reads (layout window counts) without dropping the
+    /// degradation.
+    pub(crate) const fn snapshot_mut(&mut self) -> &mut SessionSnapshot {
+        &mut self.snapshot
+    }
+
     /// Borrow what the snapshot could not see.
     #[must_use]
     pub const fn degradation(&self) -> &Degradation {
