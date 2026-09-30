@@ -171,6 +171,16 @@ pub struct Metrics {
     pub font: String,
 }
 
+impl Metrics {
+    /// The cell size in whole pixels (at least 1x1), as the viewport
+    /// reports it to the server.
+    #[must_use]
+    pub fn cell_px(&self) -> (u16, u16) {
+        let whole = |px: f64| px.round().clamp(1.0, f64::from(u16::MAX)) as u16;
+        (whole(self.cell_w), whole(self.cell_h))
+    }
+}
+
 impl Default for Metrics {
     fn default() -> Self {
         Self {

@@ -859,6 +859,80 @@ async fn a_double_width_character_copies_without_a_trailing_space() {
     client.close();
 }
 
+/// A second connection that attaches reporting `cell_px` cells, as another
+/// client (a desktop or TUI at another font size) does, then stays.
+async fn attach_with_cells(cell_px: (u16, u16)) -> web_sys::WebSocket {
+    use phux_protocol::wire::frame::FrameKind;
+
+    let vt = phux_vt_web::Vt::load().await.expect("load engine");
+    let session = Rc::new(RefCell::new(phux_web::Session::new(&vt, 80, 24)));
+    session.borrow_mut().set_cell_size(cell_px.0, cell_px.1);
+    let socket = web_sys::WebSocket::new(WS_URL).unwrap();
+    socket.set_binary_type(web_sys::BinaryType::Arraybuffer);
+    let attached = Rc::new(Cell::new(false));
+    let send = {
+        let socket = socket.clone();
+        move |frames: Vec<Vec<u8>>| {
+            for frame in frames {
+                socket.send_with_u8_array(&frame).unwrap();
+            }
+        }
+    };
+    let open = {
+        let (session, send) = (Rc::clone(&session), send.clone());
+        Closure::<dyn FnMut()>::new(move || send(session.borrow().handshake()))
+    };
+    let message = {
+        let (session, attached) = (Rc::clone(&session), Rc::clone(&attached));
+        Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
+            let bytes = js_sys::Uint8Array::new(&event.data()).to_vec();
+            match FrameKind::decode(&bytes) {
+                Ok((frame @ FrameKind::HelloOk { .. }, _)) => {
+                    send(session.borrow_mut().on_frame(frame).send);
+                }
+                Ok((FrameKind::Attached { .. }, _)) => attached.set(true),
+                _ => {}
+            }
+        })
+    };
+    socket.set_onopen(Some(open.as_ref().unchecked_ref()));
+    socket.set_onmessage(Some(message.as_ref().unchecked_ref()));
+    open.forget();
+    message.forget();
+    for _ in 0..POLLS {
+        if attached.get() {
+            return socket;
+        }
+        sleep(POLL).await;
+    }
+    panic!("the second connection never attached");
+}
+
+/// The server divides mouse positions by the cell size of the most recent
+/// viewport that reported pixels. The browser reports its own, so another
+/// client's cell size does not move its clicks off their cells.
+#[wasm_bindgen_test]
+async fn mouse_positions_land_on_their_cells_after_another_client_reports_other_cells() {
+    let other = attach_with_cells((10, 20)).await;
+    let canvas = mounted_canvas("cells-canvas");
+    let client = phux_web::client::run(WS_URL, canvas.clone(), 80, 24)
+        .await
+        .expect("connect to live phux server");
+    canvas.focus().unwrap();
+    let surface = input_surface(&canvas);
+    program_prints(&client, &surface, &["[?1000;1006h"], "CELLS_ON", &[]).await;
+    pointer(&canvas, "pointerdown", 4, 2);
+    pointer(&canvas, "pointerup", 4, 2);
+    assert!(
+        wait_for(&client, "[<0;5;3m").await,
+        "the click lands on column 5, row 3: {}",
+        screen(&client)
+    );
+    program_prints(&client, &surface, &["[?1000;1006l"], "CELLS_OFF", &[]).await;
+    other.close().unwrap();
+    client.close();
+}
+
 fn copy_event(surface: &Element) -> (bool, String) {
     let clipboard = DataTransfer::new().unwrap();
     let init = ClipboardEventInit::new();

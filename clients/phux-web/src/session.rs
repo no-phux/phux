@@ -529,6 +529,8 @@ pub struct Session {
     effects: EffectBuffer,
     cols: u16,
     rows: u16,
+    /// The pixel size of one cell as the client draws it, when known.
+    cell_px: Option<(u16, u16)>,
     focused_terminal: Option<ResourceId>,
     terminal_order: Vec<ResourceId>,
     bootstrap_limits: Option<BootstrapLimits>,
@@ -570,6 +572,7 @@ impl Session {
             effects: EffectBuffer::new(),
             cols,
             rows,
+            cell_px: None,
             focused_terminal: None,
             terminal_order: Vec::new(),
             bootstrap_limits: None,
@@ -852,7 +855,7 @@ impl Session {
                             command: None,
                             cwd: None,
                         },
-                        viewport: ViewportInfo::new(self.cols, self.rows),
+                        viewport: self.viewport(),
                         request_scrollback: true,
                         scrollback_limit_lines: HISTORY_LINES,
                         role_policy: None,
@@ -1173,8 +1176,33 @@ impl Session {
         self.rows = rows;
         self.kernel.as_ref()?;
         Some(encode(&FrameKind::ViewportResize {
-            viewport: ViewportInfo::new(cols, rows),
+            viewport: self.viewport(),
         }))
+    }
+
+    /// Set the pixel size of one cell as the client draws it and reports
+    /// pointer positions in. The next `ATTACH` or `VIEWPORT_RESIZE` reports
+    /// the viewport's size in those pixels, from which the server sizes the
+    /// cells its mouse encoder divides positions by (SPEC L1 §9.2.1);
+    /// without it the server uses another client's cells or its 8x16
+    /// default.
+    pub fn set_cell_size(&mut self, width: u16, height: u16) {
+        self.cell_px = Some((width.max(1), height.max(1)));
+    }
+
+    /// The viewport as `ATTACH` and `VIEWPORT_RESIZE` report it: cells, and
+    /// pixels when the cell size is known and the grid fits the wire's u16.
+    fn viewport(&self) -> ViewportInfo {
+        let pixels = self.cell_px.and_then(|(width, height)| {
+            Some((
+                self.cols.checked_mul(width)?,
+                self.rows.checked_mul(height)?,
+            ))
+        });
+        ViewportInfo::new(self.cols, self.rows).with_pixels(
+            pixels.map(|(width, _)| width),
+            pixels.map(|(_, height)| height),
+        )
     }
 
     /// Encode an eligible structured key event for the focused published pane.

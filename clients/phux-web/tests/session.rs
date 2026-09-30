@@ -1073,6 +1073,43 @@ fn decode_one(frame: &[u8]) -> FrameKind {
     decoded
 }
 
+/// The viewport's size in pixels, as the ATTACH or VIEWPORT_RESIZE in
+/// `frame` reports it.
+fn reported_pixels(frame: &[u8]) -> (Option<u16>, Option<u16>) {
+    match decode_one(frame) {
+        FrameKind::Attach { viewport, .. } | FrameKind::ViewportResize { viewport } => {
+            (viewport.pixel_w, viewport.pixel_h)
+        }
+        other => panic!("not a viewport report: {other:?}"),
+    }
+}
+
+/// The server sizes its mouse encoder's cells from the viewport's pixel
+/// size (`pixel / cells`), so the client reports the cell grid it draws and
+/// sends pointer positions in: without it, the server divides by whatever
+/// cell size another client reported, or its 8x16 default.
+#[wasm_bindgen_test]
+async fn the_viewport_reports_the_cell_grid_in_pixels() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Session::new(&vt, 80, 24);
+    session.set_cell_size(9, 18);
+    let attach = session.on_frame(hello_ok(
+        BootstrapProfile::SynthesizedVtRaw,
+        BootstrapLimits::default(),
+    ));
+    assert_eq!(
+        reported_pixels(&attach.send[0]),
+        (Some(80 * 9), Some(24 * 18))
+    );
+    let resize = session.resize_frame(100, 30).expect("VIEWPORT_RESIZE");
+    assert_eq!(reported_pixels(&resize), (Some(100 * 9), Some(30 * 18)));
+
+    // A grid too wide for the wire's u16 pixels reports no pixel size
+    // rather than a wrapped one.
+    let huge = session.resize_frame(8_000, 30).expect("VIEWPORT_RESIZE");
+    assert_eq!(reported_pixels(&huge), (None, None));
+}
+
 #[wasm_bindgen_test]
 async fn resize_rides_the_attach_before_hello_ok_and_viewport_resize_after() {
     let vt = Vt::load().await.expect("load engine");

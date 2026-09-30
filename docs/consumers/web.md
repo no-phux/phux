@@ -210,9 +210,14 @@ What a page embedding the client can rely on, beyond typing:
   the wheel (as buttons 4 and 5), and the motion its mode asks for reach it
   as structured `INPUT_MOUSE` events, and the right-click menu is its.
   Shift+drag and Shift+wheel stay local (select, scroll back), as does the
-  pointer while the view is scrolled back. Positions are canvas pixels on
-  the 8x16 cell grid, the cell size the server assumes when no client
-  reports one.
+  pointer while the view is scrolled back. Positions are pixels of the
+  canvas's cell grid, measured from where the canvas is drawn, so CSS
+  scaling, page zoom, and the device pixel ratio do not move them off
+  their cell. The viewport (`ATTACH`, `VIEWPORT_RESIZE`) reports that grid's
+  size in pixels, and the server's mouse encoder divides by the cell size of
+  the most recent such report on the terminal: another client reporting its
+  own cells later shifts the browser's positions until the browser reports
+  again (a resize or a reconnect).
 - **Links.** Command+click, or Ctrl+click, opens the program's OSC 8
   hyperlink under the pointer, or a plain URL in that row, in a new tab
   with no opener or referrer. Only `http`, `https`, and `mailto` links open;
