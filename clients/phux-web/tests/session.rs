@@ -7,7 +7,9 @@ use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapProfileKind, EngineCodec, EngineFeatureSet,
     ImageProtocolSet, ServerCapabilities, ServerFeatureExt, ServerFeatureExtSet,
 };
-use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SatelliteHost, SessionId, StreamId, WindowId};
+use phux_protocol::ids::{
+    BootstrapId, ClientId, ResourceId, SatelliteHost, SessionId, StreamId, WindowId,
+};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{FrameKind, PathKind, PathResults, PathRow, PathStatus};
 use phux_protocol::wire::info::{AgentFacet, ResourceInfo, SessionSnapshot};
@@ -108,7 +110,9 @@ async fn satellite_pane_queries_its_own_host_not_the_hub() {
     .await;
     let request = session.path_query_frame("~", "src", true).expect("query");
     let (frame, _) = FrameKind::decode(&request).expect("decode");
-    let FrameKind::PathQuery { host, .. } = frame else { panic!("not a query") };
+    let FrameKind::PathQuery { host, .. } = frame else {
+        panic!("not a query")
+    };
     assert_eq!(host, Some(SatelliteHost::new("build")));
 }
 
@@ -1106,4 +1110,81 @@ async fn resize_rides_the_attach_before_hello_ok_and_viewport_resize_after() {
         session.resize_frame(90, 20).is_none(),
         "a failed session is inert"
     );
+}
+
+#[wasm_bindgen_test]
+async fn live_bells_ring_bootstrap_bells_do_not_and_mouse_input_is_structured() {
+    use phux_protocol::input::InputEvent;
+    use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
+
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Session::new(&vt, 20, 3);
+    let terminal_id = ResourceId::local(1);
+    let (stream_id, bootstrap_id) = (stream(1), bootstrap(1));
+    session.on_frame(hello_ok(
+        BootstrapProfile::SynthesizedVtRaw,
+        BootstrapLimits::default(),
+    ));
+    session.on_frame(attached(terminal_id.clone(), 20, 3));
+    session.on_frame(begin(
+        terminal_id.clone(),
+        stream_id,
+        bootstrap_id,
+        phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
+        20,
+        3,
+        0,
+    ));
+    let replayed = session.on_frame(FrameKind::BootstrapChunk {
+        terminal_id: terminal_id.clone(),
+        stream_id,
+        bootstrap_id,
+        chunk_seq: 0,
+        payload: Bytes::from_static(b"old\x07"),
+    });
+    assert!(!replayed.bell, "replayed state never rings");
+    session.on_frame(FrameKind::BootstrapReady {
+        terminal_id: terminal_id.clone(),
+        stream_id,
+        bootstrap_id,
+        history_cursor: None,
+    });
+    let ready = session.on_frame(FrameKind::AttachReady { attach_id: 1 });
+    assert!(!ready.bell, "a bootstrap bell does not ring at publication");
+
+    let output = |seq, bytes: &'static [u8]| FrameKind::ResourceOutput {
+        terminal_id: terminal_id.clone(),
+        stream_id,
+        bootstrap_id,
+        seq,
+        bytes: Bytes::from_static(bytes),
+    };
+    assert!(
+        !session.on_frame(output(1, b"\x1b]0;title\x07")).bell,
+        "an OSC terminator is not a bell"
+    );
+    assert!(
+        session.on_frame(output(2, b"ding\x07")).bell,
+        "a live BEL rings"
+    );
+    assert!(!session.on_frame(output(3, b"more")).bell);
+
+    assert!(!session.terminal().expect("published").mouse_tracking());
+    session.on_frame(output(4, b"\x1b[?1000h"));
+    assert!(session.terminal().expect("published").mouse_tracking());
+
+    let press = MouseEvent {
+        action: MouseAction::Press,
+        button: MouseButton::Left,
+        mods: ModSet::empty(),
+        x: 32.0,
+        y: 16.0,
+    };
+    let frame = session
+        .input_frame(InputEvent::Mouse(press))
+        .expect("mouse input is eligible");
+    assert!(matches!(
+        decode_one(&frame),
+        FrameKind::InputMouse { event, .. } if event == press
+    ));
 }

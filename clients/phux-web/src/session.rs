@@ -8,13 +8,13 @@ use std::rc::Rc;
 use bytes::{Bytes, BytesMut};
 use phux_client_core::engine::{
     BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
-    EngineEffectBuffer, HistoryApplyOutcome,
+    EngineEffectBuffer, EngineStatus, HistoryApplyOutcome,
 };
 use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::session::{
     AgentSessionDeclaration, EffectBuffer, HistoryRejectionReason as KernelHistoryRejectionReason,
     HistoryUnavailableReason, InputEligibility, KernelAction, KernelEffect, KernelInput,
-    KernelSend, SessionKernel,
+    KernelSend, KernelStatus, SessionKernel,
 };
 use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapLimits, BootstrapProfile, BootstrapProfileKind,
@@ -169,6 +169,8 @@ pub struct Outcome {
     pub render: bool,
     /// Whether the set of agent badges changed and should be repainted.
     pub badges: bool,
+    /// Whether the focused terminal's program rang the bell (BEL).
+    pub bell: bool,
     /// Fatal protocol/kernel failure; the transport must close.
     pub fatal: Option<String>,
 }
@@ -332,6 +334,8 @@ impl EngineAdapter for WebEngine {
         match &mut replica.state {
             WebReplicaState::Synthesized(terminal) => {
                 terminal.write(payload);
+                // Replayed state is not the program ringing now.
+                let _ = terminal.take_bell();
                 effects.push(EngineEffect::Damage(EngineDamage::Full));
                 Ok(BootstrapProgress::Pending)
             }
@@ -509,6 +513,9 @@ impl EngineAdapter for WebEngine {
             ))?;
         terminal.write(payload);
         effects.push(EngineEffect::Damage(EngineDamage::Full));
+        if terminal.take_bell() {
+            effects.push(EngineEffect::Status(EngineStatus::Bell));
+        }
         Ok(())
     }
 }
@@ -1271,6 +1278,14 @@ impl Session {
                     }
                 }
                 KernelEffect::AgentRecords { .. } => outcome.badges = true,
+                KernelEffect::Status(KernelStatus::Engine {
+                    key,
+                    status: EngineStatus::Bell,
+                }) => {
+                    if focused == Some(&key.terminal_id) || focused.is_none() {
+                        outcome.bell = true;
+                    }
+                }
                 KernelEffect::Status(_) | KernelEffect::Job(_) => {}
             }
         }

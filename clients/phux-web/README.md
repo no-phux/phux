@@ -73,8 +73,9 @@ await start_webtransport("https://host:4433/session", "wss://host/session",
 const client = await start_hosted(url, "my-canvas", 100, 24, onEvent, signal);
 ```
 
-Input, scrollback, selection, the title event, and the connection attribute
-are described in [the web client guide](../../docs/consumers/web.md#in-the-page).
+Input, scrollback, selection, find, mouse reporting, links, the bell and
+title events, and the connection attribute are described in
+[the web client guide](../../docs/consumers/web.md#in-the-page).
 
 ## Building
 
@@ -97,7 +98,7 @@ verified source acquisition and the byte-for-byte regeneration check.
 ## Tests
 
 ```sh
-wasm-pack test --node                 # session/codec, input and selection routing
+wasm-pack test --node                 # session/codec, input, search, and link routing
 # headless Chrome suites against a fresh ws_demo_server, as CI runs them
 # (from the repository root):
 nix develop .#browser -c python3 scripts/ci/web-browser.py

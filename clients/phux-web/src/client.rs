@@ -24,6 +24,8 @@ use futures_util::future::{Either, select};
 use gloo_timers::future::TimeoutFuture;
 use phux_protocol::BootstrapProfile;
 use phux_protocol::input::InputEvent;
+use phux_protocol::input::key::ModSet;
+use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::wire::frame::FrameKind;
 use phux_vt_web::{Grid, Vt};
 use wasm_bindgen::JsCast;
@@ -36,9 +38,11 @@ use web_sys::{
 };
 
 use crate::framing::FrameBuffer;
+use crate::search::{Search, find_matches, reveal_row};
 use crate::selection::{Selection, cell_at};
-use crate::{Metrics, render_cursor_cell, render_selected};
+use crate::{Mark, Metrics, Overlay, render_cursor_cell, render_selected};
 
+mod find;
 mod path_picker;
 
 const CONNECT_DEADLINE_MS: u32 = 10_000;
@@ -187,6 +191,17 @@ pub const TITLE_ATTRIBUTE: &str = "data-phux-title";
 /// Bubbling `CustomEvent` dispatched on the canvas when the program's title
 /// changes; `detail` is the new title (empty when cleared).
 pub const TITLE_EVENT: &str = "phux-title";
+
+/// Bubbling `CustomEvent` dispatched on the canvas when the program rings
+/// the bell (BEL). The canvas also flashes briefly, unless the page prefers
+/// reduced motion.
+pub const BELL_EVENT: &str = "phux-bell";
+
+/// How long the visual bell shows, and the least time between two flashes.
+const BELL_FLASH_MS: u32 = 150;
+
+/// The visual bell: a translucent wash over the whole canvas.
+const BELL_FLASH_FILL: &str = "rgba(255, 255, 255, 0.18)";
 
 /// DOM id of the element that holds the focused pane's agent badges.
 pub const BADGE_CONTAINER_ID: &str = "phux-agent-badges";
@@ -764,6 +779,7 @@ impl OutboundQueue {
 struct AppBindings {
     websocket: Option<WebSocketBindings>,
     input: Option<InputBinding>,
+    find: Option<find::FindBinding>,
     path_picker: Option<path_picker::PickerBinding>,
     blink: Option<BlinkBinding>,
     frame: Option<FrameBinding>,
@@ -778,6 +794,9 @@ impl AppBindings {
         }
         if let Some(input) = self.input.take() {
             input.dispose();
+        }
+        if let Some(find) = self.find.take() {
+            find.dispose();
         }
         if let Some(picker) = self.path_picker.take() {
             picker.dispose();
@@ -818,11 +837,26 @@ impl WebSocketBindings {
 /// Class of the hidden `<textarea>` that owns terminal input.
 pub const INPUT_SURFACE_CLASS: &str = "phux-web-input";
 
+/// Class of the find bar mounted after the canvas (hidden until opened);
+/// its field is its `input`, its match count `.phux-find-count`.
+pub const FIND_BAR_CLASS: &str = "phux-find";
+
 /// The input surface and every listener it and the canvas carry.
 struct InputBinding {
     surface: HtmlTextAreaElement,
-    listeners: Vec<Listener>,
+    listeners: Listeners,
 }
+
+impl InputBinding {
+    fn dispose(self) {
+        self.listeners.dispose();
+        self.surface.remove();
+    }
+}
+
+/// DOM event listeners removed together.
+#[derive(Default)]
+struct Listeners(Vec<Listener>);
 
 struct Listener {
     target: web_sys::EventTarget,
@@ -830,7 +864,7 @@ struct Listener {
     callback: Closure<dyn FnMut(web_sys::Event)>,
 }
 
-impl InputBinding {
+impl Listeners {
     fn listen(
         &mut self,
         target: &web_sys::EventTarget,
@@ -839,7 +873,7 @@ impl InputBinding {
     ) -> Result<(), JsValue> {
         let callback = Closure::<dyn FnMut(web_sys::Event)>::new(handler);
         target.add_event_listener_with_callback(kind, callback.as_ref().unchecked_ref())?;
-        self.listeners.push(Listener {
+        self.0.push(Listener {
             target: target.clone(),
             kind,
             callback,
@@ -848,13 +882,12 @@ impl InputBinding {
     }
 
     fn dispose(self) {
-        for listener in self.listeners {
+        for listener in self.0 {
             let _ = listener.target.remove_event_listener_with_callback(
                 listener.kind,
                 listener.callback.as_ref().unchecked_ref(),
             );
         }
-        self.surface.remove();
     }
 }
 
@@ -914,9 +947,23 @@ struct App {
     painted: RefCell<Option<Grid>>,
     /// The program title last published to the page.
     title: RefCell<String>,
+    /// The search matches the canvas shows, so a cursor blink keeps them.
+    painted_marks: RefCell<Vec<Mark>>,
     /// The mouse selection over the viewport, and whether a drag is live.
     selection: Cell<Option<Selection>>,
     selecting: Cell<bool>,
+    /// Find in the terminal, and whether new output has made its matches
+    /// stale.
+    search: RefCell<Search>,
+    search_stale: Cell<bool>,
+    /// The button a press forwarded to the program holds down, and the
+    /// last cell a mouse report named (motion reports once per cell).
+    forwarded_button: Cell<Option<MouseButton>>,
+    mouse_cell: Cell<Option<(u16, u16)>>,
+    /// Whether the pointer shows a link under a held Command/Ctrl.
+    link_hover: Cell<bool>,
+    /// When the visual bell last started, on the monotonic clock.
+    bell_started_ms: Cell<f64>,
     bindings: RefCell<AppBindings>,
     ready: RefCell<Option<oneshot::Sender<Result<(), String>>>>,
     failure_reason: RefCell<Option<String>>,
@@ -1067,14 +1114,22 @@ impl App {
         if self.session.viewport_scrolled() {
             return;
         }
+        if self.bell_showing() {
+            // The flash covers the cursor cell too; its end repaints it.
+            return;
+        }
         if let Some(grid) = self.painted.borrow().as_ref() {
-            let selected = self.selected_cells(grid.cols);
+            let marks = self.painted_marks.borrow();
+            let overlay = Overlay {
+                selected: self.selected_cells(grid.cols),
+                marks: &marks,
+            };
             render_cursor_cell(
                 &self.ctx,
                 grid,
                 &self.metrics,
                 self.cursor_on.get(),
-                &selected,
+                &overlay,
             );
         }
     }
@@ -1084,6 +1139,7 @@ impl App {
             return;
         }
         let grid = self.session.grid();
+        let marks = self.search_marks(grid.cols, grid.rows);
         // Keep the canvas sized to the grid (handles server-side resizes).
         let w = u32::from(grid.cols) * (self.metrics.cell_w as u32);
         let h = u32::from(grid.rows) * (self.metrics.cell_h as u32);
@@ -1095,10 +1151,72 @@ impl App {
         }
         // The cursor belongs to the live screen, not a scrolled-back view.
         let cursor = self.cursor_on.get() && !self.session.viewport_scrolled();
-        let selected = self.selected_cells(grid.cols);
-        render_selected(&self.ctx, &grid, &self.metrics, cursor, &selected);
+        let overlay = Overlay {
+            selected: self.selected_cells(grid.cols),
+            marks: &marks,
+        };
+        render_selected(&self.ctx, &grid, &self.metrics, cursor, &overlay);
+        if self.bell_showing() {
+            self.ctx.set_fill_style_str(BELL_FLASH_FILL);
+            self.ctx.fill_rect(0.0, 0.0, f64::from(w), f64::from(h));
+        }
         self.painted.replace(Some(grid));
+        self.painted_marks.replace(marks);
         self.publish_title();
+    }
+
+    /// Whether the visual bell is on screen now.
+    fn bell_showing(&self) -> bool {
+        monotonic_now_ms()
+            .is_ok_and(|now| now - self.bell_started_ms.get() < f64::from(BELL_FLASH_MS))
+    }
+
+    /// The highlights of the open search's matches on screen, re-running
+    /// the search first when output has changed the screen since.
+    fn search_marks(&self, cols: u16, rows: u16) -> Vec<Mark> {
+        if self.search.borrow().query().is_empty() {
+            return Vec::new();
+        }
+        if self.search_stale.get() {
+            let query = self.search.borrow().query().to_owned();
+            self.run_search(&query);
+        }
+        let Some(terminal) = self.session.terminal() else {
+            return Vec::new();
+        };
+        let top = terminal.scrollbar().offset;
+        self.search.borrow().marks(top, rows, cols)
+    }
+
+    /// Search the replica's whole screen for `query` and show the count.
+    fn run_search(&self, query: &str) {
+        self.search_stale.set(false);
+        let (matches, truncated) = match self.session.terminal() {
+            Some(terminal) if !query.is_empty() => {
+                let vt = self.session.vt();
+                find_matches(&terminal.screen_rows(), query, |ch| vt.codepoint_width(ch))
+            }
+            _ => (Vec::new(), false),
+        };
+        let label = {
+            let mut search = self.search.borrow_mut();
+            search.set_results(query, matches, truncated);
+            search.label()
+        };
+        find::set_label(self, &label);
+    }
+
+    /// Scroll the current match into view, if it is off screen, and repaint.
+    fn reveal_current_match(&self) {
+        let current = self.search.borrow().current();
+        if let (Some(found), Some(terminal)) = (current, self.session.terminal()) {
+            let bar = terminal.scrollbar();
+            if let Some(top) = reveal_row(found.row, bar.offset, bar.len, bar.total) {
+                terminal.scroll_to_row(top);
+                self.clear_selection();
+            }
+        }
+        self.request_paint();
     }
 
     /// Row-major indices of the selected cells, empty without a selection.
@@ -1142,6 +1260,39 @@ impl App {
             self.metrics.cell_h * scale_y,
             cols,
             rows,
+        )
+    }
+
+    /// The pointer in the canvas's own pixels, the cell grid of
+    /// [`Metrics`] (8x16, the server's default cell size for the mouse
+    /// encoder), clamped to the grid: what `INPUT_MOUSE` carries.
+    fn surface_pixels(&self, event: &web_sys::MouseEvent) -> (f64, f64) {
+        let rect = self.canvas.get_bounding_client_rect();
+        let (cols, rows) = self.session.dims();
+        let axis = |client: f64, origin: f64, css: f64, device: u32, cell: f64, count: u16| {
+            let scale = css / f64::from(device.max(1));
+            let max = (f64::from(count) * cell - 1.0).max(0.0);
+            ((client - origin) / scale.max(f64::EPSILON))
+                .floor()
+                .clamp(0.0, max)
+        };
+        (
+            axis(
+                event.client_x(),
+                rect.left(),
+                rect.width(),
+                self.canvas.width(),
+                self.metrics.cell_w,
+                cols,
+            ),
+            axis(
+                event.client_y(),
+                rect.top(),
+                rect.height(),
+                self.canvas.height(),
+                self.metrics.cell_h,
+                rows,
+            ),
         )
     }
 
@@ -1199,8 +1350,15 @@ fn build_app(
         wheel_carry: Cell::new(0.0),
         painted: RefCell::new(None),
         title: RefCell::new(String::new()),
+        painted_marks: RefCell::new(Vec::new()),
         selection: Cell::new(None),
         selecting: Cell::new(false),
+        search: RefCell::new(Search::default()),
+        search_stale: Cell::new(false),
+        forwarded_button: Cell::new(None),
+        mouse_cell: Cell::new(None),
+        link_hover: Cell::new(false),
+        bell_started_ms: Cell::new(f64::NEG_INFINITY),
         bindings: RefCell::new(AppBindings::default()),
         ready: RefCell::new(Some(ready_tx)),
         failure_reason: RefCell::new(None),
@@ -1772,6 +1930,7 @@ struct BatchEffects {
     flow: ReceiveFlow,
     render: bool,
     badges: bool,
+    bell: bool,
 }
 
 impl Default for BatchEffects {
@@ -1780,6 +1939,7 @@ impl Default for BatchEffects {
             flow: ReceiveFlow::Continue,
             render: false,
             badges: false,
+            bell: false,
         }
     }
 }
@@ -1788,20 +1948,70 @@ impl BatchEffects {
     fn merge(&mut self, other: Self) {
         self.render |= other.render;
         self.badges |= other.badges;
+        self.bell |= other.bell;
         if matches!(other.flow, ReceiveFlow::Stop) {
             self.flow = ReceiveFlow::Stop;
         }
     }
 
     fn paint(self, app: &Rc<RefCell<App>>) {
-        let app = app.borrow();
-        if self.render {
-            app.request_paint();
+        {
+            let app = app.borrow();
+            if self.render {
+                app.search_stale.set(true);
+                app.request_paint();
+            }
+            if self.badges {
+                app.paint_badges();
+            }
         }
-        if self.badges {
-            app.paint_badges();
+        // One bell per batch: a flood of BELs flashes and announces once.
+        if self.bell {
+            ring_bell(app);
         }
     }
+}
+
+/// The program rang the bell: announce it with [`BELL_EVENT`], then flash
+/// the canvas unless the page prefers reduced motion or a flash is showing.
+fn ring_bell(app: &Rc<RefCell<App>>) {
+    let canvas = app.borrow().canvas.clone();
+    let init = web_sys::CustomEventInit::new();
+    init.set_bubbles(true);
+    if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict(BELL_EVENT, &init) {
+        // Dispatched with no borrow held: a listener may call the client.
+        let _ = canvas.dispatch_event(&event);
+    }
+    {
+        let app = app.borrow();
+        let Ok(now) = monotonic_now_ms() else {
+            return;
+        };
+        if prefers_reduced_motion() || app.bell_showing() {
+            return;
+        }
+        app.bell_started_ms.set(now);
+        app.request_paint();
+    }
+    let weak = Rc::downgrade(app);
+    wasm_bindgen_futures::spawn_local(async move {
+        TimeoutFuture::new(BELL_FLASH_MS).await;
+        if let Some(app) = weak.upgrade() {
+            app.borrow().request_paint();
+        }
+    });
+}
+
+/// Whether the page asks for reduced motion (`prefers-reduced-motion`).
+fn prefers_reduced_motion() -> bool {
+    web_sys::window()
+        .and_then(|window| {
+            window
+                .match_media("(prefers-reduced-motion: reduce)")
+                .ok()
+                .flatten()
+        })
+        .is_some_and(|query| query.matches())
 }
 
 fn apply_frame(app: &Rc<RefCell<App>>, frame: FrameKind) -> BatchEffects {
@@ -1842,6 +2052,7 @@ fn apply_frame(app: &Rc<RefCell<App>>, frame: FrameKind) -> BatchEffects {
         flow: ReceiveFlow::Continue,
         render: outcome.render,
         badges: outcome.badges,
+        bell: outcome.bell,
     }
 }
 
@@ -1912,7 +2123,7 @@ fn install_input(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
     let surface = create_input_surface(&document, &canvas)?;
     let mut binding = InputBinding {
         surface: surface.clone(),
-        listeners: Vec::new(),
+        listeners: Listeners::default(),
     };
     let handlers: [(&str, InputHandler); 6] = [
         ("keydown", on_keydown),
@@ -1924,7 +2135,7 @@ fn install_input(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         ("paste", on_paste),
         ("copy", on_copy),
     ];
-    let canvas_handlers: [(&str, InputHandler); 7] = [
+    let canvas_handlers: [(&str, InputHandler); 8] = [
         ("focus", focus_surface),
         ("mousedown", focus_surface),
         ("wheel", on_wheel),
@@ -1932,6 +2143,7 @@ fn install_input(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         ("pointermove", on_pointer),
         ("pointerup", on_pointer),
         ("pointercancel", on_pointer),
+        ("contextmenu", on_context_menu),
     ];
     let targets: [(&web_sys::EventTarget, &[(&str, InputHandler)]); 2] = [
         (surface.as_ref(), &handlers),
@@ -1941,7 +2153,7 @@ fn install_input(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         for &(kind, handler) in handlers {
             let weak = Rc::downgrade(app);
             let surface = surface.clone();
-            binding.listen(target, kind, move |event| {
+            binding.listeners.listen(target, kind, move |event| {
                 if let Some(app) = weak.upgrade() {
                     handler(&app, &event, &surface);
                 }
@@ -1953,6 +2165,7 @@ fn install_input(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
     if let Some(old) = old {
         old.dispose();
     }
+    find::install(app, &document)?;
     if focus_is_idle(&document) {
         app.borrow().place_input_surface();
         let _ = surface.focus();
@@ -2006,11 +2219,223 @@ fn focus_surface(_: &Rc<RefCell<App>>, event: &web_sys::Event, surface: &HtmlTex
     let _ = surface.focus();
 }
 
-/// A primary-button drag over the canvas selects cells; a click clears.
+/// The pointer over the canvas, in precedence order: Command/Ctrl+click
+/// opens a link; while the program tracks the mouse, presses, releases, and
+/// the motion it asked for reach it as `INPUT_MOUSE`; otherwise (and always
+/// with Shift held) a primary-button drag selects text locally.
 fn on_pointer(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
     let Some(event) = event.dyn_ref::<web_sys::PointerEvent>() else {
         return;
     };
+    if event.type_() == "pointermove" {
+        hover_link(&app.borrow(), event);
+    }
+    if open_link(app, event) || forward_pointer(app, event) {
+        return;
+    }
+    select_with_pointer(app, event);
+}
+
+/// Whether a pointer event carries the link modifier: Command on macOS,
+/// Ctrl elsewhere (either is accepted), without Shift.
+fn link_modifier(event: &web_sys::MouseEvent) -> bool {
+    (event.meta_key() || event.ctrl_key()) && !event.shift_key()
+}
+
+/// The link at a viewport cell that a click may open: the program's OSC 8
+/// hyperlink when it set one (even one this client refuses to open), else a
+/// plain `http`, `https`, or `mailto` URL in the row's text.
+fn link_at(app: &App, (col, row): (u16, u16)) -> Option<String> {
+    let terminal = app.session.terminal()?;
+    if let Some(uri) = terminal.hyperlink_at(col, row) {
+        return crate::links::allowed_link(&uri).map(str::to_owned);
+    }
+    let painted = app.painted.borrow();
+    let grid = painted.as_ref()?;
+    let cols = usize::from(grid.cols);
+    let start = usize::from(row) * cols;
+    let cells = grid.cells.get(start..start + cols)?;
+    let text: Vec<char> = cells.iter().map(|cell| cell.ch).collect();
+    crate::links::url_at(&text, usize::from(col))
+}
+
+/// Command/Ctrl+click on a link opens it in a new tab, with no opener or
+/// referrer. Returns whether the click was a link's.
+fn open_link(app: &Rc<RefCell<App>>, event: &web_sys::PointerEvent) -> bool {
+    if event.type_() != "pointerdown" || event.button() != 0 || !link_modifier(event) {
+        return false;
+    }
+    let url = {
+        let app = app.borrow();
+        link_at(&app, app.cell_under(event))
+    };
+    let Some(url) = url else {
+        return false;
+    };
+    event.prevent_default();
+    if let Some(window) = web_sys::window() {
+        let _ = window.open_with_url_and_target_and_features(&url, "_blank", "noopener,noreferrer");
+    }
+    true
+}
+
+/// Show a pointer over a link while the link modifier is held.
+fn hover_link(app: &App, event: &web_sys::PointerEvent) {
+    let over_link = link_modifier(event) && link_at(app, app.cell_under(event)).is_some();
+    if app.link_hover.replace(over_link) == over_link {
+        return;
+    }
+    let style = app.canvas.style();
+    let _ = if over_link {
+        style.set_property("cursor", "pointer")
+    } else {
+        style.remove_property("cursor").map(|_| ())
+    };
+}
+
+/// Whether pointer input goes to the program: it tracks the mouse, the
+/// viewport shows the live screen its coordinates name, and Shift (the
+/// local-selection override) is not held.
+fn program_takes_mouse(app: &App, shift: bool) -> bool {
+    !shift
+        && !app.session.viewport_scrolled()
+        && app
+            .session
+            .terminal()
+            .is_some_and(phux_vt_web::Terminal::mouse_tracking)
+}
+
+/// Where one pointer event goes.
+enum PointerRoute {
+    /// Local selection handles it.
+    Local,
+    /// The program owns the pointer but asked for no report of this event.
+    Swallow,
+    /// Report it to the program.
+    Report(MouseAction, MouseButton),
+}
+
+/// Forward a press, release, or reported motion to a mouse-tracking
+/// program. Returns whether the event was the program's.
+fn forward_pointer(app: &Rc<RefCell<App>>, event: &web_sys::PointerEvent) -> bool {
+    let route = route_pointer(&app.borrow(), event);
+    match route {
+        PointerRoute::Local => false,
+        PointerRoute::Swallow => true,
+        PointerRoute::Report(action, button) => {
+            send_mouse(app, event, action, button);
+            true
+        }
+    }
+}
+
+fn route_pointer(app: &App, event: &web_sys::PointerEvent) -> PointerRoute {
+    if app.selecting.get() {
+        return PointerRoute::Local;
+    }
+    match event.type_().as_str() {
+        "pointerdown" => route_press(app, event),
+        "pointerup" | "pointercancel" => route_release(app, event),
+        "pointermove" => route_motion(app, event),
+        _ => PointerRoute::Local,
+    }
+}
+
+/// A press goes to a tracking program, which then owns the drag.
+fn route_press(app: &App, event: &web_sys::PointerEvent) -> PointerRoute {
+    let Some(button) = crate::input::mouse_button(event.button()) else {
+        return PointerRoute::Local;
+    };
+    if !program_takes_mouse(app, event.shift_key()) {
+        return PointerRoute::Local;
+    }
+    app.forwarded_button.set(Some(button));
+    // Keep receiving moves and the release outside the canvas.
+    let _ = app.canvas.set_pointer_capture(event.pointer_id());
+    app.clear_selection();
+    PointerRoute::Report(MouseAction::Press, button)
+}
+
+/// A release (or cancel) ends a forwarded press, even if tracking stopped.
+fn route_release(app: &App, event: &web_sys::PointerEvent) -> PointerRoute {
+    let Some(pressed) = app.forwarded_button.take() else {
+        return PointerRoute::Local;
+    };
+    let released = crate::input::mouse_button(event.button()).unwrap_or(pressed);
+    PointerRoute::Report(MouseAction::Release, released)
+}
+
+/// Motion reaches the program once per cell, when its mode reports it.
+fn route_motion(app: &App, event: &web_sys::PointerEvent) -> PointerRoute {
+    let forwarding = app.forwarded_button.get().is_some();
+    if !forwarding && !program_takes_mouse(app, event.shift_key()) {
+        return PointerRoute::Local;
+    }
+    let Some(terminal) = app.session.terminal() else {
+        return PointerRoute::Local;
+    };
+    let dragging = crate::input::held_button(event.buttons());
+    let wanted = crate::input::reports_motion(
+        terminal.dec_mode(1003),
+        terminal.dec_mode(1002),
+        dragging.is_some(),
+    );
+    if !wanted || app.mouse_cell.get() == Some(app.cell_under(event)) {
+        return PointerRoute::Swallow;
+    }
+    PointerRoute::Report(
+        MouseAction::Motion,
+        dragging.unwrap_or(MouseButton::Unknown),
+    )
+}
+
+/// Send one mouse report at the pointer's cell-grid pixel position.
+fn send_mouse(
+    app: &Rc<RefCell<App>>,
+    event: &web_sys::MouseEvent,
+    action: MouseAction,
+    button: MouseButton,
+) {
+    let (x, y) = {
+        let app = app.borrow();
+        app.mouse_cell.set(Some(app.cell_under(event)));
+        app.surface_pixels(event)
+    };
+    let mut mods = ModSet::empty();
+    if event.ctrl_key() {
+        mods |= ModSet::CTRL;
+    }
+    if event.alt_key() {
+        mods |= ModSet::ALT;
+    }
+    if event.shift_key() {
+        mods |= ModSet::SHIFT;
+    }
+    send_input(
+        app,
+        [InputEvent::Mouse(MouseEvent {
+            action,
+            button,
+            mods,
+            x,
+            y,
+        })],
+    );
+}
+
+/// The context menu is the program's while it tracks the mouse, so a
+/// right-click reaches it; Shift+right-click still opens the browser's.
+fn on_context_menu(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
+    let shift = event
+        .dyn_ref::<web_sys::MouseEvent>()
+        .is_some_and(web_sys::MouseEvent::shift_key);
+    if program_takes_mouse(&app.borrow(), shift) {
+        event.prevent_default();
+    }
+}
+
+/// A primary-button drag over the canvas selects cells; a click clears.
+fn select_with_pointer(app: &Rc<RefCell<App>>, event: &web_sys::PointerEvent) {
     let app = app.borrow();
     let cell = app.cell_under(event);
     match event.type_().as_str() {
@@ -2056,12 +2481,17 @@ fn on_copy(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaEleme
     }
 }
 
-/// The wheel pages the local scrollback; the page itself does not scroll.
+/// The wheel pages the local scrollback, or scrolls a mouse-tracking
+/// program (Shift+wheel stays local); the page itself does not scroll.
 fn on_wheel(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
     let Some(event) = event.dyn_ref::<web_sys::WheelEvent>() else {
         return;
     };
     event.prevent_default();
+    if program_takes_mouse(&app.borrow(), event.shift_key()) {
+        forward_wheel(app, event);
+        return;
+    }
     let app = app.borrow();
     // CSS may scale the canvas; a row is its cell height in client pixels.
     let rect = app.canvas.get_bounding_client_rect();
@@ -2079,6 +2509,35 @@ fn on_wheel(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElem
     if rows != 0 && app.session.scroll_viewport(rows) {
         app.clear_selection();
         app.request_paint();
+    }
+}
+
+/// Most wheel clicks one wheel event reports, so a flung trackpad cannot
+/// flood the program.
+const MAX_WHEEL_CLICKS: i32 = 10;
+
+/// Report wheel travel to the program as xterm wheel presses (buttons 4
+/// and 5), one per [`crate::input::WHEEL_ROWS_PER_CLICK`] rows.
+fn forward_wheel(app: &Rc<RefCell<App>>, event: &web_sys::WheelEvent) {
+    let clicks = {
+        let app = app.borrow();
+        let rect = app.canvas.get_bounding_client_rect();
+        let scale = rect.height() / f64::from(app.canvas.height().max(1));
+        let (_, page_rows) = app.session.dims();
+        let mut carry = app.wheel_carry.get();
+        let clicks = crate::input::wheel_rows(
+            event.delta_y(),
+            event.delta_mode(),
+            app.metrics.cell_h * scale * crate::input::WHEEL_ROWS_PER_CLICK,
+            page_rows,
+            &mut carry,
+        );
+        app.wheel_carry.set(carry);
+        clicks.clamp(-MAX_WHEEL_CLICKS, MAX_WHEEL_CLICKS)
+    };
+    let button = crate::input::wheel_button(clicks);
+    for _ in 0..clicks.unsigned_abs() {
+        send_mouse(app, event, MouseAction::Press, button);
     }
 }
 
@@ -2102,6 +2561,11 @@ fn on_keydown(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaEl
         // before `isComposing` turns true.
         composing: event.is_composing() || event.key_code() == 229,
     };
+    if crate::input::is_find_chord(&browser_key) {
+        event.prevent_default();
+        find::open(app);
+        return;
+    }
     if crate::input::is_copy_chord(&browser_key) && copy_selection(app) {
         event.prevent_default();
         return;
@@ -2914,9 +3378,11 @@ mod tests {
                 flow: ReceiveFlow::Continue,
                 render: true,
                 badges: false,
+                bell: true,
             });
         }
         assert!(batch.render);
         assert_eq!(usize::from(batch.render), 1, "one paint follows the drain");
+        assert!(batch.bell, "a flood of bells rings once per drained batch");
     }
 }

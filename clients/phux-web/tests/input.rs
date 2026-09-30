@@ -1,10 +1,12 @@
 //! Keyboard, IME, and paste routing (`phux_web::input`), under node.
 
 use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
+use phux_protocol::input::mouse::MouseButton;
 use phux_protocol::input::paste::PasteTrust;
 use phux_web::input::{
-    BrowserKey, MAX_PASTE_BYTES, code_to_physical_key, is_copy_chord, key_events_for_text,
-    paste_event, route_key, scrollback_page, wheel_rows,
+    BrowserKey, MAX_PASTE_BYTES, code_to_physical_key, held_button, is_copy_chord, is_find_chord,
+    key_events_for_text, mouse_button, paste_event, reports_motion, route_key, scrollback_page,
+    wheel_button, wheel_rows,
 };
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -234,4 +236,61 @@ fn command_c_and_ctrl_shift_c_are_copy_chords() {
         ..key("c", "KeyC")
     };
     assert!(!is_copy_chord(&ctrl_c), "Ctrl+C stays the interrupt");
+}
+
+#[wasm_bindgen_test]
+fn command_f_and_ctrl_shift_f_open_find() {
+    let command_f = BrowserKey {
+        meta: true,
+        ..key("f", "KeyF")
+    };
+    assert!(is_find_chord(&command_f));
+    let ctrl_shift_f = BrowserKey {
+        ctrl: true,
+        shift: true,
+        ..key("F", "KeyF")
+    };
+    assert!(is_find_chord(&ctrl_shift_f));
+    let ctrl_f = BrowserKey {
+        ctrl: true,
+        ..key("f", "KeyF")
+    };
+    assert!(!is_find_chord(&ctrl_f), "Ctrl+F stays the terminal's");
+    let command_shift_f = BrowserKey {
+        shift: true,
+        ..command_f
+    };
+    assert!(!is_find_chord(&command_shift_f));
+}
+
+#[wasm_bindgen_test]
+fn dom_buttons_map_to_wire_buttons() {
+    assert_eq!(mouse_button(0), Some(MouseButton::Left));
+    assert_eq!(mouse_button(1), Some(MouseButton::Middle));
+    assert_eq!(mouse_button(2), Some(MouseButton::Right));
+    assert_eq!(mouse_button(3), Some(MouseButton::Eight), "back");
+    assert_eq!(mouse_button(4), Some(MouseButton::Nine), "forward");
+    assert_eq!(mouse_button(-1), None, "no button (a move)");
+    assert_eq!(mouse_button(5), None);
+
+    assert_eq!(held_button(0), None);
+    assert_eq!(held_button(1), Some(MouseButton::Left));
+    assert_eq!(held_button(2), Some(MouseButton::Right));
+    assert_eq!(held_button(4), Some(MouseButton::Middle));
+    assert_eq!(held_button(6), Some(MouseButton::Right), "lowest bit wins");
+
+    assert_eq!(wheel_button(-1), MouseButton::Four, "up");
+    assert_eq!(wheel_button(2), MouseButton::Five, "down");
+}
+
+#[wasm_bindgen_test]
+fn motion_is_reported_only_to_modes_that_ask_for_it() {
+    // (any-event 1003, button-event 1002, button held) -> reported
+    assert!(reports_motion(true, false, false), "1003 reports hovering");
+    assert!(reports_motion(false, true, true), "1002 reports drags");
+    assert!(!reports_motion(false, true, false), "1002 ignores hovering");
+    assert!(
+        !reports_motion(false, false, true),
+        "1000 reports no motion"
+    );
 }
