@@ -691,35 +691,44 @@ pub(super) fn close_frame_with_chrome<W: Write>(
     fallback_origin: Option<(u16, u16)>,
     compose: ComposePolicy,
 ) -> StatusBarPaint {
-    close_frame_reporting(
-        block,
-        chrome.status_bar.as_deref_mut(),
-        chrome.viewport,
-        chrome.sidebar,
-        chrome.session_name,
-        cursor,
-        fallback_origin,
-        compose,
-    )
-    .0
+    let bar = BarTail {
+        status_bar: chrome.status_bar.as_deref_mut(),
+        viewport: chrome.viewport,
+        sidebar: chrome.sidebar,
+        session_name: chrome.session_name,
+    };
+    close_frame_reporting(block, bar, cursor, fallback_origin, compose).0
+}
+
+/// The slice of a frame's chrome its closing bar row paints from: the part
+/// of [`ChromeCtx`] a pane-output frame (which has no strip painter or
+/// theme) can also supply.
+pub(super) struct BarTail<'a> {
+    /// The status-bar painter, or `None` for a bar-less config.
+    pub(super) status_bar: Option<&'a mut StatusBarPainter>,
+    /// The outer terminal viewport, `(cols, rows)`.
+    pub(super) viewport: (u16, u16),
+    /// This frame's sidebar reservation; the bar yields its columns.
+    pub(super) sidebar: Option<SidebarReservation>,
+    /// The attached session's name, as the bar renders it.
+    pub(super) session_name: &'a str,
 }
 
 /// [`close_frame_with_chrome`], also reporting whether the frame shipped (a
 /// failed frame's pane fronts must be forgotten).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the same frame-tail context as close_frame_with_chrome, which wraps this"
-)]
 pub(super) fn close_frame_reporting<W: Write>(
     mut block: FrameBlock<'_, W>,
-    mut status_bar: Option<&mut StatusBarPainter>,
-    viewport_dims: (u16, u16),
-    sidebar: Option<SidebarReservation>,
-    session_name: &str,
+    bar: BarTail<'_>,
     cursor: Option<(u16, u16)>,
     fallback_origin: Option<(u16, u16)>,
     compose: ComposePolicy,
 ) -> (StatusBarPaint, bool) {
+    let BarTail {
+        mut status_bar,
+        viewport: viewport_dims,
+        sidebar,
+        session_name,
+    } = bar;
     let painted = status_bar
         .as_deref_mut()
         .map_or(StatusBarPaint::NotPublished, |painter| {

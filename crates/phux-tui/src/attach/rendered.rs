@@ -14,34 +14,31 @@ use phux_protocol::ids::ResourceId;
 use ratatui::buffer::{Buffer, Cell as RatatuiCell, CellDiffOption};
 use ratatui::style::{Color, Modifier};
 
+use super::chrome_ctx::ChromeCtx;
 #[cfg(test)]
 use super::paint::content_rect;
-use super::paint::{ContentLayout, SidebarReservation, bar_inset, content_layout, sidebar_rect};
+use super::paint::{ContentLayout, bar_inset, content_layout, sidebar_rect};
 use super::pane_state::PaneSlot;
 use crate::layout::LayoutState;
 use crate::render::chrome::dividers::compose_buffer as compose_divider_buffer;
-use crate::render::chrome::sidebar::SidebarPainter;
 use crate::render::chrome::status_bar::{StatusBarPainter, make_context};
 
 /// Compose the assembled multi-pane frame into a dense [`RenderedFrame`] for
-/// the outer viewport `viewport_dims`. `now` feeds time-based status widgets.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the paint context is passed flat, mirroring paint_full_frame"
-)]
+/// the chrome's outer viewport. The chrome is only read, never painted; `now`
+/// feeds time-based status widgets.
 pub(super) fn compose_full_frame_cells(
+    chrome: &ChromeCtx<'_>,
     layout_state: &LayoutState,
     panes: &mut HashMap<ResourceId, PaneSlot>,
     kernel: &super::pane_state::AttachKernel,
     focused_resource: Option<&ResourceId>,
-    viewport_dims: (u16, u16),
-    status_bar: Option<&StatusBarPainter>,
-    sidebar: Option<SidebarReservation>,
-    sidebar_painter: Option<&SidebarPainter>,
-    session_name: &str,
     now: SystemTime,
-    theme: &crate::render::theme::Theme,
 ) -> RenderedFrame {
+    let viewport_dims = chrome.viewport;
+    let status_bar = chrome.status_bar.as_deref();
+    let sidebar = chrome.sidebar;
+    let sidebar_painter = chrome.sidebar_painter.as_deref();
+    let (session_name, theme) = (chrome.session_name, chrome.theme);
     let (cols, rows) = viewport_dims;
     let bar = status_bar.map(StatusBarPainter::position);
     let ContentLayout {
@@ -190,9 +187,10 @@ mod tests {
     use super::*;
     use std::time::UNIX_EPOCH;
 
-    use crate::attach::paint::SidebarEdge;
+    use crate::attach::paint::{SidebarEdge, SidebarReservation};
     use crate::attach::pane_state::published_test_state;
     use crate::render::Theme;
+    use crate::render::chrome::sidebar::SidebarPainter;
     use crate::render::chrome::status_bar::Position;
     use phux_config::widget::WindowInfo;
     use phux_protocol::wire::info::{LayoutNode, SplitDir};
@@ -241,22 +239,26 @@ mod tests {
     fn compose(
         layout: &LayoutState,
         entries: &[(&ResourceId, u16, u16, &[u8])],
-        status_bar: Option<&StatusBarPainter>,
-        sidebar: Option<(SidebarReservation, &SidebarPainter)>,
+        status_bar: Option<&mut StatusBarPainter>,
+        sidebar: Option<(SidebarReservation, &mut SidebarPainter)>,
     ) -> RenderedFrame {
         let (kernel, _, mut panes) = published_test_state(entries);
+        let (sidebar, sidebar_painter) = sidebar.unzip();
+        let chrome = ChromeCtx {
+            viewport: (80, 24),
+            sidebar,
+            status_bar,
+            sidebar_painter,
+            session_name: "alpha",
+            theme: &Theme::default(),
+        };
         compose_full_frame_cells(
+            &chrome,
             layout,
             &mut panes,
             &kernel,
             layout.focus.as_ref(),
-            (80, 24),
-            status_bar,
-            sidebar.map(|(res, _)| res),
-            sidebar.map(|(_, painter)| painter),
-            "alpha",
             UNIX_EPOCH,
-            &Theme::default(),
         )
     }
 
@@ -286,7 +288,12 @@ mod tests {
         strip.set_windows(vec![window("editor"), window("shell")]);
 
         for sidebar in [None, Some(STRIP)] {
-            let frame = compose(&layout, &entries, None, sidebar.map(|res| (res, &strip)));
+            let frame = compose(
+                &layout,
+                &entries,
+                None,
+                sidebar.map(|res| (res, &mut strip)),
+            );
             let multi = crate::attach::multi_pane::compute_layout_in(
                 &layout,
                 content_rect((80, 24), None, sidebar),
@@ -328,7 +335,7 @@ mod tests {
             focus: Some(pane.clone()),
         };
         let entries: [(&ResourceId, u16, u16, &[u8]); 1] = [(&pane, 80, 24, b"hi")];
-        let frame = compose(&layout, &entries, Some(&bar("session-name")), None);
+        let frame = compose(&layout, &entries, Some(&mut bar("session-name")), None);
         assert!(row(&frame, 23, 0..80).contains("alpha"));
         assert_eq!(frame.cell(1, 0).unwrap().grapheme, "h", "row 0 is the rail");
 
@@ -336,7 +343,12 @@ mod tests {
         tabs.set_windows(vec![window("editor")]);
         let mut strip = SidebarPainter::new(Theme::default());
         strip.set_windows(vec![window("editor")]);
-        let frame = compose(&layout, &entries, Some(&tabs), Some((STRIP, &strip)));
+        let frame = compose(
+            &layout,
+            &entries,
+            Some(&mut tabs),
+            Some((STRIP, &mut strip)),
+        );
         assert!(
             !row(&frame, 23, 0..20).contains("editor"),
             "tabs must not paint under the strip"

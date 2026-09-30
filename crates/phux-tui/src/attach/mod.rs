@@ -47,6 +47,8 @@ pub mod rendered;
 // ADR-0029: the monotone repaint accumulator, drained once per iteration.
 mod repaint;
 pub mod server_frame;
+// phux-jx39.3: the session state server frames fold into.
+mod session_mirror;
 mod stdout_writer;
 mod terminal_probe;
 mod tty_input;
