@@ -35,6 +35,7 @@ REQUIRED_TESTS = (
     "modifier_click_opens_http_links_in_a_new_tab_and_nothing_else",
     "the_bell_announces_itself_and_flashes_the_canvas",
     "a_double_width_character_copies_without_a_trailing_space",
+    "focus_changes_reach_a_program_that_asks_for_them",
     "the_wheel_on_the_alternate_screen_is_arrow_keys",
     "mouse_positions_land_on_their_cells_after_another_client_reports_other_cells",
     # Unit tests in src/ that need a DOM and the live server.
