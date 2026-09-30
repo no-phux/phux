@@ -2,6 +2,8 @@
 
 #[path = "../common/ambient.rs"]
 mod common;
+#[path = "../common/listeners.rs"]
+mod listeners;
 
 mod host_enroll;
 mod host_lifecycle;

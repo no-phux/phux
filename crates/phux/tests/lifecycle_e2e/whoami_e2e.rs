@@ -13,6 +13,8 @@
 
 #[path = "../common/ambient.rs"]
 mod common;
+#[path = "../common/listeners.rs"]
+mod listeners;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Output, Stdio};
@@ -106,16 +108,6 @@ fn json_doc(out: &Output) -> serde_json::Value {
     serde_json::from_slice(&out.stdout).expect("whoami --json is one JSON document")
 }
 
-/// A UDP port nothing is bound to right now; a collision fails loudly at the
-/// readiness wait rather than passing by accident.
-fn free_udp_port() -> u16 {
-    std::net::UdpSocket::bind("127.0.0.1:0")
-        .expect("bind probe socket")
-        .local_addr()
-        .expect("probe addr")
-        .port()
-}
-
 /// Over the local socket: the kernel peer uid, no credential, and the same
 /// user on both ends. The prose view prints one labelled field per line.
 #[test]
@@ -170,10 +162,14 @@ fn whoami_over_remote_reports_the_bearer_credential() {
     // with a bound remote listener (ADR-0141), and the server re-reads its
     // token store at the next dial. Retried until the server answers; a
     // refused mint writes nothing.
-    let port = free_udp_port();
-    let quic = format!("127.0.0.1:{port}");
-    let _server = start_server(dir.path(), &["--quic", &quic], &[("PHUX_WS_SECURE", "1")]);
+    let _server = start_server(
+        dir.path(),
+        &["--quic", listeners::LOOPBACK_ANY_PORT],
+        &[("PHUX_WS_SECURE", "1")],
+    );
     let socket = dir.path().join("s.sock");
+    let quic = listeners::bound_listener_addr(&socket, listeners::RemoteListenerTransport::Quic)
+        .to_string();
     let socket = socket.to_str().expect("utf-8 socket path");
     let paired = json_doc(&await_success(
         dir.path(),
@@ -188,7 +184,7 @@ fn whoami_over_remote_reports_the_bearer_credential() {
     std::fs::write(
         dir.path().join("config/phux/config.toml"),
         format!(
-            "[[remote]]\nname = \"{REMOTE}\"\nendpoint = \"quic://127.0.0.1:{port}\"\n\
+            "[[remote]]\nname = \"{REMOTE}\"\nendpoint = \"quic://{quic}\"\n\
              token-file = \"{}\"\n",
             token_file.display()
         ),

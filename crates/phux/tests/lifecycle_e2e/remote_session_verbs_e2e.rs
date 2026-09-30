@@ -8,6 +8,8 @@
 
 #[path = "../common/ambient.rs"]
 mod common;
+#[path = "../common/listeners.rs"]
+mod listeners;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Output, Stdio};
@@ -37,14 +39,14 @@ struct LoopbackRemote {
 impl LoopbackRemote {
     fn start() -> Self {
         let dir = TempDir::new().expect("tempdir");
-        let port = free_udp_port();
-        write_registry(dir.path(), port);
+        std::fs::create_dir_all(dir.path().join("run")).expect("runtime dir");
+        let socket = dir.path().join("s.sock");
         let server = common::phux_cmd(PHUX)
             .envs(hermetic_env(dir.path()))
             .arg("server")
             .arg("--socket")
-            .arg(dir.path().join("s.sock"))
-            .args(["--quic", &format!("127.0.0.1:{port}")])
+            .arg(&socket)
+            .args(["--quic", listeners::LOOPBACK_ANY_PORT])
             // Backstop only: the Drop below kills the server, but a panic
             // that skips it must not leave a daemon behind for long.
             .args(["--exit-after-idle", "120"])
@@ -54,6 +56,9 @@ impl LoopbackRemote {
             .spawn()
             .expect("spawn phux server");
         let remote = Self { dir, server };
+        let quic =
+            listeners::bound_listener_addr(&socket, listeners::RemoteListenerTransport::Quic);
+        write_registry(remote.dir.path(), quic.port());
         remote.await_ready();
         remote
     }
@@ -145,23 +150,11 @@ fn hermetic_env(dir: &Path) -> Vec<(&'static str, PathBuf)> {
 fn write_registry(dir: &Path, port: u16) {
     let config_dir = dir.join("config/phux");
     std::fs::create_dir_all(&config_dir).expect("config dir");
-    std::fs::create_dir_all(dir.join("run")).expect("runtime dir");
     std::fs::write(
         config_dir.join("config.toml"),
         format!("[[remote]]\nname = \"{REMOTE}\"\nendpoint = \"quic://127.0.0.1:{port}\"\n"),
     )
     .expect("write registry");
-}
-
-/// A UDP port nothing is bound to right now. The window between releasing it
-/// here and the server binding it is small, and a collision fails loudly at
-/// the readiness wait rather than passing by accident.
-fn free_udp_port() -> u16 {
-    std::net::UdpSocket::bind("127.0.0.1:0")
-        .expect("bind probe socket")
-        .local_addr()
-        .expect("probe addr")
-        .port()
 }
 
 fn stderr(out: &Output) -> String {

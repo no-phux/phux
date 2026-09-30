@@ -8,6 +8,8 @@
 
 #[path = "../common/ambient.rs"]
 mod common;
+#[path = "../common/listeners.rs"]
+mod listeners;
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -485,14 +487,20 @@ fn usage_errors_never_echo_a_base64url_secret() {
     }
 }
 
-/// A UDP port nothing is bound to right now; a collision fails loudly at
-/// the readiness wait rather than passing by accident.
-fn free_udp_port() -> u16 {
-    std::net::UdpSocket::bind("127.0.0.1:0")
-        .expect("bind probe socket")
-        .local_addr()
-        .expect("probe addr")
-        .port()
+/// The port the QUIC listener of the server on `socket` bound.
+fn bound_quic_port(socket: &Path) -> u16 {
+    listeners::bound_listener_addr(socket, listeners::RemoteListenerTransport::Quic).port()
+}
+
+/// Register the server on `dir`'s socket as [`REMOTE`], by the QUIC port it
+/// bound.
+fn register_loopback_remote(dir: &Path) {
+    let port = bound_quic_port(&dir.join("s.sock"));
+    std::fs::write(
+        dir.join("config/phux/config.toml"),
+        format!("[[remote]]\nname = \"{REMOTE}\"\nendpoint = \"quic://127.0.0.1:{port}\"\n"),
+    )
+    .expect("write registry");
 }
 
 fn server_command(dir: &Path, extra: &[&str], env: &[(&str, &str)]) -> std::process::Command {
@@ -552,18 +560,12 @@ fn revoke_marks_the_record_and_a_new_connection_is_refused() {
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).expect("chmod");
     let id = enroll(dir.path(), &client, &cert, &["*@global"]);
 
-    let port = free_udp_port();
-    std::fs::write(
-        dir.path().join("config/phux/config.toml"),
-        format!("[[remote]]\nname = \"{REMOTE}\"\nendpoint = \"quic://127.0.0.1:{port}\"\n"),
-    )
-    .expect("write registry");
-    let quic = format!("127.0.0.1:{port}");
     let _server = start_server(
         dir.path(),
-        &["--quic", &quic],
+        &["--quic", listeners::LOOPBACK_ANY_PORT],
         &[("PHUX_WORKLOAD_MTLS", "1")],
     );
+    register_loopback_remote(dir.path());
     let identity = [
         ("PHUX_WORKLOAD_CERT", cert.as_path()),
         ("PHUX_WORKLOAD_KEY", key.as_path()),
@@ -611,20 +613,18 @@ fn no_key_nonce_or_signature_bytes_in_argv_env_stdout_stderr_or_trace() {
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).expect("chmod");
     let id = enroll(dir.path(), &client, &cert, &["*@global"]);
 
-    let port = free_udp_port();
-    std::fs::write(
-        dir.path().join("config/phux/config.toml"),
-        format!("[[remote]]\nname = \"{REMOTE}\"\nendpoint = \"quic://127.0.0.1:{port}\"\n"),
-    )
-    .expect("write registry");
-    let quic = format!("127.0.0.1:{port}");
     let log = dir.path().join("server.log");
     let stderr = std::fs::File::create(dir.path().join("server.stderr")).expect("stderr file");
     let trace =
         "phux=trace,phux_server=trace,phux_dial=trace,phux_protocol=trace,phux_client=trace,info";
     let server = server_command(
         dir.path(),
-        &["--quic", &quic, "--exit-after-idle", "120"],
+        &[
+            "--quic",
+            listeners::LOOPBACK_ANY_PORT,
+            "--exit-after-idle",
+            "120",
+        ],
         &[
             ("PHUX_WORKLOAD_MTLS", "1"),
             ("RUST_LOG", trace),
@@ -636,6 +636,7 @@ fn no_key_nonce_or_signature_bytes_in_argv_env_stdout_stderr_or_trace() {
     .spawn()
     .expect("spawn phux server");
     let server = Server(server);
+    register_loopback_remote(dir.path());
 
     let identity = [
         ("PHUX_WORKLOAD_CERT", cert.as_path()),
@@ -685,12 +686,16 @@ fn workload_mode_refuses_to_start_with_webtransport() {
     let dir = TempDir::new().expect("tempdir");
     prepare_dirs(dir.path());
     init_authority(dir.path());
-    let webtransport = format!("127.0.0.1:{}", free_udp_port());
     // A server that wrongly starts exits on its own after the idle window,
     // successfully, which fails the assertion instead of hanging the lane.
     let out = server_command(
         dir.path(),
-        &["--webtransport", &webtransport, "--exit-after-idle", "5"],
+        &[
+            "--webtransport",
+            listeners::LOOPBACK_ANY_PORT,
+            "--exit-after-idle",
+            "5",
+        ],
         &[("PHUX_WORKLOAD_MTLS", "1")],
     )
     .output()
@@ -742,18 +747,12 @@ impl HeldWorld {
             &cert,
             &["inventory,observe,?signal@global"],
         );
-        let port = free_udp_port();
-        std::fs::write(
-            dir.path().join("config/phux/config.toml"),
-            format!("[[remote]]\nname = \"{REMOTE}\"\nendpoint = \"quic://127.0.0.1:{port}\"\n"),
-        )
-        .expect("write registry");
-        let quic = format!("127.0.0.1:{port}");
         let server = start_server(
             dir.path(),
-            &["--quic", &quic],
+            &["--quic", listeners::LOOPBACK_ANY_PORT],
             &[("PHUX_WORKLOAD_MTLS", "1")],
         );
+        register_loopback_remote(dir.path());
         let world = Self {
             dir,
             _server: server,
@@ -1170,10 +1169,10 @@ fn host_add_enrolls_a_certificate_a_paired_listener_admits_until_revoked() {
     prepare_dirs(&dir.path().join("client"));
     let far = FarHost::new(dir.path());
     let ssh = far.fake_ssh(dir.path());
-    let port = free_udp_port();
     // Bound on every address, so the listener is a secure one that asks for
     // the pairing token as a real remote's does; dialed on loopback.
-    let _server = far.serve(&format!("0.0.0.0:{port}"));
+    let _server = far.serve("0.0.0.0:0");
+    let port = bound_quic_port(&far.root.join("s.sock"));
     let quic = format!("127.0.0.1:{port}");
 
     let add = [
