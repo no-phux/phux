@@ -81,7 +81,7 @@ def main():
     environment = {key: os.environ[key] for key in ("HOME", "USER", "LOGNAME", "TMPDIR") if key in os.environ}
     environment.update(PATH="/usr/bin:/bin:/usr/sbin:/sbin", LANG="en_US.UTF-8",
                        CMUX_ALLOW_SOCKET_OVERRIDE="1", CMUX_SOCKET_PATH="/tmp/phux-cmux-bench.sock",
-                       CMUXD_UNIX_PATH="/tmp/phux-cmuxd-bench.sock")
+                       CMUXD_UNIX_PATH="/tmp/phux-cmuxd-bench.sock", CMUX_SOCKET_MODE="allowAll")
     with (app / "Contents/Info.plist").open("rb") as source:
         info = plistlib.load(source)
     result = {
@@ -93,6 +93,7 @@ def main():
                     "binary_sha256": hashlib.file_digest(executable.open("rb"), "sha256").hexdigest(),
                     "cli": command([cli, "--version"], environment=environment)},
         "configuration": {"state": "fresh disposable runner account; default native window and terminal", "samples_requested": 20,
+                          "socket_policy": "allowAll on the private CI socket, explicitly permitting the external benchmark driver",
                           "startup_boundary": "LaunchServices open invocation to first observed completed terminal command; includes CLI startup and polling",
                           "echo_boundary": "CLI send invocation to completion marker returned by CLI read-screen; includes both CLI launches and polling; NOT PTY-byte echo or input-to-pixel"},
         "samples": [], "ok": False,
@@ -103,14 +104,14 @@ def main():
     try:
         started = time.perf_counter_ns()
         launch = ["/usr/bin/open", "-n", str(app)]
-        for key in ("CMUX_ALLOW_SOCKET_OVERRIDE", "CMUX_SOCKET_PATH", "CMUXD_UNIX_PATH"):
+        for key in ("CMUX_ALLOW_SOCKET_OVERRIDE", "CMUX_SOCKET_PATH", "CMUXD_UNIX_PATH", "CMUX_SOCKET_MODE"):
             launch.extend(["--env", f"{key}={environment[key]}"])
         result["launch"] = command(launch, environment=environment)
         if result["launch"]["exit_code"] != 0:
             raise RuntimeError("LaunchServices refused the application")
         deadline = time.monotonic() + 90
         while time.monotonic() < deadline:
-            workspaces = command([cli, "list-workspaces", "--json"], environment=environment, timeout=5)
+            workspaces = command([cli, "workspace", "list", "--json"], environment=environment, timeout=5)
             if workspaces["exit_code"] == 0 and workspaces["stdout"] not in ("", "[]"):
                 break
             time.sleep(0.1)
