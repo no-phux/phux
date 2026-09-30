@@ -166,8 +166,7 @@ absorbed; near 1 under a flood means frames are being fed one at a time.
 
 The desktop host (`clients/desktop`) appends its painter rows to the same
 report, `desktopPerfJson`: `desktop.prepare` and `desktop.paint` (per
-terminal element per window draw), `desktop.prepare_reused` (draws that
-reused the previous cell walk), and `desktop.key_to_paint`, from a key
+terminal element per window draw) and `desktop.key_to_paint`, from a key
 reaching a focused terminal to the first paint of that terminal's next
 output. Launched with `PHUX_DESKTOP_PERF=<absolute path>`, the desktop
 appends one JSON line per second with that report, the main window's draw

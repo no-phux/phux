@@ -14,14 +14,12 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use napi_derive::napi;
-use phux_perf::{Counter, Histogram, Metric, Unit};
+use phux_perf::{Histogram, Metric, Unit};
 
 /// Microseconds to prepare one terminal element's frame for paint.
 pub static PREPARE: Histogram = Histogram::new();
 /// Microseconds to submit one terminal element's quads and glyphs.
 pub static PAINT: Histogram = Histogram::new();
-/// Prepares that reused the previous draw's cell walk and shaped glyphs.
-pub static PREPARE_REUSED: Counter = Counter::new();
 /// Microseconds from a key reaching a focused terminal to the first paint of
 /// that terminal's next output (the echo, when a program answers).
 pub static KEY_TO_PAINT: Histogram = Histogram::new();
@@ -35,7 +33,6 @@ pub static TABLE: &[Metric] = &[
     Metric::histogram("desktop.key_to_paint", Unit::Micros, &KEY_TO_PAINT),
     Metric::histogram("desktop.prepare", Unit::Micros, &PREPARE),
     Metric::histogram("desktop.paint", Unit::Micros, &PAINT),
-    Metric::counter("desktop.prepare_reused", Unit::Count, &PREPARE_REUSED),
 ];
 
 fn started() -> Instant {
