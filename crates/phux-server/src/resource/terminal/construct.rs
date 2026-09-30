@@ -10,8 +10,7 @@ use super::{
     PerTerminalMouseEncoder, PerTerminalPasteEncoder, PtyEvent, PtyOwned, PtySource, Rc, RefCell,
     ResourceCore, ResourceFacetHandle, ResourceHandle, ResourceKind, ResourceLifecycle,
     SizeReportSize, SnapshotSynthesizer, TerminalActor, TerminalActorBundle, TerminalActorError,
-    TerminalHandle, VecDeque, adopt_pty, color_query_reply, default_shell_command, mpsc, osc133,
-    resolve_shell, spawn_pty, watch,
+    TerminalHandle, VecDeque, adopt_pty, color_query_reply, mpsc, osc133, spawn_pty, watch,
 };
 use phux_config::ScrollbackLimits;
 
@@ -44,18 +43,6 @@ impl TerminalActor {
             DEFAULT_SCROLLBACK,
             CancellationToken::new(),
             None,
-        )
-    }
-
-    /// Spawn the default shell in a fresh PTY (no server config).
-    pub fn new_with_default_shell(
-        cols: u16,
-        rows: u16,
-    ) -> Result<TerminalActorBundle, TerminalActorError> {
-        Self::new_with_command(
-            default_shell_command(&resolve_shell(None), false),
-            cols,
-            rows,
         )
     }
 

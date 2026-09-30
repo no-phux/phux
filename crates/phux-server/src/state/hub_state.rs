@@ -1,5 +1,5 @@
-//! Hub handles (ADR-0007): the satellite table, link statuses, and relays.
-//! All three are installed together at startup and are `None` exactly when
+//! Hub handles (ADR-0007): the satellite table and relays.
+//! Both are installed together at startup and are `None` exactly when
 //! the server is not a hub. The federation protocol lives in the runtime and
 //! [`crate::hub`]. Everything is `pub(super)` and sync.
 
@@ -8,8 +8,6 @@
 pub(super) struct HubState {
     /// Validated satellite table.
     table: Option<crate::hub::HubTable>,
-    /// Per-satellite link statuses.
-    link_statuses: Option<crate::hub::link::HubLinkStatuses>,
     /// Per-satellite relay handles, used to route `ResourceId::Satellite`.
     relays: Option<crate::hub::relay::HubRelays>,
     /// What each satellite advertised on its current link (ADR-0127), set by
@@ -27,12 +25,11 @@ impl Default for HubState {
 }
 
 impl HubState {
-    /// Build the off-hub state: no table, no statuses, no relays.
+    /// Build the off-hub state: no table, no relays.
     #[must_use]
     pub(super) const fn new() -> Self {
         Self {
             table: None,
-            link_statuses: None,
             relays: None,
             satellite_features: Vec::new(),
         }
@@ -71,18 +68,6 @@ impl HubState {
     #[must_use]
     pub(super) const fn table(&self) -> Option<&crate::hub::HubTable> {
         self.table.as_ref()
-    }
-
-    /// Install the shared per-satellite link-status handle (phux-v45.3).
-    pub(super) fn set_link_statuses(&mut self, statuses: crate::hub::link::HubLinkStatuses) {
-        self.link_statuses = Some(statuses);
-    }
-
-    /// Read the per-satellite link statuses set by
-    /// [`Self::set_link_statuses`]. `None` on a non-hub server.
-    #[must_use]
-    pub(super) const fn link_statuses(&self) -> Option<&crate::hub::link::HubLinkStatuses> {
-        self.link_statuses.as_ref()
     }
 
     /// Install the shared per-satellite frame-relay registry (phux-v45.4).

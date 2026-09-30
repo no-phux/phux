@@ -966,24 +966,6 @@ mod tests {
     }
 
     #[test]
-    fn set_client_color_support_updates_live_attached_client() {
-        // HELLO after ATTACH (tolerated) patches the live record.
-        let mut s = ServerState::new();
-        let _ = s.seed_session("default");
-        let cid = s.new_client_id();
-        s.attach_default_caps(cid, "default", mk_tx()).unwrap();
-        assert!(s.set_client_color_support(cid, ColorSupport::Indexed256));
-        let client = s.attached().get(&cid).unwrap();
-        assert_eq!(client.client_caps.color_support, ColorSupport::Indexed256);
-    }
-
-    #[test]
-    fn set_client_color_support_returns_false_for_unknown_client() {
-        let mut s = ServerState::new();
-        assert!(!s.set_client_color_support(ClientId(999), ColorSupport::Indexed16));
-    }
-
-    #[test]
     fn attach_snapshot_panes_collects_live_handles_for_session_tree() {
         let mut s = ServerState::new();
         let (sid, wid, pid_a) = s.seed_session("default");

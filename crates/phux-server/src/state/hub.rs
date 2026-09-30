@@ -13,18 +13,6 @@ impl ServerState {
         self.hub.table()
     }
 
-    /// Install the link-status handle (hub startup).
-    pub fn set_hub_link_statuses(&mut self, statuses: crate::hub::link::HubLinkStatuses) {
-        self.hub.set_link_statuses(statuses);
-    }
-
-    /// Read the per-satellite link statuses set by
-    /// [`Self::set_hub_link_statuses`]. `None` on a non-hub server.
-    #[must_use]
-    pub const fn hub_link_statuses(&self) -> Option<&crate::hub::link::HubLinkStatuses> {
-        self.hub.link_statuses()
-    }
-
     /// Install the relay registry (hub startup).
     pub(crate) fn set_hub_relays(&mut self, relays: crate::hub::relay::HubRelays) {
         self.hub.set_relays(relays);

@@ -983,7 +983,7 @@ fn install_hook_dispatcher(
 }
 
 /// Spawn one link supervisor per validated satellite (ADR-0038) and mirror
-/// the link statuses and relay registry into shared state.
+/// the relay registry into shared state.
 fn spawn_hub_links(
     state: &SharedState,
     hub_table: Option<&crate::hub::HubTable>,
@@ -995,7 +995,6 @@ fn spawn_hub_links(
     let statuses = crate::hub::link::HubLinkStatuses::default();
     let relays = crate::hub::relay::HubRelays::default();
     state.with_mut(|s| {
-        s.set_hub_link_statuses(statuses.clone());
         s.set_hub_relays(relays.clone());
     });
     let ssh_program = state.with(|s| s.server_env().ssh_program());
