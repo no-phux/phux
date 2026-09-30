@@ -1457,7 +1457,8 @@ pub(crate) enum Command {
         /// frame (layout tiling + dividers + status bar) as the human's glass
         /// shows it — as dense structured cells. Unlike the
         /// default side-effect-free read this ATTACHES (drives the headless
-        /// client render path). Mutually exclusive with `--cells` /
+        /// client render path), though without a window-size vote, so the
+        /// session's panes keep their size. Mutually exclusive with `--cells` /
         /// `--scrollback` / `--tail` / `--unwrap`; sizes the composite via
         /// `--cols` / `--rows`.
         #[usage(long, conflicts("--cells", "--scrollback", "--tail", "--unwrap"))]

@@ -176,6 +176,36 @@ fn resize_json_reports_requested_and_applied() {
     assert_eq!(server.pane_size(), (200, 50));
 }
 
+/// A rendered snapshot is a read: it attaches to compose the frame but must
+/// not vote on the window size. It used to send its (non-TTY: 80x24)
+/// viewport, which the default `smallest` policy applied to the live panes
+/// and the detach then re-resolved.
+#[test]
+#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
+fn rendered_snapshot_does_not_resize_the_panes() {
+    let server = ServerGuard::start();
+    server.success(&["resize", SESSION, "140x45"]);
+    let rendered = server.success(&[
+        "snapshot",
+        "--rendered",
+        "--cols",
+        "40",
+        "--rows",
+        "10",
+        SESSION,
+    ]);
+    assert!(
+        rendered.contains("40x10"),
+        "the composite is the requested size:\n{rendered}"
+    );
+    assert_eq!(
+        server.pane_size(),
+        (140, 45),
+        "`snapshot --rendered` resized the session's panes: its headless \
+         attach cast a window-size vote instead of a zero viewport"
+    );
+}
+
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn resize_does_not_attach_the_session() {

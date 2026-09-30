@@ -3268,10 +3268,11 @@ Flags:
                         assembled frame (layout tiling + dividers + status bar)
                         as the human's glass shows it — as dense structured
                         cells. Unlike the default side-effect-free read this
-                        ATTACHES (drives the headless client render path).
-                        Mutually exclusive with `--cells` / `--scrollback` /
-                        `--tail` / `--unwrap`; sizes the composite via `--cols`
-                        / `--rows`.
+                        ATTACHES (drives the headless client render path),
+                        though without a window-size vote, so the session's
+                        panes keep their size. Mutually exclusive with `--cells`
+                        / `--scrollback` / `--tail` / `--unwrap`; sizes the
+                        composite via `--cols` / `--rows`.
       --format <FMT>    Render through the SERVER's libghostty-vt Formatter
                         instead of the lines/cells JSON: `html` for
                         inline-styled markup, `vt` for re-playable VT escape

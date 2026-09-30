@@ -8,7 +8,7 @@ use phux_protocol::caps::{
     BootstrapLimits, ClientCapabilities, Layer, LayerSet, ServerFeature, detect_color_support,
 };
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::{AttachTarget, FrameKind};
+use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 
 use crate::attach::connection::Connection;
 use crate::attach::outcome::AttachError;
@@ -147,6 +147,24 @@ pub(super) async fn send_attach(
     target: AttachTarget,
 ) -> Result<u32, AttachError> {
     let viewport = current_viewport()?;
+    send_attach_with_viewport(conn, target, viewport).await
+}
+
+/// Send the `ATTACH` frame without a window-size vote: a zero viewport
+/// resizes nothing on attach and re-resolves nothing on detach (L1 §9), so
+/// a read-only view (the headless composite) leaves live panes alone.
+pub(super) async fn send_attach_without_size_vote(
+    conn: &mut Connection,
+    target: AttachTarget,
+) -> Result<u32, AttachError> {
+    send_attach_with_viewport(conn, target, ViewportInfo::new(0, 0)).await
+}
+
+async fn send_attach_with_viewport(
+    conn: &mut Connection,
+    target: AttachTarget,
+    viewport: ViewportInfo,
+) -> Result<u32, AttachError> {
     // ADR-0127: `--viewer` / `--take`, or nothing for the default.
     let role_policy = crate::attach::attach_role::attach_role_for(conn)?;
     let attach_id = conn.next_attach_id();
