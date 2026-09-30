@@ -19,7 +19,7 @@ use crate::attach::pane_state::{AttachKernel, AttentionNavigation, PaneSlot, Vcs
 use crate::attach::plugin_actions::PluginActionEntry;
 use crate::attach::plugin_panes::PluginPaneEntry;
 use crate::layout::{SplitDir, Workspace};
-use crate::predict::{Overlay, PredictionState, PredictiveConfig};
+use crate::predict::{PredictionState, PredictiveConfig};
 use crate::render::chrome::sidebar::SidebarTargets;
 use crate::render::chrome::status_bar::{Position, StatusBarPainter};
 use crate::render::overlay::OverlayState;
@@ -351,7 +351,6 @@ impl Env<'_> {
                 &mut self.focused,
                 &mut detach,
                 &mut self.predict,
-                &Overlay,
                 &mut self.panes,
                 &mut ctx,
             )

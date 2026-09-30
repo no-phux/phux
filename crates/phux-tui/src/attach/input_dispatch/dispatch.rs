@@ -131,7 +131,6 @@ pub(in crate::attach) async fn dispatch_input_events<W: crate::attach::RenderSin
     focused_resource: &mut Option<ResourceId>,
     detach_pending: &mut bool,
     predict: &mut PredictionState,
-    overlay: &Overlay,
     panes: &mut HashMap<ResourceId, PaneSlot>,
     ctx: &mut DispatchCtx<'_>,
 ) -> Result<bool, AttachError> {
@@ -158,7 +157,7 @@ pub(in crate::attach) async fn dispatch_input_events<W: crate::attach::RenderSin
         // keystrokes produces a single positioned write run, not one per
         // event. The overlay is a no-op on an empty queue.
         if predicted_any {
-            env.paint_predictions(overlay);
+            env.paint_predictions();
         }
         layout_changed
     };
@@ -539,7 +538,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
 
     /// Paint queued predictions at the focused pane's origin when the
     /// ADR-0090 display policy allows.
-    fn paint_predictions(&mut self, overlay: &Overlay) {
+    fn paint_predictions(&mut self) {
         if !self.predict.should_display(predict_now_ms()) {
             return;
         }
@@ -551,7 +550,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let origin = focused
             .and_then(|fid| self.panes.get(fid))
             .map_or((0, 0), |s| s.renderer.last_origin());
-        let _ = overlay.render(self.predict, origin, self.out);
+        let _ = Overlay.render(self.predict, origin, self.out);
         // The guesses now sit over the focused pane's cells; its
         // front buffer must not keep claiming what was there before them.
         if let Some(slot) = focused.and_then(|fid| self.panes.get_mut(fid)) {

@@ -22,9 +22,10 @@ use phux_protocol::{
 
 use super::paint::{SidebarEdge, SidebarReservation, content_rect, paint_full_frame};
 use super::pane_state::PaneSlot;
-use super::server_frame::{AgentMetaIndex, handle_server_frame};
+use super::server_frame::{FrameEnv, handle_server_frame};
+use super::session_mirror::SessionMirror;
 use crate::layout::{LayoutState, WindowState, Workspace};
-use crate::predict::{Overlay, PredictionState, PredictiveConfig};
+use crate::predict::{PredictionState, PredictiveConfig};
 
 const fn tid(id: u32) -> ResourceId {
     ResourceId::local(id)
@@ -87,22 +88,12 @@ fn dump(grid: &[String]) -> String {
 /// triggers the same `paint_full_frame` the driver runs on
 /// `layout_changed`.
 struct Rig {
-    panes: HashMap<ResourceId, PaneSlot>,
-    workspace: Workspace,
-    focused: Option<ResourceId>,
-    zoomed: Option<ResourceId>,
-    session_name: String,
+    mirror: SessionMirror,
     sidebar: Option<SidebarReservation>,
     overlay_active: bool,
-    predict: PredictionState,
-    pending_splits: HashMap<u32, super::actions::PendingSplit>,
-    pending_windows: HashMap<u32, super::actions::PendingWindow>,
-    agent_meta: AgentMetaIndex,
     glass: GhosttyTerminal<'static, 'static>,
     viewport: (u16, u16),
     seq: HashMap<ResourceId, u64>,
-    kernel: SessionKernel<GhosttyAdapter>,
-    kernel_effects: KernelEffectBuffer,
     bootstraps: HashMap<ResourceId, BootstrapId>,
     next_bootstrap: u64,
     attach_released: bool,
@@ -131,18 +122,18 @@ impl Rig {
                 &mut kernel_effects,
             )
             .expect("attach started");
+        let mut mirror = SessionMirror::new(
+            kernel,
+            PredictionState::new(PredictiveConfig::disabled(), viewport.0, viewport.1),
+        );
+        mirror.kernel_effects = kernel_effects;
+        mirror.workspace = workspace;
+        mirror.focused_resource = focused;
+        mirror.session_name = "stress".to_owned();
         Self {
-            panes: HashMap::new(),
-            workspace,
-            focused,
-            zoomed: None,
-            session_name: "stress".to_owned(),
+            mirror,
             sidebar: None,
             overlay_active: false,
-            predict: PredictionState::new(PredictiveConfig::disabled(), viewport.0, viewport.1),
-            pending_splits: HashMap::new(),
-            pending_windows: HashMap::new(),
-            agent_meta: AgentMetaIndex::default(),
             glass: {
                 let mut terminal =
                     GhosttyTerminal::new(viewport.0, viewport.1).expect("glass terminal");
@@ -153,8 +144,6 @@ impl Rig {
             },
             viewport,
             seq: HashMap::new(),
-            kernel,
-            kernel_effects,
             bootstraps: HashMap::new(),
             next_bootstrap: 1,
             attach_released: false,
@@ -165,7 +154,7 @@ impl Rig {
     /// with initial content — the "resize handshake in flight" fixture when
     /// the size differs from the pane's layout rect.
     fn seed_pane(&mut self, id: &ResourceId, cols: u16, rows: u16, content: &[u8]) {
-        self.panes.insert(
+        self.mirror.panes.insert(
             id.clone(),
             PaneSlot::new_with_size(cols, rows).expect("pane slot"),
         );
@@ -176,34 +165,14 @@ impl Rig {
     /// whatever it painted into the glass.
     fn drive(&mut self, frame: FrameKind) -> super::server_frame::FrameOutcome {
         let mut out: Vec<u8> = Vec::new();
-        let overlay = Overlay;
-        let outcome = handle_server_frame(
-            &mut self.kernel,
-            &mut self.kernel_effects,
-            &mut out,
-            frame,
-            &mut self.panes,
-            &mut self.workspace,
-            &mut self.focused,
-            &mut self.zoomed,
-            &mut self.session_name,
-            &mut false,
-            None,
-            None,
-            self.sidebar,
-            self.viewport,
-            &mut self.predict,
-            &overlay,
-            None,
-            &mut self.pending_splits,
-            &mut self.pending_windows,
-            &mut std::collections::HashSet::new(),
-            &mut std::collections::HashMap::new(),
-            &mut self.agent_meta,
-            self.overlay_active,
-            false,
-        )
-        .expect("handle_server_frame");
+        let env = FrameEnv {
+            sidebar: self.sidebar,
+            viewport_dims: self.viewport,
+            overlay_active: self.overlay_active,
+            ..FrameEnv::default()
+        };
+        let outcome = handle_server_frame(&mut self.mirror, env, &mut out, frame)
+            .expect("handle_server_frame");
         self.glass.vt_write(&out);
         outcome
     }
@@ -264,22 +233,26 @@ impl Rig {
             self.attach_released = true;
         }
         let mut out: Vec<u8> = Vec::new();
-        if let Some(ls) = self.workspace.render_window(self.zoomed.as_ref()) {
+        if let Some(ls) = self
+            .mirror
+            .workspace
+            .render_window(self.mirror.zoomed.as_ref())
+        {
             let theme = crate::render::theme::Theme::default();
             let mut chrome = crate::attach::chrome_ctx::ChromeCtx {
                 viewport: self.viewport,
                 sidebar: self.sidebar,
                 status_bar: None,
                 sidebar_painter: None,
-                session_name: &self.session_name,
+                session_name: &self.mirror.session_name,
                 theme: &theme,
             };
             paint_full_frame(
                 &mut out,
                 ls.as_ref(),
-                &mut self.panes,
-                &self.kernel,
-                self.focused.as_ref(),
+                &mut self.mirror.panes,
+                &self.mirror.engine_kernel,
+                self.mirror.focused_resource.as_ref(),
                 &mut chrome,
             );
         }
@@ -289,8 +262,9 @@ impl Rig {
     /// `next-window` (`C-a n`): advance the active window, re-anchor focus,
     /// repaint — the `switch_window` + `layout_changed` sequence.
     fn switch_next(&mut self) {
-        self.workspace.next();
-        self.focused = self
+        self.mirror.workspace.next();
+        self.mirror.focused_resource = self
+            .mirror
             .workspace
             .active_window()
             .and_then(|ls| ls.focus.clone());
@@ -336,7 +310,10 @@ impl Rig {
     /// Whether any pane is mid synchronized-output transaction (paints
     /// suppressed; the screen legitimately lags the mirror).
     fn sync_active(&self) -> bool {
-        self.panes.values().any(|s| s.sync_output_since.is_some())
+        self.mirror
+            .panes
+            .values()
+            .any(|s| s.sync_output_since.is_some())
     }
 
     /// The compose invariant: at a settled point (no overlay, no open
@@ -350,15 +327,16 @@ impl Rig {
         let (cols, rows) = self.viewport;
         let content = content_rect(self.viewport, None, self.sidebar);
         let ls = self
+            .mirror
             .workspace
-            .render_window(self.zoomed.as_ref())
+            .render_window(self.mirror.zoomed.as_ref())
             .expect("active window");
         let rects = super::multi_pane::compute_layout_in(ls.as_ref(), content, self.viewport).rects;
 
         let mut expected: Vec<Vec<Option<char>>> =
             vec![vec![None; usize::from(cols)]; usize::from(rows)];
         for (id, rect) in &rects {
-            let terminal = super::pane_state::published_terminal(&self.kernel, id)
+            let terminal = super::pane_state::published_terminal(&self.mirror.engine_kernel, id)
                 .expect("published pane terminal");
             let mgrid = term_grid(terminal);
             let mcols = terminal.cols().expect("mirror cols");

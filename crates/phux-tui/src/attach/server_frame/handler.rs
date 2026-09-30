@@ -3,7 +3,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use phux_client_core::session::EffectBuffer as KernelEffectBuffer;
 use phux_protocol::ResourceKind;
 use phux_protocol::ids::{ClientId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{
@@ -34,9 +33,35 @@ use phux_client::layout_ops::{
 use super::engine_route::{KernelRoute, is_terminal, route_engine_frame};
 use super::index::{AgentMetaIndex, note_agent_change};
 use super::outcome::{FrameOutcome, frame_kind_label, input_authority_notice, pane_label};
+use crate::attach::session_mirror::SessionMirror;
 
-/// The driver state one inbound frame is dispatched against, threaded from
-/// [`handle_server_frame`]'s flat parameter list (the driver boundary).
+/// The per-frame inputs [`handle_server_frame`] reads beside the mirror: the
+/// chrome the paint tiles against, and whether this frame may paint at all.
+/// `Default` is a chrome-less, painting frame with no session known yet.
+#[derive(Default)]
+pub(in crate::attach) struct FrameEnv<'a> {
+    /// This client's session, so the layout arm can tell ours from a peer's.
+    pub(in crate::attach) focused_session: Option<SessionId>,
+    /// `None` when the attach has no configured bar.
+    pub(in crate::attach) status_bar: Option<&'a mut StatusBarPainter>,
+    /// This frame's sidebar reservation, so every layout site tiles into the
+    /// same inset content rect the driver paints against.
+    pub(in crate::attach) sidebar: Option<SidebarReservation>,
+    /// `(cols, rows)` of the outer terminal.
+    pub(in crate::attach) viewport_dims: (u16, u16),
+    /// The request id of the initial layout GET, while it is outstanding.
+    pub(in crate::attach) pending_layout_request: Option<u32>,
+    /// An overlay is on top: mirrors keep ingesting, stdout paints are
+    /// suppressed; the driver repaints on dismiss.
+    pub(in crate::attach) overlay_active: bool,
+    /// An earlier frame of a coalesced burst: apply, but leave the paint to
+    /// the pane's last frame in the burst.
+    pub(in crate::attach) defer_paint: bool,
+}
+
+/// The driver state one inbound frame is dispatched against: the
+/// [`SessionMirror`] split into its fields (the kernel read-only, since
+/// [`route_engine_frame`] already mutated it) plus the [`FrameEnv`].
 struct FrameCtx<'a, W: crate::attach::RenderSink> {
     /// Read-only here: the kernel mutated in [`route_engine_frame`] already.
     engine_kernel: &'a AttachKernel,
@@ -62,7 +87,6 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
     /// bottom row.
     viewport_dims: (u16, u16),
     predict: &'a mut PredictionState,
-    overlay: &'a Overlay,
     pending_layout_request: Option<u32>,
     pending_splits: &'a mut HashMap<u32, PendingSplit>,
     pending_windows: &'a mut HashMap<u32, PendingWindow>,
@@ -122,38 +146,39 @@ fn agent_stream_outcome(terminal_id: &ResourceId, route: KernelRoute) -> FrameOu
     }
 }
 
-/// Process one server-to-client frame; the [`FrameOutcome`] describes the
-/// follow-up the async driver owes.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the driver's whole per-frame state, threaded verbatim from `main_loop` / `headless`; the arms take a `FrameCtx` built from these, but the entry point's shape is the driver boundary"
-)]
+/// Process one server-to-client frame into `mirror`; the [`FrameOutcome`]
+/// describes the follow-up the async driver owes.
 pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
-    engine_kernel: &mut crate::attach::pane_state::AttachKernel,
-    kernel_effects: &mut KernelEffectBuffer,
+    mirror: &mut SessionMirror,
+    env: FrameEnv<'_>,
     out: &mut W,
     frame: FrameKind,
-    panes: &mut HashMap<ResourceId, PaneSlot>,
-    workspace: &mut Workspace,
-    focused_resource: &mut Option<ResourceId>,
-    zoomed: &mut Option<ResourceId>,
-    session_name: &mut String,
-    keep_empty_session: &mut bool,
-    focused_session: Option<SessionId>,
-    status_bar: Option<&mut StatusBarPainter>,
-    sidebar: Option<SidebarReservation>,
-    viewport_dims: (u16, u16),
-    predict: &mut PredictionState,
-    overlay: &Overlay,
-    pending_layout_request: Option<u32>,
-    pending_splits: &mut HashMap<u32, PendingSplit>,
-    pending_windows: &mut HashMap<u32, PendingWindow>,
-    expected_closes: &mut HashSet<ResourceId>,
-    pending_resource_ops: &mut HashMap<u32, ResourceId>,
-    agent_meta: &mut AgentMetaIndex,
-    overlay_active: bool,
-    defer_paint: bool,
 ) -> Result<FrameOutcome, AttachError> {
+    let SessionMirror {
+        engine_kernel,
+        kernel_effects,
+        panes,
+        workspace,
+        focused_resource,
+        zoomed,
+        session_name,
+        keep_empty_session,
+        predict,
+        pending_splits,
+        pending_windows,
+        expected_closes,
+        pending_resource_ops,
+        agent_meta,
+    } = mirror;
+    let FrameEnv {
+        focused_session,
+        status_bar,
+        sidebar,
+        viewport_dims,
+        pending_layout_request,
+        overlay_active,
+        defer_paint,
+    } = env;
     let is_output = matches!(frame, FrameKind::ResourceOutput { .. });
     let apply_span = is_output.then(|| tracing::debug_span!("vt_apply"));
     let apply_guard = apply_span.as_ref().map(tracing::Span::enter);
@@ -188,7 +213,6 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
         sidebar,
         viewport_dims,
         predict,
-        overlay,
         pending_layout_request,
         pending_splits,
         pending_windows,
@@ -621,7 +645,6 @@ fn handle_terminal_output<W: crate::attach::RenderSink>(
             viewport_dims: ctx.viewport_dims,
             session_name: ctx.session_name.as_str(),
             predict: ctx.predict,
-            overlay: ctx.overlay,
         },
         std::slice::from_ref(terminal_id),
     );
@@ -653,7 +676,6 @@ pub(in crate::attach) struct OutputFrame<'a, W> {
     pub(in crate::attach) viewport_dims: (u16, u16),
     pub(in crate::attach) session_name: &'a str,
     pub(in crate::attach) predict: &'a mut PredictionState,
-    pub(in crate::attach) overlay: &'a Overlay,
 }
 
 /// Composite and ship ONE frame covering every pane in `targets`: a single
@@ -676,7 +698,6 @@ pub(in crate::attach) fn paint_output_frame<W: crate::attach::RenderSink>(
         viewport_dims,
         session_name,
         predict,
-        overlay,
     } = paint;
     // Tile against the zoom-honoring view; panes off it get no rect.
     let Some(active_ls) = workspace.render_window(zoomed) else {
@@ -702,7 +723,6 @@ pub(in crate::attach) fn paint_output_frame<W: crate::attach::RenderSink>(
                 terminal_id,
                 walk,
                 predict,
-                overlay,
             );
         } else if let Some(rect) = rect {
             // Non-focused panes repaint on their own output; no rect, no paint.
@@ -759,12 +779,15 @@ fn finish_output_frame<W: crate::attach::RenderSink>(
             crate::attach::paint::tiled_rect(tail.active_ls, tail.content, tail.viewport_dims, fid)
         })
         .map_or(Some((0, 0)), |r| Some((r.x, r.y)));
+    let bar = crate::attach::paint::BarTail {
+        status_bar,
+        viewport: tail.viewport_dims,
+        sidebar: tail.sidebar,
+        session_name: tail.session_name,
+    };
     crate::attach::paint::close_frame_reporting(
         block,
-        status_bar,
-        tail.viewport_dims,
-        tail.sidebar,
-        tail.session_name,
+        bar,
         focused_cursor,
         fallback_origin,
         // A pane-output frame changes no bar input, so the widget pipeline
@@ -775,10 +798,6 @@ fn finish_output_frame<W: crate::attach::RenderSink>(
 
 /// Render the focused pane's interior and reconcile predictions against the
 /// cells that just landed.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the focused-pane paint context: sink, geometry, mirrors, kernel, predictor, overlay; same arg-list refactor follow-up as paint_full_frame"
-)]
 fn paint_focused_interior<W: crate::attach::RenderSink>(
     out: &mut W,
     rect: Rect,
@@ -787,7 +806,6 @@ fn paint_focused_interior<W: crate::attach::RenderSink>(
     fid: &ResourceId,
     walk: ReplicaWalk<'_, 'static, 'static>,
     predict: &mut PredictionState,
-    overlay: &Overlay,
 ) {
     let _ = paint_focused_pane(out, rect, panes, kernel, fid, false);
     // Reconcile and overlay run in pane-local coordinates.
@@ -817,7 +835,7 @@ fn paint_focused_interior<W: crate::attach::RenderSink>(
     }
     // Paint surviving predictions, gated by the ADR-0090 display policy.
     if predict.should_display(now_ms) {
-        let _ = overlay.render(predict, pane_origin, out);
+        let _ = Overlay.render(predict, pane_origin, out);
         // The guesses now sit over the pane's cells; the front
         // buffer must not keep claiming what was there before them.
         if let Some(slot) = panes.get_mut(fid) {

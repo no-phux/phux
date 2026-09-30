@@ -1,25 +1,25 @@
 //! The headless one-shot composite (`phux snapshot --rendered`) and its
 //! completion barrier.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::Duration;
 
 use phux_client_core::engine::ghostty::GhosttyAdapter;
 use phux_client_core::history::HistoryCacheConfig;
-use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, SessionKernel};
+use phux_client_core::session::SessionKernel;
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{ResourceId, SessionId};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, Scope};
 
-use crate::attach::actions::{PendingSplit, PendingWindow};
+use crate::attach::chrome_ctx::ChromeCtx;
 use crate::attach::connection::Connection;
 use crate::attach::outcome::AttachError;
 use crate::attach::paint::{SidebarReservation, sidebar_reservation};
-use crate::attach::pane_state::{PaneSlot, VcsIndex};
-use crate::attach::server_frame::{AgentMetaIndex, FrameOutcome, handle_server_frame};
-use crate::layout::Workspace;
-use crate::predict::{Overlay, PredictionState, PredictiveConfig};
+use crate::attach::pane_state::VcsIndex;
+use crate::attach::server_frame::{FrameEnv, FrameOutcome, handle_server_frame};
+use crate::attach::session_mirror::SessionMirror;
+use crate::predict::{PredictionState, PredictiveConfig};
 use crate::render::chrome::sidebar::SidebarPainter;
 use crate::render::chrome::status_bar::StatusBarPainter;
 use phux_client::agent_meta::RESOURCE_AGENT_KEY;
@@ -152,28 +152,14 @@ fn headless_chrome(viewport_dims: (u16, u16)) -> HeadlessChrome {
 }
 
 /// The session-scoped state the headless composite ingests frames into (the
-/// live loop keeps the same set on `SessionLoop`).
+/// live loop keeps the same [`SessionMirror`] on `SessionLoop`).
 struct HeadlessSession {
-    /// The client-side libghostty session kernel the frames feed.
-    engine_kernel: SessionKernel<GhosttyAdapter>,
-    /// Effects the kernel emits per ingested frame.
-    kernel_effects: KernelEffectBuffer,
+    /// The mirror the frames fold into. Prediction is disabled and no kill
+    /// is ever dispatched, so its predictor and close set stay empty.
+    mirror: SessionMirror,
     /// Throwaway sink: `defer_paint = true` emits no VT, but
     /// `handle_server_frame` still needs a `Write`.
     sink: Vec<u8>,
-    /// The pane mirrors, keyed by Terminal.
-    panes: HashMap<ResourceId, PaneSlot>,
-    /// The multi-pane layout the composite tiles against.
-    workspace: Workspace,
-    /// The pane the composited frame draws as focused.
-    focused_resource: Option<ResourceId>,
-    /// The zoomed pane, if the layout carries one.
-    zoomed: Option<ResourceId>,
-    /// The session name, learned from ATTACHED.
-    session_name: String,
-    /// ADR-0105: the attached session's keep-empty mark, learned from
-    /// ATTACHED; threaded for the shared signature.
-    keep_empty_session: bool,
     /// The status-bar painter, absent when the config disables it.
     status_bar: Option<StatusBarPainter>,
     /// The sidebar reservation the panes tile inside of.
@@ -182,23 +168,6 @@ struct HeadlessSession {
     sidebar_theme: crate::render::Theme,
     /// The caller-supplied viewport; there is no TTY to ask.
     viewport_dims: (u16, u16),
-    /// Prediction state, disabled for a one-shot composite.
-    predict: PredictionState,
-    /// The overlay stack, empty for a one-shot composite.
-    overlay: Overlay,
-    /// Splits this client asked for, keyed by request id.
-    pending_splits: HashMap<u32, PendingSplit>,
-    /// Windows this client asked for, keyed by request id.
-    pending_windows: HashMap<u32, PendingWindow>,
-    /// Headless composite dispatches no kill actions, so the
-    /// expected-close set stays empty; threaded for the shared signature.
-    expected_closes: HashSet<ResourceId>,
-    /// `request_id` -> Terminal for commands whose `TERMINAL_NOT_FOUND`
-    /// refusal is the only evidence a stale leaf should fold out.
-    pending_resource_ops: HashMap<u32, ResourceId>,
-    /// ADR-0040: one-shot `phux.agent/v1` reads so the composited window
-    /// labels prefer structured agent records, matching a live attach.
-    agent_meta: AgentMetaIndex,
     /// Pane cwd + branch memo so the composited sidebar carries
     /// the same branch lines a live attach would.
     vcs: VcsIndex,
@@ -211,31 +180,18 @@ impl HeadlessSession {
         chrome: HeadlessChrome,
         viewport_dims: (u16, u16),
     ) -> Self {
+        let predict = PredictionState::new(
+            PredictiveConfig::disabled(),
+            viewport_dims.0,
+            viewport_dims.1,
+        );
         Self {
-            engine_kernel,
-            kernel_effects: KernelEffectBuffer::new(),
+            mirror: SessionMirror::new(engine_kernel, predict),
             sink: Vec::new(),
-            panes: HashMap::new(),
-            workspace: Workspace::default(),
-            focused_resource: None,
-            zoomed: None,
-            session_name: String::new(),
-            keep_empty_session: false,
             status_bar: chrome.status_bar,
             sidebar: chrome.sidebar,
             sidebar_theme: chrome.sidebar_theme,
             viewport_dims,
-            predict: PredictionState::new(
-                PredictiveConfig::disabled(),
-                viewport_dims.0,
-                viewport_dims.1,
-            ),
-            overlay: Overlay,
-            pending_splits: HashMap::new(),
-            pending_windows: HashMap::new(),
-            expected_closes: HashSet::new(),
-            pending_resource_ops: HashMap::new(),
-            agent_meta: AgentMetaIndex::default(),
             vcs: VcsIndex::default(),
         }
     }
@@ -248,32 +204,16 @@ impl HeadlessSession {
         focused_session: Option<SessionId>,
         layout_get_request_id: Option<u32>,
     ) -> Result<FrameOutcome, AttachError> {
-        handle_server_frame(
-            &mut self.engine_kernel,
-            &mut self.kernel_effects,
-            &mut self.sink,
-            frame,
-            &mut self.panes,
-            &mut self.workspace,
-            &mut self.focused_resource,
-            &mut self.zoomed,
-            &mut self.session_name,
-            &mut self.keep_empty_session,
+        let env = FrameEnv {
             focused_session,
-            self.status_bar.as_mut(),
-            self.sidebar,
-            self.viewport_dims,
-            &mut self.predict,
-            &self.overlay,
-            layout_get_request_id,
-            &mut self.pending_splits,
-            &mut self.pending_windows,
-            &mut self.expected_closes,
-            &mut self.pending_resource_ops,
-            &mut self.agent_meta,
-            false,
-            true,
-        )
+            status_bar: self.status_bar.as_mut(),
+            sidebar: self.sidebar,
+            viewport_dims: self.viewport_dims,
+            pending_layout_request: layout_get_request_id,
+            overlay_active: false,
+            defer_paint: true,
+        };
+        handle_server_frame(&mut self.mirror, env, &mut self.sink, frame)
     }
 
     /// ADR-0040: one `phux.agent/v1` GET per pane (no SUBSCRIBE), with request
@@ -284,8 +224,8 @@ impl HeadlessSession {
     )]
     async fn request_agent_records(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
         let mut req_id: u32 = 1000;
-        for id in self.panes.keys() {
-            self.agent_meta.pending.insert(req_id, id.clone());
+        for id in self.mirror.panes.keys() {
+            self.mirror.agent_meta.pending.insert(req_id, id.clone());
             conn.send(&FrameKind::GetMetadata {
                 request_id: req_id,
                 scope: Scope::Resource(id.clone()),
@@ -299,7 +239,7 @@ impl HeadlessSession {
 
     /// Whether every one-shot `phux.agent/v1` reply has landed.
     fn agent_metadata_complete(&self) -> bool {
-        self.agent_meta.pending.is_empty()
+        self.mirror.agent_meta.pending.is_empty()
     }
 
     /// Seed the window/tab strip exactly as the live loop does before its
@@ -308,21 +248,22 @@ impl HeadlessSession {
     fn compose(&mut self) -> phux_core::screen::RenderedFrame {
         use std::time::SystemTime;
 
+        let mirror = &mut self.mirror;
         let mut windows = window_infos(
-            &self.workspace,
-            &self.panes,
-            self.zoomed.as_ref(),
-            &self.agent_meta.records,
+            &mirror.workspace,
+            &mirror.panes,
+            mirror.zoomed.as_ref(),
+            &mirror.agent_meta.records,
             &mut self.vcs,
         );
         let local = agent_entries(
-            &self.workspace,
-            &self.panes,
-            &self.agent_meta,
-            &crate::attach::agent_rows::agent_session_rows(&self.engine_kernel),
+            &mirror.workspace,
+            &mirror.panes,
+            &mirror.agent_meta,
+            &crate::attach::agent_rows::agent_session_rows(&mirror.engine_kernel),
             &crate::attach::review::ReviewIndex::new(),
         );
-        super::chrome::badge_windows(&mut windows, &self.workspace, &local, &self.sidebar_theme);
+        super::chrome::badge_windows(&mut windows, &mirror.workspace, &local, &self.sidebar_theme);
         if let Some(sb) = self.status_bar.as_mut() {
             sb.set_windows(windows.clone());
         }
@@ -331,7 +272,7 @@ impl HeadlessSession {
         let mut sidebar_painter = SidebarPainter::new(self.sidebar_theme);
         sidebar_painter.set_windows(windows);
         let mut session = crate::render::chrome::sidebar::SessionRosterEntry {
-            name: self.session_name.clone(),
+            name: mirror.session_name.clone(),
             host: "this server".to_owned(),
             active: true,
             selectable: true,
@@ -343,25 +284,29 @@ impl HeadlessSession {
         // on what else happened to be running on the server.
         sidebar_painter.set_needs_you(local);
 
-        let layout_state = self
+        let layout_state = mirror
             .workspace
-            .render_window(self.zoomed.as_ref())
+            .render_window(mirror.zoomed.as_ref())
             .map_or_else(
                 crate::layout::LayoutState::default,
                 std::borrow::Cow::into_owned,
             );
+        let theme = crate::render::theme::Theme::default();
+        let chrome = ChromeCtx {
+            viewport: self.viewport_dims,
+            sidebar: self.sidebar,
+            status_bar: self.status_bar.as_mut(),
+            sidebar_painter: Some(&mut sidebar_painter),
+            session_name: &mirror.session_name,
+            theme: &theme,
+        };
         crate::attach::rendered::compose_full_frame_cells(
+            &chrome,
             &layout_state,
-            &mut self.panes,
-            &self.engine_kernel,
-            self.focused_resource.as_ref(),
-            self.viewport_dims,
-            self.status_bar.as_ref(),
-            self.sidebar,
-            Some(&sidebar_painter),
-            &self.session_name,
+            &mut mirror.panes,
+            &mirror.engine_kernel,
+            mirror.focused_resource.as_ref(),
             SystemTime::now(),
-            &crate::render::theme::Theme::default(),
         )
     }
 }
@@ -451,7 +396,7 @@ async fn drain_until_settled(
         )
         .await?;
         if outcome.resync_required {
-            *attach_id = restart_attach(conn, &session.session_name, completion).await?;
+            *attach_id = restart_attach(conn, &session.mirror.session_name, completion).await?;
             continue;
         }
         if let Some(request) = outcome.history_request {
@@ -566,9 +511,9 @@ mod sidebar_tests {
         };
         let mut session = HeadlessSession::new(kernel, chrome, (100, 24));
         let id = ResourceId::local(1);
-        session.workspace = Workspace::single(id.clone());
-        session.session_name = "work".to_owned();
-        session.agent_meta.records.insert(
+        session.mirror.workspace = crate::layout::Workspace::single(id.clone());
+        session.mirror.session_name = "work".to_owned();
+        session.mirror.agent_meta.records.insert(
             id,
             AgentRecord {
                 name: "reviewer".to_owned(),
