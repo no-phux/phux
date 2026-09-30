@@ -2,12 +2,13 @@
 
 #![allow(unreachable_pub, reason = "items shared by several test binaries")]
 
-use std::net::{SocketAddr, UdpSocket};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use phux_client::attach::connection::Connection;
 use phux_client::attach::{CertTrust, QuicDial};
+use phux_protocol::wire::RemoteListenerTransport;
 use phux_server::{ServerConfig, ServerEnv, ServerRuntime};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -29,23 +30,28 @@ pub fn quic_env(cert: &Path, key: &Path, upload_dir: Option<&Path>) -> ServerEnv
 }
 
 pub struct Server {
+    /// The address the QUIC listener actually bound.
+    pub quic_addr: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
     handle: Option<JoinHandle<Result<(), phux_server::ServerError>>>,
 }
 
 impl Server {
-    /// Run `config` on the current `LocalSet`, listening on `quic_addr` too.
-    pub fn start(config: ServerConfig, quic_addr: SocketAddr) -> Self {
+    /// Run `config` on the current `LocalSet`, listening on a loopback QUIC
+    /// port the kernel picks; [`Self::quic_addr`] is the one it bound.
+    pub async fn start(config: ServerConfig) -> Self {
+        let socket = config.socket_path.clone();
         let (shutdown, stopped) = oneshot::channel();
         let handle = tokio::task::spawn_local(async move {
             ServerRuntime::new(config)
-                .listen_quic(quic_addr)
+                .listen_quic(SocketAddr::from(([127, 0, 0, 1], 0)))
                 .run_async(async move {
                     let _ = stopped.await;
                 })
                 .await
         });
         Self {
+            quic_addr: bound_quic_addr(&socket).await,
             shutdown: Some(shutdown),
             handle: Some(handle),
         }
@@ -72,9 +78,33 @@ pub fn seeded_config(socket: PathBuf, session: &str) -> ServerConfig {
     }
 }
 
-pub fn free_udp_addr() -> SocketAddr {
-    let socket = UdpSocket::bind("127.0.0.1:0").expect("reserve UDP port");
-    socket.local_addr().expect("read UDP port")
+/// The QUIC address the server on `socket` reports bound in its `GET_STATE`
+/// listener report, retrying until the socket answers.
+async fn bound_quic_addr(socket: &Path) -> SocketAddr {
+    let deadline = Instant::now() + STEP_DEADLINE;
+    let view = loop {
+        match phux_client::state::get_state(socket).await {
+            Ok(view) => break view,
+            Err(_) if Instant::now() < deadline => sleep(Duration::from_millis(25)).await,
+            Err(error) => panic!("server never answered GET_STATE: {error}"),
+        }
+    };
+    let slot = view
+        .snapshot()
+        .listeners()
+        .and_then(|report| {
+            report
+                .listeners
+                .iter()
+                .find(|slot| slot.transport == RemoteListenerTransport::Quic)
+        })
+        .cloned()
+        .expect("the server reported no QUIC listener");
+    assert!(slot.bound, "the QUIC listener did not bind: {slot:?}");
+    slot.addr
+        .as_deref()
+        .and_then(|addr| addr.parse().ok())
+        .unwrap_or_else(|| panic!("the QUIC listener reported no address: {slot:?}"))
 }
 
 /// Dial the production QUIC path, retrying until the listener is up.
