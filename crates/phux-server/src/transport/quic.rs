@@ -54,6 +54,8 @@ pub(crate) struct QuicListener {
     admission: QuicAdmission,
     workload_registry: Option<Arc<crate::workload::ReloadingWorkloadRegistry>>,
     admissions: super::Admissions<QuicAccepted>,
+    /// Refused preambles, warned about at a bounded rate.
+    refusals: Arc<super::RefusalWarnings>,
 }
 
 /// Whom a [`QuicListener`] admits.
@@ -86,6 +88,7 @@ impl QuicListener {
             admission: tokens.map_or(QuicAdmission::Open, QuicAdmission::Store),
             workload_registry,
             admissions: super::Admissions::new(),
+            refusals: Arc::new(super::RefusalWarnings::new()),
         })
     }
 
@@ -303,6 +306,7 @@ impl Incoming for QuicListener {
                     incoming,
                     self.admission.clone(),
                     self.workload_registry.clone(),
+                    Arc::clone(&self.refusals),
                 );
                 Ok(Box::pin(async move { admission.await.map(Ok) })
                     as super::Admission<QuicAccepted>)
@@ -321,6 +325,7 @@ async fn admit_connection(
     incoming: quinn::Incoming,
     admission: QuicAdmission,
     workload_registry: Option<Arc<crate::workload::ReloadingWorkloadRegistry>>,
+    refusals: Arc<super::RefusalWarnings>,
 ) -> Option<QuicAccepted> {
     let remote = incoming.remote_address();
     let conn = match tokio::time::timeout(ADMISSION_DEADLINE, incoming).await {
@@ -355,8 +360,14 @@ async fn admit_connection(
             let Ok(Some(credential)) = preamble else {
                 if preamble.is_err() {
                     debug!(%remote, "quic auth preamble timed out");
+                } else if let Some(suppressed) = refusals.due() {
+                    warn!(
+                        %remote,
+                        suppressed,
+                        "quic consumer refused: missing or invalid token"
+                    );
                 } else {
-                    warn!(%remote, "quic consumer refused: missing or invalid token");
+                    debug!(%remote, "quic consumer refused: missing or invalid token");
                 }
                 conn.close(AUTH_FAILED_CODE.into(), b"unauthorized");
                 return None;
@@ -1300,6 +1311,74 @@ mod tests {
             }
             other => panic!("expected application close on auth failure, got {other:?}"),
         }
+    }
+
+    /// A log sink for one test thread's WARN lines.
+    #[derive(Clone, Default)]
+    struct CapturedLog(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl io::Write for CapturedLog {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self {
+            self.clone()
+        }
+    }
+
+    impl CapturedLog {
+        fn text(&self) -> String {
+            String::from_utf8_lossy(
+                &self
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+            .into_owned()
+        }
+    }
+
+    /// An unauthenticated peer cannot flood the log: refused preambles warn
+    /// once per interval, and the rest are counted into the next warning.
+    #[tokio::test]
+    async fn refused_preambles_warn_at_most_once_per_interval() {
+        let log = CapturedLog::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(log.clone())
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let (_tokens, store) = token_store();
+        let (_dir, listener, addr) = listener(Some(store));
+        let clients = async {
+            for _ in 0..4 {
+                let (conn, mut send, _recv) = open_control(&client_endpoint(), addr).await;
+                let _ = send
+                    .write_all(&token_preamble(&[0x22u8; crate::auth::TOKEN_LEN]))
+                    .await;
+                tokio::time::timeout(Duration::from_secs(5), conn.closed())
+                    .await
+                    .expect("server must refuse promptly");
+            }
+        };
+        tokio::select! {
+            () = clients => {}
+            _ = listener.accept() => panic!("a refused peer was admitted"),
+        }
+        let warnings = log.text().matches("quic consumer refused").count();
+        assert_eq!(warnings, 1, "{}", log.text());
     }
 
     /// A CSR-enrolled workload client: its identity files and credential.

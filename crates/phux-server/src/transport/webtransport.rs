@@ -46,6 +46,8 @@ pub(crate) struct WtListener {
     endpoint: quinn::Endpoint,
     tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
     admissions: super::Admissions<Accepted>,
+    /// Refused `CONNECT`s, warned about at a bounded rate.
+    refusals: Arc<super::RefusalWarnings>,
 }
 
 /// Closes a connection that establishment abandons, whether it refused the
@@ -81,6 +83,7 @@ impl WtListener {
             endpoint: super::quic::server_endpoint(addr, tls, None)?,
             tokens,
             admissions: super::Admissions::new(),
+            refusals: Arc::new(super::RefusalWarnings::new()),
         })
     }
 
@@ -94,6 +97,7 @@ impl WtListener {
     async fn establish(
         incoming: quinn::Incoming,
         tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
+        refusals: Arc<super::RefusalWarnings>,
     ) -> Option<Accepted> {
         let connection = match incoming.await {
             Ok(connection) => connection,
@@ -127,7 +131,11 @@ impl WtListener {
         let credential = match admit_connect(&payload, tokens.as_deref()) {
             Ok(credential) => credential,
             Err(reason) => {
-                warn!(%remote, "webtransport consumer refused: {reason}");
+                if let Some(suppressed) = refusals.due() {
+                    warn!(%remote, suppressed, "webtransport consumer refused: {reason}");
+                } else {
+                    debug!(%remote, "webtransport consumer refused: {reason}");
+                }
                 let _ = h3::send_connect_status(&mut connect_send, false).await;
                 // Let the 403 land before the connection is closed under it.
                 let _ = tokio::time::timeout(REFUSAL_LINGER, connect_send.stopped()).await;
@@ -258,7 +266,7 @@ impl Incoming for WtListener {
                 })?;
                 let establish = tokio::time::timeout(
                     ESTABLISH_DEADLINE,
-                    Self::establish(incoming, self.tokens.clone()),
+                    Self::establish(incoming, self.tokens.clone(), Arc::clone(&self.refusals)),
                 );
                 Ok(Box::pin(async move {
                     establish

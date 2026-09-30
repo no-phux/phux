@@ -17,7 +17,7 @@ use std::time::Duration;
 use phux_dial::{CertTrust, QuicDial, SendWindow};
 use phux_protocol::policy::{PeerIdentity, QUIC_RELAY_ALPN, TransportType};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::hub::link::Backoff;
 use crate::runtime::accept_loop;
@@ -199,6 +199,9 @@ struct ConnectorIncoming {
     window: SendWindow,
     consumer_tokens: Arc<crate::auth::ReloadingTokenStore>,
     admissions: crate::transport::Admissions<BridgedConsumer>,
+    /// Refused consumers, warned about at a bounded rate across redials:
+    /// anyone who knows the route can open a bridged stream.
+    refusals: Arc<crate::transport::RefusalWarnings>,
 }
 
 type BridgedConsumer = (QuicReader, QuicWriter, crate::auth::ConnectionIdentity);
@@ -232,6 +235,7 @@ impl Incoming for ConnectorIncoming {
                     self.connection.remote_address(),
                     self.window.clone(),
                     Arc::clone(&self.consumer_tokens),
+                    Arc::clone(&self.refusals),
                 );
                 Ok(Box::pin(async move { admission.await.map(Ok) })
                     as crate::transport::Admission<BridgedConsumer>)
@@ -256,6 +260,7 @@ async fn admit_consumer(
     relay: SocketAddr,
     window: SendWindow,
     consumer_tokens: Arc<crate::auth::ReloadingTokenStore>,
+    refusals: Arc<crate::transport::RefusalWarnings>,
 ) -> Option<BridgedConsumer> {
     // `accept_bi` is a normal idle wait; only the preamble is bounded, and a
     // timeout refuses that consumer instead of tearing down the leg.
@@ -267,17 +272,35 @@ async fn admit_consumer(
     let credential = match authorized {
         Ok(Some(credential)) => credential,
         Ok(None) => {
-            warn!(%relay, "bridged consumer refused: missing or invalid server token");
+            if let Some(suppressed) = refusals.due() {
+                warn!(
+                    %relay,
+                    suppressed,
+                    "bridged consumer refused: missing or invalid server token"
+                );
+            } else {
+                debug!(%relay, "bridged consumer refused: missing or invalid server token");
+            }
             let _ = send.reset(AUTH_FAILED_CODE.into());
             let _ = recv.stop(AUTH_FAILED_CODE.into());
             return None;
         }
         Err(_) => {
-            warn!(
-                %relay,
-                seconds = crate::transport::HANDSHAKE_DEADLINE.as_secs(),
-                "bridged consumer abandoned: no token preamble within the deadline"
-            );
+            let seconds = crate::transport::HANDSHAKE_DEADLINE.as_secs();
+            if let Some(suppressed) = refusals.due() {
+                warn!(
+                    %relay,
+                    seconds,
+                    suppressed,
+                    "bridged consumer abandoned: no token preamble within the deadline"
+                );
+            } else {
+                debug!(
+                    %relay,
+                    seconds,
+                    "bridged consumer abandoned: no token preamble within the deadline"
+                );
+            }
             let _ = send.reset(AUTH_FAILED_CODE.into());
             let _ = recv.stop(AUTH_FAILED_CODE.into());
             return None;
@@ -337,6 +360,7 @@ async fn supervise(
     cancel: CancellationToken,
 ) {
     let mut backoff = Backoff::new(BACKOFF_BASE, BACKOFF_CAP);
+    let refusals = Arc::new(crate::transport::RefusalWarnings::new());
     loop {
         let attempt = backoff.failures().saturating_add(1);
         let connected = async {
@@ -367,6 +391,7 @@ async fn supervise(
                     connection,
                     consumer_tokens: Arc::clone(&consumer_tokens),
                     admissions: crate::transport::Admissions::new(),
+                    refusals: Arc::clone(&refusals),
                 };
                 // Keep the endpoint driver and connector-initiated stream 0
                 // alive and silent while bridged consumer streams are served.

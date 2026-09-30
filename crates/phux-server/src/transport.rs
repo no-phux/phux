@@ -387,7 +387,7 @@ pub(crate) struct WsListener {
     /// Present only with a workload CA; every admission maps the client
     /// certificate through it, as QUIC does.
     workload: Option<std::sync::Arc<crate::workload::ReloadingWorkloadRegistry>>,
-    rejection_warnings: Mutex<PeerRejectionWarnLimiter>,
+    rejection_warnings: RefusalWarnings,
     admissions: Admissions<WsAccepted>,
     /// Browser origins the anonymous listener admits; unused with tokens.
     origins: std::sync::Arc<AllowedOrigins>,
@@ -407,7 +407,7 @@ impl WsListener {
             tls,
             tokens,
             workload,
-            rejection_warnings: Mutex::new(PeerRejectionWarnLimiter::new()),
+            rejection_warnings: RefusalWarnings::new(),
             admissions: Admissions::new(),
             origins: std::sync::Arc::new(AllowedOrigins::default()),
         }
@@ -543,21 +543,10 @@ impl Incoming for WsListener {
             return AcceptErrorDisposition::Default;
         };
 
-        let decision = {
-            let mut limiter = match self.rejection_warnings.lock() {
-                Ok(limiter) => limiter,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            limiter.observe(Instant::now())
-        };
-        let warn_suppressed = match decision {
-            PeerRejectionWarnDecision::Suppress => None,
-            PeerRejectionWarnDecision::Emit { suppressed } => Some(suppressed),
-        };
         AcceptErrorDisposition::PeerRejected {
             stage: rejection.stage.as_str(),
             source_ip: rejection.source_ip,
-            warn_suppressed,
+            warn_suppressed: self.rejection_warnings.due(),
         }
     }
 
@@ -801,6 +790,32 @@ impl PeerRejectionWarnLimiter {
 enum PeerRejectionWarnDecision {
     Suppress,
     Emit { suppressed: u64 },
+}
+
+/// One listener's peer refusals, logged at WARN at most once per
+/// [`WS_REJECTION_WARN_INTERVAL`] with the count suppressed since, so an
+/// unauthenticated peer cannot flood the log. Callers log every refusal at
+/// DEBUG regardless.
+#[derive(Debug)]
+pub(crate) struct RefusalWarnings(Mutex<PeerRejectionWarnLimiter>);
+
+impl RefusalWarnings {
+    pub(crate) const fn new() -> Self {
+        Self(Mutex::new(PeerRejectionWarnLimiter::new()))
+    }
+
+    /// Record one refusal; `Some(suppressed)` when a WARN is due now.
+    pub(crate) fn due(&self) -> Option<u64> {
+        let decision = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .observe(Instant::now());
+        match decision {
+            PeerRejectionWarnDecision::Suppress => None,
+            PeerRejectionWarnDecision::Emit { suppressed } => Some(suppressed),
+        }
+    }
 }
 
 /// Verify either the native Authorization header or the browser's credential
