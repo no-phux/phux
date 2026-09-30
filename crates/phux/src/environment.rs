@@ -78,6 +78,28 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
         ],
     },
     EnvVarSpec {
+        name: "PHUX_UPLOAD_DIR",
+        lines: &[
+            "Where the server lands file uploads (PUT_FILE). Default:",
+            "$XDG_DATA_HOME/phux/uploads, else",
+            "~/.local/share/phux/uploads.",
+        ],
+    },
+    EnvVarSpec {
+        name: "PHUX_UPLOAD_MAX_BYTES",
+        lines: &[
+            "Total bytes of finished and partial uploads the server",
+            "keeps before refusing more (default 8 GiB; 0 = no limit).",
+        ],
+    },
+    EnvVarSpec {
+        name: "PHUX_UPLOAD_MAX_FILES",
+        lines: &[
+            "Uploads, finished or partial, the server keeps before",
+            "refusing a new one (default 10000; 0 = no limit).",
+        ],
+    },
+    EnvVarSpec {
         name: "PHUX_SSH",
         lines: &[
             "OpenSSH-compatible program used to reach ssh:// hosts and",

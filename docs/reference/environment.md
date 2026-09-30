@@ -27,6 +27,9 @@ Every environment variable the `phux` binary reads, from the canonical in-code t
 | `PHUX_WS_TOKENS` | Pairing-token store the server reads and `phux pair` writes. |
 | `PHUX_QUIC_ADDR` | Also accept QUIC clients on HOST:PORT. Equivalent to `phux server --quic`, which overrides it. |
 | `PHUX_WT_ADDR` | Also accept WebTransport (HTTP/3 over QUIC) clients on HOST:PORT. Equivalent to `phux server --webtransport`. |
+| `PHUX_UPLOAD_DIR` | Where the server lands file uploads (PUT_FILE). Default: $XDG_DATA_HOME/phux/uploads, else ~/.local/share/phux/uploads. |
+| `PHUX_UPLOAD_MAX_BYTES` | Total bytes of finished and partial uploads the server keeps before refusing more (default 8 GiB; 0 = no limit). |
+| `PHUX_UPLOAD_MAX_FILES` | Uploads, finished or partial, the server keeps before refusing a new one (default 10000; 0 = no limit). |
 | `PHUX_SSH` | OpenSSH-compatible program used to reach ssh:// hosts and satellites (default: `ssh` on PATH). |
 | `PHUX_TAILSCALE` | Tailscale-compatible CLI used to detect the overlay address (default: `tailscale` on PATH) for `phux pair`, `phux doctor`, and the server's auto-bound remote listener. When set it is the only source consulted: naming a command that reports nothing turns overlay detection off everywhere. |
 | `PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE` | Idle limit in seconds (1..=86400) for an auto-spawned server, as if started with `phux server --exit-after-idle`. Unset means no limit. For test harnesses and CI jobs that cannot guarantee their own cleanup runs. |

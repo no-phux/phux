@@ -902,6 +902,7 @@ pub(crate) async fn handle_command(
                     data,
                     final_chunk,
                     sha256,
+                    principal: state.with(|s| super::upload::upload_principal(s, client_id)),
                 },
             )
             .await

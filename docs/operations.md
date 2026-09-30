@@ -301,8 +301,21 @@ There is no access audit log.
 
 `TRANSCRIBE` runs the argv in `[voice].transcriber` on an uploaded clip
 and pastes stdout into the pane. Without `[voice]` the command is
-refused. Schema and defaults:
+refused. Only an audio upload (`wav`, `m4a`, `aac`, `caf`, `mp3`, `ogg`,
+`oga`, `opus`, `webm`, `flac`) reaches the transcriber: ffmpeg-based
+tools follow the paths inside playlist and concat formats, so any other
+extension is refused before a process starts. Schema and defaults:
 [`docs/reference/config.md`](./reference/config.md).
+
+Uploads (`PUT_FILE`) land in `PHUX_UPLOAD_DIR`
+(`$XDG_DATA_HOME/phux/uploads` by default). An upload id belongs to the
+connection principal that started it: its pairing or workload credential,
+else the owner socket's uid. The directory is held to
+`PHUX_UPLOAD_MAX_BYTES` (8 GiB) and `PHUX_UPLOAD_MAX_FILES` (10,000
+uploads); past either, a new upload is refused with the remedy, and `0`
+lifts a limit. Finished uploads are never deleted by the server, so a
+full directory needs `rm` of old `phux-upload-*` files. Partial uploads
+untouched for a day are swept at startup and on every upload.
 
 ## Agent-state detection
 

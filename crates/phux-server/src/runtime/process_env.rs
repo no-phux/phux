@@ -52,6 +52,12 @@ pub struct ServerEnv {
     pub no_auto_listen: bool,
     /// `PHUX_UPLOAD_DIR` (non-empty): where `PUT_FILE` lands uploads.
     pub upload_dir: Option<PathBuf>,
+    /// `PHUX_UPLOAD_MAX_BYTES`: total bytes the upload directory may hold
+    /// (`0` = unlimited); unset or malformed (warned) is the default.
+    pub upload_max_bytes: Option<u64>,
+    /// `PHUX_UPLOAD_MAX_FILES`: uploads the upload directory may hold
+    /// (`0` = unlimited); unset or malformed (warned) is the default.
+    pub upload_max_files: Option<u64>,
     /// `PHUX_SSH`: the program hub links dial SSH satellites with.
     pub ssh_program: Option<OsString>,
 }
@@ -86,6 +92,8 @@ impl ServerEnv {
             workload_keys: path("PHUX_WORKLOAD_KEYS"),
             no_auto_listen: lookup(super::DISABLE_AUTO_LISTEN_ENV).is_some(),
             upload_dir: non_empty("PHUX_UPLOAD_DIR").map(PathBuf::from),
+            upload_max_bytes: count(&lookup, "PHUX_UPLOAD_MAX_BYTES"),
+            upload_max_files: count(&lookup, "PHUX_UPLOAD_MAX_FILES"),
             ssh_program: lookup("PHUX_SSH"),
         }
     }
@@ -113,6 +121,20 @@ impl ServerEnv {
     #[must_use]
     pub fn ssh_program(&self) -> OsString {
         self.ssh_program.clone().unwrap_or_else(|| "ssh".into())
+    }
+}
+
+/// Parse a non-negative integer from variable `var`; unset or empty is
+/// `None`, and malformed is `None` with a warning (the default applies).
+fn count(lookup: &impl Fn(&str) -> Option<OsString>, var: &str) -> Option<u64> {
+    let raw = lookup(var).filter(|value| !value.is_empty())?;
+    let raw = raw.to_string_lossy();
+    match raw.trim().parse::<u64>() {
+        Ok(value) => Some(value),
+        Err(err) => {
+            warn!(var, value = %raw, error = %err, "invalid count; using the default");
+            None
+        }
     }
 }
 
@@ -148,6 +170,8 @@ mod tests {
                 "PHUX_WS_ADDR" => "127.0.0.1:1".into(),
                 "PHUX_QUIC_ADDR" => "not an address".into(),
                 "PHUX_WS_SECURE" | "PHUX_UPLOAD_DIR" => OsString::new(),
+                "PHUX_UPLOAD_MAX_BYTES" => "1024".into(),
+                "PHUX_UPLOAD_MAX_FILES" => "lots".into(),
                 _ => format!("/x/{var}").into(),
             })
         });
@@ -155,6 +179,8 @@ mod tests {
         assert_eq!(env.quic_addr, None, "malformed is disabled, not fatal");
         assert!(!env.ws_secure, "an empty PHUX_WS_SECURE does not force TLS");
         assert_eq!(env.upload_dir, None, "an empty PHUX_UPLOAD_DIR is unset");
+        assert_eq!(env.upload_max_bytes, Some(1024));
+        assert_eq!(env.upload_max_files, None, "malformed keeps the default");
         assert_eq!(env.tls_cert, Some(PathBuf::from("/x/PHUX_WS_TLS_CERT")));
         assert_eq!(
             env.ws_allowed_origins.as_deref(),
