@@ -208,6 +208,9 @@ def run_chrome(command, env, logs):
 
 def browser_tests(env, logs):
     env["PHUX_WS_ADDR"] = "127.0.0.1:0"
+    # A `cat` pane: each typed line comes back as program output, escape
+    # sequences included (ws_demo_server's default pane is a shell).
+    env["PHUX_DEMO_PANE"] = "cat"
     command = ["wasm-pack", "test", "--headless", "--chrome", "--locked", "--lib",
                "--test", "render", "--test", "e2e_browser", "--test", "e2e_input"]
     # wasm-pack accepts a driver; wasm-bindgen needs capabilities for the binary.
@@ -298,6 +301,22 @@ def authenticated_fallback_tests(env, logs, directory):
                 stop(server)
 
 
+# The runner's own knobs; every other inherited PHUX_* variable is dropped.
+RUNNER_VARIABLES = ("PHUX_WEB_CARGO_TARGET_DIR", "PHUX_BROWSER_AUTH_ONLY")
+
+
+def isolated_environment(environ):
+    """The runner's environment without inherited phux configuration.
+
+    Run from a phux pane, the shell carries the production server's socket,
+    listener addresses, TLS material, and token store (PHUX_SOCKET,
+    PHUX_QUIC_ADDR, PHUX_WS_TOKENS, ...). The demo server snapshots PHUX_*
+    at startup, so an inherited value would aim it at production state.
+    """
+    return {name: value for name, value in environ.items()
+            if not name.startswith("PHUX_") or name in RUNNER_VARIABLES}
+
+
 def interrupted(signum, _frame):
     raise SystemExit(128 + signum)
 
@@ -309,7 +328,7 @@ def main():
     logs.mkdir(parents=True, exist_ok=True)
     for name in ("build.log", "chrome.log", "server.log", "auth-server.log"):
         (logs / name).unlink(missing_ok=True)
-    env = dict(os.environ)
+    env = isolated_environment(os.environ)
     for variable, binary in (("CHROME", "chromium"), ("CHROMEDRIVER", "chromedriver")):
         executable = shutil.which(binary)
         if executable:
