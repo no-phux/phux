@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: evolving
-last-reviewed: 2026-09-27
+last-reviewed: 2026-09-30
 ---
 
 # Native terminal input
@@ -28,8 +28,13 @@ test-only: shipping builds must not enable `input-fixture`.
   key-down. JS never sends a second text event.
 - Pointer and scroll use the painter's hitbox and GPUI capture so releases and
   drags reach the originating view. Initial hits in grid padding are rejected.
-- Copy/Paste bind to `copy_selection` and `paste_text`. A paste correlation is
-  not delivery confirmation; outcomes stay with the sole FFI event owner.
+- Copy/Paste bind to `copy_selection` and `paste_text`. A clipboard paste is
+  the user's own action, so it is trusted (as a DEC 2004 paste reaching the
+  TUI is): the server brackets it and never refuses multi-line text. One that
+  fits a single `APPLY_INPUT` is acknowledged; a larger one, or one for a
+  satellite pane, goes as one atomic `INPUT_PASTE` event and is never split
+  (input.md §5.1). A paste correlation is not delivery confirmation; outcomes
+  stay with the sole FFI event owner, and the shell shows a refusal.
 
 ## Admission and semantics
 

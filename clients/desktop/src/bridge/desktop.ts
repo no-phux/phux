@@ -89,6 +89,17 @@ export function structural(event: DesktopEvent): boolean {
   );
 }
 
+/**
+ * The server's or runtime's reason when acknowledged input (a paste, an
+ * inserted path) was refused, so the shell can say so instead of the paste
+ * silently vanishing. Delivered and Unknown are not refusals: Unknown shows
+ * as the pane's delivery fence.
+ */
+export function refusedInput(event: DesktopEvent): string | undefined {
+  if (event.kind !== "InputDelivery" || `${event.outcome}` !== "Refused") return undefined;
+  return event.message || "The terminal did not accept the input.";
+}
+
 export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
   const [status, setStatus] = createSignal("Connecting");
   const [error, setError] = createSignal<string | undefined>();
