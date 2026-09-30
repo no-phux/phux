@@ -145,7 +145,7 @@ impl HostProbe {
                 row.reachable = true;
                 row.sessions = sessions;
             }
-            Ok(Err(err)) => row.error = Some(err.to_string()),
+            Ok(Err(err)) => row.error = Some(unreachable_reason(&err)),
             Err(_) => {
                 row.error = Some(format!(
                     "did not answer within {}s",
@@ -154,6 +154,22 @@ impl HostProbe {
             }
         }
         row
+    }
+}
+
+/// Why a host did not list, in the words `phux ls` uses: a socket with no
+/// server behind it is "no server running", not an attach-loop I/O error.
+fn unreachable_reason(err: &phux_client::attach::AttachError) -> String {
+    match err {
+        phux_client::attach::AttachError::Io(io)
+            if matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+            ) =>
+        {
+            "no server running".to_owned()
+        }
+        other => other.to_string(),
     }
 }
 
@@ -463,6 +479,24 @@ pub(crate) fn print_sessions_json(
 
 #[cfg(test)]
 mod tests {
+    /// `phux ls --all` with no local server said "unreachable: attach loop
+    /// io error: No such file or directory (os error 2)".
+    #[test]
+    fn a_host_with_no_server_is_named_so() {
+        use phux_client::attach::AttachError;
+        for kind in [
+            std::io::ErrorKind::NotFound,
+            std::io::ErrorKind::ConnectionRefused,
+        ] {
+            let err = AttachError::Io(std::io::Error::from(kind));
+            assert_eq!(super::unreachable_reason(&err), "no server running");
+        }
+        assert_eq!(
+            super::unreachable_reason(&AttachError::Refused("no".to_owned())),
+            AttachError::Refused("no".to_owned()).to_string()
+        );
+    }
+
     #[test]
     fn all_hosts_listing_groups_by_machine_and_keeps_a_down_host() {
         use phux_core::host_list::{HostJson, HostKind, HostListJson};
