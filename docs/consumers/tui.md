@@ -533,6 +533,12 @@ Focus follows it, including an in-process reattach when it crosses sessions.
 Move, layout, and rollback failures stay in the TUI as a **Pane move failed**
 message rather than silently changing or ending the attach.
 
+The **name prompts** (new session, rename session or window) edit like a
+shell: `C-a`/Home and `C-e`/End jump to
+the ends, `C-b`/`C-f` and the arrows move, `C-u` and `C-k` kill to the start
+or end, `C-w` kills the previous word, `C-h`/Backspace and `C-d`/Delete
+delete a character. Enter commits; Esc cancels.
+
 The **directory picker** (`C-a G`) browses directories on the attached
 server and opens a new window there. Over `phux --remote` it browses the
 remote host. With a satellite pane focused, and a hub that advertises
