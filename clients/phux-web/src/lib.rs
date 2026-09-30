@@ -22,7 +22,7 @@ use std::ops::Range;
 
 use futures_channel::oneshot;
 use futures_util::future::{Either, select};
-use phux_vt_web::{Grid, Rgb};
+use phux_vt_web::{Grid, GridCell, Rgb};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::CanvasRenderingContext2d;
@@ -181,8 +181,9 @@ impl Default for Metrics {
     }
 }
 
-/// Paint a [`Grid`] onto a 2D canvas context: a background rect per cell, then
-/// the glyph in its resolved foreground. Cells fall back to the grid defaults.
+/// Paint a [`Grid`] onto a 2D canvas context: row by row, a background rect
+/// per cell, then each glyph in its resolved foreground. Cells fall back to
+/// the grid defaults.
 /// When `cursor_on` is true and the grid's cursor is visible, an inverted block
 /// cursor is drawn over the cursor cell (the caller toggles `cursor_on` to blink).
 pub fn render(ctx: &CanvasRenderingContext2d, grid: &Grid, m: &Metrics, cursor_on: bool) {
@@ -234,19 +235,18 @@ pub fn render_selected(
     ctx.set_font(&m.font);
     ctx.set_text_baseline("top");
     for row in 0..grid.rows {
-        for col in 0..grid.cols {
-            draw_cell(ctx, grid, m, col, row, overlay);
-        }
+        draw_row(ctx, grid, m, row, overlay);
     }
     if cursor_on {
         draw_cursor(ctx, grid, m);
     }
 }
 
-/// Redraw only the cursor's cell of an already painted `grid`: the cell as
-/// is, then the cursor over it when `cursor_on`. A blink costs one cell
-/// instead of the whole grid.
-pub fn render_cursor_cell(
+/// Redraw only the cursor's row of an already painted `grid`, then the
+/// cursor over it when `cursor_on`. A blink costs one row instead of the
+/// whole grid, and repaints whatever part of a neighbor's glyph (a wide
+/// character's right half) reaches into the cursor's cell.
+pub fn render_cursor_row(
     ctx: &CanvasRenderingContext2d,
     grid: &Grid,
     m: &Metrics,
@@ -255,55 +255,75 @@ pub fn render_cursor_cell(
 ) {
     ctx.set_font(&m.font);
     ctx.set_text_baseline("top");
-    draw_cell(ctx, grid, m, grid.cursor_col, grid.cursor_row, overlay);
+    draw_row(ctx, grid, m, grid.cursor_row, overlay);
     if cursor_on {
         draw_cursor(ctx, grid, m);
     }
 }
 
-fn draw_cell(
+/// Paint one row: every cell's background first, then every glyph. A wide
+/// (CJK) glyph is drawn from its own cell across the spacer cell after it,
+/// so painting cell by cell would cover its right half with the spacer's
+/// background.
+fn draw_row(
     ctx: &CanvasRenderingContext2d,
     grid: &Grid,
     m: &Metrics,
-    col: u16,
     row: u16,
     overlay: &Overlay<'_>,
 ) {
-    let index = usize::from(row) * usize::from(grid.cols) + usize::from(col);
-    let Some(cell) = grid.cells.get(index).filter(|_| col < grid.cols) else {
+    let start = usize::from(row) * usize::from(grid.cols);
+    let Some(cells) = grid.cells.get(start..start + usize::from(grid.cols)) else {
         return;
     };
-    let x = f64::from(col) * m.cell_w;
     let y = f64::from(row) * m.cell_h;
-    let (mut fg, mut bg) = (
-        cell.fg.unwrap_or(grid.default_fg),
-        cell.bg.unwrap_or(grid.default_bg),
-    );
+    for (col, cell) in (0..grid.cols).zip(cells) {
+        let (_, bg) = cell_colors(grid, cell, start + usize::from(col), overlay);
+        ctx.set_fill_style_str(&css(bg));
+        ctx.fill_rect(f64::from(col) * m.cell_w, y, m.cell_w, m.cell_h);
+    }
+    for (col, cell) in (0..grid.cols).zip(cells) {
+        if has_glyph(cell.ch) {
+            let (fg, _) = cell_colors(grid, cell, start + usize::from(col), overlay);
+            ctx.set_fill_style_str(&css(fg));
+            draw_glyph(ctx, cell.ch, f64::from(col) * m.cell_w, y);
+        }
+    }
+}
+
+/// A cell's foreground and background under the overlay: the selection
+/// inverts them, a search match takes the match colors.
+fn cell_colors(grid: &Grid, cell: &GridCell, index: usize, overlay: &Overlay<'_>) -> (Rgb, Rgb) {
+    let fg = cell.fg.unwrap_or(grid.default_fg);
+    let bg = cell.bg.unwrap_or(grid.default_bg);
     if overlay.selected.contains(&index) {
-        std::mem::swap(&mut fg, &mut bg);
-    } else if let Some(mark) = overlay
+        return (bg, fg);
+    }
+    match overlay
         .marks
         .iter()
         .find(|mark| mark.cells.contains(&index))
     {
-        bg = if mark.current {
-            CURRENT_MARK_BG
-        } else {
-            MARK_BG
-        };
-        fg = MARK_TEXT;
-    }
-    ctx.set_fill_style_str(&css(bg));
-    ctx.fill_rect(x, y, m.cell_w, m.cell_h);
-    if cell.ch != ' ' && cell.ch != '\0' {
-        ctx.set_fill_style_str(&css(fg));
-        let mut buf = [0u8; 4];
-        let _ = ctx.fill_text(cell.ch.encode_utf8(&mut buf), x, y);
+        Some(mark) if mark.current => (MARK_TEXT, CURRENT_MARK_BG),
+        Some(_) => (MARK_TEXT, MARK_BG),
+        None => (fg, bg),
     }
 }
 
+/// Whether a cell draws a glyph: blanks and wide characters' spacer cells
+/// do not.
+const fn has_glyph(ch: char) -> bool {
+    ch != ' ' && ch != '\0'
+}
+
+fn draw_glyph(ctx: &CanvasRenderingContext2d, ch: char, x: f64, y: f64) {
+    let mut buf = [0u8; 4];
+    let _ = ctx.fill_text(ch.encode_utf8(&mut buf), x, y);
+}
+
 /// Inverted block cursor: fill the cell with the foreground color, then
-/// redraw its glyph in the background color on top.
+/// redraw its glyph in the background color on top, clipped to the cell so
+/// a wide glyph's right half keeps its own colors.
 fn draw_cursor(ctx: &CanvasRenderingContext2d, grid: &Grid, m: &Metrics) {
     let (col, row) = (grid.cursor_col, grid.cursor_row);
     if !grid.cursor_visible || col >= grid.cols || row >= grid.rows {
@@ -317,13 +337,14 @@ fn draw_cursor(ctx: &CanvasRenderingContext2d, grid: &Grid, m: &Metrics) {
     let fg = cell.and_then(|c| c.fg).unwrap_or(grid.default_fg);
     ctx.set_fill_style_str(&css(fg));
     ctx.fill_rect(x, y, m.cell_w, m.cell_h);
-    if let Some(c) = cell
-        && c.ch != ' '
-        && c.ch != '\0'
-    {
+    if let Some(c) = cell.filter(|c| has_glyph(c.ch)) {
+        ctx.save();
+        ctx.begin_path();
+        ctx.rect(x, y, m.cell_w, m.cell_h);
+        ctx.clip();
         ctx.set_fill_style_str(&css(c.bg.unwrap_or(grid.default_bg)));
-        let mut buf = [0u8; 4];
-        let _ = ctx.fill_text(c.ch.encode_utf8(&mut buf), x, y);
+        draw_glyph(ctx, c.ch, x, y);
+        ctx.restore();
     }
 }
 
