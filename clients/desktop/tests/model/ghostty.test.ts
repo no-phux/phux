@@ -207,6 +207,19 @@ describe("ghostty config", () => {
     expect(ghosttyAction("paste_from_selection")).toBe("paste-selection");
     expect(ghosttyAction("reset")).toBeUndefined();
   });
+
+  test("object built-ins are not action, modifier or key names", () => {
+    for (const name of ["toString", "constructor", "valueOf", "hasOwnProperty", "__proto__"]) {
+      expect(ghosttyAction(name)).toBeUndefined();
+      expect(ghosttyAction(`${name}:plain`)).toBeUndefined();
+    }
+    const config = parseGhostty("keybind = super+x=toString\nkeybind = super+y=constructor");
+    expect(config.keybinds.has("cmd+x")).toBe(false);
+    expect(config.keybinds.has("cmd+y")).toBe(false);
+    expect(config.unmapped).toEqual(["super+x = toString", "super+y = constructor"]);
+    expect(ghosttyChord("constructor+k")).toBeUndefined();
+    expect(ghosttyChord("super+__proto__")).toBe("cmd+__proto__");
+  });
 });
 
 describe("window chords", () => {
