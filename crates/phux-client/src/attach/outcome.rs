@@ -134,10 +134,13 @@ impl AttachEnd {
                 None | Some(DetachReason::Requested) => None,
                 Some(reason) => Some(format!("phux: detached: {}", reason.describe())),
             },
-            Self::LastPaneClosed { exit_status } => Some(format!(
-                "phux: session ended: the last pane {}",
-                describe_exit(exit_status),
-            )),
+            Self::LastPaneClosed {
+                exit_status: Some(code),
+            } => Some(format!("phux: session ended: the last pane exited {code}")),
+            // No exit code: a signal, `kill-pane`, or an unknown cause.
+            Self::LastPaneClosed { exit_status: None } => {
+                Some("phux: session ended: the last pane was killed".to_owned())
+            }
         }
     }
 }
