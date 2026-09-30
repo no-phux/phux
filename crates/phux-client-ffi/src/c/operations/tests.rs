@@ -970,6 +970,36 @@ fn disconnect_cancels_pending_without_retry_and_retains_opaque_server_identity()
 }
 
 #[test]
+fn runtime_connection_loss_retains_unknown_outcomes_without_closing_client() {
+    let mut h = Harness::attached();
+    assert_eq!(h.spawn(10), PhuxClientResult::Ok);
+    assert_eq!(h.attach(11, &ResourceId::local(2)), PhuxClientResult::Ok);
+    h.0.inner.control().connection_lost(None);
+    h.0.inner.process_runtime_events().unwrap();
+    assert_eq!((h.result(0).request_id, h.result(0).status), (10, 3));
+    assert_eq!((h.result(1).request_id, h.result(1).status), (11, 3));
+    assert_eq!(h.0.inner.state(), PhuxClientState::HelloQueued);
+    assert_eq!(h.spawn(12), PhuxClientResult::InvalidState);
+    h.0.inner.control().connection_opened();
+    let mut hello =
+        test_support::hello_ok(test_support::caps(&[]), BootstrapProfile::SynthesizedVtRaw);
+    if let FrameKind::HelloOk { server_id, .. } = &mut hello {
+        *server_id = b"replacement".to_vec();
+    }
+    assert_eq!(h.feed(hello), PhuxClientResult::Ok);
+    assert_eq!(h.0.inner.state(), PhuxClientState::Negotiated);
+    // Re-negotiation does not erase ambiguity or turn a sent spawn into a retry.
+    assert_eq!((h.result(0).request_id, h.result(0).status), (10, 3));
+    assert_eq!((h.result(1).request_id, h.result(1).status), (11, 3));
+    assert!(h.0.inner.outgoing.iter().all(|bytes| {
+        !matches!(
+            FrameKind::decode(bytes).unwrap().0,
+            FrameKind::SpawnResource { .. }
+        )
+    }));
+}
+
+#[test]
 fn pending_plus_results_and_dynamic_admissions_are_bounded() {
     let mut h = Harness::attached();
     for request_id in 1..=128 {

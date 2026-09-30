@@ -337,7 +337,6 @@ pub fn incarnationRecovery() !void {
 fn reconnectBootstrap(engine: *engine_module.Engine, replacement: bool) !void {
     const remote = engine.model.phux().?;
     try remote.host.reconnect("shared-context-test");
-    remote.attach_queued = false;
     const hello = try fixture.readFixture("hello.bin");
     defer testing.allocator.free(hello);
     if (replacement) {
@@ -773,7 +772,6 @@ pub fn offlineSharedCloseRefuses() !void {
         try testing.expectEqual(@as(u32, 0), remote.host.operation_ledger.last_id);
         try testing.expect(!remote.bridge.outgoing.hasPending());
         try remote.host.reconnect("operations-test");
-        remote.attach_queued = false;
         try fixture.stageFixture(remote.bridge, "hello.bin");
         _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = support.phux_channel_key, .kind = .data }, null);
         try feed(engine, "attached.bin");

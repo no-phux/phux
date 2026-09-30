@@ -21,6 +21,9 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 * **cockpit:** keep terminal canvas geometry stable through connection changes
   and command feedback; show status and Reconnect in the fixed header instead
   of inserting bottom bars.
+* **cockpit:** recover workspace snapshots and terminal input after Reconnect
+  or server restart without restarting the app; recover the selected session
+  by its confirmed name when a replacement server reuses numeric IDs.
 
 ## [0.31.0](https://github.com/no-phux/phux/compare/cockpit-v0.30.0...cockpit-v0.31.0) (2026-09-26)
 

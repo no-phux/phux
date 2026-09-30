@@ -1354,7 +1354,7 @@ pub unsafe extern "C" fn phux_client_server_id(
         let out =
             unsafe { out_id.as_mut() }.ok_or_else(|| BridgeError::invalid("out_id is null"))?;
         *out = PhuxBytes::default();
-        if !client.protocol_ready {
+        if client.control().server().is_none() {
             return Err(BridgeError::state(
                 "server identity unavailable before HELLO_OK",
             ));

@@ -360,6 +360,15 @@ impl Client {
     }
 
     pub(crate) fn detach(&mut self) {
+        self.retire_connection();
+        self.render.clear();
+        self.control().close();
+        self.detached = true;
+    }
+
+    /// Retire binding-owned correlations, not the runtime's reconnect or
+    /// durable-operation state. Published immutable frames remain displayable.
+    fn retire_connection(&mut self) {
         self.operations.disconnect();
         self.workspace.disconnect();
         self.directory.disconnect();
@@ -368,13 +377,14 @@ impl Client {
         self.session_rename.disconnect();
         self.projection.disconnect();
         self.outgoing.clear();
-        self.render.clear();
+        self.sessions.clear();
+        self.resources.clear();
         self.agent_streams.clear();
-        self.control().close();
         self.attach_queued = false;
         self.expected_attach_id = None;
         self.attached = false;
-        self.detached = true;
+        self.attached_notified = false;
+        self.protocol_ready = false;
     }
 
     pub(crate) fn active_attach_contains(&self, id: &ResourceId) -> bool {
@@ -676,7 +686,7 @@ impl Client {
     }
 
     /// Drain the frames a connected driver read since the last poll.
-    pub(crate) fn take_inbound(&self) -> Vec<Vec<u8>> {
+    pub(crate) fn take_inbound(&self) -> (u64, Vec<Vec<u8>>) {
         self.runtime.take_inbound()
     }
 
@@ -709,6 +719,17 @@ impl Client {
     }
 
     pub(crate) fn process_runtime_event(&mut self, event: Event) -> Result<bool, BridgeError> {
+        if matches!(event, Event::ConnectionLost { .. }) {
+            self.owned_effects.clear();
+            self.effect_count = 0;
+        }
+        if matches!(
+            event,
+            Event::ConnectionLost { .. } | Event::StatusChanged(RuntimeStatus::Failed)
+        ) {
+            self.retire_connection();
+            return Ok(false);
+        }
         let event = match self.process_topology_event(event)? {
             EventProjection::Handled(attached) => return Ok(attached),
             EventProjection::Next(event) => event,
@@ -1030,7 +1051,17 @@ impl Client {
     }
 
     fn sync_server_features(&mut self) {
-        let Some(server) = self.control().server().cloned() else {
+        let server = {
+            let control = self.control();
+            matches!(
+                control.status(),
+                RuntimeStatus::Negotiated | RuntimeStatus::Attached
+            )
+            .then(|| control.server().cloned())
+            .flatten()
+        };
+        let Some(server) = server else {
+            self.protocol_ready = false;
             return;
         };
         self.protocol_ready = true;
