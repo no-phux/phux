@@ -27,6 +27,7 @@ REQUIRED_TESTS = (
     "exact_wasm_codec_selects_native_and_renders_live_server",
     "synthesized_only_browser_remains_compatible_with_native_server",
     "keys_ime_commits_and_paste_reach_the_terminal_and_nothing_else_is_captured",
+    "resize_reflows_the_live_terminal_and_canvas",
     # Unit tests in src/ that need a DOM and the live server.
     "exported_start_retains_live_client_until_transport_failure",
     "closed_ws_send_and_repeated_reconnect_teardown_release_every_app",
