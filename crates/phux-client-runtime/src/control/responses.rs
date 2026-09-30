@@ -324,7 +324,13 @@ impl ControlPlane {
             (None, extra) => extra.to_owned(),
         };
         self.error = Some(detail.clone());
-        if reason == Some(DetachReason::ProtocolError) && self.options.automatic_lifecycle {
+        // A refused HELLO ended with PROTOCOL_ERROR before workload-auth §7's
+        // AUTHENTICATION_FAILED was emitted; both stop retrying.
+        let fatal = matches!(
+            reason,
+            Some(DetachReason::ProtocolError | DetachReason::AuthenticationFailed)
+        );
+        if fatal && self.options.automatic_lifecycle {
             return Err(ControlError::Refused(detail));
         }
         // Other endings: the server closes the socket itself, and the

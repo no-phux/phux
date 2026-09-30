@@ -268,9 +268,12 @@ impl ClientTable {
         tx: mpsc::Sender<Outbound>,
     ) -> &mut EventSubscription {
         let epoch = &mut self.next_subscription_epoch;
+        let grants = &self.grants;
         self.event_subscriptions.entry(client).or_insert_with(|| {
             *epoch += 1;
-            EventSubscription::new(tx, *epoch)
+            // workload-auth §6: a scoped grant's subscription is filtered.
+            let observe = crate::policy::filter::event_filter(grants.get(&client));
+            EventSubscription::new(tx, *epoch, observe)
         })
     }
 

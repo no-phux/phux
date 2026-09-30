@@ -562,6 +562,13 @@ pub(crate) fn prepare_attach(
         let snapshot = s
             .build_session_snapshot(sid)
             .ok_or_else(|| crate::state::AttachError::UnknownSession(session_name.to_owned()))?;
+        // workload-auth §6: every returned Terminal is filtered by OBSERVE.
+        let snapshot = crate::policy::filter::filter_snapshot(
+            s,
+            client_id,
+            phux_protocol::kinds::Verb::Observe,
+            snapshot,
+        );
         let panes_to_snapshot = s.attach_snapshot_panes(sid);
         let bootstrapped: HashSet<_> = panes_to_snapshot
             .iter()
@@ -3047,7 +3054,17 @@ pub(crate) fn handle_get_state(
                 }
                 // L1 §7.3: the viewer's journal head at the cut, read under
                 // the snapshot's lock.
-                snapshot.with_journal_head(Some(s.journal_head_for(viewer)))
+                let snapshot = snapshot.with_journal_head(Some(s.journal_head_for(viewer)));
+                // workload-auth §6: only what the viewer may INVENTORY.
+                match viewer {
+                    Some(viewer) => crate::policy::filter::filter_snapshot(
+                        s,
+                        viewer,
+                        phux_protocol::kinds::Verb::Inventory,
+                        snapshot,
+                    ),
+                    None => snapshot,
+                }
             });
             CommandResult::OkWith(CommandValue::State(snapshot))
         }
@@ -3075,7 +3092,21 @@ pub(crate) async fn handle_get_state_federated(
     if !matches!(scope, StateScope::Server) {
         return local;
     }
-    let relays = state.with(crate::state::ServerState::hub_relays_all);
+    // workload-auth §6: only the satellites the viewer may inventory are
+    // asked, so another host's name and health never reach it.
+    let relays: Vec<_> = state.with(|s| {
+        s.hub_relays_all()
+            .into_iter()
+            .filter(|relay| {
+                crate::policy::filter::admits_satellite(
+                    s,
+                    viewer,
+                    phux_protocol::kinds::Verb::Inventory,
+                    relay.host().as_str(),
+                )
+            })
+            .collect()
+    });
     if relays.is_empty() {
         // Non-hub server (or hub with an empty table): the local snapshot
         // is the whole truth, and its empty `hosts` says so.
@@ -3100,7 +3131,16 @@ pub(crate) async fn handle_get_state_federated(
     }
     hosts.sort_by(|a, b| a.host.as_str().cmp(b.host.as_str()));
     mirror_federated_agent_metadata(state, &snapshot);
-    CommandResult::OkWith(CommandValue::State(snapshot.with_hosts(hosts)))
+    // workload-auth §6: the satellites' rows and Terminals, filtered too.
+    let snapshot = state.with(|s| {
+        crate::policy::filter::filter_snapshot(
+            s,
+            viewer,
+            phux_protocol::kinds::Verb::Inventory,
+            snapshot.with_hosts(hosts),
+        )
+    });
+    CommandResult::OkWith(CommandValue::State(snapshot))
 }
 
 /// Ask each satellite link to mirror the agent allowlist for every terminal

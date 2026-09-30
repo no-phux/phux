@@ -731,6 +731,111 @@ async fn the_owner_socket_keeps_todays_behaviour() {
         .await;
 }
 
+/// workload-auth §6 `GET_STATE { SERVER }` over the client loop: a Group
+/// grant holding INVENTORY is admitted and answered with its own session
+/// and Terminal only; a grant without INVENTORY is refused.
+#[tokio::test(flavor = "current_thread")]
+async fn get_state_answers_with_only_what_the_grant_inventories() {
+    LocalSet::new()
+        .run_until(async {
+            let fixture = fixture(Engine::Fixed, |topology| {
+                vec![format!("inventory@group:{}", topology.alpha_group)]
+            });
+            let get_state = command(
+                1,
+                Command::GetState {
+                    scope: phux_protocol::wire::frame::StateScope::Server,
+                },
+            );
+            let outcome = exchange(
+                &fixture.state,
+                script(&[hello("scope-matrix"), get_state]),
+                None,
+                has_result(1),
+            )
+            .await;
+            let Some(CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::State(
+                snapshot,
+            ))) = outcome.result(1)
+            else {
+                panic!("GET_STATE answered: {:?}", outcome.frames);
+            };
+            let ids: Vec<_> = snapshot.resources.iter().map(|r| r.id.clone()).collect();
+            assert_eq!(ids, vec![fixture.alpha.clone()], "never beta");
+            assert_eq!(snapshot.sessions.len(), 1, "{:?}", snapshot.sessions);
+            assert!(!ids.contains(&fixture.beta));
+
+            let blind = fixture_with(Engine::Fixed, "observe@global");
+            let get_state = command(
+                2,
+                Command::GetState {
+                    scope: phux_protocol::wire::frame::StateScope::Server,
+                },
+            );
+            let outcome = exchange(
+                &blind.state,
+                script(&[hello("scope-matrix"), get_state]),
+                None,
+                has_result(2),
+            )
+            .await;
+            assert!(
+                is_permission_denied(outcome.result(2)),
+                "{:?}",
+                outcome.frames
+            );
+        })
+        .await;
+}
+
+fn fixture_with(engine: Engine, scope: &str) -> Fixture {
+    let scope = scope.to_owned();
+    fixture(engine, |_| vec![scope])
+}
+
+/// workload-auth §6 `ATTACH`: the `ATTACHED` snapshot a Group grant receives
+/// holds its own session and Terminal, never another session's.
+#[test]
+fn an_attach_snapshot_holds_only_observable_terminals() {
+    let mut scope = String::new();
+    let fixture = fixture(Engine::Fixed, |topology| {
+        scope = format!("bind,observe@group:{}", topology.alpha_group);
+        vec![scope.clone()]
+    });
+    // The grant HELLO would mint, set directly: this drives the attach
+    // below the guard.
+    let grant =
+        ConnectionGrant::scoped(TerminalScopeSet::parse_all(&[scope]).unwrap(), None).unwrap();
+    fixture
+        .state
+        .with_mut(|s| s.set_connection_grant(CLIENT, grant));
+    let alpha = fixture
+        .state
+        .with(|s| s.find_session_by_name("alpha"))
+        .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+    let (snapshot, ..) = super::commands::prepare_attach(
+        &fixture.state,
+        CLIENT,
+        alpha,
+        &tx,
+        ClientCapabilities::default(),
+        BootstrapProfile::SynthesizedVtRaw,
+        BootstrapLimits::default(),
+    )
+    .expect("attached");
+    let ids: Vec<_> = snapshot.resources.iter().map(|r| r.id.clone()).collect();
+    assert_eq!(ids, vec![fixture.alpha]);
+    assert!(
+        snapshot
+            .sessions
+            .iter()
+            .all(|session| session.name == "alpha"),
+        "{:?}",
+        snapshot.sessions
+    );
+}
+
 /// The race workload-auth §5 forbids: the guard authorizes session `work`,
 /// and while the attach awaits, `work` is renamed away and another session
 /// takes its name. The attach follows the id the guard pinned.

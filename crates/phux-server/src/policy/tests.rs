@@ -36,6 +36,7 @@ use phux_protocol::wire::frame::{
     ListenerTransport, ReportedAgentState, SESSION_CREATE_KEY, SESSION_KEEP_EMPTY_KEY, Scope,
     SpawnResource, StateScope, TerminalSignal, ViewportInfo, WHOAMI_KEY, encode_session_keep_empty,
 };
+use phux_protocol::wire::info::SessionSnapshot;
 
 use super::{
     Authority, ConnectionGrant, PolicyPosture, PostureError, Request, ScopedPolicy, enforce,
@@ -525,6 +526,579 @@ fn the_owner_grant_admits_every_sample() {
 }
 
 // -----------------------------------------------------------------------------
+// The §6 tables, row by row: each row's verbs on its own subject selector.
+// -----------------------------------------------------------------------------
+
+/// One §6 row as the guard must decide it: `frame` reaches the row; every
+/// grant set in `admit` is admitted; every set in `deny` is refused.
+struct Row {
+    frame: FrameKind,
+    admit: Vec<Vec<String>>,
+    deny: Vec<Vec<String>>,
+}
+
+fn row(frame: FrameKind, admit: &[&[&str]], deny: &[&[&str]]) -> Row {
+    let sets = |sets: &[&[&str]]| -> Vec<Vec<String>> {
+        sets.iter()
+            .map(|set| set.iter().map(|scope| (*scope).to_owned()).collect())
+            .collect()
+    };
+    Row {
+        frame,
+        admit: sets(admit),
+        deny: sets(deny),
+    }
+}
+
+/// `set` with `verb` taken out of every grant; a grant left with no verb
+/// is dropped.
+fn without_verb(set: &[String], verb: Verb) -> Vec<String> {
+    let name = phux_protocol::scope::verb_name(verb);
+    set.iter()
+        .filter_map(|scope| {
+            let (verbs, selector) = scope.split_once('@').unwrap();
+            let verbs: Vec<&str> = if verbs == "*" {
+                Verb::ALL
+                    .iter()
+                    .map(|verb| phux_protocol::scope::verb_name(*verb))
+                    .collect()
+            } else {
+                verbs.split(',').collect()
+            };
+            let kept: Vec<&str> = verbs.into_iter().filter(|kept| *kept != name).collect();
+            (!kept.is_empty()).then(|| format!("{}@{selector}", kept.join(",")))
+        })
+        .collect()
+}
+
+/// Whether the grant `set` spells admits `frame`; an empty set grants
+/// nothing.
+fn admits_set(world: &World, set: &[String], frame: &FrameKind) -> bool {
+    if set.is_empty() {
+        return false;
+    }
+    let scopes: Vec<&str> = set.iter().map(String::as_str).collect();
+    admits(world, &scoped(&scopes), frame)
+}
+
+/// Every row of both §6 tables a client can reach, with the narrowest grant
+/// that admits it and the near misses that must not.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one entry per spec row, kept as one flat table"
+)]
+fn rows(world: &mut World) -> Vec<Row> {
+    let child = world
+        .state
+        .registry_mut()
+        .new_agent_session(
+            world.alpha_core,
+            phux_core::resource::AgentFacet {
+                provider: "claude".to_owned(),
+                native_id: None,
+                state: None,
+            },
+        )
+        .unwrap();
+    let child = world.state.intern_terminal_wire(child);
+    let t = world.alpha.clone();
+    let beta_group = world
+        .state
+        .find_session_by_name("beta")
+        .and_then(|session| world.state.idspace.session_wire(session))
+        .unwrap()
+        .get();
+    let s = |verbs: &str, selector: &str| format!("{verbs}@{selector}");
+    let ta = format!("terminal:{}", local_id(&t));
+    let tb = format!("terminal:{}", local_id(&world.beta));
+    let tc = format!("terminal:{}", local_id(&child));
+    let ga = format!("group:{}", world.alpha_group);
+    let gb = format!("group:{beta_group}");
+    let upload = FileUploadId::new([1; 16]).unwrap();
+    let focus = InputEvent::Focus(FocusEvent::Gained);
+
+    // A named-Terminal row needing `verbs`: the Terminal, its Group, and
+    // the local host admit; the other Terminal and a satellite do not.
+    let on_terminal = |frame: FrameKind, verbs: &str| -> Row {
+        let (on_t, on_g) = (s(verbs, &ta), s(verbs, &ga));
+        let (on_other, remote) = (s(verbs, &tb), s(verbs, "host:h"));
+        row(
+            frame,
+            &[&[&on_t], &[&on_g], &[&s(verbs, "host")]],
+            &[&[&on_other], &[&remote], &[&s(verbs, &gb)]],
+        )
+    };
+    // A Global row needing `verbs`: only Global admits.
+    let on_global = |frame: FrameKind, verbs: &str| -> Row {
+        row(
+            frame,
+            &[&[&s(verbs, "global")]],
+            &[&[&s(verbs, "host")], &[&s(verbs, &ta)]],
+        )
+    };
+    let denied = |frame: FrameKind| row(frame, &[], &[&["*@global"]]);
+    let exempt = |frame: FrameKind| row(frame, &[&["inventory@terminal:999"]], &[]);
+
+    let command = |command: Command| FrameKind::Command {
+        request_id: 1,
+        command,
+    };
+    let stream_id = StreamId::new(1).unwrap();
+    let bootstrap_id = BootstrapId::new(1).unwrap();
+    let mut rows = vec![
+        denied(samples(world)[0].clone()),
+        exempt(FrameKind::Ping { nonce: 1 }),
+        exempt(FrameKind::Detach),
+        row(
+            attach(AttachTarget::ByName("alpha".to_owned())),
+            &[&[&s("bind,observe", &ga)], &[&s("bind,observe", "host")]],
+            &[
+                &[&s("bind,observe", &gb)],
+                &[&s("bind,observe", &ta)],
+                &[&s("bind,observe", "host:h")],
+            ],
+        ),
+        row(
+            attach(AttachTarget::CreateIfMissing {
+                name: "fresh".to_owned(),
+                command: None,
+                cwd: None,
+            }),
+            &[&[&s("create,bind,observe", "host")]],
+            &[
+                &[&s("create,bind,observe", &ga)],
+                &[&s("create,bind,observe", &ta)],
+            ],
+        ),
+        on_terminal(
+            FrameKind::HistoryRequest {
+                terminal_id: t.clone(),
+                stream_id,
+                bootstrap_id,
+                cursor: Bytes::new(),
+                max_bytes: 1,
+                max_rows: 1,
+            },
+            "observe",
+        ),
+        on_terminal(
+            FrameKind::FrameAck {
+                terminal_id: t.clone(),
+                stream_id,
+                bootstrap_id,
+                seq: 1,
+            },
+            "observe",
+        ),
+        on_terminal(
+            FrameKind::InputFocus {
+                terminal_id: t.clone(),
+                event: FocusEvent::Gained,
+            },
+            "input",
+        ),
+        row(
+            FrameKind::ViewportResize {
+                viewport: ViewportInfo::new(80, 24),
+            },
+            &[&[&s("bind", &ta)], &[&s("bind", &ga)]],
+            &[&[&s("bind", &tb)], &[&s("bind", &gb)]],
+        ),
+        row(
+            spawn(Some("h"), None, None),
+            &[&[&s("create", "host:h")]],
+            &[&[&s("create", "host")], &[&s("create", "host:other")]],
+        ),
+        row(
+            spawn(None, None, None),
+            &[&[&s("create", "host")]],
+            &[&[&s("create", &ga)], &[&s("create", "host:h")]],
+        ),
+        row(
+            spawn(None, Some(t.clone()), None),
+            &[&[&s("create", &ga), &s("bind", &ta)]],
+            &[
+                &[&s("create", &gb), &s("bind", &ta)],
+                &[&s("create", &ga), &s("bind", &tb)],
+            ],
+        ),
+        denied(spawn(Some("h"), Some(t.clone()), None)),
+        row(
+            spawn(
+                None,
+                None,
+                Some(SpawnResource::agent_session(t.clone(), "claude")),
+            ),
+            &[&[&s("create", &ga), &s("bind", &ta)]],
+            &[
+                &[&s("create", &gb), &s("bind", &ta)],
+                &[&s("create", &ga), &s("bind", &tb)],
+            ],
+        ),
+        row(
+            spawn(
+                Some("h"),
+                None,
+                Some(SpawnResource::agent_session(
+                    WireResourceId::satellite("h", 7),
+                    "claude",
+                )),
+            ),
+            &[&[&s("create", "host:h"), &s("bind", "terminal:h/7")]],
+            &[
+                &[&s("create", "host:h"), &s("bind", "terminal:h/8")],
+                &[&s("create", "host:other"), &s("bind", "terminal:h/7")],
+            ],
+        ),
+        // A different-host parent is default-deny, whatever is granted.
+        denied(spawn(
+            Some("h"),
+            None,
+            Some(SpawnResource::agent_session(
+                WireResourceId::satellite("other", 7),
+                "claude",
+            )),
+        )),
+        denied(spawn(
+            None,
+            None,
+            Some(SpawnResource::agent_session(t.clone(), "claude")).map(|mut orphan| {
+                orphan.parent = None;
+                orphan
+            }),
+        )),
+        on_terminal(
+            FrameKind::ResizeTerminal {
+                terminal_id: t.clone(),
+                cols: 80,
+                rows: 24,
+            },
+            "bind",
+        ),
+        row(
+            FrameKind::MoveResource {
+                request_id: 1,
+                terminal: t.clone(),
+                owner_terminal: world.beta.clone(),
+            },
+            &[&[&s("bind", &ta), &s("bind", &tb)]],
+            &[&[&s("bind", &ta)], &[&s("bind", &tb)]],
+        ),
+        on_terminal(
+            FrameKind::SubscribeEvents {
+                terminal: Some(t.clone()),
+                after_seq: None,
+            },
+            "observe",
+        ),
+        // Filtered at the source: OBSERVE anywhere admits.
+        row(
+            FrameKind::SubscribeEvents {
+                terminal: None,
+                after_seq: None,
+            },
+            &[&[&s("observe", &tb)], &[&s("observe", "host:h")]],
+            &[&["inventory,create,bind,input,signal@global"]],
+        ),
+        exempt(FrameKind::GetMetadata {
+            request_id: 1,
+            scope: Scope::Global,
+            key: WHOAMI_KEY.to_owned(),
+        }),
+        on_terminal(
+            FrameKind::GetMetadata {
+                request_id: 1,
+                scope: Scope::Resource(t.clone()),
+                key: "phux.agent/v1".to_owned(),
+            },
+            "observe",
+        ),
+        on_global(set(Scope::Global, SESSION_CREATE_KEY, b"{}"), "create,bind"),
+        on_global(
+            set(
+                Scope::Global,
+                SESSION_KEEP_EMPTY_KEY,
+                &encode_session_keep_empty("alpha", true),
+            ),
+            "create,bind",
+        ),
+        row(
+            set(
+                Scope::Global,
+                SESSION_KEEP_EMPTY_KEY,
+                &encode_session_keep_empty("alpha", false),
+            ),
+            &[&[&s("signal", &ga)], &[&s("signal", "host")]],
+            &[&[&s("signal", &gb)], &[&s("signal", &ta)]],
+        ),
+        denied(set(Scope::Global, SESSION_KEEP_EMPTY_KEY, b"alpha")),
+        on_global(set(Scope::Global, CONFIG_RELOAD_KEY, b"1"), "signal"),
+        // The held kill names `alpha`: SIGNAL on it decides.
+        row(
+            set(Scope::Global, &world.approval.decide_key(), b"approve"),
+            &[&[&s("signal", &ta)], &[&s("signal", &ga)]],
+            &[&[&s("signal", &tb)], &[&s("signal", "host:h")]],
+        ),
+        denied(set(Scope::Global, &world.approval.decide_key(), b"maybe")),
+        denied(set(Scope::Global, "phux.session.created/v1", b"x")),
+        denied(FrameKind::SubscribeMetadata {
+            scope: Scope::Global,
+            key: "phux.session.created/v1".to_owned(),
+        }),
+        denied(set(Scope::Global, WHOAMI_KEY, b"x")),
+        on_terminal(
+            set(Scope::Resource(t.clone()), "phux.tags/v1", b"[]"),
+            "bind",
+        ),
+        on_global(
+            FrameKind::ListMetadata {
+                request_id: 1,
+                scope: Scope::Global,
+            },
+            "inventory",
+        ),
+        on_global(
+            FrameKind::ListDirectory {
+                request_id: 1,
+                path: String::new(),
+                host: None,
+            },
+            "inventory",
+        ),
+        on_terminal(
+            FrameKind::SubscribeMetadata {
+                scope: Scope::Resource(t.clone()),
+                key: "phux.agent/v1".to_owned(),
+            },
+            "observe",
+        ),
+        denied(FrameKind::Pong { nonce: 1 }),
+        // --- Nested commands ---
+        on_terminal(
+            command(Command::AttachResource {
+                terminal_id: t.clone(),
+                role_policy: None,
+            }),
+            "bind,observe",
+        ),
+        exempt(command(Command::DetachResource {
+            terminal_id: t.clone(),
+        })),
+        on_terminal(
+            command(Command::KillResource {
+                terminal_id: t.clone(),
+                operation_id: None,
+            }),
+            "signal",
+        ),
+        on_terminal(
+            command(Command::KillResourceIf {
+                terminal_id: t.clone(),
+                precondition: KillPrecondition::default(),
+                operation_id: None,
+            }),
+            "signal",
+        ),
+        on_terminal(command(get_screen(t.clone())), "observe"),
+        on_terminal(
+            command(Command::ApplyInput {
+                operation_id: InputOperationId::new([2; 16]).unwrap(),
+                terminal_id: t.clone(),
+                events: vec![focus],
+            }),
+            "input",
+        ),
+        // All-or-nothing: a grant on one of the two named Terminals fails.
+        row(
+            command(Command::KillResources {
+                ids: vec![t.clone(), world.beta.clone()],
+                operation_id: None,
+            }),
+            &[
+                &[&s("signal", &ta), &s("signal", &tb)],
+                &[&s("signal", "host")],
+            ],
+            &[&[&s("signal", &ta)], &[&s("signal", &tb)]],
+        ),
+        row(
+            command(Command::CloseTabResources {
+                ids: vec![t.clone(), world.beta.clone()],
+            }),
+            &[&[&s("signal", &ta), &s("signal", &tb)]],
+            &[&[&s("signal", &ta)], &[&s("signal", &gb)]],
+        ),
+        // Filtered at the source: INVENTORY anywhere admits.
+        row(
+            command(Command::GetState {
+                scope: StateScope::Server,
+            }),
+            &[&[&s("inventory", &tb)], &[&s("inventory", "host:h")]],
+            &[&["observe,create,bind,input,signal@global"]],
+        ),
+        on_terminal(
+            command(Command::GetTerminalState {
+                terminal_id: t.clone(),
+                include_scrollback: false,
+                max_scrollback_lines: 0,
+            }),
+            "inventory",
+        ),
+        on_terminal(
+            command(Command::SubscribeResourceEvents {
+                terminal_id: t.clone(),
+                event_types: Vec::new(),
+            }),
+            "observe",
+        ),
+        on_global(command(Command::Upgrade), "signal"),
+        on_terminal(
+            command(Command::AcquireInput {
+                terminal_id: t.clone(),
+                mode: InputMode::Cooperative,
+                ttl_ms: 0,
+            }),
+            "bind",
+        ),
+        on_terminal(
+            command(Command::SignalTerminal {
+                terminal_id: t.clone(),
+                signal: TerminalSignal::Interrupt,
+                operation_id: None,
+            }),
+            "signal",
+        ),
+        on_terminal(
+            command(Command::ReportAgentState {
+                terminal_id: t.clone(),
+                state: ReportedAgentState::Working,
+            }),
+            "bind",
+        ),
+        on_terminal(
+            command(Command::PutFile {
+                upload_id: upload,
+                terminal_id: t.clone(),
+                extension: "wav".to_owned(),
+                offset: 0,
+                data: vec![1],
+                final_chunk: false,
+                sha256: None,
+            }),
+            "input",
+        ),
+        on_terminal(
+            command(Command::Transcribe {
+                upload_id: upload,
+                terminal_id: t.clone(),
+            }),
+            "input",
+        ),
+        row(
+            command(Command::DetachClients {
+                session: Some("alpha".to_owned()),
+            }),
+            &[&[&s("signal", &ga)], &[&s("signal", "host")]],
+            &[&[&s("signal", &gb)], &[&s("signal", &ta)]],
+        ),
+        on_global(command(Command::DetachClients { session: None }), "signal"),
+        // Owner-socket rows: no remote grant reaches them.
+        denied(command(Command::Shutdown)),
+        denied(command(Command::OpenListener {
+            transport: ListenerTransport::Quic,
+            port_range: None,
+            linger_secs: 0,
+        })),
+        on_global(command(Command::GetPerf { reset: false }), "observe"),
+        on_global(command(Command::GetPerf { reset: true }), "observe,bind"),
+        // Through the parent alone: a grant naming only the child fails.
+        row(
+            command(Command::AppendResourceOutput {
+                terminal_id: child,
+                bytes: b"{}\n".to_vec(),
+            }),
+            &[&[&s("bind,input", &ta)], &[&s("bind,input", &ga)]],
+            &[&[&s("bind,input", &tc)], &[&s("bind,input", &tb)]],
+        ),
+    ];
+    // The other members of shared rows, each checked like the first.
+    for frame in [
+        FrameKind::InputPaste {
+            terminal_id: t.clone(),
+            event: PasteEvent {
+                trust: PasteTrust::Trusted,
+                data: b"x".to_vec(),
+            },
+        },
+        FrameKind::InputTerminalReply {
+            terminal_id: t.clone(),
+            bytes: Bytes::from_static(b"\x1b[0n"),
+        },
+        command(Command::RouteInput {
+            terminal_id: t.clone(),
+            event: InputEvent::Focus(FocusEvent::Gained),
+        }),
+    ] {
+        rows.push(on_terminal(frame, "input"));
+    }
+    rows.push(on_terminal(
+        command(Command::ReleaseInput { terminal_id: t }),
+        "bind",
+    ));
+    rows
+}
+
+/// workload-auth §6, both tables: every reachable row admits its verbs on
+/// its subject selector and refuses the near misses (another Terminal,
+/// Group, or Host; a partial multi-target grant; a child-only grant); each
+/// required verb is necessary; an exempt row admits any grant; a
+/// default-deny row refuses even `*@global`.
+#[test]
+fn every_row_admits_its_verbs_on_its_subject_and_nothing_nearby() {
+    let mut world = world();
+    let rows = rows(&mut world);
+    for Row { frame, admit, deny } in &rows {
+        let rule = frame_rule(frame);
+        let case = rule.case;
+        for set in admit {
+            assert!(admits_set(&world, set, frame), "`{case}` refused {set:?}");
+            for verb in rule.verb_set().iter() {
+                let fewer = without_verb(set, verb);
+                assert!(
+                    !admits_set(&world, &fewer, frame),
+                    "`{case}` admitted {fewer:?}, which lacks {}",
+                    verb.name()
+                );
+            }
+        }
+        for set in deny {
+            assert!(!admits_set(&world, set, frame), "`{case}` admitted {set:?}");
+        }
+        match rule.requirement {
+            Requirement::Exempt(Exemption::Handshake) | Requirement::Deny => {
+                assert!(admit.is_empty(), "`{case}` is default-deny");
+            }
+            // The owner-socket predicate: no scoped grant rides that socket.
+            Requirement::Verbs(_) if rule.subject.requires_owner_uds() => {
+                assert!(admit.is_empty(), "`{case}` is owner-socket only");
+            }
+            Requirement::Exempt(_) => {}
+            Requirement::Verbs(_) | Requirement::Nested => assert!(
+                !admit.is_empty() && !deny.is_empty(),
+                "`{case}` needs both a grant that admits and one that does not"
+            ),
+        }
+    }
+    let covered: Vec<&str> = rows.iter().map(|row| frame_rule(&row.frame).case).collect();
+    for rule in FRAME_RULES.iter().chain(COMMAND_RULES.iter()) {
+        assert!(
+            covered.contains(&rule.case) || UNREACHABLE.contains(&rule.case),
+            "no table entry for `{}`",
+            rule.case
+        );
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Selectors against the live topology.
 // -----------------------------------------------------------------------------
 
@@ -566,8 +1140,9 @@ fn terminal_scoped_grant_cannot_reach_another_terminal_group_or_satellite() {
         &grant,
         &spawn(None, Some(world.alpha.clone()), None)
     ));
-    // Nor server-global data.
-    assert!(!admits_command(
+    // Server state is admitted and filtered at the source (§6), so the
+    // Terminal grant reads its own Terminal and nothing else there.
+    assert!(admits_command(
         &world,
         &grant,
         Command::GetState {
@@ -1246,4 +1821,216 @@ fn clearing_keep_empty_is_signal_on_the_named_session() {
         key: SESSION_KEEP_EMPTY_KEY.to_owned(),
     };
     assert!(!admits(&world, &all, &delete));
+}
+
+// -----------------------------------------------------------------------------
+// Filtered results (§6): what an admitted row returns.
+// -----------------------------------------------------------------------------
+
+/// `world`'s whole-server snapshot as `CLIENT` holding `scopes` may see it
+/// with `verb`, cut with a listener report so server-global data shows.
+fn filtered(world: &mut World, scopes: &[&str], verb: Verb) -> SessionSnapshot {
+    world.state.set_connection_grant(CLIENT, scoped(scopes));
+    let alpha = world.state.find_session_by_name("alpha").unwrap();
+    let snapshot = world
+        .state
+        .build_session_snapshot(alpha)
+        .unwrap()
+        .with_listeners(phux_protocol::wire::RemoteListenersReport::new());
+    super::filter::filter_snapshot(&world.state, CLIENT, verb, snapshot)
+}
+
+fn resource_ids(snapshot: &SessionSnapshot) -> Vec<WireResourceId> {
+    snapshot
+        .resources
+        .iter()
+        .map(|resource| resource.id.clone())
+        .collect()
+}
+
+/// `GET_STATE { SERVER }` returns only resources the INVENTORY selectors
+/// match, and server-global data (the listener report) only with Global;
+/// `ATTACH` filters by OBSERVE the same way.
+#[test]
+fn a_snapshot_keeps_only_what_the_grant_covers() {
+    let mut world = world();
+    let (alpha, beta) = (world.alpha.clone(), world.beta.clone());
+    let g = world.alpha_group;
+
+    let global = filtered(&mut world, &["inventory@global"], Verb::Inventory);
+    assert_eq!(resource_ids(&global), vec![alpha.clone(), beta.clone()]);
+    assert!(
+        global.listeners().is_some(),
+        "Global reads server-global data"
+    );
+
+    let host = filtered(&mut world, &["inventory@host"], Verb::Inventory);
+    assert_eq!(resource_ids(&host), vec![alpha.clone(), beta.clone()]);
+    assert_eq!(host.sessions.len(), 2);
+    assert!(host.listeners().is_none(), "the host is not Global");
+
+    let group = filtered(
+        &mut world,
+        &[&format!("bind,observe@group:{g}")],
+        Verb::Observe,
+    );
+    assert_eq!(resource_ids(&group), vec![alpha]);
+    assert_eq!(group.sessions.len(), 1, "{:?}", group.sessions);
+    assert!(
+        group
+            .windows
+            .iter()
+            .all(|window| window.session_id.get() == g)
+    );
+    assert_eq!(group.focused_session.get(), g, "the focus stays visible");
+
+    let terminal = filtered(
+        &mut world,
+        &[&format!("inventory@terminal:{}", local_id(&beta))],
+        Verb::Inventory,
+    );
+    assert_eq!(resource_ids(&terminal), vec![beta]);
+    assert!(terminal.windows.is_empty(), "nor its window");
+    assert!(
+        terminal.sessions.is_empty(),
+        "a Terminal grant holds no Group"
+    );
+    assert_eq!(
+        terminal.focused_session.get(),
+        0,
+        "a focus the grant cannot see is not disclosed"
+    );
+
+    // The verb matters: an OBSERVE grant inventories nothing.
+    let wrong_verb = filtered(&mut world, &["observe@global"], Verb::Inventory);
+    assert!(resource_ids(&wrong_verb).is_empty());
+    assert!(wrong_verb.listeners().is_none());
+
+    // A hub asks only the satellites the grant may inventory.
+    let mut satellite = |scopes: &[&str]| {
+        world.state.set_connection_grant(CLIENT, scoped(scopes));
+        super::filter::admits_satellite(&world.state, CLIENT, Verb::Inventory, "h")
+    };
+    assert!(!satellite(&["inventory@host"]));
+    assert!(!satellite(&["inventory@host:other"]));
+    assert!(satellite(&["inventory@host:h"]));
+    assert!(satellite(&["inventory@global"]));
+
+    // Other connections and an uncovered parent are not disclosed.
+    let child = world
+        .state
+        .registry_mut()
+        .new_agent_session(
+            world.alpha_core,
+            phux_core::resource::AgentFacet {
+                provider: "claude".to_owned(),
+                native_id: None,
+                state: None,
+            },
+        )
+        .unwrap();
+    let child = world.state.intern_terminal_wire(child);
+    let alpha_session = world.state.find_session_by_name("alpha").unwrap();
+    let mut whole = world.state.build_session_snapshot(alpha_session).unwrap();
+    for resource in &mut whole.resources {
+        resource.viewers = vec![phux_protocol::ids::ClientId::new(99)];
+        resource.input_holder = Some(phux_protocol::ids::ClientId::new(99));
+        if resource.id == child {
+            resource.parent = Some(world.alpha.clone());
+        }
+    }
+    world.state.set_connection_grant(
+        CLIENT,
+        scoped(&[&format!("inventory@terminal:{}", local_id(&child))]),
+    );
+    let only_child = super::filter::filter_snapshot(&world.state, CLIENT, Verb::Inventory, whole);
+    assert_eq!(resource_ids(&only_child), vec![child]);
+    let seen = &only_child.resources[0];
+    assert!(seen.viewers.is_empty() && seen.input_holder.is_none());
+    assert_eq!(seen.parent, None, "the parent is outside the grant");
+
+    // The owner's grant filters nothing.
+    world
+        .state
+        .set_connection_grant(CLIENT, ConnectionGrant::owner());
+    let alpha_session = world.state.find_session_by_name("alpha").unwrap();
+    let whole = world.state.build_session_snapshot(alpha_session).unwrap();
+    let owner =
+        super::filter::filter_snapshot(&world.state, CLIENT, Verb::Inventory, whole.clone());
+    assert_eq!(owner, whole);
+}
+
+/// The Bell events a server-wide subscription holding `scopes` receives,
+/// after one Bell each on `alpha`, `beta`, no Terminal, and a child of
+/// `alpha`, in that order.
+fn server_wide_bells(scopes: &[&str]) -> Vec<Option<WireResourceId>> {
+    use crate::state::EventRecord;
+    use phux_protocol::wire::frame::AgentEvent;
+
+    let mut world = world();
+    let child = world
+        .state
+        .registry_mut()
+        .new_agent_session(
+            world.alpha_core,
+            phux_core::resource::AgentFacet {
+                provider: "claude".to_owned(),
+                native_id: None,
+                state: None,
+            },
+        )
+        .unwrap();
+    let child = world.state.intern_terminal_wire(child);
+    world.state.set_connection_grant(CLIENT, scoped(scopes));
+    let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+    world.state.subscribe_events(CLIENT, None, tx);
+    for terminal in [Some(world.alpha.clone()), Some(world.beta.clone()), None] {
+        world
+            .state
+            .record_and_fanout(EventRecord::new(terminal, AgentEvent::Bell));
+    }
+    world.state.record_and_fanout(
+        EventRecord::new(Some(child), AgentEvent::Bell).with_parent(Some(world.alpha.clone())),
+    );
+    std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|out| match out {
+            crate::mailbox::Outbound::Frame(FrameKind::Event {
+                terminal,
+                event: AgentEvent::Bell,
+                ..
+            }) => Some(terminal),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `SUBSCRIBE_EVENTS { terminal: None }` under a scoped grant delivers only
+/// events on Terminals it may OBSERVE (a child through its parent), and a
+/// server-global event only with Global.
+#[test]
+fn a_server_wide_subscription_delivers_only_observable_events() {
+    let world = world();
+    let (alpha, beta, g) = (world.alpha.clone(), world.beta.clone(), world.alpha_group);
+
+    let all = server_wide_bells(&["observe@global"]);
+    assert_eq!(all.len(), 4, "Global sees every event: {all:?}");
+
+    let host = server_wide_bells(&["observe@host"]);
+    assert_eq!(
+        host.len(),
+        3,
+        "no server-global event without Global: {host:?}"
+    );
+    assert_eq!(&host[..2], &[Some(alpha.clone()), Some(beta.clone())]);
+
+    let group = server_wide_bells(&[&format!("observe@group:{g}")]);
+    assert_eq!(group.len(), 2, "alpha and its child: {group:?}");
+    assert_eq!(group[0], Some(alpha));
+    assert_ne!(group[1], Some(beta.clone()));
+
+    let other = server_wide_bells(&[&format!("observe@terminal:{}", local_id(&beta))]);
+    assert_eq!(other, vec![Some(beta)]);
+
+    let blind = server_wide_bells(&["inventory,bind@global"]);
+    assert!(blind.is_empty(), "{blind:?}");
 }

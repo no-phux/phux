@@ -13,6 +13,7 @@
 //! closed modes; `ServerConfig::policy_engine` can override (ADR-0072).
 
 mod enforce;
+pub mod filter;
 mod hold;
 
 #[cfg(test)]
