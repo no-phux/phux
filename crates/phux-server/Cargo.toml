@@ -151,3 +151,10 @@ required-features = ["ack-allocations-example"]
 name = "capture"
 harness = false
 required-features = ["native-engine", "capture-bench"]
+
+# State-sync tick and wire-copy stages (phux-69pq.5): allocation table plus
+# Criterion timings.
+[[bench]]
+name = "live_path"
+harness = false
+required-features = ["capture-bench"]
