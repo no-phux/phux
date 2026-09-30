@@ -1995,6 +1995,57 @@ pub(crate) async fn handle_existing_socket(socket_path: &Path) -> Result<(), Ser
     Ok(())
 }
 
+/// A listener's live-connection cap ([`Incoming::max_connections`]), counted
+/// on the accept loop's thread.
+struct ConnectionCap {
+    cap: Option<usize>,
+    live: std::rc::Rc<std::cell::Cell<usize>>,
+    refusals: crate::transport::RefusalWarnings,
+}
+
+/// One connection's place under a [`ConnectionCap`], returned when its task
+/// ends.
+struct LiveConnection(std::rc::Rc<std::cell::Cell<usize>>);
+
+impl Drop for LiveConnection {
+    fn drop(&mut self) {
+        self.0.set(self.0.get().saturating_sub(1));
+    }
+}
+
+impl ConnectionCap {
+    fn new(cap: Option<usize>) -> Self {
+        Self {
+            cap,
+            live: std::rc::Rc::default(),
+            refusals: crate::transport::RefusalWarnings::new(),
+        }
+    }
+
+    /// A place for one more connection, or `None` (logged, at a bounded
+    /// rate) when the listener is at its cap.
+    fn admit(&self, transport: &'static str) -> Option<LiveConnection> {
+        if let Some(cap) = self.cap
+            && self.live.get() >= cap
+        {
+            if let Some(suppressed) = self.refusals.due() {
+                warn!(
+                    transport,
+                    cap, suppressed, "connection refused: listener at its connection cap"
+                );
+            } else {
+                debug!(
+                    transport,
+                    cap, "connection refused: listener at its connection cap"
+                );
+            }
+            return None;
+        }
+        self.live.set(self.live.get() + 1);
+        Some(LiveConnection(std::rc::Rc::clone(&self.live)))
+    }
+}
+
 /// Accept connections and spawn a local client task for each (ADR-0014).
 /// Root cancellation stops admission, then waits (bounded) for every client
 /// task to flush its shutdown `DETACHED`.
@@ -2010,6 +2061,7 @@ pub(crate) async fn accept_loop<L: Incoming>(
     input_lane: Option<InputLaneHandle>,
 ) -> Result<(), ServerError> {
     let mut clients: JoinSet<()> = JoinSet::new();
+    let cap = ConnectionCap::new(listener.max_connections());
     loop {
         tokio::select! {
             () = root_token.cancelled() => {
@@ -2031,6 +2083,10 @@ pub(crate) async fn accept_loop<L: Incoming>(
             accept = listener.accept() => {
                 match accept {
                     Ok((reader, writer, connection_identity)) => {
+                        // Over the cap: dropping the transport closes it.
+                        let Some(live) = cap.admit(listener.kind()) else {
+                            continue;
+                        };
                         debug!(transport = listener.kind(), "client connected");
                         // Counted before the task exists so the idle watchdog
                         // never sees an unattended gap.
@@ -2044,6 +2100,7 @@ pub(crate) async fn accept_loop<L: Incoming>(
                         let task_transport = listener.transport_type();
                         let task_supports_quic_streams = listener.supports_quic_streams();
                         clients.spawn_local(async move {
+                            let _live = live;
                             if let Err(err) = handle_client(reader, writer, task_state.clone(), client_id, client_token, task_root_token, task_input_lane, task_transport, task_supports_quic_streams).await {
                                 warn!(error = %err, "client task ended with error");
                             }

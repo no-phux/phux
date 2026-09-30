@@ -314,6 +314,10 @@ impl Incoming for QuicListener {
             .await
     }
 
+    fn max_connections(&self) -> Option<usize> {
+        matches!(self.admission, QuicAdmission::Open).then_some(super::ANONYMOUS_MAX_CONNECTIONS)
+    }
+
     fn kind(&self) -> &'static str {
         "quic"
     }

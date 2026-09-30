@@ -44,6 +44,13 @@ pub(crate) const WS_REJECTION_WARN_INTERVAL: Duration = Duration::from_secs(60);
 /// peers fill every slot for good.
 pub(crate) const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
 
+/// Connections a listener that admits anyone (a loopback listener with no
+/// credential) serves at once: far above any real set of local tools and
+/// browser tabs, and a bound on the tasks, sockets, and per-client state a
+/// runaway local process can make the server hold. One past it is closed as
+/// soon as its handshake completes.
+pub(crate) const ANONYMOUS_MAX_CONNECTIONS: usize = 256;
+
 /// Peers one listener admits at once. Finite, but more than one: a silent
 /// peer holds one slot until its deadline instead of the whole listener.
 pub(crate) const MAX_PENDING_ADMISSIONS: usize = 32;
@@ -177,6 +184,13 @@ pub(crate) trait Incoming {
     /// stream mux (a relay connector shares one tunnel, so it does not).
     fn supports_quic_streams(&self) -> bool {
         false
+    }
+
+    /// Most connections this listener serves at once. Only a listener that
+    /// admits whoever connects (loopback, no credential) is bounded, at
+    /// [`ANONYMOUS_MAX_CONNECTIONS`]; `None` is unbounded.
+    fn max_connections(&self) -> Option<usize> {
+        None
     }
 
     /// The transport stamped into `PeerIdentity` and consulted for
@@ -391,6 +405,9 @@ pub(crate) struct WsListener {
     admissions: Admissions<WsAccepted>,
     /// Browser origins the anonymous listener admits; unused with tokens.
     origins: std::sync::Arc<AllowedOrigins>,
+    /// Live-connection cap: [`ANONYMOUS_MAX_CONNECTIONS`] for the anonymous
+    /// listener, none with tokens.
+    connection_cap: Option<usize>,
 }
 
 type WsAccepted = (WsReader, WsWriter, crate::auth::ConnectionIdentity);
@@ -410,7 +427,15 @@ impl WsListener {
             rejection_warnings: RefusalWarnings::new(),
             admissions: Admissions::new(),
             origins: std::sync::Arc::new(AllowedOrigins::default()),
+            connection_cap: None,
         }
+    }
+
+    /// This listener with its live-connection cap at `cap` (tests).
+    #[cfg(test)]
+    pub(crate) const fn with_connection_cap(mut self, cap: usize) -> Self {
+        self.connection_cap = Some(cap);
+        self
     }
 
     /// A plaintext loopback listener that still demands a pairing token, for
@@ -428,6 +453,7 @@ impl WsListener {
     pub(crate) async fn bind(addr: SocketAddr, origins: AllowedOrigins) -> io::Result<Self> {
         let mut listener = Self::from_parts(TcpListener::bind(addr).await?, None, None, None);
         listener.origins = std::sync::Arc::new(origins);
+        listener.connection_cap = Some(ANONYMOUS_MAX_CONNECTIONS);
         Ok(listener)
     }
 
@@ -548,6 +574,10 @@ impl Incoming for WsListener {
             source_ip: rejection.source_ip,
             warn_suppressed: self.rejection_warnings.due(),
         }
+    }
+
+    fn max_connections(&self) -> Option<usize> {
+        self.connection_cap
     }
 
     fn kind(&self) -> &'static str {
@@ -1250,6 +1280,75 @@ mod tests {
             let (_, response) = refused_handshake(&listener, addr, request).await;
             assert_generic_unauthorized(response);
         }
+    }
+
+    /// The anonymous loopback listener serves at most its connection cap at
+    /// once (256 in production): one past it is closed as soon as it is
+    /// admitted, and a slot a connection gives back is reused.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_anonymous_listener_caps_live_connections() {
+        assert_eq!(
+            WsListener::bind("127.0.0.1:0".parse().unwrap(), AllowedOrigins::default())
+                .await
+                .unwrap()
+                .max_connections(),
+            Some(ANONYMOUS_MAX_CONNECTIONS)
+        );
+        LocalSet::new()
+            .run_until(async {
+                let listener =
+                    WsListener::bind("127.0.0.1:0".parse().unwrap(), AllowedOrigins::default())
+                        .await
+                        .unwrap()
+                        .with_connection_cap(2);
+                let addr = listener.local_addr().unwrap();
+                let state = crate::state::SharedState::new();
+                let root_token = CancellationToken::new();
+                let accept_state = state.clone();
+                let accept_token = root_token.clone();
+                let accept_task = tokio::task::spawn_local(async move {
+                    crate::runtime::client::accept_loop(&listener, accept_state, accept_token, None)
+                        .await
+                });
+                let connect = || async move {
+                    let tcp = TcpStream::connect(addr).await.unwrap();
+                    tokio_tungstenite::client_async(request(addr), tcp)
+                        .await
+                        .expect("the upgrade completes")
+                        .0
+                };
+                // Closed by the server within the window, or still open.
+                let closed_within = |mut client: WebSocketStream<TcpStream>, window| async move {
+                    let closed = matches!(
+                        tokio::time::timeout(window, client.next()).await,
+                        Ok(None | Some(Err(_) | Ok(Message::Close(_))))
+                    );
+                    (closed, client)
+                };
+                let window = Duration::from_millis(500);
+
+                let first = connect().await;
+                let (closed, second) = closed_within(connect().await, window).await;
+                assert!(!closed, "the second connection is within the cap");
+                let (closed, _third) = closed_within(connect().await, window).await;
+                assert!(closed, "a connection past the cap is closed");
+
+                drop(first);
+                let mut reused = false;
+                for _ in 0..20 {
+                    let (closed, client) = closed_within(connect().await, window).await;
+                    if !closed {
+                        reused = true;
+                        drop(client);
+                        break;
+                    }
+                }
+                assert!(reused, "a returned slot is reused");
+                drop(second);
+                root_token.cancel();
+                let _ = accept_task.await;
+            })
+            .await;
     }
 
     #[tokio::test]

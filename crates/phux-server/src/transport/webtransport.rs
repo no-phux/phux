@@ -281,6 +281,12 @@ impl Incoming for WtListener {
             .await
     }
 
+    fn max_connections(&self) -> Option<usize> {
+        self.tokens
+            .is_none()
+            .then_some(super::ANONYMOUS_MAX_CONNECTIONS)
+    }
+
     fn kind(&self) -> &'static str {
         "webtransport"
     }
