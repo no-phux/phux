@@ -812,8 +812,9 @@ pub enum TerminalActorError {
     /// Could not open a PTY pair via `portable_pty`.
     #[error("openpty failed: {0}")]
     OpenPty(String),
-    /// Could not spawn the command on the PTY slave.
-    #[error("spawn failed: {0}")]
+    /// Could not spawn the command on the PTY slave. The text is the whole
+    /// wire refusal reason; the client already prefixes "spawn failed".
+    #[error("{0}")]
     Spawn(String),
     /// Could not take the master halves or start the bridge threads.
     #[error("pty io setup failed: {0}")]

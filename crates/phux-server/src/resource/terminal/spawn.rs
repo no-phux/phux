@@ -610,11 +610,28 @@ pub(crate) fn spawn_pty(
     let child = pair
         .slave
         .spawn_command(cmd)
-        .map_err(|e| TerminalActorError::Spawn(e.to_string()))?;
+        .map_err(|e| TerminalActorError::Spawn(spawn_failure_reason(&e)))?;
     // Our slave copy would prevent EOF on the master after the child exits.
     drop(pair.slave);
 
     start_pty_bridge(pair.master, child)
+}
+
+/// A PTY spawn failure as one line a user can act on. portable-pty's
+/// command-not-found text spans lines and quotes the whole `PATH` it
+/// searched, which the refusal would carry verbatim to every client.
+fn spawn_failure_reason(err: &dyn std::fmt::Display) -> String {
+    const NOT_FOUND: &str = "No viable candidates found in PATH";
+    let text = err.to_string();
+    let text = match text.find(NOT_FOUND) {
+        Some(at) => format!("{}not found in PATH", &text[..at]),
+        None => text,
+    };
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Adopt an inherited PTY master fd and child pid after a graceful-upgrade
@@ -900,6 +917,28 @@ mod writer_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `phux spawn nosuch` printed "spawn failed: spawn failed: Unable to
+    /// spawn nosuch because:" and then the server's whole `PATH`, several
+    /// kilobytes long. The refusal is one line and names no `PATH` value.
+    #[test]
+    fn a_missing_command_is_one_line_without_the_path() {
+        let mut cmd = CommandBuilder::new("phux-no-such-command-for-this-test");
+        cmd.env("PATH", "/nonexistent/a:/nonexistent/b");
+        let pair = native_pty_system()
+            .openpty(PtySize::default())
+            .expect("openpty");
+        let err = pair.slave.spawn_command(cmd).expect_err("no such command");
+        let reason = spawn_failure_reason(&err);
+        assert_eq!(
+            reason,
+            "Unable to spawn phux-no-such-command-for-this-test because: not found in PATH"
+        );
+        assert_eq!(
+            TerminalActorError::Spawn(reason.clone()).to_string(),
+            reason
+        );
+    }
 
     #[test]
     fn resolve_shell_precedence() {
