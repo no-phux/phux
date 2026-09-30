@@ -13,6 +13,19 @@ watched. `phux config show --layers` names which layer set each key.
 
 ---
 
+## Make your first change
+
+1. Run `phux config path` to locate your user file. If it does not exist,
+   create it with `phux config init`; do not use `--force` on an existing file.
+2. Make one small edit, such as the [prefix example](#example-1-rebind-the-prefix-from-ctrl-a-to-ctrl-b).
+3. Run `phux config check`. Fix any reported file/key errors before continuing.
+4. Run `phux config reload`, then try the changed binding in an attached client.
+   For a prefix chord, press and release the prefix before the continuation.
+
+**Expected:** the new binding works without losing your panes. If it does not,
+check `phux config show --layers` and the [apply/restart boundaries](#applying-changes).
+For a rejected or ineffective edit, use [configuration recovery](./troubleshooting.md#a-config-change-fails-or-does-not-apply).
+
 ## Config file location and discovery
 
 phux loads configuration in this order:
@@ -29,8 +42,8 @@ overrides. phux does not expose a global config-path override; set
 `XDG_CONFIG_HOME` when a command needs an isolated config tree.
 
 The Unix socket is not a config key. Socket path, profile isolation, and
-`PHUX_SOCKET` live in [`docs/reference/files.md`](./reference/files.md) and
-[operations.md](./operations.md#instance-isolation-profiles).
+`PHUX_SOCKET` live in [file locations](./reference/files.md) and
+[instance isolation](./operations.md#instance-isolation-profiles).
 
 ### Getting started
 
@@ -70,7 +83,7 @@ validation error a client keeps its previous config fully in effect and
 surfaces the error as a dismissable toast — never a half-applied mix. The
 same reload is available inside the TUI as the `reload-config` action: a
 command-palette row ("Reload the config file"), bindable to any chord
-(unbound by default). See [`docs/consumers/tui.md`](./consumers/tui.md#reloading)
+(unbound by default). See [TUI reloading](./consumers/tui.md#reloading)
 for the attach-side reload.
 
 A few settings are read once at attach and still need a client restart
@@ -129,7 +142,7 @@ right = [
 
 Run `phux config reload` to apply it. For styling (color, bold,
 underline), use the universal `style` table in
-[`docs/reference/widgets.md`](./reference/widgets.md).
+[the widget reference](./reference/widgets.md).
 
 ### Example 3: Log a pane exit
 
@@ -145,7 +158,7 @@ action = { kind = "run", command = "echo pane exited >> ~/.cache/phux/hooks.log"
 
 `phux config check` validates the surface; `phux config reload` is not
 enough for hooks — the server reads them at start. The event table is
-[`docs/reference/hooks.md`](./reference/hooks.md).
+[the hook reference](./reference/hooks.md).
 
 ---
 
@@ -189,7 +202,7 @@ every other binding stays active:
 "H" = { action = "resize-pane", direction = "left",  amount = 5 }
 ```
 
-The action catalog is [`docs/reference/actions.md`](./reference/actions.md).
+The action catalog is in the [action reference](./reference/actions.md).
 
 ---
 
@@ -209,7 +222,7 @@ you add teaching chrome such as `help-hints`. Use
 copy the shipped list from `phux config show --default` and edit in
 place.
 
-The widget catalog is [`docs/reference/widgets.md`](./reference/widgets.md).
+The widget catalog is in the [widget reference](./reference/widgets.md).
 `phux config check` validates `[status]` through the same build path, so
 a typo'd kind or option surfaces as a located finding.
 
@@ -228,7 +241,7 @@ and encodes each page only when a client asks for it
 resident memory per pane, multiplied by your pane count. The measured
 depths and the 64 MiB cap live in the comments of the shipped defaults
 (`phux config show --default`; also the annotated file in
-[`docs/reference/config.md`](./reference/config.md)).
+[the configuration reference](./reference/config.md)).
 
 ---
 
@@ -250,7 +263,7 @@ action = { kind = "run", command = "echo pane exited >> ~/.cache/phux/hooks.log"
 `phux config check` validates event names, `when` keys, and actions; the
 server warns again at startup about a hook that can never fire. The event
 table, context keys, and `PHUX_*` environment are
-[`docs/reference/hooks.md`](./reference/hooks.md).
+in the [hook reference](./reference/hooks.md).
 
 ---
 
@@ -411,7 +424,7 @@ accent = "#7aa2f7"
 ```
 
 Slot names and the shipped colors are in
-[`docs/reference/config.md`](./reference/config.md).
+[the configuration reference](./reference/config.md).
 
 **Sidebar.** On by default. `enabled`, `width` (`0` adapts to 28–40
 columns; a positive width is fixed), and `position` (`left` or `right`)
@@ -430,15 +443,15 @@ files, never inline. Enroll a host with the commands in
 
 **Generated (cannot drift):**
 
-- **Full schema and annotated defaults** → [`docs/reference/config.md`](./reference/config.md)
-- **Action catalog** → [`docs/reference/actions.md`](./reference/actions.md)
-- **Widget catalog** → [`docs/reference/widgets.md`](./reference/widgets.md)
-- **Hook events** → [`docs/reference/hooks.md`](./reference/hooks.md)
-- **File locations** → [`docs/reference/files.md`](./reference/files.md)
-- **CLI inventory** → [`docs/reference/cli.md`](./reference/cli.md)
+- [Full schema and annotated defaults](./reference/config.md)
+- [Action catalog](./reference/actions.md)
+- [Widget catalog](./reference/widgets.md)
+- [Hook events](./reference/hooks.md)
+- [File locations](./reference/files.md)
+- [CLI inventory](./reference/cli.md)
 
 **Narrative:**
 
-- **Attach TUI** → [`docs/consumers/tui.md`](./consumers/tui.md)
-- **Getting started** → [`docs/QUICKSTART.md`](./QUICKSTART.md)
+- [Terminal UI guide](./consumers/tui.md)
+- [Quickstart](./QUICKSTART.md)
 - **Shipped defaults with comments** → `phux config show --default`

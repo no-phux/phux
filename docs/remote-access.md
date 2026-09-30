@@ -17,10 +17,31 @@ manual, overlay, and relay paths are below for when that command cannot.
 
 ## The short way: `phux host add`
 
+**Before you start:** install phux locally and on the remote macOS or Linux
+host, using the same release on both. Confirm you can log in with
+`ssh me@mini` and that `ssh me@mini phux --version` finds the remote binary.
+Replace `me@mini` below with that working SSH destination. Enrollment uses
+your existing SSH trust and changes the remote user's service configuration;
+use an account whose terminals you are authorized to control.
+
+You do not need to configure an overlay first if the SSH route already works.
+For installs and release compatibility, see the [installation guide](./INSTALL.md).
+
 ```sh
 phux host add me@mini
 phux attach mini
 ```
+
+**Expected:** enrollment prints its checks and saves a host named `mini`.
+Attach opens that host's terminal session. Run `hostname` in its shell to
+confirm you are on the intended machine. Press `Ctrl-A`, release both keys,
+then `d` to detach; `phux attach mini` returns to the running remote session.
+Detaching leaves work on the remote server; a remote server crash or reboot
+does not preserve live jobs ([continuity boundaries](./operations.md#workspace-continuity-and-update-survival)).
+
+If enrollment fails, follow the named failing step below. If a saved host
+stops connecting, start with [the diagnostic sequence](#troubleshooting);
+do not delete its credentials or disable a firewall to guess at a fix.
 
 The first command reads like the `ssh me@mini` you already type, and it uses
 that same trust: anyone who can ssh to the host can run `phux pair` there and
@@ -276,7 +297,7 @@ that phux dials like a LAN address. The pin is on the fingerprint, not the
 hostname, so overlay DNS names work unchanged, and the fully-OSS
 Headscale/WireGuard path is first-class. The trust model and environment
 knobs live in
-[operations.md](./operations.md#connecting-from-another-network-overlay-reachability).
+[overlay reachability](./operations.md#connecting-from-another-network-overlay-reachability).
 
 ## Common steps: listen, then pair
 
@@ -340,7 +361,7 @@ minutes by default (`--overlap-seconds 0` cuts over immediately); an existing
 absolute expiry is preserved, and an expired credential cannot be rotated.
 Revocation and the end of a rotation overlap also disconnect established
 sessions using that credential
-([operations.md](./operations.md#remote-consumer-trust-model-opt-in)).
+([remote consumer trust model](./operations.md#remote-consumer-trust-model-opt-in)).
 These, `ls`, and `prune` only edit the store and need no running server:
 
 ```sh
@@ -470,38 +491,47 @@ the local server running and produces an `outbound connector lost; scheduling
 redial` diagnostic. A bad `SERVER_TOKEN` resets only that consumer stream;
 the tunnel and other consumers remain live. Full relay state-file,
 revocation, and trust-boundary details are in
-[operations.md](./operations.md#running-the-reference-relay); the design is
+[relay operations](./operations.md#running-the-reference-relay); the design is
 ADR-0057, building on
 [ADR-0051](adr/0051-outbound-dial-out-connector-transport.md) and
 [ADR-0052](adr/0052-connector-route-identity-and-config.md).
 
 ## Troubleshooting
 
-Failures fall into a few classes, and the symptom tells you which one you have.
+Work from the server outward. A timeout alone cannot distinguish a stopped
+server, wrong address, blocked port, or broken network route.
 
-- **No route / connection timed out / connection refused.** An overlay
-  problem, not a phux problem. Check `tailscale status` (both peers listed and
-  not `offline`) and `tailscale ping <host>` on Tailscale/Headscale, or `wg
-  show` for a recent handshake on raw WireGuard. Confirm the server binds an
-  address the overlay routes (`0.0.0.0:8787` or the overlay IP itself) and
-  that no host firewall drops the port. QUIC needs UDP end to end — if QUIC
-  times out but wss:// works, UDP is blocked; stay on `--ws`.
-- **Connect succeeds, then hangs forever; `phux ls` on the server is fine.**
-  This is a host firewall stealth-drop. The macOS Application Firewall
-  completes the TCP handshake and never delivers the bytes, so the server
-  logs nothing. phux ships adhoc-signed, so it needs an explicit allowlist
-  entry keyed to the exact binary path, and Homebrew's
-  `/opt/homebrew/Cellar/phux/<version>/bin/phux` changes on every upgrade.
-  `phux doctor` on the server host names this as `remote-reachable`. Until
-  release binaries are Developer ID signed, either re-allow the new Cellar
-  path after each upgrade or, on a host already behind an overlay, turn the
-  firewall off (`/usr/libexec/ApplicationFirewall/socketfilterfw
-  --getglobalstate` shows its state).
+1. **Check the host and server.** Can you still `ssh me@mini`? On that host,
+   run `phux status` and `phux doctor`. If the server is stopped, the normal
+   `phux attach mini` path can [repair it over SSH](#what-happens-when-the-server-is-stopped).
+   If startup fails, inspect `phux logs --server` there before retrying.
+2. **Check the saved route.** Locally, run `phux host show mini`; compare its
+   endpoint with the remote listener and address reported by the host.
+   An `ssh://` fallback is usable, not proof that enrollment failed.
+3. **Check reachability for that route.** Only if you use Tailscale/Headscale,
+   inspect `tailscale status` and `tailscale ping <host>`; on WireGuard,
+   inspect `wg show` for a recent handshake. Confirm the listener binds an
+   address your client can reach and the intended port is allowed. QUIC needs
+   UDP end to end. QUIC timing out while WebSocket works suggests a
+   UDP-specific problem; use an already configured WebSocket route while
+   investigating rather than removing authentication.
+4. **Check host firewall admission.** A connection that opens but stalls can
+   be a firewall stealth-drop, but it is not conclusive. On macOS, run
+   `phux doctor` on the server host and follow its `remote-reachable` remedy:
+   allow the exact phux binary through the Application Firewall. Homebrew's
+   Cellar path changes after upgrades, so an old allowlist entry may no longer
+   apply. Keep the firewall enabled; an overlay does not replace host policy.
+5. **Read the actual refusal.** Authentication and certificate errors need
+   the remedies below, not more network retries.
+
+### Credentials and certificate failures
+
 - **Auth failure** (HTTP 401 / unauthorized on the WebSocket upgrade; QUIC
-  token rejection). The link is fine; the bearer token is missing, mistyped,
-  or was revoked. Mint one with `phux pair`; it is live at the next connection
-  attempt, with no restart. The 401 is returned before any phux frame is read,
-  so a 401 proves reachability.
+  token rejection). The responding endpoint is reachable, but it rejected
+  the credential. Confirm it is the intended host and that the saved token
+  is present and not revoked. If needed, mint a new token with `phux pair`
+  on the trusted server and update the registration. New tokens are live at
+  the next connection attempt; no server restart is required.
 - **Insecure credential store.** The default store and any path selected by
   `PHUX_WS_TOKENS` must be a regular, non-symlink file owned by the effective
   user with no group or world permissions. Restore owner-only permissions
@@ -539,7 +569,7 @@ Failures fall into a few classes, and the symptom tells you which one you have.
 
 Overlay links are higher-latency than a LAN; remote consumers get better
 behavior by requesting state-sync output — see
-[operations.md](./operations.md#output-mode-for-remote-consumers).
+[remote output modes](./operations.md#output-mode-for-remote-consumers).
 
 ## Scope and alternatives
 
