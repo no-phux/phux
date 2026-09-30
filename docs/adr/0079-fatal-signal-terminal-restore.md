@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-08-09
+last-reviewed: 2026-09-30
 ---
 
 # 0079 — Fatal-signal terminal restore
@@ -12,8 +12,9 @@ inside the alt screen with mouse tracking armed. phux now installs an
 async-signal-safe handler that writes the DEC private-mode resets with a raw
 `write(2)`, restores the saved termios, and re-raises with default disposition
 so core dumps and exit status are unchanged. The handler lives in
-`phux-crash`, a crate vendored from xAI's Apache-2.0 `xai-crash-handler` — the
-only crate in this workspace that is not `MIT OR Apache-2.0`.
+`phux-crash`, a trimmed derivative of xAI's Apache-2.0 `xai-crash-handler`
+that keeps only this signal-restore subset — the only crate in this workspace
+that is not `MIT OR Apache-2.0`.
 
 Status: Accepted
 Date: 2026-08-09
@@ -72,8 +73,8 @@ the FFI surprise in the form it actually takes.
    ordering constraints on the reset sequence that are enforced by unit tests,
    and an integration suite that spawns real subprocesses which really do
    raise each signal and asserts on what they left behind. Upstream is
-   Apache-2.0 and has no internal dependencies — only `backtrace` and platform
-   `libc`/`windows-sys`.
+   Apache-2.0. phux keeps only the signal-restore subset (alternate stack,
+   handler, re-raise; sole dependency `libc`) and does not track upstream.
 
 3. **The reset sequence is deliberately a superset of what phux enables.**
    phux sets `?1049`, `?25`, `?1002`, `?1006`, `?1003`, and `?2026`. The
@@ -99,8 +100,7 @@ the FFI surprise in the form it actually takes.
    `license = "Apache-2.0"` explicitly rather than inheriting the workspace's
    `MIT OR Apache-2.0`, it ships its own `LICENSE` and `NOTICE`, and every
    modified file carries a `MODIFIED FROM UPSTREAM` banner. The full
-   modification list lives in the crate's `Cargo.toml` header and is the
-   re-vendoring checklist.
+   modification list, removals included, lives in the crate's `Cargo.toml`.
 
 6. **Crash *reporting* is deliberately out of scope here.** The upstream crate
    can also write a binary crash blob and symbolicate it on the next start
@@ -108,7 +108,7 @@ the FFI surprise in the form it actually takes.
    restore half. Turning on blob capture means deciding where blobs live, how
    long they are kept, whether the next launch surfaces them, and whether any
    of it is reported anywhere — a product question, not a terminal-hygiene
-   one. The capability is present in the crate when we want it.
+   one. The unused reporting half was deleted from the crate.
 
 ## Rationale
 
@@ -148,10 +148,9 @@ else.
 - **Nothing is captured about *why* we crashed.** Per decision 6, the terminal
   is saved and the crash is not explained. A user who hits an engine fault
   still has nothing to send us beyond "it died". Blob capture is the follow-up.
-- **We now carry vendored code.** It must be re-synced by hand if upstream
-  fixes something. The modification list is kept in the crate's Cargo.toml
-  specifically so that re-sync is a diff-and-reapply rather than an
-  archaeology exercise.
+- **We now own derived code.** Upstream fixes are not picked up
+  automatically; the subset is small enough to review by hand against
+  upstream if it ever changes the restore path.
 
 ## Alternatives considered
 
