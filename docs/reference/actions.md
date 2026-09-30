@@ -73,7 +73,7 @@ Why the dash rows have no palette entry:
 - `select-window` — parameterized by `index`, which the palette has no UI to collect; the window picker is the surface for "jump to window N".
 - `move-window` — parameterized by direction; bound to `<` and `>` under the leader, offered in the window context menu, and done by dragging a tab or a sidebar window row.
 - `switch-session` — requires a `name` arg supplied by the session picker (or the fleet's foreign rows), so a bare palette row would have no target to act on.
-- `switch-host` — requires `host` and `name` args supplied by the sidebar's machine segments, so a bare palette row would have no target to act on.
+- `switch-host` — requires `host` and `name` args supplied by the sidebar's machine segments or the session picker's machine groups, so a bare palette row would have no target to act on.
 - `copy-mode` — a modal input surface entered from its keybinding, not a one-shot command the palette can commit.
 - `plugin-action` — its palette rows are built dynamically from enabled plugins' manifests, one per manifest action, carrying `plugin`/`action` args a static row could not supply.
 - `plugin-pane` — same shape as `plugin-action`: dynamic rows from enabled plugins' manifest `[[panes]]`, carrying `plugin`/`pane` args.

@@ -125,6 +125,21 @@ pub(super) fn switch_session_args(
     args
 }
 
+/// ADR-0140: the `switch-host { host, name }` action that re-attaches this
+/// terminal to session `name` on machine `host` (a `phux.hosts/v1` row name).
+pub(super) fn switch_host_action(
+    host: impl Into<String>,
+    name: impl Into<String>,
+) -> phux_config::keybind::ResolvedAction {
+    phux_config::keybind::ResolvedAction {
+        action: "switch-host".to_owned(),
+        args: std::collections::BTreeMap::from([
+            ("host".to_owned(), toml::Value::String(host.into())),
+            ("name".to_owned(), toml::Value::String(name.into())),
+        ]),
+    }
+}
+
 /// Pull an arbitrary string arg out of a
 /// [`phux_config::keybind::ResolvedAction`] (phux-r82.5: `plugin` /
 /// `action` on `plugin-action`).

@@ -3341,9 +3341,7 @@ impl SessionLoop {
             return;
         }
         let items = crate::attach::input_dispatch::session_picker_rows(
-            &self.peers.sessions,
-            self.peers.focused_session,
-            &self.peers.hosts,
+            &self.peers.inputs(&self.review),
             &self.mirror.workspace,
         );
         let key = crate::attach::input_dispatch::SESSION_PICKER_LIVE_KEY;
@@ -3586,7 +3584,7 @@ impl SessionLoop {
             .map_or((0, 0), |r| (r.x, r.y))
     }
 
-    /// A spawned plugin action finished: log it, and toast a failure.
+    /// ADR-0140: a hosts-provider answer; redraw machines and the picker.
     fn on_hosts<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,
@@ -3599,10 +3597,12 @@ impl SessionLoop {
         crate::attach::hosts::remember(&hosts);
         self.peers.remote_hosts = hosts;
         self.peers.chrome_dirty = true;
+        self.session_picker_dirty = true;
         let mut repaint = RepaintAccumulator::default();
         self.drain_repaint(out, sidebar, &mut repaint);
     }
 
+    /// A spawned plugin action finished: log it, and toast a failure.
     fn on_plugin_result<W: crate::attach::RenderSink>(
         &mut self,
         out: &mut W,

@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-27
+last-reviewed: 2026-09-30
 ---
 
 # The phux reference TUI
@@ -411,6 +411,9 @@ that prints the `phux.hosts/v1` document. The default provider is
 `phux ls --all --json`. Set `[sidebar] hosts-provider = ["cmd", "arg"]` to
 supply your own, or `hosts = false` to list only the attached server
 ([ADR-0140](../adr/0140-sidebar-machines-come-from-a-hosts-provider.md)).
+The session picker (`C-a s`) lists the same machines, one group each after
+the attached server's sessions and any satellites; its filter matches a
+session by its name or its machine's.
 
 Click targets commit the same actions as keys. The **Agents** and **Sessions**
 headings open their full management views; window and roster rows select their

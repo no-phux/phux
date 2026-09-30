@@ -976,15 +976,11 @@ fn push_window_picker(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
         .push(Box::new(SelectList::new("Windows", items, ctx.theme)));
 }
 
-/// Push the session picker (grouped by host on a federation hub), with a
-/// "+ New session" row, and ask the driver for a fresh host inventory.
+/// Push the session picker (grouped by host when a hub satellite or another
+/// machine is known), with a "+ New session" row, and ask the driver for a
+/// fresh host inventory.
 fn push_session_picker(ctx: &mut DispatchCtx<'_>) {
-    let items = session_picker_rows(
-        ctx.peers.sessions,
-        ctx.peers.focused_session,
-        ctx.peers.hosts,
-        ctx.workspace,
-    );
+    let items = session_picker_rows(&ctx.peers, ctx.workspace);
     *ctx.host_refresh_request = true;
     ctx.overlays.push(Box::new(
         SelectList::new("Sessions", items, ctx.theme).with_live_key(SESSION_PICKER_LIVE_KEY),
@@ -1149,7 +1145,8 @@ fn switch_session(
 /// ADR-0140: `switch-host { host, name }` — re-attach this terminal to
 /// session `name` on another machine. `host` is a `phux.hosts/v1` row name:
 /// a `[[remote]]` registry name, or `local` for this machine's own server.
-/// The sidebar's machine segments commit it.
+/// The sidebar's machine segments and the session picker's machine groups
+/// commit it.
 fn switch_host(resolved: &phux_config::keybind::ResolvedAction, effects: &mut ActionEffects) {
     let (Some(host), Some(name)) = (str_arg(resolved, "host"), name_arg(resolved)) else {
         tracing::warn!(args = ?resolved.args, "switch-host needs `host` and `name` args");
