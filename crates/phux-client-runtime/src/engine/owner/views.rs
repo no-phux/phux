@@ -378,6 +378,13 @@ impl Owner {
         id: &ResourceId,
         scroll: Scroll,
     ) -> Result<(), EngineError> {
+        let scroll = match scroll {
+            Scroll::Prompt(count) => match self.prompt_target(id, count)? {
+                Some(target) => target,
+                None => return Ok(()),
+            },
+            other => other,
+        };
         let viewport = viewport_scroll(scroll)?;
         let replica = if let Some(replica) = self.kernel.published_engine_mut(id) {
             replica
@@ -390,6 +397,35 @@ impl Owner {
         replica
             .scroll_viewport(viewport)
             .map_err(|error| engine_error(error.to_string()))
+    }
+
+    /// Ghostty's `jump_to_prompt`: the row of the `count`th primary prompt
+    /// line past the viewport's top row, as a scroll. A prompt in the active
+    /// area follows the tail, since the viewport cannot scroll below it.
+    fn prompt_target(&self, id: &ResourceId, count: i64) -> Result<Option<Scroll>, EngineError> {
+        use libghostty_vt::screen::RowSemanticPrompt;
+        use libghostty_vt::terminal::{Point, PointCoordinate};
+
+        let terminal = self.terminal(id)?;
+        let bar = terminal
+            .scrollbar()
+            .map_err(|error| engine_error(error.to_string()))?;
+        let found = nth_prompt(bar.offset, bar.total, count, |row| {
+            let y = u32::try_from(row).map_err(|_| engine_error("prompt row exceeds u32"))?;
+            terminal
+                .grid_ref(Point::History(PointCoordinate { x: 0, y }))
+                .and_then(|cell| cell.row())
+                .and_then(libghostty_vt::screen::Row::semantic_prompt)
+                .map(|prompt| prompt == RowSemanticPrompt::Prompt)
+                .map_err(|error| engine_error(error.to_string()))
+        })?;
+        Ok(found.map(|row| {
+            if row.saturating_add(bar.len) >= bar.total {
+                Scroll::Bottom
+            } else {
+                Scroll::Row(row)
+            }
+        }))
     }
 
     pub(super) fn remember_closed_scroll(&mut self, id: &ResourceId) -> Result<(), EngineError> {
@@ -497,6 +533,35 @@ impl Owner {
     }
 }
 
+/// Walk rows away from `from` (exclusive) toward row 0 for a negative
+/// `count`, or toward `total` for a positive one, and return the row of the
+/// `|count|`th prompt, or of the farthest prompt when there are fewer.
+pub(super) fn nth_prompt<E>(
+    from: u64,
+    total: u64,
+    count: i64,
+    mut is_prompt: impl FnMut(u64) -> Result<bool, E>,
+) -> Result<Option<u64>, E> {
+    let wanted = count.unsigned_abs();
+    let rows: Box<dyn Iterator<Item = u64>> = if count < 0 {
+        Box::new((0..from.min(total)).rev())
+    } else {
+        Box::new(from.saturating_add(1)..total)
+    };
+    let mut found = None;
+    let mut seen = 0;
+    for row in rows {
+        if seen == wanted {
+            break;
+        }
+        if is_prompt(row)? {
+            found = Some(row);
+            seen += 1;
+        }
+    }
+    Ok(found)
+}
+
 impl Presentation {
     const fn note_output(&mut self, distance: Option<u64>) {
         if let (Some(before), Some(after)) = (self.tail_distance, distance) {
@@ -505,5 +570,31 @@ impl Presentation {
                 .saturating_add(after.saturating_sub(before));
         }
         self.tail_distance = distance;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nth_prompt;
+
+    #[test]
+    fn nth_prompt_counts_away_from_the_viewport_top() {
+        let prompts = [0_u64, 3, 6];
+        let find = |from, total, count| {
+            nth_prompt(from, total, count, |row| {
+                Ok::<_, ()>(prompts.contains(&row))
+            })
+            .unwrap()
+        };
+        assert_eq!(find(3, 7, -1), Some(0));
+        assert_eq!(find(4, 7, -1), Some(3));
+        assert_eq!(find(4, 7, -2), Some(0));
+        assert_eq!(find(0, 7, 1), Some(3));
+        assert_eq!(find(0, 7, 2), Some(6));
+        assert_eq!(find(0, 7, 9), Some(6));
+        assert_eq!(find(6, 7, 1), None);
+        assert_eq!(find(0, 7, -1), None);
+        assert_eq!(find(3, 7, 0), None);
+        assert_eq!(find(99, 7, -1), Some(6));
     }
 }
