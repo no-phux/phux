@@ -935,6 +935,16 @@ fn refusals_are_terminal_and_a_requested_detach_closes() {
         Err(ControlError::Refused(_))
     ));
 
+    // A refused HELLO (workload-auth §7) stops retrying like a violation.
+    let (mut plane, _) = negotiated();
+    assert!(matches!(
+        plane.feed(FrameKind::Detached {
+            reason: Some(DetachReason::AuthenticationFailed),
+            message: "policy denied".to_owned(),
+        }),
+        Err(ControlError::Refused(_))
+    ));
+
     let (mut plane, _) = negotiated();
     assert!(matches!(
         plane.feed(FrameKind::Error {

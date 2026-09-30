@@ -151,6 +151,18 @@ async fn a_bearer_revoked_since_its_upgrade_is_refused_at_hello() {
             )
         })
         .await;
+        // workload-auth §7: HELLO's authentication outcome, not a revocation
+        // of authority this connection never held.
+        late.wait_for("DETACHED { AUTHENTICATION_FAILED }", |frame| {
+            matches!(
+                frame,
+                FrameKind::Detached {
+                    reason: Some(DetachReason::AuthenticationFailed),
+                    ..
+                }
+            )
+        })
+        .await;
         assert!(
             !late
                 .frames()
