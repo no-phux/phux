@@ -132,6 +132,15 @@ describe("ghostty config", () => {
     expect(zigString(String.raw`\q \u{110000}`)).toBe(String.raw`\q \u{110000}`);
   });
 
+  test("text byte escapes are UTF-8, as Ghostty writes them to the pty", () => {
+    // Zig's \xNN is one byte; Ghostty sends the bytes, so a multi-byte run
+    // is one character, not one Latin-1 character per byte.
+    expect(zigString(String.raw`\xe2\x82\xac`)).toBe("€");
+    expect(zigString(String.raw`a\xc3\xa9\x1b\r`)).toBe("aé\u001b\r");
+    expect(zigString(String.raw`\\x41`)).toBe(String.raw`\x41`);
+    expect(zigString(String.raw`\xff`)).toBe("�");
+  });
+
   test("a later bind or clear replaces earlier ones, globals included", () => {
     const later = parseGhostty(
       "keybind = global:ctrl+grave_accent=toggle_quick_terminal\nkeybind = ctrl+grave_accent=reset",

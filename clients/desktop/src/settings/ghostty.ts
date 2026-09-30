@@ -332,7 +332,11 @@ export function ghosttyAction(action: string): string | undefined {
   return ACTIONS[`${name}:${direction}`] ?? ACTIONS[name] ?? parameterized(name, argument);
 }
 
-/** Zig string-literal escapes, as Ghostty's `text:` action takes them. Unknown ones stay literal. */
+/**
+ * Zig string-literal escapes, as Ghostty's `text:` action takes them. Unknown
+ * ones stay literal. `\xNN` is one byte and Ghostty writes the bytes, so a run
+ * of them decodes as UTF-8 (`\xe2\x82\xac` is one "€").
+ */
 export function zigString(value: string): string {
   const simple: Record<string, string> = {
     n: "\n",
@@ -343,9 +347,9 @@ export function zigString(value: string): string {
     '"': '"',
   };
   return value.replace(
-    /\\(x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]{1,6}\}|[nrt\\'"])/g,
-    (whole: string, code: string) => {
-      if (code.startsWith("x")) return String.fromCharCode(Number.parseInt(code.slice(1), 16));
+    /((?:\\x[0-9a-fA-F]{2})+)|\\(u\{[0-9a-fA-F]{1,6}\}|[nrt\\'"])/g,
+    (whole: string, bytes: string | undefined, code: string) => {
+      if (bytes) return utf8Bytes(bytes);
       if (code.startsWith("u{")) {
         const point = Number.parseInt(code.slice(2, -1), 16);
         return point <= 0x10ffff ? String.fromCodePoint(point) : whole;
@@ -353,6 +357,15 @@ export function zigString(value: string): string {
       return simple[code] ?? whole;
     },
   );
+}
+
+/** A run of `\xNN` escapes as the UTF-8 text its bytes spell; invalid bytes become U+FFFD. */
+function utf8Bytes(run: string): string {
+  const bytes = run
+    .split("\\x")
+    .filter(Boolean)
+    .map((pair) => Number.parseInt(pair, 16));
+  return new TextDecoder().decode(Uint8Array.from(bytes));
 }
 
 /** Chords the terminal itself already serves with the Ghostty action's meaning. */
