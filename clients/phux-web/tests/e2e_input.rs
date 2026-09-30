@@ -256,6 +256,12 @@ async fn scrollback_pages_by_wheel_and_shift_page_up_and_a_drag_copies_from_it()
     let row = rows.iter().position(|r| r.contains(marker)).unwrap();
     let col = rows[row].find(marker).unwrap();
     let (row, first, last) = (row as u16, col as u16, (col + marker.len() - 1) as u16);
+    // A cancelled pointer (a touch the browser took for panning) ends the
+    // drag: later moves select nothing.
+    pointer(&canvas, "pointerdown", first, row);
+    pointer(&canvas, "pointercancel", first, row);
+    pointer(&canvas, "pointermove", last, row);
+    assert_eq!(copy_event(&surface), (false, String::new()));
     pointer(&canvas, "pointerdown", first, row);
     pointer(&canvas, "pointermove", first + 3, row);
     pointer(&canvas, "pointermove", last, row);
