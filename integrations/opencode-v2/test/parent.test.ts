@@ -1,103 +1,61 @@
 import { describe, expect, test } from "bun:test";
 
-import { isWriteTool, parentPane, parentWriteError, samePane } from "../src/parent.js";
-import { createGuardedTools } from "../src/tools.js";
-import type { PhuxToolRuntime } from "../src/tools-core.js";
+import { parentPane } from "../src/parent.js";
+import { createPhuxTools, type PhuxToolRuntime } from "../../runtime/src/tools.js";
 
 describe("parent pane", () => {
-  test("normalizes a bare terminal id", () => {
+  test("normalizes the hosting terminal identity", () => {
     expect(parentPane("7")).toBe("@7");
     expect(parentPane("@7")).toBe("@7");
     expect(parentPane(undefined)).toBeNull();
     expect(parentPane("  ")).toBeNull();
   });
 
-  test("matches only the same local pane", () => {
-    expect(samePane("7", "@7")).toBe(true);
-    expect(samePane("@7", "7")).toBe(true);
-    expect(samePane("@8", "@7")).toBe(false);
-    expect(samePane("mac/@7", "@7")).toBe(false);
+  test("refuses every parent input path before calling the CLI", async () => {
+    const calls: string[] = [];
+    const tools = createPhuxTools(fakeRuntime(calls, "@7"));
+    const writes = [
+      ["phux_run", { command: "pwd", target: "@7" }],
+      ["phux_send_keys", { keys: ["Enter"] }],
+      ["phux_paste", { text: "hello", target: "@7" }],
+      ["phux_agent_prompt", { text: "hello", target: "@7" }],
+    ] as const;
+    for (const [name, input] of writes) {
+      await expect(tools[name]!.execute(input, context)).rejects.toThrow();
+    }
+    expect(calls).toEqual([]);
   });
 
-  test("write tools are the ones that type", () => {
-    expect(isWriteTool("phux_run")).toBe(true);
-    expect(isWriteTool("phux_send_keys")).toBe(true);
-    expect(isWriteTool("phux_snapshot")).toBe(false);
-    expect(isWriteTool("phux_wait")).toBe(false);
-    expect(isWriteTool("phux_create")).toBe(false);
-  });
-});
-
-describe("guarded tools", () => {
-  test("refuses a write into the parent before calling phux", async () => {
-    let called = false;
-    const runtime = fakeRuntime(() => {
-      called = true;
-    });
-    const tools = createGuardedTools(runtime, "@7");
-    await expect(tools.phux_run!.execute({ command: "ls", target: "7" }, context())).rejects.toThrow(/Refusing phux_run on @7/);
-    expect(called).toBe(false);
-    expect(parentWriteError("phux_run", "@7").message).toContain("sibling");
-  });
-
-  test("allows a write to a sibling and a read of the parent", async () => {
-    const seen: string[] = [];
-    const runtime = fakeRuntime((name) => {
-      seen.push(name);
-    });
-    const tools = createGuardedTools(runtime, "@7");
-    await tools.phux_run!.execute({ command: "ls", target: "@8" }, context());
-    await tools.phux_snapshot!.execute({ target: "@7" }, context());
-    expect(seen).toEqual(["run", "snapshot"]);
-  });
-
-  test("refuses a write that falls through to the parent", async () => {
-    let called = false;
-    const runtime = fakeRuntime(() => {
-      called = true;
-    });
-    runtime.environmentTarget = "@7";
-    const tools = createGuardedTools(runtime, "@7");
-    await expect(tools.phux_send_keys!.execute({ keys: ["Enter"] }, context())).rejects.toThrow(/Refusing phux_send_keys/);
-    expect(called).toBe(false);
-  });
-
-  test("does not guard when OpenCode is not inside a pane", async () => {
-    const seen: string[] = [];
-    const tools = createGuardedTools(fakeRuntime((name) => seen.push(name)), null);
-    await tools.phux_send_keys!.execute({ keys: ["Enter"], target: "@7" }, context());
-    expect(seen).toEqual(["sendKeys"]);
-    expect(tools.phux_run!.description).not.toContain("Refuses the pane");
+  test("allows sibling input and parent observation without confusing remote IDs", async () => {
+    const calls: string[] = [];
+    const tools = createPhuxTools(fakeRuntime(calls));
+    await tools.phux_run!.execute({ command: "pwd", target: "@8" }, context);
+    await tools.phux_run!.execute({ command: "pwd", target: "mac/@7" }, context);
+    await tools.phux_snapshot!.execute({ target: "@7" }, context);
+    expect(calls).toEqual(["run:@8", "run:mac/@7", "snapshot:@7"]);
   });
 });
 
-function context() {
-  return { sessionID: "ses", agent: "build", messageID: "msg", id: "call" };
-}
+const context = { sessionID: "ses", agent: "build", messageID: "msg", id: "call" };
 
-function fakeRuntime(onCall: (name: string) => void): PhuxToolRuntime {
+function fakeRuntime(calls: string[], environmentTarget?: string): PhuxToolRuntime {
   const cli = {
-    ls: async () => ({ sessions: [] }),
-    create: async () => {
-      throw new Error("unused");
-    },
-    snapshot: async () => {
-      onCall("snapshot");
+    snapshot: async (options: { target: string }) => {
+      calls.push(`snapshot:${options.target}`);
       return { pane: 7, cols: 80, rows: 24, lines: [], scrollback: [], cursor: { x: 0, y: 0, visible: true } };
     },
-    sendKeys: async () => {
-      onCall("sendKeys");
+    run: async (target: string) => {
+      calls.push(`run:${target}`);
+      return { exit_code: 0, output: "", duration_ms: 1, truncated: false, command: "pwd" };
     },
-    run: async () => {
-      onCall("run");
-      return { exit_code: 0, output: "", duration_ms: 1, truncated: false, command: "ls" };
-    },
-    wait: async () => {
-      throw new Error("unused");
-    },
+    sendKeys: async () => { calls.push("sendKeys"); },
+    paste: async () => { calls.push("paste"); },
+    agentPrompt: async () => { calls.push("agentPrompt"); },
   };
   return {
     cli: cli as unknown as PhuxToolRuntime["cli"],
+    parentTarget: "@7",
+    ...(environmentTarget === undefined ? {} : { environmentTarget }),
     getSelectedTarget: () => undefined,
     selectTarget: () => undefined,
   };

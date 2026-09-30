@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- Add native paste, acknowledged agent prompt, agent/resource wait, server status,
+  and runtime-info tools while preserving branch-local aliases and lifecycle metadata.
+- Expose snapshot tail/unwrap, wait regex/output-only/tail, and retained spawn output.
+
+### Safety
+
+- Default run and wait operations to 30 seconds, with coherent finite local
+  subprocess deadlines and cancellation propagation.
+- Refuse input and destructive writes to Pi's hosting pane after alias/group
+  resolution, and reject broad raw write selectors rather than falling back to focus.
+- Preserve command exits, wait timeouts, delivery receipts/uncertainty, and
+  output-only diagnostics without retrying mutations.
+
 ## [0.3.0](https://github.com/no-phux/phux/compare/pi-extension-v0.2.3...pi-extension-v0.3.0) (2026-09-13)
 
 

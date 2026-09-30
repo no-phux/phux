@@ -79,7 +79,7 @@ the shell, Cargo, and npm commands below also work directly.
 | Handwritten docs | Git, Bash, standard Unix utilities | `bash scripts/check-docs.sh` |
 | Pure Rust domain / wire codec | Rust, native compiler/linker | `just core-check` or `just crate-check phux-protocol` |
 | Server, TUI, CLI, engine-dependent protocol helpers, FFI | Rust, Zig, platform packages | `just doctor native`, then `just crate-check phux-server` |
-| Agent integrations | Node/npm | `just integration-check pi` (or `opencode`, `claude`) |
+| Agent integrations | Node/npm and Bun | `just integration-check pi` (or `runtime`, `opencode-v2`, `omp`, `claude`) |
 | Browser client | Rust WASM target, Node, WASM tools (engine binary is committed) | `just doctor web`; see [Browser client](#browser-client) |
 | Cockpit app | Apple-silicon Mac, SDK, Zig, Node, Rust FFI, Python | `just doctor cockpit`, then `just cockpit-test` |
 | GPUIX desktop development | Apple-silicon Mac, Xcode with Metal, native Rust/Zig, Bun, Node, Python | `just doctor desktop`, then `just desktop-app` |
@@ -173,17 +173,19 @@ coverage, not a workspace suite.
 
 ## Agent integrations
 
-Node 24 LTS with npm (matching CI). Mise supplies Node; otherwise
-`brew install node@24` or the [official installer](https://nodejs.org).
+Node 24 LTS with npm, plus Bun for OMP and OpenCode (matching CI). Mise supplies
+both; otherwise use the [Node installer](https://nodejs.org) and [Bun installer](https://bun.sh).
 
 ```sh
 just doctor integrations
-just integration-check pi    # or runtime, opencode, claude
+just integration-check pi    # or runtime, opencode-v2, omp, claude
 ```
 
-Gates include dependency auditing and need network. A prebuilt phux binary is
-enough for live dogfooding unless you also changed Rust. Shared helper or
-version-contract changes should run `just agent-integrations-check`.
+The Pi and Claude gates include dependency auditing and need network.
+OMP and OpenCode gates verify their packed artifacts and native registration.
+A prebuilt phux binary is enough for live dogfooding unless you also changed
+Rust. Shared helper or version-contract changes should run
+`just agent-integrations-check`.
 
 ## Browser client
 

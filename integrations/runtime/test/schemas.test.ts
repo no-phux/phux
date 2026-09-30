@@ -46,7 +46,20 @@ test("screen parser validates dimensions and normalizes additive fields", () => 
     lines: ["$"],
   });
   assert.deepEqual(screen.scrollback, []);
-  assert.throws(() => parseScreenState({ ...screen, rows: 2 }), SchemaValidationError);
+  assert.throws(() => parseScreenState({ ...screen, rows: 0 }), SchemaValidationError);
+});
+
+test("unwrapped snapshots retain physical geometry and upstream truncation evidence", () => {
+  const screen = parseScreenState({
+    schema_version: 3, pane: 7, cols: 4, rows: 2,
+    cursor: { x: 0, y: 1, visible: true },
+    lines: ["abcdefgh"], scrollback: [],
+    truncated: true, truncated_reason: "row_window",
+  });
+  assert.deepEqual(screen.lines, ["abcdefgh"]);
+  assert.equal(screen.rows, 2);
+  assert.equal(screen.truncated, true);
+  assert.equal(screen.truncated_reason, "row_window");
 });
 
 test("agent session open and emit parsers accept the documented documents", () => {

@@ -1,6 +1,6 @@
 import { PhuxError } from "./errors.js";
 import { DEFAULT_MAX_OUTPUT_BYTES, nodeProcessRunner, } from "./runner.js";
-import { AGENT_EVENT_TYPES, isAgentEventType, parseAgentEmitResult, parseAgentRecord, parseAgentSessionOpenResult, parseAgentStateList, parseAskedEvent, parseCreateResult, parseInsertPaneResult, parseLaunchResult, parseMovePaneResult, parseRenderedFrame, parseRunResult, parseScreenState, parseSessionList, parseSpawnResult, parseSwapPaneResult, parseWatchEvent, SchemaValidationError, } from "./schemas.js";
+import { AGENT_EVENT_TYPES, isAgentEventType, parseAgentEmitResult, parseAgentRecord, parseAgentSessionOpenResult, parseAgentStateList, parseAskedEvent, parseCreateResult, parseInsertPaneResult, parseLaunchResult, parseMovePaneResult, parseRenderedFrame, parseRunResult, parseScreenState, parseSessionList, parseSpawnResult, parseSwapPaneResult, parseWatchEvent, parseAgentPromptResult, parseAgentWaitResult, parseResourceWaitResult, parseStatusResult, parseVersionedDocument, SchemaValidationError, } from "./schemas.js";
 export { AGENT_EVENT_TYPES, isAgentEventType } from "./schemas.js";
 export const MINIMUM_PHUX_VERSION = "0.1.0";
 const VERSION_PATTERN = /^phux\s+v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/;
@@ -100,6 +100,10 @@ export class PhuxCli {
             args.push("--ratio", String(options.ratio));
         if (options.cwd !== undefined)
             args.push("--cwd", options.cwd);
+        if (options.retainSeconds !== undefined) {
+            requirePositiveInteger(options.retainSeconds, "retainSeconds");
+            args.push(`--retain=${String(options.retainSeconds)}`);
+        }
         this.pushSocket(args);
         if (options.command !== undefined) {
             if (options.command.length === 0)
@@ -248,6 +252,12 @@ export class PhuxCli {
         }
         if (options.cells === true)
             args.push("--cells");
+        if (options.tail !== undefined) {
+            requirePositiveInteger(options.tail, "tail");
+            args.push("--tail", String(options.tail));
+        }
+        if (options.unwrap === true)
+            args.push("--unwrap");
         this.pushSocket(args);
         if (options.target !== undefined)
             args.push(options.target);
@@ -255,37 +265,46 @@ export class PhuxCli {
     }
     async wait(options = {}) {
         const args = ["wait", "--json"];
+        if ([options.until, options.regex, options.idleMs].filter((value) => value !== undefined).length > 1) {
+            throw new TypeError("wait accepts only one of until, regex, or idleMs");
+        }
+        if (options.regex !== undefined)
+            args.push("--regex", options.regex);
+        if (options.outputOnly === true)
+            args.push("--output-only");
+        if (options.tail !== undefined) {
+            requirePositiveInteger(options.tail, "tail");
+            args.push("--tail", String(options.tail));
+        }
         if (options.until !== undefined)
             args.push("--until", options.until);
         if (options.idleMs !== undefined) {
             requireNonNegativeInteger(options.idleMs, "idleMs");
             args.push("--idle", String(options.idleMs));
         }
-        if (options.phuxTimeoutSeconds !== undefined) {
-            requireNonNegativeInteger(options.phuxTimeoutSeconds, "phuxTimeoutSeconds");
-            args.push("--timeout", String(options.phuxTimeoutSeconds));
-        }
+        args.push("--timeout", String(operationSeconds(options)));
         this.pushSocket(args);
         if (options.target !== undefined)
             args.push(options.target);
-        const result = await this.completed("wait", args, options, true);
+        const result = await this.completed("wait", args, boundedExecution(options), true);
         if (result.exitCode !== 0 && result.exitCode !== 124) {
             throw commandFailed("wait", this.executable, args, result);
         }
         const screen = parseJson("wait", this.executable, result.stdout, args, parseScreenState);
-        return { outcome: result.exitCode === 124 ? "timed_out" : "satisfied", screen };
+        return {
+            outcome: result.exitCode === 124 ? "timed_out" : "satisfied",
+            screen,
+            ...(result.stderr.trim() === "" ? {} : { warning: result.stderr.trim().slice(0, 2048) }),
+        };
     }
     async run(target, command, options = {}) {
         if (command.length === 0)
             throw new TypeError("command must contain at least one argv item");
         const args = ["run", "--json"];
-        if (options.phuxTimeoutSeconds !== undefined) {
-            requireNonNegativeInteger(options.phuxTimeoutSeconds, "phuxTimeoutSeconds");
-            args.push("--timeout", String(options.phuxTimeoutSeconds));
-        }
+        args.push("--timeout", String(operationSeconds(options)));
         this.pushSocket(args);
         args.push(target, ...command);
-        const result = await this.completed("run", args, options, true);
+        const result = await this.completed("run", args, boundedExecution(options), true);
         if (result.exitCode !== 0 && result.stdout.trim().length === 0) {
             throw commandFailed("run", this.executable, args, result);
         }
@@ -304,13 +323,83 @@ export class PhuxCli {
         args.push(target, ...keys);
         await this.completed("send-keys", args, options, false);
     }
+    /** Bracketed paste is one input operation; it does not submit Enter. */
+    async paste(target, text, options = {}) {
+        const args = this.withSocket(["paste"]);
+        args.push("--", target, text);
+        await this.completed("paste", args, options, false);
+    }
+    async runtimeInfo(options = {}) {
+        return this.jsonCommand("runtime-info", ["runtime-info", "--json"], options, parseVersionedDocument);
+    }
+    async status(options = {}) {
+        return this.outcomeCommand("status", this.withSocket(["status", "--json"]), options, parseStatusResult, (document) => document.running === true ? 0 : 1);
+    }
+    async agentPrompt(target, text, options = {}) {
+        if (text.trim() === "" || /[\r\n]/.test(text))
+            throw new TypeError("agent prompt requires non-empty single-line text");
+        if (options.wait === false && (options.until !== undefined || options.phuxTimeoutSeconds !== undefined)) {
+            throw new TypeError("until and phuxTimeoutSeconds require wait");
+        }
+        const args = ["agent", "prompt", "--json"];
+        if (options.expectAgent !== undefined)
+            args.push("--expect-agent", options.expectAgent);
+        if (options.expectKind !== undefined)
+            args.push("--expect-kind", options.expectKind);
+        if (options.wait !== false) {
+            args.push("--wait", "--timeout", String(operationSeconds(options)));
+            pushUntil(args, options.until);
+        }
+        this.pushSocket(args);
+        args.push("--", target, text);
+        try {
+            return await this.outcomeCommand("agent prompt", args, boundedExecution(options), parseAgentPromptResult, (document) => options.wait !== false && document.transition_observed === false ? 124 : 0);
+        }
+        catch (error) {
+            if (error instanceof PhuxError && ["timeout", "aborted", "output_limit", "malformed_json", "invalid_response"].includes(error.code)) {
+                throw new PhuxError(error.code, `${error.message}. Prompt delivery may have occurred. Do not resend; inspect the pane.`, {
+                    ...(error.argv === undefined ? {} : { argv: error.argv }),
+                    ...(error.exitCode === undefined ? {} : { exitCode: error.exitCode }),
+                    ...(error.stderr === undefined ? {} : { stderr: error.stderr }),
+                    cause: error,
+                });
+            }
+            throw error;
+        }
+    }
+    async agentWait(target, options = {}) {
+        const args = ["agent", "wait", "--json", "--timeout", String(operationSeconds(options))];
+        pushUntil(args, options.until);
+        this.pushSocket(args);
+        args.push("--", target);
+        return this.outcomeCommand("agent wait", args, boundedExecution(options), parseAgentWaitResult, (document) => document.satisfied === true ? 0 : 124);
+    }
+    async resourceWait(target, options = {}) {
+        const args = ["resource", "wait", "--json", "--timeout", String(operationSeconds(options))];
+        if (options.after !== undefined)
+            args.push("--after", options.after);
+        this.pushSocket(args);
+        args.push("--", target);
+        return this.outcomeCommand("resource wait", args, boundedExecution(options), parseResourceWaitResult, (document) => document.outcome === "exited" ? 0 : document.outcome === "gone" ? 1 : 124);
+    }
+    async outcomeCommand(verb, args, options, parser, expectedExit) {
+        const result = await this.completed(verb, args, options, true);
+        if (result.stdout.trim() === "")
+            throw commandFailed(verb, this.executable, args, result);
+        const document = parseJson(verb, this.executable, result.stdout, args, parser);
+        if (result.exitCode !== expectedExit(document)) {
+            throw invalidResponse(verb, this.executable, args, "result outcome does not match process exit status");
+        }
+        const warning = result.stderr.trim().slice(0, 2048);
+        return warning === "" ? document : { ...document, warning };
+    }
     async kill(target, options = {}) {
-        const args = ["kill", target];
+        const args = ["kill", "--yes", target];
         this.pushSocket(args);
         await this.completed("kill", args, options, false);
     }
     async signal(target, signal, options = {}) {
-        const args = ["signal", target, signal];
+        const args = ["signal", ...(signal === "terminate" || signal === "kill" ? ["--yes"] : []), target, signal];
         this.pushSocket(args);
         await this.completed("signal", args, options, false);
     }
@@ -401,7 +490,7 @@ export class PhuxCli {
             ...(this.cwd === undefined ? {} : { cwd: this.cwd }),
             ...(this.env === undefined ? {} : { env: this.env }),
             ...(options.signal === undefined ? {} : { signal: options.signal }),
-            ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+            timeoutMs: options.timeoutMs ?? 10_000,
             maxStdoutBytes: this.maxStdoutBytes,
             maxStderrBytes: this.maxStderrBytes,
         };
@@ -429,6 +518,23 @@ export class PhuxCli {
     pushSocket(args) {
         if (this.socket !== undefined)
             args.push("--socket", this.socket);
+    }
+}
+function operationSeconds(options) {
+    const seconds = options.phuxTimeoutSeconds ?? 30;
+    requirePositiveInteger(seconds, "phuxTimeoutSeconds");
+    if (seconds > 86_400)
+        throw new RangeError("phuxTimeoutSeconds must not exceed 86400");
+    return seconds;
+}
+function boundedExecution(options) {
+    return { ...options, timeoutMs: options.timeoutMs ?? operationSeconds(options) * 1000 + 5000 };
+}
+function pushUntil(args, states) {
+    for (const state of states ?? []) {
+        if (!["idle", "working", "blocked", "done"].includes(state))
+            throw new TypeError("invalid agent lifecycle state");
+        args.push("--until", state);
     }
 }
 function parseJson(verb, executable, stdout, args, parser) {
@@ -509,10 +615,21 @@ function invalidResponse(verb, executable, args, detail, cause) {
     return new PhuxError("invalid_response", `phux ${verb} JSON does not match its documented CLI shape: ${detail}`, { argv: [executable, ...args], cause });
 }
 function commandFailed(verb, executable, args, result) {
+    let cliError;
+    try {
+        const document = JSON.parse(result.stderr.trim());
+        if (document !== null && typeof document === "object" && !Array.isArray(document)) {
+            cliError = document;
+        }
+    }
+    catch {
+        // Non-JSON diagnostics from older binaries remain available as stderr.
+    }
     return new PhuxError("command_failed", `phux ${verb} failed with exit code ${String(result.exitCode)}${diagnosticSuffix(result.stderr)}`, {
         argv: [executable, ...args],
         exitCode: result.exitCode,
         stderr: result.stderr,
+        ...(cliError === undefined ? {} : { cliError }),
     });
 }
 function diagnosticSuffix(stderr) {

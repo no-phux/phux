@@ -46,7 +46,7 @@ export function registerPhuxExtension(
       ...(selected === undefined ? {} : { selected }),
     };
   };
-  registerPhuxTools(pi, cli, store);
+  registerPhuxTools(pi, cli, store, environment.PHUX_TERMINAL_ID);
 
   const updateStatus = (ctx: ExtensionContext): void => {
     if (!ctx.hasUI) return;

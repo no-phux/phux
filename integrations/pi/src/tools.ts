@@ -17,9 +17,13 @@ const TARGET_NAME = Type.String({ minLength: 1, maxLength: 64, pattern: "^[A-Za-
 const PLACEMENT_TARGET = Type.String({ minLength: 1, maxLength: 512, pattern: ".*\\S.*", description: "Exact local CLI pane selector or alias:name" });
 const SPLIT = Type.Optional(Type.Union([Type.Literal("horizontal"), Type.Literal("vertical")]));
 const RATIO = Type.Optional(Type.Number({ exclusiveMinimum: 0, exclusiveMaximum: 1 }));
-const LOCAL_TIMEOUT = Type.Optional(Type.Integer({ minimum: 1, maximum: 3_600_000, description: "Local subprocess timeout in milliseconds" }));
-const RUN_TIMEOUT = Type.Optional(Type.Integer({ minimum: 0, maximum: 86_400, description: "phux run timeout in seconds; 0 waits indefinitely" }));
-const WAIT_TIMEOUT = Type.Optional(Type.Integer({ minimum: 1, maximum: 86_400, description: "phux wait timeout in seconds; omit to wait indefinitely" }));
+const LOCAL_TIMEOUT = Type.Optional(Type.Integer({ minimum: 1, maximum: 86_405_000, description: "Local subprocess deadline in milliseconds; defaults to 10s for short calls or operation timeout + 5s" }));
+const RUN_TIMEOUT = Type.Optional(Type.Integer({ minimum: 1, maximum: 86_400, description: "Operation timeout in seconds; defaults to 30; unbounded waits are rejected" }));
+const WAIT_TIMEOUT = RUN_TIMEOUT;
+const TAIL = Type.Optional(Type.Integer({ minimum: 1, maximum: 100_000 }));
+const AGENT_UNTIL = Type.Optional(Type.Array(Type.Union([
+  Type.Literal("idle"), Type.Literal("working"), Type.Literal("blocked"), Type.Literal("done"),
+]), { minItems: 1, maxItems: 4, uniqueItems: true }));
 const NONEMPTY_ARGV = Type.Array(Type.String(), { minItems: 1, maxItems: 256 });
 const STRICT = { additionalProperties: false } as const;
 
@@ -34,6 +38,8 @@ export const PhuxSnapshotParams = Type.Object({
   target: TARGET,
   scrollback: Type.Optional(Type.Integer({ minimum: 0, maximum: 100_000 })),
   cells: Type.Optional(Type.Boolean()),
+  tail: TAIL,
+  unwrap: Type.Optional(Type.Boolean()),
   local_timeout_ms: LOCAL_TIMEOUT,
 }, STRICT);
 export const PhuxSendKeysParams = Type.Object({
@@ -41,6 +47,35 @@ export const PhuxSendKeysParams = Type.Object({
   keys: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 256 }),
   local_timeout_ms: LOCAL_TIMEOUT,
 }, STRICT);
+export const PhuxPasteParams = Type.Object({
+  target: TARGET,
+  text: Type.String({ minLength: 1, maxLength: 65_536, description: "Literal text, including newlines; pasted as one input event without submitting Enter" }),
+  local_timeout_ms: LOCAL_TIMEOUT,
+}, STRICT);
+export const PhuxAgentPromptParams = Type.Object({
+  target: TARGET,
+  text: Type.String({ minLength: 1, maxLength: 4096, pattern: "^[^\\r\\n]+$", description: "Single-line prompt; CLI enforces a 4096-byte ceiling" }),
+  wait: Type.Optional(Type.Boolean({ description: "Wait for the submitted agent turn; defaults to true" })),
+  until: AGENT_UNTIL,
+  expect_agent: Type.Optional(Type.String({ minLength: 1, maxLength: 255 })),
+  expect_kind: Type.Optional(Type.String({ minLength: 1, maxLength: 255 })),
+  timeout_seconds: WAIT_TIMEOUT,
+  local_timeout_ms: LOCAL_TIMEOUT,
+}, STRICT);
+export const PhuxAgentWaitParams = Type.Object({
+  target: TARGET,
+  until: AGENT_UNTIL,
+  timeout_seconds: WAIT_TIMEOUT,
+  local_timeout_ms: LOCAL_TIMEOUT,
+}, STRICT);
+export const PhuxResourceWaitParams = Type.Object({
+  target: Type.String({ minLength: 1, maxLength: 512, pattern: ".*\\S.*", description: "Explicit resource identity accepted by phux resource wait (not a pane alias)" }),
+  after: Type.Optional(Type.String({ minLength: 1, maxLength: 512 })),
+  timeout_seconds: WAIT_TIMEOUT,
+  local_timeout_ms: LOCAL_TIMEOUT,
+}, STRICT);
+export const PhuxStatusParams = Type.Object({ local_timeout_ms: LOCAL_TIMEOUT }, STRICT);
+export const PhuxRuntimeInfoParams = Type.Object({ local_timeout_ms: LOCAL_TIMEOUT }, STRICT);
 export const PhuxRunParams = Type.Object({
   target: TARGET,
   command: Type.String({ minLength: 1, pattern: ".*\\S.*", description: "One shell command line, passed to phux as a single argument" }),
@@ -50,15 +85,21 @@ export const PhuxRunParams = Type.Object({
 export const PhuxWaitParams = Type.Object({
   target: TARGET,
   until: Type.Optional(Type.String({ minLength: 1 })),
+  regex: Type.Optional(Type.String({ minLength: 1 })),
+  output_only: Type.Optional(Type.Boolean()),
+  tail: TAIL,
   idle_ms: Type.Optional(Type.Integer({ minimum: 0, maximum: 86_400_000 })),
   timeout_seconds: WAIT_TIMEOUT,
   local_timeout_ms: LOCAL_TIMEOUT,
-}, { ...STRICT, not: { required: ["until", "idle_ms"] } });
+}, { ...STRICT, not: { anyOf: [
+  { required: ["until", "idle_ms"] }, { required: ["until", "regex"] }, { required: ["regex", "idle_ms"] },
+] } });
 export const PhuxPanesParams = Type.Object({}, STRICT);
 const SPAWN_COMMON = {
   cwd: Type.Optional(Type.String({ minLength: 1, pattern: ".*\\S.*" })),
   command: Type.Optional(NONEMPTY_ARGV),
   alias: Type.Optional(TARGET_NAME),
+  retain_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 86_400, description: "Retain the exited pane for inspection for this many seconds" })),
   local_timeout_ms: LOCAL_TIMEOUT,
 };
 export const PhuxSpawnParams = Type.Union([
@@ -160,7 +201,7 @@ const MODEL_TRUNCATION_NOTICE = `[Pi adapter truncated terminal output to the la
 const PHUX_TRUNCATION_NOTICE = "[phux reported that terminal output was already truncated]";
 
 export interface PhuxToolDetails {
-  readonly operation: "list" | "panes" | "create" | "spawn" | "launch" | "insert_pane" | "move_pane" | "swap_pane" | "snapshot" | "rendered_snapshot" | "send_keys" | "run" | "wait" | "kill" | "signal" | "tag" | "ask" | "watch" | "targets";
+  readonly operation: "list" | "panes" | "create" | "spawn" | "launch" | "insert_pane" | "move_pane" | "swap_pane" | "snapshot" | "rendered_snapshot" | "send_keys" | "paste" | "run" | "wait" | "agent_prompt" | "agent_wait" | "resource_wait" | "status" | "runtime_info" | "kill" | "signal" | "tag" | "ask" | "watch" | "targets";
   readonly summary: string;
   readonly target?: string;
   readonly selection?: PhuxTargetSelection;
@@ -168,6 +209,8 @@ export interface PhuxToolDetails {
   readonly exitCode?: number;
   readonly durationMs?: number;
   readonly outcome?: string;
+  readonly result?: Readonly<Record<string, unknown>>;
+  readonly warning?: string;
   readonly rows?: number;
   readonly cols?: number;
   readonly modelOutputTruncated?: boolean;
@@ -175,7 +218,122 @@ export interface PhuxToolDetails {
 }
 
 /** Register bounded non-shell phux tools against the extension's shared target store. */
-export function registerPhuxTools(pi: ExtensionAPI, cli: PhuxCli, store: PhuxTargetStore): void {
+export function registerPhuxTools(pi: ExtensionAPI, cli: PhuxCli, store: PhuxTargetStore, parentTerminalId?: string): void {
+  const guardWrite = (target: string): void => {
+    if (!/^(?:[^/\s]+\/)?@(?:0|[1-9]\d*)$/.test(target)) {
+      throw new Error("Writes require a canonical @N or host/@N pane target (or a validated alias/group); raw selectors cannot safely exclude Pi's hosting pane.");
+    }
+    if (parentTerminalId === undefined) return;
+    const parent = /^\d+$/.test(parentTerminalId) ? `@${BigInt(parentTerminalId)}` : parentTerminalId;
+    if (!/^(?:[^/\s]+\/)?@(?:0|[1-9]\d*)$/.test(parent)) {
+      throw new Error("Cannot safely identify Pi's hosting pane; refusing terminal writes.");
+    }
+    if (target === parent) throw new Error(`Refusing to write to Pi's hosting pane ${parent}; choose a worker pane.`);
+  };
+  pi.registerTool({
+    name: "phux_paste",
+    label: "phux paste",
+    description: "Paste literal text, including indentation and newlines, as one paste event into a worker pane. Does not press Enter or execute a command. Use phux_send_keys for a deliberate Enter; use phux_agent_prompt for safe agent-turn delivery. Never automatically retry uncertain delivery.",
+    promptSnippet: "Paste multiline text without key-by-key corruption",
+    parameters: PhuxPasteParams,
+    async execute(_id, params, signal) {
+      const target = await resolveActionTarget(params.target, store, signal);
+      guardWrite(target);
+      await cli.paste(target, params.text, execution(params, signal));
+      return toolResult(`Pasted text to ${target}; no Enter was sent.`, { operation: "paste", summary: `pasted to ${target}`, target });
+    },
+    renderCall: (args, theme) => callText(theme, `paste to ${args.target ?? "selected target"}`),
+    renderResult: renderSummary,
+  });
+
+  pi.registerTool({
+    name: "phux_agent_prompt",
+    label: "phux agent prompt",
+    description: "Submit one single-line agent prompt with acknowledged delivery and optional identity checks. Waits by default for a post-delivery transition to idle, blocked, or done, bounded to 30s. wait:false only submits and forbids until/timeout_seconds. A timeout after acknowledgment was still delivered; on delivery_unknown DO NOT RESEND: inspect the pane.",
+    promptSnippet: "Send a prompt to a worker agent and observe its turn",
+    parameters: PhuxAgentPromptParams,
+    async execute(_id, params, signal) {
+      if (params.wait === false && (params.until !== undefined || params.timeout_seconds !== undefined)) {
+        throw new Error("until and timeout_seconds require waiting for the agent turn");
+      }
+      const options = params.wait === false ? execution(params, signal) : operationExecution(params, signal);
+      const target = await resolveActionTarget(params.target, store, signal);
+      guardWrite(target);
+      const result = await cli.agentPrompt(target, params.text, {
+        ...options,
+        wait: params.wait ?? true,
+        ...(params.until === undefined ? {} : { until: params.until }),
+        ...(params.expect_agent === undefined ? {} : { expectAgent: params.expect_agent }),
+        ...(params.expect_kind === undefined ? {} : { expectKind: params.expect_kind }),
+      });
+      return recordResult("agent_prompt", result, target);
+    },
+    renderCall: (args, theme) => callText(theme, `prompt agent ${args.target ?? "selected target"}`),
+    renderResult: renderSummary,
+  });
+
+  pi.registerTool({
+    name: "phux_agent_wait",
+    label: "phux agent wait",
+    description: "Observe a future agent lifecycle transition, bounded to 30s by default. An already-idle agent does not satisfy this; a departed agent is not completion. Prefer phux_agent_prompt with wait to avoid a submit/observe race. Inspect blocked states for required human attention.",
+    promptSnippet: "Wait for a worker agent lifecycle state",
+    parameters: PhuxAgentWaitParams,
+    async execute(_id, params, signal) {
+      const options = operationExecution(params, signal);
+      const target = await resolveActionTarget(params.target, store, signal);
+      const result = await cli.agentWait(target, {
+        ...options, ...(params.until === undefined ? {} : { until: params.until }),
+      });
+      return recordResult("agent_wait", result, target);
+    },
+    renderCall: (args, theme) => callText(theme, `wait for agent ${args.target ?? "selected target"}`),
+    renderResult: renderSummary,
+  });
+
+  pi.registerTool({
+    name: "phux_resource_wait",
+    label: "phux resource wait",
+    description: "Wait for a canonical resource lifecycle result, optionally after a prior cursor, with a 30s default timeout. Requires an explicit resource identity; never falls back to the selected or focused pane.",
+    promptSnippet: "Wait for an explicit phux resource",
+    parameters: PhuxResourceWaitParams,
+    async execute(_id, params, signal) {
+      if (!params.target?.trim() || /^(?:alias|group):/.test(params.target)) throw new Error("resource wait requires an explicit resource identity, not a pane alias/group");
+      const result = await cli.resourceWait(params.target, {
+        ...operationExecution(params, signal),
+        ...(params.after === undefined ? {} : { after: params.after }),
+      });
+      return recordResult("resource_wait", result, params.target);
+    },
+    renderCall: (args, theme) => callText(theme, `wait for resource ${args.target}`),
+    renderResult: renderSummary,
+  });
+
+  pi.registerTool({
+    name: "phux_status",
+    label: "phux status",
+    description: "Read bounded canonical phux status JSON. This reports the server, not the branch-local target shown by /phux-status.",
+    promptSnippet: "Inspect phux server status",
+    parameters: PhuxStatusParams,
+    async execute(_id, params, signal) {
+      return recordResult("status", await cli.status(execution(params, signal)));
+    },
+    renderCall: (_args, theme) => callText(theme, "server status"),
+    renderResult: renderSummary,
+  });
+
+  pi.registerTool({
+    name: "phux_runtime_info",
+    label: "phux runtime info",
+    description: "Read bounded canonical runtime-info JSON to discover the active runtime and capabilities instead of guessing installed CLI support.",
+    promptSnippet: "Inspect phux runtime capabilities",
+    parameters: PhuxRuntimeInfoParams,
+    async execute(_id, params, signal) {
+      return recordResult("runtime_info", await cli.runtimeInfo(execution(params, signal)));
+    },
+    renderCall: (_args, theme) => callText(theme, "runtime info"),
+    renderResult: renderSummary,
+  });
+
   pi.registerTool({
     name: "phux_list",
     label: "phux list",
@@ -237,9 +395,11 @@ export function registerPhuxTools(pi: ExtensionAPI, cli: PhuxCli, store: PhuxTar
         target,
         ...(params.scrollback === undefined ? {} : { scrollback: params.scrollback }),
         ...(params.cells === undefined ? {} : { cells: params.cells }),
+        ...(params.tail === undefined ? {} : { tail: params.tail }),
+        ...(params.unwrap === undefined ? {} : { unwrap: params.unwrap }),
         ...execution(params, signal),
       });
-      return screenResult("snapshot", target, screen);
+      return screenResult("snapshot", target, screen, undefined, undefined, params.cells);
     },
     renderCall: (args, theme) => callText(theme, `snapshot ${args.target ?? "selected target"}`),
     renderResult: renderSummary,
@@ -248,11 +408,12 @@ export function registerPhuxTools(pi: ExtensionAPI, cli: PhuxCli, store: PhuxTar
   pi.registerTool({
     name: "phux_send_keys",
     label: "phux send keys",
-    description: "Send named keys or literal strings to a phux pane. Uses an explicit target or requires the available selected /phux target. This is not a paste operation.",
+    description: "Send named keys (Enter, C-c, arrows) to an interactive program in a worker pane. Use phux_paste for literal multiline text, phux_run only at a shell prompt, and phux_agent_prompt for an agent turn. Never writes to Pi's hosting pane.",
     promptSnippet: "Send keystrokes to a shared phux terminal",
     parameters: PhuxSendKeysParams,
     async execute(_id, params, signal) {
       const target = await resolveActionTarget(params.target, store, signal);
+      guardWrite(target);
       await cli.sendKeys(target, params.keys, execution(params, signal));
       return toolResult(`Sent ${String(params.keys.length)} key item(s) to ${target}.`, {
         operation: "send_keys",
@@ -268,15 +429,14 @@ export function registerPhuxTools(pi: ExtensionAPI, cli: PhuxCli, store: PhuxTar
   pi.registerTool({
     name: "phux_run",
     label: "phux run",
-    description: "Run one shell command line in a phux pane through phux's documented run sentinel. The command is passed as one argument. Uses an explicit target or requires the available selected /phux target. Output is bounded to 200 lines and 12 KiB.",
+    description: "Run one command line only in a pane known to be at a shell prompt, using phux's run sentinel. Do not send shell syntax to an agent/editor/REPL; use phux_agent_prompt or paste/keys instead. Defaults to a finite 30s wait; nonzero command exits remain command results. Never automatically retry an uncertain delivery.",
     promptSnippet: "Run a command in a shared phux terminal",
     parameters: PhuxRunParams,
     async execute(_id, params, signal) {
+      const options = operationExecution(params, signal);
       const target = await resolveActionTarget(params.target, store, signal);
-      const result = await cli.run(target, [params.command], {
-        ...(params.timeout_seconds === undefined ? {} : { phuxTimeoutSeconds: params.timeout_seconds }),
-        ...execution(params, signal),
-      });
+      guardWrite(target);
+      const result = await cli.run(target, [params.command], options);
       const header = `run exit=${String(result.exit_code)} duration_ms=${String(result.duration_ms)} target=${target}`;
       const output = boundedResult(header, result.output, result.truncated);
       return toolResult(output.text, {
@@ -296,23 +456,25 @@ export function registerPhuxTools(pi: ExtensionAPI, cli: PhuxCli, store: PhuxTar
   pi.registerTool({
     name: "phux_wait",
     label: "phux wait",
-    description: "Wait for visible text or terminal idleness. Uses an explicit target or requires the available selected /phux target. The final screen is bounded to 200 lines and 12 KiB.",
+    description: "Wait up to 30s by default for visible literal text, regex, or terminal idleness (choose at most one). output_only filters command echo only with OSC-133 shell integration; a warning reports when filtering is unavailable. tail bounds inspected logical lines. Screen idleness is not proof an agent turn completed: use phux_agent_wait.",
     promptSnippet: "Wait for a condition in a shared phux terminal",
     parameters: PhuxWaitParams,
     async execute(_id, params, signal) {
-      if (params.until !== undefined && params.idle_ms !== undefined) {
-        throw new Error("phux_wait accepts either until or idle_ms, not both");
+      if ([params.until, params.regex, params.idle_ms].filter((value) => value !== undefined).length > 1) {
+        throw new Error("phux_wait accepts at most one of until, regex, or idle_ms");
       }
+      const options = operationExecution(params, signal);
       const target = await resolveActionTarget(params.target, store, signal);
-      const timeout = operationTimeout(params.timeout_seconds);
       const result = await cli.wait({
         target,
         ...(params.until === undefined ? {} : { until: params.until }),
+        ...(params.regex === undefined ? {} : { regex: params.regex }),
+        ...(params.output_only === undefined ? {} : { outputOnly: params.output_only }),
+        ...(params.tail === undefined ? {} : { tail: params.tail }),
         ...(params.idle_ms === undefined ? {} : { idleMs: params.idle_ms }),
-        ...(timeout === undefined ? {} : { phuxTimeoutSeconds: timeout }),
-        ...execution(params, signal),
+        ...options,
       });
-      return screenResult("wait", target, result.screen, result.outcome);
+      return screenResult("wait", target, result.screen, result.outcome, result.warning);
     },
     renderCall: (args, theme) => callText(theme, `wait on ${args.target ?? "selected target"}`),
     renderResult: renderSummary,
@@ -365,6 +527,7 @@ export function registerPhuxTools(pi: ExtensionAPI, cli: PhuxCli, store: PhuxTar
         ...(ratio === undefined ? {} : { ratio }),
         ...(params.cwd === undefined ? {} : { cwd: params.cwd }),
         ...(params.command === undefined ? {} : { command: params.command }),
+        ...(params.retain_seconds === undefined ? {} : { retainSeconds: params.retain_seconds }),
         ...execution(params, signal),
       });
       const target = spawned.satellite === null ? `@${String(spawned.terminal_id)}` : `${spawned.satellite}/@${String(spawned.terminal_id)}`;
@@ -476,12 +639,13 @@ export function registerPhuxTools(pi: ExtensionAPI, cli: PhuxCli, store: PhuxTar
   pi.registerTool({
     name: "phux_kill",
     label: "phux kill",
-    description: "Destroy an explicit CLI selector, alias:name, or every ownership-validated pane in group:name. confirm:true is required. Raw selectors and groups may resolve to and destroy multiple panes.",
+    description: "Destroy an explicit canonical pane, validated alias, or every pane in a validated group. confirm:true is required. The entire group is checked against Pi's hosting pane before any destruction; broad raw selectors are rejected.",
     promptSnippet: "Explicitly confirm destruction of shared terminal panes",
     parameters: PhuxKillParams,
     async execute(_id, params, signal) {
       if (params.confirm !== true) throw new Error("phux_kill requires confirm:true; selectors and groups may destroy multiple panes");
       const targets = await resolveActionTargets(params.target, store, signal);
+      for (const target of targets) guardWrite(target);
       for (const target of targets) await cli.kill(target, execution(params, signal));
       return controlResult("kill", targets);
     },
@@ -492,7 +656,7 @@ export function registerPhuxTools(pi: ExtensionAPI, cli: PhuxCli, store: PhuxTar
   pi.registerTool({
     name: "phux_signal",
     label: "phux signal",
-    description: "Deliver a supported process-group signal through phux to one selector or alias. terminate and kill require an explicit target and confirm:true because selectors may affect multiple processes or panes. Use phux_kill to destroy panes.",
+    description: "Signal a canonical worker pane or validated alias, never Pi's hosting pane. terminate and kill require an explicit target and confirm:true. Use phux_kill to destroy the pane; interrupt/freeze/resume control its process group.",
     promptSnippet: "Signal a process group in a shared terminal",
     parameters: PhuxSignalParams,
     async execute(_id, params, signal) {
@@ -500,6 +664,7 @@ export function registerPhuxTools(pi: ExtensionAPI, cli: PhuxCli, store: PhuxTar
         throw new Error(`phux_signal ${params.signal} requires an explicit target and confirm:true; selectors may affect multiple processes or panes`);
       }
       const target = await resolveActionTarget(params.target, store, signal);
+      guardWrite(target);
       await cli.signal(target, params.signal, execution(params, signal));
       return toolResult(`Sent ${params.signal} to ${target}.`, {
         operation: "signal", summary: `${params.signal} ${target}`, target,
@@ -519,6 +684,7 @@ export function registerPhuxTools(pi: ExtensionAPI, cli: PhuxCli, store: PhuxTar
       if (params.action === "ls" && params.tags !== undefined) throw new Error("phux_tag ls does not accept tags");
       if (params.action !== "ls" && params.tags === undefined) throw new Error(`phux_tag ${params.action} requires tags`);
       const targets = await resolveActionTargets(params.target, store, signal);
+      if (params.action !== "ls") for (const target of targets) guardWrite(target);
       const rows = [];
       for (const target of targets) rows.push(...await cli.tag(params.action, target, params.tags ?? [], execution(params, signal)));
       const output = boundedResult(`tag ${params.action} targets=${String(targets.length)}`, rows.map((row) => `${row.terminal}\t${row.tagsText}`).join("\n"));
@@ -539,6 +705,7 @@ export function registerPhuxTools(pi: ExtensionAPI, cli: PhuxCli, store: PhuxTar
     parameters: PhuxAskParams,
     async execute(_id, params, signal) {
       const target = await resolveActionTarget(params.target, store, signal);
+      guardWrite(target);
       const asked = await cli.ask(target, params.question, {
         ...(params.id === undefined ? {} : { id: params.id }),
         ...(params.suggestions === undefined ? {} : { suggestions: params.suggestions }),
@@ -644,11 +811,19 @@ export function registerPhuxTools(pi: ExtensionAPI, cli: PhuxCli, store: PhuxTar
   });
 }
 
-function execution(params: { readonly local_timeout_ms?: number }, signal: AbortSignal | undefined) {
-  return {
-    ...(signal === undefined ? {} : { signal }),
-    ...(params.local_timeout_ms === undefined ? {} : { timeoutMs: params.local_timeout_ms }),
-  };
+function execution(params: { readonly local_timeout_ms?: number }, signal: AbortSignal | undefined, defaultMs = 10_000) {
+  signal?.throwIfAborted();
+  const timeoutMs = params.local_timeout_ms ?? defaultMs;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 86_405_000) {
+    throw new RangeError("local_timeout_ms must be an integer from 1 through 86405000");
+  }
+  return { ...(signal === undefined ? {} : { signal }), timeoutMs };
+}
+
+function operationExecution(params: { readonly local_timeout_ms?: number; readonly timeout_seconds?: number }, signal: AbortSignal | undefined) {
+  const phuxTimeoutSeconds = operationTimeout(params.timeout_seconds);
+  const deadline = phuxTimeoutSeconds * 1000 + 5000;
+  return { ...execution(params, signal, deadline), phuxTimeoutSeconds };
 }
 
 export function resolveTarget(explicit: string | undefined, store: PhuxTargetStore): string {
@@ -727,7 +902,8 @@ async function resolveActionTarget(
   store: PhuxTargetStore,
   signal: AbortSignal | undefined,
 ): Promise<string> {
-  if (explicit?.startsWith("alias:") === true) await refreshNamedTargets(store, signal);
+  signal?.throwIfAborted();
+  if ((explicit === undefined && store.snapshot.selection !== null) || explicit?.startsWith("alias:") === true) await refreshNamedTargets(store, signal);
   return resolveTarget(explicit, store);
 }
 
@@ -736,6 +912,7 @@ async function resolveActionTargets(
   store: PhuxTargetStore,
   signal: AbortSignal | undefined,
 ): Promise<readonly string[]> {
+  signal?.throwIfAborted();
   if (explicit === undefined) throw new Error("an explicit target is required");
   if (explicit.startsWith("alias:") || explicit.startsWith("group:")) await refreshNamedTargets(store, signal);
   return resolveTargets(explicit, store);
@@ -789,27 +966,48 @@ function screenResult(
   target: string,
   screen: ScreenState,
   outcome?: string,
+  warning?: string,
+  cells?: boolean,
 ): AgentToolResult<PhuxToolDetails> {
-  const terminal = [...screen.scrollback, ...screen.lines].join("\n");
+  const terminal = cells ? JSON.stringify(screen, null, 2) : [...screen.scrollback, ...screen.lines].join("\n");
   const header = `${operation}${outcome === undefined ? "" : ` ${outcome}`} target=${target} pane=@${String(screen.pane)} size=${String(screen.cols)}x${String(screen.rows)}`;
-  const output = boundedResult(header, terminal);
+  const output = boundedResult(header, warning === undefined ? terminal : `${terminal}\nCLI warning: ${warning}`, screen.truncated);
   return toolResult(output.text, {
     operation,
     summary: `${operation}${outcome === undefined ? "" : ` ${outcome}`} on ${target} (${String(screen.cols)}x${String(screen.rows)})`,
     target,
     ...(outcome === undefined ? {} : { outcome }),
+    ...(warning === undefined ? {} : { warning }),
     rows: screen.rows,
     cols: screen.cols,
     modelOutputTruncated: output.truncated,
+    phuxOutputTruncated: screen.truncated ?? false,
   });
 }
 
-function operationTimeout(value: number | undefined): number | undefined {
-  if (value === undefined) return undefined;
-  if (!Number.isSafeInteger(value) || value < 1) {
-    throw new RangeError("timeout_seconds must be a positive integer; omit it to wait indefinitely");
+function operationTimeout(value: number | undefined): number {
+  const timeout = value ?? 30;
+  if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 86_400) {
+    throw new RangeError("timeout_seconds must be an integer from 1 through 86400; unbounded waits are not supported");
   }
-  return value;
+  return timeout;
+}
+
+function recordResult(
+  operation: "agent_prompt" | "agent_wait" | "resource_wait" | "status" | "runtime_info",
+  result: Readonly<Record<string, unknown>>,
+  target?: string,
+): AgentToolResult<PhuxToolDetails> {
+  const outcome = typeof result.outcome === "string" ? result.outcome : undefined;
+  const summary = `${operation}${outcome === undefined ? "" : ` ${outcome}`}${target === undefined ? "" : ` on ${target}`}`;
+  const output = boundedResult(summary, JSON.stringify(result, null, 2));
+  return toolResult(output.text, {
+    operation, summary,
+    ...(output.truncated ? {} : { result }),
+    ...(target === undefined ? {} : { target }),
+    ...(outcome === undefined ? {} : { outcome }),
+    modelOutputTruncated: output.truncated,
+  });
 }
 
 /** Bound only terminal body text so the result header and truncation notices remain visible. */

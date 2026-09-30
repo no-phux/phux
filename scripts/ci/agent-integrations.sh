@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# npm typecheck, unit, pack, and audit gates for the agent integrations.
+# Native harness typecheck, unit, loader, pack, and npm audit gates.
 # `just agent-integrations-check` and ci.yml's integrations job both call
 # this so the required lane cannot drift from the local recipe. Runtime
 # is first: pi bundles it, and the committed dist must match a fresh build.
@@ -26,6 +26,12 @@ git diff --exit-code -- integrations/runtime/dist
     bun run gates
 )
 git diff --exit-code -- integrations/opencode-v2/index.js
+
+(
+    cd integrations/omp
+    bun install --frozen-lockfile
+    bun run gates
+)
 
 for package in pi claude; do
     npm --prefix "integrations/$package" ci
