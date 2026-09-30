@@ -8,6 +8,7 @@ use super::{
 use crate::ViewId;
 use crate::engine::views::ViewCommand;
 use phux_client_core::engine::EngineDocumentAdapter;
+use phux_client_core::history::HistoryCache;
 
 pub(super) struct Presentation {
     pub(super) predictor: Predictor,
@@ -399,6 +400,31 @@ impl Owner {
             .offset;
         self.presentation_mut(id)?.closed_offset = Some(offset);
         Ok(())
+    }
+
+    /// Keep every existing presentation scrollable after a bounded search.
+    /// The scoped view swaps its state with the default, so this visits each
+    /// presentation exactly once even inside `with_view`.
+    pub(super) fn search_match_capacity(&self, id: &ResourceId) -> usize {
+        let available = self
+            .kernel
+            .history_cache(id)
+            .map_or(0, HistoryCache::remaining_anchor_capacity);
+        let unpinned = self
+            .presentations
+            .get(id)
+            .into_iter()
+            .chain(
+                self.views
+                    .values()
+                    .filter(|view| &view.terminal == id)
+                    .map(|view| &view.presentation),
+            )
+            .filter(|state| state.viewport.is_none())
+            .count();
+        // In addition to first pins, one replacement is temporarily alive
+        // alongside the old pin. Owner-thread scrolling is sequential.
+        available.saturating_sub(unpinned.saturating_add(1)) / 2
     }
 
     pub(super) fn clear_search_handles(&mut self, id: &ResourceId) -> Result<(), EngineError> {

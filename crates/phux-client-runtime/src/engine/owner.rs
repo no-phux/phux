@@ -848,6 +848,7 @@ impl Owner {
             return Err(engine_error("search query is empty"));
         }
         self.clear_search_handles(id)?;
+        let max_matches = max_matches.min(self.search_match_capacity(id));
         self.kernel
             .adapter_mut()
             .set_search_case_sensitive(case_sensitive);
@@ -1054,10 +1055,10 @@ impl Owner {
     #[cfg(feature = "engine")]
     fn scroll(&mut self, id: &ResourceId, scroll: Scroll) -> Result<EngineOutcome, EngineError> {
         let active = self.kernel.published_engine_mut(id).is_some();
-        self.scroll_replica(id, scroll)?;
         if active {
-            self.update_history_viewport(id)?;
+            self.scroll_active(id, scroll)?;
         } else {
+            self.scroll_replica(id, scroll)?;
             self.remember_closed_scroll(id)?;
         }
         self.render_and_publish(id)?;
@@ -1065,6 +1066,24 @@ impl Owner {
             effects: self.effects.take(),
             error: None,
         })
+    }
+
+    #[cfg(feature = "engine")]
+    fn scroll_active(&mut self, id: &ResourceId, scroll: Scroll) -> Result<(), EngineError> {
+        let previous = self
+            .terminal(id)?
+            .scrollbar()
+            .map_err(|error| engine_error(error.to_string()))?
+            .offset;
+        self.scroll_replica(id, scroll)?;
+        if let Err(error) = self.update_history_viewport(id) {
+            // Explicit anchors or newly created views may have consumed the
+            // reserved search headroom. Failed pin allocation must not leave
+            // the engine viewport disagreeing with its presentation/frame.
+            self.scroll_replica(id, Scroll::Row(previous))?;
+            return Err(error);
+        }
+        Ok(())
     }
 
     #[cfg(feature = "engine")]
