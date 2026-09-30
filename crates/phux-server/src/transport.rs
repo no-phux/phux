@@ -23,22 +23,77 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
+use futures_util::future::LocalBoxFuture;
+use futures_util::stream::FuturesUnordered;
 use futures_util::{SinkExt, StreamExt};
 use phux_protocol::policy::{PeerIdentity, TransportType};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream, UnixListener};
 use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::error::CapacityError;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message};
 
 use phux_protocol::wire::framing::{self, LENGTH_PREFIX_LEN as LENGTH_PREFIX};
 pub(crate) const WS_REJECTION_WARN_INTERVAL: Duration = Duration::from_secs(60);
 
-/// How long a peer has to finish the TLS handshake and WebSocket upgrade.
-/// The accept loop awaits `accept()` before serving anyone else, so an
-/// un-timed handshake would let one silent peer wedge the whole listener.
+/// How long a peer has to finish each admission step (TLS handshake,
+/// WebSocket upgrade, token preamble). Admissions run concurrently, but only
+/// [`MAX_PENDING_ADMISSIONS`] at a time, so an un-timed step would let silent
+/// peers fill every slot for good.
 pub(crate) const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Peers one listener admits at once. Finite, but more than one: a silent
+/// peer holds one slot until its deadline instead of the whole listener.
+pub(crate) const MAX_PENDING_ADMISSIONS: usize = 32;
+
+/// One in-flight admission (TLS, upgrade, token preamble). `None` is a
+/// refusal the admission already logged; `Some(Err)` reaches the accept
+/// loop's error handling.
+pub(crate) type Admission<T> = LocalBoxFuture<'static, Option<io::Result<T>>>;
+
+/// Drives a listener's admissions concurrently, so one slow or silent peer
+/// cannot hold every other peer behind its handshake deadline.
+pub(crate) struct Admissions<T> {
+    pending: tokio::sync::Mutex<FuturesUnordered<Admission<T>>>,
+}
+
+impl<T: 'static> Admissions<T> {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending: tokio::sync::Mutex::new(FuturesUnordered::new()),
+        }
+    }
+
+    /// The next admitted connection. `raw` accepts one raw connection and
+    /// returns its admission; it must be cancel-safe, since a completed
+    /// admission wins the race against it. Admissions survive a dropped
+    /// call, so cancelling this loses no peer.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the set is held for the whole race; its one caller is the accept loop"
+    )]
+    pub(crate) async fn next<F, Fut>(&self, mut raw: F) -> io::Result<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = io::Result<Admission<T>>>,
+    {
+        let mut pending = self.pending.lock().await;
+        loop {
+            tokio::select! {
+                done = pending.next(), if !pending.is_empty() => {
+                    if let Some(Some(result)) = done {
+                        return result;
+                    }
+                }
+                admission = raw(), if pending.len() < MAX_PENDING_ADMISSIONS => {
+                    pending.push(admission?);
+                }
+            }
+        }
+    }
+}
 
 /// Read side of a client connection: yields one complete encoded frame (length
 /// prefix included) per call, or `None` at end-of-stream.
@@ -146,22 +201,56 @@ pub(crate) enum AcceptErrorDisposition {
 
 // ── Unix domain socket ───────────────────────────────────────────────────────
 
+/// Bytes a stream reader asks for per read. The frame buffer grows only by
+/// what actually arrived, so a bare length header never commits a
+/// maximum-size frame's memory.
+const READ_CHUNK: usize = 64 * 1024;
+
+/// Reassembles length-prefixed frames off a byte stream, cancel-safely.
+///
+/// The client loop races `read_frame` against other events in a `select!`,
+/// which drops the read future whenever another arm wins. Bytes already read
+/// live here, not in that future, so a dropped read loses nothing and the
+/// stream never desynchronises onto payload bytes.
+#[derive(Debug, Default)]
+pub(crate) struct FrameAssembler {
+    buf: BytesMut,
+}
+
+impl FrameAssembler {
+    /// The next complete frame (prefix included), or `None` at a clean end of
+    /// stream on a frame boundary. Cancel-safe.
+    pub(crate) async fn read_frame<R>(&mut self, reader: &mut R) -> io::Result<Option<BytesMut>>
+    where
+        R: tokio::io::AsyncRead + Unpin,
+    {
+        loop {
+            if let Some(frame) = framing::split_frame(&mut self.buf)? {
+                return Ok(Some(frame));
+            }
+            self.buf.reserve(READ_CHUNK);
+            if reader.read_buf(&mut self.buf).await? == 0 {
+                if self.buf.is_empty() {
+                    return Ok(None);
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "stream ended mid-frame",
+                ));
+            }
+        }
+    }
+}
+
 /// UDS read half: reassembles length-prefixed frames off the byte stream.
 pub(crate) struct UdsReader {
     reader: OwnedReadHalf,
-    header: [u8; LENGTH_PREFIX],
+    frames: FrameAssembler,
 }
 
 impl FrameReader for UdsReader {
     async fn read_frame(&mut self) -> io::Result<Option<BytesMut>> {
-        match self.reader.read_exact(&mut self.header).await {
-            Ok(_) => {}
-            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-            Err(err) => return Err(err),
-        }
-        let mut framed = framing::frame_buffer(self.header)?;
-        self.reader.read_exact(&mut framed[LENGTH_PREFIX..]).await?;
-        Ok(Some(framed))
+        self.frames.read_frame(&mut self.reader).await
     }
 }
 
@@ -217,7 +306,7 @@ impl Incoming for UdsListener {
         Ok((
             UdsReader {
                 reader,
-                header: [0u8; LENGTH_PREFIX],
+                frames: FrameAssembler::default(),
             },
             UdsWriter { writer },
             peer_identity.into(),
@@ -299,10 +388,13 @@ pub(crate) struct WsListener {
     /// certificate through it, as QUIC does.
     workload: Option<std::sync::Arc<crate::workload::ReloadingWorkloadRegistry>>,
     rejection_warnings: Mutex<PeerRejectionWarnLimiter>,
+    admissions: Admissions<WsAccepted>,
 }
 
+type WsAccepted = (WsReader, WsWriter, crate::auth::ConnectionIdentity);
+
 impl WsListener {
-    const fn from_parts(
+    fn from_parts(
         tcp: TcpListener,
         tls: Option<tokio_rustls::TlsAcceptor>,
         tokens: Option<std::sync::Arc<crate::auth::ReloadingTokenStore>>,
@@ -314,6 +406,7 @@ impl WsListener {
             tokens,
             workload,
             rejection_warnings: Mutex::new(PeerRejectionWarnLimiter::new()),
+            admissions: Admissions::new(),
         }
     }
 
@@ -374,6 +467,15 @@ impl FrameReader for WsReader {
                     framing::check_frame(&data)?;
                     return Ok(Some(BytesMut::from(&data[..])));
                 }
+                // Over the size cap: the same §5 violation as an oversized
+                // length header, so the peer gets FRAME_TOO_LARGE.
+                Some(Err(WebSocketError::Capacity(CapacityError::MessageTooLong {
+                    size, ..
+                }))) => {
+                    let length =
+                        u32::try_from(size.saturating_sub(LENGTH_PREFIX)).unwrap_or(u32::MAX);
+                    return Err(framing::FramingError::LengthOutOfRange { length }.into());
+                }
                 Some(Err(err)) => return Err(io::Error::other(err)),
                 // Ignore text / ping / pong / raw — the wire is binary frames only.
                 Some(Ok(_)) => {}
@@ -415,100 +517,20 @@ impl Incoming for WsListener {
         TransportType::WebSocket
     }
 
-    async fn accept(&self) -> io::Result<(WsReader, WsWriter, crate::auth::ConnectionIdentity)> {
-        let (tcp, peer) = self.tcp.accept().await?;
-        // Only the source IP is retained; the ephemeral port identifies nothing.
-        let source_ip = peer.ip();
-
-        // Nagle would hold each short keystroke echo for the peer's delayed
-        // ACK. Failure only costs latency.
-        if let Err(err) = tcp.set_nodelay(true) {
-            tracing::debug!(error = %err, "could not disable Nagle on accepted WebSocket TCP stream");
-        }
-
-        // TLS first, so the token in the upgrade request is encrypted.
-        let (stream, peer_leaf) = match &self.tls {
-            Some(acceptor) => tls_handshake(acceptor, tcp, source_ip).await?,
-            None => (ServerStream::Left(tcp), None),
-        };
-
-        // With a token store, authenticate during the handshake and refuse
-        // with HTTP 401 before any phux frame is read.
-        let (ws, admitted) = match &self.tokens {
-            Some(store) => {
-                let store = store.clone();
-                let workload = self.workload.clone();
-                let captured: std::rc::Rc<std::cell::RefCell<Option<Admitted>>> =
-                    std::rc::Rc::new(std::cell::RefCell::new(None));
-                let sink = captured.clone();
-                #[allow(
-                    clippy::result_large_err,
-                    reason = "tokio-tungstenite fixes the HTTP rejection response type for its handshake callback"
-                )]
-                let callback = move |req: &Request, resp| {
-                    let workload = workload
-                        .as_deref()
-                        .map(|registry| (registry, peer_leaf.as_deref()));
-                    admit_upgrade(req, &store, workload).map_or_else(
-                        || Err(unauthorized_response()),
-                        |admitted| {
-                            *sink.borrow_mut() = Some(admitted);
-                            Ok(select_ws_protocol(req, resp))
-                        },
-                    )
-                };
-                let ws = ws_upgrade(stream, source_ip, callback).await?;
-                let admitted = captured.borrow_mut().take();
-                (ws, admitted)
-            }
-            None => (
-                ws_upgrade(stream, source_ip, anonymous_ws_upgrade).await?,
-                None,
-            ),
-        };
-        // The connection's credential (the workload's under workload mTLS)
-        // and the pairing-store bearer, kept so its revocation ends the
-        // connection live.
-        let (credential, bearer) = match admitted {
-            Some((credential, bearer)) => (
-                Some(credential),
-                self.tokens.as_ref().map(|store| {
-                    crate::auth::BearerAdmission::new(std::sync::Arc::clone(store), &bearer)
-                }),
-            ),
-            None => (None, None),
-        };
-
-        // The credential id rides `mcp_host_key` so policy and audit see a
-        // non-anonymous peer.
-        if let Some(credential) = credential.as_ref() {
-            tracing::info!(
-                transport = "ws",
-                %source_ip,
-                credential_id = %credential.id,
-                "paired WebSocket consumer admitted"
-            );
-        }
-        let peer_identity = PeerIdentity {
-            uid: 0,
-            pid: None,
-            exe_path: None,
-            mcp_host_key: credential.as_ref().map(|credential| credential.id.clone()),
-            transport: TransportType::WebSocket,
-            source_addr: Some(source_ip),
-        };
-
-        let (tx, rx) = ws.split();
-        Ok((
-            WsReader { rx },
-            WsWriter { tx },
-            crate::auth::ConnectionIdentity {
-                peer: peer_identity,
-                ssh_origin: None,
-                credential,
-                bearer,
-            },
-        ))
+    async fn accept(&self) -> io::Result<WsAccepted> {
+        self.admissions
+            .next(|| async {
+                let (tcp, peer) = self.tcp.accept().await?;
+                let admission = ws_admit(
+                    tcp,
+                    peer,
+                    self.tls.clone(),
+                    self.tokens.clone(),
+                    self.workload.clone(),
+                );
+                Ok(Box::pin(async move { Some(admission.await) }) as Admission<WsAccepted>)
+            })
+            .await
     }
 
     fn accept_error_disposition(&self, error: &io::Error) -> AcceptErrorDisposition {
@@ -540,6 +562,108 @@ impl Incoming for WsListener {
     fn kind(&self) -> &'static str {
         "ws"
     }
+}
+
+/// TLS, then the upgrade and its token gate, each under
+/// [`HANDSHAKE_DEADLINE`]; owned inputs so it runs beside other admissions.
+async fn ws_admit(
+    tcp: TcpStream,
+    peer: SocketAddr,
+    tls: Option<tokio_rustls::TlsAcceptor>,
+    tokens: Option<std::sync::Arc<crate::auth::ReloadingTokenStore>>,
+    workload: Option<std::sync::Arc<crate::workload::ReloadingWorkloadRegistry>>,
+) -> io::Result<WsAccepted> {
+    // Only the source IP is retained; the ephemeral port identifies nothing.
+    let source_ip = peer.ip();
+
+    // Nagle would hold each short keystroke echo for the peer's delayed
+    // ACK. Failure only costs latency.
+    if let Err(err) = tcp.set_nodelay(true) {
+        tracing::debug!(error = %err, "could not disable Nagle on accepted WebSocket TCP stream");
+    }
+
+    // TLS first, so the token in the upgrade request is encrypted.
+    let (stream, peer_leaf) = match &tls {
+        Some(acceptor) => tls_handshake(acceptor, tcp, source_ip).await?,
+        None => (ServerStream::Left(tcp), None),
+    };
+
+    // With a token store, authenticate during the handshake and refuse
+    // with HTTP 401 before any phux frame is read.
+    let (ws, admitted) = if let Some(store) = &tokens {
+        let store = store.clone();
+        let workload = workload.clone();
+        let captured: std::rc::Rc<std::cell::RefCell<Option<Admitted>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let sink = captured.clone();
+        #[allow(
+            clippy::result_large_err,
+            reason = "tokio-tungstenite fixes the HTTP rejection response type for its handshake callback"
+        )]
+        let callback = move |req: &Request, resp| {
+            let workload = workload
+                .as_deref()
+                .map(|registry| (registry, peer_leaf.as_deref()));
+            admit_upgrade(req, &store, workload).map_or_else(
+                || Err(unauthorized_response()),
+                |admitted| {
+                    *sink.borrow_mut() = Some(admitted);
+                    Ok(select_ws_protocol(req, resp))
+                },
+            )
+        };
+        let ws = ws_upgrade(stream, source_ip, callback).await?;
+        let admitted = captured.borrow_mut().take();
+        (ws, admitted)
+    } else {
+        (
+            ws_upgrade(stream, source_ip, anonymous_ws_upgrade).await?,
+            None,
+        )
+    };
+    // The connection's credential (the workload's under workload mTLS)
+    // and the pairing-store bearer, kept so its revocation ends the
+    // connection live.
+    let (credential, bearer) = match admitted {
+        Some((credential, bearer)) => (
+            Some(credential),
+            tokens.as_ref().map(|store| {
+                crate::auth::BearerAdmission::new(std::sync::Arc::clone(store), &bearer)
+            }),
+        ),
+        None => (None, None),
+    };
+
+    // The credential id rides `mcp_host_key` so policy and audit see a
+    // non-anonymous peer.
+    if let Some(credential) = credential.as_ref() {
+        tracing::info!(
+            transport = "ws",
+            %source_ip,
+            credential_id = %credential.id,
+            "paired WebSocket consumer admitted"
+        );
+    }
+    let peer_identity = PeerIdentity {
+        uid: 0,
+        pid: None,
+        exe_path: None,
+        mcp_host_key: credential.as_ref().map(|credential| credential.id.clone()),
+        transport: TransportType::WebSocket,
+        source_addr: Some(source_ip),
+    };
+
+    let (tx, rx) = ws.split();
+    Ok((
+        WsReader { rx },
+        WsWriter { tx },
+        crate::auth::ConnectionIdentity {
+            peer: peer_identity,
+            ssh_origin: None,
+            credential,
+            bearer,
+        },
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -593,7 +717,7 @@ where
 {
     tokio::time::timeout(
         HANDSHAKE_DEADLINE,
-        tokio_tungstenite::accept_hdr_async(stream, callback),
+        tokio_tungstenite::accept_hdr_async_with_config(stream, callback, Some(ws_config())),
     )
     .await
     .map_err(|_| {
@@ -601,6 +725,15 @@ where
         ws_accept_error(WsAcceptStage::Upgrade, source_ip)
     })?
     .map_err(|error| classify_ws_upgrade_error(&error, source_ip))
+}
+
+/// One WebSocket message carries one frame, so nothing larger than a
+/// maximum frame is ever buffered (tungstenite's default is 64 MiB).
+fn ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+    let max = LENGTH_PREFIX + phux_protocol::wire::frame::MAX_FRAME_LEN as usize;
+    tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(max))
+        .max_frame_size(Some(max))
 }
 
 /// A 401 from our callback is the pairing stage; every other failure is the
@@ -1182,6 +1315,59 @@ mod tests {
         );
     }
 
+    /// A message larger than any frame is refused as a framing violation
+    /// without the server buffering it whole first.
+    #[tokio::test]
+    async fn an_oversized_message_is_a_framing_violation() {
+        let (listener, addr, token_hex, _tokens) = token_listener().await;
+        let max = phux_protocol::wire::frame::MAX_FRAME_LEN as usize;
+        let mut oversized = vec![0_u8; LENGTH_PREFIX + max + 1];
+        oversized[..LENGTH_PREFIX].copy_from_slice(&3_u32.to_be_bytes());
+        let server = async {
+            let (mut reader, _writer, _peer) = listener.accept().await.unwrap();
+            reader.read_frame().await
+        };
+        let client = async {
+            let tcp = TcpStream::connect(addr).await.unwrap();
+            let (mut ws, _) =
+                tokio_tungstenite::client_async(bearer_request(addr, &token_hex), tcp)
+                    .await
+                    .expect("upgrade");
+            // The server stops reading partway, so the send may break.
+            let _ = ws.send(Message::Binary(oversized.into())).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        let (read, ()) = tokio::join!(server, client);
+        let err = read.expect_err("an oversized message");
+        let violation = err
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<framing::FramingError>())
+            .expect("a typed framing violation");
+        assert!(
+            matches!(violation, framing::FramingError::LengthOutOfRange { .. }),
+            "{violation:?}"
+        );
+    }
+
+    /// A peer that connects and never speaks holds one admission slot, not
+    /// the listener: a healthy peer behind it upgrades at once instead of
+    /// after the silent one's deadline.
+    #[tokio::test]
+    async fn a_silent_peer_does_not_delay_other_admissions() {
+        let (listener, addr, token_hex, _tokens) = token_listener().await;
+        let _silent = TcpStream::connect(addr).await.unwrap();
+        let (reads, _, _) = tokio::time::timeout(
+            Duration::from_secs(3),
+            exchange(&listener, addr, bearer_request(addr, &token_hex), &[&FRAME]),
+        )
+        .await
+        .expect("the healthy peer is admitted without waiting on the silent one");
+        assert_eq!(
+            reads[0].as_ref().unwrap().as_ref().unwrap().as_ref(),
+            &FRAME
+        );
+    }
+
     #[tokio::test]
     async fn invalid_malformed_and_missing_tokens_are_identical_safe_rejections() {
         let (listener, addr, _token_hex, _tokens) = token_listener().await;
@@ -1453,6 +1639,55 @@ mod tests {
             PeerRejectionWarnDecision::Suppress
         );
         assert_eq!(limiter.suppressed, u64::MAX);
+    }
+
+    /// The client loop drops `read_frame` whenever another `select!` arm
+    /// wins. A frame split across that drop must still arrive whole, or the
+    /// stream desynchronises and payload bytes are parsed as frames.
+    #[tokio::test]
+    async fn a_dropped_read_loses_no_bytes() {
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (server_read, _server_write) = server.into_split();
+        let mut reader = UdsReader {
+            reader: server_read,
+            frames: FrameAssembler::default(),
+        };
+        let mut client = client;
+        let frame = [0_u8, 0, 0, 6, 0xaa, 1, 2, 3, 4, 5];
+        client.write_all(&frame[..7]).await.unwrap();
+        let cancelled = tokio::time::timeout(Duration::from_millis(50), reader.read_frame()).await;
+        assert!(cancelled.is_err(), "half a frame must not complete a read");
+        client.write_all(&frame[7..]).await.unwrap();
+        let read = tokio::time::timeout(Duration::from_secs(5), reader.read_frame())
+            .await
+            .expect("the rest of the frame completes the read")
+            .unwrap()
+            .expect("one frame");
+        assert_eq!(&read[..], &frame[..]);
+        drop(client);
+        assert!(reader.read_frame().await.unwrap().is_none(), "clean EOF");
+    }
+
+    /// A bare length header commits no more memory than the bytes that
+    /// actually arrived: a peer cannot pin a maximum-size frame buffer with
+    /// four bytes.
+    #[tokio::test]
+    async fn a_bare_header_does_not_reserve_the_whole_frame() {
+        let (mut client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (server_read, _server_write) = server.into_split();
+        let mut reader = UdsReader {
+            reader: server_read,
+            frames: FrameAssembler::default(),
+        };
+        let max = phux_protocol::wire::frame::MAX_FRAME_LEN;
+        client.write_all(&max.to_be_bytes()).await.unwrap();
+        let pending = tokio::time::timeout(Duration::from_millis(50), reader.read_frame()).await;
+        assert!(pending.is_err());
+        assert!(
+            reader.frames.buf.capacity() < 1024 * 1024,
+            "reserved {} bytes for a 4-byte header",
+            reader.frames.buf.capacity()
+        );
     }
 
     #[test]

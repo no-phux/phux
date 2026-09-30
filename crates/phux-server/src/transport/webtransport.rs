@@ -20,12 +20,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::BytesMut;
-use futures_util::future::{FutureExt as _, LocalBoxFuture};
-use futures_util::stream::{FuturesUnordered, StreamExt as _};
 use phux_dial::window::{SendWindow, TrackedSend};
 use phux_protocol::policy::{PeerIdentity, TransportType};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::Mutex;
 use tracing::{debug, warn};
 use wtransport_proto::qpack::Decoder;
 
@@ -38,18 +35,37 @@ mod h3;
 /// Bound on the HTTP/3 request, token gate, session accept, and first stream.
 const ESTABLISH_DEADLINE: Duration = super::HANDSHAKE_DEADLINE;
 
-/// Sessions establishing concurrently: finite, but more than one so a slow
-/// peer cannot serialize the listener.
-const MAX_PENDING_ESTABLISHMENTS: usize = 32;
+/// How long a refused peer has to read its 403 before its connection is
+/// closed.
+const REFUSAL_LINGER: Duration = Duration::from_secs(1);
 
 type Accepted = (WtReader, WtWriter, crate::auth::ConnectionIdentity);
-type PendingEstablishments = FuturesUnordered<LocalBoxFuture<'static, Option<Accepted>>>;
 
 /// A WebTransport listener, optionally token-authenticated.
 pub(crate) struct WtListener {
     endpoint: quinn::Endpoint,
     tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
-    pending: Mutex<PendingEstablishments>,
+    admissions: super::Admissions<Accepted>,
+}
+
+/// Closes a connection that establishment abandons, whether it refused the
+/// peer, failed, or was dropped at its deadline. The drain task holds a
+/// clone of the connection, so without an explicit close a refused peer's
+/// connection and task would live until the peer chose to leave.
+struct CloseUnlessEstablished(Option<quinn::Connection>);
+
+impl CloseUnlessEstablished {
+    fn established(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for CloseUnlessEstablished {
+    fn drop(&mut self) {
+        if let Some(connection) = self.0.take() {
+            connection.close(0_u32.into(), b"refused");
+        }
+    }
 }
 
 impl WtListener {
@@ -64,7 +80,7 @@ impl WtListener {
         Ok(Self {
             endpoint: super::quic::server_endpoint(addr, tls, None)?,
             tokens,
-            pending: Mutex::new(FuturesUnordered::new()),
+            admissions: super::Admissions::new(),
         })
     }
 
@@ -87,6 +103,7 @@ impl WtListener {
             }
         };
         let remote = connection.remote_address();
+        let abandon = CloseUnlessEstablished(Some(connection.clone()));
 
         let settings_send = match h3::send_local_settings(&connection).await {
             Ok(send) => send,
@@ -112,6 +129,8 @@ impl WtListener {
             Err(reason) => {
                 warn!(%remote, "webtransport consumer refused: {reason}");
                 let _ = h3::send_connect_status(&mut connect_send, false).await;
+                // Let the 403 land before the connection is closed under it.
+                let _ = tokio::time::timeout(REFUSAL_LINGER, connect_send.stopped()).await;
                 return None;
             }
         };
@@ -132,6 +151,7 @@ impl WtListener {
             }
         };
 
+        abandon.established();
         let peer_identity = PeerIdentity {
             uid: 0,
             pid: None,
@@ -156,6 +176,7 @@ impl WtListener {
                     _settings_send: settings_send,
                 },
                 recv,
+                frames: super::FrameAssembler::default(),
             },
             WtWriter {
                 send: TrackedSend::new(send, SendWindow::new(connection.clone())),
@@ -184,11 +205,12 @@ pub(crate) struct WtReader {
     /// Keeps the HTTP/3 CONNECT session and control stream alive.
     _session: h3::SessionStreams,
     recv: quinn::RecvStream,
+    frames: super::FrameAssembler,
 }
 
 impl FrameReader for WtReader {
     async fn read_frame(&mut self) -> io::Result<Option<BytesMut>> {
-        super::quic::read_framed(&mut self.recv).await
+        self.frames.read_frame(&mut self.recv).await
     }
 }
 
@@ -228,40 +250,27 @@ impl Incoming for WtListener {
         TransportType::WebTransport
     }
 
-    async fn accept(&self) -> io::Result<(WtReader, WtWriter, crate::auth::ConnectionIdentity)> {
-        loop {
-            let mut pending = self.pending.lock().await;
-            let incoming = tokio::select! {
-                completed = pending.next(), if !pending.is_empty() => {
-                    if let Some(Some(accepted)) = completed {
-                        return Ok(accepted);
-                    }
-                    None
-                }
-                incoming = self.endpoint.accept(), if pending.len() < MAX_PENDING_ESTABLISHMENTS => {
-                    Some(incoming.ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::NotConnected,
-                            "webtransport endpoint closed",
-                        )
-                    })?)
-                }
-            };
-            drop(pending);
-            if let Some(incoming) = incoming {
+    async fn accept(&self) -> io::Result<Accepted> {
+        self.admissions
+            .next(|| async {
+                let incoming = self.endpoint.accept().await.ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotConnected, "webtransport endpoint closed")
+                })?;
                 let establish = tokio::time::timeout(
                     ESTABLISH_DEADLINE,
                     Self::establish(incoming, self.tokens.clone()),
-                )
-                .map(|result| {
-                    result.unwrap_or_else(|_| {
-                        debug!("webtransport establishment timed out");
-                        None
-                    })
-                });
-                self.pending.lock().await.push(establish.boxed_local());
-            }
-        }
+                );
+                Ok(Box::pin(async move {
+                    establish
+                        .await
+                        .unwrap_or_else(|_| {
+                            debug!("webtransport establishment timed out");
+                            None
+                        })
+                        .map(Ok)
+                }) as super::Admission<Accepted>)
+            })
+            .await
     }
 
     fn kind(&self) -> &'static str {
@@ -557,7 +566,7 @@ mod tests {
         let bearer = format!("Bearer {}", hex::encode(TEST_TOKEN));
 
         let client = async {
-            let status = raw_connect_status(
+            let (status, conn) = raw_connect_status(
                 addr,
                 vec![
                     (":method", "CONNECT"),
@@ -571,6 +580,11 @@ mod tests {
             )
             .await;
             assert_eq!(status, 403);
+            // A refused peer's connection is closed, not held open by the
+            // listener's stream-drain task until the peer leaves.
+            tokio::time::timeout(Duration::from_secs(5), conn.closed())
+                .await
+                .expect("the refused connection is closed");
         };
         tokio::select! {
             () = client => {}
@@ -579,8 +593,12 @@ mod tests {
     }
 
     /// Drive a CONNECT whose QPACK payload is `headers` (preserving repeats)
-    /// and return the `:status` the listener answers with.
-    async fn raw_connect_status(addr: SocketAddr, headers: Vec<(&str, &str)>) -> u16 {
+    /// and return the `:status` the listener answers with, and the
+    /// connection.
+    async fn raw_connect_status(
+        addr: SocketAddr,
+        headers: Vec<(&str, &str)>,
+    ) -> (u16, quinn::Connection) {
         use std::borrow::Cow;
         use wtransport_proto::frame::Frame;
         use wtransport_proto::qpack::Encoder;
@@ -608,12 +626,13 @@ mod tests {
         let frame = Frame::read_async(&mut h3::H3Recv(&mut recv))
             .await
             .expect("CONNECT response");
-        Decoder::decode(frame.payload())
+        let status = Decoder::decode(frame.payload())
             .expect("response QPACK")
             .get(":status")
             .expect("response :status")
             .parse()
-            .expect("numeric :status")
+            .expect("numeric :status");
+        (status, conn)
     }
 
     #[tokio::test]

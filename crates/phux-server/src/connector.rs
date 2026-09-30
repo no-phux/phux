@@ -200,7 +200,10 @@ struct ConnectorIncoming {
     /// one.
     window: SendWindow,
     consumer_tokens: Arc<crate::auth::ReloadingTokenStore>,
+    admissions: crate::transport::Admissions<BridgedConsumer>,
 }
+
+type BridgedConsumer = (QuicReader, QuicWriter, crate::auth::ConnectionIdentity);
 
 impl Incoming for ConnectorIncoming {
     type Reader = QuicReader;
@@ -210,67 +213,32 @@ impl Incoming for ConnectorIncoming {
         TransportType::Quic
     }
 
-    async fn accept(
-        &self,
-    ) -> io::Result<(Self::Reader, Self::Writer, crate::auth::ConnectionIdentity)> {
-        loop {
-            let (mut send, mut recv) = self
-                .connection
-                .accept_bi()
-                .await
-                .map_err(io::Error::other)?;
-            let relay = self.connection.remote_address();
-            // Only the preamble read is bounded (`accept_bi` is a normal idle
-            // wait): a silent consumer would otherwise starve later ones. A
-            // timeout refuses that consumer instead of tearing down the leg.
-            let authorized = tokio::time::timeout(
-                crate::transport::HANDSHAKE_DEADLINE,
-                authorize_preamble(&mut recv, &self.consumer_tokens),
-            )
-            .await;
-            let credential = match authorized {
-                Ok(Some(credential)) => credential,
-                Ok(None) => {
-                    warn!(%relay, "bridged consumer refused: missing or invalid server token");
-                    let _ = send.reset(AUTH_FAILED_CODE.into());
-                    let _ = recv.stop(AUTH_FAILED_CODE.into());
-                    continue;
-                }
-                Err(_) => {
-                    warn!(
-                        %relay,
-                        seconds = crate::transport::HANDSHAKE_DEADLINE.as_secs(),
-                        "bridged consumer abandoned: no token preamble within the deadline"
-                    );
-                    let _ = send.reset(AUTH_FAILED_CODE.into());
-                    let _ = recv.stop(AUTH_FAILED_CODE.into());
-                    continue;
-                }
-            };
-            return Ok((
-                // One tunnel stream per authenticated consumer; accepting more
-                // would cross the authentication boundary.
-                QuicReader::from_stream(recv),
-                QuicWriter::from_stream(send, self.window.clone()),
-                crate::auth::ConnectionIdentity {
-                    peer: PeerIdentity {
-                        uid: 0,
-                        pid: None,
-                        exe_path: None,
-                        mcp_host_key: Some(credential.id.clone()),
-                        transport: TransportType::Quic,
-                        source_addr: Some(relay.ip()),
-                    },
-                    // Kept so revocation ends the bridged connection live.
-                    bearer: Some(crate::auth::BearerAdmission::new(
-                        Arc::clone(&self.consumer_tokens),
-                        &credential,
-                    )),
-                    credential: Some(credential),
-                    ssh_origin: None,
-                },
-            ));
-        }
+    /// Consumers authenticate concurrently: anyone who knows the route can
+    /// open a bridged stream, so one that stalls its preamble must not hold
+    /// every other consumer behind its deadline.
+    #[allow(
+        clippy::future_not_send,
+        reason = "ADR-0014: the server runs on a LocalSet; admissions are !Send local futures"
+    )]
+    async fn accept(&self) -> io::Result<BridgedConsumer> {
+        self.admissions
+            .next(|| async {
+                let (send, recv) = self
+                    .connection
+                    .accept_bi()
+                    .await
+                    .map_err(io::Error::other)?;
+                let admission = admit_consumer(
+                    send,
+                    recv,
+                    self.connection.remote_address(),
+                    self.window.clone(),
+                    Arc::clone(&self.consumer_tokens),
+                );
+                Ok(Box::pin(async move { admission.await.map(Ok) })
+                    as crate::transport::Admission<BridgedConsumer>)
+            })
+            .await
     }
 
     fn accept_errors_are_fatal(&self) -> bool {
@@ -280,6 +248,66 @@ impl Incoming for ConnectorIncoming {
     fn kind(&self) -> &'static str {
         "relay-quic"
     }
+}
+
+/// Verify one bridged consumer's bearer preamble; `None` refuses it (the
+/// stream is reset) without touching the relay leg.
+async fn admit_consumer(
+    mut send: quinn::SendStream,
+    mut recv: quinn::RecvStream,
+    relay: SocketAddr,
+    window: SendWindow,
+    consumer_tokens: Arc<crate::auth::ReloadingTokenStore>,
+) -> Option<BridgedConsumer> {
+    // `accept_bi` is a normal idle wait; only the preamble is bounded, and a
+    // timeout refuses that consumer instead of tearing down the leg.
+    let authorized = tokio::time::timeout(
+        crate::transport::HANDSHAKE_DEADLINE,
+        authorize_preamble(&mut recv, &consumer_tokens),
+    )
+    .await;
+    let credential = match authorized {
+        Ok(Some(credential)) => credential,
+        Ok(None) => {
+            warn!(%relay, "bridged consumer refused: missing or invalid server token");
+            let _ = send.reset(AUTH_FAILED_CODE.into());
+            let _ = recv.stop(AUTH_FAILED_CODE.into());
+            return None;
+        }
+        Err(_) => {
+            warn!(
+                %relay,
+                seconds = crate::transport::HANDSHAKE_DEADLINE.as_secs(),
+                "bridged consumer abandoned: no token preamble within the deadline"
+            );
+            let _ = send.reset(AUTH_FAILED_CODE.into());
+            let _ = recv.stop(AUTH_FAILED_CODE.into());
+            return None;
+        }
+    };
+    Some((
+        // One tunnel stream per authenticated consumer; accepting more would
+        // cross the authentication boundary.
+        QuicReader::from_stream(recv),
+        QuicWriter::from_stream(send, window),
+        crate::auth::ConnectionIdentity {
+            peer: PeerIdentity {
+                uid: 0,
+                pid: None,
+                exe_path: None,
+                mcp_host_key: Some(credential.id.clone()),
+                transport: TransportType::Quic,
+                source_addr: Some(relay.ip()),
+            },
+            // Kept so revocation ends the bridged connection live.
+            bearer: Some(crate::auth::BearerAdmission::new(
+                consumer_tokens,
+                &credential,
+            )),
+            credential: Some(credential),
+            ssh_origin: None,
+        },
+    ))
 }
 
 /// Spawn one independently supervised task per connector plan.
@@ -340,6 +368,7 @@ async fn supervise(
                     window: SendWindow::new(connection.clone()),
                     connection,
                     consumer_tokens: Arc::clone(&consumer_tokens),
+                    admissions: crate::transport::Admissions::new(),
                 };
                 // Keep the endpoint driver and connector-initiated stream 0
                 // alive and silent while bridged consumer streams are served.
