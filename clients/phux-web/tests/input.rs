@@ -4,9 +4,9 @@ use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::MouseButton;
 use phux_protocol::input::paste::PasteTrust;
 use phux_web::input::{
-    BrowserKey, MAX_PASTE_BYTES, code_to_physical_key, held_button, is_copy_chord, is_find_chord,
-    key_events_for_text, mouse_button, paste_event, reports_motion, route_key, scrollback_page,
-    surface_pixel, wheel_button, wheel_rows,
+    BrowserKey, MAX_PASTE_BYTES, WheelAction, WheelModes, code_to_physical_key, held_button,
+    is_copy_chord, is_find_chord, key_events_for_text, mouse_button, paste_event, reports_motion,
+    route_key, route_wheel, scrollback_page, surface_pixel, wheel_arrows, wheel_button, wheel_rows,
 };
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -293,6 +293,67 @@ fn motion_is_reported_only_to_modes_that_ask_for_it() {
         !reports_motion(false, false, true),
         "1000 reports no motion"
     );
+}
+
+#[wasm_bindgen_test]
+fn the_wheel_scrolls_back_reports_or_becomes_arrows_by_the_programs_modes() {
+    let primary = WheelModes::default();
+    let tracking = WheelModes {
+        tracking: true,
+        ..primary
+    };
+    // xterm's alternateScroll (DECSET 1007, on unless the program clears
+    // it): a program on the alternate screen that does not track the mouse
+    // gets the wheel as arrow keys.
+    let alternate = WheelModes {
+        alt_screen: true,
+        alt_scroll: true,
+        ..primary
+    };
+    let opted_out = WheelModes {
+        alt_scroll: false,
+        ..alternate
+    };
+    assert_eq!(route_wheel(primary, false, false), WheelAction::Scrollback);
+    assert_eq!(route_wheel(tracking, false, false), WheelAction::Report);
+    assert_eq!(route_wheel(alternate, false, false), WheelAction::Arrows);
+    assert_eq!(
+        route_wheel(
+            WheelModes {
+                tracking: true,
+                ..alternate
+            },
+            false,
+            false
+        ),
+        WheelAction::Report,
+        "a tracking program gets the wheel itself"
+    );
+    assert_eq!(
+        route_wheel(opted_out, false, false),
+        WheelAction::Scrollback
+    );
+    // Shift, and a scrolled-back view, keep the wheel local.
+    for modes in [tracking, alternate] {
+        assert_eq!(route_wheel(modes, true, false), WheelAction::Scrollback);
+        assert_eq!(route_wheel(modes, false, true), WheelAction::Scrollback);
+    }
+}
+
+#[wasm_bindgen_test]
+fn wheel_rows_become_one_unmodified_arrow_press_each() {
+    let up = wheel_arrows(-3);
+    assert_eq!(up.len(), 3);
+    for key in &up {
+        assert_eq!(key.key, PhysicalKey::ArrowUp);
+        assert_eq!(key.action, KeyAction::Press);
+        assert_eq!(key.mods, ModSet::empty());
+        assert_eq!(key.text, None);
+    }
+    let down = wheel_arrows(2);
+    assert_eq!(down.len(), 2);
+    assert!(down.iter().all(|key| key.key == PhysicalKey::ArrowDown));
+    assert!(wheel_arrows(0).is_empty());
 }
 
 #[wasm_bindgen_test]

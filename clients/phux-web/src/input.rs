@@ -223,6 +223,69 @@ pub fn surface_pixel(offset: f64, css_cell: f64, cell_px: u16, count: u16) -> f6
     (cells * f64::from(cell_px)).floor().clamp(0.0, max)
 }
 
+/// The program modes a wheel event is routed by, read off the replica.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WheelModes {
+    /// The program tracks the mouse (DECSET 9, 1000, 1002, or 1003).
+    pub tracking: bool,
+    /// The program is on the alternate screen (DECSET 47, 1047, or 1049).
+    pub alt_screen: bool,
+    /// Alternate scroll (DECSET 1007) is on: the engine's default, until
+    /// the program clears it.
+    pub alt_scroll: bool,
+}
+
+/// What a wheel event over the terminal does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WheelAction {
+    /// Page the local scrollback.
+    Scrollback,
+    /// Report wheel presses (buttons 4 and 5) to a mouse-tracking program.
+    Report,
+    /// Send arrow keys, one per row, to a program on the alternate screen.
+    Arrows,
+}
+
+/// Route one wheel event, as the reference TUI does: a mouse-tracking
+/// program gets the wheel; a program on the alternate screen, which has no
+/// scrollback, gets it as arrow keys under alternate scroll (xterm's
+/// `alternateScroll`); otherwise it pages the local scrollback. Shift, and a
+/// view already scrolled back, keep it local.
+#[must_use]
+pub const fn route_wheel(modes: WheelModes, shift: bool, scrolled: bool) -> WheelAction {
+    if shift || scrolled {
+        WheelAction::Scrollback
+    } else if modes.tracking {
+        WheelAction::Report
+    } else if modes.alt_screen && modes.alt_scroll {
+        WheelAction::Arrows
+    } else {
+        WheelAction::Scrollback
+    }
+}
+
+/// The arrow-key presses for `rows` rows of wheel travel: Up for negative
+/// (toward history), Down for positive, unmodified, so the server encodes
+/// them in the program's cursor-key mode.
+#[must_use]
+pub fn wheel_arrows(rows: i32) -> Vec<KeyEvent> {
+    let key = if rows < 0 {
+        PhysicalKey::ArrowUp
+    } else {
+        PhysicalKey::ArrowDown
+    };
+    let press = KeyEvent {
+        action: KeyAction::Press,
+        key,
+        mods: ModSet::empty(),
+        consumed_mods: ModSet::empty(),
+        composing: false,
+        text: None,
+        unshifted_codepoint: None,
+    };
+    vec![press; rows.unsigned_abs() as usize]
+}
+
 /// Whether pointer motion reaches the program: any-event tracking (DECSET
 /// 1003) reports every move, button-event tracking (1002) only drags, and
 /// normal tracking (1000) none.

@@ -38,6 +38,7 @@ use web_sys::{
 };
 
 use crate::framing::FrameBuffer;
+use crate::input::WheelAction;
 use crate::search::{Search, find_matches, reveal_row};
 use crate::selection::{Selection, cell_at};
 use crate::{Mark, Metrics, Overlay, render_cursor_row, render_selected};
@@ -2475,60 +2476,85 @@ fn on_copy(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaEleme
     }
 }
 
-/// The wheel pages the local scrollback, or scrolls a mouse-tracking
-/// program (Shift+wheel stays local); the page itself does not scroll.
+/// The wheel pages the local scrollback, scrolls a mouse-tracking program,
+/// or reaches a program on the alternate screen as arrow keys
+/// ([`crate::input::route_wheel`]); the page itself does not scroll.
 fn on_wheel(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
     let Some(event) = event.dyn_ref::<web_sys::WheelEvent>() else {
         return;
     };
     event.prevent_default();
-    if program_takes_mouse(&app.borrow(), event.shift_key()) {
-        forward_wheel(app, event);
-        return;
+    let action = {
+        let app = app.borrow();
+        crate::input::route_wheel(
+            wheel_modes(&app),
+            event.shift_key(),
+            app.session.viewport_scrolled(),
+        )
+    };
+    match action {
+        WheelAction::Report => forward_wheel(app, event),
+        WheelAction::Arrows => {
+            let rows = wheel_travel(&app.borrow(), event, 1.0);
+            let arrows =
+                crate::input::wheel_arrows(rows.clamp(-MAX_WHEEL_ARROWS, MAX_WHEEL_ARROWS));
+            send_input(app, arrows.into_iter().map(InputEvent::Key));
+        }
+        WheelAction::Scrollback => {
+            let app = app.borrow();
+            let rows = wheel_travel(&app, event, 1.0);
+            if rows != 0 && app.session.scroll_viewport(rows) {
+                app.clear_selection();
+                app.request_paint();
+            }
+        }
     }
-    let app = app.borrow();
-    // CSS may scale the canvas; a row is its cell height in client pixels.
+}
+
+/// The replica's modes a wheel event is routed by.
+fn wheel_modes(app: &App) -> crate::input::WheelModes {
+    app.session
+        .terminal()
+        .map_or_else(Default::default, |terminal| crate::input::WheelModes {
+            tracking: terminal.mouse_tracking(),
+            alt_screen: [1049, 1047, 47]
+                .into_iter()
+                .any(|mode| terminal.dec_mode(mode)),
+            alt_scroll: terminal.dec_mode(1007),
+        })
+}
+
+/// Whole units of wheel travel, `rows_per_unit` rows each; the remainder
+/// carries to the next wheel event. A row is a cell's drawn height.
+fn wheel_travel(app: &App, event: &web_sys::WheelEvent, rows_per_unit: f64) -> i32 {
     let rect = app.canvas.get_bounding_client_rect();
-    let scale = rect.height() / f64::from(app.canvas.height().max(1));
+    let (_, css_h) = app.css_cell(&rect);
     let (_, page_rows) = app.session.dims();
     let mut carry = app.wheel_carry.get();
-    let rows = crate::input::wheel_rows(
+    let units = crate::input::wheel_rows(
         event.delta_y(),
         event.delta_mode(),
-        app.metrics.cell_h * scale,
+        css_h * rows_per_unit,
         page_rows,
         &mut carry,
     );
     app.wheel_carry.set(carry);
-    if rows != 0 && app.session.scroll_viewport(rows) {
-        app.clear_selection();
-        app.request_paint();
-    }
+    units
 }
 
 /// Most wheel clicks one wheel event reports, so a flung trackpad cannot
 /// flood the program.
 const MAX_WHEEL_CLICKS: i32 = 10;
 
+/// Most arrow keys one wheel event sends: the rows of
+/// [`MAX_WHEEL_CLICKS`] clicks.
+const MAX_WHEEL_ARROWS: i32 = 30;
+
 /// Report wheel travel to the program as xterm wheel presses (buttons 4
 /// and 5), one per [`crate::input::WHEEL_ROWS_PER_CLICK`] rows.
 fn forward_wheel(app: &Rc<RefCell<App>>, event: &web_sys::WheelEvent) {
-    let clicks = {
-        let app = app.borrow();
-        let rect = app.canvas.get_bounding_client_rect();
-        let scale = rect.height() / f64::from(app.canvas.height().max(1));
-        let (_, page_rows) = app.session.dims();
-        let mut carry = app.wheel_carry.get();
-        let clicks = crate::input::wheel_rows(
-            event.delta_y(),
-            event.delta_mode(),
-            app.metrics.cell_h * scale * crate::input::WHEEL_ROWS_PER_CLICK,
-            page_rows,
-            &mut carry,
-        );
-        app.wheel_carry.set(carry);
-        clicks.clamp(-MAX_WHEEL_CLICKS, MAX_WHEEL_CLICKS)
-    };
+    let clicks = wheel_travel(&app.borrow(), event, crate::input::WHEEL_ROWS_PER_CLICK)
+        .clamp(-MAX_WHEEL_CLICKS, MAX_WHEEL_CLICKS);
     let button = crate::input::wheel_button(clicks);
     for _ in 0..clicks.unsigned_abs() {
         send_mouse(app, event, MouseAction::Press, button);
