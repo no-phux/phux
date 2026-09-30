@@ -2368,6 +2368,24 @@ impl SessionLoop {
         if outcome.resync_required {
             return self.request_rebootstrap(conn).await;
         }
+        self.fold_frame_outcome(conn, out, sidebar, outcome, prev_rects.as_ref(), repaint)
+            .await?;
+        Ok(FrameStep::Done)
+    }
+
+    /// Fold one non-terminal frame outcome into the loop: attach what it
+    /// discovered, fold peer, rename, watch, and chrome changes, send the
+    /// requests it owes, and raise (never paint) what the burst drain must
+    /// repaint. `prev_rects` is the pre-frame leaf geometry a reflow diffs.
+    async fn fold_frame_outcome<W: crate::attach::RenderSink>(
+        &mut self,
+        conn: &mut Connection,
+        out: &mut W,
+        sidebar: Option<SidebarReservation>,
+        mut outcome: FrameOutcome,
+        prev_rects: Option<&HashMap<ResourceId, crate::layout::Rect>>,
+        repaint: &mut RepaintAccumulator,
+    ) -> Result<(), AttachError> {
         self.attach_discovered_panes(conn, &outcome.attach_panes)
             .await?;
         let answered = spawned_satellite_panes(&outcome.adopt_spawned);
@@ -2381,10 +2399,10 @@ impl SessionLoop {
         self.resync_watches(conn, &mut outcome).await?;
         self.fold_chrome_and_notices(&mut outcome, repaint);
         self.open_directory_picker(out, sidebar, outcome.directory_listing.take());
-        self.emit_outcome_requests(conn, &mut outcome, sidebar, prev_rects.as_ref())
+        self.emit_outcome_requests(conn, &mut outcome, sidebar, prev_rects)
             .await?;
         self.settle_frame_view(out, &outcome, sidebar, fleet_dirty, repaint);
-        Ok(FrameStep::Done)
+        Ok(())
     }
 
     /// The per-leaf rect map of the zoom- and sidebar-honoring view, or
