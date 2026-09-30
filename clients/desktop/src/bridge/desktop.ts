@@ -64,6 +64,13 @@ export interface Bridge {
   onPathAnswers(listener: (answers: DesktopPathAnswer[]) => void): void;
 }
 
+/**
+ * Wake drains across every bridge in this process, for `PHUX_DESKTOP_PERF`:
+ * how many wakes, how many events they carried, and the milliseconds spent
+ * draining and applying them (including the Solid updates they trigger).
+ */
+export const drainStats = { wakes: 0, events: 0, ms: 0, maxMs: 0 };
+
 export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
   const [status, setStatus] = createSignal("Connecting");
   const [error, setError] = createSignal<string | undefined>();
@@ -127,6 +134,7 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
 
   function activity(from: string): void {
     if (closed || !owner || from !== owner.handle) return;
+    const started = performance.now();
     // One drain per wake, even when empty: the drain rearms notification.
     const events = owner.takeEvents();
     // Drain every wake: the runtime's answer queue is bounded, and a full
@@ -137,6 +145,11 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
       if (answers.length > 0) pathListener(answers);
       snapshot();
     });
+    const elapsed = performance.now() - started;
+    drainStats.wakes += 1;
+    drainStats.events += events.length;
+    drainStats.ms += elapsed;
+    drainStats.maxMs = Math.max(drainStats.maxMs, elapsed);
   }
 
   function connect(): void {

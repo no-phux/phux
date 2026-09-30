@@ -85,6 +85,7 @@ pub(super) fn prepare(
     }
     prepared.prepare_opacity_layers(window, cx);
     prepared.report.prepare_micros = started.elapsed().as_micros();
+    crate::perf::PREPARE.record_elapsed(started);
     prepared
 }
 
@@ -318,6 +319,7 @@ impl Prepared {
             }
         });
         self.report.paint_micros = started.elapsed().as_micros();
+        crate::perf::PAINT.record_elapsed(started);
         self.report
     }
 
