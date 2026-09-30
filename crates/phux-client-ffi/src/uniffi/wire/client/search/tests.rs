@@ -232,6 +232,55 @@ fn no_match_is_an_empty_untruncated_result() {
 }
 
 #[test]
+fn saturated_search_keeps_matches_revealable_after_repeated_searches() {
+    let lines: Vec<_> = (0..600).map(|index| format!("needle {index:03}")).collect();
+    let remote = remote_with(&[(1, lines.join("\r\n").into_bytes())]);
+    for _ in 0..3 {
+        remote.scroll_projection_to_bottom(pane(1));
+        let found = search(&remote, 1, "needle");
+        assert!(found.truncated);
+        assert!(!found.matches.is_empty());
+        // The first reveal needs a viewport pin; subsequent reveals must
+        // allocate its replacement before releasing that pin.
+        for index in [0, 1, 2, 0] {
+            remote
+                .reveal_search_match(pane(1), found.matches[index].start)
+                .expect("bounded search leaves room for viewport pins");
+            assert_eq!(top_row(&remote, 1), format!("needle {index:03}"));
+        }
+        let replaced = search(&remote, 1, "needle");
+        remote
+            .reveal_search_match(pane(1), replaced.matches[1].start)
+            .expect("searching while pinned leaves replacement capacity");
+        assert_eq!(top_row(&remote, 1), "needle 001");
+        remote.clear_projection_search(pane(1)).expect("clear");
+        assert_eq!(top_row(&remote, 1), "needle 001");
+    }
+}
+
+#[test]
+fn sparse_cells_separate_matches_without_splitting_wide_or_wrapped_text() {
+    let remote = remote_with(&[(
+        1,
+        "a\x1b[2Cb\r\n日本語\r\ncafe\u{301}\r\n123456789012345678901234界x"
+            .as_bytes()
+            .to_vec(),
+    )]);
+    assert!(search(&remote, 1, "ab").matches.is_empty());
+    assert_eq!(search(&remote, 1, "a  b").matches.len(), 1);
+    assert_eq!(search(&remote, 1, "b\n日本語").matches.len(), 1);
+    assert_eq!(search(&remote, 1, "日本語").matches.len(), 1);
+    assert_eq!(search(&remote, 1, "cafe\u{301}").matches.len(), 1);
+    assert_eq!(search(&remote, 1, "34界x").matches.len(), 1);
+
+    // With one column left, Ghostty inserts a spacer head before wrapping
+    // the wide glyph. Neither that head nor its tail is a searchable space.
+    let remote = remote_with(&[(1, "12345678901234567890123界x".as_bytes().to_vec())]);
+    assert_eq!(search(&remote, 1, "23界x").matches.len(), 1);
+    assert!(search(&remote, 1, "23 界x").matches.is_empty());
+}
+
+#[test]
 fn bounds_are_explicit() {
     let remote = remote_with(&[(1, scrollback())]);
     assert!(matches!(

@@ -622,7 +622,9 @@ impl HistoryCache {
     }
 
     /// Remaining bounded engine-anchor registrations.
-    pub(crate) fn remaining_anchor_capacity(&self) -> usize {
+    /// Presentation owners can reserve headroom before allocating search results.
+    #[must_use]
+    pub fn remaining_anchor_capacity(&self) -> usize {
         self.config
             .max_materialized_rows
             .saturating_sub(self.anchor_pages.len())

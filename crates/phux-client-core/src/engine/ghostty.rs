@@ -930,16 +930,54 @@ fn scan_history_row(
     scan: &mut NeedleScan<'_>,
     cols: u16,
     y: u32,
+    wrapped: bool,
 ) -> Result<bool, GhosttyEngineError> {
+    let mut blanks = Vec::new();
     for x in 0..cols {
         let grid_ref = terminal.grid_ref(Point::History(PointCoordinate { x, y }))?;
-        for scalar in grid_ref_graphemes(&grid_ref)? {
+        let Some(scalars) = search_cell_graphemes(&grid_ref)? else {
+            continue;
+        };
+        if scalars.is_empty() {
+            blanks.push(x);
+            continue;
+        }
+        // Textless interior cells are spaces, not adjacency. Delay them so
+        // trailing empty padding does not separate text from its newline.
+        if scan_blank_columns(scan, &mut blanks, y) {
+            return Ok(true);
+        }
+        for scalar in scalars {
             if scan.push(scalar, history_point(x, y)) {
                 return Ok(true);
             }
         }
     }
-    Ok(false)
+    // A soft wrap continues the same logical line, including sparse gaps
+    // before a wide spacer head. Only hard-line padding is discarded.
+    Ok(wrapped && scan_blank_columns(scan, &mut blanks, y))
+}
+
+fn scan_blank_columns(scan: &mut NeedleScan<'_>, blanks: &mut Vec<u16>, y: u32) -> bool {
+    for blank in blanks.drain(..) {
+        if scan.push(' ', history_point(blank, y)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Wide continuation cells occupy columns but contribute no searchable text.
+fn search_cell_graphemes(
+    grid_ref: &libghostty_vt::screen::GridRef<'_>,
+) -> Result<Option<Vec<char>>, GhosttyEngineError> {
+    if matches!(
+        grid_ref.cell()?.wide()?,
+        CellWide::SpacerTail | CellWide::SpacerHead
+    ) {
+        return Ok(None);
+    }
+    grid_ref_graphemes(grid_ref).map(Some)
 }
 
 /// Scan loaded history oldest-first for `needle`, stopping at `max_matches` ranges.
@@ -957,7 +995,7 @@ fn scan_history_for_needle(
     let cols = terminal.cols()?;
     let mut y = 0_u32;
     while let Some(wrapped) = history_row_wrapped_at(terminal, y)? {
-        if scan_history_row(terminal, &mut scan, cols, y)? {
+        if scan_history_row(terminal, &mut scan, cols, y, wrapped)? {
             break;
         }
         if !wrapped && scan.push('\n', history_point(cols.saturating_sub(1), y)) {
@@ -2099,6 +2137,29 @@ mod tests {
         sensitive.push('é', start);
         sensitive.push('X', end);
         assert!(sensitive.into_ranges().is_empty());
+    }
+
+    #[test]
+    fn search_keeps_sparse_cells_at_soft_wraps_but_not_hard_line_padding() {
+        let mut terminal = GhosttyTerminal::new(4, 4).expect("terminal");
+        terminal.vt_write("a\x1b[2C界x".as_bytes());
+        assert_eq!(history_row_wrapped_at(&terminal, 0).unwrap(), Some(true));
+        assert!(
+            scan_history_for_needle(&terminal, "a界x", 1, true)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            scan_history_for_needle(&terminal, "a  界x", 1, true).unwrap(),
+            vec![(history_point(0, 0), history_point(2, 1))]
+        );
+
+        let mut terminal = GhosttyTerminal::new(4, 4).expect("terminal");
+        terminal.vt_write(b"ab\r\ncd");
+        assert_eq!(
+            scan_history_for_needle(&terminal, "ab\ncd", 1, true).unwrap(),
+            vec![(history_point(0, 0), history_point(1, 1))]
+        );
     }
 
     #[test]
