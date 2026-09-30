@@ -1436,6 +1436,15 @@ pub fn run() -> ExitCode {
         output::bytes(format!("{}\n", kind.as_str()).as_bytes());
         return ExitCode::SUCCESS;
     }
+    // A development build whose state directory resolves to production
+    // (`PHUX_PROFILE=default` outside a temp sandbox) would log, record, and
+    // provision into the day-to-day installation's state. Nothing runs.
+    if let Err(refusal) =
+        phux_config::production::refuse_dev_on_production_state(&phux_config::instance::state_dir())
+    {
+        eprintln!("phux: {refusal}");
+        return ExitCode::from(2);
+    }
     let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
     // Key material never belongs on a `phux workload` command line, and argv is
     // echoed in too many places to scrub, so that verb is refused before parsing

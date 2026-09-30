@@ -50,6 +50,10 @@ pub enum TlsError {
         /// Path of the file that is missing.
         missing: String,
     },
+    /// A development build aimed at the production certificate or key
+    /// ([`refuse_dev_on_production_tls`]).
+    #[error("{0}")]
+    ProductionState(String),
 }
 
 /// Maps onto the variants [`TlsError`] already had, so operator-facing
@@ -84,7 +88,7 @@ pub fn default_key_path() -> PathBuf {
 /// either file is missing. Prefer [`ensure_self_signed_for`] when the
 /// routable address is known.
 pub fn ensure_self_signed(cert_path: &Path, key_path: &Path) -> Result<(), TlsError> {
-    Ok(cert::ensure_self_signed(cert_path, key_path)?)
+    ensure_self_signed_for(cert_path, key_path, &[])
 }
 
 /// Provision a self-signed pair naming `advertised` alongside loopback.
@@ -98,9 +102,27 @@ pub fn ensure_self_signed_for(
     key_path: &Path,
     advertised: &[String],
 ) -> Result<(), TlsError> {
+    refuse_dev_on_production_tls(cert_path, key_path)?;
     Ok(cert::ensure_self_signed_for(
         cert_path, key_path, advertised,
     )?)
+}
+
+/// Refuse a development build the production certificate or private key.
+///
+/// Provisioning one would write production state, and presenting one would
+/// let a dev server answer as the production identity. The one check lives
+/// in [`phux_config::production::refuse_dev_on_production_state`].
+///
+/// # Errors
+///
+/// [`TlsError::ProductionState`] with the refusal.
+pub fn refuse_dev_on_production_tls(cert_path: &Path, key_path: &Path) -> Result<(), TlsError> {
+    for path in [cert_path, key_path] {
+        phux_config::production::refuse_dev_on_production_state(path)
+            .map_err(TlsError::ProductionState)?;
+    }
+    Ok(())
 }
 
 /// The SANs a listener bound to `addr` advertises.

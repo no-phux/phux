@@ -351,7 +351,15 @@ fn update_one(
 
 /// The managed plugins directory under the phux data dir:
 /// `$XDG_DATA_HOME/phux/plugins`, else `~/.local/share/phux/plugins`.
+/// Refused to a development build when it is the production directory (it
+/// is not profile-scoped, and the production server runs what lands there).
 fn plugins_data_dir() -> Result<PathBuf, String> {
+    let dir = unguarded_plugins_data_dir()?;
+    phux_config::production::refuse_dev_on_production_state(&dir)?;
+    Ok(dir)
+}
+
+fn unguarded_plugins_data_dir() -> Result<PathBuf, String> {
     if let Some(xdg) = std::env::var_os("XDG_DATA_HOME")
         && !xdg.is_empty()
     {

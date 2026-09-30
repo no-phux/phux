@@ -46,6 +46,13 @@ tracing.workspace = true
 # `time` status-bar widget for strftime-style formatting. No workspace dep
 # yet because no other crate consumes chrono.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# `production::refuse_dev_on_production_state` needs the account's home
+# directory from the password database (`getpwuid_r`), because a sandbox
+# rewrites `$HOME` while an inherited `PHUX_WS_TOKENS` still points at the
+# real store. `nix`'s `user` feature is a safe wrapper, keeping this crate's
+# `forbid(unsafe_code)`; the same version is already in the tree through
+# phux-server, so this adds a consumer, not new third-party code.
+nix = { version = "0.31", default-features = false, features = ["user"] }
 
 [dev-dependencies]
 serde_json.workspace = true

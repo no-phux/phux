@@ -121,6 +121,10 @@ pub enum WorkloadError {
     /// The supplied enrollment material was refused.
     #[error(transparent)]
     Material(#[from] MaterialError),
+    /// A development build aimed at the production workload authority
+    /// ([`phux_config::production::refuse_dev_on_production_state`]).
+    #[error("{0}")]
+    ProductionState(String),
 }
 
 /// Where workload authority material lives. `PHUX_WORKLOAD_CA`,

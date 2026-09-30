@@ -102,6 +102,8 @@ pub fn edit_document(path: &Path) -> Result<RegistryEdit, String> {
 }
 
 fn lock_registry(path: &Path) -> Result<std::fs::File, String> {
+    // The machine registries point the production client at credentials.
+    crate::production::refuse_dev_on_production_state(path)?;
     let parent = path
         .parent()
         .ok_or_else(|| "registry has no parent directory".to_owned())?;
