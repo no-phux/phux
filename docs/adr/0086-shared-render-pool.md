@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-09-22
+last-reviewed: 2026-09-30
 ---
 
 # 0086 — The pooled libghostty render trio lives in `phux-protocol`
@@ -56,7 +56,10 @@ The token is a **required** argument of the one entry point rather than a
 second `begin_generation` method. A walker whose terminal is fixed for the
 pool's life — the server synthesizer walks one PTY-backed `Terminal` per pane
 for the pane's whole life — passes a constant, which is exactly "a generation
-that never changes", so behaviour is identical either way. Two entry points
+that never changes", so behaviour is identical either way. (The synthesizer
+does bump its token for one other reason: after one of its fresh-state walks
+drained the terminal's dirty bits, the pooled rows may be stale, so the next
+tick rebuilds; `phux-69pq.13`.) Two entry points
 would mean one of them was always the wrong one to reach for, and the cost of
 reaching for it was silent grid corruption that only manifests when a
 replacement terminal's pages recycle the freed allocation. On the client, the
