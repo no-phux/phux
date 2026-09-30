@@ -396,7 +396,13 @@ function setKeybind(config: GhosttyConfig, value: string): void {
   const trigger = raw.replace(/^((global|all|unconsumed|performable):)+/, "");
   const action = value.slice(equals + 1).trim();
   const chord = ghosttyChord(trigger);
-  if (chord && BUILT_IN[chord] === action) return;
+  // The terminal already serves this chord with this meaning: it keeps no
+  // earlier config binding either, so the built-in answers again.
+  if (chord && BUILT_IN[chord] === action) {
+    config.keybinds.delete(chord);
+    config.globals.delete(chord);
+    return;
+  }
   const command = ghosttyAction(action);
   if (!chord || command === undefined) {
     // Sequences, bare keys and actions with no equivalent: the chord keeps

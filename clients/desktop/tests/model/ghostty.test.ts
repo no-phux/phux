@@ -154,6 +154,14 @@ describe("ghostty config", () => {
     expect(cleared.unmapped).toEqual([]);
   });
 
+  test("restoring a built-in chord's own action drops an earlier rebind of it", () => {
+    const restored = parseGhostty(
+      "keybind = global:super+c=text:x\nkeybind = super+c=copy_to_clipboard",
+    );
+    expect(restored.keybinds.has("cmd+c")).toBe(false);
+    expect(restored.globals.has("cmd+c")).toBe(false);
+  });
+
   test("a theme needs both default colours; a palette needs all 16", () => {
     const theme = ghosttyTheme(config);
     expect(theme?.background).toBe("#071012");
