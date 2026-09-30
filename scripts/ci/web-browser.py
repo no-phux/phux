@@ -74,6 +74,10 @@ def signal_group(group, signum):
         os.killpg(group, signum)
     except ProcessLookupError:
         return False
+    except PermissionError:
+        # Darwin answers EPERM for a group whose remaining members are
+        # zombies awaiting their reaper: nothing signalable is left in it.
+        return False
     return True
 
 
