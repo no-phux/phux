@@ -155,16 +155,14 @@ fn read_connector_token(path: Option<&Path>) -> Result<Option<Vec<u8>>, String> 
     };
     let metadata = std::fs::metadata(path)
         .map_err(|error| format!("read token file metadata {}: {error}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err(format!(
-                "token file {} must be owner-only (mode 0600)",
-                path.display()
-            ));
-        }
-    }
+    // Owner-only and owned by this uid: a file another account can read or
+    // replace is someone else's tunnel credential.
+    phux_dial::secret_file::check_metadata(
+        path,
+        &metadata,
+        phux_dial::secret_file::SecretFile::OwnerOnlyToken,
+        phux_dial::secret_file::effective_uid(),
+    )?;
     let raw = std::fs::read_to_string(path)
         .map_err(|error| format!("read token file {}: {error}", path.display()))?;
     let token = raw
@@ -461,7 +459,7 @@ mod tests {
             std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o644))
                 .expect("set broad mode");
             let error = read_connector_token(Some(file.path())).expect_err("broad mode refused");
-            assert!(error.contains("owner-only"), "{error}");
+            assert!(error.contains("chmod 600"), "{error}");
             std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o600))
                 .expect("set owner-only mode");
         }

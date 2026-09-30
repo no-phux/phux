@@ -27,7 +27,9 @@ mod splice;
 mod tls;
 mod tokens;
 
-pub use runtime::{BoundRelay, DEFAULT_MAX_CONNS, RelayConfig, RelayRuntime};
+pub use runtime::{
+    BoundRelay, DEFAULT_HANDSHAKES_PER_SOURCE, DEFAULT_MAX_CONNS, RelayConfig, RelayRuntime,
+};
 pub use tls::{cert_fingerprint, ensure_self_signed};
 pub use tokens::{RouteTokenStore, mint_route_token, validate_route_name};
 
@@ -127,6 +129,12 @@ pub enum RelayError {
         missing: String,
     },
 
+    /// A secret file (the TLS key or the route-token store) is owned by
+    /// another account, or other accounts can replace it (or, for the key,
+    /// read it). Carries the refusal and its fix.
+    #[error("{0}")]
+    InsecureFile(String),
+
     /// The OS random source failed while minting a token.
     #[error("os random source unavailable: {0}")]
     Random(#[from] getrandom::Error),
@@ -162,6 +170,7 @@ impl From<phux_dial::cert::CertError> for RelayError {
             CertError::Rcgen(err) => Self::Rcgen(err),
             CertError::Pem(err) => Self::Pem(err),
             CertError::NoCerts(path) => Self::NoCerts(path),
+            CertError::InsecureKey(message) => Self::InsecureFile(message),
             CertError::PartialTlsPair { present, missing } => {
                 Self::PartialTlsPair { present, missing }
             }

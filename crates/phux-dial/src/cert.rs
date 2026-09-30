@@ -37,6 +37,10 @@ pub enum CertError {
     /// The certificate file held no certificates. Carries the path.
     #[error("no certificates in {0}")]
     NoCerts(String),
+    /// The private key file is owned by another account, or other accounts
+    /// can read or replace it ([`crate::secret_file`]). Carries the refusal.
+    #[error("{0}")]
+    InsecureKey(String),
     /// Exactly one of the persisted cert/key pair exists; the operator must
     /// delete the survivor explicitly.
     #[error("partial TLS pair: {present} exists but {missing} is missing")]
@@ -154,10 +158,23 @@ pub fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, CertError
 
 /// Read the first PEM private key (PKCS#8, SEC1, or PKCS#1).
 ///
+/// The file must pass [`crate::secret_file::SecretFile::PrivateKey`] first:
+/// a key another account owns or can read is refused, and a group-readable
+/// one is logged as a warning and used.
+///
 /// # Errors
 ///
-/// [`CertError::Pem`] if the file cannot be read or holds no private key.
+/// [`CertError::InsecureKey`] for a refused file, and [`CertError::Pem`] if
+/// the file cannot be read or holds no private key.
 pub fn load_key(path: &Path) -> Result<PrivateKeyDer<'static>, CertError> {
+    use crate::secret_file::{SecretFile, check_metadata, effective_uid};
+    // A missing file reports as before, through the read.
+    if let Ok(metadata) = fs::metadata(path) {
+        let verdict = check_metadata(path, &metadata, SecretFile::PrivateKey, effective_uid());
+        if let Some(warning) = verdict.map_err(CertError::InsecureKey)? {
+            tracing::warn!("{warning}");
+        }
+    }
     Ok(PrivateKeyDer::from_pem_file(path)?)
 }
 
@@ -272,6 +289,27 @@ mod tests {
         let fp = cert_fingerprint(&narrow).unwrap();
         ensure_self_signed_for(&narrow, &narrow_key, &["100.64.0.2".to_owned()]).unwrap();
         assert_eq!(cert_fingerprint(&narrow).unwrap(), fp, "never widened");
+    }
+
+    /// A world-readable or group-writable key is refused before its bytes are
+    /// read; a group-readable one (an `ssl-cert` group setup) still loads.
+    #[test]
+    fn loading_a_key_checks_its_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("cert.pem");
+        let key = dir.path().join("key.pem");
+        ensure_self_signed(&cert, &key).unwrap();
+        for (mode, loads) in [(0o600, true), (0o640, true), (0o644, false), (0o660, false)] {
+            fs::set_permissions(&key, fs::Permissions::from_mode(mode)).unwrap();
+            let result = load_key(&key);
+            assert_eq!(result.is_ok(), loads, "{mode:04o}: {result:?}");
+            if !loads {
+                assert!(
+                    matches!(&result, Err(CertError::InsecureKey(message)) if message.contains("chmod 600")),
+                    "{mode:04o}: {result:?}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -17,7 +17,7 @@ use tokio::time::timeout;
 use crate::common::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, assert_app_closed, await_route_live, dial_consumer,
     dial_tunnel_raw, echo_when_ready, expect_echo, expect_post_handshake_close, mint,
-    spawn_connector, spawn_relay,
+    spawn_connector, spawn_relay, spawn_relay_tuned,
 };
 
 /// A second connector claiming a live route wins; the incumbent is closed
@@ -260,6 +260,46 @@ async fn stalled_handshakes_do_not_hold_connection_slots() {
     for dial in stalled {
         dial.abort();
     }
+}
+
+/// One source address holds only its share of the admissions in flight:
+/// with a share of one, a silent tunnel (no auth preamble) fills the
+/// source's unvalidated share, a second one (made to answer a Retry) its
+/// validated share, and a third connection from the same address is refused
+/// at once. When the silent ones reach the preamble deadline the share is
+/// returned and a connector from that address is admitted again.
+#[tokio::test]
+async fn one_source_cannot_hold_more_than_its_admission_share() {
+    let dir = tempfile::tempdir().unwrap();
+    let preamble = std::time::Duration::from_millis(800);
+    let relay = spawn_relay_tuned(dir.path(), 8, |runtime| {
+        runtime
+            .with_preamble_deadline(preamble)
+            .with_handshakes_per_source(1)
+    })
+    .await;
+    let token = mint(&relay.tokens_path, "alpha");
+
+    let mut silent = Vec::new();
+    for _ in 0..2 {
+        silent.push(
+            dial_tunnel_raw(relay.addr, &relay.fingerprint, "relay", None)
+                .await
+                .expect("a silent tunnel inside the share completes its handshake"),
+        );
+    }
+    let refused = dial_tunnel_raw(relay.addr, &relay.fingerprint, "relay", None).await;
+    assert!(
+        refused.is_err(),
+        "a third concurrent admission from one source must be refused"
+    );
+
+    tokio::time::sleep(preamble + std::time::Duration::from_millis(300)).await;
+    let _connector = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"A:").await;
+    let mut consumer =
+        echo_when_ready(relay.addr, &relay.fingerprint, "alpha", b"A:", b"served").await;
+    expect_echo(&mut consumer, b"", b"after-the-share-returned").await;
+    drop(silent);
 }
 
 /// With `max_conns = 2` held by a tunnel and a consumer, the next
