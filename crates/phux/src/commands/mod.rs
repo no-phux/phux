@@ -987,7 +987,7 @@ pub(crate) enum Command {
     #[usage(help_heading = "Sessions", display_order = 13)]
     Kill {
         /// What to kill (selector).
-        #[usage(group = "kill_what")]
+        #[usage(group = "kill_what", required_unless = "--server")]
         target: Option<String>,
         /// Stop the running server, ending every session it holds.
         ///
