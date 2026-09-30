@@ -125,7 +125,8 @@ fn unknown_unreachable_and_non_hub_hosts_are_refused_naming_the_host() {
         );
 
         // A non-hub server refuses any host rather than listing itself under it.
-        let (_port, plain_shutdown, plain_task) = spawn_satellite(tmp.path().join("plain.sock"));
+        let (_port, plain_shutdown, plain_task) =
+            spawn_satellite(tmp.path().join("plain.sock")).await;
         let mut plain = wait_for_socket(&tmp.path().join("plain.sock"), STEP_DEADLINE).await;
         let not_hub = refusal(list_on(&mut plain, 3, "/", Some("sat")).await);
         assert!(

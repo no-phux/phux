@@ -31,9 +31,10 @@ use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
 use phux_protocol::ids::{GroupId, ResourceId, SatelliteHost};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+use phux_protocol::wire::RemoteListenerTransport;
 use phux_protocol::wire::frame::{
     AttachTarget, Command, CommandResult, CommandValue, DetachReason, FrameKind, SpawnResource,
-    SpawnResult, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
+    SpawnResult, StateScope, TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
 };
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
 use tempfile::TempDir;
@@ -376,14 +377,42 @@ pub async fn command(stream: &mut UnixStream, request_id: u32, command: Command)
     await_command_result(stream, request_id).await
 }
 
-/// An ephemeral loopback port that was free a moment ago (inherently racy).
-#[must_use]
-pub fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+/// The address `transport`'s listener actually bound, read from the
+/// server's `GET_STATE` listener report over its UDS. Tests bind port 0 and
+/// ask here, rather than pre-picking a port another process could take.
+/// Panics when the listener was not configured or failed to bind.
+pub async fn bound_listener_addr(
+    socket: &Path,
+    transport: RemoteListenerTransport,
+) -> std::net::SocketAddr {
+    let mut stream = wait_for_socket(socket, SOCKET_CONNECT_DEADLINE).await;
+    let result = command(
+        &mut stream,
+        1,
+        Command::GetState {
+            scope: StateScope::Server,
+        },
+    )
+    .await;
+    let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
+        panic!("GET_STATE failed: {result:?}");
+    };
+    let report = snapshot
+        .listeners()
+        .unwrap_or_else(|| panic!("the server reported no remote listeners"));
+    let slot = report
+        .listeners
+        .iter()
+        .find(|slot| slot.transport == transport)
+        .unwrap_or_else(|| panic!("no {transport} listener in {report:?}"));
+    assert!(
+        slot.bound,
+        "the {transport} listener did not bind: {slot:?}"
+    );
+    slot.addr
+        .as_deref()
+        .and_then(|addr| addr.parse().ok())
+        .unwrap_or_else(|| panic!("the {transport} listener reported no address: {slot:?}"))
 }
 
 /// [`encode_frame`] as an owned `Vec<u8>`.

@@ -8,9 +8,10 @@ use std::time::Duration;
 
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
+use phux_protocol::wire::RemoteListenerTransport;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind};
 use phux_server::{ServerConfig, ServerRuntime};
-use phux_server_testkit::{WIRE_RECV_TIMEOUT, encode_frame_vec, run_local};
+use phux_server_testkit::{WIRE_RECV_TIMEOUT, bound_listener_addr, encode_frame_vec, run_local};
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use wtransport::ClientConfig;
@@ -19,12 +20,6 @@ use super::common::attach;
 
 #[test]
 fn wt_hello_attach_receives_attached_and_snapshot() {
-    let port = std::net::UdpSocket::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let wt_addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
     // A throwaway cert pair, so the test never touches the real state dir.
     let tls_dir = TempDir::new().unwrap();
     let (cert, key) = (
@@ -35,8 +30,9 @@ fn wt_hello_attach_receives_attached_and_snapshot() {
 
     run_local(async move {
         let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
         let cfg = ServerConfig {
-            socket_path: tmp.path().join("phux.sock"),
+            socket_path: socket_path.clone(),
             pre_seeded_session: Some("default".to_owned()),
             seed_with_pty: false,
             seed_command: None,
@@ -50,7 +46,7 @@ fn wt_hello_attach_receives_attached_and_snapshot() {
         let (_shutdown, stop) = oneshot::channel::<()>();
         let _server = tokio::task::spawn_local(async move {
             ServerRuntime::new(cfg)
-                .listen_webtransport(wt_addr)
+                .listen_webtransport("127.0.0.1:0".parse().unwrap())
                 .run_async(async move {
                     let _ = stop.await;
                 })
@@ -58,7 +54,8 @@ fn wt_hello_attach_receives_attached_and_snapshot() {
         });
 
         // The client skips cert validation; the CONNECT handshake is real.
-        let url = format!("https://127.0.0.1:{port}/session");
+        let wt_addr = bound_listener_addr(&socket_path, RemoteListenerTransport::Wt).await;
+        let url = format!("https://{wt_addr}/session");
         let mut connection = None;
         for _ in 0..40 {
             // IPv4 loopback like the server, not the dual-stack default:
