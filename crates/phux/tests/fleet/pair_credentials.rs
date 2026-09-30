@@ -6,12 +6,8 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Output, Stdio};
-use std::time::{Duration, Instant};
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
-/// How long a freshly started server has to accept on its socket.
-const READY_DEADLINE: Duration = Duration::from_secs(30);
 
 /// The socket every command in one test dials: beside the test's state
 /// dir, never the operator's.
@@ -31,7 +27,6 @@ struct Server {
 impl Server {
     fn start(state: &Path, tokens: Option<&Path>) -> Self {
         let socket = socket_path(state);
-        let wss_addr = format!("127.0.0.1:{}", free_tcp_port());
         let mut command = crate::common::phux_cmd(PHUX);
         command
             .env("XDG_STATE_HOME", state)
@@ -42,7 +37,7 @@ impl Server {
             .arg("server")
             .arg("--socket")
             .arg(&socket)
-            .args(["--no-seed", "--listen", &wss_addr])
+            .args(["--no-seed", "--listen", crate::listeners::LOOPBACK_ANY_PORT])
             // Backstop only: Drop kills the server.
             .args(["--exit-after-idle", "120"])
             .stdin(Stdio::null())
@@ -57,20 +52,16 @@ impl Server {
             }
         }
         let child = command.spawn().expect("spawn phux server");
-        let server = Self {
+        let mut server = Self {
             child,
             socket,
-            wss_addr,
+            wss_addr: String::new(),
         };
-        let start = Instant::now();
-        while std::os::unix::net::UnixStream::connect(&server.socket).is_err() {
-            assert!(
-                start.elapsed() < READY_DEADLINE,
-                "the server never accepted on {}",
-                server.socket.display()
-            );
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        server.wss_addr = crate::listeners::bound_listener_addr(
+            &server.socket,
+            crate::listeners::RemoteListenerTransport::Wss,
+        )
+        .to_string();
         server
     }
 }
@@ -81,15 +72,6 @@ impl Drop for Server {
         let _ = self.child.wait();
         let _ = std::fs::remove_file(&self.socket);
     }
-}
-
-/// A TCP port nothing is bound to right now.
-fn free_tcp_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("bind a free tcp port")
-        .local_addr()
-        .expect("local addr")
-        .port()
 }
 
 /// Run the real `phux` binary against an isolated state dir.

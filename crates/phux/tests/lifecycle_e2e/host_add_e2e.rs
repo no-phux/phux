@@ -13,6 +13,8 @@
 // credential store and certificate.
 #[path = "../common/ambient.rs"]
 mod common;
+#[path = "../common/listeners.rs"]
+mod listeners;
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -50,7 +52,22 @@ impl FarHost {
             std::fs::create_dir_all(root.join(sub)).expect("scratch dirs");
         }
         std::os::unix::fs::symlink(PHUX, root.join("bin/phux")).expect("phux on the fake PATH");
-        let port = free_udp_port();
+
+        // The first server binds a port the kernel picks; the fake ssh's
+        // restart then asks for that same port, as a service unit would.
+        let mut host = Self {
+            dir,
+            port: 0,
+            server: None,
+        };
+        host.start_server();
+        host.port = listeners::bound_listener_addr(
+            &host.socket(),
+            listeners::RemoteListenerTransport::Quic,
+        )
+        .port();
+        let root = host.dir.path();
+        let port = host.port;
 
         // The fake remote shell: `-G` names loopback; a remote command runs
         // this build with the far host's environment. `service install`
@@ -91,24 +108,18 @@ impl FarHost {
                 .expect("chmod fake ssh");
         }
 
-        let mut host = Self {
-            dir,
-            port,
-            server: None,
-        };
-        host.start_server();
         host
     }
 
-    /// Start the far host's server with its QUIC listener, as its service
-    /// unit would.
+    /// Start the far host's server with its QUIC listener on a port the
+    /// kernel picks.
     fn start_server(&mut self) {
         let server = common::phux_cmd(PHUX)
             .envs(hermetic_env(self.dir.path()))
             .arg("server")
             .arg("--socket")
             .arg(self.socket())
-            .args(["--quic", &format!("127.0.0.1:{}", self.port)])
+            .args(["--quic", listeners::LOOPBACK_ANY_PORT])
             // Backstop only: Drop kills the server, but a panic that skips
             // it must not leave a daemon behind for long.
             .args(["--exit-after-idle", "120"])
@@ -285,15 +296,6 @@ fn shell_quote(word: &str) -> String {
 
 fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
-}
-
-/// A UDP port nothing is bound to right now.
-fn free_udp_port() -> u16 {
-    std::net::UdpSocket::bind("127.0.0.1:0")
-        .expect("bind a free udp port")
-        .local_addr()
-        .expect("local addr")
-        .port()
 }
 
 /// The whole story on one host: `host add` finds phux, pairs, dials the
