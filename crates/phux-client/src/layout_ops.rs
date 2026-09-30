@@ -156,9 +156,6 @@ pub enum LayoutOpsError {
     /// The server rejected a correlated request.
     #[error("server refused layout request: {0}")]
     Refused(String),
-    /// A future `LayoutNode` variant reached a client that cannot rewrite it.
-    #[error("unsupported layout node variant")]
-    UnsupportedLayoutNode,
     /// A `--projection` value did not parse as `<prefix>.layout/v1/<session>`
     /// for the session being addressed (ADR-0129).
     #[error(
@@ -577,7 +574,6 @@ fn swap_leaves(
             left: Box::new(swap_leaves(left, first, second)?),
             right: Box::new(swap_leaves(right, first, second)?),
         }),
-        _ => Err(LayoutOpsError::UnsupportedLayoutNode),
     }
 }
 

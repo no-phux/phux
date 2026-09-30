@@ -130,12 +130,6 @@ fn graph_leaves(peers: &PeerInputs<'_>, session: SessionId) -> Vec<PeerLeaf> {
 }
 
 fn window_terminal_ids(window: &WindowInfo, resources: &[ResourceInfo]) -> Vec<ResourceId> {
-    if let Some(layout) = &window.layout {
-        let leaves = crate::layout::leaves(layout);
-        if !leaves.is_empty() {
-            return leaves;
-        }
-    }
     let mut ids: Vec<_> = resources
         .iter()
         .filter(|resource| resource.window_id == window.id && resource.kind.is_terminal())
@@ -145,7 +139,7 @@ fn window_terminal_ids(window: &WindowInfo, resources: &[ResourceInfo]) -> Vec<R
     ids
 }
 
-/// Whether `window` holds `id` according to its layout tree or resource list.
+/// Whether `window` holds `id` according to the snapshot's resource list.
 pub(super) fn window_contains_terminal(
     window: &WindowInfo,
     resources: &[ResourceInfo],
@@ -449,7 +443,6 @@ mod tests {
     use super::*;
     use crate::layout::Workspace;
     use phux_protocol::ids::WindowId;
-    use phux_protocol::wire::info::LayoutNode;
 
     fn sinfo(id: u32, name: &str) -> SessionInfo {
         SessionInfo::new(SessionId::new(id), name).with_window_count(1)
@@ -488,7 +481,6 @@ mod tests {
     ) -> WindowInfo {
         WindowInfo::new(WindowId::new(window_id), SessionId::new(session), name)
             .with_index(index)
-            .with_layout(Some(LayoutNode::Leaf(leaf.clone())))
             .with_active_resource(Some(leaf))
     }
 

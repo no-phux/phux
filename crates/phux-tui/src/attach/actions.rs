@@ -125,7 +125,6 @@ pub(super) fn apply_resize(
     let total_cells = match target_axis {
         SplitDir::Horizontal => viewport.0,
         SplitDir::Vertical => viewport.1,
-        _ => return Err(ActionError::NoResizableBoundary),
     };
     if total_cells == 0 {
         return Err(ActionError::NoResizableBoundary);
@@ -210,7 +209,6 @@ fn resize_along_axis(
                 (node.clone(), false)
             }
         }
-        _ => (node.clone(), false),
     }
 }
 
@@ -220,7 +218,6 @@ fn tree_contains(node: &LayoutNode, target: &ResourceId) -> bool {
         LayoutNode::Split { left, right, .. } => {
             tree_contains(left, target) || tree_contains(right, target)
         }
-        _ => false,
     }
 }
 
@@ -274,7 +271,6 @@ pub(super) fn apply_divider_resize(
     let p = match axis {
         SplitDir::Horizontal => pointer.0,
         SplitDir::Vertical => pointer.1,
-        _ => return Err(ActionError::NoResizableBoundary),
     };
     let low = p.saturating_sub(start).min(content_len);
     let ratio = clamp_ratio(f32::from(low) / f32::from(content_len));

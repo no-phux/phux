@@ -1521,9 +1521,6 @@ async fn unvisited_peer_agent_paints_from_server_inventory() {
     state.peers.windows.push(
         WindowInfo::new(WindowId::new(10), SessionId::new(2), "main")
             .with_index(0)
-            .with_layout(Some(phux_protocol::wire::info::LayoutNode::Leaf(
-                peer.clone(),
-            )))
             .with_active_resource(Some(peer.clone())),
     );
     state
@@ -1557,13 +1554,10 @@ async fn sweep_discovers_graph_terminals_before_layout_persist() {
         .peers
         .sessions
         .push(SessionInfo::new(SessionId::new(2), "peer"));
-    state.peers.windows.push(
-        WindowInfo::new(WindowId::new(10), SessionId::new(2), "main")
-            .with_index(0)
-            .with_layout(Some(phux_protocol::wire::info::LayoutNode::Leaf(
-                peer.clone(),
-            ))),
-    );
+    state
+        .peers
+        .windows
+        .push(WindowInfo::new(WindowId::new(10), SessionId::new(2), "main").with_index(0));
     state
         .peers
         .resources
@@ -1599,9 +1593,6 @@ async fn resource_pick_focuses_inventory_pane_without_a_tui_layout() {
     state.peers.windows.push(
         WindowInfo::new(WindowId::new(10), SessionId::new(1), "review")
             .with_index(1)
-            .with_layout(Some(phux_protocol::wire::info::LayoutNode::Leaf(
-                target.clone(),
-            )))
             .with_active_resource(Some(target.clone())),
     );
     state

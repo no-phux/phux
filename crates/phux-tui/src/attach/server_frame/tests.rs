@@ -15,8 +15,10 @@ use phux_protocol::wire::frame::{
     AgentEvent, CloseReason, CommandResult, DetachReason, ErrorCode, FrameKind, Scope, SpawnResult,
 };
 use phux_protocol::wire::info::{
-    AgentFacet, LayoutNode, ResourceInfo, SessionInfo, SessionSnapshot, SplitDir, WindowInfo,
+    AgentFacet, ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo,
 };
+
+use crate::layout::{LayoutNode, SplitDir};
 
 use crate::attach::actions::{
     Adopt, ParkedAdopt, PendingSplit, PendingWindow, SpawnedPane, SplitHost,

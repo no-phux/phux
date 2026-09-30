@@ -3116,10 +3116,8 @@ impl SessionLoop {
         }) else {
             return false;
         };
-        let layout = window
-            .layout
-            .clone()
-            .unwrap_or_else(|| crate::layout::LayoutNode::Leaf(id.clone()));
+        // `GET_STATE` carries no layout (ADR-0030): adopt the pane alone.
+        let layout = crate::layout::LayoutNode::Leaf(id.clone());
         let name = window.name.clone();
         let inventory_leaves = crate::layout::leaves(&layout);
         if self.mirror.workspace.windows.len() == 1 {

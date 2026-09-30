@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use phux_client::agent_session_record::AgentSessionRecord;
-use phux_client::layout::{LayoutState, WindowState, Workspace, kill_pane, leaves};
-use phux_protocol::ids::{ResourceId, SessionId, WindowId};
-use phux_protocol::wire::info::{
-    LayoutNode, ResourceInfo, SessionInfo, SessionSnapshot, SplitDir, WindowInfo,
+use phux_client::layout::{
+    LayoutNode, LayoutState, SplitDir, WindowState, Workspace, kill_pane, leaves,
 };
+use phux_protocol::ids::{ResourceId, SessionId, WindowId};
+use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
 use super::model::{
     ARCHIVE_SCHEMA_VERSION, WorkspaceAgentSession, WorkspaceArchive, WorkspaceLayoutNode,
@@ -260,18 +260,11 @@ fn archive_window(
     agent_sessions: &HashMap<ResourceId, AgentSessionRecord>,
 ) -> WorkspaceWindow {
     let panes = panes_by_window.get(&window.id).cloned().unwrap_or_default();
-    let pane_index = panes
-        .iter()
-        .enumerate()
-        .map(|(index, pane)| (pane.id.clone(), index))
-        .collect();
     WorkspaceWindow {
         name: window.name.clone(),
         active: Some(window.id) == active_window,
-        layout: window
-            .layout
-            .as_ref()
-            .and_then(|layout| archive_layout(layout, &pane_index)),
+        // `GET_STATE` carries no split tree (ADR-0030); only an L3 layout does.
+        layout: None,
         panes: panes
             .into_iter()
             .map(|pane| WorkspacePane {
@@ -327,20 +320,18 @@ fn archive_layout(
             left,
             right,
         } => Some(WorkspaceLayoutNode::Split {
-            dir: split_dir(*dir)?,
+            dir: split_dir(*dir),
             ratio: *ratio,
             left: Box::new(archive_layout(left, pane_index)?),
             right: Box::new(archive_layout(right, pane_index)?),
         }),
-        _ => None,
     }
 }
 
-const fn split_dir(dir: SplitDir) -> Option<WorkspaceSplitDir> {
+const fn split_dir(dir: SplitDir) -> WorkspaceSplitDir {
     match dir {
-        SplitDir::Horizontal => Some(WorkspaceSplitDir::Horizontal),
-        SplitDir::Vertical => Some(WorkspaceSplitDir::Vertical),
-        _ => None,
+        SplitDir::Horizontal => WorkspaceSplitDir::Horizontal,
+        SplitDir::Vertical => WorkspaceSplitDir::Vertical,
     }
 }
 

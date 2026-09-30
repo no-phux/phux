@@ -500,7 +500,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
 fn root_ratio(workspace: &Workspace) -> f32 {
     match workspace.active_window().unwrap().tree.as_ref().unwrap() {
         LayoutNode::Split { ratio, .. } => *ratio,
-        other => panic!("expected root Split, got {other:?}"),
+        other @ LayoutNode::Leaf(_) => panic!("expected root Split, got {other:?}"),
     }
 }
 

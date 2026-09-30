@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{
-    LayoutDecodeError, LayoutNode, ResourceId, SplitDir, unknown_layout_variant, unknown_split_dir,
-};
+use super::{LayoutDecodeError, LayoutNode, ResourceId, SplitDir};
 
 /// Minimal envelope shape used to peek the `version` byte before
 /// committing to a full decode of the current schema.
@@ -36,8 +34,8 @@ pub(super) struct CborWindow {
     pub focused_terminal: CborResourceId,
 }
 
-/// CBOR shadow of [`LayoutNode`] — the wire crate exposes no `serde`
-/// impls, so this mirrors the shape and converts via `From`.
+/// CBOR shadow of [`LayoutNode`]: pins the envelope schema apart from the
+/// in-memory tree and converts via `From`.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(super) enum CborLayoutNode {
@@ -92,10 +90,6 @@ impl From<SplitDir> for CborSplitDir {
         match value {
             SplitDir::Horizontal => Self::Horizontal,
             SplitDir::Vertical => Self::Vertical,
-            // `SplitDir` is `#[non_exhaustive]` (wire-crate concession);
-            // a future variant would be wire-breaking and cannot have
-            // been decoded into the in-memory tree this function sees.
-            _ => unknown_split_dir(),
         }
     }
 }
@@ -145,13 +139,12 @@ impl From<&LayoutNode> for CborLayoutNode {
                 left: Box::new(Self::from(left.as_ref())),
                 right: Box::new(Self::from(right.as_ref())),
             },
-            _ => unknown_layout_variant(),
         }
     }
 }
 
 impl CborLayoutNode {
-    /// Convert this CBOR shadow back into a wire [`LayoutNode`], validating the split ratio.
+    /// Convert this CBOR shadow back into a [`LayoutNode`], validating the split ratio.
     pub(super) fn into_layout_node(self) -> Result<LayoutNode, LayoutDecodeError> {
         Ok(match self {
             Self::Leaf { pane } => LayoutNode::Leaf(pane.into()),

@@ -256,22 +256,20 @@ fn flatten_value(
                 return Err(BridgeError::invalid("invalid split ratio"));
             }
             Node {
-                kind: direction(*dir)?,
+                kind: direction(*dir),
                 terminal: None,
                 first: flatten_node(left, nodes, depth + 1)?,
                 second: flatten_node(right, nodes, depth + 1)?,
                 ratio: *ratio,
             }
         }
-        _ => return Err(BridgeError::invalid("unknown layout node")),
     })
 }
 
-fn direction(dir: layout::SplitDir) -> Result<u32, BridgeError> {
+const fn direction(dir: layout::SplitDir) -> u32 {
     match dir {
-        layout::SplitDir::Horizontal => Ok(2),
-        layout::SplitDir::Vertical => Ok(3),
-        _ => Err(BridgeError::invalid("unknown split direction")),
+        layout::SplitDir::Horizontal => 2,
+        layout::SplitDir::Vertical => 3,
     }
 }
 

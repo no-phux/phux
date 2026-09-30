@@ -3,8 +3,6 @@
 use thiserror::Error;
 
 /// A malformed-input condition the decoder surfaces instead of panicking.
-///
-/// Not `Eq`: [`Self::MalformedLayoutRatio`] carries an `f32`.
 #[derive(Debug, Error, PartialEq)]
 #[non_exhaustive]
 pub enum DecodeError {
@@ -115,19 +113,11 @@ pub enum DecodeError {
     #[error("DIRECTORY_LISTING entry count exceeds protocol limits")]
     DirectoryEntryLimitExceeded,
 
-    /// A layout tree nested deeper than
+    /// A tree in the retired `WindowInfo` layout slot nested deeper than
     /// [`MAX_LAYOUT_DEPTH`](crate::wire::info::MAX_LAYOUT_DEPTH), which would
     /// otherwise overflow the stack.
     #[error("layout tree nested deeper than the decoder bound")]
     LayoutTooDeep,
-
-    /// A [`LayoutNode::Split`](crate::wire::info::LayoutNode::Split) ratio was
-    /// NaN, infinite, or outside `[0.0, 1.0]`.
-    #[error("malformed layout ratio: {ratio}")]
-    MalformedLayoutRatio {
-        /// The offending ratio.
-        ratio: f32,
-    },
 }
 
 impl DecodeError {

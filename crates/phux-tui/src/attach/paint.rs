@@ -939,12 +939,12 @@ mod tests {
     use crate::attach::pane_state::published_test_state;
     use crate::attach::render::SYNC_OUTPUT_END;
     use crate::layout::Rect;
+    use crate::layout::{LayoutNode, SplitDir};
     use crate::render::ChromeBreakpoints;
     use crate::render::chrome::sidebar::SidebarPainter;
     use crate::render::theme::Theme;
     use phux_config::widget::WidgetRegistry;
     use phux_config::{StatusCfg, Widget};
-    use phux_protocol::wire::info::{LayoutNode, SplitDir};
 
     const LEFT20: SidebarReservation = SidebarReservation {
         edge: SidebarEdge::Left,
