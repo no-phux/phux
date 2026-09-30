@@ -229,6 +229,39 @@ async fn remint_replaces_token_and_invalidates_old_at_next_handshake() {
     assert!(conn1.conn.close_reason().is_none(), "live tunnel untouched");
 }
 
+/// Peers that start a handshake and never finish it hold no connection
+/// slot: with `max_conns = 2` and two stalled handshakes in flight, a
+/// connector and a consumer are still admitted.
+#[tokio::test]
+async fn stalled_handshakes_do_not_hold_connection_slots() {
+    let dir = tempfile::tempdir().unwrap();
+    let relay = spawn_relay(dir.path(), 2).await;
+    let token = mint(&relay.tokens_path, "alpha");
+
+    // The relay's replies never reach these dialers, so their handshakes
+    // stay half-open on the relay side.
+    let proxy = phux_dial::testing::DropProxy::start(relay.addr)
+        .await
+        .unwrap();
+    proxy.blackhole_downstream();
+    let stalled: Vec<_> = (0..2)
+        .map(|_| {
+            let fingerprint = relay.fingerprint.clone();
+            let addr = proxy.addr();
+            tokio::spawn(async move { dial_consumer(addr, &fingerprint, "alpha").await })
+        })
+        .collect();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let _connector = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"A:").await;
+    let mut consumer =
+        echo_when_ready(relay.addr, &relay.fingerprint, "alpha", b"A:", b"served").await;
+    expect_echo(&mut consumer, b"", b"still-served").await;
+    for dial in stalled {
+        dial.abort();
+    }
+}
+
 /// With `max_conns = 2` held by a tunnel and a consumer, the next
 /// connection is refused `OVER_CAP` after the handshake while existing ones
 /// keep working; releasing a slot restores admission.
