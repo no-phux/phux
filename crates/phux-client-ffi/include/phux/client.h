@@ -1076,6 +1076,9 @@ PhuxClientResult phux_client_send_focus(PhuxClient *client, const PhuxResourceId
 PhuxClientResult phux_client_send_paste(PhuxClient *client, const PhuxResourceId *terminal_id, const uint8_t *data, size_t len, bool trusted);
 PhuxClientResult phux_client_terminal_resize(PhuxClient *client, const PhuxResourceId *terminal_id, uint16_t cols, uint16_t rows);
 PhuxClientResult phux_client_viewport_resize(PhuxClient *client, uint16_t cols, uint16_t rows, bool has_pixel_size, uint16_t pixel_width, uint16_t pixel_height);
+/* kind: 0 top, 1 live tail, 2 `value` rows (negative toward history),
+ * 3 absolute row `value`, 4 the `value`th shell prompt (OSC 133) above
+ * (negative) or below the viewport's top row. */
 PhuxClientResult phux_client_scroll_viewport(PhuxClient *client, const PhuxResourceId *terminal_id, uint32_t kind, int64_t value);
 PhuxClientResult phux_client_anchor_create(PhuxClient *client, const PhuxResourceId *terminal_id, PhuxDocumentPoint point, PhuxDocumentAnchor *out_anchor);
 PhuxClientResult phux_client_anchor_release(PhuxClient *client, const PhuxResourceId *terminal_id, PhuxDocumentAnchor anchor);

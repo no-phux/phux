@@ -1293,6 +1293,10 @@ pub unsafe extern "C" fn phux_client_viewport_resize(
 
 /// Scrolls a terminal's history viewport.
 ///
+/// `kind` 0 is the top, 1 the live tail, 2 `value` rows (negative toward history), 3 absolute row `value`,
+/// and 4 the `value`th shell prompt (OSC 133) above (negative) or below the
+/// viewport's top row, as Ghostty's `jump_to_prompt`.
+///
 /// # Safety
 ///
 /// When non-null, `client` must be a live client on its owning thread with
@@ -2210,6 +2214,68 @@ mod tests {
             assert_eq!(
                 phux_client_anchor_release(client, &raw const terminal, view.top_anchor),
                 PhuxClientResult::Ok
+            );
+            phux_client_free(client);
+        }
+    }
+
+    #[test]
+    fn scroll_kind_four_jumps_between_shell_prompts() {
+        let client = attaching(&[], 7);
+        let terminal_id = phux_protocol::ResourceId::local(1);
+        let snapshot = single_terminal_snapshot(terminal_id.clone(), 40, 12);
+        assert_eq!(
+            feed(client, &attached_frame(7, snapshot)),
+            PhuxClientResult::Ok,
+        );
+        let mut bytes = b"\x1b]133;A\x07$ first\r\n".to_vec();
+        for row in 0..20 {
+            bytes.extend_from_slice(format!("out {row}\r\n").as_bytes());
+        }
+        bytes.extend_from_slice(b"\x1b]133;A\x07$ live");
+        feed_complete_bootstrap(client, &terminal_id, &bytes);
+        assert_eq!(
+            feed(client, &FrameKind::AttachReady { attach_id: 7 }),
+            PhuxClientResult::Ok,
+        );
+        let terminal = PhuxResourceId {
+            id: 1,
+            ..PhuxResourceId::default()
+        };
+        let mut view = PhuxTerminalGridView::default();
+        // SAFETY: all spans and output pointers belong to this test; borrowed
+        // grid data is consumed before the next mutable client call.
+        unsafe {
+            let mut top = |client| {
+                assert_eq!(
+                    phux_client_terminal_grid(client, &raw const terminal, &raw mut view),
+                    PhuxClientResult::Ok
+                );
+                let text = std::str::from_utf8(bytes_in(view.utf8.data, view.utf8.len).unwrap())
+                    .unwrap()
+                    .to_owned();
+                assert_eq!(
+                    phux_client_anchor_release(client, &raw const terminal, view.top_anchor),
+                    PhuxClientResult::Ok
+                );
+                (view.history_viewport_offset, text)
+            };
+            let (tail, _) = top(client);
+            assert_eq!(
+                phux_client_scroll_viewport(client, &raw const terminal, 4, -1),
+                PhuxClientResult::Ok
+            );
+            let (offset, text) = top(client);
+            assert_eq!(offset, 0);
+            assert!(text.starts_with("$ first"));
+            assert_eq!(
+                phux_client_scroll_viewport(client, &raw const terminal, 4, 1),
+                PhuxClientResult::Ok
+            );
+            assert_eq!(top(client).0, tail, "a live prompt follows the tail");
+            assert_eq!(
+                phux_client_scroll_viewport(client, &raw const terminal, 5, 0),
+                PhuxClientResult::InvalidArgument
             );
             phux_client_free(client);
         }
