@@ -355,6 +355,37 @@ impl SettingsOverlay {
         self.scroll.set(0);
     }
 
+    /// Escape clears a live query first; with no query it closes the overlay.
+    fn clear_query_or_dismiss(&mut self) -> OverlayCommand {
+        if self.query.is_empty() {
+            return OverlayCommand::Dismiss;
+        }
+        self.query.clear();
+        self.requery();
+        OverlayCommand::Stay
+    }
+
+    /// Tab / Shift-Tab: the next or previous section, wrapping.
+    fn step_section(&mut self, backwards: bool) {
+        let count = SettingSection::ALL.len();
+        let next = if backwards {
+            (self.section + count - 1) % count
+        } else {
+            (self.section + 1) % count
+        };
+        self.select_section(next);
+    }
+
+    /// Append printable key text to the filter query.
+    fn type_filter_text(&mut self, text: Option<&str>) {
+        let Some(text) = text.filter(|t| !t.chars().any(char::is_control)) else {
+            return;
+        };
+        self.query.push_str(text);
+        self.status = None;
+        self.requery();
+    }
+
     // ---- editing --------------------------------------------------------
 
     /// Enter, Space, or a click: the row's primary action.
@@ -665,11 +696,11 @@ impl SettingsOverlay {
         full_key: bool,
     ) -> Line<'static> {
         let overridden = self.origin_at(spec.key).is_some();
+        let colors = self.row_colors(selected);
         let marker = if overridden { "\u{2022} " } else { "  " };
         let key = if full_key { spec.key } else { spec.leaf() };
         let value_spans = self.value_spans(spec, selected);
-        let value_w: usize = value_spans.iter().map(|s| display_width(&s.content)).sum();
-        let (badge, badge_style) = self.badge(spec.key);
+        let value_w = spans_width(&value_spans);
         let show_badge = width >= 40;
         let badge_w = if show_badge { BADGE_COLS } else { 0 };
         // The key takes what the value and badge leave, and at least a third
@@ -681,56 +712,42 @@ impl SettingsOverlay {
             .min(width.saturating_sub(2));
         let key_text = clip_text(key, key_budget);
         let value_budget = width.saturating_sub(2 + badge_w + display_width(&key_text) + 1);
-        let value_fg = if selected {
-            self.theme.selection_fg
-        } else {
-            self.theme.text
-        };
-        let value_spans: Vec<Span<'static>> = if value_w > value_budget {
-            let joined: String = value_spans.iter().map(|s| s.content.as_ref()).collect();
-            vec![Span::styled(
-                clip_text(&joined, value_budget),
-                Style::default().fg(value_fg),
-            )]
-        } else {
-            value_spans
-        };
-        let value_w: usize = value_spans.iter().map(|s| display_width(&s.content)).sum();
-        let pad = width.saturating_sub(2 + display_width(&key_text) + value_w + badge_w);
-        let row_style = if selected {
-            Style::default()
-                .fg(self.theme.selection_fg)
-                .bg(self.theme.selection_bg)
-        } else {
-            Style::default()
-        };
-        let key_style = row_style.fg(value_fg).add_modifier(if overridden {
-            Modifier::BOLD
-        } else {
-            Modifier::empty()
-        });
-        let marker_fg = if selected {
-            self.theme.selection_fg
-        } else {
-            self.theme.accent
-        };
+        let value_spans = clip_value_spans(value_spans, value_w, value_budget, colors.text);
+        let pad = width
+            .saturating_sub(2 + display_width(&key_text) + spans_width(&value_spans) + badge_w);
         let mut spans = vec![
-            Span::styled(marker.to_owned(), row_style.fg(marker_fg)),
-            Span::styled(key_text, key_style),
-            Span::styled(" ".repeat(pad), row_style),
+            Span::styled(marker.to_owned(), colors.row.fg(colors.marker)),
+            Span::styled(key_text, colors.key(overridden)),
+            Span::styled(" ".repeat(pad), colors.row),
         ];
-        for span in value_spans {
-            spans.push(Span::styled(span.content, span.style.patch(row_style)));
-        }
+        spans.extend(
+            value_spans
+                .into_iter()
+                .map(|span| Span::styled(span.content, span.style.patch(colors.row))),
+        );
         if show_badge {
-            let badge_pad = BADGE_COLS.saturating_sub(display_width(&badge));
-            spans.push(Span::styled(" ".repeat(badge_pad), row_style));
-            spans.push(Span::styled(
-                badge,
-                if selected { row_style } else { badge_style },
-            ));
+            let (badge, badge_style) = self.badge(spec.key);
+            let badge_style = if selected { colors.row } else { badge_style };
+            spans.extend(badge_spans(badge, badge_style, colors.row));
         }
         Line::from(spans)
+    }
+
+    /// The palette of one list row: the selection colors when selected.
+    fn row_colors(&self, selected: bool) -> RowColors {
+        if !selected {
+            return RowColors {
+                row: Style::default(),
+                text: self.theme.text,
+                marker: self.theme.accent,
+            };
+        }
+        let fg = self.theme.selection_fg;
+        RowColors {
+            row: Style::default().fg(fg).bg(self.theme.selection_bg),
+            text: fg,
+            marker: fg,
+        }
     }
 
     /// The section title row a single-column layout shows above its rows.
@@ -1012,6 +1029,61 @@ fn kind_label(kind: SettingKind) -> String {
 
 /// When a change lands, in the page's words. `NextSpawn` is spelled as the
 /// server behaves: `[defaults]` and `[voice]` are read once at server start.
+/// The palette of one settings list row.
+#[derive(Debug, Clone, Copy)]
+struct RowColors {
+    /// The row's base style (background and default foreground).
+    row: Style,
+    /// Key and value text.
+    text: Color,
+    /// The overridden-key marker.
+    marker: Color,
+}
+
+impl RowColors {
+    /// The key's style: bold when the key is overridden.
+    const fn key(self, overridden: bool) -> Style {
+        let modifier = if overridden {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        };
+        self.row.fg(self.text).add_modifier(modifier)
+    }
+}
+
+/// Total display width of a run of spans.
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|s| display_width(&s.content)).sum()
+}
+
+/// The value spans unchanged when they fit `budget`; otherwise one span of
+/// their joined text clipped to `budget`, in `fg`.
+fn clip_value_spans(
+    spans: Vec<Span<'static>>,
+    width: usize,
+    budget: usize,
+    fg: Color,
+) -> Vec<Span<'static>> {
+    if width <= budget {
+        return spans;
+    }
+    let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+    vec![Span::styled(
+        clip_text(&joined, budget),
+        Style::default().fg(fg),
+    )]
+}
+
+/// The badge right-aligned in its [`BADGE_COLS`] column.
+fn badge_spans(badge: String, badge_style: Style, row_style: Style) -> [Span<'static>; 2] {
+    let badge_pad = BADGE_COLS.saturating_sub(display_width(&badge));
+    [
+        Span::styled(" ".repeat(badge_pad), row_style),
+        Span::styled(badge, badge_style),
+    ]
+}
+
 const fn applies_label(applies: Applies) -> &'static str {
     match applies {
         Applies::LiveReload => "now (reloaded)",
@@ -1022,69 +1094,76 @@ const fn applies_label(applies: Applies) -> &'static str {
 
 /// Parse the editor's text into an edit for `kind`.
 fn parse_input(kind: SettingKind, text: &str) -> Result<Edit, String> {
-    let unset_word = text.is_empty() || text.eq_ignore_ascii_case("unset");
+    if accepts_unset(kind) && is_unset_word(text) {
+        return Ok(Edit::Unset);
+    }
     match kind {
-        SettingKind::Bool => parse_bool(text)
-            .map(|b| Edit::Set(toml::Value::Boolean(b)))
-            .ok_or_else(|| "expected true or false".to_owned()),
-        SettingKind::OptionalBool => {
-            if unset_word {
-                return Ok(Edit::Unset);
-            }
-            parse_bool(text)
-                .map(|b| Edit::Set(toml::Value::Boolean(b)))
-                .ok_or_else(|| "expected true, false, or unset".to_owned())
-        }
-        SettingKind::Integer { min, max } => parse_int(text, min, max),
-        SettingKind::OptionalInteger { min, max } => {
-            if unset_word {
-                Ok(Edit::Unset)
-            } else {
-                parse_int(text, min, max)
-            }
+        SettingKind::Bool => parse_bool_edit(text, "expected true or false"),
+        SettingKind::OptionalBool => parse_bool_edit(text, "expected true, false, or unset"),
+        SettingKind::Integer { min, max } | SettingKind::OptionalInteger { min, max } => {
+            parse_int(text, min, max)
         }
         SettingKind::Text | SettingKind::Chord => {
-            if text.is_empty() {
-                Err("cannot be empty; use Del to fall back to the shipped default".to_owned())
-            } else {
-                Ok(Edit::Set(toml::Value::String(text.to_owned())))
-            }
+            require_non_empty(text)?;
+            Ok(set_string(text))
         }
-        SettingKind::OptionalText => {
-            if unset_word {
-                Ok(Edit::Unset)
-            } else {
-                Ok(Edit::Set(toml::Value::String(text.to_owned())))
-            }
-        }
-        SettingKind::Choice(variants) => {
-            let lowered = text.to_lowercase();
-            variants
-                .iter()
-                .find(|v| **v == lowered)
-                .map(|v| Edit::Set(toml::Value::String((*v).to_owned())))
-                .ok_or_else(|| format!("expected one of {}", variants.join(", ")))
-        }
+        SettingKind::OptionalText => Ok(set_string(text)),
+        SettingKind::Choice(variants) => parse_choice(text, variants),
         SettingKind::Argv => {
-            if unset_word {
-                return Ok(Edit::Unset);
-            }
             let words = split_words(text)?;
             Ok(Edit::Set(toml::Value::Array(
                 words.into_iter().map(toml::Value::String).collect(),
             )))
         }
         SettingKind::Color => {
-            if text.is_empty() {
-                return Err(
-                    "cannot be empty; use Del to fall back to the shipped default".to_owned(),
-                );
-            }
+            require_non_empty(text)?;
             Color::from_str(text)
-                .map(|_| Edit::Set(toml::Value::String(text.to_owned())))
+                .map(|_| set_string(text))
                 .map_err(|_| "not a color: use a name, #rrggbb, or an index 0-255".to_owned())
         }
     }
+}
+
+/// Kinds whose editor treats empty text or `unset` as removing the key.
+const fn accepts_unset(kind: SettingKind) -> bool {
+    matches!(
+        kind,
+        SettingKind::OptionalBool
+            | SettingKind::OptionalInteger { .. }
+            | SettingKind::OptionalText
+            | SettingKind::Argv
+    )
+}
+
+const fn is_unset_word(text: &str) -> bool {
+    text.is_empty() || text.eq_ignore_ascii_case("unset")
+}
+
+fn require_non_empty(text: &str) -> Result<(), String> {
+    if text.is_empty() {
+        return Err("cannot be empty; use Del to fall back to the shipped default".to_owned());
+    }
+    Ok(())
+}
+
+fn set_string(text: &str) -> Edit {
+    Edit::Set(toml::Value::String(text.to_owned()))
+}
+
+fn parse_bool_edit(text: &str, expected: &str) -> Result<Edit, String> {
+    parse_bool(text)
+        .map(|b| Edit::Set(toml::Value::Boolean(b)))
+        .ok_or_else(|| expected.to_owned())
+}
+
+/// Match `text` case-insensitively against the choice's variants.
+fn parse_choice(text: &str, variants: &[&str]) -> Result<Edit, String> {
+    let lowered = text.to_lowercase();
+    variants
+        .iter()
+        .find(|v| **v == lowered)
+        .map(|v| set_string(v))
+        .ok_or_else(|| format!("expected one of {}", variants.join(", ")))
 }
 
 fn parse_bool(text: &str) -> Option<bool> {
@@ -1115,58 +1194,57 @@ fn split_words(text: &str) -> Result<Vec<String>, String> {
     let mut in_word = false;
     let mut chars = text.chars();
     while let Some(c) = chars.next() {
+        if c.is_whitespace() {
+            if in_word {
+                words.push(std::mem::take(&mut current));
+                in_word = false;
+            }
+            continue;
+        }
+        in_word = true;
         match c {
-            '\'' => {
-                in_word = true;
-                loop {
-                    match chars.next() {
-                        Some('\'') => break,
-                        Some(ch) => current.push(ch),
-                        None => return Err("unterminated single quote".to_owned()),
-                    }
-                }
-            }
-            '"' => {
-                in_word = true;
-                loop {
-                    match chars.next() {
-                        Some('"') => break,
-                        Some('\\') => match chars.next() {
-                            Some(esc @ ('"' | '\\' | '$' | '`')) => current.push(esc),
-                            Some(other) => {
-                                current.push('\\');
-                                current.push(other);
-                            }
-                            None => return Err("unterminated double quote".to_owned()),
-                        },
-                        Some(ch) => current.push(ch),
-                        None => return Err("unterminated double quote".to_owned()),
-                    }
-                }
-            }
-            '\\' => {
-                in_word = true;
-                match chars.next() {
-                    Some(ch) => current.push(ch),
-                    None => return Err("trailing backslash".to_owned()),
-                }
-            }
-            c if c.is_whitespace() => {
-                if in_word {
-                    words.push(std::mem::take(&mut current));
-                    in_word = false;
-                }
-            }
-            c => {
-                in_word = true;
-                current.push(c);
-            }
+            '\'' => read_single_quoted(&mut chars, &mut current)?,
+            '"' => read_double_quoted(&mut chars, &mut current)?,
+            '\\' => current.push(chars.next().ok_or("trailing backslash")?),
+            c => current.push(c),
         }
     }
     if in_word {
         words.push(current);
     }
     Ok(words)
+}
+
+/// Consume a single-quoted span through its closing quote: every character
+/// is literal.
+fn read_single_quoted(chars: &mut std::str::Chars<'_>, out: &mut String) -> Result<(), String> {
+    loop {
+        match chars.next() {
+            Some('\'') => return Ok(()),
+            Some(ch) => out.push(ch),
+            None => return Err("unterminated single quote".to_owned()),
+        }
+    }
+}
+
+/// Consume a double-quoted span through its closing quote: a backslash
+/// escapes `"`, `\`, `$`, and `` ` `` and is kept literally before anything
+/// else.
+fn read_double_quoted(chars: &mut std::str::Chars<'_>, out: &mut String) -> Result<(), String> {
+    const UNTERMINATED: &str = "unterminated double quote";
+    loop {
+        match chars.next().ok_or(UNTERMINATED)? {
+            '"' => return Ok(()),
+            '\\' => match chars.next().ok_or(UNTERMINATED)? {
+                esc @ ('"' | '\\' | '$' | '`') => out.push(esc),
+                other => {
+                    out.push('\\');
+                    out.push(other);
+                }
+            },
+            ch => out.push(ch),
+        }
+    }
 }
 
 /// Greedy word wrap to `width` cells; a word wider than the line is cut.
@@ -1412,15 +1490,7 @@ impl RenderOverlay for SettingsOverlay {
             return command;
         }
         match key.key {
-            PhysicalKey::Escape => {
-                if self.query.is_empty() {
-                    OverlayCommand::Dismiss
-                } else {
-                    self.query.clear();
-                    self.requery();
-                    OverlayCommand::Stay
-                }
-            }
+            PhysicalKey::Escape => self.clear_query_or_dismiss(),
             PhysicalKey::Enter | PhysicalKey::NumpadEnter => self
                 .selected_spec()
                 .map_or(OverlayCommand::Stay, |spec| self.activate(spec)),
@@ -1433,13 +1503,7 @@ impl RenderOverlay for SettingsOverlay {
                 .selected_spec()
                 .map_or(OverlayCommand::Stay, |spec| self.reset(spec)),
             PhysicalKey::Tab => {
-                let count = SettingSection::ALL.len();
-                let next = if key.mods.contains(ModSet::SHIFT) {
-                    (self.section + count - 1) % count
-                } else {
-                    (self.section + 1) % count
-                };
-                self.select_section(next);
+                self.step_section(key.mods.contains(ModSet::SHIFT));
                 OverlayCommand::Stay
             }
             // Only the arrow keys step a value: a letter is always filter
@@ -1459,13 +1523,7 @@ impl RenderOverlay for SettingsOverlay {
             }
             navigation if self.navigate(navigation, len) => OverlayCommand::Stay,
             _ => {
-                if let Some(t) = &key.text
-                    && !t.chars().any(char::is_control)
-                {
-                    self.query.push_str(t);
-                    self.status = None;
-                    self.requery();
-                }
+                self.type_filter_text(key.text.as_deref());
                 OverlayCommand::Stay
             }
         }
@@ -1935,6 +1993,24 @@ mod tests {
         assert_eq!(split_words("   ").unwrap(), Vec::<String>::new());
         assert!(split_words("'open").is_err());
         assert!(split_words("trailing\\").is_err());
+        // An empty quoted span is still a word; quotes join adjacent text.
+        assert_eq!(split_words("a '' b").unwrap(), vec!["a", "", "b"]);
+        assert_eq!(split_words("x'y z'\"w\"").unwrap(), vec!["xy zw"]);
+        // Inside double quotes only `"`, `\`, `$`, and `` ` `` are escapes.
+        assert_eq!(split_words(r#""\$ \` \n""#).unwrap(), vec![r"$ ` \n"]);
+        assert_eq!(
+            split_words("\"open").unwrap_err(),
+            "unterminated double quote"
+        );
+        assert_eq!(
+            split_words("\"open\\").unwrap_err(),
+            "unterminated double quote"
+        );
+        assert_eq!(
+            split_words("'open").unwrap_err(),
+            "unterminated single quote"
+        );
+        assert_eq!(split_words("x\\").unwrap_err(), "trailing backslash");
     }
 
     #[test]
@@ -1973,5 +2049,36 @@ mod tests {
         assert_eq!(parse_input(SettingKind::OptionalText, ""), Ok(Edit::Unset));
         assert!(parse_input(SettingKind::Color, "#12345").is_err());
         assert!(parse_input(SettingKind::Color, "cyan").is_ok());
+        // Unset words apply only to the optional kinds and argv.
+        assert_eq!(parse_input(SettingKind::Argv, "UNSET"), Ok(Edit::Unset));
+        assert_eq!(
+            parse_input(SettingKind::Argv, "a 'b c'"),
+            Ok(Edit::Set(toml::Value::Array(vec![
+                toml::Value::String("a".to_owned()),
+                toml::Value::String("b c".to_owned()),
+            ])))
+        );
+        assert_eq!(
+            parse_input(SettingKind::Text, "unset"),
+            Ok(Edit::Set(toml::Value::String("unset".to_owned())))
+        );
+        assert_eq!(
+            parse_input(SettingKind::Bool, "").unwrap_err(),
+            "expected true or false"
+        );
+        assert_eq!(
+            parse_input(SettingKind::OptionalBool, "maybe").unwrap_err(),
+            "expected true, false, or unset"
+        );
+        assert!(parse_input(SettingKind::Integer { min: 0, max: 9 }, "unset").is_err());
+        assert!(parse_input(SettingKind::Chord, "").is_err());
+        assert_eq!(
+            parse_input(SettingKind::Color, "").unwrap_err(),
+            "cannot be empty; use Del to fall back to the shipped default"
+        );
+        assert_eq!(
+            parse_input(SettingKind::Choice(&["left", "right"]), "up").unwrap_err(),
+            "expected one of left, right"
+        );
     }
 }
