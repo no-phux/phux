@@ -90,7 +90,7 @@ pub enum EngineEvent {
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         chunk_seq: u32,
-        payload: Vec<u8>,
+        payload: bytes::Bytes,
     },
     /// `BOOTSTRAP_READY`.
     BootstrapReady {
@@ -108,7 +108,7 @@ pub enum EngineEvent {
         rows: u32,
         cursor: Vec<u8>,
         next_cursor: Option<Vec<u8>>,
-        payload: Vec<u8>,
+        payload: bytes::Bytes,
     },
     /// `HISTORY_TOMBSTONE`.
     HistoryTombstone {
@@ -134,7 +134,7 @@ pub enum EngineEvent {
         stream_id: StreamId,
         bootstrap_id: BootstrapId,
         seq: u64,
-        bytes: Vec<u8>,
+        bytes: bytes::Bytes,
     },
     /// `BOOTSTRAP_TOMBSTONE`.
     Tombstone {
