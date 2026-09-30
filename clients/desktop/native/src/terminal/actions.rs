@@ -1,7 +1,8 @@
 //! One-shot requests the shell makes of the focused terminal that need the
 //! platform: Ghostty's clipboard actions on any chord, and handing a written
 //! file to the clipboard or its default app. They use the same GPUI
-//! clipboard and paste path as Command-C and Command-V.
+//! clipboard and paste path as Command-C and Command-V, minus its keyboard
+//! focus check: the find bar over the terminal may hold the keyboard.
 //!
 //! The shell sends `hostAction = { id, kind, text? }`; a new `id` runs once,
 //! on the next render. A request already present when the element is created
@@ -70,16 +71,16 @@ impl HostActions {
 }
 
 /// Failures are as quiet as Command-C with nothing selected: the terminal's
-/// own state already shows why (no selection, not focused, not ready).
+/// own state already shows why (no selection, not ready). Copy and Paste are
+/// addressed to this terminal, so they do not need its keyboard focus.
 pub(super) fn run(
     action: HostAction,
     input: &gpui::Entity<TerminalInput>,
-    window: &mut gpui::Window,
     cx: &mut gpui::App,
 ) {
     match action {
         HostAction::Copy => input.update(cx, |state, cx| {
-            let _ = state.copy_selection(window, cx);
+            let _ = state.copy_requested(cx);
         }),
         HostAction::Paste => {
             let text = cx
@@ -87,8 +88,8 @@ pub(super) fn run(
                 .and_then(|item| item.text())
                 .unwrap_or_default();
             if !text.is_empty() {
-                input.update(cx, |state, cx| {
-                    let _ = state.paste_text(&text, window, cx);
+                input.update(cx, |state, _| {
+                    let _ = state.paste_requested(&text);
                 });
             }
         }
