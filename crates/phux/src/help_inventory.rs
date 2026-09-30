@@ -33,21 +33,23 @@ fn ticket_like_tokens(help: &str) -> Vec<String> {
     const ALLOW: &[&str] = &[
         "plugin", "server", "web", "ask", "config", "core", "client", "protocol", "mcp",
     ];
-    const NEEDLE: &str = "phux-";
-    let mut hits = Vec::new();
-    let mut cursor = 0;
-    while let Some(rel) = help[cursor..].find(NEEDLE) {
-        let slug_start = cursor + rel + NEEDLE.len();
-        let slug: String = help[slug_start..]
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '.')
-            .collect();
-        if !slug.is_empty() && !ALLOW.iter().any(|word| slug.starts_with(word)) {
-            hits.push(format!("phux-{slug}"));
-        }
-        cursor = slug_start;
-    }
-    hits
+    help.split(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '_' | '-' | '.'))
+        .filter_map(|token| {
+            let slug = token.strip_prefix("phux-")?;
+            (!slug.is_empty() && !ALLOW.iter().any(|word| slug.starts_with(word)))
+                .then(|| token.to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn ticket_scanner_distinguishes_skill_names_from_issue_tokens() {
+    let text = "`using-phux-tools` using-phux-mcp phux-plugin.toml phux-client-ffi \
+                `phux-y8v6` (phux-foz.5) /phux-l5xa";
+    assert_eq!(
+        ticket_like_tokens(text),
+        ["phux-y8v6", "phux-foz.5", "phux-l5xa"]
+    );
 }
 
 fn root_long_help() -> String {
