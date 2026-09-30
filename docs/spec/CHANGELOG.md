@@ -1,1 +1,1 @@
-PLACEHOLDER_LOAD_FROM_/workspace/push_924_changelog.json
+PLACEHOLDER_WILL_REPLACE
