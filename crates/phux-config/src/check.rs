@@ -19,8 +19,8 @@ use serde_path_to_error::Segment;
 use crate::keybind::{KeybindError, Resolver, parse_chord, parse_chord_sequence};
 use crate::widget::{WidgetError, WidgetRegistry};
 use crate::{
-    Action, Config, ConfigError, ConfigProvenance, DefaultsCfg, HookEntry, KeybindingsCfg,
-    LayerSource, merged_config_with_provenance, vocab,
+    Config, ConfigError, ConfigProvenance, DefaultsCfg, HookEntry, KeybindingsCfg, LayerSource,
+    merged_config_with_provenance, vocab,
 };
 
 /// Upper bound on findings in one run: each finding costs a full re-walk of
@@ -310,7 +310,7 @@ fn keybinding_findings(
                     error.to_string(),
                 );
             }
-            let name = action_name(action);
+            let name = vocab::action_name(action);
             if !vocab::ACTION_NAMES.contains(&name) {
                 let message = format!(
                     "unknown action `{name}`{}",
@@ -365,46 +365,46 @@ fn hook_findings(
         for (index, entry) in entries.iter().enumerate() {
             let entry_path = format!("{table_path}[{index}]");
             let source = array_entry_source(provenance, &table_path, index);
-
-            for key in entry.when.keys() {
-                let base = key.strip_suffix("-startswith").unwrap_or(key);
-                if context_keys.contains(&base) {
-                    continue;
-                }
+            for key in vocab::unknown_hook_when_keys(context_keys, &entry.when) {
                 findings.push(Finding {
                     path: crate::layer::child_path(&format!("{entry_path}.when"), key),
                     fault: Fault::UnknownName,
-                    message: format!(
-                        "unknown when key `{key}`: this clause can never match; \
-                         `{event}` context keys are {}{}",
-                        context_keys.join(", "),
-                        suggest(base, context_keys),
-                    ),
+                    message: unknown_when_key_message(event, key, context_keys),
                     source: source.clone(),
                 });
             }
-
-            let name = action_name(&entry.action);
-            if name != "noop" && !vocab::hook_action_is_executable(&entry.action) {
-                let message = if name == "run" {
-                    "`run` action has no usable `command` (need a non-blank string or a \
-                     non-empty array of strings); a match consumes the event and runs nothing"
-                        .to_owned()
-                } else {
-                    format!(
-                        "action `{name}` never executes server-side (only `run` does; \
-                         `noop` is the deliberate no-op); a match still consumes the event"
-                    )
-                };
+            if let Some(name) = vocab::dead_hook_action(&entry.action) {
                 findings.push(Finding {
                     path: format!("{entry_path}.action"),
                     fault: Fault::DeadAction,
-                    message,
-                    source: source.clone(),
+                    message: dead_hook_action_message(name),
+                    source,
                 });
             }
         }
     }
+}
+
+fn unknown_when_key_message(event: &str, key: &str, context_keys: &[&str]) -> String {
+    format!(
+        "unknown when key `{key}`: this clause can never match; \
+         `{event}` context keys are {}{}",
+        context_keys.join(", "),
+        suggest(vocab::hook_when_key_base(key), context_keys),
+    )
+}
+
+/// Why a dead hook action (see [`vocab::dead_hook_action`]) never runs.
+fn dead_hook_action_message(name: &str) -> String {
+    if name == "run" {
+        return "`run` action has no usable `command` (need a non-blank string or a \
+                non-empty array of strings); a match consumes the event and runs nothing"
+            .to_owned();
+    }
+    format!(
+        "action `{name}` never executes server-side (only `run` does; \
+         `noop` is the deliberate no-op); a match still consumes the event"
+    )
 }
 
 /// Build every status-bar widget exactly as the TUI will, one at a time so
@@ -485,13 +485,6 @@ fn push_semantic(
         message,
         source,
     });
-}
-
-fn action_name(action: &Action) -> &str {
-    match action {
-        Action::Bare(name) => name,
-        Action::Parameterized(parameterized) => &parameterized.action,
-    }
 }
 
 /// Dotted path for a binding key, quoted the way provenance records it.
