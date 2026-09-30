@@ -1,0 +1,110 @@
+diff --git a/.changeset/release-standard-keys.md b/.changeset/release-standard-keys.md
+new file mode 100644
+index 0000000..77e0835
+--- /dev/null
++++ b/.changeset/release-standard-keys.md
+@@ -0,0 +1,6 @@
++---
++'@gpuix/native': patch
++---
++
++Let a statically linked host release a standard macOS app key (such as
++`cmd-w`) before the first window opens, so its own key handling receives it.
+diff --git a/packages/native/src/app_menu.rs b/packages/native/src/app_menu.rs
+index 9e22b1b..c590782 100644
+--- a/packages/native/src/app_menu.rs
++++ b/packages/native/src/app_menu.rs
+@@ -41,13 +41,9 @@ gpui::actions!(
+ /// `ZoomWindow`, `CloseWindow`) are handled by the root element in
+ /// `GpuixView::render`, which is the only place a `Window` exists.
+ pub(crate) fn init(app_name: &str, cx: &mut App) {
+-    cx.bind_keys([
+-        gpui::KeyBinding::new("cmd-q", Quit, None),
+-        gpui::KeyBinding::new("cmd-h", Hide, None),
+-        gpui::KeyBinding::new("cmd-alt-h", HideOthers, None),
+-        gpui::KeyBinding::new("cmd-m", MinimizeWindow, None),
+-        gpui::KeyBinding::new("cmd-w", CloseWindow, None),
+-    ]);
++    cx.bind_keys(standard_bindings(
++        crate::native_extensions::standard_key_released,
++    ));
+ 
+     cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
+     cx.on_action(|_: &Hide, cx: &mut App| cx.hide());
+@@ -57,6 +53,32 @@ pub(crate) fn init(app_name: &str, cx: &mut App) {
+     cx.set_menus(default_menus(app_name));
+ }
+ 
++/// The standard shortcuts, less those the host application released to
++/// handle itself (`native_extensions::release_standard_key`).
++fn standard_bindings(released: impl Fn(&str) -> bool) -> Vec<gpui::KeyBinding> {
++    [
++        ("cmd-q", Box::new(Quit) as Box<dyn gpui::Action>),
++        ("cmd-h", Box::new(Hide)),
++        ("cmd-alt-h", Box::new(HideOthers)),
++        ("cmd-m", Box::new(MinimizeWindow)),
++        ("cmd-w", Box::new(CloseWindow)),
++    ]
++    .into_iter()
++    .filter(|(keystroke, _)| !released(keystroke))
++    .map(|(keystroke, action)| {
++        gpui::KeyBinding::load(
++            keystroke,
++            action,
++            None,
++            false,
++            None,
++            &gpui::DummyKeyboardMapper,
++        )
++        .expect("standard keystrokes parse")
++    })
++    .collect()
++}
++
+ /// The App menu plus the Window menu, the minimum a macOS app is expected to
+ /// have. `create_menu_bar` gives the menu named `Window` to
+ /// `NSApplication.setWindowsMenu:`, which is what appends the window list.
+@@ -126,6 +148,17 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn a_released_standard_key_is_left_unbound() {
++        let all = standard_bindings(|_| false);
++        assert_eq!(all.len(), 5);
++        let kept = standard_bindings(|keystroke| keystroke == "cmd-w");
++        assert_eq!(kept.len(), 4);
++        assert!(kept
++            .iter()
++            .all(|binding| !binding.action().partial_eq(&CloseWindow)));
++    }
++
+     // `create_menu_bar` only calls `setWindowsMenu:` for this exact name.
+     #[test]
+     fn window_menu_keeps_the_name_appkit_looks_for() {
+diff --git a/packages/native/src/native_extensions.rs b/packages/native/src/native_extensions.rs
+index 084f3e4..800abdc 100644
+--- a/packages/native/src/native_extensions.rs
++++ b/packages/native/src/native_extensions.rs
+@@ -44,6 +44,21 @@ pub fn install(installer: Installer) -> Result<(), &'static str> {
+     INSTALLATION.lock().unwrap().install(installer)
+ }
+ 
++/// Standard app keys the host application handles itself.
++static RELEASED_KEYS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
++
++/// Leave one of GPUIX's standard macOS app keys (`cmd-w`, `cmd-m`, ...)
++/// unbound, so the application's own key handling receives it. Its menu item
++/// stays, without the shortcut: a menu key equivalent would otherwise take the
++/// key back from the application. Call before the first window opens.
++pub fn release_standard_key(keystroke: &'static str) {
++    RELEASED_KEYS.lock().unwrap().push(keystroke);
++}
++
++pub(crate) fn standard_key_released(keystroke: &str) -> bool {
++    RELEASED_KEYS.lock().unwrap().contains(&keystroke)
++}
++
+ pub(crate) fn seal_installation() {
+     INSTALLATION.lock().unwrap().sealed = true;
+ }
