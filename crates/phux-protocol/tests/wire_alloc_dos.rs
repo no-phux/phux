@@ -382,3 +382,48 @@ fn malformed_history_page_scalars_reject_before_payload_allocation_in_any_field_
         );
     }
 }
+
+/// Filler that makes a hostile frame large enough that "at most one element
+/// per remaining byte" is still an amplification: the reservation must be
+/// bounded by the input's bytes, not its byte count times the element size.
+/// `0xFF` makes the first element fail to decode, so only the up-front
+/// reservation is measured.
+const FILLER: usize = 256 * 1024;
+
+/// Assert a hostile frame never reserves more than the bytes it carries.
+fn assert_alloc_within_input(frame: &[u8], what: &str) {
+    let max = largest_alloc_during(frame);
+    assert!(
+        max <= frame.len(),
+        "{what}: decoder reserved {max} bytes for a {}-byte frame",
+        frame.len()
+    );
+}
+
+#[test]
+fn padded_huge_counts_reserve_no_more_than_the_input() {
+    // ATTACHED snapshot: a u32::MAX sessions count followed by filler.
+    let mut snap_value = u32::MAX.to_be_bytes().to_vec();
+    snap_value.resize(4 + FILLER, 0xFF);
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, &snap_value);
+    assert_alloc_within_input(&framed_tlv(0x81, &fields), "attached sessions list");
+
+    // SPAWN_RESOURCE command list: a u32::MAX count followed by filler.
+    let mut cmd_value = u32::MAX.to_be_bytes().to_vec();
+    cmd_value.resize(4 + FILLER, 0xFF);
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, &0u32.to_be_bytes());
+    tlv_field(&mut fields, 2, &1u32.to_be_bytes());
+    tlv_field(&mut fields, 3, &cmd_value);
+    assert_alloc_within_input(&framed_tlv(0x22, &fields), "spawn command list");
+
+    // SPAWN_RESOURCE env list: pairs are the widest string element.
+    let mut env_value = u32::MAX.to_be_bytes().to_vec();
+    env_value.resize(4 + FILLER, 0xFF);
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, &0u32.to_be_bytes());
+    tlv_field(&mut fields, 2, &1u32.to_be_bytes());
+    tlv_field(&mut fields, 5, &env_value);
+    assert_alloc_within_input(&framed_tlv(0x22, &fields), "spawn env list");
+}

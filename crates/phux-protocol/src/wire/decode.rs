@@ -124,11 +124,15 @@ impl<'a> Decoder<'a> {
             .saturating_sub(self.pos)
     }
 
-    /// A `Vec` with capacity `min(count, remaining bytes)`; an over-declared
-    /// `count` still fails with `UnexpectedEof` in the caller's read loop.
+    /// A `Vec` whose reservation is at most the remaining body's bytes: an
+    /// element count capped at one per byte would still reserve
+    /// `size_of::<T>()` times the input. An over-declared `count` still
+    /// fails with `UnexpectedEof` in the caller's read loop; a legitimate
+    /// list of narrow-on-the-wire elements just grows as it decodes.
     #[must_use]
     pub(crate) fn bounded_capacity<T>(&self, count: usize) -> Vec<T> {
-        Vec::with_capacity(count.min(self.remaining_in_body()))
+        let per_element = core::mem::size_of::<T>().max(1);
+        Vec::with_capacity(count.min(self.remaining_in_body() / per_element))
     }
 
     fn take(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
