@@ -17,6 +17,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use phux_client_core::input_replay::operation_id_hex;
 use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
@@ -542,19 +543,6 @@ pub enum PromptError {
     /// Transport or protocol failure.
     #[error(transparent)]
     Transport(#[from] AttachError),
-}
-
-/// Hex of an operation id, for correlation in diagnostics and `--json`.
-#[must_use]
-pub fn operation_id_hex(operation_id: &InputOperationId) -> String {
-    use std::fmt::Write as _;
-    operation_id
-        .as_bytes()
-        .iter()
-        .fold(String::with_capacity(32), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
 }
 
 /// Read the pane's record over `conn`: the last one observed at or before
