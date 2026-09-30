@@ -53,9 +53,9 @@ pub struct ServerEnv {
 }
 
 impl ServerEnv {
-    /// Snapshot the variables from this process's environment. Only the
-    /// `phux server` entry point should call this; everything else builds a
-    /// [`ServerEnv`] explicitly.
+    /// Snapshot the variables from this process's environment. Only
+    /// process-entry binaries (`phux server`, `ws_demo_server`) should call
+    /// this; in-process embedders and tests build a [`ServerEnv`] explicitly.
     #[must_use]
     pub fn from_process() -> Self {
         Self::from_lookup(|var| std::env::var_os(var))
