@@ -24,7 +24,7 @@ import {
   type StatusInfo,
   type Toast,
 } from "./shell/chrome";
-import { keyChord } from "./shell/keymap";
+import { keyChord, textFieldHasKeys } from "./shell/keymap";
 import { CommandPalette, type PaletteItem } from "./shell/palette";
 import { Sidebar, paneTitle, shortPath } from "./shell/sidebar";
 import { TabBar, type TabView } from "./shell/tabbar";
@@ -1179,8 +1179,13 @@ function DesktopApp(props: AppProps): JSX.Element {
     }
     const command = keymap().get(chord);
     if (!command) return;
-    // A text field (a dialog, the palette, the find bar) keeps its own Select All.
-    if (command.id === "select-all" && (modal().kind !== "none" || find())) return;
+    // A text field (a dialog, the palette, this pane's find bar) keeps its own Select All.
+    const typing = textFieldHasKeys(
+      modal().kind !== "none",
+      find()?.placementId,
+      workspace.focused()?.id,
+    );
+    if (command.id === "select-all" && typing) return;
     const open = modal().kind;
     if (open !== "none") {
       setModal({ kind: "none" });
@@ -1390,7 +1395,10 @@ function DesktopApp(props: AppProps): JSX.Element {
         pane={paneOf(placement.terminalId)}
         agent={bridge.agents()[placement.terminalId]}
         selected={selected()}
-        inputFocused={selected() && modal().kind === "none" && find()?.placementId !== placement.id}
+        inputFocused={
+          selected() &&
+          !textFieldHasKeys(modal().kind !== "none", find()?.placementId, placement.id)
+        }
         sizeOwner={workspace.sizeOwner(placement)}
         showHeader={
           placements(tab()?.root ?? { kind: "leaf", placement }).length > 1 || !!tab()?.zoomedId

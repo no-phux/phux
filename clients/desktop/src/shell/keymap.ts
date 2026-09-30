@@ -97,3 +97,17 @@ export function displayChord(chord: string): string {
   const label = GLYPHS[key] ?? (key.length === 1 ? key.toUpperCase() : key);
   return `${mods.join("")}${label}`;
 }
+
+/**
+ * Whether a text field has the keyboard, so its own editing keys (Select All)
+ * win over the terminal's chords: an open dialog or palette, or a find bar on
+ * the focused pane. A find bar left open on another pane or tab does not: the
+ * focused terminal has the keys there.
+ */
+export function textFieldHasKeys(
+  modalOpen: boolean,
+  findPlacementId: string | undefined,
+  focusedPlacementId: string | undefined,
+): boolean {
+  return modalOpen || (findPlacementId !== undefined && findPlacementId === focusedPlacementId);
+}

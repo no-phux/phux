@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { rank } from "../../src/shell/filter";
-import { chordOf, displayChord } from "../../src/shell/keymap";
+import { chordOf, displayChord, textFieldHasKeys } from "../../src/shell/keymap";
 import { quotePaths } from "../../src/terminal/pane";
 import { mix, palette, readableOn, themes } from "../../src/ui/theme";
 
@@ -23,6 +23,18 @@ describe("chords", () => {
   test("display uses macOS modifier order", () => {
     expect(displayChord("cmd+shift+p")).toBe("⇧⌘P");
     expect(displayChord("cmd+alt+left")).toBe("⌥⌘←");
+  });
+});
+
+describe("text fields", () => {
+  test("only a dialog or the focused pane's own find bar owns the keys", () => {
+    expect(textFieldHasKeys(true, undefined, "a")).toBe(true);
+    expect(textFieldHasKeys(false, "a", "a")).toBe(true);
+    // Find left open in another split or another tab: the focused terminal
+    // has the keys, so its Select All must still work.
+    expect(textFieldHasKeys(false, "a", "b")).toBe(false);
+    expect(textFieldHasKeys(false, "a", undefined)).toBe(false);
+    expect(textFieldHasKeys(false, undefined, "a")).toBe(false);
   });
 });
 
