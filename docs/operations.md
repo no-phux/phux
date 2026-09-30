@@ -160,9 +160,14 @@ A native embedder such as Cockpit reads its client's table with
 `phux_client_perf_json`: the kernel's `kernel.*` rows (frames and bytes
 applied, `kernel.apply`, `kernel.echo.rtt`) and the runtime's `runtime.*`
 rows (`runtime.apply_batches` owner-thread round trips, `runtime.publish`
-grid publications, `runtime.project` projection time). `kernel.frames`
-divided by `runtime.publish` is how many output frames one publication
-absorbed; near 1 under a flood means frames are being fed one at a time.
+grid publications, `runtime.project` projection time, and the read pacing
+behind them: `runtime.acquire` consumer reads, `runtime.publish_deferred`
+projections skipped because the current frame was unread, `runtime.catch_up`
+projections a read pulled). `kernel.frames` divided by `runtime.publish` is
+how many output frames one publication absorbed. Under a flood
+`runtime.publish` should track `runtime.acquire`; one well above it means a
+consumer reads every frame it is woken for rather than once per display
+tick.
 
 The desktop host (`clients/desktop`) appends its painter rows to the same
 report, `desktopPerfJson`: `desktop.prepare` and `desktop.paint` (per

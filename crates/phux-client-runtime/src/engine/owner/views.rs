@@ -2,8 +2,8 @@
 
 use super::{
     CanonicalGeometry, ClosedReplica, DocumentAnchorId, DocumentPoint, DocumentSpace,
-    EngineDocumentSelection, EngineError, GridBuffer, Owner, PointerGesture, Predictor, ResourceId,
-    Scroll, apply_terminal_selection, engine_error, viewport_scroll,
+    EngineDocumentSelection, EngineError, FrameKey, GridBuffer, Owner, PointerGesture, Predictor,
+    ResourceId, Scroll, apply_terminal_selection, engine_error, viewport_scroll,
 };
 use crate::ViewId;
 use crate::engine::views::ViewCommand;
@@ -139,7 +139,7 @@ impl Owner {
 
     /// The default state is restored even when installation or the operation
     /// fails. Only owner-thread code can enter this scope; scopes never nest.
-    fn with_view<T>(
+    pub(super) fn with_view<T>(
         &mut self,
         view: ViewId,
         operation: impl FnOnce(&mut Self, &ResourceId) -> Result<T, EngineError>,
@@ -203,13 +203,29 @@ impl Owner {
         }
     }
 
+    /// Publish every presentation of `id` now.
     pub(super) fn render_views(&mut self, id: &ResourceId) -> Result<bool, EngineError> {
-        let published = self.render_and_publish(id)?;
+        self.render_presentations(id, false)
+    }
+
+    /// Publish every presentation of `id` a consumer has caught up with, and
+    /// defer the rest to their next acquire (see `publication`).
+    pub(super) fn render_damage(&mut self, id: &ResourceId) -> Result<bool, EngineError> {
+        self.render_presentations(id, true)
+    }
+
+    fn render_presentations(&mut self, id: &ResourceId, paced: bool) -> Result<bool, EngineError> {
+        let published = if paced && self.deferred(&FrameKey::Default(id.clone())) {
+            false
+        } else {
+            self.render_and_publish(id)?
+        };
         let views: Vec<_> = self
             .views
             .iter()
             .filter(|(_, view)| &view.terminal == id)
             .map(|(id, _)| *id)
+            .filter(|view| !(paced && self.deferred(&FrameKey::View(*view))))
             .collect();
         let mut failure = None;
         for view in views {
@@ -218,6 +234,14 @@ impl Owner {
             }
         }
         failure.map_or(Ok(published), Err)
+    }
+
+    fn deferred(&self, key: &FrameKey) -> bool {
+        let deferred = self.publication.defer(key);
+        if deferred {
+            crate::perf::DEFERRED.incr();
+        }
+        deferred
     }
 
     pub(super) fn forget_views(&mut self, id: &ResourceId) {

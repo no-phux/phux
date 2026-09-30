@@ -12,11 +12,16 @@ impl Owner {
             return Ok(false);
         };
         self.ensure_projector(id, token, geometry)?;
-        let full = self.views.values().any(|view| &view.terminal == id);
+        let views = self.views.values().any(|view| &view.terminal == id);
         self.install_presentation(id)?;
         let Some(mut slot) = self.projectors.remove(id) else {
             return Ok(false);
         };
+        // Paced publication can leave one presentation many projections
+        // behind another; its row damage then says nothing about its own
+        // previous frame.
+        let full = views || slot.reader != self.active_view;
+        slot.reader = self.active_view;
         let started = std::time::Instant::now();
         let result = self.project_frame(id, &mut slot, full, (stream, bootstrap, sequence));
         self.projectors.insert(id.clone(), slot);
