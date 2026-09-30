@@ -260,8 +260,10 @@ fn client_state_dir() -> PathBuf {
 pub fn init() -> Result<Option<WorkerGuard>, Box<dyn std::error::Error + Send + Sync>> {
     let format = LogFormat::from_env();
 
-    // Always-on stderr layer (ANSI for an interactive operator).
-    let stderr_layer = fmt_layer(format, std::io::stderr as fn() -> std::io::Stderr, true);
+    // Always-on stderr layer: ANSI only for an interactive operator. An
+    // auto-spawned or supervised server's stderr is the server log file.
+    let ansi = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    let stderr_layer = fmt_layer(format, std::io::stderr as fn() -> std::io::Stderr, ansi);
 
     // Optional file tee, without ANSI codes.
     let (file_layer, guard) = match std::env::var_os(ENV_LOG_PATH) {

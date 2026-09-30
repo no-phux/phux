@@ -234,6 +234,30 @@ fn stale_socket_is_recovered_and_explicit_socket_overrides_environment() {
     fixture.assert_cleaned_up();
 }
 
+/// An auto-spawned server writes its stderr into `server.log`, a file: its
+/// tracing lines must carry no ANSI color escapes, or `grep` and `phux
+/// logs --server` show `^[[2m` noise around every field.
+#[test]
+fn server_log_from_an_auto_spawned_server_has_no_ansi_escapes() {
+    let mut fixture = Fixture::new();
+    let output = bounded_output(
+        fixture
+            .command()
+            .env("RUST_LOG", "phux=info")
+            .args(["server", "--ensure"]),
+    );
+    assert_success(&output);
+    fixture.server.capture_pid();
+    let log = std::fs::read_to_string(fixture.dir.path().join("phux-ensure/server.log"))
+        .expect("server log");
+    assert!(log.contains("phux server started"), "{log}");
+    assert!(
+        !log.contains('\u{1b}'),
+        "ANSI escapes in the log file:\n{log}"
+    );
+    fixture.assert_cleaned_up();
+}
+
 #[test]
 fn foreign_version_coordinator_is_reused_without_reexecution() {
     let mut fixture = Fixture::new();
