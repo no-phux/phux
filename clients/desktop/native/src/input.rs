@@ -479,9 +479,20 @@ impl TerminalInput {
         window: &Window,
         cx: &App,
     ) -> Result<Option<u64>, InputError> {
+        let focused = self.focused(window, cx);
+        self.paste(text, focused)
+    }
+
+    /// The shell's Paste command, addressed to this terminal by placement.
+    /// Keyboard focus may sit in an overlay over it, such as the find bar,
+    /// whose own Command-V pastes into the field instead.
+    pub fn paste_requested(&mut self, text: &str) -> Result<Option<u64>, InputError> {
+        self.paste(text, true)
+    }
+
+    fn paste(&mut self, text: &str, focused: bool) -> Result<Option<u64>, InputError> {
         self.cancel();
         let client = self.client()?;
-        let focused = self.focused(window, cx);
         let delivery = client.with_control(|control| {
             let admission = if focused {
                 self.validate(control, true)
@@ -509,7 +520,16 @@ impl TerminalInput {
     }
 
     pub fn copy_selection(&self, window: &Window, cx: &mut App) -> Result<(), InputError> {
-        self.current(window, cx)?;
+        if !self.focused(window, cx) {
+            return Err(InputError::WrongFocus);
+        }
+        self.copy_requested(cx)
+    }
+
+    /// The shell's Copy command, addressed to this terminal by placement: its
+    /// selection is copied wherever keyboard focus is, as with the find bar
+    /// open.
+    pub fn copy_requested(&self, cx: &mut App) -> Result<(), InputError> {
         let text = self.with_current(false, |control| {
             control
                 .engine()
