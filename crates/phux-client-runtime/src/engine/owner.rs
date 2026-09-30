@@ -362,6 +362,7 @@ impl Owner {
     }
 
     fn apply_batch(&mut self, events: Vec<EngineEvent>) -> Vec<EngineOutcome> {
+        crate::perf::APPLY_BATCHES.incr();
         let mut damaged = Vec::new();
         let mut outcomes = Vec::with_capacity(events.len());
         for event in events {

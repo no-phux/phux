@@ -1211,9 +1211,9 @@ impl Client {
     }
 
     pub(crate) fn perf_json(&mut self) {
-        self.perf_buf = phux_client_core::perf::report(self.created_at.elapsed())
-            .to_json()
-            .into_bytes();
+        let mut report = phux_client_core::perf::report(self.created_at.elapsed());
+        report.metrics.extend(phux_client_runtime::perf::snapshot());
+        self.perf_buf = report.to_json().into_bytes();
     }
 }
 

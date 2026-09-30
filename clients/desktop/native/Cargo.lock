@@ -4723,6 +4723,7 @@ dependencies = [
  "phux-client-core",
  "phux-config",
  "phux-dial",
+ "phux-perf",
  "phux-protocol",
  "quinn",
  "serde_json",

@@ -1531,8 +1531,9 @@ pub unsafe extern "C" fn phux_client_selection_text(
 ///
 /// Frames applied and their bytes, engine apply time, and the echo round trip
 /// from a key or paste leaving `phux_client_send_*` to the first output frame
-/// for that terminal. Always on; counters since the client was created. The
-/// bytes are borrowed from the client and valid until the next
+/// for that terminal, then the runtime's owner-thread apply round trips and
+/// grid publications (`runtime.*`). Always on; counters since the client was
+/// created. The bytes are borrowed from the client and valid until the next
 /// `phux_client_perf_json` call.
 ///
 /// # Safety
@@ -1675,6 +1676,30 @@ mod tests {
 
     unsafe extern "C-unwind" fn panic_callback(_: *mut c_void) {
         panic!("callback panic");
+    }
+
+    /// The perf report carries the runtime's owner-thread rows beside the
+    /// kernel's, so an embedder can see its publications per frame.
+    #[test]
+    fn perf_json_reports_kernel_and_runtime_metrics() {
+        let client = new_client();
+        let mut out = PhuxBytes::default();
+        // SAFETY: a live client from `new_client` and a writable output.
+        assert_eq!(
+            unsafe { phux_client_perf_json(client, &raw mut out) },
+            PhuxClientResult::Ok
+        );
+        // SAFETY: the bytes are borrowed from the live client.
+        let json = unsafe { bytes_in(out.data, out.len) }.expect("perf json span");
+        let json = std::str::from_utf8(json).expect("utf-8");
+        for name in ["kernel.frames", "runtime.apply_batches", "runtime.publish"] {
+            assert!(
+                json.contains(&format!("\"{name}\"")),
+                "{name} missing: {json}"
+            );
+        }
+        // SAFETY: the client is released exactly once.
+        unsafe { phux_client_free(client) };
     }
 
     #[test]

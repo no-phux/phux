@@ -1121,8 +1121,10 @@ PhuxClientResult phux_client_selection_text(PhuxClient *client, const PhuxResour
  * Snapshots the kernel's always-on performance telemetry as a JSON
  * PerfReport (ADR-0096): frames applied and their bytes, engine apply time,
  * and the echo round trip from a key or paste leaving phux_client_send_* to
- * the first output frame for that terminal. The returned bytes are borrowed
- * from the client and stay valid until the next phux_client_perf_json call.
+ * the first output frame for that terminal, plus the runtime's owner-thread
+ * apply round trips and grid publications (runtime.*). The returned bytes
+ * are borrowed from the client and stay valid until the next
+ * phux_client_perf_json call.
  * Returns PHUX_CLIENT_INVALID_ARGUMENT for a null argument.
  */
 PhuxClientResult phux_client_perf_json(PhuxClient *client, PhuxBytes *out_json);
