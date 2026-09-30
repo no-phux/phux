@@ -13,10 +13,10 @@ use super::{
 #[cfg(feature = "engine")]
 use super::{
     Arc, CanonicalGeometry, ClosedReplica, DocumentAnchorId, DocumentPoint, DocumentSpace,
-    EngineDocumentPoint, EngineDocumentSelection, EngineError, GhosttyAdapter, GhosttyReplica,
-    GridBuffer, GridDamage, GridFrame, GridProjector, HashMap, MouseMode, Publication, ReplicaInfo,
-    Rgb, Scroll, ScrollViewport, Scrollbar, SearchMatch, SearchResults, SelectionGestureEvent,
-    SelectionGestureResult, TextRegion,
+    EngineDocumentPoint, EngineDocumentSelection, EngineError, FrameKey, GhosttyAdapter,
+    GhosttyReplica, GridBuffer, GridDamage, GridFrame, GridProjector, HashMap, MouseMode,
+    Publication, ReplicaInfo, Rgb, Scroll, ScrollViewport, Scrollbar, SearchMatch, SearchResults,
+    SelectionGestureEvent, SelectionGestureResult, TextRegion,
 };
 #[cfg(feature = "engine")]
 use libghostty_vt::selection::gesture::{
@@ -45,6 +45,10 @@ struct PointerGesture {
 struct ProjectorSlot {
     token: u128,
     projector: GridProjector,
+    /// The presentation the projector last projected (`None` for the
+    /// default). Row damage is relative to that projection, so it is exact
+    /// only for the same presentation.
+    reader: Option<crate::ViewId>,
 }
 
 pub(super) struct Owner {
@@ -127,6 +131,10 @@ impl Owner {
                 Command::Query(query) => self.query(query),
                 #[cfg(feature = "engine")]
                 Command::View(command) => self.view_command(command),
+                #[cfg(feature = "engine")]
+                Command::CatchUp(key, reply) => {
+                    let _ = reply.send(self.catch_up(&key));
+                }
             }
         }
     }
@@ -429,10 +437,29 @@ impl Owner {
     fn publish_damaged(&mut self, damaged: Vec<ResourceId>) {
         self.release_pending();
         for id in damaged {
-            if let Err(error) = self.render_views(&id) {
+            if let Err(error) = self.render_damage(&id) {
                 tracing::warn!(terminal = %id, %error, "grid projection failed");
             }
         }
+    }
+
+    /// Project a presentation an acquire found deferred and hand its frame
+    /// to that consumer. A presentation that no longer exists hands back
+    /// whatever its slot still holds.
+    #[cfg(feature = "engine")]
+    fn catch_up(&mut self, key: &FrameKey) -> Option<Arc<GridFrame>> {
+        let result = match key {
+            FrameKey::Default(id) => self.render_and_publish(id).map(drop),
+            FrameKey::View(view) if self.views.contains_key(view) => {
+                self.with_view(*view, Self::render_and_publish).map(drop)
+            }
+            FrameKey::View(_) => Ok(()),
+        };
+        match result {
+            Ok(()) => crate::perf::CAUGHT_UP.incr(),
+            Err(error) => tracing::warn!(?key, %error, "grid catch-up failed"),
+        }
+        self.publication.hand_off(key)
     }
 
     /// Record which terminals gained or lost a projection in effect order,
@@ -624,8 +651,14 @@ impl Owner {
             EngineError::Engine(format!("render state allocation failed: {error}"))
         })?;
         self.reset_generation_presentations(id, geometry);
-        self.projectors
-            .insert(id.clone(), ProjectorSlot { token, projector });
+        self.projectors.insert(
+            id.clone(),
+            ProjectorSlot {
+                token,
+                projector,
+                reader: None,
+            },
+        );
         Ok(())
     }
 

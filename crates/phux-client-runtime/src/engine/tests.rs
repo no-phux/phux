@@ -166,7 +166,11 @@ fn an_output_burst_projects_once_without_losing_event_outcomes() {
     let (owner, publication) = owner();
     let terminal = id(1);
     attach(&owner, &terminal, b"ready");
-    let before = publication.generation(&terminal).expect("published");
+    // A caught-up consumer: the batch publishes before anyone asks again.
+    let before = publication
+        .acquire(&terminal)
+        .expect("published")
+        .generation;
     let events = vec![
         EngineEvent::Output {
             terminal_id: terminal.clone(),
@@ -198,6 +202,114 @@ fn an_output_burst_projects_once_without_losing_event_outcomes() {
         vec![0, 2],
         "one final projection preserves the burst's exact accumulated row damage"
     );
+}
+
+#[cfg(feature = "engine")]
+fn output(terminal: &ResourceId, seq: u64, bytes: &[u8]) -> EngineEvent {
+    EngineEvent::Output {
+        terminal_id: terminal.clone(),
+        stream_id: stream(1),
+        bootstrap_id: bootstrap(1),
+        seq,
+        bytes: bytes.to_vec().into(),
+    }
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn an_unread_frame_defers_projection_until_the_next_acquire() {
+    let (owner, publication) = owner();
+    let terminal = id(1);
+    attach(&owner, &terminal, b"ready");
+    let slot = publication.slot(&terminal).expect("published");
+    let first = slot.generation();
+
+    // Nobody read the attach frame: three batches replace nothing.
+    apply_batch_ok(&owner, vec![output(&terminal, 1, b"\x1b[1;1Htop")]);
+    apply_batch_ok(&owner, vec![output(&terminal, 2, b"\x1b[2;1Hsecond")]);
+    apply_batch_ok(&owner, vec![output(&terminal, 3, b"\x1b[3;1Hthird")]);
+    assert_eq!(slot.generation(), first, "unread frames are not replaced");
+
+    // The read pulls one projection of the latest state, with the damage of
+    // every deferred batch.
+    let caught_up = slot.acquire().expect("caught up");
+    assert_eq!(caught_up.generation, first + 1);
+    assert_eq!(caught_up.last_seq, 3);
+    assert_eq!(caught_up.row_text(0), "topdy");
+    assert_eq!(caught_up.row_text(2), "third");
+    assert_eq!(caught_up.damage, GridDamage::Rows);
+    assert_eq!(caught_up.dirty_rows().collect::<Vec<_>>(), vec![0, 1, 2]);
+    // Nothing changed since: a second read is the same frame, no projection.
+    let again = slot.acquire().expect("current");
+    assert!(Arc::ptr_eq(&caught_up, &again));
+
+    // Read, so the next batch publishes at once: an echo is never held.
+    apply_batch_ok(&owner, vec![output(&terminal, 4, b"\x1b[4;1Hecho")]);
+    assert_eq!(slot.generation(), first + 2);
+    let echo = publication.acquire(&terminal).expect("published");
+    assert_eq!(echo.row_text(3), "echo");
+    assert_eq!(echo.damage, GridDamage::Rows);
+    assert!(echo.is_row_dirty(3));
+    assert!(!echo.is_row_dirty(0));
+}
+
+/// The read/stale handshake under contention: a consumer that only
+/// re-acquires when the generation moves must still end on the final state,
+/// however its reads interleave with the owner's publish-or-defer choice.
+#[cfg(feature = "engine")]
+#[test]
+fn a_generation_polling_consumer_never_strands_on_a_deferred_frame() {
+    const BATCHES: u64 = 2_000;
+    let (owner, publication) = owner();
+    let terminal = id(1);
+    attach(&owner, &terminal, b"ready");
+    let slot = publication.slot(&terminal).expect("published");
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let consumer = {
+        let done = Arc::clone(&done);
+        std::thread::spawn(move || {
+            let mut painted = slot.acquire().expect("frame");
+            loop {
+                let finished = done.load(std::sync::atomic::Ordering::SeqCst);
+                if slot.generation() != painted.generation {
+                    painted = slot.acquire().expect("frame");
+                } else if finished {
+                    return painted;
+                }
+                std::thread::yield_now();
+            }
+        })
+    };
+    for seq in 1..=BATCHES {
+        let text = format!("\x1b[1;1H{seq:06}");
+        apply_batch_ok(&owner, vec![output(&terminal, seq, text.as_bytes())]);
+    }
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    let painted = consumer.join().expect("consumer");
+    assert_eq!(painted.last_seq, BATCHES);
+    assert_eq!(painted.row_text(0), format!("{BATCHES:06}"));
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn a_catch_up_after_the_owner_stops_returns_the_last_frame() {
+    let (owner, publication) = owner();
+    let terminal = id(1);
+    attach(&owner, &terminal, b"ready");
+    let slot = publication.slot(&terminal).expect("published");
+    apply_batch_ok(&owner, vec![output(&terminal, 1, b"\x1b[1;1Htop")]);
+    let held = slot.generation();
+    drop(owner);
+    // Retiring the owner removes the slot; a held handle neither blocks nor
+    // resurrects it.
+    for _ in 0..100 {
+        if slot.acquire().is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(slot.acquire().is_none());
+    assert_eq!(slot.generation(), held);
 }
 
 #[cfg(feature = "engine")]

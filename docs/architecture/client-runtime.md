@@ -91,7 +91,9 @@ to call from.
   `EngineOutcome`s (the kernel's declarative effects) back. A single event
   publishes before answering as before; `ControlPlane::apply_engine_events`
   applies an ordered pump batch, accumulates damage, and projects each damaged
-  terminal once before the ordered outcomes return to the plane. A fatal
+  presentation a consumer has caught up with once before the ordered outcomes
+  return to the plane (see [the publication contract](#the-publication-contract)
+  for the ones nobody has read yet). A fatal
   outcome ends the applied prefix; later queued frames never mutate replicas.
   Generation and dirty-row facts therefore describe the batch's final
   authoritative state without paying one projection per output frame.
@@ -111,7 +113,9 @@ to call from.
 - **Caller threads** hold a `Client` (an `Arc`; clone to share) and call
   synchronous methods from anywhere. Each takes the lock briefly and
   notifies the driver when frames were queued. Grid frames are acquired
-  from the `Publication` table without touching the plane at all.
+  from the `Publication` table without touching the plane at all; an
+  acquire that must catch up waits on one owner-thread round trip, so no
+  owner-thread code acquires.
 
 Without the `engine` feature a bounded `ByteAdapter` replica keeps the
 same kernel and the same threads, so the transport and control-plane lanes
@@ -134,7 +138,29 @@ holds it. A consumer:
 - reads `damage` and `dirty_rows()`, taken from libghostty's render state
   (`Snapshot::dirty`, `RowIteration::dirty`) and cleared after each
   projection, so a repaint can be incremental. The first frame of a replica
-  generation, and every full projection, marks all rows dirty.
+  generation, and every full projection, marks all rows dirty, as does the
+  first projection of a presentation after another presentation of the same
+  terminal was projected in between.
+
+Publication is paced by reads, with no timer. After a batch the owner
+projects a damaged presentation (a terminal's default one or a view) only
+when a consumer has acquired its current frame; otherwise the frame it
+would replace is unread, so the owner defers and marks the slot stale. The
+next `acquire` of a stale slot asks the owner to project the latest state
+and returns that frame, one owner round trip. So:
+
+- the owner never projects faster than consumers read (an output flood read
+  at display rate publishes at display rate, and a presentation nobody reads
+  is projected once), and a consumer never receives a frame older than the
+  replica was when it asked;
+- a caught-up consumer's next change, a keystroke's echo included, publishes
+  in the batch that applies it;
+- `generation` only holds still while the current generation is unread, so
+  a consumer that polls it still sees every change it has not painted, and
+  the caught-up frame's dirty rows cover every deferred batch.
+
+`runtime.publish_deferred`, `runtime.acquire`, and `runtime.catch_up` count
+the three sides of that exchange.
 
 The frame also carries the geometry, cursor, scrollbar, the colors the
 cells were resolved against, and the replica identity (stream, bootstrap,

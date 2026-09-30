@@ -438,11 +438,12 @@ fn embedded_with_history(history_cursor: Option<Vec<u8>>) -> phux_client_runtime
 /// The delivery shape sets the owner-thread cost, and the `runtime.*`
 /// counters show it: a transport read fed as one batch is one apply round
 /// trip and one grid publication; the same frames fed one at a time are one
-/// of each per frame.
+/// round trip each, and publish per frame only for a consumer that reads
+/// every frame. Unread, they cost one projection, pulled by the next read.
 #[cfg(feature = "engine")]
 #[test]
-fn a_batched_read_publishes_once_and_frame_at_a_time_publishes_per_frame() {
-    use phux_client_runtime::perf::{APPLY_BATCHES, PUBLISHED};
+fn a_batched_read_publishes_once_and_frame_at_a_time_publishes_per_read() {
+    use phux_client_runtime::perf::{ACQUIRED, APPLY_BATCHES, CAUGHT_UP, DEFERRED, PUBLISHED};
     const FRAMES: u64 = 8;
     let client = embedded_with_history(None);
     let frame = |seq: u64| {
@@ -458,6 +459,7 @@ fn a_batched_read_publishes_once_and_frame_at_a_time_publishes_per_frame() {
         encoded.to_vec()
     };
 
+    let _ = client.acquire(&terminal()).unwrap();
     let (batches, published) = (APPLY_BATCHES.get(), PUBLISHED.get());
     let read: Vec<_> = (1..=FRAMES).map(frame).collect();
     client
@@ -466,21 +468,45 @@ fn a_batched_read_publishes_once_and_frame_at_a_time_publishes_per_frame() {
     assert_eq!(APPLY_BATCHES.get() - batches, 1, "one round trip per read");
     assert_eq!(PUBLISHED.get() - published, 1, "one publication per read");
 
+    // A consumer that reads every frame is published every frame.
     let (batches, published) = (APPLY_BATCHES.get(), PUBLISHED.get());
     for seq in FRAMES + 1..=2 * FRAMES {
+        let _ = client.acquire(&terminal()).unwrap();
         client
             .with_control(|plane| plane.feed_bytes(&frame(seq)))
             .unwrap();
     }
     assert_eq!(APPLY_BATCHES.get() - batches, FRAMES);
     assert_eq!(PUBLISHED.get() - published, FRAMES);
+
+    // Nobody reads: every frame after the first unread one is deferred, and
+    // the read that follows pulls one projection of the final state.
+    let _ = client.acquire(&terminal()).unwrap();
+    let (batches, published, deferred, acquired) = (
+        APPLY_BATCHES.get(),
+        PUBLISHED.get(),
+        DEFERRED.get(),
+        ACQUIRED.get(),
+    );
+    for seq in 2 * FRAMES + 1..=3 * FRAMES {
+        client
+            .with_control(|plane| plane.feed_bytes(&frame(seq)))
+            .unwrap();
+    }
+    assert_eq!(APPLY_BATCHES.get() - batches, FRAMES);
+    assert_eq!(PUBLISHED.get() - published, 1, "only the first frame");
+    assert_eq!(DEFERRED.get() - deferred, FRAMES - 1);
+    let caught_up = CAUGHT_UP.get();
     assert!(
         client
             .acquire(&terminal())
             .unwrap()
             .row_text(3)
-            .starts_with("line 16")
+            .starts_with("line 24")
     );
+    assert_eq!(CAUGHT_UP.get() - caught_up, 1);
+    assert_eq!(PUBLISHED.get() - published, 2, "the read pulled one more");
+    assert_eq!(ACQUIRED.get() - acquired, 1);
 }
 
 #[cfg(feature = "engine")]
@@ -743,10 +769,12 @@ fn a_transport_batch_publishes_once_and_preserves_ordered_changes() {
     let (mut plane, attach_id) = negotiated();
     attach(&mut plane, attach_id, b"ready");
     let _ = plane.take_events();
+    // A caught-up consumer, so the batch publishes without being asked.
     let before = plane
         .publication()
-        .generation(&terminal())
-        .expect("bootstrap published");
+        .acquire(&terminal())
+        .expect("bootstrap published")
+        .generation;
     let event_count = 32_u64;
     let frames = (1..=event_count)
         .map(|seq| {
@@ -791,8 +819,9 @@ fn a_control_frame_splits_engine_batches_without_reordering() {
     let _ = plane.take_outbound();
     let before = plane
         .publication()
-        .generation(&terminal())
-        .expect("bootstrap published");
+        .acquire(&terminal())
+        .expect("bootstrap published")
+        .generation;
     let output = |seq, bytes: &'static [u8]| {
         encode(&FrameKind::ResourceOutput {
             terminal_id: terminal(),
