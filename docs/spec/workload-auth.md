@@ -325,22 +325,30 @@ the same verbs.
 
 ## 6. Terminal endpoint mapping and total classification
 
-<!-- impl-status: partial; probe: classify_command,ScopedPolicy,enforce -->
-> **Status: partial.** Both tables below are mirrored row for row by
+<!-- impl-status: shipped; probe: classify_command,ScopedPolicy,enforce,filter_snapshot,observes_event -->
+> **Status: shipped.** Both tables below are mirrored row for row by
 > `phux_protocol::kinds` (ADR-0125), the table `classify_frame` and
-> `classify_command` read; a test pins it to these rows in both directions.
-> The reference server enforces it for `paired` workload grants at three
-> points that share one `enforce`: the client frame loop after decode, the
-> top of command dispatch (above the input lane and every satellite relay),
-> and QUIC `STREAM_BIND` (`OBSERVE` on the bound Terminal). Where the table
-> allows a filtered result, the guard fails closed instead of filtering:
-> `SUBSCRIBE_EVENTS { terminal: None }` and `GET_STATE { SERVER }` need
-> their verb on Global, and `ATTACH` needs its verbs on the resolved Group,
-> which contains every member. An unowned local `SPAWN_RESOURCE` needs
-> `CREATE` on the local host, because the server, not the payload `GroupId`,
-> picks its session. The owner's grant (`local`, the §8 transitional
-> posture, and the owner socket under `paired`) admits every frame, leaving
-> the handlers' own checks as its only limit.
+> `classify_command` read; a test pins it to these rows in both directions,
+> and a table-driven test checks every reachable row's verbs on its own
+> subject selector against the near misses. The reference server enforces
+> it for `paired` workload grants at three points that share one `enforce`:
+> the client frame loop after decode, the top of command dispatch (above
+> the input lane and every satellite relay), and QUIC `STREAM_BIND`
+> (`OBSERVE` on the bound Terminal). The rows that allow a filtered result
+> filter at the source (`phux_server::policy::filter`):
+> `SUBSCRIBE_EVENTS { terminal: None }` is admitted with `OBSERVE` on any
+> selector and delivers, and replays, only events on Terminals the grant
+> observes (a child through its parent; an event naming no Terminal only
+> with Global); `GET_STATE { SERVER }` is admitted with `INVENTORY` on any
+> selector and returns only the sessions, windows, Terminals, and satellite
+> rows it inventories, with the listener report only at Global; `ATTACH`'s
+> `ATTACHED` snapshot keeps only what the grant observes. An event is
+> placed in its Group when it is journaled. An unowned local
+> `SPAWN_RESOURCE` needs `CREATE` on the local host, because its payload
+> `GroupId` is the opaque key only the local host contains (§5.1). The
+> owner's grant (`local`, the §8 transitional posture, and the owner socket
+> under `paired`) admits every frame and filters nothing, leaving the
+> handlers' own checks as its only limit.
 
 The terminal protocol adds no workload frame and no HELLO workload field:
 HELLO field ids 7 and 8 stay reserved and unassigned, `WORKLOAD_RESPONSE
@@ -439,11 +447,15 @@ point before any handler or satellite branch:
 | `APPEND_RESOURCE_OUTPUT` | `BIND` and `INPUT` | the named resource's parent Terminal; a grant naming only the child does not suffice, and a Terminal-kind target is refused after admission with `WRONG_RESOURCE_KIND` |
 | Unknown, retired, or otherwise unclassified command tag | default-deny | none |
 
-<!-- impl-status: partial; probe: ResourceKind,COMMAND_TAG_APPEND_RESOURCE_OUTPUT -->
-> **Status: partial.** The kind-bearing spawn rows and the
-> `APPEND_RESOURCE_OUTPUT` row classify frames the codec decodes but no
-> server serves; they bind the classifier the day the `AGENT_SESSION` kind
-> lands ([L1.md §1.1](./L1.md)).
+<!-- impl-status: shipped; probe: ResourceKind,COMMAND_TAG_APPEND_RESOURCE_OUTPUT -->
+> **Status: shipped.** The `AGENT_SESSION` kind is served
+> ([L1.md §1.1](./L1.md)), and the kind-bearing spawn rows and the
+> `APPEND_RESOURCE_OUTPUT` row are enforced as written: a local agent
+> session needs `CREATE` on its parent's Group and `BIND` on the parent; a
+> remote one `CREATE` on its host and `BIND` on the same-host parent, and a
+> different-host parent is refused; a kind that contradicts its binding is
+> refused whatever is granted; and output is appended only through the
+> parent, never through a grant naming the child alone.
 
 A resource bound to a parent ([L1.md §1.2](./L1.md)) is admitted through
 that parent: for every row above whose subject is "named Terminal", a child

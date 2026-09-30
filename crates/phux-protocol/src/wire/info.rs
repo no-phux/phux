@@ -679,6 +679,14 @@ impl SessionSnapshot {
         self
     }
 
+    /// The same snapshot with no listener report: what a server returns to a
+    /// caller not entitled to server-global data (workload-auth §6).
+    #[must_use]
+    pub fn without_listeners(mut self) -> Self {
+        self.set_listeners(None);
+        self
+    }
+
     fn set_hosts(&mut self, hosts: Vec<HostInventory>) {
         self.edit_trail(|trail| trail.hosts = boxed_hosts(hosts).unwrap_or_default());
     }
