@@ -1,10 +1,12 @@
 //! Keyboard, IME, and paste routing (`phux_web::input`), under node.
 
 use phux_protocol::input::key::{KeyAction, ModSet, PhysicalKey};
+use phux_protocol::input::mouse::MouseButton;
 use phux_protocol::input::paste::PasteTrust;
 use phux_web::input::{
-    BrowserKey, MAX_PASTE_BYTES, code_to_physical_key, is_copy_chord, key_events_for_text,
-    paste_event, route_key, scrollback_page, wheel_rows,
+    BrowserKey, MAX_PASTE_BYTES, WheelAction, WheelModes, code_to_physical_key, held_button,
+    is_copy_chord, is_find_chord, key_events_for_text, mouse_button, paste_event, reports_motion,
+    route_key, route_wheel, scrollback_page, surface_pixel, wheel_arrows, wheel_button, wheel_rows,
 };
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -234,4 +236,139 @@ fn command_c_and_ctrl_shift_c_are_copy_chords() {
         ..key("c", "KeyC")
     };
     assert!(!is_copy_chord(&ctrl_c), "Ctrl+C stays the interrupt");
+}
+
+#[wasm_bindgen_test]
+fn command_f_and_ctrl_shift_f_open_find() {
+    let command_f = BrowserKey {
+        meta: true,
+        ..key("f", "KeyF")
+    };
+    assert!(is_find_chord(&command_f));
+    let ctrl_shift_f = BrowserKey {
+        ctrl: true,
+        shift: true,
+        ..key("F", "KeyF")
+    };
+    assert!(is_find_chord(&ctrl_shift_f));
+    let ctrl_f = BrowserKey {
+        ctrl: true,
+        ..key("f", "KeyF")
+    };
+    assert!(!is_find_chord(&ctrl_f), "Ctrl+F stays the terminal's");
+    let command_shift_f = BrowserKey {
+        shift: true,
+        ..command_f
+    };
+    assert!(!is_find_chord(&command_shift_f));
+}
+
+#[wasm_bindgen_test]
+fn dom_buttons_map_to_wire_buttons() {
+    assert_eq!(mouse_button(0), Some(MouseButton::Left));
+    assert_eq!(mouse_button(1), Some(MouseButton::Middle));
+    assert_eq!(mouse_button(2), Some(MouseButton::Right));
+    assert_eq!(mouse_button(3), Some(MouseButton::Eight), "back");
+    assert_eq!(mouse_button(4), Some(MouseButton::Nine), "forward");
+    assert_eq!(mouse_button(-1), None, "no button (a move)");
+    assert_eq!(mouse_button(5), None);
+
+    assert_eq!(held_button(0), None);
+    assert_eq!(held_button(1), Some(MouseButton::Left));
+    assert_eq!(held_button(2), Some(MouseButton::Right));
+    assert_eq!(held_button(4), Some(MouseButton::Middle));
+    assert_eq!(held_button(6), Some(MouseButton::Right), "lowest bit wins");
+
+    assert_eq!(wheel_button(-1), MouseButton::Four, "up");
+    assert_eq!(wheel_button(2), MouseButton::Five, "down");
+}
+
+#[wasm_bindgen_test]
+fn motion_is_reported_only_to_modes_that_ask_for_it() {
+    // (any-event 1003, button-event 1002, button held) -> reported
+    assert!(reports_motion(true, false, false), "1003 reports hovering");
+    assert!(reports_motion(false, true, true), "1002 reports drags");
+    assert!(!reports_motion(false, true, false), "1002 ignores hovering");
+    assert!(
+        !reports_motion(false, false, true),
+        "1000 reports no motion"
+    );
+}
+
+#[wasm_bindgen_test]
+fn the_wheel_scrolls_back_reports_or_becomes_arrows_by_the_programs_modes() {
+    let primary = WheelModes::default();
+    let tracking = WheelModes {
+        tracking: true,
+        ..primary
+    };
+    // xterm's alternateScroll (DECSET 1007, on unless the program clears
+    // it): a program on the alternate screen that does not track the mouse
+    // gets the wheel as arrow keys.
+    let alternate = WheelModes {
+        alt_screen: true,
+        alt_scroll: true,
+        ..primary
+    };
+    let opted_out = WheelModes {
+        alt_scroll: false,
+        ..alternate
+    };
+    assert_eq!(route_wheel(primary, false, false), WheelAction::Scrollback);
+    assert_eq!(route_wheel(tracking, false, false), WheelAction::Report);
+    assert_eq!(route_wheel(alternate, false, false), WheelAction::Arrows);
+    assert_eq!(
+        route_wheel(
+            WheelModes {
+                tracking: true,
+                ..alternate
+            },
+            false,
+            false
+        ),
+        WheelAction::Report,
+        "a tracking program gets the wheel itself"
+    );
+    assert_eq!(
+        route_wheel(opted_out, false, false),
+        WheelAction::Scrollback
+    );
+    // Shift, and a scrolled-back view, keep the wheel local.
+    for modes in [tracking, alternate] {
+        assert_eq!(route_wheel(modes, true, false), WheelAction::Scrollback);
+        assert_eq!(route_wheel(modes, false, true), WheelAction::Scrollback);
+    }
+}
+
+#[wasm_bindgen_test]
+fn wheel_rows_become_one_unmodified_arrow_press_each() {
+    let up = wheel_arrows(-3);
+    assert_eq!(up.len(), 3);
+    for key in &up {
+        assert_eq!(key.key, PhysicalKey::ArrowUp);
+        assert_eq!(key.action, KeyAction::Press);
+        assert_eq!(key.mods, ModSet::empty());
+        assert_eq!(key.text, None);
+    }
+    let down = wheel_arrows(2);
+    assert_eq!(down.len(), 2);
+    assert!(down.iter().all(|key| key.key == PhysicalKey::ArrowDown));
+    assert!(wheel_arrows(0).is_empty());
+}
+
+#[wasm_bindgen_test]
+fn pointer_positions_land_on_the_reported_cell_grid_at_any_scale() {
+    // 8 px cells drawn 8 CSS px wide: 20 CSS px in is 20 px.
+    assert_eq!(surface_pixel(20.0, 8.0, 8, 80), 20.0);
+    // Drawn 12 CSS px wide (CSS scaling or page zoom), 30 CSS px in is two
+    // and a half cells: still 20 px of the reported grid.
+    assert_eq!(surface_pixel(30.0, 12.0, 8, 80), 20.0);
+    // Drawn 4 CSS px wide (a high-DPI backing store shown at half size).
+    assert_eq!(surface_pixel(10.0, 4.0, 8, 80), 20.0);
+    // Another reported cell size scales with it: two and a half 11 px cells.
+    assert_eq!(surface_pixel(30.0, 12.0, 11, 80), 27.0);
+    // Whole pixels, clamped to the grid.
+    assert_eq!(surface_pixel(20.5, 8.0, 8, 80), 20.0);
+    assert_eq!(surface_pixel(-3.0, 8.0, 8, 80), 0.0);
+    assert_eq!(surface_pixel(1.0e6, 8.0, 8, 80), 639.0);
 }

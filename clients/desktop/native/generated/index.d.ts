@@ -1145,6 +1145,12 @@ export declare class GlobalHotkeys {
 /** Process-local fixture counts, including actual GPUI paint callbacks. */
 export declare function desktopHostProbeCounts(): HostProbeCounts
 
+/**
+ * Kernel, runtime and desktop rows as one `PerfReport` JSON, counted since
+ * the host loaded. Process-wide: every window and connection shares them.
+ */
+export declare function desktopPerfJson(): string
+
 export interface HostProbeCounts {
   created: number
   destroyed: number

@@ -4765,6 +4765,7 @@ dependencies = [
  "phux-client-core",
  "phux-client-ffi",
  "phux-client-runtime",
+ "phux-perf",
  "phux-protocol",
  "serde_json",
  "unicode-segmentation",

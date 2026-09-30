@@ -3,7 +3,7 @@
  * shell. Shared by the dev entry (`desktop-main.ts`) and the packaged app
  * (`app-main.ts`); only how they find the addon and socket differs.
  */
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { loadDesktopHost } from "../native/loader.mjs";
@@ -69,6 +69,54 @@ export async function startDesktop(start: DesktopStart): Promise<void> {
     writeTempFile,
   });
   scheduleCapture(process.env.PHUX_DESKTOP_CAPTURE);
+  const { drainStats } = await import("../src/bridge/desktop");
+  schedulePerfLog(process.env.PHUX_DESKTOP_PERF, host.desktopPerfJson, drainStats);
+}
+
+/** The main window's GPUIX renderer, once `app.mount` has created it. */
+function mainRenderer(): object | undefined {
+  const slot: unknown = Reflect.get(globalThis, Symbol.for("@gpuix/solid/render-host"));
+  const renderer: unknown =
+    slot && typeof slot === "object" ? Reflect.get(slot, "renderer") : undefined;
+  return renderer && typeof renderer === "object" ? renderer : undefined;
+}
+
+function callRenderer(name: string): unknown {
+  const renderer = mainRenderer();
+  const method: unknown = renderer ? Reflect.get(renderer, name) : undefined;
+  return typeof method === "function" ? Reflect.apply(method, renderer, []) : undefined;
+}
+
+/**
+ * `PHUX_DESKTOP_PERF=<absolute path>` appends one JSON line per second: the
+ * main window's draw count and recent draw times (GPUI's frame overlay
+ * numbers, over its last 1000 draws; resetting them would itself redraw),
+ * the wake drains in that second, and the host's cumulative kernel, runtime
+ * and painter metrics (`desktopPerfJson`). Diagnostics only; unset, nothing
+ * runs.
+ */
+function schedulePerfLog(
+  path: string | undefined,
+  hostPerf: () => string,
+  drains: { wakes: number; events: number; ms: number; maxMs: number },
+): void {
+  if (!path?.startsWith("/")) return;
+  setInterval(() => {
+    const drained = { ...drains };
+    Object.assign(drains, { wakes: 0, events: 0, ms: 0, maxMs: 0 });
+    // Diagnostics never take the app down, not even once its main window
+    // has closed and the renderer refuses every call.
+    try {
+      const host: unknown = JSON.parse(hostPerf());
+      const frames = callRenderer("getDebugFrameOverlayStats");
+      appendFileSync(
+        path,
+        `${JSON.stringify({ at: Date.now(), frames, drains: drained, host })}\n`,
+      );
+    } catch {
+      // Skip this second.
+    }
+  }, 1000);
 }
 
 /**
@@ -81,9 +129,7 @@ function scheduleCapture(spec: string | undefined): void {
   if (!match?.[1] || !match[2]) return;
   const path = match[2];
   setTimeout(() => {
-    const slot: unknown = Reflect.get(globalThis, Symbol.for("@gpuix/solid/render-host"));
-    const renderer: unknown =
-      slot && typeof slot === "object" ? Reflect.get(slot, "renderer") : undefined;
+    const renderer = mainRenderer();
     const capture: unknown = renderer ? Reflect.get(renderer, "captureScreenshot") : undefined;
     if (typeof capture === "function") Reflect.apply(capture, renderer, [path]);
   }, Number(match[1]));

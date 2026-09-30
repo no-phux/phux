@@ -251,10 +251,10 @@ export function RenameDialog(props: {
   function keyDown(event: KeyLike): void {
     const key = plainKey(event);
     if (key === "escape") props.close();
-    if (key === "enter") {
-      props.apply(value());
-      props.close();
-    }
+  }
+  function submit(): void {
+    props.apply(value());
+    props.close();
   }
   return (
     <Overlay close={props.close} width={420} top={140}>
@@ -268,6 +268,8 @@ export function RenameDialog(props: {
           placeholder="Follow the terminal title"
           onChange={(event) => setValue(event.value ?? "")}
           onKeyDown={keyDown}
+          // A single-line input turns Enter into `submit`; keyDown never sees it.
+          onSubmit={submit}
           style={{
             height: 32,
             paddingLeft: 10,

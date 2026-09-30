@@ -7,7 +7,8 @@
     "patches/0001-native-extensions.patch": "42d56bb564ea8e87d0c0a872a918c05d597881fd0a1cd69a04287ad9aa69132d",
     "patches/0002-multi-window.patch": "d346c3923e556dd135158f0998363811f8a8311ae2262d3518dab070062dbaf4",
     "patches/0003-solid-native-elements.patch": "9dd437ce3533243eb35047cdbd404bcc50003463ecf3fb85a51dda17b98e166d",
-    "patches/0004-close-window-on-reset.patch": "3753c44db19fc3ab62cff00b77e9cae1d9a28f35363c062ef4aab7b837b036f1"
+    "patches/0004-close-window-on-reset.patch": "3753c44db19fc3ab62cff00b77e9cae1d9a28f35363c062ef4aab7b837b036f1",
+    "patches/0006-release-standard-keys.patch": "6833c8f80dec254757050c3c04cb58921209b9686ded3a7855f3d9b2f88532e6"
   },
   "zedPatches": {
     "patches/0005-drawable-presented.patch": "b7a52e664675b3e7fbe8b748ed2fd23ad9970794627375cd1892b6421da12754"
