@@ -1,6 +1,6 @@
 //! Transport establishment and framed I/O for one connection attempt.
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures_util::StreamExt;
 use phux_dial::ws::{WsActivity, WsReader, WsWriter, recv_activity_alive};
 use phux_protocol::wire::frame::FrameKind;
@@ -36,7 +36,7 @@ pub(super) enum Io {
 impl Io {
     /// The next bounded transport batch, or `Ok(None)` on a clean close.
     /// Cancel-safe: partial bytes stay buffered.
-    pub(super) async fn read_frames(&mut self, name: &str) -> Result<Option<Vec<Vec<u8>>>, String> {
+    pub(super) async fn read_frames(&mut self, name: &str) -> Result<Option<Vec<Bytes>>, String> {
         match self {
             Self::Stream {
                 reader,
@@ -102,7 +102,7 @@ async fn read_stream_frames(
     pending: &mut BytesMut,
     quic: Option<&(quinn::Endpoint, quinn::Connection)>,
     name: &str,
-) -> Result<Option<Vec<Vec<u8>>>, String> {
+) -> Result<Option<Vec<Bytes>>, String> {
     loop {
         let frames = take_complete_frames(pending, name)?;
         if !frames.is_empty() {
@@ -124,11 +124,15 @@ async fn read_stream_frames(
     }
 }
 
-fn take_complete_frames(pending: &mut BytesMut, name: &str) -> Result<Vec<Vec<u8>>, String> {
+/// Split a read's complete frames off `pending` without copying them: each
+/// frame is a frozen view of the read buffer. A queued frame therefore keeps
+/// its read slab alive until the consumer decodes it, bounded by the inbound
+/// queue's ceilings (a slab is `pending`'s 64 KiB, or one oversized frame).
+fn take_complete_frames(pending: &mut BytesMut, name: &str) -> Result<Vec<Bytes>, String> {
     let mut frames = Vec::new();
     while frames.len() < MAX_INBOUND_BATCH {
         match framing::split_frame(pending) {
-            Ok(Some(frame)) => frames.push(frame.to_vec()),
+            Ok(Some(frame)) => frames.push(frame.freeze()),
             Err(error) if frames.is_empty() => return Err(format!("{name}: {error}")),
             // Preserve already-decoded frames. On error, the malformed bytes
             // remain at the front of `pending` and fail the next pump step.
@@ -143,14 +147,14 @@ async fn read_ws_frames(
     writer: &mut WsWriter,
     deferred_error: &mut Option<String>,
     name: &str,
-) -> Result<Option<Vec<Vec<u8>>>, String> {
+) -> Result<Option<Vec<Bytes>>, String> {
     match recv_activity_alive(reader, writer)
         .await
         .map_err(|error| dial_message(name, &error))?
     {
         WsActivity::Message(frame) => {
             validate_ws_frame(&frame, name)?;
-            let mut frames = vec![frame];
+            let mut frames = vec![Bytes::from(frame)];
             while frames.len() < MAX_INBOUND_BATCH {
                 let frame = match reader.try_recv_message() {
                     Ok(Some(frame)) => frame,
@@ -164,12 +168,12 @@ async fn read_ws_frames(
                     *deferred_error = Some(error);
                     break;
                 }
-                frames.push(frame);
+                frames.push(Bytes::from(frame));
             }
             Ok(Some(frames))
         }
         // A pong or a peer ping: no phux payload, but proof of life.
-        WsActivity::Control => Ok(Some(vec![Vec::new()])),
+        WsActivity::Control => Ok(Some(vec![Bytes::new()])),
         WsActivity::Closed => Ok(None),
     }
 }

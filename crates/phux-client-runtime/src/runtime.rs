@@ -11,6 +11,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use bytes::Bytes;
 use phux_protocol::ResourceId;
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::KeyEvent;
@@ -344,7 +345,7 @@ impl Client {
     /// Re-arms the listener before the snapshot so concurrently queued activity
     /// cannot be stranded behind its wake.
     #[must_use]
-    pub fn take_inbound(&self) -> (u64, Vec<Vec<u8>>) {
+    pub fn take_inbound(&self) -> (u64, Vec<Bytes>) {
         self.inner.wake_pending.store(false, Ordering::Release);
         let batch = {
             let mut control = lock(&self.inner.control);
