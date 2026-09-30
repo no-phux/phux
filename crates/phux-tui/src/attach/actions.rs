@@ -96,9 +96,11 @@ pub fn apply_focus(state: &LayoutState, dir: Direction) -> Option<LayoutState> {
 /// Minimum leaf size along the active axis, in cells (ADR-0019 decision 5).
 const MIN_PANE_CELL: u16 = 2;
 
-/// Resize the focused pane: adjust the nearest enclosing split along the
-/// direction's axis by `amount / axis_cells`. Positive `amount` grows the
-/// focused pane toward `dir`. `Ok(None)` when a child would drop below
+/// Resize the focused pane: move the boundary of the enclosing split along
+/// the direction's axis `amount / axis_cells` toward `dir`, so a positive
+/// `amount` grows the focused pane toward `dir` when that side has a
+/// neighbor, and shrinks it from the far side otherwise (tmux's
+/// `resize-pane`). `Ok(None)` when a child would drop below
 /// [`MIN_PANE_CELL`] (the driver bells).
 ///
 /// # Errors
@@ -145,8 +147,7 @@ pub(super) fn apply_resize(
 }
 
 /// Adjust the first split on `axis` that contains `focused`, returning
-/// `(new_tree, applied)`. `delta` is added when the focused pane is on the
-/// side that grows toward `dir`, subtracted otherwise.
+/// `(new_tree, applied)`: its boundary moves `delta` toward `dir`.
 fn resize_along_axis(
     node: &LayoutNode,
     focused: &ResourceId,
@@ -166,10 +167,13 @@ fn resize_along_axis(
                 let left_has = tree_contains(left, focused);
                 let right_has = tree_contains(right, focused);
                 if left_has || right_has {
-                    let signed_delta = match (dir, left_has) {
-                        (Direction::Right | Direction::Down, true)
-                        | (Direction::Left | Direction::Up, false) => delta,
-                        _ => -delta,
+                    // The boundary moves toward `dir` whichever side holds
+                    // focus, as tmux's `resize-pane -L/-R/-U/-D` do: a right
+                    // or lower pane grows toward `dir`, a left or upper one
+                    // gives way. `ratio` is the left (upper) child's share.
+                    let signed_delta = match dir {
+                        Direction::Right | Direction::Down => delta,
+                        Direction::Left | Direction::Up => -delta,
                     };
                     let new_ratio = clamp_ratio(*ratio + signed_delta);
                     return (
@@ -656,6 +660,30 @@ mod tests {
                 Err(ActionError::NoResizableBoundary)
             ));
         }
+    }
+
+    /// With the right pane focused, `C-a H` ("grow the focused pane to the
+    /// left") shrank it: the boundary moved right. The boundary follows the
+    /// key's direction whichever side holds focus.
+    #[test]
+    fn resize_moves_the_boundary_toward_the_key_from_either_side() {
+        let mut right_focused = two_pane(SplitDir::Horizontal);
+        right_focused.focus = Some(t(2));
+        let left = apply_resize(&right_focused, Direction::Left, 8, (80, 24), None)
+            .unwrap()
+            .unwrap();
+        assert!((ratio(&left) - 0.4).abs() < 1e-4, "{}", ratio(&left));
+        let right = apply_resize(&right_focused, Direction::Right, 8, (80, 24), None)
+            .unwrap()
+            .unwrap();
+        assert!((ratio(&right) - 0.6).abs() < 1e-4, "{}", ratio(&right));
+
+        let mut lower_focused = two_pane(SplitDir::Vertical);
+        lower_focused.focus = Some(t(2));
+        let up = apply_resize(&lower_focused, Direction::Up, 6, (80, 24), None)
+            .unwrap()
+            .unwrap();
+        assert!(ratio(&up) < 0.5, "{}", ratio(&up));
     }
 
     #[test]

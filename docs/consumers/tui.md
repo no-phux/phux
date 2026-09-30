@@ -246,8 +246,10 @@ proportionally. A leaf that hits its minimum (`min_cols = 2`,
 `min_rows = 1` for inner content) freezes; remaining space goes to
 non-frozen leaves. Below the layout's aggregate minimum, freezing
 disengages and panes degrade to sub-viable rectangles rather than
-disappearing. `C-a H/J/K/L` moves the boundary against the focused pane's
-neighbor by changing that node's ratio. A resize that would push either
+disappearing. `C-a H/J/K/L` moves the boundary between the focused pane
+and its neighbor left, down, up, or right by changing that node's ratio,
+whichever side the focused pane is on (tmux's `resize-pane`). A resize
+that would push either
 side below 2 cells on that axis is a bell-no-op.
 
 **Shared geometry.** A Terminal has one `(cols, rows)`. Concurrent views
