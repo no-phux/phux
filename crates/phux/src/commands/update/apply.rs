@@ -392,63 +392,14 @@ fn replace_binaries_with_checkpoint(
     checkpoint(InstallCheckpoint::Journal);
 
     let publish = (|| {
-        let mut moved = Vec::new();
-        for (index, name) in targets.iter().enumerate() {
-            let from = staged.join(name);
-            let to = bin_dir.join(name);
-            adopt_permissions(&from, &to)?;
-            fs::File::open(&from)
-                .and_then(|file| file.sync_all())
-                .map_err(|err| {
-                    UpdateError::Install(format!(
-                        "could not make staged binary {} durable: {err}",
-                        from.display()
-                    ))
-                })?;
-            fs::rename(&from, &to).map_err(|err| {
-                UpdateError::Install(format!("could not install {}: {err}", to.display()))
-            })?;
-            if index == 0 && targets.len() > 1 {
-                checkpoint(InstallCheckpoint::FirstBinaryVisible);
-            } else if index + 1 == targets.len() {
-                checkpoint(InstallCheckpoint::AllBinariesVisible);
-            }
-            sync_directory(bin_dir)?;
-            moved.push((*name).to_owned());
-            if index == 0 && targets.len() > 1 {
-                checkpoint(InstallCheckpoint::FirstBinary);
-            }
-        }
+        let moved = publish_binaries(
+            bin_dir,
+            &targets,
+            |name| install_staged_binary(staged, bin_dir, name),
+            |step| checkpoint(step.into()),
+        )?;
         checkpoint(InstallCheckpoint::AllBinaries);
-
-        let backup = bin_dir.join(BACKUP_DIR);
-        let previous_backup = bin_dir.join(PREVIOUS_BACKUP_DIR);
-        if backup.exists() {
-            fs::rename(&backup, &previous_backup).map_err(|err| {
-                UpdateError::Install(format!(
-                    "could not preserve previous backup {}: {err}",
-                    backup.display()
-                ))
-            })?;
-            checkpoint(InstallCheckpoint::PreviousBackupVisible);
-            sync_directory(bin_dir)?;
-            checkpoint(InstallCheckpoint::PreviousBackup);
-        }
-        fs::rename(&transaction, &backup).map_err(|err| {
-            UpdateError::Install(format!(
-                "could not publish rollback backup {}: {err}",
-                backup.display()
-            ))
-        })?;
-        checkpoint(InstallCheckpoint::CommitVisible);
-        sync_directory(bin_dir)?;
-        checkpoint(InstallCheckpoint::Commit);
-
-        if previous_backup.exists() {
-            let _ = fs::remove_dir_all(&previous_backup);
-            let _ = sync_directory(bin_dir);
-        }
-
+        let backup = commit_install(bin_dir, &transaction, &mut checkpoint)?;
         Ok(Replaced {
             binaries: moved,
             backup,
@@ -464,6 +415,131 @@ fn replace_binaries_with_checkpoint(
         )));
     }
     publish
+}
+
+/// A per-binary crash boundary inside [`publish_binaries`].
+#[derive(Debug, Clone, Copy)]
+enum BinaryStep {
+    /// The first of several binaries is renamed into place.
+    FirstVisible,
+    /// That first rename is durable.
+    First,
+    /// The last binary is renamed into place.
+    AllVisible,
+}
+
+impl From<BinaryStep> for InstallCheckpoint {
+    fn from(step: BinaryStep) -> Self {
+        match step {
+            BinaryStep::FirstVisible => Self::FirstBinaryVisible,
+            BinaryStep::First => Self::FirstBinary,
+            BinaryStep::AllVisible => Self::AllBinariesVisible,
+        }
+    }
+}
+
+impl From<BinaryStep> for RollbackCheckpoint {
+    fn from(step: BinaryStep) -> Self {
+        match step {
+            BinaryStep::FirstVisible => Self::FirstBinaryVisible,
+            BinaryStep::First => Self::FirstBinary,
+            BinaryStep::AllVisible => Self::AllBinariesVisible,
+        }
+    }
+}
+
+/// Rename each binary into place with `publish_one`, making `bin_dir`
+/// durable after each, and report the per-binary crash boundaries to `step`.
+/// Returns the names published, in order.
+fn publish_binaries<S: AsRef<str>>(
+    bin_dir: &Path,
+    names: &[S],
+    mut publish_one: impl FnMut(&str) -> Result<(), UpdateError>,
+    mut step: impl FnMut(BinaryStep),
+) -> Result<Vec<String>, UpdateError> {
+    let first_of_many = |index: usize| index == 0 && names.len() > 1;
+    let mut published = Vec::new();
+    for (index, name) in names.iter().enumerate() {
+        let name = name.as_ref();
+        publish_one(name)?;
+        if first_of_many(index) {
+            step(BinaryStep::FirstVisible);
+        } else if index + 1 == names.len() {
+            step(BinaryStep::AllVisible);
+        }
+        sync_directory(bin_dir)?;
+        published.push(name.to_owned());
+        if first_of_many(index) {
+            step(BinaryStep::First);
+        }
+    }
+    Ok(published)
+}
+
+/// Move one staged binary over its installed copy, keeping the old mode.
+fn install_staged_binary(staged: &Path, bin_dir: &Path, name: &str) -> Result<(), UpdateError> {
+    let from = staged.join(name);
+    let to = bin_dir.join(name);
+    adopt_permissions(&from, &to)?;
+    sync_file(&from, "staged binary")?;
+    fs::rename(&from, &to)
+        .map_err(|err| UpdateError::Install(format!("could not install {}: {err}", to.display())))
+}
+
+/// Commit an install: publish the journal as the rollback backup (keeping
+/// any older backup aside until the commit is durable), then drop the older
+/// backup best-effort. Returns the backup path.
+fn commit_install(
+    bin_dir: &Path,
+    transaction: &Path,
+    checkpoint: &mut impl FnMut(InstallCheckpoint),
+) -> Result<PathBuf, UpdateError> {
+    let backup = bin_dir.join(BACKUP_DIR);
+    let previous_backup = bin_dir.join(PREVIOUS_BACKUP_DIR);
+    if backup.exists() {
+        fs::rename(&backup, &previous_backup).map_err(|err| {
+            UpdateError::Install(format!(
+                "could not preserve previous backup {}: {err}",
+                backup.display()
+            ))
+        })?;
+        checkpoint(InstallCheckpoint::PreviousBackupVisible);
+        sync_directory(bin_dir)?;
+        checkpoint(InstallCheckpoint::PreviousBackup);
+    }
+    fs::rename(transaction, &backup).map_err(|err| {
+        UpdateError::Install(format!(
+            "could not publish rollback backup {}: {err}",
+            backup.display()
+        ))
+    })?;
+    checkpoint(InstallCheckpoint::CommitVisible);
+    sync_directory(bin_dir)?;
+    checkpoint(InstallCheckpoint::Commit);
+
+    if previous_backup.exists() {
+        let _ = fs::remove_dir_all(&previous_backup);
+        let _ = sync_directory(bin_dir);
+    }
+    Ok(backup)
+}
+
+/// `fsync` one file; `what` names it in the error.
+fn sync_file(path: &Path, what: &str) -> Result<(), UpdateError> {
+    fs::File::open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|err| {
+            UpdateError::Install(format!(
+                "could not make {what} {} durable: {err}",
+                path.display()
+            ))
+        })
+}
+
+/// Remove a directory tree; the error reads "could not `what` `path`".
+fn remove_dir(path: &Path, what: &str) -> Result<(), UpdateError> {
+    fs::remove_dir_all(path)
+        .map_err(|err| UpdateError::Install(format!("could not {what} {}: {err}", path.display())))
 }
 
 /// Give the staged file the mode of the file it replaces. With nothing to
@@ -627,14 +703,7 @@ fn restore_file(source: &Path, target: &Path, bin_dir: &Path) -> Result<(), Upda
             ))
         })?;
     }
-    fs::File::open(&temporary)
-        .and_then(|file| file.sync_all())
-        .map_err(|err| {
-            UpdateError::Install(format!(
-                "could not make recovered binary {} durable: {err}",
-                temporary.display()
-            ))
-        })?;
+    sync_file(&temporary, "recovered binary")?;
     fs::rename(&temporary, target).map_err(|err| {
         UpdateError::Install(format!("could not recover {}: {err}", target.display()))
     })?;
@@ -642,96 +711,100 @@ fn restore_file(source: &Path, target: &Path, bin_dir: &Path) -> Result<(), Upda
 }
 
 /// Recover any state whose durable commit marker was not published.
+///
+/// Phases run in order: drop an unpublished journal, finish a committed
+/// rollback, roll back an uncommitted install or rollback, then settle a
+/// leftover previous backup.
 fn recover_interrupted_transaction(bin_dir: &Path) -> Result<(), UpdateError> {
+    clear_incomplete_journal(bin_dir)?;
+    finish_committed_rollback(bin_dir)?;
+    undo_uncommitted_transaction(bin_dir)?;
+    settle_previous_backup(bin_dir)
+}
+
+/// A journal still being prepared never published anything: drop it.
+fn clear_incomplete_journal(bin_dir: &Path) -> Result<(), UpdateError> {
     let preparing = bin_dir.join(PREPARING_DIR);
-    if preparing.exists() {
-        fs::remove_dir_all(&preparing).map_err(|err| {
-            UpdateError::Install(format!(
-                "could not clear incomplete journal {}: {err}",
-                preparing.display()
-            ))
-        })?;
-        sync_directory(bin_dir)?;
+    if !preparing.exists() {
+        return Ok(());
     }
+    remove_dir(&preparing, "clear incomplete journal")?;
+    sync_directory(bin_dir)
+}
 
+/// A rollback whose commit marker is durable only has cleanup left: the
+/// consumed backup goes (durably) before the marker does.
+fn finish_committed_rollback(bin_dir: &Path) -> Result<(), UpdateError> {
     let committed_rollback = bin_dir.join(ROLLBACK_COMMITTED_DIR);
-    if committed_rollback.exists() {
-        let backup = bin_dir.join(BACKUP_DIR);
-        if backup.exists() {
-            fs::remove_dir_all(&backup).map_err(|err| {
-                UpdateError::Install(format!(
-                    "could not finish committed rollback at {}: {err}",
-                    backup.display()
-                ))
-            })?;
-            sync_directory(bin_dir)?;
-        }
-        fs::remove_dir_all(&committed_rollback).map_err(|err| {
-            UpdateError::Install(format!(
-                "could not clear committed rollback {}: {err}",
-                committed_rollback.display()
-            ))
-        })?;
+    if !committed_rollback.exists() {
+        return Ok(());
+    }
+    let backup = bin_dir.join(BACKUP_DIR);
+    if backup.exists() {
+        remove_dir(&backup, "finish committed rollback at")?;
         sync_directory(bin_dir)?;
     }
+    remove_dir(&committed_rollback, "clear committed rollback")?;
+    sync_directory(bin_dir)
+}
 
+/// An uncommitted transaction journal: restore every journaled binary
+/// (all-or-nothing on the journal being complete), put a set-aside backup
+/// back, and drop the journal.
+fn undo_uncommitted_transaction(bin_dir: &Path) -> Result<(), UpdateError> {
     let transaction = bin_dir.join(TRANSACTION_DIR);
-    if transaction.exists() {
-        let names = manifest_names(&transaction)?;
-        for name in &names {
-            let saved = transaction.join(name);
-            if !saved.is_file() {
-                return Err(UpdateError::Install(format!(
-                    "interrupted transaction is missing {}",
-                    saved.display()
-                )));
-            }
-        }
-        for name in &names {
-            restore_file(&transaction.join(name), &bin_dir.join(name), bin_dir)?;
-        }
-
-        let previous = bin_dir.join(PREVIOUS_BACKUP_DIR);
-        let backup = bin_dir.join(BACKUP_DIR);
-        if previous.exists() && !backup.exists() {
-            fs::rename(&previous, &backup).map_err(|err| {
-                UpdateError::Install(format!(
-                    "could not restore previous rollback backup {}: {err}",
-                    backup.display()
-                ))
-            })?;
-            sync_directory(bin_dir)?;
-        }
-        fs::remove_dir_all(&transaction).map_err(|err| {
-            UpdateError::Install(format!(
-                "could not clear recovered transaction {}: {err}",
-                transaction.display()
-            ))
-        })?;
-        sync_directory(bin_dir)?;
+    if !transaction.exists() {
+        return Ok(());
+    }
+    let names = manifest_names(&transaction)?;
+    if let Some(saved) = names
+        .iter()
+        .map(|name| transaction.join(name))
+        .find(|saved| !saved.is_file())
+    {
+        return Err(UpdateError::Install(format!(
+            "interrupted transaction is missing {}",
+            saved.display()
+        )));
+    }
+    for name in &names {
+        restore_file(&transaction.join(name), &bin_dir.join(name), bin_dir)?;
     }
 
     let previous = bin_dir.join(PREVIOUS_BACKUP_DIR);
-    if previous.exists() {
-        let backup = bin_dir.join(BACKUP_DIR);
-        if backup.exists() {
-            fs::remove_dir_all(&previous).map_err(|err| {
-                UpdateError::Install(format!(
-                    "could not clear superseded backup {}: {err}",
-                    previous.display()
-                ))
-            })?;
-        } else {
-            fs::rename(&previous, &backup).map_err(|err| {
-                UpdateError::Install(format!(
-                    "could not recover previous backup {}: {err}",
-                    backup.display()
-                ))
-            })?;
-        }
+    let backup = bin_dir.join(BACKUP_DIR);
+    if previous.exists() && !backup.exists() {
+        fs::rename(&previous, &backup).map_err(|err| {
+            UpdateError::Install(format!(
+                "could not restore previous rollback backup {}: {err}",
+                backup.display()
+            ))
+        })?;
         sync_directory(bin_dir)?;
     }
-    Ok(())
+    remove_dir(&transaction, "clear recovered transaction")?;
+    sync_directory(bin_dir)
+}
+
+/// A previous backup left beside a committed one is superseded; without a
+/// committed one it becomes the backup again.
+fn settle_previous_backup(bin_dir: &Path) -> Result<(), UpdateError> {
+    let previous = bin_dir.join(PREVIOUS_BACKUP_DIR);
+    if !previous.exists() {
+        return Ok(());
+    }
+    let backup = bin_dir.join(BACKUP_DIR);
+    if backup.exists() {
+        remove_dir(&previous, "clear superseded backup")?;
+    } else {
+        fs::rename(&previous, &backup).map_err(|err| {
+            UpdateError::Install(format!(
+                "could not recover previous backup {}: {err}",
+                backup.display()
+            ))
+        })?;
+    }
+    sync_directory(bin_dir)
 }
 
 /// What a rollback restored.
@@ -784,14 +857,15 @@ fn rollback_with_checkpoint(
     let (version, names) = read_backup_manifest(&backup)?;
 
     // All-or-nothing: refuse if any saved file is missing.
-    for name in &names {
-        let saved = backup.join(name);
-        if !saved.exists() {
-            return Err(UpdateError::NoBackup(format!(
-                "{} is missing; the backup is incomplete and was not applied",
-                saved.display()
-            )));
-        }
+    if let Some(saved) = names
+        .iter()
+        .map(|name| backup.join(name))
+        .find(|saved| !saved.exists())
+    {
+        return Err(UpdateError::NoBackup(format!(
+            "{} is missing; the backup is incomplete and was not applied",
+            saved.display()
+        )));
     }
 
     let target_refs: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -799,74 +873,14 @@ fn rollback_with_checkpoint(
     checkpoint(RollbackCheckpoint::Journal);
 
     let restore = (|| {
-        let mut restored = Vec::new();
-        for (index, name) in names.iter().enumerate() {
-            let saved = backup.join(name);
-            let incoming = transaction.join(format!("{name}.incoming"));
-            if fs::hard_link(&saved, &incoming).is_err() {
-                fs::copy(&saved, &incoming).map_err(|err| {
-                    UpdateError::Install(format!(
-                        "could not stage rollback of {}: {err}",
-                        bin_dir.join(name).display()
-                    ))
-                })?;
-            }
-            fs::File::open(&incoming)
-                .and_then(|file| file.sync_all())
-                .map_err(|err| {
-                    UpdateError::Install(format!(
-                        "could not make rollback binary {} durable: {err}",
-                        incoming.display()
-                    ))
-                })?;
-            fs::rename(&incoming, bin_dir.join(name)).map_err(|err| {
-                UpdateError::Install(format!(
-                    "could not restore {} from {}: {err}",
-                    bin_dir.join(name).display(),
-                    saved.display()
-                ))
-            })?;
-            if index == 0 && names.len() > 1 {
-                checkpoint(RollbackCheckpoint::FirstBinaryVisible);
-            } else if index + 1 == names.len() {
-                checkpoint(RollbackCheckpoint::AllBinariesVisible);
-            }
-            sync_directory(bin_dir)?;
-            restored.push(name.clone());
-            if index == 0 && names.len() > 1 {
-                checkpoint(RollbackCheckpoint::FirstBinary);
-            }
-        }
+        let restored = publish_binaries(
+            bin_dir,
+            &names,
+            |name| restore_saved_binary(bin_dir, &backup, &transaction, name),
+            |step| checkpoint(step.into()),
+        )?;
         checkpoint(RollbackCheckpoint::AllBinaries);
-
-        let committed = bin_dir.join(ROLLBACK_COMMITTED_DIR);
-        fs::rename(&transaction, &committed).map_err(|err| {
-            UpdateError::Install(format!(
-                "could not commit rollback at {}: {err}",
-                committed.display()
-            ))
-        })?;
-        checkpoint(RollbackCheckpoint::CommitVisible);
-        sync_directory(bin_dir)?;
-        checkpoint(RollbackCheckpoint::Commit);
-
-        fs::remove_dir_all(&backup).map_err(|err| {
-            UpdateError::Install(format!(
-                "could not clear consumed backup {}: {err}",
-                backup.display()
-            ))
-        })?;
-        // The consumed backup must be durably absent before the commit marker
-        // can disappear. Otherwise a crash could resurrect the backup without
-        // the marker and make a second rollback apply it in the wrong direction.
-        sync_directory(bin_dir)?;
-        fs::remove_dir_all(&committed).map_err(|err| {
-            UpdateError::Install(format!(
-                "could not clear committed rollback {}: {err}",
-                committed.display()
-            ))
-        })?;
-        sync_directory(bin_dir)?;
+        commit_rollback(bin_dir, &transaction, &backup, &mut checkpoint)?;
         Ok(RolledBack {
             binaries: restored,
             version,
@@ -882,6 +896,63 @@ fn rollback_with_checkpoint(
         )));
     }
     restore
+}
+
+/// Stage one saved binary inside the journal (hard link, else copy), make
+/// it durable, and rename it over the installed copy.
+fn restore_saved_binary(
+    bin_dir: &Path,
+    backup: &Path,
+    transaction: &Path,
+    name: &str,
+) -> Result<(), UpdateError> {
+    let saved = backup.join(name);
+    let target = bin_dir.join(name);
+    let incoming = transaction.join(format!("{name}.incoming"));
+    if fs::hard_link(&saved, &incoming).is_err() {
+        fs::copy(&saved, &incoming).map_err(|err| {
+            UpdateError::Install(format!(
+                "could not stage rollback of {}: {err}",
+                target.display()
+            ))
+        })?;
+    }
+    sync_file(&incoming, "rollback binary")?;
+    fs::rename(&incoming, &target).map_err(|err| {
+        UpdateError::Install(format!(
+            "could not restore {} from {}: {err}",
+            target.display(),
+            saved.display()
+        ))
+    })
+}
+
+/// Commit a rollback: publish the journal as the commit marker, then consume
+/// the backup and finally the marker.
+fn commit_rollback(
+    bin_dir: &Path,
+    transaction: &Path,
+    backup: &Path,
+    checkpoint: &mut impl FnMut(RollbackCheckpoint),
+) -> Result<(), UpdateError> {
+    let committed = bin_dir.join(ROLLBACK_COMMITTED_DIR);
+    fs::rename(transaction, &committed).map_err(|err| {
+        UpdateError::Install(format!(
+            "could not commit rollback at {}: {err}",
+            committed.display()
+        ))
+    })?;
+    checkpoint(RollbackCheckpoint::CommitVisible);
+    sync_directory(bin_dir)?;
+    checkpoint(RollbackCheckpoint::Commit);
+
+    remove_dir(backup, "clear consumed backup")?;
+    // The consumed backup must be durably absent before the commit marker
+    // can disappear. Otherwise a crash could resurrect the backup without
+    // the marker and make a second rollback apply it in the wrong direction.
+    sync_directory(bin_dir)?;
+    remove_dir(&committed, "clear committed rollback")?;
+    sync_directory(bin_dir)
 }
 
 #[cfg(test)]
