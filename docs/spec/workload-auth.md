@@ -149,6 +149,11 @@ grant before any stateful frame is processed.
   request a client certificate, or when the server certificate does
   not chain to the pinned CA. Receiving `HELLO_OK` over an
   unauthenticated channel is downgrade, not permission to continue.
+  (Informative: the reference dialer turns this on with
+  `PHUX_WORKLOAD_REQUIRE_PAIRED`, off by default, and fails the TLS
+  handshake itself when no `CertificateRequest` arrived, with session
+  resumption disabled so every handshake can show one. It still pins the
+  server leaf rather than a CA; see §2.)
 - **TLS session resumption** preserves the authenticated identity: a
   resumed session carries the same verified peer as the session it
   resumes. 0-RTT application data is not used for phux frames.

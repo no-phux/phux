@@ -783,7 +783,14 @@ The workload keeps its private key. `add-key` accepts only a certificate this
 CA issued or a certificate signing request, read from stdin or `--file` and
 never from the command line, and refuses input that contains a private key.
 The client presents its pair through `PHUX_WORKLOAD_CERT` and
-`PHUX_WORKLOAD_KEY`, which name files and never hold key bytes. The CA key
+`PHUX_WORKLOAD_KEY`, which name files and never hold key bytes. Setting
+`PHUX_WORKLOAD_REQUIRE_PAIRED` as well makes the client refuse a server that
+does not ask for the certificate: the TLS handshake fails before the pairing
+token or any phux frame is sent, so a listener that lost its workload check
+cannot quietly downgrade the client to bearer-only admission
+([workload-auth.md](spec/workload-auth.md) §3). It is off by default, needs
+both identity variables, and disables TLS session resumption so every
+handshake shows whether the server asked. The CA key
 (`<state-dir>/workload-ca.key`), the CA certificate, and the registry
 (`<state-dir>/workload-keys`) are owner-only files, replaced under a lock by
 atomic rename; `PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, and
