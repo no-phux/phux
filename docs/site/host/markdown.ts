@@ -33,8 +33,8 @@ export function wantsMarkdown(accept: string | null): boolean {
   });
 }
 
-// Page chrome that carries no prose value for an agent. <header> only ever
-// holds the nav on this site; the article body lives in <main>.
+// Strip interaction chrome from the selected content region. An article may
+// have its own header containing the title and summary; retain that prose.
 const DROP_TAGS = [
   "script",
   "style",
@@ -46,7 +46,6 @@ const DROP_TAGS = [
   "button",
   "select",
   "nav",
-  "header",
   "footer",
 ];
 
@@ -135,8 +134,8 @@ function metaProperty(html: string, property: string): string | null {
 
 function metaContent(tag: string | null): string | null {
   if (!tag) return null;
-  const match = /\bcontent=["']([^"']*)["']/i.exec(tag);
-  const value = match?.[1]?.trim();
+  const match = /\bcontent=(["'])([\s\S]*?)\1/i.exec(tag);
+  const value = match?.[2]?.trim();
   return value ? value : null;
 }
 

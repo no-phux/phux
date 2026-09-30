@@ -6,7 +6,12 @@ last-reviewed: 2026-09-15
 
 # How phux works
 
-**TL;DR.** phux is a terminal multiplexer. Your shells live in a background server. You split them into panes, detach, and they keep running. Each pane is a live terminal object on a wire, so the TUI, Cockpit, a script, or an agent attach to the same one. Nobody screen-scrapes. Nobody holds a second copy.
+**TL;DR.** phux is a terminal multiplexer: shells run in a background
+server while you organize them into sessions, windows, and panes.
+Detaching closes your view, not your shell. A terminal client, Cockpit,
+script, or coding agent can observe and control the same running terminal.
+Clients may replicate rendering state; they do not create another copy of
+your running program.
 
 ---
 
@@ -36,6 +41,40 @@ last-reviewed: 2026-09-15
 
 The server holds the terminals. The TUI, CLI, web, and Cockpit attach to those same ones. Detach does not copy.
 
+## Sessions, windows, and panes
+
+For everyday use, start with these terms:
+
+| Term | What it means when you use phux |
+|---|---|
+| Server | The background process that owns your terminals. Closing a client does not close it. |
+| Session | A named workspace you can attach to and return to. |
+| Window | One view within a session; switch windows to work on another set of panes. |
+| Pane | A terminal in a window's layout: normally a shell, editor, or coding agent. |
+| Client | Your view and input path into the server: for example the TUI or Cockpit. |
+| Attach / detach | Open / leave a view of existing work, rather than start / stop the work itself. |
+
+A split adds another pane. Exiting a shell or killing a pane is different
+from detaching: it ends that terminal's work. A second client can observe the
+same pane, and input from multiple writers can interleave. Coordinate before
+typing into a terminal an agent is driving, or use a viewer attach when you
+only want to watch.
+
+Persistence is tied to the running server, not a disk checkpoint of your
+programs. For detach, upgrade, crash, and restore boundaries, see
+[workspace continuity](./operations.md#workspace-continuity-and-update-survival).
+Try the [quickstart](./QUICKSTART.md) before learning protocol terminology.
+
+## Choose your next step
+
+- [Use the terminal UI](./consumers/tui.md) for keys, copying, and navigation.
+- [Run a coding agent](./consumers/getting-started.md) for a host-specific setup.
+- [Connect another machine](./remote-access.md) for SSH enrollment and reconnect.
+- [Use Cockpit](./consumers/cockpit.md) for the native macOS interface.
+
+The sections below are for automation and client implementers. You do not
+need resource kinds or wire details to use a session.
+
 ## Resources
 
 A resource is a server-owned, addressable thing. Every resource has:
@@ -49,7 +88,12 @@ A resource is a server-owned, addressable thing. Every resource has:
 
 Terminal is the first kind: a PTY child and a libghostty engine, with columns, rows, a title, and a working directory. Operations that only make sense there — typed input, resize, screen reads — are refused on any other kind.
 
-AgentSession is the second kind, and this checkout serves it. The server advertises `RESOURCE_KINDS`; the runtime creates the resource; `phux agent session open|close`, `phux agent emit`, and `phux agent log` are the producer and reader verbs; `%name` resolves one. It is the structured event stream of an agent harness, bound to the Terminal the agent runs in. Closing the parent closes the child; closing the child never touches the parent. While that stream is live it is the source of agent lifecycle; the pane detector is compatibility for a harness that does not emit. Harness authors: [`consumers/harness.md`](./consumers/harness.md).
+AgentSession is the second kind: a structured event stream from an agent
+harness, bound to the Terminal it runs in. Closing the parent closes the
+child; closing the child never touches the parent. While the stream is live
+it supplies agent lifecycle state; the pane detector is the fallback for a
+harness that does not emit. Check applicability under [Maturity](#maturity);
+producer procedures live in the [harness author guide](./consumers/harness.md).
 
 `phux agent show` is a different surface: it reads agent state from a pane, not from an AgentSession resource.
 
@@ -64,28 +108,41 @@ The wire carries four things:
 - **Bytes.** Opaque per-kind output (bootstrap and live). Structured input atoms for a Terminal; appended records for an AgentSession. Both ends run the engine for the kinds they show; the wire is not a second screen model.
 - **Metadata.** Opaque key-value pairs. The server stores them; it does not interpret them.
 
-There is no L2 collection tier. Group membership is metadata plus client logic; atomic teardown is a single L1 operation. See [`spec/L2.md`](./spec/L2.md).
+There is no L2 collection tier. Group membership is metadata plus client
+logic; atomic teardown is a single L1 operation. See the
+[collection-layer explanation](./spec/L2.md).
 
-The byte-level codec is [`spec/appendix-encoding.md`](./spec/appendix-encoding.md). L1 is [`spec/L1.md`](./spec/L1.md); metadata is [`spec/L3.md`](./spec/L3.md).
+Wire details live in the [encoding reference](./spec/appendix-encoding.md),
+[resource and terminal protocol](./spec/L1.md), and
+[metadata protocol](./spec/L3.md).
 
 ## Consumers are peers
 
 The reference TUI, the headless CLI, the browser client, and Cockpit are peers. None has protocol-level standing: if a consumer needs a capability the wire does not provide, the answer is an ADR that extends the spec, not a consumer-shaped hook ([ADR-0017](adr/0017-tui-not-protocol-privileged.md)).
 
-- TUI: [`consumers/tui.md`](./consumers/tui.md)
-- CLI: [`consumers/agents.md`](./consumers/agents.md)
-- web: [`consumers/web.md`](./consumers/web.md)
-- Cockpit: [`consumers/cockpit.md`](./consumers/cockpit.md)
+- [Terminal UI](./consumers/tui.md)
+- [Automation CLI](./consumers/agents.md)
+- [Browser client development](./consumers/web.md)
+- [Cockpit](./consumers/cockpit.md)
 
 A consumer that wants structured state carries the engine for the kinds it shows. One that does not render a kind lists it and draws none of it.
 
 ## Maturity
 
-The protocol is 0.9.0, pinned in `phux-protocol` and mirrored by [`spec/`](./spec/README.md); a CI gate keeps the two in sync. Spec leads the code.
+The protocol version describes wire compatibility, not the installed product
+version. Its authoritative definition is the [protocol specification](./spec/README.md).
 
-This checkout serves both resource kinds. Confirm with `phux status --json`: a server that advertises `RESOURCE_KINDS` has AgentSession. Older brew or curl releases may not.
+**Capability-dependent behavior:** the source checkout implements both resource
+kinds. For an installed release, check `phux status --json`: the running
+server must advertise `RESOURCE_KINDS` before you use AgentSession verbs.
+This is not a claim that every stable release includes them. If absent,
+ordinary Terminal operations and pane detection remain the starting point;
+update through your [install source](./INSTALL.md#updating) if you need
+AgentSession support. The [agent CLI guide](./consumers/agents.md#this-tree-older-releases-two-agent-surfaces)
+owns the exact refusals and distinction between those surfaces.
 
-The long arc lives in [`vision.md`](./vision.md). This page owns the Status table below; other docs link here rather than restating the gaps.
+The [vision](./vision.md) describes the long-term direction. This page owns
+the Status table below; other docs link here rather than restating the gaps.
 
 ## Status
 
@@ -93,7 +150,7 @@ Target-versus-shipped gaps as of the last review. Each row names the ADR that ow
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| On-disk output journal and crash recovery | Decided: not built ([ADR-0130](adr/0130-on-disk-pty-journal-is-not-built.md)). A crash loses every pane's scrollback; the `EVENT` stream is a separate, memory-bounded journal ([ADR-0123](adr/0123-events-are-journaled.md)) that carries no PTY bytes. | [ADR-0003](adr/0003-server-process-model.md), [ADR-0092](adr/0092-durable-work-coordinator-authority.md), [ADR-0130](adr/0130-on-disk-pty-journal-is-not-built.md) | phux-p91i |
+| On-disk output journal and crash recovery | Decided: not built ([ADR-0130](adr/0130-on-disk-pty-journal-is-not-built.md)). Server death ends live sessions and loses their terminal history; a workspace archive recreates fresh PTYs, not the lost processes. The `EVENT` stream is a separate, memory-bounded journal ([ADR-0123](adr/0123-events-are-journaled.md)) that carries no PTY bytes. | [ADR-0003](adr/0003-server-process-model.md), [ADR-0092](adr/0092-durable-work-coordinator-authority.md), [ADR-0130](adr/0130-on-disk-pty-journal-is-not-built.md) | phux-p91i |
 | Workload authentication enforcement | Paired mode requests a client certificate and enforces the scope matrix at dispatch; a revoked or expired credential now loses authority on the live connection, not just at the next HELLO. Unset mode beside a remote listener still admits every connection with the owner's full grant — a warned transitional posture, not the startup error the spec's target table asks for — and a configured CA or registry path with no mode is ignored rather than refused. | [ADR-0116](adr/0116-workload-auth-is-mtls.md) | phux-cockpit-p1q.11.2 |
 
 Scopes, attach roles, and approval gates are shipped: scope enforcement at
@@ -107,13 +164,13 @@ the transitional posture row above.
 
 | You want to | Read |
 |---|---|
-| Run it | [`QUICKSTART.md`](./QUICKSTART.md) |
-| Understand the wire bytes | [`spec/README.md`](./spec/README.md) |
-| Understand how the server is built | [`architecture/README.md`](./architecture/README.md) |
-| Drive it from an agent | [`consumers/agents.md`](./consumers/agents.md) |
-| Use the browser client | [`consumers/web.md`](./consumers/web.md) |
-| Use Cockpit | [`consumers/cockpit.md`](./consumers/cockpit.md) |
-| Understand the TUI surface | [`consumers/tui.md`](./consumers/tui.md) |
-| See why we decided X | [`adr/README.md`](adr/README.md) |
-| Read the long arc | [`vision.md`](./vision.md) |
-| Contribute | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) |
+| Run it | [Quickstart](./QUICKSTART.md) |
+| Understand the wire bytes | [Protocol specification](./spec/README.md) |
+| Understand how the server is built | [Architecture](./architecture/README.md) |
+| Drive it from an agent | [Coding-agent getting started](./consumers/getting-started.md) |
+| Build a browser client | [Web client](./consumers/web.md) |
+| Use Cockpit | [Cockpit guide](./consumers/cockpit.md) |
+| Understand the TUI surface | [Terminal UI guide](./consumers/tui.md) |
+| See why a design was chosen | [Architecture decisions](adr/README.md) |
+| Read the long arc | [Vision](./vision.md) |
+| Contribute | [Contributor guide](../CONTRIBUTING.md) |

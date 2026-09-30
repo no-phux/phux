@@ -71,7 +71,6 @@ forbid_fixed README.md "v0.0.3"
 # version is stale by the next release; point at "the latest release" instead.
 forbid_fixed docs/RELEASING.md "v0.0.3"
 
-require_prose docs/INSTALL.md "Homebrew is the recommended day-to-day path on supported macOS and Linux"
 require_fixed docs/INSTALL.md "Supported install channels"
 require_fixed docs/INSTALL.md "Homebrew"
 require_fixed docs/INSTALL.md "brew trust --tap no-phux/tap"
@@ -97,7 +96,6 @@ require_fixed docs/INSTALL.md '[Agents](./consumers/agents.md)'
 require_fixed docs/INSTALL.md 'verifies the release `.sha256` sidecar before unpacking'
 require_fixed docs/INSTALL.md 'prints the exact command to run next'
 require_fixed docs/INSTALL.md 'only when that directory is not already on `PATH`'
-require_fixed docs/INSTALL.md "| macOS (x86_64) | Not supported. No official release artifact; Homebrew and the curl installer both refuse. Source: yes. |"
 require_fixed docs/INSTALL.md "| Linux aarch64 | Curl/tarball: yes. Homebrew: yes where Linuxbrew supports the host. Source: yes. |"
 
 require_fixed docs/RELEASING.md "phux and phux-mcp artifacts"

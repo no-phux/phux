@@ -16,6 +16,10 @@ surface.
 
 ## Registering with a host
 
+For Claude Code, the [Claude plugin](./claude.md) already registers MCP and
+adds lifecycle hooks. Use the manual registration below for an MCP-only
+setup, not in addition to the plugin.
+
 Installing phux puts both release binaries on `PATH` but does not
 register MCP with a host. Start phux first so the server is running
 (`phux` starts it when needed), then register:
@@ -66,12 +70,30 @@ output schemas). These are standalone modes, not part of the host's server
 command. `phux mcp` execs the `phux-mcp` companion; registering `phux-mcp`
 directly also works.
 
+### First inventory and snapshot
+
+1. Leave a phux shell session running, then restart or reconnect your MCP
+   host after saving its registration.
+2. Ask the host to call `phux_ls` and identify the session you created.
+3. Ask for `phux_snapshot` of its shell pane, using an explicit target from
+   inventory. **Expected:** the tool returns the same terminal text you see
+   in phux, without resizing the human view.
+4. Only after checking the target, ask the host to run `pwd` in that idle
+   shell using `phux_run`. A refusal that the pane is not an available shell
+   is a safety check: select a shell rather than forcing input into an agent UI.
+
+If the catalog loads but inventory fails, inspect `phux status` and the
+adapter's socket environment; see
+[agent connection recovery](../troubleshooting.md#an-agent-or-mcp-host-cannot-see-the-server).
+Disconnecting the MCP host closes the adapter, not the phux server or its
+running panes. Coordinate input with anyone attached to the same pane.
+
 ## What this is
 
 A thin adapter over the same `phux-client` functions the agent CLI uses
-([`agents.md`](./agents.md)). It holds no protocol-level privilege.
+([agent CLI guide](./agents.md)). It holds no protocol-level privilege.
 Return shapes are the CLI `--json` documents; selectors are the CLI
-`TARGET` grammar ([`tui.md`](./tui.md#selectors)). Run `phux mcp --schema` for
+`TARGET` grammar ([pane selectors](./tui.md#selectors)). Run `phux mcp --schema` for
 every current argument. Do not infer required fields from this page.
 
 ## Transport and lifecycle
@@ -103,7 +125,7 @@ as the CLI. Resolution is client-side. `=` is unsupported: an MCP
 request has no attached-client focus history. Use `.` or an explicit
 target.
 
-This tree's adapter **resolves `%name`**. In-process tools parse it as
+**Checkout behavior:** the source adapter **resolves `%name`**. In-process tools parse it as
 `Selector::Agent` and resolve it to the named agent's Terminal (exactly
 one match, or a refusal). CLI-backed session tools pass the string
 through: `phux_agent_session_close`, `phux_agent_emit`, and
@@ -126,7 +148,7 @@ the daemon default (`$XDG_RUNTIME_DIR/phux/phux.sock`, falling back to
 `phux mcp --schema | jq -r '.[].name'` lists the compiled catalog.
 
 Name-for-name mapping onto the CLI, checked by an automated parity gate:
-[`../reference/parity.md`](../reference/parity.md) (generated) lists every
+[CLI/MCP parity](../reference/parity.md) (generated) lists every
 tool, the `phux` verb it mirrors, whether it runs in-process or through
 the CLI, and its annotations. In-process tools call the same `phux-client`
 function the CLI verb calls and return the same document. A small residue

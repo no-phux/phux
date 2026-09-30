@@ -177,6 +177,7 @@ const ORIENTATION: { file: string; slug: string; group: Group; order: number }[]
   { file: "performance.md", slug: "performance", group: "start", order: 6 },
   { file: "CONFIG.md", slug: "quickstart/config", group: "use", order: 0 },
   { file: "remote-access.md", slug: "remote-access", group: "use", order: 4 },
+  { file: "troubleshooting.md", slug: "troubleshooting", group: "use", order: 5 },
   { file: "operations.md", slug: "architecture/operations", group: "internals", order: 0 },
   { file: "vision.md", slug: "concepts/vision", group: "records", order: 0 },
 ];
@@ -440,17 +441,6 @@ function deriveDescription(summary: string): string {
   return sentence ?? `${summary.slice(0, 157).replace(/\s+\S*$/, "")}...`;
 }
 
-function codeLanguages(body: string): string[] {
-  const languages: string[] = [];
-  let open = false;
-  for (const line of body.split("\n")) {
-    const fence = line.match(/^```([^`]*)$/);
-    if (!fence) continue;
-    if (!open) languages.push(fence[1].trim().split(/\s+/)[0] || "text");
-    open = !open;
-  }
-  return languages;
-}
 
 /** The docs shell owns the page title and lede; avoid rendering source copies. */
 function stripSourceLead(body: string): string {
@@ -578,43 +568,39 @@ async function writeOverviewPage(versions: {
 }): Promise<number> {
   const title = "Get started";
   const summary =
-    "Install phux, pick a surface, and attach. CLI, Cockpit, web, and agents share the same live terminals.";
+    "Learn phux, share running terminals with coding agents, connect your machines, and compare measured performance.";
   const body = `# Get started
 
-Install it, pick a surface, and attach. Every interface — the TUI, Cockpit, the browser, a script, or an agent — talks to the same live terminals.
+phux keeps your shells running in a background server. Use a terminal interface, a desktop app, or an agent to work with the same running terminals.
 
-## Surfaces
+## Start with a running terminal
 
-- [CLI](/consumers/tui) — the reference TUI. Attach, split, detach.
-- [Cockpit](/consumers/cockpit) — native macOS app for the same terminals.
-- [Web](/consumers/web) — browser client with its own engine.
-- [Agents](/consumers/agents) — CLI, JSON, MCP, OpenCode, Pi, Claude.
+- [Install phux](/quickstart/install) — supported platforms and installation.
+- [Your first terminal](/quickstart) — start, split, detach, and reconnect.
+- [Understand the essentials](/concepts) — terminals, sessions, and shared control.
+- [Coming from tmux](/concepts/coming-from) — familiar tasks and keybindings.
 
-## Pick your path
+## Choose your next task
 
-- [New here](/quickstart) — install, attach, detach.
-- [Coming from tmux](/concepts) — panes are a view; the terminal is an object on a wire.
-- [You run agents](/consumers/agents) — read, act, wait.
-- [Building a peer](/wire) — PROTO, then required L1.
+- [Run coding agents](/consumers/getting-started) — choose your integration and verify it works.
+- [Connect machines](/remote-access) — set up remote access over SSH and reconnect directly.
+- [Configure phux](/quickstart/config) — keys, appearance, and behavior.
+- [Troubleshoot and recover](/troubleshooting) — diagnose failures and understand what survives.
 
-## Get started
+## Evaluate phux
 
-[Quickstart](/quickstart) · [Install](/quickstart/install) · [Concepts](/concepts) · [When to use phux](/concepts/when-to-use)
+- [Performance](/performance) — measurements, boundaries, raw results, and reproduction.
+- [Compare tmux, Herdr, and cmux](/concepts/when-to-use) — choose by the job you need to do.
 
-## Build
+## Go deeper
 
-[Agent loop](/consumers/agents) · [MCP adapter](/consumers/mcp) · [Cockpit](/consumers/cockpit) · [Wire tutorial](/wire/tutorial)
-
-## Resources
-
-[Protocol](/wire) · [Generated reference](/reference) · [Architecture](/architecture) · [Decisions](/decisions)
+[Command reference](/reference/cli) · [Automation](/consumers/agents) · [Build a client](/consumers/build-a-client) · [Protocol](/wire) · [Architecture](/architecture)
 `;
   const fm = [
     "---",
     `title: ${yamlString(title)}`,
     `summary: ${yamlString(summary)}`,
     `description: ${yamlString(summary)}`,
-    `codeLanguages: []`,
     `group: ${yamlString(GROUPS.start)}`,
     `order: -1`,
     `sourcePath: ${yamlString("docs/site/src/pages/overview.astro")}`,
@@ -639,33 +625,57 @@ function yamlString(s: string): string {
 // upstream) defensively onto a safe default.
 const SCHEMA_STABILITY = new Set(["stable", "evolving", "draft"]);
 
-/**
- * Fumadocs sidebar folder labels, by section prefix. Everything is lowercase /
- * terminal-native to match the site's voice (the old flat groups are gone).
- */
+/** Navigation groups organize tasks without changing public document URLs. */
 const FOLDER_TITLES: Record<string, string> = {
-  quickstart: "quickstart",
-  concepts: "concepts",
-  consumers: "guides",
-  "consumers/agents": "agents and automation",
-  "consumers/tui": "interactive TUI",
-  reference: "reference",
-  wire: "protocol",
-  architecture: "architecture",
-  decisions: "decisions",
+  quickstart: "Getting started",
+  concepts: "Concepts",
+  consumers: "Interfaces and integrations",
+  reference: "Reference",
+  wire: "Protocol",
+  architecture: "Architecture",
+  decisions: "Design decisions",
 };
+
+// Fumadocs supports references to pages outside a folder. These virtual
+// folders give each page one navigational home while preserving its URL,
+// source metadata, search breadcrumbs, and previous/next relationships.
+const TASK_GROUPS = [
+  {
+    folder: "(start)", title: "Start here", defaultOpen: true,
+    pages: ["../quickstart/install", "../quickstart/index", "../concepts/index", "../concepts/coming-from"],
+  },
+  {
+    folder: "(use)", title: "Use phux",
+    pages: ["../consumers/index", "../consumers/tui", "../quickstart/config", "../consumers/cockpit", "../consumers/recording", "../consumers/web", "../consumers/ios"],
+  },
+  {
+    folder: "(agents)", title: "Run coding agents",
+    pages: ["../consumers/getting-started", "../consumers/claude", "../consumers/pi", "../consumers/opencode", "../consumers/opencode-v2", "../consumers/mcp"],
+  },
+  {
+    folder: "(connect)", title: "Connect machines",
+    pages: ["../remote-access"],
+  },
+  {
+    folder: "(evaluate)", title: "Performance & comparisons",
+    pages: ["../performance", "../concepts/when-to-use"],
+  },
+  {
+    folder: "(maintain)", title: "Troubleshoot & maintain",
+    pages: ["../troubleshooting", "../architecture/operations"],
+  },
+  {
+    folder: "(contribute)", title: "Build & contribute",
+    pages: ["../consumers/build-a-client", "../consumers/sdk", "../consumers/harness", "../consumers/desktop", "../architecture", "../decisions", "../concepts/vision", "../docs"],
+  },
+];
 
 const ROOT_PAGES = [
   "overview",
-  "docs",
-  "quickstart",
-  "concepts",
-  "consumers",
-  "remote-access",
+  ...TASK_GROUPS.slice(0, 6).map((group) => group.folder),
   "reference",
   "wire",
-  "architecture",
-  "decisions",
+  "(contribute)",
 ];
 
 const PROTOCOL_PAGES = [
@@ -775,7 +785,6 @@ async function run() {
     const summary = e.summary ?? deriveSummary(body) ?? "";
     const description = deriveDescription(summary);
     const rewritten = rewriteLinks(presentBody(body, e.slug, e.sections), e.repoPath);
-    const languages = codeLanguages(rewritten);
     const stability = SCHEMA_STABILITY.has((meta.stability ?? "").toLowerCase())
       ? meta.stability
       : "stable";
@@ -785,7 +794,6 @@ async function run() {
       `title: ${yamlString(title)}`,
       `summary: ${yamlString(summary)}`,
       `description: ${yamlString(description)}`,
-      `codeLanguages: ${JSON.stringify(languages)}`,
       `group: ${yamlString(GROUPS[e.group])}`,
       `order: ${e.order}`,
       `sourcePath: ${yamlString(e.repoPath)}`,
@@ -836,6 +844,7 @@ async function run() {
         ...REFERENCE_PAGES.filter((page) => available.delete(page)),
         ...pages.filter((page) => available.has(page)),
       ];
+      pages.push("../consumers/agents");
     }
     if (prefix === "consumers") {
       const available = new Set(pages);
@@ -853,6 +862,11 @@ async function run() {
     };
     await writeFile(join(OUT_DIR, prefix, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`);
   }
+  for (const { folder, ...meta } of TASK_GROUPS) {
+    await mkdir(join(OUT_DIR, folder), { recursive: true });
+    await writeFile(join(OUT_DIR, folder, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`);
+  }
+
 
   await writeFile(
     join(OUT_DIR, "meta.json"),
