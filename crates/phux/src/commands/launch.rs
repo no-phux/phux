@@ -152,10 +152,7 @@ fn spawn_resolved(
     };
     match result {
         Ok(SpawnResult::Ok(terminal_id)) => print_launched(resolved, argv, &terminal_id, json),
-        Ok(SpawnResult::Err(err)) => {
-            report_spawn_error(&err);
-            ExitCode::FAILURE
-        }
+        Ok(SpawnResult::Err(err)) => report_spawn_error(json, &err),
         // `SpawnResult` is `#[non_exhaustive]`: a kind with no arm here is a
         // vocabulary this client does not have, i.e. version skew.
         Ok(_) => {

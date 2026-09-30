@@ -187,10 +187,7 @@ pub(crate) fn run_spawn(
             ),
             EXIT_USAGE,
         ),
-        Ok(SpawnResult::Err(err)) => {
-            report_spawn_error(&err);
-            ExitCode::FAILURE
-        }
+        Ok(SpawnResult::Err(err)) => report_spawn_error(json, &err),
         // `SpawnResult` is `#[non_exhaustive]`: a kind with no arm here is a
         // vocabulary this client does not have, i.e. version skew.
         Ok(_) => {
@@ -269,34 +266,31 @@ pub(crate) fn dispatch_spawn_placed(
         {
             Ok(CommandResult::OkWith(CommandValue::State(s))) => s,
             Ok(other) => {
-                eprintln!(
-                    "phux: {}",
-                    phux_client::explain::explain_unexpected("GET_STATE", &other)
-                );
-                return Err(ExitCode::FAILURE);
+                return Err(json_err::emit(
+                    json,
+                    &CliError::new(
+                        codes::TRANSPORT,
+                        phux_client::explain::explain_unexpected("GET_STATE", &other),
+                        "run `phux doctor` for a health check",
+                    ),
+                    1,
+                ));
             }
             Err(err) => return Err(json_err::report_no_server(json, &err, socket_path, verb)),
         };
         let candidates = resolve_targets(socket_path, &selector, &snapshot).await;
-        let Some(owner) =
-            phux_client::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
-        else {
-            eprintln!("phux: no such target");
-            return Err(ExitCode::FAILURE);
-        };
-        if !matches!(owner, ResourceId::Local { .. }) {
-            eprintln!("phux: explicit spawn placement is local-only");
-            return Err(ExitCode::FAILURE);
-        }
-        let Some((owner_window, session)) =
-            phux_client::spawn::ownership_for_terminal(&snapshot, &owner)
-        else {
-            eprintln!("phux: target has no local session ownership");
-            return Err(ExitCode::FAILURE);
-        };
+        let (owner, owner_window, session) =
+            placement_owner(json, target_text, &snapshot, &candidates)?;
         let FrameKind::SpawnResource { owner_terminal, .. } = &mut frame else {
-            eprintln!("phux: internal spawn placement error");
-            return Err(ExitCode::FAILURE);
+            return Err(json_err::emit(
+                json,
+                &CliError::new(
+                    codes::INTERNAL_ERROR,
+                    "internal spawn placement error",
+                    "report this with `phux report`",
+                ),
+                1,
+            ));
         };
         *owner_terminal = Some(owner.clone());
         let spawned = dispatch_spawn_async(socket_path, &frame, agent_session)
@@ -327,24 +321,77 @@ pub(crate) fn dispatch_spawn_placed(
             &mut notices,
         )
         .await;
-        for message in &notices {
-            eprintln!("phux: warning: partial results — {message}");
+        // Warnings are prose; under --json stderr carries only the one
+        // error document a failure emits.
+        if !json {
+            for message in &notices {
+                eprintln!("phux: warning: partial results — {message}");
+            }
         }
         match rollback {
             phux_client::spawn::RollbackOutcome::Placed => Ok(spawned),
-            phux_client::spawn::RollbackOutcome::RolledBack { reason } => {
-                eprintln!("phux: {verb} placement failed; spawned pane was removed: {reason}");
-                Err(ExitCode::FAILURE)
-            }
+            phux_client::spawn::RollbackOutcome::RolledBack { reason } => Err(placement_failed(
+                json,
+                format!("{verb} placement failed; spawned pane was removed: {reason}"),
+            )),
             phux_client::spawn::RollbackOutcome::RollbackUnconfirmed {
                 reason,
                 cleanup_note,
-            } => {
-                eprintln!("phux: {verb} placement failed ({reason}); {cleanup_note}");
-                Err(ExitCode::FAILURE)
-            }
+            } => Err(placement_failed(
+                json,
+                format!("{verb} placement failed ({reason}); {cleanup_note}"),
+            )),
         }
     })
+}
+
+/// The local pane a placed spawn lands beside, with its window and session;
+/// every refusal is reported (as JSON under `json`) and returned in `Err`.
+fn placement_owner(
+    json: bool,
+    target_text: &str,
+    snapshot: &phux_protocol::wire::info::SessionSnapshot,
+    candidates: &[ResourceId],
+) -> Result<
+    (
+        ResourceId,
+        phux_protocol::ids::WindowId,
+        phux_protocol::ids::SessionId,
+    ),
+    ExitCode,
+> {
+    let Some(owner) =
+        phux_client::selector::pick_target_pane(candidates, &snapshot.focused_resource)
+    else {
+        return Err(json_err::emit(
+            json,
+            &CliError::new(
+                codes::NO_SUCH_TARGET,
+                format!("no such target: {target_text}"),
+                "run `phux ls` to see live sessions and panes",
+            ),
+            1,
+        ));
+    };
+    if !matches!(owner, ResourceId::Local { .. }) {
+        return Err(json_err::emit(
+            json,
+            &CliError::new(
+                codes::SATELLITE_TARGET,
+                "explicit spawn placement is local-only",
+                "target a pane on this server, or run the verb on the satellite's host",
+            ),
+            1,
+        ));
+    }
+    let Some((window, session)) = phux_client::spawn::ownership_for_terminal(snapshot, &owner)
+    else {
+        return Err(placement_failed(
+            json,
+            "target has no local session ownership".to_owned(),
+        ));
+    };
+    Ok((owner, window, session))
 }
 
 /// Print the freshly spawned Terminal id — human line or the stable JSON
@@ -365,10 +412,33 @@ fn print_spawned(terminal_id: &ResourceId, replayed: bool, json: bool) -> ExitCo
     ExitCode::SUCCESS
 }
 
-/// Map the typed `SpawnError` to an actionable stderr diagnostic
-/// ([`phux_client::spawn::spawn_error_message`]).
-pub(crate) fn report_spawn_error(err: &SpawnError) {
-    eprintln!("phux: {}", phux_client::spawn::spawn_error_message(err));
+/// Map the typed `SpawnError` to an actionable diagnostic
+/// ([`phux_client::spawn::spawn_error_message`]), as the JSON error document
+/// under `json`. Exits 1.
+pub(crate) fn report_spawn_error(json: bool, err: &SpawnError) -> ExitCode {
+    json_err::emit(
+        json,
+        &CliError::new(
+            codes::SPAWN_FAILED,
+            phux_client::spawn::spawn_error_message(err),
+            "check the command and working directory; `phux logs` has the server's view",
+        ),
+        1,
+    )
+}
+
+/// A placed spawn that could not land where it was asked: exit 1,
+/// `spawn_failed` under `json`.
+fn placement_failed(json: bool, message: String) -> ExitCode {
+    json_err::emit(
+        json,
+        &CliError::new(
+            codes::SPAWN_FAILED,
+            message,
+            "run `phux ls` to check the target and the pane the spawn left behind",
+        ),
+        1,
+    )
 }
 
 #[cfg(test)]

@@ -15,7 +15,7 @@ use phux_client::agent_session_record::{AgentSessionRecord, fetch_record_index};
 
 use crate::commands::agent::{PreparedAgentSession, prepare};
 use crate::commands::new::{create_session_via_metadata, preflight_atomic_agent_session_create};
-use crate::commands::spawn::{dispatch_spawn_async, report_spawn_error};
+use crate::commands::spawn::dispatch_spawn_async;
 use crate::commands::{cli_runtime, partial, report_no_server};
 
 mod model;
@@ -441,8 +441,10 @@ async fn spawn_owned_pane(
     let spawned = match dispatch_spawn_async(socket_path, &frame, None).await {
         Ok(SpawnResult::Ok(id)) => id,
         Ok(SpawnResult::Err(err)) => {
-            report_spawn_error(&err);
-            return Err("workspace restore could not recreate an archived pane".to_owned());
+            return Err(format!(
+                "workspace restore could not recreate an archived pane: {}",
+                phux_client::spawn::spawn_error_message(&err)
+            ));
         }
         Ok(_) => {
             return Err(
