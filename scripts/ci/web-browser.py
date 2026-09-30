@@ -24,6 +24,7 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_TESTS = (
     "renders_engine_grid_to_canvas",
+    "a_wide_character_paints_across_its_spacer_cell",
     "exact_wasm_codec_selects_native_and_renders_live_server",
     "synthesized_only_browser_remains_compatible_with_native_server",
     "keys_ime_commits_and_paste_reach_the_terminal_and_nothing_else_is_captured",

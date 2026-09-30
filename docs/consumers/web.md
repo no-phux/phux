@@ -173,7 +173,7 @@ the one documented in the [wire encoding reference](../spec/appendix-encoding.md
    `SynthesizedVtStateSync` acknowledges a transition after applying it.
    Retained history is requested incrementally after READY. Paints are
    coalesced to animation frames; the 530 ms cursor blink redraws only the
-   cursor's cell.
+   cursor's row.
 6. Input goes through a hidden `<textarea>` beside the canvas, focused when
    the canvas is focused or clicked (and on connect when nothing else holds
    focus), so the page's other controls keep their keys. A keydown the

@@ -40,7 +40,7 @@ use web_sys::{
 use crate::framing::FrameBuffer;
 use crate::search::{Search, find_matches, reveal_row};
 use crate::selection::{Selection, cell_at};
-use crate::{Mark, Metrics, Overlay, render_cursor_cell, render_selected};
+use crate::{Mark, Metrics, Overlay, render_cursor_row, render_selected};
 
 mod find;
 mod path_picker;
@@ -942,7 +942,7 @@ struct App {
     cursor_on: Cell<bool>,
     /// Fractional wheel rows not yet scrolled (trackpads send small deltas).
     wheel_carry: Cell<f64>,
-    /// The grid the canvas shows, so a cursor blink redraws one cell
+    /// The grid the canvas shows, so a cursor blink redraws one row
     /// without reading the whole grid back from the engine.
     painted: RefCell<Option<Grid>>,
     /// The program title last published to the page.
@@ -1108,7 +1108,7 @@ impl App {
         }
     }
 
-    /// Toggle the cursor blink phase and redraw only the cursor's cell.
+    /// Toggle the cursor blink phase and redraw only the cursor's row.
     fn blink(&self) {
         self.cursor_on.set(!self.cursor_on.get());
         if self.session.viewport_scrolled() {
@@ -1124,7 +1124,7 @@ impl App {
                 selected: self.selected_cells(grid.cols),
                 marks: &marks,
             };
-            render_cursor_cell(
+            render_cursor_row(
                 &self.ctx,
                 grid,
                 &self.metrics,
