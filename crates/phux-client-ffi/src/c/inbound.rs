@@ -56,7 +56,7 @@ pub(crate) fn poll_connected(client: &mut Client) -> Result<bool, BridgeError> {
 fn feed_snapshot(
     client: &mut Client,
     epoch: u64,
-    frames: Vec<Vec<u8>>,
+    frames: Vec<bytes::Bytes>,
     run: &mut OutputRun,
     attached: &mut bool,
 ) -> Result<(), BridgeError> {
@@ -180,7 +180,7 @@ mod tests {
         client
             .inner
             .control()
-            .queue_inbound_batch(frames)
+            .queue_inbound_batch(frames.into_iter().map(Into::into).collect())
             .expect("room for the read");
     }
 
