@@ -86,7 +86,9 @@ between toggles. If Ghostty is still running it holds that hotkey too, so quit i
 or rebind one of them. Settings > Ghostty re-applies the config, reloads it,
 switches keybind import off (the global hotkey too, from the next launch), and
 lists the binds it skipped: key sequences,
-bare letters, and actions with no equivalent yet. `reset` is one: the
+bare letters, keys the window never reports (such as keypad keys), and
+actions with no equivalent yet. Keys may be named as Ghostty names them, as
+W3C codes (`KeyK`, `Digit1`, `ArrowUp`) or with a `physical:` prefix. `reset` is one: the
 terminal's state belongs to the server, and resetting only this window's copy
 would leave input encoding and every other client on the old state, so it
 waits for a protocol request. `vt` and `html` copy and write formats are
