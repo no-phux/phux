@@ -235,6 +235,20 @@ fn is_origin(host: &HostJson, origin: &AttachOrigin) -> bool {
     }
 }
 
+/// A machine name as the hosts provider labels this machine: the first
+/// label of a DNS name (`mac.local` is `mac`, as `phux ls --all` prints
+/// it), and an IP address or bare name unchanged.
+#[must_use]
+pub fn short_host_label(host: &str) -> &str {
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return host;
+    }
+    host.split('.')
+        .next()
+        .filter(|first| !first.is_empty())
+        .unwrap_or(host)
+}
+
 /// The label for the attached server's own segment: the registry name of a
 /// remote origin, else the provider's name for this machine, else the
 /// serving host the server reported.
@@ -303,6 +317,17 @@ pub fn exec_switch_host(host: &str, session: &str) -> ! {
 mod tests {
     use super::*;
     use phux_core::session_list::SessionJson;
+
+    /// The sidebar's machine header read "phalls-Mac-mini.local" until the
+    /// hosts listing landed and renamed it "phalls-Mac-mini".
+    #[test]
+    fn a_served_host_is_labelled_as_the_hosts_provider_labels_it() {
+        assert_eq!(short_host_label("mac.local"), "mac");
+        assert_eq!(short_host_label("mini"), "mini");
+        assert_eq!(short_host_label("10.0.0.7"), "10.0.0.7");
+        assert_eq!(short_host_label("::1"), "::1");
+        assert_eq!(short_host_label(".weird"), ".weird");
+    }
 
     fn host(name: &str, kind: HostKind) -> HostJson {
         HostJson {

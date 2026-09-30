@@ -1021,7 +1021,9 @@ impl SessionLoop {
         self.peers.serving_host = value
             .and_then(|bytes| serde_json::from_slice::<WhoamiRecord>(bytes).ok())
             .filter(|r| r.schema_version == WHOAMI_SCHEMA_VERSION && !r.host.trim().is_empty())
-            .map(|r| r.host);
+            // The hosts provider's spelling, so the machine header does not
+            // flip between `mac.local` and `mac` when its listing lands.
+            .map(|r| crate::attach::hosts::short_host_label(&r.host).to_owned());
         self.peers.chrome_dirty = true;
     }
 
