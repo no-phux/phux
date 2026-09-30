@@ -350,22 +350,90 @@ fn a_spawn_receipt_fences_an_older_inventory_even_before_its_broadcast() {
 }
 
 #[test]
-fn repeated_inventory_refreshes_coalesce_a_pending_metadata_read() {
-    let (mut plane, old_read) = discovered();
+fn repeated_inventory_refreshes_coalesce_and_leave_a_known_terminal_alone() {
+    let (mut plane, read) = discovered();
     let request_id = plane.refresh_topology().unwrap();
     for _ in 0..100 {
         assert_eq!(plane.refresh_topology(), Some(request_id));
     }
     assert_eq!(outbound(&mut plane).len(), 1);
     answer_state(&mut plane, request_id, snapshot());
-    assert!(matches!(
-        outbound(&mut plane).as_slice(),
-        [FrameKind::SubscribeMetadata { .. }]
+    assert!(
+        outbound(&mut plane).is_empty(),
+        "a live subscription already carries every later change"
+    );
+    answer_metadata(&mut plane, read, Some(b"current"));
+    assert_eq!(declarations(&mut plane), vec![Some(b"current".to_vec())]);
+}
+
+fn refresh_after_settling(plane: &mut ControlPlane, snapshot: SessionSnapshot) -> Vec<FrameKind> {
+    let request_id = plane.refresh_topology().unwrap();
+    let _ = outbound(plane);
+    answer_state(plane, request_id, snapshot);
+    outbound(plane)
+}
+
+#[test]
+fn an_inventory_subscribes_and_reads_only_terminals_new_to_it() {
+    let (mut plane, read) = discovered();
+    answer_metadata(&mut plane, read, None);
+    let mut current = snapshot();
+    current.resources.push(ResourceInfo::new(
+        ResourceId::local(8),
+        WindowId::new(1),
+        20,
+        4,
     ));
-    answer_metadata(&mut plane, old_read, Some(b"stale"));
-    assert!(declarations(&mut plane).is_empty());
-    let frames = outbound(&mut plane);
-    assert_eq!(frames.len(), 1);
-    answer_metadata(&mut plane, metadata_id(&frames), None);
-    assert_eq!(declarations(&mut plane), vec![None]);
+    let frames = refresh_after_settling(&mut plane, current);
+    assert!(
+        matches!(
+            frames.as_slice(),
+            [
+                FrameKind::SubscribeMetadata { scope: Scope::Resource(subscribed), .. },
+                FrameKind::GetMetadata { scope: Scope::Resource(read), .. },
+            ] if *subscribed == ResourceId::local(8) && *read == ResourceId::local(8)
+        ),
+        "{frames:?}"
+    );
+}
+
+#[test]
+fn a_detach_ends_the_subscriptions_so_the_next_inventory_renews_them() {
+    let (mut plane, read) = discovered();
+    answer_metadata(&mut plane, read, None);
+    plane
+        .feed(FrameKind::Detached {
+            reason: Some(DetachReason::Requested),
+            message: String::new(),
+        })
+        .unwrap();
+    let frames = refresh_after_settling(&mut plane, snapshot());
+    assert!(
+        matches!(
+            frames.as_slice(),
+            [
+                FrameKind::SubscribeMetadata { .. },
+                FrameKind::GetMetadata { .. }
+            ]
+        ),
+        "{frames:?}"
+    );
+}
+
+#[test]
+fn a_failed_read_is_retried_by_the_next_inventory() {
+    let (mut plane, read) = discovered();
+    plane
+        .feed(FrameKind::Error {
+            request_id: Some(read),
+            code: ErrorCode::InvalidCommand,
+            message: "busy".into(),
+        })
+        .unwrap();
+    let frames = refresh_after_settling(&mut plane, snapshot());
+    let retry = metadata_id(&frames);
+    assert_ne!(retry, read);
+    answer_metadata(&mut plane, retry, Some(b"declared"));
+    assert_eq!(declarations(&mut plane), vec![Some(b"declared".to_vec())]);
+    assert!(refresh_after_settling(&mut plane, snapshot()).is_empty());
 }

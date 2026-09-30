@@ -1003,6 +1003,31 @@ mod tests {
             .await;
     }
 
+    /// phux-lv57: a resumed tree has served no client in this process, so
+    /// the rebuild must not arm last-session self-exit. Only a client that
+    /// attaches (or creates a session) after the re-exec may arm it; until
+    /// then a resumed pane's exit leaves the server running.
+    #[tokio::test(flavor = "current_thread")]
+    async fn rebuild_does_not_arm_last_session_self_exit() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut state = ServerState::new();
+                let handoff = blob(
+                    vec![session(1, vec![2])],
+                    vec![window(2, 1, vec![3])],
+                    vec![no_pty_pane(3, 2)],
+                );
+                state.rebuild_from_blob(&handoff).expect("rebuild");
+                assert_eq!(session_names(&state), vec!["main".to_owned()]);
+                assert!(
+                    !state.has_served_client(),
+                    "a resumed tree must not count as having served clients"
+                );
+            })
+            .await;
+    }
+
     /// A session that names a window the blob does not contain fails closed
     /// and leaves the destination state untouched.
     #[tokio::test(flavor = "current_thread")]
