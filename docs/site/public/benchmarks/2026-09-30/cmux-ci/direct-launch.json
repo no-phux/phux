@@ -1,0 +1,69 @@
+{
+  "recorded_at": "2026-09-30T07:27:39.208603+00:00",
+  "runner": {
+    "RUNNER_OS": "macOS",
+    "RUNNER_ARCH": "ARM64",
+    "RUNNER_ENVIRONMENT": "github-hosted",
+    "ImageOS": "macos15",
+    "ImageVersion": "20260907.0337.1",
+    "GITHUB_RUN_ID": "36683763740",
+    "GITHUB_SHA": "4945a85cc9e9cf08b4b60a4a354b2305ae677310"
+  },
+  "hardware": {
+    "platform": "macOS-15.7.9-arm64-arm-64bit-Mach-O",
+    "cpu": {
+      "argv": [
+        "/usr/sbin/sysctl",
+        "-n",
+        "machdep.cpu.brand_string"
+      ],
+      "exit_code": 0,
+      "stdout": "Apple M1 (Virtual)",
+      "stderr": ""
+    },
+    "memory": {
+      "argv": [
+        "/usr/sbin/sysctl",
+        "-n",
+        "hw.memsize"
+      ],
+      "exit_code": 0,
+      "stdout": "7516192768",
+      "stderr": ""
+    },
+    "load_start": [
+      7.23583984375,
+      9.24169921875,
+      8.13623046875
+    ]
+  },
+  "release": {
+    "version": "0.64.25",
+    "build": "106",
+    "binary_sha256": "b83e415b6309e185fff2044d10b43b2722debcc13082b591fae5455fdfd677e5",
+    "cli": {
+      "argv": [
+        "$RUNNER_TEMP/cmux-native/cmux.app/Contents/Resources/bin/cmux",
+        "--version"
+      ],
+      "exit_code": 0,
+      "stdout": "cmux 0.64.25 (106) [b685a275c]",
+      "stderr": ""
+    }
+  },
+  "configuration": {
+    "state": "fresh disposable runner account; default native window and terminal",
+    "samples_requested": 20,
+    "startup_boundary": "direct app executable launch to first observed completed terminal command; includes CLI startup and polling",
+    "echo_boundary": "CLI send invocation to completion marker returned by CLI read-screen; includes both CLI launches and polling; NOT PTY-byte echo or input-to-pixel"
+  },
+  "samples": [],
+  "ok": false,
+  "error": "native application exited with -11",
+  "publication": {
+    "kind": "native-readiness-preflight-not-performance",
+    "run_url": "https://github.com/no-phux/phux/actions/runs/36683763740",
+    "harness_source_commit": "890ae0851abda49c59e8c95e7c44d89dfb4c2987",
+    "redaction": "Only runner temporary paths replaced with $RUNNER_TEMP; observations unchanged."
+  }
+}

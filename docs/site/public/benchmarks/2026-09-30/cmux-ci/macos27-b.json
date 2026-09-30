@@ -1,0 +1,275 @@
+{
+  "recorded_at": "2026-09-30T07:57:53.087319+00:00",
+  "runner": {
+    "RUNNER_OS": "macOS",
+    "RUNNER_ARCH": "ARM64",
+    "RUNNER_ENVIRONMENT": "github-hosted",
+    "ImageOS": "macos27",
+    "ImageVersion": "20260921.0210.1",
+    "GITHUB_RUN_ID": "36686454138",
+    "GITHUB_SHA": "9dc2f72fc30e0f5480dc35c8695026db19157311"
+  },
+  "hardware": {
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "cpu": {
+      "argv": [
+        "/usr/sbin/sysctl",
+        "-n",
+        "machdep.cpu.brand_string"
+      ],
+      "exit_code": 0,
+      "stdout": "Apple M1 (Virtual)",
+      "stderr": ""
+    },
+    "memory": {
+      "argv": [
+        "/usr/sbin/sysctl",
+        "-n",
+        "hw.memsize"
+      ],
+      "exit_code": 0,
+      "stdout": "7516192768",
+      "stderr": ""
+    },
+    "load_start": [
+      11.8681640625,
+      15.427734375,
+      9.25048828125
+    ]
+  },
+  "release": {
+    "version": "0.64.25",
+    "build": "106",
+    "binary_sha256": "b83e415b6309e185fff2044d10b43b2722debcc13082b591fae5455fdfd677e5",
+    "cli": {
+      "argv": [
+        "$RUNNER_TEMP/cmux-native/cmux.app/Contents/Resources/bin/cmux",
+        "--version"
+      ],
+      "exit_code": 0,
+      "stdout": "cmux 0.64.25 (106) [b685a275c]",
+      "stderr": ""
+    }
+  },
+  "configuration": {
+    "state": "fresh disposable runner account; default native window and terminal",
+    "samples_requested": 20,
+    "socket_policy": "allowAll on the private CI socket, explicitly permitting the external benchmark driver",
+    "startup_boundary": "LaunchServices open invocation to first observed completed terminal command; includes CLI startup and polling",
+    "echo_boundary": "CLI send invocation to completion marker returned by CLI read-screen; includes both CLI launches and polling; NOT PTY-byte echo or input-to-pixel"
+  },
+  "samples": [
+    {
+      "ok": true,
+      "elapsed_us": 428768,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 207228,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 123133,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 107329,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 110892,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 1066423,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 404476,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 277980,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 177030,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 321642,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 197875,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 1276399,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 201015,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 150091,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 191363,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 185806,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 195025,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 242885,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 214659,
+      "read_calls": 1
+    },
+    {
+      "ok": true,
+      "elapsed_us": 161094,
+      "read_calls": 1
+    }
+  ],
+  "ok": true,
+  "display": {
+    "argv": [
+      "/usr/sbin/system_profiler",
+      "SPDisplaysDataType",
+      "-json"
+    ],
+    "exit_code": 0,
+    "stdout": "{\n  \"SPDisplaysDataType\" : [\n\n  ]\n}",
+    "stderr": ""
+  },
+  "initial_screenshot": {
+    "argv": [
+      "/usr/sbin/screencapture",
+      "-x",
+      "$RUNNER_TEMP/cmux-observations/before.png"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "signature": {
+    "argv": [
+      "/usr/bin/codesign",
+      "--verify",
+      "--deep",
+      "--strict",
+      "$RUNNER_TEMP/cmux-native/cmux.app"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "launch": {
+    "argv": [
+      "/usr/bin/open",
+      "-n",
+      "$RUNNER_TEMP/cmux-native/cmux.app",
+      "--env",
+      "CMUX_ALLOW_SOCKET_OVERRIDE=1",
+      "--env",
+      "CMUX_SOCKET_PATH=/tmp/phux-cmux-bench.sock",
+      "--env",
+      "CMUXD_UNIX_PATH=/tmp/phux-cmuxd-bench.sock",
+      "--env",
+      "CMUX_SOCKET_MODE=allowAll"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "workspaces": {
+    "argv": [
+      "$RUNNER_TEMP/cmux-native/cmux.app/Contents/Resources/bin/cmux",
+      "workspace",
+      "list",
+      "--json"
+    ],
+    "exit_code": 0,
+    "stdout": "{\n  \"window_ref\" : \"window:1\",\n  \"workspaces\" : [\n    {\n      \"current_directory\" : \"/Users/runner\",\n      \"custom_color\" : null,\n      \"custom_title\" : null,\n      \"description\" : null,\n      \"has_custom_title\" : false,\n      \"id\" : \"5CD58A8B-5841-47B4-B2DC-048F50F0DA4E\",\n      \"index\" : 0,\n      \"latest_conversation_message\" : null,\n      \"latest_submitted_at\" : null,\n      \"latest_submitted_message\" : null,\n      \"listening_ports\" : [\n\n      ],\n      \"pinned\" : false,\n      \"ref\" : \"workspace:1\",\n      \"remote\" : {\n        \"active_terminal_sessions\" : 0,\n        \"cloud_vm_base\" : null,\n        \"cloud_vm_id\" : null,\n        \"cloud_vm_transport\" : null,\n        \"conflicted_ports\" : [\n\n        ],\n        \"connected\" : false,\n        \"daemon\" : {\n          \"capabilities\" : [\n\n          ],\n          \"detail\" : null,\n          \"name\" : null,\n          \"remote_path\" : null,\n          \"state\" : \"unavailable\",\n          \"version\" : null\n        },\n        \"destination\" : null,\n        \"detail\" : null,\n        \"detected_ports\" : [\n\n        ],\n        \"enabled\" : false,\n        \"forwarded_ports\" : [\n\n        ],\n        \"has_identity_file\" : false,\n        \"has_ssh_options\" : false,\n        \"heartbeat\" : {\n          \"age_seconds\" : null,\n          \"count\" : 0,\n          \"last_seen_at\" : null\n        },\n        \"local_proxy_port\" : null,\n        \"persistent_daemon_slot\" : null,\n        \"port\" : null,\n        \"proxy\" : {\n          \"error_code\" : null,\n          \"host\" : null,\n          \"port\" : null,\n          \"schemes\" : [\n            \"socks5\",\n            \"http_connect\"\n          ],\n          \"state\" : \"unavailable\",\n          \"url\" : null\n        },\n        \"state\" : \"disconnected\",\n        \"terminal_profile\" : null,\n        \"terminal_tmux_session\" : null,\n        \"terminal_transport\" : null,\n        \"transport\" : null\n      },\n      \"selected\" : true,\n      \"title\" : \"Terminal\"\n    }\n  ]\n}",
+    "stderr": ""
+  },
+  "first_command": {
+    "ok": true,
+    "elapsed_us": 273770,
+    "read_calls": 1
+  },
+  "launch_to_first_command_us": 9265082,
+  "completed": 20,
+  "failures": 0,
+  "median_us": 199445.0,
+  "max_us": 1276399,
+  "memory": {
+    "processes": [
+      {
+        "pid": 6279,
+        "parent": 1,
+        "rss_kib": 228976,
+        "executable": "$RUNNER_TEMP/cmux-native/cmux.app/Contents/MacOS/cmux"
+      },
+      {
+        "pid": 6295,
+        "parent": 6279,
+        "rss_kib": 8176,
+        "executable": "/usr/bin/login"
+      },
+      {
+        "pid": 6296,
+        "parent": 6295,
+        "rss_kib": 3312,
+        "executable": "-/bin/bash"
+      }
+    ],
+    "sum_rss_kib": 240464,
+    "scope": "app, bundled helper roots, and their current descendants; excludes shared WindowServer, GPU allocations and unattributed reparented helpers; RSS may double-count shared pages"
+  },
+  "screenshot": {
+    "argv": [
+      "/usr/sbin/screencapture",
+      "-x",
+      "$RUNNER_TEMP/cmux-observations/screen.png"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "publication": {
+    "kind": "native-command-observation-not-input-to-pixel",
+    "run_url": "https://github.com/no-phux/phux/actions/runs/36686454138",
+    "harness_source": "https://github.com/no-phux/phux/tree/bench/cmux-docs-2026-09-30-macos27-b",
+    "redaction": "Only runner temporary paths replaced with $RUNNER_TEMP; observations unchanged."
+  }
+}

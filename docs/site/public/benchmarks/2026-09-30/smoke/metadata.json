@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-09-30T05:14:18.131936+00:00",
+  "command": [
+    "scripts/bench/mux-compare.sh",
+    "--mux",
+    "phux,herdr,tmux",
+    "--phux-bin",
+    "<PHUX_BIN>",
+    "--herdr-bin",
+    "<HERDR_BIN>",
+    "--tmux-bin",
+    "<TMUX_BIN>",
+    "--attach-samples",
+    "1",
+    "--pty-iters",
+    "3",
+    "--key-samples",
+    "2",
+    "--seq-lines",
+    "1000",
+    "--out",
+    "target/bench/docs-smoke-20260930"
+  ],
+  "lanes": [
+    "phux",
+    "herdr",
+    "tmux"
+  ],
+  "hardware": {
+    "system": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "logical_cpus": 14,
+    "load_average": [
+      185.52197265625,
+      292.224609375,
+      189.662109375
+    ],
+    "cpu": {
+      "argv": [
+        "/usr/sbin/sysctl",
+        "-n",
+        "machdep.cpu.brand_string"
+      ],
+      "exit_code": 0,
+      "stdout": "Apple M4 Pro",
+      "stderr": ""
+    },
+    "memory_bytes": {
+      "argv": [
+        "/usr/sbin/sysctl",
+        "-n",
+        "hw.memsize"
+      ],
+      "exit_code": 0,
+      "stdout": "51539607552",
+      "stderr": ""
+    },
+    "os": {
+      "argv": [
+        "/usr/bin/sw_vers"
+      ],
+      "exit_code": 0,
+      "stdout": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A428",
+      "stderr": ""
+    }
+  },
+  "binaries": {
+    "tmux": {
+      "path": "<TMUX_BIN>",
+      "sha256": "1d101560ca3d4fb6f86bb53e6d9946e7b98444343d1fdab4a2a6e72980e232a5",
+      "version": {
+        "argv": [
+          "<TMUX_BIN>",
+          "-V"
+        ],
+        "exit_code": 0,
+        "stdout": "tmux 3.7c",
+        "stderr": ""
+      }
+    },
+    "phux": {
+      "path": "<PHUX_BIN>",
+      "sha256": "aa641ecf67c1ecb544d6011f142396a8154121a7b6b7df44caae0eae31478fca",
+      "version": {
+        "argv": [
+          "<PHUX_BIN>",
+          "--version"
+        ],
+        "exit_code": 0,
+        "stdout": "phux 0.46.0+next.c6f83ef",
+        "stderr": ""
+      }
+    },
+    "herdr": {
+      "path": "<HERDR_BIN>",
+      "sha256": "32b53df09872628059c789a69f02a6b8e29e14ddf26711421f3463f70c1aef17",
+      "version": {
+        "argv": [
+          "<HERDR_BIN>",
+          "--version"
+        ],
+        "exit_code": 0,
+        "stdout": "herdr 0.9.0",
+        "stderr": ""
+      }
+    }
+  },
+  "harness_revision": {
+    "argv": [
+      "git",
+      "-C",
+      "<REPO>",
+      "rev-parse",
+      "HEAD"
+    ],
+    "exit_code": 0,
+    "stdout": "6ad7bebb6f46558f5db8cd78f8041f5b38eec150",
+    "stderr": ""
+  },
+  "harness_sha256": {
+    "mux-compare.sh": "8ed3acd995a533a71e38fe24c197a204da3a98f801485fb333fefd4b4b111e67",
+    "pty-echo.py": "58e8f56273886c8ce6eda654862e2893ddedd0b5f719d8c219584134b640bb39",
+    "metadata.py": "92bac2bb01dc10ec40ff306ab0daa259478f8af81d45d54cd8952aaa5bf27fcf"
+  },
+  "configuration": {
+    "attach_samples": 1,
+    "key_samples": 2,
+    "pty_iters": 3,
+    "seq_lines": 1000,
+    "big_history": 0,
+    "rtt_ms": 0,
+    "path_mbit": 0,
+    "loss_percent": 0,
+    "loss_seed": 0,
+    "terminal": "xterm-256color",
+    "locale": "en_US.UTF-8",
+    "shell": "/bin/sh",
+    "outer_geometry": [
+      120,
+      40
+    ],
+    "big_history_geometry": [
+      188,
+      40
+    ],
+    "big_history_panes": 4,
+    "big_history_lines_per_pane": 60000,
+    "history_policy": "product defaults; equal input does not imply equal retained history",
+    "isolation": "env -i; private HOME/XDG/socket per lane; tmux -f /dev/null",
+    "memory_scope": "individual server and attach-client RSS; excludes shells, observer, GUI and GPU",
+    "echo_boundary": "outer PTY write to attach-client output byte, not input-to-pixel",
+    "percentile_method": "sorted sample at round(p*(n-1)/100); p99 only for n>=1000"
+  },
+  "publication": {
+    "path_redaction": "Binary paths, repository root and ephemeral run root replaced by named placeholders. Versions, SHA-256 identities, timings and samples unchanged.",
+    "run_kind": "functional-smoke",
+    "original_file_sha256": "017a4ab5a47246af0ee54314dd009394f5f6bdf79059a3e7adf819eb7d4d1535"
+  }
+}

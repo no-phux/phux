@@ -18,6 +18,8 @@ export const DOCS_PREFIXES = [
   "/concepts",
   "/consumers",
   "/remote-access",
+  "/performance",
+  "/troubleshooting",
   "/reference",
   "/wire",
   "/architecture",

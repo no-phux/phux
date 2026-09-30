@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-09-30",
+  "product": "cmux",
+  "status": "native_command_observed_input_to_pixel_unmeasured",
+  "quantitative_ranking": null,
+  "release": {
+    "version": "0.64.25",
+    "build": "106",
+    "source_revision": "b685a275c2e411799857155e37264daf84f7e4d6",
+    "bundle_identifier": "com.cmuxterm.app",
+    "download_url": "https://github.com/manaflow-ai/cmux/releases/download/v0.64.25/cmux-macos.dmg",
+    "download_sha256": "0afb2f8ff9bfef10f03e61ff12e65ce02dbca5c96cb9047118e13483ac5b08ad",
+    "inspection": "Official DMG downloaded, SHA-256 matched release API digest, mounted read-only locally without opening app. Version/build/revision read from Info.plist. The native application was subsequently exercised on a disposable GitHub-hosted macOS runner, never on the user's desktop."
+  },
+  "measurement_boundaries": {
+    "pty_byte_echo": "Not applicable to native GUI; CLI command acknowledgement is not terminal rendering.",
+    "native_startup": "One LaunchServices invocation per campaign to a command completion marker returned by read-screen; includes CLI startup and polling, not a cold-cache boot.",
+    "native_memory": "Main-app and captured process-tree RSS recorded after the command probes; excludes shared WindowServer, GPU allocations and unattributed helpers, may double-count shared pages, and is not physical footprint or server-only RSS.",
+    "input_to_pixel": "Unmeasured: requires a presentation receipt or controlled visual instrumentation; no timing inferred from socket acknowledgement."
+  },
+  "isolation_review": {
+    "supported_route": "Upstream tagged Release staging changes bundle identity, socket and daemon socket, ad-hoc signs the copied app, then invokes open -g.",
+    "local_session_blocker": "The inspected release's startup calls scheduleInitialMainWindowBootstrap -> bootstrapInitialMainWindowIfNeeded with shouldActivate defaulting true. createMainWindow uses runningApplication([activateAllWindows]) and respectActivationSuppression:false. open -g alone therefore does not prove non-activation. No native launch was attempted on the user's active GUI session.",
+    "state_warning": "Upstream staging script resolves account home via getpwuid for discovery markers; changing HOME alone does not isolate all macOS preferences/state.",
+    "required_environment": "Dedicated macOS login/VM or explicitly available GUI test session, owned sockets/state/workspace, no global accessibility changes. The disposable runner used the official bundle identity; tagged bundle isolation is needed when sharing an existing desktop."
+  },
+  "native_experiment": {
+    "run_url": "https://github.com/no-phux/phux/actions/runs/36685005009",
+    "harness_source": "https://github.com/no-phux/phux/tree/bench/cmux-docs-2026-09-30",
+    "result": "cmux-ci/native-observations.json",
+    "screenshot": "cmux-ci/native-window.png",
+    "preflight_attempts": ["cmux-ci/direct-launch.json", "cmux-ci/launchservices-default-policy.json"],
+    "macos27_repeats": [
+      {"result": "cmux-ci/macos27-a.json", "screenshot": "cmux-ci/macos27-a.png", "source": "https://github.com/no-phux/phux/tree/bench/cmux-docs-2026-09-30-macos27-a"},
+      {"result": "cmux-ci/macos27-b.json", "screenshot": "cmux-ci/macos27-b.png", "source": "https://github.com/no-phux/phux/tree/bench/cmux-docs-2026-09-30-macos27-b"},
+      {"result": "cmux-ci/macos27-c.json", "screenshot": "cmux-ci/macos27-c.png", "source": "https://github.com/no-phux/phux/tree/bench/cmux-docs-2026-09-30-macos27-c"}
+    ],
+    "comparison_limit": "Different host and CLI-observation boundary from the phux/tmux/Herdr PTY campaign; no cross-product numerical ranking."
+  },
+  "sources": [
+    "https://api.github.com/repos/manaflow-ai/cmux/releases/latest",
+    "https://github.com/manaflow-ai/cmux/blob/v0.64.25/scripts/reloads.sh",
+    "https://github.com/manaflow-ai/cmux/blob/v0.64.25/Sources/AppDelegate.swift",
+    "https://github.com/manaflow-ai/cmux/blob/main/skills/cmux-dev-workflow/references/tagged-builds.md",
+    "https://cmux.com/docs/api"
+  ]
+}

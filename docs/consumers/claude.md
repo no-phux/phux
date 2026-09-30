@@ -11,6 +11,11 @@ last-reviewed: 2026-09-12
 Claude sessions running inside phux panes. It is versioned independently from
 the phux binaries and distributed through this repository's Claude marketplace.
 
+Use the **plugin** when you want Claude to have phux tools. Use the optional
+**launch shim** when you want invoking `claude` to create or enter a phux
+session automatically. They are not interchangeable: the plugin registers
+tools and hooks; the shim changes how Claude starts.
+
 ## Install
 
 Install `phux` and `phux-mcp` first, then register and install the marketplace
@@ -23,6 +28,36 @@ claude plugin install phux@phux
 
 The plugin requires Claude Code 2.1.232 or a compatible newer release, and phux
 0.16.0 or newer on `PATH`. Start a local phux server before using MCP tools.
+
+## First shared-terminal walkthrough
+
+1. Complete the plugin installation above. Start `phux` in a real terminal,
+   leaving a shell pane available for Claude to inspect.
+2. Open another phux pane (press `Ctrl-A`, release, then `%`) and run `claude`
+   there. Launching inside phux lets the hooks identify Claude's own pane;
+   the shell it will operate should be a different pane.
+3. Ask Claude: “Use phux to list the sessions and panes, then snapshot the
+   idle shell pane. Do not send input yet.” Confirm the returned screen is
+   the shell you see, not Claude's own interactive UI.
+4. Ask it to run a harmless `pwd` in that selected shell pane using the phux
+   tools. **Expected:** the result identifies the shell's working directory,
+   and you can see the command in the human terminal view.
+5. Quit Claude normally to end the conversation, or detach from phux with
+   `Ctrl-A`, release, `d` to leave the running work alone. Detach does not
+   stop Claude or the shell.
+
+If Claude has no phux tools, confirm the plugin is installed and restart
+Claude. If tools exist but cannot reach the server, follow
+[agent connection recovery](../troubleshooting.md#an-agent-or-mcp-host-cannot-see-the-server).
+Do not also register a duplicate phux MCP server when the plugin already
+provides one. For an MCP-only setup without plugin hooks, use
+[manual MCP registration](./mcp.md#registering-with-a-host).
+
+For automatic launch behavior, run `phux agent install-claude` and follow
+its instructions; inspect `phux agent install-claude --help` first if you
+already manage your own Claude launcher.
+
+### Develop the plugin
 
 For development, load the checked-out package directly:
 
@@ -55,17 +90,18 @@ integration for Claude sessions regardless of how they were started.
 
 ## What the hook shim emits
 
-This tree's `phux agent install-claude` shim (schema 5) registers every arm
-below and emits AgentSession records through `phux agent session` /
-`phux agent emit`. An older released binary's shim (schema 4) registers every
-arm except `PreToolUse` and `PostToolUse`, feeds the detector with
-`phux agent report-state`, and emits no records. Check `phux status --json`
-for `RESOURCE_KINDS`.
+**Checkout behavior, not a minimum-release promise:** the source checkout's
+`phux agent install-claude` shim (schema 5) registers every arm below and emits
+AgentSession records through `phux agent session` / `phux agent emit`.
+The older schema-4 released shim omits `PreToolUse` and `PostToolUse`, feeds
+the detector with `phux agent report-state`, and emits no records. The plugin
+minimum above does not imply schema-5 hooks. Check the running server with
+`phux status --json` for `RESOURCE_KINDS` before relying on the event stream.
 
 On a server that advertises `RESOURCE_KINDS`, the shim gives every Claude run
 inside a phux pane an **agent session**: a second resource, parented to the
 pane, whose stream is one JSON record per hook event
-([`agents.md`](./agents.md)). Every `--phux-hook` arm reads the
+([agent CLI guide](./agents.md)). Every `--phux-hook` arm reads the
 hook's stdin JSON and acts only when `PHUX_TERMINAL_ID` names Claude's own
 pane. What each arm does:
 

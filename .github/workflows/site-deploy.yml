@@ -99,8 +99,8 @@ jobs:
 
           overview="$(curl -fsSL --retry 6 --retry-delay 5 --retry-all-errors \
             "https://docs.phux.sh/overview?deployed=${deployed}")"
-          if ! grep -Fq '<title>phux — Get started</title>' <<<"$overview"; then
-            echo "docs.phux.sh/overview did not return the docs document" >&2
+          if ! grep -Fq 'rel="canonical" href="https://docs.phux.sh/overview"' <<<"$overview"; then
+            echo "docs.phux.sh/overview did not return the canonical docs document" >&2
             exit 1
           fi
           stylesheet="${overview#*href=\"/_astro/}"

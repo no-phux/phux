@@ -102,7 +102,7 @@ Field semantics:
 
 - **`audience`**. Who is this written for? Comma-separated if more than
   one. The four values:
-  - `humans` — end users (eventual; rare today)
+  - `humans` — people installing, using, evaluating, or troubleshooting phux
   - `agents` — AI coding agents loaded into context every turn
   - `consumers` — downstream implementers of `phux-protocol`
   - `contributors` — people working in this repo
@@ -154,7 +154,8 @@ A flowchart for "I have something to write":
 4. **Is it a user-facing surface of a specific consumer** (the TUI's
    keybinds, the SDK's API)? → `docs/consumers/`.
 5. **Is it errors, logging, telemetry, security**? →
-   `docs/operations.md`.
+   `docs/operations.md` owns the operational contract;
+   `docs/troubleshooting.md` routes readers through diagnosis and recovery.
 6. **Is it the long arc / future shape**? → `docs/vision.md`.
 7. **Is it "what is phux"**? → `docs/CONCEPTS.md`. Nowhere else.
 8. **Is it the landing page / router**? → `README.md`.
@@ -164,6 +165,12 @@ A flowchart for "I have something to write":
 If you can't place it on the flowchart, the doc system is missing a
 home. File a bd ticket against the `[epic]` docs-restructure (phux-dfz)
 or its successor before inventing a new top-level `.md`.
+
+Public navigation follows reader tasks, not these storage directories. The
+site's [content contract](./site/CONTENT.md) defines the reading paths, and
+`docs/site/scripts/sync-docs.ts` publishes them without moving canonical URLs.
+An onboarding guide may summarize a concept and link to its authority; “one
+fact, one home” prevents competing contracts, not necessary explanation.
 
 ---
 

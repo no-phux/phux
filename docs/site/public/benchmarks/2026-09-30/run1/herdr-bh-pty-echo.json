@@ -1,0 +1,13 @@
+{
+  "label": "herdr-bh",
+  "iters": 1000,
+  "ok": false,
+  "command": [
+    "<HERDR_BIN>"
+  ],
+  "boundary": "outer PTY write to attach-client output byte",
+  "cols": 188,
+  "rows": 40,
+  "prompt_seen_before_settle": true,
+  "error": "pane never answered a probe command"
+}
