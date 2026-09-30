@@ -126,8 +126,9 @@ type HistoryPageRequest = (
 struct HeadlessChrome {
     /// The columns the window sidebar reserves, or `None` when it is off.
     sidebar: Option<SidebarReservation>,
-    /// The theme the sidebar strip paints with.
-    sidebar_theme: crate::render::Theme,
+    /// The configured `[theme]`: the sidebar strip and the dividers paint
+    /// with it, as on the glass.
+    theme: crate::render::Theme,
     /// The status-bar painter, absent when the config disables it.
     status_bar: Option<StatusBarPainter>,
 }
@@ -146,7 +147,7 @@ fn headless_chrome(viewport_dims: (u16, u16)) -> HeadlessChrome {
     );
     HeadlessChrome {
         sidebar,
-        sidebar_theme: settings.theme,
+        theme: settings.theme,
         status_bar: settings.status_bar,
     }
 }
@@ -164,8 +165,8 @@ struct HeadlessSession {
     status_bar: Option<StatusBarPainter>,
     /// The sidebar reservation the panes tile inside of.
     sidebar: Option<SidebarReservation>,
-    /// The theme the sidebar strip paints with.
-    sidebar_theme: crate::render::Theme,
+    /// The configured `[theme]` the chrome paints with.
+    theme: crate::render::Theme,
     /// The caller-supplied viewport; there is no TTY to ask.
     viewport_dims: (u16, u16),
     /// Pane cwd + branch memo so the composited sidebar carries
@@ -190,7 +191,7 @@ impl HeadlessSession {
             sink: Vec::new(),
             status_bar: chrome.status_bar,
             sidebar: chrome.sidebar,
-            sidebar_theme: chrome.sidebar_theme,
+            theme: chrome.theme,
             viewport_dims,
             vcs: VcsIndex::default(),
         }
@@ -263,13 +264,13 @@ impl HeadlessSession {
             &crate::attach::agent_rows::agent_session_rows(&mirror.engine_kernel),
             &crate::attach::review::ReviewIndex::new(),
         );
-        super::chrome::badge_windows(&mut windows, &mirror.workspace, &local, &self.sidebar_theme);
+        super::chrome::badge_windows(&mut windows, &mirror.workspace, &local, &self.theme);
         if let Some(sb) = self.status_bar.as_mut() {
             sb.set_windows(windows.clone());
         }
         // Feed the same window list into the strip painter so the
         // composited frame shows the sidebar tabs when `[sidebar]` is enabled.
-        let mut sidebar_painter = SidebarPainter::new(self.sidebar_theme);
+        let mut sidebar_painter = SidebarPainter::new(self.theme);
         sidebar_painter.set_windows(windows);
         let mut session = crate::render::chrome::sidebar::SessionRosterEntry {
             name: mirror.session_name.clone(),
@@ -291,14 +292,13 @@ impl HeadlessSession {
                 crate::layout::LayoutState::default,
                 std::borrow::Cow::into_owned,
             );
-        let theme = crate::render::theme::Theme::default();
         let chrome = ChromeCtx {
             viewport: self.viewport_dims,
             sidebar: self.sidebar,
             status_bar: self.status_bar.as_mut(),
             sidebar_painter: Some(&mut sidebar_painter),
             session_name: &mirror.session_name,
-            theme: &theme,
+            theme: &self.theme,
         };
         crate::attach::rendered::compose_full_frame_cells(
             &chrome,
@@ -506,7 +506,7 @@ mod sidebar_tests {
                 edge: crate::attach::paint::SidebarEdge::Left,
                 width: 32,
             }),
-            sidebar_theme: crate::render::Theme::default(),
+            theme: crate::render::Theme::default(),
             status_bar: None,
         };
         let mut session = HeadlessSession::new(kernel, chrome, (100, 24));
@@ -537,6 +537,57 @@ mod sidebar_tests {
         assert!(
             rows[13].contains("work") && rows[13].contains("●1"),
             "{rows:?}"
+        );
+    }
+
+    /// The composite's dividers paint with the configured theme, as the
+    /// glass's do, not the built-in default.
+    #[test]
+    fn headless_dividers_use_the_configured_theme() {
+        use phux_core::screen::CellColor;
+        use ratatui::style::Color;
+        let kernel = SessionKernel::new(
+            GhosttyAdapter::new(phux_protocol::BootstrapLimits::default()),
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+        );
+        let theme = crate::render::Theme {
+            divider: Color::Rgb(1, 2, 3),
+            divider_focus: Color::Rgb(4, 5, 6),
+            ..crate::render::Theme::default()
+        };
+        let chrome = HeadlessChrome {
+            sidebar: None,
+            theme,
+            status_bar: None,
+        };
+        let mut session = HeadlessSession::new(kernel, chrome, (80, 24));
+        let (left, right) = (ResourceId::local(1), ResourceId::local(2));
+        let mut workspace = crate::layout::Workspace::single(left.clone());
+        let tree = workspace
+            .active_window()
+            .and_then(|window| window.tree.clone())
+            .expect("tree");
+        workspace.active_window_mut().expect("window").tree = Some(
+            crate::layout::split_at(
+                &tree,
+                &left,
+                &right,
+                crate::layout::SplitDir::Horizontal,
+                0.5,
+            )
+            .expect("split"),
+        );
+        session.mirror.workspace = workspace;
+        let frame = session.compose();
+        let themed = |cell: &phux_core::screen::RenderedCell| {
+            matches!(
+                cell.style.fg,
+                CellColor::Rgb { r: 1, g: 2, b: 3 } | CellColor::Rgb { r: 4, g: 5, b: 6 }
+            )
+        };
+        assert!(
+            frame.cells.iter().any(themed),
+            "no divider cell carries the configured theme"
         );
     }
 }
