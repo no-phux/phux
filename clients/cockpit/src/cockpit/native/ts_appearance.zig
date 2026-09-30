@@ -3,6 +3,7 @@ const std = @import("std");
 const model_module = @import("../model.zig");
 const config = @import("../../config/config.zig");
 const themes = @import("../../config/theme.zig");
+const ghostty = @import("../../config/ghostty.zig");
 const projection = @import("workspace_projection.zig");
 const Model = model_module.Model;
 const TabPlacement = @import("../topology.zig").TabPlacement;
@@ -160,7 +161,9 @@ pub const State = struct {
     }
 
     fn resetValue(self: *State, model: *Model, id: u8) void {
-        const defaults: config.Config = .{};
+        // A reset returns to the default this user starts from, which for a
+        // Ghostty user is Ghostty's font, not Cockpit's.
+        const defaults = config.Config.seeded(model.config.inherited);
         inline for (fields, 0..) |pair, index| {
             if (id == index) {
                 @field(model.config, pair[1]) = @field(defaults, pair[1]);
@@ -298,6 +301,14 @@ pub const State = struct {
             @memcpy(out[end + 3 ..][0..value.len], value);
             end += 3 + value.len;
         }
+        // One trailing record after the settings: what was adopted from
+        // Ghostty, empty when nothing was.
+        var adopted_buffer: [1024]u8 = undefined;
+        const adopted = ghostty.summary(&model.config.inherited, &adopted_buffer);
+        out[end] = fields.len;
+        std.mem.writeInt(u16, out[end + 1 ..][0..2], @intCast(adopted.len), .little);
+        @memcpy(out[end + 3 ..][0..adopted.len], adopted);
+        end += 3 + adopted.len;
         return out[0..end];
     }
 };
@@ -563,12 +574,14 @@ fn sourceHash(model: *const Model) !?u64 {
 }
 
 /// Reload only client preferences; an external edit cannot retarget live work.
+/// The Ghostty layer is re-imported too, so this is also "re-read Ghostty".
 fn reloadConfig(model: *Model, registry: ?*const config.keybindings_module.Registry) !void {
     if (!model.config_file.enabled()) return error.NoDestination;
     var buffer: [config.max_config_bytes + 1]u8 = undefined;
     const original = try readDestination(model.provider.io, model.config_file.path(), &buffer);
-    const parsed = config.parse(original.bytes);
+    const parsed = config.parseOver(ghostty.load(model.provider.io, &model.ghostty), original.bytes);
     try validateBindings(&parsed, registry);
+    model.config.inherited = parsed.inherited;
     inline for (fields) |pair| @field(model.config, pair[1]) = @field(parsed, pair[1]);
     model.config.follow_system_theme = parsed.follow_system_theme;
     model.config.keybindings = parsed.keybindings;
@@ -618,7 +631,7 @@ test "external config edits during an appearance preview are not overwritten" {
     const source = try readDestination(io, path, &buffer);
     try std.testing.expectEqualStrings(external, source.bytes);
     state.apply(engine.model, &.{ 1, 6, 0 });
-    try std.testing.expectEqual(@as(f32, 13), engine.model.fontSize());
+    try std.testing.expectEqual(config.default_font_size, engine.model.fontSize());
 }
 
 test "settings preview reset cancel and save preserve actual defaults and comments" {
@@ -752,6 +765,56 @@ test "binding conflict reload retains last good client settings" {
     try std.testing.expectEqual(.refused, state.outcome);
     try std.testing.expectEqual(config.default_font_size, engine.model.fontSize());
     try std.testing.expectEqual(@as(usize, 0), engine.model.config.keybindings.count);
+}
+
+test "Ghostty adoption: reload re-imports it, reset returns to it, Settings names it" {
+    const Engine = @import("ts_engine.zig").Engine;
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const model = engine.model;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.writeFile(io, .{ .sub_path = "config", .data = "cursor-style = bar\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "ghostty", .data = "font-size = 17\nforeground = #c5d0cd\n" });
+    const path = try tmp.dir.realPathFileAlloc(io, "config", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+    const ghostty_path = try tmp.dir.realPathFileAlloc(io, "ghostty", std.testing.allocator);
+    defer std.testing.allocator.free(ghostty_path);
+    model.config_file.setPath(path);
+    model.ghostty = ghostty.Locator.fromEnv(null, null, ghostty_path);
+
+    // Reload (Settings' "Re-import from Ghostty") reads Ghostty afresh, under
+    // the Cockpit file.
+    var state: State = .{};
+    state.apply(model, &.{ 2, 10, 0 });
+    try std.testing.expectEqual(.saved, state.outcome);
+    try std.testing.expectEqual(@as(f32, 17), model.fontSize());
+    try std.testing.expectEqual(config.CursorStyle.bar, model.config.cursor_style);
+    try std.testing.expectEqual(config.Rgb{ .r = 0xc5, .g = 0xd0, .b = 0xcd }, model.config.resolvedForeground().?);
+
+    // Settings says where it came from, as the twelfth record.
+    state.apply(model, &.{ 1, 0, 0 });
+    var out: [max_bytes]u8 = undefined;
+    const encoded = state.encode(model, &out);
+    const marker = std.mem.indexOf(u8, encoded, "From Ghostty (") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(u8, fields.len), encoded[marker - 3]);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "17 pt") != null);
+
+    // Reset returns to the size this user starts from: Ghostty's, not 14.
+    state.apply(model, "\x02\x08\x0120");
+    try std.testing.expectEqual(@as(f32, 20), model.fontSize());
+    state.apply(model, &.{ 2, 9, 1 });
+    try std.testing.expectEqual(@as(f32, 17), model.fontSize());
+    state.apply(model, &.{ 1, 6, 0 });
+
+    // An edited Ghostty file is picked up by the next reload; a Cockpit key
+    // then still outranks it.
+    try tmp.dir.writeFile(io, .{ .sub_path = "ghostty", .data = "font-size = 12\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "config", .data = "foreground = #010203\n" });
+    state.apply(model, &.{ 2, 10, 0 });
+    try std.testing.expectEqual(@as(f32, 12), model.fontSize());
+    try std.testing.expectEqual(config.Rgb{ .r = 1, .g = 2, .b = 3 }, model.config.resolvedForeground().?);
 }
 
 // Failure injection exercises the Settings/installer transaction seam. Actual
@@ -910,7 +973,7 @@ test "failed binding installation on Save leaves disk untouched and successful r
     try std.testing.expect(state.initial == null);
     const written = try readDestination(io, path, &buffer);
     const loaded = config.parse(written.bytes);
-    try std.testing.expectEqual(@as(f32, 14), loaded.font_size);
+    try std.testing.expectEqual(config.default_font_size + 1, loaded.font_size);
     try std.testing.expectEqualDeep(model.config.keybindings, loaded.keybindings);
     try std.testing.expect(std.mem.indexOf(u8, written.bytes, "future-key = retained\n") != null);
 }

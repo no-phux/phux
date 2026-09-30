@@ -149,6 +149,7 @@ test {
     _ = @import("tests/config_tests.zig");
     _ = @import("tests/shell_identity_tests.zig");
     _ = @import("tests/config_wiring_tests.zig");
+    _ = @import("tests/ghostty_config_tests.zig");
     _ = @import("tests/tab_identity_tests.zig");
     _ = @import("tests/ts_snapshot_tests.zig");
     _ = @import("tests/scrollback_search_tests.zig");
