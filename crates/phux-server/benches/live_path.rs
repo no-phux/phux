@@ -18,7 +18,7 @@
 //!   actor's tick runs it, after `dirty` rows changed.
 //! - `wire`: the server writer encoding one `RESOURCE_OUTPUT` per consumer
 //!   into its reused batch buffer, then one client framing that frame off
-//!   its socket buffer and decoding it (`split_frame` + `to_vec` +
+//!   its socket buffer and decoding it (`split_frame` + `freeze` +
 //!   `FrameKind::decode`, the `phux-client-runtime` read path).
 //!
 //! `PHUX_LIVE_PATH_TABLE_ONLY=1` prints the table and skips Criterion.
@@ -192,7 +192,7 @@ fn client_decode(socket: &mut BytesMut, wire: &[u8]) -> FrameKind {
     let frame = framing::split_frame(socket)
         .expect("framing")
         .expect("one whole frame")
-        .to_vec();
+        .freeze();
     FrameKind::decode(&frame).expect("decode").0
 }
 
