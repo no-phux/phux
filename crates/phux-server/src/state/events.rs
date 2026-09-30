@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use phux_protocol::ids::ResourceId as WireResourceId;
+use phux_protocol::scope::EffectiveScopeSet;
 use phux_protocol::wire::frame::{
     AgentEvent, ControlAction, EventStamp, FrameKind, ResourceEventType,
 };
@@ -166,10 +167,17 @@ pub struct EventSubscription {
     pump_claimed: bool,
     /// Distinguishes this subscription from others for the same client.
     epoch: u64,
+    /// A scoped grant's clauses: only events it may `OBSERVE` are delivered
+    /// or replayed (workload-auth §6). `None` for the owner's grant.
+    observe: Option<EffectiveScopeSet>,
 }
 
 impl EventSubscription {
-    pub(super) fn new(tx: mpsc::Sender<Outbound>, epoch: u64) -> Self {
+    pub(super) fn new(
+        tx: mpsc::Sender<Outbound>,
+        epoch: u64,
+        observe: Option<EffectiveScopeSet>,
+    ) -> Self {
         Self {
             tx,
             scopes: HashMap::new(),
@@ -180,6 +188,7 @@ impl EventSubscription {
             wake: Arc::new(Notify::new()),
             pump_claimed: false,
             epoch,
+            observe,
         }
     }
 
@@ -192,6 +201,16 @@ impl EventSubscription {
     /// journal-aware subscriptions (older decoders fail on it).
     fn admits(&self, entry: &JournalEntry) -> bool {
         if !self.journal_aware && is_role_changed(&entry.event) {
+            return false;
+        }
+        if let Some(effective) = &self.observe
+            && !crate::policy::filter::observes_event(
+                effective,
+                entry.terminal.as_ref(),
+                entry.parent.as_ref(),
+                &entry.subject,
+            )
+        {
             return false;
         }
         self.scopes
@@ -457,8 +476,13 @@ pub fn journal_gap_frame(first_missing: u64, last_missing: u64) -> FrameKind {
 impl ServerState {
     /// Stamp `record` in the journal and offer it to every subscription,
     /// under the state lock. Returns the `seq` (`None` if exhausted).
-    pub fn record_and_fanout(&mut self, record: EventRecord) -> Option<u64> {
+    pub fn record_and_fanout(&mut self, mut record: EventRecord) -> Option<u64> {
         let actor = record.actor.map(|client| self.clients.actor_ref(client));
+        record.subject = crate::policy::filter::EventSubject::at(
+            self,
+            record.terminal.as_ref(),
+            record.parent.as_ref(),
+        );
         let entry = self.journal.record(record, actor, now_unix_ms())?;
         self.clients.offer_event(&entry);
         Some(entry.seq())

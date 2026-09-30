@@ -802,7 +802,11 @@ The server reads it once at start
   authority. Every TLS connection must present an enrolled certificate and
   holds exactly its registry scopes, such as `observe,input@host` or `inventory@global`. A
   frame or command outside them is refused with `PERMISSION_DENIED`, and the
-  connection stays up. The scopes come from the registry at HELLO, never
+  connection stays up. Server-wide reads are filtered rather than refused:
+  `phux ls`-style state, a server-wide event subscription, and an attach
+  snapshot list only what the scopes cover, and the listener report needs
+  `@global`. A refused HELLO ends with `DETACHED { AUTHENTICATION_FAILED }`.
+  The scopes come from the registry at HELLO, never
   from a pairing token. A paired server refuses to start without usable
   workload authority material, or beside a WebTransport listener or relay
   connector.

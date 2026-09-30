@@ -287,10 +287,10 @@ pub(super) fn needs_for(
             .map(one),
         Subject::MetadataScope => metadata_scope(request).map(|scope| one(scope_subject(s, scope))),
         Subject::HeldAction => super::hold::held_action_needs(s, request),
-        // The filtered results require Global, which the unfiltered one is.
-        Subject::ObservableTerminals
-        | Subject::InventoryMatches
-        | Subject::Global {
+        // A filtered result needs its verb somewhere; what it returns is
+        // filtered at the source (`super::filter`).
+        Subject::ObservableTerminals | Subject::InventoryMatches => Some(one(Point::Anywhere)),
+        Subject::Global {
             owner_uds_only: false,
         } => Some(one(Point::Global)),
         // A scoped grant never rides the owner's socket; and rows without a
@@ -310,6 +310,7 @@ const fn subject_kind(subject: Subject) -> &'static str {
         | Subject::AttachedTerminals
         | Subject::MovedAndOwnerTerminals
         | Subject::ParentOfNamed => "terminal",
+        Subject::ObservableTerminals | Subject::InventoryMatches => "any",
         Subject::ResolvedGroup
         | Subject::SelectedLocalGroup
         | Subject::NamedSession
@@ -317,10 +318,7 @@ const fn subject_kind(subject: Subject) -> &'static str {
         | Subject::OwnerTerminalGroup
         | Subject::ParentTerminalGroup => "group",
         Subject::SatelliteHost | Subject::SatelliteHostAndParent => "host",
-        Subject::ObservableTerminals
-        | Subject::InventoryMatches
-        | Subject::MetadataScope
-        | Subject::Global { .. } => "global",
+        Subject::MetadataScope | Subject::Global { .. } => "global",
         Subject::HeldAction => "approval",
         Subject::None | Subject::CallingConnection => "unclassified",
     }
@@ -343,9 +341,12 @@ fn frame_ack_is_current(s: &ServerState, client: ClientId, request: Request<'_>)
 
 /// A resolved subject.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Point {
+pub(super) enum Point {
     /// Every subject: server-global data.
     Global,
+    /// Whatever the grant covers: a row whose result is filtered at the
+    /// source needs its verb on some selector, never on a particular one.
+    Anywhere,
     /// A local subject no narrower selector names (absent Group, the opaque
     /// `GroupId`, an unowned spawn's session); only Global and Host contain
     /// it.
@@ -359,18 +360,18 @@ enum Point {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct TerminalPoint {
-    at: Located,
+pub(super) struct TerminalPoint {
+    pub(super) at: Located,
     /// The wire session id of the window holding it; `None` when it is
     /// absent, a satellite Terminal, or a child with no window.
-    group: Option<u32>,
+    pub(super) group: Option<u32>,
     /// A child resource's parent Terminal: the child matches whatever its
     /// parent matches (workload-auth §6, L1 §1.2).
-    parent: Option<Box<Self>>,
+    pub(super) parent: Option<Box<Self>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Located {
+pub(super) enum Located {
     Local(u32),
     /// A local resource no wire id names yet. No client can have addressed
     /// it, so only Global, the local Host, and its Group contain it.
@@ -379,7 +380,7 @@ enum Located {
 }
 
 impl TerminalPoint {
-    fn of(s: &ServerState, wire: &WireResourceId) -> Self {
+    pub(super) fn of(s: &ServerState, wire: &WireResourceId) -> Self {
         match wire {
             WireResourceId::Local { id } => local_terminal(s, *id, s.terminal_from_wire(wire)),
             WireResourceId::Satellite { host, id } => Self {
@@ -432,7 +433,7 @@ fn local_point(s: &ServerState, core: CoreResourceId) -> TerminalPoint {
 }
 
 /// The wire session id of the session whose window holds `core`.
-fn group_of(s: &ServerState, core: CoreResourceId) -> Option<u32> {
+pub(super) fn group_of(s: &ServerState, core: CoreResourceId) -> Option<u32> {
     let window = s.registry().resource(core)?.window?;
     let session = s.registry().window(window)?.session;
     s.idspace.session_wire(session).map(WireSessionId::get)
@@ -469,7 +470,7 @@ fn scope_subject(s: &ServerState, scope: &Scope) -> Point {
 
 /// Whether `selector` contains `point`. A child resource is contained when
 /// either it or its parent is.
-fn contains(selector: &Selector, point: &Point) -> bool {
+pub(super) fn contains(selector: &Selector, point: &Point) -> bool {
     match point {
         Point::Terminal(terminal) => {
             terminal_in(selector, terminal)
@@ -484,7 +485,9 @@ fn contains(selector: &Selector, point: &Point) -> bool {
 
 fn place_in(selector: &Selector, point: &Point) -> bool {
     match (selector, point) {
-        (Selector::Global, _) | (Selector::HostLocal, Point::LocalHost | Point::Group(_)) => true,
+        (Selector::Global, _)
+        | (_, Point::Anywhere)
+        | (Selector::HostLocal, Point::LocalHost | Point::Group(_)) => true,
         (Selector::HostSatellite(host), Point::SatelliteHost(name)) => host.as_str() == name,
         (Selector::Group(id), Point::Group(group)) => id == group,
         _ => false,

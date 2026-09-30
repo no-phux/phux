@@ -5,6 +5,7 @@
 //! empties it (visible through `HELLO_OK.server_id`). Delivery is
 //! [`super::events`]'s job.
 
+use crate::policy::filter::EventSubject;
 use std::collections::VecDeque;
 
 use phux_protocol::ids::{IdempotencyKey, ResourceId as WireResourceId};
@@ -30,6 +31,9 @@ pub struct EventRecord {
     pub actor: Option<ClientId>,
     /// The idempotency key of the operation that caused the event.
     pub operation_id: Option<IdempotencyKey>,
+    /// Where the event sits in the topology, stamped by the journal's owner
+    /// so a filtered subscription can be judged later (workload-auth §6).
+    pub(crate) subject: EventSubject,
 }
 
 impl EventRecord {
@@ -42,6 +46,7 @@ impl EventRecord {
             event,
             actor: None,
             operation_id: None,
+            subject: EventSubject::UNPLACED,
         }
     }
 
@@ -84,6 +89,8 @@ pub(crate) struct JournalEntry {
     bytes: usize,
     /// Relayed from a satellite: stamped here but not retained.
     relayed: bool,
+    /// Where the event sat when recorded, as [`EventRecord::subject`].
+    pub(crate) subject: EventSubject,
 }
 
 impl JournalEntry {
@@ -102,6 +109,7 @@ impl JournalEntry {
             stamp,
             bytes: 0,
             relayed: true,
+            subject: EventSubject::UNPLACED,
         }
     }
 
@@ -252,6 +260,7 @@ impl Journal {
             stamp,
             bytes,
             relayed: false,
+            subject: record.subject,
         };
         self.entries.push_back(entry.clone());
         self.bytes = self.bytes.saturating_add(bytes);
