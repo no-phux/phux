@@ -133,6 +133,7 @@ impl ControlPlane {
         reason: phux_protocol::wire::frame::CloseReason,
     ) -> bool {
         self.forget_agent_metadata(terminal_id);
+        self.listings.forget(terminal_id);
         let was_known = self.own_spawns.contains(terminal_id)
             || self.terminal_attached.contains(terminal_id)
             || self

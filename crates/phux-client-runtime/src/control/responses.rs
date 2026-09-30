@@ -10,6 +10,7 @@ use super::{
     ServerFeatureSet, ServerInfo, SessionSnapshot, SpawnResult, StateScope, Status, Topology,
     ViewportInfo, topology, validate_hello_ok,
 };
+use crate::control::topology::View;
 
 impl ControlPlane {
     // ----- handshake --------------------------------------------------
@@ -192,7 +193,10 @@ impl ControlPlane {
                 "ATTACHED used unexpected attach id {attach_id}"
             )));
         }
-        self.close_vanished(snapshot)?;
+        // Lifecycle events are not replayed on attach; the previous attach's
+        // listing is the floor.
+        let closed = self.listings.relist(View::Attach, snapshot);
+        self.close_proven(closed)?;
         let (terminals, seen) = attached_terminals(snapshot)?;
         self.attach_terminals = seen;
         self.attached_session = Some(snapshot.focused_session.get());
@@ -213,17 +217,17 @@ impl ControlPlane {
         // Any earlier attachment's subscriptions ended with it.
         self.forget_roster_subscriptions();
         self.sync_agent_metadata();
+        // A hub's satellites and anything the grant inventories but does not
+        // observe are missing from this view, not gone: read them back.
+        if self.options.automatic_lifecycle && self.listings.hides(View::Attach, snapshot) {
+            self.queue_refresh_topology();
+        }
         Ok(())
     }
 
-    fn close_vanished(&mut self, snapshot: &SessionSnapshot) -> Result<(), ControlError> {
-        // Lifecycle events are not replayed on attach; the snapshot is the floor.
-        let vanished = self
-            .topology
-            .as_ref()
-            .map(|topology| topology.vanished(snapshot))
-            .unwrap_or_default();
-        for terminal_id in vanished {
+    /// Close the terminals a same-view listing proved gone.
+    fn close_proven(&mut self, closed: Vec<ResourceId>) -> Result<(), ControlError> {
+        for terminal_id in closed {
             self.apply_engine(EngineEvent::closed_unknown(terminal_id.clone()))?;
             self.close_pane(
                 &terminal_id,
@@ -301,7 +305,11 @@ impl ControlPlane {
             });
             return Err(ControlError::Refused(rendered));
         }
-        if request_id.is_some_and(|id| self.agent_metadata_error(id)) {
+        let roster_read = request_id.and_then(|id| self.agent_metadata_error(id, code));
+        if roster_read == Some(true) {
+            return Ok(());
+        }
+        if roster_read.is_some() {
             self.push_event(Event::ServerError {
                 code,
                 message,
@@ -508,27 +516,16 @@ impl ControlPlane {
         Ok(())
     }
 
-    /// Apply a `GET_STATE` snapshot on a live connection: terminals that
-    /// vanished are closed, but a close already processed is never
-    /// resurrected by a snapshot the server built before it.
+    /// Apply a `GET_STATE` snapshot on a live connection: terminals the
+    /// previous `GET_STATE` listed and this one does not are closed, but a
+    /// close already processed is never resurrected by a snapshot the server
+    /// built before it. A terminal only `ATTACHED` listed is merely hidden.
     pub(super) fn apply_topology_refresh(
         &mut self,
         snapshot: &SessionSnapshot,
     ) -> Result<(), ControlError> {
-        let vanished = self
-            .topology
-            .as_ref()
-            .map(|topology| topology.vanished(snapshot))
-            .unwrap_or_default();
-        for terminal_id in vanished {
-            self.apply_engine(EngineEvent::closed_unknown(terminal_id.clone()))?;
-            self.close_pane(
-                &terminal_id,
-                None,
-                None,
-                phux_protocol::wire::frame::CloseReason::Unknown,
-            );
-        }
+        let closed = self.listings.relist(View::Inventory, snapshot);
+        self.close_proven(closed)?;
         let mut topology = Topology::from_snapshot(snapshot);
         if let Some(engine) = &self.engine {
             topology

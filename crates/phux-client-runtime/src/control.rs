@@ -369,6 +369,8 @@ pub struct ControlPlane {
     #[cfg(feature = "engine")]
     publication: Arc<Publication>,
     topology: Option<Topology>,
+    /// The Terminals each snapshot view last listed.
+    listings: topology::Listings,
     /// The target every connection attaches; a `CreateIfMissing` becomes
     /// `ByName` once sent, so a reconnect never re-creates.
     attach_target: Option<AttachTarget>,
@@ -431,6 +433,7 @@ impl ControlPlane {
             #[cfg(feature = "engine")]
             publication: Arc::new(Publication::new()),
             topology: None,
+            listings: topology::Listings::default(),
             active_attach_id: None,
             attach_terminals: HashSet::new(),
             attached_session: None,

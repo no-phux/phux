@@ -478,7 +478,10 @@ to narrate it.
 For a metadata `Scope::Resource`, `Scope::Group`, or `Scope::Global`, the subject
 is respectively that Terminal, Group, or Global. A result assembled from several
 resources SHALL be filtered at the source as well as admission-checked; authority
-to enumerate a container does not disclose members outside the effective set.
+to enumerate a container does not disclose members outside the effective set. A
+filtered result is the grant's view, not a record of what exists: a Terminal
+it omits may be alive, and a consumer reads its absence as
+[L1.md](./L1.md) §7.3 says.
 
 When deriving a selector requires server state (for example a named ATTACH or
 forced-detach Group), the derivation is a side-effect-free part of the guard.
