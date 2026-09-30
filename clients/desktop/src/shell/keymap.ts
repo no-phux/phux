@@ -97,3 +97,46 @@ export function displayChord(chord: string): string {
   const label = GLYPHS[key] ?? (key.length === 1 ? key.toUpperCase() : key);
   return `${mods.join("")}${label}`;
 }
+
+/**
+ * The chord to show for each command id in the effective `keymap`: a chord
+ * the user bound (one `defaults` does not give that command) wins over the
+ * built-in chord and its aliases; otherwise the first built-in one, which is
+ * the command's own chord before any alias.
+ */
+export function shownChords<C extends { id: string }>(
+  keymap: ReadonlyMap<string, C>,
+  defaults: ReadonlyMap<string, C>,
+): Map<string, string> {
+  const builtIn = (chord: string, command: C): boolean => defaults.get(chord) === command;
+  const shown = new Map<string, string>();
+  for (const [chord, command] of keymap) {
+    const existing = shown.get(command.id);
+    if (!existing || (!builtIn(chord, command) && builtIn(existing, command)))
+      shown.set(command.id, chord);
+  }
+  return shown;
+}
+
+/**
+ * Whether a text field has the keyboard, so its own editing keys (Select All)
+ * win over the terminal's chords: an open dialog or palette, or a find bar on
+ * the focused pane. A find bar left open on another pane or tab does not: the
+ * focused terminal has the keys there.
+ */
+export function textFieldHasKeys(
+  modalOpen: boolean,
+  findPlacementId: string | undefined,
+  focusedPlacementId: string | undefined,
+): boolean {
+  return modalOpen || (findPlacementId !== undefined && findPlacementId === focusedPlacementId);
+}
+
+/**
+ * Commands that edit text, which a text field that has the keys keeps for
+ * itself: Select All, and Ghostty `text:`/`esc:` binds (`send:`), which would
+ * otherwise type into the shell behind the field.
+ */
+export function yieldsToTextField(commandId: string): boolean {
+  return commandId === "select-all" || commandId.startsWith("send:");
+}

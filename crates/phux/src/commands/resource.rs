@@ -20,7 +20,6 @@ use phux_server::runtime::default_socket_path;
 use crate::commands::json_err::{self, CliError, codes};
 use crate::commands::{ResourceAction, cli_runtime, parse_selector, resolve_target};
 use crate::exit_codes::{EXIT_FAILURE, EXIT_PARTIAL_VIEW, EXIT_USAGE, EXIT_WAIT_TIMEOUT};
-use phux_client::selector::Selector;
 
 /// `phux resource <action>`.
 pub(crate) fn run_resource(action: &ResourceAction, socket: Option<PathBuf>) -> ExitCode {
@@ -48,20 +47,10 @@ async fn resolve(
     json: bool,
 ) -> Result<ResourceId, ExitCode> {
     let selector = parse_selector(Some(target))?;
-    if let Some(id) = direct_id(&selector) {
+    if let Some(id) = selector.explicit_id() {
         return Ok(id);
     }
     resolve_target(socket, &selector, verb, json).await
-}
-
-pub(crate) fn direct_id(selector: &Selector) -> Option<ResourceId> {
-    match selector {
-        Selector::ResourceId(id) => Some(ResourceId::local(*id)),
-        Selector::SatelliteResourceId { host, id } => {
-            Some(ResourceId::satellite(host.as_str(), *id))
-        }
-        _ => None,
-    }
 }
 
 fn run_show(socket: &Path, target: &str, json: bool) -> ExitCode {
@@ -401,19 +390,6 @@ mod tests {
             parse(&["phux", "resource", "methods", "work:1.0"]),
             ResourceAction::Methods { .. }
         ));
-    }
-
-    #[test]
-    fn a_direct_id_is_taken_as_given() {
-        let selector = phux_client::selector::parse("@9").expect("selector");
-        assert_eq!(direct_id(&selector), Some(ResourceId::local(9)));
-        let satellite = phux_client::selector::parse("edge/@4").expect("selector");
-        assert_eq!(
-            direct_id(&satellite),
-            Some(ResourceId::satellite("edge", 4))
-        );
-        let session = phux_client::selector::parse("work").expect("selector");
-        assert_eq!(direct_id(&session), None);
     }
 
     #[test]

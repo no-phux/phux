@@ -96,6 +96,19 @@ describe("htmlToMarkdown", () => {
     expect(markdown).not.toContain("footer links");
     expect(markdown.endsWith("\n")).toBe(true);
   });
+
+  test("retains an article header and a description containing an apostrophe", () => {
+    const markdown = htmlToMarkdown(`<head>
+      <meta name="description" content="Compare each tool's measured performance." />
+    </head><body><header><nav>Site navigation</nav></header><main>
+      <header><h1>Performance</h1><p>Measured results, not rankings.</p></header>
+      <h2>Results</h2><p>Read the methodology before comparing numbers.</p>
+    </main></body>`);
+    expect(markdown).toContain(`description: "Compare each tool's measured performance."`);
+    expect(markdown).toContain("# Performance");
+    expect(markdown).toContain("Measured results, not rankings.");
+    expect(markdown).not.toContain("Site navigation");
+  });
 });
 
 describe("estimateTokens", () => {

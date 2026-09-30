@@ -139,10 +139,7 @@ pub(crate) fn run_watch(args: WatchArgs<'_>) -> ExitCode {
     rt.block_on(async move {
         // A resumed `@N` needs no live inventory: the replay can reach the
         // events of a pane that has since closed and was not retained.
-        let direct = after
-            .is_some()
-            .then(|| crate::commands::resource::direct_id(&selector))
-            .flatten();
+        let direct = after.is_some().then(|| selector.explicit_id()).flatten();
         let terminal_id = match direct {
             Some(id) => id,
             None => match resolve_target(&socket_path, &selector, "watch", json).await {

@@ -15,18 +15,22 @@ the errors. Flags and inventories live in the generated CLI reference.
 
 ---
 
+**Looking to connect Claude, Pi, OpenCode, or an MCP host?** Start with
+[coding-agent getting started](./getting-started.md). This page is the detailed
+automation contract, not an integration installation tutorial.
+
 ## 1. What this is
 
 The CLI plus its versioned `--json` documents is the agent contract.
 Structured screen state, command results, and semantic events are a local
 projection over the shared engine, not a second wire model
 ([ADR-0030](../adr/0030-engine-delegated-wire-and-projection-consumers.md);
-mental model in [`../CONCEPTS.md`](../CONCEPTS.md)). The MCP adapter and
+mental model in [How phux works](../CONCEPTS.md)). The MCP adapter and
 the in-tree client library wrap the same functions; they add no
 privilege.
 
 Flags, defaults, and the verb inventory are generated from the binary:
-[`../reference/cli.md`](../reference/cli.md), or `phux --help` /
+[CLI reference](../reference/cli.md), or `phux --help` /
 `phux <verb> --help`. This page keeps the facts those texts do not
 teach: viewport safety, the read-act-wait loop, selector `%name`, JSON
 field meaning, and typed errors.
@@ -38,7 +42,7 @@ human's focus or viewport. `resize` changes the grid by design but still
 never attaches. Layout verbs (`insert-pane`, `move-pane`, `swap-pane`)
 change persisted topology, not client-local focus. CLI and MCP cannot hold
 an input lease beyond the calling process, so MCP has no `take` / `give`
-([`mcp.md`](./mcp.md)); `phux take --ttl SECS` asks the server to release
+([MCP adapter](./mcp.md)); `phux take --ttl SECS` asks the server to release
 the lease itself after `SECS` (ADR-0033). `phux attach --viewer` watches
 without input and `--take` attaches holding the wheel (ADR-0127); `phux rec`
 and `phux agent log` attach as viewers.
@@ -48,13 +52,16 @@ does not auto-start a server.
 
 ### This tree, older releases, two agent surfaces
 
-This tree serves **AgentSession**. The server advertises
-`RESOURCE_KINDS`. `phux agent session open|close`, `phux agent emit`,
-and `phux agent log` exist; `%name` resolves an AgentSession. Check
-`phux status --json` for `features`. An older brew/curl *release* may
-omit the bit; those verbs then refuse with `unsupported_server` before
-touching a resource. A live session stream outranks the pane detector.
-Harness authors emit into that stream; see [`harness.md`](./harness.md).
+**Checkout capability, not a minimum-release promise:** the source implements
+**AgentSession**. To use it on your installation, the running server must
+advertise `RESOURCE_KINDS` in `phux status --json`'s `features`, and the client
+must expose `phux agent session`, `phux agent emit`, and `phux agent log`.
+`%name` resolves an AgentSession. A server without the capability refuses those
+verbs with `unsupported_server` before touching a resource; ordinary pane
+operations remain available. Upgrade through your [install source](../INSTALL.md#updating)
+when needed rather than assuming that installing a newer adapter upgrades the
+server. A live session stream outranks the pane detector.
+Harness authors emit into that stream; see the [harness author guide](./harness.md).
 
 The pane **detector** is a different surface: `phux agent show` /
 `explain` (and `list` / `set` / `clear` / `wait` / `send-keys` /
@@ -167,7 +174,7 @@ not proof of completion.
 
 One grammar, every targeted verb. Resolved client-side against a
 snapshot; the server never parses a selector. The TUI table and
-examples live in [`tui.md`](./tui.md#selectors). Headless commands reject `=`:
+examples live in [pane selectors](./tui.md#selectors). Headless commands reject `=`:
 they have no attached-client focus history.
 
 | Selector | Meaning |
@@ -212,7 +219,7 @@ Help text owns the flags. The contract:
   `--untrusted` opts into the pane's safety gate, which may silently
   drop an unsafe payload (notably multiline). Success includes a
   silently dropped untrusted paste. Never split one logical payload
-  across calls. See [`../spec/input.md`](../spec/input.md) §5.1.
+  across calls. See [the input protocol](../spec/input.md) §5.1.
 - **`run TARGET CMD...`** — POSIX shell, sentinels, mirrors `$?`. Flags
   must precede `TARGET`. `--timeout` (default 600s; `0` means none) is
   one absolute budget started before `TARGET` is resolved: connect,
@@ -281,7 +288,7 @@ It never creates, splits, moves, or focuses layout.
   reference TUI presents it as `C-a q` / `C-a Q`.
 
 `phux rec` and `phux play` are the recording surface
-([`recording.md`](./recording.md)). Capture is viewport-safe in the
+([recording guide](./recording.md)). Capture is viewport-safe in the
 same sense as `snapshot` and `watch`. `snapshot --rendered` is the
 exception that attaches a headless client to composite the frame.
 
@@ -347,7 +354,7 @@ Each `--json` verb stamps its own `schema_version`. The version moves
 when a key is **removed, renamed, or retyped**, never when one is added:
 consumers ignore unknown keys. Probe for a field's *presence*, not for a
 version, when you need to know whether a producer supplies it. Full flag
-help: [`../reference/cli.md`](../reference/cli.md). MCP tool inputs:
+help: [CLI reference](../reference/cli.md). MCP tool inputs:
 `phux mcp --schema`.
 
 On failure, **stdout stays empty** and stderr carries one JSON error
@@ -712,7 +719,7 @@ time. `frames` is encoded animation frames; for `cast` it is the event
 count. `truncated` is true when encoding stopped at `--max-bytes`: the
 file is still a complete playable container. A failed *export* is exit
 1 but keeps the captured `.cast`. Full surface in
-[`recording.md`](./recording.md).
+[the recording guide](./recording.md).
 
 `play --json`: `{ schema_version, terminal_id, path, cols, rows, events,
 speed, idle_limit, duration_ms, passes }`. `path` is absolute (the pane
@@ -742,13 +749,13 @@ Every key is present; `null` means the server could not find out, never
 "none". Pair `pid` with `start_ms` before trusting a pid across calls.
 `prompt.state` is `unknown|at_prompt|running`, from OSC-133 marks.
 `exit.signal` reports a death by signal that `RESOURCE_CLOSED.exit_status`
-reads as `null`. Normative rules: [`../spec/L1.md`](../spec/L1.md) §6.3.
+reads as `null`. Normative rules: [resource protocol](../spec/L1.md) §6.3.
 
 **Retained exits.** A Terminal spawned with `retain_secs` stays listed as
 `EXITED` with its exit facet after its process ends, still answering screen,
 state, history, and attach reads until retention expires, the retained
 count bound evicts it, or it is killed; input and signals are refused. Gate
-on `RETAIN_ON_EXIT` (normative: [`../spec/L1.md`](../spec/L1.md),
+on `RETAIN_ON_EXIT` (normative: [resource protocol](../spec/L1.md),
 [ADR-0124](../adr/0124-retain-on-exit.md)).
 
 ### Other `--json` verbs
@@ -796,7 +803,7 @@ are hard failures: exit nonzero, stdout empty.
 
 ## 8. Exit codes and errors
 
-The canonical table is [`../reference/exit-codes.md`](../reference/exit-codes.md):
+The canonical table is the [exit-code reference](../reference/exit-codes.md):
 `0` success, `1` failure, `2` usage or refusal, `3` partial-fleet
 unanswerable, `124` `wait` timeout, `125` `run` timeout.
 
@@ -866,7 +873,7 @@ delivered; retry safe), `delivery_unknown` (never resend),
 
 A session's one *named shared* projection is its
 `phux.tui.layout/v1/<session-id>` L3 envelope: window order, split trees,
-pane placement ([`../spec/L3.md`](../spec/L3.md) §3.2). The spatial verbs
+pane placement ([metadata protocol](../spec/L3.md) §3.2). The spatial verbs
 mutate it; a cross-session move adds one `MOVE_RESOURCE`. Writes are
 whole-value last-write-wins, and a spatial edit against a vanished anchor
 refuses with a typed code rather than inventing placement (§7). Focus never
@@ -875,7 +882,7 @@ rides the envelope: its focus fields are ignored on read, and
 ([ADR-0049](../adr/0049-client-local-focus-and-advisory-attention.md)).
 
 A script wanting its own arrangement uses its own key prefix
-(`app.foo.layout/v1`, [`../spec/L3.md`](../spec/L3.md) §3.5) and names it
+(`app.foo.layout/v1`, [metadata protocol](../spec/L3.md) §3.5) and names it
 with `--projection <prefix>.layout/v1/<session-id>` on the spatial and
 placement verbs; a cross-session `move-pane` passes it twice or not at all.
 Durability is `phux workspace save` / `restore`, which read and replay each
@@ -910,15 +917,15 @@ substitute for it.
 
 ## 12. MCP and SDK
 
-- [`mcp.md`](./mcp.md) — JSON-RPC stdio adapter over the same verbs.
+- [MCP adapter](./mcp.md) — JSON-RPC stdio adapter over the same verbs.
   `phux mcp --schema` is the tool catalog; `phux mcp --skill` is the
   operating guide. Every verb indexed in §7 has an MCP tool or a listed
   reason it has none, enforced by a parity gate; the mapping is
-  [`../reference/parity.md`](../reference/parity.md).
-- [`sdk.md`](./sdk.md) — `phux-client` is workspace-internal; there is
+  [CLI/MCP parity reference](../reference/parity.md).
+- [Rust client library](./sdk.md) — `phux-client` is workspace-internal; there is
   no crates.io SDK. Native embedders use `phux-client-ffi`.
-- Host adapters: [`opencode-v2.md`](./opencode-v2.md), [`pi.md`](./pi.md),
-  [`claude.md`](./claude.md). They select subsets; they do not redefine
+- Host adapters: [OpenCode V2](./opencode-v2.md), [Pi](./pi.md),
+  [Claude Code](./claude.md). They select subsets; they do not redefine
   this contract.
 - Install the reusable skill with `npx skills add no-phux/skills`.
   `phux --skill` prints the version-matched copy compiled into this

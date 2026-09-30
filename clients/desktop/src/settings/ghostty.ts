@@ -212,7 +212,7 @@ export function ghosttyChord(trigger: string): string | undefined {
   const mods = new Set<string>();
   let key: string | undefined;
   for (const part of trigger.toLowerCase().split("+")) {
-    const modifier = MODIFIERS[part];
+    const modifier = own(MODIFIERS, part);
     if (modifier) mods.add(modifier);
     else if (key !== undefined || !part) return undefined;
     else key = part;
@@ -222,7 +222,7 @@ export function ghosttyChord(trigger: string): string | undefined {
     key = "=";
     mods.add("shift");
   }
-  key = KEY_NAMES[key] ?? key.replace(/^(digit|key)_(?=.$)/, "");
+  key = own(KEY_NAMES, key) ?? key.replace(/^(digit|key)_(?=.$)/, "");
   if (mods.size === 0 && key.length === 1) return undefined;
   return [...["cmd", "ctrl", "alt", "shift"].filter((mod) => mods.has(mod)), key].join("+");
 }
@@ -300,7 +300,7 @@ function parameterized(name: string, argument: string): string | undefined {
   // and `mixed` (plain plus rich text) copies its plain half.
   if (name === "copy_to_clipboard")
     return ["", "plain", "mixed"].includes(argument.trim()) ? "copy" : undefined;
-  const region = WRITE_REGIONS[name];
+  const region = own(WRITE_REGIONS, name);
   if (region) {
     const [mode = "", format = "plain"] = argument.split(",").map((part) => part.trim());
     return ["copy", "paste", "open"].includes(mode) && format === "plain"
@@ -329,10 +329,24 @@ export function ghosttyAction(action: string): string | undefined {
   const name = colon < 0 ? trimmed : trimmed.slice(0, colon);
   const argument = colon < 0 ? "" : trimmed.slice(colon + 1);
   const direction = argument.split(",")[0] ?? "";
-  return ACTIONS[`${name}:${direction}`] ?? ACTIONS[name] ?? parameterized(name, argument);
+  return (
+    own(ACTIONS, `${name}:${direction}`) ?? own(ACTIONS, name) ?? parameterized(name, argument)
+  );
 }
 
-/** Zig string-literal escapes, as Ghostty's `text:` action takes them. Unknown ones stay literal. */
+/**
+ * A table entry by the user's word: only the table's own keys, so a name like
+ * `toString` or `constructor` is unknown rather than an `Object` built-in.
+ */
+function own(table: Record<string, string>, key: string): string | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
+}
+
+/**
+ * Zig string-literal escapes, as Ghostty's `text:` action takes them. Unknown
+ * ones stay literal. `\xNN` is one byte and Ghostty writes the bytes, so a run
+ * of them decodes as UTF-8 (`\xe2\x82\xac` is one "€").
+ */
 export function zigString(value: string): string {
   const simple: Record<string, string> = {
     n: "\n",
@@ -343,9 +357,9 @@ export function zigString(value: string): string {
     '"': '"',
   };
   return value.replace(
-    /\\(x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]{1,6}\}|[nrt\\'"])/g,
-    (whole: string, code: string) => {
-      if (code.startsWith("x")) return String.fromCharCode(Number.parseInt(code.slice(1), 16));
+    /((?:\\x[0-9a-fA-F]{2})+)|\\(u\{[0-9a-fA-F]{1,6}\}|[nrt\\'"])/g,
+    (whole: string, bytes: string | undefined, code: string) => {
+      if (bytes) return utf8Bytes(bytes);
       if (code.startsWith("u{")) {
         const point = Number.parseInt(code.slice(2, -1), 16);
         return point <= 0x10ffff ? String.fromCodePoint(point) : whole;
@@ -353,6 +367,15 @@ export function zigString(value: string): string {
       return simple[code] ?? whole;
     },
   );
+}
+
+/** A run of `\xNN` escapes as the UTF-8 text its bytes spell; invalid bytes become U+FFFD. */
+function utf8Bytes(run: string): string {
+  const bytes = run
+    .split("\\x")
+    .filter(Boolean)
+    .map((pair) => Number.parseInt(pair, 16));
+  return new TextDecoder().decode(Uint8Array.from(bytes));
 }
 
 /** Chords the terminal itself already serves with the Ghostty action's meaning. */
@@ -383,7 +406,13 @@ function setKeybind(config: GhosttyConfig, value: string): void {
   const trigger = raw.replace(/^((global|all|unconsumed|performable):)+/, "");
   const action = value.slice(equals + 1).trim();
   const chord = ghosttyChord(trigger);
-  if (chord && BUILT_IN[chord] === action) return;
+  // The terminal already serves this chord with this meaning: it keeps no
+  // earlier config binding either, so the built-in answers again.
+  if (chord && BUILT_IN[chord] === action) {
+    config.keybinds.delete(chord);
+    config.globals.delete(chord);
+    return;
+  }
   const command = ghosttyAction(action);
   if (!chord || command === undefined) {
     // Sequences, bare keys and actions with no equivalent: the chord keeps

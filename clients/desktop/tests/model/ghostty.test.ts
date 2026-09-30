@@ -132,6 +132,15 @@ describe("ghostty config", () => {
     expect(zigString(String.raw`\q \u{110000}`)).toBe(String.raw`\q \u{110000}`);
   });
 
+  test("text byte escapes are UTF-8, as Ghostty writes them to the pty", () => {
+    // Zig's \xNN is one byte; Ghostty sends the bytes, so a multi-byte run
+    // is one character, not one Latin-1 character per byte.
+    expect(zigString(String.raw`\xe2\x82\xac`)).toBe("€");
+    expect(zigString(String.raw`a\xc3\xa9\x1b\r`)).toBe("aé\u001b\r");
+    expect(zigString(String.raw`\\x41`)).toBe(String.raw`\x41`);
+    expect(zigString(String.raw`\xff`)).toBe("�");
+  });
+
   test("a later bind or clear replaces earlier ones, globals included", () => {
     const later = parseGhostty(
       "keybind = global:ctrl+grave_accent=toggle_quick_terminal\nkeybind = ctrl+grave_accent=reset",
@@ -143,6 +152,14 @@ describe("ghostty config", () => {
     );
     expect(cleared.globals.size).toBe(0);
     expect(cleared.unmapped).toEqual([]);
+  });
+
+  test("restoring a built-in chord's own action drops an earlier rebind of it", () => {
+    const restored = parseGhostty(
+      "keybind = global:super+c=text:x\nkeybind = super+c=copy_to_clipboard",
+    );
+    expect(restored.keybinds.has("cmd+c")).toBe(false);
+    expect(restored.globals.has("cmd+c")).toBe(false);
   });
 
   test("a theme needs both default colours; a palette needs all 16", () => {
@@ -189,6 +206,19 @@ describe("ghostty config", () => {
     expect(ghosttyAction("copy_to_clipboard:vt")).toBeUndefined();
     expect(ghosttyAction("paste_from_selection")).toBe("paste-selection");
     expect(ghosttyAction("reset")).toBeUndefined();
+  });
+
+  test("object built-ins are not action, modifier or key names", () => {
+    for (const name of ["toString", "constructor", "valueOf", "hasOwnProperty", "__proto__"]) {
+      expect(ghosttyAction(name)).toBeUndefined();
+      expect(ghosttyAction(`${name}:plain`)).toBeUndefined();
+    }
+    const config = parseGhostty("keybind = super+x=toString\nkeybind = super+y=constructor");
+    expect(config.keybinds.has("cmd+x")).toBe(false);
+    expect(config.keybinds.has("cmd+y")).toBe(false);
+    expect(config.unmapped).toEqual(["super+x = toString", "super+y = constructor"]);
+    expect(ghosttyChord("constructor+k")).toBeUndefined();
+    expect(ghosttyChord("super+__proto__")).toBe("cmd+__proto__");
   });
 });
 

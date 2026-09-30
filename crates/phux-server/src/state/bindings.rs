@@ -17,13 +17,6 @@ use phux_protocol::wire::frame::CloseReason;
 use super::ServerState;
 
 impl ServerState {
-    /// The resources bound to `parent` (the cascade walks any depth, though
-    /// spawn refuses a second level).
-    #[must_use]
-    pub fn resource_children(&self, parent: ResourceId) -> Vec<ResourceId> {
-        self.sessions.registry.children(parent)
-    }
-
     /// `parent`'s descendants, breadth-first.
     #[must_use]
     pub fn resource_descendants(&self, parent: ResourceId) -> Vec<ResourceId> {
@@ -65,26 +58,6 @@ impl ServerState {
                     .resource(child)
                     .is_some_and(|r| r.kind == ResourceKind::AgentSession)
             })
-    }
-
-    /// `parent`'s live `AgentSession` children and their handles.
-    #[must_use]
-    pub fn agent_session_children(
-        &self,
-        parent: ResourceId,
-    ) -> Vec<(ResourceId, crate::resource::ResourceHandle)> {
-        self.sessions
-            .registry
-            .children(parent)
-            .into_iter()
-            .filter(|child| {
-                self.sessions
-                    .registry
-                    .resource(*child)
-                    .is_some_and(|r| r.kind == ResourceKind::AgentSession)
-            })
-            .filter_map(|child| self.resource_handle(child).cloned().map(|h| (child, h)))
-            .collect()
     }
 
     /// Record why `resource` is closing. First writer wins; an unmarked

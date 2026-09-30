@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { rank } from "../../src/shell/filter";
-import { chordOf, displayChord } from "../../src/shell/keymap";
+import {
+  chordOf,
+  displayChord,
+  shownChords,
+  textFieldHasKeys,
+  yieldsToTextField,
+} from "../../src/shell/keymap";
 import { quotePaths } from "../../src/terminal/pane";
 import { mix, palette, readableOn, themes } from "../../src/ui/theme";
 
@@ -23,6 +29,55 @@ describe("chords", () => {
   test("display uses macOS modifier order", () => {
     expect(displayChord("cmd+shift+p")).toBe("⇧⌘P");
     expect(displayChord("cmd+alt+left")).toBe("⌥⌘←");
+  });
+});
+
+describe("text fields", () => {
+  test("only a dialog or the focused pane's own find bar owns the keys", () => {
+    expect(textFieldHasKeys(true, undefined, "a")).toBe(true);
+    expect(textFieldHasKeys(false, "a", "a")).toBe(true);
+    // Find left open in another split or another tab: the focused terminal
+    // has the keys, so its Select All must still work.
+    expect(textFieldHasKeys(false, "a", "b")).toBe(false);
+    expect(textFieldHasKeys(false, "a", undefined)).toBe(false);
+    expect(textFieldHasKeys(false, undefined, "a")).toBe(false);
+  });
+
+  test("keys typed as text belong to the field, never to the shell behind it", () => {
+    expect(yieldsToTextField("select-all")).toBe(true);
+    // A Ghostty `super+backspace=text:\x15` pressed in the find field must
+    // not erase the shell's command line.
+    expect(yieldsToTextField("send:\u0015")).toBe(true);
+    expect(yieldsToTextField("palette")).toBe(false);
+    expect(yieldsToTextField("new")).toBe(false);
+  });
+});
+
+describe("shown chords", () => {
+  const fontUp = { id: "font-up", chord: "cmd+=" };
+  const fontReset = { id: "font-reset", chord: "cmd+0" };
+  const find = { id: "find", chord: "cmd+f" };
+  const defaults = new Map([
+    ["cmd+=", fontUp],
+    ["cmd+shift+=", fontUp],
+    ["cmd+0", fontReset],
+    ["cmd+f", find],
+  ]);
+
+  test("a command shows its own chord, never an alias", () => {
+    const shown = shownChords(new Map(defaults), defaults);
+    expect(shown.get("font-up")).toBe("cmd+=");
+    expect(shown.get("font-reset")).toBe("cmd+0");
+  });
+
+  test("a user bind wins over the built-in chord and its aliases", () => {
+    const keymap = new Map(defaults);
+    keymap.set("cmd+=", fontReset);
+    keymap.set("cmd+alt+f", find);
+    const shown = shownChords(keymap, defaults);
+    expect(shown.get("font-reset")).toBe("cmd+=");
+    expect(shown.get("font-up")).toBe("cmd+shift+=");
+    expect(shown.get("find")).toBe("cmd+alt+f");
   });
 });
 

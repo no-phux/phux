@@ -376,19 +376,6 @@ pub async fn command(stream: &mut UnixStream, request_id: u32, command: Command)
     await_command_result(stream, request_id).await
 }
 
-/// Skip frames until the `COMMAND_RESULT` for `request_id` (per-read timeout
-/// only). Prefer [`await_command_result`].
-pub async fn recv_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
-    recv_until(stream, |_, frame| match frame {
-        FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } if got == request_id => Some(result),
-        _ => None,
-    })
-    .await
-}
-
 /// An ephemeral loopback port that was free a moment ago (inherently racy).
 #[must_use]
 pub fn free_port() -> u16 {

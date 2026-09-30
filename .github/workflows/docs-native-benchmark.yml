@@ -1,0 +1,35 @@
+name: docs-native-benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-cmux:
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Stage the checksum-pinned official release
+        run: |
+          curl --fail --show-error --location \
+            https://github.com/manaflow-ai/cmux/releases/download/v0.64.25/cmux-macos.dmg \
+            --output "$RUNNER_TEMP/cmux.dmg"
+          printf '0afb2f8ff9bfef10f03e61ff12e65ce02dbca5c96cb9047118e13483ac5b08ad  %s\n' "$RUNNER_TEMP/cmux.dmg" | shasum -a 256 -c
+          mkdir -p "$RUNNER_TEMP/cmux-volume" "$RUNNER_TEMP/cmux-native"
+          hdiutil attach "$RUNNER_TEMP/cmux.dmg" -readonly -nobrowse -mountpoint "$RUNNER_TEMP/cmux-volume"
+          ditto "$RUNNER_TEMP/cmux-volume/cmux.app" "$RUNNER_TEMP/cmux-native/cmux.app"
+          hdiutil detach "$RUNNER_TEMP/cmux-volume"
+      - name: Observe the native application on the disposable runner
+        run: python3 scripts/bench/cmux-native.py --app "$RUNNER_TEMP/cmux-native/cmux.app" --out "$RUNNER_TEMP/cmux-observations"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: cmux-native-observations
+          path: ${{ runner.temp }}/cmux-observations
+          if-no-files-found: warn
+          retention-days: 30

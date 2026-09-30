@@ -14,7 +14,10 @@ use libghostty_vt::{
     screen::Screen,
     terminal::{ScrollViewport, Terminal},
 };
-use phux_client_core::grid::{CursorStyle as CoreCursorStyle, GridDamage, GridProjector};
+use phux_client_core::grid::{
+    CursorStyle as CoreCursorStyle, GridBuffer, GridDamage, GridProjector,
+};
+use phux_client_runtime::engine::predict::Predictor;
 use phux_client_runtime::publication::{Rgb, Scrollbar};
 
 use crate::projection::grid;
@@ -82,7 +85,7 @@ pub struct GridProjection {
 struct EngineInner {
     terminal: Terminal<'static, 'static>,
     projector: GridProjector,
-    predictor: super::predict::Predictor,
+    predictor: Predictor,
     generation: u64,
 }
 
@@ -223,8 +226,7 @@ impl EngineInner {
         terminal
             .set_scrollback_max_bytes((scrollback == 0).then_some(0))
             .map_err(|error| EngineError::Engine(format!("scrollback_max_bytes: {error:?}")))?;
-        let mut predictor = super::predict::Predictor::default();
-        predictor.set_viewport(cols.max(1), rows.max(1));
+        let predictor = Predictor::new(cols, rows);
         Ok(Self {
             terminal,
             projector: GridProjector::new()
@@ -245,14 +247,14 @@ impl EngineInner {
         match command {
             EngineMutation::Write(bytes) => self.terminal.vt_write(&bytes),
             EngineMutation::Resize(cols, rows, reply) => {
-                self.predictor.set_viewport(cols.max(1), rows.max(1));
+                self.predictor.set_viewport(cols, rows);
                 let result = self
                     .terminal
                     .resize(cols.max(1), rows.max(1), 0, 0)
                     .map_err(|error| EngineError::Engine(format!("resize: {error:?}")));
                 let _ = reply.send(result);
             }
-            EngineMutation::Predict(text) => self.predictor.predict(&self.terminal, &text),
+            EngineMutation::Predict(text) => self.predict(&text),
             EngineMutation::ClearPredictions => self.predictor.clear(),
             EngineMutation::Scroll(delta) => self.terminal.scroll_viewport(ScrollViewport::Delta(
                 isize::try_from(delta).unwrap_or_else(|_| {
@@ -269,13 +271,21 @@ impl EngineInner {
         }
     }
 
+    /// Queue predictions for committed `text` at the terminal's cursor.
+    fn predict(&mut self, text: &str) {
+        let cursor = (
+            self.terminal.cursor_x().unwrap_or(0),
+            self.terminal.cursor_y().unwrap_or(0),
+        );
+        let alternate = is_alt_screen(&self.terminal);
+        self.predictor
+            .predict_text(text, cursor, alternate, monotonic_ms());
+    }
+
     fn query(&mut self, command: EngineQuery) {
         match command {
             EngineQuery::IsAltScreen(reply) => {
-                let _ = reply.send(matches!(
-                    self.terminal.active_screen(),
-                    Ok(Screen::Alternate)
-                ));
+                let _ = reply.send(is_alt_screen(&self.terminal));
             }
             EngineQuery::Scrollbar(reply) => {
                 let result = scrollbar(&self.terminal);
@@ -300,11 +310,22 @@ impl EngineInner {
         let mut cursor = snapshot.cursor;
         let colors = snapshot.colors.clone();
         let damage = snapshot.damage;
-        let mut cells = snapshot.buffer.cells.clone();
-        let mut utf8 = snapshot.buffer.utf8.clone();
+        let mut buffer = GridBuffer {
+            cells: snapshot.buffer.cells.clone(),
+            utf8: snapshot.buffer.utf8.clone(),
+            ..GridBuffer::default()
+        };
         let row_dirty = snapshot.buffer.row_dirty.clone();
-        self.predictor
-            .apply(&self.terminal, cols, &mut cursor, &mut cells, &mut utf8);
+        let alternate = is_alt_screen(&self.terminal);
+        self.predictor.apply(
+            cols,
+            rows,
+            alternate,
+            &mut cursor,
+            &mut buffer,
+            monotonic_ms(),
+        );
+        let GridBuffer { cells, utf8, .. } = buffer;
         if damage != GridDamage::Clean {
             self.generation = self.generation.wrapping_add(1).max(1);
         }
@@ -385,6 +406,18 @@ pub struct ScrollbarState {
     pub total: u64,
     pub offset: u64,
     pub len: u64,
+}
+
+fn is_alt_screen(terminal: &Terminal<'static, 'static>) -> bool {
+    matches!(terminal.active_screen(), Ok(Screen::Alternate))
+}
+
+/// Milliseconds since this process first asked: the predictor's clock.
+fn monotonic_ms() -> u64 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    u64::try_from(EPOCH.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 fn scrollbar(terminal: &Terminal<'static, 'static>) -> Result<ScrollbarState, EngineError> {

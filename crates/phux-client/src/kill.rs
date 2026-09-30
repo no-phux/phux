@@ -416,7 +416,7 @@ pub async fn selected(
     if key.is_some() && !keyed_signal_supported(conn) {
         return Err(KillError::UnsupportedKeyedSignal);
     }
-    if let (Some(key), Some(id)) = (key, explicit_id(selector)) {
+    if let (Some(key), Some(id)) = (key, selector.explicit_id()) {
         return kill_keyed(conn, target, vec![id], key).await;
     }
     let (snapshot, degradation) = crate::state::get_state_on(conn).await?.into_parts();
@@ -441,17 +441,6 @@ pub async fn selected(
     match key {
         Some(key) => kill_keyed(conn, target, terminals, key).await,
         None => kill_each_terminal(conn, terminals).await,
-    }
-}
-
-/// The one id an explicit `@N` / `host/@N` target names.
-fn explicit_id(selector: &Selector) -> Option<ResourceId> {
-    match selector {
-        Selector::ResourceId(id) => Some(ResourceId::local(*id)),
-        Selector::SatelliteResourceId { host, id } => {
-            Some(ResourceId::satellite(host.as_str(), *id))
-        }
-        _ => None,
     }
 }
 

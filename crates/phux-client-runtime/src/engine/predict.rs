@@ -1,4 +1,5 @@
-//! Owner-thread predictive echo over the shared POD grid.
+//! Predictive echo over the shared POD grid: the engine owner's per-view
+//! predictor, also driven by the `UniFFI` local engine in `phux-client-ffi`.
 
 use phux_client_core::grid::{Cell, Cursor, GridBuffer};
 use phux_client_core::predict::{
@@ -7,14 +8,18 @@ use phux_client_core::predict::{
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use unicode_segmentation::UnicodeSegmentation;
 
+/// A [`PredictionState`] fed from committed text and reconciled against, then
+/// overlaid onto, each projected [`GridBuffer`].
 #[derive(Debug)]
-pub(super) struct Predictor {
+pub struct Predictor {
     state: PredictionState,
     viewport: (u16, u16),
 }
 
 impl Predictor {
-    pub(super) fn new(cols: u16, rows: u16) -> Self {
+    /// A predictor for a `cols` x `rows` viewport (each clamped to at least 1).
+    #[must_use]
+    pub fn new(cols: u16, rows: u16) -> Self {
         let viewport = (cols.max(1), rows.max(1));
         Self {
             state: PredictionState::new(PredictiveConfig::enabled(), viewport.0, viewport.1),
@@ -22,13 +27,16 @@ impl Predictor {
         }
     }
 
-    pub(super) fn predict_text(
-        &mut self,
-        text: &str,
-        cursor: (u16, u16),
-        alternate: bool,
-        now_ms: u64,
-    ) {
+    /// Resize the viewport ahead of the next [`Self::apply`].
+    pub fn set_viewport(&mut self, cols: u16, rows: u16) {
+        let viewport = (cols.max(1), rows.max(1));
+        self.state.set_viewport(viewport.0, viewport.1);
+        self.viewport = viewport;
+    }
+
+    /// Queue a guess per grapheme of `text`, anchored at `cursor` (`(col, row)`)
+    /// when nothing is pending.
+    pub fn predict_text(&mut self, text: &str, cursor: (u16, u16), alternate: bool, now_ms: u64) {
         self.state.set_alt_screen(alternate);
         if self.state.pending_len() == 0 {
             self.state.set_cursor(cursor.1, cursor.0);
@@ -40,11 +48,14 @@ impl Predictor {
         }
     }
 
-    pub(super) fn clear(&mut self) {
+    /// Drop every pending guess.
+    pub fn clear(&mut self) {
         self.state.clear();
     }
 
-    pub(super) fn apply(
+    /// Reconcile pending guesses against `buffer`, then overlay the displayable
+    /// ones and move `cursor` to the predicted position.
+    pub fn apply(
         &mut self,
         cols: u16,
         rows: u16,
@@ -53,10 +64,8 @@ impl Predictor {
         buffer: &mut GridBuffer,
         now_ms: u64,
     ) {
-        let viewport = (cols.max(1), rows.max(1));
-        if self.viewport != viewport {
-            self.state.set_viewport(viewport.0, viewport.1);
-            self.viewport = viewport;
+        if self.viewport != (cols.max(1), rows.max(1)) {
+            self.set_viewport(cols, rows);
         }
         self.state.set_alt_screen(alternate);
         let authoritative = buffer
@@ -142,5 +151,19 @@ fn overlay(prediction: &Prediction, cols: u16, buffer: &mut GridBuffer) {
         && let Some(tail) = buffer.cells.get_mut(index + 1)
     {
         tail.utf8_len = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn composed_grapheme_stays_one_shared_predictor_event() {
+        let events = "e\u{301}👨‍👩‍👧‍👦"
+            .graphemes(true)
+            .filter_map(prediction_event)
+            .count();
+        assert_eq!(events, 2);
     }
 }

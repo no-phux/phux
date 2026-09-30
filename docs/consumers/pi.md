@@ -39,6 +39,48 @@ There is no package command for choosing an alternate executable. Library
 consumers can construct `PhuxCli` with an absolute `executable`, but the
 installed Pi extension expects `phux` on `PATH`.
 
+## First shared-terminal walkthrough
+
+1. Start or locate a local phux server outside Pi. For a first local session,
+   `phux new work` creates and attaches interactively.
+2. In a separate terminal or pane, run `pi` with the package installed, then
+   enter `/phux`. Do not select Pi's own interactive UI as a shell target.
+3. Choose the idle shell pane under `work`. The Pi status line shows the saved
+   target. Ask Pi to snapshot it without sending input.
+4. **Expected:** Pi shows the same shell text you see in phux. Ask it to run
+   `pwd` there with `phux_run`; the result should match that shell's directory.
+5. Run `/phux-status` before a handoff if the pane may have exited or moved.
+6. Run `/phux-attach`. Pi prints an argv such as
+   `["phux","attach","work"]` and identifies the pane to navigate to after
+   attach. Run the equivalent `phux attach work` in a separate real terminal.
+   The extension does not execute it or open a nested terminal inside Pi.
+
+If `/phux` is missing, confirm the package installation and restart Pi. If the
+target is **stale** or **unavailable**, inventory again and select a live pane;
+do not force a write to an old id. For connection errors, use
+[agent connection recovery](../troubleshooting.md#an-agent-or-mcp-host-cannot-see-the-server).
+Quit Pi normally to end it. To leave a human phux view while work runs,
+press `Ctrl-A`, release both keys, then `d`.
+
+A human attach is not a read-only monitor: agent and human input can
+interleave at the PTY, and the package serializes nothing. Coordinate before
+typing into a pane the other participant is driving.
+
+### Add and arrange workers
+
+After the first read/write succeeds, ask Pi to create or launch a worker
+beside the selected target. For example,
+`phux_launch({ integration: "codex", target: "@3", split: "vertical",
+ratio: 0.4, alias: "worker" })` creates a side-by-side pane when Codex is
+installed and that integration is configured; substitute your actual target.
+`split` or `ratio` requires `target`; ratios must be finite and strictly
+between 0 and 1. `vertical` means side-by-side and `horizontal` means stacked.
+
+Shape already-created panes with `phux_insert_pane`, `phux_move_pane`, or
+`phux_swap_pane`. These mutate persisted topology only: they do not spawn,
+focus, take, give, or paste. Insert and move accept optional `direction` and
+`ratio`; horizontal is the CLI default. Insert never spawns its `new_pane`.
+
 ## Surface
 
 The extension registers exactly these nineteen model tools:
@@ -144,33 +186,6 @@ visible for diagnosis, but an implicit targeted tool refuses it. An inventory
 failure is **unavailable** and likewise preserves the saved selection. Pass an
 explicit target to a tool only when intentionally overriding the selection.
 
-## First shared-terminal walkthrough
-
-1. Start or locate a local phux server outside Pi. For a first local session,
-   `phux new work` creates and attaches interactively.
-2. Start Pi with the package installed and run `/phux`.
-3. Choose the pane under `work`. The Pi status line shows the saved target.
-4. Ask Pi to create or launch a worker beside that target. For example,
-   `phux_launch({ integration: "codex", target: "@3", split: "vertical",
-   ratio: 0.4, alias: "worker" })` creates a side-by-side pane. `split` or
-   `ratio` requires `target`; ratios must be finite and strictly between 0 and
-   1. `vertical` means side-by-side and `horizontal` means stacked.
-5. Shape already-created panes with `phux_insert_pane`, `phux_move_pane`, or
-   `phux_swap_pane`. These mutate persisted topology only: they do not spawn,
-   focus, take, give, or paste. Insert and move accept optional `direction` and
-   `ratio`; horizontal is the CLI default. Insert never spawns its `new_pane`.
-6. Ask Pi to inspect the pane or run a discrete command. Pi can use
-   `phux_snapshot`, `phux_run`, and `phux_wait` without attaching or resizing
-   the human view.
-7. Run `/phux-status` before a handoff if the pane may have exited or moved.
-8. Run `/phux-attach`. Pi prints an argv such as
-   `["phux","attach","work"]` and identifies the pane to navigate to after
-   attach. Copy the argv into a separate real terminal. The extension does not
-   execute it and does not open a nested terminal inside Pi.
-
-A human attach is not a read-only monitor: agent and human input can
-interleave at the PTY, and the package serializes nothing. Coordinate before
-typing into a pane the other participant is driving.
 
 ## Lifecycle metadata
 
@@ -178,7 +193,7 @@ When a target is ownership-validated as available, the extension reports a
 `phux.agent/v1` record with `name=pi`, `kind=pi`, and a Pi-session owner in the
 `session` field — **identity only, never a `state`**. A declared `state`
 outranks the server's own derivation for the record's whole lifetime
-([`../spec/L3.md`](../spec/L3.md) §3.7), so reporting one would stand the
+([metadata protocol](../spec/L3.md) §3.7), so reporting one would stand the
 `rules/pi.toml` detector down. Identity is written once per owner and target.
 
 On a server that advertises `RESOURCE_KINDS`, the extension also opens one
@@ -223,4 +238,4 @@ a reload keeps it. This is status metadata, not an input lock.
 A checked-in [live-fleet recording](../pi-live-fleet-proof.md) shows Pi using
 this surface to place, drive, verify, and spatially rearrange real Claude Code
 and OpenAI Codex panes. Package-local development and validation commands live
-in [`../../integrations/pi/README.md`](../../integrations/pi/README.md).
+in the [Pi package development guide](../../integrations/pi/README.md).

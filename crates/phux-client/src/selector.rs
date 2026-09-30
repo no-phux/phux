@@ -56,6 +56,21 @@ pub enum Selector {
     Agent(String),
 }
 
+impl Selector {
+    /// The one id an explicit `@N` / `host/@N` names, taken as given (no
+    /// snapshot lookup); `None` for every other form.
+    #[must_use]
+    pub fn explicit_id(&self) -> Option<ResourceId> {
+        match self {
+            Self::ResourceId(id) => Some(ResourceId::local(*id)),
+            Self::SatelliteResourceId { host, id } => {
+                Some(ResourceId::satellite(host.as_str(), *id))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// How a window is addressed within a session: by numeric index or by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowRef {
@@ -653,6 +668,19 @@ mod tests {
     use super::*;
     use phux_protocol::ids::{SessionId, WindowId};
     use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
+
+    #[test]
+    fn an_explicit_id_is_taken_as_given() {
+        assert_eq!(
+            parse("@9").unwrap().explicit_id(),
+            Some(ResourceId::local(9))
+        );
+        assert_eq!(
+            parse("edge/@4").unwrap().explicit_id(),
+            Some(ResourceId::satellite("edge", 4))
+        );
+        assert_eq!(parse("work").unwrap().explicit_id(), None);
+    }
 
     #[test]
     fn parse_accepts_every_form() {

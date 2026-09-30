@@ -52,8 +52,9 @@ mod apply;
 #[cfg(not(feature = "engine"))]
 pub mod byte_adapter;
 mod owner;
+/// Predictive local echo over a projected grid.
 #[cfg(feature = "engine")]
-mod predict;
+pub mod predict;
 #[cfg(feature = "engine")]
 mod views;
 

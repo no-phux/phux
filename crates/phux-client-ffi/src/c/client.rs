@@ -21,7 +21,7 @@ use phux_client_runtime::engine::{
     EngineDocumentPoint, EngineError, MouseMode, Scroll, SelectionGestureEvent,
     SelectionGestureResult,
 };
-use phux_client_runtime::publication::{GridFrame, Rgb};
+use phux_client_runtime::publication::GridFrame;
 use phux_client_runtime::{Client as RuntimeClient, ControlGuard, Lane, Runtime};
 use phux_protocol::ResourceKind;
 use phux_protocol::caps::{BootstrapLimits, Layer, ServerFeature};
@@ -1343,14 +1343,5 @@ const fn history_unavailable_code(
         Reason::Released => 5,
         Reason::Limit => 6,
         Reason::CodecFailure => 7,
-    }
-}
-
-#[allow(dead_code)]
-const fn rgb(value: Rgb) -> crate::c::grid_metadata::PhuxGridRgb {
-    crate::c::grid_metadata::PhuxGridRgb {
-        r: value.r,
-        g: value.g,
-        b: value.b,
     }
 }

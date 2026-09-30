@@ -22,7 +22,7 @@ the command palette, the `|` / `-` split aliases, `Tab` for the next
 window, `${cwd-basename}` session naming, the padded blue tab strip, the
 tokyonight chrome palette — moved one layer down into
 `crates/phux-config/src/default.toml` and
-`crates/phux-client/src/render/theme.rs`. Nothing was dropped. It is
+`crates/phux-tui/src/render/theme.rs`. Nothing was dropped. It is
 simply not a distro's job to hold the settings that everyone should have:
 a starter distribution exists to offer a *choice*, and there was no
 choice being offered here, only a good default sitting behind an opt-in.

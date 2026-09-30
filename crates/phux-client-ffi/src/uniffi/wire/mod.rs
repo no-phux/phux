@@ -27,6 +27,4 @@ use super::keymap::{self, KeyMods, KeyPress};
 mod client;
 mod types;
 
-#[allow(unused_imports)]
-pub use client::*;
 pub use types::*;

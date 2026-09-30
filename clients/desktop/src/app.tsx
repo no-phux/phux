@@ -24,7 +24,7 @@ import {
   type StatusInfo,
   type Toast,
 } from "./shell/chrome";
-import { keyChord } from "./shell/keymap";
+import { keyChord, shownChords, textFieldHasKeys, yieldsToTextField } from "./shell/keymap";
 import { CommandPalette, type PaletteItem } from "./shell/palette";
 import { Sidebar, paneTitle, shortPath } from "./shell/sidebar";
 import { TabBar, type TabView } from "./shell/tabbar";
@@ -1155,16 +1155,7 @@ function DesktopApp(props: AppProps): JSX.Element {
   });
 
   /** The chord to show for a command: the user's Ghostty bind wins. */
-  const displayChords = createMemo(() => {
-    const shown = new Map<string, string>();
-    for (const [chord, command] of keymap()) {
-      if (!shown.has(command.id) || command.chord !== chord) {
-        const existing = shown.get(command.id);
-        if (!existing || existing === command.chord) shown.set(command.id, chord);
-      }
-    }
-    return shown;
-  });
+  const displayChords = createMemo(() => shownChords(keymap(), defaultChords));
 
   /** Chords without Command that the terminal must hand to the window. */
   const appChords = createMemo(() =>
@@ -1179,8 +1170,14 @@ function DesktopApp(props: AppProps): JSX.Element {
     }
     const command = keymap().get(chord);
     if (!command) return;
-    // A text field (a dialog, the palette, the find bar) keeps its own Select All.
-    if (command.id === "select-all" && (modal().kind !== "none" || find())) return;
+    // A text field (a dialog, the palette, this pane's find bar) keeps its
+    // own Select All, and text binds never type into the shell behind it.
+    const typing = textFieldHasKeys(
+      modal().kind !== "none",
+      find()?.placementId,
+      workspace.focused()?.id,
+    );
+    if (typing && yieldsToTextField(command.id)) return;
     const open = modal().kind;
     if (open !== "none") {
       setModal({ kind: "none" });
@@ -1390,7 +1387,10 @@ function DesktopApp(props: AppProps): JSX.Element {
         pane={paneOf(placement.terminalId)}
         agent={bridge.agents()[placement.terminalId]}
         selected={selected()}
-        inputFocused={selected() && modal().kind === "none" && find()?.placementId !== placement.id}
+        inputFocused={
+          selected() &&
+          !textFieldHasKeys(modal().kind !== "none", find()?.placementId, placement.id)
+        }
         sizeOwner={workspace.sizeOwner(placement)}
         showHeader={
           placements(tab()?.root ?? { kind: "leaf", placement }).length > 1 || !!tab()?.zoomedId

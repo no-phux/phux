@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 
 use phux_core::ids::{ResourceId, SessionId};
-use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, ClientCapabilities, ColorSupport, LayerSet,
-};
+use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities, LayerSet};
 use phux_protocol::ids::ResourceId as WireResourceId;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -202,25 +200,6 @@ impl ServerState {
             BootstrapProfile::SynthesizedVtRaw,
             BootstrapLimits::default(),
         )
-    }
-
-    /// Update an attached client's capabilities (a late HELLO is tolerated);
-    /// `false` if not attached.
-    pub fn set_client_capabilities(
-        &mut self,
-        client_id: ClientId,
-        client_caps: ClientCapabilities,
-    ) -> bool {
-        self.clients.set_capabilities(client_id, client_caps)
-    }
-
-    /// Compatibility wrapper for tests that still update color only.
-    pub fn set_client_color_support(
-        &mut self,
-        client_id: ClientId,
-        color_support: ColorSupport,
-    ) -> bool {
-        self.clients.set_color_support(client_id, color_support)
     }
 
     /// Detach `client_id`: attachment teardown (idempotent).

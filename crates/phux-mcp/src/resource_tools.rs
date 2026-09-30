@@ -9,7 +9,6 @@ use std::time::Duration;
 use phux_client::deadline::Deadline;
 use phux_client::resource::LookupError;
 use phux_client::resource::cursor::Cursor;
-use phux_client::selector::Selector;
 use phux_client::state;
 use phux_protocol::ids::ResourceId;
 use serde_json::{Value, json};
@@ -139,22 +138,12 @@ async fn wait(args: &Value) -> Result<Value, ToolError> {
 async fn target(args: &Value) -> Result<(PathBuf, ResourceId), ToolError> {
     let socket = socket_or_default(args);
     let selector = parse_selector(required_str(args, "target")?)?;
-    if let Some(id) = direct_id(&selector) {
+    if let Some(id) = selector.explicit_id() {
         return Ok((socket, id));
     }
     let view = state::get_state(&socket).await?;
     let id = resolve_one(&socket, &selector, &view).await?;
     Ok((socket, id))
-}
-
-fn direct_id(selector: &Selector) -> Option<ResourceId> {
-    match selector {
-        Selector::ResourceId(id) => Some(ResourceId::local(*id)),
-        Selector::SatelliteResourceId { host, id } => {
-            Some(ResourceId::satellite(host.as_str(), *id))
-        }
-        _ => None,
-    }
 }
 
 fn lookup_error(err: &LookupError) -> ToolError {

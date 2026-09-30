@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use phux_core::ids::SessionId;
-use phux_protocol::caps::{ClientCapabilities, ColorSupport, Layer, LayerSet};
+use phux_protocol::caps::{Layer, LayerSet};
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{ActorRef, FrameKind, Scope};
 use tokio::sync::{Notify, mpsc, watch};
@@ -198,26 +198,6 @@ impl ClientTable {
     }
 
     // -- attached clients ----------------------------------------------
-
-    /// Update an attached client's capabilities; `false` if not attached.
-    pub(super) fn set_capabilities(&mut self, client: ClientId, caps: ClientCapabilities) -> bool {
-        self.attached
-            .get_mut(&client)
-            .map(|c| {
-                c.client_caps = caps;
-            })
-            .is_some()
-    }
-
-    /// Patch an attached client's color tier; `false` if not attached.
-    pub(super) fn set_color_support(&mut self, client: ClientId, color: ColorSupport) -> bool {
-        self.attached
-            .get_mut(&client)
-            .map(|c| {
-                c.client_caps = c.client_caps.with_color_support(color);
-            })
-            .is_some()
-    }
 
     /// `(client, mailbox)` for every client attached to `session`
     /// (per-terminal consumers excluded).
