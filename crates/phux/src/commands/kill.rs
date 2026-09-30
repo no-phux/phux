@@ -218,6 +218,7 @@ fn report_selected(
                 }
                 KillError::NoSuchTarget { target } => {
                     eprintln!("phux: no such target: {target}");
+                    eprintln!("  run `phux ls` to see live sessions and panes");
                     ExitCode::FAILURE
                 }
                 KillError::Unresolved {

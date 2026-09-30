@@ -140,6 +140,8 @@ fn report_miss(
             Some(target) => eprintln!("phux: no such target: {target}"),
             None => eprintln!("phux: no such target"),
         }
+        // The same remedy the `--json` document carries.
+        eprintln!("  run `phux ls` to see live sessions and panes");
         return ExitCode::FAILURE;
     }
     // Deliberately never the word "no such target": this client does not know

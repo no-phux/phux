@@ -149,6 +149,10 @@ fn kill_and_tag_never_call_an_unsearchable_pane_absent() {
             stderr_of(&complete).contains("no such target: @999"),
             "{args:?}"
         );
+        assert!(
+            stderr_of(&complete).contains("run `phux ls`"),
+            "a miss names the way to see what exists: {args:?}"
+        );
 
         let degraded = run_verb(partial_fleet(), args);
         assert_eq!(degraded.status.code(), Some(3), "{args:?}");
