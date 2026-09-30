@@ -634,6 +634,10 @@ fn observed_text(plane: &ControlPlane) -> String {
 }
 
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "one attach-to-input scenario; every assert! scores as a branch"
+)]
 fn a_fed_attach_publishes_the_terminal_and_input_goes_out_as_frames() {
     let (mut plane, attach_id) = negotiated();
     attach(&mut plane, attach_id, b"ready");

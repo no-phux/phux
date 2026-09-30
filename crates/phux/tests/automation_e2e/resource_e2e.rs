@@ -327,6 +327,10 @@ fn resource_show_json_has_lifecycle_and_process() {
 /// cursor, and `kill` purges the pane so `show` answers a plain miss.
 #[test]
 #[ignore = "spawns a real phux server; run via `just e2e`."]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "one linear resource lifecycle through the CLI; every assert! scores as a branch"
+)]
 fn scripted_task_lifecycle_pha406() {
     const KEY: &str = "3c1a9e7f5d2b48c6a1f0e9d8c7b6a5f4";
     let server = Server::start();

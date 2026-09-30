@@ -1869,6 +1869,10 @@ fn resource_ids(snapshot: &SessionSnapshot) -> Vec<WireResourceId> {
 /// match, and server-global data (the listener report) only with Global;
 /// `ATTACH` filters by OBSERVE the same way.
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "one grant matrix walked in order; every assert! scores as a branch"
+)]
 fn a_snapshot_keeps_only_what_the_grant_covers() {
     let mut world = world();
     let (alpha, beta) = (world.alpha.clone(), world.beta.clone());

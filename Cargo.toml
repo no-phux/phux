@@ -30,6 +30,11 @@ unreachable_pub = "warn"
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
+# Not in either group above; without this, clippy.toml's
+# `cognitive-complexity-threshold` is inert. CI's `-D warnings` makes it a
+# gate. Tests that are one long assertion script opt out per function with
+# `#[expect(clippy::cognitive_complexity, reason = ...)]`.
+cognitive_complexity = "warn"
 unwrap_used = "warn"
 expect_used = "warn"
 panic = "warn"

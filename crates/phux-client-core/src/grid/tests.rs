@@ -83,6 +83,10 @@ fn seeded_terminal(cols: u16, rows: u16, bytes: &[u8]) -> Terminal<'static, 'sta
 }
 
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "one assertion per projected cell field; every assert! scores as a branch"
+)]
 fn projects_a_dense_viewport_over_one_utf8_arena() {
     // Row 0: "hi", a bold red "B", then a wide CJK glyph; row 1 stays empty.
     let terminal = seeded_terminal(6, 2, "hi\x1b[1;31mB\x1b[m\u{6f22}".as_bytes());
