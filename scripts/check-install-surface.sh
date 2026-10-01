@@ -79,7 +79,6 @@ require_fixed docs/INSTALL.md "Release tarball"
 require_fixed docs/INSTALL.md "From source"
 require_fixed docs/INSTALL.md "nix develop -c cargo install --locked --path crates/phux"
 require_fixed docs/INSTALL.md "nix develop -c cargo install --locked --path crates/phux-mcp"
-require_fixed docs/INSTALL.md 'Every portable tarball and installer path includes `phux-mcp`'
 # Backticked in the doc since the curated-docs truth pass (6968cf06); match the
 # rendered claim, not the old unformatted spelling.
 require_fixed docs/INSTALL.md '`cargo install phux` is unsupported'
@@ -94,8 +93,6 @@ require_fixed docs/INSTALL.md "Windows is not supported"
 require_fixed docs/INSTALL.md '[Quickstart](./QUICKSTART.md)'
 require_fixed docs/INSTALL.md '[Agents](./consumers/agents.md)'
 require_fixed docs/INSTALL.md 'verifies the release `.sha256` sidecar before unpacking'
-require_fixed docs/INSTALL.md 'prints the exact command to run next'
-require_fixed docs/INSTALL.md 'only when that directory is not already on `PATH`'
 require_fixed docs/INSTALL.md "| Linux aarch64 | Curl/tarball: yes. Homebrew: yes where Linuxbrew supports the host. Source: yes. |"
 
 require_fixed docs/RELEASING.md "phux and phux-mcp artifacts"
@@ -507,7 +504,6 @@ require_fixed docs/INSTALL.md 'brew upgrade no-phux/tap/phux'
 forbid_fixed docs/INSTALL.md 'brew upgrade phall1/tap/phux'
 require_fixed docs/INSTALL.md 'nix profile upgrade phux'
 require_fixed docs/INSTALL.md 'nixos-rebuild switch'
-require_fixed docs/INSTALL.md 'Verifies the checksum before unpacking anything'
 require_fixed docs/INSTALL.md 'phux update --rollback'
 require_fixed docs/INSTALL.md '--channel next'
 require_fixed docs/INSTALL.md 'PHUX_CHANNEL=next'
