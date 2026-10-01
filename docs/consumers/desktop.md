@@ -22,6 +22,10 @@ The architecture choice is [ADR-0139](../adr/0139-solid-desktop-over-native-runt
 [Cockpit](./cockpit.md) remains a separate client. The first release requires
 independent same-terminal views; Linux follows, Intel macOS is not required.
 
+[Install the GPUIX/Solid desktop demo](../INSTALL.md#desktop-demo) on an
+Apple-silicon Mac. The current installer builds from source; it is not the
+Cockpit download.
+
 ## Start with a terminal
 
 First launch offers a local terminal, **Open Folder**, and recent projects;
