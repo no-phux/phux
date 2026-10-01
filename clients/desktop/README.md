@@ -4,6 +4,9 @@
 on an Apple-silicon Mac. The install guide covers prerequisites, building
 `Phux.app`, and choosing the server session.
 
+The bundle contains the shell and launcher compiled into one executable,
+with the release native addon beside it.
+
 Startup problems are shown in the window and logged to
 `~/Library/Logs/phux-desktop.log`. `just desktop-package` builds the bundle
 without installing it.
