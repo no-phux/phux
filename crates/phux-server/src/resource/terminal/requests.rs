@@ -199,12 +199,18 @@ impl Drop for InputCredit {
 /// The request back, as `try_send` would return it.
 pub(crate) fn try_send_to_writer(
     tx: &mpsc::Sender<EncodedInputRequest>,
-    request: EncodedInputRequest,
+    mut request: EncodedInputRequest,
 ) -> Result<(), mpsc::error::TrySendError<EncodedInputRequest>> {
-    if request.credit.is_none() && tx.capacity() <= INPUT_CREDITS {
-        return Err(mpsc::error::TrySendError::Full(request));
+    let result = if request.credit.is_none() && tx.capacity() <= INPUT_CREDITS {
+        Err(mpsc::error::TrySendError::Full(request))
+    } else {
+        request.writer_queued_at = Some(std::time::Instant::now());
+        tx.try_send(request)
+    };
+    if matches!(&result, Err(mpsc::error::TrySendError::Full(_))) {
+        crate::perf::INPUT_WRITER_FULL.incr();
     }
-    tx.try_send(request)
+    result
 }
 
 /// Final disposition of a PTY write, reported on
@@ -289,6 +295,8 @@ pub(crate) struct EncodedInputRequest {
     /// the request drops: after the writer thread's `write(2)`, or at
     /// whichever step discards it.
     pub(crate) credit: Option<InputCredit>,
+    /// Stamped only at the final writer handoff, not the lane/actor queue.
+    pub(crate) writer_queued_at: Option<std::time::Instant>,
 }
 
 impl EncodedInputRequest {
@@ -303,6 +311,7 @@ impl EncodedInputRequest {
             echo_probe,
             completion: None,
             credit: None,
+            writer_queued_at: None,
         }
     }
 
@@ -319,6 +328,7 @@ impl EncodedInputRequest {
             echo_probe: true,
             completion: Some(completion),
             credit: None,
+            writer_queued_at: None,
         }
     }
 }

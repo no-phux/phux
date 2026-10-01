@@ -23,7 +23,7 @@ while True:
             for c in range(0, cols, 8):
                 color = palette[(r + c // 8 + frame) % len(palette)]
                 buf += b"\x1b[%dm%08d" % (color, (frame * 7919 + r * 131 + c) % 100000000)
-        buf += b"\x1b[0m\x1b[%d;1H\x1b[2K frame %d " % (rows, frame)
+        buf += b"\x1b[0m\x1b[%d;1H\x1b[2K # %d " % (rows, frame)
     else:
         spin = "|/-\\"[frame % 4].encode()
         buf += b"\x1b[%d;1H\x1b[2K\x1b[33m%s\x1b[0m %d" % (rows, spin, frame)

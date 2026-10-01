@@ -90,9 +90,13 @@ impl InputCredits {
             return Err(InputStalled);
         }
         crate::perf::INPUT_CREDIT_WAITS.incr();
-        match tokio::time::timeout(INPUT_STALL_LIMIT, pool.take()).await {
+        let wait_started = std::time::Instant::now();
+        let outcome = tokio::time::timeout(INPUT_STALL_LIMIT, pool.take()).await;
+        crate::perf::INPUT_CREDIT_WAIT.record_elapsed(wait_started);
+        match outcome {
             Ok(credit) => Ok(Some(credit)),
             Err(_elapsed) => {
+                crate::perf::INPUT_CREDIT_TIMEOUTS.incr();
                 tracing::warn!(
                     ?terminal_id,
                     "pane input stalled; refusing input until it drains"

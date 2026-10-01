@@ -86,6 +86,8 @@ pub(super) struct PaintPacer {
     next_allowed: Option<tokio::time::Instant>,
     /// Panes owing a settle paint, deduplicated (one entry per visible pane).
     pending: Vec<phux_protocol::ids::ResourceId>,
+    /// First withheld output in the current debt, not a per-pane allocation.
+    withheld_at: Option<tokio::time::Instant>,
     /// The pane the user's last input went to. Pane-keyed on purpose: typing
     /// in one pane must not un-pace a flood in another.
     last_input: Option<InputMark>,
@@ -235,6 +237,9 @@ impl PaintPacer {
     /// Remember that `terminal_id` owes a settle paint.
     pub(super) fn withhold(&mut self, terminal_id: &phux_protocol::ids::ResourceId) {
         if !self.pending.iter().any(|id| id == terminal_id) {
+            if self.pending.is_empty() {
+                self.withheld_at = Some(tokio::time::Instant::now());
+            }
             self.pending.push(terminal_id.clone());
         }
     }
@@ -251,12 +256,27 @@ impl PaintPacer {
 
     /// Take the panes owed a settle paint, clearing the debt.
     pub(super) fn take_pending(&mut self) -> Vec<phux_protocol::ids::ResourceId> {
+        self.record_retired_debt();
         std::mem::take(&mut self.pending)
     }
 
     /// Forget every withheld pane: a full repaint just redrew them all.
     pub(super) fn clear_pending(&mut self) {
+        self.record_retired_debt();
         self.pending.clear();
+    }
+
+    fn record_retired_debt(&mut self) {
+        let Some(started) = self.withheld_at.take() else {
+            return;
+        };
+        let now = tokio::time::Instant::now();
+        phux_client::perf::PACER_HOLD.record_duration(now.saturating_duration_since(started));
+        if let Some(deadline) = self.next_allowed {
+            phux_client::perf::PACER_LATE.record_duration(now.saturating_duration_since(deadline));
+        }
+        phux_client::perf::PACER_PANES
+            .record(u64::try_from(self.pending.len()).unwrap_or(u64::MAX));
     }
 }
 

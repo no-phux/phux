@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-27
+last-reviewed: 2026-10-01
 ---
 
 # Operations
@@ -108,26 +108,42 @@ phux perf --json       # the raw PerfReport (schema_version inside)
 ```
 
 The table is grouped by pipeline stage, top to bottom in the order bytes
-move. The columns are `count` / `rate/s` for counters and `p50` `p90`
-`p99` `max` for histograms; latencies are microseconds, sizes bytes.
+move. Counters show `count` / `rate/s`; histograms show sample count,
+rate, `total` (sum in the declared unit), and `p50` `p90` `p99` `max`.
+Latencies are elapsed microseconds, sizes bytes. Nested stages overlap:
+their totals are not additive CPU time. The header's process CPU comes
+from `getrusage`, independently of those elapsed durations.
+
+Percentiles use log-linear bucket upper bounds (up to 12.5% above a
+sample); `max` is exact in a lifetime report and a bucket bound in a
+`--watch` interval. Reports aggregate each process's activity, not individual
+panes. Use the existing debug spans to correlate a slow operation with its
+pane; no terminal contents become metric labels.
 
 | Group | What it measures | Healthy on a laptop over the local socket |
 |---|---|---|
-| `pty.read.size` | bytes per `read(2)` from a PTY. macOS caps this at 1024, so a burst is a spike of exactly-1024 reads | p99 at 1024 under a flood is the OS, not phux |
+| `pty.read.size` | bytes per `read(2)` from a PTY. macOS caps this at 1024 | a percentile bound of 1151 can represent 1024-byte reads; this is the OS plus histogram resolution, not oversized reads |
 | `pty.reader.blocked` | reader thread parked because the actor's queue was full | 0; anything else means the actor is behind the child |
 | `pty.queue_wait` | reader-to-actor queue delay | p99 under 1 ms |
 | `pty.burst.bytes` / `pty.burst.chunks` | how many reads the actor coalesced into one parse and one frame | chunks above 1 under a flood is coalescing working |
-| `pty.vt_apply` | libghostty parse time per burst | p99 under 2 ms at 16 KiB |
+| `pty.vt_apply` / `pty.vt_parse` / `pty.post_apply` | whole synchronous ingest, canonical VT parsing, and derived work (color replies, input-mode publication, semantic events, native capture start); native replay excluded | compare parse versus post-apply before attributing a slow ingest to libghostty |
 | `echo.server` | key or paste handed to the PTY writer until the next output from that pane, sampled only when the pane was quiet for the previous 100 ms; includes the child's own reaction | p50 under 1 ms for a shell prompt |
 | `input.pty_write` | `write(2)` plus flush on the writer thread | p99 under 200 us |
 | `input.credit_waits` | input events that waited for a saturated pane to drain before the server read the client's next frame ([ADR-0144](./adr/0144-input-credits-backpressure-instead-of-drop.md)) | 0 while typing; a burst or paste into a slow program may wait |
+| `input.writer.queue_wait` / `input.writer.full` | final writer handoff to writer pickup, and full-queue refusals, including terminal-generated replies | high wait with cheap `input.pty_write` points to queued work or scheduling |
+| `input.credit_wait` / `input.credit_timeouts` / `input.canonical_refused` | actual credit-wait duration and timeouts; canonical-mode writes refused before delivery | immediate credit acquisition and already-stalled fast refusals add no wait sample |
+| `pty.yield_wait` / `runtime.detect_tick_late` | capped-burst cooperative yield/resume delay; lateness of the already-running detector timer | includes runtime/OS scheduling, preceding actor work, priority starvation and timer resolution; not a new heartbeat or pure CPU measurement |
+| `agent.detect` / `agent.viewport` / `agent.publish` / `proc.cwd_query` | detector tick, requested viewport projection, synchronous metadata/hook enqueue, and child kernel cwd lookup | separates agent/control-plane work from parsing; hook subprocess execution is excluded |
 | `tick.emit` / `tick.synth` / `tick.out_bytes` | state-sync fan-out: whole tick, per-consumer diff, per-consumer frame size | tick p99 under 5 ms; grows with consumers x rows |
 | `consumer.mailbox_full` | ticks that skipped a consumer whose outbound queue was full | 0; a steady rate is a client that cannot drain |
 | `consumer.ack_rtt` | emit to `FRAME_ACK` round trip per state-sync client | tracks the link: sub-ms local, tens of ms over QUIC |
 | `pump.frames` / `pump.bytes` / `pump.frame.bytes` | raw broadcast fan-out volume and per-frame size | frame size near `pty.burst.bytes` |
 | `pump.lagged` / `pump.gap_resync` | output pumps that fell behind (more than 256 frames, or a chunk older than 250 ms when dequeued), and the resyncs that cost; each resync re-bootstraps only the pump that fell behind | 0 |
 | `wire.write` / `wire.write.bytes` / `wire.bytes_out` | coalesced socket writes per client | p99 under 500 us on UDS |
+| `wire.encode` / `wire.batch.frames` | admitted frame encoding/compression and encoded frames per coalesced write batch | high encode time with cheap writes is CPU-side work; revoked/write-failed batches still count as encoded |
 | `cmd.handle` / `attach.handle` | control-plane latency | attach p99 under 100 ms with a warm history |
+| `attach.capture_wall` / `attach.publish_wall` | non-deferred attach staging (actor queues/capture/adaptation) and queueing `ATTACHED` through `ATTACH_READY` | includes async waits, not socket drain; distinguishes capture cost from outbound backpressure |
+| `bootstrap.synth` / `bootstrap.native_begin` / `bootstrap.native_step` | synthesized replay, native capture start, and productive native capture steps | includes attempted failures; native step excludes inter-turn scheduling but includes completion replay |
 | `proc.*` | clients, panes, sessions (gauges) and, in the header, CPU split, peak RSS, context switches | idle CPU under 1 percent with agents running in panes |
 
 `GET_PERF` and `phux perf --json` also carry a `stream_diagnostics`
@@ -139,11 +155,26 @@ Storage is bounded (256 queued items per stream) and overflows are counted;
 no payloads or caller-defined labels are retained, and `--reset` clears
 interval observations without invalidating live trackers.
 
-The client keeps its own table: when an attach ends it writes one
-`session perf:` line to its log (`phux logs --client`) with the echo round
-trip, `vt_apply` and `paint.full` percentiles, frame counts, pacer waits, and
-stdout drops. Degradations such as a full consumer mailbox or a dropped
-stdout backlog warn at most once per ten seconds with a `suppressed` count.
+The TUI client keeps its own table. Normal detach and attach-loop errors
+write `session perf:` with a complete JSON `perf` field to the client log
+(`phux logs --client`), after stopping/joining the stdout writer. Enable
+`PHUX_RENDER_PROF=1` to record the same table as interval JSON at most once
+per second while processing frames. Idle clients do not wake just to report;
+there is no per-frame report allocation.
+
+| Client rows | Boundary |
+|---|---|
+| `paint.full` / `paint.chrome` / `paint.submit` | composition versus synchronous sink submission; production tty I/O runs separately |
+| `paint.pane` / `paint.prepare` / `paint.rows` | every pane-render attempt (including clean/error paths), pooled libghostty render-state preparation, and dirty-row walking/front-buffer diffing/VT emission; nested elapsed times, excluding composite chrome, submission and tty I/O |
+| `loop.input_wall` / `loop.frames_wall` | selected stdin/frame handler through completion, including awaited sends/errors; excludes parking in `select!` |
+| `loop.burst_frames` / `loop.burst_capped` | inbound batch size and fairness-cap hits |
+| `pacer.hold` / `pacer.late` / `pacer.panes` | first withheld output to debt retirement, lateness versus pacing deadline, and panes retired; not a receipt for pixels or tty delivery |
+| `stdout.backlog` / `stdout.queue_wait` | queued bytes on submission, before any overflow discard (excluding writer in-flight chunks), and each written chunk's enqueue-to-write-start delay; discarded chunks add no wait sample |
+| `stdout.write` / `stdout.flush` / `stdout.errors` | real writer-thread calls, including blocking and error paths; idle waiting is excluded |
+| `stdout.bytes` / `stdout.written` / `stdout.dropped_bytes` | offered bytes, completed successful writes, and overflow discards including the trigger frame; failed partial writes and shutdown discards are not counted as successful delivery |
+
+Degradations such as a full consumer mailbox or dropped stdout backlog warn
+at most once per ten seconds with a `suppressed` count.
 
 A native embedder such as Cockpit reads its client's table with
 `phux_client_perf_json`: the kernel's `kernel.*` rows (frames and bytes
@@ -158,6 +189,21 @@ how many output frames one publication absorbed. Under a flood
 consumer reads every frame it is woken for rather than once per display
 tick.
 
+The runtime also splits owner-thread work into `runtime.owner_queue_wait`
+(command enqueue to dequeue), `runtime.owner_execute`, and
+`runtime.request_wall` (primary request-channel creation through reply/error).
+Explicit-view secondary response-channel overhead is outside `request_wall`.
+`runtime.apply_execute` includes publication; `runtime.apply_events` counts
+delivered events, including an unapplied suffix after a fatal event;
+`runtime.catch_up_execute` covers deferred projection on acquire.
+`runtime.project_grid` separates projection/prediction from
+`runtime.publish_swap` (slot swap and predecessor reclamation).
+`runtime.buffer_held` counts predecessor frames that a consumer still owns
+and therefore cannot be recycled. `runtime.request_errors` counts owner
+channel send/receive failures, not business-operation rejections such as an
+unknown view. `runtime.apply_errors` and `runtime.project_errors` count failed
+apply events and timed projections respectively; projection setup is excluded.
+
 The desktop host (`clients/desktop`) appends its painter rows to the same
 report, `desktopPerfJson`: `desktop.prepare` and `desktop.paint` (per
 terminal element per window draw) and `desktop.key_to_paint`, from a key
@@ -169,8 +215,27 @@ spent applying them).
 
 For a reproducible number rather than a live one, `just perf-echo` runs
 the byte-level echo probe against an isolated server at a chosen size
-with a flooding sibling pane, and `just profile` records a CPU profile of
+with a flooding sibling pane. Its server snapshots bracket the measured
+phase after command-proven readiness and before detach, not fixed sleeps.
+It retains raw snapshots, their interval table, echo samples and the client
+log in the printed artifacts directory. Readiness duration is recorded
+separately; a prompt-string timeout is no longer required before the
+readiness command. Collection failures retain the samples and make the load
+harness fail rather than silently report missing telemetry.
+The sibling flood emits no visible probe letters, including its numeric
+frame footer, so it cannot satisfy a key-echo match by itself.
+
+Timing runs do not invoke a sampling profiler. Set `PHUX_BENCH_SAMPLE=1`
+for optional macOS server/client `sample` profiles; profiling adds overhead,
+so do not compare those timings with unsampled runs. `just profile` records
 the `profiling` build (symbols kept) with samply.
+
+To isolate pane emission from tty scheduling, run
+`cargo bench --locked -p phux-tui --features testkit --bench render_frame`.
+The existing deterministic corpora exercise full-dirty, one-row-dirty and
+clean frames, reporting time, bytes, Rust heap allocations and flushes per
+frame. This excludes libghostty's C allocator and physical display latency.
+
 
 ### Environment knobs
 
@@ -179,7 +244,7 @@ the `profiling` build (symbols kept) with samply.
 | `RUST_LOG` | Filter directives. Default `phux=info,warn`. |
 | `PHUX_LOG=<path>` | Write logs to `<path>` via non-blocking file writer. Server tees to this file *in addition to* stderr; client writes here *instead of* its per-pid default. Parent directory created if missing. |
 | `PHUX_LOG_FORMAT=text\|json` | `text` (default): human single-line layer. `json`: one JSON object per line for `jq`/`grep`. Applies to both stderr and file sinks. |
-| `PHUX_RENDER_PROF=1` | Client only. One `render_prof` INFO line per second with the attach loop's paint counters (`frames`, `paints`, `skipped`, `bar_composes`, `layouts`, `paced_replies`, `paced_waits`, `flushes`, `bytes`) plus `echo_p50_us` / `echo_p99_us`. `paced_replies` versus `paced_waits` separates a paint-scheduler regression from machine load. Free when unset. |
+| `PHUX_RENDER_PROF=1` | Client only. At most one `render_prof` INFO line per second while processing frames, with paint/echo counters and the complete interval `PerfReport` in the JSON `perf` field, including handler, pacer and stdout timings. Disabled, no periodic report is allocated. |
 | `PHUX_FRAME_INTERVAL_MS=<ms>` | Client only. Minimum interval between composited frames; default `16` (one frame at 60Hz). The first frame after any lull always paints immediately, and output from the pane the user last acted on is never paced while its reply grace is open, so this only bounds how often a sustained *unsolicited* output stream repaints. `0` disables pacing entirely. |
 | `PHUX_INPUT_GRACE_MS=<ms>` | Client only. Pins how long after input that pane's output still counts as a reply and bypasses pacing. Unset, it is `max(20ms, 2 x observed input-to-output latency)` capped at 250ms, keyed to the pane the input went to; pointer motion does not arm it. `0` paces every frame. |
 | `PHUX_TTY_READINESS=0` | Client only. Read the outer terminal through tokio's blocking-pool stdin instead of reactor readiness on its own non-blocking handle. Use it when a pollable terminal misbehaves; unpollable ones fall back automatically. |

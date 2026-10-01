@@ -892,6 +892,8 @@ pub(crate) fn spawn_agent_state_drain(
 
     tokio::task::spawn_local(async move {
         while let Some(event) = rx.recv().await {
+            let _publish_span = tracing::debug_span!("agent_publish", ?wire_terminal_id,).entered();
+            let _timer = crate::perf::AGENT_PUBLISH.timer();
             // Both the ask broadcast and the hook re-take the state lock, so
             // they are resolved under it and fired after it is released.
             let mut asked = None;
@@ -5413,7 +5415,9 @@ fn encode_into_batch(
             Some(message),
         ),
     };
+    let encode_started = std::time::Instant::now();
     frame.encode_compressed(compress_policy(&frame, compression), scratch, batch);
+    crate::perf::WIRE_ENCODE.record_elapsed(encode_started);
     ends.push(batch.len());
     terminal_message
 }
@@ -5738,6 +5742,7 @@ async fn writer_task<W: FrameWriter>(
                 &mut ends,
             );
         }
+        crate::perf::WIRE_BATCH_FRAMES.record_len(ends.len());
         // Revoked while gathering: none of the batch is owed.
         if let Some(goodbye) = revocation.current() {
             say_goodbye(

@@ -15,16 +15,22 @@ use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 /// Backlog cap: how much ALREADY-QUEUED work may pile up before the sink
 /// drops it and forces a resync. It never governs the frame in hand (see
 /// [`StdoutSink::flush`]).
 pub(super) const CAP_BYTES: usize = 256 * 1024;
 
+struct Chunk {
+    bytes: Vec<u8>,
+    queued_at: Instant,
+}
+
 /// Shared producer/consumer state behind the lock.
 struct QueueState {
     /// Complete-`flush()` byte buffers, written to the tty in order.
-    chunks: VecDeque<Vec<u8>>,
+    chunks: VecDeque<Chunk>,
     /// Buffers the writer finished with, returned for the sink to refill so
     /// the steady state neither allocates nor frees.
     spare: Vec<Vec<u8>>,
@@ -134,6 +140,7 @@ impl Write for StdoutSink {
                 // assumes the dropped bytes landed). The self-contained resync
                 // repaint then lands on an empty queue.
                 q.chunks.clear();
+                phux_client::perf::STDOUT_DROPPED_BYTES.add_len(q.bytes + chunk.len());
                 q.bytes = 0;
                 self.needs_resync.store(true, Ordering::Release);
                 phux_client::perf::STDOUT_DROPS.incr();
@@ -147,8 +154,12 @@ impl Write for StdoutSink {
                 Self::pool(&mut self.recycled, chunk, q.spare_limit);
             } else {
                 q.bytes += chunk.len();
-                q.chunks.push_back(chunk);
+                q.chunks.push_back(Chunk {
+                    bytes: chunk,
+                    queued_at: Instant::now(),
+                });
             }
+            phux_client::perf::STDOUT_BACKLOG.record(u64::try_from(q.bytes).unwrap_or(u64::MAX));
         }
         self.shared.cv.notify_one();
         Ok(())
@@ -231,7 +242,7 @@ fn spawn_writer_into<W: Write + Send + 'static>(inner: W) -> (StdoutSink, Writer
 /// Drain the queue to `out` off the runtime thread; exits once `shutdown` is
 /// set and the queue is empty.
 fn writer_loop<W: Write>(shared: &Shared, mut out: W) {
-    let mut chunks: Vec<Vec<u8>> = Vec::new();
+    let mut chunks: Vec<Chunk> = Vec::new();
     loop {
         {
             let mut q = shared
@@ -251,11 +262,24 @@ fn writer_loop<W: Write>(shared: &Shared, mut out: W) {
             chunks.extend(q.chunks.drain(..));
         }
         for chunk in &chunks {
-            if out.write_all(chunk).is_err() {
+            phux_client::perf::STDOUT_QUEUE_WAIT.record_elapsed(chunk.queued_at);
+            let result = {
+                let _timed = phux_client::perf::STDOUT_WRITE.timer();
+                out.write_all(&chunk.bytes)
+            };
+            if result.is_err() {
+                phux_client::perf::STDOUT_ERRORS.incr();
                 return;
             }
+            phux_client::perf::STDOUT_WRITTEN.add_len(chunk.bytes.len());
         }
-        let _ = out.flush();
+        let result = {
+            let _timed = phux_client::perf::STDOUT_FLUSH.timer();
+            out.flush()
+        };
+        if result.is_err() {
+            phux_client::perf::STDOUT_ERRORS.incr();
+        }
         {
             let mut q = shared
                 .queue
@@ -266,8 +290,8 @@ fn writer_loop<W: Write>(shared: &Shared, mut out: W) {
                 clippy::iter_with_drain,
                 reason = "`chunks` is reused across loop iterations; `into_iter` would consume the allocation this loop exists to keep"
             )]
-            for buf in chunks.drain(..) {
-                StdoutSink::pool(&mut q.spare, buf, limit);
+            for chunk in chunks.drain(..) {
+                StdoutSink::pool(&mut q.spare, chunk.bytes, limit);
             }
         }
     }

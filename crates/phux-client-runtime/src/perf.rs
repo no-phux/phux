@@ -12,8 +12,10 @@
 //! `runtime.acquire` of a deferred presentation pulls one projection
 //! (`runtime.catch_up`, also counted in `runtime.publish`). Under an output
 //! flood `runtime.publish` therefore tracks `runtime.acquire`, not
-//! `runtime.apply_batches`. Everything is a `static` from [`phux_perf`],
-//! always on, one relaxed atomic add per sample.
+//! `runtime.apply_batches`. `runtime.request_wall` includes queue wait,
+//! execution and response delivery;
+//! none of these elapsed durations claim CPU time. Everything is a `static`
+//! from [`phux_perf`], always on, with allocation-free relaxed atomic recording.
 
 use phux_perf::{Counter, Histogram, Metric, MetricSnapshot, Unit};
 
@@ -30,6 +32,30 @@ pub static DEFERRED: Counter = Counter::new();
 pub static ACQUIRED: Counter = Counter::new();
 /// Projections an acquire pulled from the owner for a deferred presentation.
 pub static CAUGHT_UP: Counter = Counter::new();
+/// Microseconds from command enqueue to owner dequeue; includes scheduling delay.
+pub static OWNER_QUEUE_WAIT: Histogram = Histogram::new();
+/// Microseconds executing a dequeued command, including replying; excludes idle recv.
+pub static OWNER_EXECUTE: Histogram = Histogram::new();
+/// Microseconds from request channel creation through response/error receipt.
+pub static REQUEST_WALL: Histogram = Histogram::new();
+/// Microseconds executing an apply batch, including its publications.
+pub static APPLY_EXECUTE: Histogram = Histogram::new();
+/// Events delivered in an apply batch.
+pub static APPLY_EVENTS: Histogram = Histogram::new();
+/// Apply events that returned an error, including fatal batch-prefix endings.
+pub static APPLY_ERRORS: Counter = Counter::new();
+/// Microseconds executing a publication catch-up, excluding its request wait.
+pub static CATCH_UP_EXECUTE: Histogram = Histogram::new();
+/// Microseconds projecting one grid, excluding publication.
+pub static PROJECT_GRID: Histogram = Histogram::new();
+/// Microseconds publishing a projected frame and reclaiming its predecessor.
+pub static PUBLISH_SWAP: Histogram = Histogram::new();
+/// Previous frames still held by a consumer at the publication swap.
+pub static BUFFER_HELD: Counter = Counter::new();
+/// Timed grid projection/publication attempts that failed (setup excluded).
+pub static PROJECT_ERRORS: Counter = Counter::new();
+/// Command send or synchronous response receive failures (owner stopped).
+pub static REQUEST_ERRORS: Counter = Counter::new();
 
 /// The runtime's metric table, in render order.
 pub static TABLE: &[Metric] = &[
@@ -39,6 +65,18 @@ pub static TABLE: &[Metric] = &[
     Metric::counter("runtime.publish_deferred", Unit::Count, &DEFERRED),
     Metric::counter("runtime.acquire", Unit::Count, &ACQUIRED),
     Metric::counter("runtime.catch_up", Unit::Count, &CAUGHT_UP),
+    Metric::histogram("runtime.owner_queue_wait", Unit::Micros, &OWNER_QUEUE_WAIT),
+    Metric::histogram("runtime.owner_execute", Unit::Micros, &OWNER_EXECUTE),
+    Metric::histogram("runtime.request_wall", Unit::Micros, &REQUEST_WALL),
+    Metric::histogram("runtime.apply_execute", Unit::Micros, &APPLY_EXECUTE),
+    Metric::histogram("runtime.apply_events", Unit::Count, &APPLY_EVENTS),
+    Metric::counter("runtime.apply_errors", Unit::Count, &APPLY_ERRORS),
+    Metric::histogram("runtime.catch_up_execute", Unit::Micros, &CATCH_UP_EXECUTE),
+    Metric::histogram("runtime.project_grid", Unit::Micros, &PROJECT_GRID),
+    Metric::histogram("runtime.publish_swap", Unit::Micros, &PUBLISH_SWAP),
+    Metric::counter("runtime.buffer_held", Unit::Count, &BUFFER_HELD),
+    Metric::counter("runtime.project_errors", Unit::Count, &PROJECT_ERRORS),
+    Metric::counter("runtime.request_errors", Unit::Count, &REQUEST_ERRORS),
 ];
 /// Snapshot every runtime metric, for a binding to append to the kernel's
 /// report.

@@ -20,6 +20,7 @@ impl TerminalActor {
         &self,
         scrollback: Option<u32>,
     ) -> Result<SnapshotBytes, crate::grid::SynthesisError> {
+        let _timer = crate::perf::BOOTSTRAP_SYNTH.timer();
         let canonical = self.terminal.borrow();
         let Some(terminal) = canonical.try_terminal() else {
             return Err(crate::grid::SynthesisError::TerminalUnavailable);
@@ -34,6 +35,7 @@ impl TerminalActor {
         scrollback: Option<u32>,
         max_bytes: usize,
     ) -> Result<SnapshotBytes, crate::grid::SynthesisError> {
+        let _timer = crate::perf::BOOTSTRAP_SYNTH.timer();
         let canonical = self.terminal.borrow();
         let Some(terminal) = canonical.try_terminal() else {
             return Err(crate::grid::SynthesisError::TerminalUnavailable);

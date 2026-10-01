@@ -14,10 +14,17 @@ use phux_perf::{Counter, Histogram, Metric, PerfReport, Unit};
 pub static ECHO_RTT: Histogram = Histogram::new();
 /// Microseconds libghostty took to apply one `RESOURCE_OUTPUT` frame.
 pub static VT_APPLY: Histogram = Histogram::new();
-/// Microseconds per full-frame paint (every pane, chrome, flush).
+/// Microseconds composing a full frame into memory, excluding submission and tty I/O.
 pub static PAINT_FULL: Histogram = Histogram::new();
 /// Microseconds per chrome-only paint.
 pub static PAINT_CHROME: Histogram = Histogram::new();
+/// Microseconds per pane render attempt, including clean and failed attempts;
+/// excludes letterbox margins, composite chrome, submission, and tty I/O.
+pub static PAINT_PANE: Histogram = Histogram::new();
+/// Microseconds updating/acquiring pooled libghostty render state.
+pub static PAINT_PREPARE: Histogram = Histogram::new();
+/// Microseconds walking dirty rows, front-buffer diffing and emitting VT into memory.
+pub static PAINT_ROWS: Histogram = Histogram::new();
 /// `RESOURCE_OUTPUT` frames received.
 pub static FRAMES: Counter = Counter::new();
 /// Frames that led to a paint.
@@ -28,13 +35,43 @@ pub static SKIPPED: Counter = Counter::new();
 pub static BAR_COMPOSES: Counter = Counter::new();
 /// Layout computations.
 pub static LAYOUTS: Counter = Counter::new();
-/// Stdout flushes.
+/// Nonempty stdout sink flush submissions.
 pub static FLUSHES: Counter = Counter::new();
-/// Bytes written to the outer terminal.
+/// Bytes offered to the stdout writer, including frames later dropped.
 pub static BYTES_OUT: Counter = Counter::new();
 /// Times the stdout backlog crossed its cap and queued diffs were dropped
 /// for a resync: the outer terminal could not keep up.
 pub static STDOUT_DROPS: Counter = Counter::new();
+/// Microseconds copying/submitting a composited frame to the render sink.
+pub static PAINT_SUBMIT: Histogram = Histogram::new();
+/// Microseconds from stdin readiness through handling, including awaited sends.
+pub static INPUT_WALL: Histogram = Histogram::new();
+/// Microseconds from socket readiness through burst handling, including awaited sends.
+pub static FRAMES_WALL: Histogram = Histogram::new();
+/// Frames drained per inbound burst.
+pub static BURST_FRAMES: Histogram = Histogram::new();
+/// Bursts that reached the fairness cap.
+pub static BURST_CAPPED: Counter = Counter::new();
+/// Microseconds from first withheld pane until its debt is retired (not tty delivery).
+pub static PACER_HOLD: Histogram = Histogram::new();
+/// Microseconds past the pacing deadline when withheld debt is retired.
+pub static PACER_LATE: Histogram = Histogram::new();
+/// Panes whose withheld debt is retired together.
+pub static PACER_PANES: Histogram = Histogram::new();
+/// Queued bytes sampled after each nonempty sink flush; excludes in-flight writes.
+pub static STDOUT_BACKLOG: Histogram = Histogram::new();
+/// Microseconds from enqueue until a chunk's actual write starts.
+pub static STDOUT_QUEUE_WAIT: Histogram = Histogram::new();
+/// Microseconds in each actual `write_all` call, including blocking and failed calls.
+pub static STDOUT_WRITE: Histogram = Histogram::new();
+/// Microseconds in each actual writer-thread flush, including failed calls.
+pub static STDOUT_FLUSH: Histogram = Histogram::new();
+/// Bytes in successfully completed writer-thread `write_all` calls.
+pub static STDOUT_WRITTEN: Counter = Counter::new();
+/// Bytes discarded on backlog overflow, including the triggering frame.
+pub static STDOUT_DROPPED_BYTES: Counter = Counter::new();
+/// Actual writer-thread `write_all` or flush errors.
+pub static STDOUT_ERRORS: Counter = Counter::new();
 /// Frames the pacer let through immediately because they answered input.
 pub static PACER_REPLIES: Counter = Counter::new();
 /// Frames the pacer held for the next frame interval.
@@ -49,6 +86,14 @@ pub static TABLE: &[Metric] = &[
     Metric::histogram("vt_apply", Unit::Micros, &VT_APPLY),
     Metric::histogram("paint.full", Unit::Micros, &PAINT_FULL),
     Metric::histogram("paint.chrome", Unit::Micros, &PAINT_CHROME),
+    Metric::histogram("paint.pane", Unit::Micros, &PAINT_PANE),
+    Metric::histogram("paint.prepare", Unit::Micros, &PAINT_PREPARE),
+    Metric::histogram("paint.rows", Unit::Micros, &PAINT_ROWS),
+    Metric::histogram("paint.submit", Unit::Micros, &PAINT_SUBMIT),
+    Metric::histogram("loop.input_wall", Unit::Micros, &INPUT_WALL),
+    Metric::histogram("loop.frames_wall", Unit::Micros, &FRAMES_WALL),
+    Metric::histogram("loop.burst_frames", Unit::Count, &BURST_FRAMES),
+    Metric::counter("loop.burst_capped", Unit::Count, &BURST_CAPPED),
     Metric::counter("frames.received", Unit::Count, &FRAMES),
     Metric::counter("frames.painted", Unit::Count, &PAINTS),
     Metric::counter("frames.skipped", Unit::Count, &SKIPPED),
@@ -57,8 +102,18 @@ pub static TABLE: &[Metric] = &[
     Metric::counter("stdout.flushes", Unit::Count, &FLUSHES),
     Metric::counter("stdout.bytes", Unit::Bytes, &BYTES_OUT),
     Metric::counter("stdout.drops", Unit::Count, &STDOUT_DROPS),
+    Metric::histogram("stdout.backlog", Unit::Bytes, &STDOUT_BACKLOG),
+    Metric::histogram("stdout.queue_wait", Unit::Micros, &STDOUT_QUEUE_WAIT),
+    Metric::histogram("stdout.write", Unit::Micros, &STDOUT_WRITE),
+    Metric::histogram("stdout.flush", Unit::Micros, &STDOUT_FLUSH),
+    Metric::counter("stdout.written", Unit::Bytes, &STDOUT_WRITTEN),
+    Metric::counter("stdout.dropped_bytes", Unit::Bytes, &STDOUT_DROPPED_BYTES),
+    Metric::counter("stdout.errors", Unit::Count, &STDOUT_ERRORS),
     Metric::counter("pacer.replies", Unit::Count, &PACER_REPLIES),
     Metric::counter("pacer.waits", Unit::Count, &PACER_WAITS),
+    Metric::histogram("pacer.hold", Unit::Micros, &PACER_HOLD),
+    Metric::histogram("pacer.late", Unit::Micros, &PACER_LATE),
+    Metric::histogram("pacer.panes", Unit::Count, &PACER_PANES),
     Metric::gauge("proc.sched_interactive", Unit::Count, &SCHED_INTERACTIVE),
 ];
 

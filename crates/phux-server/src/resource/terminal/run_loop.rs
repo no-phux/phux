@@ -189,6 +189,8 @@ struct RunLoopState {
     detect_interval: std::time::Duration,
     /// The armed detector interval.
     detect_tick: tokio::time::Interval,
+    /// False after intentional disarming: the first resumed deadline is stale.
+    detect_deadline_valid: bool,
     /// Debounced post-resize / gap resync owed to subscribers.
     resync: ResyncDebounce,
     /// Next combined ingress prefers native control when true.
@@ -241,6 +243,7 @@ impl TerminalActor {
             tick,
             detect_interval,
             detect_tick,
+            detect_deadline_valid: true,
             resync: ResyncDebounce::idle(),
             prefer_native: false,
             native_step_due: false,
@@ -266,6 +269,10 @@ impl TerminalActor {
             // One read serves every guard below.
             let bootstrap_pending = self.native_bootstrap_pending();
             let pump = BootstrapPump::resolve(self.native_work_pending(), state.native_step_due);
+            let detector_armed = self.detector_tick_armed(bootstrap_pending);
+            if !detector_armed {
+                state.detect_deadline_valid = false;
+            }
 
             tokio::select! {
                 biased;
@@ -345,8 +352,13 @@ impl TerminalActor {
 
                 // Agent-state detector (ADR-0046): driven only by this
                 // adaptive interval, never by PTY bytes.
-                _ = state.detect_tick.tick(), if self.detector_tick_armed(bootstrap_pending) =>
-                    self.service_detect_tick(&mut state.detect_tick, &mut state.detect_interval),
+                scheduled = state.detect_tick.tick(), if detector_armed => {
+                    if state.detect_deadline_valid {
+                        crate::perf::RUNTIME_DETECT_TICK_LATE.record_duration(scheduled.elapsed());
+                    }
+                    state.detect_deadline_valid = true;
+                    self.service_detect_tick(&mut state.detect_tick, &mut state.detect_interval);
+                },
 
                 () = tokio::task::yield_now(), if pump == BootstrapPump::YieldDue =>
                     state.native_step_due = true,
@@ -655,9 +667,7 @@ impl TerminalActor {
         #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
         let deferred = false;
         if !deferred {
-            let apply_started = std::time::Instant::now();
             self.ingest_pty_payload(&burst.payload);
-            crate::perf::PTY_VT_APPLY.record_elapsed(apply_started);
         }
         let _ = self.core.output_tx.send(PaneOutput::Live {
             seq,
@@ -669,7 +679,9 @@ impl TerminalActor {
             self.handle_pty_eof();
         } else if burst.hit_byte_cap {
             // Capped with more queued: yield so input and sibling tasks run.
+            let yield_started = std::time::Instant::now();
             tokio::task::yield_now().await;
+            crate::perf::PTY_YIELD_WAIT.record_elapsed(yield_started);
         }
         PtyTurn::Stepped(native_step_due)
     }
@@ -720,7 +732,11 @@ impl TerminalActor {
     /// skip plain text with `memchr`; the FFI reads are cheap enough to stay
     /// unconditional.
     fn ingest_pty_payload(&mut self, payload: &Bytes) {
+        let _apply_timer = crate::perf::PTY_VT_APPLY.timer();
+        let parse_started = std::time::Instant::now();
         self.terminal.borrow_mut().vt_write(payload);
+        crate::perf::PTY_VT_PARSE.record_elapsed(parse_started);
+        let _post_timer = crate::perf::PTY_POST_APPLY.timer();
         self.answer_color_queries(payload);
         self.publish_input_snapshot();
         self.terminal_dirty_since_tick = true;

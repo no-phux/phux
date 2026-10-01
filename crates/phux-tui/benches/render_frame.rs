@@ -18,7 +18,7 @@
 //! allocated a `Vec<char>` per non-empty cell, so a full-dirty 200x60 frame
 //! cost ~10k malloc/free pairs before a single byte reached the terminal.
 //!
-//! Run: `cargo bench -p phux-client --features testkit --bench render_frame`.
+//! Run: `cargo bench -p phux-tui --features testkit --bench render_frame`.
 
 #![allow(
     clippy::cast_precision_loss,
@@ -345,7 +345,7 @@ fn measure_clean(corpus: Corpus) -> Measurement {
 }
 
 fn main() {
-    println!("phux-client attach::render cell-emission gate");
+    println!("phux-tui attach::render cell-emission gate");
     for corpus in [Corpus::Shell80x24, Corpus::Tui200x60] {
         report("full-dirty", corpus, &measure_full(corpus));
         report("one-row-dirty", corpus, &measure_one_row(corpus));

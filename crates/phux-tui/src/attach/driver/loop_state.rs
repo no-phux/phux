@@ -246,21 +246,18 @@ enum FrameStep {
 }
 
 /// A `sleep_until` future for an armed deadline, or a never-resolving one.
-fn sleep_until_or_pending(
-    deadline: Option<tokio::time::Instant>,
-) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+async fn sleep_until_or_pending(deadline: Option<tokio::time::Instant>) {
     match deadline {
-        Some(deadline) => Box::pin(tokio::time::sleep_until(deadline)),
-        None => Box::pin(std::future::pending::<()>()),
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending::<()>().await,
     }
 }
 
 /// The relative-delay twin of [`sleep_until_or_pending`].
-fn sleep_for_or_pending(interval: Option<Duration>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
-    match interval {
-        Some(interval) => Box::pin(tokio::time::sleep(interval)),
-        None => Box::pin(std::future::pending::<()>()),
-    }
+fn sleep_for_or_pending(interval: Option<Duration>) -> impl Future<Output = ()> {
+    // Anchor relative delays when armed, not when select first polls them.
+    let deadline = interval.map(|interval| tokio::time::Instant::now() + interval);
+    sleep_until_or_pending(deadline)
 }
 
 /// Restore the terminal explicitly (Drop wouldn't fire on `exit()`), then
@@ -1669,10 +1666,20 @@ impl SessionLoop {
         tokio::select! {
             biased;
 
-            n = self.stdin.read(&mut self.stdin_buf) => self.on_stdin(conn, out, sidebar, n).await,
+            n = self.stdin.read(&mut self.stdin_buf) => {
+                let started = std::time::Instant::now();
+                let result = self.on_stdin(conn, out, sidebar, n).await;
+                phux_client::perf::INPUT_WALL.record_elapsed(started);
+                result
+            },
 
             // Inbound frames, drained in a bounded batch so a burst paints once.
-            frame = conn.recv() => self.on_server_frame(conn, out, sidebar, frame).await,
+            frame = conn.recv() => {
+                let started = std::time::Instant::now();
+                let result = self.on_server_frame(conn, out, sidebar, frame).await;
+                phux_client::perf::FRAMES_WALL.record_elapsed(started);
+                result
+            },
 
             // The pacer window expired: settle every withheld pane in one frame.
             () = paint_sleep => {
@@ -2025,6 +2032,10 @@ impl SessionLoop {
         first: FrameKind,
     ) -> Result<Step, AttachError> {
         let batch = drain_frame_batch(conn, first)?;
+        phux_client::perf::BURST_FRAMES.record(u64::try_from(batch.len()).unwrap_or(u64::MAX));
+        if batch.len() == FRAME_COALESCE_CAP {
+            phux_client::perf::BURST_CAPPED.incr();
+        }
         // Per-pane last-wins: a frame defers its paint iff a later frame in
         // the burst repaints the same pane.
         let defer_flags = coalesce_defer_flags(&batch, frame_paint_target);
