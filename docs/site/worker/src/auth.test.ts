@@ -18,8 +18,14 @@ const env: AuthEnv = {
 };
 
 function setCookies(response: Response): string[] {
-  const headers = response.headers as Headers & { getSetCookie?: () => string[] };
-  return headers.getSetCookie?.() ?? (response.headers.get("Set-Cookie")?.split(", ") ?? []);
+  const headers = response.headers as Headers & {
+    getSetCookie?: () => string[];
+  };
+  return (
+    headers.getSetCookie?.() ??
+    response.headers.get("Set-Cookie")?.split(", ") ??
+    []
+  );
 }
 
 function cookiePair(setCookie: string): string {
@@ -32,7 +38,9 @@ async function start(
   returnTo = "/",
 ) {
   const response = await handler(
-    new Request(`${PUBLIC_AUTH_ORIGIN}/auth/${provider}?return_to=${encodeURIComponent(returnTo)}`),
+    new Request(
+      `${PUBLIC_AUTH_ORIGIN}/auth/${provider}?return_to=${encodeURIComponent(returnTo)}`,
+    ),
     env,
   );
   expect(response?.status).toBe(302);
@@ -43,7 +51,11 @@ async function start(
   };
 }
 
-function requestWithCookie(url: string, cookie: string, init?: RequestInit): Request {
+function requestWithCookie(
+  url: string,
+  cookie: string,
+  init?: RequestInit,
+): Request {
   const headers = new Headers(init?.headers);
   headers.set("Cookie", cookie);
   return new Request(url, { ...init, headers });
@@ -60,8 +72,12 @@ describe("OAuth starts", () => {
     expect(result.authorization.searchParams.get("redirect_uri")).toBe(
       `${PUBLIC_APP_ORIGIN}/auth/github/callback`,
     );
-    expect(result.authorization.searchParams.get("code_challenge_method")).toBe("S256");
-    expect(result.authorization.searchParams.get("code_challenge")?.length).toBe(43);
+    expect(result.authorization.searchParams.get("code_challenge_method")).toBe(
+      "S256",
+    );
+    expect(
+      result.authorization.searchParams.get("code_challenge")?.length,
+    ).toBe(43);
     expect(result.authorization.searchParams.has("scope")).toBe(false);
     expect(setCookies(result.response)[0]).toMatch(
       /^__Secure-phux_oauth_github=.*; Domain=phux.sh; Path=\/; Max-Age=600; HttpOnly; Secure; SameSite=Lax$/,
@@ -70,13 +86,30 @@ describe("OAuth starts", () => {
 
   test("rejects untrusted request origins and open redirects", async () => {
     const handler = createAuthRequestHandler();
-    expect((await handler(new Request("https://attacker.example/auth/github"), env))?.status).toBe(400);
     expect(
-      (await handler(new Request(`${PUBLIC_AUTH_ORIGIN}/auth/google?return_to=https://attacker.example`), env))
+      (await handler(new Request("https://attacker.example/auth/github"), env))
         ?.status,
     ).toBe(400);
-    expect((await handler(new Request(`${PUBLIC_AUTH_ORIGIN}/auth/github?return_to=//attacker.example`), env))?.status)
-      .toBe(400);
+    expect(
+      (
+        await handler(
+          new Request(
+            `${PUBLIC_AUTH_ORIGIN}/auth/google?return_to=https://attacker.example`,
+          ),
+          env,
+        )
+      )?.status,
+    ).toBe(400);
+    expect(
+      (
+        await handler(
+          new Request(
+            `${PUBLIC_AUTH_ORIGIN}/auth/github?return_to=//attacker.example`,
+          ),
+          env,
+        )
+      )?.status,
+    ).toBe(400);
   });
 
   test("starts GitHub OAuth on the public site origin so the browser never hits shell.phux.sh", async () => {
@@ -84,12 +117,46 @@ describe("OAuth starts", () => {
       throw new Error("unexpected fetch");
     });
     const response = await handler(
-      new Request(`${PUBLIC_APP_ORIGIN}/auth/github?return_to=${encodeURIComponent("/")}`),
+      new Request(
+        `${PUBLIC_APP_ORIGIN}/auth/github?return_to=${encodeURIComponent("/")}`,
+      ),
       env,
     );
     expect(response?.status).toBe(302);
     const location = new URL(response!.headers.get("Location")!);
-    expect(location.searchParams.get("redirect_uri")).toBe(`${PUBLIC_APP_ORIGIN}/auth/github/callback`);
+    expect(location.searchParams.get("redirect_uri")).toBe(
+      `${PUBLIC_APP_ORIGIN}/auth/github/callback`,
+    );
+  });
+
+  test("returns missing provider configuration to the app without accepting an open redirect", async () => {
+    const handler = createAuthRequestHandler();
+    for (const key of [
+      "GITHUB_OAUTH_CLIENT_ID",
+      "GITHUB_OAUTH_CLIENT_SECRET",
+      "AUTH_COOKIE_SECRET",
+    ] as const) {
+      const unconfigured = { ...env, [key]: "" };
+      const response = await handler(
+        new Request(`${PUBLIC_APP_ORIGIN}/auth/github?return_to=/embed`),
+        unconfigured,
+      );
+      expect(response?.status).toBe(302);
+      expect(response?.headers.get("Location")).toBe(
+        `${PUBLIC_APP_ORIGIN}/embed?auth=error&auth_error=configuration`,
+      );
+      expect(setCookies(response!)).toHaveLength(0);
+      expect(
+        (
+          await handler(
+            new Request(
+              `${PUBLIC_APP_ORIGIN}/auth/github?return_to=https://attacker.example`,
+            ),
+            unconfigured,
+          )
+        )?.status,
+      ).toBe(400);
+    }
   });
 
   test("accepts the frontend camelCase alias and still stores /embed", async () => {
@@ -97,13 +164,18 @@ describe("OAuth starts", () => {
       throw new Error("unexpected fetch");
     });
     const response = await handler(
-      new Request(`${PUBLIC_AUTH_ORIGIN}/auth/google?returnTo=${encodeURIComponent("/embed")}`),
+      new Request(
+        `${PUBLIC_AUTH_ORIGIN}/auth/google?returnTo=${encodeURIComponent("/embed")}`,
+      ),
       env,
     );
     expect(response?.status).toBe(302);
     const cookie = setCookies(response!)[0]!;
     const payload = JSON.parse(
-      Buffer.from(cookie.split(";", 1)[0]!.split("=")[1]!.split(".")[0]!, "base64url").toString(),
+      Buffer.from(
+        cookie.split(";", 1)[0]!.split("=")[1]!.split(".")[0]!,
+        "base64url",
+      ).toString(),
     ) as { returnPath?: string };
     expect(payload.returnPath).toBe("/embed");
   });
@@ -126,7 +198,9 @@ describe("OAuth callbacks", () => {
     );
 
     expect(response?.status).toBe(302);
-    expect(response?.headers.get("Location")).toBe(`${PUBLIC_APP_ORIGIN}/?auth=error`);
+    expect(response?.headers.get("Location")).toBe(
+      `${PUBLIC_APP_ORIGIN}/?auth=error&auth_error=session_expired`,
+    );
     expect(fetches).toBe(0);
     expect(setCookies(response!)).toContain(
       "__Secure-phux_oauth_github=; Domain=phux.sh; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
@@ -147,7 +221,9 @@ describe("OAuth callbacks", () => {
     );
 
     expect(response?.status).toBe(302);
-    expect(response?.headers.get("Location")).toBe(`${PUBLIC_APP_ORIGIN}/embed?auth=error`);
+    expect(response?.headers.get("Location")).toBe(
+      `${PUBLIC_APP_ORIGIN}/embed?auth=error&auth_error=cancelled`,
+    );
     expect(response?.headers.get("Location")).not.toContain("private");
   });
 
@@ -156,7 +232,8 @@ describe("OAuth callbacks", () => {
     const handler = createAuthRequestHandler(async (input, init) => {
       const url = String(input);
       requests.push({ url, init });
-      if (url.endsWith("/access_token")) return Response.json({ access_token: "transient-token" });
+      if (url.endsWith("/access_token"))
+        return Response.json({ access_token: "transient-token" });
       return Response.json({
         id: 123456,
         login: "octocat",
@@ -174,10 +251,28 @@ describe("OAuth callbacks", () => {
     );
 
     expect(response?.status).toBe(302);
-    expect(response?.headers.get("Location")).toBe(`${PUBLIC_APP_ORIGIN}/embed?auth=success`);
-    expect(String(requests[0]?.init?.body)).toContain("code_verifier=");
-    expect(new Headers(requests[1]?.init?.headers).get("Authorization")).toBe("Bearer transient-token");
-    const sessionSetCookie = setCookies(response!).find((value) => value.startsWith("__Secure-phux_session="))!;
+    expect(response?.headers.get("Location")).toBe(
+      `${PUBLIC_APP_ORIGIN}/embed?auth=success`,
+    );
+    const tokenRequest = new URLSearchParams(String(requests[0]?.init?.body));
+    const verifier = tokenRequest.get("code_verifier")!;
+    const challenge = Buffer.from(
+      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
+    ).toString("base64url");
+    expect(initiated.authorization.searchParams.get("code_challenge")).toBe(
+      challenge,
+    );
+    expect(tokenRequest.get("redirect_uri")).toBe(
+      initiated.authorization.searchParams.get("redirect_uri"),
+    );
+    expect(initiated.authorization.toString()).not.toContain(verifier);
+    expect(state).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(new Headers(requests[1]?.init?.headers).get("Authorization")).toBe(
+      "Bearer transient-token",
+    );
+    const sessionSetCookie = setCookies(response!).find((value) =>
+      value.startsWith("__Secure-phux_session="),
+    )!;
     expect(sessionSetCookie).toMatch(
       /^__Secure-phux_session=.*; Domain=phux.sh; Path=\/; Max-Age=28800; HttpOnly; Secure; SameSite=Lax$/,
     );
@@ -185,37 +280,73 @@ describe("OAuth callbacks", () => {
       requestWithCookie(`${PUBLIC_AUTH_ORIGIN}/`, cookiePair(sessionSetCookie)),
       env.AUTH_COOKIE_SECRET,
     );
-    expect(identity).toEqual({ principal: "github:123456", provider: "github", display: "octocat" });
+    expect(identity).toEqual({
+      principal: "github:123456",
+      provider: "github",
+      display: "octocat",
+    });
     expect(sessionSetCookie).not.toContain("transient-token");
   });
 
-  test("completes GitHub login from the signed state when the transaction cookie is missing", async () => {
-    const handler = createAuthRequestHandler(async (input) => {
-      if (String(input).endsWith("/access_token")) {
-        return Response.json({ access_token: "transient-token" });
-      }
-      return Response.json({
-        id: 123456,
-        login: "octocat",
-        created_at: "2020-01-01T00:00:00Z",
-      });
+  test("rejects a callback copied to a browser without its transaction cookie", async () => {
+    let fetches = 0;
+    const handler = createAuthRequestHandler(async () => {
+      fetches += 1;
+      return Response.json({ access_token: "must-not-be-used" });
     });
     const initiated = await start("github", handler, "/embed");
     const state = initiated.authorization.searchParams.get("state")!;
     const response = await handler(
-      new Request(`${PUBLIC_APP_ORIGIN}/auth/github/callback?code=one-time-code&state=${encodeURIComponent(state)}`),
+      new Request(
+        `${PUBLIC_APP_ORIGIN}/auth/github/callback?code=one-time-code&state=${encodeURIComponent(state)}`,
+      ),
       env,
     );
 
     expect(response?.status).toBe(302);
-    expect(response?.headers.get("Location")).toBe(`${PUBLIC_APP_ORIGIN}/embed?auth=success`);
-    const sessionSetCookie = setCookies(response!).find((value) => value.startsWith("__Secure-phux_session="))!;
+    expect(response?.headers.get("Location")).toBe(
+      `${PUBLIC_APP_ORIGIN}/?auth=error&auth_error=session_expired`,
+    );
+    expect(fetches).toBe(0);
     expect(
-      await verifySessionCookie(
-        requestWithCookie(`${PUBLIC_APP_ORIGIN}/`, cookiePair(sessionSetCookie)),
-        env.AUTH_COOKIE_SECRET,
+      setCookies(response!).some((value) =>
+        value.startsWith("__Secure-phux_session="),
       ),
-    ).toEqual({ principal: "github:123456", provider: "github", display: "octocat" });
+    ).toBe(false);
+  });
+
+  test("rejects a tampered, expired, or different browser's transaction before token exchange", async () => {
+    let clock = Date.now();
+    let fetches = 0;
+    const handler = createAuthRequestHandler(
+      async () => {
+        fetches += 1;
+        return Response.json({});
+      },
+      () => clock,
+    );
+    const initiated = await start("github", handler);
+    const other = await start("github", handler);
+    const callback = `${PUBLIC_APP_ORIGIN}/auth/github/callback?code=code&state=${initiated.authorization.searchParams.get("state")}`;
+    const tampered = initiated.cookie.replace("=", "=invalid");
+    for (const transactionCookie of [tampered, other.cookie]) {
+      const response = await handler(
+        requestWithCookie(callback, transactionCookie),
+        env,
+      );
+      expect(response?.headers.get("Location")).toBe(
+        `${PUBLIC_APP_ORIGIN}/?auth=error&auth_error=session_expired`,
+      );
+    }
+    clock += 10 * 60 * 1_000;
+    const expired = await handler(
+      requestWithCookie(callback, initiated.cookie),
+      env,
+    );
+    expect(expired?.headers.get("Location")).toBe(
+      `${PUBLIC_APP_ORIGIN}/?auth=error&auth_error=session_expired`,
+    );
+    expect(fetches).toBe(0);
   });
 
   test("accepts GitHub form-urlencoded tokens and string user ids", async () => {
@@ -241,10 +372,12 @@ describe("OAuth callbacks", () => {
       env,
     );
     expect(response?.status).toBe(302);
-    expect(response?.headers.get("Location")).toBe(`${PUBLIC_APP_ORIGIN}/?auth=success`);
+    expect(response?.headers.get("Location")).toBe(
+      `${PUBLIC_APP_ORIGIN}/?auth=success`,
+    );
   });
 
-  test("maps GitHub token-endpoint error bodies to a generic frontend error", async () => {
+  test("maps GitHub credential errors to an actionable configuration error without provider details", async () => {
     const handler = createAuthRequestHandler(async (input) => {
       if (String(input).endsWith("/access_token")) {
         return Response.json({ error: "incorrect_client_credentials" });
@@ -260,7 +393,9 @@ describe("OAuth callbacks", () => {
       env,
     );
     expect(response?.status).toBe(302);
-    expect(response?.headers.get("Location")).toBe(`${PUBLIC_APP_ORIGIN}/?auth=error`);
+    expect(response?.headers.get("Location")).toBe(
+      `${PUBLIC_APP_ORIGIN}/?auth=error&auth_error=configuration`,
+    );
     expect(response?.headers.get("Location")).not.toContain("incorrect_client");
   });
 
@@ -286,7 +421,9 @@ describe("OAuth callbacks", () => {
     );
 
     expect(response?.status).toBe(302);
-    expect(response?.headers.get("Location")).toBe(`${PUBLIC_APP_ORIGIN}/?auth=error`);
+    expect(response?.headers.get("Location")).toBe(
+      `${PUBLIC_APP_ORIGIN}/?auth=error&auth_error=account_too_new`,
+    );
     expect(setCookies(response!)).toHaveLength(1);
   });
 
@@ -325,7 +462,9 @@ describe("OAuth callbacks", () => {
     );
 
     expect(response?.status).toBe(302);
-    const session = setCookies(response!).find((value) => value.startsWith("__Secure-phux_session="))!;
+    const session = setCookies(response!).find((value) =>
+      value.startsWith("__Secure-phux_session="),
+    )!;
     expect(
       await verifySessionCookie(
         requestWithCookie(`${PUBLIC_AUTH_ORIGIN}/`, cookiePair(session)),
@@ -345,7 +484,8 @@ describe("OAuth callbacks", () => {
     jwk.kid = "google-key";
     let idToken = "";
     const handler = createAuthRequestHandler(async (input) => {
-      if (String(input).endsWith("/certs")) return Response.json({ keys: [jwk] });
+      if (String(input).endsWith("/certs"))
+        return Response.json({ keys: [jwk] });
       return Response.json({ id_token: idToken });
     });
     const initiated = await start("google", handler);
@@ -368,20 +508,27 @@ describe("OAuth callbacks", () => {
       env,
     );
     expect(response?.status).toBe(302);
-    expect(response?.headers.get("Location")).toBe(`${PUBLIC_APP_ORIGIN}/?auth=error`);
+    expect(response?.headers.get("Location")).toBe(
+      `${PUBLIC_APP_ORIGIN}/?auth=error&auth_error=provider_unavailable`,
+    );
   });
 });
 
 describe("sessions", () => {
   async function githubSession(now = Date.now()) {
-    const handler = createAuthRequestHandler(async (input) =>
-      String(input).endsWith("/access_token")
-        ? Response.json({ access_token: "token" })
-        : Response.json({
-            id: 42,
-            login: "safe-login",
-            created_at: new Date(now - 30 * 24 * 60 * 60 * 1_000).toISOString(),
-          }), () => now);
+    const handler = createAuthRequestHandler(
+      async (input) =>
+        String(input).endsWith("/access_token")
+          ? Response.json({ access_token: "token" })
+          : Response.json({
+              id: 42,
+              login: "safe-login",
+              created_at: new Date(
+                now - 30 * 24 * 60 * 60 * 1_000,
+              ).toISOString(),
+            }),
+      () => now,
+    );
     const initiated = await start("github", handler);
     const response = await handler(
       requestWithCookie(
@@ -392,24 +539,40 @@ describe("sessions", () => {
     );
     return {
       handler,
-      session: cookiePair(setCookies(response!).find((value) => value.startsWith("__Secure-phux_session="))!),
+      session: cookiePair(
+        setCookies(response!).find((value) =>
+          value.startsWith("__Secure-phux_session="),
+        )!,
+      ),
       now,
     };
   }
 
   test("rejects tampered and expired signed session cookies", async () => {
     const created = await githubSession(1_800_000_000_000);
-    const request = requestWithCookie(`${PUBLIC_AUTH_ORIGIN}/`, created.session);
-    expect(await verifySessionCookie(request, env.AUTH_COOKIE_SECRET, created.now)).not.toBeNull();
+    const request = requestWithCookie(
+      `${PUBLIC_AUTH_ORIGIN}/`,
+      created.session,
+    );
+    expect(
+      await verifySessionCookie(request, env.AUTH_COOKIE_SECRET, created.now),
+    ).not.toBeNull();
     expect(
       await verifySessionCookie(
-        requestWithCookie(`${PUBLIC_AUTH_ORIGIN}/`, `${created.session.slice(0, -1)}x`),
+        requestWithCookie(
+          `${PUBLIC_AUTH_ORIGIN}/`,
+          `${created.session.slice(0, -1)}x`,
+        ),
         env.AUTH_COOKIE_SECRET,
         created.now,
       ),
     ).toBeNull();
     expect(
-      await verifySessionCookie(request, env.AUTH_COOKIE_SECRET, created.now + 8 * 60 * 60 * 1_000 + 1),
+      await verifySessionCookie(
+        request,
+        env.AUTH_COOKIE_SECRET,
+        created.now + 8 * 60 * 60 * 1_000 + 1,
+      ),
     ).toBeNull();
   });
 
@@ -422,8 +585,12 @@ describe("sessions", () => {
       env,
     );
     expect(response?.headers.get("Cache-Control")).toBe("no-store");
-    expect(response?.headers.get("Access-Control-Allow-Origin")).toBe(PUBLIC_APP_ORIGIN);
-    expect(response?.headers.get("Access-Control-Allow-Credentials")).toBe("true");
+    expect(response?.headers.get("Access-Control-Allow-Origin")).toBe(
+      PUBLIC_APP_ORIGIN,
+    );
+    expect(response?.headers.get("Access-Control-Allow-Credentials")).toBe(
+      "true",
+    );
     expect(await response?.json()).toEqual({
       authenticated: true,
       provider: "github",
@@ -445,10 +612,22 @@ describe("sessions", () => {
 
   test("logout requires the exact same Origin and clears the host cookie", async () => {
     const handler = createAuthRequestHandler();
-    for (const origin of [null, "https://attacker.example", "https://shell.phux.sh.evil"]) {
+    for (const origin of [
+      null,
+      "https://attacker.example",
+      "https://shell.phux.sh.evil",
+    ]) {
       const headers = origin ? { Origin: origin } : undefined;
       expect(
-        (await handler(new Request(`${PUBLIC_AUTH_ORIGIN}/auth/logout`, { method: "POST", headers }), env))?.status,
+        (
+          await handler(
+            new Request(`${PUBLIC_AUTH_ORIGIN}/auth/logout`, {
+              method: "POST",
+              headers,
+            }),
+            env,
+          )
+        )?.status,
       ).toBe(403);
     }
     const response = await handler(
@@ -459,7 +638,9 @@ describe("sessions", () => {
       env,
     );
     expect(response?.status).toBe(204);
-    expect(response?.headers.get("Access-Control-Allow-Origin")).toBe(PUBLIC_APP_ORIGIN);
+    expect(response?.headers.get("Access-Control-Allow-Origin")).toBe(
+      PUBLIC_APP_ORIGIN,
+    );
     expect(response?.headers.get("Set-Cookie")).toBe(
       "__Secure-phux_session=; Domain=phux.sh; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
     );
@@ -477,6 +658,8 @@ describe("production monitor authentication", () => {
     });
     expect(verifySyntheticBearer(request, `${secret}x`)).toBeNull();
     expect(verifySyntheticBearer(request, undefined)).toBeNull();
-    expect(JSON.stringify(verifySyntheticBearer(request, secret))).not.toContain(secret);
+    expect(
+      JSON.stringify(verifySyntheticBearer(request, secret)),
+    ).not.toContain(secret);
   });
 });

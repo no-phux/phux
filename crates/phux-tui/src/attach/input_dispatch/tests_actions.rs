@@ -1453,7 +1453,9 @@ fn session_picker_groups_rows_by_host() {
     let items = host_grouped_session_items(
         &sessions,
         Some(SessionId::new(1)),
+        LOCAL_HOST_HEADER,
         &host_fixture(),
+        &[],
         &Workspace::single(tid(1)),
     );
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
@@ -1490,7 +1492,8 @@ fn session_picker_groups_rows_by_host() {
 
     let mut open = Workspace::single(tid(1));
     open.add_window("edge/build".to_owned(), satellite_id("edge", 9));
-    let items = host_grouped_session_items(&[], None, &host_fixture(), &open);
+    let items =
+        host_grouped_session_items(&[], None, LOCAL_HOST_HEADER, &host_fixture(), &[], &open);
     let build = items.iter().find(|i| i.label == "build").expect("row");
     assert!(
         build
@@ -1505,6 +1508,8 @@ fn session_picker_groups_rows_by_host() {
     let grouped = host_grouped_session_items(
         &sessions,
         Some(SessionId::new(1)),
+        LOCAL_HOST_HEADER,
+        &[],
         &[],
         &Workspace::single(tid(1)),
     );
@@ -1513,6 +1518,224 @@ fn session_picker_groups_rows_by_host() {
         session_picker_items(&sessions, Some(SessionId::new(1))).len()
     );
     assert!(grouped.iter().all(|item| !item.is_header()));
+}
+
+/// ADR-0140 hosts-provider rows: this machine, a reachable machine with two
+/// sessions, one with none, and one that did not answer.
+fn machine_fixture() -> Vec<phux_core::host_list::HostJson> {
+    use phux_core::host_list::{HostJson, HostKind};
+    use phux_core::session_list::SessionJson;
+    let session = |name: &str, windows, attached_clients| SessionJson {
+        name: name.to_owned(),
+        windows,
+        attached: attached_clients != 0,
+        attached_clients,
+        keep_empty: false,
+        empty: false,
+    };
+    let host = |name: &str, label: &str, kind, sessions: Vec<SessionJson>| HostJson {
+        name: name.to_owned(),
+        label: label.to_owned(),
+        kind,
+        endpoint: None,
+        reachable: true,
+        error: None,
+        sessions,
+    };
+    vec![
+        host(
+            crate::attach::hosts::LOCAL_HOST,
+            "laptop",
+            HostKind::Local,
+            vec![session("work", 1, 1)],
+        ),
+        host(
+            "mini",
+            "mini",
+            HostKind::Remote,
+            vec![session("build", 2, 0), session("phall", 1, 1)],
+        ),
+        host("spare", "spare", HostKind::Remote, Vec::new()),
+        HostJson {
+            reachable: false,
+            error: Some("timed out".to_owned()),
+            ..host("xps", "xps", HostKind::Remote, Vec::new())
+        },
+    ]
+}
+
+/// phux-s7mm: the session picker lists every other machine from the hosts
+/// provider under its own header, never the attached machine twice, keeps
+/// an unreachable machine as a disabled group, and commits `switch-host`.
+#[test]
+fn session_picker_lists_other_machines() {
+    use crate::attach::hosts::AttachOrigin;
+
+    let hosts = machine_fixture();
+    let sessions = [sinfo(1, "work")];
+    let items = host_grouped_session_items(
+        &sessions,
+        Some(SessionId::new(1)),
+        LOCAL_HOST_HEADER,
+        &[],
+        &crate::attach::hosts::other_hosts(&hosts, &AttachOrigin::Local),
+        &Workspace::single(tid(1)),
+    );
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        [
+            "Local",
+            "work",
+            "mini - 2 sessions",
+            "build",
+            "phall",
+            "spare - connected, no sessions",
+            "xps - unreachable: timed out",
+        ]
+    );
+    for i in [0, 2, 5, 6] {
+        assert!(items[i].is_header(), "{i}");
+    }
+    let build = &items[3];
+    assert!(build.indented);
+    assert_eq!(build.action.action, "switch-host");
+    assert_eq!(
+        build.action.args.get("host"),
+        Some(&Value::String("mini".to_owned()))
+    );
+    assert_eq!(
+        build.action.args.get("name"),
+        Some(&Value::String("build".to_owned()))
+    );
+    assert_eq!(build.secondary.as_deref(), Some("on mini, 2 windows"));
+    assert_eq!(
+        items[4].secondary.as_deref(),
+        Some("on mini, 1 window, 1 attached")
+    );
+
+    // Attached to `mini`: its group is the attach stream's, headed by its
+    // registry name, and this machine appears as a machine to switch back to.
+    let items = host_grouped_session_items(
+        &sessions,
+        Some(SessionId::new(1)),
+        "mini",
+        &[],
+        &crate::attach::hosts::other_hosts(&hosts, &AttachOrigin::Remote("mini".to_owned())),
+        &Workspace::single(tid(1)),
+    );
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        [
+            "mini",
+            "work",
+            "laptop - 1 session",
+            "work",
+            "spare - connected, no sessions",
+            "xps - unreachable: timed out",
+        ]
+    );
+    assert_eq!(
+        items[3].action.args.get("host"),
+        Some(&Value::String(crate::attach::hosts::LOCAL_HOST.to_owned()))
+    );
+    assert!(!items[1].action.args.contains_key("host"));
+}
+
+/// A machine row's commit reaches the `switch-host` effect the driver execs.
+#[test]
+fn a_machine_row_commits_switch_host() {
+    let hosts = machine_fixture();
+    let items = host_grouped_session_items(
+        &[],
+        None,
+        LOCAL_HOST_HEADER,
+        &[],
+        &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),
+        &Workspace::single(tid(1)),
+    );
+    let phall = items.iter().find(|i| i.label == "phall").expect("row");
+    let effects = run(&phall.action, &mut Workspace::single(tid(1)));
+    assert_eq!(
+        effects.switch_host,
+        Some(("mini".to_owned(), "phall".to_owned()))
+    );
+}
+
+/// The picker's fuzzy filter spans machines: a query matches a machine's
+/// sessions by name or by the machine named in the secondary, and Enter on
+/// the match commits `switch-host` there.
+#[test]
+fn session_picker_filter_spans_machines() {
+    use crate::render::overlay::{OverlayCommand, RenderOverlay, SelectList};
+    use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+
+    let hosts = machine_fixture();
+    let items = host_grouped_session_items(
+        &[sinfo(1, "work"), sinfo(2, "notes")],
+        Some(SessionId::new(1)),
+        LOCAL_HOST_HEADER,
+        &host_fixture(),
+        &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),
+        &Workspace::single(tid(1)),
+    );
+    let press = |key, text: Option<&str>| KeyEvent {
+        action: KeyAction::Press,
+        key,
+        mods: ModSet::empty(),
+        consumed_mods: ModSet::empty(),
+        composing: false,
+        text: text.map(ToOwned::to_owned),
+        unshifted_codepoint: None,
+    };
+    let mut picker = SelectList::new("Sessions", items, &Theme::default());
+    for ch in "phall".chars() {
+        let _ = picker.handle_key(&press(PhysicalKey::A, Some(&ch.to_string())));
+    }
+    let OverlayCommand::Commit(resolved) = picker.handle_key(&press(PhysicalKey::Enter, None))
+    else {
+        panic!("a query matching one machine session should commit it");
+    };
+    assert_eq!(resolved.action, "switch-host");
+    assert_eq!(
+        resolved.args.get("host"),
+        Some(&Value::String("mini".to_owned()))
+    );
+    assert_eq!(
+        resolved.args.get("name"),
+        Some(&Value::String("phall".to_owned()))
+    );
+}
+
+/// The session picker as drawn with a hub satellite and other machines.
+#[test]
+fn session_picker_with_machines_render() {
+    use crate::render::overlay::{RenderOverlay, SelectList};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    let hosts = machine_fixture();
+    let mut items = host_grouped_session_items(
+        &[sinfo(1, "work"), sinfo(2, "notes")],
+        Some(SessionId::new(1)),
+        LOCAL_HOST_HEADER,
+        &host_fixture(),
+        &crate::attach::hosts::other_hosts(&hosts, &crate::attach::hosts::AttachOrigin::Local),
+        &Workspace::single(tid(1)),
+    );
+    items.push(new_session_item());
+    let picker = SelectList::new("Sessions", items, &Theme::default());
+    let area = Rect::new(0, 0, 100, 48);
+    let mut buf = Buffer::empty(area);
+    picker.render(area, &mut buf);
+    let mut text = String::new();
+    for y in 0..area.height {
+        let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
+        text.push_str(row.trim_end());
+        text.push('\n');
+    }
+    insta::assert_snapshot!(text);
 }
 
 fn switch_to_satellite(

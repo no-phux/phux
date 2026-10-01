@@ -1,0 +1,40 @@
+---
+source: crates/phux-tui/src/attach/input_dispatch/tests_actions.rs
+expression: text
+---
+
+
+
+
+
+
+
+
+
+
+
+
+                         ┌ Sessions ──────────────────────────────────────┐
+                         │ >                                              │
+                         │ Local                                          │
+                         │   work                       1 window, current │
+                         │   notes                               1 window │
+                         │ edge - 2 sessions                              │
+                         │   build            on edge, 2 windows, 3 panes │
+                         │   logs               on edge, 1 window, 1 pane │
+                         │ idle - connected, no sessions                  │
+                         │ down - unreachable: link is down               │
+                         │ mini - 2 sessions                              │
+                         │   build                     on mini, 2 windows │
+                         │   phall          on mini, 1 window, 1 attached │
+                         │ spare - connected, no sessions                 │
+                         │ xps - unreachable: timed out                   │
+                         │ + New session…                          create │
+                         │                                                │
+                         │                                                │
+                         │                                                │
+                         │                                                │
+                         │                                                │
+                         │                                                │
+                         │                                                │
+                         └────────────────────────────────────────────────┘

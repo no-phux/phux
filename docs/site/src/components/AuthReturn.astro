@@ -4,37 +4,34 @@
 // callback. Identity stays on the HttpOnly session cookie.
 ---
 <script is:inline>
-  const result = new URLSearchParams(window.location.search).get("auth");
+  const authUrl = new URL(window.location.href);
+  const result = authUrl.searchParams.get("auth");
   if (result === "success" || result === "error") {
-    if (window.opener) {
-      document.documentElement.dataset.authReturn = result;
+    const messages = {
+      session_expired: "Sign-in expired or its cookie was blocked. Open phux.sh in a top-level tab, allow site cookies, and try again.",
+      cancelled: "Sign-in was cancelled. Try again and approve sign-in, or continue with the edge shell.",
+      account_too_new: "GitHub accounts must be at least seven days old. Use Google or continue with the edge shell.",
+      configuration: "Sign-in is unavailable because the provider is not configured correctly. Try the other provider or the edge shell, and report this to the site operator.",
+      provider_unavailable: "The sign-in provider could not verify your account. Try again, use the other provider, or continue with the edge shell.",
+    };
+    const code = authUrl.searchParams.get("auth_error");
+    const error = result === "error"
+      ? (Object.hasOwn(messages, code) ? messages[code] : messages.provider_unavailable)
+      : undefined;
+    document.documentElement.dataset.nativeAuthResult = result;
+    if (error) document.documentElement.dataset.nativeAuthError = error;
+    else delete document.documentElement.dataset.nativeAuthError;
+    authUrl.searchParams.delete("auth");
+    authUrl.searchParams.delete("auth_error");
+    history.replaceState({}, "", authUrl);
+    if (window.opener && !window.opener.closed) {
       window.opener.postMessage(
-        { source: "phux-auth", type: "complete", result },
+        { source: "phux-auth", type: "complete", result, ...(error ? { error } : {}) },
         window.location.origin,
       );
       window.close();
-    } else {
-      document.documentElement.dataset.nativeAuthResult = result;
-      const url = new URL(window.location.href);
-      url.searchParams.delete("auth");
-      history.replaceState({}, "", url);
+      // If browser policy prevents closing, the normal page still shows the result.
     }
   }
 </script>
 
-<style is:global>
-  html[data-auth-return] body > * {
-    display: none;
-  }
-  html[data-auth-return] body::before {
-    content: "Sign-in complete. This window can be closed.";
-    min-height: 100dvh;
-    display: grid;
-    place-content: center;
-    padding: 24px;
-    box-sizing: border-box;
-    color: #b9ff65;
-    font: 12px / 1.6 ui-monospace, monospace;
-    text-align: center;
-  }
-</style>

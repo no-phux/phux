@@ -21,6 +21,12 @@ function report(name: string, ok: boolean, detail = "") {
 async function openTerminal(page: Page) {
   await page.getByRole("button", { name: "Open a live terminal" }).click();
 }
+
+async function waitForOutput(found: () => boolean) {
+  const deadline = Date.now() + 5_000;
+  while (!found() && Date.now() < deadline) await delay(20);
+  if (!found()) throw new Error("Expected terminal output did not arrive");
+}
 try {
   const noJs = await browser.newContext({ javaScriptEnabled: false });
   const staticPage = await noJs.newPage();
@@ -122,8 +128,8 @@ try {
   );
   await openTerminal(page);
   await page.locator('.pterm[data-status="live"]').waitFor({ timeout: 30_000 });
-  await page.waitForFunction(
-    () => document.activeElement?.tagName === "CANVAS",
+  await page.waitForFunction(() =>
+    document.activeElement?.classList.contains("phux-web-input"),
   );
   report(
     "real backend reaches live with keyboard focus",
@@ -146,6 +152,79 @@ try {
   report(
     "real edge command returns its output over the wire",
     output.includes("\nPHUX_SHOWCASE_WIRE_OK"),
+  );
+
+  // A half-typed command must stay in its terminal while another pane runs.
+  await page.keyboard.type("echo PHUX_LEFT_");
+  await page
+    .getByRole("button", { name: "Split left/right", exact: true })
+    .click();
+  await page.locator('canvas[data-phux-pane-count="2"]').waitFor();
+  await page.getByRole("button", { name: "Next pane", exact: true }).waitFor();
+  await page.waitForFunction(
+    () =>
+      !document.querySelector<HTMLButtonElement>(
+        ".pterm-pane-controls button:nth-of-type(3)",
+      )?.disabled,
+  );
+  await page.keyboard.type("echo PHUX_RIGHT_OK");
+  await page.keyboard.press("Enter");
+  await waitForOutput(() => output.includes("\nPHUX_RIGHT_OK"));
+  await page.getByRole("button", { name: "Next pane", exact: true }).click();
+  await page.keyboard.type("OK");
+  await page.keyboard.press("Enter");
+  await waitForOutput(() => output.includes("\nPHUX_LEFT_OK"));
+  report(
+    "split panes preserve independent command lines over one connection",
+    sockets === 1,
+  );
+
+  await page.keyboard.press("Control+a");
+  await page.keyboard.type("%");
+  await page.locator('canvas[data-phux-pane-count="3"]').waitFor();
+  await page.waitForFunction(
+    () =>
+      !document.querySelector<HTMLButtonElement>(
+        ".pterm-pane-controls button:nth-of-type(3)",
+      )?.disabled,
+  );
+  await page.keyboard.press("Control+a");
+  await page.keyboard.type('"');
+  await page.locator('canvas[data-phux-pane-count="4"]').waitFor();
+  report(
+    "both keyboard split directions work and enforce the pane cap",
+    (await page
+      .getByRole("button", { name: "Split left/right", exact: true })
+      .isDisabled()) &&
+      (await page
+        .getByRole("button", { name: "Split top/bottom", exact: true })
+        .isDisabled()),
+  );
+  const desktopViewport = page.viewportSize()!;
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.waitForFunction(() => {
+    const canvas = document.querySelector("canvas");
+    const host = document.querySelector(".pterm-canvas-host");
+    return canvas && host && canvas.width <= host.clientWidth;
+  });
+  report(
+    "resizing a live four-pane view keeps every pane inside the narrow canvas",
+    await page.locator('canvas[data-phux-pane-count="4"]').isVisible(),
+  );
+  await page.setViewportSize(desktopViewport);
+  await page.waitForFunction(
+    () => (document.querySelector("canvas")?.width ?? 0) > 375,
+  );
+  for (const count of [3, 2, 1]) {
+    await page.getByRole("button", { name: "Close pane", exact: true }).click();
+    await page.locator(`canvas[data-phux-pane-count="${count}"]`).waitFor();
+  }
+  await page.keyboard.type("echo PHUX_SURVIVOR_OK");
+  await page.keyboard.press("Enter");
+  await waitForOutput(() => output.includes("\nPHUX_SURVIVOR_OK"));
+  report(
+    "closing panes leaves the surviving terminal usable",
+    sockets === 1 && closed === 0,
   );
   await page.getByRole("button", { name: "Close live terminal" }).click();
   await page.waitForFunction(() =>
@@ -210,6 +289,79 @@ try {
     await embed.locator('.pterm[data-status="unlock"]').isVisible(),
   );
   await embedded.close();
+
+  const iframeContext = await browser.newContext();
+  await iframeContext.route(`${BASE}/__embed-host`, (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: `<iframe src="${BASE}/embed" title="Hosted shell"></iframe>`,
+    }),
+  );
+  await iframeContext.route(`${BASE}/auth/github?*`, (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<title>Controlled OAuth start</title>",
+    }),
+  );
+  const iframeHost = await iframeContext.newPage();
+  await iframeHost.goto(`${BASE}/__embed-host`);
+  const shellFrame = iframeHost.frameLocator('iframe[title="Hosted shell"]');
+  const popupOpened = iframeContext.waitForEvent("page");
+  await shellFrame
+    .getByRole("button", { name: "Continue with GitHub" })
+    .click();
+  const authPopup = await popupOpened;
+  await authPopup.waitForURL(`${BASE}/auth/github?*`);
+  report(
+    "embedded GitHub sign-in escapes the iframe into a popup",
+    iframeHost.frames().some((frame) => frame.url() === `${BASE}/embed`),
+  );
+  const popupClosed = authPopup.waitForEvent("close");
+  await authPopup
+    .goto(`${BASE}/embed?auth=error&auth_error=cancelled`)
+    .catch((error) => {
+      if (!authPopup.isClosed()) throw error;
+    });
+  await popupClosed;
+  await shellFrame.getByRole("alert").waitFor();
+  report(
+    "failed popup sign-in returns an actionable error to the embedded shell",
+    await shellFrame
+      .getByRole("button", { name: "Continue with GitHub" })
+      .isEnabled(),
+  );
+  const secondPopupOpened = iframeContext.waitForEvent("page");
+  await shellFrame
+    .getByRole("button", { name: "Continue with GitHub" })
+    .click();
+  const completedPopup = await secondPopupOpened;
+  await completedPopup.waitForURL(`${BASE}/auth/github?*`);
+  const completedPopupClosed = completedPopup.waitForEvent("close");
+  await completedPopup.goto(`${BASE}/embed?auth=success`).catch((error) => {
+    if (!completedPopup.isClosed()) throw error;
+  });
+  await completedPopupClosed;
+  await shellFrame
+    .getByRole("alert")
+    .filter({ hasText: "could not read your session" })
+    .waitFor();
+  report(
+    "embedded cookie restrictions direct the user to the standalone shell",
+    await shellFrame
+      .getByRole("link", { name: "Open standalone shell" })
+      .isVisible(),
+  );
+  await iframeContext.close();
+
+  const failedAuth = await browser.newContext();
+  const failedAuthPage = await failedAuth.newPage();
+  await failedAuthPage.goto(`${BASE}/?auth=error&auth_error=configuration`);
+  await failedAuthPage.locator('dialog[open] [role="alert"]').waitFor();
+  report(
+    "same-tab sign-in errors reopen the dialog without leaking callback query",
+    !new URL(failedAuthPage.url()).search,
+  );
+  await failedAuth.close();
 
   const mobile = await browser.newContext({
     viewport: { width: 375, height: 667 },

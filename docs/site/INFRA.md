@@ -38,10 +38,12 @@ container, and the committed `phux-web` artifact all speak workspace protocol
 when the wire changes.
 
 Idle edge sockets use Durable Object WebSocket hibernation. The object persists
-only a versioned logical shell checkpoint (viewport, sequence, partial demo
-input, or portfolio selection), then reconstructs the WASM session on the next
-message. One alarm enforces idle and hard deadlines; there are no JavaScript
-timers or reservation heartbeats keeping the object resident.
+one bounded version-2 checkpoint containing up to four independent terminals:
+dimensions, generations, sequence numbers, shell state, and bounded VT replay.
+It reconstructs the WASM session on the next message. The storage key remains
+`checkpoint-v1`; version-1 payloads migrate when restored. One alarm enforces
+idle and hard deadlines; no JavaScript timers or reservation heartbeats keep
+the object resident.
 Client disconnects explicitly complete the WebSocket close handshake before
 releasing admission; the pinned 2025 compatibility date does not auto-reply.
 
@@ -110,6 +112,12 @@ command set (`help`, `ls`/`cat` over an in-memory FS, `echo`, `pwd`, `clear`,
 phux logo. Not arbitrary execution (no `/bin/sh`), which is also why it's safe:
 there's no process to break out of.
 
+Each pane is a separate terminal resource on the original WebSocket and session
+reservation, not another hosted allocation. Existing spawn/attach/resize/kill
+frames drive it. The server refuses a fifth resource and closing the last one.
+Per-terminal input is capped at 4 KiB and retained replay at 8 KiB of VT bytes
+(16 KiB JSON-escaped); the complete checkpoint is bounded below 120 KiB.
+
 ## The native shell
 
 `worker/Dockerfile` builds a reproducible linux/amd64 image from digest-pinned
@@ -175,13 +183,16 @@ retry action the client cannot guarantee.
   closes the socket before attach completes. No health probe gates launch.
 - The homepage diagram allocates no sessions and downloads no terminal WASM.
   Its dialog starts the anonymous edge tour on explicit launch. The Linux tab
-  and `/embed` offer GitHub/Google authentication or the edge shell. OAuth runs in the
-  same tab against `/auth/{github|google}?return_to=/` or `/embed` on
-  `https://phux.sh`. The Worker redirects back to that path with `auth=success`
-  (or `auth=error`); the page strips the query, reopens the native dialog on the
-  homepage, and rechecks the HttpOnly session cookie. The query name is
-  `return_to`; `returnTo` is accepted only as
-  a compatibility alias. The flow never sends identity or tokens to JavaScript.
+  and `/embed` offer GitHub/Google authentication or the edge shell. Top-level
+  OAuth stays in the same tab; an iframe opens a user-gesture popup rather than
+  loading the provider inside the frame. Both use `/auth/{github|google}` with
+  an allowlisted `return_to` of `/` or `/embed` on `https://phux.sh`.
+  AuthReturn strips the result query and reports only a safe success/error
+  result to its same-origin opener. The page rechecks the HttpOnly session;
+  blocked popups or third-party cookie restrictions offer the standalone shell.
+  Errors remain visible and retryable. `returnTo` remains a compatibility alias.
+  Provider tokens and the transaction's PKCE verifier never reach application
+  JavaScript.
 - Startup timing is measured in the visitor's browser from launch to readiness,
   not advertised as an edge/network benchmark. Closing the dialog or changing
   runtime releases its session. Initial geometry fits native 8×16-pixel cells

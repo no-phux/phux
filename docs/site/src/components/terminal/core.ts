@@ -50,6 +50,10 @@ export type HostedEvent =
 
 export interface PhuxController {
   close(): void;
+  resize(cols: number, rows: number): void;
+  splitPane(axis: "vertical" | "horizontal"): void;
+  focusNextPane(): void;
+  closePane(): void;
 }
 
 export interface MountOptions {
@@ -98,6 +102,18 @@ export async function mountPhuxTerminal(
       opts.signal?.removeEventListener("abort", controller.close);
       mounted.close();
       mounted.free();
+    },
+    resize(cols: number, rows: number) {
+      mounted.resize(cols, rows);
+    },
+    splitPane(axis: "vertical" | "horizontal") {
+      mounted.split_pane(axis);
+    },
+    focusNextPane() {
+      mounted.focus_next_pane();
+    },
+    closePane() {
+      mounted.close_pane();
     },
   };
   if (opts.signal?.aborted) {

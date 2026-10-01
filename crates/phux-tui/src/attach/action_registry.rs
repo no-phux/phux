@@ -418,8 +418,8 @@ pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
         params: "`host` (a registered host name, or `local` for this \
                  machine); `name` (the session there)",
         reason: "requires `host` and `name` args supplied by the sidebar's \
-                 machine segments, so a bare palette row would have no \
-                 target to act on",
+                 machine segments or the session picker's machine groups, \
+                 so a bare palette row would have no target to act on",
     },
     NonPaletteAction {
         name: "copy-mode",

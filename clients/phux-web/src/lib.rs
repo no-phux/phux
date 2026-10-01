@@ -11,9 +11,12 @@ pub mod client;
 pub mod framing;
 pub mod input;
 pub mod links;
+mod panes;
 pub mod search;
 pub mod selection;
 pub mod session;
+
+pub use panes::PaneRect;
 
 pub use session::{AgentBadge, Outcome, Session};
 
@@ -58,6 +61,30 @@ impl HostedClient {
     /// geometry.
     pub fn resize(&self, cols: u16, rows: u16) {
         self.client.resize(cols, rows);
+    }
+
+    /// Split the focused terminal using one new resource on this connection.
+    ///
+    /// # Errors
+    /// Refuses invalid axes, a fifth pane, or a split while another is pending.
+    pub fn split_pane(&self, axis: &str) -> Result<(), JsValue> {
+        self.client.split_pane(axis)
+    }
+
+    /// Move keyboard focus to the next published pane.
+    ///
+    /// # Errors
+    /// Fails when the connection has no usable terminal.
+    pub fn focus_next_pane(&self) -> Result<(), JsValue> {
+        self.client.focus_next_pane()
+    }
+
+    /// Close the focused terminal without closing its siblings.
+    ///
+    /// # Errors
+    /// Refuses the last pane; use the host's Release Session control instead.
+    pub fn close_pane(&self) -> Result<(), JsValue> {
+        self.client.close_pane()
     }
 }
 

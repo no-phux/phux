@@ -5,10 +5,14 @@ use std::collections::HashMap;
 use phux_protocol::ResourceId;
 use phux_protocol::ids::SessionId;
 
+use phux_core::host_list::HostJson;
+
+use crate::attach::hosts::AttachOrigin;
+use crate::attach::sidebar_zones::PeerInputs;
 use crate::layout::Workspace;
 use crate::render::overlay::SelectItem;
 
-use super::args::switch_session_args;
+use super::args::{switch_host_action, switch_session_args};
 use super::ctx::DispatchCtx;
 use super::effects::ActionEffects;
 
@@ -270,42 +274,95 @@ pub(super) fn session_picker_items(
 pub(super) const LOCAL_HOST_HEADER: &str = "Local";
 
 /// Live-refresh key: an open session picker is rebuilt when a fresh host
-/// inventory lands.
+/// inventory or hosts-provider answer lands.
 pub(in crate::attach) const SESSION_PICKER_LIVE_KEY: &str = "session-picker";
 
 /// The full session-picker rows (host-grouped sessions plus "+ New
 /// session"), one builder for the open and the live refresh.
 pub(in crate::attach) fn session_picker_rows(
-    sessions: &[phux_protocol::wire::info::SessionInfo],
-    focused: Option<phux_protocol::ids::SessionId>,
-    hosts: &[phux_protocol::wire::info::HostInventory],
+    peers: &PeerInputs<'_>,
     workspace: &Workspace,
 ) -> Vec<SelectItem> {
-    let mut items = host_grouped_session_items(sessions, focused, hosts, workspace);
+    let here = match peers.origin {
+        Some(AttachOrigin::Remote(name)) => name.as_str(),
+        Some(AttachOrigin::Local) | None => LOCAL_HOST_HEADER,
+    };
+    let mut items = host_grouped_session_items(
+        peers.sessions,
+        peers.focused_session,
+        here,
+        peers.hosts,
+        &peers.other_machines(),
+        workspace,
+    );
     items.push(new_session_item());
     items
 }
 
-/// Session picker rows grouped by host: without an inventory exactly
-/// [`session_picker_items`]; with one, this host under
-/// [`LOCAL_HOST_HEADER`] and each satellite under its own header (kept,
-/// marked unreachable, when the hub could not list it), committing
-/// `switch-session { name, host }`.
+/// Session picker rows grouped by host: with no other host exactly
+/// [`session_picker_items`]; otherwise the attached server's sessions under
+/// `here`, then each hub satellite and each other machine under its own
+/// header (kept, marked unreachable, when it could not be listed). A
+/// satellite row commits `switch-session { name, host }`; a machine row
+/// commits `switch-host { host, name }` (ADR-0140).
 pub(super) fn host_grouped_session_items(
     sessions: &[phux_protocol::wire::info::SessionInfo],
     focused: Option<phux_protocol::ids::SessionId>,
-    hosts: &[phux_protocol::wire::info::HostInventory],
+    here: &str,
+    satellites: &[phux_protocol::wire::info::HostInventory],
+    machines: &[&HostJson],
     workspace: &Workspace,
 ) -> Vec<SelectItem> {
     let local = session_picker_items(sessions, focused);
-    if hosts.is_empty() {
+    if satellites.is_empty() && machines.is_empty() {
         return local;
     }
-    let mut items = vec![SelectItem::header(LOCAL_HOST_HEADER)];
+    let mut items = vec![SelectItem::header(here)];
     items.extend(local.into_iter().map(SelectItem::indented));
-    for host in hosts {
+    for host in satellites {
         items.extend(satellite_host_items(host, workspace));
     }
+    for host in machines {
+        items.extend(machine_items(host));
+    }
+    items
+}
+
+/// ADR-0140: one hosts-provider machine's header plus its session rows, in
+/// the provider's (name-sorted) order.
+fn machine_items(host: &HostJson) -> Vec<SelectItem> {
+    if !host.reachable {
+        let header = host.error.as_deref().map_or_else(
+            || format!("{} - unreachable", host.label),
+            |reason| format!("{} - unreachable: {reason}", host.label),
+        );
+        return vec![SelectItem::header(header)];
+    }
+    let status = if host.sessions.is_empty() {
+        "connected, no sessions".to_owned()
+    } else {
+        count_label(
+            u16::try_from(host.sessions.len()).unwrap_or(u16::MAX),
+            "session",
+            "sessions",
+        )
+    };
+    let mut items = vec![SelectItem::header(format!("{} - {status}", host.label))];
+    items.extend(host.sessions.iter().map(|session| {
+        let mut details = vec![
+            format!("on {}", host.label),
+            count_label(session.windows, "window", "windows"),
+        ];
+        if session.attached_clients != 0 {
+            details.push(format!("{} attached", session.attached_clients));
+        }
+        SelectItem::new(
+            session.name.clone(),
+            switch_host_action(host.name.clone(), session.name.clone()),
+        )
+        .secondary(details.join(", "))
+        .indented()
+    }));
     items
 }
 

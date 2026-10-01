@@ -6,10 +6,10 @@ last-reviewed: 2026-09-30
 
 # The phux web client
 
-**TL;DR.** The Rust/WASM web client renders one terminal on a canvas and sends
-input over WebTransport or WebSocket. Try it in the hosted demo or embed it
-in your own page. This is a developer guide, not a hosted dashboard for your
-servers. Splits and layout are outside the client's current scope.
+**TL;DR.** The Rust/WASM web client renders up to four terminal panes on one
+canvas, using one WebTransport or WebSocket connection. Try the hosted demo or
+embed it in your own page. This is a developer guide, not a hosted dashboard
+for your servers.
 
 ---
 
@@ -185,6 +185,17 @@ do not pull in libghostty ([ADR-0024](../adr/0024-wire-owns-input-atoms.md)).
 
 The embedded client supports these interactions and page hooks:
 
+- **Panes.** Click a pane to focus it. Ctrl+a followed by `%` splits left/right,
+  `"` splits top/bottom, `o` focuses the next pane, and `x` closes the focused
+  terminal. Ctrl+a twice sends a literal Ctrl+a. The hosted toolbar offers the
+  same actions; `HostedClient` exposes `split_pane("vertical" | "horizontal")`,
+  `focus_next_pane()`, and `close_pane()`. These operate on real server resources,
+  not copied views. A split commits only after its bootstrap and attach
+  acknowledgement; refused operations leave existing panes usable. The view
+  allows four panes and keeps at least one. A bubbling `phux-panes` event on the
+  original canvas carries `{ count, focused, pending, error? }`; `focused` is
+  a resource-id string. The canvas also exposes `data-phux-pane-count` and
+  `data-phux-focused-pane`. Layout is local to this client, not the server's TUI.
 - **Scrollback.** The wheel over the canvas, and Shift+PageUp/PageDown, page
   through the history the replica holds (including what the bootstrap
   carried from before the attach). Scrolling is local; typing returns to the
@@ -235,7 +246,7 @@ The embedded client supports these interactions and page hooks:
   `prefers-reduced-motion: reduce` the page gets the event and no flash. A
   burst of bells rings once.
 - **Resize.** `HostedClient.resize(cols, rows)` (Rust: `Client::resize`)
-  announces a new viewport; the canvas follows the pane's new geometry.
+  resizes the local view and requests each visible terminal's pane geometry.
 - **Title.** The program's OSC 0/2 title is mirrored onto the canvas as
   `data-phux-title` and announced by a bubbling `phux-title` `CustomEvent`
   whose `detail` is the title.
@@ -246,8 +257,9 @@ The embedded client supports these interactions and page hooks:
 
 ## Scope and limits
 
-- **Single terminal.** The client mirrors one terminal, without splits,
-  windows, or layout controls.
+- **Four panes.** Splits share one canvas and transport. Window/session management
+  and saved layouts are not exposed. Closing a pane kills its terminal resource;
+  closing a hosted demo releases all of that disposable session's resources.
 - **Text, color, cursor.** The canvas renderer paints grapheme cells with fg/bg
   and a blinking block cursor; a wide (CJK) character paints across its
   spacer cell. Images and sixel (which the engine does parse)

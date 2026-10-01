@@ -1,8 +1,7 @@
 /* @ts-self-types="./phux_edge.d.ts" */
 
 /**
- * One live wire session: the curated shell + the bits of server state the wire
- * needs (a terminal id, an output sequence counter, the viewport size).
+ * One live hosted wire session with up to four independently addressed shells.
  */
 export class EdgeSession {
     static __wrap(ptr) {
@@ -22,8 +21,8 @@ export class EdgeSession {
         wasm.__wbg_edgesession_free(ptr, 0);
     }
     /**
-     * Serialize logical session state only. The caller persists mode and the
-     * portfolio snapshot separately and supplies them again to `restore`.
+     * Persist all resources, subscriptions, replica generations and the ID allocator.
+     * Mode and the portfolio snapshot remain in the caller's boot record.
      * @returns {string}
      */
     checkpoint() {
@@ -39,8 +38,6 @@ export class EdgeSession {
         }
     }
     /**
-     * Create a session. `cols`/`rows` are defaults until the client's `ATTACH`
-     * reports its viewport.
      * @param {number} cols
      * @param {number} rows
      * @param {string} mode
@@ -57,9 +54,7 @@ export class EdgeSession {
         return this;
     }
     /**
-     * Handle one inbound WebSocket message (one encoded `FrameKind`). Returns a
-     * JS array of `Uint8Array`s — each is one frame to send back, one WS
-     * message per element.
+     * One encoded frame in, one JS Uint8Array per response frame out.
      * @param {Uint8Array} data
      * @returns {Array<any>}
      */
@@ -93,22 +88,22 @@ if (Symbol.dispose) EdgeSession.prototype[Symbol.dispose] = EdgeSession.prototyp
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
-        __wbg___wbindgen_throw_5d9e815e6fdf150f: function(arg0, arg1) {
+        __wbg___wbindgen_throw_41e9ee4f547fc59a: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
-        __wbg_new_a32a1ab6c6655abe: function(arg0, arg1) {
+        __wbg_new_343a093a3c2ffb4e: function(arg0, arg1) {
             const ret = new Error(getStringFromWasm0(arg0, arg1));
             return ret;
         },
-        __wbg_new_ffa92086ea89f79c: function() {
+        __wbg_new_ee2291f50781bf1d: function() {
             const ret = new Array();
             return ret;
         },
-        __wbg_new_from_slice_4ee02165f9de919e: function(arg0, arg1) {
+        __wbg_new_from_slice_9a868026ffa4208a: function(arg0, arg1) {
             const ret = new Uint8Array(getArrayU8FromWasm0(arg0, arg1));
             return ret;
         },
-        __wbg_push_bfdf956ba476f65b: function(arg0, arg1) {
+        __wbg_push_2baf45db356cf468: function(arg0, arg1) {
             const ret = arg0.push(arg1);
             return ret;
         },

@@ -49,7 +49,15 @@ pub(super) struct PeerInputs<'a> {
     pub review: &'a ReviewIndex,
 }
 
-impl PeerInputs<'_> {
+impl<'a> PeerInputs<'a> {
+    /// ADR-0140: every hosts-provider machine except the attached one, in
+    /// provider order. Empty when the CLI recorded no origin.
+    pub(super) fn other_machines(&self) -> Vec<&'a phux_core::host_list::HostJson> {
+        self.origin.map_or_else(Vec::new, |origin| {
+            crate::attach::hosts::other_hosts(self.remote_hosts, origin)
+        })
+    }
+
     /// The peer sessions, in the graph's order, paired with the cached layout
     /// each one has (if any).
     fn ordered_sessions(&self) -> Vec<&SessionInfo> {
@@ -313,12 +321,7 @@ pub(super) fn session_roster(
         out.push(entry);
     }
     out.extend(satellite_roster(peers.hosts));
-    if let Some(origin) = peers.origin {
-        out.extend(machine_roster(&crate::attach::hosts::other_hosts(
-            peers.remote_hosts,
-            origin,
-        )));
-    }
+    out.extend(machine_roster(&peers.other_machines()));
     out
 }
 

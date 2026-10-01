@@ -429,6 +429,18 @@ impl PtyAttach {
     pub fn start_with(
         socket: &Path,
         args: &[&str],
+        size: (u16, u16),
+        configure: impl FnOnce(&Path, &mut portable_pty::CommandBuilder),
+    ) -> Self {
+        let mut attach_args = vec!["--socket", socket.to_str().expect("UTF-8 socket path")];
+        attach_args.extend_from_slice(args);
+        Self::start_dialing(&attach_args, size, configure)
+    }
+
+    /// `phux attach <args...>` with no `--socket` injected, for an attach
+    /// that dials by `--quic`, `--ws`, or `--remote`.
+    pub fn start_dialing(
+        args: &[&str],
         (cols, rows): (u16, u16),
         configure: impl FnOnce(&Path, &mut portable_pty::CommandBuilder),
     ) -> Self {
@@ -448,8 +460,6 @@ impl PtyAttach {
             command.env_remove(key);
         }
         command.arg("attach");
-        command.arg("--socket");
-        command.arg(socket);
         command.args(args);
         command.env("SHELL", "/bin/sh");
         command.env("TERM", "xterm-256color");
@@ -487,6 +497,11 @@ impl PtyAttach {
     pub fn send(&mut self, bytes: &[u8]) {
         self.writer.write_all(bytes).expect("write to attach PTY");
         self.writer.flush().expect("flush attach PTY");
+    }
+
+    /// Whether the `phux attach` process is still running.
+    pub fn is_running(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
     }
 
     /// Everything painted so far, with terminal control sequences removed.

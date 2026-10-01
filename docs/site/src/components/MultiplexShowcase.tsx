@@ -29,7 +29,7 @@ export default function MultiplexShowcase({ wsUrl = "" }: { wsUrl?: string }) {
   const [mode, setMode] = useState<Mode>("demo");
   const [Terminal, setTerminal] = useState<typeof PhuxTerminal | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
-  const [authFailed, setAuthFailed] = useState(false);
+  const [authError, setAuthError] = useState("");
   const dialog = useRef<HTMLDialogElement>(null);
   const opener = useRef<HTMLElement | null>(null);
   const loading = useRef<Promise<void> | null>(null);
@@ -61,7 +61,13 @@ export default function MultiplexShowcase({ wsUrl = "" }: { wsUrl?: string }) {
     const result = document.documentElement.dataset.nativeAuthResult;
     if (!result) return;
     delete document.documentElement.dataset.nativeAuthResult;
-    setAuthFailed(result === "error");
+    setAuthError(
+      result === "error"
+        ? (document.documentElement.dataset.nativeAuthError ??
+            "Sign-in did not finish. Try a provider again below, or choose the edge tour.")
+        : "",
+    );
+    delete document.documentElement.dataset.nativeAuthError;
     setMode("native");
     setOpen(true);
     loadTerminal();
@@ -238,24 +244,25 @@ export default function MultiplexShowcase({ wsUrl = "" }: { wsUrl?: string }) {
             Linux shell <small>sign-in required</small>
           </button>
         </div>
-        {authFailed && (
-          <p className="mux-dialog-description" role="status">
-            Sign-in did not finish. Try a provider again below, or choose the
-            edge tour.
+        {authError && (
+          <p className="mux-dialog-description" role="alert">
+            {authError}
           </p>
         )}
         <p className="mux-dialog-description" id={`${id}-description`}>
           {mode === "demo" ? (
             <>
-              A curated, OS-less shell using the {SITE.name} protocol and libghostty.
+              Split with the controls below or <kbd>Ctrl+a</kbd>, then <kbd>%</kbd>.
+              Each pane runs a curated, OS-less shell over the {SITE.name} protocol.
               No processes or network. Try <code>help</code>, <code>ls</code>, or{" "}
               <code>demo</code>.
             </>
           ) : (
             <>
-              A disposable Linux environment. Run <code>phux</code>, then{" "}
-              <kbd>Ctrl+a</kbd> followed by <kbd>%</kbd> to split. Native
-              capacity is limited; the edge tour is the fallback.
+              A disposable Linux environment. Split and switch terminals
+              directly in this client using the buttons below or{" "}
+              <kbd>Ctrl+a</kbd> then <kbd>%</kbd>. Native capacity is limited;
+              edge is the fallback.
             </>
           )}
         </p>
