@@ -120,6 +120,9 @@ dialog loads the actual phux web client: the anonymous edge tour is a curated,
 OS-less shell in a Durable Object; the optional authenticated Linux tab runs
 the native container. Label both runtimes and their different capabilities.
 The edge tour has no network or processes; do not imply it is a general shell.
+The live shell—not just the diagram—supports independent split panes with visible
+controls and keyboard shortcuts. Keep that distinction explicit; the browser
+interaction contract lives in [the web client guide](../consumers/web.md#in-the-page).
 
 Closing the dialog or switching runtime releases the hosted session, including
 an in-flight attach. The diagram describes normal phux continuity; hosted demo

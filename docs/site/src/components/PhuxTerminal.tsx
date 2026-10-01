@@ -50,6 +50,23 @@ interface Attempt {
   client?: PhuxController;
 }
 
+interface PaneState {
+  count: number;
+  focused: string;
+  pending: boolean;
+  error?: string;
+}
+
+function isAuthCompletion(event: MessageEvent): boolean {
+  return (
+    event.origin === window.location.origin &&
+    event.data !== null &&
+    typeof event.data === "object" &&
+    event.data.source === "phux-auth" &&
+    event.data.type === "complete"
+  );
+}
+
 const fallbackCopy: Record<SessionFallbackReason, string> = {
   "auth-required":
     "Sign in to unlock native Linux. This session uses the edge shell.",
@@ -129,6 +146,13 @@ export default function PhuxTerminal({
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
   const [startupMs, setStartupMs] = useState<number | null>(null);
   const [message, setMessage] = useState("");
+  const [panes, setPanes] = useState<PaneState>({
+    count: 1,
+    focused: "",
+    pending: false,
+  });
+  const [paneError, setPaneError] = useState("");
+  const [authMessage, setAuthMessage] = useState("");
 
   function signal(status: EmbedStatus) {
     if (!statusParentOrigin || window.parent === window) return;
@@ -145,6 +169,18 @@ export default function PhuxTerminal({
     attempt.current = null;
     current?.abort.abort();
     current?.client?.close();
+  }
+
+  function paneAction(action: (client: PhuxController) => void) {
+    const client = attempt.current?.client;
+    if (!client) return;
+    setPaneError("");
+    try {
+      action(client);
+      canvasHost.current?.querySelector("canvas")?.focus();
+    } catch (error) {
+      setPaneError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   async function readIdentity(signal: AbortSignal): Promise<Identity | null> {
@@ -229,6 +265,32 @@ export default function PhuxTerminal({
     return { canvas, geometry };
   }
 
+  function observeSize(current: Attempt) {
+    const host = canvasHost.current;
+    if (!host) return;
+    const resize = () => {
+      if (current.abort.signal.aborted) return;
+      const geometry = terminalGeometry(
+        host.clientWidth,
+        window.innerHeight * 0.55,
+        cols,
+        rows,
+      );
+      current.client?.resize(geometry.cols, geometry.rows);
+    };
+    const observer = new ResizeObserver(resize);
+    observer.observe(host);
+    window.addEventListener("resize", resize, { signal: current.abort.signal });
+    current.abort.signal.addEventListener(
+      "abort",
+      () => observer.disconnect(),
+      {
+        once: true,
+      },
+    );
+    resize();
+  }
+
   async function launch(selectedMode = mode) {
     if (!wsUrl || attempt.current) return;
     const current: Attempt = { abort: new AbortController() };
@@ -241,6 +303,8 @@ export default function PhuxTerminal({
     setSecondsLeft(null);
     setStartupMs(null);
     setMessage("");
+    setPanes({ count: 1, focused: "", pending: false });
+    setPaneError("");
     setPhase("connecting");
     signal("loading");
     try {
@@ -250,6 +314,16 @@ export default function PhuxTerminal({
       );
       if (!isCurrent()) return;
       const { canvas, geometry } = createCanvas();
+      canvas.addEventListener(
+        "phux-panes",
+        (event) => {
+          if (!isCurrent()) return;
+          const state = (event as CustomEvent<PaneState>).detail;
+          setPanes(state);
+          setPaneError(state.error ?? "");
+        },
+        { signal: current.abort.signal },
+      );
       await Promise.all([
         mountPhuxTerminal({
           wsUrl,
@@ -264,7 +338,10 @@ export default function PhuxTerminal({
           },
         }).then((mounted) => {
           if (!isCurrent()) mounted.close();
-          else current.client = mounted;
+          else {
+            current.client = mounted;
+            observeSize(current);
+          }
         }),
         waitForMeaningfulCanvasPaint(canvas, { signal: current.abort.signal }),
       ]);
@@ -299,9 +376,28 @@ export default function PhuxTerminal({
 
   function beginAuth(provider: "github" | "google") {
     const returnPath = window.location.pathname === "/embed" ? "/embed" : "/";
-    window.location.assign(
-      nativeAuthStartUrl(window.location.origin, provider, returnPath),
+    const url = nativeAuthStartUrl(
+      window.location.origin,
+      provider,
+      returnPath,
     );
+    setAuthMessage("");
+    if (window.parent === window) {
+      window.location.assign(url);
+      return;
+    }
+    // Providers cannot sign in inside an iframe. Keep the embedded client
+    // alive and use AuthReturn's origin-checked completion message.
+    const popup = window.open(
+      url,
+      "phux-native-auth",
+      "popup,width=600,height=740",
+    );
+    if (!popup) {
+      setAuthMessage(
+        "The sign-in window was blocked. Allow popups, or open the standalone shell to sign in.",
+      );
+    }
   }
 
   async function logout() {
@@ -323,6 +419,15 @@ export default function PhuxTerminal({
   }
 
   useEffect(() => {
+    const authResult = document.documentElement.dataset.nativeAuthResult;
+    if (authResult === "error") {
+      setAuthMessage(
+        document.documentElement.dataset.nativeAuthError ??
+          "Sign-in did not finish. Please try again.",
+      );
+    }
+    delete document.documentElement.dataset.nativeAuthResult;
+    delete document.documentElement.dataset.nativeAuthError;
     const auth = new AbortController();
     async function initialize() {
       if (!wsUrl) {
@@ -345,17 +450,25 @@ export default function PhuxTerminal({
     void initialize();
 
     async function authComplete(event: MessageEvent) {
-      if (
-        mode !== "native" ||
-        event.origin !== window.location.origin ||
-        !event.data ||
-        typeof event.data !== "object" ||
-        event.data.source !== "phux-auth" ||
-        event.data.type !== "complete"
-      )
+      if (mode !== "native" || !isAuthCompletion(event)) return;
+      if (event.data.result === "error") {
+        setAuthMessage(
+          typeof event.data.error === "string"
+            ? event.data.error.slice(0, 300)
+            : "Sign-in did not finish. Please try again.",
+        );
         return;
+      }
+      if (event.data.result !== "success") return;
+      setAuthMessage("");
       const current = await readIdentity(auth.signal).catch(() => null);
-      if (auth.signal.aborted || !current) return;
+      if (auth.signal.aborted) return;
+      if (!current) {
+        setAuthMessage(
+          "Sign-in completed, but this embedded shell could not read your session. Open the standalone shell to continue.",
+        );
+        return;
+      }
       setIdentity(current);
       if (!attempt.current) void launch("native");
     }
@@ -436,6 +549,19 @@ export default function PhuxTerminal({
                   Five disposable minutes. No outbound network or persistence.
                   Or try the smaller edge WASM shell without signing in.
                 </p>
+                {authMessage && (
+                  <p className="pterm-auth-error" role="alert">
+                    {authMessage}
+                  </p>
+                )}
+                <a
+                  className="pterm-standalone"
+                  href="/embed"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Open standalone shell
+                </a>
                 <div className="pterm-actions">
                   <button onClick={() => beginAuth("github")}>
                     Continue with GitHub
@@ -499,6 +625,43 @@ export default function PhuxTerminal({
           </div>
         )}
       </div>
+      {phase === "live" && (
+        <nav className="pterm-pane-controls" aria-label="Pane controls">
+          <span>
+            {panes.count} / 4 panes
+            {panes.focused ? ` · terminal ${panes.focused}` : ""}
+          </span>
+          <button
+            disabled={panes.pending || panes.count >= 4}
+            onClick={() => paneAction((client) => client.splitPane("vertical"))}
+          >
+            Split left/right
+          </button>
+          <button
+            disabled={panes.pending || panes.count >= 4}
+            onClick={() =>
+              paneAction((client) => client.splitPane("horizontal"))
+            }
+          >
+            Split top/bottom
+          </button>
+          <button
+            disabled={panes.pending || panes.count < 2}
+            onClick={() => paneAction((client) => client.focusNextPane())}
+          >
+            Next pane
+          </button>
+          <button
+            disabled={panes.pending || panes.count < 2}
+            onClick={() => paneAction((client) => client.closePane())}
+          >
+            Close pane
+          </button>
+          <span className="pterm-pane-status" role="status">
+            {paneError || (panes.pending ? "Updating panes…" : "")}
+          </span>
+        </nav>
+      )}
       <nav className="pterm-controls" aria-label="Shell controls">
         <span>
           {native && identity
@@ -543,22 +706,22 @@ export default function PhuxTerminal({
           </p>
         )}
       </aside>
-      {session?.backend === "native" && phase === "live" && (
-        <aside className="pterm-shortcuts" aria-label="phux TUI shortcuts">
-          <b>
-            Run <code>phux</code>, then
-          </b>
+      {phase === "live" && (
+        <aside className="pterm-shortcuts" aria-label="Terminal pane shortcuts">
           <span>
-            <kbd>C-a</kbd> <kbd>%</kbd> split left/right
+            <kbd>Ctrl+a</kbd> <kbd>%</kbd> split left/right
           </span>
           <span>
-            <kbd>C-a</kbd> <kbd>&quot;</kbd> split top/bottom
+            <kbd>Ctrl+a</kbd> <kbd>&quot;</kbd> split top/bottom
           </span>
           <span>
-            <kbd>C-a</kbd> <kbd>c</kbd> new window
+            <kbd>Ctrl+a</kbd> <kbd>o</kbd> next pane
           </span>
           <span>
-            <kbd>C-a</kbd> <kbd>?</kbd> all keys
+            <kbd>Ctrl+a</kbd> <kbd>x</kbd> close pane
+          </span>
+          <span>
+            Click a pane to type there. Each pane has its own terminal.
           </span>
         </aside>
       )}

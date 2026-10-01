@@ -3,8 +3,10 @@
 //! Transport framing stays here; replica lifecycle, generation validation,
 //! ordering, READY fences, and input eligibility stay in `phux-client-core`.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::panes::{Axis, Layout, PaneRect};
 use bytes::{Bytes, BytesMut};
 use phux_client_core::engine::{
     BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
@@ -21,13 +23,13 @@ use phux_protocol::caps::{
     BootstrapProfileSet, BootstrapStreamProfile, ClientCapabilities, EngineCodec, EngineFeatureSet,
     ImageProtocolSet, ServerFeature, ServerFeatureExt,
 };
-use phux_protocol::ids::ResourceId;
+use phux_protocol::ids::{GroupId, ResourceId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::KeyEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    AttachTarget, FrameKind, HistoryRejectionReason, HistoryTombstoneReason, PathQueryResult,
-    PathResults, ViewportInfo,
+    AttachTarget, Command, CommandResult, FrameKind, HistoryRejectionReason,
+    HistoryTombstoneReason, PathQueryResult, PathResults, SpawnResult, ViewportInfo,
 };
 use phux_protocol::{PROTOCOL_VERSION, ResourceKind};
 use phux_vt_web::{Grid, NativeCodecError, NativeDecodeKind, NativeDecoder, Terminal, Vt};
@@ -171,6 +173,8 @@ pub struct Outcome {
     pub badges: bool,
     /// Whether the focused terminal's program rang the bell (BEL).
     pub bell: bool,
+    /// Pane inventory, focus, pending operation, or an actionable refusal changed.
+    pub panes: bool,
     /// Fatal protocol/kernel failure; the transport must close.
     pub fatal: Option<String>,
 }
@@ -520,6 +524,14 @@ impl EngineAdapter for WebEngine {
     }
 }
 
+struct PendingSplit {
+    request_id: u32,
+    target: ResourceId,
+    axis: Axis,
+    resource: Option<ResourceId>,
+    acknowledged: bool,
+}
+
 /// A wire session whose terminal replicas are owned by [`SessionKernel`].
 pub struct Session {
     vt: Rc<Vt>,
@@ -545,6 +557,16 @@ pub struct Session {
     failed: bool,
     render_visible: bool,
     attach_ready: bool,
+    layout: Option<Layout>,
+    /// Last requested geometry, including resizes not yet published by the server.
+    pane_sizes: HashMap<ResourceId, CanonicalGeometry>,
+    /// Failed new resources remain isolated until their queued close arrives.
+    retiring_panes: Vec<ResourceId>,
+    pending_split: Option<PendingSplit>,
+    pending_close: Option<(u32, ResourceId)>,
+    pane_request_id: u32,
+    pane_error: Option<String>,
+    spawn_initial_size: bool,
 }
 
 impl Session {
@@ -587,7 +609,404 @@ impl Session {
             failed: false,
             render_visible: false,
             attach_ready: false,
+            layout: None,
+            pane_sizes: HashMap::new(),
+            retiring_panes: Vec::new(),
+            pending_split: None,
+            pending_close: None,
+            pane_request_id: 0x1000,
+            pane_error: None,
+            spawn_initial_size: false,
         }
+    }
+
+    /// Overall canvas dimensions, independent of the focused terminal.
+    #[must_use]
+    pub const fn canvas_dims(&self) -> (u16, u16) {
+        (self.cols, self.rows)
+    }
+
+    /// Visible terminals and their local rectangles (at most four).
+    #[must_use]
+    pub fn pane_rects(&self) -> Vec<(ResourceId, PaneRect)> {
+        let mut panes = Vec::with_capacity(4);
+        if let Some(layout) = &self.layout {
+            layout.rects(
+                PaneRect {
+                    x: 0,
+                    y: 0,
+                    cols: self.cols,
+                    rows: self.rows,
+                },
+                &mut panes,
+            );
+        }
+        panes
+    }
+
+    /// Current keyboard target, only after its replica has been published.
+    #[must_use]
+    pub fn focused_pane(&self) -> Option<ResourceId> {
+        self.first_published_terminal()
+    }
+
+    /// Whether a server-authoritative split or close is outstanding.
+    #[must_use]
+    pub fn pane_pending(&self) -> bool {
+        self.pending_split.is_some() || self.pending_close.is_some()
+    }
+
+    /// Last actionable pane refusal; does not fail the connection.
+    #[must_use]
+    pub fn pane_error(&self) -> Option<&str> {
+        self.pane_error.as_deref()
+    }
+
+    pub(crate) fn set_pane_error(&mut self, message: String) {
+        self.pane_error = Some(message);
+    }
+
+    /// Published engine for a resource.
+    #[must_use]
+    pub fn pane_terminal(&self, id: &ResourceId) -> Option<&Terminal> {
+        self.kernel.as_ref()?.published_engine(id)?.terminal()
+    }
+
+    /// Focus one published, visible terminal.
+    ///
+    /// # Errors
+    /// Refuses missing or bootstrapping terminals.
+    pub fn focus_pane(&mut self, id: &ResourceId) -> Result<(), String> {
+        if self.failed
+            || !self.pane_rects().iter().any(|(pane, _)| pane == id)
+            || self.pane_terminal(id).is_none()
+        {
+            return Err("That pane is not ready for input yet.".to_owned());
+        }
+        self.focused_terminal = Some(id.clone());
+        self.cancel_path_query();
+        self.pane_error = None;
+        Ok(())
+    }
+
+    /// Cycle keyboard focus through visible, published terminals.
+    ///
+    /// # Errors
+    /// Refuses when no terminal is ready.
+    pub fn focus_next_pane(&mut self) -> Result<(), String> {
+        let panes: Vec<_> = self
+            .pane_rects()
+            .into_iter()
+            .map(|(id, _)| id)
+            .filter(|id| self.pane_terminal(id).is_some())
+            .collect();
+        if panes.is_empty() {
+            return Err("No terminal is ready for input.".to_owned());
+        }
+        let index = panes
+            .iter()
+            .position(|id| Some(id) == self.focused_terminal.as_ref())
+            .map_or(0, |index| (index + 1) % panes.len());
+        self.focus_pane(&panes[index])
+    }
+
+    fn next_pane_request(&mut self) -> u32 {
+        self.pane_request_id = self.pane_request_id.wrapping_add(1).max(0x1000);
+        self.pane_request_id
+    }
+
+    fn pane_operation_ready(&self) -> Result<(), String> {
+        if self.failed || !self.attach_ready {
+            return Err("Reconnect the session before changing panes.".to_owned());
+        }
+        if self.pane_pending() {
+            return Err("Wait for the current pane operation to finish.".to_owned());
+        }
+        Ok(())
+    }
+
+    /// Request a real terminal spawn; commit layout only after bootstrap and ack.
+    ///
+    /// # Errors
+    /// Refuses invalid axes, unavailable sessions, small panes, or a fifth pane.
+    pub fn split_pane_frame(&mut self, axis: &str) -> Result<Vec<u8>, String> {
+        let axis = Axis::parse(axis)?;
+        self.pane_operation_ready()?;
+        let panes = self.pane_rects();
+        if panes.len() + self.retiring_panes.len() >= 4 {
+            return Err("Four terminals are open or closing. Wait for cleanup or close a pane before splitting.".to_owned());
+        }
+        let target = self
+            .focused_pane()
+            .ok_or("No terminal is ready to split.")?;
+        let rect = panes
+            .iter()
+            .find(|(id, _)| id == &target)
+            .map(|(_, rect)| *rect)
+            .ok_or("The focused terminal is not visible.")?;
+        let (_, new_rect) = rect
+            .split(axis)
+            .ok_or("This pane is too small to split. Enlarge the terminal first.")?;
+        let request_id = self.next_pane_request();
+        self.pending_split = Some(PendingSplit {
+            request_id,
+            target: target.clone(),
+            axis,
+            resource: None,
+            acknowledged: false,
+        });
+        self.pane_error = None;
+        Ok(encode(&FrameKind::SpawnResource {
+            request_id,
+            group: GroupId::new(1),
+            command: None,
+            cwd: None,
+            env: None,
+            term: None,
+            satellite: target.host().cloned(),
+            owner_terminal: Some(target),
+            agent_session: None,
+            initial_size: self
+                .spawn_initial_size
+                .then_some((new_rect.cols, new_rect.rows)),
+            resource: None,
+        }))
+    }
+
+    /// Request closure; keep the pane visible until ResourceClosed.
+    ///
+    /// # Errors
+    /// Refuses the last pane or another pending operation.
+    pub fn close_pane_frame(&mut self) -> Result<Vec<u8>, String> {
+        self.pane_operation_ready()?;
+        if self.pane_rects().len() <= 1 {
+            return Err(
+                "Cannot close the last pane. Use Release Session to end the session.".to_owned(),
+            );
+        }
+        let terminal_id = self
+            .focused_pane()
+            .ok_or("No terminal is ready to close.")?;
+        let request_id = self.next_pane_request();
+        self.pending_close = Some((request_id, terminal_id.clone()));
+        self.pane_error = None;
+        Ok(encode(&FrameKind::Command {
+            request_id,
+            command: Command::KillResource {
+                terminal_id,
+                operation_id: None,
+            },
+        }))
+    }
+
+    fn restore_layout(&mut self) {
+        if let Some(focused) = &self.focused_terminal
+            && let Some(index) = self.terminal_order.iter().position(|id| id == focused)
+            && index >= 4
+        {
+            self.terminal_order.swap(0, index);
+        }
+        self.terminal_order.truncate(4);
+        let mut ids = self.terminal_order.iter().take(4);
+        self.layout = ids.next().cloned().map(Layout::Leaf);
+        let mut previous = self.terminal_order.first().cloned();
+        for id in ids {
+            if let (Some(layout), Some(target)) = (&mut self.layout, &previous) {
+                layout.insert(target, id.clone(), Axis::Vertical);
+            }
+            previous = Some(id.clone());
+        }
+    }
+
+    fn pane_resize_frames(&mut self) -> Vec<Vec<u8>> {
+        self.pane_rects()
+            .into_iter()
+            .filter_map(|(terminal_id, rect)| {
+                let geometry = CanonicalGeometry {
+                    cols: rect.cols,
+                    rows: rect.rows,
+                };
+                let previous = self
+                    .pane_sizes
+                    .insert(terminal_id.clone(), geometry)
+                    .or_else(|| {
+                        self.kernel
+                            .as_ref()
+                            .and_then(|kernel| kernel.published(&terminal_id))
+                            .map(|replica| replica.geometry())
+                    });
+                if previous == Some(geometry) {
+                    return None;
+                }
+                Some(encode(&FrameKind::ResizeTerminal {
+                    terminal_id,
+                    cols: rect.cols,
+                    rows: rect.rows,
+                }))
+            })
+            .collect()
+    }
+
+    /// Resize every visible resource to its local pane rectangle.
+    pub fn resize_panes(&mut self, cols: u16, rows: u16) -> Vec<Vec<u8>> {
+        if self.layout.is_none() {
+            return self.resize_frame(cols, rows).into_iter().collect();
+        }
+        let (cols, rows) = (cols.max(1), rows.max(1));
+        if self.failed || (cols, rows) == (self.cols, self.rows) {
+            return Vec::new();
+        }
+        self.cols = cols;
+        self.rows = rows;
+        self.pane_resize_frames()
+    }
+
+    fn pane_refusal(&mut self, message: String) -> Outcome {
+        let resource = self
+            .pending_split
+            .take()
+            .and_then(|pending| pending.resource);
+        self.pending_close = None;
+        self.pane_error = Some(message);
+        let send = resource
+            .into_iter()
+            .map(|terminal_id| {
+                self.retiring_panes.push(terminal_id.clone());
+                let request_id = self.next_pane_request();
+                encode(&FrameKind::Command {
+                    request_id,
+                    command: Command::KillResource {
+                        terminal_id,
+                        operation_id: None,
+                    },
+                })
+            })
+            .collect();
+        Outcome {
+            send,
+            panes: true,
+            ..Outcome::default()
+        }
+    }
+
+    fn reduce_pane_frame(&mut self, frame: &FrameKind) -> Option<Outcome> {
+        match frame {
+            FrameKind::ResourceSpawned { request_id, result }
+                if self
+                    .pending_split
+                    .as_ref()
+                    .is_some_and(|pending| pending.request_id == *request_id) =>
+            {
+                Some(self.accept_spawn(result))
+            }
+            FrameKind::CommandResult { request_id, result } => {
+                self.accept_pane_command(*request_id, result)
+            }
+            FrameKind::Error {
+                request_id,
+                message,
+                ..
+            } => {
+                let correlated = request_id.is_some_and(|id| {
+                    self.pending_split
+                        .as_ref()
+                        .is_some_and(|pending| pending.request_id == id)
+                        || self
+                            .pending_close
+                            .as_ref()
+                            .is_some_and(|(pending, _)| *pending == id)
+                });
+                if correlated {
+                    Some(self.pane_refusal(message.clone()))
+                } else {
+                    self.pane_error = Some(message.clone());
+                    Some(Outcome {
+                        panes: true,
+                        ..Outcome::default()
+                    })
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn accept_spawn(&mut self, result: &SpawnResult) -> Outcome {
+        let Some(terminal_id) = result.spawned_id().cloned() else {
+            return self.pane_refusal(format!(
+                "Could not split this pane: {result:?}. Try again or close another pane."
+            ));
+        };
+        let request_id = self.next_pane_request();
+        if let Some(pending) = self.pending_split.as_mut() {
+            pending.resource = Some(terminal_id.clone());
+            pending.request_id = request_id;
+        }
+        Outcome {
+            send: vec![encode(&FrameKind::Command {
+                request_id,
+                command: Command::AttachResource {
+                    terminal_id,
+                    role_policy: None,
+                },
+            })],
+            panes: true,
+            ..Outcome::default()
+        }
+    }
+
+    fn accept_pane_command(&mut self, request_id: u32, result: &CommandResult) -> Option<Outcome> {
+        let split = self
+            .pending_split
+            .as_ref()
+            .is_some_and(|pending| pending.request_id == request_id);
+        let close = self
+            .pending_close
+            .as_ref()
+            .is_some_and(|(id, _)| *id == request_id);
+        if !split && !close {
+            return None;
+        }
+        if let CommandResult::Error { message, .. } = result {
+            return Some(self.pane_refusal(format!("Pane operation refused: {message}")));
+        }
+        if split && let Some(pending) = self.pending_split.as_mut() {
+            pending.acknowledged = true;
+        }
+        Some(Outcome {
+            panes: true,
+            ..Outcome::default()
+        })
+    }
+
+    fn finish_split(&mut self, outcome: &mut Outcome) {
+        let Some(pending) = self.pending_split.as_ref() else {
+            return;
+        };
+        let Some(id) = pending.resource.as_ref() else {
+            return;
+        };
+        if !pending.acknowledged || self.pane_terminal(id).is_none() {
+            return;
+        }
+        let id = id.clone();
+        if let Some(layout) = self.layout.as_mut() {
+            if !layout.insert(&pending.target, id.clone(), pending.axis)
+                && let Some(target) = self.terminal_order.first()
+            {
+                // The requested source may naturally exit while spawn is in flight.
+                layout.insert(target, id.clone(), pending.axis);
+            }
+        } else {
+            self.layout = Some(Layout::Leaf(id.clone()));
+        }
+        self.terminal_order.push(id.clone());
+        self.focused_terminal = Some(id);
+        self.cancel_path_query();
+        self.pending_split = None;
+        outcome.panes = true;
+        outcome.badges = true;
+        outcome.render = true;
+        outcome.send.extend(self.pane_resize_frames());
     }
     /// Negotiated decode limits after `HELLO_OK`.
     #[must_use]
@@ -774,21 +1193,42 @@ impl Session {
         if self.failed {
             return Outcome::default();
         }
+        if frame_resource_id(&frame).is_some_and(|id| self.retiring_panes.contains(id))
+            && !matches!(&frame, FrameKind::ResourceClosed { .. })
+        {
+            return Outcome::default();
+        }
         if let FrameKind::HelloOk { server_caps, .. } = &frame {
             self.path_query_supported = server_caps
                 .features_ext
                 .contains(ServerFeatureExt::PathQuery);
+            self.spawn_initial_size = server_caps
+                .features
+                .contains(ServerFeature::SpawnInitialSize);
         }
         if let FrameKind::PathResults { request_id, result } = frame {
             self.accept_path_results(request_id, result);
             return Outcome::default();
         }
         let agent_frame = frame_resource_id(&frame).is_some_and(|id| self.is_agent_session(id));
+        let split_frame = frame_resource_id(&frame).is_some_and(|id| {
+            self.pending_split
+                .as_ref()
+                .and_then(|pending| pending.resource.as_ref())
+                == Some(id)
+        });
         let mut outcome = self.reduce_frame(frame);
         if agent_frame && outcome.fatal.is_some() {
             self.failed = false;
             outcome.fatal = None;
         }
+        if split_frame && let Some(message) = outcome.fatal.take() {
+            self.failed = false;
+            return self.pane_refusal(format!(
+                "New pane bootstrap failed: {message}. The other panes are still available."
+            ));
+        }
+        self.finish_split(&mut outcome);
         outcome
     }
 
@@ -808,6 +1248,9 @@ impl Session {
     }
 
     fn reduce_frame(&mut self, frame: FrameKind) -> Outcome {
+        if let Some(outcome) = self.reduce_pane_frame(&frame) {
+            return outcome;
+        }
         match frame {
             FrameKind::HelloOk {
                 protocol_major,
@@ -916,6 +1359,7 @@ impl Session {
                 self.focused_terminal = Some(focused_terminal);
                 self.cancel_path_query();
                 self.terminal_order = terminal_ids;
+                self.restore_layout();
                 self.render_visible = false;
                 outcome
             }
@@ -1074,6 +1518,8 @@ impl Session {
                 reason,
                 signal,
             } => {
+                self.retiring_panes.retain(|id| id != &terminal_id);
+                self.pane_sizes.remove(&terminal_id);
                 let was_focused = self.focused_terminal.as_ref() == Some(&terminal_id);
                 let was_agent = self.is_agent_session(&terminal_id);
                 let (mut outcome, applied) = self.apply_kernel(KernelInput::ResourceClosed {
@@ -1082,9 +1528,38 @@ impl Session {
                     signal,
                     reason,
                 });
-                if applied && was_focused {
-                    self.cancel_path_query();
-                    self.focused_terminal = self.first_published_terminal();
+                if applied && !was_agent {
+                    self.terminal_order.retain(|id| id != &terminal_id);
+                    self.layout = self
+                        .layout
+                        .take()
+                        .and_then(|layout| layout.remove(&terminal_id));
+                    if self
+                        .pending_close
+                        .as_ref()
+                        .is_some_and(|(_, id)| id == &terminal_id)
+                    {
+                        self.pending_close = None;
+                    }
+                    if self
+                        .pending_split
+                        .as_ref()
+                        .is_some_and(|pending| pending.resource.as_ref() == Some(&terminal_id))
+                    {
+                        self.pending_split = None;
+                        self.pane_error = Some(
+                            "The terminal closed before the split completed. Try splitting again."
+                                .to_owned(),
+                        );
+                    }
+                    if was_focused {
+                        self.cancel_path_query();
+                        self.focused_terminal = self.first_published_terminal();
+                    }
+                    outcome.panes = true;
+                    outcome.render |= self.render_visible;
+                    outcome.badges = true;
+                    outcome.send.extend(self.pane_resize_frames());
                 }
                 if applied && was_agent {
                     outcome.badges = true;
@@ -1092,9 +1567,14 @@ impl Session {
                 outcome
             }
             FrameKind::AttachReady { attach_id } => {
-                let (outcome, applied) = self.apply_kernel(KernelInput::AttachReady { attach_id });
+                let (mut outcome, applied) =
+                    self.apply_kernel(KernelInput::AttachReady { attach_id });
                 if applied {
                     self.attach_ready = true;
+                    outcome.panes = true;
+                    if self.pane_rects().len() > 1 {
+                        outcome.send.extend(self.pane_resize_frames());
+                    }
                 }
                 outcome
             }
@@ -1237,6 +1717,32 @@ impl Session {
         }
     }
 
+    pub(crate) fn pane_focus_frames(&mut self, previous: Option<ResourceId>) -> Vec<Vec<u8>> {
+        use phux_protocol::input::focus::FocusEvent;
+        let mut frames = Vec::new();
+        for (id, focus) in [
+            (previous, FocusEvent::Lost),
+            (self.focused_pane(), FocusEvent::Gained),
+        ] {
+            let Some(id) = id else {
+                continue;
+            };
+            if !self
+                .pane_terminal(&id)
+                .is_some_and(|terminal| terminal.dec_mode(1004))
+            {
+                continue;
+            }
+            let event = InputEvent::Focus(focus);
+            let (outcome, _) = self.apply_kernel(KernelInput::Action(KernelAction::Input {
+                terminal_id: &id,
+                event: &event,
+            }));
+            frames.extend(outcome.send);
+        }
+        frames
+    }
+
     fn apply_kernel(&mut self, input: KernelInput<'_>) -> (Outcome, bool) {
         let Some(kernel) = self.kernel.as_mut() else {
             self.effects.clear();
@@ -1300,11 +1806,7 @@ impl Session {
                 // already ignored below, and this keeps the web client's
                 // wire traffic unchanged until it wants them.
                 KernelEffect::Send(KernelSend::SubscribeEvents { .. }) => {}
-                KernelEffect::Damage(damage) => {
-                    if focused == Some(&damage.terminal_id) || focused.is_none() {
-                        outcome.render = true;
-                    }
-                }
+                KernelEffect::Damage(_) => outcome.render = true,
                 KernelEffect::AgentRecords { .. } => outcome.badges = true,
                 KernelEffect::Status(KernelStatus::Engine {
                     key,
@@ -1334,18 +1836,31 @@ impl Session {
         }
     }
 
-    /// Retire browser-side bootstrap state that exceeded the hard staging lifetime.
-    ///
-    /// Returning `true` asks the browser driver to tear down this connection;
-    /// web clients do not expose the native resynchronization-status channel.
-    pub fn expire_bootstrap_staging(&mut self) -> bool {
+    /// Retire expired staging; a failed new split never disconnects its siblings.
+    pub fn expire_bootstrap_staging(&mut self) -> Outcome {
         let Some(kernel) = self.kernel.as_mut() else {
             self.effects.clear();
-            return false;
+            return Outcome::default();
         };
         let expired = kernel.expire_bootstrap_staging(browser_monotonic_ms(), &mut self.effects);
+        if expired == 0 {
+            self.effects.clear();
+            return Outcome::default();
+        }
+        let split = self
+            .pending_split
+            .as_ref()
+            .and_then(|pending| pending.resource.as_ref());
+        let only_split = self.effects.as_slice().iter().all(|effect| {
+            !matches!(effect, KernelEffect::Status(KernelStatus::ResyncRequired { terminal_id, .. })
+                if Some(terminal_id) != split)
+        });
         self.effects.clear();
-        expired > 0
+        if split.is_some() && only_split {
+            self.pane_refusal("New pane bootstrap timed out. The other panes are still available; try splitting again.".to_owned())
+        } else {
+            self.protocol_failure("terminal bootstrap staging timed out")
+        }
     }
 
     fn protocol_failure(&mut self, message: &str) -> Outcome {

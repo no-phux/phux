@@ -2,26 +2,19 @@
 /* eslint-disable */
 
 /**
- * One live wire session: the curated shell + the bits of server state the wire
- * needs (a terminal id, an output sequence counter, the viewport size).
+ * One live hosted wire session with up to four independently addressed shells.
  */
 export class EdgeSession {
     free(): void;
     [Symbol.dispose](): void;
     /**
-     * Serialize logical session state only. The caller persists mode and the
-     * portfolio snapshot separately and supplies them again to `restore`.
+     * Persist all resources, subscriptions, replica generations and the ID allocator.
+     * Mode and the portfolio snapshot remain in the caller's boot record.
      */
     checkpoint(): string;
-    /**
-     * Create a session. `cols`/`rows` are defaults until the client's `ATTACH`
-     * reports its viewport.
-     */
     constructor(cols: number, rows: number, mode: string, snapshot_json: string);
     /**
-     * Handle one inbound WebSocket message (one encoded `FrameKind`). Returns a
-     * JS array of `Uint8Array`s — each is one frame to send back, one WS
-     * message per element.
+     * One encoded frame in, one JS Uint8Array per response frame out.
      */
     on_message(data: Uint8Array): Array<any>;
     static restore(checkpoint_json: string, mode: string, snapshot_json: string): EdgeSession;

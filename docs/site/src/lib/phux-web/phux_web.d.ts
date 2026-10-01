@@ -12,6 +12,33 @@ export class HostedClient {
      * Close the socket and synchronously remove all browser handlers and timers.
      */
     close(): void;
+    /**
+     * Close the focused terminal without closing its siblings.
+     *
+     * # Errors
+     * Refuses the last pane; use the host's Release Session control instead.
+     */
+    close_pane(): void;
+    /**
+     * Move keyboard focus to the next published pane.
+     *
+     * # Errors
+     * Fails when the connection has no usable terminal.
+     */
+    focus_next_pane(): void;
+    /**
+     * Resize the terminal to `cols`x`rows` cells (for example after the
+     * host element changes size). The canvas follows the server's new
+     * geometry.
+     */
+    resize(cols: number, rows: number): void;
+    /**
+     * Split the focused terminal using one new resource on this connection.
+     *
+     * # Errors
+     * Refuses invalid axes, a fifth pane, or a split while another is pending.
+     */
+    split_pane(axis: string): void;
 }
 
 /**
@@ -53,23 +80,27 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_hostedclient_free: (a: number, b: number) => void;
     readonly hostedclient_close: (a: number) => void;
+    readonly hostedclient_close_pane: (a: number) => [number, number];
+    readonly hostedclient_focus_next_pane: (a: number) => [number, number];
+    readonly hostedclient_resize: (a: number, b: number, c: number) => void;
+    readonly hostedclient_split_pane: (a: number, b: number, c: number) => [number, number];
     readonly start: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly start_hosted: (a: number, b: number, c: number, d: number, e: number, f: number, g: any, h: number) => any;
     readonly start_webtransport: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => any;
-    readonly wasm_bindgen_68491a1fb648450a___convert__closures_____invoke___u32__u32__i32__true_: (a: number, b: number, c: number, d: number) => number;
-    readonly wasm_bindgen_68491a1fb648450a___convert__closures_____invoke___js_sys_693052f2514f24c___Function_fn_wasm_bindgen_68491a1fb648450a___JsValue_____wasm_bindgen_68491a1fb648450a___sys__Undefined___js_sys_693052f2514f24c___Function_fn_wasm_bindgen_68491a1fb648450a___JsValue_____wasm_bindgen_68491a1fb648450a___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen_68491a1fb648450a___convert__closures_____invoke___wasm_bindgen_68491a1fb648450a___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_68491a1fb648450a___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_68491a1fb648450a___convert__closures_____invoke___wasm_bindgen_68491a1fb648450a___sys__Undefined__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_68491a1fb648450a___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_68491a1fb648450a___convert__closures_____invoke___wasm_bindgen_68491a1fb648450a___sys__Undefined__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_68491a1fb648450a___JsError___true__10: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_68491a1fb648450a___convert__closures_____invoke___web_sys_3da061fdc792b34e___features__gen_MessageEvent__MessageEvent______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_68491a1fb648450a___convert__closures_____invoke___web_sys_3da061fdc792b34e___features__gen_MessageEvent__MessageEvent______true__7: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_68491a1fb648450a___convert__closures_____invoke___web_sys_3da061fdc792b34e___features__gen_MessageEvent__MessageEvent______true__8: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_68491a1fb648450a___convert__closures_____invoke_______true_: (a: number, b: number) => void;
+    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke___u32__u32__i32__true_: (a: number, b: number, c: number, d: number) => number;
+    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke___js_sys_19e6b106fee1164f___Function_fn_wasm_bindgen_4319d9ad64dc54c6___JsValue_____wasm_bindgen_4319d9ad64dc54c6___sys__Undefined___js_sys_19e6b106fee1164f___Function_fn_wasm_bindgen_4319d9ad64dc54c6___JsValue_____wasm_bindgen_4319d9ad64dc54c6___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke___u32__u32______true_: (a: number, b: number, c: number, d: number) => void;
+    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke___wasm_bindgen_4319d9ad64dc54c6___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_4319d9ad64dc54c6___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke___wasm_bindgen_4319d9ad64dc54c6___sys__Undefined__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_4319d9ad64dc54c6___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke___wasm_bindgen_4319d9ad64dc54c6___sys__Undefined__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_4319d9ad64dc54c6___JsError___true__13: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke___web_sys_bb7631f4d8aa1b67___features__gen_MessageEvent__MessageEvent______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke___web_sys_bb7631f4d8aa1b67___features__gen_MessageEvent__MessageEvent______true__11: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_4319d9ad64dc54c6___convert__closures_____invoke_______true_: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
-    readonly __wbindgen_exn_store: (a: number) => void;
     readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
+    readonly __wbindgen_exn_store: (a: number) => void;
     readonly __wbindgen_destroy_closure: (a: number, b: number) => void;
     readonly __externref_table_dealloc: (a: number) => void;
     readonly __wbindgen_start: () => void;
