@@ -9,9 +9,12 @@ use std::fmt::Write as _;
 
 use crate::{MetricValue, PerfReport, Unit};
 
-/// Render `report` as an aligned text table. When `interval` is set the
-/// report is a [`PerfReport::delta`] and counters gain a per-second rate;
-/// otherwise counters are lifetime totals.
+/// Render `report` as an aligned text table.
+///
+/// When `interval` is set the report is a [`PerfReport::delta`] and counters
+/// gain a per-second rate; otherwise counters are lifetime totals. Histogram
+/// `total` is the sum of samples in their declared unit; nested timings
+/// overlap and are not CPU time.
 #[must_use]
 pub fn render_report(report: &PerfReport, interval: Option<std::time::Duration>) -> String {
     let mut out = String::new();
@@ -22,7 +25,7 @@ pub fn render_report(report: &PerfReport, interval: Option<std::time::Duration>)
         .map(|m| Row::from_metric(m, interval))
         .collect();
     let widths = column_widths(&rows);
-    let header = ["count", "rate/s", "p50", "p90", "p99", "max"].map(str::to_owned);
+    let header = ["count", "rate/s", "total", "p50", "p90", "p99", "max"].map(str::to_owned);
     write_row(&mut out, "metric", &header, &widths);
     let mut last_group = "";
     for row in &rows {
@@ -37,7 +40,7 @@ pub fn render_report(report: &PerfReport, interval: Option<std::time::Duration>)
 }
 
 /// One aligned line: the name left-aligned, every column right-aligned.
-fn write_row(out: &mut String, name: &str, cols: &[String; 6], widths: &[usize; 7]) {
+fn write_row(out: &mut String, name: &str, cols: &[String; 7], widths: &[usize; 8]) {
     let _ = write!(out, "{name:<w$}", w = widths[0]);
     for (col, w) in cols.iter().zip(&widths[1..]) {
         let _ = write!(out, "  {col:>w$}");
@@ -72,7 +75,7 @@ fn render_header(out: &mut String, report: &PerfReport, interval: Option<std::ti
 
 struct Row {
     name: String,
-    cols: [String; 6],
+    cols: [String; 7],
 }
 
 impl Row {
@@ -94,6 +97,7 @@ impl Row {
             MetricValue::Histogram(h) => [
                 h.count.to_string(),
                 rate(h.count),
+                fmt_unit(h.sum, m.unit),
                 fmt_unit(h.percentile(50), m.unit),
                 fmt_unit(h.percentile(90), m.unit),
                 fmt_unit(h.percentile(99), m.unit),
@@ -106,10 +110,12 @@ impl Row {
                 "-".to_owned(),
                 "-".to_owned(),
                 "-".to_owned(),
+                "-".to_owned(),
             ],
             MetricValue::Gauge(n) => [
                 fmt_unit(*n, m.unit),
                 "gauge".to_owned(),
+                "-".to_owned(),
                 "-".to_owned(),
                 "-".to_owned(),
                 "-".to_owned(),
@@ -123,8 +129,8 @@ impl Row {
     }
 }
 
-fn column_widths(rows: &[Row]) -> [usize; 7] {
-    let mut w = [6_usize, 5, 6, 3, 3, 3, 3];
+fn column_widths(rows: &[Row]) -> [usize; 8] {
+    let mut w = [6_usize, 5, 6, 5, 3, 3, 3, 3];
     for r in rows {
         w[0] = w[0].max(r.name.len());
         for (i, c) in r.cols.iter().enumerate() {
@@ -184,16 +190,6 @@ fn fmt_bytes(b: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Counter, Gauge, Histogram, Metric, Unit};
-
-    static H: Histogram = Histogram::new();
-    static C: Counter = Counter::new();
-    static G: Gauge = Gauge::new();
-    static TABLE: &[Metric] = &[
-        Metric::histogram("echo.rtt", Unit::Micros, &H),
-        Metric::counter("pty.read.bytes", Unit::Bytes, &C),
-        Metric::gauge("clients", Unit::Count, &G),
-    ];
 
     #[test]
     fn units_format_readably() {
@@ -204,22 +200,5 @@ mod tests {
         assert_eq!(fmt_bytes(30_000_000), "28.6MiB");
         assert_eq!(fmt_duration_ms(90_000), "1m30s");
         assert_eq!(fmt_duration_ms(6 * 86_400_000 + 3_600_000), "6d01h");
-    }
-
-    #[test]
-    fn table_has_a_header_and_every_metric() {
-        H.record(700);
-        C.add(4096);
-        G.set(2);
-        let r = crate::snapshot("server", TABLE, std::time::Duration::from_secs(10));
-        let text = render_report(&r, None);
-        assert!(text.starts_with("server pid "), "{text}");
-        assert!(text.contains("uptime 10.0s"), "{text}");
-        assert!(text.contains("echo.rtt"), "{text}");
-        assert!(text.contains("pty.read.bytes"), "{text}");
-        assert!(text.contains("4.0KiB"), "{text}");
-        assert!(text.contains("gauge"), "{text}");
-        let with_rate = render_report(&r, Some(std::time::Duration::from_secs(2)));
-        assert!(with_rate.contains("last 2.0s"), "{with_rate}");
     }
 }

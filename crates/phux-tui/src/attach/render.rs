@@ -112,23 +112,37 @@ fn read_row<'alloc, 'buf>(
     row: &RowIteration<'alloc, '_>,
     buf: &'buf mut RowBuf,
 ) -> Result<RowCells<'buf>, RenderError> {
-    buf.cells.clear();
+    let mut index = 0;
     buf.styles.clear();
     let mut iter = cells.update(row)?;
     while let Some(cell) = iter.next() {
         let style = cell.style()?;
         let style_index = u32::try_from(buf.styles.len()).unwrap_or(u32::MAX);
         buf.styles.push(style);
-        let mut text = String::new();
+        // Reuse each column's UTF-8 allocation across row walks. The previous
+        // row's cells are no longer borrowed when this scratch buffer is reused.
+        let mut text = buf
+            .cells
+            .get_mut(index)
+            .map(|cell| std::mem::take(&mut cell.text))
+            .unwrap_or_default();
+        text.clear();
         cell.graphemes_utf8(&mut text)?;
-        buf.cells.push(OwnedRowCell {
+        let owned = OwnedRowCell {
             text,
             style_index,
             fg: cell.fg_color()?,
             bg: cell.bg_color()?,
             wide: cell.raw_cell()?.wide()?,
-        });
+        };
+        if let Some(cell) = buf.cells.get_mut(index) {
+            *cell = owned;
+        } else {
+            buf.cells.push(owned);
+        }
+        index += 1;
     }
+    buf.cells.truncate(index);
     Ok(RowCells {
         cells: &buf.cells,
         styles: &buf.styles,
@@ -606,16 +620,20 @@ impl<'alloc> TerminalRenderer<'alloc> {
         clip: (u16, u16),
         force_full: bool,
     ) -> Result<Dirty, RenderError> {
+        let _timed = phux_client::perf::PAINT_PANE.timer();
         // Record where this pane is anchored before any early-return: the
         // predictive-echo overlay reads `last_origin` to place pane-local
         // echoes, and the pane stays at this origin even on a clean (no-op)
         // render.
         self.last_origin = origin;
+        let prepare_timer = phux_client::perf::PAINT_PREPARE.timer();
+        let projected = self.pool.begin(walk.terminal, walk.generation);
+        drop(prepare_timer);
         let RenderWalk {
             snapshot,
             rows,
             cells,
-        } = self.pool.begin(walk.terminal, walk.generation)?;
+        } = projected?;
         let dirty = frame_dirty(&snapshot, force_full)?;
 
         if matches!(dirty, Dirty::Clean) {
@@ -747,6 +765,7 @@ fn paint_dirty_rows<'alloc>(
     marks: &CopyMarks,
     record: bool,
 ) -> Result<(), RenderError> {
+    let _timed = phux_client::perf::PAINT_ROWS.timer();
     let (cols_total, rows_total) = extent;
     // The outer pen is unknown at the start of every pane paint: chrome,
     // another pane, or an overlay may have written anything since this pane

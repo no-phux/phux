@@ -92,6 +92,7 @@ impl<'a, W: Write> FrameBlock<'a, W> {
         }
         let shipped = if self.painted {
             phux_client::perf::PAINTS.add(1);
+            let _timed = phux_client::perf::PAINT_SUBMIT.timer();
             self.inner
                 .write_all(&self.body)
                 .and_then(|()| self.inner.flush())

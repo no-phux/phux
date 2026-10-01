@@ -8,7 +8,7 @@ use super::predict::Predictor;
 use super::{
     Adapter, Command, EffectBuffer, EngineApplyError, EngineEvent, EngineOutcome, HashSet,
     InputBlockReason, InputEligibility, KernelDamageKind, KernelEffect, Lifecycle, Query,
-    ResourceId, SessionKernel, mpsc,
+    QueuedCommand, ResourceId, SessionKernel, mpsc,
 };
 #[cfg(feature = "engine")]
 use super::{
@@ -116,9 +116,11 @@ impl Owner {
         }
     }
 
-    pub(super) fn run(mut self, commands: &mpsc::Receiver<Command>) {
-        while let Ok(command) = commands.recv() {
-            match command {
+    pub(super) fn run(mut self, commands: &mpsc::Receiver<QueuedCommand>) {
+        while let Ok(queued) = commands.recv() {
+            crate::perf::OWNER_QUEUE_WAIT.record_elapsed(queued.queued_at);
+            let _timed = crate::perf::OWNER_EXECUTE.timer();
+            match queued.command {
                 Command::Stop(reply) => {
                     self.retire_publications();
                     let _ = reply.send(());
@@ -371,10 +373,15 @@ impl Owner {
 
     fn apply_batch(&mut self, events: Vec<EngineEvent>) -> Vec<EngineOutcome> {
         crate::perf::APPLY_BATCHES.incr();
+        let _timed = crate::perf::APPLY_EXECUTE.timer();
+        crate::perf::APPLY_EVENTS.record(u64::try_from(events.len()).unwrap_or(u64::MAX));
         let mut damaged = Vec::new();
         let mut outcomes = Vec::with_capacity(events.len());
         for event in events {
             let outcome = self.apply_one(event, &mut damaged);
+            if outcome.error.is_some() {
+                crate::perf::APPLY_ERRORS.incr();
+            }
             let fatal = outcome.resync_required()
                 || matches!(outcome.error.as_ref(), Some(EngineApplyError::Protocol(_)));
             outcomes.push(outcome);
@@ -448,6 +455,7 @@ impl Owner {
     /// whatever its slot still holds.
     #[cfg(feature = "engine")]
     fn catch_up(&mut self, key: &FrameKey) -> Option<Arc<GridFrame>> {
+        let _timed = crate::perf::CATCH_UP_EXECUTE.timer();
         let result = match key {
             FrameKey::Default(id) => self.render_and_publish(id).map(drop),
             FrameKey::View(view) if self.views.contains_key(view) => {

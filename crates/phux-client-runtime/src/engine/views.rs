@@ -41,7 +41,10 @@ impl EngineHandle {
                 done,
             ))
         })??;
-        response.recv().map_err(|_| EngineError::Stopped)
+        response.recv().map_err(|_| {
+            crate::perf::REQUEST_ERRORS.incr();
+            EngineError::Stopped
+        })
     }
 
     /// Scroll only this view, returning effects for control-plane routing.

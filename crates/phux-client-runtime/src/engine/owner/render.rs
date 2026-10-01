@@ -22,12 +22,14 @@ impl Owner {
         // previous frame.
         let full = views || slot.reader != self.active_view;
         slot.reader = self.active_view;
-        let started = std::time::Instant::now();
+        let _timed = crate::perf::PROJECT.timer();
         let result = self.project_frame(id, &mut slot, full, (stream, bootstrap, sequence));
         self.projectors.insert(id.clone(), slot);
-        let frame = result?;
-        self.publish_frame(id, frame)?;
-        crate::perf::PROJECT.record_elapsed(started);
+        let result = result.and_then(|frame| self.publish_frame(id, frame));
+        if result.is_err() {
+            crate::perf::PROJECT_ERRORS.incr();
+        }
+        result?;
         crate::perf::PUBLISHED.incr();
         Ok(true)
     }
@@ -39,6 +41,7 @@ impl Owner {
         full: bool,
         generation: (u64, u64, u64),
     ) -> Result<GridFrame, EngineError> {
+        let _timed = crate::perf::PROJECT_GRID.timer();
         let terminal = self.terminal(id)?;
         let defaults = terminal_defaults(terminal)?;
         let alternate = matches!(
@@ -94,12 +97,16 @@ impl Owner {
     }
 
     fn publish_frame(&mut self, id: &ResourceId, frame: GridFrame) -> Result<(), EngineError> {
+        let _timed = crate::perf::PUBLISH_SWAP.timer();
         let previous = match self.active_view {
             Some(view) => self.publication.publish_view(view, frame),
             None => self.publication.publish(id, frame),
         };
-        if let Some(previous) = previous.and_then(|frame| Arc::try_unwrap(frame).ok()) {
-            self.presentation_mut(id)?.spare = Some(previous.buffer);
+        if let Some(previous) = previous {
+            match Arc::try_unwrap(previous) {
+                Ok(previous) => self.presentation_mut(id)?.spare = Some(previous.buffer),
+                Err(_) => crate::perf::BUFFER_HELD.incr(),
+            }
         }
         Ok(())
     }

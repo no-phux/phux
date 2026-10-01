@@ -26,8 +26,17 @@ pub static PTY_QUEUE_WAIT: Histogram = Histogram::new();
 pub static PTY_BURST_BYTES: Histogram = Histogram::new();
 /// Reader chunks folded into each burst.
 pub static PTY_BURST_CHUNKS: Histogram = Histogram::new();
-/// Microseconds libghostty took to parse one burst.
+/// Microseconds per synchronous non-deferred ingest, including parsing and
+/// derived output work. Excludes native capture replay.
 pub static PTY_VT_APPLY: Histogram = Histogram::new();
+/// Microseconds spent only in the canonical terminal's VT parser.
+pub static PTY_VT_PARSE: Histogram = Histogram::new();
+/// Microseconds after parsing: color replies, input-mode publication, semantic
+/// events/cwd checks and starting a queued native capture.
+pub static PTY_POST_APPLY: Histogram = Histogram::new();
+/// Wall microseconds to resume a cooperative yield after a byte-capped PTY
+/// burst. Includes scheduling and sibling work, not CPU time; no idle samples.
+pub static PTY_YIELD_WAIT: Histogram = Histogram::new();
 
 // --- echo: input in, output out, same pane --------------------------------
 
@@ -45,6 +54,38 @@ pub static INPUT_EVENTS: Counter = Counter::new();
 pub static INPUT_PTY_WRITE: Histogram = Histogram::new();
 /// Input events that waited for a saturated pane to drain (ADR-0144).
 pub static INPUT_CREDIT_WAITS: Counter = Counter::new();
+/// Wall microseconds in an actual bounded credit wait, including timeout.
+/// Immediate acquisitions and already-stalled refusals are not sampled.
+pub static INPUT_CREDIT_WAIT: Histogram = Histogram::new();
+/// Credit waits that reached their deadline (not subsequent fast refusals).
+pub static INPUT_CREDIT_TIMEOUTS: Counter = Counter::new();
+/// Microseconds from writer-queue send attempt to writer pickup, before the
+/// canonical-mode guard. Includes scheduling; terminal replies are sampled too.
+pub static INPUT_WRITER_QUEUE_WAIT: Histogram = Histogram::new();
+/// Writer-queue refusals, including slots reserved for credited input.
+pub static INPUT_WRITER_FULL: Counter = Counter::new();
+/// Writer requests refused by the canonical line-discipline guard.
+pub static INPUT_CANONICAL_REFUSED: Counter = Counter::new();
+
+// --- actor-derived work ---------------------------------------------------
+
+/// Microseconds per installed detector tick, including viewport projection,
+/// process observation and best-effort event emission; no absent-detector samples.
+pub static AGENT_DETECT: Histogram = Histogram::new();
+/// Microseconds projecting a viewport requested by the detector, including
+/// failed projections. On-loan terminals are not sampled.
+pub static AGENT_VIEWPORT: Histogram = Histogram::new();
+/// Microseconds handling one detector event in the runtime: metadata/authority
+/// work, ask broadcast and hook enqueue (not execution of the hook process).
+pub static AGENT_PUBLISH: Histogram = Histogram::new();
+/// Microseconds querying the live child's kernel cwd, including failed queries;
+/// excludes path conversion, comparison and event emission.
+pub static PROC_CWD_QUERY: Histogram = Histogram::new();
+/// Wall microseconds past an existing actor detector timer's scheduled deadline.
+///
+/// Includes runtime/OS scheduling and actor priority starvation. The first tick
+/// after intentional native-bootstrap gating is skipped; no new wakeups.
+pub static RUNTIME_DETECT_TICK_LATE: Histogram = Histogram::new();
 
 // --- tick: state-sync fanout ----------------------------------------------
 
@@ -89,6 +130,11 @@ pub static WIRE_WRITE: Histogram = Histogram::new();
 pub static WIRE_WRITE_BYTES: Histogram = Histogram::new();
 /// Total bytes written to every client.
 pub static WIRE_BYTES_OUT: Counter = Counter::new();
+/// Microseconds encoding one admitted outbound frame, including negotiated
+/// compression. Excludes queue wait, generation-fenced drops and socket writes.
+pub static WIRE_ENCODE: Histogram = Histogram::new();
+/// Frames encoded per coalesced batch, even if later revoked or write-failed.
+pub static WIRE_BATCH_FRAMES: Histogram = Histogram::new();
 
 // --- control plane --------------------------------------------------------
 
@@ -96,6 +142,29 @@ pub static WIRE_BYTES_OUT: Counter = Counter::new();
 pub static CMD_HANDLE: Histogram = Histogram::new();
 /// Microseconds per session `ATTACH` handled.
 pub static ATTACH_HANDLE: Histogram = Histogram::new();
+/// Wall microseconds staging all panes for a non-deferred attach.
+///
+/// Includes consumer registration, actor queues/capture replies, capability
+/// adaptation and failed staging; excludes prepare, rollback and publication.
+pub static ATTACH_CAPTURE_WALL: Histogram = Histogram::new();
+/// Wall microseconds queueing `ATTACHED` through `ATTACH_READY`.
+///
+/// Includes mailbox backpressure, synchronous hook enqueue and closed-mailbox
+/// failures; excludes socket drain and native publication activation.
+pub static ATTACH_PUBLISH_WALL: Histogram = Histogram::new();
+/// Microseconds synthesizing a VT snapshot in the actor.
+///
+/// Includes scrollback and bounded refusals for raw/state-sync attach and
+/// resize/gap resyncs; excludes queue wait, reply handoff and capability adaptation.
+pub static BOOTSTRAP_SYNTH: Histogram = Histogram::new();
+/// Microseconds initializing one native capture: validation, engine loan and
+/// initial scratch allocation. Includes refused starts; excludes backlog wait.
+pub static BOOTSTRAP_NATIVE_BEGIN: Histogram = Histogram::new();
+/// Microseconds per productive native bootstrap actor step.
+///
+/// Includes engine export, scratch growth/retention, completion and failure
+/// handling/replay. No pending capture means no sample; excludes inter-turn scheduling.
+pub static BOOTSTRAP_NATIVE_STEP: Histogram = Histogram::new();
 
 // --- gauges, refreshed when a report is taken -----------------------------
 
@@ -117,10 +186,35 @@ pub static TABLE: &[Metric] = &[
     Metric::histogram("pty.burst.bytes", Unit::Bytes, &PTY_BURST_BYTES),
     Metric::histogram("pty.burst.chunks", Unit::Count, &PTY_BURST_CHUNKS),
     Metric::histogram("pty.vt_apply", Unit::Micros, &PTY_VT_APPLY),
+    Metric::histogram("pty.vt_parse", Unit::Micros, &PTY_VT_PARSE),
+    Metric::histogram("pty.post_apply", Unit::Micros, &PTY_POST_APPLY),
+    Metric::histogram("pty.yield_wait", Unit::Micros, &PTY_YIELD_WAIT),
     Metric::histogram("echo.server", Unit::Micros, &ECHO_SERVER),
     Metric::counter("input.events", Unit::Count, &INPUT_EVENTS),
     Metric::histogram("input.pty_write", Unit::Micros, &INPUT_PTY_WRITE),
     Metric::counter("input.credit_waits", Unit::Count, &INPUT_CREDIT_WAITS),
+    Metric::histogram("input.credit_wait", Unit::Micros, &INPUT_CREDIT_WAIT),
+    Metric::counter("input.credit_timeouts", Unit::Count, &INPUT_CREDIT_TIMEOUTS),
+    Metric::histogram(
+        "input.writer.queue_wait",
+        Unit::Micros,
+        &INPUT_WRITER_QUEUE_WAIT,
+    ),
+    Metric::counter("input.writer.full", Unit::Count, &INPUT_WRITER_FULL),
+    Metric::counter(
+        "input.canonical_refused",
+        Unit::Count,
+        &INPUT_CANONICAL_REFUSED,
+    ),
+    Metric::histogram("agent.detect", Unit::Micros, &AGENT_DETECT),
+    Metric::histogram("agent.viewport", Unit::Micros, &AGENT_VIEWPORT),
+    Metric::histogram("agent.publish", Unit::Micros, &AGENT_PUBLISH),
+    Metric::histogram("proc.cwd_query", Unit::Micros, &PROC_CWD_QUERY),
+    Metric::histogram(
+        "runtime.detect_tick_late",
+        Unit::Micros,
+        &RUNTIME_DETECT_TICK_LATE,
+    ),
     Metric::histogram("tick.emit", Unit::Micros, &TICK_EMIT),
     Metric::histogram("tick.synth", Unit::Micros, &TICK_SYNTH),
     Metric::histogram("tick.out_bytes", Unit::Bytes, &TICK_OUT_BYTES),
@@ -135,8 +229,23 @@ pub static TABLE: &[Metric] = &[
     Metric::histogram("wire.write", Unit::Micros, &WIRE_WRITE),
     Metric::histogram("wire.write.bytes", Unit::Bytes, &WIRE_WRITE_BYTES),
     Metric::counter("wire.bytes_out", Unit::Bytes, &WIRE_BYTES_OUT),
+    Metric::histogram("wire.encode", Unit::Micros, &WIRE_ENCODE),
+    Metric::histogram("wire.batch.frames", Unit::Count, &WIRE_BATCH_FRAMES),
     Metric::histogram("cmd.handle", Unit::Micros, &CMD_HANDLE),
     Metric::histogram("attach.handle", Unit::Micros, &ATTACH_HANDLE),
+    Metric::histogram("attach.capture_wall", Unit::Micros, &ATTACH_CAPTURE_WALL),
+    Metric::histogram("attach.publish_wall", Unit::Micros, &ATTACH_PUBLISH_WALL),
+    Metric::histogram("bootstrap.synth", Unit::Micros, &BOOTSTRAP_SYNTH),
+    Metric::histogram(
+        "bootstrap.native_begin",
+        Unit::Micros,
+        &BOOTSTRAP_NATIVE_BEGIN,
+    ),
+    Metric::histogram(
+        "bootstrap.native_step",
+        Unit::Micros,
+        &BOOTSTRAP_NATIVE_STEP,
+    ),
     Metric::gauge("proc.clients", Unit::Count, &CLIENTS),
     Metric::gauge("proc.panes", Unit::Count, &PANES),
     Metric::gauge("proc.sessions", Unit::Count, &SESSIONS),

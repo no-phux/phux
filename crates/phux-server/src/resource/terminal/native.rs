@@ -77,6 +77,7 @@ impl TerminalActor {
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) fn start_native_bootstrap(&mut self, req: NativeBootstrapRequest) {
+        let _timer = crate::perf::BOOTSTRAP_NATIVE_BEGIN.timer();
         let limits = req.limits;
         let chunk_bytes = match usize::try_from(limits.max_chunk_bytes()) {
             Ok(size) if size != 0 => size.min(req.max_bytes),
@@ -172,6 +173,7 @@ impl TerminalActor {
         let Some(mut pending) = self.pending_native_bootstrap.take() else {
             return;
         };
+        let _timer = crate::perf::BOOTSTRAP_NATIVE_STEP.timer();
         if pending.started_at.elapsed() > NATIVE_CAPTURE_LIFETIME {
             self.fail_native_bootstrap(
                 pending,

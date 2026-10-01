@@ -206,8 +206,12 @@ fn service_write_request(
     master: &Mutex<Box<dyn MasterPty + Send>>,
     request: EncodedInputRequest,
 ) -> WriterLoopControl {
+    if let Some(queued_at) = request.writer_queued_at {
+        crate::perf::INPUT_WRITER_QUEUE_WAIT.record_elapsed(queued_at);
+    }
     let len = request.bytes.len();
     if let Some(overflow) = canonical_refusal(master, &request.bytes) {
+        crate::perf::INPUT_CANONICAL_REFUSED.incr();
         // Refuse before writing: zero bytes beat a truncated, uncompletable
         // line that wedges the pane. Input stays alive.
         error!(

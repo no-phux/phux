@@ -443,6 +443,11 @@ impl EngineConfig {
     }
 }
 
+struct QueuedCommand {
+    command: Command,
+    queued_at: std::time::Instant,
+}
+
 enum Command {
     Stop(Sender<()>),
     ApplyBatch(Vec<EngineEvent>, Sender<Vec<EngineOutcome>>),
@@ -454,6 +459,20 @@ enum Command {
     /// frame back.
     #[cfg(feature = "engine")]
     CatchUp(FrameKey, Sender<Option<Arc<GridFrame>>>),
+}
+
+impl Command {
+    fn send(self, sender: &Sender<QueuedCommand>) -> Result<(), EngineError> {
+        sender
+            .send(QueuedCommand {
+                command: self,
+                queued_at: std::time::Instant::now(),
+            })
+            .map_err(|_| {
+                crate::perf::REQUEST_ERRORS.incr();
+                EngineError::Stopped
+            })
+    }
 }
 
 enum Lifecycle {
@@ -549,7 +568,7 @@ enum Query {
 pub struct EngineHandle {
     /// Shared so the publication's catch-up can hold it weakly: a consumer's
     /// acquire must not keep a dropped owner thread alive.
-    commands: Arc<Sender<Command>>,
+    commands: Arc<Sender<QueuedCommand>>,
 }
 
 impl EngineHandle {
@@ -660,18 +679,14 @@ impl EngineHandle {
     /// can still scroll and read it until [`Self::release`].
     #[cfg(feature = "engine")]
     pub fn set_retain_on_close(&self, terminal_id: &ResourceId, retain: bool) {
-        let _ = self.commands.send(Command::Lifecycle(Lifecycle::Retain(
-            terminal_id.clone(),
-            retain,
-        )));
+        let _ =
+            Command::Lifecycle(Lifecycle::Retain(terminal_id.clone(), retain)).send(&self.commands);
     }
 
     /// Release a retained closed replica and its projection.
     #[cfg(feature = "engine")]
     pub fn release(&self, terminal_id: &ResourceId) {
-        let _ = self
-            .commands
-            .send(Command::Lifecycle(Lifecycle::Release(terminal_id.clone())));
+        let _ = Command::Lifecycle(Lifecycle::Release(terminal_id.clone())).send(&self.commands);
     }
 
     /// Scroll the terminal's viewport and publish the result before
@@ -877,25 +892,29 @@ impl EngineHandle {
     }
 
     fn request<T>(&self, command: impl FnOnce(Sender<T>) -> Command) -> Result<T, EngineError> {
+        let _timed = crate::perf::REQUEST_WALL.timer();
         let (reply, response) = mpsc::channel();
-        self.commands
-            .send(command(reply))
-            .map_err(|_| EngineError::Stopped)?;
-        response.recv().map_err(|_| EngineError::Stopped)
+        command(reply).send(&self.commands)?;
+        response.recv().map_err(|_| {
+            crate::perf::REQUEST_ERRORS.incr();
+            EngineError::Stopped
+        })
     }
 }
 
 /// The acquire-side catch-up for a deferred presentation: one owner round
 /// trip, and `None` once the owner is gone.
 #[cfg(feature = "engine")]
-fn catch_up(commands: std::sync::Weak<Sender<Command>>) -> CatchUp {
+fn catch_up(commands: std::sync::Weak<Sender<QueuedCommand>>) -> CatchUp {
     Arc::new(move |key: &FrameKey| {
+        let commands = commands.upgrade()?;
+        let _timed = crate::perf::REQUEST_WALL.timer();
         let (reply, response) = mpsc::channel();
-        commands
-            .upgrade()?
-            .send(Command::CatchUp(key.clone(), reply))
-            .ok()?;
-        response.recv().ok().flatten()
+        Command::CatchUp(key.clone(), reply).send(&commands).ok()?;
+        response.recv().unwrap_or_else(|_| {
+            crate::perf::REQUEST_ERRORS.incr();
+            None
+        })
     })
 }
 

@@ -32,13 +32,13 @@ use crate::terminal_actor::{
     ResizeSender, ResyncAudience, ResyncTarget, SetDefaultColorsRequest, SnapshotRequest,
 };
 
-/// Adapt a broadcast chunk to a client's capabilities: verbatim (no copy)
-/// when capable, SGR-downsampled otherwise.
+/// Adapt a chunk to a client's capabilities without copying when neither
+/// the capabilities nor the bytes require rewriting.
 pub(crate) fn downsample_for_caps(
     bytes: &bytes::Bytes,
     caps: phux_protocol::ClientCapabilities,
 ) -> bytes::Bytes {
-    if crate::downsample::caps_pass_through(caps) {
+    if crate::downsample::caps_pass_through(caps) || memchr::memchr(0x1b, bytes).is_none() {
         bytes.clone()
     } else {
         crate::downsample::rewrite_bytes_with_caps(bytes, caps).into()
@@ -3535,10 +3535,12 @@ pub(crate) async fn handle_attach(
     };
     // ADR-0127: roles apply only once the attach has published.
     let role_panes = panes_to_snapshot.clone();
-    if let Err(reason) = capture
+    let capture_started = std::time::Instant::now();
+    let captured = capture
         .capture_panes(&mut staging, panes_to_snapshot, closed_before_ready)
-        .await
-    {
+        .await;
+    crate::perf::ATTACH_CAPTURE_WALL.record_elapsed(capture_started);
+    if let Err(reason) = captured {
         fail_prepublication!(reason.as_str());
     }
 
@@ -3559,10 +3561,12 @@ pub(crate) async fn handle_attach(
         stream_id,
         bootstrap_id,
     };
-    if !publication
+    let publication_started = std::time::Instant::now();
+    let published = publication
         .publish(snapshot, initial_client_id, staging.frames, &session_name)
-        .await
-    {
+        .await;
+    crate::perf::ATTACH_PUBLISH_WALL.record_elapsed(publication_started);
+    if !published {
         return;
     }
     apply_session_role(state, client_id, &role_panes, role, same_session_reattach).await;

@@ -73,6 +73,7 @@ fn tick_at(now: std::time::Instant) {
         _ => phux_perf::HistogramSnapshot::default(),
     };
     tracing::info!(
+        perf = %interval.to_json(),
         frames = get("frames.received"),
         paints = get("frames.painted"),
         skipped = get("frames.skipped"),

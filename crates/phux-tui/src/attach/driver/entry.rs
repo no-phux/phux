@@ -343,7 +343,9 @@ fn mouse_capture_enabled() -> bool {
     phux_config::loader::load().map_or(true, |config| config.defaults.mouse)
 }
 
-/// Drain and stop the off-loop stdout writer, if any, before reset writes.
+/// Stop and join the off-loop stdout writer, if any, before reset writes.
+///
+/// Shutdown discards pending chunks; this is not a lossless drain.
 fn stop_writer(writer: &mut Option<crate::attach::stdout_writer::WriterHandle>) {
     if let Some(writer) = writer.take() {
         writer.shutdown_and_join();
@@ -373,8 +375,9 @@ async fn switch_session<W: crate::attach::RenderSink>(
 }
 
 /// The attach session body shared by the production and test entry points.
+///
 /// `resync` is the stdout writer's backpressure flag and `writer` its handle
-/// (both `None` for the synchronous test sink); the writer is drained before
+/// (both `None` for the synchronous test sink); the writer is stopped/joined before
 /// every terminal reset.
 #[allow(
     clippy::future_not_send,
@@ -467,9 +470,14 @@ async fn attach_session<W: crate::attach::RenderSink>(
         {
             Ok(exit) => exit,
             Err(err) => {
-                // Drain + stop the off-loop writer before propagating; the
+                // Stop and join the off-loop writer before propagating; the
                 // RawModeGuard's Drop restores the terminal as we unwind.
                 stop_writer(&mut writer);
+                tracing::info!(
+                    perf = %phux_client::perf::report().to_json(),
+                    "{}",
+                    phux_client::perf::summary_line()
+                );
                 return Err(err);
             }
         };
@@ -480,13 +488,15 @@ async fn attach_session<W: crate::attach::RenderSink>(
             } => {
                 // Lifecycle transition (info): the attach loop is exiting.
                 tracing::info!(?end, "attach loop: DETACHED; exiting");
-                // The session's own numbers, one line, always: what a user
-                // pastes into a report about a laggy session.
-                tracing::info!("{}", phux_client::perf::summary_line());
-                // Exit the process rather than return: a returning attach
-                // would block the runtime drop on the uncancellable stdin
-                // thread. Drain the writer first so nothing is lost.
+                // Exit rather than return: runtime drop can wait on an
+                // uncancellable stdin reader. Stop and join the writer first.
                 stop_writer(&mut writer);
+                // Include the stopped writer's final samples.
+                tracing::info!(
+                    perf = %phux_client::perf::report().to_json(),
+                    "{}",
+                    phux_client::perf::summary_line()
+                );
                 exit_after_detach(end, locally_requested, &onboarding_path, recorder.as_ref());
             }
             LoopExit::SwitchTo {

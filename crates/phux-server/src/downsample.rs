@@ -37,8 +37,11 @@ pub fn rewrite_bytes_with_caps(input: &[u8], caps: ClientCapabilities) -> Vec<u8
     let mut i = 0;
     while i < input.len() {
         if input[i] != ESC {
-            out.push(input[i]);
-            i += 1;
+            // Most terminal output is plain text. Copy that run at once
+            // rather than branching and pushing for every byte.
+            let end = memchr::memchr(ESC, &input[i..]).map_or(input.len(), |offset| i + offset);
+            out.extend_from_slice(&input[i..end]);
+            i = end;
             continue;
         }
         // ESC at end of input — emit verbatim.
@@ -674,6 +677,34 @@ mod tests {
         ];
         for (i, (input, caps, want)) in cases.iter().enumerate() {
             assert_eq!(rewrite_bytes_with_caps(input, *caps), *want, "case {i}");
+        }
+    }
+
+    #[test]
+    fn plain_runs_preserve_binary_bytes_and_escape_boundaries() {
+        let plain = b"text \xe6\x9d\xb1\xe4\xba\xac\x00\xff\x9b\r\n".repeat(80);
+        let caps = ClientCapabilities::new()
+            .with_color_support(ColorSupport::Indexed256)
+            .with_image_protocols(ImageProtocolSet::new());
+        for tail in [b"".as_slice(), b"\x1b", b"\x1b[38;2;255"] {
+            let input = [
+                plain.as_slice(),
+                b"\x1b[38;2;255;0;0m",
+                plain.as_slice(),
+                b"\x1b_Ga=T;image\x1b\\",
+                plain.as_slice(),
+                tail,
+            ]
+            .concat();
+            let expected = [
+                plain.as_slice(),
+                b"\x1b[38;5;196m",
+                plain.as_slice(),
+                plain.as_slice(),
+                tail,
+            ]
+            .concat();
+            assert_eq!(rewrite_bytes_with_caps(&input, caps), expected);
         }
     }
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Byte-level key echo latency probe for terminal multiplexers.
 
-Runs the command under test on a real pty of a fixed size, waits for the shell
-prompt, then measures the round trip of a single typed byte: write one byte to
-the master, then select() until that byte comes back out of the master. The
+Runs the command under test on a real pty of a fixed size, proves that the
+shell answers a readiness command, then measures one typed byte: write to the
+master, then select() until that byte comes back out of the master. The
 measurement ends at client output bytes, not a displayed GPU frame. Its floor
 is the PTY and process under test rather than a screen-capture polling interval.
 
@@ -28,6 +28,7 @@ import select
 import shlex
 import signal
 import struct
+import subprocess
 import sys
 import termios
 import time
@@ -131,21 +132,28 @@ def drain(fd, extra_fds):
             return
 
 
-def settle(fd, extra_fds, prompt, token, timeout=2.5):
-    """Clear any first-run overlay and prove the pane reaches a live shell."""
+def settle(fd, extra_fds, token, timeout=2.5, attach_timeout=30.0):
+    """Clear overlays and prove readiness; prompt text is not a readiness signal."""
     needle = ("READY_" + token).encode()
+    deadline = time.monotonic() + attach_timeout
     for _ in range(8):
+        if time.monotonic() >= deadline:
+            break
         os.write(fd, b"\x1b")
-        time.sleep(0.1)
+        time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+        if time.monotonic() >= deadline:
+            break
         os.write(fd, b"\x15")
         os.write(fd, b'echo R""EADY_' + token.encode() + b"\r")
-        found, _ = wait_for(fd, needle, extra_fds, timeout)
+        found, _ = wait_for(fd, needle, extra_fds, min(timeout, max(0, deadline - time.monotonic())))
         if found:
             os.write(fd, b"\x15")
             drain(fd, extra_fds)
             return True
+        if time.monotonic() >= deadline:
+            break
         os.write(fd, b"\r")
-        time.sleep(0.2)
+        time.sleep(min(0.2, max(0, deadline - time.monotonic())))
     return False
 
 
@@ -206,16 +214,29 @@ def measure(args, fd, extra_fds):
     return samples, spikes, timeouts
 
 
+def capture_telemetry(command):
+    """Retain a report or explicit collection failure; never discard echo samples."""
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        if completed.returncode:
+            return {"error": "telemetry command failed", "returncode": completed.returncode,
+                    "stderr": completed.stderr}
+        return json.loads(completed.stdout)
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        return {"error": str(exc)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cols", type=int, default=120)
     ap.add_argument("--rows", type=int, default=40)
     ap.add_argument("--iters", type=int, default=60)
-    ap.add_argument("--prompt", default="BENCH>")
     ap.add_argument("--label", default="probe")
     ap.add_argument("--json", dest="json_out")
     ap.add_argument("--attach-timeout", type=float, default=30.0)
     ap.add_argument("--settle-timeout", type=float, default=2.5)
+    ap.add_argument("--telemetry-command",
+                    help="JSON-report command to run immediately before and after the measured phase")
     ap.add_argument("--interfere-at", type=int, default=-1)
     ap.add_argument("--interfere", help="second client command line, run on its own pty")
     ap.add_argument("cmd", nargs=argparse.REMAINDER)
@@ -230,6 +251,7 @@ def main():
     if args.iters <= 0 or args.cols <= 0 or args.rows <= 0:
         ap.error("iters, cols and rows must be positive")
     args.interfere = shlex.split(args.interfere) if args.interfere else None
+    args.telemetry_command = shlex.split(args.telemetry_command) if args.telemetry_command else None
 
     token = "P%d" % os.getpid()
     pid, fd = spawn_pty(argv, args.cols, args.rows)
@@ -240,11 +262,14 @@ def main():
         "cols": args.cols, "rows": args.rows,
     }
     try:
-        found, _ = wait_for(fd, args.prompt.encode(), extra_fds, min(args.attach_timeout, 8.0))
-        result["prompt_seen_before_settle"] = found
-        if not settle(fd, extra_fds, args.prompt, token, args.settle_timeout):
+        ready_started = time.monotonic()
+        ready = settle(fd, extra_fds, token, args.settle_timeout, args.attach_timeout)
+        result["readiness_elapsed_ms"] = (time.monotonic() - ready_started) * 1000
+        if not ready:
             result["error"] = "pane never answered a probe command"
         else:
+            if args.telemetry_command:
+                result["telemetry_before"] = capture_telemetry(args.telemetry_command)
             samples, spikes, timeouts = measure(args, fd, extra_fds)
             result.update(
                 ok=len(samples) == args.iters,
@@ -257,6 +282,8 @@ def main():
                 p99_us=percentile(samples, 99) if len(samples) >= 1000 else None,
                 max_us=max(samples) if samples else None,
             )
+            if args.telemetry_command:
+                result["telemetry_after"] = capture_telemetry(args.telemetry_command)
             if spikes:
                 result.update(
                     interference_max_us=max(spikes),
