@@ -6,28 +6,23 @@ last-reviewed: 2026-09-27
 
 # The phux reference TUI
 
-**TL;DR.** The reference TUI is the human attach client: split panes, switch
-windows, detach, and return to the same live terminals. This page is that
-product — prefix keys, layout, chrome, copy-mode, and the fleet overlay —
-so a person can use it without reading the wire spec. Headless verbs and
-other clients are peers; they cannot steal this client's focus.
+**TL;DR.** The TUI attaches to server-owned terminals: split panes, switch
+windows, detach, and return while work keeps running. Use prefix keys, the
+command palette, or pointer controls to manage layout and inspect agent
+state. Focus and copy-mode stay local to this client; headless verbs and
+other clients cannot move its focus.
 
 ---
 
 ## What this is
 
-The TUI is the attach client that ships in the `phux` binary. `phux` with
-no arguments starts the per-user server if needed, attaches, and paints
-the session. Detach leaves the session running. A second terminal, a
-script, Cockpit, or an agent can observe and drive those same terminals
-while you watch.
+Running `phux` with no arguments starts the per-user server if needed and
+attaches the TUI. Detaching leaves the session running on that server.
 
-This page is the TUI's product surface. The CLI verb catalog lives in
-the [generated CLI reference](../reference/cli.md) and
-[agents](./agents.md). Config keys live in
-[configuration](../CONFIG.md). Recording lives in
-[recording](./recording.md). Maturity lives in
-[concepts](../CONCEPTS.md).
+For headless commands, see the [CLI reference](../reference/cli.md) and
+[agent guide](./agents.md). [Configuration](../CONFIG.md),
+[recording](./recording.md), and [product maturity](../CONCEPTS.md) have
+separate guides.
 
 The TUI has no protocol-level standing
 ([ADR-0017](../adr/0017-tui-not-protocol-privileged.md)). Sessions,
@@ -42,10 +37,9 @@ Install, then:
 phux
 ```
 
-Work in it like a normal terminal. The default prefix is `Ctrl-A`. Window tabs
-on the status bar are clickable; everything else is a prefix chord, the
-command palette (`C-a Space` or `:`), or a right-click. These continuations
-are enough for a first run:
+The default prefix is `Ctrl-A`: press it, release both keys, then press the
+continuation. Use clickable window tabs, the command palette (`C-a Space`
+or `C-a :`), or right-click menus for other actions. Start with:
 
 | Keys | Action |
 |---|---|
@@ -69,7 +63,7 @@ and `phux wait`.
 
 ## User model
 
-Three nouns. Same as tmux.
+The TUI uses three familiar multiplexer terms:
 
 - **Session** — named container. Persists across detach. Lives until you
   kill it or the server exits. A session marked keep-empty can outlive
@@ -92,20 +86,17 @@ from the worktree path. That is a CLI composition; attaching to the
 derived name is ordinary TUI attach. See [`agents.md`](./agents.md) for
 the verbs.
 
-**Attach finds; `new` creates.** As with tmux's `attach -t`, `phux attach
-NAME` joins an existing session and never creates one on a running server:
-an unknown name exits 1 and names `phux new NAME`. With no server running,
-the auto-started server seeds its first session under NAME, since a new
-server holds nothing else to join.
+`phux attach NAME` joins an existing session on a running server. An unknown
+name exits 1 and suggests `phux new NAME`. If no server is running, auto-start
+seeds the first session under NAME.
 
-**Attach roles.** `phux attach --viewer` attaches to watch: every pane
-renders, and the server refuses this attach's input. `phux attach --take`
-attaches and takes the wheel of every pane it opens in the same step; the
-previous holder stays attached and sees the handover notice. A plain
-`phux attach` is neither and behaves as it always has. Both flags need a
-server that advertises attach roles and are refused by an older one
-(ADR-0127). A viewer's viewport still sizes the panes, and it cannot answer
-terminal queries, so an application waiting on a reply times out.
+`phux attach --viewer` renders every pane but refuses this attach's input.
+`phux attach --take` takes input authority for every pane it opens; the
+previous holder stays attached and sees a handover notice. Plain
+`phux attach` requests neither role. Both flags require a server advertising
+attach roles and are refused by older servers (ADR-0127). A viewer's viewport
+still sizes panes, but it cannot answer terminal queries, so applications
+waiting for replies time out.
 
 ## Selectors
 
@@ -171,14 +162,12 @@ action a keybinding produces. The generated catalog is
 [`../reference/actions.md`](../reference/actions.md); `C-a ?` shows the
 live chords.
 
-At attach, a bad binding disables exactly that binding: a chord that
-fails to parse, a binding to an unknown action, or a sequence that is a
-strict prefix of another (the later one in table-key order loses), is
-skipped. Everything else,
-including `detach`, keeps working. Each skip is named on the status-bar
-error line and points at `phux config check`. A `prefix` string that
-fails to parse falls back to `C-a`. Reload is the exception: it is
-all-or-nothing, because a reload has a previous good config to keep.
+At attach, an invalid chord, unknown action, or ambiguous sequence disables
+only that binding. If a sequence is a strict prefix of another, the later
+binding in table-key order loses. The status-bar error names each skipped
+binding and points to `phux config check`; other bindings keep working.
+An invalid `prefix` falls back to `C-a`. Reload is all-or-nothing and retains
+the previous configuration on failure.
 
 ### Cheat sheet
 
@@ -215,12 +204,10 @@ Default prefix `C-a`. Override it in one line of config.
 
 ### Which-key
 
-Press the prefix and hesitate, and a small panel lists every prefix-table
-continuation, built from the live bindings. Numeric window-jump keys
-collapse into one `0-9` row. The popup is display-only: any key dismisses
-it and executes as if it had never appeared. A continuation typed before
-the delay suppresses it entirely. Esc dismisses it and cancels the
-pending prefix.
+Pause after the prefix to see a panel of live continuations; numeric window
+jumps share one `0-9` row. Any continuation dismisses the panel and runs
+normally. Typing before the delay prevents it from appearing. Esc dismisses
+it and cancels the pending prefix.
 
 ```toml
 [keybindings]
@@ -234,19 +221,16 @@ A window's layout is a **binary split tree**: each interior node is a
 horizontal or vertical split with a ratio in `(0, 1)` and exactly two
 children; leaves are panes. Three-way splits are nested binary splits.
 
-Panes **share** their rules. A split costs one cell of chrome, not two
-adjacent borders, so a 2×2 window is one `│` column and one `─` row
-crossing at a `┼`. Above the pane area sits the **rail**: one reserved
-row that closes the grid at the top and holds each top-row pane's title.
-Splitting a window never moves the panes you were already looking at.
+Panes share dividers, so each split costs one cell rather than two adjacent
+borders. A 2×2 window has one `│` column and one `─` row crossing at `┼`.
+The rail reserves a row above the pane area for top-row pane titles.
+Splitting a window never moves the panes already displayed.
 
-Focus is colour, not a heavier stroke: `divider_focus` plus bold on the
-focused pane's rules and title, `divider` everywhere else. A pane's title
-is its own OSC-2 terminal title. A pane whose program never set a title
-gets no label. Control characters and explicit bidi overrides are dropped
-from every chrome label. A pane that has asked for a human badges with a
-filled `●` in the `attention` tone ahead of its title — the same glyph
-the sidebar uses for that pane.
+Focused dividers and titles use `divider_focus` and bold; other dividers use
+`divider`. Titles come from OSC-2 and remain blank until the program sets one.
+All chrome labels discard control characters and explicit bidi overrides.
+A pane requesting attention gets a filled `●` in the `attention` color
+before its title, matching the sidebar.
 
 On viewport resize, split ratios are preserved and space redistributes
 proportionally. A leaf that hits its minimum (`min_cols = 2`,
@@ -319,8 +303,7 @@ row-wide: every spacer splits the same leftover width. A bar with a
 spacer has no room left for the center slot. Spacers yield first on a
 narrow terminal, so they cannot push content off the screen.
 
-The bar is not multi-row and not a styling engine. Per-widget `style`
-tables only.
+The bar supports one row and per-widget `style` tables.
 
 **Asked chrome.** When an agent in a pane blocks for a human, the asking
 window gets a ` !` suffix on its tab, and a right-aligned `ask`
@@ -421,15 +404,13 @@ as the create affordance. Commands and Settings stay on the palette
 
 ### Small terminals
 
-A viewport is **compact** on an axis at or below 64 columns or 18 rows,
-judged independently. Overlays go full-bleed on the starved axis (still
-stopping at a docked sidebar). List rows yield their secondary column
-before the label, then clip with `…`; a short secondary such as a bound
-chord (at most a third of the row) stays whole and the label clips
-instead. The sidebar is not reserved below
-resolved sidebar width + 40 columns; `C-a b` rings the bell at those
-widths rather than flipping a flag with no visible effect. Turning the
-strip off is always allowed.
+A viewport is compact at or below 64 columns or 18 rows, independently on
+each axis. Overlays fill the constrained axis except for a docked sidebar.
+List rows drop secondary text before clipping labels with `…`; short
+secondary text such as a bound chord stays whole if it fits within a third
+of the row. The sidebar is hidden below its resolved width plus 40 columns.
+At those widths, `C-a b` rings the bell instead of enabling it. Disabling
+the sidebar is always allowed.
 
 ```toml
 [chrome]
@@ -459,11 +440,10 @@ surface = "#171b23"
 
 ## Copy-mode
 
-`C-a [` enters copy-mode on the focused pane. Copy-mode is
-**client-local**: a projection over the pane's own libghostty engine.
-Nothing about a selection touches the wire. The client extracts the
-selected text from its own `Terminal` and writes it to the host clipboard
-via OSC 52
+`C-a [` enters copy-mode on the focused pane. Selection and scrolling are
+client-local, using this client's libghostty engine. Copying extracts text
+from its `Terminal` and writes it to the host clipboard via OSC 52; selection
+sends nothing over the wire
 ([ADR-0045](../adr/0045-client-side-copy-mode.md)).
 
 - Arrow keys move the cursor; hold Shift to extend from the anchor.
@@ -501,14 +481,12 @@ terminal **keeps** copy-mode open and adopts the new size.
 
 ## Command palette, pickers, and settings
 
-`C-a :` (`command-palette`) and `C-a ?` (`show-help`) are two aliases
-for one filterable **Commands** overlay. Every action is annotated
-with its currently-bound chord. Empty query: rows grouped under Pane,
-Window, Session, View. Typing ranks a fuzzy match; Enter commits through
-the same dispatcher a keybinding uses. Navigate with arrows / `C-n` /
-`C-p` (`j` / `k` while the query is empty), PageUp / PageDown, Home /
-End, or the wheel. Enabled plugin `[[actions]]` and hostable `[[panes]]`
-appear under a trailing **Plugin** header.
+`C-a :` (`command-palette`) and `C-a ?` (`show-help`) open the same Commands
+overlay. Actions show their live chords, grouped under Pane, Window, Session,
+and View. Typing fuzzy-filters the list; Enter runs the selected action.
+Navigate with arrows / `C-n` / `C-p` (`j` / `k` when the query is empty),
+PageUp / PageDown, Home / End, or the wheel. Enabled plugin `[[actions]]`
+and hostable `[[panes]]` appear under Plugin.
 
 <!-- impl-status: partial; probe: PluginPanePlacement -->
 > **Status: partial.** Manifest `placement = "overlay"` is valid schema
@@ -597,15 +575,11 @@ phux report new "note"   # logs-and-version only, when the TUI itself is down
 
 ## Agent fleet
 
-`C-a A` (`agent-fleet`) is the one-view answer to which agent needs you:
-a filterable overlay of every pane of the attached session, grouped
-under session headers, plus every satellite agent grouped by agent name
-rather than by machine. Each row carries the agent's name and kind, a
-state glyph from the same badge vocabulary as the tabs and sidebar
-(`●` blocked, `◐` working, `◆` done, `○` idle or unknown),
-an attention highlight when the pane has a pending question, and branch
-or cwd in the dim right column. A satellite row badges its host and
-opens that pane beside the focused one.
+`C-a A` (`agent-fleet`) opens a filterable overlay of the attached session's
+panes under session headers, plus satellite agents grouped by agent name.
+Rows show name, kind, state (`●` blocked, `◐` working, `◆` done,
+`○` idle or unknown), pending-question highlights, and branch or cwd.
+Satellite rows identify the host and open the pane beside the focused one.
 
 Enter focuses the chosen pane. Rows under other sessions on this server
 are one-step cross-session focus when that peer's layout is cached;
@@ -683,6 +657,6 @@ hook on `agent-state-changed` is the notifier edge. Hooks are
 | Every action the dispatcher handles | [Action catalog](../reference/actions.md) |
 | Every status-bar widget | [Widgets](../reference/widgets.md) |
 | Headless verbs, JSON, `%name` | [Agents](./agents.md) |
-| Record a pane or the glass | [Recording](./recording.md) |
+| Record a pane or attached session | [Recording](./recording.md) |
 | The native macOS client | [Cockpit](./cockpit.md) |
 | What is shipped versus a gap | [Concepts](../CONCEPTS.md) |

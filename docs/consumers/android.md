@@ -6,8 +6,5 @@ last-reviewed: 2026-09-15
 
 # Android client
 
-**TL;DR.** Coming soon.
-
----
-
-Coming soon.
+**TL;DR.** The Android client is forthcoming; no release or installation
+instructions are documented here.

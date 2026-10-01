@@ -22,11 +22,10 @@ the IPC boundary translate to `ERROR` messages with a stable `ErrorCode`
 and a human-readable message. [`spec/proto.md`](./spec/proto.md) owns that
 wire shape and the code catalog.
 
-A CLI verb whose **stdout reader hangs up** (`phux snapshot work | head -8`)
-is not an error: every stdout write goes through one helper that treats
-`BrokenPipe` as a clean end and exits `0` silently. Any other write failure
-is one stderr line with a failing status. The bin crate keeps clippy's
-`print_stdout` lint armed so a new `println!` cannot bypass the helper.
+A CLI stdout `BrokenPipe` (`phux snapshot work | head -8`) exits silently
+with status `0`. Other write failures print one stderr line and exit non-zero.
+Every stdout write uses a shared helper; the bin crate's `print_stdout`
+lint prevents `println!` from bypassing it.
 
 A **malformed `config.toml` is fatal at server start**: the server refuses to
 start and reports the config path, the loader error, and the remedy
@@ -36,18 +35,15 @@ never silently reverts a broken config to defaults.
 
 ## Runtime status
 
-`phux status` is the one-glance answer to "is the server up, and what is
-it doing": whether a server is listening at the socket and as which pid
-(from the UDS peer credentials), since when (the socket file's bind time,
-honest across a graceful upgrade), the protocol version it negotiates (a
-real `HELLO`/`HELLO_OK` exchange), the summed attached-client count, one
-line per session plus the satellite-terminal split, and both log paths. A
-partial federation view is reported inline, never silently dropped.
-`--json` emits a stable versioned document; with no server running the
-human path prints the standard no-server diagnostic and `--json` answers
-`{"running": false, ...}` on stdout — both exit 1. Everything it reports
-is client-side sourcing over the existing wire; no protocol surface exists
-for it.
+`phux status` reports the listening server's PID (from UDS peer credentials),
+socket bind time (preserved across graceful upgrade), negotiated protocol
+version, total attached clients, sessions, satellite-terminal counts, and log
+paths. It uses existing wire operations, including a real
+`HELLO`/`HELLO_OK` exchange. Partial federation results are identified.
+
+`--json` emits a stable versioned document. With no server, human output
+shows the standard diagnostic and JSON output is `{"running": false, ...}`;
+both exit 1.
 
 Per-pane scrollback is a config knob, not an ops table: raising
 `history-limit` on a wide grid does nothing, and raising `history-bytes`
@@ -56,12 +52,9 @@ costs resident memory per pane, not attach latency. See
 
 ## Logging and observability
 
-Logs are both an operator surface and a leak surface;
-[ADR-0028](adr/0028-runtime-log-control.md) owns that decision, and
-this section is the home for the facts.
-
-`tracing` is the structured logging substrate, bootstrapped in
-`phux_server::telemetry`. Two entry points share one layer builder:
+Logging uses `tracing`, initialized in `phux_server::telemetry`; server and
+TUI entry points share a layer builder
+([ADR-0028](adr/0028-runtime-log-control.md)).
 
 - **Server / foreground** (`phux server`, one-shot control verbs, any
   `--json` path) — `telemetry::init()`. Always logs human-or-JSON text to
@@ -85,14 +78,11 @@ this section is the home for the facts.
 
 ### Crash reports
 
-A fatal signal in the Cockpit process leaves two artifacts. The log above
-ends with the Zig handler's report, which is where the last thing the
-process was doing sits. macOS writes the full report to
-`~/Library/Logs/DiagnosticReports/phux-cockpit-<date>.ips`; its
-`Triggered by Thread` line names the thread that faulted (for example
-`phux-remote-tunnel`, the bridge's remote dial and relay thread), and the
-first frames under that thread are the ones to read. Console.app shows
-the same reports under Crash Reports.
+A fatal Cockpit signal leaves the Zig handler's final report in the log and
+a macOS crash report at
+`~/Library/Logs/DiagnosticReports/phux-cockpit-<date>.ips`.
+Read `Triggered by Thread` and that thread's first stack frames to locate
+the fault. Console.app lists the same files under Crash Reports.
 
 ### Local bug reports
 
@@ -107,10 +97,8 @@ Both fmt layers emit span-close timing (`FmtSpan::CLOSE`), so any
 
 ### Performance observability
 
-Every hop on the hot path records into an always-on, lock-free histogram
-or counter that lives in the binary. There is nothing to enable. The
-numbers a session was keeping while it felt slow are the numbers you read
-afterwards.
+Hot-path stages record always-on, lock-free histograms and counters. Nothing
+needs enabling before a slowdown; the observations remain available afterward.
 
 ```sh
 phux perf              # lifetime table since the server started
@@ -206,14 +194,10 @@ back to `$HOME/.local/state/phux/`). The auto-spawned daemon and the
 
 ### Sensitive data in logs
 
-Log sinks are created with mode `0o600` (owner-only) on Unix so another
-user on a shared box cannot read them. Input atoms are **self-narrating
-and redaction-safe**: `KeyEvent` and `PasteEvent` have hand-written
-`Debug` impls (and `InputEvent::narrate`) that report only structural
-facts — action, physical key, modifiers, payload *lengths* — and never
-the typed key text or pasted bytes. A `trace!(?input, …)` therefore
-records that a keystroke or paste happened, with its shape, without
-spilling the secret it carried.
+Unix log sinks use owner-only mode `0o600`. `KeyEvent` and `PasteEvent` have
+hand-written `Debug` implementations, and `InputEvent::narrate` reports only
+action, physical key, modifiers, and payload lengths. Neither typed text nor
+pasted bytes appear, including in `trace!(?input, …)`.
 
 ### Remote WebSocket pairing admissions
 
@@ -240,13 +224,11 @@ logged wholesale.
 
 ### Crash capture
 
-Panics are durable on both sides. The **client** panic hook logs the
-panic message plus a captured `std::backtrace::Backtrace` to its file
-sink *before* it restores the terminal (survives even though the default
-hook's stderr backtrace would vanish into the dead alt screen). The
-**server** panic hook logs task/actor panics with their backtrace through
-`tracing`, so a daemonized server's crash lands in the log file. Both
-honor `RUST_BACKTRACE` for trace verbosity.
+The client panic hook writes the message and captured
+`std::backtrace::Backtrace` to its file before restoring the terminal, so
+the backtrace survives leaving the alternate screen. The server hook records
+task/actor panics and backtraces through `tracing`, including when daemonized.
+Both honor `RUST_BACKTRACE`.
 
 The server hook is armed only by the long-running daemons (`phux server`,
 `phux relay run`); one-shot CLI verbs keep the default hook so a CLI crash is
@@ -258,16 +240,15 @@ Release builds keep line tables (`debug = "line-tables-only"`,
 
 ### Blast radius of a panic
 
-There is **one server process per user**
-([ADR-0003](adr/0003-server-process-model.md)) on one current-thread
-runtime, and the release profile aborts on panic. A panic anywhere in the
-daemon ends every session, window, and pane for that user at once; it is
-not contained to the pane actor that raised it. Planned restart (`phux
-update` / `phux upgrade`) preserves sessions by passing the listening fd
-to the new image. An unplanned death has no equivalent — the crash record
-is what the operator gets. `panic = "abort"` is a deliberate choice (no
-half-unwound actor state, smaller binary, no landing pads); nobody should
-read "durable panics" as "contained panics".
+The release build uses one server process per user
+([ADR-0003](adr/0003-server-process-model.md)), one current-thread runtime,
+and `panic = "abort"`. A panic anywhere in the daemon ends every session,
+window, and pane in that process. Logging the panic does not contain it.
+
+Planned upgrades can preserve live work through
+[update handoff](#workspace-continuity-and-update-survival). A crash cannot:
+only the crash record survives. Aborting avoids partially unwound actor
+state and reduces binary size by omitting unwind landing pads.
 
 ### Reading a trace to localize lag
 
@@ -295,17 +276,15 @@ closed` at debug.
 
 ### Finding and tailing the logs
 
-`phux logs` is the discovery verb. Bare invocation prints the inventory
-— the canonical server log, the per-pid client logs (newest first), the
-state dir that holds them, and on macOS the Cockpit log — with existence,
-size, and age; a file that does not exist yet is reported as "not created
-yet", never as an error. `phux logs --server` tails the server log,
-`phux logs --client` the newest client log (`--pid PID` picks a specific
-one), and `phux logs --cockpit` the Cockpit log; `-f` follows and
-`-n NUM` sets the tail length. `phux logs --json` emits the inventory as
-a stable `schema_version` 1 document on stdout (`cockpit_log` is `null`
-off macOS). `phux service logs` is the same tail over the same server
-log, kept for symmetry with the other `service` verbs.
+`phux logs` lists the server log, per-PID client logs newest first, their
+state directory, and the Cockpit log on macOS, with existence, size, and age.
+Missing files are marked "not created yet", not treated as errors.
+
+Use `--server`, `--client`, or `--cockpit` to tail a log. `--client` selects
+the newest unless `--pid PID` is supplied; `-f` follows and `-n NUM` sets the
+tail length. `--json` emits a stable `schema_version` 1 inventory
+(`cockpit_log` is `null` off macOS). `phux service logs` tails the same server
+log as `phux logs --server`.
 
 There is no Prometheus/OpenTelemetry exporter, or runtime per-target
 log-level control. Use `phux status` and `phux ls --json` for the running
@@ -364,8 +343,6 @@ server exits once no client has been *connected* for `SECS` — live panes
 and all. Both "nobody ever connected" (the clock runs from startup) and
 "the last client left" are covered.
 
-Notes that matter in practice:
-
 - **Connected, not attached.** One-shot control verbs (`phux ls`,
   `phux send-keys`, `phux new --json`) count: each connect postpones the
   exit. A scripted harness that never attaches is safe.
@@ -387,9 +364,8 @@ phux server --session ci --socket /tmp/phux-ci-$$.sock --exit-after-idle 120 &
 
 ## Instance isolation (profiles)
 
-phux is developed on the same machines it is used on, so a development
-build must not be able to touch the installed build's sessions. Every
-phux process resolves a **profile** that scopes where it looks
+Each phux process resolves a profile that separates development sessions
+from the installed release's sessions
 ([ADR-0080](adr/0080-socket-lifecycle-and-instance-isolation.md)):
 
 | profile | when | socket | state |
@@ -403,15 +379,12 @@ variable is set, and `PHUX_SOCKET` (or `--socket`) still overrides
 everything. Paths in full:
 [`docs/reference/files.md`](./reference/files.md).
 
-Detection is automatic — a binary under a Cargo `target/` directory, or
-one built with `debug_assertions`, is a development build — because a
-variable a developer has to remember is not isolation. Set
-`PHUX_PROFILE` explicitly to run more than two instances, e.g. one per
-agent worktree.
+A binary under a Cargo `target/` directory or built with `debug_assertions`
+automatically selects the development profile. Set `PHUX_PROFILE` explicitly
+for additional instances, such as one per agent worktree.
 
-The consequence to expect: **a `cargo run` build will not show your
-installed phux's sessions.** That is the point, and `phux doctor`
-reports a non-default profile as a warning so it is never a mystery:
+`cargo run` therefore does not show your installed phux's sessions.
+`phux doctor` reports non-default profiles:
 
 ```
 warn instance  profile dev (this is a development build …); state …/phux-dev
@@ -419,9 +392,8 @@ warn instance  profile dev (this is a development build …); state …/phux-dev
 
 ### Hard guards: a dev build never reaches production
 
-A profile only sets *default* paths, and `--socket`, `PHUX_SOCKET`,
-`PHUX_PROFILE=default`, or copying a dev binary over the installed one all
-walk past a default. So the boundary is also enforced, with no override:
+Profiles set default paths, which explicit socket/profile settings or a copied
+binary could bypass. Hard guards enforce the production boundary with no override:
 
 - **Connect and bind.** A development build refuses to connect to, bridge
   to, or bind a production socket: `/tmp/phux-$USER/phux.sock`,
@@ -473,18 +445,15 @@ walk past a default. So the boundary is also enforced, with no override:
   `target/` directory, and its server hand-off goes through the socket
   guard.
 
-For contributors and agents: test a fix against a dev server (`just
-rebuild` hot-swaps the dev-profile server only). Never copy a build into an
-install location such as `~/.local/bin`, and never point a build at the
-production socket or state. Tests that spawn `phux` start from a scrubbed
-`PHUX_*` environment (`crates/phux/tests/common/ambient.rs`), and an
-in-process server never reads one: the runtime takes its `PHUX_*`
-configuration (listener addresses, TLS pair, credential store, workload
-mode, upload directory, SSH program) from `ServerConfig::env`, which only
-`phux server` fills from the environment and which is empty by default. The
-guards
-refuse all of it, and trying to route around them is the failure they exist
-to prevent.
+Contributors and agents must test against a dev server; `just rebuild`
+hot-swaps only the dev-profile server. Never copy a build into an install
+location such as `~/.local/bin` or point it at production sockets or state.
+
+Tests spawning `phux` scrub inherited `PHUX_*` variables
+(`crates/phux/tests/common/ambient.rs`). In-process servers read configuration
+from `ServerConfig::env`, empty by default, rather than the process environment.
+Only `phux server` fills it with listener, TLS, credential, workload, upload,
+and SSH settings. Do not route around the production guards.
 
 ## Restart policy and crash-loop visibility
 
@@ -525,10 +494,8 @@ pointing at a file that no longer exists. Package managers bypass the
 re-exec: `brew upgrade phux` swaps the binary while the old server keeps
 running, indefinitely.
 
-phux detects this. Each server records its version in the start history,
-so a client can see a mismatch the wire handshake cannot show it (that
-negotiates the *protocol* version, not the build). On attach, the
-handoff happens automatically:
+The server's start history records its build version, which the protocol
+handshake does not negotiate. Attach detects a mismatch and initiates handoff:
 
 ```
 phux: the running server is 0.13.0, this binary is 0.14.0 — upgrading it in place
@@ -547,10 +514,9 @@ before downgrading.
 
 ### Putting a server that is already running under supervision
 
-`phux service install` refuses while a server holds the socket, because
-the supervised process would fail to bind on every start and retry
-forever. `phux service install --adopt` is the way past that refusal
-without stopping anything:
+`phux service install` refuses while a server holds the socket: a second
+server would fail to bind and keep retrying. Use `--adopt` to prepare
+supervision without stopping the running server:
 
 ```
 $ phux service install --adopt
@@ -559,19 +525,15 @@ phux service armed (nothing was stopped).
   panes   untouched — the running server was not signalled
 ```
 
-The unit is written from your flags exactly as a plain install writes it,
-and then **armed** rather than loaded — the file is on disk and the init
-system is committed to it, but nothing has been started. Supervision
-takes over at whichever comes first: the next login or reboot, or the
-first `phux` command after the running server exits, which starts the
-supervised server instead of auto-spawning an unsupervised one.
+The command writes the unit from your flags and arms it without starting
+another process. Supervision begins at the next login or reboot, or at the
+first `phux` command after the current server exits, whichever comes first.
+That command starts the supervised server instead of an unsupervised one.
 
-`--adopt` transfers supervision, not the process: neither launchd nor
-systemd can put an existing process under restart supervision, so the panes
-survive because the running server is never touched. `phux service status`
-reports `state armed` while adoption is pending, `phux service uninstall`
-cancels it, and over a socket with nothing listening `--adopt` is an
-ordinary install.
+Neither launchd nor systemd can adopt an existing process for restart
+supervision; `--adopt` leaves it and its panes untouched. `phux service status`
+reports `state armed` while waiting, and `phux service uninstall` cancels it.
+If nothing is listening on the socket, `--adopt` performs an ordinary install.
 
 ### Scheduling class
 
@@ -590,20 +552,14 @@ equivalent, so the request is a no-op there and the gauge reads `0`.
 
 ## Service-managed pane environment
 
-`phux service install` runs the server under launchd or systemd, both of
-which start their unit with a minimal environment: no login shell ever
-ran, so `PATH` additions a Homebrew or Nix installer put in
-`~/.zprofile` / `~/.profile` never take effect. Left alone, every pane
-the server spawns would inherit that minimal `PATH` — `nvim` and `brew`
-reporting "command not found" even though an ordinary interactive shell
-on the same machine has them.
+launchd and systemd start service units with a minimal environment, without
+sourcing a login profile. Homebrew or Nix additions to `~/.zprofile` or
+`~/.profile` would otherwise be absent from each pane's `PATH`.
 
-**The fix is conditional, not a blanket default.** `phux service
-install` stamps `PHUX_SERVICE_MANAGED=1` into the unit it generates (both
-the launchd `EnvironmentVariables` dict and the systemd `Environment=`
-lines). `phux server` checks for that marker at its own startup and, only
-when present, spawns every command-less pane's shell in its platform
-**login** mode instead of a plain interactive shell:
+`phux service install` therefore writes `PHUX_SERVICE_MANAGED=1` into the
+unit (`EnvironmentVariables` on launchd, `Environment=` on systemd).
+At startup, `phux server` checks this marker. When present, command-less
+panes use their shell's login mode:
 
 | shell        | login flag |
 |--------------|------------|
@@ -622,8 +578,7 @@ its own transient `PATH` (for example from `nix develop`) into the unit.
 
 ## Workspace continuity and update survival
 
-phux has two different continuity mechanisms. They are intentionally
-separate:
+Workspace restore and live update handoff have different guarantees:
 
 - **Restart restore:** `phux workspace save` writes a typed JSON archive of
   the running workspace, reading each session's split tree from its L3 layout
@@ -851,20 +806,14 @@ cannot quietly downgrade the client to bearer-only admission
 both identity variables, and disables TLS session resumption so every
 handshake shows whether the server asked.
 
-`phux host add me@host` enrolls a certificate for you over ssh
-([workload-auth.md](spec/workload-auth.md) §8.1): the key is generated on
-this machine, only its CSR crosses ssh (on stdin), and the key and chain land
-as owner-only files under `<state-dir>/remotes/` that the `[[remote]]` entry
-names as `client-cert` and `client-key`. Every dial to that remote presents
-them, without the `PHUX_WORKLOAD_*` variables. Running `host add` again when
-the saved route no longer answers enrolls a new certificate, records it, and
-only then revokes the old one on the far host, so a failure part way leaves
-the entry on a certificate that still works. Certificates are issued for 90
-days: `phux host renew NAME` replaces one on demand, `host add` replaces one
-within 14 days of expiry, and dials and `phux doctor` (`client-certs`) warn
-before then ([remote-access.md](remote-access.md#client-certificates-and-renewal)).
-`phux pair revoke sha256:...` revokes an enrolled certificate like any other
-workload credential. The CA key
+`phux host add me@host` enrolls a client certificate over SSH and saves
+owner-only key and certificate files in `<state-dir>/remotes/`. Its registry
+entry supplies them on every dial without `PHUX_WORKLOAD_*` variables.
+For renewal, expiry warnings, and failure-safe replacement, see
+[client certificates and renewal](remote-access.md#client-certificates-and-renewal).
+
+`phux pair revoke sha256:...` can also revoke an enrolled workload credential.
+The CA key
 (`<state-dir>/workload-ca.key`), the CA certificate, and the registry
 (`<state-dir>/workload-keys`) are owner-only files, replaced under a lock by
 atomic rename; `PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, and
@@ -996,14 +945,11 @@ is the Application Firewall stealth-drop; see
 
 ### Running the reference relay
 
-A server behind NAT can dial out to a self-hosted relay and hold one QUIC
-tunnel per named route; remote consumers dial the relay, name the route
-via TLS SNI, and are spliced onto that tunnel byte for byte. **The relay
-terminates TLS on both legs, so it sees every phux frame in plaintext**
-— every keystroke and every rendered cell crosses the relay decrypted.
-The mitigation is not a protocol feature; it is self-hosting. Run the
-relay yourself, on a host you trust. Setup is [Remote access, Path
-D](./remote-access.md#path-d-via-a-reference-relay).
+A self-hosted relay accepts an outbound QUIC tunnel per named server route.
+Consumers select a route through TLS SNI and exchange frames through that
+tunnel. **The relay terminates TLS on both connections and can read all phux
+traffic, including input and terminal output.** Run it on a host you trust.
+Setup: [Remote access, Path D](./remote-access.md#path-d-via-a-reference-relay).
 
 The surface is two commands: `phux relay pair --route NAME` mints the
 tunnel token and prints the fingerprint both legs pin; `phux relay run

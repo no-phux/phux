@@ -6,11 +6,11 @@ last-reviewed: 2026-09-12
 
 # Recording a session
 
-**TL;DR.** How to record a phux pane or a whole attached session and export it
-as an asciinema cast, an animated GIF, or an APNG, and how to play a cast back
-as a live pane. Two capture surfaces share one set of rules: a headless
-observer that never touches the pane it watches, and a tee on the interactive
-client's own composited output. No external tools are involved.
+**TL;DR.** Record one pane with `phux rec` or an attached session with
+`phux --rec`. Export asciinema casts, GIFs, or APNGs without external tools;
+play a cast back in a new pane with `phux play`. Headless recording observes
+without resizing; interactive recording captures the client's composited
+output. Neither records input events.
 
 ![A phux recording, recorded with phux](../assets/recording-demo.gif)
 
@@ -18,13 +18,10 @@ client's own composited output. No external tools are involved.
 
 ## 1. The two surfaces
 
-**`phux rec [TARGET] -o PATH`** records one pane, headlessly, from outside.
-It subscribes as a pure observer: it does not attach the session and never
-resizes the pane, so it is safe to run against a session a human is using
-right now. This is the one to reach for when you want a clean artifact of a
-single pane, when you want to script a recording, or when you are not the
-person sitting in the session. It talks to a local server over the UDS
-(`--socket` overrides the path); it does not dial QUIC or WebSocket.
+`phux rec [TARGET] -o PATH` records one pane without attaching the session
+or resizing the pane. Use it for scripted capture or to record a pane
+someone else is using. It connects to a local server over the UDS
+(`--socket` overrides the path), not QUIC or WebSocket.
 
 ```sh
 phux rec -o demo.gif                       # the focused pane, until Ctrl-C
@@ -32,12 +29,9 @@ phux rec work:1.0 -o demo.cast --duration 30
 phux rec @7 -o demo.png --fps 20           # .png means APNG
 ```
 
-**`phux --rec PATH`** records the session you are attached to, as you use it.
-It tees the client's own composited output stream, so the recording contains
-exactly what your glass received: panes tiled per the layout, dividers, the
-status bar, the sidebar, overlays, and the cursor. The flag applies to `phux`
-and `phux attach` only; on any other verb it is an error that points you at
-`phux rec`.
+`phux --rec PATH` records the attached client's composited output: tiled
+panes, dividers, status bar, sidebar, overlays, and cursor. The flag applies
+only to `phux` and `phux attach`; other verbs reject it and point to `phux rec`.
 
 ```sh
 phux --rec demo.gif                        # attach and record the whole session
@@ -45,14 +39,11 @@ phux attach work --rec demo.cast
 phux --rec demo.out --rec-format gif       # explicit format wins; path as typed
 ```
 
-Ctrl-C during a headless capture is a **success**: you asked the recording to
-stop, and what was captured up to that point is written and exported. The
-interactive surface finishes when the session detaches, and prints its
-one-liner only after the alt screen is down.
+Ctrl-C ends a headless capture successfully, writing and exporting what it
+recorded. Interactive capture finishes on detach and prints its result after
+leaving the alternate screen.
 
 ## 2. What a recording is not
-
-Worth knowing before you record something long, rather than after.
 
 - **Timing is the server's paint cadence, not your keystrokes.** The server
   coalesces PTY bytes at its output pacing rate (default 60 Hz) before it
@@ -66,16 +57,14 @@ Worth knowing before you record something long, rather than after.
   scrolled past before you started.
 - **Glyph coverage is narrow.** The animation is drawn with a 1-bit bitmap
   face: Latin, Greek, Cyrillic, Braille, box drawing, and Powerline. CJK and
-  other wide glyphs and color emoji render as tofu boxes. This is a deliberate
-  and permanent consequence of the encoder design
-  ([ADR-0060](../adr/0060-self-contained-session-recording.md)) — it is
-  what keeps GIF quantization lossless — not a gap waiting to be filled. A
-  `.cast` has no such limit; only the rendered animation does.
+  other wide glyphs and color emoji render as tofu boxes. This is a permanent
+  encoder limit that keeps GIF quantization lossless
+  ([ADR-0060](../adr/0060-self-contained-session-recording.md)).
+  It affects rendered animations, not `.cast` files.
 
-Two more worth knowing: **input is never recorded** (no keystroke events, on
-either surface, with no opt-in flag — passwords do not belong in a recording),
-and kitty-graphics images do not survive a re-render, because the replayer
-draws cells and an image is not one.
+Input events are never recorded on either surface, and there is no opt-in
+flag. Kitty-graphics images do not survive re-rendering: the replayer draws
+cells, not images.
 
 **Agent-session streams are not recorded.** A cast is a terminal artifact;
 an agent session's JSON record stream is read with `phux agent log`
@@ -92,25 +81,22 @@ The output extension picks the format, case-insensitively:
 | `.png`, `.apng` | animated PNG | Truecolor, no palette, 1 ms timing. |
 | *(none)* | animated GIF | `.gif` is appended to the path you gave. |
 
-`--format` (or `--rec-format` on the interactive surface) overrides the
-extension outright and leaves the path exactly as you typed it. An extension
-phux does not recognize is an error naming the three it does — it will not
-silently write a `demo.mp4` that is not an MP4.
+`--format` (or interactive `--rec-format`) overrides the extension without
+changing the path. Unknown extensions are rejected; phux will not write a
+GIF named `demo.mp4` unless you explicitly select that format.
 
-**The `.cast` is the source of truth and the animation is a derivative.** Every
-export goes through a cast, even when you asked for a GIF; for a GIF or an
-APNG it is an intermediate in the temp directory, deleted once the artifact
-lands. If the render fails, that intermediate is deliberately *kept* and its
-path printed, so a forty-minute capture is never lost to an encoder bug. Keep
-the cast when the recording matters and re-render it later:
+Every export uses a cast as its source. For GIF or APNG output, phux creates
+a temporary cast and deletes it after a successful render. If rendering
+fails, it keeps the cast and prints its path so the capture can be recovered.
+To keep a reusable source, record a cast and render it later:
 
 ```sh
 phux rec --from demo.cast -o demo.gif --fps 20 --idle-limit 1.5
 phux rec --from demo.cast -o smaller.gif --max-bytes 2000000
 ```
 
-`--from` never touches the server. It is a pure offline re-render, and it also
-transcodes: `--from v2.cast -o v3.cast --cast-version 3`.
+`--from` runs offline without contacting the server. It can also transcode:
+`--from v2.cast -o v3.cast --cast-version 3`.
 
 ### asciicast version
 
@@ -130,9 +116,8 @@ backward compatible (a v2-only reader plays it at the wrong speed). Pass
 The idle clamp applies once, before both the cast write and the render, so
 they agree. `--fps` is the main size lever; idle stretches cost no frames.
 
-The interactive `--rec` surface has none of these knobs: it renders with the
-defaults. If you want a different rate, keep the `.cast` and re-render with
-`--from`.
+Interactive `--rec` uses the defaults. Record a `.cast` and re-render with
+`--from` to change them.
 
 ## 5. Output
 
@@ -142,18 +127,16 @@ On success, one line on stdout:
 phux: wrote demo.gif (184.3 KiB, 211 frames, 42.1s)
 ```
 
-With `--json`, one object on stdout and nothing else. The shape is documented
-in [`agents.md`](./agents.md). Progress (`recording... 12s (340
-events)`) goes to stderr and only on the headless surface, and is suppressed
-under `--json`; the interactive surface says nothing at all while the session
-is up, because it owns the alt screen.
+`--json` prints only the result object on stdout; its shape is documented in
+[`agents.md`](./agents.md). Headless progress (`recording... 12s (340 events)`)
+goes to stderr unless `--json` is set. Interactive capture prints nothing
+while it owns the alternate screen.
 
 ## 6. Playing a recording back
 
-`phux play FILE.cast [TARGET]` creates a **pane whose PTY is fed from the
-recording**, and prints its Terminal id. It does not paint the cast onto the
-terminal you are typing in — for that, `asciinema play FILE.cast` is the right
-tool and needs no phux server at all.
+`phux play FILE.cast [TARGET]` creates a pane whose PTY reads from the
+recording and prints its Terminal id. To play directly in your current
+terminal instead, use `asciinema play FILE.cast`; it needs no phux server.
 
 ```sh
 phux play demo.cast                        # a pane beside the focused one
@@ -165,12 +148,10 @@ phux play demo.cast --json                 # {"schema_version": 1, "terminal_id"
 The result is an ordinary pane: attach, snapshot, resize, watch, re-record,
 or kill it like any other.
 
-**TARGET says where the pane goes, never what gets overwritten.** The playback
-pane is created *beside* TARGET, splitting its window exactly as
-`phux spawn --target` does; TARGET itself is untouched. The default is `.`,
-the focused pane, so a playback appears next to whatever you are looking at.
-There is no flag that plays into an existing pane: a pane's process is its
-identity.
+TARGET chooses placement, not a pane to overwrite. Playback creates a new
+pane beside TARGET, splitting its window as `phux spawn --target` does.
+The default is `.` (the focused pane). Playback cannot replace an existing
+pane's process.
 
 | Flag | Default | What it does |
 |---|---|---|
@@ -181,21 +162,18 @@ identity.
 | `--close` | *(off)* | Close the pane when playback ends instead of holding the final frame. |
 | `--split`, `--ratio` | `horizontal`, `0.5` | Placement of the new pane, as on `phux spawn`. |
 
-**The pane is fitted to the recording.** Before the first byte, the pane is
-resized to the cast header's grid, and each `r` event in the recording is
-applied the same way. A cast is bytes that were correct at one geometry:
-played into a narrower pane, wrapped lines wrap in the wrong places and
-absolute cursor addresses land somewhere else, and the result is not
-approximate but unreadable. When the resize does not hold — an attached
-client's viewport owns a pane's size under every `defaults.window-size` policy
-but `manual`, see [`tui.md`](./tui.md#layout) — playback says so in one line and
-plays anyway. `--no-fit` suppresses the header fit and the recorded resizes
-alike.
+Before playback, the pane is resized to the cast header's grid; recorded
+`r` events resize it again. VT bytes depend on geometry: a narrower grid
+changes line wrapping and cursor placement, which can make playback
+unreadable. If an attached client's size policy overrides a resize, playback
+warns and continues. Every `defaults.window-size` policy except `manual`
+lets a client's viewport control pane size; see [Layout](./tui.md#layout).
+`--no-fit` suppresses both the initial fit and recorded resizes.
 
-**When the recording ends, the pane holds its final frame** until killed,
-so `phux snapshot` is not a race; `--close` ends it instead. Only `o` and
-`r` events drive the pane; recorded input, markers, and exit status are
-ignored. There is no pause, seek, or scrubbing.
+When playback ends, the pane holds its final frame until killed, allowing
+`phux snapshot` without a timing race. `--close` ends it instead. Only `o`
+and `r` events drive the pane; recorded input, markers, and exit status are
+ignored. Pause, seek, and scrubbing are not supported.
 
 ## 7. Where this fits
 

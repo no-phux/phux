@@ -6,11 +6,11 @@ last-reviewed: 2026-09-30
 
 # Troubleshooting and recovery
 
-**TL;DR.** Identify which binary, server, and pane you are using before
-changing state. Check configuration before retrying startup, separate remote
-reachability from authentication, and collect local evidence before restarting.
-A detached client is recoverable by attaching again; a dead server's processes
-are not resurrected by restoring a workspace.
+**TL;DR.** Identify the binary, server, and pane before changing state. Check
+configuration before retrying startup, distinguish remote reachability from
+authentication, and collect logs before restarting. Reattach after a client
+disconnects. After a server dies, workspace restore starts fresh processes;
+it cannot revive the old ones.
 
 ## Choose the symptom
 
@@ -27,21 +27,21 @@ are not resurrected by restoring a workspace.
 
 ## phux is not found, or the wrong version runs
 
-1. Run `command -v phux` in the shell where it fails. No path means this is an
-   installation or `PATH` problem, not a server problem. Follow your
+1. Run `command -v phux` in the failing shell. No path means an installation
+   or `PATH` problem, not a server problem. Follow your
    [installation channel's instructions](./INSTALL.md#supported-install-channels);
-   the curl installer prints the needed `PATH` remedy when applicable.
-2. If a path is found, run `phux --version`. Compare the path with the install
-   you intended to use. An old Cargo binary or version-manager shim can shadow
-   a newer direct install. Correct `PATH` ordering rather than copying binaries
-   over another install; refresh the shell's command cache if necessary.
-3. Update using the owner of that install: Homebrew and Nix are not overwritten
-   by `phux update`. Use the [update procedure](./INSTALL.md#updating).
-4. If the binary version is now right but a running server is older, run
-   `phux doctor` and follow the [version-skew procedure](./operations.md#upgrades-and-version-skew).
+   the curl installer prints a `PATH` remedy when needed.
+2. Run `phux --version` and compare the resolved path with your intended
+   install. An old Cargo binary or version-manager shim can shadow a newer
+   install. Correct `PATH` ordering; do not copy binaries over another
+   installation. Refresh the shell's command cache if necessary.
+3. Update through the install's owner. `phux update` does not overwrite
+   Homebrew or Nix installs; see the [update procedure](./INSTALL.md#updating).
+4. If the binary is correct but the running server is older, run `phux doctor`
+   and follow the [version-skew procedure](./operations.md#upgrades-and-version-skew).
 
-**Success:** the intended binary runs and diagnostics no longer report the
-unexpected server version. A protocol version in status is not a package version.
+**Success:** the intended binary runs and diagnostics no longer report
+unexpected server skew. Protocol and package versions are different numbers.
 
 ## phux will not start
 
@@ -63,9 +63,9 @@ and [collect a report](#collect-a-useful-report) before changing the service.
 
 ## The server is running but my session is missing
 
-1. Run `phux ls` in both the working and failing terminal environments.
-   Compare `phux status` and `phux doctor` output rather than creating a
-   replacement session immediately.
+1. Run `phux ls`, `phux status`, and `phux doctor` in both the working and
+   failing terminal environments. Compare their results before creating a
+   replacement session.
 2. Check for an explicit `--socket`, inherited `PHUX_SOCKET`, or a different
    `PHUX_PROFILE`. A development build deliberately uses separate state.
    [Profiles and socket precedence](./operations.md#instance-isolation-profiles)
@@ -146,9 +146,9 @@ A live update handoff and a fresh server start are not the same operation.
   programs' own saved files or native resume mechanisms. phux has no on-disk
   terminal-output journal that can reconstruct the lost processes.
 
-For future restarts, [workspace save and restore](./operations.md#workspace-continuity-and-update-survival)
-records the layout and startup information. Restoring starts **fresh PTYs**;
-it does not resurrect a crashed process or its scrollback.
+[Workspace save and restore](./operations.md#workspace-continuity-and-update-survival)
+preserves layout and startup information for future restarts, not processes
+or scrollback.
 
 ## Collect a useful report
 
@@ -159,12 +159,12 @@ phux report new
 phux report show
 ```
 
-**Expected:** a local report bundle and a readable report, not an upload.
-[Local bug reports](./operations.md#local-bug-reports) documents the files and
-permissions. Review the bundle before sharing: logs and optional screen
-captures may contain private work. Include the failing command, expected and
-observed behavior, binary version, host/platform, socket/profile, and whether
-it is local or remote. Never include pairing tokens or private keys.
+**Expected:** a local bundle and readable report; nothing is uploaded.
+[Local bug reports](./operations.md#local-bug-reports) describes its files and
+permissions. Review before sharing: logs and screen captures may contain
+private work. Include the failing command, expected and observed behavior,
+binary version, host/platform, socket/profile, and whether the connection is
+local or remote. Never include pairing tokens or private keys.
 
 For latency rather than a connection failure, use
 [performance observability](./operations.md#performance-observability) to locate

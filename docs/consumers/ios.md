@@ -6,11 +6,8 @@ last-reviewed: 2026-09-20
 
 # iOS client
 
-**TL;DR.** Coming soon.
-
----
-
-Coming soon. An Android client is coming as well.
+**TL;DR.** The iOS client is forthcoming. The requirements below are for
+mobile integration; they do not establish release availability.
 
 ## Minimum `PHUX_REV`
 
