@@ -6,17 +6,14 @@ last-reviewed: 2026-09-30
 
 # Module structure
 
-**TL;DR.** Per-crate module trees as they exist in tree today, kept as a
-navigational map rather than an exhaustive listing. New modules should land
-in the shape that fits the crate; do not retrofit older layouts onto new
-work.
+**TL;DR.** Directory-level maps of phux's twenty crates. Follow each crate's
+current layout when adding modules; do not retrofit older layouts onto new
+work. File-level detail belongs in the crate's `lib.rs` and module docs.
 
 ---
 
-Twenty crates, roughly in dependency order. Directory-level entries only;
-the crate's own `lib.rs` and module docs own the file-level detail. The
-`phux-tui` / `phux-client-core` split is
-[`render-layering.md`](./render-layering.md); crate edges are
+Crates appear roughly in dependency order. For rendering ownership, see
+[`render-layering.md`](./render-layering.md); for dependency edges, see
 [`crate-graph.md`](./crate-graph.md).
 
 ## `phux-protocol`

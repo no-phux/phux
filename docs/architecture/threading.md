@@ -6,31 +6,23 @@ last-reviewed: 2026-09-12
 
 # Threading and I/O
 
-**TL;DR.** Why the server runs on a single current-thread tokio runtime with
-a LocalSet (libghostty's `Terminal` is `!Send`, so it cannot move across
-threads), why every resource engine is one `spawn_local` task around a
-`ResourceCore`, and why server state nonetheless lives behind an
-`Arc<Mutex<ServerState>>` using `std::sync` — the lock is never held across
-an await, so cross-task, test, and embed paths can share it without a
-multi-threaded runtime. A multiplexer is I/O-bound; work-stealing buys
-nothing on the hot path.
+**TL;DR.** libghostty's `Terminal` is `!Send`, so resource engines run as
+`spawn_local` tasks on a current-thread tokio runtime and `LocalSet`.
+`ServerState` uses a `std::sync` mutex shared with the input lane, tests,
+and embedded callers. No lock is held across an await. Input routing and
+encoding run on a separate OS thread.
 
 ---
 
 ## One current-thread runtime with a LocalSet
 
-A terminal multiplexer is I/O-bound, not CPU-bound: the work is
-poll-many-fds-fanout-bytes. A single-threaded executor is simpler and fast
-enough. We pick tokio over `mio` or `polling` because the ecosystem we need
-(tokio-uds for Unix sockets, signal-hook-tokio for signals, tokio-util frame
-codecs) is mature and not worth reinventing. The hot path gains nothing from
-work-stealing, so the server does not use the multi-threaded runtime.
+The server polls file descriptors and fans out bytes on one tokio
+current-thread executor. tokio supplies the Unix-socket, signal, and frame-codec
+integrations this needs (`tokio-uds`, `signal-hook-tokio`, `tokio-util`).
 
-The current-thread choice is not only a performance call — it is forced by
-the engine. libghostty's `Terminal` is `!Send`: it cannot move across
-threads, so the tasks that feed and read it run on a `LocalSet` pinned to the
-runtime thread. A multi-threaded runtime would refuse to spawn those tasks
-at all.
+libghostty's `Terminal` is `!Send`: it cannot move across threads. Tasks that
+feed and read it therefore run on a `LocalSet` pinned to the runtime thread,
+rather than as tasks on a multi-threaded executor.
 
 ```rust
 fn main() -> std::io::Result<()> {
@@ -73,23 +65,18 @@ legal because the `JoinSet` is dropped on the thread that spawned its
 
 ## Shared state behind a std::sync Mutex
 
-Server state lives behind an `Arc<Mutex<ServerState>>` from `std::sync` (not
-`tokio::sync`). Both facts hold at once and do not contradict: the runtime is
-single-threaded for the `!Send` engine, and the state is still wrapped in a
-mutex so that multiple tasks — plus the test and embed paths that drive the
-server in-process — share one consistent view.
+Server state lives behind an `Arc<Mutex<ServerState>>` from `std::sync`, not
+`tokio::sync`. The mutex gives runtime tasks, tests, and embedded callers one
+consistent view while the `!Send` engines stay on the runtime thread.
 
-The rule that makes a synchronous mutex safe on an async runtime is that the
-lock is **never held across an `.await`**. Each acquisition is a short
+The lock is never held across an `.await`. Each acquisition is a short
 critical section: take the lock, read or mutate `ServerState`, drop the lock,
-then await any I/O. Holding a `std::sync::Mutex` across a yield point would
-risk deadlocking the single thread; the discipline of dropping it first is
-what keeps that from happening and what lets group operations such as
-`KILL_RESOURCES` apply all-or-nothing under a single acquisition. The same
-discipline is what the Terminal exit path relies on: gathering subscribers,
-reaping the domain entity, and forgetting the table entry happen in one
-critical section, and only the `RESOURCE_CLOSED` sends are awaited after
-it ([data-model.md](./data-model.md)).
+then await any I/O. Holding a `std::sync::Mutex` across a yield point risks
+deadlocking the single thread. Group operations such as `KILL_RESOURCES`
+apply all-or-nothing under one acquisition. The Terminal exit path likewise
+gathers subscribers, reaps the domain entity, and forgets the table entry
+under one lock; only the `RESOURCE_CLOSED` sends are awaited afterward
+([data-model.md](./data-model.md)).
 
 Because the state is shared with the input lane below, `ServerState` must be
 `Send` (so `Arc<Mutex<ServerState>>` is `Send`). That is a real constraint on

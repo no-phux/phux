@@ -6,7 +6,11 @@ last-reviewed: 2026-09-12
 
 # System shape diagram
 
-**TL;DR.** phux is a libghostty-backed control plane that serves resources. The canonical state of every resource lives server-side behind a kind engine; clients attach over one frame codec on any of five byte streams and keep local replicas for rendering. This sketch shows the path from a Terminal's PTY through the server and the wire to a client's screen, and where a producer-fed AgentSession joins it.
+**TL;DR.** Each resource has a server-side kind engine. Terminal engines
+consume PTY bytes; AgentSession engines consume producer-fed records.
+Clients attach through one frame codec over five byte streams and maintain
+local replicas for rendering. Resource ownership, transport, and presentation
+are separate boundaries.
 
 ---
 
@@ -111,9 +115,6 @@ type. Details in [transport.md](./transport.md).
 - **Producer -> wire -> server -> subscribers**: for a producer-fed kind,
   appended records fan out as opaque output bytes under that kind's codec
   (ADR-0103).
-
-The wire is asymmetric: one direction is bytes, the other is structured
-events. That is the core invariant from ADR-0013.
 
 ---
 

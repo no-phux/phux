@@ -6,22 +6,19 @@ last-reviewed: 2026-09-18
 
 # Transport abstraction
 
-**TL;DR.** One length-prefixed frame codec rides five byte streams: Unix
-domain socket, WebSocket, QUIC, WebTransport, and SSH-stdio. There is no
-shared `Transport` trait. The server's accept loop is generic over a
-crate-private `Incoming` listener that yields a `FrameReader` / `FrameWriter`
-pair per connection; the client wraps its three lanes in `FrameReader` /
-`FrameWriter` enums behind one `Connection`; outbound TLS establishment for
-QUIC and WebSocket is the `phux-dial` crate, shared by the attach loop and the
-federation hub.
+**TL;DR.** One length-prefixed frame codec runs over Unix domain sockets,
+WebSocket, QUIC, WebTransport, and SSH-stdio. Server listeners yield
+`FrameReader` / `FrameWriter` pairs; the client wraps its three lanes in
+enums behind `Connection`. There is no shared `Transport` trait. The attach
+loop and federation hub share outbound QUIC and WebSocket establishment
+through `phux-dial`.
 
 ---
 
-The seam is the **frame**, not a trait object. Every transport delivers
-complete encoded frames (`docs/spec/proto.md` §5, owned by
-`phux_protocol::wire::framing`); everything above that seam — the per-client
-dispatch loop, the `FrameKind` codec, attach and bootstrap lifecycles — is
-written once and never names a concrete stream.
+Every transport delivers complete encoded frames (`docs/spec/proto.md` §5,
+owned by `phux_protocol::wire::framing`). The per-client dispatch loop,
+`FrameKind` codec, and attach and bootstrap lifecycles operate on these frames
+without naming a concrete stream.
 
 ## Where the seam lives in code
 
@@ -138,9 +135,6 @@ seam changes.
   dials with `ServerAliveInterval` / `ServerAliveCountMax` derived from the
   same interval/timeout constants the WS path uses, so a silent partition
   makes the ssh child exit. The bridged phux stream stays byte-transparent.
-
-All five run the same codec. A consumer that can frame the codec over a
-stream is a peer regardless of which stream it uses.
 
 ## Outbound dialing is shared
 
