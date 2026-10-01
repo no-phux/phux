@@ -2,6 +2,7 @@
 //! with SPEC §5 framing (owned by [`phux_protocol::wire::framing`]) and the
 //! correlated request/response primitives every verb uses.
 
+use std::collections::VecDeque;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -75,6 +76,9 @@ pub struct Connection {
     multistream: Option<Multistream>,
     /// A write found the server already gone (see [`Self::write_hit_closed_peer`]).
     write_hit_closed_peer: bool,
+    /// Control frames interleaved before a geometry-ordering barrier's PONG.
+    deferred_control: VecDeque<(FrameKind, usize)>,
+    deferred_control_bytes: usize,
 }
 
 /// QUIC multi-stream state (proto.md §4.2, ADR-0115): each bound Terminal
@@ -462,6 +466,8 @@ impl Connection {
             next_attach_id: 1,
             multistream,
             write_hit_closed_peer: false,
+            deferred_control: VecDeque::new(),
+            deferred_control_bytes: 0,
         }
     }
 
@@ -838,7 +844,46 @@ impl Connection {
             };
             return send_quic_frame(&mut binding.send, frame).await;
         }
-        self.writer.send(frame).await
+        self.writer.send(frame).await?;
+        if self.multistream_enabled() && matches!(frame, FrameKind::ViewportResize { .. }) {
+            self.settle_viewport_order().await?;
+        }
+        Ok(())
+    }
+
+    /// QUIC orders each stream, not the control stream against pane streams.
+    /// Wait until the viewport vote has been dispatched before the caller can
+    /// send its exact pane layout. This uses the existing protocol on old
+    /// servers too; moving `RESIZE_TERMINAL` to control would be rejected.
+    async fn settle_viewport_order(&mut self) -> Result<(), AttachError> {
+        let nonce = uuid::Uuid::new_v4().as_u64_pair().0;
+        self.writer.send(&FrameKind::Ping { nonce }).await?;
+        let FrameReader::Quic(reader) = &mut self.reader else {
+            return Err(AttachError::Protocol(
+                "viewport barrier requires QUIC".to_owned(),
+            ));
+        };
+        tokio::time::timeout(TERMINAL_FRAME_DEADLINE, async {
+            loop {
+                let (frame, bytes) =
+                    recv_buffered_sized(&mut reader.recv, &mut reader.buf, reader.bootstrap_limits)
+                        .await?;
+                if matches!(frame, FrameKind::Pong { nonce: received } if received == nonce) {
+                    return Ok(());
+                }
+                if self.deferred_control.len() == MUX_FRAME_CHANNEL
+                    || self.deferred_control_bytes + bytes > MUX_FRAME_BYTES
+                {
+                    return Err(AttachError::Protocol(
+                        "viewport ordering barrier exceeded its control-frame bound".to_owned(),
+                    ));
+                }
+                self.deferred_control.push_back((frame, bytes));
+                self.deferred_control_bytes += bytes;
+            }
+        })
+        .await
+        .map_err(|_| AttachError::Protocol("viewport ordering barrier timed out".to_owned()))?
     }
 
     /// Whether a Terminal-targeted frame for `terminal_id` can be sent now.
@@ -1002,6 +1047,10 @@ impl Connection {
     }
 
     async fn recv_frame(&mut self) -> Result<FrameKind, AttachError> {
+        if let Some((frame, bytes)) = self.deferred_control.pop_front() {
+            self.deferred_control_bytes -= bytes;
+            return Ok(frame);
+        }
         if self.multistream.is_some() {
             return self.recv_multistream().await;
         }
@@ -1075,6 +1124,10 @@ impl Connection {
     }
 
     fn try_recv_frame(&mut self) -> Result<Option<FrameKind>, AttachError> {
+        if let Some((frame, bytes)) = self.deferred_control.pop_front() {
+            self.deferred_control_bytes -= bytes;
+            return Ok(Some(frame));
+        }
         let limits = self
             .negotiated_bootstrap
             .map_or_else(BootstrapLimits::default, |negotiated| negotiated.limits);
@@ -1492,9 +1545,21 @@ async fn recv_buffered(
     buf: &mut BytesMut,
     limits: BootstrapLimits,
 ) -> Result<FrameKind, AttachError> {
+    recv_buffered_sized(src, buf, limits)
+        .await
+        .map(|(frame, _)| frame)
+}
+
+/// Retain the wire size for bounded interleaving without re-encoding a frame.
+async fn recv_buffered_sized(
+    src: &mut (impl tokio::io::AsyncRead + Unpin),
+    buf: &mut BytesMut,
+    limits: BootstrapLimits,
+) -> Result<(FrameKind, usize), AttachError> {
     loop {
+        let before = buf.len();
         if let Some(frame) = decode_buffered(buf, limits)? {
-            return Ok(frame);
+            return Ok((frame, before - buf.len()));
         }
         if src.read_buf(buf).await.map_err(AttachError::Io)? == 0 {
             return Err(AttachError::Disconnected);

@@ -100,7 +100,7 @@ pub(super) fn attach_agent_sessions<'a>(
 /// counting other sessions' panes left `ATTACH_READY` unresolvable whenever a
 /// second session existed. A pane whose window is not listed is excluded, so
 /// the failure mode is a late paint rather than an attach that never completes.
-pub(super) fn attach_participants(snapshot: &SessionSnapshot) -> Vec<ResourceId> {
+pub(in crate::attach) fn attach_participants(snapshot: &SessionSnapshot) -> Vec<ResourceId> {
     let focused_windows: Vec<_> = snapshot
         .windows
         .iter()

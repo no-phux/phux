@@ -447,13 +447,10 @@ pub(crate) fn handle_terminal_resize(
             debug!(?client_id, ?wire_terminal_id, "RESIZE_TERMINAL: pane exited; ignored");
             return;
         }
-        // The actor clamps to one cell; record the same so `GET_STATE` (which
-        // `phux resize` reads back) never reports a size no grid has.
+        // Match the actor's clamp. Record this target only after admission;
+        // the replacement bootstrap carries the actor's settled geometry.
         let cols = cols.max(1);
         let rows = rows.max(1);
-        if let Some(pane) = s.registry_mut().terminal_mut(terminal) {
-            pane.dims = (cols, rows);
-        }
         let terminal = match local.handle.terminal() {
             Ok(terminal) => terminal,
             Err(error) => {
@@ -464,7 +461,11 @@ pub(crate) fn handle_terminal_resize(
             }
         };
         // No pixel size rides this frame, so the actor keeps its last one.
-        try_resize(terminal, (cols, rows), None, "RESIZE_TERMINAL", client_id);
+        if try_resize(terminal, (cols, rows), None, "RESIZE_TERMINAL", client_id)
+            && let Some(pane) = s.registry_mut().terminal_mut(local.id)
+        {
+            pane.dims = (cols, rows);
+        }
     });
 }
 
@@ -484,15 +485,15 @@ fn send_wrong_kind_error(
     }
 }
 
-/// Queue a live resize that resyncs every client's mirror. Resizes are
-/// best-effort (SPEC §10.5): a full or closed mailbox drops this one.
+/// Admit a live resize into the actor's latest-geometry slot. A closed
+/// actor refuses it; mailbox pressure coalesces rather than losing it.
 fn try_resize(
     terminal: &TerminalHandle,
     (cols, rows): (u16, u16),
     cell_px: Option<(u16, u16)>,
     verb: &str,
     client_id: ClientId,
-) {
+) -> bool {
     let request = ResizeRequest {
         cols,
         rows,
@@ -502,15 +503,10 @@ fn try_resize(
         resync_for: None,
     };
     match terminal.resize.try_send(request) {
-        Ok(()) => {}
-        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-            warn!(
-                ?client_id,
-                cols, rows, "{verb}: pane resize mailbox full; dropping"
-            );
-        }
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-            debug!(?client_id, "{verb}: pane actor gone; dropping resize");
+        Ok(()) => true,
+        Err(error) => {
+            debug!(?client_id, %error, "{verb}: pane actor gone; resize not accepted");
+            false
         }
     }
 }
@@ -4221,68 +4217,50 @@ pub(crate) const fn empty_session_snapshot() -> phux_protocol::wire::info::Sessi
     )
 }
 
-/// Handle a client's `VIEWPORT_RESIZE` (SPEC §7.1 / §10.5): record the
-/// client's viewport, resolve its focused Terminal's geometry across every
-/// subscriber under the window-size policy, and resize the pane. Not-found
-/// paths are benign races and only log at debug.
+/// Record a session-attached client's viewport vote and recompute every
+/// subscribed Terminal in that session under the server's geometry policy.
 pub(crate) fn handle_viewport_resize(
     state: &SharedState,
     client_id: ClientId,
     viewport: &ViewportInfo,
 ) {
     state.with_mut(|s| {
-        let Some(client) = s.attached().get(&client_id) else {
+        if !s.attached().contains_key(&client_id) {
             debug!(
                 ?client_id,
                 "VIEWPORT_RESIZE from non-attached client; ignoring"
             );
             return;
-        };
-        let session_id = client.session;
-        let Some(session) = s.registry().session(session_id) else {
-            debug!(?client_id, "VIEWPORT_RESIZE: client's session vanished");
-            return;
-        };
-        let Some(window_id) = session.active else {
-            debug!(?client_id, "VIEWPORT_RESIZE: no active window in session");
-            return;
-        };
-        let Some(window) = s.registry().window(window_id) else {
-            return;
-        };
-        let Some(terminal_id) = window.active else {
-            return;
-        };
-        // Every subscriber's viewport counts, so two clients never thrash
-        // the grid; `None` (e.g. `Manual`) leaves the PTY size untouched.
-        s.set_client_viewport(client_id, *viewport);
-        let Some((cols, rows)) = s.resolve_terminal_geometry(terminal_id, Some(*viewport)) else {
-            debug!(
-                ?client_id,
-                ?terminal_id,
-                "VIEWPORT_RESIZE: window-size policy yielded no geometry; PTY size unchanged",
-            );
-            return;
-        };
-        if let Some(pane) = s.registry_mut().terminal_mut(terminal_id) {
-            pane.dims = (cols, rows);
         }
-        // The most recent usable pixel report fixes the advertised cell size.
-        let cell_px = s.resolve_terminal_cell_px(terminal_id);
-        if let Some(Ok(terminal)) = s.resource_handle(terminal_id).map(ResourceHandle::terminal) {
-            try_resize(
+        s.set_client_viewport(client_id, *viewport);
+        // A degenerate report withdraws the vote, but must not itself resize
+        // a pane from another subscriber's vote or a headless fallback.
+        if viewport.cols == 0 || viewport.rows == 0 {
+            return;
+        }
+        for terminal_id in s.viewport_terminals(client_id) {
+            if s.retained_exit(terminal_id).is_some() {
+                continue;
+            }
+            let Some((cols, rows)) = s.resolve_terminal_geometry(terminal_id, Some(*viewport))
+            else {
+                continue;
+            };
+            let cell_px = s.resolve_terminal_cell_px(terminal_id);
+            let Some(Ok(terminal)) = s.resource_handle(terminal_id).map(ResourceHandle::terminal)
+            else {
+                continue;
+            };
+            if try_resize(
                 terminal,
                 (cols, rows),
                 cell_px,
                 "VIEWPORT_RESIZE",
                 client_id,
-            );
-        } else {
-            debug!(
-                ?client_id,
-                ?terminal_id,
-                "VIEWPORT_RESIZE: no TerminalHandle registered for pane; dropping resize",
-            );
+            ) && let Some(pane) = s.registry_mut().terminal_mut(terminal_id)
+            {
+                pane.dims = (cols, rows);
+            }
         }
     });
 }

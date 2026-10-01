@@ -1223,7 +1223,8 @@ pub unsafe extern "C" fn phux_client_send_paste(
     })
 }
 
-/// Queues a terminal resize.
+/// Requests exact terminal geometry through the runtime's readiness and role checks.
+/// Success means queued, not applied; authoritative grids are the readback.
 ///
 /// # Safety
 ///
@@ -1237,32 +1238,38 @@ pub unsafe extern "C" fn phux_client_terminal_resize(
     cols: u16,
     rows: u16,
 ) -> PhuxClientResult {
+    use phux_client_runtime::control::TerminalResizeOutcome;
     with_client_mut(client, |client| {
-        if cols == 0 || rows == 0 {
-            return Err(BridgeError::invalid(
-                "terminal resize geometry must be non-zero",
-            ));
-        }
-        if !client.attached {
-            return Err(BridgeError::state(
-                "terminal resize requires an attached client",
-            ));
-        }
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
-        let _ = client.terminal_key(&terminal_id)?;
-        if client.operations.detaching(&terminal_id) {
-            return Err(BridgeError::state("terminal detach is pending"));
+        if client.operations.subscription_pending(&terminal_id) {
+            return Err(BridgeError::state(
+                "terminal subscription change is pending",
+            ));
         }
-        client.queue_frame(&FrameKind::ResizeTerminal {
-            terminal_id,
-            cols,
-            rows,
-        })?;
-        Ok(())
+        let outcome =
+            client
+                .control()
+                .resize_terminal(&terminal_id, u32::from(cols), u32::from(rows));
+        match outcome {
+            TerminalResizeOutcome::Queued => {
+                client.drain_outbound();
+                Ok(())
+            }
+            TerminalResizeOutcome::InvalidSize => Err(BridgeError::invalid(
+                "terminal resize geometry must be non-zero",
+            )),
+            TerminalResizeOutcome::Observer => Err(BridgeError::state(
+                "terminal resize is not allowed for an observe-only subscription",
+            )),
+            TerminalResizeOutcome::NotReady => Err(BridgeError::state(
+                "terminal resize requires a live ready subscription",
+            )),
+        }
     })
 }
 
-/// Queues a viewport resize.
+/// Submits desired viewport geometry, retaining it until ATTACH is ready.
+/// Success accepts intent, not application; session size policy remains authoritative.
 ///
 /// # Safety
 ///
@@ -1283,10 +1290,8 @@ pub unsafe extern "C" fn phux_client_viewport_resize(
                 "viewport resize geometry must be non-zero",
             ));
         }
-        if !client.attached {
-            return Err(BridgeError::state(
-                "viewport resize requires an attached client",
-            ));
+        if client.control().status().is_terminal() {
+            return Err(BridgeError::state("viewport resize requires a live client"));
         }
         if has_pixel_size {
             if pixel_width == 0 || pixel_height == 0 {
@@ -1300,10 +1305,11 @@ pub unsafe extern "C" fn phux_client_viewport_resize(
             ));
         }
         let pixels = has_pixel_size.then_some((pixel_width, pixel_height));
-        client.queue_frame(&FrameKind::ViewportResize {
-            viewport: ViewportInfo::new(cols, rows)
+        client.control().resize_viewport_info(
+            ViewportInfo::new(cols, rows)
                 .with_pixels(pixels.map(|value| value.0), pixels.map(|value| value.1)),
-        })?;
+        );
+        client.drain_outbound();
         Ok(())
     })
 }

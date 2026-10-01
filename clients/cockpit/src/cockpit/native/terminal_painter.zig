@@ -203,7 +203,7 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
 
     if (count == 0) return;
     const tree = ws.selectedTreeConst() orelse return;
-    try paintTerminalContents(model, builder, tree, panes[0..count], tokens, window_active);
+    try paintTerminalContents(model, builder, tree, panes[0..count], tokens, window_active, ws.surface_scale_factor);
 
     // Borders and the focus ring follow all panes and their dim scrims, so a
     // neighbouring pane cannot cover the active pane's focus indication.
@@ -211,7 +211,7 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
     try paintPaneChrome(builder, panes[0..count], tree.focus, tokens, window_active);
 }
 
-fn paintTerminalContents(model: *const Model, builder: *canvas.Builder, tree: *const layout.Tree, panes: []const layout.Pane, tokens: canvas.DesignTokens, window_active: bool) !void {
+fn paintTerminalContents(model: *const Model, builder: *canvas.Builder, tree: *const layout.Tree, panes: []const layout.Pane, tokens: canvas.DesignTokens, window_active: bool, scale_factor: f32) !void {
     // Ground and search controls are outside the panes' command envelope.
     const prologue = builder.len;
     const count = panes.len;
@@ -246,6 +246,7 @@ fn paintTerminalContents(model: *const Model, builder: *canvas.Builder, tree: *c
             .frame = grid_rect,
             .background_frame = grid_rect,
             .tokens = grid_tokens,
+            .scale_factor = scale_factor,
             .running = false,
             .focused = options_focused,
             .selecting = false,
@@ -312,7 +313,7 @@ fn paintPane(model: *const Model, tree: *const layout.Tree, builder: *canvas.Bui
         options.running = presentation.phase == .live;
         options.selecting = if (model.remoteUiForOwnerConst(presentation.owner)) |state| state.selecting else false;
         try grid.paintTerminalGrid(presentation.grid, builder, options);
-        recordRemoteCell(model, presentation.owner, options.tokens);
+        recordRemoteCell(model, presentation.owner, options.tokens, options.scale_factor);
     }
     return true;
 }
@@ -364,9 +365,15 @@ fn paintPaneChrome(
 /// the focus signal.
 const dim_scrim: canvas.Color = canvas.Color.rgba(0, 0, 0, 0.15);
 
-fn recordRemoteCell(model: *const Model, owner: provider_contract.ReplicaOwner, tokens: canvas.DesignTokens) void {
+fn recordRemoteCell(model: *const Model, owner: provider_contract.ReplicaOwner, tokens: canvas.DesignTokens, scale_factor: f32) void {
     if (comptime !@import("../phux_support.zig").phux_enabled) return;
     const remote = model.phuxForOwnerConst(owner) orelse return;
     const metrics = canvas.terminalCellMetrics(tokens);
-    remote.host.recordMeasuredCell(owner, .{ .width = metrics.width, .height = metrics.height });
+    remote.host.recordMeasuredCell(owner, .{
+        .width = metrics.width,
+        .height = metrics.height,
+        .font_id = tokens.typography.mono_font_id,
+        .font_size = metrics.font_size,
+        .scale_factor = scale_factor,
+    });
 }

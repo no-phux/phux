@@ -1005,7 +1005,7 @@ pub const PaneViewport = struct {
 pub const ProposedViewports = struct {
     items: [layout.max_panes]PaneViewport = undefined,
     count: usize = 0,
-    /// A local pane was not yet measured; propose nothing.
+    /// A pane has not yet been painted with the current font/device scale.
     incomplete: bool = false,
 
     pub fn slice(self: *const ProposedViewports) []const PaneViewport {
@@ -1021,18 +1021,23 @@ pub fn proposedViewportsIn(
     var result: ProposedViewports = .{};
     var panes: [layout.max_panes]layout.Pane = undefined;
     const count = resolvePanesIn(model, workspace, size, &panes);
-    // Local panes use the painter's measured cell; this estimate is only for
-    // remote panes, which have no local session.
-    const metrics = terminalCellMetricsFor(terminalTokens(model));
+    const typography = terminalTokens(model).typography;
     for (panes[0..count]) |pane| {
         const inner = paneGridRect(pane.rect, count);
         if (inner.width <= 0 or inner.height <= 0) continue;
         if (model.provider.terminalConst(pane.terminal)) |terminal| {
             const session = terminal.session;
+            if (session.font_size != typography.label_size or
+                session.measured_font_id != typography.mono_font_id or
+                session.measured_scale_factor != workspace.surface_scale_factor)
+            {
+                result.incomplete = true;
+                continue;
+            }
             // Unmeasured: a guessed proposal would SIGWINCH the shell twice.
             const cell = session.measuredCell() orelse {
                 result.incomplete = true;
-                return result;
+                continue;
             };
             const proposed = grid.Session.clampGrid(
                 @intFromFloat(@max(2, inner.width / cell.width)),
@@ -1045,9 +1050,20 @@ pub fn proposedViewportsIn(
         const tree = workspace.selectedTreeConst() orelse continue;
         const presentation = model.remotePaintPresentationIn(tree, pane.terminal) orelse continue;
         if (presentation.phase != .live) continue;
+        const cell = presentation.measured_cell orelse {
+            result.incomplete = true;
+            continue;
+        };
+        if (cell.font_size != typography.label_size or
+            cell.font_id != typography.mono_font_id or
+            cell.scale_factor != workspace.surface_scale_factor)
+        {
+            result.incomplete = true;
+            continue;
+        }
         const proposed = grid.Session.clampGrid(
-            @intFromFloat(@max(2, inner.width / metrics.width)),
-            @intFromFloat(@max(2, inner.height / metrics.height)),
+            @intFromFloat(@max(2, inner.width / cell.width)),
+            @intFromFloat(@max(2, inner.height / cell.height)),
         );
         result.items[result.count] = .{ .terminal = pane.terminal, .owner = presentation.owner, .cols = proposed.x, .rows = proposed.y };
         result.count += 1;

@@ -218,6 +218,10 @@ const Terminal = struct {
     history_unread_rows: u64 = 0,
     bell_owner: ?provider.ReplicaOwner = null,
     viewport: ?provider.Viewport = null,
+    /// Failed submissions retry only after a readiness drain or a new intent.
+    /// `viewport` remains the last successfully queued request, never the
+    /// policy-resolved authoritative grid.
+    viewport_attempt: ?provider.Viewport = null,
     /// The coordinator this replica belongs to (`Host.provider_id` when it
     /// was admitted): part of every ref and owner it publishes.
     provider_id: provider.ProviderId = .phux,
@@ -1095,6 +1099,7 @@ pub const Host = struct {
             terminal.pending_title.items.len = 0;
             terminal.pending_title_set = false;
             terminal.viewport = null;
+            terminal.viewport_attempt = null;
         }
     }
 
@@ -1197,6 +1202,7 @@ pub const Host = struct {
         // GET_METADATA/GET_STATE here, and a busy history bootstrap would
         // otherwise starve it. Consume EOF only once the queue is idle.
         try host.stageOutgoing();
+        for (host.terminals.items) |*terminal| terminal.viewport_attempt = null;
         delta.workspace_changed = host.workspace_changed;
         delta.metadata_changed = host.metadata_changed or host.workspace_changed;
         host.metadata_changed = false;
@@ -1304,6 +1310,9 @@ pub const Host = struct {
 
     pub fn viewportResize(host: *Host, terminal_ref: provider.TerminalRef, viewport: provider.Viewport) !void {
         const terminal = host.findTerminal(terminal_ref) orelse return error.InvalidState;
+        if (terminal.viewport) |last| if (last.eql(viewport)) return;
+        if (terminal.viewport_attempt) |attempt| if (attempt.eql(viewport)) return error.NoValue;
+        terminal.viewport_attempt = viewport;
         const id = try host.currentCId(terminal.owner());
         try resultError(c.phux_client_terminal_resize(
             host.client,
@@ -1446,6 +1455,7 @@ pub const Host = struct {
 
     pub fn recordMeasuredCell(host: *Host, owner_value: provider.ReplicaOwner, cell: provider.MeasuredCell) void {
         const terminal = host.findTerminal(owner_value.terminal_ref) orelse return;
+        if (!std.math.isFinite(cell.width) or !std.math.isFinite(cell.height) or cell.width <= 0 or cell.height <= 0) return;
         if (terminal.owner().eql(owner_value)) terminal.measured_cell = cell;
     }
 
@@ -2239,6 +2249,8 @@ pub const Host = struct {
             terminal.remove_at_barrier = false;
             terminal.pending_title.items.len = 0;
             terminal.pending_title_set = false;
+            terminal.viewport = null;
+            terminal.viewport_attempt = null;
             // A boundary may be missed while detached; the cwd stays as the
             // last one known, like the title.
             terminal.command = .unknown;
@@ -3864,6 +3876,35 @@ test "resize viewport follows identity when effects remove an earlier terminal" 
     try std.testing.expectEqual(@as(usize, 1), host.terminals.items.len);
     try std.testing.expect(host.lastViewport(terminal_ref) != null);
     try std.testing.expectEqualDeep(viewport, host.lastViewport(terminal_ref).?);
+}
+
+test "not-ready resize keeps the latest request retryable after readiness" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try test_support.attachHost(host);
+    _ = try host.requestSpawn(null, .{ .cols = 80, .rows = 24 });
+    try test_support.stageFixture(&bridge, "spawn-local.bin");
+    _ = try host.drainReadiness();
+    const ref = host.takeOperationResult().?.terminal_ref.?;
+    bridge.outgoing.reset();
+    const first: provider.Viewport = .{ .cols = 100, .rows = 30 };
+    const latest: provider.Viewport = .{ .cols = 120, .rows = 40 };
+    try std.testing.expectError(error.InvalidState, host.viewportResize(ref, first));
+    try std.testing.expectError(error.NoValue, host.viewportResize(ref, first));
+    try std.testing.expectError(error.InvalidState, host.viewportResize(ref, latest));
+    try std.testing.expect(host.lastViewport(ref) == null);
+    try test_support.expectOutgoingCount(&bridge, 0);
+
+    try test_support.stageFixture(&bridge, "local-ready.bin");
+    _ = try host.drainReadiness();
+    bridge.outgoing.reset();
+    try host.viewportResize(ref, latest);
+    try std.testing.expectEqualDeep(latest, host.lastViewport(ref).?);
+    try test_support.expectOutgoingCount(&bridge, 1);
+    try host.viewportResize(ref, latest);
+    try test_support.expectOutgoingCount(&bridge, 0);
 }
 
 test "disconnect finalizes queued operations once with their old connection epoch" {

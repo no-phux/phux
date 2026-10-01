@@ -21,15 +21,16 @@ use std::time::{Duration, Instant};
 
 use phux_client_ffi::{
     ABI_VERSION, PhuxAttachOptions, PhuxBytes, PhuxCatalogTerminal, PhuxClient, PhuxClientOptions,
-    PhuxClientResult, PhuxClientState, PhuxConnectOptions, PhuxResourceId, PhuxSessionInfo,
-    PhuxTerminalGridView, PhuxWorkspaceInfo, PhuxWorkspaceMutation, PhuxWorkspaceWindow,
-    phux_client_catalog_terminal_get, phux_client_connect, phux_client_connection_epoch,
-    phux_client_connection_error, phux_client_feed_frame, phux_client_free,
-    phux_client_is_connected, phux_client_new, phux_client_outgoing_count, phux_client_poll,
-    phux_client_poll_pending, phux_client_queue_attach, phux_client_resource_count,
-    phux_client_send_paste, phux_client_session_get, phux_client_state, phux_client_terminal_grid,
-    phux_client_workspace_info, phux_client_workspace_mutate, phux_client_workspace_refresh,
-    phux_client_workspace_window_get,
+    PhuxClientResult, PhuxClientState, PhuxConnectOptions, PhuxResourceId, PhuxResourceInfo,
+    PhuxSessionInfo, PhuxTerminalGridView, PhuxWorkspaceInfo, PhuxWorkspaceMutation,
+    PhuxWorkspaceWindow, phux_client_catalog_terminal_get, phux_client_connect,
+    phux_client_connection_epoch, phux_client_connection_error, phux_client_feed_frame,
+    phux_client_free, phux_client_is_connected, phux_client_new, phux_client_outgoing_count,
+    phux_client_poll, phux_client_poll_pending, phux_client_queue_attach,
+    phux_client_resource_count, phux_client_resource_get, phux_client_send_paste,
+    phux_client_session_get, phux_client_state, phux_client_terminal_grid,
+    phux_client_terminal_resize, phux_client_viewport_resize, phux_client_workspace_info,
+    phux_client_workspace_mutate, phux_client_workspace_refresh, phux_client_workspace_window_get,
 };
 use phux_server_testkit::{run_local, spawn_server, spawn_server_with_seed_cmd};
 use tempfile::TempDir;
@@ -216,6 +217,37 @@ fn connected_poll_rearms_wake_for_later_attach_activity() {
     });
 }
 
+/// Exact geometry and same-size viewport reassertion both reach authoritative grids.
+async fn check_connected_geometry(client: *mut PhuxClient, terminal: PhuxResourceId) {
+    let geometry_is = |cols, rows| {
+        let mut grid = PhuxTerminalGridView::default();
+        // SAFETY: client and local identity are live, and output is writable.
+        (unsafe { phux_client_terminal_grid(client, &raw const terminal, &raw mut grid) }
+            == PhuxClientResult::Ok)
+            && (grid.cols, grid.rows) == (cols, rows)
+    };
+    poll_until(client, "deferred viewport geometry", || geometry_is(50, 10)).await;
+    // SAFETY: client and local identity are live on this thread.
+    assert_eq!(
+        unsafe { phux_client_terminal_resize(client, &raw const terminal, 60, 12) },
+        PhuxClientResult::Ok
+    );
+    poll_until(client, "exact terminal geometry", || geometry_is(60, 12)).await;
+    // Reassert the same desired viewport after an exact resize. Desired
+    // equality must not be mistaken for authoritative application.
+    // SAFETY: a live client on this thread.
+    assert_eq!(
+        unsafe { phux_client_viewport_resize(client, 50, 10, true, 500, 200) },
+        PhuxClientResult::Ok
+    );
+    poll_until(client, "reasserted viewport geometry", || {
+        geometry_is(50, 10)
+    })
+    .await;
+    // SAFETY: a live client; geometry frames belong to the connected driver.
+    assert_eq!(unsafe { phux_client_outgoing_count(client) }, 0);
+}
+
 async fn connected_lane() {
     let tmp = TempDir::new().unwrap();
     let socket = tmp.path().join("phux.sock");
@@ -274,6 +306,13 @@ async fn connected_lane() {
     // SAFETY: a live client and readable options.
     let result = unsafe { phux_client_queue_attach(client, &raw const attach) };
     assert_eq!(result, PhuxClientResult::Ok, "queue_attach");
+    // The driver may have written ATTACH, but the owning thread has not
+    // consumed its readiness barrier. The latest viewport must follow it.
+    // SAFETY: a live client on this thread.
+    assert_eq!(
+        unsafe { phux_client_viewport_resize(client, 50, 10, true, 500, 200) },
+        PhuxClientResult::Ok
+    );
 
     // Nothing drains outgoing here: releasing the control guard woke the
     // driver, and the driver writes the frame.
@@ -298,6 +337,17 @@ async fn connected_lane() {
         (unsafe { phux_client_resource_count(client) }) > 0
     })
     .await;
+
+    let mut resource = PhuxResourceInfo::default();
+    // SAFETY: a live client and initialized, writable output.
+    assert_eq!(
+        unsafe { phux_client_resource_get(client, 0, &raw mut resource) },
+        PhuxClientResult::Ok
+    );
+    // This fixture is local; the copied identity has no borrowed host span.
+    assert_eq!(resource.terminal_id.kind, 0);
+    let terminal = resource.terminal_id;
+    check_connected_geometry(client, terminal).await;
 
     assert!(
         WAKES.load(Ordering::Acquire) > 0,

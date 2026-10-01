@@ -23,6 +23,212 @@ fn history_send(id: ResourceId) -> phux_client_core::session::KernelSend {
     }
 }
 
+fn geometry_frames(harness: &mut Harness) -> Vec<FrameKind> {
+    std::mem::take(&mut harness.0.inner.outgoing)
+        .iter()
+        .map(|bytes| FrameKind::decode(bytes).expect("geometry frame decodes").0)
+        .filter(|frame| {
+            matches!(
+                frame,
+                FrameKind::ViewportResize { .. } | FrameKind::ResizeTerminal { .. }
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn viewport_resize_retains_latest_cells_and_pixels_until_attach_ready() {
+    let mut h = Harness::new();
+    // SAFETY: the harness owns the client on this thread.
+    assert_eq!(
+        unsafe { phux_client_viewport_resize(h.ptr(), 90, 25, true, 900, 500) },
+        PhuxClientResult::Ok
+    );
+    assert!(geometry_frames(&mut h).is_empty());
+    test_support::negotiate_with(
+        h.ptr(),
+        test_support::caps(&[]),
+        BootstrapProfile::SynthesizedVtRaw,
+    );
+    test_support::queue_attach(h.ptr(), 1);
+    // A new ATTACH supplies its own initial geometry. Layout changes after
+    // queueing it must not disappear behind that older report.
+    // SAFETY: the harness owns the client on this thread.
+    assert_eq!(
+        unsafe { phux_client_viewport_resize(h.ptr(), 90, 25, true, 900, 500) },
+        PhuxClientResult::Ok
+    );
+    assert!(geometry_frames(&mut h).is_empty());
+    assert_eq!(
+        h.feed(test_support::attached_frame(
+            1,
+            test_support::single_terminal_snapshot(ResourceId::local(1), 40, 12),
+        )),
+        PhuxClientResult::Ok
+    );
+    h.bootstrap(ResourceId::local(1));
+    // SAFETY: the harness owns the client on this thread.
+    assert_eq!(
+        unsafe { phux_client_viewport_resize(h.ptr(), 90, 25, true, 990, 550) },
+        PhuxClientResult::Ok
+    );
+    assert!(geometry_frames(&mut h).is_empty());
+    assert_eq!(
+        h.feed(FrameKind::AttachReady { attach_id: 1 }),
+        PhuxClientResult::Ok
+    );
+    let expected = FrameKind::ViewportResize {
+        viewport: ViewportInfo::new(90, 25).with_pixels(Some(990), Some(550)),
+    };
+    assert_eq!(geometry_frames(&mut h), vec![expected.clone()]);
+    let published = h.0.inner.projection(&ResourceId::local(1)).unwrap();
+    assert_eq!((published.cols, published.rows), (40, 12));
+    // SAFETY: the harness owns the client on this thread.
+    assert_eq!(
+        unsafe { phux_client_viewport_resize(h.ptr(), 90, 25, true, 990, 550) },
+        PhuxClientResult::Ok
+    );
+    assert_eq!(geometry_frames(&mut h), vec![expected]);
+}
+
+#[test]
+fn terminal_resize_maps_readiness_and_invalid_size_without_optimistic_geometry() {
+    let mut h = Harness::negotiated(&[]);
+    let id = ResourceId::local(1);
+    let raw = terminal_id_out(&id);
+    // SAFETY: the harness owns the client and the identity is readable.
+    assert_eq!(
+        unsafe { phux_client_terminal_resize(h.ptr(), &raw const raw, 100, 30) },
+        PhuxClientResult::InvalidState
+    );
+    test_support::queue_attach(h.ptr(), 1);
+    assert_eq!(
+        h.feed(test_support::attached_frame(
+            1,
+            test_support::single_terminal_snapshot(id.clone(), 40, 12),
+        )),
+        PhuxClientResult::Ok
+    );
+    // SAFETY: the harness owns the client and the identity is readable.
+    assert_eq!(
+        unsafe { phux_client_terminal_resize(h.ptr(), &raw const raw, 100, 30) },
+        PhuxClientResult::InvalidState
+    );
+    assert!(geometry_frames(&mut h).is_empty());
+    h.bootstrap(id.clone());
+    assert_eq!(
+        h.feed(FrameKind::AttachReady { attach_id: 1 }),
+        PhuxClientResult::Ok
+    );
+    geometry_frames(&mut h);
+    // SAFETY: the harness owns the client and the identity is readable.
+    unsafe {
+        assert_eq!(
+            phux_client_terminal_resize(h.ptr(), &raw const raw, 0, 30),
+            PhuxClientResult::InvalidArgument
+        );
+        assert_eq!(
+            phux_client_terminal_resize(h.ptr(), &raw const raw, 100, 30),
+            PhuxClientResult::Ok
+        );
+    }
+    assert_eq!(
+        geometry_frames(&mut h),
+        vec![FrameKind::ResizeTerminal {
+            terminal_id: id.clone(),
+            cols: 100,
+            rows: 30
+        }]
+    );
+    let published = h.0.inner.projection(&id).unwrap();
+    assert_eq!((published.cols, published.rows), (40, 12));
+    assert_eq!(h.0.inner.control().viewport(), (80, 24));
+    h.0.inner.control().connection_lost(None);
+    // SAFETY: the harness owns the client and the identity is readable.
+    assert_eq!(
+        unsafe { phux_client_terminal_resize(h.ptr(), &raw const raw, 100, 30) },
+        PhuxClientResult::InvalidState
+    );
+    assert!(geometry_frames(&mut h).is_empty());
+}
+
+#[test]
+fn terminal_resize_waits_for_subscription_confirmation_and_respects_resource_viewer_role() {
+    let mut h = Harness::attached_with(&[ServerFeature::AttachRoles]);
+    let primary = ResourceId::local(9);
+    let raw_primary = terminal_id_out(&primary);
+    assert_eq!(h.attach(1, &primary), PhuxClientResult::Ok);
+    h.bootstrap(primary.clone());
+    geometry_frames(&mut h);
+    // SAFETY: the harness owns the client and the identity is readable.
+    assert_eq!(
+        unsafe { phux_client_terminal_resize(h.ptr(), &raw const raw_primary, 100, 30) },
+        PhuxClientResult::InvalidState
+    );
+    assert!(geometry_frames(&mut h).is_empty());
+    assert_eq!(
+        h.feed(FrameKind::CommandResult {
+            request_id: 1,
+            result: CommandResult::Ok
+        }),
+        PhuxClientResult::Ok
+    );
+    // SAFETY: the harness owns the client and the identity is readable.
+    assert_eq!(
+        unsafe { phux_client_terminal_resize(h.ptr(), &raw const raw_primary, 100, 30) },
+        PhuxClientResult::Ok
+    );
+    assert_eq!(
+        geometry_frames(&mut h),
+        vec![FrameKind::ResizeTerminal {
+            terminal_id: primary.clone(),
+            cols: 100,
+            rows: 30
+        }]
+    );
+    // SAFETY: the harness owns the client on this thread.
+    assert_eq!(
+        unsafe { phux_client_attach_role(h.ptr(), 1) },
+        PhuxClientResult::Ok
+    );
+    let viewer = ResourceId::local(10);
+    let raw_viewer = terminal_id_out(&viewer);
+    assert_eq!(h.attach(2, &viewer), PhuxClientResult::Ok);
+    h.bootstrap(viewer);
+    assert_eq!(
+        h.feed(FrameKind::CommandResult {
+            request_id: 2,
+            result: CommandResult::Ok
+        }),
+        PhuxClientResult::Ok
+    );
+    geometry_frames(&mut h);
+    // SAFETY: the harness owns the client and the identity is readable.
+    unsafe {
+        assert_eq!(
+            phux_client_terminal_resize(h.ptr(), &raw const raw_viewer, 100, 30),
+            PhuxClientResult::InvalidState
+        );
+        assert_eq!(
+            phux_client_viewport_resize(h.ptr(), 100, 30, false, 0, 0),
+            PhuxClientResult::Ok
+        );
+    }
+    assert_eq!(
+        geometry_frames(&mut h),
+        vec![
+            FrameKind::ViewportResize {
+                viewport: ViewportInfo::new(100, 30)
+            },
+            FrameKind::ResizeTerminal {
+                terminal_id: primary,
+                cols: 100,
+                rows: 30
+            },
+        ]
+    );
+}
+
 #[test]
 fn a_bound_spawn_needs_conditional_kill_and_its_reply_carries_the_instance() {
     let mut h = Harness::attached();

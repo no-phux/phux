@@ -714,7 +714,7 @@ pub struct TerminalActor {
     upgrade_rx: mpsc::Receiver<UpgradeHandleRequest>,
     pwd_rx: mpsc::Receiver<PwdRequest>,
     process_rx: mpsc::Receiver<ProcessFacetRequest>,
-    resize_rx: mpsc::Receiver<ResizeRequest>,
+    resize_rx: ResizeReceiver,
     consumer_attach_rx: mpsc::Receiver<ConsumerAttachRequest>,
     consumer_detach_rx: mpsc::Receiver<ConsumerDetachRequest>,
     /// Per-consumer `FRAME_ACK` channel.
@@ -798,6 +798,9 @@ pub struct TerminalActor {
     /// Cell size in pixels for winsize and XTWINOPS; never zero. Updated by
     /// resizes that carry pixel metrics, kept by those that do not.
     cell_px: (u16, u16),
+    /// An ioctl failure must remain retryable even when the grid already
+    /// has the requested geometry.
+    pty_resize_pending: bool,
     /// Geometry shared with libghostty's `on_size` callback, which answers
     /// XTWINOPS queries inside `vt_write`.
     size_report: Rc<Cell<SizeReportSize>>,

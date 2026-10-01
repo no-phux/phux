@@ -568,21 +568,11 @@ fn every_named(s: &ServerState, verbs: Verbs, request: Request<'_>) -> Vec<Need>
         .collect()
 }
 
-/// `VIEWPORT_RESIZE`: every Terminal of the session the connection is
-/// attached to, each one checked, none skipped. Zero targets is a no-op.
+/// `VIEWPORT_RESIZE`: check exactly the subscribed session panes targeted by
+/// geometry dispatch. Foreign resource subscriptions are not viewport targets.
 fn attached_terminals(s: &ServerState, client: ClientId, verbs: Verbs) -> Vec<Need> {
-    let Some(session) = s.attached().get(&client).map(|attached| attached.session) else {
-        return Vec::new();
-    };
-    let registry = s.registry();
-    let windows = registry
-        .session(session)
-        .map(|session| session.windows.clone())
-        .unwrap_or_default();
-    windows
-        .iter()
-        .filter_map(|window| registry.window(*window))
-        .flat_map(|window| window.slots.iter().copied())
+    s.viewport_terminals(client)
+        .into_iter()
         .map(|core| Need::new(verbs, Point::Terminal(local_point(s, core))))
         .collect()
 }

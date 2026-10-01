@@ -1680,7 +1680,6 @@ mod tests {
     // Used only by the tests below — scoped here rather than at module level
     // so the lib's import set stays clean under `-D warnings`.
     use crate::state::ClientId;
-    use crate::terminal_actor::ResizeRequest;
     use phux_protocol::caps::ClientCapabilities;
     use phux_protocol::wire::frame::{AttachTarget, ViewportInfo};
     use tokio::task::JoinSet;
@@ -2120,7 +2119,7 @@ mod tests {
     /// sends succeed, and tests read the ones they observe.
     struct StubRx {
         snapshot: tokio::sync::mpsc::Receiver<crate::terminal_actor::SnapshotRequest>,
-        resize: tokio::sync::mpsc::Receiver<ResizeRequest>,
+        resize: crate::terminal_actor::ResizeReceiver,
         encoded_input: tokio::sync::mpsc::Receiver<crate::terminal_actor::EncodedInputRequest>,
         consumer_attach: tokio::sync::mpsc::Receiver<crate::terminal_actor::ConsumerAttachRequest>,
         consumer_detach: tokio::sync::mpsc::Receiver<crate::terminal_actor::ConsumerDetachRequest>,
@@ -2148,7 +2147,7 @@ mod tests {
         let (consumer_ack, rx) = channel(8);
         keep.push(Box::new(rx));
         let (snapshot, snapshot_rx) = channel(8);
-        let (resize, resize_rx) = channel(8);
+        let (resize, resize_rx) = crate::terminal_actor::ResizeSender::channel(8);
         let (encoded_input, encoded_rx) = channel(8);
         let (consumer_attach, attach_rx) = channel(8);
         let (consumer_detach, detach_rx) = channel(8);
@@ -2353,6 +2352,140 @@ mod tests {
         assert_eq!(
             state.with(|s| s.attached().get(&client_id).map(|c| c.session)),
             Some(sid)
+        );
+    }
+
+    #[test]
+    fn viewport_resize_fans_out_only_to_live_subscribed_session_panes() {
+        let state = SharedState::new();
+        let (_, window, active) = state.with_mut(|s| s.seed_session("home"));
+        let inactive = state.with_mut(|s| s.registry_mut().new_terminal(window).unwrap());
+        let retained = state.with_mut(|s| s.registry_mut().new_terminal(window).unwrap());
+        let (_, _, foreign) = state.with_mut(|s| s.seed_session("foreign"));
+        let unsubscribed = state.with_mut(|s| s.registry_mut().new_terminal(window).unwrap());
+        let mut receivers: Vec<_> = [active, inactive, retained, foreign, unsubscribed]
+            .into_iter()
+            .map(|pane| register_stub(&state, pane))
+            .collect();
+        let client = attach_client(&state, "home");
+        state.with_mut(|s| {
+            s.subscribe_terminal(client, foreign, None);
+            s.unsubscribe_terminal(client, unsubscribed);
+            s.restore_retained_exit(retained, phux_protocol::wire::info::ExitFacet::new(1, 1000));
+        });
+        let foreign_wire = state.with_mut(|s| s.intern_terminal_wire(foreign));
+        handle_terminal_resize(&state, client, &foreign_wire, 137, 57);
+        receivers[3]
+            .resize
+            .try_recv()
+            .expect("foreign exact geometry");
+        for cols in 1..=512 {
+            handle_viewport_resize(&state, client, &ViewportInfo::new(cols, 53));
+        }
+        for index in [0, 1] {
+            let request = receivers[index].resize.try_recv().expect("final geometry");
+            assert_eq!((request.cols, request.rows), (512, 53));
+        }
+        for index in [2, 3, 4] {
+            assert!(receivers[index].resize.try_recv().is_err());
+        }
+        assert_eq!(
+            state.with(|s| s.registry().terminal(retained).unwrap().dims),
+            (80, 24)
+        );
+        assert_eq!(
+            state.with(|s| s.registry().terminal(unsubscribed).unwrap().dims),
+            (80, 24)
+        );
+        assert_eq!(
+            state.with(|s| s.registry().terminal(foreign).unwrap().dims),
+            (137, 57)
+        );
+        state.with_mut(|s| s.detach(client));
+        assert!(
+            receivers[3].resize.try_recv().is_err(),
+            "detach cannot reflow a foreign resource subscription"
+        );
+        assert!(
+            receivers[4].resize.try_recv().is_err(),
+            "detach cannot reflow an unsubscribed session pane"
+        );
+        assert_eq!(
+            state.with(|s| s.registry().terminal(foreign).unwrap().dims),
+            (137, 57)
+        );
+        assert_eq!(
+            state.with(|s| s.registry().terminal(retained).unwrap().dims),
+            (80, 24)
+        );
+    }
+
+    #[test]
+    fn viewport_resize_preserves_policy_and_zero_vote_protection() {
+        use phux_config::WindowSize;
+        let state = SharedState::new();
+        let (_, _, pane) = state.with_mut(|s| s.seed_session("home"));
+        let mut receiver = register_stub(&state, pane);
+        let small = attach_client(&state, "home");
+        let large = attach_client(&state, "home");
+        state.with_mut(|s| s.set_client_viewport(small, ViewportInfo::new(70, 20)));
+        for (policy, expected) in [
+            (WindowSize::Smallest, (70, 20)),
+            (WindowSize::Largest, (140, 50)),
+            (WindowSize::Latest, (140, 50)),
+        ] {
+            state.with_mut(|s| s.set_window_size(policy));
+            handle_viewport_resize(&state, large, &ViewportInfo::new(140, 50));
+            let request = receiver.resize.try_recv().expect("policy geometry");
+            assert_eq!((request.cols, request.rows), expected);
+        }
+        let wire = state.with_mut(|s| s.intern_terminal_wire(pane));
+        handle_terminal_resize(&state, large, &wire, 99, 33);
+        receiver.resize.try_recv().expect("exact resize");
+        state.with_mut(|s| s.set_window_size(WindowSize::Smallest));
+        handle_viewport_resize(&state, large, &ViewportInfo::new(0, 50));
+        assert!(
+            receiver.resize.try_recv().is_err(),
+            "zero report cannot resize from another vote"
+        );
+        assert_eq!(
+            state.with(|s| s.registry().terminal(pane).unwrap().dims),
+            (99, 33)
+        );
+        state.with_mut(|s| s.set_window_size(WindowSize::Manual));
+        handle_viewport_resize(&state, large, &ViewportInfo::new(200, 60));
+        assert!(receiver.resize.try_recv().is_err());
+        assert_eq!(
+            state.with(|s| s.registry().terminal(pane).unwrap().dims),
+            (99, 33)
+        );
+    }
+
+    #[test]
+    fn closed_resize_delivery_never_advances_registry_geometry() {
+        let state = SharedState::new();
+        let (_, _, pane) = state.with_mut(|s| s.seed_session("home"));
+        drop(register_stub(&state, pane));
+        let client = attach_client(&state, "home");
+        let target = state.with_mut(|s| crate::state::AttachSnapshotPane {
+            terminal_id: pane,
+            handle: s.resource_handle(pane).unwrap().clone(),
+            wire_terminal_id: s.intern_terminal_wire(pane),
+        });
+        handle_viewport_resize(&state, client, &ViewportInfo::new(140, 50));
+        assert_eq!(
+            state.with(|s| s.registry().terminal(pane).unwrap().dims),
+            (80, 24)
+        );
+        handle_terminal_resize(&state, client, &target.wire_terminal_id, 99, 33);
+        assert_eq!(
+            state.with(|s| s.registry().terminal(pane).unwrap().dims),
+            (80, 24)
+        );
+        attach::apply_attach_viewport(&state, client, &[target], ViewportInfo::new(100, 40));
+        assert_eq!(
+            state.with(|s| s.registry().terminal(pane).unwrap().dims),
+            (80, 24)
         );
     }
 

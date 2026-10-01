@@ -150,8 +150,8 @@ pub fn frontViewport(model: *const Model) ?contract.Viewport {
     if (size.width <= 0 or size.height <= 0) return null;
     const content = projection.workspaceChromeIn(model, workspace, size).content;
     if (content.width <= 0 or content.height <= 0) return null;
-    // The cell a remote pane is sized with (workspace_projection's own
-    // estimate for panes no local session has measured).
+    // ATTACH needs a provisional grid before this remote pane can paint.
+    // The viewport pump replaces it with the painter's actual measurement.
     const metrics = projection.terminalCellMetricsFor(projection.terminalTokens(model));
     if (metrics.width <= 0 or metrics.height <= 0) return null;
     const cells = grid.Session.clampGrid(

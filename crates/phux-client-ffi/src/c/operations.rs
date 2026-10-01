@@ -292,7 +292,7 @@ impl Operations {
         true
     }
 
-    fn subscription_pending(&self, id: &ResourceId) -> bool {
+    pub(crate) fn subscription_pending(&self, id: &ResourceId) -> bool {
         self.pending
             .values()
             .any(|pending| matches!(pending, Pending::Attach(target) | Pending::Detach(target) if target == id))
@@ -881,7 +881,7 @@ fn queue_terminal_attach(
             role_policy,
         },
     })?;
-    if !client.control().admit_external_attach(&id) {
+    if !client.control().admit_external_attach(&id, role_policy) {
         return Err(BridgeError::state(
             "terminal admission changed while queueing",
         ));

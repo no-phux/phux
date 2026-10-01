@@ -359,6 +359,7 @@ enum Pending {
 #[derive(Debug)]
 pub struct ControlPlane {
     options: ControlOptions,
+    viewport: geometry::ViewportIntent,
     /// Bumped by every `connection_opened`. A consumer that fences
     /// per-connection state on its own client's identity uses this instead
     /// once the runtime owns the reconnect.
@@ -398,6 +399,8 @@ pub struct ControlPlane {
     terminal_attached: HashSet<ResourceId>,
     /// Opt-in subscription intent retained across transport reconnects.
     preserve_terminal_geometry: HashSet<ResourceId>,
+    /// Roles declared by manual per-terminal attaches, overriding the session role.
+    terminal_roles: HashMap<ResourceId, RolePolicy>,
     /// Resources bootstrapped on this connection, excluding retained old frames.
     geometry_bootstrapped: HashSet<ResourceId>,
     /// Terminals whose replacement snapshot is requested but not published.
@@ -428,6 +431,10 @@ impl ControlPlane {
         let offered_caps = options.client_caps();
         Self {
             attach_target: options.attach.clone(),
+            viewport: geometry::ViewportIntent {
+                desired: ViewportInfo::new(options.viewport.0, options.viewport.1),
+                pending: false,
+            },
             options,
             offered_caps,
             connection_epoch: 0,
@@ -453,6 +460,7 @@ impl ControlPlane {
             selected_session: None,
             terminal_attached: HashSet::new(),
             preserve_terminal_geometry: HashSet::new(),
+            terminal_roles: HashMap::new(),
             geometry_bootstrapped: HashSet::new(),
             stream_recoveries: HashSet::new(),
             own_spawns: HashSet::new(),
@@ -626,16 +634,16 @@ impl ControlPlane {
             .map_err(|error| EngineError::Engine(error.to_string()))
     }
 
-    /// The current viewport.
+    /// The desired viewport in cells, not the server's applied geometry.
     #[must_use]
     pub const fn viewport(&self) -> (u16, u16) {
-        self.options.viewport
+        (self.viewport.desired.cols, self.viewport.desired.rows)
     }
 
     /// Whether this connection's viewport takes part in window-size policy.
     #[must_use]
     pub const fn votes_on_geometry(&self) -> bool {
-        self.options.viewport.0 != 0 && self.options.viewport.1 != 0
+        self.viewport.desired.cols != 0 && self.viewport.desired.rows != 0
     }
 
     /// The payload limits inbound frames must be decoded under.
@@ -692,11 +700,17 @@ impl ControlPlane {
                 .is_none_or(|engine| !engine.is_closed(terminal_id))
     }
 
-    /// Reserve a per-terminal pump queued by a manual binding.
-    pub fn admit_external_attach(&mut self, terminal_id: &ResourceId) -> bool {
+    /// Reserve a per-terminal pump queued by a manual binding with its role.
+    pub fn admit_external_attach(
+        &mut self,
+        terminal_id: &ResourceId,
+        role_policy: Option<RolePolicy>,
+    ) -> bool {
         if self.terminal_is_admitted(terminal_id) {
             return false;
         }
+        self.terminal_roles
+            .insert(terminal_id.clone(), role_policy.unwrap_or_default());
         self.terminal_attached.insert(terminal_id.clone())
     }
 
@@ -712,6 +726,7 @@ impl ControlPlane {
     /// inventory and the engine owner.
     pub fn release_terminal(&mut self, terminal_id: &ResourceId) -> bool {
         self.preserve_terminal_geometry.remove(terminal_id);
+        self.terminal_roles.remove(terminal_id);
         self.geometry_bootstrapped.remove(terminal_id);
         let known = self.attach_terminals.remove(terminal_id)
             | self.terminal_attached.remove(terminal_id)
@@ -743,6 +758,7 @@ impl ControlPlane {
         // state would be a protocol error.
         let _ = self.take_inbound();
         self.terminal_attached.clear();
+        self.terminal_roles.clear();
         self.stream_recoveries.clear();
         self.own_spawns.clear();
         self.handshake_ready = false;
@@ -807,6 +823,7 @@ impl ControlPlane {
         self.attached_session = None;
         self.selected_session = None;
         self.terminal_attached.clear();
+        self.terminal_roles.clear();
         self.agent_streams.clear();
         self.preserve_terminal_geometry.clear();
         self.geometry_bootstrapped.clear();

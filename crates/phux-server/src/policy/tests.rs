@@ -1678,7 +1678,7 @@ fn an_expired_grant_admits_nothing() {
 }
 
 #[test]
-fn viewport_resize_checks_every_pane_including_unnamed_ones() {
+fn viewport_resize_checks_every_subscribed_session_pane_including_unnamed_ones() {
     let mut world = world();
     let resize = FrameKind::ViewportResize {
         viewport: ViewportInfo::new(80, 24),
@@ -1689,16 +1689,41 @@ fn viewport_resize_checks_every_pane_including_unnamed_ones() {
         "the only pane is granted"
     );
     // A second pane no client has a wire id for yet.
-    world
+    let pane = world
         .state
         .add_pane_to_terminal_owner(&world.alpha)
         .expect("a pane beside alpha");
+    assert!(
+        admits(&world, &one_pane, &resize),
+        "an unsubscribed pane is not a viewport target"
+    );
+    world.state.subscribe_terminal(CLIENT, pane, None);
     assert!(
         !admits(&world, &one_pane, &resize),
         "an unnamed pane in the session is checked, not skipped"
     );
     let group = scoped(&[&format!("bind@group:{}", world.alpha_group)]);
     assert!(admits(&world, &group, &resize), "the Group contains it");
+}
+
+#[test]
+fn viewport_resize_does_not_require_scope_for_foreign_resource_subscriptions() {
+    let mut world = world();
+    let resize = FrameKind::ViewportResize {
+        viewport: ViewportInfo::new(100, 30),
+    };
+    let home = scoped(&[&format!("bind@group:{}", world.alpha_group)]);
+    let foreign = world.state.terminal_from_wire(&world.beta).unwrap();
+    world.state.subscribe_terminal(CLIENT, foreign, None);
+    assert!(
+        admits(&world, &home, &resize),
+        "a home-session vote cannot resize a foreign resource subscription"
+    );
+    let foreign_only = scoped(&[&format!("bind@terminal:{}", local_id(&world.beta))]);
+    assert!(
+        !admits(&world, &foreign_only, &resize),
+        "the actual home-session targets still require authorization"
+    );
 }
 
 #[test]

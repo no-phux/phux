@@ -3779,10 +3779,7 @@ pub const Engine = struct {
             interaction.resize(self.model, fx, proposal.terminal, viewport);
             return;
         };
-        const remote = self.model.phuxForOwner(owner) orelse return;
-        if (!self.model.ownerIsCurrent(owner)) return;
-        if (remote.lastViewport(proposal.terminal)) |last| if (last.eql(viewport)) return;
-        remote.viewportResize(proposal.terminal, viewport) catch {};
+        interaction.resizeRemote(self.model, owner, viewport);
     }
 
     /// Paint the main window's grids beneath the markup chrome: the shipping

@@ -648,6 +648,8 @@ mod tests {
 
         let mut s = ServerState::new();
         let (_sid, _wid, pid) = s.seed_session("default");
+        let bundle = crate::terminal_actor::TerminalActor::new(80, 24).unwrap();
+        s.register_resource_handle(pid, bundle.handle.clone(), bundle.token.clone());
         let big = s.new_client_id();
         let tiny = s.new_client_id();
         s.attach_default_caps(big, "default", mk_tx()).unwrap();
@@ -702,6 +704,8 @@ mod tests {
 
         let mut s = ServerState::new();
         let (_sid, _wid, pid) = s.seed_session("default");
+        let bundle = crate::terminal_actor::TerminalActor::new(80, 24).unwrap();
+        s.register_resource_handle(pid, bundle.handle.clone(), bundle.token.clone());
         let recent = s.new_client_id();
         let departing = s.new_client_id();
         s.attach_default_caps(recent, "default", mk_tx()).unwrap();

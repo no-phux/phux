@@ -285,6 +285,12 @@ impl TerminalActor {
                 Some(input) = self.input_rx.recv(), if !bootstrap_pending =>
                     self.service_input_batch(&input),
 
+                // Apply admitted geometry before a bootstrap/screen capture
+                // or another PTY turn; output pressure cannot starve the
+                // final size. In-flight native cuts still finish first.
+                Some(req) = self.resize_rx.recv(), if !bootstrap_pending =>
+                    self.service_resize_request(req, &mut state.resync, resync_deadline.as_mut()),
+
                 () = std::future::ready(()), if pump == BootstrapPump::StepDue =>
                     self.service_cooperative_native_step(&mut state.native_step_due),
 
@@ -311,9 +317,6 @@ impl TerminalActor {
                 Some(req) = self.pwd_rx.recv() => self.reply_pane_cwd(req),
 
                 Some(req) = self.process_rx.recv() => self.reply_process_facet(req),
-
-                Some(req) = self.resize_rx.recv(), if !bootstrap_pending =>
-                    self.service_resize_request(req, &mut state.resync, resync_deadline.as_mut()),
 
                 // Debounced resize resync, once the storm settles.
                 () = &mut resync_deadline, if state.resync.may_fire(bootstrap_pending) =>

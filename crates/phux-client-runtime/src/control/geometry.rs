@@ -2,7 +2,16 @@
 
 use phux_protocol::wire::frame::TerminalRole;
 
-use super::{ControlPlane, EngineEvent, EngineOutcome, FrameKind, ResourceId};
+use super::{
+    ControlPlane, EngineEvent, EngineOutcome, FrameKind, ResourceId, Status, ViewportInfo,
+};
+
+/// Desired geometry and whether it still awaits the current attach barrier.
+#[derive(Debug)]
+pub(super) struct ViewportIntent {
+    pub(super) desired: ViewportInfo,
+    pub(super) pending: bool,
+}
 
 /// Local disposition of a targeted geometry request, never a server receipt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,13 +21,68 @@ pub enum TerminalResizeOutcome {
     Queued,
     /// An axis was zero or exceeded the wire's `u16` range. Nothing was sent.
     InvalidSize,
-    /// This client's configured attach role is observe-only. Nothing was sent.
+    /// The terminal's configured attach role is observe-only. Nothing was sent.
     Observer,
     /// No live, confirmed subscription and current ready replica. Nothing was sent.
     NotReady,
 }
 
 impl ControlPlane {
+    /// Submit desired viewport cells, clamping zero axes to one.
+    ///
+    /// The session viewport is a subscriber vote: the server applies its size
+    /// policy across relevant subscribed terminals of the attached session,
+    /// not just its active pane. Ordinary per-terminal subscriptions outside
+    /// that session receive separate exact resizes. Preserving subscriptions
+    /// and viewers skip that exact fanout; a session viewer still casts its
+    /// viewport vote, as specified by L1.
+    ///
+    /// Desired geometry survives reconnect and changes during ATTACH are sent
+    /// after `ATTACH_READY`. An explicit same-size submission reasserts intent;
+    /// queuing is not application, and published grids remain authoritative.
+    pub fn resize_viewport(&mut self, cols: u16, rows: u16) {
+        self.resize_viewport_info(ViewportInfo::new(cols, rows));
+    }
+
+    /// Submit desired viewport cells and optional coherent pixel dimensions.
+    /// Has the same lifecycle and authority semantics as [`Self::resize_viewport`].
+    pub fn resize_viewport_info(&mut self, mut viewport: ViewportInfo) {
+        viewport.cols = viewport.cols.max(1);
+        viewport.rows = viewport.rows.max(1);
+        self.viewport.desired = viewport;
+        self.viewport.pending = true;
+        self.publish_viewport();
+    }
+
+    pub(super) fn publish_viewport(&mut self) {
+        if !self.viewport.pending
+            || !self.handshake_ready
+            || self.status.is_terminal()
+            || (self.active_attach_id.is_some() && self.status != Status::Attached)
+        {
+            return;
+        }
+        self.viewport.pending = false;
+        if self.attached_session.is_some() {
+            self.queue_frame(&FrameKind::ViewportResize {
+                viewport: self.viewport.desired,
+            });
+        }
+        let foreign: Vec<_> = self
+            .terminal_attached
+            .iter()
+            .filter(|id| self.follows_global_geometry(id))
+            .cloned()
+            .collect();
+        for terminal_id in foreign {
+            self.queue_frame(&FrameKind::ResizeTerminal {
+                terminal_id,
+                cols: self.viewport.desired.cols,
+                rows: self.viewport.desired.rows,
+            });
+        }
+    }
+
     /// Request exact cell dimensions for one subscribed terminal.
     ///
     /// Does not change the global viewport, resize another resource, or update
@@ -42,7 +106,7 @@ impl ControlPlane {
         if cols == 0 || rows == 0 {
             return TerminalResizeOutcome::InvalidSize;
         }
-        if self.geometry_observer() {
+        if self.geometry_observer(terminal_id) {
             return TerminalResizeOutcome::Observer;
         }
         if !self.geometry_ready(terminal_id) {
@@ -68,12 +132,19 @@ impl ControlPlane {
                 .is_some_and(|engine| engine.input_ready(terminal_id))
     }
 
-    pub(super) fn geometry_observer(&self) -> bool {
-        self.options.attach_role.unwrap_or_default().role == TerminalRole::Viewer
+    fn geometry_observer(&self, terminal_id: &ResourceId) -> bool {
+        self.terminal_roles
+            .get(terminal_id)
+            .copied()
+            .or(self.options.attach_role)
+            .unwrap_or_default()
+            .role
+            == TerminalRole::Viewer
     }
 
     pub(super) fn follows_global_geometry(&self, terminal_id: &ResourceId) -> bool {
-        !self.geometry_observer() && !self.preserve_terminal_geometry.contains(terminal_id)
+        !self.geometry_observer(terminal_id)
+            && !self.preserve_terminal_geometry.contains(terminal_id)
     }
 
     /// Subscribe without requesting a resize or joining global viewport fanout.
