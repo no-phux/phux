@@ -153,22 +153,29 @@ export function Pane(props: PaneProps): JSX.Element {
           backgroundColor: props.theme.background,
         }}
       >
-        <phux-terminal
-          clientHandle={props.clientHandle}
-          terminalId={props.placement.terminalId}
-          viewId={props.placement.viewId}
-          paintRevision={props.revision}
-          focused={props.inputFocused}
-          sizeOwner={props.sizeOwner}
-          optionAsAlt={props.optionAsAlt}
-          appChords={props.appChords}
-          hostAction={props.hostAction}
-          font={props.font}
-          theme={props.theme}
-          onClick={() => props.focus()}
-          onFileDrop={(event) => props.drop(event.paths ?? [])}
-          style={{ flexGrow: 1, minWidth: 0, minHeight: 0 }}
-        />
+        <Show when={!props.placement.viewId}>
+          <Label color={colors().muted}>Waiting for terminal…</Label>
+        </Show>
+        <Show when={props.placement.viewId}>
+          {(viewId: Accessor<string>): JSX.Element => (
+            <phux-terminal
+              clientHandle={props.clientHandle}
+              terminalId={props.placement.terminalId}
+              viewId={viewId()}
+              paintRevision={props.revision}
+              focused={props.inputFocused}
+              sizeOwner={props.sizeOwner}
+              optionAsAlt={props.optionAsAlt}
+              appChords={props.appChords}
+              hostAction={props.hostAction}
+              font={props.font}
+              theme={props.theme}
+              onClick={() => props.focus()}
+              onFileDrop={(event) => props.drop(event.paths ?? [])}
+              style={{ flexGrow: 1, minWidth: 0, minHeight: 0 }}
+            />
+          )}
+        </Show>
         <Show when={props.dim > 0}>
           <div
             style={{

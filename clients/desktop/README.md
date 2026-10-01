@@ -24,6 +24,19 @@ server other than the one this checkout just ensured. `PHUX_PROFILE=<name>`
 isolates the whole instance; `PHUX_DESKTOP_BACKGROUND=1` opens the window
 behind the active app.
 
+For a disposable demo that cannot reuse the installed server:
+
+```sh
+just desktop-demo
+```
+
+This builds the CLI and native addon from this checkout, then owns a private
+foreground server and app. Each run gets a temporary socket, HOME, and XDG
+directories; inherited Phux listener/auth settings are cleared. Closing the
+app or interrupting the supervisor reaps both children and removes that state.
+The demo refuses installed or external artifacts and does not restart a lost
+server behind the supervisor.
+
 ## Using it
 
 The window is a sidebar (agents by urgency, then every session and its panes),
@@ -98,6 +111,11 @@ path as one shell-quoted word and presses nothing else, and only into the pane
 it opened on. **Terminate Terminal Process** (palette only) is the
 one action that ends a process. Layout and display preferences persist per
 server incarnation under `$XDG_STATE_HOME/phux-desktop/`.
+Unavailable saved panes retain their split positions until they can attach;
+closing one explicitly removes it. Replacing the daemon retires its old view
+handles rather than rebinding their numeric terminal IDs. Unsupported or
+damaged layout files are preserved without automatic writes, with a notice in
+the window. Back up and remove the affected layout file to start a fresh one.
 
 ## Native framework verification
 
@@ -111,10 +129,10 @@ just desktop-check
 just desktop-framework-check
 ```
 
-The framework check compares generated native declarations and Solid artifacts
-against the installed packages, builds a production JSX bundle, and drives its
-real native window through click and text-input events. It uses the matched
-source-built addon, a background-focus window and bounded process cleanup.
+The framework check builds the checksum-verified patched source addon and a
+production JSX bundle, then drives its real native window through click and
+text-input events. It uses a background-focus window and bounded process
+cleanup; patched declarations are not compared to the unpatched npm package.
 The GPU capture is `dist/framework/window.png` under this package.
 This fixture verifies the framework, not a working phux terminal application.
 The required CI workflow gate runs `desktop-install` and `desktop-check` on

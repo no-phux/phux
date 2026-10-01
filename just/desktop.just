@@ -17,6 +17,7 @@ desktop-install:
 [doc('Check native TS7, Oxc, Solid rules and source-pin guards (not native app acceptance)')]
 desktop-check:
     cd clients/desktop && bun run check:tooling
+    cd clients/desktop && bun test tests/desktop-demo.test.ts
     python3 clients/desktop/scripts/test-bootstrap-source.py
     python3 scripts/check-desktop-host-lock.py
     python3 scripts/test-check-desktop-host-lock.py
@@ -47,10 +48,14 @@ desktop-app: desktop-install desktop-native-build desktop-cli
     cd clients/desktop && PHUX_BIN="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/debug/phux" PHUX_DESKTOP_ADDON="$PWD/.cache/host/phux-desktop-native.darwin-arm64.node" bun scripts/launch-desktop.ts
 
 [group('desktop')]
+[doc('Opt-in desktop demo with a checkout-built CLI/addon and disposable private server')]
+desktop-demo: desktop-install desktop-native-build desktop-cli
+    cd clients/desktop && bun scripts/desktop-demo.ts
+
+[group('desktop')]
 [doc('Build and drive a production Solid framework window using the source-built addon')]
-desktop-framework-check:
-    cmp clients/desktop/toolchain/gpuix/packages/native/index.d.ts clients/desktop/node_modules/@gpuix/native/index.d.ts
-    diff -qr clients/desktop/toolchain/gpuix/packages/solid/dist clients/desktop/node_modules/@gpuix/solid/dist
+desktop-framework-check: desktop-source-build
+    # The bundle verifies and uses patched source, not the unpatched npm artifacts.
     cd clients/desktop && bun scripts/check-framework.ts
 
 [group('desktop')]

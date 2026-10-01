@@ -60,7 +60,7 @@ export const SIDEBAR_MIN = 180;
 export const SIDEBAR_MAX = 440;
 
 export type SavedNode =
-  | { kind: "leaf"; terminalId: string }
+  | { kind: "leaf"; terminalId: string; id?: string }
   | { kind: "split"; axis: Axis; ratio: number; first: SavedNode; second: SavedNode };
 
 export interface SavedTab {
@@ -68,6 +68,8 @@ export interface SavedTab {
   title?: string;
   root: SavedNode;
   focusedTerminal: string;
+  /** Optional for older v2 snapshots that only recorded terminal focus. */
+  focusedId?: string;
 }
 
 export interface SavedLayout {
@@ -76,6 +78,24 @@ export interface SavedLayout {
   activeTab?: string;
   tabs: SavedTab[];
   display: DisplayPrefs;
+}
+
+/** Refuse automatic replacement of data this version cannot read losslessly. */
+export function loadLayoutStore(store: { read(): unknown; write(layout: unknown): void }): {
+  initial: SavedLayout | undefined;
+  blocked: boolean;
+  write(layout: SavedLayout): void;
+} {
+  const raw = store.read();
+  const initial = parseLayout(raw);
+  const blocked = raw !== undefined && initial === undefined;
+  return {
+    initial,
+    blocked,
+    write: (layout) => {
+      if (!blocked) store.write(layout);
+    },
+  };
 }
 
 export function saveLayout(
@@ -94,6 +114,7 @@ export function saveLayout(
         id: tab.id,
         root: saveNode(tab.root),
         focusedTerminal: focused?.terminalId ?? "",
+        focusedId: tab.focusedId,
       };
       if (tab.title) saved.title = tab.title;
       return saved;
@@ -104,7 +125,8 @@ export function saveLayout(
 }
 
 function saveNode(node: LayoutNode): SavedNode {
-  if (node.kind === "leaf") return { kind: "leaf", terminalId: node.placement.terminalId };
+  if (node.kind === "leaf")
+    return { kind: "leaf", id: node.placement.id, terminalId: node.placement.terminalId };
   return {
     kind: "split",
     axis: node.axis,
@@ -125,7 +147,7 @@ export function parseLayout(value: unknown): SavedLayout | undefined {
       : value.version === 1
         ? value.tabs.flatMap(migrateTab)
         : undefined;
-  if (!tabs) return undefined;
+  if (!tabs || tabs.length !== value.tabs.length || !uniqueIdentities(tabs)) return undefined;
   const layout: SavedLayout = {
     version: 2,
     serverId: value.serverId,
@@ -136,8 +158,22 @@ export function parseLayout(value: unknown): SavedLayout | undefined {
   return layout;
 }
 
+function savedIds(node: SavedNode): string[] {
+  if (node.kind === "leaf") return node.id === undefined ? [] : [node.id];
+  return [...savedIds(node.first), ...savedIds(node.second)];
+}
+
+function uniqueIdentities(tabs: SavedTab[]): boolean {
+  const tabIds = tabs.map((tab) => tab.id);
+  const placementIds = tabs.flatMap((tab) => savedIds(tab.root));
+  return (
+    new Set(tabIds).size === tabIds.length && new Set(placementIds).size === placementIds.length
+  );
+}
+
 function parseTab(value: unknown): SavedTab[] {
-  if (!isRecord(value) || typeof value.id !== "string") return [];
+  if (!isRecord(value) || !isIdentity(value.id)) return [];
+  if (value.focusedId !== undefined && typeof value.focusedId !== "string") return [];
   const root = parseNode(value.root, 0);
   if (!root) return [];
   const tab: SavedTab = {
@@ -146,6 +182,7 @@ function parseTab(value: unknown): SavedTab[] {
     focusedTerminal: typeof value.focusedTerminal === "string" ? value.focusedTerminal : "",
   };
   if (typeof value.title === "string" && value.title.length > 0) tab.title = value.title;
+  if (typeof value.focusedId === "string") tab.focusedId = value.focusedId;
   return [tab];
 }
 
@@ -153,24 +190,35 @@ const MAX_DEPTH = 16;
 
 function parseNode(value: unknown, depth: number): SavedNode | undefined {
   if (!isRecord(value) || depth > MAX_DEPTH) return undefined;
-  if (value.kind === "leaf") {
-    return typeof value.terminalId === "string"
-      ? { kind: "leaf", terminalId: value.terminalId }
-      : undefined;
-  }
-  if (value.kind !== "split" || (value.axis !== "row" && value.axis !== "column")) return undefined;
+  if (value.kind === "leaf") return parseLeaf(value);
+  return value.kind === "split" ? parseSplit(value, depth) : undefined;
+}
+
+function parseSplit(value: Record<string, unknown>, depth: number): SavedNode | undefined {
+  if (value.axis !== "row" && value.axis !== "column") return undefined;
   const first = parseNode(value.first, depth + 1);
   const second = parseNode(value.second, depth + 1);
-  if (!first || !second) return first ?? second;
-  const ratio = typeof value.ratio === "number" ? value.ratio : 0.5;
+  if (!first || !second) return undefined;
+  const ratio = value.ratio === undefined ? 0.5 : value.ratio;
+  if (typeof ratio !== "number" || !Number.isFinite(ratio) || ratio <= 0 || ratio >= 1)
+    return undefined;
   return { kind: "split", axis: value.axis, ratio, first, second };
 }
 
+function parseLeaf(value: Record<string, unknown>): SavedNode | undefined {
+  if (!isIdentity(value.terminalId)) return undefined;
+  if (value.id !== undefined && !isIdentity(value.id)) return undefined;
+  const node: SavedNode = { kind: "leaf", terminalId: value.terminalId };
+  if (typeof value.id === "string") node.id = value.id;
+  return node;
+}
+
 function migrateTab(value: unknown): SavedTab[] {
-  if (!isRecord(value) || typeof value.id !== "string" || !Array.isArray(value.terminals)) {
+  if (!isRecord(value) || !isIdentity(value.id) || !Array.isArray(value.terminals)) {
     return [];
   }
-  const terminals = value.terminals.filter((item): item is string => typeof item === "string");
+  const terminals = value.terminals.filter(isIdentity);
+  if (terminals.length !== value.terminals.length) return [];
   const root = terminals
     .map((terminalId): SavedNode => ({ kind: "leaf", terminalId }))
     .reduceRight<SavedNode | undefined>(
@@ -194,6 +242,10 @@ function migrateTab(value: unknown): SavedTab[] {
       focusedTerminal: typeof value.focusedTerminal === "string" ? value.focusedTerminal : "",
     },
   ];
+}
+
+function isIdentity(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
 }
 
 export function parseDisplay(value: unknown): DisplayPrefs {
@@ -264,5 +316,5 @@ function clamp(value: number, low: number, high: number): number {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

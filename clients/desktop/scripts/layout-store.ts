@@ -8,9 +8,9 @@ export function fileLayoutStore(path: string) {
         return parseJson(readFileSync(path, "utf8"));
       } catch (error) {
         if (isMissing(error)) return undefined;
-        const damaged = `${path}.damaged`;
-        renameSync(path, damaged);
-        return undefined;
+        // Present but unreadable is not first launch. The consumer refuses
+        // writes for this sentinel, leaving malformed or inaccessible data intact.
+        return null;
       }
     },
     write(layout: unknown): void {
