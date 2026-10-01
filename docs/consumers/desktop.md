@@ -6,11 +6,11 @@ last-reviewed: 2026-09-28
 
 # Desktop
 
-**TL;DR.** The accepted desktop contract is terminal-first: organize work with
-projects, folders, and worktrees; reveal agents where they run; open independent
-views of the same terminal across panes and windows. Closing a view preserves
-execution. Apple-silicon macOS is the first target. This page specifies the
-product; the native desktop is not yet a verified shipping implementation.
+**TL;DR.** This is the accepted desktop product contract, not a verified
+shipping implementation. It specifies terminal work organized by projects,
+folders, and worktrees, agent state shown where agents run, and independent
+views across panes and windows. Closing a view preserves execution.
+Apple-silicon macOS is the first target.
 
 <!-- impl-status: partial; probe: GridFrame -->
 > **Status: partial.** The Solid shell runs daily on Apple silicon: tabs,
@@ -24,12 +24,12 @@ independent same-terminal views; Linux follows, Intel macOS is not required.
 
 ## Start with a terminal
 
-First launch offers a local terminal immediately plus **Open Folder** and
-recent projects; no account, project, or agent is a prerequisite. An existing
-daemon is reused; a startup failure names the failed step and offers a retry,
-and loading never masquerades as an empty inventory. The terminal is the
-primary surface, organized by a project navigator, tabs, splits, a command
-palette, and an optional inspector, all driven by one command surface.
+First launch offers a local terminal, **Open Folder**, and recent projects;
+no account, project, or agent is required. It reuses an existing daemon.
+Startup failures name the failed step and offer a retry; loading must not
+appear as an empty inventory. A project navigator, tabs, splits, command
+palette, and optional inspector organize the terminal through one command
+surface.
 
 ## Projects, folders, and worktrees
 
@@ -122,13 +122,12 @@ fidelity evidence and any explicit unsupported-case disposition.
 
 ## Agents appear where the work is
 
-A terminal stays a terminal when an agent starts; a badge and detail
-affordance appear from emitted state. The inspector shows AgentSession
-children, lifecycle, attention, bounded recent events, questions, and
-server-held approvals, keeping emitted state distinguishable from detector
-fallback and making gaps and stale approvals visible. Notifications are
-deduplicated and navigate without typing; approval buttons appear only with
-server authority.
+An agent's emitted state adds a badge and details to its terminal. The
+inspector shows AgentSession children, lifecycle, attention, bounded recent
+events, questions, and server-held approvals. It distinguishes emitted state
+from detector fallback and exposes gaps and stale approvals. Notifications
+are deduplicated and navigate without typing; approval buttons appear only
+with server authority.
 
 ## Connections, settings, and native behavior
 

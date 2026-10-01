@@ -14,13 +14,9 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
   <AuthReturn slot="head" />
   <section class="wrap hero">
     <div class="hero-copy">
-      <h1>You and your agents share the same terminals.</h1>
-      <p class="lede">
-        Split your workspace. Share a terminal with an agent.
-        Pick it up in another client without starting over.
-        phux keeps the terminals running; your desktop, browser,
-        and tools are views into the same work.
-      </p>
+      <p class="hero-kicker">{SITE.category}</p>
+      <h1>{SITE.tagline}</h1>
+      <p class="lede">{SITE.description}</p>
       <div class="hero-ctas">
         <a class="cta" href="#install">Install</a>
         <a class="cta ghost" href={docsHref("/overview")}>Read the docs</a>
@@ -33,12 +29,11 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
 
   <section class="wrap attention" aria-labelledby="attention-title">
     <div class="attention-copy">
-      <p class="attention-kicker">THE FLEET INBOX</p>
-      <h2 id="attention-title">Never hunt for the stuck one.</h2>
+      <p class="attention-kicker">AGENT ATTENTION</p>
+      <h2 id="attention-title">See what needs input.</h2>
       <p>
-        Agents publish their own work state beside the terminal where it
-        happened. When one needs you, that terminal rises to the inbox with
-        the exact question attached.
+        Integrated agents report progress and questions beside their terminals.
+        Open the terminal that needs a decision.
       </p>
     </div>
     <AgentInboxDemo client:visible />
@@ -48,95 +43,85 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
     <a class="feature" href={docsHref("/concepts")}>
       <span>01</span>
       <div>
-        <h2>Panes are a view.</h2>
+        <h2>Keep processes running</h2>
         <p>
-          The multiplexer chrome is one consumer. Underneath, each terminal
-          is an object with a stable id. Detach, reattach, share it.
+          Shells live in a background server, independent of your interface.
+          Disconnect and reattach without restarting them.
         </p>
       </div>
     </a>
-    <a class="feature" href={docsHref("/consumers")}>
+    <a class="feature" href={docsHref("/consumers/build-a-client")}>
       <span>02</span>
       <div>
-        <h2>Same objects, many consumers.</h2>
+        <h2>Build your own tools</h2>
         <p>
-          CLI, Cockpit, the browser, and agents attach to the same live
-          emulator. Nobody screen-scrapes. Nobody holds a second copy.
+          Create terminals, send input, read output, and wait for events.
+          Use the CLI or MCP adapter, or build a client against the public protocol.
         </p>
       </div>
     </a>
     <a class="feature" href={docsHref("/consumers/agents")}>
       <span>03</span>
       <div>
-        <h2>Co-presence.</h2>
+        <h2>Read agent state</h2>
         <p>
-          An agent reads, acts, and waits against the terminal you are
-          looking at. When it emits, blocked is a fact on the wire, not a
-          scrape of its UI. OpenCode, Pi, and Claude plug into that loop.
+          Supported harnesses publish activity, questions, and completion as
+          structured events. Terminal-based detectors cover additional harnesses.
         </p>
       </div>
     </a>
     <a class="feature" href={docsHref("/wire")}>
       <span>04</span>
       <div>
-        <h2>Bytes stay bytes.</h2>
+        <h2>Render with libghostty</h2>
         <p>
-          The same libghostty engine runs on both ends. Server sends VT;
-          client sends structured input. Nothing in the middle re-parses.
+          Bundled clients receive raw terminal output and render it with
+          libghostty, the same engine the server uses. Input travels as structured events.
         </p>
       </div>
     </a>
     <a class="feature" href={docsHref("/remote-access")}>
       <span>05</span>
       <div>
-        <h2>Your machines. No account.</h2>
+        <h2>Connect your machines</h2>
         <p>
-          Pair once with <code>phux --remote me@mini</code>. After that the
-          dial is encrypted QUIC with no ssh in the path and no phux
-          account in the middle.
+          Connect over SSH or encrypted QUIC. Address remote terminals from
+          the same CLI and API, without a hosted account.
         </p>
       </div>
     </a>
   </section>
 
   <section class="wrap install" id="install">
-    <h2>Install the CLI, or Cockpit on macOS.</h2>
+    <h2>Install</h2>
     <p class="lede">
-      One command, then <code>phux</code>. Cockpit is the native app for the
-      same terminals.
+      Start with the CLI, or use Cockpit for a native macOS interface.
     </p>
     <div class="install-row">
       <div class="install-cmd">
         <span>CLI {release.tag && <em>{release.tag}</em>}</span>
-        <code>{cliInstall}</code>
+        <code tabindex="0">{cliInstall}</code>
         <button type="button" data-copy={cliInstall}>Copy</button>
       </div>
       <div class="install-cmd">
         <span>Cockpit {release.cockpit?.tag && <em>{release.cockpit.tag}</em>}</span>
-        <code>{cockpitInstall}</code>
+        <code tabindex="0">{cockpitInstall}</code>
         <button type="button" data-copy={cockpitInstall}>Copy</button>
       </div>
     </div>
     <p class="install-more">
-      Both scripts verify release checksums. Cockpit needs Apple silicon macOS
-      11+. Homebrew: <code>brew trust --tap no-phux/tap && brew tap no-phux/tap && brew install no-phux/tap/phux</code>.
-      Agents: <code>npx skills add no-phux/skills</code>.
-      To track green <code>main</code>, add{" "}
-      <code>--channel next</code>{" "}
-      (<code>curl -fsSL https://phux.sh/install | sh -s -- --channel next</code>).
-      {" "}
-      <a href={docsHref("/quickstart/install")}>All install methods</a>
+      CLI: macOS arm64 and Linux x86_64 or arm64. Cockpit: Apple silicon,
+      macOS 11+. Both installers verify release checksums.{" "}
+      <a href={docsHref("/quickstart/install")}>Other install methods and channels</a>
+      {" · "}
+      <a href={docsHref("/consumers/getting-started")}>Set up an agent</a>
     </p>
   </section>
 
   <section class="wrap join" id="beta">
     <div class="join-copy">
-      <h2>join the beta</h2>
-      <p>
-        Early-release invites and a short note when something big ships. No
-        spam, unsubscribe is one click, and your email is never sold or
-        shared.
-      </p>
+      <h2>Release updates</h2>
+      <p>Release notes and beta invitations. Unsubscribe at any time.</p>
     </div>
     <form class="join-form" id="join-form">
       <input
@@ -147,12 +132,11 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
         placeholder="you@example.com"
         aria-label="Email address"
       />
-      <button type="submit">notify me</button>
+      <button type="submit">Subscribe</button>
       <p class="join-note" id="join-note">
-        Voluntary — and anonymous visitors are never tracked at all: usage
-        stats are aggregate, and device-level detail exists only for members
-        who explicitly claim their device via a personal link.{" "}
-        <a href="/telemetry">what we measure</a>
+        Site statistics are aggregate. Device-level reporting requires a
+        separate opt-in.{" "}
+        <a href="/telemetry">What we measure</a>
       </p>
     </form>
   </section>
@@ -172,16 +156,17 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
     letter-spacing: -0.01em;
   }
   .join-copy p {
-    color: var(--fg-muted, #565f89);
+    color: var(--color-muted);
     margin: 0;
     max-width: 46ch;
   }
   .join-form {
     display: grid;
-    grid-template-columns: 1fr auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     gap: 10px;
   }
   .join-form input {
+    min-width: 0;
     background: var(--bg, #07080b);
     border: 1px solid var(--line, #232433);
     color: var(--fg, #c0caf5);
@@ -201,7 +186,7 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
   .join-note {
     grid-column: 1 / -1;
     font-size: 12px;
-    color: var(--fg-muted, #565f89);
+    color: var(--color-muted);
     margin: 0;
   }
   .join-note a {
@@ -214,7 +199,7 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
   }
 </style>
 
-<script is:inline define:vars={{ cliInstall, cockpitInstall, releaseTag: release.tag, releaseUrl: release.url }}>
+<script is:inline define:vars={{ cliInstall, cockpitInstall, productName: SITE.name, docsUrl: SITE.docsUrl, releaseTag: release.tag, releaseUrl: release.url }}>
   document.querySelectorAll("[data-copy]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const value = btn.getAttribute("data-copy");
@@ -250,11 +235,11 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
         });
         const result = await response.json();
         note.textContent = result.ok
-          ? "you're on the list — first invite goes out with the next release."
-          : "that didn't work: " + (result.error ?? "try again");
+          ? "You're on the list."
+          : "Could not subscribe: " + (result.error ?? "try again.");
         if (result.ok) form.reset();
       } catch {
-        note.textContent = "network hiccup — try again in a moment.";
+        note.textContent = "Could not connect. Try again.";
       } finally {
         button.disabled = false;
       }
@@ -268,14 +253,14 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
     if (!modelContext || typeof modelContext.registerTool !== "function") return;
     modelContext.registerTool("get_install_command", {
       description:
-        "Get the one-line installer for the phux CLI, Cockpit (the native GUI), or the agent skills package.",
+        `Get the installer for the ${productName} CLI, Cockpit, or agent skills.`,
       inputSchema: {
         type: "object",
         properties: {
           target: {
             type: "string",
             enum: ["cli", "cockpit", "skills"],
-            description: "Which installer to return. Defaults to the phux CLI.",
+            description: `Which installer to return. Defaults to the ${productName} CLI.`,
           },
         },
       },
@@ -290,7 +275,7 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
     });
     modelContext.registerTool("open_docs", {
       description:
-        "Get the canonical docs.phux.sh URL for a phux docs topic (overview, quickstart, concepts, consumers, remote-access, wire, architecture, decisions).",
+        `Get the canonical documentation URL for a ${productName} topic.`,
       inputSchema: {
         type: "object",
         properties: {
@@ -315,11 +300,11 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
           decisions: "/decisions",
         };
         const path = paths[slug] ?? `/overview?search=${encodeURIComponent(slug)}`;
-        return { url: `https://docs.phux.sh${path}` };
+        return { url: `${docsUrl}${path}` };
       },
     });
     modelContext.registerTool("get_latest_release", {
-      description: "Get the latest phux release tag and URL.",
+      description: `Get the latest ${productName} release tag and URL.`,
       inputSchema: { type: "object", properties: {} },
       execute: () => ({ tag: releaseTag, url: releaseUrl }),
     });
@@ -333,6 +318,13 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
     gap: clamp(32px, 5vw, 64px);
     padding-block: clamp(48px, 8vw, 96px);
     align-items: center;
+  }
+  .hero-kicker {
+    margin: 0 0 16px;
+    color: var(--color-accent);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
   }
   .hero h1 {
     margin: 0 0 20px;

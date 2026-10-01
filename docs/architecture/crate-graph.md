@@ -6,12 +6,11 @@ last-reviewed: 2026-09-30
 
 # Crate dependency graph
 
-**TL;DR.** The crate edges that hold phux together and the boundaries
-they enforce: `phux-core` and `phux-protocol` never depend on each other,
-`phux-protocol` re-exports libghostty atoms directly, and the ratatui
-chrome is fenced into `phux-tui` above a headless `phux-client`. Plus how
-each crate participates in
-the L1/L3 wire layering from ADR-0015 and ADR-0102.
+**TL;DR.** `phux-core` and `phux-protocol` are independent; `IdBridge` joins
+their ID spaces. ratatui stays in `phux-tui`, above the headless client and
+session kernel. Shared dialing and runtime crates keep transport and
+connection policy out of bindings. The graph also maps these boundaries
+onto L1 resources and L3 metadata.
 
 ---
 
@@ -37,7 +36,7 @@ the L1/L3 wire layering from ADR-0015 and ADR-0102.
                         └───────────────────┘      pane (ADR-0013)
 ```
 
-Five crate boundaries carry weight:
+Five boundaries govern dependencies:
 
 1. **`phux-core` and `phux-protocol` do not depend on each other.** Core
    holds the in-process domain (slotmap keys with generational tags,
@@ -130,10 +129,9 @@ and never builds the native binary.
   ADR-0025 originally descoped a shared core for native + web; that call was
   reversed, and the ADR records the correction.
 
-This is the one place `phux-protocol`'s default-features-off shell pays off: the
-web client compiles the codec to wasm without the `server` feature's
-libghostty-vt dependency graph. Full architecture + build steps: [the web
-client consumer doc](../consumers/web.md).
+Without the `server` feature's libghostty-vt dependency, the web client can
+compile the protocol codec to wasm. Build steps and browser architecture:
+[web client](../consumers/web.md).
 
 ## Protocol layering and this implementation
 

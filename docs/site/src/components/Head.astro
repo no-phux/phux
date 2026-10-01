@@ -20,7 +20,8 @@ const path =
   Astro.url.pathname.replace(/\/index\.html$/, "/").replace(/\.html$/, "").replace(/\/+$/, "") ||
   "/";
 const canonical = new URL(path, origin).href;
-const ogImage = new URL("/og.png", SITE.url).href;
+const previewIdentity = encodeURIComponent(`${SITE.name}|${SITE.category}|${SITE.tagline}`);
+const ogImage = new URL(`/og.png?v=${previewIdentity}`, SITE.url).href;
 ---
 
 <meta charset="utf-8" />

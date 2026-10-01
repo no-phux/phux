@@ -3,37 +3,33 @@
 // crawlers and tools that never run JavaScript. Aggregate-only: no IPs, no
 // raw user agents, no cookies. Data: /api/telemetry.
 import BaseLayout from "../layouts/BaseLayout.astro";
+import { SITE } from "../lib/site";
 
-const title = "phux — live agent traffic";
+const title = `${SITE.name} — Site traffic`;
 const description =
-  "Aggregate edge telemetry for phux.sh: who is hitting the domain — browsers, AI crawlers, scanners, tools — and which agent signals they use.";
+  `Aggregate requests to ${SITE.domain}: browsers, crawlers, tools, and documentation formats.`;
 ---
 
 <BaseLayout {title} {description}>
   <section class="wrap">
-    <h1>live agent traffic</h1>
+    <h1>Site traffic</h1>
     <p class="lede">
-      The edge sees every request — including AI crawlers and tools that
-      JavaScript analytics is blind to. These are aggregate counters only:
-      no IPs, no raw user agents, no cookies. Refreshes every 30s.
+      Aggregate requests, including crawlers and tools that do not run JavaScript.
+      No stored IPs or raw user agents. Refreshes every 30 seconds.
     </p>
 
     <section class="card privacy">
-      <h2>what we measure (and what we don't)</h2>
+      <h2>What we measure</h2>
       <p>
-        Anonymous visits are counted as aggregates: rough user-agent class,
-        country, and page/signal counts, with visitor identity reduced to a
-        daily-rotated hash — nothing correlates across days, no cookies are
-        set, and IPs are never stored.
+        Anonymous visits are counted by user-agent class, country, and page.
+        A daily-rotated hash deduplicates visitors within a day, not across days.
+        No cookies are set for these visits, and IPs are never stored.
       </p>
       <p>
-        The one identified dataset is <strong>voluntary</strong>: the
-        <a href="/#beta">join-the-beta</a> email list. Members who want
-        device-level detail (e.g. "my installs, my demo sessions") opt in by
-        clicking a personal claim link from the beta emails, which sets a
-        first-party <code>phux_mid</code> cookie. Nothing else on this site
-        is individually tracked, and the raw event store is private with a
-        90-day retention.
+        The <a href="/#beta">release mailing list</a> is voluntary. Members can
+        separately opt into device-level reporting through a personal claim
+        link, which sets a first-party <code>phux_mid</code> cookie.
+        Identified events are private and retained for 90 days.
       </p>
     </section>
 

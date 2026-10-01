@@ -12,7 +12,7 @@ import { navigate } from "astro:transitions/client";
 import { RootProvider } from "fumadocs-ui/provider/astro";
 import type { AstroProviderProps } from "fumadocs-core/framework/astro";
 import { SidebarProvider, SidebarTrigger, useSidebar } from "fumadocs-ui/layouts/docs/slots/sidebar";
-import { DOCS_NAV } from "../../lib/site";
+import { DOCS_NAV, SITE } from "../../lib/site";
 import SearchDialogComponent from "./search";
 import { CodeControls } from "./CodeControls";
 import { ReaderSidebar, ReaderTheme } from "./ReaderControls";
@@ -61,7 +61,7 @@ export function Docs({
         slots={readerSlots}
         sidebar={{ defaultOpenLevel: 0 }}
         nav={{
-          title: <span>phux <span className="docs-wordmark">docs</span></span>,
+          title: <span>{SITE.name} <span className="docs-wordmark">docs</span></span>,
           url: "/overview",
         }}
         links={DOCS_NAV.map((item) =>

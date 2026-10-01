@@ -6,23 +6,21 @@ last-reviewed: 2026-09-30
 
 # Pi integration
 
-**TL;DR.** `@phux/pi` lets Pi select and operate panes in an external local
-phux server, preserves branch-local targets, and appends bounded fleet-state
-checkpoints and deltas without rewriting Pi's stable prompt prefix. It provides
-twenty-five terminal/control tools, three human commands, identity-only lifecycle
-metadata, and AgentSession emit when the server supports it. It does not embed
-a terminal or own the server.
+**TL;DR.** `@phux/pi` connects Pi to an external local phux server with
+twenty-five terminal/control tools and three human commands. It preserves
+branch-local targets and appends bounded fleet context without changing Pi's
+stable prompt prefix. It writes identity metadata and, on capable servers,
+AgentSession events. It neither embeds a terminal nor owns the server.
 
 ---
 
 ## Requirements and installation
 
-The package requires Node.js 22 or newer, Pi, and an external `phux` executable
-on `PATH`. It does not bundle phux or start a separate implementation. The
-CLI capability is authoritative: this surface uses `paste`, `agent prompt/wait`,
-`resource wait`, `runtime-info`, and current snapshot/wait options. An older
-binary may support only part of it; unsupported verbs fail rather than being
-emulated. Check the installed binary before loading the package:
+The package requires Node.js 22 or newer, Pi, and `phux` on `PATH`; it does
+not bundle phux. The installed CLI must support `paste`, `agent prompt/wait`,
+`resource wait`, `runtime-info`, and current snapshot/wait options. Older
+binaries may support only part of this surface; unsupported verbs fail
+rather than being emulated. Check the installed version before loading:
 
 ```sh
 phux --version
@@ -125,16 +123,15 @@ It registers exactly these three human commands:
 | `/phux-status` | Refresh and report the saved target and its availability. |
 | `/phux-attach` | Print a human attach argv; it never executes the attach. |
 
-The headless phux CLI owns argument syntax, selector rules, JSON, and exit
-codes. Use the [agent CLI guide](./agents.md) for that canonical contract rather
-than treating this adapter as a second CLI definition.
+The [agent CLI guide](./agents.md) owns argument syntax, selector rules,
+JSON, and exit codes.
 
 There is no `take` / `give`: a one-shot CLI connection cannot hold an input
 lease.
 
-Tool output sent to the model is bounded to 200 lines and 12 KiB. CLI stdout
-and stderr capture are independently bounded, every subprocess accepts Pi
-cancellation. Short subprocess calls default to a 10-second local deadline.
+Model-facing output is capped at 200 lines and 12 KiB. CLI stdout and stderr
+capture are independently bounded; every subprocess accepts Pi cancellation.
+Short calls default to a 10-second local deadline.
 `phux_run`, `phux_wait`, `phux_agent_wait`, `phux_resource_wait`, and waiting
 `phux_agent_prompt` calls default to `timeout_seconds:30`; the allowed range is
 1–86400 seconds. Zero, non-finite values, and indefinite waits are rejected.
@@ -187,9 +184,9 @@ Before each new Pi agent run, the extension reads the public agent inventory.
 The first observation is a hidden `phux-context` checkpoint appended after the
 new user message. Later changes append sequenced deltas; an unchanged inventory
 adds no message. The base system prompt, context files, and tool definitions
-therefore remain an exact stable prefix. The model is told that the latest
-sequence supersedes older phux context and that every value is untrusted
-observational data rather than an instruction.
+remain unchanged. Each message tells the model that the latest sequence
+supersedes older phux context and that all values are untrusted observations,
+not instructions.
 
 A checkpoint carries Pi's own inherited Terminal id, the selected target, and
 up to 64 sorted pane records: canonical Terminal/session/window identity,
@@ -264,7 +261,7 @@ AgentSession per pane and emits closed record types from Pi's lifecycle bus:
 `session_start` at bind, `prompt` on `agent_start`, `tool_start` /
 `tool_end` around tool execution, `ask` on a trust prompt or blocking UI
 prompt, `stop` on `agent_settled`, and `session_end` then `session close` on
-shutdown. Working, blocked, and done then come from the stream, not a regex.
+shutdown. The server derives working, blocked, and done from this stream.
 If `phux agent session open` is missing or refused with `unsupported_server`,
 emit fails closed; identity-only writes and the detector still run.
 

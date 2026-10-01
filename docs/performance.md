@@ -21,16 +21,15 @@ CLI-observed command timings are not PTY-byte echo or input-to-pixel latency.
 | **Herdr** | Private Herdr server plus its terminal UI | No GUI timing is inferred from the terminal-client result. |
 | **cmux** | Its native app is **not applicable** to this PTY-client probe. Running its CLI, a bare shell, or its optional tmux owner would measure a different boundary. | Native launch, CLI-observed terminal output, and process-tree RSS were recorded on a separate macOS runner. Input-to-pixel latency remains **unmeasured**. |
 
-**Unmeasured is not slow, unsupported, or zero.** Choose a product using
-[When to use phux](./when-to-use.md); use this page to inspect the cost of a
-specific workflow. A smaller server RSS does not imply a smaller complete app.
+An unmeasured result means neither slow, unsupported, nor zero. A smaller server
+RSS does not imply a smaller complete app. For product selection, see
+[When to use phux](./when-to-use.md).
 
 ## Recorded-load observations: September 30, 2026
 
-**Do not read these as an idle-host baseline.** The machine remained a shared
-development host. Work for this comparison was serialized, but unrelated
-background load was not stopped or controlled. The one-, five-, and
-fifteen-minute load averages at the start of each run were:
+These are not idle-host baselines. Comparison work was serialized, but
+unrelated load on the shared development host was not stopped or controlled.
+The one-, five-, and fifteen-minute load averages at each run's start were:
 
 | Run | Product order | Start (UTC) | Load averages |
 |---|---|---|---|
@@ -94,8 +93,7 @@ stated boundary, not proof of a generally faster product.
 </figure>
 </div>
 
-The same measurements are tabulated below. Both charts retain both runs;
-the change in their ordering is the finding, not a reason to discard a run.
+The table retains both runs, including the reversal in their ordering.
 
 | Measurement | phux | tmux | Herdr |
 |---|---:|---:|---:|
@@ -123,7 +121,7 @@ observed; the echo timing phase did not start. Run 2 succeeded without changing
 the harness. This is an **unresolved readiness failure**, not zero latency, a
 five-second echo sample, or proof that Herdr itself cannot handle the workload.
 
-The honest conclusions are narrower than a leaderboard:
+These runs support only limited conclusions:
 
 - phux's fresh echo median was higher than both peers in run 1 and lower than
   both in run 2. The reversal makes a stable speed ranking indefensible here.
@@ -132,8 +130,8 @@ The honest conclusions are narrower than a leaderboard:
   other products, so this is not memory-per-retained-byte efficiency.
 - phux's server RSS was below Herdr's in both runs; client RSS did not show the
   same consistent advantage. Server-only memory is not total application cost.
-- The broad spread between medians, p99s, and maxima is part of the evidence.
-  It is not removed by reporting only the more flattering run.
+- Medians, p99s, maxima, and inter-run variation all matter; neither run alone
+  represents the observed spread.
 
 ### Download and repeat
 
@@ -177,8 +175,8 @@ and WebSocket; this was not an Internet latency test.
 | Loaded history: PTY-byte key echo, p50 | 174 µs | 12,447 µs |
 | Loaded history: server-only RSS with a client attached | 46 MB | not recorded |
 
-phux's lower echo median did **not** mean it won every workflow: Herdr reattached
-faster with loaded history. The historical phux-only attach observations were
+Herdr reattached faster with loaded history despite phux's lower echo median.
+The historical phux-only attach observations were
 64 ms cold UDS, 60 ms cold QUIC, 70 ms warm UDS, and 1.07 ms from UDS connection to
 the logged `ATTACHED` response. Protocol acknowledgement and usable UI are
 separate milestones; do not compare 1.07 ms with another product's full attach.
@@ -326,10 +324,10 @@ presentation receipt.
 
 ### Four native observation campaigns
 
-**Do not add these numbers to the PTY charts above.** Both the host and the
-measurement boundary differ. All four runners reported Apple M1 (Virtual),
-7 GiB RAM, and arm64. Each campaign completed 20 command probes with zero
-failures. The operating systems and starting load averages were:
+These numbers cannot be added to the PTY charts: the host and measurement
+boundary differ. All four runners reported Apple M1 (Virtual), 7 GiB RAM,
+and arm64. Each campaign completed 20 command probes with zero failures.
+Operating systems and starting load averages:
 
 - **A — macOS 15.7.9:** 9.71 / 11.69 / 8.43.
 - **B — macOS 27.0:** 4.13 / 3.12 / 7.05.

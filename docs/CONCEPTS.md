@@ -6,12 +6,11 @@ last-reviewed: 2026-09-15
 
 # How phux works
 
-**TL;DR.** phux is a terminal multiplexer: shells run in a background
-server while you organize them into sessions, windows, and panes.
-Detaching closes your view, not your shell. A terminal client, Cockpit,
-script, or coding agent can observe and control the same running terminal.
-Clients may replicate rendering state; they do not create another copy of
-your running program.
+**TL;DR.** phux is a programmable terminal runtime. A background server owns
+running terminals; clients organize them into sessions, windows, and panes.
+Public control and event interfaces support interactive use, automation, and
+remote access. Detaching closes a view, not the shell. Clients may replicate
+rendering state, but they do not copy the running program.
 
 ---
 
@@ -23,9 +22,9 @@ your running program.
  ┌─────────────────────────────────────────────────┐
  │ phux server -- keeps running when you leave     │
  │                                                 │
- │ libghostty terminal: the real one. Screen,      │
- │ scrollback, and modes live here, so they        │
- │ survive detach and feed every attach.           │
+ │ libghostty holds screen, scrollback, and modes. │
+ │ This state survives detach and is available     │
+ │ to each client.                                 │
  └───────────────┬──────────────────▲──────────────┘
                  │                  │
      output goes │                  │ input comes back
@@ -34,16 +33,12 @@ your running program.
      verbatim    ▼                  │ paste events
  ┌──────────────────────────────────┴──────────────┐
  │ attach: TUI, CLI, web, Cockpit                  │
- │ several clients share one live terminal;        │
- │ detach does not copy it                         │
+ │ clients render output and send input            │
+ │ disconnecting a client leaves work running      │
  └─────────────────────────────────────────────────┘
 ```
 
-The server holds the terminals. The TUI, CLI, web, and Cockpit attach to those same ones. Detach does not copy.
-
 ## Sessions, windows, and panes
-
-For everyday use, start with these terms:
 
 | Term | What it means when you use phux |
 |---|---|
@@ -60,33 +55,38 @@ same pane, and input from multiple writers can interleave. Coordinate before
 typing into a terminal an agent is driving, or use a viewer attach when you
 only want to watch.
 
-Persistence is tied to the running server, not a disk checkpoint of your
-programs. For detach, upgrade, crash, and restore boundaries, see
-[workspace continuity](./operations.md#workspace-continuity-and-update-survival).
-Try the [quickstart](./QUICKSTART.md) before learning protocol terminology.
+Persistence depends on the running server, not a disk checkpoint of your
+programs. See [workspace continuity](./operations.md#workspace-continuity-and-update-survival)
+for detach, upgrade, crash, and restore boundaries.
 
 ## Choose your next step
 
-- [Use the terminal UI](./consumers/tui.md) for keys, copying, and navigation.
-- [Run a coding agent](./consumers/getting-started.md) for a host-specific setup.
-- [Connect another machine](./remote-access.md) for SSH enrollment and reconnect.
-- [Use Cockpit](./consumers/cockpit.md) for the native macOS interface.
+- [Start a terminal](./QUICKSTART.md), then use the [TUI guide](./consumers/tui.md)
+  for keys, copying, and navigation.
+- [Run a coding agent](./consumers/getting-started.md).
+- [Connect another machine](./remote-access.md).
+- [Use Cockpit](./consumers/cockpit.md), the native macOS interface.
 
-The sections below are for automation and client implementers. You do not
-need resource kinds or wire details to use a session.
+The remaining sections describe the resource model for automation and client
+implementation.
 
 ## Resources
 
-A resource is a server-owned, addressable thing. Every resource has:
+A resource is a server-owned object with:
 
 - a kind and a stable id;
-- a lifecycle: spawned, then running, optionally exited-but-retained, then closed with a reason (`Exited`, `Killed`, `ParentClosed`, `ServerShutdown`). A Terminal spawned with `retain_secs` (ADR-0124) keeps its exit status and last grid readable after its process ends — `phux resource show`/`wait` reads it — until a TTL, a count bound, or an explicit `kill` purges it with the ordinary close;
-- an ordered, opaque output stream with a codec, and a bootstrap a consumer loads before live bytes;
+- a lifecycle: spawned, running, optionally exited-but-retained, then closed
+  with a reason (`Exited`, `Killed`, `ParentClosed`, `ServerShutdown`);
+- an ordered, opaque output stream with a codec and a bootstrap loaded before live bytes;
 - a kind-defined input channel;
 - a tagged event stream;
-- metadata, and an optional parent set at spawn and immutable.
+- metadata, plus an optional parent fixed at spawn.
 
-Terminal is the first kind: a PTY child and a libghostty engine, with columns, rows, a title, and a working directory. Operations that only make sense there — typed input, resize, screen reads — are refused on any other kind.
+Terminal is a PTY child and a libghostty engine, with columns, rows, a title,
+and a working directory. Typed input, resize, and screen reads are refused on
+other kinds. With `retain_secs` (ADR-0124), its exit status and last grid remain
+readable through `phux resource show`/`wait` after the process ends, until a
+TTL, a count bound, or an explicit `kill` closes it.
 
 AgentSession is the second kind: a structured event stream from an agent
 harness, bound to the Terminal it runs in. Closing the parent closes the
@@ -97,7 +97,9 @@ producer procedures live in the [harness author guide](./consumers/harness.md).
 
 `phux agent show` is a different surface: it reads agent state from a pane, not from an AgentSession resource.
 
-Sessions, windows, panes, and splits are not a lifecycle tier. "Pane" stays a TUI and CLI word for a Terminal-kind resource in a layout slot, expressed as metadata and client logic.
+Sessions, windows, panes, and splits are layouts built from metadata and client
+logic, not a separate lifecycle tier. In the TUI and CLI, a "pane" is a
+Terminal-kind resource in a layout slot.
 
 ## The wire
 
@@ -118,35 +120,33 @@ Wire details live in the [encoding reference](./spec/appendix-encoding.md),
 
 ## Consumers are peers
 
-The reference TUI, the headless CLI, the browser client, and Cockpit are peers. None has protocol-level standing: if a consumer needs a capability the wire does not provide, the answer is an ADR that extends the spec, not a consumer-shaped hook ([ADR-0017](adr/0017-tui-not-protocol-privileged.md)).
+The TUI, headless CLI, browser client, and Cockpit have no protocol-level
+privileges. New capabilities require an ADR extending the spec, not a
+client-specific hook ([ADR-0017](adr/0017-tui-not-protocol-privileged.md)).
+Their interfaces are documented in the [consumer guides](./consumers/README.md).
 
-- [Terminal UI](./consumers/tui.md)
-- [Automation CLI](./consumers/agents.md)
-- [Browser client development](./consumers/web.md)
-- [Cockpit](./consumers/cockpit.md)
-
-A consumer that wants structured state carries the engine for the kinds it shows. One that does not render a kind lists it and draws none of it.
+A consumer carries the engine for each kind it renders. It can list other
+kinds without rendering them.
 
 ## Maturity
 
 The protocol version describes wire compatibility, not the installed product
 version. Its authoritative definition is the [protocol specification](./spec/README.md).
 
-**Capability-dependent behavior:** the source checkout implements both resource
-kinds. For an installed release, check `phux status --json`: the running
-server must advertise `RESOURCE_KINDS` before you use AgentSession verbs.
-This is not a claim that every stable release includes them. If absent,
-ordinary Terminal operations and pane detection remain the starting point;
-update through your [install source](./INSTALL.md#updating) if you need
-AgentSession support. The [agent CLI guide](./consumers/agents.md#this-tree-older-releases-two-agent-surfaces)
-owns the exact refusals and distinction between those surfaces.
+For an installed release, check `phux status --json`: the server must advertise
+`RESOURCE_KINDS` before you use AgentSession verbs. The source checkout
+implements both resource kinds, but not every stable release includes them.
+Without the capability, use ordinary Terminal operations and pane detection,
+or [update](./INSTALL.md#updating) for AgentSession support. The
+[agent CLI guide](./consumers/agents.md#this-tree-older-releases-two-agent-surfaces)
+defines the exact refusals and distinguishes the two agent surfaces.
 
-The [vision](./vision.md) describes the long-term direction. This page owns
-the Status table below; other docs link here rather than restating the gaps.
+The [vision](./vision.md) describes the long-term direction; the table below
+records current gaps.
 
 ## Status
 
-Target-versus-shipped gaps as of the last review. Each row names the ADR that owns the target and the bead that tracks the work.
+Current gaps, with the decision that defines each target and its tracking issue:
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
@@ -157,20 +157,14 @@ Scopes, attach roles, and approval gates are shipped: scope enforcement at
 dispatch ([ADR-0116](adr/0116-workload-auth-is-mtls.md)), `VIEWER`/`PRIMARY`
 attach intent on the lease ([ADR-0127](adr/0127-attach-roles-are-lease-intent.md)),
 and server-held approvals for dangerous actions
-([ADR-0128](adr/0128-approvals-are-held-actions.md)); nothing is open beyond
-the transitional posture row above.
+([ADR-0128](adr/0128-approvals-are-held-actions.md)). The remaining authentication
+gap is the transitional posture above.
 
 ## Where to go next
 
 | You want to | Read |
 |---|---|
-| Run it | [Quickstart](./QUICKSTART.md) |
 | Understand the wire bytes | [Protocol specification](./spec/README.md) |
 | Understand how the server is built | [Architecture](./architecture/README.md) |
-| Drive it from an agent | [Coding-agent getting started](./consumers/getting-started.md) |
-| Build a browser client | [Web client](./consumers/web.md) |
-| Use Cockpit | [Cockpit guide](./consumers/cockpit.md) |
-| Understand the TUI surface | [Terminal UI guide](./consumers/tui.md) |
 | See why a design was chosen | [Architecture decisions](adr/README.md) |
-| Read the long arc | [Vision](./vision.md) |
 | Contribute | [Contributor guide](../CONTRIBUTING.md) |

@@ -26,7 +26,7 @@ const path = Astro.url.pathname;
     <a class="skip" href="#main">Skip to content</a>
     <header class="site-frame">
       <nav class="nav" aria-label="Primary navigation">
-        <a class="brand" href="/">phux</a>
+        <a class="brand" href="/">{SITE.name}</a>
         <div class="links">
           {
             NAV.map((item) => (
@@ -56,8 +56,8 @@ const path = Astro.url.pathname;
     <footer class="site-frame">
       <div class="foot">
         <div class="foot-brand">
-          <a class="brand" href="/">phux</a>
-          <p>You and your agents share the same terminals.</p>
+          <a class="brand" href="/">{SITE.name}</a>
+          <p>{SITE.category}</p>
         </div>
         <nav class="foot-col" aria-label="Product">
           <h2>Product</h2>
@@ -84,12 +84,5 @@ const path = Astro.url.pathname;
       <p class="foot-end">© 2026 no-phux</p>
     </footer>
 
-    <script>
-      console.log(
-        "%c phux %c / terminal control plane",
-        "color:#07080b;background:#7aa2f7;font-weight:700;padding:2px 6px",
-        "color:#565f89",
-      );
-    </script>
   </body>
 </html>

@@ -6,15 +6,14 @@ last-reviewed: 2026-09-12
 
 # Claude Code integration
 
-**TL;DR.** The first-party `phux` Claude Code plugin exposes the authoritative
-`phux mcp` tool server and publishes lifecycle identity and attention events for
-Claude sessions running inside phux panes. It is versioned independently from
-the phux binaries and distributed through this repository's Claude marketplace.
+**TL;DR.** Install the `phux` Claude Code plugin for MCP tools and pane
+identity/attention hooks. It is versioned separately from the phux binaries
+and distributed through this repository's Claude marketplace. The optional
+launch shim starts Claude inside phux; its lifecycle support depends on the
+shim and server versions.
 
-Use the **plugin** when you want Claude to have phux tools. Use the optional
-**launch shim** when you want invoking `claude` to create or enter a phux
-session automatically. They are not interchangeable: the plugin registers
-tools and hooks; the shim changes how Claude starts.
+The plugin registers tools and hooks. The optional launch shim makes
+`claude` create or enter a phux session automatically.
 
 ## Install
 
@@ -83,11 +82,6 @@ Claude's own pane, never guess from phux focus, and never write a lifecycle
 `state`. The server-side Claude detector remains authoritative for working and
 blocked state.
 
-The built-in `phux agent install-claude` shim remains available for users who
-want plain `claude` to create or enter a phux session automatically. The plugin
-does not replace that launch behavior; it provides native tools and lifecycle
-integration for Claude sessions regardless of how they were started.
-
 ## What the hook shim emits
 
 **Checkout behavior, not a minimum-release promise:** the source checkout's
@@ -98,12 +92,10 @@ the detector with `phux agent report-state`, and emits no records. The plugin
 minimum above does not imply schema-5 hooks. Check the running server with
 `phux status --json` for `RESOURCE_KINDS` before relying on the event stream.
 
-On a server that advertises `RESOURCE_KINDS`, the shim gives every Claude run
-inside a phux pane an **agent session**: a second resource, parented to the
-pane, whose stream is one JSON record per hook event
-([agent CLI guide](./agents.md)). Every `--phux-hook` arm reads the
-hook's stdin JSON and acts only when `PHUX_TERMINAL_ID` names Claude's own
-pane. What each arm does:
+On a server advertising `RESOURCE_KINDS`, the shim opens an AgentSession
+parented to Claude's pane and appends one JSON record per hook event
+([agent CLI guide](./agents.md)). Each `--phux-hook` arm reads stdin JSON
+and acts only when `PHUX_TERMINAL_ID` names Claude's own pane:
 
 | Hook | Emits | On every server | Fallback only (no `RESOURCE_KINDS`) |
 |---|---|---|---|
@@ -116,11 +108,10 @@ pane. What each arm does:
 | `Stop` | `stop` | | `phux agent report-state done` |
 | `SessionEnd` | `session_end`, then `phux agent session close` | `phux agent clear` | |
 
-The server derives the pane's lifecycle state from that stream ahead of every
-other source (working on `prompt` / `tool_start`, blocked on `ask` and a
-permission or elicitation `notification`, done on `stop`, retracted on
-`session_end`), so `phux agent wait --until done` and the sidebar's state
-glyph read the harness's own account of the turn rather than a screen rule.
+The server derives pane state from that stream before consulting other
+sources: working on `prompt` / `tool_start`, blocked on `ask` or permission /
+elicitation `notification`, done on `stop`, and retracted on `session_end`.
+`phux agent wait --until done` and the sidebar state glyph use this derived state.
 
 **Fallback.** Against a server without `RESOURCE_KINDS` (an older server, or
 a hub relaying a pane it does not own), `session open` refuses with
@@ -135,8 +126,8 @@ default and the shim never sets it. The retained stream is bounded by
 `defaults.agent-log-bytes`, readable by any client on the socket through
 `phux agent log`, and not recorded by `phux rec`.
 
-The marketplace plugin's own hooks keep the identity-and-ask contract
-described under Runtime contract until they are moved onto the same arms.
+The marketplace plugin's hooks emit only identity and attention, as described
+under [Runtime contract](#runtime-contract); they do not emit this stream.
 
 ## Validation and versioning
 

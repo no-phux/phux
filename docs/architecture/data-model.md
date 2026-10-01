@@ -6,14 +6,11 @@ last-reviewed: 2026-09-12
 
 # Data model
 
-**TL;DR.** The in-process types the server manipulates: the resources it
-owns (a Terminal is the first kind, an agent session the second), the
-parent bindings between them, the grouping metadata over them, and the
-attached clients. Pure-data `phux-core::Registry` on slotmaps with
-generational keys; I/O state lives separately on
-`phux-server::ServerState`. This shape is distinct from the wire; the
-bridge crosses at `IdBridge`. Grouping is metadata over resources, not a
-built collection type.
+**TL;DR.** `phux-core::Registry` holds resources, parent bindings, and grouping
+metadata in slotmaps with generational keys. Terminal and AgentSession are
+the two resource kinds. Attached-client and I/O state live separately in
+`phux-server::ServerState`. `IdBridge` maps in-process identities to wire IDs;
+grouping remains metadata, not a collection tier.
 
 ---
 
@@ -21,14 +18,11 @@ The server is a graph of long-lived nodes with stable identity. The domain
 (`phux-core`) uses one `SlotMap` per node type rather than `Rc<RefCell<>>`
 because:
 
-- Stable IDs are exactly what the wire protocol needs anyway.
-- Cross-references ("this client's active terminal") become an ID, not a
-  borrowed reference — no aliasing problem.
+- Stable IDs map to wire identities.
+- Cross-references such as a client's active terminal use IDs rather than
+  borrowed references, avoiding aliasing.
 - Deletion is `O(1)` and slotmap's generational keys catch use-after-free in
   tests.
-
-The domain (pure data) lives in `phux-core`; attached-client and I/O
-state live in `phux-server`.
 
 ## Resources and kinds
 
@@ -160,10 +154,10 @@ gathers the subscribers, reaps the domain entity through
 empty), and forgets the `ResourceTable` entry, all in the same critical
 section, before the `RESOURCE_CLOSED` sends are awaited.
 
-Session name lookup goes through `Registry::sessions()` rather than a side
-index — it is O(N) in session count, which is fine: session count is small
-(single digits typical, double digits worst-case) and an extra index would
-have to be kept consistent across cascading deletes.
+Session name lookup uses `Registry::sessions()` rather than a side index.
+Its O(N) cost is acceptable for the small session count (typically single
+digits, double digits at worst); a second index would need to stay consistent
+across cascading deletes.
 
 ## Status
 

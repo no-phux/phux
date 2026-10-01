@@ -6,10 +6,10 @@ last-reviewed: 2026-09-12
 
 # Architecture reference
 
-**TL;DR.** Internal structure of phux — the glance diagram, process model,
-threading, transport, crate graph, data model, state sync, rendering, and
-the quality bar. Not normative (the wire spec is); not user-facing (the
-consumer docs are). What you read to understand how phux is built.
+**TL;DR.** Internal structure of phux: resource ownership, client replicas,
+transport, rendering, and verification. These pages describe the implementation
+and identify gaps against accepted designs. The wire specification is
+normative; consumer docs describe user-facing behavior.
 
 ---
 
@@ -37,11 +37,10 @@ There is no L2 collection tier; see [`../spec/L2.md`](../spec/L2.md).
 
 ## What's not here
 
-- Wire bytes — that's [`../spec/`](../spec/).
-- TUI surfaces — that's [`../consumers/tui.md`](../consumers/tui.md).
-- Decisions — that's [`../adr/`](../adr/). Architecture docs
-  describe what the code is; ADRs explain why it's that shape.
-- What phux is — that's [`../CONCEPTS.md`](../CONCEPTS.md).
+- Wire bytes — [`../spec/`](../spec/).
+- TUI surfaces — [`../consumers/tui.md`](../consumers/tui.md).
+- Decisions and rationale — [`../adr/`](../adr/).
+- What phux is — [`../CONCEPTS.md`](../CONCEPTS.md).
 
 Where code and target shape differ, each document says so in its single
 `Status` table ([`../CONVENTIONS.md`](../CONVENTIONS.md)); product-wide gaps

@@ -15,12 +15,10 @@ presentation acknowledgement, tooling, and teardown.
 
 The [product contract](../consumers/desktop.md) owns desktop terminology and
 interaction. [ADR-0139](../adr/0139-solid-desktop-over-native-runtime-views.md)
-owns this architecture choice. The following target design is authorized for
-implementation; it is not a claim that `clients/desktop` already delivers it.
+authorizes this target design for implementation. It does not describe a
+completed `clients/desktop` integration.
 
 ## Existing substrate and actual seams
-
-The source inspection for this contract establishes:
 
 | Source | Present behavior | Integration consequence |
 |---|---|---|
@@ -35,8 +33,8 @@ The source inspection for this contract establishes:
 | [`projection/grid.rs`](../../crates/phux-client-ffi/src/projection/grid.rs) | `GridView` exposes a subset of the native frame. | Paint from native frame facts, including metadata and complete color state. |
 
 Existing [runtime architecture](./client-runtime.md) and wire/input contracts
-remain authoritative. Method names in this table exist. The view and host
-operations below describe required seams, not a fabricated current API.
+remain authoritative. The table names existing methods; the view and host
+operations below are required extensions.
 
 ## Ownership and package boundaries
 

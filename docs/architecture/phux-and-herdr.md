@@ -15,9 +15,8 @@ boundary in different places.
 
 ---
 
-This is not a feature scorecard. Features move too quickly, and both projects
-are active. The useful comparison is the boundary each system asks the rest of
-its architecture to preserve.
+This comparison concerns architectural boundaries, not a feature ranking.
+Both projects are active; their feature sets change.
 
 For a short product decision, start with [When to use phux](../when-to-use.md#compared-with-herdr).
 For measured latency, throughput, and memory from one controlled host, see
@@ -58,9 +57,8 @@ their state into the workspace model. For multiple machines, one client
 connects to independent herdr servers through SSH-backed endpoints and composes
 their workspace and agent projections into one interface.
 
-The durable idea is **a server-owned agent workspace with client-owned
-presentation**. The stable endpoint contract can evolve independently of the
-private same-install protocol because the endpoint projection is the boundary.
+The stable endpoint contract can evolve independently of the private
+same-install protocol because the workspace projection is the boundary.
 
 ## phux: the wire is the product boundary
 
@@ -96,8 +94,7 @@ compatibility path when a harness does not emit.
 
 A remote client can dial another per-user server directly. A federation hub can
 also relay the same frames while qualifying resource ids by host; it does not
-merge remote workspace models. The durable idea is **server-owned resources
-with peer consumers over one wire**.
+merge remote workspace models.
 
 ## Where the architectures actually diverge
 
@@ -123,10 +120,9 @@ is the fallback rather than the resource model.
 endpoints. phux either addresses a server directly or routes host-qualified
 resource ids through a hub that relays the same frames.
 
-These differences do not establish which interface is better, faster, or more
-complete. They explain what extension pressure each architecture absorbs.
-herdr can evolve its workspace projection as one product. phux pays the cost of
-a public substrate so independently shaped consumers can remain peers.
+herdr can evolve its workspace projection as one product. phux maintains a
+public resource protocol for independently designed consumers. These boundaries
+do not establish which product is better, faster, or more complete.
 
 ## Read the boundaries, not this summary
 
@@ -135,6 +131,4 @@ diagram](./DIAGRAM.md), [data model](./data-model.md), [transport
 boundary](./transport.md), and [wire specification](../spec/README.md). For
 herdr's current behavior, read its [concepts](https://herdr.dev/docs/concepts/),
 [socket API](https://herdr.dev/docs/socket-api/), and [multi-machine
-model](https://herdr.dev/docs/connecting-machines/). If either project changes
-an implementation detail without moving the boundary above, this page should
-not need to change.
+model](https://herdr.dev/docs/connecting-machines/).

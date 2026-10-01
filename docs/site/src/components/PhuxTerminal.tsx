@@ -16,6 +16,7 @@ import {
   type EmbedStatus,
 } from "./terminal/embed-status";
 import { nativeAuthStartUrl } from "./terminal/auth-start";
+import { SITE } from "../lib/site";
 
 interface Props {
   wsUrl?: string;
@@ -128,7 +129,7 @@ export default function PhuxTerminal({
   cols = 100,
   rows = 24,
   poster = "",
-  posterAlt = "a phux session",
+  posterAlt = `${SITE.name} session`,
   mode = "demo",
   autoStart = false,
   focusOnStart = false,
@@ -510,7 +511,7 @@ export default function PhuxTerminal({
       data-status={phase}
     >
       <header className="pterm-head">
-        <span className="pterm-mark">phux / hosted</span>
+        <span className="pterm-mark">{SITE.name} / hosted</span>
         <span className="pterm-state" aria-live="polite">
           {phase}
         </span>

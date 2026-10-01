@@ -6,11 +6,10 @@ last-reviewed: 2026-09-30
 
 # Ways to use phux
 
-**TL;DR.** Choose the terminal UI or Cockpit for interactive work, a host
-integration or MCP for a coding agent, and the CLI for scripts. The browser
-client is available as a demo and developer integration. Desktop contracts
-and mobile previews are not equivalent to an installable client. All connect
-to the same server-owned terminal model.
+**TL;DR.** Use the TUI or Cockpit for interactive work, a host integration or
+MCP for coding agents, and the CLI for scripts. The browser client is a demo
+and developer integration. Desktop contracts and mobile previews do not
+establish release availability.
 
 ## Choose an interface
 
@@ -42,6 +41,6 @@ to the same server-owned terminal model.
 | Follow mobile client availability | [iOS](./ios.md) and [Android](./android.md) status |
 
 Clients are protocol peers; the TUI has no special protocol privilege
-([the design decision](../adr/0017-tui-not-protocol-privileged.md)). For product
-boundaries, see [current limitations](../CONCEPTS.md#status). Each guide's
-metadata declares its own stability.
+([design decision](../adr/0017-tui-not-protocol-privileged.md)). See
+[current limitations](../CONCEPTS.md#status) for product boundaries and each
+guide's metadata for its stability.

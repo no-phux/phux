@@ -52,6 +52,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { OVERVIEW, SITE } from "../src/lib/site";
 
 const ROOT = resolve(import.meta.dir, "..");
 const DOCS_DIR = resolve(ROOT, process.env.PHUX_DOCS_DIR ?? "..");
@@ -566,35 +567,24 @@ async function writeOverviewPage(versions: {
   protocolVersion: string;
   projectVersion: string;
 }): Promise<number> {
-  const title = "Get started";
-  const summary =
-    "Learn phux, share running terminals with coding agents, connect your machines, and compare measured performance.";
-  const body = `# Get started
+  const { title, summary } = OVERVIEW;
+  const body = `# ${title}
 
-phux keeps your shells running in a background server. Use a terminal interface, a desktop app, or an agent to work with the same running terminals.
+${summary}
 
-## Start with a running terminal
+## Guides
 
-- [Install phux](/quickstart/install) — supported platforms and installation.
-- [Your first terminal](/quickstart) — start, split, detach, and reconnect.
-- [Understand the essentials](/concepts) — terminals, sessions, and shared control.
-- [Coming from tmux](/concepts/coming-from) — familiar tasks and keybindings.
+${OVERVIEW.paths.map(({ href, title, text }) => `- [${title}](${href}) — ${text}`).join("\n")}
 
-## Choose your next task
+## Terminal model
 
-- [Run coding agents](/consumers/getting-started) — choose your integration and verify it works.
-- [Connect machines](/remote-access) — set up remote access over SSH and reconnect directly.
-- [Configure phux](/quickstart/config) — keys, appearance, and behavior.
-- [Troubleshoot and recover](/troubleshooting) — diagnose failures and understand what survives.
+The server owns the terminals. Clients read output and send input through the same protocol. Processes keep running after a client disconnects.
 
-## Evaluate phux
+## Reference
 
-- [Performance](/performance) — measurements, boundaries, raw results, and reproduction.
-- [Compare tmux, Herdr, and cmux](/concepts/when-to-use) — choose by the job you need to do.
+[Core concepts](/concepts) · [CLI and configuration](/reference) · [Protocol](/wire) · [Architecture](/architecture) · [All documentation](/docs)
 
-## Go deeper
-
-[Command reference](/reference/cli) · [Automation](/consumers/agents) · [Build a client](/consumers/build-a-client) · [Protocol](/wire) · [Architecture](/architecture)
+[Performance](/performance) — measurements, boundaries, and raw evidence.
 `;
   const fm = [
     "---",
@@ -645,12 +635,12 @@ const TASK_GROUPS = [
     pages: ["../quickstart/install", "../quickstart/index", "../concepts/index", "../concepts/coming-from"],
   },
   {
-    folder: "(use)", title: "Use phux",
+    folder: "(use)", title: `Use ${SITE.name}`,
     pages: ["../consumers/index", "../consumers/tui", "../quickstart/config", "../consumers/cockpit", "../consumers/recording", "../consumers/web", "../consumers/ios"],
   },
   {
     folder: "(agents)", title: "Run coding agents",
-    pages: ["../consumers/getting-started", "../consumers/claude", "../consumers/pi", "../consumers/opencode", "../consumers/opencode-v2", "../consumers/mcp"],
+    pages: ["../consumers/getting-started", "../consumers/claude", "../consumers/pi", "../consumers/omp", "../consumers/opencode", "../consumers/opencode-v2", "../consumers/mcp"],
   },
   {
     folder: "(connect)", title: "Connect machines",

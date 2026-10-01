@@ -16,17 +16,15 @@ contract. External callers should use the CLI or MCP adapter.
 
 ## What it is
 
-There is no published client SDK crate. `phux-client` is workspace-internal
-(`publish = false`): it wraps the `phux-protocol` codec and the resolution,
-snapshot, run, and wait functions behind the CLI agent verbs and the
-[MCP adapter](./mcp.md). External callers use those.
+`phux-client` is workspace-internal (`publish = false`). It wraps the
+`phux-protocol` codec and the selection, snapshot, run, and wait functions
+behind the CLI agent verbs and [MCP adapter](./mcp.md).
 
-Native embedders use the binding crate `phux-client-ffi` (the C ABI Cockpit
-links, or the UniFFI lane phux-mobile consumes), which projects
-`phux-client-runtime`; that runtime owns dialing, reconnect, the session
-kernel, acknowledged-input replay, and grid publication, so no embedder
-reimplements them ([`../architecture/client-runtime.md`](../architecture/client-runtime.md),
-ADR-0133, ADR-0135).
+Native embedders use `phux-client-ffi`: the C ABI for Cockpit or UniFFI for
+phux-mobile. Both project `phux-client-runtime`, which owns dialing,
+reconnect, the session kernel, acknowledged-input replay, and grid publication.
+See the [client runtime](../architecture/client-runtime.md) (ADR-0133,
+ADR-0135).
 
 `phux-client` speaks L1 ([`../spec/L1.md`](../spec/L1.md)); its session,
 window, and layout helpers are L3 conventions over L1 state
@@ -35,19 +33,13 @@ window, and layout helpers are L3 conventions over L1 state
 
 ## How it fits the projection thesis
 
-[ADR-0030](../adr/0030-engine-delegated-wire-and-projection-consumers.md)
-states the wire carries opaque terminal bytes, not structured screen
-state. A consumer that wants structure computes it from an engine it
-runs. The reference shape for that is [phux-web](./web.md): Rust to
-WASM, loading `ghostty-vt.wasm`, projecting the grid locally.
+`phux-client` reads structured screen state through the server's
+engine-convenience snapshots (`GET_SCREEN` / `GET_TERMINAL_STATE`) rather
+than running a local engine. These snapshots are not a normative structured
+wire tier ([ADR-0030](../adr/0030-engine-delegated-wire-and-projection-consumers.md)).
 
-`phux-client` is the native-side library for the same pattern. Today it
-leans on the server's engine-convenience snapshots (`GET_SCREEN` /
-`GET_TERMINAL_STATE`) to read screen state rather than running a local
-engine; those are a convenience over the shared engine, not a normative
-structured wire tier. A consumer that wants to own its projection
-follows phux-web's carry-your-own-engine shape instead. Either way the
-wire stays identical; only the projection differs.
+For a client that renders its own grid, follow [phux-web](./web.md): Rust
+compiled to WASM loads `ghostty-vt.wasm` and projects terminal bytes locally.
 
 ## Free-function surface
 
@@ -71,10 +63,9 @@ module functions directly:
 The async operation functions open the connections they need and return
 `attach::AttachError` for transport, protocol, or server refusal
 failures. The selector helpers are synchronous and operate on
-caller-provided snapshots. These are workspace-internal Rust APIs, not a
-compatibility facade. Use the [CLI agent surface](./agents.md) or
-[MCP adapter](./mcp.md) outside the workspace. Their `ScreenState`,
-`RunResult`, and `WaitOutcome` JSON shapes are versioned.
+caller-provided snapshots. Outside the workspace, use the versioned JSON
+surface described in the [agent CLI guide](./agents.md) and
+[MCP adapter](./mcp.md).
 
 The JSON shapes and exit codes are [`agents.md`](./agents.md); the codec is
 [`../spec/appendix-encoding.md`](../spec/appendix-encoding.md).

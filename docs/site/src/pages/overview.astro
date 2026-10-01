@@ -6,11 +6,10 @@ import { Docs } from "../components/docs/Docs";
 import { OverviewBody } from "../components/docs/Overview";
 import Layout from "../components/docs/layout.astro";
 import { source } from "../lib/source";
-import { SITE } from "../lib/site";
+import { OVERVIEW, SITE } from "../lib/site";
 
-const title = "phux — Get started";
-const description =
-  "You and your agents share the same running terminals. Start with the quickstart, choose an interface, or explore the measured performance.";
+const title = `${SITE.name} — ${OVERVIEW.title}`;
+const description = OVERVIEW.summary;
 ---
 
 <Layout title={title} description={description} origin={SITE.docsUrl}>
@@ -19,8 +18,8 @@ const description =
     pathname="/overview"
     params={Astro.params}
     sourceUrl={`${SITE.github}/blob/main/docs/site/src/pages/overview.astro`}
-    title="Get started"
-    summary="You and your agents, on the same running terminals. Start locally, choose your interface, and keep working when you disconnect."
+    title={OVERVIEW.title}
+    summary={OVERVIEW.summary}
     description={description}
     stability="stable"
     protocolVersion=""

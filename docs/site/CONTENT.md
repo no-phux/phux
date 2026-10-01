@@ -8,15 +8,19 @@ publishes those sources rather than maintaining a second technical manual.
 
 ## The proposition
 
-People, applications, scripts, and coding agents can inspect and control the
-same running terminals. A background server owns the shells. Terminal and
-desktop interfaces are views of those running processes, not separate sessions
-that must be synchronized by copying logs.
+phux is a programmable terminal runtime: a background server owns terminals;
+clients and automation control them through a public protocol, locally or
+across machines. Shared views are one consequence, not the whole proposition.
 
-Explain that useful behavior before introducing resources, wire layers, or
-engine implementation. Do not imply clients have no local rendering state, or
-promise compatibility with every future terminal protocol. Distinguish emitted
-agent lifecycle state from terminal-based detection.
+The display name, category, headline, and description live in `src/lib/site.ts`.
+Site chrome, page titles, demos, and the generated social card read that identity.
+Changing it does not rename commands, packages, domains, protocol identifiers,
+or the canonical documentation. A product rename must migrate those deliberately.
+
+Explain useful behavior before resource kinds and wire layers. Distinguish
+emitted agent lifecycle state from terminal-based detection. Client rendering
+state is not a second running process. The durable coordinator is planned,
+not a shipped reason to install.
 
 ## Readers and language
 
@@ -29,15 +33,12 @@ agent lifecycle state from terminal-based detection.
 4. Integrators and contributors need the exact protocol and implementation
    reference, without marketing claims in normative text.
 
-Use direct, specific prose. Explain unfamiliar terms on first use. Keep the
-wordmark lowercase; use normal sentence case for navigation and headings.
-Prefer “Open the browser client” to “Choose your glass,” and “Configure phux”
-to a visible repository filename. Name the product, channel, and version when
+Follow the [editorial rules](../CONVENTIONS.md#writing). Keep the wordmark
+lowercase and headings in sentence case. Name the channel and version when
 behavior depends on them; “this tree” is not a release identifier.
 
-Do not dilute the technical detail. Put it at the point where it is useful.
-Short user guides link to the exact reference; they do not copy its full
-schema. Architecture and historical decisions are not onboarding prerequisites.
+Short guides link to the full reference. Do not make architecture or historical
+decisions a prerequisite for starting a terminal.
 
 ## Documentation navigation
 
@@ -76,10 +77,9 @@ followed by an expandable duplicate. Source provenance is available without
 interrupting the task. Descriptive link labels explain destinations. Keep
 existing deep-link headings stable or migrate their callers.
 
-The overview offers a clear first action, explains shared terminals visually
-and in text, and routes readers by task. It is not a second feature pitch or
-an exhaustive list of protocol layers. Its search representation must name the
-same tasks and destinations as the rendered page.
+The overview routes readers by task and illustrates the server/client model.
+Its title, summary, and task links come from `OVERVIEW` in `src/lib/site.ts`,
+shared with the generated search representation.
 
 Screenshots and diagrams explain something the prose alone makes hard to see.
 Provide meaningful alternatives; motion is never required to understand a
@@ -107,12 +107,10 @@ methodology link. Do not hide conditions behind tooltips.
 
 ## Product landing and demo
 
-The marketing landing at `src/pages/index.astro` uses
-`<MultiplexShowcase client:load>` to explain split views, shared clients, and
-detach/reattach. The sequence is shared-terminal proposition, interactive
-diagram with a launch-gated real terminal, agent-attention demonstration,
-capabilities, then installation. Guide links lead into the reader paths above.
-Update this contract when changing that sequence.
+The landing at `src/pages/index.astro` introduces the runtime, then shows an
+interactive terminal model, agent attention, capabilities, and installation.
+`<MultiplexShowcase client:load>` demonstrates split views, shared clients,
+and detach/reattach, with a separate launch action for the hosted terminal.
 
 The opening panel is explicitly a diagram, not simulated live output. It works
 without downloading WASM or allocating a hosted session. Opening the terminal

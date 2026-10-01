@@ -6,14 +6,14 @@ last-reviewed: 2026-09-13
 
 # Build a client against the wire
 
-**TL;DR.** Three honest paths: the CLI and MCP if you are an agent, the
-publishable `phux-protocol` crate plus your own engine if you are a
-client, `phux-client-ffi` if you are a native embedder. There is no
-public Rust SDK crate. The TUI is not a privileged peer.
+**TL;DR.** Use CLI/MCP for automation, `phux-protocol` for a wire client, or
+`phux-client-ffi` for native embedding. A rendering client needs a terminal
+engine. There is no public Rust client SDK; the TUI uses the same protocol
+as other clients.
 
 ---
 
-Pick the path that matches the job. Do not start from ADRs.
+Choose an interface:
 
 | You are | Use | Start here |
 |---|---|---|
@@ -22,9 +22,9 @@ Pick the path that matches the job. Do not start from ADRs.
 | A new graphical or headless client | Speak L1, carry an engine | [`../spec/L1.md`](../spec/L1.md), [`web.md`](./web.md) |
 | A native app | `phux-client-ffi` C ABI | [`cockpit.md`](./cockpit.md) |
 
-`phux-protocol` is the publishable codec (`publish = true`). It is the
-bytes. `phux-client` is workspace-internal (`publish = false`) and is
-not a downstream dependency; see [`sdk.md`](./sdk.md).
+`phux-protocol` is the publishable codec (`publish = true`).
+`phux-client` is workspace-internal (`publish = false`), not a downstream
+dependency; see the [library guide](./sdk.md).
 
 ## Minimum client loop
 
@@ -32,11 +32,10 @@ not a downstream dependency; see [`sdk.md`](./sdk.md).
    length-prefixed phux frames ([`../spec/proto.md`](../spec/proto.md)).
 2. `HELLO`, then wait for `HELLO_OK`. Negotiate features. AgentSession
    exists only when the server advertises `RESOURCE_KINDS`.
-3. Attach or subscribe. Terminal output is raw VT bytes. Input is
-   structured key / mouse / paste atoms. Do not invent a cell-diff
-   wire.
-4. If you render a terminal, run an engine on the bytes. The reference
-   shape is [phux-web](./web.md): carry libghostty, project locally.
+3. Attach or subscribe. Terminal output is raw VT bytes; input is
+   structured key / mouse / paste atoms. There is no cell-diff wire.
+4. To render a terminal, run an engine on the output bytes.
+   [phux-web](./web.md) uses libghostty and projects the grid locally.
 5. If you show agent state, prefer a live AgentSession stream over
    scraping the grid. [`harness.md`](./harness.md).
 

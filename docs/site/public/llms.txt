@@ -1,11 +1,10 @@
 # phux
 
-phux is a terminal multiplexer whose panes are a view. You, Cockpit, a script,
-or an agent attach to the same live terminal. When a harness emits, blocked is
-a fact on that wire. Join another machine with no phux account.
+phux is a programmable terminal runtime. A background server owns terminals;
+clients and automation control them through a public protocol, locally or
+across machines.
 
-This file is the agent-oriented map of the site. Every page below is also
-available as clean markdown: send `Accept: text/markdown` to any page URL.
+Request any documentation page with `Accept: text/markdown` for clean Markdown.
 
 ## Install
 
@@ -27,7 +26,7 @@ npx skills add no-phux/skills                   # agent skills
 
 ## Documentation (docs.phux.sh)
 
-- [Start here](https://docs.phux.sh/overview): choose a task and understand the shared-terminal model.
+- [Start here](https://docs.phux.sh/overview): guides and reference.
 - [Install](https://docs.phux.sh/quickstart/install): supported platforms and installation channels.
 - [Quickstart](https://docs.phux.sh/quickstart): start, split, detach, and inspect your first terminal.
 - [Run coding agents](https://docs.phux.sh/consumers/getting-started): choose an integration and verify it works.

@@ -69,6 +69,27 @@ place — don't fork.
 
 ---
 
+## Writing
+
+Write for the reader's next decision, not for the appearance of completeness.
+
+- Lead with the answer or action. Put prerequisites first when they affect
+  safety or whether a command will work.
+- Name the operation and its observable result. Prefer “Read agent state”
+  to “Co-presence.” Headings identify a task or subject; they are not slogans.
+- Keep causal explanations. Cut throat-clearing, repeated summaries, and
+  paragraphs announcing what the next section will explain.
+- Use complete sentences and vary their length. Short instructions need not
+  turn every paragraph into a series of fragments.
+- Use numbered lists for sequences, bullets for independent choices, and
+  tables for comparisons. Use prose for relationships and tradeoffs.
+- Give commands, examples, and warnings room. Group related sentences into
+  paragraphs; do not make every sentence a callout or bold every key phrase.
+- Shorten repetition, not contracts. Keep safety conditions, failure modes,
+  release limits, and evidence qualifications beside the claims they constrain.
+
+---
+
 ## Frontmatter (required on every doc)
 
 Every Markdown file under `docs/` (including `docs/adr/`), `research/`, and every
@@ -124,8 +145,8 @@ mechanical edits shouldn't reset freshness.
 
 ## TL;DR block (required on every doc)
 
-The first H1 is followed by a `**TL;DR.**` paragraph of roughly 50
-words (hard cap: 75). It is the summary that:
+The first H1 is followed by a `**TL;DR.**` paragraph, usually one or two
+sentences. The 75-word cap is a ceiling, not a target. The summary:
 
 - Lets a returning reader page in the gist before deciding to read on
 - Lets an AI agent load only the summaries of many docs into context

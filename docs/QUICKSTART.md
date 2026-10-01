@@ -6,9 +6,8 @@ last-reviewed: 2026-09-30
 
 # Quickstart
 
-**TL;DR.** Start a shell, detach, and return to the same running terminal.
-Then use a second client to read and drive that pane without disrupting
-your attached view.
+**TL;DR.** Install phux, start a shell, detach, and reattach. Then read its
+state, send a command, and wait for the result from a second terminal.
 
 ## Before you start
 
@@ -34,9 +33,8 @@ installer, tarballs, and source builds, use the [installation guide](./INSTALL.m
 phux --version
 ```
 
-**Expected:** the installed binary prints its version. If the command is not
-found, apply the installer's `PATH` advice before continuing. See
-[installation recovery](./troubleshooting.md#phux-is-not-found-or-the-wrong-version-runs).
+The command prints the installed version. If it is not found, follow the
+installer's `PATH` advice or [installation recovery](./troubleshooting.md#phux-is-not-found-or-the-wrong-version-runs).
 
 ## 2. Start a terminal
 
@@ -44,13 +42,12 @@ found, apply the installer's `PATH` advice before continuing. See
 phux
 ```
 
-With no arguments, phux starts a per-user server if needed and attaches the
-interactive client, creating a shell-backed session when needed. **Expected:**
-you see a shell prompt inside phux. Type a harmless command such as `pwd` to
+phux starts a per-user server if needed and attaches the interactive client,
+creating a shell-backed session when needed. At the prompt, type `pwd` to
 confirm the shell is ready.
 
-The default prefix is `Ctrl-A`. **Press Ctrl and A together, release both,
-then press the next key.** `Ctrl-A d` does not mean holding Ctrl while pressing d.
+The default prefix is `Ctrl-A`: press Ctrl and A together, release both, then
+press the next key. `Ctrl-A d` does not mean holding Ctrl while pressing d.
 
 | Keys | Action |
 |---|---|
@@ -59,9 +56,9 @@ then press the next key.** `Ctrl-A d` does not mean holding Ctrl while pressing 
 | `Ctrl-A "` | Split top and bottom. |
 | `Ctrl-A d` | Detach without stopping the shell. |
 
-Try `Ctrl-A d`, then run `phux` again. **Expected:** you return to the same
-live session, including the output you left on screen. Use [the TUI guide](./consumers/tui.md)
-for more keys, copy mode, and navigation.
+Try `Ctrl-A d`, then run `phux` again. You return to the same live session,
+including its screen output. See [the TUI guide](./consumers/tui.md) for more
+keys, copy mode, and navigation.
 
 ### What survives?
 
@@ -72,9 +69,9 @@ for more keys, copy mode, and navigation.
 | Server crash, server shutdown, or machine reboot | This is not live-process persistence; do not expect the old jobs or scrollback to return. |
 | Restore a saved workspace | Fresh PTYs recreate the saved workspace, not the old processes. |
 
-The exact boundaries and save/restore behavior live in
-[workspace continuity](./operations.md#workspace-continuity-and-update-survival).
-Save important work in the programs themselves; detaching is not a backup.
+See [workspace continuity](./operations.md#workspace-continuity-and-update-survival)
+for the exact boundaries and save/restore behavior. Save important work in
+the programs themselves; detaching is not a backup.
 
 ## 3. See it from the outside
 
@@ -86,13 +83,12 @@ phux ls
 phux snapshot .
 ```
 
-**Expected:** `ls` shows the session and `snapshot` shows its terminal text.
-The snapshot does not attach or change the pane's size. If several panes are
-active, choose an explicit [pane selector](./consumers/tui.md#selectors)
-instead of `.` so you do not type into the wrong program.
+`ls` shows the session; `snapshot` reads its terminal text without attaching or
+resizing the pane. With several active panes, choose an explicit
+[pane selector](./consumers/tui.md#selectors) instead of `.` to avoid typing
+into the wrong program.
 
-Now send a command and wait for output that is not present in the typed
-command itself:
+Send a command, then wait for output distinct from the typed command:
 
 ```sh
 phux send-keys . "printf '%s\n' phux-ready | tr a-z A-Z" Enter
@@ -100,8 +96,8 @@ phux wait --until "PHUX-READY" --timeout 10 .
 phux snapshot --json --scrollback 50 .
 ```
 
-**Expected:** the first terminal prints `PHUX-READY`, the wait succeeds, and
-the JSON snapshot contains that output. This is the automation loop:
+The first terminal prints `PHUX-READY`, the wait succeeds, and the JSON
+snapshot contains that output. The automation loop is:
 
 ```text
 read state -> act -> wait for a condition -> read again
@@ -113,10 +109,9 @@ human and agent input at the same time: both reach the same program.
 
 ## 4. Connect an agent
 
-[Choose your coding-agent setup](./consumers/getting-started.md): Claude Code,
-Pi, OpenCode, another MCP host, or a script. Each route starts with a small
-read-only check before writing to a terminal. You do not need to implement an
-AgentSession producer just to use an agent.
+[Choose a coding-agent setup](./consumers/getting-started.md): Claude Code,
+Pi, OMP, OpenCode, another MCP host, or a script. Each starts with a read-only check.
+You do not need an AgentSession producer to use an agent.
 
 ## Know the edges
 
@@ -125,17 +120,15 @@ work that must survive a server failure.
 
 ## When something misbehaves
 
-If no prompt appears, run `phux status` in another terminal. A missing server
-and an unreachable remote host need different remedies; follow
-[troubleshooting and recovery](./troubleshooting.md) rather than restarting
-or deleting state as a first step.
+If no prompt appears, run `phux status` in another terminal and follow
+[troubleshooting and recovery](./troubleshooting.md). Do not restart or delete
+state before distinguishing a missing server from an unreachable host.
 
 ## Next steps
 
 | You want to | Go to |
 |---|---|
 | Change keys, status, or hooks | [Configuration](./CONFIG.md) |
-| Run a coding agent | [Coding-agent getting started](./consumers/getting-started.md) |
 | Automate with the full CLI contract | [Agent CLI reference guide](./consumers/agents.md) |
 | Reach a server from another machine | [Remote access](./remote-access.md) |
 | Understand sessions, windows, and panes | [How phux works](./CONCEPTS.md) |
