@@ -6,10 +6,10 @@ last-reviewed: 2026-09-27
 
 # Configuration and keybindings
 
-**TL;DR.** phux loads `$XDG_CONFIG_HOME/phux/config.toml` as a sparse overlay
-on the shipped defaults: omit a key and it keeps tracking those defaults.
-Edit, `phux config check`, then `phux config reload` — the file is not
-watched. `phux config show --layers` names which layer set each key.
+**TL;DR.** Run `phux config path`, edit the file, then run `phux config check`
+and `phux config reload`. The file is not watched. Configuration layers
+override shipped defaults per key; `phux config show --layers` identifies
+where each value came from.
 
 ---
 
@@ -22,9 +22,9 @@ watched. `phux config show --layers` names which layer set each key.
 4. Run `phux config reload`, then try the changed binding in an attached client.
    For a prefix chord, press and release the prefix before the continuation.
 
-**Expected:** the new binding works without losing your panes. If it does not,
-check `phux config show --layers` and the [apply/restart boundaries](#applying-changes).
-For a rejected or ineffective edit, use [configuration recovery](./troubleshooting.md#a-config-change-fails-or-does-not-apply).
+The new binding should work without losing panes. If it does not, check
+`phux config show --layers` and the [apply/restart boundaries](#applying-changes).
+See [configuration recovery](./troubleshooting.md#a-config-change-fails-or-does-not-apply) for rejected or ineffective edits.
 
 ## Config file location and discovery
 
@@ -36,10 +36,9 @@ phux loads configuration in this order:
 3. **User config** — `$XDG_CONFIG_HOME/phux/config.toml` (or
    `~/.config/phux/config.toml` if `$XDG_CONFIG_HOME` is not set)
 
-Later files override earlier ones, key-by-key. A key you omit keeps the
-default, so a phux upgrade reaches you automatically without losing your
-overrides. phux does not expose a global config-path override; set
-`XDG_CONFIG_HOME` when a command needs an isolated config tree.
+Later files override earlier ones per key. Unset keys follow the defaults
+across upgrades. There is no global config-path override; set
+`XDG_CONFIG_HOME` for commands that need an isolated config tree.
 
 The Unix socket is not a config key. Socket path, profile isolation, and
 `PHUX_SOCKET` live in [file locations](./reference/files.md) and
@@ -72,20 +71,16 @@ phux config reload       # apply edits to running clients in place
 
 ### Applying changes
 
-The edit loop is edit, `phux config check`, `phux config reload`.
+`phux config reload` validates the layered config locally before notifying
+the server. Invalid files, widgets, or action bindings fail without sending
+a reload signal. Each attached client then re-reads its own file and
+atomically rebuilds keybindings, theme, status bar, and plugin palette rows.
+A client with a parse or validation error keeps its previous config and
+shows a dismissable error toast.
 
-`phux config reload` validates the layered config locally first, with the
-same checks a client applies on reload — a broken file, a bad widget, or a
-binding to an unknown action fails right there and signals nothing — then
-rings a reload doorbell on the server so every attached client re-reads
-its own config file and atomically rebuilds keybindings, the theme, the
-status-bar composition, and plugin palette rows. On any parse or
-validation error a client keeps its previous config fully in effect and
-surfaces the error as a dismissable toast — never a half-applied mix. The
-same reload is available inside the TUI as the `reload-config` action: a
-command-palette row ("Reload the config file"), bindable to any chord
-(unbound by default). See [TUI reloading](./consumers/tui.md#config-and-reload)
-for the attach-side reload.
+In the TUI, use the `reload-config` action, listed in the command palette as
+"Reload the config file". It is unbound by default and can be assigned to any
+chord. See [TUI reloading](./consumers/tui.md#config-and-reload).
 
 A few settings are read once at attach and still need a client restart
 (detach and re-attach, or relaunch `phux`): `[experimental]` flags,
@@ -93,8 +88,7 @@ A few settings are read once at attach and still need a client restart
 `[voice]`, `[policy]`, and `[[hooks.*]]` are owned by the server and take
 effect on the next server start.
 
-Reload is explicit: the file is not watched, so a broken intermediate save
-stays inert until you ask for it.
+The file is not watched; intermediate saves do not trigger a reload.
 
 Local config/plugin subcommands (`init`, `path`, `show`, `check`,
 `plugins`, `agents`, `plugin ...`, and plugin action `run`) read the file
@@ -106,8 +100,7 @@ fresh on each invocation.
 
 ### Example 1: Rebind the prefix from Ctrl-A to Ctrl-B
 
-The shipped default is `C-a` to avoid conflicts with readline and screen.
-To change it, edit `~/.config/phux/config.toml`:
+To change the default prefix from `C-a`, edit `~/.config/phux/config.toml`:
 
 ```toml
 [keybindings]
@@ -127,10 +120,9 @@ prefix = "C-Space"
 
 ### Example 2: Switch the clock to a 12-hour format
 
-The shipped right slot is session name and clock on a wide terminal, and
-a `switch` chip below 65 columns. Changing the clock means assigning
-`right`, which replaces that whole list — copy the shipped lineup and
-edit the format, or you drop `switch`:
+The default `right` list shows session name and clock at 65 columns or wider,
+and a `switch` chip below that. Assigning `right` replaces the whole list,
+so keep `switch` when changing the clock:
 
 ```toml
 [status]
@@ -157,9 +149,8 @@ when   = { exit-code = "*" }
 action = { kind = "run", command = "echo pane exited >> ~/.cache/phux/hooks.log" }
 ```
 
-`phux config check` validates the surface; `phux config reload` is not
-enough for hooks — the server reads them at start. The event table is
-[the hook reference](./reference/hooks.md).
+Run `phux config check` to validate. Hooks take effect at the next server
+start, not on `phux config reload`. See [the hook reference](./reference/hooks.md).
 
 ---
 
@@ -167,14 +158,12 @@ enough for hooks — the server reads them at start. The event table is
 
 The keybindings section has three keys:
 
-- **`prefix`** — the key that unlocks prefix-table bindings (default:
-  `C-a`)
-- **`[keybindings.prefix-table]`** — bindings that fire after pressing
-  the prefix. This is where `c` (new window), `%` (vertical split), `"`
-  (horizontal split), `x` (kill pane), and the rest live.
-- **`[keybindings.global]`** — bindings that fire any time, no prefix
-  needed. Reserved for modifiers unlikely to conflict with inner
-  programs: `super`, `hyper`, `meta`. Empty by default.
+- `prefix` — the key that activates prefix-table bindings (default: `C-a`).
+- `[keybindings.prefix-table]` — bindings after the prefix, such as `c`
+  (new window), `%` (vertical split), `"` (horizontal split), and `x` (kill pane).
+- `[keybindings.global]` — bindings without a prefix. Reserved for modifiers
+  unlikely to conflict with inner programs: `super`, `hyper`, `meta`.
+  Empty by default.
 
 **Chord syntax:**
 
@@ -186,10 +175,9 @@ The keybindings section has three keys:
 - Punctuation with implicit Shift: `|`, `?`, `"` decompose to physical
   key + Shift on a US layout
 
-**Resolution:** After pressing the prefix, the *next* keystroke is
-matched against `prefix-table`. If it matches, the action runs; else the
-keystroke goes to the pane. Global bindings are checked for every
-keystroke; they fire if they match, else the keystroke goes to the pane.
+After the prefix, the next keystroke is matched against `prefix-table`.
+Global bindings are checked on every keystroke. A match runs the action;
+an unmatched keystroke goes to the pane.
 
 A bare string is shorthand for a no-parameter action. Inline tables take
 parameters. Your file overrides matching keys in the shipped defaults;
@@ -214,46 +202,39 @@ The status bar is rendered entirely client-side from three widget lists:
 shorthand for `{ kind = "session-name" }`. Widgets that take parameters
 use inline table syntax.
 
-**Assigning `right =` replaces the shipped right lineup.** The defaults
-put session name and clock on a wide terminal and a `switch` chip below
-65 columns. A `right = [...]` in your file drops all of that, including
-`switch`. The shipped `center` slot is empty; assigning `center =` is how
-you add teaching chrome such as `help-hints`. Use
-`right-append` / `center-append` to add a widget; to change one widget,
-copy the shipped list from `phux config show --default` and edit in
-place.
+Assigning a list replaces it. Use `right-append` / `center-append` to add
+widgets; to change one widget, copy the list from `phux config show --default`
+and edit it. The [clock example](#example-2-switch-the-clock-to-a-12-hour-format)
+preserves the default responsive layout. The default `center` list is empty;
+use it for widgets such as `help-hints`.
 
-The widget catalog is in the [widget reference](./reference/widgets.md).
-`phux config check` validates `[status]` through the same build path, so
-a typo'd kind or option surfaces as a located finding.
+See the [widget reference](./reference/widgets.md) for available kinds and
+options. `phux config check` validates them and reports each error's location.
 
 ---
 
 ## Scrollback
 
 Per-pane history has a line bound (`defaults.history-limit`) and a byte
-bound (`defaults.history-bytes`); libghostty prunes on whichever is
-reached first. On anything but a narrow grid the byte bound is what
-binds, so **raising `history-limit` on a wide grid buys no extra
-scrollback.** Raise `history-bytes` if you want depth. That is a memory
-setting, not attach latency: the server leases retained history at READY
-and encodes each page only when a client asks for it
-([ADR-0119](adr/0119-attach-leases-retained-history.md)). Budget it as
-resident memory per pane, multiplied by your pane count. The measured
-depths and the 64 MiB cap live in the comments of the shipped defaults
-(`phux config show --default`; also the annotated file in
-[the configuration reference](./reference/config.md)).
+bound (`defaults.history-bytes`); libghostty prunes at whichever is reached
+first. The byte bound usually limits wider grids, so raising `history-limit`
+alone may not retain more scrollback. Increase `history-bytes` for more depth,
+budgeted as resident memory per pane.
+
+History size does not set attach latency: the server leases retained history
+at READY and encodes pages on request
+([ADR-0119](adr/0119-attach-leases-retained-history.md)). Measured depths and
+the 64 MiB cap are documented in `phux config show --default` and
+[the configuration reference](./reference/config.md).
 
 ---
 
 ## Hooks
 
-Hooks are event-driven actions the server fires. A starter set ships
-today — `after-new-pane`, `pane-exit`, `focus-changed`,
-`client-attached`, `client-detached`, and `agent-state-changed` — and the
-shipped defaults define none. Each `[[hooks.<name>]]` entry is an
-array-of-tables row; multiple entries are allowed and the first match
-wins per event.
+Hooks are server-side actions triggered by `after-new-pane`, `pane-exit`,
+`focus-changed`, `client-attached`, `client-detached`, or `agent-state-changed`.
+None are configured by default. Each `[[hooks.<name>]]` entry is an
+array-of-tables row; the first matching entry runs for each event.
 
 ```toml
 [[hooks.pane-exit]]
@@ -317,10 +298,8 @@ Rules:
 
 ### Array merge: replace by default, `-append` to add
 
-Tables merge per key across layers, but an array assignment replaces the
-inherited array wholesale — TOML arrays have no per-element identity to
-merge on. When a layer should *contribute to* a list instead of owning
-it, use the `-append` key suffix:
+Tables merge per key; array assignments replace the inherited array because
+TOML arrays have no per-element identity. Use the `-append` suffix to add to a list:
 
 ```toml
 # In a distro layer or your own config:
@@ -379,11 +358,9 @@ per element).
 
 ### Starter distributions: `config init --distro`
 
-A *distro* is a config layer curated as a starting point: keybindings, a
-status lineup, a theme, and a plugin set, referenced rather than pasted into
-yours. The repo bundles one, [`starter`](../distros/starter/README.md), which
-carries only the demo plugin set; everything else it once added is now a
-shipped default.
+A *distro* is a reusable config layer: keybindings, status widgets, theme,
+or plugins. The bundled [`starter`](../distros/starter/README.md) contains
+only demo plugins; its former settings are now shipped defaults.
 
 ```sh
 phux config init --distro starter            # bundled name
@@ -398,9 +375,9 @@ statement at the top:
 extends = ["/absolute/path/to/distros/starter/starter.toml"]
 ```
 
-Nothing is copied out of the distro: keys you set win over it, it wins over
-the shipped defaults, and updating it updates every config that extends it.
-`init --distro` validates the full merged stack before writing anything.
+Your keys override the distro, which overrides shipped defaults. Nothing is
+copied, so distro updates reach every config that extends it.
+`init --distro` validates the full merged stack before writing.
 
 A bundled name `n` resolves to `<dir>/n/n.toml` across, in order:
 `$PHUX_DISTROS_DIR` (explicit override), `$XDG_DATA_HOME/phux/distros`
@@ -442,7 +419,7 @@ files, never inline. Enroll a host with the commands in
 
 ## Links
 
-**Generated (cannot drift):**
+Generated reference:
 
 - [Full schema and annotated defaults](./reference/config.md)
 - [Action catalog](./reference/actions.md)
@@ -451,8 +428,8 @@ files, never inline. Enroll a host with the commands in
 - [File locations](./reference/files.md)
 - [CLI inventory](./reference/cli.md)
 
-**Narrative:**
+Guides and defaults:
 
 - [Terminal UI guide](./consumers/tui.md)
 - [Quickstart](./QUICKSTART.md)
-- **Shipped defaults with comments** → `phux config show --default`
+- Shipped defaults with comments: `phux config show --default`

@@ -16,31 +16,28 @@ part of [no-phux](https://github.com/orgs/no-phux/repositories)
 [![CI](https://github.com/no-phux/phux/actions/workflows/ci.yml/badge.svg)](https://github.com/no-phux/phux/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-phux is a terminal multiplexer for terminals shared by people, apps, and
-agents. Your shells live in a background server; the TUI, Cockpit, the browser,
-a script, and an agent can all attach to the same live terminal.
+phux is a programmable terminal runtime. A background server keeps shells
+running; public control and event interfaces let people, scripts, and coding
+agents work with them across clients and machines.
 
-- **One terminal, many peers.** What you see is what an agent reads and drives;
-  there is no copied log or agent-only pane model.
-- **Agent state can be data.** A harness emits structured lifecycle records;
-  terminal detection is the compatibility path when it does not.
-- **The wire is public.** Visual clients, the JSON CLI, SDK, and MCP adapter use
-  the same resource protocol rather than privileged side channels.
-- **Remote does not require a phux account.** `phux --remote me@mini` pairs over
-  SSH once; subsequent attaches dial the machine directly over QUIC.
+- Split, detach, and reattach in the TUI, or use a native or browser client.
+- Read terminal state, send input, and wait for output through the JSON CLI,
+  SDK, or MCP adapter. Visual and headless clients use the same resource protocol.
+- Read structured agent lifecycle records from a harness, with terminal
+  detection as the fallback.
+- Connect directly to remote machines: `phux --remote me@mini` pairs over SSH
+  once, then attaches over QUIC. No phux account is required.
 
 ## tmux, Herdr, or phux?
 
-Use **tmux** if you need a mature local multiplexer and nothing else. phux keeps
-the familiar attach, split, prefix, and detach loop, but earns its extra moving
-parts only when another client or an agent must share the terminal as a live,
-addressable object.
+Use tmux for mature terminal multiplexing. Choose phux when you also need
+public terminal and agent-event interfaces, independent clients, or direct
+remote attachment.
 
-Use **Herdr** if you want one integrated agent-workspace product. Herdr and phux
-both keep real PTYs alive and expose agent-aware control; they put the durable
-boundary in different places. Herdr projects its workspace model to its clients.
-phux exposes Terminal and AgentSession resources on one wire so independently
-shaped visual and headless clients remain peers.
+Use Herdr for an integrated agent workspace. Both systems keep real PTYs
+alive and expose agent-aware control. Herdr projects its workspace model to
+its clients; phux exposes Terminal and AgentSession resources for clients
+with their own layouts and workflows.
 
 [Choose by use case](./docs/when-to-use.md) ·
 [translate tmux keys](./docs/coming-from.md) ·

@@ -6,12 +6,10 @@ last-reviewed: 2026-09-27
 
 # Install
 
-**TL;DR.** Install official binaries on Apple-silicon macOS or supported
-Linux hosts through Homebrew, the curl installer, or release tarballs.
-Source builds use native tools or Nix. Direct installs use `phux update`;
-package-managed installs use their package manager. Choose numbered
-releases for normal use or opt into the moving `next` prerelease.
-Cockpit has a separate macOS installer.
+**TL;DR.** Install with Homebrew or the release installer on supported macOS
+and Linux hosts. Use numbered releases for stable builds or `next` for the
+moving prerelease. Update direct installs with `phux update`, package-managed
+installs with their package manager. Cockpit has a separate macOS installer.
 
 ---
 
@@ -35,12 +33,10 @@ Cockpit has a separate macOS installer.
 | From source | Contributors and source-first users | Clone, build, and install with native tools or Nix |
 | Agent skills | Harnesses that load SKILL.md | `npx skills add no-phux/skills` |
 
-The public install page is
-[https://docs.phux.sh/quickstart/install](https://docs.phux.sh/quickstart/install).
+Public install page: [docs.phux.sh/quickstart/install](https://docs.phux.sh/quickstart/install).
 
-Use the updater that owns your install. `phux update` replaces direct-release
-installs; it refuses to overwrite Homebrew, Cargo, or Nix installs and names
-the native command instead. See [Updating](#updating).
+Use the [updater for your install source](#updating). `phux update` refuses
+to overwrite Homebrew, Cargo, or Nix installs and prints the native command.
 
 Not supported: `cargo install phux`, Windows, and mise/asdf shims. The
 crates.io package is `phux-protocol`, not the CLI.
@@ -59,30 +55,26 @@ Homebrew 6 requires the explicit trust decision for a third-party tap; earlier
 Homebrew releases do not need that command. This installs both `phux` and
 `phux-mcp`. Use a source build if the Formula has not reached your target yet.
 
-The Formula ships arm64 macOS, x86_64 Linux, and arm64 Linux. On an Intel Mac it
-refuses with "The arm64 architecture is required for this software" rather than
-installing an arm64 binary that cannot run; build from source there.
+On Intel Macs the Formula refuses with "The arm64 architecture is required
+for this software"; build from source instead.
 
 ## Curl installer
 
-The installer is a convenience wrapper over the same GitHub release assets:
+Install the GitHub release assets:
 
 ```sh
 curl -fsSL https://phux.sh/install | sh
 ```
 
-That URL serves `scripts/install.sh` from this repository byte for byte; the
-site build copies it in rather than keeping a second copy, so there is nothing
-to drift. `https://phux.sh/install.sh` is the same script under a name your
-editor will syntax-highlight, and the raw GitHub URL still works if you would
-rather fetch from the repository directly:
+The URL serves this repository's `scripts/install.sh` unchanged, as does
+`https://phux.sh/install.sh`. You can also fetch it directly from GitHub:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/no-phux/phux/main/scripts/install.sh | sh
 ```
 
-The script is POSIX `sh`, so `sh`, `bash`, `dash`, and `ash` all run it. Read
-it before you pipe it anywhere, the way you should with any installer.
+Read the script before piping it to a shell. It uses POSIX `sh` and runs
+under `sh`, `bash`, `dash`, or `ash`.
 
 It verifies the release `.sha256` sidecar before unpacking and transactionally
 installs `phux` and `phux-mcp` into `${PHUX_INSTALL_DIR:-$HOME/.local/bin}`.
@@ -96,9 +88,9 @@ prerelease of green `main` instead:
 curl -fsSL https://phux.sh/install | sh -s -- --channel next
 ```
 
-Homebrew stays on stable. On success, the installer prints the exact command to run next. It prints a copy-paste `PATH` remedy only when that directory is not already on `PATH`.
-Every portable tarball and installer path includes `phux-mcp`; there is no
-separate MCP package to install.
+The installer prints the next command and, if needed, a `PATH` remedy.
+Every portable tarball and installer includes `phux-mcp`; no separate MCP
+package is needed. Homebrew stays on stable.
 
 To pin a specific release, pass any tag from the
 [releases page](https://github.com/no-phux/phux/releases):
@@ -109,25 +101,22 @@ curl -fsSL https://phux.sh/install | sh -s -- --version vX.Y.Z
 
 ## Cockpit (native macOS)
 
-Cockpit is versioned and released independently (`cockpit-vX.Y.Z` tags on a
-separate cadence from the CLI above). Install it with its own curl installer:
+Cockpit releases independently under `cockpit-vX.Y.Z` tags. Use its installer:
 
 ```sh
 curl -fsSL https://phux.sh/install-cockpit | sh
 ```
 
-That URL serves `scripts/install-cockpit.sh` from this repository byte for
-byte, the same way `/install` serves the CLI installer — read it before you
-pipe it anywhere. With no `--version`, it installs the latest `cockpit-vX.Y.Z`
-release; pin one with `sh -s -- --version cockpit-vX.Y.Z`. Pass
-`--channel next` (or set `PHUX_CHANNEL=next`) for the build of green `main`
-instead:
+The URL serves this repository's `scripts/install-cockpit.sh` unchanged;
+read it before running it. By default it installs the latest `cockpit-vX.Y.Z`.
+Pin a release with `sh -s -- --version cockpit-vX.Y.Z`, or use
+`--channel next` (also `PHUX_CHANNEL=next`) for the build of green `main`:
 
 ```sh
 curl -fsSL https://phux.sh/install-cockpit | sh -s -- --channel next
 ```
 
-It verifies the release checksum before unpacking, places **Phux Cockpit.app** in
+It verifies the release checksum before unpacking, places `Phux Cockpit.app` in
 `/Applications` (`~/Applications` when `/Applications` is not writable),
 writes a `phux-cockpit` launcher into
 `${PHUX_COCKPIT_BIN_DIR:-${PHUX_INSTALL_DIR:-$HOME/.local/bin}}`,
@@ -149,30 +138,28 @@ brew install --cask no-phux/tap/phux-cockpit
 Cockpit requires Apple silicon macOS 11 or later. Intel Macs have no release
 artifact; the curl installer and the cask both refuse there.
 
-From a running installer-placed app, **Check for Updates…** (View menu, or
-Settings → About) checks the channel the app was installed from. A stable
-app compares `CFBundleShortVersionString` to the latest `cockpit-vX.Y.Z`
-release. A next app compares its build SHA to the head of `next`. If a
-newer build exists, Install drives `scripts/install-cockpit.sh` — SHA256SUMS, atomic
-replace, quarantine-clear, and rollback on placement failure. After a
-successful replace the new binary relaunches; Phux-backed remote sessions stay
-on the server. Homebrew, Nix, and development copies refuse and print the
-native command instead of overwriting.
+For installer-placed apps, **Check for Updates…** (View menu or Settings → About)
+checks the installed channel: `CFBundleShortVersionString` against the latest
+`cockpit-vX.Y.Z` release for stable, or build SHA against `next` for prereleases.
+Install runs `scripts/install-cockpit.sh` with SHA256SUMS verification, atomic
+replacement, quarantine clearing, and rollback on placement failure.
+After replacement the app relaunches; phux-backed remote sessions remain on
+the server. Homebrew, Nix, and development copies refuse self-update and
+print the native command.
 
 ## Agent skills
 
-Harnesses that load Agent Skills install the product skills from the publish
-mirror:
+For harnesses that load Agent Skills:
 
 ```sh
 npx skills add no-phux/skills
 ```
 
-That installs `using-phux` and `using-phux-mcp`. Pass `--skill using-phux` or
-`--skill using-phux-mcp` to take one. The same skills are also served from
-`https://phux.sh` (`npx skills add https://phux.sh`). `phux --skill` and
-`phux mcp --skill` remain the version-matched copies compiled into the
-installed binaries. See [Agents](./consumers/agents.md).
+This installs `using-phux` and `using-phux-mcp`; select one with
+`--skill using-phux` or `--skill using-phux-mcp`. The same skills are served
+at `https://phux.sh` (`npx skills add https://phux.sh`).
+`phux --skill` and `phux mcp --skill` print version-matched copies compiled
+into the binaries. See [Agents](./consumers/agents.md).
 
 ## Release tarball
 
@@ -222,9 +209,8 @@ Interactive `phux`, `phux attach`, and `phux new` require both stdin and stdout
 to be terminals. Redirected invocations refuse before starting a server or
 emitting terminal control bytes; use the headless verbs for scripts and CI.
 
-If you are developing rather than installing, select the relevant native or
-Nix setup and scoped checks in [Contributor setup](./SETUP.md).
-For a checkout you edit continuously, install the current debug build with:
+For development setup and scoped checks, see [Contributor setup](./SETUP.md).
+To install a checkout's debug build:
 
 ```sh
 just install-dev             # build phux + phux-mcp into ~/.cargo/bin
@@ -275,18 +261,16 @@ phux channel next       # follow green main
 phux channel latest     # back to the latest vX.Y.Z
 ```
 
-Cockpit's in-app **Check for Updates…** is the same honesty for the macOS app:
-it only rewrites an installer-placed `Phux Cockpit.app`. See
+Cockpit's **Check for Updates…** only replaces installer-placed apps; see
 [Cockpit (native macOS)](#cockpit-native-macos).
 
-`phux update` exists because a deployment is a lockstep set: mismatched peers
-refuse each other at HELLO. See
-[ADR-0071](adr/0071-what-phux-1-0-commits-to.md). Default is the latest
-numbered GitHub release. `phux channel next` is the opt-in rail that tracks
-green `main` ([ADR-0113](adr/0113-next-release-channel.md)); `phux channel
-latest` (also `stable`) is the numbered releases. The choice is remembered in
-`<bindir>/.phux-channel` so later `phux update` stays on that rail. Homebrew
-stays on stable. `phux update --channel next` is the same switch.
+Keep peers on the same release: mismatched peers refuse each other at HELLO
+([ADR-0071](adr/0071-what-phux-1-0-commits-to.md)). The default channel is the
+latest numbered GitHub release. `phux channel next` tracks green `main`
+([ADR-0113](adr/0113-next-release-channel.md)); `phux channel latest`
+(also `stable`) selects numbered releases. `<bindir>/.phux-channel` stores
+the choice for later updates. `phux update --channel next` also switches
+channels. Homebrew stays on stable.
 
 On macOS, an installed Phux Cockpit moves with the CLI
 ([ADR-0138](adr/0138-cockpit-rides-the-next-channel.md)). `phux update`
@@ -303,8 +287,8 @@ version-manager shim, `phux update` warns and names it. The JSON reports it as
 1. Resolves the current GitHub release (the latest `vX.Y.Z`, `--channel next`,
    or the tag you pass to `--version`).
 2. Downloads `phux-<tag>-<target>.tar.gz` and its `.sha256` sidecar.
-3. **Verifies the checksum before unpacking anything.** A mismatch refuses,
-   names both digests, and installs nothing.
+3. Verifies the checksum before unpacking. A mismatch refuses, names both
+   digests, and installs nothing.
 4. Unpacks to a staging directory on the same filesystem and publishes under
    an update lock with a fsynced recovery journal, so `phux` and a sibling
    `phux-mcp` recover together as the old or new release after an
@@ -317,8 +301,8 @@ The full trust boundary — including what the checksum does and does not prove
 
 ### Install sources it recognizes
 
-`phux update` decides how phux was installed from the **symlink-resolved** path
-of the running binary, and only ever writes to installs it maintains.
+`phux update` identifies the install source from the running binary's
+symlink-resolved path. It writes only to direct-release installs.
 
 | Source | Recognized by | What `phux update` does |
 |---|---|---|
@@ -328,9 +312,8 @@ of the running binary, and only ever writes to installs it maintains.
 | Nix / NixOS | The path is under the Nix store (`/nix/store`, or `$NIX_STORE`) | Refuses; prints `nix profile upgrade phux`, or a flake update plus `nixos-rebuild switch` on NixOS |
 | Unknown | Anything else | Refuses, names the path, and lists the locations it does maintain |
 
-An unknown location is a **refusal, not a best-effort overwrite**. If you keep
-phux somewhere else on purpose, set `PHUX_INSTALL_DIR` to that directory and
-`phux update` will maintain it.
+For a direct install in another directory, set `PHUX_INSTALL_DIR` to let
+`phux update` maintain it. Unknown locations are otherwise refused.
 
 ### Homebrew
 
@@ -339,15 +322,13 @@ brew upgrade no-phux/tap/phux
 phux upgrade                    # hand the running server off to the new binary
 ```
 
-`brew upgrade` replaces the binary but does not touch a running server;
-`phux upgrade` is the second half. A server that was started from Homebrew
-re-execs its own path, so the two steps together preserve live panes.
+`brew upgrade` replaces the binary; `phux upgrade` hands the running server
+over to it. A Homebrew-started server re-execs its own path, preserving panes.
 
 ### Direct archives
 
-For curl-installer or tarball installs, `phux update` is the supported path;
-re-running the curl installer (with `--channel next` if that is your rail) is
-equivalent.
+Use `phux update`, or re-run the curl installer with `--channel next` if that
+is your channel.
 
 ### NixOS and Nix profiles
 
@@ -366,9 +347,8 @@ nix profile upgrade phux
 home-manager switch
 ```
 
-Then `phux upgrade` to move a running server onto the new store path — unless
-the store path changed, in which case stop the server and start it again, since
-the re-exec mechanism replays the *same* path.
+Run `phux upgrade` if the store path is unchanged. If it changed, stop and
+restart the server: live upgrade re-execs the same path.
 
 ### Checking and previewing
 
@@ -390,8 +370,8 @@ and a failure puts one JSON object on stderr.
 
 ### Rolling back
 
-The previous binaries are kept in `.phux-update-backup/` beside the new ones,
-with a manifest naming the version they are:
+The previous binaries and their version manifest remain in
+`.phux-update-backup/` beside the new ones:
 
 ```sh
 phux update --rollback
@@ -431,10 +411,9 @@ If the binary is missing or the wrong version runs, start with
 
 ## Shell completions
 
-`phux completion SHELL` writes a completion script to stdout for `bash`,
-`elvish`, `fish`, `powershell`, or `zsh`, generated from the binary's own
-argument parser. It contacts no server and reads no config, so it is safe in
-a shell startup file.
+`phux completion SHELL` writes a script for `bash`, `elvish`, `fish`,
+`powershell`, or `zsh`, generated from the binary's argument parser. It
+contacts no server and reads no config, so it is safe in a shell startup file.
 
 ```sh
 # zsh — any directory on $fpath works
@@ -447,6 +426,5 @@ phux completion bash > ~/.local/share/bash-completion/completions/phux
 phux completion fish > ~/.config/fish/completions/phux.fish
 ```
 
-Regenerate after upgrading phux. A stale script keeps completing verbs the
-new binary may have renamed or dropped.
+Regenerate after upgrading to reflect renamed or removed commands.
 

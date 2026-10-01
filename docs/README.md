@@ -6,10 +6,9 @@ last-reviewed: 2026-09-30
 
 # phux documentation
 
-**TL;DR.** Start with a working local terminal, choose an agent integration,
-or connect a remote machine. This index routes you by task and keeps the
-full CLI, protocol, architecture, and operational references reachable without
-requiring them for a first session.
+**TL;DR.** Start with the quickstart to run a terminal, detach, and reattach.
+Use the task guides below for configuration, coding agents, and remote access;
+the references cover commands, protocols, and implementation.
 
 ## Start here
 
@@ -38,18 +37,17 @@ For scripts and advanced automation, use the [agent CLI guide](./consumers/agent
 
 ## Connect machines
 
-[Remote access](./remote-access.md) starts with SSH enrollment and a first
-successful attach, then covers reconnect, pairing, overlays, and relays.
-The [remote troubleshooting sequence](./remote-access.md#troubleshooting)
-separates server, route, firewall, and credential failures.
+[Remote access](./remote-access.md) starts with SSH enrollment and attach,
+then covers reconnect, pairing, overlays, and relays.
+[Troubleshooting](./remote-access.md#troubleshooting) separates server,
+route, firewall, and credential failures.
 
 ## Performance and comparisons
 
-- [When to use phux](./when-to-use.md): task-fit comparisons with tmux, Herdr,
-  and cmux; choose a tool before comparing numbers.
+- [When to use phux](./when-to-use.md): compare workflows with tmux, Herdr, and cmux.
 - [Performance](./performance.md): measured results, methodology, and limits.
-- [Performance diagnostics](./operations.md#performance-observability): inspect
-  your running system rather than treating a published benchmark as a diagnosis.
+- [Performance diagnostics](./operations.md#performance-observability): measure
+  your running system.
 
 ## Troubleshoot and maintain
 
