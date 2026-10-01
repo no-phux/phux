@@ -1,6 +1,6 @@
 {
   "name": "@phux/pi",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Pi integration for controlling shared phux terminals",
   "type": "module",
   "license": "Apache-2.0",
@@ -39,7 +39,9 @@
     "extensions": [
       "./extensions/index.ts"
     ],
-    "skills": ["./skills"]
+    "skills": [
+      "./skills"
+    ]
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",

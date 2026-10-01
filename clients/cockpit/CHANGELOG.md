@@ -25,6 +25,43 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or server restart without restarting the app; recover the selected session
   by its confirmed name when a replacement server reuses numeric IDs.
 
+## [0.32.0](https://github.com/no-phux/phux/compare/cockpit-v0.31.0...cockpit-v0.32.0) (2026-10-01)
+
+
+### Features
+
+* **cockpit:** add host Insert Path picker ([a2a36d4](https://github.com/no-phux/phux/commit/a2a36d4f06a40b272f803872aad9106e0db7dcfa))
+* **cockpit:** adopt the user's Ghostty font and colours, default to 14pt ([d915bdc](https://github.com/no-phux/phux/commit/d915bdc6eed35af518b7999a223f3a3b5ea702d5))
+* **cockpit:** log local terminal spawn and resize geometry ([2407678](https://github.com/no-phux/phux/commit/2407678dff2e5494852066324125a4dc57d48b87))
+* **cockpit:** measure the host rasterizer against Ghostty and time its rows ([eb7c48f](https://github.com/no-phux/phux/commit/eb7c48f513023b31f689e3e609fee1238174f7e1))
+* **cockpit:** show where you are, every machine and every window ([715c575](https://github.com/no-phux/phux/commit/715c5751141ef7532724b5801af25dd2fdf99d0f))
+* **cockpit:** stabilize chrome and speed up pane updates ([e1c2ca3](https://github.com/no-phux/phux/commit/e1c2ca3283ae1852d1e45b12404f5a7e4d026e5e))
+
+
+### Bug Fixes
+
+* **client:** recover workspaces across server restarts ([e9721d2](https://github.com/no-phux/phux/commit/e9721d29fc1dec263d9324fd2bac83eb5e644639))
+* **cockpit:** acknowledge the bell and loss on local panes the user can see ([47d23fe](https://github.com/no-phux/phux/commit/47d23fe5a8dd7288c10eb2206b8c83c452b015e1))
+* **cockpit:** disarm EXIT before exit on bash 3.2 ([ce2f5eb](https://github.com/no-phux/phux/commit/ce2f5eb1eae1c5a1a08bb7a8589f19658e8e3781))
+* **cockpit:** exit nonzero from EXIT trap on macOS bash 3.2 ([#878](https://github.com/no-phux/phux/issues/878)) ([9811117](https://github.com/no-phux/phux/commit/9811117a76a477717ca1319a2022249e1256066b))
+* **cockpit:** hold keys typed while a Phux terminal reconnects ([#881](https://github.com/no-phux/phux/issues/881)) ([64978d6](https://github.com/no-phux/phux/commit/64978d621321c0b77073c0e6e8053f47d979347e))
+* **cockpit:** keep Re-import from Ghostty beside Reload and singularize one palette colour ([87c36f6](https://github.com/no-phux/phux/commit/87c36f61d691f40c88eb4d1e9b6d33a6cc092b21))
+* **cockpit:** launch under macOS Bash 3.2 without empty arrays ([#884](https://github.com/no-phux/phux/issues/884)) ([a2824b8](https://github.com/no-phux/phux/commit/a2824b819c83c9d99232561dd5a5b29ba4664dcf))
+* **cockpit:** make the everyday-remote probe import history while pinned (phux-qt5h) ([cdf59ef](https://github.com/no-phux/phux/commit/cdf59ef49edc9f45df3f8335930f83f946f7f1c7))
+* **pair:** mint only against a live remote listener ([1f3efbb](https://github.com/no-phux/phux/commit/1f3efbb30b7c4322b85a491f6ad53585f675b4e8))
+* propagate terminal geometry consistently across clients ([#956](https://github.com/no-phux/phux/issues/956)) ([7f80b7c](https://github.com/no-phux/phux/commit/7f80b7c96fe576c3292713a92a4237e81ee5fbd9))
+
+
+### Refactors
+
+* **cli:** retire the host enroll alias and move Cockpit to host add ([0f99cb7](https://github.com/no-phux/phux/commit/0f99cb7d4f02ce3a252b31821210758ca5e29599))
+* repo-wide cull of dead code, redundant tests, and hack patches ([#888](https://github.com/no-phux/phux/issues/888)) ([1f73694](https://github.com/no-phux/phux/commit/1f73694e73686cac06b9f27455cb061f0328f842))
+
+
+### Documentation
+
+* **cockpit:** record the host-versus-Ghostty ink comparison at scale 1 ([990227a](https://github.com/no-phux/phux/commit/990227a1a748ff2671d2b88adbe58a3010de9de0))
+
 ## [0.31.0](https://github.com/no-phux/phux/compare/cockpit-v0.30.0...cockpit-v0.31.0) (2026-09-26)
 
 
