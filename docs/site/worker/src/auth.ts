@@ -36,7 +36,8 @@ export function verifySyntheticBearer(
   let difference = candidate.length ^ secret.length;
   const length = Math.max(candidate.length, secret.length);
   for (let index = 0; index < length; index++) {
-    difference |= (candidate.charCodeAt(index) || 0) ^ (secret.charCodeAt(index) || 0);
+    difference |=
+      (candidate.charCodeAt(index) || 0) ^ (secret.charCodeAt(index) || 0);
   }
   return difference === 0
     ? { principal: "synthetic:production-monitor" }
@@ -49,27 +50,43 @@ interface SessionClaims extends SessionIdentity {
 
 interface TransactionClaims {
   provider: "github" | "google";
+  state: string;
   verifier: string;
   nonce?: string;
   returnPath: "/" | "/embed";
   exp: number;
 }
 
-type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+type AuthError =
+  | "session_expired"
+  | "cancelled"
+  | "account_too_new"
+  | "configuration"
+  | "provider_unavailable";
+
+type Fetcher = (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) => Promise<Response>;
 
 function base64UrlEncode(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  return btoa(binary)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
 }
 
 function base64UrlDecode(value: string): Uint8Array | null {
   try {
-    const base64 = value.replaceAll("-", "+").replaceAll("_", "/").padEnd(
-      Math.ceil(value.length / 4) * 4,
-      "=",
+    const base64 = value
+      .replaceAll("-", "+")
+      .replaceAll("_", "/")
+      .padEnd(Math.ceil(value.length / 4) * 4, "=");
+    return Uint8Array.from(atob(base64), (character) =>
+      character.charCodeAt(0),
     );
-    return Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
   } catch {
     return null;
   }
@@ -83,7 +100,9 @@ async function hmac(secret: string, value: string): Promise<Uint8Array> {
     false,
     ["sign"],
   );
-  return new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(value)));
+  return new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, encoder.encode(value)),
+  );
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -109,12 +128,15 @@ async function verifyClaims<T>(
   const parts = value.split(".");
   if (parts.length !== 2) return null;
   const provided = base64UrlDecode(parts[1]!);
-  if (!provided || !equalBytes(await hmac(secret, parts[0]!), provided)) return null;
+  if (!provided || !equalBytes(await hmac(secret, parts[0]!), provided))
+    return null;
 
   const bytes = base64UrlDecode(parts[0]!);
   if (!bytes) return null;
   try {
-    const claims = JSON.parse(new TextDecoder().decode(bytes)) as T & { exp?: unknown };
+    const claims = JSON.parse(new TextDecoder().decode(bytes)) as T & {
+      exp?: unknown;
+    };
     if (typeof claims.exp !== "number" || claims.exp <= now) return null;
     return claims;
   } catch {
@@ -126,7 +148,11 @@ function cookies(request: Request): Map<string, string> {
   const result = new Map<string, string>();
   for (const part of (request.headers.get("Cookie") ?? "").split(";")) {
     const separator = part.indexOf("=");
-    if (separator > 0) result.set(part.slice(0, separator).trim(), part.slice(separator + 1).trim());
+    if (separator > 0)
+      result.set(
+        part.slice(0, separator).trim(),
+        part.slice(separator + 1).trim(),
+      );
   }
   return result;
 }
@@ -148,25 +174,42 @@ function randomValue(byteLength = 32): string {
 }
 
 async function pkceChallenge(verifier: string): Promise<string> {
-  return base64UrlEncode(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(verifier))));
+  return base64UrlEncode(
+    new Uint8Array(
+      await crypto.subtle.digest("SHA-256", encoder.encode(verifier)),
+    ),
+  );
 }
 
 function safeText(value: unknown, maxLength = 200): string | null {
   if (typeof value !== "string") return null;
-  const cleaned = value.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, maxLength);
+  const cleaned = value
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim()
+    .slice(0, maxLength);
   return cleaned || null;
 }
 
 function returnPath(url: URL): "/" | "/embed" | null {
   const value =
-    url.searchParams.get("return_to") ?? url.searchParams.get("returnTo") ?? "/";
+    url.searchParams.get("return_to") ??
+    url.searchParams.get("returnTo") ??
+    "/";
   return value === "/" || value === "/embed" ? value : null;
 }
 
-function redirectAfterAuth(path: "/" | "/embed", result: "success" | "error"): Response {
+function redirectAfterAuth(
+  path: "/" | "/embed",
+  result: "success" | "error",
+  error?: AuthError,
+): Response {
   const url = new URL(path, PUBLIC_APP_ORIGIN);
   url.searchParams.set("auth", result);
-  return new Response(null, { status: 302, headers: { Location: url.toString() } });
+  if (error) url.searchParams.set("auth_error", error);
+  return new Response(null, {
+    status: 302,
+    headers: { Location: url.toString() },
+  });
 }
 
 function json(value: unknown, status = 200, cors = false): Response {
@@ -182,8 +225,13 @@ function json(value: unknown, status = 200, cors = false): Response {
   });
 }
 
-async function formResponse(response: Response): Promise<Record<string, unknown>> {
-  const value = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+async function formResponse(
+  response: Response,
+): Promise<Record<string, unknown>> {
+  const value = (await response.json().catch(() => ({}))) as Record<
+    string,
+    unknown
+  >;
   if (!response.ok) {
     const error = safeText(value.error, 80) ?? `http_${response.status}`;
     throw new Error(error);
@@ -191,7 +239,9 @@ async function formResponse(response: Response): Promise<Record<string, unknown>
   return value;
 }
 
-async function oauthTokenBody(response: Response): Promise<Record<string, unknown>> {
+async function oauthTokenBody(
+  response: Response,
+): Promise<Record<string, unknown>> {
   const raw = await response.text();
   const contentType = response.headers.get("content-type") ?? "";
   let value: Record<string, unknown> = {};
@@ -210,13 +260,19 @@ async function oauthTokenBody(response: Response): Promise<Record<string, unknow
   return value;
 }
 
-function validTransaction(value: TransactionClaims, provider: "github" | "google"): boolean {
+function validTransaction(
+  value: TransactionClaims,
+  provider: "github" | "google",
+): boolean {
   return (
     value.provider === provider &&
+    typeof value.state === "string" &&
+    value.state.length === 43 &&
     typeof value.verifier === "string" &&
     value.verifier.length >= 43 &&
     (value.returnPath === "/" || value.returnPath === "/embed") &&
-    (provider === "github" || (typeof value.nonce === "string" && value.nonce.length >= 32))
+    (provider === "github" ||
+      (typeof value.nonce === "string" && value.nonce.length >= 32))
   );
 }
 
@@ -225,7 +281,8 @@ function oauthRedirectUri(provider: "github" | "google"): string {
 }
 
 function githubUserId(value: unknown): number | null {
-  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0)
+    return value;
   if (typeof value === "string" && /^\d{1,16}$/.test(value)) {
     const id = Number(value);
     if (Number.isSafeInteger(id) && id > 0) return id;
@@ -240,10 +297,17 @@ async function readOAuthTransaction(
   now: number,
 ): Promise<TransactionClaims | null> {
   const rawState = new URL(request.url).searchParams.get("state") ?? "";
-  const transaction = await verifyClaims<TransactionClaims>(secret, rawState, now);
+  const cookieVal = cookies(request).get(
+    `${TRANSACTION_COOKIE_PREFIX}${provider}`,
+  );
+  const transaction = await verifyClaims<TransactionClaims>(
+    secret,
+    cookieVal,
+    now,
+  );
   if (!transaction || !validTransaction(transaction, provider)) return null;
-  const cookieVal = cookies(request).get(`${TRANSACTION_COOKIE_PREFIX}${provider}`);
-  if (cookieVal !== undefined && cookieVal !== rawState) return null;
+  if (!equalBytes(encoder.encode(transaction.state), encoder.encode(rawState)))
+    return null;
   return transaction;
 }
 
@@ -251,9 +315,11 @@ function finishAuthRedirect(
   path: "/" | "/embed",
   result: "success" | "error",
   extraCookies: string[] = [],
+  error?: AuthError,
 ): Response {
-  const response = redirectAfterAuth(path, result);
-  for (const extra of extraCookies) response.headers.append("Set-Cookie", extra);
+  const response = redirectAfterAuth(path, result, error);
+  for (const extra of extraCookies)
+    response.headers.append("Set-Cookie", extra);
   response.headers.set("Cache-Control", "no-store");
   return response;
 }
@@ -263,7 +329,11 @@ export async function verifySessionCookie(
   secret: string,
   now = Date.now(),
 ): Promise<SessionIdentity | null> {
-  const claims = await verifyClaims<SessionClaims>(secret, cookies(request).get(SESSION_COOKIE), now);
+  const claims = await verifyClaims<SessionClaims>(
+    secret,
+    cookies(request).get(SESSION_COOKIE),
+    now,
+  );
   if (
     !claims ||
     (claims.provider !== "github" && claims.provider !== "google") ||
@@ -286,18 +356,36 @@ export function createAuthRequestHandler(
   fetcher: Fetcher = fetch,
   now: () => number = Date.now,
 ) {
-  return async function authRequestHandler(request: Request, env: AuthEnv): Promise<Response | null> {
+  return async function authRequestHandler(
+    request: Request,
+    env: AuthEnv,
+  ): Promise<Response | null> {
     const url = new URL(request.url);
     if (!url.pathname.startsWith("/auth/")) return null;
-    if (!isAllowedAuthHost(url.origin)) return json({ error: "invalid auth origin" }, 400);
-    if (!env.AUTH_COOKIE_SECRET) return json({ error: "authentication is not configured" }, 500);
+    if (!isAllowedAuthHost(url.origin))
+      return json({ error: "invalid auth origin" }, 400);
+    if (!env.AUTH_COOKIE_SECRET) {
+      if (
+        /^\/auth\/(github|google)(\/callback)?$/.test(url.pathname) &&
+        request.method === "GET"
+      ) {
+        const destination = returnPath(url);
+        if (!destination) return json({ error: "invalid return path" }, 400);
+        return finishAuthRedirect(destination, "error", [], "configuration");
+      }
+      return json({ error: "authentication is not configured" }, 500);
+    }
 
     if (url.pathname === "/auth/session" && request.method === "GET") {
       const origin = request.headers.get("Origin");
       if (origin && !isAllowedAuthHost(origin)) {
         return json({ error: "origin not allowed" }, 403);
       }
-      const identity = await verifySessionCookie(request, env.AUTH_COOKIE_SECRET, now());
+      const identity = await verifySessionCookie(
+        request,
+        env.AUTH_COOKIE_SECRET,
+        now(),
+      );
       return json(
         identity
           ? {
@@ -333,7 +421,8 @@ export function createAuthRequestHandler(
     }
 
     const match = /^\/auth\/(github|google)(\/callback)?$/.exec(url.pathname);
-    if (!match || request.method !== "GET") return json({ error: "not found" }, 404);
+    if (!match || request.method !== "GET")
+      return json({ error: "not found" }, 404);
     const provider = match[1] as "github" | "google";
     const callback = Boolean(match[2]);
     if (
@@ -341,7 +430,9 @@ export function createAuthRequestHandler(
         ? !env.GITHUB_OAUTH_CLIENT_ID || !env.GITHUB_OAUTH_CLIENT_SECRET
         : !env.GOOGLE_OIDC_CLIENT_ID || !env.GOOGLE_OIDC_CLIENT_SECRET
     ) {
-      return json({ error: "authentication is not configured" }, 500);
+      const destination = returnPath(url);
+      if (!destination) return json({ error: "invalid return path" }, 400);
+      return finishAuthRedirect(destination, "error", [], "configuration");
     }
     const transactionCookie = `${TRANSACTION_COOKIE_PREFIX}${provider}`;
     const redirectUri = oauthRedirectUri(provider);
@@ -350,15 +441,20 @@ export function createAuthRequestHandler(
       const destination = returnPath(url);
       if (!destination) return json({ error: "invalid return path" }, 400);
       const verifier = randomValue(48);
+      const state = randomValue();
       const nonce = provider === "google" ? randomValue() : undefined;
       const transaction: TransactionClaims = {
         provider,
+        state,
         verifier,
         ...(nonce ? { nonce } : {}),
         returnPath: destination,
         exp: now() + TRANSACTION_MAX_AGE_SECONDS * 1_000,
       };
-      const state = await signClaims(env.AUTH_COOKIE_SECRET, transaction);
+      const transactionValue = await signClaims(
+        env.AUTH_COOKIE_SECRET,
+        transaction,
+      );
       const authorization = new URL(
         provider === "github"
           ? "https://github.com/login/oauth/authorize"
@@ -366,12 +462,17 @@ export function createAuthRequestHandler(
       );
       authorization.searchParams.set(
         "client_id",
-        provider === "github" ? env.GITHUB_OAUTH_CLIENT_ID : env.GOOGLE_OIDC_CLIENT_ID,
+        provider === "github"
+          ? env.GITHUB_OAUTH_CLIENT_ID
+          : env.GOOGLE_OIDC_CLIENT_ID,
       );
       authorization.searchParams.set("redirect_uri", redirectUri);
       authorization.searchParams.set("response_type", "code");
       authorization.searchParams.set("state", state);
-      authorization.searchParams.set("code_challenge", await pkceChallenge(verifier));
+      authorization.searchParams.set(
+        "code_challenge",
+        await pkceChallenge(verifier),
+      );
       authorization.searchParams.set("code_challenge_method", "S256");
       if (provider === "google") {
         authorization.searchParams.set("nonce", nonce!);
@@ -383,7 +484,11 @@ export function createAuthRequestHandler(
       });
       response.headers.append(
         "Set-Cookie",
-        cookie(transactionCookie, state, TRANSACTION_MAX_AGE_SECONDS),
+        cookie(
+          transactionCookie,
+          transactionValue,
+          TRANSACTION_MAX_AGE_SECONDS,
+        ),
       );
       response.headers.set("Cache-Control", "no-store");
       return response;
@@ -396,29 +501,52 @@ export function createAuthRequestHandler(
       now(),
     );
     if (!transaction) {
-      return finishAuthRedirect("/", "error", [clearCookie(transactionCookie)]);
+      return finishAuthRedirect(
+        "/",
+        "error",
+        [clearCookie(transactionCookie)],
+        "session_expired",
+      );
     }
     if (!url.searchParams.get("code") || url.searchParams.has("error")) {
-      return finishAuthRedirect(transaction.returnPath, "error", [clearCookie(transactionCookie)]);
+      const error =
+        url.searchParams.get("error") === "access_denied"
+          ? "cancelled"
+          : "provider_unavailable";
+      return finishAuthRedirect(
+        transaction.returnPath,
+        "error",
+        [clearCookie(transactionCookie)],
+        error,
+      );
     }
 
     let identity: SessionIdentity;
     try {
       if (provider === "github") {
-        const tokenResponse = await fetcher("https://github.com/login/oauth/access_token", {
-          method: "POST",
-          headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            client_id: env.GITHUB_OAUTH_CLIENT_ID,
-            client_secret: env.GITHUB_OAUTH_CLIENT_SECRET,
-            code: url.searchParams.get("code")!,
-            redirect_uri: redirectUri,
-            code_verifier: transaction.verifier,
-          }),
-        });
+        const tokenResponse = await fetcher(
+          "https://github.com/login/oauth/access_token",
+          {
+            method: "POST",
+            headers: {
+              Accept: "application/json",
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+            body: new URLSearchParams({
+              client_id: env.GITHUB_OAUTH_CLIENT_ID,
+              client_secret: env.GITHUB_OAUTH_CLIENT_SECRET,
+              code: url.searchParams.get("code")!,
+              redirect_uri: redirectUri,
+              code_verifier: transaction.verifier,
+            }),
+          },
+        );
         const tokenBody = await oauthTokenBody(tokenResponse);
         const token = safeText(tokenBody.access_token, 2_000);
-        if (!token) throw new Error(safeText(tokenBody.error, 80) ?? "GitHub access token missing");
+        if (!token)
+          throw new Error(
+            safeText(tokenBody.error, 80) ?? "GitHub access token missing",
+          );
         const userResponse = await fetcher("https://api.github.com/user", {
           headers: {
             Accept: "application/vnd.github+json",
@@ -431,32 +559,39 @@ export function createAuthRequestHandler(
         const login = safeText(user.login);
         const createdAt = Date.parse(safeText(user.created_at) ?? "");
         const userId = githubUserId(user.id);
-        if (
-          userId === null ||
-          !login ||
-          !Number.isFinite(createdAt) ||
-          createdAt > now() - GITHUB_MIN_ACCOUNT_AGE_MS
-        ) {
+        if (userId === null || !login || !Number.isFinite(createdAt)) {
           throw new Error("Invalid GitHub identity");
         }
+        if (createdAt > now() - GITHUB_MIN_ACCOUNT_AGE_MS)
+          throw new Error("github_account_too_new");
         identity = { principal: `github:${userId}`, provider, display: login };
       } else {
-        const tokenResponse = await fetcher("https://oauth2.googleapis.com/token", {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            client_id: env.GOOGLE_OIDC_CLIENT_ID,
-            client_secret: env.GOOGLE_OIDC_CLIENT_SECRET,
-            code: url.searchParams.get("code")!,
-            grant_type: "authorization_code",
-            redirect_uri: redirectUri,
-            code_verifier: transaction.verifier,
-          }),
-        });
-        const idToken = safeText((await formResponse(tokenResponse)).id_token, 20_000);
+        const tokenResponse = await fetcher(
+          "https://oauth2.googleapis.com/token",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+              client_id: env.GOOGLE_OIDC_CLIENT_ID,
+              client_secret: env.GOOGLE_OIDC_CLIENT_SECRET,
+              code: url.searchParams.get("code")!,
+              grant_type: "authorization_code",
+              redirect_uri: redirectUri,
+              code_verifier: transaction.verifier,
+            }),
+          },
+        );
+        const idToken = safeText(
+          (await formResponse(tokenResponse)).id_token,
+          20_000,
+        );
         if (!idToken) throw new Error("Google ID token missing");
-        const jwksResponse = await fetcher("https://www.googleapis.com/oauth2/v3/certs");
-        const jwks = await formResponse(jwksResponse) as unknown as JSONWebKeySet;
+        const jwksResponse = await fetcher(
+          "https://www.googleapis.com/oauth2/v3/certs",
+        );
+        const jwks = (await formResponse(
+          jwksResponse,
+        )) as unknown as JSONWebKeySet;
         const verified = await jwtVerify(idToken, createLocalJWKSet(jwks), {
           issuer: ["https://accounts.google.com", "accounts.google.com"],
           audience: env.GOOGLE_OIDC_CLIENT_ID,
@@ -465,15 +600,38 @@ export function createAuthRequestHandler(
         const sub = safeText(verified.payload.sub);
         const email = safeText(verified.payload.email);
         const display = safeText(verified.payload.name) ?? email;
-        if (!sub || !email || !display || verified.payload.email_verified !== true || verified.payload.nonce !== transaction.nonce) {
+        if (
+          !sub ||
+          !email ||
+          !display ||
+          verified.payload.email_verified !== true ||
+          verified.payload.nonce !== transaction.nonce
+        ) {
           throw new Error("Invalid Google identity");
         }
         identity = { principal: `google:${sub}`, provider, display, email };
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : "unknown";
-      console.log(`oauth_callback_failed provider=${provider} reason=${reason}`);
-      return finishAuthRedirect(transaction.returnPath, "error", [clearCookie(transactionCookie)]);
+      const failure =
+        reason === "github_account_too_new"
+          ? "account_too_new"
+          : [
+                "incorrect_client_credentials",
+                "invalid_client",
+                "redirect_uri_mismatch",
+              ].includes(reason)
+            ? "configuration"
+            : "provider_unavailable";
+      console.log(
+        `oauth_callback_failed provider=${provider} reason=${failure}`,
+      );
+      return finishAuthRedirect(
+        transaction.returnPath,
+        "error",
+        [clearCookie(transactionCookie)],
+        failure,
+      );
     }
 
     const session = await signClaims(env.AUTH_COOKIE_SECRET, {

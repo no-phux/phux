@@ -60,7 +60,7 @@ terminal traffic). See [ADR-0024]/[ADR-0025] for why this beats linking them.
 `#[wasm_bindgen]` entry points, designed to be driven from JS:
 
 ```js
-import init, { start, start_webtransport } from "./pkg/phux_web.js";
+import init, { start, start_hosted, start_webtransport } from "./pkg/phux_web.js";
 await init();
 // finds <canvas id="…">, connects, attaches, and runs for the connection's life
 await start("wss://host/session", "my-canvas", /*cols*/ 100, /*rows*/ 24);
@@ -69,8 +69,12 @@ await start("wss://host/session", "my-canvas", /*cols*/ 100, /*rows*/ 24);
 // Fallback carries that token in Sec-WebSocket-Protocol, never the WSS URL:
 await start_webtransport("https://host:4433/session", "wss://host/session",
                          "my-canvas", 100, 24);
-// the hosted live-demo entry returns a controller: close() and resize(cols, rows)
+// hosted live-demo entry returns a controller
 const client = await start_hosted(url, "my-canvas", 100, 24, onEvent, signal);
+client.split_pane("vertical"); // side-by-side; "horizontal" stacks panes
+client.focus_next_pane();
+client.close_pane();           // keeps at least one terminal
+// client.resize(cols, rows) resizes the view; client.close() releases it
 ```
 
 Input, scrollback, selection, find, mouse and focus reporting, links, the bell and
@@ -106,9 +110,10 @@ nix develop .#browser -c python3 scripts/ci/web-browser.py
 
 ## Scope
 
-Single terminal; text + color + cursor. Splits/layout are the TUI's job. Image
-drawing (sixel/Kitty graphics — which the engine *parses*) is a future renderer
-pass.
+Up to four independent terminal panes on one transport, with text, color, and
+cursor rendering. Pane controls, shortcuts, and events are documented in
+[the web client guide](../../docs/consumers/web.md#in-the-page). Images
+(sixel/Kitty graphics, which the engine parses) are not drawn.
 
 [ADR-0017]: ../../docs/adr/0017-tui-not-protocol-privileged.md
 [ADR-0024]: ../../docs/adr/0024-wire-owns-input-atoms.md

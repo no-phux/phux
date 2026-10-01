@@ -198,9 +198,10 @@ paths are scoped to `docs/site/**`.
      "Invalid Redirect URI" page.
      Request no scopes. An unverified-app caution on first authorize is not a
      failure; publisher verification is the only way to remove it. The Worker
-     always sends that public-site `redirect_uri`, and the OAuth `state` is the
-     signed transaction, so a no-scope GitHub bounce that drops the transaction
-     cookie still completes.
+     always sends that public-site `redirect_uri`. OAuth `state` is an opaque
+     nonce matched against a required signed HttpOnly transaction cookie; the
+     PKCE verifier remains only in that cookie. A missing, expired, or mismatched
+     cookie fails closed with a retryable sign-in message, never a stateless fallback.
    - Google Web OAuth client in the `phux-shell-*` project: authorized
      JavaScript origins `https://phux.sh` and `https://shell.phux.sh`;
      authorized redirect URI exactly `https://phux.sh/auth/google/callback`
