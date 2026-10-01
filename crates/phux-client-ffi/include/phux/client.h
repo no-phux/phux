@@ -1074,7 +1074,11 @@ PhuxClientResult phux_client_send_key(PhuxClient *client, const PhuxResourceId *
 PhuxClientResult phux_client_send_mouse(PhuxClient *client, const PhuxResourceId *terminal_id, const PhuxMouseEvent *event);
 PhuxClientResult phux_client_send_focus(PhuxClient *client, const PhuxResourceId *terminal_id, bool focused);
 PhuxClientResult phux_client_send_paste(PhuxClient *client, const PhuxResourceId *terminal_id, const uint8_t *data, size_t len, bool trusted);
+/* Queue exact cells only for a live, ready, non-viewer subscription.
+ * InvalidState means not ready/allowed; Ok is not an application receipt. */
 PhuxClientResult phux_client_terminal_resize(PhuxClient *client, const PhuxResourceId *terminal_id, uint16_t cols, uint16_t rows);
+/* Retain desired cells/pixels through attach and reconnect. Same-size calls
+ * reassert intent. The authoritative grid, not Ok, confirms applied geometry. */
 PhuxClientResult phux_client_viewport_resize(PhuxClient *client, uint16_t cols, uint16_t rows, bool has_pixel_size, uint16_t pixel_width, uint16_t pixel_height);
 /* kind: 0 top, 1 live tail, 2 `value` rows (negative toward history),
  * 3 absolute row `value`, 4 the `value`th shell prompt (OSC 133) above

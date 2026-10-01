@@ -5649,6 +5649,44 @@ test "shipping exit of superseded scratch shell preserves confirmed Phux focus" 
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
+fn paintViewportFixture(engine: *Engine, size: native_sdk.geometry.SizeF) !void {
+    const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
+    defer std.testing.allocator.free(commands);
+    const builder = try std.testing.allocator.create(canvas.Builder);
+    defer std.testing.allocator.destroy(builder);
+    builder.initAt(commands);
+    try engine.paint(builder, size, cockpit.projection.cockpitTokens(engine.model));
+}
+
+test "local viewport waits for a repaint after font or DPI changes" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const engine = bridge.engine.?;
+    const model = engine.model;
+    const pane = model.provider.terminal(model.focusedTerminalRef().?).?;
+    const size = native_sdk.geometry.SizeF.init(900, 500);
+    var fx = Recorder{};
+    var frame: native_sdk.platform.GpuFrame = .{ .label = canvas_label, .size = size, .scale_factor = 1 };
+    try paintViewportFixture(engine, size);
+    engine.pumpViewports(&fx, frame);
+    const before = pane.session.cols();
+    try std.testing.expect(model.stepFontSize(3));
+    engine.pumpViewports(&fx, frame);
+    try std.testing.expectEqual(before, pane.session.cols());
+    const stale = cockpit.projection.proposedViewportsIn(model, model.wsConst(), size);
+    try std.testing.expect(stale.incomplete);
+    try std.testing.expectEqual(@as(usize, 0), stale.slice().len);
+    try paintViewportFixture(engine, size);
+    engine.pumpViewports(&fx, frame);
+    try std.testing.expect(pane.session.cols() < before);
+    frame.scale_factor = 2;
+    engine.pumpViewports(&fx, frame);
+    try std.testing.expect(cockpit.projection.proposedViewportsIn(model, model.wsConst(), size).incomplete);
+    try paintViewportFixture(engine, size);
+    try std.testing.expect(!cockpit.projection.proposedViewportsIn(model, model.wsConst(), size).incomplete);
+}
+
 test "shipping frame resizes a published Phux viewport once" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.start();
@@ -5665,6 +5703,7 @@ test "shipping frame resizes a published Phux viewport once" {
         .frame_index = 2,
         .timestamp_ns = 2,
     };
+    try paintViewportFixture(engine, frame.size);
     _ = onFrame(&rig.app_state.model, frame);
     const after = remote.lastViewport(ref) orelse return error.TestExpectedRemoteViewport;
     if (before) |old| try std.testing.expect(!old.eql(after));
@@ -5681,6 +5720,7 @@ test "pending attachment cannot propose a viewport for a reused remote identity"
     const ref = try rig.attachFixture();
     const model = bridge.engine.?.model;
     const size = native_sdk.geometry.SizeF{ .width = 900, .height = 500 };
+    try paintViewportFixture(bridge.engine.?, size);
     const before = cockpit.projection.proposedViewportsIn(model, model.ws(), size);
     try std.testing.expectEqual(@as(usize, 1), before.slice().len);
     model.rejectAttachmentContext();
@@ -8479,6 +8519,7 @@ test "remote Find survives staged resize rebootstrap and reruns only on READY" {
         .frame_index = 2,
         .timestamp_ns = 2,
     };
+    try paintViewportFixture(engine, frame.size);
     engine.pumpViewports(&fx, frame);
     const closed_rows = remote.lastViewport(ref).?.rows;
     try std.testing.expect(remotePresentationCommand(engine, .find, &fx));

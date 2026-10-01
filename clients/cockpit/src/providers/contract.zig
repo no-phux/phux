@@ -241,7 +241,13 @@ pub const KeyInput = struct {
 pub const MouseAction = enum { press, release, move };
 pub const MouseButton = enum(u8) { none, left, middle, right, button_4, button_5, button_6, button_7, _ };
 pub const MouseMode = enum(u32) { off, x10, normal, button, any_motion };
-pub const MeasuredCell = struct { width: f32, height: f32 };
+pub const MeasuredCell = struct {
+    width: f32,
+    height: f32,
+    font_id: canvas.FontId = 0,
+    font_size: f32 = 0,
+    scale_factor: f32 = 1,
+};
 pub const SelectionGesture = struct {
     phase: enum(u32) { press, drag, release },
     clicks: u8 = 1,

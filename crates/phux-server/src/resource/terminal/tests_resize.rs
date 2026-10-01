@@ -5,43 +5,173 @@
 use super::test_support::*;
 use super::*;
 
-/// Resize updates the `Terminal` (the PTY ioctl is covered elsewhere).
+/// More geometry updates than the bounded mailbox can hold still apply
+/// the final grid and PTY size before the attach snapshot is captured.
 #[tokio::test(flavor = "current_thread")]
-async fn resize_updates_terminal_dims() {
+async fn saturated_geometry_applies_final_size_before_snapshot() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let bundle = TerminalActor::new(80, 24).expect("new");
-            let handle = bundle.handle.clone();
-            let token = bundle.token;
-            let join = tokio::task::spawn_local(bundle.actor.run());
-
-            handle
-                .terminal()
-                .expect("terminal facet")
+            let bundle = TerminalActor::new_with_command(CommandBuilder::new("/bin/cat"), 80, 24)
+                .expect("spawn");
+            let master = std::sync::Arc::clone(&bundle.actor.pty.as_ref().expect("pty").master);
+            let terminal = bundle.handle.terminal().expect("terminal").clone();
+            let mut out = bundle.handle.output.subscribe();
+            let request = ResizeRequest {
+                cols: 90,
+                rows: 30,
+                cell_px: Some((9, 18)),
+                resync_clients: true,
+                resync_only: false,
+                resync_for: None,
+            };
+            terminal.resize.try_send(request).expect("pixel donor");
+            for cols in 1..=512 {
+                terminal
+                    .resize
+                    .try_send(ResizeRequest {
+                        cols,
+                        rows: 30,
+                        cell_px: None,
+                        resync_clients: false,
+                        ..request
+                    })
+                    .expect("geometry cannot fill the mailbox");
+            }
+            terminal
                 .resize
-                .send(ResizeRequest {
-                    cols: 120,
-                    rows: 40,
+                .try_send(ResizeRequest {
+                    cols: 137,
+                    rows: 53,
                     cell_px: None,
                     resync_clients: false,
-                    resync_only: false,
-                    resync_for: None,
+                    ..request
                 })
+                .expect("final geometry");
+            let (reply, snapshot) = tokio::sync::oneshot::channel();
+            terminal
+                .snapshot
+                .try_send(SnapshotRequest {
+                    scrollback: None,
+                    max_bytes: 1024 * 1024,
+                    max_frames: 64,
+                    chunk_bytes: 64 * 1024,
+                    reply,
+                })
+                .expect("queue attach capture before actor starts");
+            let token = bundle.token;
+            let join = tokio::task::spawn_local(bundle.actor.run());
+            let (snapshot, _) = tokio::time::timeout(ACTOR_EXIT_DEADLINE, snapshot)
                 .await
-                .expect("send resize");
-            // Let the actor process the resize before shutdown.
-            for _ in 0..16 {
-                tokio::task::yield_now().await;
-            }
-
+                .expect("capture deadline")
+                .expect("actor reply")
+                .expect("snapshot");
+            assert_eq!((snapshot.cols, snapshot.rows), (137, 53));
+            let size = master.lock().expect("master").get_size().expect("winsize");
+            assert_eq!(
+                (size.cols, size.rows, size.pixel_width, size.pixel_height),
+                (137, 53, 1233, 954)
+            );
+            let resync = tokio::time::timeout(ACTOR_EXIT_DEADLINE, out.recv())
+                .await
+                .expect("resync deadline")
+                .expect("resync");
+            assert!(
+                matches!(
+                    resync,
+                    PaneOutput::Resync {
+                        cols: 137,
+                        rows: 53,
+                        reason: ResyncReason::Resize,
+                        audience: ResyncAudience::Everyone,
+                        ..
+                    }
+                ),
+                "an attach-time update cannot erase an owed live resync: {resync:?}"
+            );
             token.cancel();
             tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
                 .await
-                .expect("actor did not exit after cancel")
-                .expect("actor task panicked");
+                .expect("actor exit")
+                .expect("actor task");
         })
         .await;
+}
+
+#[test]
+fn geometry_pressure_preserves_targeted_recovery_and_closed_delivery() {
+    let (tx, mut rx) = ResizeSender::channel(1);
+    let target = ResyncTarget {
+        owner: 7,
+        stream_id: phux_protocol::ids::StreamId::new(3).unwrap(),
+        bootstrap_id: phux_protocol::ids::BootstrapId::new(2).unwrap(),
+    };
+    let recovery = ResizeRequest {
+        cols: 0,
+        rows: 0,
+        cell_px: None,
+        resync_clients: true,
+        resync_only: true,
+        resync_for: Some(target),
+    };
+    tx.try_send(recovery).expect("fill recovery queue");
+    assert!(matches!(
+        tx.try_send(recovery),
+        Err(mpsc::error::TrySendError::Full(_))
+    ));
+    for cols in 1..=512 {
+        tx.try_send(ResizeRequest {
+            cols,
+            rows: 30,
+            resync_only: false,
+            resync_for: None,
+            ..recovery
+        })
+        .expect("recovery pressure cannot drop geometry");
+    }
+    let final_size = rx.try_recv().expect("latest geometry");
+    assert_eq!((final_size.cols, final_size.rows), (512, 30));
+    let owed = rx.try_recv().expect("targeted recovery survives");
+    assert!(owed.resync_only);
+    assert_eq!(owed.resync_for, Some(target));
+    drop(rx);
+    assert!(matches!(
+        tx.try_send(final_size),
+        Err(mpsc::error::TrySendError::Closed(_))
+    ));
+}
+
+#[test]
+fn failed_engine_resize_does_not_settle_or_publish_the_requested_geometry() {
+    let mut bundle = TerminalActor::new(80, 24).expect("terminal");
+    let saved = std::mem::replace(
+        bundle.actor.terminal.get_mut(),
+        CanonicalTerminal::Plain(None),
+    );
+    let request = ResizeRequest {
+        cols: 100,
+        rows: 40,
+        cell_px: Some((9, 18)),
+        resync_clients: true,
+        resync_only: false,
+        resync_for: None,
+    };
+    assert!(
+        bundle.actor.apply_resize_request(request).is_empty(),
+        "a refused engine resize cannot publish replacement geometry"
+    );
+    *bundle.actor.terminal.get_mut() = saved;
+    assert_eq!(
+        bundle.actor.apply_resize_request(request).len(),
+        1,
+        "a successful retry owes the replacement that failure refused"
+    );
+    let snapshot = bundle.actor.synthesize().expect("snapshot after retry");
+    assert_eq!(
+        (snapshot.cols, snapshot.rows),
+        (100, 40),
+        "the same request must remain retryable after engine refusal"
+    );
 }
 
 /// A resize with cell pixel metrics sets the kernel winsize pixels
@@ -408,6 +538,21 @@ async fn a_no_op_resize_publishes_no_resync_for_phux_a5xj() {
             let mut out = handle.output.subscribe();
             let join = tokio::task::spawn_local(bundle.actor.run());
 
+            // A coalesced excursion that never reached the actor is still
+            // a no-op, not a reason to replace an established generation.
+            handle
+                .terminal()
+                .expect("terminal facet")
+                .resize
+                .try_send(ResizeRequest {
+                    cols: 100,
+                    rows: 40,
+                    cell_px: None,
+                    resync_clients: true,
+                    resync_only: false,
+                    resync_for: None,
+                })
+                .expect("transient geometry");
             // Exactly what the reflow emits for a pane the spawn already
             // sized: the geometry it is already at.
             handle

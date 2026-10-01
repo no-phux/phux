@@ -269,11 +269,15 @@ pub fn resize(model: *Model, fx: anytype, ref: TerminalRef, viewport: contract.V
     // Each coordinator's terminal is sized on its own server, only once a
     // pane shows it and it is live.
     const owner = model.terminalOwner(ref) orelse return;
+    resizeRemote(model, owner, viewport);
+}
+
+pub fn resizeRemote(model: *Model, owner: contract.ReplicaOwner, viewport: contract.Viewport) void {
     const remote = model.phuxForOwner(owner) orelse return;
-    if (remote.lastViewport(ref)) |last| if (last.eql(viewport)) return;
-    const presentation = presentationForOwner(model, owner) orelse return;
-    if (presentation.phase != .live) return;
-    remote.viewportResize(ref, viewport) catch {};
+    if (!model.ownerIsCurrent(owner)) return;
+    // The host keeps failed/not-ready submissions retryable at its next
+    // readiness drain; an unchanged authoritative grid is not a retry signal.
+    remote.viewportResize(owner.terminal_ref, viewport) catch {};
 }
 
 fn resizeLocal(pane: *local.Pane, fx: anytype, viewport: contract.Viewport) void {

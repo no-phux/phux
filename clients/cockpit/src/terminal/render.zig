@@ -56,6 +56,7 @@ pub const RowFit = enum {
 pub const PaintOptions = struct {
     frame: geometry.RectF,
     tokens: canvas.DesignTokens,
+    scale_factor: f32 = 1,
     running: bool,
     focused: bool = true,
     selecting: bool,
@@ -90,6 +91,8 @@ pub fn paint(session: *Session, builder: *canvas.Builder, options: PaintOptions)
     // The only writer of the measured cell box: only these runtime tokens
     // carry the text-measure provider.
     session.setMeasuredCell(metrics.width, metrics.height);
+    session.measured_font_id = options.tokens.typography.mono_font_id;
+    session.measured_scale_factor = options.scale_factor;
     // Written every frame so a config change applies with nothing to
     // invalidate.
     session.minimum_contrast = options.minimum_contrast;

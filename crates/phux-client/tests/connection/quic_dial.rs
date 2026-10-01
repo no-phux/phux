@@ -305,6 +305,74 @@ async fn negotiated_quic_streams_bind_route_and_merge_terminal_frames() {
 }
 
 #[tokio::test]
+async fn viewport_vote_precedes_exact_resize_across_quic_streams() {
+    let (_dir, cert, key) = cert_pair();
+    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let terminal_id = ResourceId::local(9);
+    let viewport = FrameKind::ViewportResize {
+        viewport: phux_protocol::wire::frame::ViewportInfo::new(100, 40),
+    };
+    let exact = FrameKind::ResizeTerminal {
+        terminal_id: terminal_id.clone(),
+        cols: 98,
+        rows: 37,
+    };
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let server = async {
+        let conn = endpoint.accept().await.unwrap().await.unwrap();
+        let (mut control_send, mut control_recv) = conn.accept_bi().await.unwrap();
+        accept_hello_with_caps(
+            &mut control_send,
+            &mut control_recv,
+            ServerCapabilities::new()
+                .with_features(ServerFeatureSet::with(&[ServerFeature::QuicStreams])),
+        )
+        .await;
+        let (_terminal_send, mut terminal_recv) = conn.accept_bi().await.unwrap();
+        assert_eq!(
+            read_stream_bind(&mut terminal_recv).await.terminal_id,
+            terminal_id
+        );
+        assert_eq!(read_frame(&mut control_recv).await, viewport);
+        let FrameKind::Ping { nonce } = read_frame(&mut control_recv).await else {
+            panic!("exact pane resize requires an ordered control barrier");
+        };
+        write_frame(&mut control_send, &FrameKind::Pong { nonce: 44 }).await;
+        write_frame(&mut control_send, &FrameKind::Pong { nonce: 43 }).await;
+        write_frame(&mut control_send, &FrameKind::Pong { nonce }).await;
+        assert_eq!(read_frame(&mut terminal_recv).await, exact);
+        write_frame(&mut control_send, &FrameKind::Pong { nonce: 45 }).await;
+        // Keep the connection live until the client consumes both receipts.
+        done_rx.await.expect("client consumed receipts");
+    };
+    let client = async {
+        let dial = QuicDial {
+            addr,
+            server_name: "localhost".to_owned(),
+            token: None,
+            trust: CertTrust::SkipVerify,
+            identity: None,
+        };
+        let mut conn = Connection::connect_quic(&dial).await.expect("dial");
+        conn.bind_terminal(&terminal_id).await.expect("bind");
+        conn.send(&viewport).await.expect("viewport barrier");
+        conn.send(&exact).await.expect("exact pane resize");
+        assert_eq!(
+            conn.try_recv().unwrap(),
+            Some(FrameKind::Pong { nonce: 44 })
+        );
+        assert_eq!(conn.recv().await.unwrap(), FrameKind::Pong { nonce: 43 });
+        assert_eq!(conn.recv().await.unwrap(), FrameKind::Pong { nonce: 45 });
+        done_tx.send(()).expect("server remains live");
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(server, client);
+    })
+    .await
+    .expect("geometry must not wedge across QUIC streams");
+}
+
+#[tokio::test]
 async fn malformed_terminal_stream_length_fails_promptly() {
     let (_dir, cert, key) = cert_pair();
     let (endpoint, addr) = server_endpoint(&cert, &key);

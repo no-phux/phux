@@ -319,6 +319,97 @@ async fn pending_stream_bind_tracking_matches_connection_cap() {
     ));
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn late_bound_reflow_uses_current_zoom_and_chrome_once() {
+    let (mut state, mut client, mut server, _) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    let _ = frames_sent(&mut client, &mut server).await;
+    let first = ResourceId::local(1);
+    let bound = ResourceId::local(2);
+    let offscreen = ResourceId::local(3);
+    let workspace = &mut state.mirror.workspace;
+    workspace.active_window_mut().unwrap().tree = Some(
+        crate::layout::split_at(
+            &crate::layout::LayoutNode::Leaf(first.clone()),
+            &first,
+            &bound,
+            crate::layout::SplitDir::Horizontal,
+            0.5,
+        )
+        .unwrap(),
+    );
+    workspace.add_window("offscreen".into(), offscreen.clone());
+    workspace.select(0);
+    state.mirror.zoomed = Some(bound.clone());
+    state.viewport_dims = (120, 40);
+    let sidebar = Some(wide_sidebar());
+    let content = state.content(sidebar);
+    // A layout reply and a late binding may settle in the same drain. Neither
+    // may restore the old unzoomed size or leave a second reflow armed.
+    state.bind_reflow_owed = true;
+    state
+        .emit_outcome_requests(
+            &mut client,
+            &mut FrameOutcome {
+                layout_get_answered: true,
+                ..FrameOutcome::default()
+            },
+            sidebar,
+            None,
+        )
+        .await
+        .unwrap();
+    let resized: HashMap<_, _> = frames_sent(&mut client, &mut server)
+        .await
+        .into_iter()
+        .map(|frame| match frame {
+            FrameKind::ResizeTerminal {
+                terminal_id,
+                cols,
+                rows,
+            } => (terminal_id, (cols, rows)),
+            other => panic!("unexpected late-bind frame: {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        resized,
+        [
+            (bound, (content.w, content.h)),
+            (offscreen, (content.w, content.h)),
+        ]
+        .into_iter()
+        .collect()
+    );
+    state
+        .emit_outcome_requests(&mut client, &mut FrameOutcome::default(), sidebar, None)
+        .await
+        .unwrap();
+    assert!(frames_sent(&mut client, &mut server).await.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn sigwinch_reasserts_pane_targets_when_host_cells_are_unchanged() {
+    let (mut state, mut client, mut server, mut out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    let _ = frames_sent(&mut client, &mut server).await;
+    let host = current_viewport_or_default();
+    state.viewport_dims = (host.cols.max(1), host.rows.max(1));
+    state.on_resize(&mut client, &mut out, None).await.unwrap();
+    let content = state.content(None);
+    let sent = frames_sent(&mut client, &mut server).await;
+    assert!(
+        matches!(
+            sent.as_slice(),
+            [
+                FrameKind::ViewportResize { .. },
+                FrameKind::ResizeTerminal { terminal_id, cols, rows },
+            ] if terminal_id == &ResourceId::local(1)
+                && (*cols, *rows) == (content.w, content.h)
+        ),
+        "a session vote must be followed by the explicit chrome-inset target: {sent:?}"
+    );
+}
+
 /// Drain sent frames through a FIFO barrier, with no timing-based idle guess.
 async fn frames_sent(client: &mut Connection, server: &mut Connection) -> Vec<FrameKind> {
     client

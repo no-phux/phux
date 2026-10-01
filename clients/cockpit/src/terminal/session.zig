@@ -115,6 +115,9 @@ pub const Session = struct {
     /// Null until the painter has measured the mono face (see `CellBox`).
     measured_cell: ?CellBox = null,
     font_size: f32 = 13,
+    /// Identity of the painter measurement, not an estimate from config.
+    measured_font_id: canvas.FontId = 0,
+    measured_scale_factor: f32 = 1,
     /// WCAG contrast floor applied by `snapshot` (see `Palette.contrasted`).
     /// Defaults to 1 (no floor) so unpainted sessions are not colour-shifted;
     /// `render.paint` writes the configured value every frame.

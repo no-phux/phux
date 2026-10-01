@@ -196,6 +196,58 @@ test "exact-source paint packets isolate selection and measured cell receipts" {
     try testing.expect(pair.first.presentation(pair.ref).?.measured_cell != null);
 }
 
+fn resizeMeasure(_: ?*anyopaque, font: canvas.FontId, size: f32, text: []const u8) f32 {
+    const advance = size * @as(f32, if (font == canvas.default_mono_font_id) 0.9 else 0.75);
+    return @as(f32, @floatFromInt(text.len)) * advance;
+}
+
+test "remote resize waits for current font and DPI measurements from its own painter" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const pair = try Pair.start();
+    defer pair.engine.destroy();
+    const model = pair.engine.model;
+    const projection = @import("cockpit/native/workspace_projection.zig");
+    const size = sdk.geometry.SizeF.init(980, 640);
+    const commands = try testing.allocator.alloc(canvas.CanvasCommand, canvas.max_display_list_commands);
+    defer testing.allocator.free(commands);
+    var builder = canvas.Builder.init(commands);
+    const measure = canvas.TextMeasureProvider{ .measure_fn = resizeMeasure };
+    var tokens = projection.cockpitTokens(model);
+    tokens.text_measure = &measure;
+    const workspace = model.wsAt(0).?;
+
+    try testing.expectEqual(@as(usize, 0), projection.proposedViewportsIn(model, workspace, size).slice().len);
+    var previous_cols: ?u16 = null;
+    for (0..4) |stage| {
+        switch (stage) {
+            1 => try testing.expect(model.stepFontSize(3)),
+            2 => model.config = @import("config/config.zig").parse("font-family = Geist Mono\n"),
+            3 => workspace.surface_scale_factor = 2,
+            else => {},
+        }
+        const stale = projection.proposedViewportsIn(model, workspace, size);
+        try testing.expect(stale.incomplete);
+        try testing.expectEqual(@as(usize, 0), stale.slice().len);
+        builder.reset();
+        try painter.paintWindowIndex(model, &builder, 0, size, tokens, 0);
+        const row = try firstRow(builder.displayList());
+        const proposals = projection.proposedViewportsIn(model, workspace, size);
+        try testing.expect(!proposals.incomplete);
+        try testing.expectEqual(@as(usize, 1), proposals.slice().len);
+        const proposal = proposals.slice()[0];
+        const content = projection.workspaceChromeIn(model, workspace, size).content;
+        try testing.expectEqual(@as(u16, @intFromFloat(content.width / row.cell_width)), proposal.cols);
+        try testing.expectEqual(@as(u16, @intFromFloat(content.height / row.cell_height)), proposal.rows);
+        try testing.expect(proposal.owner.?.eql(pair.first.owner(pair.ref).?));
+        if (previous_cols) |cols| {
+            if (stage != 3) try testing.expect(cols != proposal.cols);
+        }
+        previous_cols = proposal.cols;
+        // The other attachment has the same remote id, not this receipt.
+        try testing.expectEqual(@as(usize, 0), projection.proposedViewportsIn(model, model.wsAtConst(1).?, size).slice().len);
+    }
+}
+
 test "exact-source paint packets never fall back from a stale explicit attachment" {
     if (comptime !support.phux_enabled) return error.SkipZigTest;
     const pair = try Pair.start();

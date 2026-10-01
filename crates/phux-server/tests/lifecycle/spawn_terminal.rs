@@ -241,6 +241,102 @@ fn resize_terminal_updates_reported_dims() {
     });
 }
 
+/// Session viewport votes must reach subscribed panes even when registry
+/// focus points elsewhere. Both the replacement generation and the child's
+/// real `stty` readback defend this wire path.
+#[test]
+fn viewport_resize_reaches_nonactive_panes_and_preserves_noop_generations() {
+    phux_server_testkit::run_local(async {
+        let (server, mut stream) = attached().await;
+        let first = spawned(
+            &mut stream,
+            31,
+            sh("while :; do stty size; sleep 0.02; done"),
+        )
+        .await;
+        let second = spawned(
+            &mut stream,
+            32,
+            sh("while :; do stty size; sleep 0.02; done"),
+        )
+        .await;
+        // Two subscribed panes necessarily include a non-active pane; do
+        // not change registry focus to make the resize accidentally work.
+        state(&mut stream, 33).await;
+        let panes = [first, second];
+        let viewport = FrameKind::ViewportResize {
+            viewport: phux_protocol::wire::frame::ViewportInfo::new(137, 53),
+        };
+        send_frame(&mut stream, &viewport).await;
+        let mut generations = [None, None];
+        let mut ready = [false, false];
+        let mut output = [Vec::new(), Vec::new()];
+        let deadline = tokio::time::Instant::now() + phux_server_testkit::WIRE_RECV_TIMEOUT;
+        let reached =
+            phux_server_testkit::recv_until_deadline(&mut stream, deadline, |_, frame| {
+                match frame {
+                    FrameKind::BootstrapBegin {
+                        terminal_id,
+                        stream_id,
+                        bootstrap_id,
+                        cols: 137,
+                        rows: 53,
+                        ..
+                    } => {
+                        if let Some(index) = panes.iter().position(|pane| pane == &terminal_id) {
+                            generations[index] = Some((stream_id, bootstrap_id));
+                            ready[index] = false;
+                        }
+                    }
+                    FrameKind::BootstrapReady {
+                        stream_id,
+                        bootstrap_id,
+                        ..
+                    } => {
+                        if let Some(index) = generations
+                            .iter()
+                            .position(|generation| *generation == Some((stream_id, bootstrap_id)))
+                        {
+                            ready[index] = true;
+                        }
+                    }
+                    FrameKind::ResourceOutput {
+                        terminal_id, bytes, ..
+                    } => {
+                        if let Some(index) = panes.iter().position(|pane| pane == &terminal_id) {
+                            output[index].extend_from_slice(&bytes);
+                        }
+                    }
+                    _ => {}
+                }
+                (ready.iter().all(|ready| *ready)
+                    && output
+                        .iter()
+                        .all(|bytes| bytes.windows(6).any(|part| part == b"53 137")))
+                .then_some(())
+            })
+            .await;
+        assert!(
+            reached.is_some(),
+            "both panes need a replacement grid and real PTY readback"
+        );
+
+        send_frame(&mut stream, &viewport).await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(200);
+        phux_server_testkit::recv_until_deadline(&mut stream, deadline, |_, frame| {
+            assert!(
+                !matches!(frame, FrameKind::BootstrapBegin { ref terminal_id, .. }
+                if panes.contains(terminal_id)),
+                "same geometry must not replace a generation"
+            );
+            None::<()>
+        })
+        .await;
+        drop(stream);
+        server.stop().await;
+    });
+}
+
 /// `initial_size` builds the first bootstrap generation at that grid (no
 /// capture-then-resize); absent or with a zero axis the 80x24 default holds.
 #[test]

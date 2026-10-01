@@ -12,6 +12,8 @@ use crate::attach::connection::Connection;
 use crate::attach::outcome::AttachError;
 use crate::layout::{LayoutState, Workspace};
 
+use super::session_io::send_unless_peer_gone;
+
 /// The zoom- and sidebar-honoring per-leaf rects (empty without a seeded
 /// tree), via the paint path's memoized tiling since it runs every batch.
 pub(super) fn view_rects(
@@ -77,11 +79,16 @@ pub(super) async fn emit_moved_tiles(
 pub(super) async fn emit_bootstrap_workspace_reflow(
     conn: &mut Connection,
     workspace: &Workspace,
+    zoomed: Option<&ResourceId>,
     content: crate::layout::Rect,
 ) -> Result<(), AttachError> {
     let no_previous_rects = HashMap::new();
-    for window in &workspace.windows {
-        emit_layout_reflow(conn, &window.state, &no_previous_rects, content).await?;
+    for (index, window) in workspace.windows.iter().enumerate() {
+        if index == workspace.active {
+            emit_view_reflow(conn, workspace, zoomed, &no_previous_rects, content).await?;
+        } else {
+            emit_layout_reflow(conn, &window.state, &no_previous_rects, content).await?;
+        }
     }
     Ok(())
 }
@@ -94,6 +101,13 @@ async fn emit_layout_reflow(
     content: crate::layout::Rect,
 ) -> Result<(), AttachError> {
     let diff = crate::attach::reflow::compute_reflow(layout, prev_rects, content);
+    if diff.too_small {
+        tracing::warn!(
+            cols = content.w,
+            rows = content.h,
+            "viewport too small for current layout; rendering may be garbled",
+        );
+    }
     for (terminal_id, new_rect) in &diff.changed {
         // A leaf a persisted layout names before its ATTACH_RESOURCE is
         // confirmed has no QUIC stream yet, and may name a pane that died
@@ -102,11 +116,14 @@ async fn emit_layout_reflow(
             tracing::debug!(?terminal_id, "reflow: skipping a pane with no stream yet");
             continue;
         }
-        conn.send(&FrameKind::ResizeTerminal {
-            terminal_id: terminal_id.clone(),
-            cols: new_rect.w,
-            rows: new_rect.h,
-        })
+        send_unless_peer_gone(
+            conn,
+            &FrameKind::ResizeTerminal {
+                terminal_id: terminal_id.clone(),
+                cols: new_rect.w,
+                rows: new_rect.h,
+            },
+        )
         .await?;
     }
     Ok(())
@@ -200,7 +217,7 @@ mod tests {
         let mut client = Connection::from_stream(client_stream);
         let mut server = Connection::from_stream(server_stream);
         let (sent, received) = tokio::join!(
-            emit_bootstrap_workspace_reflow(&mut client, &workspace, content),
+            emit_bootstrap_workspace_reflow(&mut client, &workspace, None, content),
             async {
                 [
                     server.recv().await.expect("first resize frame"),
@@ -227,5 +244,49 @@ mod tests {
             resized,
             [ResourceId::local(1), second].into_iter().collect()
         );
+    }
+
+    #[tokio::test]
+    async fn reflow_write_after_peer_close_preserves_final_exit_frame() {
+        let terminal_id = ResourceId::local(1);
+        let workspace = Workspace::single(terminal_id.clone());
+        let (client_stream, server_stream) = UnixStream::pair().expect("pair");
+        let mut client = Connection::from_stream(client_stream);
+        let mut server = Connection::from_stream(server_stream);
+        server
+            .send(&FrameKind::ResourceClosed {
+                terminal_id: terminal_id.clone(),
+                exit_status: Some(7),
+                reason: phux_protocol::wire::frame::CloseReason::Exited,
+                signal: None,
+            })
+            .await
+            .expect("queue final close");
+        drop(server);
+
+        emit_view_reflow(
+            &mut client,
+            &workspace,
+            None,
+            &HashMap::new(),
+            crate::layout::Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 30,
+            },
+        )
+        .await
+        .expect("a peer-gone resize must leave the read side in charge");
+        let close = client.recv().await.expect("read final close");
+        drop(client);
+        assert!(matches!(
+            close,
+            FrameKind::ResourceClosed {
+                terminal_id: closed,
+                exit_status: Some(7),
+                ..
+            } if closed == terminal_id
+        ));
     }
 }

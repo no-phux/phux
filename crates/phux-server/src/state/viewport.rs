@@ -15,6 +15,20 @@ fn viewport_cell_px(v: &phux_protocol::wire::frame::ViewportInfo) -> Option<(u16
 }
 
 impl ServerState {
+    /// Subscribed panes of the client's attached session. Foreign resource
+    /// subscriptions, including geometry-preserving views, do not become
+    /// viewport targets. Authorization uses this same target set.
+    #[must_use]
+    pub(crate) fn viewport_terminals(&self, client: ClientId) -> Vec<ResourceId> {
+        let Some(attached) = self.clients.attached.get(&client) else {
+            return Vec::new();
+        };
+        self.session_terminals(attached.session)
+            .into_iter()
+            .filter(|terminal| self.subscribers_for_terminal(*terminal).contains(&client))
+            .collect()
+    }
+
     /// Record `client`'s current outer viewport (`phux-nk07`), as carried by
     /// `ATTACH` or a live `VIEWPORT_RESIZE`. No-op for an unattached client.
     pub fn set_client_viewport(
@@ -80,36 +94,39 @@ impl ServerState {
             .map(|(_, cell)| cell)
     }
 
-    /// Recompute `session`'s Terminals after a view left; with no usable
-    /// viewport left they return to the headless size. `Manual` is left
-    /// alone.
-    pub(super) fn restore_session_geometry_after_detach(
-        &mut self,
-        session: phux_core::ids::SessionId,
-    ) {
+    /// Recompute a departed view's Terminals; with no usable viewport left
+    /// they return to the headless size. `Manual` is left alone.
+    pub(super) fn restore_terminal_geometry_after_detach(&mut self, terminals: Vec<ResourceId>) {
         if self.config.window_size == phux_config::WindowSize::Manual {
             return;
         }
-        for terminal in self.session_terminals(session) {
+        for terminal in terminals {
             let latest = self.latest_terminal_viewport(terminal);
             let (cols, rows) = self
                 .resolve_terminal_geometry(terminal, latest)
                 .unwrap_or(HEADLESS_TERMINAL_DIMS);
             let cell_px = self.resolve_terminal_cell_px(terminal);
-            if let Some(pane) = self.registry_mut().terminal_mut(terminal) {
-                pane.dims = (cols, rows);
+            if self.retained_exit(terminal).is_some() {
+                continue;
             }
             let Some(Ok(handle)) = self.resource_handle(terminal).map(|h| h.terminal()) else {
                 continue;
             };
-            let _ = handle.resize.try_send(ResizeRequest {
-                cols,
-                rows,
-                cell_px,
-                resync_clients: true,
-                resync_only: false,
-                resync_for: None,
-            });
+            if handle
+                .resize
+                .try_send(ResizeRequest {
+                    cols,
+                    rows,
+                    cell_px,
+                    resync_clients: true,
+                    resync_only: false,
+                    resync_for: None,
+                })
+                .is_ok()
+                && let Some(pane) = self.registry_mut().terminal_mut(terminal)
+            {
+                pane.dims = (cols, rows);
+            }
         }
     }
 

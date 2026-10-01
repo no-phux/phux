@@ -176,7 +176,7 @@ impl TerminalActor {
         let (upgrade_tx, upgrade_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
         let (pwd_tx, pwd_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
         let (process_tx, process_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
-        let (resize_tx, resize_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
+        let (resize_tx, resize_rx) = super::ResizeSender::channel(DEFAULT_INPUT_MAILBOX);
         let (consumer_attach_tx, consumer_attach_rx) =
             mpsc::channel::<ConsumerAttachRequest>(DEFAULT_INPUT_MAILBOX);
         let (consumer_detach_tx, consumer_detach_rx) =
@@ -269,6 +269,7 @@ impl TerminalActor {
             cols,
             rows,
             cell_px: DEFAULT_CELL_PX,
+            pty_resize_pending: false,
             size_report,
         };
         let facet = TerminalHandle {

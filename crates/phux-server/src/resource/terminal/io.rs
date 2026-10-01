@@ -240,20 +240,18 @@ impl TerminalActor {
         // native history cursors.
         if cols == self.cols && rows == self.rows && cell_px.is_none_or(|cell| cell == self.cell_px)
         {
+            self.apply_pty_resize();
             return false;
         }
         // Sticky cell size: see the `ResizeRequest::cell_px` doc.
-        if let Some(cell) = cell_px {
-            self.cell_px = cell;
-        }
-        let (cell_w, cell_h) = self.cell_px;
+        let (cell_w, cell_h) = cell_px.unwrap_or(self.cell_px);
 
         // Pixel dimensions are `cells x cell size`, always nonzero.
         let applied = {
             let mut term = self.terminal.borrow_mut();
-            let result = term.resize(cols, rows, u32::from(cell_w), u32::from(cell_h));
-            if let Err(err) = result {
+            if let Err(err) = term.resize(cols, rows, u32::from(cell_w), u32::from(cell_h)) {
                 warn!(?err, cols, rows, "terminal resize failed");
+                return false;
             }
             // Cache what libghostty settled on, not the request.
             term.try_terminal().map_or((cols, rows), |t| {
@@ -267,6 +265,7 @@ impl TerminalActor {
         }
         self.cols = applied.0;
         self.rows = applied.1;
+        self.cell_px = (cell_w, cell_h);
         self.size_report.set(SizeReportSize {
             rows: applied.1,
             columns: applied.0,
@@ -278,26 +277,41 @@ impl TerminalActor {
         // regions: force both ticks to rescan.
         self.terminal_dirty_since_tick = true;
         self.agent_dirty_since_detect = true;
-        if let Some(pty) = &self.pty {
-            // Winsize pixels saturate rather than wrap.
-            let size = PtySize {
-                rows: applied.1,
-                cols: applied.0,
-                pixel_width: applied.0.saturating_mul(cell_w),
-                pixel_height: applied.1.saturating_mul(cell_h),
-            };
-            if let Ok(master) = pty.master.lock()
-                && let Err(err) = master.resize(size)
-            {
-                warn!(
-                    ?err,
-                    cols = applied.0,
-                    rows = applied.1,
-                    "pty resize ioctl failed"
-                );
-            }
-        }
+        self.pty_resize_pending = true;
+        self.apply_pty_resize();
         true
+    }
+
+    /// A failed kernel resize is not a settled no-op. A later identical
+    /// request retries only the ioctl, without invalidating history again.
+    fn apply_pty_resize(&mut self) {
+        if !self.pty_resize_pending {
+            return;
+        }
+        let Some(pty) = &self.pty else {
+            self.pty_resize_pending = false;
+            return;
+        };
+        let (cell_w, cell_h) = self.cell_px;
+        let size = PtySize {
+            rows: self.rows,
+            cols: self.cols,
+            pixel_width: self.cols.saturating_mul(cell_w),
+            pixel_height: self.rows.saturating_mul(cell_h),
+        };
+        let Ok(master) = pty.master.lock() else {
+            warn!("pty resize master lock poisoned");
+            return;
+        };
+        match master.resize(size) {
+            Ok(()) => self.pty_resize_pending = false,
+            Err(err) => warn!(
+                ?err,
+                cols = self.cols,
+                rows = self.rows,
+                "pty resize ioctl failed"
+            ),
+        }
     }
 
     /// Broadcast a full synthesized snapshot as an in-band

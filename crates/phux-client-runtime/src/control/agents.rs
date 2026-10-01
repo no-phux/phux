@@ -142,6 +142,7 @@ impl ControlPlane {
                 .is_some_and(|topology| topology.pane(terminal_id).is_some());
         self.terminal_attached.remove(terminal_id);
         self.preserve_terminal_geometry.remove(terminal_id);
+        self.terminal_roles.remove(terminal_id);
         self.geometry_bootstrapped.remove(terminal_id);
         self.stream_recoveries.remove(terminal_id);
         self.own_spawns.remove(terminal_id);

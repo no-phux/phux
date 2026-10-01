@@ -12,6 +12,7 @@ mod outcome;
 #[cfg(test)]
 mod tests;
 
+pub(super) use engine_route::attach_participants;
 pub(super) use handler::pane_is_referenced;
 pub(super) use handler::{FrameEnv, handle_server_frame};
 // The composited output frame, shared with the driver's frame
@@ -22,7 +23,7 @@ pub(super) use index::AgentMetaIndex;
 pub(super) use outcome::FrameOutcome;
 
 #[cfg(test)]
-use engine_route::{attach_agent_sessions, attach_participants, route_engine_frame};
+use engine_route::{attach_agent_sessions, route_engine_frame};
 #[cfg(test)]
 use handler::{handle_window_spawned, reconcile_loaded_workspace};
 #[cfg(test)]
