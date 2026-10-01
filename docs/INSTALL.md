@@ -99,6 +99,26 @@ To pin a specific release, pass any tag from the
 curl -fsSL https://phux.sh/install | sh -s -- --version vX.Y.Z
 ```
 
+## GPUIX desktop alpha (native macOS)
+
+The GPUIX desktop is a separate app and release train from Cockpit. With the
+phux CLI installed, install the Apple-silicon macOS 27-or-later alpha:
+
+```sh
+curl -fsSL https://phux.sh/install-desktop | sh
+```
+
+This selects a published `desktop-vX.Y.Z-alpha.N` prerelease and verifies the
+checksum and ad-hoc app signature before replacing `Phux.app`. It does not
+upgrade the CLI or stop a server. Releases are not Apple-notarized; the
+installer clears quarantine after verification. Rerun to update, or pin an
+alpha with `sh -s -- --version 0.1.0-alpha.1`.
+
+The app is a view of server-owned sessions: quitting or crashing the desktop
+does not intentionally end the shells. This is not a guarantee against server
+failure or reboot. See the [desktop guide](../clients/desktop/README.md) for
+controls, alternate install locations and the current alpha limitations.
+
 ## Cockpit (native macOS)
 
 Cockpit releases independently under `cockpit-vX.Y.Z` tags. Use its installer:

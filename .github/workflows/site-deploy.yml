@@ -19,6 +19,7 @@ on:
       # script. sync-docs.ts copies them in; this is what triggers that copy.
       - "scripts/install.sh"
       - "scripts/install-cockpit.sh"
+      - "scripts/install-desktop.sh"
       - ".github/workflows/site-deploy.yml"
   # A new phux release stamps the site's version badge (scripts/fetch-release.ts).
   release:
@@ -183,3 +184,11 @@ jobs:
             fi
           done
           echo "cockpit installer verified at /install-cockpit and /install-cockpit.sh"
+          for path in install-desktop install-desktop.sh; do
+            downloaded="$(mktemp)"
+            curl -fsSL --retry 6 --retry-delay 5 --retry-all-errors \
+              "https://phux.sh/${path}?deployed=${GITHUB_SHA}" -o "$downloaded"
+            cmp scripts/install-desktop.sh "$downloaded"
+            rm "$downloaded"
+          done
+          echo "desktop installer verified byte-for-byte at /install-desktop and /install-desktop.sh"

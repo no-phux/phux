@@ -13,6 +13,7 @@ import re
 import tomllib
 
 SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+DESKTOP_VERSION = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-alpha\.[1-9]\d*")
 SKILL_VERSION = re.compile(
     r'^(\s*)version:\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*#\s*x-release-please-version\s*$'
 )
@@ -25,6 +26,7 @@ EXACT = {
     "Cargo.toml": "workspace_manifest",
     "Cargo.lock": "workspace_lock",
     "clients/phux-web/Cargo.lock": "workspace_lock",
+    "clients/desktop/package.json": "desktop_package",
     ".release-please-manifest.json": "manifest",
     "docs/site/worker/Dockerfile": "dockerfile",
     ".agents/skills/using-phux/SKILL.md": "skill",
@@ -105,10 +107,27 @@ def manifest_only(before, after):
         return False
     if not isinstance(old, dict) or not isinstance(new, dict) or set(old) != set(new):
         return False
-    for value in (*old.values(), *new.values()):
-        if not isinstance(value, str) or SEMVER.fullmatch(value) is None:
-            return False
+    for path in old:
+        for value in (old[path], new[path]):
+            pattern = DESKTOP_VERSION if path == "clients/desktop" and value != "0.0.0" else SEMVER
+            if not isinstance(value, str) or pattern.fullmatch(value) is None:
+                return False
     return True
+
+
+def desktop_package_only(before, after):
+    try:
+        old = json.loads(before)
+        new = json.loads(after)
+        old_version = old.pop("version")
+        new_version = new.pop("version")
+    except (KeyError, ValueError, AttributeError):
+        return False
+    return (
+        isinstance(old_version, str) and DESKTOP_VERSION.fullmatch(old_version) is not None
+        and isinstance(new_version, str) and DESKTOP_VERSION.fullmatch(new_version) is not None
+        and old == new
+    )
 
 
 def _version_lines_only(before, after, pattern):
@@ -137,6 +156,7 @@ CHECKS = {
     "workspace_manifest": workspace_manifest_only,
     "workspace_lock": workspace_lock_only,
     "manifest": manifest_only,
+    "desktop_package": desktop_package_only,
     "dockerfile": dockerfile_only,
     "skill": skill_only,
 }

@@ -26,7 +26,7 @@ import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isCockpitImportBaseline, recoveryFor } from "./release-drift-policy.mjs";
+import { desktopReleaseProblems, isCockpitImportBaseline, isUnreleasedDesktop, recoveryFor } from "./release-drift-policy.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -133,7 +133,7 @@ const releases = gh([
   `repos/${repo}/releases`,
   "--paginate",
   "--jq",
-  ".[] | {tag: .tag_name, draft: .draft, assets: (.assets | length), created: .created_at}",
+  ".[] | {tag: .tag_name, draft: .draft, prerelease: .prerelease, assets: (.assets | length), assetNames: [.assets[].name], created: .created_at}",
 ]);
 
 // 1. A draft that outlived the grace window is a release whose publish step
@@ -157,6 +157,7 @@ for (const release of releases) {
 //    so zero is never legitimate — it means the publish step flipped the draft
 //    before, or instead of, uploading.
 for (const release of releases) {
+  failures.push(...desktopReleaseProblems(release));
   if (release.draft) continue;
   if (release.assets === 0) {
     failures.push(`${release.tag} is published with zero assets — nothing to download.`);
@@ -202,6 +203,9 @@ if (Number.isFinite(manifestTouched) && now - manifestTouched > graceMs) {
   const tags = new Set(releases.map((release) => release.tag));
   for (const [path, version] of Object.entries(manifest)) {
     const component = config.packages?.[path]?.component;
+    // Release Please's 0.0.0 sentinel means this component has never shipped.
+    // The first release PR replaces it; alpha.1 itself is never exempt.
+    if (isUnreleasedDesktop({ path, version, initialVersion: config.packages?.[path]?.["initial-version"] })) continue;
     const tag = component ? `${component}-v${version}` : `v${version}`;
     // Cockpit 0.16.1 shipped from the standalone repository immediately before
     // its history moved here. The temporary bootstrap SHA deliberately treats

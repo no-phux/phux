@@ -1,0 +1,150 @@
+# Release Please owns the immutable tag and draft; publish.yml is the only door.
+# Initial alpha: Apple silicon, ad-hoc signed, not Apple-notarized.
+name: Release Desktop Alpha
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing desktop-vX.Y.Z-alpha.N draft to build and publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mini-v1-desktop-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    name: Qualify and publish macOS arm64 alpha
+    runs-on: xcode-27
+    timeout-minutes: 60
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      GH_REPO: ${{ github.repository }}
+      LIBGHOSTTY_VT_SYS_CPU: baseline
+      RUSTFLAGS: -C target-cpu=apple-m1
+      MACOSX_DEPLOYMENT_TARGET: "27.0"
+    steps:
+      # The harness follows main; all product builds use the immutable tag below.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Require an existing alpha draft and native runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^desktop-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-alpha\.[1-9][0-9]*$ ]]
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate tagged source and select Bun
+        id: version
+        working-directory: source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          git merge-base --is-ancestor HEAD origin/main
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          package = json.loads(Path('clients/desktop/package.json').read_text())
+          manifest = json.loads(Path('.release-please-manifest.json').read_text())
+          version = os.environ['RELEASE_TAG'].removeprefix('desktop-v')
+          assert package['version'] == manifest['clients/desktop'] == version
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"bun={package['engines']['bun']}\n")
+              output.write(f"archive=phux-desktop-{version}-macos-arm64.zip\n")
+          PY
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ steps.version.outputs.bun }}
+      - name: Contributor Rust and Zig setup
+        working-directory: source
+        run: |
+          bash scripts/setup-rust.sh native
+          bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+          brew install just
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: source -> target
+          shared-key: mini-v1-desktop-release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build same-checkout qualification CLI and compiled desktop app
+        working-directory: source
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p phux
+          just desktop-package
+      - name: Verify signature and create checksummed alpha archive
+        working-directory: source
+        env:
+          ARCHIVE: ${{ steps.version.outputs.archive }}
+        run: |
+          set -euo pipefail
+          app=clients/desktop/dist/app/Phux.app
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv --verbose=4 "$app" 2>&1 | grep -F 'Signature=adhoc'
+          PHUX_MACOS_MIN_MAX=27.0 bash ../scripts/check-binary-portability.sh \
+            "$app/Contents/MacOS/phux-desktop" \
+            "$app/Contents/Resources/phux-desktop-native.darwin-arm64.node"
+          mkdir -p "$RUNNER_TEMP/desktop-release"
+          ditto -c -k --norsrc --keepParent "$app" "$RUNNER_TEMP/desktop-release/$ARCHIVE"
+          cd "$RUNNER_TEMP/desktop-release"
+          shasum -a 256 "$ARCHIVE" > SHA256SUMS
+          shasum -a 256 -c SHA256SUMS
+      - name: Qualify the archived app against an isolated same-checkout server
+        env:
+          ARCHIVE: ${{ steps.version.outputs.archive }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/desktop-qualified"
+          ditto -x -k "$RUNNER_TEMP/desktop-release/$ARCHIVE" "$RUNNER_TEMP/desktop-qualified"
+          codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/desktop-qualified/Phux.app"
+          bun clients/desktop/scripts/smoke-app.ts --app "$RUNNER_TEMP/desktop-qualified/Phux.app" --phux "$GITHUB_WORKSPACE/source/target/release/phux" --output "$RUNNER_TEMP/desktop-evidence"
+      - name: Exercise installer transactions
+        run: python3 scripts/test-install-desktop.py
+      - name: Retain packaged runtime evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-runtime-${{ inputs.tag }}
+          path: ${{ runner.temp }}/desktop-evidence
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload to draft and verify downloaded bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE: ${{ steps.version.outputs.archive }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/desktop-release/$ARCHIVE" "$RUNNER_TEMP/desktop-release/SHA256SUMS" --clobber
+          gh release download "$RELEASE_TAG" --pattern "$ARCHIVE" --pattern SHA256SUMS --dir "$RUNNER_TEMP/desktop-download"
+          cd "$RUNNER_TEMP/desktop-download"
+          cmp SHA256SUMS "$RUNNER_TEMP/desktop-release/SHA256SUMS"
+          shasum -a 256 -c SHA256SUMS
+      - name: Publish as prerelease, never latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/desktop-release-notes"
+          gh release view "$RELEASE_TAG" --json body --jq '.body // ""' > "$notes"
+          marker='Desktop alpha: ad-hoc signed; not Apple-notarized.'
+          if ! grep -Fq "$marker" "$notes"; then
+            printf '\n%s\n\nApple silicon macOS 27 or later. Requires a separately installed phux CLI (https://phux.sh/install); this app does not install or upgrade your coordinator.\n' "$marker" >> "$notes"
+          fi
+          release_id="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)"
+          gh api --method PATCH "repos/$GH_REPO/releases/$release_id" \
+            -F body=@"$notes" -F draft=false -F prerelease=true -f make_latest=false

@@ -1,45 +1,22 @@
 #!/bin/sh
-#
-# POSIX sh on purpose. This script is served verbatim at
-# https://phux.sh/install-cockpit and has to survive being piped to `sh`.
-# Two bashisms in particular are fatal there and must not come back:
-# `set -o pipefail` (rejected by dash before 0.5.12) and `printf %q` (an
-# invalid directive in every dash). `just shellcheck` lints this file as sh
-# because of the shebang above, so a new bashism fails the gate rather than a
-# stranger's install.
-#
-# What it does: downloads the `phux-cockpit-<semver>-macos-arm64.zip` asset
-# from the latest `cockpit-vX.Y.Z` GitHub release (or, with `--channel next`,
-# the green-main bundle named by the moving `next` prerelease's
-# cockpit-channel.json), verifies it against the published checksum before
-# unpacking, and places `Phux Cockpit.app` in /Applications (or
-# ~/Applications when /Applications is not writable). It also writes a
-# `phux-cockpit` CLI launcher into ${PHUX_COCKPIT_BIN_DIR:-${PHUX_INSTALL_DIR:-$HOME/.local/bin}}.
-# The quarantine attribute is cleared, the same step the Homebrew cask
-# performs for ad-hoc-signed builds. An existing install is backed up and
-# restored if placement fails.
+# Served verbatim at https://phux.sh/install-desktop (POSIX sh).
+# Installs the checksummed GPUIX desktop alpha without replacing the phux CLI
+# or stopping its server. Existing app installation rolls back on failure.
 set -eu
 
 usage() {
   cat <<'EOF'
-Usage: scripts/install-cockpit.sh [--version <cockpit-vX.Y.Z>] [--channel stable|next] [options]
+Usage: install-desktop.sh [--version desktop-vX.Y.Z-alpha.N] [options]
 
-Options:
-  --version <cockpit-vX.Y.Z|X.Y.Z>
-                         Cockpit release to install (default: latest GitHub release).
-  --channel <stable|latest|next>
-                         Release channel (default: stable, or $PHUX_CHANNEL).
-                         next is the moving build of green main.
-  --applications-dir <dir>
-                         Directory for Phux Cockpit.app (default: /Applications
-                         when writable, else $HOME/Applications).
-  --bin-dir <dir>        Directory for the phux-cockpit launcher (default:
-                         $PHUX_COCKPIT_BIN_DIR, else $PHUX_INSTALL_DIR, else
-                         $HOME/.local/bin).
-  --os <darwin>          Override OS detection (Cockpit is macOS-only).
-  --arch <arm64|aarch64> Override architecture detection.
-  --dry-run              Print resolved tag, URLs, and destination only.
-  --help                 Show this help.
+Installs the latest desktop alpha for Apple-silicon macOS. Requires an installed
+phux CLI; never upgrades it or stops a server. Releases are ad-hoc signed, not
+Apple-notarized. The installer removes quarantine after checksum/signature checks.
+
+  --version <tag|X.Y.Z-alpha.N>  Pin a desktop alpha (default: newest published).
+  --applications-dir <dir>      Default: /Applications if writable, else ~/Applications.
+  --bin-dir <dir>               phux-desktop launcher (default: ~/.local/bin).
+  --dry-run                    Print release URLs and destination without installing.
+  --help                       Show this help.
 EOF
 }
 
@@ -69,15 +46,15 @@ write_cli_launcher() {
   app_path="$1"
   [ -n "$bin_dir" ] || return 1
   mkdir -p "$bin_dir" || return 1
-  staged="$(mktemp "${bin_dir}/.phux-cockpit.XXXXXX")" || return 1
+  staged="$(mktemp "${bin_dir}/.phux-desktop.XXXXXX")" || return 1
   {
     printf '%s\n' '#!/bin/sh'
-    printf '%s\n' '# Installed by the Phux Cockpit installer. Opens the app bundle'
+    printf '%s\n' '# Installed by the Phux installer. Opens the app bundle'
     printf '%s\n' '# through Launch Services so Dock identity stays this copy.'
     printf 'APP=%s\n' "$(shell_quote "$app_path")"
     printf '%s\n' 'if [ ! -d "$APP" ] || [ ! -f "$APP/Contents/Info.plist" ]; then'
-    printf '%s\n' '  echo "error: Phux Cockpit is not installed at $APP" >&2'
-    printf '%s\n' '  echo "remedy: curl -fsSL https://phux.sh/install-cockpit | sh" >&2'
+    printf '%s\n' '  echo "error: Phux is not installed at $APP" >&2'
+    printf '%s\n' '  echo "remedy: curl -fsSL https://phux.sh/install-desktop | sh" >&2'
     printf '%s\n' '  exit 1'
     printf '%s\n' 'fi'
     printf '%s\n' 'exec open "$APP"'
@@ -89,18 +66,15 @@ write_cli_launcher() {
     rm -f "$staged"
     return 1
   }
-  mv -f "$staged" "${bin_dir}/phux-cockpit" || {
+  mv -f "$staged" "${bin_dir}/phux-desktop" || {
     rm -f "$staged"
     return 1
   }
 }
 
 version=""
-channel=""
-applications_dir="${PHUX_COCKPIT_APPLICATIONS_DIR:-}"
-bin_dir="${PHUX_COCKPIT_BIN_DIR:-${PHUX_INSTALL_DIR:-}}"
-os=""
-arch=""
+applications_dir="${PHUX_DESKTOP_APPLICATIONS_DIR:-}"
+bin_dir="${PHUX_DESKTOP_BIN_DIR:-${PHUX_INSTALL_DIR:-}}"
 dry_run=0
 
 while [ "$#" -gt 0 ]; do
@@ -111,11 +85,6 @@ while [ "$#" -gt 0 ]; do
       version="$2"
       shift 2
       ;;
-    --channel)
-      [ "$#" -ge 2 ] || die "--channel requires a value"
-      channel="$2"
-      shift 2
-      ;;
     --applications-dir)
       [ "$#" -ge 2 ] || die "--applications-dir requires a value"
       applications_dir="$2"
@@ -124,16 +93,6 @@ while [ "$#" -gt 0 ]; do
     --bin-dir)
       [ "$#" -ge 2 ] || die "--bin-dir requires a value"
       bin_dir="$2"
-      shift 2
-      ;;
-    --os)
-      [ "$#" -ge 2 ] || die "--os requires a value"
-      os="$2"
-      shift 2
-      ;;
-    --arch)
-      [ "$#" -ge 2 ] || die "--arch requires a value"
-      arch="$2"
       shift 2
       ;;
     --dry-run)
@@ -396,76 +355,23 @@ resolve_latest_version() (
 )
 # END shared release resolver
 
-# The next channel's pointer names the green-main SHA whose bundle is attached
-# to the moving `next` prerelease. stdout: "<sha> <version>".
-resolve_next_head() {
-  pointer_url="https://github.com/no-phux/phux/releases/download/next/cockpit-channel.json"
-  if command -v curl >/dev/null 2>&1; then
-    body="$(curl -fsSL "$pointer_url")" \
-      || die "could not download the Cockpit next channel pointer"
-  elif command -v wget >/dev/null 2>&1; then
-    body="$(wget -qO- "$pointer_url")" \
-      || die "could not download the Cockpit next channel pointer"
-  else
-    die "curl or wget is required to resolve the next channel"
-  fi
-  head_sha="$(printf '%s\n' "$body" \
-    | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{40\}\)".*/\1/p' \
-    | head -n 1)"
-  head_version="$(printf '%s\n' "$body" \
-    | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' \
-    | head -n 1)"
-  [ -n "$head_sha" ] || die "the Cockpit next channel pointer named no SHA"
-  printf '%s %s\n' "$head_sha" "${head_version:-0.0.0}"
-}
-
-if [ -z "$channel" ]; then
-  channel="${PHUX_CHANNEL:-stable}"
-fi
-case "$channel" in
-  latest) channel="stable" ;;
-  stable|next) ;;
-  *) die "--channel must be stable, latest, or next" ;;
-esac
-if [ "$channel" = "next" ] && [ -n "$version" ]; then
-  die "--version pins a stable tag; omit it when using --channel next"
-fi
-
-next_sha=""
-if [ "$channel" = "next" ]; then
-  next_head="$(resolve_next_head)"
-  next_sha="${next_head%% *}"
-  semver="${next_head#* }"
-  version="next.${next_sha}"
-else
-  if [ -z "$version" ]; then
-    version="$(resolve_latest_version cockpit-v)"
-  fi
-
-  # Accept a bare semver as shorthand; the release tag carries the prefix.
-  case "$version" in
-    cockpit-v*) semver="${version#cockpit-v}" ;;
-    *) semver="$version"; version="cockpit-v$semver" ;;
-  esac
-  valid_release_tag "$version" cockpit-v \
-    || die "--version must be a release like cockpit-vX.Y.Z (got ${version})"
-fi
-
-if [ -z "$os" ]; then
-  case "$(uname -s)" in
-    Darwin) os="darwin" ;;
-    *) die "Phux Cockpit is macOS-only; this machine reports $(uname -s)" ;;
-  esac
-fi
-[ "$os" = "darwin" ] || die "Phux Cockpit is macOS-only (got --os $os)"
-
-if [ -z "$arch" ]; then
-  arch="$(uname -m)"
-fi
-case "$arch" in
+[ "$(uname -s)" = Darwin ] || die "Phux desktop is macOS-only"
+case "$(uname -m)" in
   arm64|aarch64) ;;
-  *) die "Phux Cockpit ships arm64 only; this machine reports $arch" ;;
+  *) die "Phux desktop ships arm64 only" ;;
 esac
+os_version="$(/usr/bin/sw_vers -productVersion)"
+[ "${os_version%%.*}" -ge 27 ] || die "Phux desktop alpha requires macOS 27 or later"
+
+if [ -z "$version" ]; then
+  version="$(resolve_latest_version desktop-v alpha)"
+fi
+case "$version" in
+  desktop-v*) semver="${version#desktop-v}" ;;
+  *) semver="$version"; version="desktop-v$semver" ;;
+esac
+valid_release_tag "$version" desktop-v alpha \
+  || die "--version must be desktop-vX.Y.Z-alpha.N (got ${version})"
 
 if [ -z "$applications_dir" ]; then
   if [ -d "/Applications" ] && [ -w "/Applications" ]; then
@@ -480,25 +386,13 @@ if [ -z "$bin_dir" ] && [ -n "${HOME:-}" ]; then
   bin_dir="${HOME}/.local/bin"
 fi
 
-if [ "$channel" = "next" ]; then
-  # One zip per SHA with a .sha256 sidecar in the same `<digest>  <name>` form.
-  base_url="https://github.com/no-phux/phux/releases/download/next"
-  zip_name="phux-cockpit-next.${next_sha}-macos-arm64.zip"
-  sums_url="${base_url}/${zip_name}.sha256"
-else
-  base_url="https://github.com/no-phux/phux/releases/download/${version}"
-  zip_name="phux-cockpit-${semver}-macos-arm64.zip"
-  sums_url="${base_url}/SHA256SUMS"
-fi
+base_url="https://github.com/no-phux/phux/releases/download/${version}"
+zip_name="phux-desktop-${semver}-macos-arm64.zip"
+sums_url="${base_url}/SHA256SUMS"
 zip_url="${base_url}/${zip_name}"
 
 if [ "$dry_run" -eq 1 ]; then
-  echo "channel: ${channel}"
   echo "tag: ${version}"
-  if [ "$channel" = "next" ]; then
-    echo "sha: ${next_sha}"
-    echo "version: ${semver}"
-  fi
   echo "zip_url: ${zip_url}"
   echo "sha256_url: ${sums_url}"
   echo "applications_dir: ${applications_dir}"
@@ -506,8 +400,17 @@ if [ "$dry_run" -eq 1 ]; then
   exit 0
 fi
 
-for tool in unzip ditto xattr; do
-  command -v "$tool" >/dev/null 2>&1 || die "$tool is required to install Phux Cockpit"
+# Dock/Spotlight cannot rediscover a one-shot PHUX_BIN or interactive PATH.
+phux_found=0
+for candidate in "${HOME}/.local/bin/phux" /opt/homebrew/bin/phux /usr/local/bin/phux "${HOME}/.cargo/bin/phux"; do
+  if [ -x "$candidate" ]; then phux_found=1; break; fi
+done
+if [ "$phux_found" -eq 0 ]; then
+  die "install the phux CLI in ~/.local/bin, ~/.cargo/bin, /opt/homebrew/bin, or /usr/local/bin first: curl -fsSL https://phux.sh/install | sh"
+fi
+
+for tool in unzip ditto xattr codesign lockf; do
+  command -v "$tool" >/dev/null 2>&1 || die "$tool is required to install Phux"
 done
 
 if command -v curl >/dev/null 2>&1; then
@@ -525,8 +428,6 @@ fi
 tmp_dir="$(mktemp -d)"
 publish_dir=""
 lock_dir=""
-lock_pending=""
-lock_acquired=0
 publish_started=0
 publish_complete=0
 published_app=0
@@ -535,37 +436,22 @@ rollback_publish() {
   [ "$publish_started" -eq 1 ] || return 0
   [ "$publish_complete" -eq 0 ] || return 0
   if [ "$published_app" -eq 1 ]; then
-    rm -rf "${applications_dir}/Phux Cockpit.app"
+    rm -rf "${applications_dir}/Phux.app"
   fi
-  if [ -e "${publish_dir}/backup/Phux Cockpit.app" ] || [ -L "${publish_dir}/backup/Phux Cockpit.app" ]; then
-    mv -f "${publish_dir}/backup/Phux Cockpit.app" "${applications_dir}/Phux Cockpit.app"
-  fi
-}
-
-release_install_lock() {
-  if [ -n "$lock_pending" ]; then
-    rm -rf "$lock_pending" 2>/dev/null || true
-    lock_pending=""
-  fi
-  [ -n "$lock_dir" ] && [ -d "$lock_dir" ] || return 0
-  lock_pid=""
-  if [ -f "${lock_dir}/pid" ]; then
-    lock_pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
-  fi
-  # Drop a lock we created, including a signal between mkdir and lock_acquired=1.
-  # A lock with no pid, or another installer's pid, is left untouched.
-  if [ "$lock_acquired" -eq 1 ] || [ "$lock_pid" = "$$" ]; then
-    rm -f "${lock_dir}/pid"
-    rmdir "$lock_dir" 2>/dev/null || true
+  if [ -e "${publish_dir}/backup/Phux.app" ] || [ -L "${publish_dir}/backup/Phux.app" ]; then
+    mv -f "${publish_dir}/backup/Phux.app" "${applications_dir}/Phux.app" || {
+      echo "error: rollback failed; old app preserved at ${publish_dir}/backup/Phux.app" >&2
+      publish_dir=""
+      return 1
+    }
   fi
 }
 
 cleanup() {
-  rollback_publish
+  rollback_publish || true
   if [ -n "$publish_dir" ]; then
     rm -rf "$publish_dir"
   fi
-  release_install_lock
   rm -rf "$tmp_dir"
 }
 trap_install_signals() {
@@ -583,17 +469,16 @@ extract_dir="${tmp_dir}/extract"
 download "$zip_url" "$zip_path"
 download "$sums_url" "$sums_path"
 
-# The release checksums cover the zip and the dmg; only the zip line matters
-# here, and requiring the whole file to verify would demand the dmg too.
-awk -v name="$zip_name" '$2 == name' "$sums_path" > "${tmp_dir}/cockpit.sha256" \
+# Verify only this asset; never accept a checksum for a different archive.
+awk -v name="$zip_name" '$2 == name' "$sums_path" > "${tmp_dir}/desktop.sha256" \
   || die "SHA256SUMS did not cover ${zip_name}"
-[ -s "${tmp_dir}/cockpit.sha256" ] || die "SHA256SUMS did not cover ${zip_name}"
+[ -s "${tmp_dir}/desktop.sha256" ] || die "SHA256SUMS did not cover ${zip_name}"
 (
   cd "$tmp_dir"
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum -c "cockpit.sha256"
+    sha256sum -c "desktop.sha256"
   elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 -c "cockpit.sha256"
+    shasum -a 256 -c "desktop.sha256"
   else
     die "sha256sum or shasum is required to verify release artifacts"
   fi
@@ -601,75 +486,74 @@ awk -v name="$zip_name" '$2 == name' "$sums_path" > "${tmp_dir}/cockpit.sha256" 
 
 validate_zip() {
   members_path="${tmp_dir}/zip.members"
-  # -Z1 lists one filename per line; `unzip -l` column parsing would split
-  # the space in "Phux Cockpit.app".
-  unzip -Z1 "$zip_path" | sed -n '/./p' > "$members_path"
+  unzip -Z1 "$zip_path" > "$members_path" || die "could not read archive"
+  # The shipped bundle has no symlinks; reject links before extraction rather
+  # than letting one archive entry redirect another outside the temporary tree.
+  unzip -Z -l "$zip_path" | awk '$1 ~ /^l/ { found = 1 } END { exit found }' \
+    || die "archive contains symlinks"
   [ -s "$members_path" ] || die "archive was empty"
   while IFS= read -r member; do
     case "$member" in
-      ""|/*|../*|*/../*) die "unsafe archive member path: $member" ;;
+      ""|/*|../*|*/../*|*/..) die "unsafe archive member path: $member" ;;
     esac
     case "$member" in
-      "Phux Cockpit.app/"*) ;;
+      "Phux.app/"*) ;;
       *) die "unexpected archive member: $member" ;;
     esac
   done < "$members_path"
-  grep -Fxq "Phux Cockpit.app/Contents/Info.plist" "$members_path" \
-    || die "archive did not contain a Phux Cockpit.app bundle"
+  grep -Fxq "Phux.app/Contents/Info.plist" "$members_path" \
+    || die "archive did not contain a Phux.app bundle"
 }
 
 mkdir -p "$extract_dir"
 validate_zip
 unzip -q -o "$zip_path" -d "$extract_dir"
-[ -d "${extract_dir}/Phux Cockpit.app" ] && [ ! -L "${extract_dir}/Phux Cockpit.app" ] \
-  || die "archive did not contain a Phux Cockpit.app directory"
-[ -f "${extract_dir}/Phux Cockpit.app/Contents/Info.plist" ] \
-  || die "archive did not contain a Phux Cockpit.app bundle"
+[ -d "${extract_dir}/Phux.app" ] && [ ! -L "${extract_dir}/Phux.app" ] \
+  || die "archive did not contain a Phux.app directory"
+[ -f "${extract_dir}/Phux.app/Contents/Info.plist" ] \
+  || die "archive did not contain a Phux.app bundle"
+
+[ -x "${extract_dir}/Phux.app/Contents/MacOS/phux-desktop" ] \
+  || die "archive did not contain the desktop executable"
+codesign --verify --deep --strict "${extract_dir}/Phux.app" \
+  || die "desktop app signature verification failed"
+identity="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${extract_dir}/Phux.app/Contents/Info.plist")"
+[ "$identity" = dev.phux.desktop ] || die "archive is not the GPUIX desktop app"
+bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :PhuxDesktopVersion' "${extract_dir}/Phux.app/Contents/Info.plist")"
+[ "$bundle_version" = "$semver" ] || die "desktop bundle version does not match ${version}"
 
 mkdir -p "$applications_dir"
-lock_dir="${applications_dir}/.phux-cockpit-install.lock"
-# Exclusive mkdir still claims the canonical lock. Ownership is recorded in a
-# pid-tagged pending directory first so interruption before lock_acquired=1
-# cannot strand our lock or delete another installer's.
-lock_pending="${lock_dir}.$$"
-rm -rf "$lock_pending" 2>/dev/null || true
-mkdir "$lock_pending" || die "could not create install lock"
-printf '%s\n' "$$" > "${lock_pending}/pid"
-# Hold HUP/INT/TERM across the exclusive mkdir so a signal cannot land after
-# the lock exists and before lock_acquired=1. The pending directory still
-# covers interruption before this hold.
-trap '' HUP INT TERM
-if ! mkdir "$lock_dir" 2>/dev/null; then
-  trap_install_signals
-  rm -rf "$lock_pending"
-  lock_pending=""
-  die "another Cockpit install is already publishing to ${applications_dir}"
-fi
-lock_acquired=1
-mv "${lock_pending}/pid" "${lock_dir}/pid"
-rm -rf "$lock_pending"
-lock_pending=""
-trap_install_signals
+lock_dir="${applications_dir}/.phux-desktop-install.lock"
+# The inherited descriptor keeps the kernel lock until this shell exits, even
+# through rollback. Never unlink it: all installers must lock the same inode.
+# A killed process releases the lock automatically; no stale PID recovery.
+exec 9>"$lock_dir"
+lockf -s -t 0 9 || die "another Desktop install is already publishing to ${applications_dir}"
 
-publish_dir="$(mktemp -d "${applications_dir}/.phux-cockpit-install.XXXXXX")"
+publish_dir="$(mktemp -d "${applications_dir}/.phux-desktop-install.XXXXXX")"
 mkdir "${publish_dir}/backup"
 # Finish copying on the destination filesystem before touching an existing app.
 # Only renames happen during publication, so a failed copy leaves it available.
-ditto "${extract_dir}/Phux Cockpit.app" "${publish_dir}/Phux Cockpit.app"
+ditto "${extract_dir}/Phux.app" "${publish_dir}/Phux.app"
 
-installed_path="${applications_dir}/Phux Cockpit.app"
+installed_path="${applications_dir}/Phux.app"
 if [ -e "$installed_path" ] && [ ! -d "$installed_path" ]; then
   die "refusing to replace non-directory install destination: ${installed_path}"
 fi
 
+if [ -d "$installed_path" ]; then
+  identity="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$installed_path/Contents/Info.plist" 2>/dev/null || true)"
+  [ "$identity" = dev.phux.desktop ] || die "refusing to replace an unrelated Phux.app"
+fi
+
 publish_started=1
 if [ -e "$installed_path" ] || [ -L "$installed_path" ]; then
-  mv "$installed_path" "${publish_dir}/backup/Phux Cockpit.app"
+  mv "$installed_path" "${publish_dir}/backup/Phux.app"
 fi
 # Mark before mv so interruption immediately after the rename still rolls back.
 # A failed backup rename never sets this flag: the original remains untouched.
 published_app=1
-mv "${publish_dir}/Phux Cockpit.app" "$installed_path"
+mv "${publish_dir}/Phux.app" "$installed_path"
 publish_complete=1
 
 # Releases without Developer ID credentials are ad-hoc signed; clearing the
@@ -677,10 +561,12 @@ publish_complete=1
 # the Homebrew cask performs.
 xattr -d com.apple.quarantine "$installed_path" 2>/dev/null || true
 
-echo "installed Phux Cockpit ${version} to ${applications_dir}"
-installed_app="$(CDPATH='' cd "$applications_dir" && pwd -P)/Phux Cockpit.app"
+echo "installed Phux ${version} to ${applications_dir}"
+installed_app="$(CDPATH='' cd "$applications_dir" && pwd -P)/Phux.app"
 if write_cli_launcher "$installed_app"; then
-  launcher_path="$(CDPATH='' cd "$bin_dir" && pwd -P)/phux-cockpit"
+  launcher_path="$(CDPATH='' cd "$bin_dir" && pwd -P)/phux-desktop"
   echo "launcher: ${launcher_path}"
+else
+  echo "warning: could not install phux-desktop launcher; open the app directly" >&2
 fi
 printf 'next: open %s\n' "$(shell_quote "$installed_app")"

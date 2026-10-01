@@ -3,6 +3,7 @@
  * shell. Shared by the dev entry (`desktop-main.ts`) and the packaged app
  * (`app-main.ts`); only how they find the addon and socket differs.
  */
+import { createHash } from "node:crypto";
 import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -29,7 +30,8 @@ function restartServer(start: DesktopStart): string | undefined {
   if (process.env.PHUX_DESKTOP_DEMO === "1")
     return "The private demo server stopped. Relaunch the demo to start a new sandbox.";
   const phux = findPhux(process.env.PHUX_BIN);
-  if (!phux) return "Install the phux CLI (~/.local/bin/phux) so the desktop can start a server.";
+  if (!phux)
+    return "Install the phux CLI from https://phux.sh/install so the desktop can start a server.";
   try {
     const explicit = process.env.PHUX_SOCKET || undefined;
     ensureServer(phux, explicit);
@@ -60,13 +62,24 @@ export async function startDesktop(start: DesktopStart): Promise<void> {
   native.registerCustomElementType("phux-drag-region");
   const app = await import("../src/app");
   const state = process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state");
+  // Different servers/sessions must not replace one another's workspace.
+  const target = createHash("sha256")
+    .update(JSON.stringify([start.socketPath, start.sessionName]))
+    .digest("hex")
+    .slice(0, 24);
   app.mount(host, {
     socketPath: start.socketPath,
     sessionName: start.sessionName,
-    layouts: fileLayoutStore(join(state, "phux-desktop/layout.json")),
+    layouts: fileLayoutStore(
+      join(state, `phux-desktop/${target}/layout.json`),
+      join(state, "phux-desktop/layout.json"),
+    ),
     startupError: start.startupError,
     readGhostty: readGhosttyConfig,
-    quickLayouts: fileLayoutStore(join(state, "phux-desktop/quick.json")),
+    quickLayouts: fileLayoutStore(
+      join(state, `phux-desktop/${target}/quick.json`),
+      join(state, "phux-desktop/quick.json"),
+    ),
     ensureServer: () => restartServer(start),
     writeTempFile,
   });

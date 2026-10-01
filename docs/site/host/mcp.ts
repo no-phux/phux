@@ -48,6 +48,7 @@ interface ToolDef {
 const INSTALL_COMMANDS = {
   cli: "curl -fsSL https://phux.sh/install | sh",
   cockpit: "curl -fsSL https://phux.sh/install-cockpit | sh",
+  desktop: "curl -fsSL https://phux.sh/install-desktop | sh",
   skills: "npx skills add no-phux/skills",
 } as const;
 
@@ -124,20 +125,20 @@ const TOOLS: ToolDef[] = [
   {
     name: "get_install_command",
     description:
-      "Get the one-line installer for the phux CLI, Cockpit (the native GUI), or the agent skills package.",
+      "Get the one-line installer for the phux CLI, GPUIX desktop alpha, Cockpit, or agent skills.",
     inputSchema: {
       type: "object",
       properties: {
         target: {
           type: "string",
-          enum: ["cli", "cockpit", "skills"],
+          enum: ["cli", "desktop", "cockpit", "skills"],
           description: "What to install. Defaults to the phux CLI.",
         },
       },
     },
     run: async (params) => {
       const target = params.target;
-      if (target === "cockpit" || target === "skills") {
+      if (target === "desktop" || target === "cockpit" || target === "skills") {
         return INSTALL_COMMANDS[target];
       }
       return INSTALL_COMMANDS.cli;

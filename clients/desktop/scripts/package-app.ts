@@ -43,12 +43,16 @@ if (!built.success) throw new AggregateError(built.logs, "Desktop app compile fa
 cpSync(addon, join(contents, "Resources/phux-desktop-native.darwin-arm64.node"));
 renderIcon(join(contents, "Resources/AppIcon.icns"));
 
+const metadata: unknown = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const version =
-  /^version = "([^"]+)"/m.exec(readFileSync(join(repo, "Cargo.toml"), "utf8"))?.[1] ?? "0.0.0";
-const sha = run(["git", "-C", repo, "rev-parse", "--short", "HEAD"]).trim();
+  metadata && typeof metadata === "object" && "version" in metadata ? metadata.version : undefined;
+if (typeof version !== "string" || !/^\d+\.\d+\.\d+(?:-alpha\.\d+)?$/.test(version))
+  throw new Error("Desktop package.json must contain a release version");
+const sha = run(["git", "-C", repo, "rev-parse", "HEAD"]).trim();
 writeFileSync(join(contents, "Info.plist"), infoPlist(version, sha));
 writeFileSync(join(contents, "PkgInfo"), "APPL????");
 run(["codesign", "--force", "--deep", "--sign", "-", app]);
+run(["codesign", "--verify", "--deep", "--strict", app]);
 console.log(`Built ${app} (${version}, ${sha})`);
 
 if (process.argv.includes("--install")) {
@@ -91,6 +95,7 @@ function renderIcon(output: string): void {
 }
 
 function infoPlist(version: string, sha: string): string {
+  const numericVersion = version.split("-")[0];
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -103,10 +108,11 @@ function infoPlist(version: string, sha: string): string {
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Phux</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>${version}</string>
-  <key>CFBundleVersion</key><string>${version}</string>
+  <key>CFBundleShortVersionString</key><string>${numericVersion}</string>
+  <key>CFBundleVersion</key><string>${numericVersion}</string>
+  <key>PhuxDesktopVersion</key><string>${version}</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
-  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>LSMinimumSystemVersion</key><string>27.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
   <key>PhuxBuildSHA</key><string>${sha}</string>

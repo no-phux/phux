@@ -8,7 +8,7 @@ last-reviewed: 2026-09-27
 
 **TL;DR.** Release Please cuts versions, tags, and private draft notes.
 `ci` proves the commit. `publish` ships every draft whose tag points at a
-green `ci` commit: root binaries, Cockpit, mobile FFI, and host integrations.
+green `ci` commit: root binaries, Cockpit, desktop alphas, mobile FFI, and host integrations.
 One dispatch finishes a stuck draft. `phux-protocol` on crates.io stays a
 separate human dispatch.
 
@@ -33,6 +33,9 @@ same release.
 | The `cockpit-vX.Y.Z` tag and draft release | release-please |
 | Cockpit ZIP, DMG, signature/notarization evidence, and publication | `cockpit-release.yml`, called by `publish.yml` |
 | `phux-cockpit` Homebrew cask | `cockpit-release.yml` |
+| Desktop version and changelog | release-please, under `clients/desktop` |
+| The `desktop-vX.Y.Z-alpha.N` tag and prerelease draft | release-please |
+| Desktop ZIP, checksum, runtime qualification, and prerelease publication | `desktop-release.yml`, called by `publish.yml` |
 | `PhuxFFI-<tag>.xcframework.zip`, its `.sha256`, and `.provenance` on the root release | `ffi-xcframework.yml`, called by `publish.yml` |
 | Moving `next` prerelease (green `main`), CLI and Cockpit | `next-release.yml` |
 
@@ -80,6 +83,7 @@ recovery. `scripts/check-release-orchestration.mjs` pins this ordering.
 | publish | `ci` or release-please completed on `main`, daily, or dispatch | Ships drafts whose tag points at a green `ci` run. Deletes drafts older than an already published version of the same component. |
 | Release artifacts | called by `publish` | Requires all target builds, attaches tarballs + checksums, publishes the complete release, then updates Homebrew. |
 | Cockpit release | called by `publish` | Re-tests the tagged tree, packages, signs and optionally notarizes, verifies downloaded ZIP/DMG assets, proves the Homebrew cask reached the tap, then publishes the draft. |
+| Desktop alpha release | called by `publish` | Builds the tagged native addon, compiled app and qualification CLI on Apple silicon; verifies ad-hoc signing, archived-app runtime and installer behavior, then uploads and verifies the ZIP/checksum before publishing as a prerelease, never latest. |
 | Cockpit SDK head | manual | Builds Cockpit against an explicitly selected SDK ref. Pinned SDK changes still run ordinary Cockpit CI. |
 | Crate publish | manual `publish-crate` workflow | `phux-protocol` package dry-run, then publish when `dry_run=false`. |
 | Agent integration release | called by `publish`, or a manual dry run | Re-runs locked gates, creates one checksummed artifact, clean-installs npm artifacts, publishes npm with provenance where applicable, and publishes the component draft release. |
@@ -192,6 +196,59 @@ is wired in. Trusted publishing cannot do a package's *first* publish: a new
 `@phux/*` package is bootstrapped once by a human `npm publish`. The lane is
 idempotent; re-dispatching a tag verifies rather than republishes.
 
+## Desktop alpha releases
+
+Desktop versions are independent of the CLI and Cockpit. Release Please excludes
+`clients/desktop` from the root release and updates its `package.json` and
+`CHANGELOG.md` through the Node strategy. `versioning: prerelease`,
+`prerelease-type: alpha.1`, and `prerelease: true` are all required: the versioning
+strategy advances the numeric alpha counter, while the release flag keeps the
+GitHub release out of the stable channel. Desktop uses a separate release PR,
+so shipping an alpha does not require releasing unrelated root or Cockpit changes.
+
+The initial manifest value is deliberately **`0.0.0`**, Release Please's
+never-released sentinel, while the package is already `0.1.0-alpha.1`.
+`initial-version: 0.1.0-alpha.1` makes the first release PR replace that sentinel
+with exactly `0.1.0-alpha.1`; pre-seeding the manifest with alpha.1 would instead
+make Release Please propose alpha.2. The drift guard exempts only the sentinel,
+not a missing alpha.1 release. Do not hand-create a tag, add a permanent
+`release-as` override, or invent a per-package `bootstrap-sha`.
+See the upstream [configuration schema](https://github.com/googleapis/release-please/blob/main/schemas/config.json),
+[manifest sentinel handling](https://github.com/googleapis/release-please/blob/main/src/manifest.ts),
+and [prerelease strategy](https://github.com/googleapis/release-please/blob/main/src/versioning-strategies/prerelease.ts).
+
+The first train is Apple silicon macOS 27 or later only:
+
+```text
+desktop-v0.1.0-alpha.1
+  phux-desktop-0.1.0-alpha.1-macos-arm64.zip
+    Phux.app/
+  SHA256SUMS
+```
+
+`publish.yml` still requires green `ci.yml` for the exact tagged commit.
+The reusable desktop workflow keeps its harness on `main` and checks out the
+immutable tag separately for every product build. It runs `just desktop-package`
+and builds a release-profile CLI from the same source for runtime qualification.
+The CLI is **not bundled**: users install it separately from
+<https://phux.sh/install>, and installing the desktop never upgrades a running
+coordinator. The app is explicitly **ad-hoc signed, not Apple-notarized**;
+there are no desktop Developer ID or notarization secrets.
+
+Before uploading, the lane verifies `codesign`, extracts the ZIP, and runs
+`bun clients/desktop/scripts/smoke-app.ts --app <Phux.app> --phux <same-checkout-binary>`
+against isolated server state. The smoke must prove rendered terminal output
+and retained sessions across client termination/relaunch; installer transaction
+checks run separately. After upload, downloaded checksums and bytes must match
+before the API changes `draft` to false, `prerelease` to true, and `make_latest`
+to false. This train does not alter the CLI `next` channel or a Homebrew cask.
+
+To recover a draft, dispatch **publish** with
+`tag=desktop-v0.1.0-alpha.1` (or its later alpha tag), never the leaf workflow.
+The release drift check includes alpha drafts, prerelease status, the expected
+versioned ZIP and `SHA256SUMS`.
+
+
 ## When a release goes quiet
 
 Release failures have been silent (an aborted release-please step inside a
@@ -232,6 +289,7 @@ Linux x86_64, and Linux arm64.
 | `@phux/pi` | npm + GitHub release | `pi-extension-vX.Y.Z`, [`agent-integration-release.yml`](../.github/workflows/agent-integration-release.yml) |
 | Claude Code plugin | repository marketplace + GitHub release | `claude-plugin-vX.Y.Z`, [`.claude-plugin/marketplace.json`](../.claude-plugin/marketplace.json) |
 | Phux Cockpit | Homebrew cask + GitHub release | `cockpit-vX.Y.Z`, ZIP + DMG + `SHA256SUMS`, [`cockpit-release.yml`](../.github/workflows/cockpit-release.yml) |
+| Phux Desktop Alpha | GitHub prerelease + desktop installer | `desktop-vX.Y.Z-alpha.N`, ZIP + `SHA256SUMS`, [`desktop-release.yml`](../.github/workflows/desktop-release.yml); Apple silicon macOS only |
 | `PhuxFFI.xcframework` (phux-client-ffi for iOS, simulator, macOS) | GitHub release asset on `vX.Y.Z` | [`ffi-xcframework.yml`](../.github/workflows/ffi-xcframework.yml), called by `publish.yml`; see [PhuxFFI xcframework](#phuxffi-xcframework) |
 | `PhuxMobileFFI-<tag>.xcframework.zip` (mobile UniFFI runtime projection plus generated Swift) | GitHub release asset on `vX.Y.Z` | [`ffi-xcframework.yml`](../.github/workflows/ffi-xcframework.yml), built beside the C artifact; see [Mobile UniFFI xcframework](#mobile-uniffi-xcframework) |
 | `PhuxMobileFFI-<tag>.android.zip` (same UniFFI surface: Kotlin + arm64-v8a/x86_64 `.so`) | GitHub Actions artifact / release asset | [`ffi-android.yml`](../.github/workflows/ffi-android.yml); phux-mobile fetches at `PHUX_REV` |

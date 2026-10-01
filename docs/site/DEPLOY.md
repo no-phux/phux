@@ -80,22 +80,25 @@ also hold `MEMBER_CLAIM_KEY_PREVIOUS`. The private MCP operator surface uses
 `OPS_MCP_KEY`; the service-bound producer receives no operator credential. All
 of this is disclosed on `/telemetry`.
 
-### The curl installers at `/install` and `/install-cockpit`
+### The curl installers
 
 `https://phux.sh/install` and `https://phux.sh/install.sh` serve the repo's
 `scripts/install.sh` byte for byte; `https://phux.sh/install-cockpit` and
 `https://phux.sh/install-cockpit.sh` do the same for
 `scripts/install-cockpit.sh`, which installs the Cockpit macOS app from the
-`cockpit-vX.Y.Z` release assets. `scripts/sync-docs.ts` copies both into
-`public/` on every build and all four destinations are gitignored, so a
-published installer cannot drift from the script the release tests exercise.
+`cockpit-vX.Y.Z` release assets. `https://phux.sh/install-desktop` and
+`https://phux.sh/install-desktop.sh` serve `scripts/install-desktop.sh`, which
+installs the GPUIX `Phux.app` from `desktop-vX.Y.Z-alpha.N` prereleases.
+`scripts/sync-docs.ts` copies all three into `public/` on every build and all
+six destinations are gitignored, so a published installer cannot drift from
+the script the release tests exercise.
 Two real files per installer rather than a redirect, because
 `curl https://phux.sh/install` has to work without `-L`.
 
 Three things keep that honest, all pinned by `scripts/check-install-surface.sh`:
-`site-deploy.yml` lists both scripts in its path filter (or an installer
+`site-deploy.yml` lists the scripts in its path filter (or an installer
 fix never redeploys the site), `sync-docs.ts` refuses to publish a script whose
-shebang is not `#!/bin/sh`, and `_headers` caps all four routes at five minutes
+shebang is not `#!/bin/sh`, and `_headers` caps all six routes at five minutes
 of edge cache so a fix propagates while somebody is still running the broken one.
 
 ## 2. The backend → Worker + Durable Objects

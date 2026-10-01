@@ -98,17 +98,19 @@ done
 
 # BEGIN shared release resolver
 #!/bin/sh
-# Embedded verbatim in both standalone installers by sync-install-resolver.sh.
+# Embedded verbatim in standalone installers by sync-install-resolver.sh.
 # Runtime dependencies are POSIX sh/awk/utilities and curl or wget, never jq or
 # Python. Parse JSON structurally: release bodies and nested assets are not tags.
 
 valid_release_tag() {
   case "$1" in *[!A-Za-z0-9.-]*) return 1 ;; esac
-  printf '%s\n' "$1" | LC_ALL=C grep -Eq "^${2}(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+  suffix=""
+  [ "${3:-stable}" != alpha ] || suffix='-alpha\.(0|[1-9][0-9]*)'
+  printf '%s\n' "$1" | LC_ALL=C grep -Eq "^${2}(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)${suffix}$"
 }
 
 release_page() {
-  LC_ALL=C awk -v prefix="$1" '
+  LC_ALL=C awk -v prefix="$1" -v channel="${3:-stable}" '
     function fail() { invalid = 1; exit 1 }
     # Keep unread input in 1 KiB chunks. Matching/removing a small token must
     # not copy the entire page; only a token spanning chunks grows the buffer.
@@ -261,7 +263,7 @@ release_page() {
     function stable_metadata() {
       if (types["tag_name"] != "string") fail()
       if (!boolean_field("draft") || !boolean_field("prerelease")) fail()
-      return fields["draft"] == "false" && fields["prerelease"] == "false"
+      return fields["draft"] == "false" && fields["prerelease"] == (channel == "alpha" ? "true" : "false")
     }
     function release(    key, tag, version_pattern) {
       for (key in fields) delete fields[key]
@@ -270,6 +272,7 @@ release_page() {
       if (!stable_metadata()) return
       tag = ascii_string(fields["tag_name"])
       version_pattern = "(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)"
+      if (channel == "alpha") version_pattern = version_pattern "-alpha\\.(0|[1-9][0-9]*)"
       if (selected == "" && tag ~ ("^" prefix version_pattern "$")) selected = tag
     }
     function page() {
@@ -314,6 +317,7 @@ resolve_latest_version() (
   # GitHub returns release streams interleaved, newest first. Keep all network
   # and temporary state inside this subshell, including for --dry-run.
   prefix="$1"
+  release_channel="${2:-stable}"
   index_dir="$(mktemp -d)"
   trap 'rm -rf "$index_dir"' 0
   trap 'exit 129' HUP
@@ -326,15 +330,15 @@ resolve_latest_version() (
       || die "could not fetch release page $page (limit 1048576 bytes); check GitHub access/rate limits or pass --version"
     [ "$(wc -c < "$index_dir/page.json")" -le 1048576 ] \
       || die "release page exceeds 1048576 bytes; pass --version to select a known release"
-    result="$(release_page "$prefix" "$index_dir/page.json")" \
+    result="$(release_page "$prefix" "$index_dir/page.json" "$release_channel")" \
       || die "invalid release list on page $page; retry or pass --version to select a known release"
     case "$result" in
-      empty) die "no stable ${prefix}X.Y.Z release found; pass --version to select a known release" ;;
+      empty) die "no ${release_channel} ${prefix} release found; pass --version to select a known release" ;;
       more) page=$((page + 1)) ;;
       *) printf '%s\n' "$result"; exit 0 ;;
     esac
   done
-  die "no stable ${prefix}X.Y.Z release found within 10 pages; pass --version to select a known release"
+  die "no ${release_channel} ${prefix} release found within 10 pages; pass --version to select a known release"
 )
 # END shared release resolver
 resolve_next_sha() {

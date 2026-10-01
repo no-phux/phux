@@ -40,7 +40,8 @@ def validation_state(runs, sha, workflow):
 
 TAG_RE = re.compile(
     r"^(?:(?P<component>[a-z0-9]+(?:-[a-z0-9]+)*)-)?"
-    r"v(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$"
+    r"v(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
+    r"(?:-alpha\.(?P<alpha>[1-9]\d*))?$"
 )
 CI_WORKFLOW = ".github/workflows/ci.yml"
 PENDING = {"pending", "queued", "in_progress", "waiting", "requested", "missing"}
@@ -50,9 +51,15 @@ def parse_tag(tag):
     match = TAG_RE.fullmatch(tag)
     if match is None:
         return None
+    # The desktop train is alpha-only; every other lane is stable-only.
+    if (match.group("component") == "desktop") != (match.group("alpha") is not None):
+        return None
     return {
         "component": match.group("component") or "phux",
-        "version": tuple(int(match.group(name)) for name in ("major", "minor", "patch")),
+        "version": (
+            *(int(match.group(name)) for name in ("major", "minor", "patch")),
+            int(match.group("alpha")) if match.group("alpha") else float("inf"),
+        ),
     }
 
 
@@ -61,6 +68,8 @@ def lane(component):
         return "phux"
     if component == "cockpit":
         return "cockpit"
+    if component == "desktop":
+        return "desktop"
     return "integration"
 
 
@@ -159,7 +168,7 @@ def _decide_reconcile(candidates, ci_state, result):
 
 
 def split_lanes(tags):
-    lanes = {"phux": "", "cockpit": "", "integration": []}
+    lanes = {"phux": "", "cockpit": "", "desktop": "", "integration": []}
     for tag in tags:
         identity = parse_tag(tag)
         if identity is None:
@@ -212,6 +221,7 @@ def _write_outputs(path, lanes, blocked):
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(f"phux_tag={lanes['phux']}\n")
         handle.write(f"cockpit_tag={lanes['cockpit']}\n")
+        handle.write(f"desktop_tag={lanes['desktop']}\n")
         handle.write(f"integration_tags={json.dumps(lanes['integration'])}\n")
         handle.write(f"blocked={blocked}\n")
 

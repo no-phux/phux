@@ -525,4 +525,5 @@ bash "$ROOT/scripts/test-install.sh"
 bash "$ROOT/scripts/test-cockpit-self-update.sh"
 bash "$ROOT/scripts/sync-install-resolver.sh" --check
 bash "$ROOT/scripts/test-install-resolution.sh"
+python3 "$ROOT/scripts/test-install-desktop.py"
 echo "install surface check passed"
