@@ -6,23 +6,21 @@ last-reviewed: 2026-09-21
 
 # Cockpit
 
-**TL;DR.** Cockpit is the native macOS attach client. It talks to the same
-phux server the TUI does, through `phux-client-ffi`, so the terminals you
-split in one are the terminals you open in the other. It is independently
-versioned. This page is the human router; the in-tree app owns its build
-notes.
+**TL;DR.** Cockpit is the native macOS attach client, independently versioned
+from the CLI. It connects through `phux-client-ffi`; the server owns its
+terminals and keeps them running when a window closes. This guide covers
+installation, behavior, and client integration details.
 
 ---
 
 ## What it is
 
-Cockpit is a native macOS application over the C ABI in `phux-client-ffi`.
-It does not run the TUI. It attaches to a running phux server and paints
-the same Terminal-kind resources the TUI shows: tabs, splits, focus, and
-input stay in the app; the shells stay in the server.
+Cockpit is a native macOS application over the C ABI in `phux-client-ffi`,
+not a wrapper around the TUI. It renders the server's Terminal-kind resources.
+The app manages tabs, splits, focus, and input; the server runs the shells.
 
-Closing a Cockpit window detaches. The session keeps running. Reopening
-reattaches to the same durable work.
+Closing a window detaches. Reopening reattaches to the session while its
+server remains alive.
 
 ## Install
 
@@ -47,14 +45,12 @@ in-app Check for Updates path, live in [`../INSTALL.md`](../INSTALL.md).
 
 ## Authority
 
-Same server, same terminals as the TUI. Cockpit is a peer consumer, not a
-second multiplexer and not a second process-owning daemon. Its release
-cadence is independent of the CLI: `cockpit-vX.Y.Z` tags, not the `phux`
-binary's.
+Cockpit has the same protocol standing as other clients; it does not own a
+second multiplexer or process-running daemon. Releases use `cockpit-vX.Y.Z`
+tags, independently of the `phux` binary.
 
-This tree projects AgentSession resources as rows under their parent
-terminal, not as panes. Maturity of the rest of the product is in
-[`../CONCEPTS.md`](../CONCEPTS.md).
+AgentSession resources appear as rows under their parent terminal, not as
+panes. See [Concepts](../CONCEPTS.md) for product maturity.
 
 ## Limits
 
@@ -65,40 +61,40 @@ terminal, not as panes. Maturity of the rest of the product is in
 
 ## Status effects
 
-`phux-client-ffi` subscribes to the connection-wide `AgentEvent` stream
-(`SUBSCRIBE_EVENTS`) once every attach barrier releases, and folds the
-subscribed cwd change, command-boundary, and process-exit events — plus a
-plain terminal close — into typed `PhuxClientEffect` status kinds:
-`PHUX_CLIENT_STATUS_CWD`, `_COMMAND_STARTED`, `_COMMAND_FINISHED`, and
-`_EXITED` (`include/phux/client.h` in `phux-client-ffi`). The subscription
-is scoped to every Terminal local to the server phux-client-ffi is
-connected to; on a federation hub it does not reach a satellite's panes,
-which need their own explicit per-terminal subscription. The live working directory's basename
-(`/` for the root) names an untitled tab ahead of the attach catalog.
-`EXITED` with reason `Exited` or `Killed` closes the pane; any other reason
-keeps today's handling. Natural `exit` of a session's last shell does not
-publish `EXITED`: the server replaces the child in place, so the pane stays.
-A window that loses its last pane to Close Pane/Tab shows Empty session when
-its session is keep-empty (ADR-0114). Otherwise the window closes, and closing
-the last window quits. The result is the same whichever
-of the close and the workspace snapshot arrives first. The command
-boundaries answer `atPrompt()`. A command that ran at least ten seconds posts
-a notification under the bell's gate and latch. A missing status, such as a
-satellite pane behind a hub, reads as unknown, never as an error.
+After each attach barrier releases, `phux-client-ffi` subscribes to the
+connection-wide `AgentEvent` stream (`SUBSCRIBE_EVENTS`). Cwd changes,
+command boundaries, process exits, and terminal closes become typed
+`PhuxClientEffect` status kinds: `PHUX_CLIENT_STATUS_CWD`,
+`_COMMAND_STARTED`, `_COMMAND_FINISHED`, and `_EXITED`
+(`include/phux/client.h` in `phux-client-ffi`).
+
+The subscription covers every Terminal local to the connected server.
+Satellite panes behind a federation hub need explicit per-terminal
+subscriptions. Missing status reads as unknown, not as an error.
+
+An untitled tab uses the live working directory's basename (`/` for root)
+before the attach catalog's name. `EXITED` with reason `Exited` or `Killed`
+closes the pane; other reasons retain their existing handling. Natural
+`exit` of a session's last shell does not publish `EXITED`: the server
+replaces the child in place. Closing the last pane of a keep-empty session
+shows Empty session (ADR-0114); otherwise the window closes. Closing the
+last window quits. These outcomes do not depend on whether the close event
+or workspace snapshot arrives first.
+
+Command boundaries determine `atPrompt()`. A command that ran for at least
+ten seconds posts a notification under the bell's gate and latch.
 
 ## Who owns the socket
 
-`phux-client-runtime` does (ADR-0133). Cockpit names a destination; the
-runtime resolves it through the CLI's `[[remote]]` registry under the CLI's
-trust rules, dials, walks the reconnect ladder, and reads and writes the
-socket on its own thread. Cockpit is woken and calls `phux_client_poll`.
+`phux-client-runtime` owns the socket (ADR-0133). Cockpit names a destination;
+the runtime resolves it through the CLI's `[[remote]]` registry and trust
+rules, dials, reconnects, and handles socket I/O on its own thread. It wakes
+Cockpit to call `phux_client_poll`.
 
-Frames are still decoded on Cockpit's owning thread: the runtime queues
-what it reads and `poll` feeds it, because the ABI's per-frame behavior
-reads state only that thread may touch. One `poll` feeds one snapshot of
-that bounded queue, and a contiguous run of terminal output in it reaches the
-engine as one batch (cut at 256 frames or 1 MiB), so an output flood
-publishes each grid once per batch rather than once per frame.
+Cockpit's owning thread decodes frames because the ABI's per-frame behavior
+uses state confined to that thread. Each `poll` drains one snapshot of the
+bounded runtime queue. Contiguous terminal output reaches the engine in
+batches of at most 256 frames or 1 MiB, publishing each grid once per batch.
 
 - The runtime queues `HELLO` on every connection it opens. `ATTACH` stays
   explicit. Both a changed `phux_client_connection_epoch` and replacement
@@ -119,14 +115,12 @@ production drives it.
 
 ## Clipboard (OSC 52)
 
-OSC 52 (the in-band terminal-to-host clipboard-write escape) is
-deliberately unsupported on the remote attach path: a pane running on a
-remote phux server writing the local clipboard of whatever machine Cockpit
-happens to be running on crosses the same trust boundary a remote
-filesystem write would. No status effect carries it, and none is planned;
-lifting this would need its own ADR, not a new effect kind.
+OSC 52 (the terminal-to-host clipboard-write escape) is unsupported on the
+remote attach path. Letting a remote pane write Cockpit's local clipboard
+crosses a trust boundary comparable to a remote filesystem write. No status
+effect carries it, and none is planned; changing this requires an ADR.
 
 ## Build
 
-The in-tree app, including how to build it, is
-[`../../clients/cockpit/README.md`](../../clients/cockpit/README.md).
+Build instructions live in the
+[in-tree app README](../../clients/cockpit/README.md).

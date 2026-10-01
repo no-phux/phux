@@ -1,21 +1,37 @@
-// Single source of truth for site metadata — pages and components read from here
-// so nothing drifts. Mirrors the wire/phall.io `SITE` convention.
+// Public identity lives here. Commands, package names and protocol identifiers
+// are separate contracts; changing the display name does not rename them.
+const name = "phux";
 
 export const SITE = {
-  name: "phux",
+  name,
   domain: "phux.sh",
   url: "https://phux.sh",
   docsDomain: "docs.phux.sh",
   docsUrl: "https://docs.phux.sh",
-  tagline: "you and your agents share the same terminals",
+  category: "Programmable terminal runtime",
+  tagline: "Terminals you can build on.",
   description:
-    "phux is a terminal multiplexer whose panes are a view. You, Cockpit, a script, or an agent attach to the same live terminal. When a harness emits, blocked is a fact on that wire. Join another machine with no phux account.",
+    `${name} keeps shells running and puts their input, output, and events behind a public API. Connect from a terminal, desktop, browser, or agent—locally or across machines.`,
   github: "https://github.com/no-phux/phux",
   // One switch for the visual system. Mode tokens live in global.css.
   designMode: "terminal",
   // Set when the WS demo backend is deployed. When empty the terminal island
   // renders the static poster + a "coming online" state instead of dialing out.
   demoWsUrl: import.meta.env.PUBLIC_PHUX_DEMO_WS ?? "",
+} as const;
+
+// Shared by the visible docs landing and its searchable Markdown representation.
+export const OVERVIEW = {
+  title: "Get started",
+  summary: "Start locally, automate a terminal, or connect another machine.",
+  paths: [
+    { href: "/quickstart", title: "Quickstart", text: "Start, split, and detach." },
+    { href: "/consumers/getting-started", title: "Coding agents", text: "Choose an integration and verify it." },
+    { href: "/remote-access", title: "Remote access", text: "Connect hosts over SSH or QUIC." },
+    { href: "/concepts/coming-from", title: "From tmux", text: "Find familiar keys and concepts." },
+    { href: "/concepts/when-to-use", title: "Compare tools", text: `${SITE.name}, tmux, Herdr, and cmux.` },
+    { href: "/troubleshooting", title: "Troubleshooting", text: "Diagnose installation, connection, and agent issues." },
+  ],
 } as const;
 
 /**

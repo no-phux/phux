@@ -11,6 +11,7 @@
 // no analytics script, no outbound referrer, noindex, and the token is
 // dropped from the address bar as soon as the page has read it. Nothing is
 // ever sent to the server — the whole exchange is local to the device.
+import { SITE } from "../lib/site";
 ---
 
 <!doctype html>
@@ -22,7 +23,7 @@
     <meta name="robots" content="noindex,nofollow" />
     <meta name="referrer" content="no-referrer" />
     <meta name="theme-color" content="#08080b" />
-    <title>Pair with phux</title>
+    <title>Pair with {SITE.name}</title>
   </head>
   <body>
     <main>
@@ -38,24 +39,24 @@
             <dt>Certificate</dt><dd id="fp" class="mono">&mdash;</dd>
           </div>
         </dl>
-        <a id="open" class="button" href="#">Open in phux</a>
+        <a id="open" class="button" href="#">Open in {SITE.name}</a>
         <p class="hint">
-          If nothing happens, phux is not installed on this device yet.
+          If nothing opens, install the app on this device.
         </p>
       </section>
 
       <section id="install" hidden>
         <p>
-          Install phux on the Mac you want to reach, then scan the code again
-          from inside the phux app.
+          Install {SITE.name} on the host, then scan its pairing code
+          from the app.
         </p>
-        <pre class="mono">brew install phall1/tap/phux</pre>
+        <pre class="mono">curl -fsSL https://phux.sh/install | sh</pre>
       </section>
 
       <section id="bad" hidden>
         <p>
-          This link is not a phux pairing link, or it is missing part of it.
-          Run <code>phux pair --qr</code> again on your Mac for a fresh one.
+          This pairing link is invalid or incomplete.
+          Run <code>phux pair --qr</code> on the host for a new one.
         </p>
       </section>
     </main>
@@ -101,7 +102,7 @@
         document.getElementById("open").setAttribute("href", deepLink);
 
         lede.textContent =
-          "Open this in the phux app to finish pairing. The link never leaves your device.";
+          "Open the app to finish pairing. This page handles the link on your device.";
         show("details");
         show("install");
 

@@ -6,36 +6,28 @@ last-reviewed: 2026-09-30
 
 # The phux agent CLI
 
-**TL;DR.** The structured CLI an agent drives without a TTY. Create and
-place panes, act with `run`, `send-keys`, or `paste`, observe with
-`snapshot`, `wait`, and `watch`, and supervise another agent through
-AgentSession verbs or the pane detector. This file is the contract: the
-loop, the safety rules `--help` does not teach, the versioned JSON, and
-the errors. Flags and inventories live in the generated CLI reference.
+**TL;DR.** Use the headless CLI to create and arrange panes, send input,
+read screens, and wait for commands or agent transitions. AgentSession
+verbs read and write harness events; pane detection supplies state when no
+stream is active. This guide defines safe operation, versioned JSON, and
+errors. The generated CLI reference lists flags and defaults.
 
 ---
 
-**Looking to connect Claude, Pi, OpenCode, or an MCP host?** Start with
-[coding-agent getting started](./getting-started.md). This page is the detailed
-automation contract, not an integration installation tutorial.
+For host setup, start with [coding-agent getting started](./getting-started.md).
 
 ## 1. What this is
 
-The CLI plus its versioned `--json` documents is the agent contract.
-Structured screen state, command results, and semantic events are a local
-projection over the shared engine, not a second wire model
-([ADR-0030](../adr/0030-engine-delegated-wire-and-projection-consumers.md);
-mental model in [How phux works](../CONCEPTS.md)). The MCP adapter and
-the in-tree client library wrap the same functions; they add no
-privilege.
+The CLI's versioned `--json` documents expose screen state, command results,
+and events. MCP and the in-tree client library wrap the same functions
+without extra privileges. Structured results are local projections, not a
+second wire model; see [How phux works](../CONCEPTS.md) and
+[ADR-0030](../adr/0030-engine-delegated-wire-and-projection-consumers.md).
 
-Flags, defaults, and the verb inventory are generated from the binary:
-[CLI reference](../reference/cli.md), or `phux --help` /
-`phux <verb> --help`. This page keeps the facts those texts do not
-teach: viewport safety, the read-act-wait loop, selector `%name`, JSON
-field meaning, and typed errors.
+Use the generated [CLI reference](../reference/cli.md), `phux --help`, or
+`phux <verb> --help` for flags and defaults.
 
-**Viewport-safe against a live pane.** `snapshot`, `wait`, `watch`,
+`snapshot`, `wait`, `watch`,
 `run`, `send-keys`, `paste`, `ask`, `agent wait`, and
 `agent send-keys` neither attach nor resize, and never move an attached
 human's focus or viewport. `resize` changes the grid by design but still
@@ -44,7 +36,7 @@ change persisted topology, not client-local focus. CLI and MCP cannot hold
 an input lease beyond the calling process, so MCP has no `take` / `give`
 ([MCP adapter](./mcp.md)); `phux take --ttl SECS` asks the server to release
 the lease itself after `SECS` (ADR-0033). `phux attach --viewer` watches
-without input and `--take` attaches holding the wheel (ADR-0127); `phux rec`
+without input and `--take` attaches with an input lease (ADR-0127); `phux rec`
 and `phux agent log` attach as viewers.
 
 `--socket` wins, then `PHUX_SOCKET`, then the daemon default. `phux ls`
@@ -52,10 +44,10 @@ does not auto-start a server.
 
 ### This tree, older releases, two agent surfaces
 
-**Checkout capability, not a minimum-release promise:** the source implements
-**AgentSession**. To use it on your installation, the running server must
-advertise `RESOURCE_KINDS` in `phux status --json`'s `features`, and the client
-must expose `phux agent session`, `phux agent emit`, and `phux agent log`.
+AgentSession is implemented in this checkout, not guaranteed by a minimum
+release. The running server must advertise `RESOURCE_KINDS` in
+`phux status --json`'s `features`, and the client must expose
+`phux agent session`, `phux agent emit`, and `phux agent log`.
 `%name` resolves an AgentSession. A server without the capability refuses those
 verbs with `unsupported_server` before touching a resource; ordinary pane
 operations remain available. Upgrade through your [install source](../INSTALL.md#updating)
@@ -63,11 +55,11 @@ when needed rather than assuming that installing a newer adapter upgrades the
 server. A live session stream outranks the pane detector.
 Harness authors emit into that stream; see the [harness author guide](./harness.md).
 
-The pane **detector** is a different surface: `phux agent show` /
-`explain` (and `list` / `set` / `clear` / `wait` / `send-keys` /
-`prompt` / `answer` / `start`) project `phux.agent/v1` plus OSC/title
-and screen evidence onto a Terminal. Do not treat a detector state as a
-session log, or `%name` as a title-heuristic.
+The Terminal-scoped surface (`phux agent show`, `explain`, `list`, `set`,
+`clear`, `wait`, `send-keys`, `prompt`, `answer`, `start`) projects agent state
+onto a pane using `phux.agent/v1`, OSC/title, screen evidence, and any live
+session stream. A pane's derived state is not a session log; `%name` does
+not match title heuristics.
 
 A resource has an id (`@N`, or `host/@N` behind a hub), a kind, an
 optional parent, a lifecycle, an output stream, and an input channel its
@@ -94,12 +86,11 @@ phux wait --until "PHUX-READY" --timeout 10 .
 phux snapshot --json --scrollback 50 .
 ```
 
-`phux run` is the one-shot for a POSIX shell command whose `$?` you
-want. It brackets the command with printed sentinels and **mirrors the
-child's exit code** (125 when phux itself gives up), so
-`phux run … && next` composes like a shell. `send-keys` plus `wait` is
-the loop for an interactive or long-lived program — a REPL, a pager, an
-agent TUI — where there is no sentinel to harvest.
+Use `phux run` for a POSIX shell command when you need its exit code. It
+brackets the command with printed sentinels and mirrors the child's exit
+code (125 when phux gives up), so `phux run … && next` composes like a shell.
+Use `send-keys` plus `wait` for a REPL, pager, agent TUI, or other interactive
+program where there is no shell sentinel to read.
 
 Because the sentinels are a *typed shell command line*, `run` first
 checks that a shell is what reads the pane — the same available-shell
@@ -113,11 +104,9 @@ verb refuses with `agent_pane_not_available` (exit 2) and types nothing.
 phux run --json --timeout 120 build "cargo test"
 ```
 
-For a process whose **end** you need (a build, a test run, a one-shot
-job), spawn it retained and wait on its exit. `phux resource wait` is
-race-free: an exit that happens while the wait starts is never missed,
-and a process that already exited is still read, because the retained
-pane keeps its status:
+To wait for a process to end, spawn it retained and use `phux resource wait`.
+The wait cannot miss an exit during startup and can read an earlier exit
+while the retained pane keeps its status:
 
 ```sh
 pane=$(phux spawn --json --retain=600 -- make test | jq -r '"@\(.terminal_id)"')
@@ -131,21 +120,19 @@ the wait, or never existed); `124` is the timeout. Keep the printed
 `cursor`: after a disconnect, `--after CURSOR` replays a close the
 server still journals. `phux kill --yes "$pane"` purges a retained pane early.
 
-A paste **inserts**; it does not **submit**. Bracketed paste (DEC mode
-2004) delivers one block; paste-aware shells and REPLs buffer it until a
-real Enter. Follow with `phux send-keys TARGET Enter` to run what you
-pasted. Prefer `paste` for multiline or indented text: ordinary
-`send-keys` literals type character by character and will trip
-auto-indent. A contiguous literal run immediately before `Enter` is
-itself a trusted paste plus the real key.
+A paste inserts text without submitting it. Bracketed paste (DEC mode 2004)
+delivers one block; paste-aware shells and REPLs buffer it until a real Enter.
+Follow with `phux send-keys TARGET Enter` to submit. Prefer `paste` for
+multiline or indented text: `send-keys` literals type character by character
+and can trigger auto-indent. A contiguous literal run immediately before
+`Enter` is itself a trusted paste plus the real key.
 
 ```sh
 phux paste repl "$(cat snippet.py)"
 phux send-keys repl Enter
 ```
 
-Supervising another agent is the same loop with a different wait. Prefer
-the fused prompt when you need the write and the edge on one connection:
+To send an agent a prompt and wait for a transition on the same connection:
 
 ```sh
 phux agent prompt --expect-agent reviewer --wait \
@@ -160,9 +147,8 @@ level read is `phux agent show`; `agent wait` / `agent prompt --wait`
 are edge reads and time out on a pane already resting in the target
 state.
 
-The fleet extension is discover → create → place → shape → act →
-observe → surface asks → verify. Topology writes are last-write-wins:
-serialize them. A worked script:
+Serialize topology writes: they are last-write-wins. For a fleet workflow
+covering discovery, creation, placement, input, asks, and verification, see
 [`examples/agents/orchestrate-placed-fleet`](../../examples/agents/orchestrate-placed-fleet).
 
 **Destructive boundary.** Resolve and display the exact target, snapshot
@@ -208,7 +194,7 @@ writes require one.
 
 ## 4. Input: send-keys, paste, run
 
-Help text owns the flags. The contract:
+Input contracts:
 
 - **`send-keys TARGET KEYS...`** — named keys or literals, tmux-shaped,
   no JSON. Flags must precede `TARGET`. A typo in `agent send-keys` is
@@ -238,8 +224,8 @@ Acknowledged agent writes (`agent send-keys`, `agent prompt`,
 The server has one acknowledged input lane; serialize concurrent
 acknowledged writes.
 
-`phux agent start` starts an agent inside an **existing** shell pane.
-It never creates, splits, moves, or focuses layout.
+`phux agent start` starts an agent in an existing shell pane without
+creating, splitting, moving, or focusing layout.
 
 ## 5. Observe: snapshot, wait, watch, ask
 
@@ -343,10 +329,8 @@ nothing: `not_producer`, `record_invalid`, `overflow`,
 `wrong_resource_kind`. `log` reads the retained ring; `--follow` is a
 stream with no `--timeout` (run it under a child-process deadline).
 
-Privacy belongs to the producer. The shipped Claude shim's `prompt`
-carries `{"chars": N}` and never the text; tool records carry
-`tool_name` and never input or output; `provider_raw` is emitted only
-when `PHUX_AGENT_EMIT_RAW=1`.
+Producers control record privacy. The [Claude shim](./claude.md#what-the-hook-shim-emits)
+omits prompt text and tool input/output; raw hook JSON requires explicit opt-in.
 
 ## 7. JSON index
 
@@ -451,9 +435,9 @@ writes `data` straight to stdout.
 integration. `duration_ms` is wall-clock from the start of the `--timeout` budget (before `TARGET` is resolved), including connection, submission, and poll latency. The capture is scrollback-aware — once the sentinel lands,
 `run` re-reads the pane with its retained history — so `truncated` is
 true only when the `BEGIN` marker is no longer in that history at all,
-not merely when the command outscrolled the viewport. **On timeout,
-`--json` emits no JSON.** Do not expect `outcome: "timed_out"` here;
-that shape is MCP `phux_run`.
+not merely when the command outscrolled the viewport. On timeout,
+`--json` emits no JSON. MCP `phux_run` reports a tool error, not an
+`outcome: "timed_out"` result.
 
 ### `new`
 
@@ -807,7 +791,7 @@ The canonical table is the [exit-code reference](../reference/exit-codes.md):
 `0` success, `1` failure, `2` usage or refusal, `3` partial-fleet
 unanswerable, `124` `wait` timeout, `125` `run` timeout.
 
-Mirroring that `--help` does not collect in one place:
+Per-verb behavior:
 
 | Verb | Notes |
 |---|---|
@@ -912,14 +896,13 @@ Prefer the highest rung the target exposes:
 
 ## 11. Authority: phux is live-state truth
 
-phux is the sole authority for live resource state. The AgentSession ring is
-"live and bounded, not durable evidence"
-([ADR-0103](../adr/0103-agent-session-resource-and-producer-fed-streams.md));
-durable work records belong to a separate coordinator endpoint
-([ADR-0097](../adr/0097-durable-coordinator-is-a-separate-bounded-endpoint.md),
-[ADR-0095](../adr/0095-the-blackbird-boundary.md)). Any external journal
-treats a phux event as wake-then-read: a cue to re-read phux, never a
-substitute for it.
+phux is the sole authority for live resource state. Treat events as cues to
+re-read that state, not substitutes for it. The AgentSession ring is live and bounded,
+not durable evidence
+([ADR-0103](../adr/0103-agent-session-resource-and-producer-fed-streams.md)).
+The planned durable coordinator is a separate endpoint, not a property of
+this stream ([ADR-0097](../adr/0097-durable-coordinator-is-a-separate-bounded-endpoint.md),
+[ADR-0095](../adr/0095-the-blackbird-boundary.md)).
 
 ## 12. MCP and SDK
 

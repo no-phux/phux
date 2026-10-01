@@ -41,7 +41,7 @@ const { title, description, origin = SITE.docsUrl } = Astro.props;
     <slot />
 
     <footer class="docs-foot wrap">
-      <a href={SITE.url}>phux.sh</a>
+      <a href={SITE.url}>{SITE.domain}</a>
       <a href="/overview">Docs</a>
       <a href="/wire">Protocol</a>
       <a href={SITE.github} target="_blank" rel="noopener">GitHub</a>

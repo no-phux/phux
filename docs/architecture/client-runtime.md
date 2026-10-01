@@ -6,16 +6,12 @@ last-reviewed: 2026-09-21
 
 # The client runtime
 
-**TL;DR.** `phux-client-runtime` is the one layer between the sans-IO
-session kernel (`phux-client-core`) and a language binding (ADR-0133).
-It is split along one seam: a synchronous, sans-IO `ControlPlane` that
-turns decoded frames into outbound frames and owned events, and an async
-`Connection` driver that dials, frames, keeps alive, reconnects, and feeds
-it. The libghostty engine lives on its own owner thread and never crosses
-one; consumers read the grid through immutable published frames carrying a
-generation counter and dirty rows. A binding holds no connected-client state
-machine: it calls the synchronous `Client`, drains `take_events`, and acquires
-frames.
+**TL;DR.** `phux-client-runtime` connects the sans-IO session kernel to
+language bindings (ADR-0133). Its synchronous `ControlPlane` handles decoded
+frames; an async `Connection` owns dialing, framing, keepalive, and reconnect.
+libghostty stays on an owner thread that publishes immutable grid frames.
+Bindings call `Client`, drain events, and acquire frames without owning a
+connected-client state machine.
 
 ---
 
@@ -36,10 +32,9 @@ reporting. It never touches a socket or a clock it is not handed:
   (drop and redial), `Refused` (terminal), `Resync` (redial for fresh
   snapshots), `Closed` (the consumer asked).
 
-That is the embedded lane, `Runtime::embedded`: a consumer that owns its
-socket feeds frames directly and needs nothing below this line. It is how a
-harness drives synthetic frames, and how the C ABI's `phux_client_new`
-clients still work.
+In `Runtime::embedded`, the consumer owns the socket and feeds frames directly.
+Harnesses use this lane for synthetic frames, as do the C ABI's
+`phux_client_new` clients.
 
 `connection::run_session` is the driver. It dials the `Target` over its
 lane (Unix socket, WebSocket, or QUIC through `phux-dial` and this crate's
@@ -82,14 +77,13 @@ for `ATTACH_READY`.
 
 ## Thread model
 
-Three kinds of thread touch a session, and no consumer is told which one
-to call from.
+Three kinds of thread touch a session; callers need no thread affinity.
 
 - **The owner thread** (`engine::EngineHandle`) hosts
   `SessionKernel<GhosttyAdapter>` and every replica. Ghostty is `!Send`,
   so only owned values cross: `EngineEvent`s in over a channel,
   `EngineOutcome`s (the kernel's declarative effects) back. A single event
-  publishes before answering as before; `ControlPlane::apply_engine_events`
+  publishes before answering; `ControlPlane::apply_engine_events`
   applies an ordered pump batch, accumulates damage, and projects each damaged
   presentation a consumer has caught up with once before the ordered outcomes
   return to the plane (see [the publication contract](#the-publication-contract)
@@ -187,11 +181,10 @@ Such a change belongs in the PR body.
 
 ## Extension points
 
-The common surface is what both consumers need today. A later rung adds a
-lane without a second state machine: `send_command` correlates any
-`COMMAND` and answers it as `Event::CommandResult`; `queue_frame` sends
-any frame; every inbound frame the plane does not consume (metadata,
-directory listings, moves) surfaces exactly once as `Event::Frame` for the
-binding's C-shaped projection; `ServerInfo` reports the negotiated features
-a binding gates on. Bindings must not clone and independently dispatch the
-same inbound frame around `ControlPlane::feed`.
+The runtime exposes extension points without requiring a second state machine:
+`send_command` correlates any `COMMAND` and returns `Event::CommandResult`;
+`queue_frame` sends any frame. Every inbound frame the plane does not consume
+(metadata, directory listings, moves) surfaces exactly once as `Event::Frame`
+for the binding's C-shaped projection. `ServerInfo` reports the negotiated
+features a binding gates on. Bindings must not clone and independently
+dispatch the same inbound frame around `ControlPlane::feed`.

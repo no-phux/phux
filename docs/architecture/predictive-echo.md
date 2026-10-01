@@ -64,13 +64,11 @@ follows authoritative terminal output, not acknowledgements. `FRAME_ACK` exists
 only for `SynthesizedVtStateSync`, after applying its transition; native and
 synthesized-raw streams never send it.
 
-Repeated contradictions turn the display tentative (mosh's term): after a
-short run of misses the overlay hides while predictions keep queueing and
-reconciling silently, and it re-shows only after clean authoritative
-confirmations prove typing has normalized. That prevents a modal editor,
-vi-mode shell, or fast layout transition from painting a sustained stream of
-incorrect local guesses — and because prediction itself never stops, the
-confirmations that lift the lock can actually occur.
+Repeated contradictions make the display tentative (mosh's term): after a
+short run of misses, the overlay hides while predictions keep queueing and
+reconciling. It returns only after clean authoritative confirmations. This
+limits incorrect guesses during modal editing or layout transitions without
+stopping the predictions needed to establish recovery.
 
 ## Alternate-screen display policy (ADR-0090)
 

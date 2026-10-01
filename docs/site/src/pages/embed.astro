@@ -12,12 +12,12 @@ import { SITE } from "../lib/site";
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta name="robots" content="noindex" />
     <meta name="theme-color" content="#08080b" />
-    <title>phall.io real phux shell</title>
+    <title>{SITE.name} — hosted terminal</title>
     <AuthReturn />
   </head>
   <body>
     <main>
-      <h1>phall.io real phux shell</h1>
+      <h1>{SITE.name} hosted terminal</h1>
       <PhuxTerminal
         client:load
         wsUrl={SITE.demoWsUrl}

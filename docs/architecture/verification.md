@@ -6,16 +6,15 @@ last-reviewed: 2026-09-22
 
 # Quality bar: testing and performance
 
-**TL;DR.** Tests run in three layers (unit tests beside code, property tests
-for codec and state-machine invariants, snapshot tests for wire bytes and
-rendered frames). The unit pool is `just test` (`cargo nextest run
---workspace`); the full root PR bar is `just ci-full`. Performance is
-measured, not guessed: crate benches, a release profile tuned for shipped
-binary speed, and opt-in mutation runs that are not a CI gate.
+**TL;DR.** Unit, property, and snapshot tests cover behavior, invariants,
+wire bytes, and rendered frames. `just test` runs the workspace unit pool;
+`just ci-full` adds the root gates and smoke lanes required for PRs.
+Crate benches and isolated-server probes measure performance. Mutation
+testing is opt-in, not a CI gate.
 
 ## Test strategy
 
-Tests are organized in three layers. All three run today.
+All three test layers run today:
 
 1. **Unit tests** colocated with the code they cover, plus crate
    integration tests under `crates/*/tests/`. The workspace pool is
@@ -53,9 +52,8 @@ Tests are organized in three layers. All three run today.
 
 ## Real-server and smoke lanes
 
-These spawn real processes and sit outside `just ci` on purpose. A `just ci`
-failure always means a deterministic defect; a green `just ci` is not the
-PR bar.
+These lanes sit outside `just ci`; passing `just ci` alone does not meet the
+PR bar. The e2e lane spawns real PTY-backed servers.
 
 - `just e2e` — the fast e2e lane: ignored `*_e2e.rs` binaries against
   PTY-backed servers (headless `run`/`wait`, agent-record loop, spatial
@@ -79,9 +77,9 @@ required mutation score.
 
 ## Performance
 
-phux does not optimize speculatively. The public [performance page](../performance.md)
-owns published end-to-end numbers, benchmark versions, caveats, and the
-reproduction command. The engineering surfaces behind it are:
+The public [performance page](../performance.md) owns published end-to-end
+numbers, benchmark versions, caveats, and reproduction commands. Engineering
+measurements use:
 
 - Crate benches: `phux-server` (`capture`, `server_measure`),
   `phux-client-core` (`history`), `phux-tui` (`render_frame`).
@@ -90,8 +88,8 @@ reproduction command. The engineering surfaces behind it are:
 - Server integration tests under `crates/phux-server/tests/perf/`
   and `benchmark_budget.rs`.
 
-The release profile uses fat LTO and a single codegen unit, since the speed
-of the shipped binary is a goal in its own right.
+The release profile uses fat LTO and a single codegen unit for shipped-binary
+speed.
 
 ## Status
 

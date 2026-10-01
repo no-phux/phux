@@ -20,10 +20,9 @@ verification reference, including local tarball installation. It pins the public
 
 ## First shared-terminal walkthrough
 
-**Applicability:** this is a source-checkout integration for OpenCode V2.
-There is no published package or V1 adapter. Use a trusted checkout and a
-compatible OpenCode V2 host; installing the phux CLI alone does not install
-this plugin. If you need a published integration now, choose
+This source-checkout integration requires a trusted checkout and a compatible
+OpenCode V2 host. There is no published package or V1 adapter; installing
+phux alone does not install it. For a published integration, use
 [MCP or another host](./getting-started.md).
 
 1. Install phux and complete the [local quickstart](../QUICKSTART.md). Install
@@ -77,10 +76,9 @@ package. This package remains private and is not published to a public registry.
 
 ## Remote
 
-Attach to the pane, including `host/@N` through a hub. Do not point an
-OpenCode client at the other machine with `--server` and call that federation.
-The plugin dials only a local phux socket (`PHUX_SOCKET`, or `socket` in
-plugin options). A hub socket is still that local socket.
+The plugin dials a local phux socket (`PHUX_SOCKET` or the `socket` plugin
+option). To control `host/@N`, use a local hub socket. OpenCode's `--server`
+does not provide phux federation. Use phux attach to view the pane.
 
 ## Lifecycle
 

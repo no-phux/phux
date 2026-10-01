@@ -6,17 +6,16 @@ last-reviewed: 2026-09-13
 
 # Emit agent lifecycle from a harness
 
-**TL;DR.** Open an `AgentSession` on the pane the agent runs in, then
-append events with `phux agent emit`. While that stream is live it is
-lifecycle truth. Screen detection is the fallback for harnesses that do
-not emit. Do not write detector `state` from hooks.
+**TL;DR.** Open an `AgentSession` on the agent's pane and append lifecycle
+events with `phux agent emit`. A live stream takes precedence over pane
+detection. Servers without `RESOURCE_KINDS` refuse it; keep identity-only
+metadata and detection as the fallback. Do not write detector `state` from hooks.
 
 ---
 
-This page is the contract for a coding-agent harness (OpenCode, Pi, Claude,
-or yours). Verb flags and JSON live in [`agents.md`](./agents.md) and the
-generated [CLI reference](../reference/cli.md). The resource kind is
-specified in [`../spec/L1.md`](../spec/L1.md).
+For verb flags and JSON, see the [agent CLI guide](./agents.md) and
+generated [CLI reference](../reference/cli.md). The resource kind is specified
+in the [L1 protocol](../spec/L1.md).
 
 ## Rank
 
@@ -59,8 +58,8 @@ a detector state.
 
 ## What not to do
 
-- Do not scrape your own TUI and write `phux agent set --state`. That is
-  how a hook stands the detector down and then lies.
+- Do not scrape your own TUI and write `phux agent set --state`: that
+  suppresses detection for the lifetime of the declared state.
 - Do not open a second session on the same pane unless you mean two
   producers. The server does not deduplicate.
 - Do not treat `idle` from `phux agent show` as completion. Completion

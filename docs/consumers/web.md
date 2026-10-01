@@ -6,11 +6,10 @@ last-reviewed: 2026-09-30
 
 # The phux web client
 
-**TL;DR.** Try the hosted demo to see real terminal panes in a browser.
-This guide is for developers building or embedding the web client, not a public
-dashboard for connecting your own servers. The Rust/WASM client carries a terminal
-engine, renders up to four independent panes on one canvas, and sends input over
-one WebTransport or WebSocket connection.
+**TL;DR.** The Rust/WASM web client renders up to four terminal panes on one
+canvas, using one WebTransport or WebSocket connection. Try the hosted demo or
+embed it in your own page. This is a developer guide, not a hosted dashboard
+for your servers.
 
 ---
 
@@ -25,10 +24,10 @@ one WebTransport or WebSocket connection.
 - **Use your own terminals today:** follow the [local quickstart](../QUICKSTART.md),
   [Cockpit guide](./cockpit.md), or [remote access guide](../remote-access.md).
   This page does not offer a hosted “connect my server” control.
-- **Build or embed a browser client:** follow Building and Running it locally
-  below, then use the architecture/reference sections when changing the client.
-  You need a trusted source checkout, the [browser build toolchain](../SETUP.md#browser-client),
-  a compatible server, and a browser that supports your chosen transport.
+- **Build or embed a browser client:** start with Building and Running it
+  locally below. You need a trusted checkout, the
+  [browser build toolchain](../SETUP.md#browser-client), a compatible server,
+  and a browser supporting your chosen transport.
 
 ## Building
 
@@ -114,12 +113,11 @@ Two crates make it up, plus one vendored artifact:
 
 ## The two-wasm architecture
 
-There are two wasm modules, one nested inside the other. The engine module is
-self-contained — it imports `env.log` and secure `ghostty.host_entropy_fill`, and ships its own allocator —
-so `phux-vt-web` loads it through the plain `WebAssembly` JS API, with no Zig
-linked into the Rust wasm binary. Linking them would mean sharing one wasm
-linear memory between two toolchains; instead the Rust module runs the engine
-as a sibling instance and copies bytes across the boundary
+The Rust wasm module embeds and instantiates a separate engine module.
+The engine imports `env.log` and secure `ghostty.host_entropy_fill` and has
+its own allocator. `phux-vt-web` loads it through the `WebAssembly` JS API;
+Zig is not linked into the Rust binary. Bytes are copied between the two
+instances rather than sharing linear memory across toolchains
 ([ADR-0025](../adr/0025-browser-web-client.md)).
 
 ```text
@@ -144,10 +142,9 @@ web-sys ------+                                          v  (consumed by phux-si
                                               <import init, { start }>
 ```
 
-`phux-protocol` is the same wire codec the server uses. It became wasm-safe in
-[ADR-0024](../adr/0024-wire-owns-input-atoms.md): the wire owns its input
-atoms, so the codec no longer pulls in libghostty on the client. The codec is
-the one documented in the [wire encoding reference](../spec/appendix-encoding.md).
+`phux-protocol` supplies the server's
+[wire codec](../spec/appendix-encoding.md). Its input atoms are wasm-safe and
+do not pull in libghostty ([ADR-0024](../adr/0024-wire-owns-input-atoms.md)).
 
 ## Runtime flow
 
@@ -186,7 +183,7 @@ the one documented in the [wire encoding reference](../spec/appendix-encoding.md
 
 ## In the page
 
-What a page embedding the client can rely on, beyond typing:
+The embedded client supports these interactions and page hooks:
 
 - **Panes.** Click a pane to focus it. Ctrl+a followed by `%` splits left/right,
   `"` splits top/bottom, `o` focuses the next pane, and `x` closes the focused
@@ -266,28 +263,26 @@ What a page embedding the client can rely on, beyond typing:
 - **Text, color, cursor.** The canvas renderer paints grapheme cells with fg/bg
   and a blinking block cursor; a wide (CJK) character paints across its
   spacer cell. Images and sixel (which the engine does parse)
-  are a future renderer pass. Accordingly, the client's `HELLO` advertises **no
-  image protocols** (`Session::client_caps`), so the server strips kitty
-  graphics, sixel, and iTerm2 image escapes before forwarding (SPEC 6.2,
-  ADR-0034) instead of shipping payloads the canvas would drop. When the
-  renderer pass lands, the advertisement widens with it.
-- **Engine boundary copies.** Bytes cross two wasm linear memories (the Rust
-  client and `ghostty-vt.wasm`), which is fine for terminal traffic.
+  are not yet rendered. The client's `HELLO` therefore advertises no image
+  protocols (`Session::client_caps`). The server strips kitty graphics,
+  sixel, and iTerm2 image escapes before forwarding (SPEC 6.2, ADR-0034).
+  Support must be added to the renderer before it can be advertised.
+- **Engine boundary copies.** Bytes are copied between the Rust client's
+  wasm linear memory and `ghostty-vt.wasm`'s.
 
 ## Agent sessions
 
-**Checkout behavior:** the source web client draws an **agent badge** when the
-mirrored Terminal has a live AgentSession child ([agent CLI guide](./agents.md)):
-the session's `provider` and stream-derived state beside the terminal heading,
-cleared when the session closes. Do not assume every released web build has the
-badge. The server must advertise `RESOURCE_KINDS` in `phux status --json`;
-the client also needs the badge implementation.
+The source client shows an agent badge beside the terminal heading when the
+mirrored Terminal has a live AgentSession child ([agent CLI guide](./agents.md)).
+It displays the provider and stream-derived state, then clears on session
+close. Availability depends on both sides: the server must advertise
+`RESOURCE_KINDS` in `phux status --json`, and the client must include the
+badge implementation. Not every released web build does.
 
-phux-web mirrors Terminals and nothing else: a non-Terminal resource in the
-session snapshot is skipped, never attached, never given an engine. The badge
-is read from `ResourceInfo`'s additive agent facet in the snapshot and the
-lifecycle frames that follow; it adds nothing to the wire and reads no stream
-— the session log is `phux agent log`'s job, not a browser's.
+Non-Terminal resources in the session snapshot are skipped, never attached
+or given an engine. The badge reads `ResourceInfo`'s additive agent facet
+and subsequent lifecycle frames, not the record stream. Use `phux agent log`
+for that stream.
 
 ## Verification
 

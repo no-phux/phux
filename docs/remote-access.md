@@ -42,48 +42,44 @@ If enrollment fails, follow the named failing step below. If a saved host
 stops connecting, start with [the diagnostic sequence](#troubleshooting);
 do not delete its credentials or disable a firewall to guess at a fix.
 
-The first command reads like the `ssh me@mini` you already type, and it uses
-that same trust: anyone who can ssh to the host can run `phux pair` there and
-read the token, so this grants nothing ssh did not already grant
+Enrollment uses SSH trust: an account that can run `phux pair` and read its
+token already has this access
 ([ADR-0055](adr/0055-always-on-server-and-ssh-bootstrapped-enrollment.md),
-[ADR-0122](adr/0122-host-add-is-the-front-door.md)). Prefer to attach
-straight away? `phux --remote me@mini` does the same setup and then attaches.
+[ADR-0122](adr/0122-host-add-is-the-front-door.md)).
+`phux --remote me@mini` performs the same setup and then attaches.
 
 ### What it checks, in order
 
 Each step prints one line as it happens; each failure names the next command.
 
-1. **phux is on the host.** `ssh me@mini phux --version`. ssh failing is
-   reported as that, with `ssh me@mini` to check; no phux there gets the
-   install one-liner (`ssh me@mini 'curl -fsSL https://phux.sh/install | sh'`)
-   or `--remote-phux PATH` when it is installed somewhere a non-interactive
-   shell does not look.
-2. **A server is running and will keep running.** `phux service install
-   --quic` writes the host's per-user unit (launchd on macOS, systemd
-   `--user` on Linux) and starts it. A server that is already running is
-   left alone and the unit is armed for its next start (`--adopt`); a host
-   with no service manager gets an unsupervised `phux server --ensure` and a
-   warning that it will not survive a reboot. `--no-service` asks for that
-   deliberately.
-3. **Pairing.** `phux pair --json` on the host mints a token, once the server
-   reports a bound remote listener, and reports the certificate fingerprint,
-   the detected overlay addresses, and the bound listeners. A server with no
-   listener fails the add with its reason; nothing is minted. A token store
-   that predates versioning is migrated once, and the server restarted so its
+1. **Check the binary.** Run `ssh me@mini phux --version`. SSH failures
+   suggest checking `ssh me@mini`. A missing binary prompts the install command
+   (`ssh me@mini 'curl -fsSL https://phux.sh/install | sh'`) or
+   `--remote-phux PATH` if the binary is outside the non-interactive shell's
+   `PATH`.
+2. **Start and supervise the server.** `phux service install --quic` writes
+   and starts a per-user launchd or systemd `--user` unit. If a server already
+   runs, `--adopt` leaves it alone and arms the unit for its next start.
+   Without a service manager, enrollment uses `phux server --ensure` and
+   warns that it will not survive reboot. `--no-service` selects this
+   unsupervised mode explicitly.
+3. **Pair.** `phux pair --json` mints a token only after the server reports
+   a bound remote listener. It returns the certificate fingerprint, detected
+   overlay addresses, and listeners. No listener means an error and no token.
+   An unversioned token store is migrated once, with a server restart so
    listeners re-read it.
-4. **A direct route.** Every candidate is dialed briefly with the credentials
-   just minted: `--endpoint` if you gave one, each overlay address, then the
-   host ssh itself connects to (`ssh -G`). The first that answers is
-   registered as `quic://HOST:PORT`.
-5. **Registration.** The entry lands in `[[remote]]` under the host's name
-   (`mini` for `me@mini`; `--name` to choose), with the token owner-only
-   under the state dir, the certificate pin, and the ssh destination it was
-   set up through. Nothing answered? The entry is `ssh://me@mini`, which still
-   attaches through ssh, and the first candidate is kept as `direct` so a
-   later attach can try it again and promote it once UDP is open.
+4. **Find a direct route.** Probe candidates with the new credentials:
+   `--endpoint` if supplied, overlay addresses, then SSH's resolved host
+   (`ssh -G`). Register the first response as `quic://HOST:PORT`.
+5. **Register the host.** Write `[[remote]]` under the host's name (`mini`
+   for `me@mini`, or `--name`), recording the certificate pin and SSH
+   destination. Store the token owner-only under the state directory.
+   If no direct route answered, register `ssh://me@mini` and retain the first
+   candidate as `direct`. Later attaches retry it and promote it once UDP
+   is reachable.
 
-Running it again on a registered host is safe: if the saved route answers it
-says so and changes nothing; if not, it sets the host up again.
+Repeating enrollment leaves a working registration unchanged; if its route
+fails, enrollment runs again. Certificate renewal has separate rules below.
 
 ### Client certificates and renewal
 
@@ -94,8 +90,7 @@ key and certificate files (`client-cert`, `client-key`) under
 `<state-dir>/remotes/`. Every direct dial presents them, which a server in
 `[policy] mode = "paired"` requires.
 
-Certificates are issued for 90 days. Nothing renews one behind your back;
-instead:
+Certificates last 90 days and do not renew automatically:
 
 - `phux host renew mini` enrolls a fresh certificate over the entry's ssh
   destination and changes nothing else (no re-pairing, no service install).
@@ -109,15 +104,15 @@ instead:
   the other remote verbs) warns once with the `phux host renew` command, and
   `phux doctor` reports it as `client-certs`.
 
-Replacing a certificate is two-phase: the new one is enrolled, checked, and
-recorded in the entry first, and only then is the old one revoked on the
-host. A failure before that point leaves the entry on the certificate that
-still works (and revokes the new credential nobody holds); a failed
-revocation prints the `ssh ... phux workload revoke sha256:...` that
-finishes it, and a host that never held the old credential (the entry used
-to point elsewhere) is reported rather than counted as revoked. An entry that names only one of `client-cert` and `client-key`
-is re-enrolled the same way, revoking the credential its enrolled
-certificate names, or warning when none can be named.
+Replacement has two phases: enroll, check, and save the new certificate,
+then revoke the old one on the host. Failure before saving retains the old
+entry and revokes the unused new credential. Failed revocation prints the
+`ssh ... phux workload revoke sha256:...` recovery command. If the host never
+held the old credential, that is reported rather than counted as revoked.
+
+An entry with only `client-cert` or `client-key` is re-enrolled the same way.
+The credential named by its certificate is revoked; if none can be identified,
+the command warns.
 
 `phux host add --json` and `phux host renew --json` report the outcome
 beside the `"host"` object:
@@ -156,9 +151,9 @@ phux host enable edge                # resume it
 phux host rm desk                    # forget the entry; token file stays put
 ```
 
-`ls`, `show`, `rename`, `renew`, `enable`, `disable`, and `rm` accept `--json` for
-scripts (except `attach`, which is interactive). `show`, `rename`, and `rm`
-accept `--role remote|satellite` when the same name exists in both registries;
+`ls`, `show`, `rename`, `renew`, `enable`, `disable`, and `rm` accept `--json`.
+`attach` is interactive. `show`, `rename`, and `rm` accept
+`--role remote|satellite` when the same name exists in both registries;
 without it they refuse to guess. Enable/disable apply only to satellites.
 Renaming changes the local registry label, not the machine's hostname, service,
 session names, or the path to its token file. The original SSH destination is
@@ -172,18 +167,16 @@ its users instead of a server you attach to. `--ssh-only` registers an
 
 ### What happens when the server is stopped
 
-Stopping the server on `mini` by hand — `phux kill --server`, or your own
-`kill` — leaves its unit loaded and stopped on purpose: a deliberate stop
-stays stopped. The next `phux attach mini` (or `phux --remote mini`) walks the
-same ladder an operator would:
+A deliberate `phux kill --server` on `mini` leaves its service stopped.
+The next `phux attach mini` (or `phux --remote mini`) tries these recovery
+steps:
 
-1. dial the saved route; an `ssh://` entry with a kept `direct` route tries
-   that route first and promotes it if it answers;
-2. nobody answered: start the server over `ssh me@mini` and dial again with
-   the saved credentials — no re-pair;
-3. still refused: re-pair over ssh and rewrite the entry;
-4. ssh itself failed: report the dial error and the ssh error together, with
-   both remedies.
+1. Dial the saved route. An `ssh://` entry tries its retained `direct` route
+   first and promotes it if reachable.
+2. If unreachable, start the server over `ssh me@mini` and retry with the
+   saved credentials.
+3. If still refused, re-pair over SSH and rewrite the entry.
+4. If SSH fails, report both the dial and SSH errors with their remedies.
 
 `--no-enroll` stops after the first dial. The headless verbs (`ls --remote`
 and friends) never shell out from a `--json` call.
@@ -204,18 +197,15 @@ other's flags by name.
 
 ### Pairing without ssh at all
 
-If the host has no ssh you can use, run `phux pair` there, copy the one-tap
-link it prints, and hand it over:
+Without SSH access, run `phux pair` on the host and pass its one-tap link:
 
 ```sh
 phux --remote mini --code 'https://phux.sh/connect?url=wss://100.64.0.2:8787&fp=...&token=...'
 ```
 
-That is the same link `phux pair --qr` renders for a phone, so a laptop and a
-phone pair through one artifact. `--code` also accepts the link's
-`phux://connect?...` spelling, which `phux pair` prints on a second line for
-older app builds. The link is registered under the target's name, and later
-attaches need no code.
+`phux pair --qr` renders the same link for phones. `--code` also accepts
+`phux://connect?...`, the spelling printed for older app builds. The link
+registers the target's name; later attaches need no code.
 
 `PORT` on a `--remote` target defaults to `8788`, the port a server auto-binds
 on its overlay address
@@ -238,21 +228,17 @@ phux rename --remote me@mini build ci
 phux kill --remote me@mini ci
 ```
 
-To see every machine at once, use `phux ls --all` (`-a`). It lists this
-machine and every registered host, grouped by machine. Each host is queried
-at the same time with a 3 second deadline, and a host that does not answer is
-listed as unreachable, with the reason, instead of failing the listing.
-`--json` prints the `phux.hosts/v1` document. The TUI sidebar reads the same
-document to show your other machines
+`phux ls --all` (`-a`) queries this machine and every registered host
+concurrently, with a three-second deadline per host. Results are grouped by
+machine; unreachable hosts show their reason without failing the listing.
+`--json` emits `phux.hosts/v1`, also used by the TUI sidebar
 ([ADR-0140](adr/0140-sidebar-machines-come-from-a-hosts-provider.md)).
 
-`ls`, `new`, `kill`, `rename`, and `detach` accept it. Each one resolves the
-target through the same ladder as `phux --remote` and dials the same QUIC or
-WSS endpoint, so a host added once needs nothing more here (and a cold host
-is set up over ssh the first time, exactly as attach would). With `--json` a
-cold host is refused instead of set up, with the remedies in the error's
-`remedy` field: setup narrates on stderr and ssh may prompt, and a
-machine-readable call must do neither. Three limits are deliberate:
+`ls`, `new`, `kill`, `rename`, and `detach` accept `--remote`. They use the
+same resolution and QUIC/WSS dial path as `phux --remote`, including SSH
+setup for an unregistered host. Under `--json`, setup is refused with
+instructions in the error's `remedy` field: a machine-readable call must
+not narrate setup or prompt through SSH. Three limits apply:
 
 - `--remote` and `--socket` cannot combine: one names a local socket, the
   other a network dial.
@@ -268,13 +254,11 @@ server's default directory: a path on this machine names nothing there.
 
 ### From Cockpit
 
-Cockpit's Connect to Host (`cmd+shift+O`) reads this same `[[remote]]`
-registry and dials through the same QUIC/WSS stack, so a host that
-`phux --remote NAME` reaches is one Cockpit reaches by NAME. It does only
-the first rung of the ladder: setup stays in the terminal, and an
-unregistered host is refused with the command that adds it. Details,
-including the `phux-remote` setting and relaunch behavior, are in
-[Cockpit's remote hosts](../clients/cockpit/docs/REMOTE_HOSTS.md).
+Cockpit's Connect to Host (`cmd+shift+O`) uses the same `[[remote]]` registry
+and QUIC/WSS stack. It only dials saved hosts; enrollment and repair stay in
+the terminal. An unregistered host is refused with the command to add it.
+See [Cockpit's remote hosts](../clients/cockpit/docs/REMOTE_HOSTS.md) for the
+`phux-remote` setting and relaunch behavior.
 
 ### The mosh-style way: `phux attach --ssh`
 
@@ -286,14 +270,13 @@ phux attach --ssh me@box
 phux attach work --ssh me@box
 ```
 
-ssh authenticates you, with its host-key check and any password or 2FA prompt
-on your terminal as usual, and runs `phux bootstrap` on the host. That starts
-your server there if none is running, and has it open a QUIC listener for this
-one attach that admits only a token minted for it. The port, the certificate
-fingerprint, and the token come back over the ssh channel. phux pins the
-fingerprint, dials the listener, and ssh exits. From then on the session rides
-QUIC, so it survives a network change, renders locally with predictive echo,
-and stays on the server when you detach.
+SSH authenticates with its usual host-key check and password or 2FA prompt,
+then runs `phux bootstrap` on the host. Bootstrap starts your server if
+needed and opens a QUIC listener admitting only this attach's token. The
+port, certificate fingerprint, and token return over SSH. phux pins the
+fingerprint, connects over QUIC, and closes SSH. The session can then survive
+network changes, render locally with predictive echo, and remain on the
+server after detach.
 
 Nothing is registered on either side. The listener closes about two minutes
 after its last connection, and each cold attach bootstraps again. The host
@@ -305,9 +288,6 @@ If the QUIC dial does not connect within a few seconds, or the host's phux
 predates `phux bootstrap`, the attach falls back to `ssh -t me@box phux attach`
 and says why. A registered `ssh://` host takes the same path.
 
-The rest of this page is the manual path: what `host add` automates, and
-what to do when it cannot reach the host.
-
 ### Joining a satellite to this hub
 
 `phux host add` (default `--role remote`) attaches *to* another machine. To
@@ -318,8 +298,7 @@ have this machine *dial* another as a federation satellite, pass
 phux host add --role satellite mini
 ```
 
-One command, typically under a minute if `mini` already has phux and you
-can `ssh mini`:
+With phux installed and `ssh mini` working, the command:
 
 1. Confirms phux is on `mini` and installs its per-user service (launchd
    on macOS, systemd `--user` on Linux) with a QUIC listener, so the
@@ -330,8 +309,8 @@ can `ssh mini`:
    argv, `config.toml`, or logs.
 4. Ensures this machine's per-user service runs with `--hub`. If a unit
    already exists, `--hub` is patched into its argv and existing
-   `--quic` / `--listen` / `--restore` / `--socket` arguments stay. A
-   naive `phux service install --hub` would drop them
+   `--quic` / `--listen` / `--restore` / `--socket` arguments stay.
+   Reinstalling with only `phux service install --hub` would drop them
    ([ADR-0083](adr/0083-in-place-supervisor-unit-reconcile.md)).
 
 Afterwards this machine is the hub: host-qualified operations reach
@@ -345,17 +324,16 @@ installing the *remote* unit only; the local `--hub` ensure still runs.
 
 ## Why an overlay
 
-Everything a remote attach needs ships except reachability: wss:// and QUIC
-(TLS 1.3), `phux pair` for a bearer token plus certificate fingerprint, and
-automatic TLS and token auth on any non-loopback bind
-([ADR-0031](adr/0031-remote-consumer-auth-and-encryption.md)). A server behind
-NAT or CGNAT still needs a routable address, and the sanctioned answer is a
-WireGuard-class overlay ([ADR-0037](adr/0037-overlay-network-reachability.md))
-that phux dials like a LAN address. The pin is on the fingerprint, not the
-hostname, so overlay DNS names work unchanged, and the fully-OSS
-Headscale/WireGuard path is first-class. The trust model and environment
-knobs live in
-[overlay reachability](./operations.md#connecting-from-another-network-overlay-reachability).
+TLS and pairing authenticate a connection; they do not make a server behind
+NAT or CGNAT reachable. A WireGuard-class overlay supplies a routable address
+([ADR-0037](adr/0037-overlay-network-reachability.md)). phux dials it like a
+LAN address, with TLS and token authentication on non-loopback binds
+([ADR-0031](adr/0031-remote-consumer-auth-and-encryption.md)).
+
+Certificate pins identify the certificate, not the hostname, so overlay DNS
+names work unchanged. Headscale and raw WireGuard are supported alongside
+Tailscale. See [overlay reachability](./operations.md#connecting-from-another-network-overlay-reachability)
+for the trust model and environment settings.
 
 ## Common steps: listen, then pair
 
@@ -505,12 +483,10 @@ cert).
 
 ## Path D: via a reference relay
 
-Paths A-C put both ends on one overlay so the client can reach the server's
-address. A relay inverts the direction: the server dials out to a relay you
-host, and consumers dial the relay — nothing on the server's network needs
-to accept an inbound connection. The tradeoff is stated plainly: the relay
-terminates TLS on both legs and sees phux traffic in plaintext. Self-hosting
-the relay on a trusted machine is the mitigation.
+An overlay gives the client a route to the server. A relay instead accepts
+outbound connections from both, so the server's network needs no inbound
+listener. The relay terminates TLS on both connections and sees phux traffic
+in plaintext. Host it on a machine you trust.
 
 Set up the route end to end:
 
@@ -610,8 +586,8 @@ server, wrong address, blocked port, or broken network route.
   when it is generated ([ADR-0091](adr/0091-certificate-names-the-advertised-address.md)),
   so one minted before phux learned to name the overlay address claims only
   loopback and always will. `phux doctor` reports it as `remote-cert` and prints
-  the remedy. Widening it means a **new certificate and a new fingerprint**,
-  which un-pairs every paired device; do it deliberately or not at all:
+  the remedy. Regeneration creates a new certificate and fingerprint,
+  invalidating every device's pin. Plan to re-pair them all:
 
   ```sh
   rm ~/.local/state/phux/remote-cert.pem ~/.local/state/phux/remote-key.pem

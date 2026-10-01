@@ -6,11 +6,10 @@ last-reviewed: 2026-09-30
 
 # Get started with a coding agent
 
-**TL;DR.** Choose an integration for the agent you already use, connect it to
-a running local phux server, and verify a read before allowing input. phux
-keeps the terminals visible to you; the agent host still owns its model,
-credentials, permissions, and conversation. Writing a lifecycle integration
-is optional, not a prerequisite for using terminal tools.
+**TL;DR.** Connect your agent host to a running local phux server and verify
+a read before allowing input. The host owns its model, credentials,
+permissions, and conversation. Terminal tools do not require a lifecycle
+integration.
 
 ## Choose your route
 
@@ -18,6 +17,7 @@ is optional, not a prerequisite for using terminal tools.
 |---|---|---|
 | Claude Code | [Claude plugin first run](./claude.md#first-shared-terminal-walkthrough) | Native MCP tools and identity/attention hooks. An optional launch shim has a separate job. |
 | Pi | [Pi first run](./pi.md#first-shared-terminal-walkthrough) | A pane chooser, saved targets, terminal tools, and fleet context. |
+| Oh My Pi | [Native OMP setup](./omp.md#install-and-load) | CLI-backed terminal tools and branch-local targets; no lifecycle producer. |
 | OpenCode V2 | [OpenCode checkout setup](./opencode-v2.md#first-shared-terminal-walkthrough) | A source-loaded plugin that works in sibling terminals. Not a published package. |
 | Another MCP-capable host | [MCP registration and first read](./mcp.md#registering-with-a-host) | Stdio tools from the installed, version-matched adapter. |
 | A shell script or custom tool | [First script below](#first-script) | The same terminals through CLI commands and versioned JSON. |
@@ -50,8 +50,8 @@ Do not upgrade to `next` merely to complete a basic snapshot.
 
 ## First script
 
-This route needs only the installed CLI and an idle shell pane. In a second
-terminal, inventory and read it first:
+With the CLI installed and an idle shell pane running, inventory and read
+it from a second terminal:
 
 ```sh
 phux ls --json
@@ -80,8 +80,7 @@ prints the operating guide matched to your installed binary.
 
 ## Share control deliberately
 
-A successful tool call does not make the terminal read-only for everyone
-else. Human and agent keystrokes can interleave. Agree who is typing before
+Human and agent keystrokes can interleave. Agree who is typing before
 using an existing pane, and inspect the target again after a handoff.
 
 To leave the human view without stopping work, press `Ctrl-A`, release both

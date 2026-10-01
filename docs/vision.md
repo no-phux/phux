@@ -6,66 +6,54 @@ last-reviewed: 2026-09-19
 
 # Vision
 
-**TL;DR.** The long arc: lazy state synchronization as the wire's destination, a durable work coordinator that does not ship today, swarm members as first-class clients of that coordinator, and federation as the default deployment shape. This is direction, not a schedule. The wire was shaped to leave room for it.
+**TL;DR.** phux's future direction is a durable work coordinator with swarm
+members as first-class clients, plus federation using lazy state
+synchronization by default. The coordinator does not ship today.
+These are architectural goals, not a delivery schedule or a description of
+current capabilities.
 
 ---
 
 ## Why now
 
-Two structural changes, neither of which existed when tmux's
-architecture was set, make a different design possible.
+Reusable terminal engines and agent-driven workflows create two opportunities.
+libghostty lets server and client run the same parser rather than translating
+between different terminal models. Agents need direct control and evidence:
+command completion with an exit code, remote process creation, and observation
+without screen scraping.
 
-**libghostty is reusable as a library.** A bytes-in / structure-out
-terminal emulator that the server and the client can both run
-identically, with no re-parsing in between. Modern terminal protocols —
-the Kitty keyboard protocol, true colour, OSC 8 hyperlinks, OSC 133
-prompt boundaries, image protocols, mouse pixel-precision — pass
-through end-to-end because the same parser sits on both ends. tmux,
-screen, and zellij predate this and re-parse VT mid-path, which is
-where those features degrade. phux carries the bytes and re-runs the
-same engine, so there is no second parser to fall behind.
-
-**Agents became a consumer category.** Programs that drive terminals —
-Claude Code, Cursor's agent, anything orchestrating a developer
-workflow — now sit alongside humans as first-class consumers. They want
-primitives, not opinions: a `command-end` event with an exit code, not
-a grid to scrape; a terminal spawned on a remote box and observed from
-one place, not an SSH-into-a-named-tmux-session ritual. The existing
-multiplexers were not built for this, and the gap widens as agents
-proliferate.
-
-Taking both seriously at once is why the wire looks like this. What
-phux is today lives in [`CONCEPTS.md`](./CONCEPTS.md); the rest of this
-document is where that leads.
+Current capabilities live in [`CONCEPTS.md`](./CONCEPTS.md). The sections below
+describe the direction beyond them.
 
 ## Lazy state synchronization as the wire's destination
 
-Lazy state synchronization of libghostty terminal state ships as an opt-in
-output mode for custom consumers ([ADR-0018](adr/0018-lazy-state-synchronization.md)).
-The server synthesizes the minimum VT transition from each consumer's last
-reference state. Bundled TUI and web clients still request raw output, which is
-the lowest-latency path for their current use cases. Federation adds the links
-where StateSync becomes the expected default rather than changing its shape.
+Lazy state synchronization ships as an opt-in output mode for custom consumers
+([ADR-0018](adr/0018-lazy-state-synchronization.md)). The server synthesizes the
+minimum VT transition from each consumer's last reference state. Bundled TUI
+and web clients still request raw output, the lowest-latency path for their
+current use cases. Making StateSync the default on federation links is a
+future goal.
 
 The research note (now archived) captures the algorithm composition:
 [`../research/archive/2026-05-26-state-sync-algorithm.md`](../research/archive/2026-05-26-state-sync-algorithm.md).
 
 ## A durable work coordinator, not shipped
 
-Durable work identity and evidence belong to a phux coordinator; clients
-own presentation. Swarm members authenticate to that coordinator as
-first-class clients; TUI, Cockpit, web, and mobile are projections. A Run
-may bind no Terminal. Objective, Run, WorkSession, Actor, Artifact, and
-Signal are not TUI layout vocabulary and are not inferred independently by
-each client. The proposed contract and its delivery order live in
+The proposed coordinator would own durable work identity and evidence;
+clients would own presentation. Swarm members would authenticate as first-class
+clients, alongside TUI, Cockpit, web, and mobile projections. A Run could exist
+without a Terminal. Objective, Run, WorkSession, Actor, Artifact, and Signal
+would have shared definitions rather than being inferred independently by
+each client.
+
+This surface does not ship. The proposed contract and delivery order live in
 [ADR-0092](adr/0092-durable-work-coordinator-authority.md); swarm-as-client
-positioning is [ADR-0132](adr/0132-swarm-members-are-coordinator-clients.md).
-That surface does not ship.
+positioning is in [ADR-0132](adr/0132-swarm-members-are-coordinator-clients.md).
 
 ## Milestones
 
-What works today is in [`CONCEPTS.md`](./CONCEPTS.md); this list is the
-forward arc only.
+The client surfaces below already ship. The hub entry distinguishes shipped
+routing from the remaining federation work:
 
 - **Hub.** Hub-and-spoke routing ships (`host/@N`; the hub does not merge
   remote session or window models). Remaining: lazy state sync as the
@@ -77,12 +65,8 @@ forward arc only.
 
 ## What phux is, on purpose, not
 
-The no-list survived two reframes — first from "better tmux" to
-"libghostty multiplexer," then from "multiplexer" to the resource
-substrate. It survives because each item is about keeping the
-substrate honest, not about being a smaller anything. The full list
-with rationale lives in [`../CONTRIBUTING.md`](../CONTRIBUTING.md);
-the headlines:
+The scope limits remain in force. [CONTRIBUTING.md](../CONTRIBUTING.md) owns
+their rationale:
 
 - No embedded scripting language.
 - No in-process plugin host. Plugins are external packages declared in

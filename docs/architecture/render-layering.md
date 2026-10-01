@@ -51,9 +51,8 @@ The renderer invalidates on its own for a forced paint (the full-frame
 path after its `ED2`), a moved origin or clipped extent, a replica
 generation change, an alternate-screen switch, a selection change, and
 kitty graphics replayed over the pane. An invalidated row is repainted
-whole the next time it is dirty, exactly as before the diff, so a
-missing invalidation shows up as stale cells and an extra one only
-costs bytes.
+whole the next time it is dirty. Missing invalidation leaves stale cells;
+unnecessary invalidation costs bytes.
 
 ## Status
 

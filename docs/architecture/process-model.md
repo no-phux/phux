@@ -21,7 +21,7 @@ socket is `$XDG_RUNTIME_DIR/phux/phux.sock` when that variable is set,
 otherwise `/tmp/phux-$UID/phux.sock`. The parent directory is created
 mode `0o700`.
 
-The persistent per-user state directory is real. It resolves via
+The persistent per-user state directory resolves via
 `phux_server::telemetry::state_dir()` in
 [`phux-server/src/telemetry.rs`](../../crates/phux-server/src/telemetry.rs)
 to `$XDG_STATE_HOME/phux/` (falling back to `$HOME/.local/state/phux/`
@@ -48,11 +48,9 @@ through `telemetry::server_log_path()` so writers and readers
 (`phux service logs`) can never disagree. The startup line carries
 pid + version + socket to attribute interleaved writers.
 
-The single `phux` binary contains both server and client logic; the
-subcommand dispatches. `phux server` runs the daemon in the foreground;
-`phux` (no args) becomes a client and lazily spawns a server if none is
-listening on the socket. The auto-spawn follows tmux's convention so a
-user never has to start a daemon by hand.
+`phux server` runs the daemon in the foreground. With no arguments, `phux`
+becomes a client and spawns a server if none is listening on the socket,
+following tmux's auto-spawn convention.
 
 Natural `exit` of a session's last live shell does not reap that
 Terminal. The server replaces the child in place with a fresh default

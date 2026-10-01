@@ -48,6 +48,7 @@
     "@types/react-dom": "^19.3.0",
     "astro": "^7.3.5",
     "playwright-core": "^1.63.0",
+    "sharp": "0.35.0",
     "tailwindcss": "^4.3.3",
     "typescript": "7.1.0-dev.20260926.1",
     "wrangler": "^4.141.0"
