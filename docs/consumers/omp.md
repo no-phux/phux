@@ -6,19 +6,19 @@ last-reviewed: 2026-09-30
 
 # Native Oh My Pi integration
 
-**TL;DR.** Build `integrations/omp`, then load its directory with
-`omp -e /absolute/path/to/integrations/omp`. The native OMP extension registers
-CLI-backed tools for persistent terminals and interactive agents. It does not
-attach, change terminal focus, start a model request, or publish lifecycle claims
-about sibling agents. Ordinary one-shot commands still belong in the shell tool.
+**TL;DR.** Build `integrations/omp` and load it with
+`omp -e /absolute/path/to/integrations/omp` for CLI-backed terminal and agent
+tools. The extension preserves branch-local targets without attaching or
+changing focus. It starts no model request and emits no AgentSession lifecycle
+records. Use the shell tool for ordinary one-shot commands.
 
 ## Install and load
 
-The host contract is grounded in **OMP 17.1.2**. Bun 1.3.14 or newer is required.
-The package uses `ExtensionAPI` from `@oh-my-pi/pi-coding-agent`, native
-`pi.registerTool`, and the host's plain JSON Schema `TSchema` alternative. It
-neither imports the Pi SDK nor depends on a Pi compatibility shim. Development
-SDK dependencies are pinned; the installed bundle has no npm runtime dependencies.
+The extension targets OMP 17.1.2 and requires Bun 1.3.14 or newer. It uses
+`ExtensionAPI` from `@oh-my-pi/pi-coding-agent`, native `pi.registerTool`, and
+the host's plain JSON Schema `TSchema` alternative, not the Pi SDK or a
+compatibility shim. Development SDK dependencies are pinned; the installed
+bundle has no npm runtime dependencies.
 
 From a phux checkout:
 
@@ -33,7 +33,7 @@ checkout: OMP must find that manifest entry. The Bun bundle embeds the shared
 integration runtime and tool definitions, so a copied or packed artifact does not
 need `../runtime`, the repository, or development `node_modules` at runtime.
 
-To make a local installation persistent, explicitly opt into OMP's plugin state:
+To persist the local installation in OMP's plugin state:
 
 ```sh
 omp plugin link /absolute/path/to/phux/integrations/omp
@@ -141,11 +141,9 @@ Cancellation and local timeout remain distinguishable from malformed CLI respons
 or executable failures. Error payloads omit raw argv and unbounded stderr, which
 may contain prompts or secrets.
 
-This is a control integration, not a new monitoring producer. It intentionally
-emits no `AgentSession` lifecycle events and never assigns OMP's identity to a
-selected sibling. Detector observations exposed by CLI results are not equivalent
-to an explicitly instrumented agent lifecycle stream; the integration does not
-promote inferred idle/done state into an authoritative completion claim.
+The extension emits no `AgentSession` lifecycle events and never assigns OMP's
+identity to a selected sibling. CLI detector observations are not a harness
+event stream: inferred idle/done states are not authoritative completion claims.
 
 ## Native loader smoke check
 
@@ -159,7 +157,7 @@ bun run --cwd integrations/omp smoke:load
 
 The script packs the package, extracts that artifact into a temporary directory,
 launches a child Bun with isolated HOME/config/data/cache/session roots,
-and invokes the **actual pinned OMP discovery and extension loader**. It verifies
+and invokes the pinned OMP discovery and extension loader. It verifies
 all 14 tools, both commands, package skill discovery, host JSON Schema validation,
 hosting-pane refusal, AbortSignal propagation, branch restoration, and a
 create/tree-navigation race. A tiny

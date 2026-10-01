@@ -6,11 +6,10 @@ last-reviewed: 2026-09-21
 
 # The phux MCP adapter
 
-**TL;DR.** What is MCP-specific in `phux mcp`: stdio JSON-RPC,
-registration, socket selection, and the tools the adapter deliberately
-omits. The installed catalog is `phux mcp --schema`; the operating guide
-is `phux mcp --skill`. Return shapes and selectors are the shared agent
-surface.
+**TL;DR.** Register `phux mcp` as a stdio server in your MCP host and keep
+the local phux server running. Use `phux mcp --schema` for the installed tool
+catalog and `phux mcp --skill` for operating guidance. The adapter shares
+the CLI's selectors and return shapes except where noted below.
 
 ---
 
@@ -133,8 +132,8 @@ through: `phux_agent_session_close`, `phux_agent_emit`, and
 tools hit the parent pane. Two live sessions sharing a name refuse.
 
 `phux_snapshot` and `phux_wait` make `target` optional (default
-focused/last session). `phux_watch` may omit it to collect server-wide
-events (no `agent_state` items in that case). `phux_send_keys`,
+focused/last session). `phux_watch` may omit it to collect server-wide events
+and `agent_state` changes for every local Terminal. `phux_send_keys`,
 `phux_paste`, `phux_run`, `phux_ask`, `phux_kill`, `phux_signal`,
 `phux_tag`, and the spatial tools require an explicit target. Spatial
 selectors must each resolve to exactly one local same-session pane.
@@ -147,23 +146,22 @@ the daemon default (`$XDG_RUNTIME_DIR/phux/phux.sock`, falling back to
 
 `phux mcp --schema | jq -r '.[].name'` lists the compiled catalog.
 
-Name-for-name mapping onto the CLI, checked by an automated parity gate:
-[CLI/MCP parity](../reference/parity.md) (generated) lists every
-tool, the `phux` verb it mirrors, whether it runs in-process or through
-the CLI, and its annotations. In-process tools call the same `phux-client`
-function the CLI verb calls and return the same document. A small residue
-(`phux_run`, `phux_new`, `phux_launch`, `phux_workspace`, the diagnostics,
-and the agent verbs whose documents the CLI assembles) still executes the
-CLI: argv (never a shell), the canonical JSON parsed, stdout/stderr capped
-at 1 MiB / 64 KiB, the child killed on cancellation or deadline. Every
-strict schema caps each string at 4096 bytes and arrays at 64 entries and
+The generated [CLI/MCP parity reference](../reference/parity.md) maps each
+tool to its CLI verb, execution path, and annotations; an automated gate checks
+the mapping. In-process tools call the same `phux-client` function as the CLI
+and return the same document. Other tools (`phux_run`, `phux_new`,
+`phux_launch`, `phux_workspace`, diagnostics, and agent verbs whose documents
+the CLI assembles) execute the CLI with argv, never a shell. They parse the
+canonical JSON, cap stdout/stderr at 1 MiB / 64 KiB, and kill the child on
+cancellation or deadline.
+Every strict schema caps each string at 4096 bytes and arrays at 64 entries and
 sets `additionalProperties: false`. A `phux_snapshot` with `tail` or
 `unwrap` is refused over 1 MiB of document, the bound the subprocess path
 had. Tool-error text is prose, not a contract; where the CLI's `--json`
 error line carried a stable `code` (`phux_spawn`, the spatial tools), the
 tool error is that same one-line document.
 
-Contract facts `--schema` descriptions do not collect:
+Additional tool contracts:
 
 - **`phux_wait`** is a bounded `{ "outcome": "met"|"timed_out", "polls": N }`
   gate, not the CLI's `ScreenState` document. It exposes `until` /
@@ -233,9 +231,8 @@ verb (keystrokes in a live PTY can run anything); `CREATE` and `BIND`
 writes are marked as writes but not destructive. The hints are advice
 for a host's confirmation UI; authorization still happens at the server.
 
-**Deliberate exclusions.** No MCP `take` / `give`: the CLI lease belongs
-to the short-lived subprocess connection, so advertising a persistent
-lease would be dishonest. No headless focus tool: focus is client-local.
+**Deliberate exclusions.** No MCP `take` / `give`: an input lease ends with
+the short-lived connection. No headless focus tool: focus is client-local.
 No `attach`. `server`, `stdio-bridge`, and `upgrade` are
 interactive/daemon/operator lifecycles; `pair` and satellite registry
 mutation handle credentials; plugin installation and config editing
@@ -273,8 +270,7 @@ Success:
 {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\n  \"command\": \"cargo test\",\n  \"exit_code\": 0,\n  \"output\": \"...\",\n  \"duration_ms\": 8123,\n  \"truncated\": false\n}"}],"isError":false}}
 ```
 
-The result is a **single text content block**. A tool failure — no such
-target, no running server, a malformed argument — is a *successful*
-JSON-RPC response carrying `isError: true`, never a JSON-RPC error and
-never a crash. Protocol-level errors (parse, unknown method, missing
-params) *are* JSON-RPC `error` responses.
+The result is a single text content block. Tool failures (no target, no
+server, malformed arguments) return JSON-RPC `result` with `isError: true`.
+Protocol failures (parse error, unknown method, missing params) return
+JSON-RPC `error`.
