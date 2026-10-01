@@ -1,17 +1,12 @@
 # phux desktop
 
-Install the app on an Apple-silicon Mac:
+[Install the GPUIX/Solid desktop demo](../../docs/INSTALL.md#desktop-demo)
+on an Apple-silicon Mac. The install guide covers prerequisites, building
+`Phux.app`, and choosing the server session.
 
-```sh
-just doctor desktop
-just desktop-install-app
-```
+The bundle contains the shell and launcher compiled into one executable,
+with the release native addon beside it.
 
-That builds `/Applications/Phux.app`: the shell and launcher compiled into one
-executable, with the release native addon beside it. Launched from the Dock or
-Spotlight, it uses your installed `phux` CLI (`~/.local/bin/phux`, Homebrew or
-`~/.cargo/bin`) to start or reuse your server and attaches its `default`
-session. `PHUX_PROFILE`, `PHUX_SOCKET` and `PHUX_SESSION` override that choice.
 Startup problems are shown in the window and logged to
 `~/Library/Logs/phux-desktop.log`. `just desktop-package` builds the bundle
 without installing it.
