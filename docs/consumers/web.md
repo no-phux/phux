@@ -6,11 +6,11 @@ last-reviewed: 2026-09-30
 
 # The phux web client
 
-**TL;DR.** Try the hosted demo to see a phux terminal in a browser.
-This guide is for developers building or embedding the single-terminal web
-client, not a public dashboard for connecting your own servers. The Rust/WASM
-client carries a terminal engine, paints to a canvas, and sends input over
-WebTransport or WebSocket. Splits and layout are outside its current scope.
+**TL;DR.** Try the hosted demo to see real terminal panes in a browser.
+This guide is for developers building or embedding the web client, not a public
+dashboard for connecting your own servers. The Rust/WASM client carries a terminal
+engine, renders up to four independent panes on one canvas, and sends input over
+one WebTransport or WebSocket connection.
 
 ---
 
@@ -188,6 +188,17 @@ the one documented in the [wire encoding reference](../spec/appendix-encoding.md
 
 What a page embedding the client can rely on, beyond typing:
 
+- **Panes.** Click a pane to focus it. Ctrl+a followed by `%` splits left/right,
+  `"` splits top/bottom, `o` focuses the next pane, and `x` closes the focused
+  terminal. Ctrl+a twice sends a literal Ctrl+a. The hosted toolbar offers the
+  same actions; `HostedClient` exposes `split_pane("vertical" | "horizontal")`,
+  `focus_next_pane()`, and `close_pane()`. These operate on real server resources,
+  not copied views. A split commits only after its bootstrap and attach
+  acknowledgement; refused operations leave existing panes usable. The view
+  allows four panes and keeps at least one. A bubbling `phux-panes` event on the
+  original canvas carries `{ count, focused, pending, error? }`; `focused` is
+  a resource-id string. The canvas also exposes `data-phux-pane-count` and
+  `data-phux-focused-pane`. Layout is local to this client, not the server's TUI.
 - **Scrollback.** The wheel over the canvas, and Shift+PageUp/PageDown, page
   through the history the replica holds (including what the bootstrap
   carried from before the attach). Scrolling is local; typing returns to the
@@ -238,7 +249,7 @@ What a page embedding the client can rely on, beyond typing:
   `prefers-reduced-motion: reduce` the page gets the event and no flash. A
   burst of bells rings once.
 - **Resize.** `HostedClient.resize(cols, rows)` (Rust: `Client::resize`)
-  announces a new viewport; the canvas follows the pane's new geometry.
+  resizes the local view and requests each visible terminal's pane geometry.
 - **Title.** The program's OSC 0/2 title is mirrored onto the canvas as
   `data-phux-title` and announced by a bubbling `phux-title` `CustomEvent`
   whose `detail` is the title.
@@ -249,8 +260,9 @@ What a page embedding the client can rely on, beyond typing:
 
 ## Scope and limits
 
-- **Single terminal.** No splits, windows, or layout chrome — that is the TUI's
-  job. The web client mirrors one terminal.
+- **Four panes.** Splits share one canvas and transport. Window/session management
+  and saved layouts are not exposed. Closing a pane kills its terminal resource;
+  closing a hosted demo releases all of that disposable session's resources.
 - **Text, color, cursor.** The canvas renderer paints grapheme cells with fg/bg
   and a blinking block cursor; a wide (CJK) character paints across its
   spacer cell. Images and sixel (which the engine does parse)

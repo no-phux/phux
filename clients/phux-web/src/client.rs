@@ -506,6 +506,30 @@ impl Client {
         self.app.borrow().session.is_failed()
     }
 
+    /// Split the focused pane vertically (side-by-side) or horizontally.
+    ///
+    /// # Errors
+    /// Refuses unsupported axes, unavailable sessions, or more than four panes.
+    pub fn split_pane(&self, axis: &str) -> Result<(), JsValue> {
+        pane_action(&self.app, PaneAction::Split(axis))
+    }
+
+    /// Move focus to the next visible terminal.
+    ///
+    /// # Errors
+    /// Fails if no terminal is ready.
+    pub fn focus_next_pane(&self) -> Result<(), JsValue> {
+        pane_action(&self.app, PaneAction::Next)
+    }
+
+    /// Close the focused terminal while preserving the other panes.
+    ///
+    /// # Errors
+    /// Refuses the last pane or a pending operation.
+    pub fn close_pane(&self) -> Result<(), JsValue> {
+        pane_action(&self.app, PaneAction::Close)
+    }
+
     /// Close the transport and drop browser handlers and timers.
     pub fn close(&self) {
         self.app.borrow_mut().dispose();
@@ -522,12 +546,11 @@ impl Client {
             config.cols = cols.max(1);
             config.rows = rows.max(1);
         }
-        let Some(frame) = app.session.resize_frame(cols, rows) else {
-            return;
-        };
-        if let Err(message) = app.tx.send(&frame) {
+        let frames = app.session.resize_panes(cols, rows);
+        if let Err(message) = app.send(frames) {
             app.fail(&message);
         }
+        app.request_paint();
     }
 
     /// Privacy-safe terminal failure reason, if this connection ended.
@@ -940,6 +963,7 @@ struct App {
     canvas: HtmlCanvasElement,
     ctx: CanvasRenderingContext2d,
     metrics: Metrics,
+    prefix: Cell<bool>,
     /// Cursor blink phase; toggled by an interval in `run`.
     cursor_on: Cell<bool>,
     /// Fractional wheel rows not yet scrolled (trackpads send small deltas).
@@ -1089,10 +1113,18 @@ impl App {
             return;
         };
         let rect = self.canvas.get_bounding_client_rect();
-        let grid = self.session.grid();
+        let painted = self.painted.borrow();
+        let current;
+        let grid = if let Some(grid) = painted.as_ref() {
+            grid
+        } else {
+            current = self.session.grid();
+            &current
+        };
         let (css_w, css_h) = self.css_cell(&rect);
-        let left = rect.left() + f64::from(grid.cursor_col) * css_w;
-        let top = rect.top() + f64::from(grid.cursor_row) * css_h;
+        let pane = self.focused_rect();
+        let left = rect.left() + f64::from(pane.x + grid.cursor_col) * css_w;
+        let top = rect.top() + f64::from(pane.y + grid.cursor_row) * css_h;
         let _ = input.surface.set_attribute(
             "style",
             &format!("{INPUT_SURFACE_STYLE}left:{left}px;top:{top}px;"),
@@ -1124,6 +1156,20 @@ impl App {
                 selected: self.selected_cells(grid.cols),
                 marks: &marks,
             };
+            self.ctx.save();
+            let pane = self.focused_rect();
+            let _ = self.ctx.translate(
+                f64::from(pane.x) * self.metrics.cell_w,
+                f64::from(pane.y) * self.metrics.cell_h,
+            );
+            self.ctx.begin_path();
+            self.ctx.rect(
+                0.0,
+                0.0,
+                f64::from(pane.cols) * self.metrics.cell_w,
+                f64::from(pane.rows) * self.metrics.cell_h,
+            );
+            self.ctx.clip();
             render_cursor_row(
                 &self.ctx,
                 grid,
@@ -1131,6 +1177,7 @@ impl App {
                 self.cursor_on.get(),
                 &overlay,
             );
+            self.ctx.restore();
         }
     }
 
@@ -1140,22 +1187,72 @@ impl App {
         }
         let grid = self.session.grid();
         let marks = self.search_marks(grid.cols, grid.rows);
-        // Keep the canvas sized to the grid (handles server-side resizes).
-        let w = u32::from(grid.cols) * (self.metrics.cell_w as u32);
-        let h = u32::from(grid.rows) * (self.metrics.cell_h as u32);
+        let mut panes = self.session.pane_rects();
+        let (cols, rows) = if panes.len() <= 1 {
+            (grid.cols, grid.rows)
+        } else {
+            self.session.canvas_dims()
+        };
+        if panes.len() == 1 {
+            panes[0].1.cols = cols;
+            panes[0].1.rows = rows;
+        }
+        let w = u32::from(cols) * (self.metrics.cell_w as u32);
+        let h = u32::from(rows) * (self.metrics.cell_h as u32);
         if self.canvas.width() != w {
             self.canvas.set_width(w);
         }
         if self.canvas.height() != h {
             self.canvas.set_height(h);
         }
-        // The cursor belongs to the live screen, not a scrolled-back view.
-        let cursor = self.cursor_on.get() && !self.session.viewport_scrolled();
-        let overlay = Overlay {
-            selected: self.selected_cells(grid.cols),
-            marks: &marks,
-        };
-        render_selected(&self.ctx, &grid, &self.metrics, cursor, &overlay);
+        self.ctx.set_fill_style_str("#303442");
+        self.ctx.fill_rect(0.0, 0.0, f64::from(w), f64::from(h));
+        let focused = self.session.focused_pane();
+        for (id, rect) in &panes {
+            let active = focused.as_ref() == Some(id);
+            self.ctx.save();
+            let x = f64::from(rect.x) * self.metrics.cell_w;
+            let y = f64::from(rect.y) * self.metrics.cell_h;
+            let width = f64::from(rect.cols) * self.metrics.cell_w;
+            let height = f64::from(rect.rows) * self.metrics.cell_h;
+            let _ = self.ctx.translate(x, y);
+            self.ctx.begin_path();
+            self.ctx.rect(0.0, 0.0, width, height);
+            self.ctx.clip();
+            if active {
+                let overlay = Overlay {
+                    selected: self.selected_cells(grid.cols),
+                    marks: &marks,
+                };
+                render_selected(
+                    &self.ctx,
+                    &grid,
+                    &self.metrics,
+                    self.cursor_on.get() && !self.session.viewport_scrolled(),
+                    &overlay,
+                );
+            } else if let Some(terminal) = self.session.pane_terminal(id) {
+                render_selected(
+                    &self.ctx,
+                    &terminal.grid(),
+                    &self.metrics,
+                    false,
+                    &Overlay::default(),
+                );
+            }
+            self.ctx.restore();
+            if panes.len() > 1 {
+                self.ctx
+                    .set_stroke_style_str(if active { "#8bb4ff" } else { "#555b6b" });
+                self.ctx.set_line_width(if active { 2.0 } else { 1.0 });
+                self.ctx.stroke_rect(
+                    x + 1.0,
+                    y + 1.0,
+                    (width - 2.0).max(0.0),
+                    (height - 2.0).max(0.0),
+                );
+            }
+        }
         if self.bell_showing() {
             self.ctx.set_fill_style_str(BELL_FLASH_FILL);
             self.ctx.fill_rect(0.0, 0.0, f64::from(w), f64::from(h));
@@ -1163,6 +1260,7 @@ impl App {
         self.painted.replace(Some(grid));
         self.painted_marks.replace(marks);
         self.publish_title();
+        self.place_input_surface();
     }
 
     /// Whether the visual bell is on screen now.
@@ -1262,8 +1360,8 @@ impl App {
         let (css_w, css_h) = self.css_cell(&rect);
         let (cols, rows) = self.session.dims();
         cell_at(
-            event.client_x() - rect.left(),
-            event.client_y() - rect.top(),
+            event.client_x() - rect.left() - f64::from(self.focused_rect().x) * css_w,
+            event.client_y() - rect.top() - f64::from(self.focused_rect().y) * css_h,
             css_w,
             css_h,
             cols,
@@ -1281,9 +1379,106 @@ impl App {
         let (cell_w, cell_h) = self.metrics.cell_px();
         let (cols, rows) = self.session.dims();
         (
-            crate::input::surface_pixel(event.client_x() - rect.left(), css_w, cell_w, cols),
-            crate::input::surface_pixel(event.client_y() - rect.top(), css_h, cell_h, rows),
+            crate::input::surface_pixel(
+                event.client_x() - rect.left() - f64::from(self.focused_rect().x) * css_w,
+                css_w,
+                cell_w,
+                cols,
+            ),
+            crate::input::surface_pixel(
+                event.client_y() - rect.top() - f64::from(self.focused_rect().y) * css_h,
+                css_h,
+                cell_h,
+                rows,
+            ),
         )
+    }
+
+    fn focused_rect(&self) -> crate::PaneRect {
+        if self.session.pane_rects().len() <= 1 {
+            let (cols, rows) = self.session.dims();
+            return crate::PaneRect {
+                x: 0,
+                y: 0,
+                cols,
+                rows,
+            };
+        }
+        let focused = self.session.focused_pane();
+        self.session
+            .pane_rects()
+            .into_iter()
+            .find(|(id, _)| Some(id) == focused.as_ref())
+            .map_or_else(
+                || {
+                    let (cols, rows) = self.session.canvas_dims();
+                    crate::PaneRect {
+                        x: 0,
+                        y: 0,
+                        cols,
+                        rows,
+                    }
+                },
+                |(_, rect)| rect,
+            )
+    }
+
+    fn focus_changed(&mut self, previous: Option<phux_protocol::ids::ResourceId>) {
+        let input_focused = self.bindings.borrow().input.as_ref().is_some_and(|input| {
+            self.canvas
+                .owner_document()
+                .and_then(|document| document.active_element())
+                .is_some_and(|active| active.is_same_node(Some(input.surface.as_ref())))
+        });
+        if input_focused {
+            let frames = self.session.pane_focus_frames(previous);
+            if let Err(message) = self.send(frames) {
+                self.fail(&message);
+                return;
+            }
+        }
+        self.clear_selection();
+        self.selecting.set(false);
+        self.forwarded_button.set(None);
+        self.mouse_cell.set(None);
+        self.wheel_carry.set(0.0);
+        self.search_stale.set(true);
+        self.painted.replace(None);
+        self.paint_badges();
+        self.place_input_surface();
+        self.request_paint();
+    }
+
+    fn publish_panes(&self) {
+        let count = self.session.pane_rects().len();
+        let focused = self
+            .session
+            .focused_pane()
+            .map(|id| id.to_string())
+            .unwrap_or_default();
+        let _ = self
+            .canvas
+            .set_attribute("data-phux-pane-count", &count.to_string());
+        let _ = self
+            .canvas
+            .set_attribute("data-phux-focused-pane", &focused);
+        let detail = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&detail, &"count".into(), &JsValue::from_f64(count as f64));
+        let _ = js_sys::Reflect::set(&detail, &"focused".into(), &JsValue::from_str(&focused));
+        let _ = js_sys::Reflect::set(
+            &detail,
+            &"pending".into(),
+            &JsValue::from_bool(self.session.pane_pending()),
+        );
+        if let Some(error) = self.session.pane_error() {
+            let _ = js_sys::Reflect::set(&detail, &"error".into(), &JsValue::from_str(error));
+        }
+        let init = web_sys::CustomEventInit::new();
+        init.set_bubbles(true);
+        init.set_detail(&detail);
+        if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("phux-panes", &init) {
+            let _ = self.canvas.dispatch_event(&event);
+        }
     }
 
     /// Mirror a changed program title onto the canvas and announce it, so a
@@ -1342,6 +1537,7 @@ fn build_app(
         canvas,
         ctx,
         metrics,
+        prefix: Cell::new(false),
         cursor_on: Cell::new(true),
         wheel_carry: Cell::new(0.0),
         painted: RefCell::new(None),
@@ -2018,6 +2214,7 @@ fn apply_frame(app: &Rc<RefCell<App>>, frame: FrameKind) -> BatchEffects {
             | FrameKind::ResourceClosed { .. }
     );
     let mut a = app.borrow_mut();
+    let old_focus = a.session.focused_pane();
     let outcome = a.session.on_frame(frame);
     if let Some(message) = outcome.fatal {
         web_sys::console::error_1(&JsValue::from_str(&format!(
@@ -2040,6 +2237,12 @@ fn apply_frame(app: &Rc<RefCell<App>>, frame: FrameKind) -> BatchEffects {
     }
     if a.session.is_attach_ready() {
         a.signal_ready();
+    }
+    if old_focus != a.session.focused_pane() {
+        a.focus_changed(old_focus);
+    }
+    if outcome.panes {
+        a.publish_panes();
     }
     if path_reply {
         path_picker::paint(&a);
@@ -2225,6 +2428,9 @@ fn on_pointer(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaEl
     let Some(event) = event.dyn_ref::<web_sys::PointerEvent>() else {
         return;
     };
+    if event.type_() == "pointerdown" {
+        focus_pointer_pane(app, event);
+    }
     if event.type_() == "pointermove" {
         hover_link(&app.borrow(), event);
     }
@@ -2564,11 +2770,108 @@ fn forward_wheel(app: &Rc<RefCell<App>>, event: &web_sys::WheelEvent) {
     }
 }
 
+enum PaneAction<'a> {
+    Split(&'a str),
+    Next,
+    Close,
+}
+
+fn pane_action(app: &Rc<RefCell<App>>, action: PaneAction<'_>) -> Result<(), JsValue> {
+    let mut app = app.borrow_mut();
+    let old_focus = app.session.focused_pane();
+    let result = match action {
+        PaneAction::Split(axis) => app.session.split_pane_frame(axis).map(Some),
+        PaneAction::Close => app.session.close_pane_frame().map(Some),
+        PaneAction::Next => app.session.focus_next_pane().map(|()| None),
+    };
+    let result = result.and_then(|frame| {
+        if let Some(frame) = frame
+            && let Err(message) = app.tx.send(&frame)
+        {
+            app.fail(&message);
+            return Err(message);
+        }
+        Ok(())
+    });
+    if let Err(message) = &result {
+        app.session.set_pane_error(message.clone());
+    }
+    if old_focus != app.session.focused_pane() {
+        app.focus_changed(old_focus);
+    }
+    app.publish_panes();
+    result.map_err(|message| JsValue::from_str(&message))
+}
+
+fn pane_keydown(app: &Rc<RefCell<App>>, event: &KeyboardEvent) -> bool {
+    if event.is_composing() || event.key_code() == 229 {
+        return false;
+    }
+    let key = event.key();
+    let prefix =
+        event.ctrl_key() && !event.alt_key() && !event.meta_key() && key.eq_ignore_ascii_case("a");
+    let waiting = app.borrow().prefix.replace(false);
+    if !waiting {
+        if prefix {
+            app.borrow().prefix.set(true);
+        }
+        return prefix;
+    }
+    if prefix {
+        // Let the ordinary key encoder send the second Ctrl+a literally.
+        return false;
+    }
+    let action = match key.as_str() {
+        "%" => PaneAction::Split("vertical"),
+        "\"" => PaneAction::Split("horizontal"),
+        "o" => PaneAction::Next,
+        "x" => PaneAction::Close,
+        "Shift" | "Control" | "Alt" | "Meta" => {
+            app.borrow().prefix.set(true);
+            return false;
+        }
+        _ => {
+            let mut app = app.borrow_mut();
+            app.session.set_pane_error("Unknown pane shortcut. After Ctrl+a use %, \", o, or x; Ctrl+a again sends the prefix.".to_owned());
+            app.publish_panes();
+            return true;
+        }
+    };
+    let _ = pane_action(app, action);
+    true
+}
+
+fn focus_pointer_pane(app: &Rc<RefCell<App>>, event: &web_sys::MouseEvent) {
+    let mut app = app.borrow_mut();
+    let previous = app.session.focused_pane();
+    let rect = app.canvas.get_bounding_client_rect();
+    let (width, height) = app.css_cell(&rect);
+    let col = (event.client_x() - rect.left()) / width;
+    let row = (event.client_y() - rect.top()) / height;
+    let target = app.session.pane_rects().into_iter().find(|(_, pane)| {
+        col >= f64::from(pane.x)
+            && col < f64::from(pane.x) + f64::from(pane.cols)
+            && row >= f64::from(pane.y)
+            && row < f64::from(pane.y) + f64::from(pane.rows)
+    });
+    if let Some((id, _)) = target
+        && app.session.focused_pane().as_ref() != Some(&id)
+        && app.session.focus_pane(&id).is_ok()
+    {
+        app.focus_changed(previous);
+        app.publish_panes();
+    }
+}
+
 /// Send one routed keydown; cancel the browser default only when sent.
 fn on_keydown(app: &Rc<RefCell<App>>, event: &web_sys::Event, _: &HtmlTextAreaElement) {
     let Some(event) = event.dyn_ref::<KeyboardEvent>() else {
         return;
     };
+    if pane_keydown(app, event) {
+        event.prevent_default();
+        return;
+    }
     let key = event.key();
     let code = event.code();
     let browser_key = crate::input::BrowserKey {
@@ -2806,9 +3109,18 @@ fn install_bootstrap_expiry(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         let Some(app) = weak.upgrade() else {
             return;
         };
-        let expired = app.borrow_mut().session.expire_bootstrap_staging();
-        if expired {
-            close_with_protocol_error(&app, "terminal bootstrap staging timed out");
+        let mut app = app.borrow_mut();
+        let outcome = app.session.expire_bootstrap_staging();
+        if let Some(message) = outcome.fatal {
+            app.fail(&message);
+            return;
+        }
+        if let Err(message) = app.send(outcome.send) {
+            app.fail(&message);
+            return;
+        }
+        if outcome.panes {
+            app.publish_panes();
         }
     });
     let interval = window.set_interval_with_callback_and_timeout_and_arguments_0(

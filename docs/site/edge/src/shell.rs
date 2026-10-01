@@ -49,6 +49,7 @@ impl Shell {
         ));
         o.push_str(&format!("  try:  {BOLD}help{RESET}   {BOLD}demo{RESET}   {BOLD}ls{RESET}   {BOLD}demo links{RESET}\r\n\r\n"));
         o.push_str(&self.prompt());
+        o.push_str(&self.line);
         o.into_bytes()
     }
 
@@ -73,13 +74,7 @@ impl Shell {
         }
 
         match ev.key {
-            PhysicalKey::Enter | PhysicalKey::NumpadEnter => {
-                let line = std::mem::take(&mut self.line);
-                let mut out = String::from("\r\n");
-                out.push_str(&run(line.trim()));
-                out.push_str(&self.prompt());
-                out.into_bytes()
-            }
+            PhysicalKey::Enter | PhysicalKey::NumpadEnter => self.submit_line(),
             PhysicalKey::Backspace | PhysicalKey::NumpadBackspace => {
                 if self.line.pop().is_some() {
                     b"\x08 \x08".to_vec() // erase one cell
@@ -104,6 +99,67 @@ impl Shell {
         }
     }
 
+    fn submit_line(&mut self) -> Vec<u8> {
+        let line = std::mem::take(&mut self.line);
+        format!("\r\n{}{}", run(line.trim()), self.prompt()).into_bytes()
+    }
+
+    /// Validate before mutation, so rejected input never partially edits a line.
+    pub fn validate_key(&self, event: &KeyEvent) -> Result<(), String> {
+        if event.action == KeyAction::Release || event.mods.intersects(ModSet::CTRL | ModSet::SUPER)
+        {
+            return Ok(());
+        }
+        if let Some(text) = event.text.as_deref() {
+            self.validate_text(text)?;
+        }
+        Ok(())
+    }
+
+    fn validate_text(&self, text: &str) -> Result<(), String> {
+        if text.chars().any(char::is_control) {
+            return Err("input must be printable text".to_owned());
+        }
+        if self.line.len().saturating_add(text.len()) > MAX_INPUT_LINE_BYTES {
+            return Err("input line exceeds 4096 bytes".to_owned());
+        }
+        Ok(())
+    }
+
+    /// Paste edits the same line as keys; explicit newlines submit commands.
+    /// The caller rejects unsafe untrusted control characters before this call.
+    pub fn paste(&mut self, text: &str) -> Result<Vec<u8>, String> {
+        if self.portfolio.is_some() {
+            return Err(
+                "paste is available in the demo shell, not the portfolio navigator".to_owned(),
+            );
+        }
+        let text = text
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .replace('\t', " ");
+        if text.chars().any(|c| c.is_control() && c != '\n') {
+            return Err("paste contains unsupported control characters".to_owned());
+        }
+        let mut lines = text.split('\n');
+        self.validate_text(lines.next().unwrap_or(""))?;
+        for line in lines {
+            if line.len() > MAX_INPUT_LINE_BYTES {
+                return Err("pasted line exceeds 4096 bytes".to_owned());
+            }
+        }
+        let mut output = Vec::new();
+        for segment in text.split_inclusive('\n') {
+            let line = segment.strip_suffix('\n').unwrap_or(segment);
+            self.line.push_str(line);
+            output.extend_from_slice(line.as_bytes());
+            if segment.ends_with('\n') {
+                output.extend(self.submit_line());
+            }
+        }
+        Ok(output)
+    }
+
     pub fn checkpoint(&self) -> ShellCheckpoint {
         match &self.portfolio {
             Some(portfolio) => ShellCheckpoint::Portfolio {
@@ -119,8 +175,8 @@ impl Shell {
     pub fn restore(&mut self, checkpoint: ShellCheckpoint) -> Result<(), String> {
         match (checkpoint, &mut self.portfolio) {
             (ShellCheckpoint::Demo { line }, None) => {
-                if line.len() > MAX_INPUT_LINE_BYTES {
-                    return Err("input line is too long".to_owned());
+                if line.len() > MAX_INPUT_LINE_BYTES || line.chars().any(char::is_control) {
+                    return Err("checkpoint input line is invalid".to_owned());
                 }
                 self.line = line;
                 Ok(())
