@@ -551,9 +551,8 @@ reason and leaves the file alone. Composite settings (widget lists,
 binding tables, hooks, plugin and host registries) stay in the file; the
 page tells you where it is.
 
-A change lands **now** for anything a reload covers, **next attach** for
-`[sidebar]`, `defaults.mouse`, and `experimental.*`, and **next server
-start** for `[defaults]` and `[voice]`.
+The page labels each setting with when it takes effect: **now**, **next
+attach**, or **next server start**. See [Config and reload](#config-and-reload).
 
 ### Bug reports
 
@@ -633,7 +632,8 @@ explicit and never automatic: the `reload-config` action, a settings-page
 edit, or `phux config reload` from any shell. A reload rebuilds keybindings,
 theme, status bar, and plugin palette rows atomically; on any error the
 previous config stays in effect and a toast names it. `[sidebar]` geometry,
-`[experimental]`, and `[defaults]` need a re-attach.
+`[experimental]`, and `defaults.mouse` need a reattach. Reattaching does not
+reload server-side settings; check each key's timing in Settings.
 
 `[experimental] predictive-echo` is unset by default: prediction is on
 for a remote attach that actually leaves the machine, off on the local

@@ -55,7 +55,6 @@
 .mux-tabs button span {
   margin-right: 6px;
   font: 10px var(--font-code);
-  opacity: 0.75;
 }
 .mux-tabs button:hover,
 .mux-mode-row button:hover {

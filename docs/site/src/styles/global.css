@@ -1239,10 +1239,6 @@ html:has(.docs-navigation-dialog[open]) {
   background: var(--color-surface);
   border-color: var(--color-accent-soft);
 }
-.overview-path-label {
-  color: var(--color-muted);
-  font-size: 0.8125rem;
-}
 .overview-paths h3 {
   display: flex;
   align-items: baseline;

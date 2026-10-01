@@ -80,7 +80,7 @@ A resource is a server-owned object with:
 - an ordered, opaque output stream with a codec and a bootstrap loaded before live bytes;
 - a kind-defined input channel;
 - a tagged event stream;
-- metadata and an optional parent, fixed at spawn.
+- metadata, plus an optional parent fixed at spawn.
 
 Terminal is a PTY child and a libghostty engine, with columns, rows, a title,
 and a working directory. Typed input, resize, and screen reads are refused on

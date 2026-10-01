@@ -110,7 +110,7 @@ human and agent input at the same time: both reach the same program.
 ## 4. Connect an agent
 
 [Choose a coding-agent setup](./consumers/getting-started.md): Claude Code,
-Pi, OpenCode, another MCP host, or a script. Each starts with a read-only check.
+Pi, OMP, OpenCode, another MCP host, or a script. Each starts with a read-only check.
 You do not need an AgentSession producer to use an agent.
 
 ## Know the edges

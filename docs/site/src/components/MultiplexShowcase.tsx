@@ -1,24 +1,25 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type PhuxTerminal from "./PhuxTerminal";
+import { SITE, docsHref } from "../lib/site";
 import "./MultiplexShowcase.css";
 
 type View = "split" | "mirror" | "detached";
 type Mode = "demo" | "native";
 const explanations: Record<View, { title: string; detail: string }> = {
   split: {
-    title: "Two terminals. One workspace.",
+    title: "Independent terminals",
     detail:
-      "A split creates another view into your workspace. Each terminal has its own identity, independent of the pane around it.",
+      "Each terminal has its own process and identity. Panes arrange their views.",
   },
   mirror: {
-    title: "Two views. The same terminal.",
+    title: "Multiple clients",
     detail:
-      "The browser and your desktop can attach to terminal 01 together. Same process, same output—not two shells pretending to stay in sync.",
+      "The desktop and browser attach to terminal 01. Both receive its output and can send input.",
   },
   detached: {
-    title: "Close the view. Keep the work.",
+    title: "Detach and reconnect",
     detail:
-      "Detaching a client does not kill its terminal. Reattach to the same identity and pick up where you left off.",
+      "Disconnecting leaves the terminal running on the server. Reattach to resume.",
   },
 };
 
@@ -86,8 +87,8 @@ export default function MultiplexShowcase({ wsUrl = "" }: { wsUrl?: string }) {
       <div className="mux-window" aria-label="Interactive multiplexing diagram">
         <header className="mux-titlebar">
           <span className="mux-brand">
-            phux<span aria-hidden="true"> / </span>
-            <span>one workspace, many views</span>
+            {SITE.name}<span aria-hidden="true"> / </span>
+            <span>terminal model</span>
           </span>
           <span className="mux-diagram-label">interactive diagram</span>
         </header>
@@ -126,10 +127,10 @@ export default function MultiplexShowcase({ wsUrl = "" }: { wsUrl?: string }) {
                 <span className="mux-detached-icon" aria-hidden="true">
                   ↗
                 </span>
-                <b>Browser detached.</b>
-                <span>Terminal 01 is still there.</span>
+                <b>Browser detached</b>
+                <span>Terminal 01 keeps running.</span>
                 <button type="button" onClick={() => setView("mirror")}>
-                  Reattach same terminal <span aria-hidden="true">↵</span>
+                  Reattach <span aria-hidden="true">↵</span>
                 </button>
               </div>
             ) : (
@@ -142,7 +143,7 @@ export default function MultiplexShowcase({ wsUrl = "" }: { wsUrl?: string }) {
         </div>
         <div className="mux-wire" aria-hidden="true">
           <span className="mux-wire-line" />
-          <span>phux protocol</span>
+          <span>public protocol</span>
           <span className="mux-wire-line" />
         </div>
         <div className="mux-server">
@@ -150,8 +151,8 @@ export default function MultiplexShowcase({ wsUrl = "" }: { wsUrl?: string }) {
             ▤
           </span>
           <div>
-            <b>One phux server</b>
-            <span>Terminals live here. Panes are just views.</span>
+            <b>{SITE.name} server</b>
+            <span>Owns the terminals and their processes.</span>
           </div>
           <span className="mux-resource">01 + 02</span>
         </div>
@@ -175,21 +176,21 @@ export default function MultiplexShowcase({ wsUrl = "" }: { wsUrl?: string }) {
               &gt;_
             </span>
             <span>
-              Open a live terminal
-              <small>No install. No sign-in for the edge tour.</small>
+              Try a terminal
+              <small>Edge tour · no install or sign-in</small>
             </span>
             <span aria-hidden="true">↗</span>
           </button>
         </div>
       </div>
       <p className="mux-caption">
-        Understand it here. Try the real wire in the live terminal.
+        The diagram shows the model. The demo opens a disposable terminal.
       </p>
       <noscript>
         <p>
           JavaScript is required for the interactive demo.{" "}
           <a href="/embed">Open the hosted shell</a> or{" "}
-          <a href="https://docs.phux.sh/quickstart">start locally</a>.
+          <a href={docsHref("/quickstart")}>start locally</a>.
         </p>
       </noscript>
       <dialog
@@ -205,8 +206,8 @@ export default function MultiplexShowcase({ wsUrl = "" }: { wsUrl?: string }) {
       >
         <header className="mux-dialog-head">
           <div>
-            <span className="mux-eyebrow">NOT A RECORDING</span>
-            <h2 id={`${id}-title`}>Your browser is a phux client.</h2>
+            <span className="mux-eyebrow">HOSTED DEMO</span>
+            <h2 id={`${id}-title`}>{SITE.name} in your browser</h2>
           </div>
           <button
             type="button"
@@ -246,8 +247,8 @@ export default function MultiplexShowcase({ wsUrl = "" }: { wsUrl?: string }) {
         <p className="mux-dialog-description" id={`${id}-description`}>
           {mode === "demo" ? (
             <>
-              Real phux protocol and libghostty rendering. A curated shell, not
-              a Linux process. Try <code>help</code>, <code>ls</code>, or{" "}
+              A curated, OS-less shell using the {SITE.name} protocol and libghostty.
+              No processes or network. Try <code>help</code>, <code>ls</code>, or{" "}
               <code>demo</code>.
             </>
           ) : (

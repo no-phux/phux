@@ -55,13 +55,13 @@ invocation facts belong in [Quickstart](./QUICKSTART.md) and the generated
 Start with a working terminal. Introduce controls when they become relevant,
 not on a timer, and skip guidance the person's actions show they do not need.
 
-| Beat | Intended feeling | Experience requirement | Failure signal |
+| Beat | User expectation | Experience requirement | Failure signal |
 |---|---|---|---|
-| Familiarity | "This is still my terminal." | Open on a usable terminal surface with conventional focus, input, and legible chrome. Require no account, configuration choice, or tour before work begins. | The first screen is about phux rather than the person's shell or process. |
-| Safety | "My work stays here." | Make continuity visible at the first relevant boundary. Explain what happened to the terminal in plain language whenever a view closes, reconnects, or cannot proceed. | The person hesitates because detach, close, quit, and kill appear interchangeable. |
-| Magic | "That is the same live work." | Demonstrate the shared-terminal promise through a real second view, consumer, or agent action connected to the current terminal. Preserve enough context that cause and effect are obvious. | The demonstration looks like copied output, a canned animation, or a separate session. |
-| Confidence | "I can do the next thing myself." | Teach one control in response to intent, then let the person complete a meaningful action without assistance. Keep a discoverable route back to help. | Success depends on remembering a sequence shown earlier or escaping a wizard. |
-| Respect | "It trusts me now." | Stop introductory guidance after use or dismissal. Return the full surface to the person's work and keep advanced capability available on demand. | Hints repeat, badges accumulate, or the product asks for setup unrelated to current work. |
+| Familiarity | Start with a usable terminal. | Open on a usable terminal surface with conventional focus, input, and legible chrome. Require no account, configuration choice, or tour before work begins. | The first screen is about phux rather than the person's shell or process. |
+| Safety | Know what closing or disconnecting will do. | Make continuity visible at the first relevant boundary. Explain what happened to the terminal in plain language whenever a view closes, reconnects, or cannot proceed. | The person hesitates because detach, close, quit, and kill appear interchangeable. |
+| Shared control | See another client affect this terminal. | Demonstrate control through a real second view, consumer, or agent action connected to the current terminal. Preserve enough context that cause and effect are obvious. | The demonstration looks like copied output, a canned animation, or a separate session. |
+| Confidence | Repeat the action without guidance. | Teach one control in response to intent, then let the person complete a meaningful action without assistance. Keep a discoverable route back to help. | Success depends on remembering a sequence shown earlier or escaping a wizard. |
+| Respect | Dismissed hints stay dismissed. | Stop introductory guidance after use or dismissal. Return the full surface to the person's work and keep advanced capability available on demand. | Hints repeat, badges accumulate, or the product asks for setup unrelated to current work. |
 
 Do not force all five beats into one session. During an incident, prioritize
 continuity and recovery over demonstrations. Someone arriving through an
@@ -148,7 +148,7 @@ and snapshots remain necessary but cannot establish usability alone.
 |---|---|---|
 | Familiarity | Can a new person begin terminal work without first making a phux decision? | A cold-start capture from launch through the first ordinary command. |
 | Safety | At each leave, disconnect, and recovery boundary, can the person tell what remains running before acting? | The exact before, interruption, and return states, including the safety message. |
-| Magic | Is it unmistakable that two consumers are acting on the same live terminal rather than copies? | A continuous capture with a causally clear action in one view and result in the other. |
+| Shared control | Is it unmistakable that two consumers are acting on the same live terminal rather than copies? | A continuous capture with a causally clear action in one view and result in the other. |
 | Confidence | Can the person complete the next relevant action after one contextual cue, with no hidden prerequisite? | A first-use trace showing cue, action, outcome, and the route back to help. |
 | Respect | After use or dismissal, does guidance stay gone while the capability remains discoverable? | A repeat-session capture plus the persisted lesson state visible through a supported inspection surface. |
 | Recovery | Does failure preserve context and offer a specific safe next step? | A fault-injected capture showing the attempted action, preserved work, remedy, and successful return. |

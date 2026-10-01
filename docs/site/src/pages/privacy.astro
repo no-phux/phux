@@ -7,18 +7,19 @@
 // When any of those change what is collected, change this page in the same
 // release and bump LAST_UPDATED.
 import BaseLayout from "../layouts/BaseLayout.astro";
+import { SITE } from "../lib/site";
 
 const LAST_UPDATED = "2026-09-23";
 const CONTACT = "privacy@phall.io";
-const title = "phux — privacy policy";
+const title = `${SITE.name} — Privacy policy`;
 const description =
-  "What the phux apps, phux.sh, and the hosted demo collect, who processes it, how long it is kept, and how to access or delete it.";
+  `What ${SITE.name} apps and hosted services collect, how long they keep it, and how to access or delete it.`;
 ---
 
 <BaseLayout {title} {description}>
   <article class="wrap policy">
     <header class="policy-head">
-      <h1>privacy policy</h1>
+      <h1>Privacy policy</h1>
       <p class="updated">
         Last updated <time datetime={LAST_UPDATED}>{LAST_UPDATED}</time>
       </p>
