@@ -147,6 +147,30 @@ After replacement the app relaunches; phux-backed remote sessions remain on
 the server. Homebrew, Nix, and development copies refuse self-update and
 print the native command.
 
+## Desktop demo
+
+The **GPUIX/Solid desktop demo** installs as `Phux.app` on Apple-silicon
+macOS 13 or later. It is separate from Cockpit. There is no published binary
+installer yet; this route builds the app from source.
+
+Install the phux CLI first, then follow [contributor setup](./SETUP.md) for
+the desktop build tools. From the repository root:
+
+```sh
+just doctor desktop
+just desktop-install-app
+open /Applications/Phux.app
+```
+
+Quit an existing `Phux.app` before installing: the command replaces
+`/Applications/Phux.app`. It does not replace your installed CLI. On launch,
+the app uses that CLI to start or reuse your server and attaches its `default`
+session; `PHUX_PROFILE`, `PHUX_SOCKET`, and `PHUX_SESSION` can override the target.
+
+This is an ad-hoc-signed development build, without notarization or automatic
+updates. Re-run the install command to rebuild it after updating your checkout.
+See the [desktop guide](./consumers/desktop.md) for controls and current limits.
+
 ## Agent skills
 
 For harnesses that load Agent Skills:
