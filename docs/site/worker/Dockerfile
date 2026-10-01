@@ -7,10 +7,10 @@ FROM --platform=linux/amd64 rust:1.98.1-bookworm@sha256:93ce27a88655056a51dbdd8f
 # x-release-please-start-version
 ARG PHUX_VERSION=0.47.0
 # x-release-please-end
-ARG PHUX_REVISION=e57017eaaeacd4a8902943ddab945229a415a23f
-ARG PHUX_SOURCE_SHA256=e46740fea940ef9b1c1234582300f69d7fd5d7652bbfe3158801b6390842638a
-ARG PHUX_LOCK_SHA256=46817db518ccf937f7e59d0358ba564fa819b1702422fb469f6f1d9ed5aa3306
-ARG PHUX_PATCHED_LOCK_SHA256=ecc4ab68d0c15256192dc9f7a5ba6429dbdf5d7e6641ab816541f564fcb2b318
+ARG PHUX_REVISION=4488bc164b287246b568c922b0c5c574b9e99e9b
+ARG PHUX_SOURCE_SHA256=2003d3cbcb03ac43320092a167edb5fde13dc0ff7aafcaa77c901004ff6b912e
+ARG PHUX_LOCK_SHA256=d5bfb052faab8c45b449e4f6c9f42d1e6efa01e34020b6a9eaf678f2b68e30fc
+ARG PHUX_PATCHED_LOCK_SHA256=82687cda1090f7ff67dc6b02dac84c81adf0b5b7d6a9dda043ce3b7eccd6bf5c
 ARG ZIG_VERSION=0.16.0
 ARG ZIG_SOURCE_SHA256=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
 ARG LIBGHOSTTY_REVISION=a0f75ba1de17ec63b14fbc259ae097de24243571
@@ -18,8 +18,8 @@ ARG LIBGHOSTTY_SOURCE_SHA256=cc1abdcc119e6dc7620547ba710fa9d54b4ec224db384ed9af9
 ARG GHOSTTY_REVISION=03c6f818eaeadf76e66dda99ab5529c9b47fa15c
 ARG GHOSTTY_SOURCE_SHA256=3d5ca7cc063c993d16ddb00c5635e99e48767861ff9a1ba33f0b5ff2764ad7a5
 
-ADD --checksum=sha256:e46740fea940ef9b1c1234582300f69d7fd5d7652bbfe3158801b6390842638a \
-    https://github.com/no-phux/phux/archive/e57017eaaeacd4a8902943ddab945229a415a23f.tar.gz /tmp/phux.tar.gz
+ADD --checksum=sha256:2003d3cbcb03ac43320092a167edb5fde13dc0ff7aafcaa77c901004ff6b912e \
+    https://github.com/no-phux/phux/archive/4488bc164b287246b568c922b0c5c574b9e99e9b.tar.gz /tmp/phux.tar.gz
 ADD --checksum=sha256:70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00 \
     https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz /tmp/zig.tar.xz
 ADD --checksum=sha256:cc1abdcc119e6dc7620547ba710fa9d54b4ec224db384ed9af9ddfb409634382 \
@@ -29,8 +29,8 @@ ADD --checksum=sha256:3d5ca7cc063c993d16ddb00c5635e99e48767861ff9a1ba33f0b5ff276
 # x-release-please-start-version
 RUN test "$PHUX_VERSION" = "0.47.0"
 # x-release-please-end
-RUN test "$PHUX_REVISION" = "e57017eaaeacd4a8902943ddab945229a415a23f" \
-    && test "$PHUX_SOURCE_SHA256" = "e46740fea940ef9b1c1234582300f69d7fd5d7652bbfe3158801b6390842638a" \
+RUN test "$PHUX_REVISION" = "4488bc164b287246b568c922b0c5c574b9e99e9b" \
+    && test "$PHUX_SOURCE_SHA256" = "2003d3cbcb03ac43320092a167edb5fde13dc0ff7aafcaa77c901004ff6b912e" \
     && test "$ZIG_VERSION" = "0.16.0" \
     && test "$ZIG_SOURCE_SHA256" = "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00" \
     && test "$LIBGHOSTTY_REVISION" = "a0f75ba1de17ec63b14fbc259ae097de24243571" \
@@ -88,7 +88,7 @@ RUN apt-get update \
       jq=1.6-2.1+deb12u2 \
       less=590-2.1~deb12u2 \
       ncurses-base=6.4-4 \
-      nodejs=18.20.4+dfsg-1~deb12u2 \
+      nodejs=18.20.4+dfsg-1~deb12u3 \
       patch=2.7.6-7 \
       procps=2:4.0.2-3 \
       python3=3.11.2-1+b1 \
