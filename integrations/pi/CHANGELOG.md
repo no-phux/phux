@@ -17,6 +17,18 @@
 - Preserve command exits, wait timeouts, delivery receipts/uncertainty, and
   output-only diagnostics without retrying mutations.
 
+## [0.4.0](https://github.com/no-phux/phux/compare/pi-extension-v0.3.0...pi-extension-v0.4.0) (2026-10-01)
+
+
+### Features
+
+* **integrations:** complete native terminal controls for OMP OpenCode and Pi ([7ee9fa3](https://github.com/no-phux/phux/commit/7ee9fa37f8acb3f672f10fac8dcb08d92b9341b5))
+
+
+### Refactors
+
+* repo-wide cull of dead code, redundant tests, and hack patches ([#888](https://github.com/no-phux/phux/issues/888)) ([1f73694](https://github.com/no-phux/phux/commit/1f73694e73686cac06b9f27455cb061f0328f842))
+
 ## [0.3.0](https://github.com/no-phux/phux/compare/pi-extension-v0.2.3...pi-extension-v0.3.0) (2026-09-13)
 
 

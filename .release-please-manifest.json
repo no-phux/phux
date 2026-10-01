@@ -1,6 +1,6 @@
 {
-  ".": "0.46.0",
-  "clients/cockpit": "0.31.0",
-  "integrations/pi": "0.3.0",
+  ".": "0.47.0",
+  "clients/cockpit": "0.32.0",
+  "integrations/pi": "0.4.0",
   "integrations/claude": "0.4.0"
 }
