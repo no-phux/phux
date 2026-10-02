@@ -66,6 +66,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Prefer local Git objects for source-pin validation; squash-merged
+          # release commits fall back to the checksummed source archive.
+          fetch-depth: 0
       - name: read desktop Bun pin
         id: desktop-bun
         run: |

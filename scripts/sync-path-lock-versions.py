@@ -12,9 +12,10 @@ root workspace declares. This rewrites the version of every sourceless package
 in each target lock whose name is also a sourceless package in the root lock,
 leaving every other byte untouched.
 
-Usage: sync-path-lock-versions.py ROOT_LOCK TARGET_LOCK...
+Usage: sync-path-lock-versions.py [--check] ROOT_LOCK TARGET_LOCK...
 """
 
+import argparse
 import re
 import sys
 from pathlib import Path
@@ -47,17 +48,24 @@ def sync(text: str, versions: dict[str, str]) -> str:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 3:
-        print(__doc__.strip().splitlines()[-1], file=sys.stderr)
-        return 2
-    versions = path_versions(Path(argv[1]).read_text())
-    for target in map(Path, argv[2:]):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", help="report drift without writing")
+    parser.add_argument("root_lock", type=Path)
+    parser.add_argument("target_locks", nargs="+", type=Path)
+    args = parser.parse_args(argv[1:])
+    versions = path_versions(args.root_lock.read_text())
+    failed = False
+    for target in args.target_locks:
         before = target.read_text()
         after = sync(before, versions)
         if after != before:
-            target.write_text(after)
-            print(f"updated {target}")
-    return 0
+            if args.check:
+                print(f"{target}: path crate versions differ from {args.root_lock}", file=sys.stderr)
+                failed = True
+            else:
+                target.write_text(after)
+                print(f"updated {target}")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

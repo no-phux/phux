@@ -42,9 +42,9 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       prs_created: ${{ steps.rp.outputs.prs_created }}
-      # `pr` is a JSON string of release-please's PullRequest object, and is
-      # unset when no PR was touched — short-circuit so fromJSON never sees ''.
-      pr_branch: ${{ steps.rp.outputs.pr && fromJSON(steps.rp.outputs.pr).headBranchName || '' }}
+      # `pr` contains only the first PR. Desktop releases can be separate,
+      # so synchronize every returned branch, including the root release PR.
+      prs: ${{ steps.rp.outputs.prs || '[]' }}
     steps:
       # Fail closed and loudly if the App is not configured, rather than falling
       # back to GITHUB_TOKEN and silently opening an unmergeable release PR.
@@ -80,11 +80,15 @@ jobs:
       # root, Cockpit, and integration component tags on the same code path.
 
   sync-lockfile:
-    name: sync Cargo.lock on the release PR
+    name: sync release inputs (${{ matrix.pr.headBranchName }})
     needs: release-please
     # Keep going when the release PR was opened and the job then failed.
     # The lockfile sync is what makes that PR mergeable.
-    if: always() && needs.release-please.outputs.prs_created == 'true' && needs.release-please.outputs.pr_branch != ''
+    if: always() && needs.release-please.outputs.prs_created == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.release-please.outputs.prs) }}
     runs-on: ubuntu-24.04
     # release-please cannot update Cargo.lock, and this is not a config mistake:
     #
@@ -114,7 +118,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.pr_branch }}
+          ref: ${{ matrix.pr.headBranchName }}
           fetch-depth: 0
           # MUST be the App token, not GITHUB_TOKEN. This job pushes a commit that
           # becomes the release PR's new head; with GITHUB_TOKEN that push raises
@@ -158,20 +162,41 @@ jobs:
           (cd clients/phux-web && cargo update --workspace)
           # The desktop host lock records them too, but its GPUIX path deps
           # are bootstrapped, not committed, so cargo cannot resolve it here.
-          python3 scripts/sync-path-lock-versions.py Cargo.lock clients/desktop/native/Cargo.lock
+          python3 scripts/sync-path-lock-versions.py Cargo.lock clients/desktop/native/Cargo.lock docs/site/edge/Cargo.lock
 
       - name: Commit Cargo.lock
         shell: bash
         env:
-          PR_BRANCH: ${{ needs.release-please.outputs.pr_branch }}
+          PR_BRANCH: ${{ matrix.pr.headBranchName }}
         run: |
           set -euo pipefail
-          if git diff --quiet -- Cargo.lock clients/phux-web/Cargo.lock clients/desktop/native/Cargo.lock; then
+          if git diff --quiet -- Cargo.lock clients/phux-web/Cargo.lock clients/desktop/native/Cargo.lock docs/site/edge/Cargo.lock; then
             echo "Cargo lockfiles already in sync."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.lock clients/phux-web/Cargo.lock clients/desktop/native/Cargo.lock
+          git add Cargo.lock clients/phux-web/Cargo.lock clients/desktop/native/Cargo.lock docs/site/edge/Cargo.lock
           git commit -m "chore: sync Cargo lockfiles with the release version"
+          git push origin "HEAD:${PR_BRANCH}"
+
+      # The archive must already exist on GitHub, and its Cargo.lock must be
+      # synchronized before hashing it. Pin this source commit, then commit
+      # the pin separately; a commit cannot embed its own immutable SHA.
+      - name: Synchronize native demo source pin
+        if: steps.root-release.outputs.changed == 'true'
+        env:
+          PR_BRANCH: ${{ matrix.pr.headBranchName }}
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/site_source_pin.py --revision HEAD
+          python3 scripts/ci/site_source_pin.py --check
+          if git diff --quiet -- docs/site/worker/Dockerfile; then
+            echo "Native demo source pin already in sync."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/site/worker/Dockerfile
+          git commit -m "chore: sync native demo source with the release version"
           git push origin "HEAD:${PR_BRANCH}"
