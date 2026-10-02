@@ -271,6 +271,19 @@ impl<'a> Pump<'a> {
     }
 
     async fn run(&mut self) -> ConnectionEnd {
+        // Writes may wait indefinitely when a peer stops reading. Observe
+        // close around the whole pump, including the opening HELLO and the
+        // writes inside step's selected branches, so joining the driver on
+        // teardown never waits for that peer. Cancellation is safe here:
+        // this connection is discarded, never resumed after a partial write.
+        let mut close = self.signals.close.clone();
+        tokio::select! {
+            () = closed(&mut close) => ConnectionEnd::Closed,
+            end = self.pump() => end,
+        }
+    }
+
+    async fn pump(&mut self) -> ConnectionEnd {
         if let Err(end) = self.open().await {
             return end;
         }
@@ -306,7 +319,6 @@ impl<'a> Pump<'a> {
         }
         tokio::select! {
             () = self.signals.outbound.notified() => self.flush_outbound().await,
-            () = closed(&mut self.signals.close) => Err(ConnectionEnd::Closed),
             () = signal(&mut self.signals.resync) => Err(ConnectionEnd::Resync),
             // A paused read has a backlog the peer just sent: it is alive,
             // and a probe answer could not be read before its deadline.
@@ -470,8 +482,113 @@ fn control_error(error: ControlError) -> ConnectionEnd {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, reason = "test assertions")]
 mod tests {
-    use super::{FrameKind, encode, is_ping_frame, peel_queued_pings};
+    use std::sync::{Arc, Mutex};
+
+    use bytes::BytesMut;
+    use futures_util::FutureExt;
+    use tokio::sync::{Notify, watch};
+
+    use super::*;
+    use crate::control::{ControlOptions, ControlPlane};
+
+    struct WriteFixture {
+        io: Io,
+        // Keep the unread peer alive so the writer waits instead of failing.
+        _peer: tokio::io::DuplexStream,
+        shared: Shared,
+        signals: Signals,
+        close: watch::Sender<bool>,
+    }
+
+    impl WriteFixture {
+        fn new(capacity: usize) -> Self {
+            let (stream, peer) = tokio::io::duplex(capacity);
+            let (reader, writer) = tokio::io::split(stream);
+            let (close, close_rx) = watch::channel(false);
+            Self {
+                io: Io::Stream {
+                    reader: Box::new(reader),
+                    writer: Box::new(writer),
+                    pending: BytesMut::new(),
+                    quic: None,
+                },
+                _peer: peer,
+                shared: Arc::new(Mutex::new(ControlPlane::new(ControlOptions::default()))),
+                signals: Signals {
+                    outbound: Arc::new(Notify::new()),
+                    resync: watch::channel(0).1,
+                    nudge: watch::channel(0).1,
+                    close: close_rx,
+                },
+                close,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn close_interrupts_a_blocked_opening_write() {
+        // One byte of capacity cannot hold HELLO. Polling once gets the
+        // opening write stuck, without sleeps or a real socket's buffers.
+        let mut fixture = WriteFixture::new(1);
+        let wake: Wake = Arc::new(|| {});
+        let mut pump = Pump::new(
+            "blocked-hello",
+            &mut fixture.io,
+            ConnectOptions::default(),
+            &fixture.shared,
+            &mut fixture.signals,
+            &wake,
+        );
+        let running = pump.run();
+        tokio::pin!(running);
+        assert!(running.as_mut().now_or_never().is_none());
+        assert_eq!(lock(&fixture.shared).connection_epoch(), 1);
+
+        fixture.close.send(true).expect("driver receives close");
+        let end = tokio::time::timeout(Duration::from_secs(1), running)
+            .await
+            .expect("close must interrupt the blocked HELLO");
+        assert!(matches!(end, ConnectionEnd::Closed));
+    }
+
+    #[tokio::test]
+    async fn close_interrupts_a_blocked_outbound_flush() {
+        // HELLO fits, then a batch of pings fills the unread peer's buffer.
+        let mut fixture = WriteFixture::new(1024);
+        let outbound = Arc::clone(&fixture.signals.outbound);
+        let wake: Wake = Arc::new(|| {});
+        let mut pump = Pump::new(
+            "blocked-flush",
+            &mut fixture.io,
+            ConnectOptions::default(),
+            &fixture.shared,
+            &mut fixture.signals,
+            &wake,
+        );
+        let running = pump.run();
+        tokio::pin!(running);
+        assert!(running.as_mut().now_or_never().is_none());
+        {
+            let mut control = lock(&fixture.shared);
+            for nonce in 0..1024 {
+                control.queue_frame(&FrameKind::Ping { nonce });
+            }
+        }
+        outbound.notify_one();
+        assert!(running.as_mut().now_or_never().is_none());
+        assert!(
+            !lock(&fixture.shared).has_outbound(),
+            "flush took the batch"
+        );
+
+        fixture.close.send(true).expect("driver receives close");
+        let end = tokio::time::timeout(Duration::from_secs(1), running)
+            .await
+            .expect("close must interrupt a selected outbound write");
+        assert!(matches!(end, ConnectionEnd::Closed));
+    }
 
     /// Pings are answered on the driver; every other frame, and a ping that
     /// does not decode, stays queued for the consumer in order.
