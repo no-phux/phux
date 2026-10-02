@@ -7,6 +7,7 @@
     "dist/**",
     "tools/oxlint/anti-slop/**",
     "tests/tooling/negative/**",
-    "bun.lock"
+    "bun.lock",
+    "CHANGELOG.md"
   ]
 }
