@@ -67,6 +67,10 @@ class LifecycleClient {
       focusedPane: this.panes[0]?.terminalId ?? "",
     };
   }
+  deliveryFenced(): boolean {
+    return false;
+  }
+
   inputReadiness(terminalId: string): { ready: boolean; deliveryFenced: boolean } {
     if (!/^local:\d+$/.test(terminalId)) throw new Error("InvalidResourceId");
     return { ready: this.ready.has(terminalId), deliveryFenced: false };

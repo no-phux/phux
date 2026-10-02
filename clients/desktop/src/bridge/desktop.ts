@@ -4,7 +4,7 @@
  * signals, and forwards current events to one subscriber. Ambiguous and
  * pre-connection badges are omitted. UI code never parses VT or retries delivery.
  */
-import { batch, createSignal, type Accessor } from "solid-js";
+import { batch, createSignal, type Accessor, type Signal } from "solid-js";
 import type {
   DesktopClient,
   DesktopEvent,
@@ -52,6 +52,13 @@ export interface Bridge {
    * refresh only on wakes whose events can change them.
    */
   revision: Accessor<number>;
+  /**
+   * Bumps when a drained wake can change what this terminal paints: its own
+   * output, or any event that is not terminal-scoped output or a badge. A
+   * mounted terminal's `paintRevision`, so a wake that only moved terminals
+   * nobody shows (a background tab's flood) redraws nothing.
+   */
+  paintRevision(terminalId: string): number;
   handle: Accessor<string>;
   target: ConnectTarget;
   client(): DesktopClient;
@@ -112,12 +119,44 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
   const [server, setServer] = createSignal<DesktopServerInfo | undefined>();
   const [agents, setAgents] = createSignal<Record<string, AgentInfo>>({});
   const [revision, setRevision] = createSignal(0);
+  // One strictly increasing tick per drain feeds every paint revision, so a
+  // revision never repeats a value, even for a terminal whose signal was
+  // dropped and recreated.
+  let paintClock = 0;
+  const [everyTerminal, setEveryTerminal] = createSignal(0);
+  const terminalRevisions = new Map<string, Signal<number>>();
   const [handle, setHandle] = createSignal("");
   let owner: DesktopClient | undefined;
   let closed = false;
   const knownTerminals = new Set<string>();
   let listener: (events: DesktopEvent[]) => void = () => {};
   let pathListener: (answers: DesktopPathAnswer[]) => void = () => {};
+
+  function terminalRevision(terminalId: string): Signal<number> {
+    const known = terminalRevisions.get(terminalId);
+    if (known) return known;
+    const [read, write] = createSignal(0);
+    const signal: Signal<number> = [read, write];
+    terminalRevisions.set(terminalId, signal);
+    return signal;
+  }
+
+  /** Bump only the terminals this batch can repaint; see `paintRevision`. */
+  function invalidatePaint(events: DesktopEvent[]): void {
+    const output = new Set<string>();
+    let all = false;
+    for (const event of events) {
+      if (event.kind === "TerminalChanged") output.add(event.terminalId);
+      else if (event.kind !== "AgentBadge") all = true;
+      // Bumping every terminal re-runs whatever still reads this one, which
+      // then subscribes to a fresh signal instead of the dropped one.
+      if (event.kind === "Closed") terminalRevisions.delete(event.terminalId);
+    }
+    if (!all && output.size === 0) return;
+    paintClock += 1;
+    if (all) setEveryTerminal(paintClock);
+    for (const terminalId of output) terminalRevision(terminalId)[1](paintClock);
+  }
 
   function client(): DesktopClient {
     if (!owner) throw new Error("Desktop client is not connected");
@@ -227,6 +266,7 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
           before.connectionEpoch === current.connectionEpoch);
       accept(events, acceptBadges);
       if (answers.length > 0) pathListener(answers);
+      invalidatePaint(events);
       setRevision((value) => value + 1);
     });
     const elapsed = performance.now() - started;
@@ -287,6 +327,7 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
     server,
     agents,
     revision,
+    paintRevision: (terminalId) => Math.max(everyTerminal(), terminalRevision(terminalId)[0]()),
     handle,
     target,
     client,
@@ -305,10 +346,7 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
     fenced: (terminalId) => {
       revision();
       return (
-        !closed &&
-        !!owner &&
-        knownTerminals.has(terminalId) &&
-        owner.inputReadiness(terminalId).deliveryFenced
+        !closed && !!owner && knownTerminals.has(terminalId) && owner.deliveryFenced(terminalId)
       );
     },
     homeSession,

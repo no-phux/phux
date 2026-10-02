@@ -3,8 +3,8 @@ use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 use super::{GridFrame, Settings, geometry::Geometry, gpui};
 use gpui::prelude::*;
 use gpui::{
-    Bounds, ContentMask, FontFeatures, FontId, GlyphId, Hsla, Pixels, ShapedLine, TextAlign, fill,
-    point, px, size,
+    Bounds, ContentMask, FontFeatures, FontId, GlyphId, Hsla, Pixels, ShapedLine, SharedString,
+    TextAlign, fill, point, px, size,
 };
 use phux_client_core::grid::{
     CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC, CELL_OVERLINE,
@@ -16,13 +16,17 @@ use phux_client_runtime::publication::{Cell, CellMetadata, CursorStyle, CursorWi
 pub struct Observation {
     pub view_id: Option<phux_client_runtime::ViewId>,
     pub frame: Option<Arc<GridFrame>>,
+    /// The connection epoch `frame` was proven current under this draw.
+    pub epoch: Option<u64>,
     pub geometry: Geometry,
+    /// Where each glyph landed; recorded only for `terminal-fixtures`.
     pub glyphs: Vec<GlyphObservation>,
     pub error: Option<String>,
     pub prepare_micros: u128,
     pub paint_micros: u128,
 }
 
+#[derive(Clone, Copy)]
 pub struct GlyphObservation {
     pub row: u16,
     pub col: u16,
@@ -37,7 +41,6 @@ struct Glyph {
     line: ShapedLine,
     bounds: Bounds<Pixels>,
     opacity: f32,
-    layer: Option<OpacityLayer>,
 }
 
 /// Consecutive cells of one row holding printable ASCII in one font and
@@ -66,7 +69,8 @@ struct PendingRun {
     row: u16,
     start: u16,
     text: String,
-    font: gpui::Font,
+    /// Index into [`Fonts`]: bold and italic bits.
+    style: usize,
     color: Hsla,
 }
 
@@ -91,65 +95,201 @@ struct CellColors {
     opacity: f32,
 }
 
-pub(super) struct Prepared {
-    report: Observation,
+/// The four faces a cell can ask for, indexed by [`style`]: built once per
+/// scene so a cell costs an index, not a font clone and comparison.
+struct Fonts {
+    cell: [gpui::Font; 4],
+    /// The same faces with ligatures off, for multi-cell runs.
+    run: [gpui::Font; 4],
+}
+
+impl Fonts {
+    fn new(base: &gpui::Font) -> Self {
+        let faces = [
+            base.clone(),
+            base.clone().bold(),
+            base.clone().italic(),
+            base.clone().bold().italic(),
+        ];
+        // Cells never join: a ligature across them would misplace every
+        // later glyph of the run. Per-cell shaping never formed one either.
+        let features = FontFeatures(Arc::new(vec![("calt".into(), 0), ("liga".into(), 0)]));
+        let run = faces.clone().map(|mut font| {
+            font.features = features.clone();
+            font
+        });
+        Self { cell: faces, run }
+    }
+}
+
+/// Everything painting one frame needs that depends only on its inputs: the
+/// frame, the element's bounds and scale, and the paint settings. GPUIX
+/// re-renders the whole window for any change, so most draws repaint a
+/// terminal whose scene is unchanged; [`prepare`] then reuses it instead of
+/// walking and shaping every cell again.
+pub(super) struct Scene {
+    frame: Arc<GridFrame>,
+    bounds: Bounds<Pixels>,
+    scale: f32,
     settings: Settings,
+    geometry: Geometry,
     background: Hsla,
     backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
-    /// The open run of same-coloured cells on one row, merged into one quad.
-    run: Option<BackgroundRun>,
     inks: Vec<Ink>,
-    pending: Option<PendingRun>,
-    decorations: Vec<(Bounds<Pixels>, Hsla)>,
-    cursor: Vec<(Bounds<Pixels>, Hsla)>,
+    /// Decorations, then the cursor: painted over the glyphs, in order.
+    overlays: Vec<(Bounds<Pixels>, Hsla)>,
+    glyphs: Vec<GlyphObservation>,
+}
+
+impl Scene {
+    /// Whether this scene paints `frame` in `bounds` exactly as a fresh one
+    /// would. The frame is compared by identity: a publication is immutable,
+    /// and the scene's own reference keeps its allocation from being reused.
+    fn reusable(
+        &self,
+        frame: &Arc<GridFrame>,
+        bounds: Bounds<Pixels>,
+        scale: f32,
+        settings: &Settings,
+    ) -> bool {
+        Arc::ptr_eq(&self.frame, frame)
+            && self.bounds == bounds
+            && self.scale == scale
+            && self.settings.paints_like(settings)
+    }
+}
+
+/// The scene a terminal element painted last, kept between draws.
+pub(super) type SceneCache = Rc<RefCell<Option<Rc<Scene>>>>;
+
+pub(super) struct Prepared {
+    report: Observation,
+    /// Painted when there is no scene (no frame, or a stale one).
+    fallback: Hsla,
+    scene: Option<Rc<Scene>>,
+    /// One per translucent glyph ink, in ink order. They wrap per-draw GPUI
+    /// elements, so they are rebuilt even for a reused scene.
+    layers: Vec<OpacityLayer>,
 }
 
 pub(super) fn prepare(
     frame: Result<Arc<GridFrame>, String>,
     settings: Settings,
     bounds: Bounds<Pixels>,
+    cache: &SceneCache,
     window: &mut gpui::Window,
     cx: &mut gpui::App,
 ) -> Prepared {
     let started = Instant::now();
-    let mut prepared = Prepared::new(settings);
+    let mut prepared = Prepared {
+        report: Observation {
+            view_id: settings.view_id,
+            ..Default::default()
+        },
+        fallback: settings.background.unwrap_or_else(gpui::black),
+        scene: None,
+        layers: Vec::new(),
+    };
     match frame {
-        Ok(frame) => prepared.prepare_frame(frame, bounds, window),
-        Err(error) => prepared.report.error = Some(error),
+        Ok(frame) => {
+            let scene = scene(frame, settings, bounds, cache, window);
+            prepared.layers = opacity_layers(&scene, window, cx);
+            prepared.scene = Some(scene);
+        }
+        Err(error) => {
+            // Nothing left to repaint: release the last frame and its scene.
+            cache.borrow_mut().take();
+            prepared.report.error = Some(error);
+        }
     }
-    prepared.prepare_opacity_layers(window, cx);
     prepared.report.prepare_micros = started.elapsed().as_micros();
     crate::perf::PREPARE.record_elapsed(started);
     prepared
 }
 
-impl Prepared {
-    fn new(settings: Settings) -> Self {
+/// The cached scene when it still paints these inputs, else a new one.
+fn scene(
+    frame: Arc<GridFrame>,
+    settings: Settings,
+    bounds: Bounds<Pixels>,
+    cache: &SceneCache,
+    window: &gpui::Window,
+) -> Rc<Scene> {
+    let scale = window.scale_factor();
+    if let Some(scene) = cache.borrow().as_ref()
+        && scene.reusable(&frame, bounds, scale, &settings)
+    {
+        crate::perf::PREPARE_REUSED.incr();
+        return Rc::clone(scene);
+    }
+    let scene = Rc::new(Builder::new(frame, settings, bounds, window).build(window));
+    *cache.borrow_mut() = Some(Rc::clone(&scene));
+    scene
+}
+
+fn opacity_layers(
+    scene: &Scene,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) -> Vec<OpacityLayer> {
+    scene
+        .inks
+        .iter()
+        .filter_map(|ink| match ink {
+            Ink::Glyph(glyph) if glyph.opacity < 1. => {
+                Some(glyph.opacity_layer(scene.geometry, window, cx))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Walks one frame's cells into a [`Scene`].
+struct Builder {
+    scene: Scene,
+    fonts: Fonts,
+    /// Default foreground and background after theme and reverse video.
+    defaults: (Hsla, Hsla),
+    /// The cell under a solid block cursor, whose glyph takes the background.
+    solid_cursor: Option<(u16, u16)>,
+    /// The open run of same-coloured cells on one row, merged into one quad.
+    run: Option<BackgroundRun>,
+    pending: Option<PendingRun>,
+}
+
+impl Builder {
+    fn new(
+        frame: Arc<GridFrame>,
+        settings: Settings,
+        bounds: Bounds<Pixels>,
+        window: &gpui::Window,
+    ) -> Self {
+        let geometry = Geometry::measure(&settings, bounds, frame.cols, frame.rows, window);
+        let defaults = defaults(&frame, &settings);
+        let solid_cursor = solid_cursor(&frame, &settings).then(|| cursor_head(&frame));
         Self {
-            background: settings.background.unwrap_or_else(gpui::black),
-            report: Observation {
-                view_id: settings.view_id,
-                ..Default::default()
-            },
-            settings,
-            backgrounds: Vec::new(),
+            fonts: Fonts::new(&settings.font),
+            defaults,
+            solid_cursor,
             run: None,
-            inks: Vec::new(),
             pending: None,
-            decorations: Vec::new(),
-            cursor: Vec::new(),
+            scene: Scene {
+                frame,
+                bounds,
+                scale: window.scale_factor(),
+                settings,
+                geometry,
+                background: defaults.1,
+                backgrounds: Vec::new(),
+                inks: Vec::new(),
+                overlays: Vec::new(),
+                glyphs: Vec::new(),
+            },
         }
     }
 
-    fn prepare_frame(
-        &mut self,
-        frame: Arc<GridFrame>,
-        bounds: Bounds<Pixels>,
-        window: &gpui::Window,
-    ) {
-        self.report.geometry =
-            Geometry::measure(&self.settings, bounds, frame.cols, frame.rows, window);
-        self.background = defaults(&frame, &self.settings).1;
+    fn build(mut self, window: &gpui::Window) -> Scene {
+        let frame = Arc::clone(&self.scene.frame);
         for row in 0..frame.rows {
             for col in 0..frame.cols {
                 self.prepare_cell(&frame, row, col, window);
@@ -158,14 +298,14 @@ impl Prepared {
         self.flush_background();
         self.flush_glyph_run(window);
         self.prepare_cursor(&frame);
-        self.report.frame = Some(frame);
+        self.scene
     }
 
     fn prepare_cell(&mut self, frame: &GridFrame, row: u16, col: u16, window: &gpui::Window) {
         let Some(cell) = frame.cell(row, col) else {
             return;
         };
-        let geometry = self.report.geometry;
+        let geometry = self.scene.geometry;
         let bounds = geometry.cell_bounds(row, col, 1);
         if !bounds.intersects(&geometry.bounds) {
             return;
@@ -177,9 +317,9 @@ impl Prepared {
             .get(index)
             .copied()
             .unwrap_or_default();
-        let colors = cell_colors(cell, metadata, frame, &self.settings);
+        let colors = cell_colors(cell, metadata, frame, &self.scene.settings, self.defaults);
         self.background_cell(row, col, colors.background);
-        if hidden(cell, &self.settings) {
+        if hidden(cell, &self.scene.settings) {
             return;
         }
         self.prepare_decorations(cell, bounds, colors);
@@ -192,21 +332,25 @@ impl Prepared {
         if text.is_empty() {
             return;
         }
-        let foreground = self.glyph_foreground(frame, row, col, colors);
-        let font = cell_font(cell, &self.settings);
+        let foreground = if self.solid_cursor == Some((row, col)) {
+            colors.background
+        } else {
+            colors.foreground
+        };
+        let style = style(cell);
         if let [byte] = text
             && cell.wide == 0
             && colors.opacity >= 1.
             && (byte.is_ascii_graphic() || *byte == b' ')
         {
-            self.ascii_cell(row, col, *byte, font, foreground, window);
+            self.ascii_cell(row, col, *byte, style, foreground, window);
             return;
         }
         self.flush_glyph_run(window);
         let text = String::from_utf8_lossy(text).into_owned();
         let width = if cell.wide == 1 { 2 } else { 1 };
         let style = TextStyle {
-            font,
+            font: self.fonts.cell[style].clone(),
             color: foreground,
             opacity: colors.opacity,
         };
@@ -220,7 +364,7 @@ impl Prepared {
         row: u16,
         col: u16,
         byte: u8,
-        font: gpui::Font,
+        style: usize,
         color: Hsla,
         window: &gpui::Window,
     ) {
@@ -229,14 +373,14 @@ impl Prepared {
             && run.row == row
             && usize::from(run.start) + run.text.len() == usize::from(col)
             && run.color == color
-            && run.font == font
+            && run.style == style
         {
             run.text.push(char::from(byte));
             return;
         }
         self.flush_glyph_run(window);
         if byte == b' ' {
-            let bounds = self.report.geometry.cell_bounds(row, col, 1);
+            let bounds = self.scene.geometry.cell_bounds(row, col, 1);
             self.observe(row, col, bounds, None, color);
             return;
         }
@@ -244,7 +388,7 @@ impl Prepared {
             row,
             start: col,
             text: char::from(byte).to_string(),
-            font,
+            style,
             color,
         });
     }
@@ -256,27 +400,25 @@ impl Prepared {
         let Some(run) = self.pending.take() else {
             return;
         };
-        let geometry = self.report.geometry;
+        let geometry = self.scene.geometry;
         let len = run.text.len();
-        let mut font = run.font.clone();
-        // Cells never join: a ligature across them would misplace every
-        // later glyph of the run. Per-cell shaping never formed one either.
-        font.features = FontFeatures(Arc::new(vec![("calt".into(), 0), ("liga".into(), 0)]));
+        let text = SharedString::from(run.text);
+        crate::perf::SHAPED.incr();
         let line = window.text_system().shape_line(
-            run.text.clone().into(),
-            px(self.settings.font_size),
+            text.clone(),
+            px(self.scene.settings.font_size),
             &[gpui::TextRun {
                 len,
-                font,
+                font: self.fonts.run[run.style].clone(),
                 color: run.color,
                 ..Default::default()
             }],
             None,
         );
         let Some(glyphs) = one_glyph_per_byte(&line, len) else {
-            for (offset, byte) in run.text.bytes().enumerate() {
+            for (offset, byte) in text.bytes().enumerate() {
                 let style = TextStyle {
-                    font: run.font.clone(),
+                    font: self.fonts.cell[run.style].clone(),
                     color: run.color,
                     opacity: 1.,
                 };
@@ -290,7 +432,7 @@ impl Prepared {
             let bounds = geometry.cell_bounds(run.row, col, 1);
             self.observe(run.row, col, bounds, None, run.color);
         }
-        self.inks.push(Ink::Run(GlyphRun {
+        self.scene.inks.push(Ink::Run(GlyphRun {
             bounds: geometry.cell_bounds(run.row, run.start, len as u16),
             color: run.color,
             glyphs,
@@ -310,11 +452,12 @@ impl Prepared {
             color: foreground,
             opacity,
         } = style;
-        let bounds = self.report.geometry.cell_bounds(row, col, width);
+        let bounds = self.scene.geometry.cell_bounds(row, col, width);
         let len = text.len();
+        crate::perf::SHAPED.incr();
         let line = window.text_system().shape_line(
             text.into(),
-            px(self.settings.font_size),
+            px(self.scene.settings.font_size),
             &[gpui::TextRun {
                 len,
                 font,
@@ -324,15 +467,16 @@ impl Prepared {
             None,
         );
         self.observe(row, col, bounds, Some(&line), foreground.opacity(opacity));
-        self.inks.push(Ink::Glyph(Box::new(Glyph {
+        self.scene.inks.push(Ink::Glyph(Box::new(Glyph {
             line,
             bounds,
             opacity,
-            layer: None,
         })));
     }
 
     /// Record where a cell's glyph lands, in row-major order, for fixtures.
+    /// Production builds record nothing: this would otherwise allocate and
+    /// retain a record per cell per frame.
     fn observe(
         &mut self,
         row: u16,
@@ -341,10 +485,13 @@ impl Prepared {
         line: Option<&ShapedLine>,
         foreground: Hsla,
     ) {
-        let geometry = self.report.geometry;
+        if !cfg!(feature = "terminal-fixtures") {
+            return;
+        }
+        let geometry = self.scene.geometry;
         let baseline = geometry.baseline + bounds.origin.y;
         let offset = line.map_or(geometry.baseline, |line| line_baseline(line, geometry));
-        self.report.glyphs.push(GlyphObservation {
+        self.scene.glyphs.push(GlyphObservation {
             row,
             col,
             bounds,
@@ -367,7 +514,7 @@ impl Prepared {
             return;
         }
         self.flush_background();
-        if color != self.background {
+        if color != self.scene.background {
             self.run = Some(BackgroundRun {
                 row,
                 start: col,
@@ -380,24 +527,17 @@ impl Prepared {
     fn flush_background(&mut self) {
         if let Some(run) = self.run.take() {
             let bounds = self
-                .report
+                .scene
                 .geometry
                 .cell_bounds(run.row, run.start, run.end - run.start);
-            self.backgrounds.push((bounds, run.color));
+            self.scene.backgrounds.push((bounds, run.color));
         }
-    }
-
-    fn glyph_foreground(&self, frame: &GridFrame, row: u16, col: u16, colors: CellColors) -> Hsla {
-        if solid_cursor(frame, &self.settings) && cursor_head(frame) == (row, col) {
-            return colors.background;
-        }
-        colors.foreground
     }
 
     fn prepare_decorations(&mut self, cell: &Cell, bounds: Bounds<Pixels>, mut colors: CellColors) {
         colors.foreground = colors.foreground.opacity(colors.opacity);
         colors.underline = colors.underline.opacity(colors.opacity);
-        let thickness = px(1. / self.report.geometry.scale);
+        let thickness = px(1. / self.scene.geometry.scale);
         let bottom = bounds.bottom() - thickness * 2.;
         match cell.underline {
             1 => self.rule(bounds, bottom, thickness, colors.underline),
@@ -428,7 +568,7 @@ impl Prepared {
     }
 
     fn rule(&mut self, bounds: Bounds<Pixels>, y: Pixels, thickness: Pixels, color: Hsla) {
-        self.decorations.push((
+        self.scene.overlays.push((
             Bounds::new(point(bounds.left(), y), size(bounds.size.width, thickness)),
             color,
         ));
@@ -456,7 +596,7 @@ impl Prepared {
                 0.
             };
             let width = if kind == 5 { thickness * 2. } else { thickness };
-            self.decorations.push((
+            self.scene.overlays.push((
                 Bounds::new(
                     point(bounds.left() + x, y - thickness * offset),
                     size(width.min(bounds.size.width - x), thickness),
@@ -469,43 +609,46 @@ impl Prepared {
     }
 
     fn prepare_cursor(&mut self, frame: &GridFrame) {
-        if !cursor_visible(frame, &self.settings) {
+        let settings = &self.scene.settings;
+        if !cursor_visible(frame, settings) {
             return;
         }
-        let geometry = self.report.geometry;
+        let geometry = self.scene.geometry;
         let (row, col) = cursor_head(frame);
         let bounds =
             geometry.cell_bounds(row, col, if frame.cursor.width.is_wide() { 2 } else { 1 });
-        let color = self
-            .settings
+        let color = settings
             .cursor
             .or_else(|| frame.colors.cursor.map(rgb))
-            .unwrap_or_else(|| defaults(frame, &self.settings).0);
+            .unwrap_or(self.defaults.0);
         let thickness = px(1. / geometry.scale);
-        let style = if self.settings.focused {
+        let style = if settings.focused {
             frame.cursor.style
         } else {
             CursorStyle::BlockHollow
         };
+        let scene = &mut self.scene;
         match style {
-            CursorStyle::Block => self.backgrounds.push((bounds, color)),
-            CursorStyle::Bar => self.cursor.push((
+            CursorStyle::Block => scene.backgrounds.push((bounds, color)),
+            CursorStyle::Bar => scene.overlays.push((
                 Bounds::new(bounds.origin, size(thickness * 2., bounds.size.height)),
                 color,
             )),
-            CursorStyle::Underline => self.cursor.push((
+            CursorStyle::Underline => scene.overlays.push((
                 Bounds::new(
                     point(bounds.left(), bounds.bottom() - thickness * 2.),
                     size(bounds.size.width, thickness * 2.),
                 ),
                 color,
             )),
-            CursorStyle::BlockHollow => self
-                .cursor
+            CursorStyle::BlockHollow => scene
+                .overlays
                 .extend(outline(bounds, thickness).map(|bounds| (bounds, color))),
         }
     }
+}
 
+impl Prepared {
     pub fn paint(
         mut self,
         bounds: Bounds<Pixels>,
@@ -513,39 +656,49 @@ impl Prepared {
         cx: &mut gpui::App,
     ) -> Observation {
         let started = Instant::now();
+        let Some(scene) = self.scene.take() else {
+            window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                window.paint_quad(fill(bounds, self.fallback));
+            });
+            return self.finish(started);
+        };
+        let mut layers = std::mem::take(&mut self.layers).into_iter();
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            window.paint_quad(fill(bounds, self.background));
-            for (bounds, color) in self.backgrounds {
-                window.paint_quad(fill(bounds, color));
+            window.paint_quad(fill(bounds, scene.background));
+            for (bounds, color) in &scene.backgrounds {
+                window.paint_quad(fill(*bounds, *color));
             }
-            let geometry = self.report.geometry;
-            let font_size = px(self.settings.font_size);
-            for ink in &mut self.inks {
+            let geometry = scene.geometry;
+            let font_size = px(scene.settings.font_size);
+            for ink in &scene.inks {
                 let result = match ink {
-                    Ink::Glyph(glyph) => glyph.paint(geometry, window, cx),
+                    Ink::Glyph(glyph) if glyph.opacity < 1. => layers
+                        .next()
+                        .ok_or_else(|| "opacity layer missing".to_owned())
+                        .and_then(|layer| layer.paint(window, cx)),
+                    Ink::Glyph(glyph) => paint_line(&glyph.line, glyph.bounds, geometry, window, cx),
                     Ink::Run(run) => run.paint(geometry, font_size, window),
                 };
                 if let Err(error) = result {
                     self.report.error = Some(error);
                 }
             }
-            for (bounds, color) in self.decorations.into_iter().chain(self.cursor) {
-                window.paint_quad(fill(bounds, color));
+            for (bounds, color) in &scene.overlays {
+                window.paint_quad(fill(*bounds, *color));
             }
         });
+        self.report.geometry = scene.geometry;
+        self.report.frame = Some(Arc::clone(&scene.frame));
+        if cfg!(feature = "terminal-fixtures") {
+            self.report.glyphs.clone_from(&scene.glyphs);
+        }
+        self.finish(started)
+    }
+
+    fn finish(mut self, started: Instant) -> Observation {
         self.report.paint_micros = started.elapsed().as_micros();
         crate::perf::PAINT.record_elapsed(started);
         self.report
-    }
-
-    fn prepare_opacity_layers(&mut self, window: &mut gpui::Window, cx: &mut gpui::App) {
-        for ink in &mut self.inks {
-            if let Ink::Glyph(glyph) = ink
-                && glyph.opacity < 1.
-            {
-                glyph.prepare_opacity_layer(self.report.geometry, window, cx);
-            }
-        }
     }
 }
 
@@ -594,12 +747,12 @@ fn line_baseline(line: &ShapedLine, geometry: Geometry) -> Pixels {
 }
 
 impl Glyph {
-    fn prepare_opacity_layer(
-        &mut self,
+    fn opacity_layer(
+        &self,
         geometry: Geometry,
         window: &mut gpui::Window,
         cx: &mut gpui::App,
-    ) {
+    ) -> OpacityLayer {
         let line = self.line.clone();
         let bounds = self.bounds;
         let result = Rc::new(RefCell::new(None));
@@ -628,24 +781,17 @@ impl Glyph {
             window,
             cx,
         );
-        self.layer = Some(OpacityLayer { element, result });
+        OpacityLayer { element, result }
     }
+}
 
-    fn paint(
-        &mut self,
-        geometry: Geometry,
-        window: &mut gpui::Window,
-        cx: &mut gpui::App,
-    ) -> Result<(), String> {
-        if let Some(layer) = &mut self.layer {
-            layer.element.paint(window, cx);
-            return layer
-                .result
-                .borrow_mut()
-                .take()
-                .ok_or("opacity layer did not paint")?;
-        }
-        paint_line(&self.line, self.bounds, geometry, window, cx)
+impl OpacityLayer {
+    fn paint(mut self, window: &mut gpui::Window, cx: &mut gpui::App) -> Result<(), String> {
+        self.element.paint(window, cx);
+        self.result
+            .borrow_mut()
+            .take()
+            .ok_or("opacity layer did not paint")?
     }
 }
 
@@ -717,13 +863,14 @@ fn defaults(frame: &GridFrame, settings: &Settings) -> (Hsla, Hsla) {
     )
 }
 
+/// One cell's colours; `defaults` is [`defaults`] for this frame and settings.
 fn cell_colors(
     cell: &Cell,
     metadata: CellMetadata,
     frame: &GridFrame,
     settings: &Settings,
+    defaults: (Hsla, Hsla),
 ) -> CellColors {
-    let defaults = defaults(frame, settings);
     let mut foreground = if metadata.foreground_kind == COLOR_KIND_DEFAULT {
         defaults.0
     } else if metadata.foreground_kind == COLOR_KIND_PALETTE
@@ -787,15 +934,9 @@ fn cell_colors(
     }
 }
 
-fn cell_font(cell: &Cell, settings: &Settings) -> gpui::Font {
-    let mut font = settings.font.clone();
-    if cell.flags & CELL_BOLD != 0 {
-        font = font.bold();
-    }
-    if cell.flags & CELL_ITALIC != 0 {
-        font = font.italic();
-    }
-    font
+/// The cell's face as an index into [`Fonts`]: bit 0 bold, bit 1 italic.
+fn style(cell: &Cell) -> usize {
+    usize::from(cell.flags & CELL_BOLD != 0) | usize::from(cell.flags & CELL_ITALIC != 0) << 1
 }
 
 fn hidden(cell: &Cell, settings: &Settings) -> bool {
@@ -861,17 +1002,42 @@ mod tests {
         }
     }
 
+    /// A builder over `frame` without a window: the geometry is given.
+    fn builder(frame: GridFrame, settings: Settings, geometry: Geometry) -> Builder {
+        let frame = Arc::new(frame);
+        let defaults = defaults(&frame, &settings);
+        Builder {
+            fonts: Fonts::new(&settings.font),
+            defaults,
+            solid_cursor: None,
+            run: None,
+            pending: None,
+            scene: Scene {
+                frame,
+                bounds: geometry.bounds,
+                scale: 1.,
+                settings,
+                geometry,
+                background: defaults.1,
+                backgrounds: Vec::new(),
+                inks: Vec::new(),
+                overlays: Vec::new(),
+                glyphs: Vec::new(),
+            },
+        }
+    }
+
     #[test]
     fn backgrounds_merge_into_row_runs_and_skip_the_default() {
-        let mut prepared = Prepared::new(Settings::default());
-        prepared.report.geometry = Geometry {
+        let geometry = Geometry {
             cell_width: px(10.),
             cell_height: px(20.),
             ..Default::default()
         };
+        let mut prepared = builder(frame(), Settings::default(), geometry);
         let red: Hsla = gpui::rgb(0xff0000).into();
         let blue: Hsla = gpui::rgb(0x0000ff).into();
-        let default = prepared.background;
+        let default = prepared.scene.background;
         // Row 0: default, red, red, blue, default. Row 1: red continues no run.
         for (col, color) in [default, red, red, blue, default].into_iter().enumerate() {
             prepared.background_cell(0, col as u16, color);
@@ -880,6 +1046,7 @@ mod tests {
         prepared.background_cell(1, 7, red);
         prepared.flush_background();
         let quads: Vec<_> = prepared
+            .scene
             .backgrounds
             .iter()
             .map(|(bounds, color)| (bounds.origin.x, bounds.origin.y, bounds.size.width, *color))
@@ -896,6 +1063,58 @@ mod tests {
     }
 
     #[test]
+    fn a_scene_is_reused_only_while_its_inputs_are_unchanged() {
+        let settings = Settings::default();
+        let geometry = Geometry {
+            bounds: Bounds::new(point(px(4.), px(8.)), size(px(100.), px(40.))),
+            ..Default::default()
+        };
+        let scene = builder(frame(), settings.clone(), geometry).scene;
+        let same = Arc::clone(&scene.frame);
+        let bounds = scene.bounds;
+        assert!(scene.reusable(&same, bounds, 1., &settings));
+        // Invalidation tokens and props the painter never reads keep it.
+        let mut unpainted = settings.clone();
+        unpainted.set("paintRevision", &serde_json::json!(7));
+        unpainted.size_owner = false;
+        unpainted.option_as_alt = true;
+        unpainted.app_chords = vec!["ctrl+tab".into()];
+        assert!(scene.reusable(&same, bounds, 1., &unpainted));
+        assert!(
+            !scene.reusable(&Arc::new(frame()), bounds, 1., &settings),
+            "an equal but newly published frame is a new frame"
+        );
+        assert!(!scene.reusable(&same, bounds, 2., &settings));
+        let moved = Bounds::new(point(px(5.), px(8.)), bounds.size);
+        assert!(!scene.reusable(&same, moved, 1., &settings));
+        let changes: [fn(&mut Settings); 6] = [
+            |settings| settings.focused = false,
+            |settings| settings.cursor_visible = false,
+            |settings| settings.blink_visible = false,
+            |settings| settings.set("theme", &serde_json::json!({"foreground": "#123456"})),
+            |settings| settings.set("font", &serde_json::json!({"family": "Monaco"})),
+            |settings| settings.set("font", &serde_json::json!({"cellWidth": 1.1})),
+        ];
+        for change in changes {
+            let mut changed = settings.clone();
+            change(&mut changed);
+            assert!(!scene.reusable(&same, bounds, 1., &changed));
+        }
+    }
+
+    #[test]
+    fn styles_index_the_four_faces() {
+        let fonts = Fonts::new(&gpui::font("Menlo"));
+        let face = |flags| &fonts.cell[style(&Cell { flags, ..Default::default() })];
+        assert_eq!(face(0).weight, gpui::FontWeight::default());
+        assert_eq!(face(CELL_BOLD).weight, gpui::FontWeight::BOLD);
+        assert_eq!(face(CELL_ITALIC).style, gpui::FontStyle::Italic);
+        let both = face(CELL_BOLD | CELL_ITALIC);
+        assert_eq!((both.weight, both.style), (gpui::FontWeight::BOLD, gpui::FontStyle::Italic));
+        assert!(fonts.run.iter().all(|font| font.features != fonts.cell[0].features));
+    }
+
+    #[test]
     fn inverse_swaps_true_color_before_selection_and_faint() {
         let frame = frame();
         let settings = Settings::default();
@@ -909,11 +1128,11 @@ mod tests {
             foreground_kind: 2,
             ..Default::default()
         };
-        let colors = cell_colors(&cell, metadata, &frame, &settings);
+        let colors = cell_colors(&cell, metadata, &frame, &settings, defaults(&frame, &settings));
         assert_eq!(colors.foreground, gpui::rgb(0x0000ff).into());
         assert_eq!(colors.background, gpui::rgb(0xff0000).into());
         cell.flags |= CELL_SELECTED | CELL_FAINT;
-        let colors = cell_colors(&cell, metadata, &frame, &settings);
+        let colors = cell_colors(&cell, metadata, &frame, &settings, defaults(&frame, &settings));
         assert_eq!(colors.background, settings.selection_background);
         assert_eq!(
             colors.foreground.a, 1.,
@@ -936,16 +1155,16 @@ mod tests {
             underline_color_is_default: true,
             ..Default::default()
         };
-        let colors = cell_colors(&cell, metadata, &frame, &settings);
+        let colors = cell_colors(&cell, metadata, &frame, &settings, defaults(&frame, &settings));
         assert_eq!(colors.foreground, settings.foreground.expect("foreground"));
         assert_eq!(colors.underline, colors.foreground);
         frame.colors.reversed = true;
-        let colors = cell_colors(&cell, metadata, &frame, &settings);
+        let colors = cell_colors(&cell, metadata, &frame, &settings, defaults(&frame, &settings));
         assert_eq!(colors.foreground, settings.background.expect("background"));
         frame.colors.has_foreground = true;
         frame.colors.foreground = Rgb { r: 255, g: 0, b: 0 };
         assert_eq!(
-            cell_colors(&cell, metadata, &frame, &settings).foreground,
+            cell_colors(&cell, metadata, &frame, &settings, defaults(&frame, &settings)).foreground,
             gpui::rgb(0xff0000).into()
         );
     }

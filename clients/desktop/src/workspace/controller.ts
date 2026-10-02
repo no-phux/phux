@@ -546,12 +546,19 @@ export function createWorkspace(
   function resolveRestored(): void {
     if (unresolved.size === 0) return;
     const live = new Set(bridge.panes().map((pane) => pane.terminalId));
-    setTabs((current) =>
-      current.map((tab) => {
+    // Runs on every drain while a saved pane is unavailable: keep the same
+    // array unless a leaf resolved, or every pane re-renders (and the window
+    // redraws) on each wake.
+    setTabs((current) => {
+      let changed = false;
+      const next = current.map((tab) => {
         const root = resolveNode(tab.root, live);
-        return root === tab.root ? tab : { ...tab, root };
-      }),
-    );
+        if (root === tab.root) return tab;
+        changed = true;
+        return { ...tab, root };
+      });
+      return changed ? next : current;
+    });
   }
 
   function syncServer(): void {

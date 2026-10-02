@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-27
+last-reviewed: 2026-10-02
 ---
 
 # Native terminal painter
@@ -26,7 +26,7 @@ never resizes a runtime view or the shared PTY.
 | `focused` | `true`; false paints a hollow cursor |
 | `cursorVisible` | `true`; application visibility gate |
 | `blinkVisible` | `true`; external blink phase for SGR blink and blinking cursor |
-| `paintRevision` | Opaque invalidation token; never compared with runtime generation |
+| `paintRevision` | Opaque invalidation token (the shell's per-terminal `Bridge.paintRevision`); never compared with runtime generation |
 
 Font/theme assignments replace their whole group; null resets it. Font size is
 bounded to 6-96 and line height to 1-3. Invalid identity props invalidate the
@@ -34,10 +34,15 @@ surface. Terminal-set default colors beat theme defaults; explicit palette/RGB
 cells keep their resolved colors; runtime selection flags drive selection paint.
 
 The host's sole wake owner drains `takeEvents` and invalidates affected nodes;
-local scroll/selection/settings changes must invalidate too. Every render
-reacquires the slot and fully redraws, so no cached generation can hide
-removal, replacement or setting changes. Missing slots and stale clients clear
-the canvas. Projection acknowledgement belongs to [PRESENTATION.md](PRESENTATION.md).
+local scroll/selection/settings changes must invalidate too. GPUIX re-renders
+the whole window for any change, so every terminal renders on every draw.
+Every render reacquires and revalidates the slot. A terminal keeps the scene it
+last prepared (cell walk, colours, shaped glyphs) and reuses it only while the
+acquired frame is the same `Arc`, the bounds and scale factor are unchanged,
+and `Settings::paints_like` holds (identity, input, sizing and `paintRevision`
+props do not count). No cached generation can hide removal, replacement or
+setting changes: missing slots and stale clients clear the canvas and drop the
+scene. Projection acknowledgement belongs to [PRESENTATION.md](PRESENTATION.md).
 
 ## Geometry and text
 
@@ -57,7 +62,8 @@ carries no image data) are not provided.
 ## Fixture
 
 The `terminal-fixtures` feature exposes `terminalFixture*` NAPI observation
-helpers; **never enable it in the production addon**. Build and run with
+helpers and records every glyph's position while preparing; production builds
+record none. **Never enable it in the production addon**. Build and run with
 `just desktop-native-fixtures-build` and `just desktop-native-painter-test`.
 The runner starts an isolated real server with a Python VT-producing PTY and
 two native elements on distinct views. It asserts painted Unicode positions,

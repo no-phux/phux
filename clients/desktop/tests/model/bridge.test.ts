@@ -49,6 +49,10 @@ class FakeClient {
   serverInfo(): { serverId: string; connectionEpoch: string; features: string[] } {
     return this.info;
   }
+  deliveryFenced(): boolean {
+    return false;
+  }
+
   inputReadiness(): { ready: boolean; deliveryFenced: boolean } {
     return { ready: true, deliveryFenced: false };
   }
@@ -226,6 +230,50 @@ describe("bridge wakes", () => {
       wake(replacement, [connecting(), badge("local:1", "current-agent")]);
       expect(bridge.server()?.serverId).toBe("server-b");
       expect(bridge.agents()["local:1"]?.name).toBe("current-agent");
+    });
+  });
+
+  test("paint revisions move only for terminals a wake can repaint", () => {
+    scenario((bridge, client) => {
+      const paint = (): [number, number] => [
+        bridge.paintRevision("local:1"),
+        bridge.paintRevision("local:2"),
+      ];
+      wake(client, [{ kind: "TopologyChanged" }]);
+      const [one, two] = paint();
+      wake(client, [{ kind: "TerminalChanged", terminalId: "local:1" }]);
+      const [output, untouched] = paint();
+      expect(output).toBeGreaterThan(one);
+      expect(untouched).toBe(two);
+      wake(client, [badge("local:2")]);
+      expect(paint()).toEqual([output, untouched]);
+      wake(client, [{ kind: "PaneSpawned", terminalId: "local:3" }]);
+      const [first, second] = paint();
+      expect(first).toBeGreaterThan(output);
+      expect(second).toBe(first);
+    });
+  });
+
+  test("a paint revision never repeats, even across a closed terminal", () => {
+    scenario((bridge, client) => {
+      const seen = [bridge.paintRevision("local:1")];
+      const events: DesktopEvent[][] = [
+        [{ kind: "TerminalChanged", terminalId: "local:1" }],
+        [{ kind: "TerminalChanged", terminalId: "local:2" }],
+        [{ kind: "Closed", terminalId: "local:1", reason: 0 }],
+        // A retained final frame still arrives as output after Closed.
+        [{ kind: "TerminalChanged", terminalId: "local:1" }],
+        [{ kind: "TopologyChanged" }],
+      ];
+      for (const batch of events) {
+        wake(client, batch);
+        seen.push(bridge.paintRevision("local:1"));
+      }
+      // Unchanged only where the batch named another terminal's output.
+      expect(seen[2]).toBe(seen[1]);
+      const moved = seen.filter((_, index) => index !== 2);
+      expect(new Set(moved).size).toBe(moved.length);
+      expect(moved).toEqual([...moved].sort((a, b) => a - b));
     });
   });
 

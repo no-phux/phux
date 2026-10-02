@@ -176,16 +176,30 @@ impl TerminalInput {
         metrics: InputMetrics,
     ) -> Result<(), InputError> {
         let client = self.client()?;
-        let identity = client.with_control(|control| {
+        let epoch = client.with_control(|control| {
             let current = self.live_frame(control)?;
-            let identity = Identity::of(control.connection_epoch(), frame);
-            if frame.terminal_id != self.terminal
-                || identity != Identity::of(control.connection_epoch(), &current)
-            {
+            let epoch = control.connection_epoch();
+            if Identity::of(epoch, frame) != Identity::of(epoch, &current) {
                 return Err(InputError::StalePresentation);
             }
-            Ok(identity)
+            Ok(epoch)
         })?;
+        self.presented_at(epoch, frame, metrics)
+    }
+
+    /// [`Self::presented`] for a frame the painter already proved current
+    /// under `epoch` in this draw (a presentation ticket), so painting costs
+    /// no second owner round trip. Input itself still revalidates live.
+    pub fn presented_at(
+        &mut self,
+        epoch: u64,
+        frame: &GridFrame,
+        metrics: InputMetrics,
+    ) -> Result<(), InputError> {
+        if frame.terminal_id != self.terminal {
+            return Err(InputError::StalePresentation);
+        }
+        let identity = Identity::of(epoch, frame);
         if self.identity.is_some_and(|previous| previous != identity) {
             self.cancel();
             self.metrics = None;

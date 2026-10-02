@@ -109,6 +109,11 @@ impl Ticket {
         Arc::clone(&self.frame)
     }
 
+    /// The connection epoch [`Self::frame`] was proven current under.
+    pub(crate) const fn connection_epoch(&self) -> u64 {
+        self.connection_epoch
+    }
+
     /// Revalidate this ticket against a drawable-presented receipt. Canvas paint
     /// and `on_next_frame` cannot mint [`Presented`].
     pub(crate) fn acknowledge(self, presented: Presented, cx: &App) -> Result<(), Rejection> {
@@ -231,14 +236,15 @@ fn current_frame(control: &ControlPlane, view: ViewId) -> Result<Arc<GridFrame>,
     }
     let engine = control.engine().ok_or(Rejection::Unavailable)?;
     // A retained publication is not evidence of membership in a replaced engine.
-    let replica = engine
-        .view_replica_info(view)
+    // One owner turn answers membership, readiness, the replica position and
+    // the frame published for it (caught up first if it was deferred): this
+    // runs per terminal per window draw, on the UI thread.
+    let presented = engine
+        .present_view(view)
         .map_err(|_| Rejection::StaleView)?;
-    let frame = control
-        .publication()
-        .acquire_view(view)
-        .ok_or(Rejection::Unavailable)?;
-    if !engine.input_ready(&frame.terminal_id) {
+    let replica = presented.replica;
+    let frame = presented.frame.ok_or(Rejection::Unavailable)?;
+    if !replica.input_ready {
         return Err(Rejection::Unavailable);
     }
     let published = (frame.stream_id, frame.bootstrap_id, frame.last_seq);

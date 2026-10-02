@@ -31,6 +31,29 @@ export interface StatusInfo {
   fontSize: number;
 }
 
+/**
+ * Field-by-field equality for the status memo. It is recomputed on every
+ * wake; GPUIX re-sends every style a changed object reaches, and any sent
+ * style redraws the whole window, so an unchanged status must not propagate.
+ */
+export function sameStatus(a: StatusInfo, b: StatusInfo): boolean {
+  const agents = Object.keys(a.agents);
+  return (
+    a.connection === b.connection &&
+    a.error === b.error &&
+    a.session === b.session &&
+    a.socket === b.socket &&
+    a.geometry === b.geometry &&
+    a.scrollback === b.scrollback &&
+    a.fenced === b.fenced &&
+    a.pending === b.pending &&
+    a.theme === b.theme &&
+    a.fontSize === b.fontSize &&
+    agents.length === Object.keys(b.agents).length &&
+    agents.every((state) => a.agents[state] === b.agents[state])
+  );
+}
+
 export function StatusBar(props: {
   info: StatusInfo;
   follow: () => void;

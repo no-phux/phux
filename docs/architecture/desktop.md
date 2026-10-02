@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-28
+last-reviewed: 2026-10-02
 ---
 
 # Desktop architecture
@@ -164,7 +164,10 @@ then fan out projected state and invalidations to every root/view. A component
 cannot compete for `take_events` or replace the listener. Runtime wakes are
 edge-triggered; schedule a bounded UI drain and preserve rearming under races.
 Local scroll, selection, search, and settings changes also invalidate paint,
-even when no network event arrives.
+even when no network event arrives. A drain invalidates only what it can
+repaint: output events bump their own terminal's paint revision, any other
+non-badge event bumps every terminal's, so output in terminals nobody shows
+redraws nothing.
 
 The painter retains an acquired `Arc<GridFrame>` through paint. The acquired
 frame's generation is the truth; a preceding atomic generation poll is only a

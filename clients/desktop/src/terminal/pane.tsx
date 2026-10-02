@@ -22,6 +22,7 @@ export interface PaneProps {
   zoomed: boolean;
   fenced: boolean;
   views: number;
+  /** The terminal's paint revision: changes when a wake can repaint it. */
   revision: number;
   font: { family: string; size: number; lineHeight: number; cellWidth: number; cellHeight: number };
   /** Non-Command chords the shell binds; the terminal lets them through. */

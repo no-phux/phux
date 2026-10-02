@@ -44,6 +44,7 @@ impl CustomElementFactory for TerminalFactory {
             element_id: gpui::ElementId::Name(format!("__phux_terminal_{id}").into()),
             settings: Settings::default(),
             observation,
+            scene: paint::SceneCache::default(),
             surface: presentation::Surface::default(),
             input: None,
             rebind: Arc::new(AtomicBool::new(false)),
@@ -59,6 +60,8 @@ struct Terminal {
     // The surface owns the acceptance record. Pending paint closures hold only
     // Weak references, so removal cannot resurrect a detached view's report.
     observation: Arc<Mutex<paint::Observation>>,
+    /// The last prepared scene, reused while its inputs are unchanged.
+    scene: paint::SceneCache,
     surface: presentation::Surface,
     input: Option<BoundInput>,
     rebind: Arc<AtomicBool>,
@@ -82,6 +85,7 @@ impl Terminal {
         let Some(view) = self.settings.view_id else {
             return (Err("missing viewId".into()), None);
         };
+        let _timed = crate::perf::ACQUIRE.timer();
         match self.surface.acquire(
             &self.settings.client_handle,
             &self.settings.terminal_id,
@@ -90,7 +94,10 @@ impl Terminal {
             cx,
         ) {
             Ok(ticket) => (Ok(ticket.frame()), Some(ticket)),
-            Err(error) => (Err(error.to_string()), None),
+            Err(error) => {
+                crate::perf::ACQUIRE_REJECTED.incr();
+                (Err(error.to_string()), None)
+            }
         }
     }
 }
@@ -148,11 +155,15 @@ impl CustomElement for Terminal {
         window: &mut gpui::Window,
         cx: &mut gpui::Context<GpuixView>,
     ) -> gpui::AnyElement {
+        crate::perf::RENDERS.incr();
         // Always reacquire, including after removal, skipped generations, or a
-        // slot replacement. Dirty rows are not a cache-coherency contract.
+        // slot replacement. Dirty rows are not a cache-coherency contract; the
+        // scene cache compares the acquired frame itself.
         let (frame, recovery) = self.painted_frame(window, cx);
+        let epoch = recovery.as_ref().map(Ticket::connection_epoch);
         let scheduled = Rc::new(RefCell::new(recovery));
         let settings = self.settings.clone();
+        let scene = Rc::clone(&self.scene);
         let observation = Arc::downgrade(&self.observation);
         let bound = self.ensure_input(window, cx);
         let rebound = bound.as_ref().is_some_and(|(_, fresh)| *fresh);
@@ -243,9 +254,12 @@ impl CustomElement for Terminal {
         surface
             .child(
                 gpui::canvas(
-                    move |bounds, window, cx| paint::prepare(frame, settings, bounds, window, cx),
-                    move |_bounds, prepared, window, cx| {
-                        let report = prepared.paint(_bounds, window, cx);
+                    move |bounds, window, cx| {
+                        paint::prepare(frame, settings, bounds, &scene, window, cx)
+                    },
+                    move |bounds, prepared, window, cx| {
+                        let mut report = prepared.paint(bounds, window, cx);
+                        report.epoch = epoch;
                         if let Some(input) = &painted {
                             input_host::present(input, &report, size_owner, &rebind, window, cx);
                             input_host::paint_preedit(
@@ -314,6 +328,7 @@ impl CustomElement for Terminal {
 
     fn destroy(&mut self) {
         self.surface.invalidate();
+        self.scene.borrow_mut().take();
         self.input = None;
         self.rebind.store(false, Ordering::Release);
         self.observation = Arc::new(Mutex::new(paint::Observation::default()));

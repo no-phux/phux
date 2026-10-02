@@ -102,13 +102,65 @@ function callRenderer(name: string): unknown {
   return typeof method === "function" ? Reflect.apply(method, renderer, []) : undefined;
 }
 
+/** Mutation batches the main window applied: each one redraws the window. */
+interface BatchStats {
+  batches: number;
+  mutations: number;
+  bytes: number;
+  /** By kind, and by `setCustomProp:<name>` for custom props. */
+  kinds: Record<string, number>;
+}
+
+/**
+ * A custom prop by name; a style by its first few keys, which is usually
+ * enough to find the component that re-sent it.
+ */
+function mutationKey(kind: string, payload: unknown): string {
+  if (kind === "setCustomProp") return `${kind}:${String(payload)}`;
+  if (kind !== "setStyle" || !payload || typeof payload !== "object") return kind;
+  return `${kind}:${Object.keys(payload).slice(0, 3).join(",")}`;
+}
+
+/**
+ * Count the main renderer's mutation batches. Every batch GPUIX applies
+ * notifies and redraws the whole window, so `batches` is the JS side's share
+ * of draws and `kinds` names what churned. Wraps the instance's own method;
+ * the Solid root's queue looks it up per flush.
+ */
+function countBatches(stats: BatchStats): void {
+  const renderer = mainRenderer();
+  const apply: unknown = renderer ? Reflect.get(renderer, "applyBatch") : undefined;
+  if (!renderer || typeof apply !== "function") return;
+  Reflect.set(renderer, "applyBatch", (json: string): unknown => {
+    stats.batches += 1;
+    stats.bytes += json.length;
+    try {
+      const queue: unknown = JSON.parse(json);
+      for (const mutation of Array.isArray(queue) ? queue : []) {
+        if (!Array.isArray(mutation)) continue;
+        const kind = `${mutation[0]}`;
+        const key = mutationKey(kind, mutation[2]);
+        stats.mutations += 1;
+        stats.kinds[key] = (stats.kinds[key] ?? 0) + 1;
+      }
+    } catch {
+      // Count the batch even when its payload is not a list.
+    }
+    const destroyed: unknown = Reflect.apply(apply, renderer, [json]);
+    return destroyed;
+  });
+}
+
 /**
  * `PHUX_DESKTOP_PERF=<absolute path>` appends one JSON line per second: the
  * main window's draw count and recent draw times (GPUI's frame overlay
  * numbers, over its last 1000 draws; resetting them would itself redraw),
- * the wake drains in that second, and the host's cumulative kernel, runtime
- * and painter metrics (`desktopPerfJson`). Diagnostics only; unset, nothing
- * runs.
+ * the wake drains and the main window's mutation batches in that second, the
+ * process's current memory (`rss`, JS heap and external bytes), and the
+ * host's cumulative kernel, runtime and painter metrics (`desktopPerfJson`,
+ * whose `process` carries CPU time). Diagnostics only; unset, nothing runs.
+ * `scripts/perf-bench.ts` drives a fixed workload and summarizes these lines
+ * per phase.
  */
 function schedulePerfLog(
   path: string | undefined,
@@ -116,17 +168,23 @@ function schedulePerfLog(
   drains: { wakes: number; events: number; ms: number; maxMs: number },
 ): void {
   if (!path?.startsWith("/")) return;
+  const batches: BatchStats = { batches: 0, mutations: 0, bytes: 0, kinds: {} };
+  countBatches(batches);
   setInterval(() => {
     const drained = { ...drains };
     Object.assign(drains, { wakes: 0, events: 0, ms: 0, maxMs: 0 });
+    const applied = { ...batches };
+    Object.assign(batches, { batches: 0, mutations: 0, bytes: 0, kinds: {} });
     // Diagnostics never take the app down, not even once its main window
     // has closed and the renderer refuses every call.
     try {
       const host: unknown = JSON.parse(hostPerf());
       const frames = callRenderer("getDebugFrameOverlayStats");
+      const { rss, heapUsed, external } = process.memoryUsage();
+      const memory = { rss, heapUsed, external };
       appendFileSync(
         path,
-        `${JSON.stringify({ at: Date.now(), frames, drains: drained, host })}\n`,
+        `${JSON.stringify({ at: Date.now(), frames, drains: drained, batches: applied, memory, host })}\n`,
       );
     } catch {
       // Skip this second.

@@ -323,6 +323,14 @@ impl DesktopClient {
         Ok(self.client()?.detach_terminal(&terminal_id(&resource_id)?))
     }
 
+    /// Whether an unknown-delivery fence holds this terminal's input. Local
+    /// state only: unlike `inputReadiness` it costs no engine round trip, so
+    /// a shell can read it for every pane on every wake.
+    #[napi]
+    pub fn delivery_fenced(&self, resource_id: String) -> Result<bool> {
+        Ok(self.client()?.delivery_fenced(&terminal_id(&resource_id)?))
+    }
+
     #[napi]
     pub fn input_readiness(&self, resource_id: String) -> Result<DesktopInputReadiness> {
         let client = self.client()?;

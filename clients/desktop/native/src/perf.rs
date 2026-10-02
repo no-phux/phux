@@ -3,23 +3,42 @@
 //!
 //! The kernel table counts output frames and echo round trips, and the
 //! runtime table counts publications; neither sees the window. These rows sit
-//! one layer out, on the GPUI thread: one prepare (cell walk, colours, glyph
-//! shaping) and one paint (quad and glyph submission) per terminal element per
-//! window draw, and `desktop.key_to_paint`, from a key reaching a focused
-//! terminal to the first paint of that terminal's next output. Everything is a
-//! `static` from [`phux_perf`], always on, one relaxed atomic add per sample.
+//! one layer out, on the GPUI thread. GPUIX re-renders the whole window for
+//! any change, so every terminal element renders once per window draw
+//! (`desktop.render`): it acquires and validates its frame (`desktop.acquire`,
+//! one owner round trip), prepares it (`desktop.prepare`: reusing the last
+//! scene when nothing it depends on changed, `desktop.prepare_reused`, else a
+//! cell walk with `desktop.shaped` line shapes), paints it (`desktop.paint`)
+//! and hands the painted geometry to input (`desktop.present`).
+//! `desktop.key_to_paint` runs from a key reaching a focused terminal to the
+//! first paint of that terminal's next output. Everything is a `static` from
+//! [`phux_perf`], always on, one relaxed atomic add per sample.
 //! `desktopPerfJson` appends them to the kernel and runtime rows.
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use napi_derive::napi;
-use phux_perf::{Histogram, Metric, Unit};
+use phux_perf::{Counter, Histogram, Metric, Unit};
 
+/// Terminal element renders: one per element per window draw.
+pub static RENDERS: Counter = Counter::new();
+/// Microseconds to acquire and validate one element's frame (UI thread,
+/// including its owner round trip).
+pub static ACQUIRE: Histogram = Histogram::new();
+/// Acquires that found no paintable frame (stale, detached or not ready):
+/// each paints an empty surface for that draw.
+pub static ACQUIRE_REJECTED: Counter = Counter::new();
 /// Microseconds to prepare one terminal element's frame for paint.
 pub static PREPARE: Histogram = Histogram::new();
+/// Prepares that reused the element's previous scene.
+pub static PREPARE_REUSED: Counter = Counter::new();
+/// Lines shaped by prepares that built a scene (runs and lone cells).
+pub static SHAPED: Counter = Counter::new();
 /// Microseconds to submit one terminal element's quads and glyphs.
 pub static PAINT: Histogram = Histogram::new();
+/// Microseconds to hand a painted frame's geometry to its input handler.
+pub static PRESENT: Histogram = Histogram::new();
 /// Microseconds from a key reaching a focused terminal to the first paint of
 /// that terminal's next output (the echo, when a program answers).
 pub static KEY_TO_PAINT: Histogram = Histogram::new();
@@ -31,8 +50,14 @@ pub const KEY_SAMPLE_CEILING: Duration = Duration::from_secs(2);
 /// The desktop host's metric table, in render order.
 pub static TABLE: &[Metric] = &[
     Metric::histogram("desktop.key_to_paint", Unit::Micros, &KEY_TO_PAINT),
+    Metric::counter("desktop.render", Unit::Count, &RENDERS),
+    Metric::histogram("desktop.acquire", Unit::Micros, &ACQUIRE),
+    Metric::counter("desktop.acquire_rejected", Unit::Count, &ACQUIRE_REJECTED),
     Metric::histogram("desktop.prepare", Unit::Micros, &PREPARE),
+    Metric::counter("desktop.prepare_reused", Unit::Count, &PREPARE_REUSED),
+    Metric::counter("desktop.shaped", Unit::Count, &SHAPED),
     Metric::histogram("desktop.paint", Unit::Micros, &PAINT),
+    Metric::histogram("desktop.present", Unit::Micros, &PRESENT),
 ];
 
 fn started() -> Instant {
@@ -117,7 +142,13 @@ mod tests {
     #[test]
     fn report_carries_every_layer() {
         let json = desktop_perf_json();
-        for name in ["kernel.frames", "runtime.publish", "desktop.key_to_paint"] {
+        for name in [
+            "kernel.frames",
+            "runtime.publish",
+            "desktop.key_to_paint",
+            "desktop.render",
+            "desktop.prepare_reused",
+        ] {
             assert!(json.contains(name), "{name} missing from {json}");
         }
     }

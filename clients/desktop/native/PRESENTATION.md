@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: evolving
-last-reviewed: 2026-09-27
+last-reviewed: 2026-10-02
 ---
 
 # Native presentation acknowledgement
@@ -21,7 +21,12 @@ and a weak surface allocation; it does not hold a `Client` shutdown lease.
 
 One `Client::with_control` turn proves engine membership, attached status,
 readiness and publication `(stream, bootstrap, sequence)` agreement before
-capturing frame and fence. `ControlPlane::input_ready` is unusable here because
+capturing frame and fence. Membership, readiness, the replica position and the
+frame come from a single owner turn, `EngineHandle::present_view`, which first
+catches up a deferred projection, so they cannot disagree and validating costs
+one owner round trip per terminal per draw. Painting hands that proven frame
+and epoch to input (`TerminalInput::presented_at`) without asking again; input
+itself still revalidates live. `ControlPlane::input_ready` is unusable here because
 it is correctly false while delivery is fenced. Recovery capture also clears
 predictive echo and reacquires the publication, since predictions change cells
 without changing the replica sequence.
