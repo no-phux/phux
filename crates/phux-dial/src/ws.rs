@@ -542,9 +542,24 @@ mod tests {
         let address = listener.local_addr().expect("fixture address");
         let server = async move {
             let (tcp, _) = listener.accept().await.expect("accept IPv6 TCP");
-            let mut ws = tokio_tungstenite::accept_async(tcp)
-                .await
-                .expect("upgrade IPv6 WebSocket");
+            #[allow(
+                clippy::result_large_err,
+                reason = "tungstenite fixes the HTTP rejection response type"
+            )]
+            let mut ws = tokio_tungstenite::accept_hdr_async(
+                tcp,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                 response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    assert_eq!(
+                        request.headers().get("host").expect("Host authority"),
+                        address.to_string().as_str()
+                    );
+                    assert_eq!(request.uri().path(), "/phux");
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("upgrade IPv6 WebSocket");
             assert_eq!(
                 ws.next().await.expect("message").expect("read message"),
                 Message::Binary(b"ipv6".to_vec().into())
@@ -609,14 +624,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_no_identity_dials_pinned_wss_with_bearer_auth() {
+    async fn explicit_no_identity_dials_pinned_ipv6_wss_with_bearer_auth() {
         const TOKEN: &str = "11111111111111111111111111111111";
         let dir = tempfile::tempdir().expect("tempdir");
         let tls = crate::testing::server_tls(dir.path(), None);
         let fingerprint =
             crate::cert::cert_fingerprint(&dir.path().join("cert.pem")).expect("certificate pin");
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        let listener = tokio::net::TcpListener::bind("[::1]:0")
             .await
             .expect("bind WSS fixture");
         let port = listener.local_addr().expect("fixture address").port();
@@ -631,6 +646,10 @@ mod tests {
             let mut ws = tokio_tungstenite::accept_hdr_async(
                 tls,
                 |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                    assert_eq!(
+                        request.headers().get("host").expect("IPv6 Host authority"),
+                        format!("[::1]:{port}").as_str()
+                    );
                     assert_eq!(
                         request
                             .headers()
@@ -656,10 +675,10 @@ mod tests {
         let client = async {
             let mut ws = dial_with_identity(
                 &WsDial {
-                    url: format!("wss://127.0.0.1:{port}"),
+                    url: format!("wss://[::1]:{port}"),
                     token: Some(TOKEN.to_owned()),
                     trust: CertTrust::Pinned(fingerprint),
-                    tls_server_name: Some("localhost".to_owned()),
+                    tls_server_name: None,
                     identity: None,
                 },
                 &TlsClientIdentity::None,
