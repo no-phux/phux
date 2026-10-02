@@ -111,8 +111,8 @@ curl -fsSL https://phux.sh/install-desktop | sh
 This selects a published `desktop-vX.Y.Z-alpha.N` prerelease and verifies the
 checksum and ad-hoc app signature before replacing `Phux.app`. It does not
 upgrade the CLI or stop a server. Releases are not Apple-notarized; the
-installer clears quarantine after verification. Rerun to update, or pin an
-alpha with `sh -s -- --version 0.1.0-alpha.1`.
+installer clears quarantine after verification. Rerun to update, or pin a
+published alpha with `sh -s -- --version X.Y.Z-alpha.N`.
 
 The app is a view of server-owned sessions: quitting or crashing the desktop
 does not intentionally end the shells. This is not a guarantee against server
