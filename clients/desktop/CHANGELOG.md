@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.0-alpha.5](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.4...desktop-v0.1.0-alpha.5) (2026-10-02)
+
+
+### Bug Fixes
+
+* **desktop:** fence agent labels and notifications across drains ([ed9a544](https://github.com/no-phux/phux/commit/ed9a544b26524a6f66d024b72f13cb121d3ead49))
+* **desktop:** preserve visible focus and retire stale agent badges ([22af75b](https://github.com/no-phux/phux/commit/22af75b4bf05d47cf80500f9716e7fcb4c390757))
+
+
+### Performance
+
+* **desktop:** instrument the host, reuse scenes, scope and pace repaints ([#980](https://github.com/no-phux/phux/issues/980)) ([04e3826](https://github.com/no-phux/phux/commit/04e38260cf69a4f0c5b2e243b198dddc56b9bb9a))
+
 ## [0.1.0-alpha.4](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.3...desktop-v0.1.0-alpha.4) (2026-10-02)
 
 
