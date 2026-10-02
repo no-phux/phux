@@ -1,8 +1,8 @@
 /**
  * The typed native boundary. One `DesktopClient` per connection, one drain
  * per wake: this module owns `takeEvents`, turns the batch into Solid
- * signals, and forwards the raw batch to one subscriber. UI code never
- * touches the socket, parses VT, or retries delivery.
+ * signals, and forwards current events to one subscriber. Ambiguous and
+ * pre-connection badges are omitted. UI code never parses VT or retries delivery.
  */
 import { batch, createSignal, type Accessor } from "solid-js";
 import type {
@@ -100,7 +100,7 @@ export function refusedInput(event: DesktopEvent): string | undefined {
   return event.message || "The terminal did not accept the input.";
 }
 
-function startsConnection(event: DesktopEvent): boolean {
+export function startsConnection(event: DesktopEvent): boolean {
   // The binding projects both runtime Connecting and Negotiated to Connecting.
   return event.kind === "StatusChanged" && `${event.status}` === "Connecting";
 }
@@ -124,21 +124,21 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
     return owner;
   }
 
-  function accept(events: DesktopEvent[], replacedServer = false): void {
-    // serverInfo is read after takeEvents. If it advanced between those calls,
-    // this already-drained batch has no boundary proving its badges are current.
-    // Drop only this batch's badges: overflow can discard a Connecting event,
-    // so waiting indefinitely for another boundary would lose fresh metadata.
-    // Fresh badges in this ambiguous batch wait for a later metadata update or
-    // reconnect; an omitted label is safer than a retired daemon's label.
-    const acceptBadges = !replacedServer || events.some(startsConnection);
-    for (const event of events) {
+  function accept(events: DesktopEvent[], acceptBadges = true): void {
+    const boundary = events.findLastIndex(startsConnection);
+    const current =
+      acceptBadges && boundary < 0
+        ? events
+        : events.filter(
+            (event, index) => event.kind !== "AgentBadge" || (acceptBadges && index > boundary),
+          );
+    for (const event of current) {
       if (startsConnection(event)) setAgents({});
       if (event.kind === "ServerError") setError(event.message);
-      if (event.kind === "AgentBadge" && acceptBadges) noteAgent(event);
+      if (event.kind === "AgentBadge") noteAgent(event);
       if (event.kind === "Closed") forgetAgent(event.terminalId);
     }
-    listener(events);
+    listener(current);
   }
 
   function noteAgent(event: Extract<DesktopEvent, { kind: "AgentBadge" }>): void {
@@ -171,13 +171,11 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
     });
   }
 
-  function snapshot(): boolean {
+  function snapshot(): DesktopServerInfo | undefined {
     const native = client();
     const failure = native.lastError();
     const next = native.topology() ?? undefined;
-    const info = native.serverInfo();
-    const previous = server();
-    const replaced = !!info && !!previous && previous.serverId !== info.serverId;
+    const info = native.serverInfo() ?? undefined;
     knownTerminals.clear();
     for (const pane of next?.panes ?? []) knownTerminals.add(pane.terminalId);
     batch(() => {
@@ -185,18 +183,29 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
       if (failure) setError(failure);
       setTopology(next);
       if (info) {
-        // Terminal IDs may be reused by another daemon. Clear its predecessor's
-        // badges even when the event queue overflow dropped the connection boundary.
-        if (server()?.serverId !== info.serverId) setAgents({});
+        // Overflow can discard a connection boundary, even on the same daemon.
+        // Rebuild labels from this connection's replay rather than retaining old ones.
+        if (
+          server()?.serverId !== info.serverId ||
+          server()?.connectionEpoch !== info.connectionEpoch
+        )
+          setAgents({});
         setServer(info);
       }
     });
-    return replaced;
+    return info;
   }
 
   function activity(from: string): void {
     if (closed || !owner || from !== owner.handle) return;
     const started = performance.now();
+    // Cache the negotiated identity on ordinary output wakes. Only a new epoch
+    // needs another full native snapshot before the drain.
+    const previous = server();
+    const before =
+      previous?.connectionEpoch === owner.connectionEpoch()
+        ? previous
+        : (owner.serverInfo() ?? undefined);
     // One drain per wake, even when empty: the drain rearms notification.
     const events = owner.takeEvents();
     // Drain every wake: the runtime's answer queue is bounded, and a full
@@ -206,9 +215,17 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
       // A new topology object re-renders every row derived from it, so read
       // one only when an event can have changed it: output, receipts and
       // agent badges cannot, and under a flood they are nearly every wake.
-      const replacedServer = events.some(structural) ? snapshot() : false;
-      // Refresh the visible identity before subscribers reconcile the batch.
-      accept(events, replacedServer);
+      const changed = events.some(structural);
+      const current = changed ? snapshot() : undefined;
+      // A Connecting event may itself belong to the retired connection. Only
+      // stable pre-/post-drain identity can attribute badges to a replacement.
+      const acceptBadges =
+        !changed ||
+        (!!before &&
+          !!current &&
+          before.serverId === current.serverId &&
+          before.connectionEpoch === current.connectionEpoch);
+      accept(events, acceptBadges);
       if (answers.length > 0) pathListener(answers);
       setRevision((value) => value + 1);
     });
@@ -227,6 +244,7 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
       setStatus("Connecting");
       setError(undefined);
       setAgents({});
+      setServer(undefined);
     });
     owner.connect(
       // No geometry vote (0x0): attaching never reshapes panes another client

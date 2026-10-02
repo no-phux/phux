@@ -52,6 +52,10 @@ class LifecycleClient {
   lastError(): null {
     return null;
   }
+  connectionEpoch(): string {
+    if (this.closed) throw new Error("StaleHandle");
+    return this.info.connectionEpoch;
+  }
   serverInfo(): { serverId: string; connectionEpoch: string; features: string[] } {
     if (this.closed) throw new Error("StaleHandle");
     return this.info;

@@ -10,6 +10,7 @@ class FakeClient {
   handle = `fake-${++FakeClient.nextHandle}`;
   info = { serverId: "server-a", connectionEpoch: "1", features: [] };
   queued: DesktopEvent[] = [];
+  afterDrain: (() => void) | undefined;
   topologyReads = 0;
   wake: (from: string) => void = () => {};
 
@@ -22,9 +23,14 @@ class FakeClient {
   close(): DesktopEvent[] {
     return [];
   }
+  connectionEpoch(): string {
+    return this.info.connectionEpoch;
+  }
   takeEvents(): DesktopEvent[] {
     const events = this.queued;
     this.queued = [];
+    this.afterDrain?.();
+    this.afterDrain = undefined;
     return events;
   }
   takePathAnswers(): never[] {
@@ -53,7 +59,7 @@ function wake(client: FakeClient, events: DesktopEvent[]): void {
   client.wake(client.handle);
 }
 
-function badge(terminalId: string, name = "claude"): DesktopEvent {
+function badge(terminalId: string, name = "claude"): Extract<DesktopEvent, { kind: "AgentBadge" }> {
   return { kind: "AgentBadge", terminalId, name, state: "working", attention: "low" };
 }
 
@@ -88,7 +94,6 @@ describe("bridge wakes", () => {
     scenario((bridge, client) => {
       wake(client, [{ kind: "TopologyChanged" }, badge("local:1"), badge("local:2")]);
       const original = bridge.agents();
-      client.info = { ...client.info, connectionEpoch: "2" };
       wake(client, [{ kind: "TopologyChanged" }]);
       expect(bridge.agents()).toEqual(original);
 
@@ -103,6 +108,10 @@ describe("bridge wakes", () => {
     scenario((bridge, client) => {
       wake(client, [{ kind: "TopologyChanged" }, badge("local:1")]);
       client.info = { ...client.info, serverId: "server-b", connectionEpoch: "2" };
+      let received: DesktopEvent[] = [];
+      bridge.onEvents((events) => {
+        received = events;
+      });
       wake(client, [
         badge("local:1", "retired-agent"),
         connecting(),
@@ -111,17 +120,64 @@ describe("bridge wakes", () => {
       ]);
       expect(Object.keys(bridge.agents())).toEqual(["local:2"]);
       expect(bridge.agents()["local:2"]?.name).toBe("current-agent");
+      expect(received.filter((event) => event.kind === "AgentBadge")).toEqual([
+        badge("local:2", "current-agent"),
+      ]);
     });
   });
 
   test("identity advancing after the drain cannot attribute that batch's badges to the new server", () => {
     scenario((bridge, client) => {
       wake(client, [{ kind: "TopologyChanged" }, badge("local:1")]);
-      client.info = { ...client.info, serverId: "server-b", connectionEpoch: "2" };
+      client.afterDrain = () => {
+        client.info = { ...client.info, serverId: "server-b", connectionEpoch: "2" };
+      };
       wake(client, [{ kind: "TopologyChanged" }, badge("local:1", "retired-agent")]);
       expect(bridge.agents()).toEqual({});
       wake(client, [connecting(), badge("local:1", "current-agent")]);
       expect(bridge.agents()["local:1"]?.name).toBe("current-agent");
+    });
+  });
+
+  test("an old Connecting event cannot qualify badges when identity advances after the drain", () => {
+    scenario((bridge, client) => {
+      wake(client, [{ kind: "TopologyChanged" }, badge("local:1")]);
+      client.afterDrain = () => {
+        client.info = { ...client.info, serverId: "server-b", connectionEpoch: "2" };
+      };
+      let received: DesktopEvent[] = [];
+      bridge.onEvents((events) => {
+        received = events;
+      });
+      wake(client, [connecting(), badge("local:1", "retired-agent")]);
+      expect(bridge.server()?.serverId).toBe("server-b");
+      expect(bridge.agents()).toEqual({});
+      expect(received.filter((event) => event.kind === "AgentBadge")).toEqual([]);
+      wake(client, [connecting(), badge("local:1", "current-agent")]);
+      expect(bridge.agents()["local:1"]?.name).toBe("current-agent");
+    });
+  });
+
+  test("same-server epoch changes after the drain cannot replay stale badges", () => {
+    scenario((bridge, client) => {
+      wake(client, [{ kind: "TopologyChanged" }, badge("local:1")]);
+      client.afterDrain = () => {
+        client.info = { ...client.info, connectionEpoch: "2" };
+      };
+      wake(client, [{ kind: "TopologyChanged" }, badge("local:1", "retired-agent")]);
+      expect(bridge.agents()).toEqual({});
+      wake(client, [badge("local:1", "current-agent")]);
+      expect(bridge.agents()["local:1"]?.name).toBe("current-agent");
+    });
+  });
+
+  test("same-server overflow retires labels even when the connection boundary was dropped", () => {
+    scenario((bridge, client) => {
+      wake(client, [{ kind: "TopologyChanged" }, badge("local:1"), badge("local:2")]);
+      client.info = { ...client.info, connectionEpoch: "2" };
+      wake(client, [{ kind: "TopologyChanged" }, badge("local:2", "current-agent")]);
+      expect(Object.keys(bridge.agents())).toEqual(["local:2"]);
+      expect(bridge.agents()["local:2"]?.name).toBe("current-agent");
     });
   });
 
@@ -135,13 +191,11 @@ describe("bridge wakes", () => {
     });
   });
 
-  test("an ambiguous overflow replacement batch waits for later metadata instead of old labels", () => {
+  test("a stable overflow replacement batch accepts current metadata without a boundary", () => {
     scenario((bridge, client) => {
       wake(client, [{ kind: "TopologyChanged" }, badge("local:1")]);
       client.info = { ...client.info, serverId: "server-b", connectionEpoch: "2" };
       wake(client, [{ kind: "TopologyChanged" }, badge("local:1", "current-agent")]);
-      expect(bridge.agents()).toEqual({});
-      wake(client, [badge("local:1", "current-agent")]);
       expect(bridge.agents()["local:1"]?.name).toBe("current-agent");
     });
   });
@@ -161,10 +215,17 @@ describe("bridge wakes", () => {
       wake(client, [{ kind: "TopologyChanged" }, badge("local:1")]);
       bridge.reconnect();
       expect(bridge.agents()).toEqual({});
+      expect(bridge.server()).toBeUndefined();
       const revision = bridge.revision();
       wake(client, [badge("local:1")]);
       expect(bridge.agents()).toEqual({});
       expect(bridge.revision()).toBe(revision);
+      const replacement = FakeClient.last;
+      if (!replacement || replacement === client) throw new Error("expected a new client");
+      replacement.info = { ...replacement.info, serverId: "server-b" };
+      wake(replacement, [connecting(), badge("local:1", "current-agent")]);
+      expect(bridge.server()?.serverId).toBe("server-b");
+      expect(bridge.agents()["local:1"]?.name).toBe("current-agent");
     });
   });
 
