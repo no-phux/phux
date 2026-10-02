@@ -159,7 +159,9 @@ export function createBridge(
   /** Bump only the terminals this batch can repaint; see `paintRevision`. */
   function invalidatePaint(events: DesktopEvent[]): void {
     const output = new Set<string>();
-    let all = false;
+    // An empty drain is a wake for state that changed without an event (such
+    // as readiness), which any terminal may paint.
+    let all = events.length === 0;
     for (const event of events) {
       if (event.kind === "TerminalChanged") output.add(event.terminalId);
       else if (event.kind !== "AgentBadge") all = true;
@@ -232,6 +234,10 @@ export function createBridge(
     const info = native.serverInfo() ?? undefined;
     knownTerminals.clear();
     for (const pane of next?.panes ?? []) knownTerminals.add(pane.terminalId);
+    // A snapshot follows a structural event, which bumps every terminal, so a
+    // pane still reading a dropped id re-subscribes to a fresh signal.
+    for (const terminalId of terminalRevisions.keys())
+      if (!knownTerminals.has(terminalId)) terminalRevisions.delete(terminalId);
     batch(() => {
       setStatus(native.status());
       if (failure) setError(failure);

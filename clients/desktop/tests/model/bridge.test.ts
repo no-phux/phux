@@ -251,6 +251,11 @@ describe("bridge wakes", () => {
       const [first, second] = paint();
       expect(first).toBeGreaterThan(output);
       expect(second).toBe(first);
+      // A wake with no events changed state no event names: repaint all.
+      wake(client, []);
+      const [third, fourth] = paint();
+      expect(third).toBeGreaterThan(first);
+      expect(fourth).toBe(third);
     });
   });
 

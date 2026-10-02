@@ -332,11 +332,7 @@ impl Builder {
         if text.is_empty() {
             return;
         }
-        let foreground = if self.solid_cursor == Some((row, col)) {
-            colors.background
-        } else {
-            colors.foreground
-        };
+        let foreground = self.glyph_foreground(row, col, colors);
         let style = style(cell);
         if let [byte] = text
             && cell.wide == 0
@@ -355,6 +351,14 @@ impl Builder {
             opacity: colors.opacity,
         };
         self.shape_cell((row, col, width), text, style, window);
+    }
+
+    /// A glyph under a solid block cursor takes the cell's background.
+    fn glyph_foreground(&self, row: u16, col: u16, colors: CellColors) -> Hsla {
+        if self.solid_cursor == Some((row, col)) {
+            return colors.background;
+        }
+        colors.foreground
     }
 
     /// Extend the pending run with one ASCII cell, or start a run. A space
