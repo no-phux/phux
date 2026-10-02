@@ -13,7 +13,7 @@ import {
 } from "solid-js";
 import { createRoot, render, resetRender, useGpuix } from "@gpuix/solid";
 import type { DesktopEvent, DesktopPane, DesktopSearchMatch } from "../native/generated/index";
-import { createBridge, refusedInput, type DesktopHost } from "./bridge/desktop";
+import { createBridge, refusedInput, startsConnection, type DesktopHost } from "./bridge/desktop";
 import { Settings, type GhosttyPanel } from "./settings/settings";
 import {
   ConfirmDialog,
@@ -194,6 +194,8 @@ function DesktopApp(props: AppProps): JSX.Element {
   let hostActionId = 0;
   const tabElements = new Map<string, number>();
   const agentStates = new Map<string, string>();
+  let agentHandle = "";
+  let agentEpoch: string | undefined;
   let toastId = 0;
 
   const bridge = createBridge(
@@ -247,7 +249,18 @@ function DesktopApp(props: AppProps): JSX.Element {
   // ── Events and notifications ───────────────────────────────────
 
   function receive(events: DesktopEvent[]): void {
+    const epoch = bridge.server()?.connectionEpoch;
+    if (agentHandle !== bridge.handle() || agentEpoch !== epoch || events.some(startsConnection)) {
+      agentStates.clear();
+      setToasts((current) => current.filter((item) => item.kind !== "agent"));
+      agentHandle = bridge.handle();
+      agentEpoch = epoch;
+    }
     for (const event of events) {
+      if (event.kind === "Closed") {
+        agentStates.delete(event.terminalId);
+        setToasts((current) => current.filter((item) => item.terminalId !== event.terminalId));
+      }
       if (event.kind === "Closed" && workspace.viewsOf(event.terminalId) > 0) {
         const pane = paneOf(event.terminalId);
         const status =
@@ -268,6 +281,11 @@ function DesktopApp(props: AppProps): JSX.Element {
   }
 
   function agentChanged(event: Extract<DesktopEvent, { kind: "AgentBadge" }>): void {
+    if (!event.name) {
+      agentStates.delete(event.terminalId);
+      setToasts((current) => current.filter((item) => item.terminalId !== event.terminalId));
+      return;
+    }
     const previous = agentStates.get(event.terminalId);
     agentStates.set(event.terminalId, event.state);
     if (!prefs().notifications || previous === undefined || previous === event.state) return;
@@ -277,6 +295,7 @@ function DesktopApp(props: AppProps): JSX.Element {
     toast({
       kind: "agent",
       agentState: event.state,
+      terminalId: event.terminalId,
       title: `${event.name} ${event.state === "blocked" ? "needs you" : event.state === "done" ? "finished" : event.state}`,
       body: `${paneTitle(pane)} · ${shortPath(pane?.cwd)}`,
       action: () => openTerminal(event.terminalId),
@@ -462,6 +481,8 @@ function DesktopApp(props: AppProps): JSX.Element {
     persist();
     const snapshot = lastSaved;
     workspace.releaseAll();
+    agentStates.clear();
+    setToasts((current) => current.filter((item) => item.kind !== "agent"));
     setFind(undefined);
     workspace.restore(snapshot);
     bridge.reconnect();

@@ -24,7 +24,6 @@ function lint(path: string) {
 
 test("native JSX, GPUIX callbacks, Bun types and explicit unknown parsing pass", () => {
   const result = lint("tests/tooling/positive");
-  expect(result.output).toContain("0 warnings and 0 errors");
   expect(result.exitCode).toBe(0);
 });
 

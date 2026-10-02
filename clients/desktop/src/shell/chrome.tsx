@@ -155,6 +155,7 @@ export interface Toast {
   title: string;
   body?: string;
   agentState?: string;
+  terminalId?: string;
   at: number;
   action?: () => void;
 }

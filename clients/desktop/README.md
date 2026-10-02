@@ -126,8 +126,10 @@ waits for a protocol request. `vt` and `html` copy and write formats are
 another.
 
 Drag split dividers, the sidebar edge, or tabs to rearrange; double-click a tab
-to rename it and a pane header to zoom. Dropping files onto a terminal pastes
-their shell-quoted paths. **Insert Path** lists paths on the host that runs
+to rename it and a pane header to zoom. Cycling panes, directional navigation,
+and revealing a terminal keep the zoom on the pane receiving keyboard input.
+Dropping files onto a terminal pastes their shell-quoted paths. **Insert Path**
+lists paths on the host that runs
 the focused terminal (a satellite's own disk for a satellite pane), never this
 Mac's; it needs a server that advertises `PATH_QUERY`. Enter types the chosen
 path as one shell-quoted word and presses nothing else, and only into the pane
@@ -141,6 +143,12 @@ closing one explicitly removes it. Replacing the daemon retires its old view
 handles rather than rebinding their numeric terminal IDs. Unsupported or
 damaged layout files are preserved without automatic writes, with a notice in
 the window. Back up and remove the affected layout file to start a fresh one.
+
+Agent badges and agent notifications retire when a terminal closes or its
+connection is replaced, including reconnects to the same daemon. Native events
+and negotiation snapshots are separate reads: if the identity advances during a
+drain, labels from that ambiguous batch are omitted until another metadata
+update or reconnect rather than attributed to a new connection.
 
 ## Native framework verification
 
