@@ -93,6 +93,9 @@ WORKFLOWS = (
     "scripts/ci/extract_changelog_section.py", "scripts/ci/test_extract_changelog_section.py",
     "scripts/ci/setup-linux-release-userspace.sh", "scripts/ci/test_runner_policy.py",
     "scripts/check-release-orchestration.mjs",
+    "scripts/ci/test_linear_release_workflow.py",
+    "scripts/ci/site_source_pin.py", "scripts/ci/test_site_source_pin.py",
+    "scripts/sync-path-lock-versions.py", "scripts/ci/test_sync_path_lock_versions.py",
 )
 ROOT = Path(__file__).resolve().parents[2]
 # nextest package matchers treat an unprefixed name as a glob; `=` is exact.

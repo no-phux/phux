@@ -14,24 +14,16 @@
 # `gh release view`: at tag time the GitHub release is still a private draft
 # and a failed view used to upload an empty notes file.
 #
-# Two stages, because a release is not one moment:
-#   building  — the tag exists and the release is being built. Dispatch-only.
-#   released  — binaries, tap, and the public GitHub release are all complete.
+# Both entry points synchronize the exact tag/version before any stage update:
+#   building  — optional manual preparation of the tagged release record.
+#   released  — synchronize, then mark Released after publication succeeds.
 #               publish.yml calls this after the artifact workflow succeeds.
 #
-# A failed artifact build therefore leaves the Linear release in Building next
-# to a private draft on GitHub, which is the honest state.
-#
-# WHY THIS IS A SEPARATE, DISPATCHABLE WORKFLOW rather than two jobs inline in
-# release-please.yml: those jobs are gated on release-please's `release_created`
-# output, and release-please.yml only runs `on: push: branches: [main]`. When a
-# release has to be recovered by hand — as v0.19.0 was, after release-please
-# built no release for it at all — that output is false and never fires, so the
-# release ships to users and Linear never hears about it. There was no way to
-# report it after the fact short of pushing a commit. Extracting it here gives
-# the recovery path an entry point, and keeps exactly one definition of how a
-# release is reported: release-please.yml calls this workflow, it does not
-# duplicate it.
+# `update` cannot create a missing release. There is deliberately no dependency
+# on an earlier `building` dispatch: release-please owns tags and draft notes,
+# not Linear reporting. A recovery needs only one `released` dispatch.
+# `sync` creates or updates the supplied version, so retries reuse the same
+# record and refresh its name, tagged notes, links, and issue associations.
 
 name: linear-release
 
@@ -65,7 +57,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: mini-v1-linear-release-${{ inputs.tag }}-${{ inputs.stage }}
+  # Serialize both entry points for a tag; sync never changes its stage.
+  group: mini-v1-linear-release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -162,21 +155,24 @@ jobs:
             fi
             sleep 10
           done
+          # Keep the current reporting helper when recovering an older tag
+          # whose source predates it. The changelog still comes from the tag.
+          cp scripts/ci/extract_changelog_section.py "$RUNNER_TEMP/extract-changelog-section.py"
           git checkout --quiet "refs/tags/${TAG}"
           echo "checked out ${TAG} at $(git rev-parse HEAD)"
 
       - name: Write Linear release notes from the tagged changelog
-        if: success() && steps.keys.outputs.skip != 'true' && inputs.stage == 'building'
+        if: success() && steps.keys.outputs.skip != 'true'
         env:
           TAG: ${{ inputs.tag }}
           CHANGELOG: ${{ steps.meta.outputs.changelog }}
         run: |
           set -euo pipefail
-          python3 scripts/ci/extract_changelog_section.py \
+          python3 "$RUNNER_TEMP/extract-changelog-section.py" \
             --tag "$TAG" --changelog "$CHANGELOG" --output release-notes.md
 
       - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
-        if: success() && steps.keys.outputs.skip != 'true' && inputs.stage == 'building' && steps.meta.outputs.component == 'phux'
+        if: success() && steps.keys.outputs.skip != 'true' && steps.meta.outputs.component == 'phux'
         with:
           access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
           command: sync
@@ -187,7 +183,7 @@ jobs:
             GitHub release=${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag }}
 
       - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
-        if: success() && steps.keys.outputs.skip != 'true' && inputs.stage == 'building' && steps.meta.outputs.component == 'cockpit'
+        if: success() && steps.keys.outputs.skip != 'true' && steps.meta.outputs.component == 'cockpit'
         with:
           access_key: ${{ secrets.LINEAR_COCKPIT_RELEASE_ACCESS_KEY }}
           command: sync

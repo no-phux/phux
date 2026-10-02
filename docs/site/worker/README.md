@@ -68,9 +68,12 @@ and records the crate version as `PHUX_VERSION`. The final image fails if
 `phux --version` is not exactly `phux $PHUX_VERSION`. `just toolchain-check`
 and `bun test worker/src` require `PHUX_VERSION` to match
 `workspace.package.version`, Zig/libghostty pins to match the repo manifests,
-and the `--version` assertion to stay in the Dockerfile. Bump the revision,
-archive checksums, and lockfile hashes together when shipping a new pin;
-Zig/libghostty/Ghostty ARGs must stay coherent with that phux revision.
+and the `--version` assertion to stay in the Dockerfile. The release job updates
+the revision, archive checksum, and lockfile hashes together; the required
+workflow gate verifies the pinned source's actual version and lockfile before
+merge. See [release versioning](../../RELEASING.md#versioning) for the refresh
+command and source-commit ordering. Zig/libghostty/Ghostty ARGs must stay
+coherent with that phux revision.
 
 ## Deploy
 
