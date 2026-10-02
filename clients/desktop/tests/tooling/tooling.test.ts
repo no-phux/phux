@@ -5,6 +5,9 @@ import solidPlugin from "@gpuix/solid/bun-plugin";
 const cwd = resolve(import.meta.dir, "../..");
 const oxlint = resolve(cwd, "node_modules/.bin/oxlint");
 const lintArgs = [
+  // Keep assertions independent of Oxlint's automatic coding-agent detection.
+  "--format",
+  "default",
   "-c",
   "oxlint.config.ts",
   "--type-aware",
@@ -14,17 +17,8 @@ const lintArgs = [
   "--no-ignore",
 ];
 
-// Oxlint omits its "Found N warnings" summary when it detects a coding agent,
-// which would fail the positive assertion only when an agent runs the gate.
-const {
-  AI_AGENT: _agent,
-  CLAUDECODE: _claude,
-  CLAUDE_CODE_ENTRYPOINT: _entry,
-  ...env
-} = process.env;
-
 function lint(path: string) {
-  const result = Bun.spawnSync([oxlint, ...lintArgs, path], { cwd, env });
+  const result = Bun.spawnSync([oxlint, ...lintArgs, path], { cwd });
   return { exitCode: result.exitCode, output: result.stdout.toString() + result.stderr.toString() };
 }
 

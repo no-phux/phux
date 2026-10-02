@@ -209,7 +209,13 @@ export function createWorkspace(
     claim(placement);
     if (tab.focusedId === placementId && activeId() === tabId) return;
     commit(
-      tabs().map((item) => (item.id === tabId ? { ...item, focusedId: placementId } : item)),
+      tabs().map((item) => {
+        if (item.id !== tabId) return item;
+        // Navigation must move the visible zoom as well as keyboard focus.
+        const next = { ...item, focusedId: placementId };
+        if (item.zoomedId) next.zoomedId = placementId;
+        return next;
+      }),
       tabId,
     );
   }
