@@ -10,8 +10,8 @@ curl -fsSL https://phux.sh/install-desktop | sh
 The installer selects only published `desktop-vX.Y.Z-alpha.N` prereleases,
 verifies the ZIP checksum and app signature, and installs `Phux.app` plus a
 `phux-desktop` launcher. It never replaces the CLI or stops its server.
-Run it again to update; pin or roll back with
-`sh -s -- --version 0.1.0-alpha.1` after the pipe. `--applications-dir` and
+Run it again to update; pin or roll back to a published alpha with
+`sh -s -- --version X.Y.Z-alpha.N` after the pipe. `--applications-dir` and
 `--bin-dir` select alternate destinations. Releases are ad-hoc signed, **not
 Apple-notarized**; after verification the installer clears quarantine.
 
