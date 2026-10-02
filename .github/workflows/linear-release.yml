@@ -128,10 +128,13 @@ jobs:
           # lives; disabling both plus naming github.com explicitly means this
           # fetch cannot be answered from a stale cache. A brief retry covers
           # GitHub's own propagation of a ref created moments ago.
+          # Reset checkout's persisted headers before adding this credential;
+          # Git otherwise sends both Authorization headers and GitHub rejects it.
           for attempt in 1 2 3 4 5 6; do
             if GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-               GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
-               GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')" \
+               GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader GIT_CONFIG_VALUE_0='' \
+               GIT_CONFIG_KEY_1=http.https://github.com/.extraheader \
+               GIT_CONFIG_VALUE_1="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')" \
                git fetch --no-tags "https://github.com/${GITHUB_REPOSITORY}" \
                  "+refs/tags/${TAG}:refs/tags/${TAG}"; then
               break
