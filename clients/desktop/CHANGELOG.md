@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.0-alpha.2](https://github.com/no-phux/phux/compare/desktop-v0.1.0-alpha.1...desktop-v0.1.0-alpha.2) (2026-10-02)
+
+
+### Bug Fixes
+
+* **desktop:** leave generated changelog formatting to release-please ([#962](https://github.com/no-phux/phux/issues/962)) ([0b36207](https://github.com/no-phux/phux/commit/0b362078d3679906ea25c0e5ab20be5ebebb8509))
+
 ## 0.1.0-alpha.1 (2026-10-02)
 
 
