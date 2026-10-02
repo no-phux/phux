@@ -9,6 +9,28 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.48.0](https://github.com/no-phux/phux/compare/v0.47.0...v0.48.0) (2026-10-02)
+
+
+### Features
+
+* **desktop:** ship qualified macOS alpha releases and installer ([#960](https://github.com/no-phux/phux/issues/960)) ([afd76b8](https://github.com/no-phux/phux/commit/afd76b853706a17a0741957379056f9d1b4420e0))
+
+
+### Bug Fixes
+
+* **ci:** isolate desktop release Cargo workspaces ([#968](https://github.com/no-phux/phux/issues/968)) ([6e04d6d](https://github.com/no-phux/phux/commit/6e04d6d9243a4066b3b19837df7391af0ee9b2fc))
+* **ci:** provision Metal compiler for desktop releases ([#969](https://github.com/no-phux/phux/issues/969)) ([6b275ac](https://github.com/no-phux/phux/commit/6b275acb1930fc3633d569bc9c2a2d0bfaf2bf12))
+* **ci:** publish desktop drafts with draft-aware lookup ([#970](https://github.com/no-phux/phux/issues/970)) ([5d8e557](https://github.com/no-phux/phux/commit/5d8e55701401aa56f8418b1cf23a2fa3116bab9f))
+* **desktop:** build native host with macOS system bash ([#964](https://github.com/no-phux/phux/issues/964)) ([725d39f](https://github.com/no-phux/phux/commit/725d39f0b09148b0a33043fe7f2dbe8d27a5be25))
+* **desktop:** leave generated changelog formatting to release-please ([#962](https://github.com/no-phux/phux/issues/962)) ([0b36207](https://github.com/no-phux/phux/commit/0b362078d3679906ea25c0e5ab20be5ebebb8509))
+* **site:** tip-worker nodejs u3 + pin PHUX to 0.47.0 tip ([#958](https://github.com/no-phux/phux/issues/958)) ([bf24486](https://github.com/no-phux/phux/commit/bf244868ff04ba6adcaa3db00967907128030184))
+
+
+### Documentation
+
+* **desktop:** pin only published alpha releases ([#966](https://github.com/no-phux/phux/issues/966)) ([6f1ab3d](https://github.com/no-phux/phux/commit/6f1ab3d49ee93278ee829147e7026fa898091a6d))
+
 ## [0.47.0](https://github.com/no-phux/phux/compare/v0.46.0...v0.47.0) (2026-10-01)
 
 
