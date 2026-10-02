@@ -169,7 +169,7 @@ there is no per-frame report allocation.
 | `loop.input_wall` / `loop.frames_wall` | selected stdin/frame handler through completion, including awaited sends/errors; excludes parking in `select!` |
 | `loop.burst_frames` / `loop.burst_capped` | inbound batch size and fairness-cap hits |
 | `pacer.hold` / `pacer.late` / `pacer.panes` | first withheld output to debt retirement, lateness versus pacing deadline, and panes retired; not a receipt for pixels or tty delivery |
-| `stdout.backlog` / `stdout.queue_wait` | queued bytes on submission, before any overflow discard (excluding writer in-flight chunks), and each written chunk's enqueue-to-write-start delay; discarded chunks add no wait sample |
+| `stdout.backlog` / `stdout.queue_wait` | queued bytes after submission admission or overflow discard (excluding writer in-flight chunks), and each written chunk's enqueue-to-write-start delay; discarded chunks add no wait sample |
 | `stdout.write` / `stdout.flush` / `stdout.errors` | real writer-thread calls, including blocking and error paths; idle waiting is excluded |
 | `stdout.bytes` / `stdout.written` / `stdout.dropped_bytes` | offered bytes, completed successful writes, and overflow discards including the trigger frame; failed partial writes and shutdown discards are not counted as successful delivery |
 
