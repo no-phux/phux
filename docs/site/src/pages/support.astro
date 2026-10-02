@@ -1,0 +1,227 @@
+---
+// Support page for the phux mobile apps (iOS, Android). App Store Connect
+// lists it as the app's Support URL, and the apps' Info.plist SupportURL
+// points here (TUIST_SUPPORT_URL in phux-mobile). Every answer describes the
+// shipped app: the labels in quotes are the app's own button text in the
+// phux-mobile sources. When those labels or flows change, change this page
+// in the same release and bump LAST_UPDATED.
+import BaseLayout from "../layouts/BaseLayout.astro";
+import { SITE, docsHref } from "../lib/site";
+
+const LAST_UPDATED = "2026-10-02";
+const CONTACT = "privacy@phall.io";
+const ISSUES = `${SITE.github}/issues`;
+const title = `${SITE.name} — Support`;
+const description =
+  `How to get help with the ${SITE.name} mobile apps: pairing a server, subscriptions, your account, and how to reach us.`;
+---
+
+<BaseLayout {title} {description}>
+  <article class="wrap policy">
+    <header class="policy-head">
+      <h1>Support</h1>
+      <p class="updated">
+        Last updated <time datetime={LAST_UPDATED}>{LAST_UPDATED}</time>
+      </p>
+      <p class="lede">
+        Help with the phux mobile apps for iOS and Android, and with the phux
+        server they connect to.
+      </p>
+    </header>
+
+    <section class="summary" aria-labelledby="contact">
+      <h2 id="contact">get in touch</h2>
+      <ul>
+        <li>
+          <strong>Email:</strong> <a href={`mailto:${CONTACT}`}>{CONTACT}</a>.
+          Account, subscription, and app problems all go here.
+        </li>
+        <li>
+          <strong>Bugs and feature requests:</strong> open an issue on
+          <a href={ISSUES} target="_blank" rel="noopener">GitHub</a>. Do not
+          paste pairing links or tokens into an issue.
+        </li>
+        <li>
+          <strong>From the app:</strong> open Settings, then "support
+          diagnostics" in the SUPPORT section. You can read the redacted report
+          before you send, share, or copy it. It contains no terminal content,
+          server names, addresses, or tokens.
+        </li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="server">
+      <h2 id="server">connecting to a phux server</h2>
+      <p>
+        The app connects to a phux server that you install and run on your own
+        Mac or Linux machine. The server is free. On Apple-silicon macOS or a
+        supported Linux host, install it with Homebrew:
+      </p>
+      <pre><code>brew install no-phux/tap/phux</code></pre>
+      <p>or with the release installer:</p>
+      <pre><code>curl -fsSL https://phux.sh/install | sh</code></pre>
+      <p>
+        Then, on that machine, run <code>phux pair --qr</code> and scan the QR
+        code from the app, or open the pairing link it prints on your phone.
+        The <a href={docsHref("/quickstart/install")}>install guide</a> covers
+        other platforms, and
+        <a href={docsHref("/remote-access")}>remote access</a> covers reaching
+        your server from outside your local network.
+      </p>
+      <p>
+        If the app cannot connect, check that the server is running, that your
+        phone can reach it on the network, and that the pairing link has not
+        been revoked. Run <code>phux pair --qr</code> again for a fresh link.
+        See <a href={docsHref("/troubleshooting")}>troubleshooting</a> for more.
+      </p>
+    </section>
+
+    <section aria-labelledby="playground">
+      <h2 id="playground">trying the app without a server</h2>
+      <p>
+        On the first screen, tap "open the playground". It runs a working
+        terminal on your device, with no server, account, or installation.
+        "don't have phux yet?" on the same screen shows the install command.
+      </p>
+    </section>
+
+    <section aria-labelledby="subscription">
+      <h2 id="subscription">phux Pro subscriptions</h2>
+      <p>
+        <strong>Manage or cancel.</strong> On iOS, subscriptions are billed
+        by Apple. Cancel or change your plan in the Settings app: tap your
+        name, then Subscriptions, then phux. In phux, the SUBSCRIPTION section
+        of Settings shows your plan and, while a subscription is active,
+        offers "manage subscription", which opens Apple's subscription
+        management. Cancel at
+        least 24 hours before the end of the current period to avoid renewal.
+        On Android, manage subscriptions in Google Play under Payments and
+        subscriptions.
+      </p>
+      <p>
+        <strong>Restore purchases.</strong> On a new device, or after
+        reinstalling, tap "upgrade to Pro" in the SUBSCRIPTION section of
+        Settings, then "restore purchases". Use the same Apple Account you
+        subscribed with. The app reports "purchases restored" or that no phux
+        Pro purchase was found for that Apple Account.
+      </p>
+      <p>
+        <strong>Refunds.</strong> Apple handles refunds for App Store
+        purchases. Request one at
+        <a href="https://reportaproblem.apple.com" target="_blank" rel="noopener">reportaproblem.apple.com</a>.
+      </p>
+    </section>
+
+    <section aria-labelledby="account">
+      <h2 id="account">your account</h2>
+      <p>
+        An account is optional. Every terminal feature works without one; an
+        account only syncs your settings across devices. You can sign in with
+        Apple or with a one-time code sent to your email address.
+      </p>
+      <p>
+        <strong>Deleting your account.</strong> Open Settings from the app
+        header and, in the ACCOUNT section, tap "delete account", then confirm.
+        This deletes your phux account and its synced servers and settings.
+        It does not cancel an App Store subscription; cancel that as described
+        above. If your app does not offer in-app deletion, email
+        <a href={`mailto:${CONTACT}`}>{CONTACT}</a>.
+      </p>
+      <p>
+        <strong>Exporting your data.</strong> While signed in, tap "export
+        account data" in the ACCOUNT section to get everything your account
+        holds as a JSON file.
+      </p>
+    </section>
+
+    <section aria-labelledby="privacy">
+      <h2 id="privacy">privacy</h2>
+      <p>
+        Your terminal traffic goes directly between your device and your own
+        server and never reaches us. The <a href="/privacy">privacy policy</a>
+        describes what the apps and services collect and how to access or
+        delete it.
+      </p>
+    </section>
+  </article>
+</BaseLayout>
+
+<style>
+  .policy {
+    max-width: calc(var(--reading-width) + 2 * var(--page-gutter));
+    padding-block: clamp(32px, 6vw, 72px) 96px;
+  }
+  .policy-head {
+    border-bottom: 1px solid var(--color-rule);
+    padding-bottom: 24px;
+    margin-bottom: 8px;
+  }
+  h1 {
+    font-size: clamp(28px, 4vw, 40px);
+    letter-spacing: -0.02em;
+    margin: 0 0 8px;
+  }
+  .updated {
+    font-family: var(--font-code);
+    font-size: 13px;
+    color: var(--color-muted);
+    margin: 0 0 16px;
+  }
+  .lede {
+    color: var(--color-muted);
+    margin: 0;
+  }
+  section {
+    border-bottom: 1px solid var(--color-rule);
+    padding-block: 24px;
+  }
+  section:last-child {
+    border-bottom: 0;
+  }
+  h2 {
+    font-size: 20px;
+    letter-spacing: -0.01em;
+    margin: 0 0 12px;
+  }
+  p,
+  ul {
+    margin: 0 0 12px;
+  }
+  ul {
+    padding-left: 1.25em;
+  }
+  li + li {
+    margin-top: 6px;
+  }
+  .summary {
+    border: 1px solid var(--color-rule);
+    border-left: 3px solid var(--color-accent);
+    background: var(--color-surface);
+    padding: 20px;
+    margin-block: 24px;
+  }
+  .summary ul {
+    margin: 0;
+  }
+  a {
+    color: var(--color-accent);
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+  }
+  a:hover,
+  a:focus-visible {
+    text-decoration-thickness: 2px;
+  }
+  code {
+    font-size: 0.9em;
+  }
+  pre {
+    max-width: 100%;
+    overflow-x: auto;
+    border: 1px solid var(--color-rule);
+    background: var(--color-surface);
+    padding: 12px;
+    margin: 0 0 12px;
+  }
+</style>
