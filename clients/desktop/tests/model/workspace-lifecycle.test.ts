@@ -173,6 +173,43 @@ const delayedSplit = (): SavedLayout =>
   });
 
 describe("workspace restore lifecycle", () => {
+  test("cycling and directional focus keep the selected pane visible while zoomed", () => {
+    scenario(delayedSplit(), ({ client, workspace, wake }) => {
+      client.panes = [pane("local:1"), pane("local:2")];
+      client.ready = new Set(["local:1", "local:2"]);
+      wake();
+      workspace.toggleZoom();
+      const original = workspace.focused();
+      workspace.cyclePane(1);
+      expect(workspace.focused()?.terminalId).toBe("local:1");
+      expect(workspace.activeTab()?.zoomedId).toBe(workspace.focused()?.id);
+      const focused = workspace.focused();
+      if (!focused) throw new Error("expected the newly focused pane");
+      expect(workspace.sizeOwner(focused)).toBe(true);
+      workspace.focusDirection("down");
+      expect(workspace.focused()).toEqual(original);
+      expect(workspace.activeTab()?.zoomedId).toBe(original?.id);
+      workspace.toggleZoom();
+      expect(workspace.activeTab()?.zoomedId).toBeUndefined();
+    });
+  });
+
+  test("revealing a hidden terminal in an inactive zoomed tab makes it visible", () => {
+    scenario(delayedSplit(), ({ client, workspace, wake }) => {
+      client.panes = [pane("local:1"), pane("local:2"), pane("local:3")];
+      client.ready = new Set(["local:1", "local:2", "local:3"]);
+      wake();
+      workspace.toggleZoom();
+      workspace.open(pane("local:3"));
+      expect(workspace.activeId()).not.toBe("saved-tab");
+      workspace.reveal("local:1");
+      expect(workspace.activeId()).toBe("saved-tab");
+      expect(workspace.focused()?.terminalId).toBe("local:1");
+      expect(workspace.activeTab()?.zoomedId).toBe(workspace.focused()?.id);
+      expect(client.views.size).toBe(3);
+    });
+  });
+
   test("a delayed split leaf keeps its position, title, focus and saved snapshot", () => {
     scenario(delayedSplit(), ({ client, workspace, snapshots, wake }) => {
       client.panes = [pane("local:1"), pane("local:2", "other")];
