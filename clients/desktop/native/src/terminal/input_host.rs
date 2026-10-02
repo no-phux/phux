@@ -16,12 +16,13 @@ pub(super) fn present(
     window: &mut gpui::Window,
     cx: &mut gpui::App,
 ) {
-    let Some(frame) = report.frame.clone() else {
+    let (Some(frame), Some(epoch)) = (report.frame.clone(), report.epoch) else {
         return;
     };
     if report.error.is_some() {
         return;
     }
+    let _timed = crate::perf::PRESENT.timer();
     let width = match frame.cursor.width {
         CursorWidth::Narrow => 1,
         CursorWidth::Wide | CursorWidth::WideTail => 2,
@@ -34,7 +35,9 @@ pub(super) fn present(
             .geometry
             .cell_bounds(frame.cursor.row, frame.cursor.col, width),
     };
-    let accepted = input.update(cx, |state, _| state.presented(&frame, metrics).is_ok());
+    let accepted = input.update(cx, |state, _| {
+        state.presented_at(epoch, &frame, metrics).is_ok()
+    });
     if !accepted {
         input.update(cx, |state, _| state.cancel());
         rebind.store(true, Ordering::Release);

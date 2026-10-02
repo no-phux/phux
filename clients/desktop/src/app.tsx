@@ -20,6 +20,7 @@ import {
   EmptyState,
   RenameDialog,
   StatusBar,
+  sameStatus,
   Toasts,
   type StatusInfo,
   type Toast,
@@ -1458,29 +1459,33 @@ function DesktopApp(props: AppProps): JSX.Element {
 
   // ── Derived chrome state ───────────────────────────────────────
 
-  const statusInfo = createMemo<StatusInfo>(() => {
-    bridge.revision();
-    const focus = workspace.focused();
-    const info = focus
-      ? safe(() => bridge.client().viewInfo(requireView(focus)), undefined)
-      : undefined;
-    const counts: Record<string, number> = {};
-    for (const agent of Object.values(bridge.agents()))
-      counts[agent.state] = (counts[agent.state] ?? 0) + 1;
-    return {
-      connection: bridge.status(),
-      error: bridge.error(),
-      session: `${sessionName} · ${bridge.panes().length} terminals`,
-      socket: socketPath,
-      geometry: info ? `${info.cols}×${info.rows}` : undefined,
-      scrollback: info && !info.atTail ? "scrolled back · ⌘L live" : undefined,
-      fenced: focus ? bridge.fenced(focus.terminalId) : false,
-      pending: workspace.pending(),
-      agents: counts,
-      theme: themeById(prefs().themeId, extraThemes()).name,
-      fontSize: prefs().fontSize,
-    };
-  });
+  const statusInfo = createMemo<StatusInfo, StatusInfo | undefined>(
+    () => {
+      bridge.revision();
+      const focus = workspace.focused();
+      const info = focus
+        ? safe(() => bridge.client().viewInfo(requireView(focus)), undefined)
+        : undefined;
+      const counts: Record<string, number> = {};
+      for (const agent of Object.values(bridge.agents()))
+        counts[agent.state] = (counts[agent.state] ?? 0) + 1;
+      return {
+        connection: bridge.status(),
+        error: bridge.error(),
+        session: `${sessionName} · ${bridge.panes().length} terminals`,
+        socket: socketPath,
+        geometry: info ? `${info.cols}×${info.rows}` : undefined,
+        scrollback: info && !info.atTail ? "scrolled back · ⌘L live" : undefined,
+        fenced: focus ? bridge.fenced(focus.terminalId) : false,
+        pending: workspace.pending(),
+        agents: counts,
+        theme: themeById(prefs().themeId, extraThemes()).name,
+        fontSize: prefs().fontSize,
+      };
+    },
+    undefined,
+    { equals: sameStatus },
+  );
 
   createEffect(() => {
     const tab = workspace.activeTab();
@@ -1560,7 +1565,7 @@ function DesktopApp(props: AppProps): JSX.Element {
         zoomed={tab()?.zoomedId === placement.id}
         fenced={bridge.fenced(placement.terminalId)}
         views={workspace.viewsOf(placement.terminalId)}
-        revision={bridge.revision()}
+        revision={bridge.paintRevision(placement.terminalId)}
         font={font()}
         theme={terminalTheme()}
         optionAsAlt={prefs().optionAsAlt}

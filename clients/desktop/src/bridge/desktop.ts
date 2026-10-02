@@ -4,7 +4,7 @@
  * signals, and forwards current events to one subscriber. Ambiguous and
  * pre-connection badges are omitted. UI code never parses VT or retries delivery.
  */
-import { batch, createSignal, type Accessor } from "solid-js";
+import { batch, createSignal, type Accessor, type Signal } from "solid-js";
 import type {
   DesktopClient,
   DesktopEvent,
@@ -52,6 +52,13 @@ export interface Bridge {
    * refresh only on wakes whose events can change them.
    */
   revision: Accessor<number>;
+  /**
+   * Bumps when a drained wake can change what this terminal paints: its own
+   * output, or any event that is not terminal-scoped output or a badge. A
+   * mounted terminal's `paintRevision`, so a wake that only moved terminals
+   * nobody shows (a background tab's flood) redraws nothing.
+   */
+  paintRevision(terminalId: string): number;
   handle: Accessor<string>;
   target: ConnectTarget;
   client(): DesktopClient;
@@ -70,10 +77,21 @@ export interface Bridge {
 
 /**
  * Wake drains across every bridge in this process, for `PHUX_DESKTOP_PERF`:
- * how many wakes, how many events they carried, and the milliseconds spent
- * draining and applying them (including the Solid updates they trigger).
+ * how many wakes, how many events they carried, the milliseconds spent
+ * draining and applying them (including the Solid updates they trigger), and
+ * how many wakes waited for the next frame (`DRAIN_INTERVAL_MS`).
  */
-export const drainStats = { wakes: 0, events: 0, ms: 0, maxMs: 0 };
+export const drainStats = { wakes: 0, events: 0, ms: 0, maxMs: 0, deferred: 0 };
+
+/**
+ * Minimum milliseconds between drains: one 60 Hz frame. A drain that changes
+ * what the window shows costs a whole-window GPUIX draw, layout included,
+ * and a display shows at most one per refresh. A wake after a quiet frame
+ * drains at once, so an echo is not delayed; a wake inside the frame drains
+ * at its end. The runtime does not wake again until a drain rearms it, so a
+ * deferred wake is coalesced, never lost.
+ */
+export const DRAIN_INTERVAL_MS = 16;
 
 /**
  * Whether an event can change the topology, status or server snapshot. Frame
@@ -105,19 +123,57 @@ export function startsConnection(event: DesktopEvent): boolean {
   return event.kind === "StatusChanged" && `${event.status}` === "Connecting";
 }
 
-export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
+export function createBridge(
+  host: DesktopHost,
+  target: ConnectTarget,
+  drainInterval = DRAIN_INTERVAL_MS,
+): Bridge {
   const [status, setStatus] = createSignal("Connecting");
   const [error, setError] = createSignal<string | undefined>();
   const [topology, setTopology] = createSignal<DesktopTopology | undefined>();
   const [server, setServer] = createSignal<DesktopServerInfo | undefined>();
   const [agents, setAgents] = createSignal<Record<string, AgentInfo>>({});
   const [revision, setRevision] = createSignal(0);
+  // One strictly increasing tick per drain feeds every paint revision, so a
+  // revision never repeats a value, even for a terminal whose signal was
+  // dropped and recreated.
+  let paintClock = 0;
+  const [everyTerminal, setEveryTerminal] = createSignal(0);
+  const terminalRevisions = new Map<string, Signal<number>>();
   const [handle, setHandle] = createSignal("");
   let owner: DesktopClient | undefined;
   let closed = false;
   const knownTerminals = new Set<string>();
   let listener: (events: DesktopEvent[]) => void = () => {};
   let pathListener: (answers: DesktopPathAnswer[]) => void = () => {};
+
+  function terminalRevision(terminalId: string): Signal<number> {
+    const known = terminalRevisions.get(terminalId);
+    if (known) return known;
+    const [read, write] = createSignal(0);
+    const signal: Signal<number> = [read, write];
+    terminalRevisions.set(terminalId, signal);
+    return signal;
+  }
+
+  /** Bump only the terminals this batch can repaint; see `paintRevision`. */
+  function invalidatePaint(events: DesktopEvent[]): void {
+    const output = new Set<string>();
+    // An empty drain is a wake for state that changed without an event (such
+    // as readiness), which any terminal may paint.
+    let all = events.length === 0;
+    for (const event of events) {
+      if (event.kind === "TerminalChanged") output.add(event.terminalId);
+      else if (event.kind !== "AgentBadge") all = true;
+      // Bumping every terminal re-runs whatever still reads this one, which
+      // then subscribes to a fresh signal instead of the dropped one.
+      if (event.kind === "Closed") terminalRevisions.delete(event.terminalId);
+    }
+    if (!all && output.size === 0) return;
+    paintClock += 1;
+    if (all) setEveryTerminal(paintClock);
+    for (const terminalId of output) terminalRevision(terminalId)[1](paintClock);
+  }
 
   function client(): DesktopClient {
     if (!owner) throw new Error("Desktop client is not connected");
@@ -178,6 +234,10 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
     const info = native.serverInfo() ?? undefined;
     knownTerminals.clear();
     for (const pane of next?.panes ?? []) knownTerminals.add(pane.terminalId);
+    // A snapshot follows a structural event, which bumps every terminal, so a
+    // pane still reading a dropped id re-subscribes to a fresh signal.
+    for (const terminalId of terminalRevisions.keys())
+      if (!knownTerminals.has(terminalId)) terminalRevisions.delete(terminalId);
     batch(() => {
       setStatus(native.status());
       if (failure) setError(failure);
@@ -196,9 +256,29 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
     return info;
   }
 
+  let lastDrain = Number.NEGATIVE_INFINITY;
+  let deferred: ReturnType<typeof setTimeout> | undefined;
+
   function activity(from: string): void {
     if (closed || !owner || from !== owner.handle) return;
+    const wait = lastDrain + drainInterval - performance.now();
+    if (wait > 0) {
+      if (deferred === undefined) {
+        drainStats.deferred += 1;
+        deferred = setTimeout(() => {
+          deferred = undefined;
+          activity(from);
+        }, wait);
+      }
+      return;
+    }
+    drain();
+  }
+
+  function drain(): void {
+    if (!owner) return;
     const started = performance.now();
+    lastDrain = started;
     // Cache the negotiated identity on ordinary output wakes. Only a new epoch
     // needs another full native snapshot before the drain.
     const previous = server();
@@ -227,6 +307,7 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
           before.connectionEpoch === current.connectionEpoch);
       accept(events, acceptBadges);
       if (answers.length > 0) pathListener(answers);
+      invalidatePaint(events);
       setRevision((value) => value + 1);
     });
     const elapsed = performance.now() - started;
@@ -257,6 +338,10 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
   function close(): void {
     if (closed || !owner) return;
     closed = true;
+    // The final batch below drains everything; a deferred drain would be
+    // for the retired client, and must not hold back the next one's wake.
+    clearTimeout(deferred);
+    deferred = undefined;
     accept(owner.close());
   }
 
@@ -287,6 +372,7 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
     server,
     agents,
     revision,
+    paintRevision: (terminalId) => Math.max(everyTerminal(), terminalRevision(terminalId)[0]()),
     handle,
     target,
     client,
@@ -305,10 +391,7 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
     fenced: (terminalId) => {
       revision();
       return (
-        !closed &&
-        !!owner &&
-        knownTerminals.has(terminalId) &&
-        owner.inputReadiness(terminalId).deliveryFenced
+        !closed && !!owner && knownTerminals.has(terminalId) && owner.deliveryFenced(terminalId)
       );
     },
     homeSession,

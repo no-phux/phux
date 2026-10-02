@@ -893,6 +893,12 @@ export declare class DesktopClient {
   spawnTerminal(sessionId: number): number
   attachTerminal(resourceId: string): number
   detachTerminal(resourceId: string): number
+  /**
+   * Whether an unknown-delivery fence holds this terminal's input. Local
+   * state only: unlike `inputReadiness` it costs no engine round trip, so
+   * a shell can read it for every pane on every wake.
+   */
+  deliveryFenced(resourceId: string): boolean
   inputReadiness(resourceId: string): DesktopInputReadiness
   /**
    * Queues one acknowledged untrusted paste. The returned string correlates

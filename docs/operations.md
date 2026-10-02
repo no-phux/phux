@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-10-01
+last-reviewed: 2026-10-02
 ---
 
 # Operations
@@ -205,13 +205,22 @@ unknown view. `runtime.apply_errors` and `runtime.project_errors` count failed
 apply events and timed projections respectively; projection setup is excluded.
 
 The desktop host (`clients/desktop`) appends its painter rows to the same
-report, `desktopPerfJson`: `desktop.prepare` and `desktop.paint` (per
-terminal element per window draw) and `desktop.key_to_paint`, from a key
-reaching a focused terminal to the first paint of that terminal's next
-output. Launched with `PHUX_DESKTOP_PERF=<absolute path>`, the desktop
-appends one JSON line per second with that report, the main window's draw
-count and recent draw times, and its wake drains (count, events, milliseconds
-spent applying them).
+report, `desktopPerfJson`. Per terminal element per window draw:
+`desktop.render`, `desktop.acquire` (frame validation, one owner round trip),
+`desktop.acquire_rejected`, `desktop.prepare` (with `desktop.prepare_reused`
+for draws that reused the previous scene and `desktop.shaped` line shapes
+for those that did not), `desktop.paint` and `desktop.present`; and
+`desktop.key_to_paint`, from a key reaching a focused terminal to the first
+paint of that terminal's next output. Launched with
+`PHUX_DESKTOP_PERF=<absolute path>`, the desktop appends one JSON line per
+second with that report, the main window's draw count and recent draw times,
+its wake drains (count, events, milliseconds spent applying them, wakes
+deferred to the next display frame), the main
+window's GPUIX mutation batches by kind (each batch redraws the window), and
+current memory. `bun clients/desktop/scripts/perf-bench.ts` drives a fixed
+workload (idle, background-tab flood, one-pane and every-pane floods) against
+a private server and summarizes those lines per phase, plus a `vmmap` region
+summary; compare runs made back to back on one host.
 
 For a reproducible number rather than a live one, `just perf-echo` runs
 the byte-level echo probe against an isolated server at a chosen size

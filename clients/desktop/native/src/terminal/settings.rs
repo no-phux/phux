@@ -58,6 +58,26 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Whether a frame paints identically under both. Identity props are
+    /// checked through the frame itself; input, sizing and the
+    /// `paintRevision` token never reach the painter.
+    pub fn paints_like(&self, other: &Self) -> bool {
+        self.font == other.font
+            && self.font_size == other.font_size
+            && self.line_height == other.line_height
+            && self.cell_width_scale == other.cell_width_scale
+            && self.cell_height_scale == other.cell_height_scale
+            && self.foreground == other.foreground
+            && self.background == other.background
+            && self.selection_foreground == other.selection_foreground
+            && self.selection_background == other.selection_background
+            && self.palette == other.palette
+            && self.cursor == other.cursor
+            && self.focused == other.focused
+            && self.cursor_visible == other.cursor_visible
+            && self.blink_visible == other.blink_visible
+    }
+
     pub fn set(&mut self, key: &str, value: &Value) {
         match key {
             "clientHandle" => self.client_handle = value.as_str().unwrap_or_default().into(),

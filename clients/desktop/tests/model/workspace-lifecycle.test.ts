@@ -67,6 +67,10 @@ class LifecycleClient {
       focusedPane: this.panes[0]?.terminalId ?? "",
     };
   }
+  deliveryFenced(): boolean {
+    return false;
+  }
+
   inputReadiness(terminalId: string): { ready: boolean; deliveryFenced: boolean } {
     if (!/^local:\d+$/.test(terminalId)) throw new Error("InvalidResourceId");
     return { ready: this.ready.has(terminalId), deliveryFenced: false };
@@ -127,10 +131,11 @@ function scenario(layout: SavedLayout | undefined, run: (context: Scenario) => v
     const DesktopClient: unknown = LifecycleClient;
     // SAFETY: LifecycleClient implements every native operation these bridge/workspace scenarios use.
     const host = { DesktopClient } as DesktopHost;
-    const bridge = createBridge(host, {
-      socketPath: "/tmp/unused-lifecycle.sock",
-      sessionName: "home",
-    });
+    const bridge = createBridge(
+      host,
+      { socketPath: "/tmp/unused-lifecycle.sock", sessionName: "home" },
+      0,
+    );
     const snapshots: SavedLayout[] = [];
     const workspace = createWorkspace(bridge, {
       changed: () =>
