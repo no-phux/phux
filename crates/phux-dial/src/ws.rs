@@ -167,15 +167,18 @@ pub async fn dial_with_identity(d: &WsDial, identity: &TlsClientIdentity) -> Res
 
 async fn dial_inner(d: &WsDial, identity: Option<&TlsClientIdentity>) -> Result<Ws, DialError> {
     let target = WsTarget::parse(&d.url)?;
+    // URI authorities retain IPv6 brackets, but tuple-based DNS/TCP lookup
+    // expects a bare address (the port is already a separate argument).
+    let host = target.host.trim_matches(['[', ']']);
     // Resolve first so a name that does not resolve (MagicDNS down) is
     // classified as unreachable; the connect re-resolves from cache.
-    if let Err(err) = tokio::net::lookup_host((target.host.as_str(), target.port)).await {
+    if let Err(err) = tokio::net::lookup_host((host, target.port)).await {
         return Err(DialError::Unreachable(format!(
             "dial {}: name resolution failed: {err}",
             target.addr_label()
         )));
     }
-    let tcp = TcpStream::connect((target.host.as_str(), target.port))
+    let tcp = TcpStream::connect((host, target.port))
         .await
         .map_err(|err| {
             let msg = format!("dial {}: {err}", target.addr_label());
@@ -517,6 +520,49 @@ mod tests {
         assert!(!wss.is_loopback());
 
         assert!(WsTarget::parse("https://example.com/").is_err());
+    }
+
+    #[test]
+    fn parses_ipv6_loopback_targets() {
+        for scheme in ["ws", "wss"] {
+            let target = WsTarget::parse(&format!("{scheme}://[::1]:8787/phux"))
+                .expect("IPv6 WebSocket target");
+            assert_eq!(target.host, "[::1]");
+            assert_eq!(target.server_name, "::1");
+            assert_eq!(target.port, 8787);
+            assert!(target.is_loopback());
+        }
+    }
+
+    #[tokio::test]
+    async fn ipv6_loopback_dials_and_exchanges_a_message() {
+        let listener = tokio::net::TcpListener::bind("[::1]:0")
+            .await
+            .expect("bind IPv6 fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let server = async move {
+            let (tcp, _) = listener.accept().await.expect("accept IPv6 TCP");
+            let mut ws = tokio_tungstenite::accept_async(tcp)
+                .await
+                .expect("upgrade IPv6 WebSocket");
+            assert_eq!(
+                ws.next().await.expect("message").expect("read message"),
+                Message::Binary(b"ipv6".to_vec().into())
+            );
+        };
+        let client = async {
+            let mut ws = dial(&plain_dial(format!("ws://{address}/phux")))
+                .await
+                .expect("dial IPv6 WebSocket");
+            ws.send(Message::Binary(b"ipv6".to_vec().into()))
+                .await
+                .expect("send IPv6 payload");
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(server, client);
+        })
+        .await
+        .expect("IPv6 handshake and payload complete");
     }
 
     fn plain_dial(url: String) -> WsDial {
