@@ -9,7 +9,7 @@
 import BaseLayout from "../layouts/BaseLayout.astro";
 import { SITE } from "../lib/site";
 
-const LAST_UPDATED = "2026-09-23";
+const LAST_UPDATED = "2026-10-02";
 const CONTACT = "privacy@phall.io";
 const title = `${SITE.name} — Privacy policy`;
 const description =
@@ -267,6 +267,15 @@ const description =
         only happens if you click that link.
       </p>
       <p>
+        <strong>TestFlight requests.</strong> If you
+        <a href="/#testflight">request access to phux for iPhone</a>, we send
+        your email address to Apple through App Store Connect, which adds you
+        as a TestFlight tester and emails you the invite. Apple keeps tester
+        records under its own privacy policy. We also keep the request on the
+        beta list described above. To leave the beta, tap Stop Testing in
+        TestFlight, or email us and we remove you as a tester.
+      </p>
+      <p>
         <strong>The hosted shell.</strong> The live terminal on the landing
         page runs on <code>shell.phux.sh</code>. The basic version needs no
         sign-in. To unlock the full Linux shell, you sign in with GitHub or
@@ -314,7 +323,7 @@ const description =
             <tr><th scope="col">Provider</th><th scope="col">What it does</th></tr>
           </thead>
           <tbody>
-            <tr><td>Apple, Google</td><td>App distribution, in-app purchases, Sign in with Apple, Google sign-in for the hosted shell</td></tr>
+            <tr><td>Apple, Google</td><td>App distribution, TestFlight beta invites, in-app purchases, Sign in with Apple, Google sign-in for the hosted shell</td></tr>
             <tr><td>RevenueCat</td><td>Subscription status</td></tr>
             <tr><td>Supabase</td><td>Optional account and settings sync</td></tr>
             <tr><td>Paddle</td><td>Web purchases, where offered</td></tr>
