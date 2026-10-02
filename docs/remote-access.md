@@ -438,6 +438,10 @@ phux attach --ws wss://HOST:8787 --token HEX --cert-fingerprint FP # when UDP is
 Routable hosts require `--cert-fingerprint` (only loopback trusts the dev
 cert).
 
+Bracket IPv6 literals in WebSocket URLs, for example
+`--ws 'wss://[fd00::1]:8787'`. The brackets belong to the URL authority;
+TCP resolution and the default TLS certificate identity use the bare address.
+
 - **Path A: [Tailscale](https://tailscale.com).** Install it on both ends and
   run `tailscale up`; `tailscale status` lists both peers with their `100.x`
   IP and MagicDNS name (`myhost.tailnet-name.ts.net`), which are
