@@ -73,12 +73,14 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ steps.version.outputs.bun }}
-      - name: Contributor Rust and Zig setup
+      - name: Contributor Rust, Zig and Metal setup
         working-directory: source
         run: |
           bash scripts/setup-rust.sh native
           bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
           brew install just
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun metal --version
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: source -> target
