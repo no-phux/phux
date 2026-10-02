@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.49.1](https://github.com/no-phux/phux/compare/v0.49.0...v0.49.1) (2026-10-02)
+
+
+### Documentation
+
+* **path:** mark host path query shipped after mobile pin ([#981](https://github.com/no-phux/phux/issues/981)) ([aade61f](https://github.com/no-phux/phux/commit/aade61f46f2a5c2b9b3c274b7ae7f335391801f3))
+
 ## [0.49.0](https://github.com/no-phux/phux/compare/v0.48.0...v0.49.0) (2026-10-02)
 
 
