@@ -64,7 +64,7 @@ recovery. `scripts/check-release-orchestration.mjs` pins this ordering.
 | Revalidate an integration tag without publishing | Dispatch **Actions -> Release agent integration** with its component tag and `dry_run=true` |
 | Check Cockpit locally before its release PR merges | `just cockpit-test`, then `bash clients/cockpit/scripts/build-phux-artifacts.sh` and `clients/cockpit/scripts/package-macos.sh` |
 | Ask whether anything is stuck right now | `just release-drift` (needs an authenticated `gh`) |
-| Report a hand-recovered release to Linear | Dispatch **Actions -> linear-release** with `vX.Y.Z` or `cockpit-vX.Y.Z`, `stage=released`; it synchronizes the exact version before updating its stage |
+| Report a hand-recovered release to Linear | Dispatch **Actions -> linear-release** with a public `vX.Y.Z` or `cockpit-vX.Y.Z` tag; it synchronizes that exact version before updating its stage |
 | Check a suspected install-doc drift | `bash scripts/check-install-surface.sh` |
 | Publish or rebuild the `next` channel | Dispatch **Actions -> next-release** (also runs after green `main` CI) |
 
@@ -90,7 +90,7 @@ recovery. `scripts/check-release-orchestration.mjs` pins this ordering.
 | Stress lane | manual or PR label `stress` | Heavy resize/output/lifecycle storms that are useful but too slow for every PR. |
 | Scoped mutation | manual | Bounded Rust or Zig advisory scans; ordinary changed-code checks remain in the product lanes. |
 | Release drift | daily at 15:20 UTC, or manual | `scripts/check-release-drift.mjs`. Fails if a release is stuck. See "When a release goes quiet". |
-| Linear release report | called by `publish` after a public release, or manual dispatch | `linear-release.yml`. Synchronizes the exact tagged version and its changelog notes before updating its stage, so retries and recovery do not require a prior `building` dispatch. Root `vX.Y.Z` goes to pipeline `phux`; `cockpit-vX.Y.Z` goes to `phux-cockpit` (secret `LINEAR_COCKPIT_RELEASE_ACCESS_KEY`). A missing Cockpit key warns and skips; it does not hold the GitHub release in draft. |
+| Linear release report | called by `publish` after a public release, or manual dispatch | `linear-release.yml`. Requires a public GitHub release, then synchronizes its exact version and tagged changelog notes before updating its stage. The explicit previous-component-tag issue range makes retries and old-tag recovery independent of Linear's latest baseline. Pre-publication `building` reporting is removed: continuous Linear pipelines complete releases during sync. Root `vX.Y.Z` goes to pipeline `phux`; `cockpit-vX.Y.Z` goes to `phux-cockpit` (secret `LINEAR_COCKPIT_RELEASE_ACCESS_KEY`). A missing Cockpit key warns and skips; it does not hold the GitHub release in draft. |
 | next channel | `ci.yml` success on `main`, one run in flight, pending runs coalesced | Release-profile `phux` + `phux-mcp` for the three portable targets, and an ad-hoc-signed Phux Cockpit when its inputs moved, attached to the moving `next` prerelease. No Homebrew. `phux update --channel next` follows `channel.json`; `install-cockpit.sh --channel next` and the app follow `cockpit-channel.json`. |
 
 ### Runners, caches, and concurrency

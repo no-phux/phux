@@ -11,19 +11,13 @@
 # Continuous Linear pipelines name a release after the short SHA unless `name`
 # is set. We always pass the tag as both name and version so Linear shows
 # `v0.36.0`, not `7d0c433`. Notes come from the tagged changelog section, not
-# `gh release view`: at tag time the GitHub release is still a private draft
-# and a failed view used to upload an empty notes file.
+# a mutable GitHub release body.
 #
-# Both entry points synchronize the exact tag/version before any stage update:
-#   building  — optional manual preparation of the tagged release record.
-#   released  — synchronize, then mark Released after publication succeeds.
-#               publish.yml calls this after the artifact workflow succeeds.
-#
-# `update` cannot create a missing release. There is deliberately no dependency
-# on an earlier `building` dispatch: release-please owns tags and draft notes,
-# not Linear reporting. A recovery needs only one `released` dispatch.
-# `sync` creates or updates the supplied version, so retries reuse the same
-# record and refresh its name, tagged notes, links, and issue associations.
+# Only published releases are reported. Continuous Linear pipelines complete
+# releases during sync, so a pre-publication "building" sync is not truthful.
+# Synchronize the exact version before updating its stage; update cannot create
+# a missing record. Recovery and retries use the same tagged notes and explicit
+# previous-component-tag scan range, independent of Linear's latest baseline.
 
 name: linear-release
 
@@ -31,54 +25,32 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: "Existing release tag to report (vX.Y.Z or cockpit-vX.Y.Z)."
-        required: true
-        type: string
-      stage:
-        description: "building = tagged and building; released = fully published."
+        description: "Published release tag to report (vX.Y.Z or cockpit-vX.Y.Z)."
         required: true
         type: string
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to report (vX.Y.Z or cockpit-vX.Y.Z). Must already exist."
+        description: "Published release tag to report (vX.Y.Z or cockpit-vX.Y.Z)."
         required: true
         type: string
-      stage:
-        description: "building = tagged and building; released = fully published."
-        required: true
-        default: released
-        type: choice
-        options:
-          - building
-          - released
 
 permissions:
   contents: read
 
 concurrency:
-  # Serialize both entry points for a tag; sync never changes its stage.
+  # Serialize retries for the same release.
   group: mini-v1-linear-release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
   report:
-    name: report ${{ inputs.tag }} to Linear (${{ inputs.stage }})
+    name: report ${{ inputs.tag }} to Linear
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
     steps:
-      - name: Validate stage
-        env:
-          STAGE: ${{ inputs.stage }}
-        run: |
-          set -euo pipefail
-          case "$STAGE" in
-            building|released) ;;
-            *) echo "::error::stage must be 'building' or 'released', got '${STAGE}'"; exit 1 ;;
-          esac
-
       - name: Resolve Linear pipeline from the tag
         id: meta
         env:
@@ -132,6 +104,19 @@ jobs:
           # The CLI scans the whole commit range, so shallow will not do.
           fetch-depth: 0
 
+      - name: Require a published GitHub release
+        if: success() && steps.keys.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          draft="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')"
+          if [ "$draft" != false ]; then
+            echo "::error::${TAG} is not a public GitHub release; refusing to report it as released."
+            exit 1
+          fi
+
       - name: Fetch the release tag from GitHub, bypassing the runner git mirror
         if: success() && steps.keys.outputs.skip != 'true'
         env:
@@ -145,7 +130,9 @@ jobs:
           # GitHub's own propagation of a ref created moments ago.
           for attempt in 1 2 3 4 5 6; do
             if GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-               git fetch --no-tags "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" \
+               GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+               GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')" \
+               git fetch --no-tags "https://github.com/${GITHUB_REPOSITORY}" \
                  "+refs/tags/${TAG}:refs/tags/${TAG}"; then
               break
             fi
@@ -171,6 +158,23 @@ jobs:
           python3 "$RUNNER_TEMP/extract-changelog-section.py" \
             --tag "$TAG" --changelog "$CHANGELOG" --output release-notes.md
 
+      - name: Resolve the tagged issue scan range
+        id: range
+        if: success() && steps.keys.outputs.skip != 'true'
+        env:
+          COMPONENT: ${{ steps.meta.outputs.component }}
+        run: |
+          set -euo pipefail
+          pattern='v[0-9]*'
+          if [ "$COMPONENT" = cockpit ]; then pattern='cockpit-v[0-9]*'; fi
+          # Exclude this tag and unrelated component tags. An explicit base
+          # also establishes the version when a path-filtered range is empty.
+          if ! base="$(git describe --tags --match "$pattern" --abbrev=0 HEAD^ 2>/dev/null)"; then
+            base="$(git rev-list --max-parents=0 HEAD)"
+          fi
+          test -n "$base"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+
       - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
         if: success() && steps.keys.outputs.skip != 'true' && steps.meta.outputs.component == 'phux'
         with:
@@ -178,6 +182,8 @@ jobs:
           command: sync
           name: ${{ inputs.tag }}
           version: ${{ inputs.tag }}
+          base_ref: ${{ steps.range.outputs.base }}
+          no_branch_ref_detection: true
           release_notes: release-notes.md
           links: |
             GitHub release=${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag }}
@@ -189,13 +195,15 @@ jobs:
           command: sync
           name: ${{ inputs.tag }}
           version: ${{ inputs.tag }}
+          base_ref: ${{ steps.range.outputs.base }}
+          no_branch_ref_detection: true
           include_paths: clients/cockpit/**
           release_notes: release-notes.md
           links: |
             GitHub release=${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag }}
 
       - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
-        if: success() && steps.keys.outputs.skip != 'true' && inputs.stage == 'released' && steps.meta.outputs.component == 'phux'
+        if: success() && steps.keys.outputs.skip != 'true' && steps.meta.outputs.component == 'phux'
         with:
           access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
           command: update
@@ -203,7 +211,7 @@ jobs:
           version: ${{ inputs.tag }}
 
       - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
-        if: success() && steps.keys.outputs.skip != 'true' && inputs.stage == 'released' && steps.meta.outputs.component == 'cockpit'
+        if: success() && steps.keys.outputs.skip != 'true' && steps.meta.outputs.component == 'cockpit'
         with:
           access_key: ${{ secrets.LINEAR_COCKPIT_RELEASE_ACCESS_KEY }}
           command: update

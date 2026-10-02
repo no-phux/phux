@@ -1,87 +1,119 @@
 #!/usr/bin/env python3
-"""Linear publication must establish a version before updating its stage.
+"""Exercise Linear reporting's publication gate, tagged notes, and issue range.
 
-The pinned Linear action's sync command creates/updates the supplied version;
-update cannot create it. These contracts run without credentials or API writes.
+All Git history is disposable; no credentials or Linear mutations are needed.
 """
 
+import os
 from pathlib import Path
 import re
+import subprocess
+import tempfile
+import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = (ROOT / ".github/workflows/linear-release.yml").read_text()
-PUBLISH = (ROOT / ".github/workflows/publish.yml").read_text()
-STEPS = re.split(r"(?=^      - )", WORKFLOW, flags=re.M)[1:]
-BASE_CONDITION = "success() && steps.keys.outputs.skip != 'true'"
 
 
-def field(block, key, indent=10):
-    match = re.search(rf"^{' ' * indent}{re.escape(key)}: (.+)$", block, re.M)
-    return match.group(1) if match else None
-
-
-def action(component, command):
-    matches = [
-        block for block in STEPS
-        if "uses: linear/linear-release-action@" in block
-        and field(block, "command") == command
-        and f"steps.meta.outputs.component == '{component}'" in field(block, "if", 8)
-    ]
-    if len(matches) != 1:
-        raise AssertionError(f"expected exactly one {component} {command} step")
-    return matches[0]
+def shell_step(name):
+    blocks = re.split(r"(?=^      - )", WORKFLOW, flags=re.M)[1:]
+    block = next(block for block in blocks if block.startswith(f"      - name: {name}\n"))
+    return textwrap.dedent(block.split("        run: |\n", 1)[1]).rstrip() + "\n"
 
 
 class LinearReleaseWorkflowTests(unittest.TestCase):
-    def test_released_entry_establishes_record_without_building_dispatch(self):
-        for component in ("phux", "cockpit"):
-            with self.subTest(component=component):
-                sync = action(component, "sync")
-                update = action(component, "update")
-                self.assertEqual(field(sync, "if", 8), f"{BASE_CONDITION} && steps.meta.outputs.component == '{component}'")
-                self.assertEqual(field(update, "if", 8), f"{BASE_CONDITION} && inputs.stage == 'released' && steps.meta.outputs.component == '{component}'")
-                self.assertLess(STEPS.index(sync), STEPS.index(update))
-                self.assertEqual(field(update, "stage"), "Released")
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="phux-linear-report-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.git("init", "--quiet")
+        self.git("config", "user.email", "release@example.invalid")
+        self.git("config", "user.name", "Release Test")
+        self.git("config", "core.hooksPath", "/dev/null")
+        self.commit("initial", {"README": "initial\n"})
 
-    def test_sync_and_update_reuse_identical_version_and_pipeline_on_retry(self):
-        for component, secret in (("phux", "LINEAR_RELEASE_ACCESS_KEY"), ("cockpit", "LINEAR_COCKPIT_RELEASE_ACCESS_KEY")):
-            sync, update = action(component, "sync"), action(component, "update")
-            for step in (sync, update):
-                self.assertEqual(field(step, "version"), "${{ inputs.tag }}")
-                self.assertEqual(field(step, "access_key"), "${{ secrets." + secret + " }}")
-            self.assertEqual(field(sync, "name"), "${{ inputs.tag }}")
-            self.assertIsNone(field(sync, "stage"), "a late building sync must not downgrade Released")
-        self.assertEqual(field(action("cockpit", "sync"), "include_paths"), "clients/cockpit/**")
+    def git(self, *args):
+        return subprocess.check_output(["git", *args], cwd=self.root, text=True).strip()
 
-    def test_notes_are_present_for_both_entry_points_before_sync(self):
-        notes = next(block for block in STEPS if "- name: Write Linear release notes" in block)
-        self.assertEqual(field(notes, "if", 8), BASE_CONDITION)
-        for component in ("phux", "cockpit"):
-            sync = action(component, "sync")
-            self.assertLess(STEPS.index(notes), STEPS.index(sync))
-            self.assertEqual(field(sync, "release_notes"), "release-notes.md")
+    def commit(self, subject, files):
+        for name, content in files.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        self.git("add", ".")
+        self.git("commit", "--quiet", "-m", subject)
+        return self.git("rev-parse", "HEAD")
 
-    def test_old_tag_recovery_keeps_current_helper_and_tagged_changelog(self):
-        copy = WORKFLOW.index('cp scripts/ci/extract_changelog_section.py "$RUNNER_TEMP/extract-changelog-section.py"')
-        checkout = WORKFLOW.index('git checkout --quiet "refs/tags/${TAG}"')
-        extract = WORKFLOW.index('python3 "$RUNNER_TEMP/extract-changelog-section.py"')
-        self.assertLess(copy, checkout)
-        self.assertLess(checkout, extract)
-        self.assertIn('--tag "$TAG" --changelog "$CHANGELOG" --output release-notes.md', WORKFLOW)
+    def run_step(self, name, **environment):
+        output = self.root / "step-output"
+        output.write_text("")
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith(("PHUX_", "GIT_")) and key not in ("GH_TOKEN", "LINEAR_ACCESS_KEY")}
+        env.update(GITHUB_OUTPUT=str(output), **environment)
+        result = subprocess.run(["bash", "-c", shell_step(name)], cwd=self.root,
+                                env=env, text=True, capture_output=True)
+        values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        return result, values
 
-    def test_same_tag_stages_are_serialized_without_cancellation(self):
-        self.assertIn("group: mini-v1-linear-release-${{ inputs.tag }}\n", WORKFLOW)
-        self.assertIn("cancel-in-progress: false", WORKFLOW)
+    def test_recovery_range_ignores_newer_and_other_component_tags(self):
+        self.commit("root previous", {"root": "old\n"})
+        self.git("tag", "v0.47.0")
+        self.commit("cockpit previous", {"clients/cockpit/change": "old\n"})
+        self.git("tag", "cockpit-v0.20.0")
+        self.commit("fix: PHA-406 root change", {"root": "new\n"})
+        self.git("tag", "v0.48.0")
+        self.commit("fix: PHA-407 cockpit change", {"clients/cockpit/change": "new\n"})
+        self.git("tag", "cockpit-v0.21.0")
+        self.commit("later root release", {"root": "later\n"})
+        self.git("tag", "v0.49.0")
+        for tag, component, expected in (("v0.48.0", "phux", "v0.47.0"),
+                                          ("cockpit-v0.21.0", "cockpit", "cockpit-v0.20.0")):
+            with self.subTest(tag=tag):
+                self.git("checkout", "--quiet", tag)
+                result, values = self.run_step("Resolve the tagged issue scan range", COMPONENT=component)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(values["base"], expected)
+                subjects = self.git("log", "--format=%s", f"{values['base']}..HEAD")
+                self.assertIn("PHA-406" if component == "phux" else "PHA-407", subjects)
+                self.assertNotIn("later root release", subjects)
 
-    def test_released_reports_remain_gated_on_successful_publication(self):
-        for component in ("phux", "cockpit"):
-            match = re.search(rf"^  linear-{component}:\n(.*?)(?=^  [a-z]|\Z)", PUBLISH, re.M | re.S)
-            self.assertIsNotNone(match)
-            block = match.group(1)
-            self.assertIn(f"needs: [plan, {component}]", block)
-            self.assertIn(f"if: needs.{component}.result == 'success'", block)
-            self.assertIn("stage: released", block)
+    def test_first_component_release_has_explicit_ancestor_boundary(self):
+        initial = self.git("rev-parse", "HEAD")
+        self.commit("first cockpit release", {"clients/cockpit/change": "first\n"})
+        self.git("tag", "cockpit-v0.1.0")
+        result, values = self.run_step("Resolve the tagged issue scan range", COMPONENT="cockpit")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(values["base"], initial)
+
+    def test_tagged_notes_survive_old_tag_recovery(self):
+        tagged = "## [0.48.0]\n\n### Bug Fixes\n\n* shipped PHA-406\n"
+        self.commit("released", {"CHANGELOG.md": tagged + "\n## [0.47.0]\n\n* older\n"})
+        self.git("tag", "v0.48.0")
+        self.commit("later notes", {"CHANGELOG.md": "## [0.49.0]\n\n* not shipped in 0.48.0\n"})
+        runner = self.root / "runner"
+        runner.mkdir()
+        (runner / "extract-changelog-section.py").write_bytes(
+            (ROOT / "scripts/ci/extract_changelog_section.py").read_bytes())
+        self.git("checkout", "--quiet", "v0.48.0")
+        result, _ = self.run_step("Write Linear release notes from the tagged changelog",
+                                  TAG="v0.48.0", CHANGELOG="CHANGELOG.md", RUNNER_TEMP=str(runner))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "release-notes.md").read_text(), tagged)
+
+    def test_unpublished_and_unknown_releases_are_rejected(self):
+        # Only the GitHub API boundary is replaced; execute the actual shell gate.
+        binary = self.root / "bin"
+        binary.mkdir()
+        gh = binary / "gh"
+        gh.write_text('#!/bin/sh\n[ "$API_RESULT" != missing ] || exit 7\nprintf "%s\\n" "$API_RESULT"\n')
+        gh.chmod(0o755)
+        for response, expected in (("false", 0), ("true", 1), ("missing", 7), ("null", 1)):
+            with self.subTest(response=response):
+                result, _ = self.run_step("Require a published GitHub release", TAG="v0.48.0",
+                                          GITHUB_REPOSITORY="example/disposable", API_RESULT=response,
+                                          PATH=f"{binary}:{os.environ['PATH']}")
+                self.assertEqual(result.returncode, expected, result.stderr)
 
 
 if __name__ == "__main__":
