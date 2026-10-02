@@ -205,6 +205,8 @@ Desktop versions are independent of the CLI and Cockpit. Release Please excludes
 strategy advances the numeric alpha counter, while the release flag keeps the
 GitHub release out of the stable channel. Desktop uses a separate release PR,
 so shipping an alpha does not require releasing unrelated root or Cockpit changes.
+Release Please also owns the changelog's formatting; the desktop formatter
+excludes that generated file so release PRs do not require manual reformatting.
 
 The initial manifest value is deliberately **`0.0.0`**, Release Please's
 never-released sentinel, while the package is already `0.1.0-alpha.1`.
