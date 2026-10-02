@@ -80,7 +80,7 @@ function scenario(
   // SAFETY: FakeClient implements every native operation these bridge scenarios use.
   const host = { DesktopClient } as DesktopHost;
   createRoot((dispose) => {
-    const bridge = createBridge(host, { socketPath: "/tmp/fake.sock", sessionName: "s" });
+    const bridge = createBridge(host, { socketPath: "/tmp/fake.sock", sessionName: "s" }, 0);
     bridge.connect();
     const client = FakeClient.last;
     if (!client) throw new Error("no client");
@@ -277,6 +277,38 @@ describe("bridge wakes", () => {
     });
   });
 
+  test("wakes inside one frame coalesce into a single drain at its end", async () => {
+    const DesktopClient: unknown = FakeClient;
+    // SAFETY: FakeClient implements every native operation these bridge scenarios use.
+    const host = { DesktopClient } as DesktopHost;
+    const bridge = createBridge(host, { socketPath: "/tmp/fake.sock", sessionName: "s" }, 20);
+    bridge.connect();
+    const client = FakeClient.last;
+    if (!client) throw new Error("no client");
+    const start = bridge.revision();
+    wake(client, [{ kind: "TerminalChanged", terminalId: "local:1" }]);
+    expect(bridge.revision()).toBe(start + 1);
+    // Inside the frame: deferred, and repeated wakes add no second drain.
+    wake(client, [{ kind: "TerminalChanged", terminalId: "local:1" }]);
+    client.wake(client.handle);
+    expect(bridge.revision()).toBe(start + 1);
+    await Bun.sleep(40);
+    expect(bridge.revision()).toBe(start + 2);
+    expect(client.queued).toEqual([]);
+    // A deferred drain for a retired client must not swallow the new one's wake.
+    wake(client, [{ kind: "TerminalChanged", terminalId: "local:1" }]);
+    wake(client, []);
+    bridge.reconnect();
+    const replacement = FakeClient.last;
+    if (!replacement || replacement === client) throw new Error("expected a new client");
+    const before = bridge.revision();
+    wake(replacement, [{ kind: "TerminalChanged", terminalId: "local:1" }]);
+    await Bun.sleep(40);
+    expect(bridge.revision()).toBeGreaterThan(before);
+    expect(replacement.queued).toEqual([]);
+    bridge.close();
+  });
+
   test("output and agent badges are not structural; lifecycle is", () => {
     expect(structural({ kind: "TerminalChanged", terminalId: "local:1" })).toBe(false);
     expect(
@@ -298,7 +330,7 @@ describe("bridge wakes", () => {
     // methods FakeClient implements.
     const host = { DesktopClient } as DesktopHost;
     createRoot((dispose) => {
-      const bridge = createBridge(host, { socketPath: "/tmp/fake.sock", sessionName: "s" });
+      const bridge = createBridge(host, { socketPath: "/tmp/fake.sock", sessionName: "s" }, 0);
       bridge.connect();
       const client = FakeClient.last;
       if (!client) throw new Error("no client");

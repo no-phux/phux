@@ -214,7 +214,8 @@ for those that did not), `desktop.paint` and `desktop.present`; and
 paint of that terminal's next output. Launched with
 `PHUX_DESKTOP_PERF=<absolute path>`, the desktop appends one JSON line per
 second with that report, the main window's draw count and recent draw times,
-its wake drains (count, events, milliseconds spent applying them), the main
+its wake drains (count, events, milliseconds spent applying them, wakes
+deferred to the next display frame), the main
 window's GPUIX mutation batches by kind (each batch redraws the window), and
 current memory. `bun clients/desktop/scripts/perf-bench.ts` drives a fixed
 workload (idle, background-tab flood, one-pane and every-pane floods) against

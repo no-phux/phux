@@ -165,14 +165,14 @@ function countBatches(stats: BatchStats): void {
 function schedulePerfLog(
   path: string | undefined,
   hostPerf: () => string,
-  drains: { wakes: number; events: number; ms: number; maxMs: number },
+  drains: { wakes: number; events: number; ms: number; maxMs: number; deferred: number },
 ): void {
   if (!path?.startsWith("/")) return;
   const batches: BatchStats = { batches: 0, mutations: 0, bytes: 0, kinds: {} };
   countBatches(batches);
   setInterval(() => {
     const drained = { ...drains };
-    Object.assign(drains, { wakes: 0, events: 0, ms: 0, maxMs: 0 });
+    Object.assign(drains, { wakes: 0, events: 0, ms: 0, maxMs: 0, deferred: 0 });
     const applied = { ...batches };
     Object.assign(batches, { batches: 0, mutations: 0, bytes: 0, kinds: {} });
     // Diagnostics never take the app down, not even once its main window

@@ -77,10 +77,21 @@ export interface Bridge {
 
 /**
  * Wake drains across every bridge in this process, for `PHUX_DESKTOP_PERF`:
- * how many wakes, how many events they carried, and the milliseconds spent
- * draining and applying them (including the Solid updates they trigger).
+ * how many wakes, how many events they carried, the milliseconds spent
+ * draining and applying them (including the Solid updates they trigger), and
+ * how many wakes waited for the next frame (`DRAIN_INTERVAL_MS`).
  */
-export const drainStats = { wakes: 0, events: 0, ms: 0, maxMs: 0 };
+export const drainStats = { wakes: 0, events: 0, ms: 0, maxMs: 0, deferred: 0 };
+
+/**
+ * Minimum milliseconds between drains: one 60 Hz frame. A drain that changes
+ * what the window shows costs a whole-window GPUIX draw, layout included,
+ * and a display shows at most one per refresh. A wake after a quiet frame
+ * drains at once, so an echo is not delayed; a wake inside the frame drains
+ * at its end. The runtime does not wake again until a drain rearms it, so a
+ * deferred wake is coalesced, never lost.
+ */
+export const DRAIN_INTERVAL_MS = 16;
 
 /**
  * Whether an event can change the topology, status or server snapshot. Frame
@@ -112,7 +123,11 @@ export function startsConnection(event: DesktopEvent): boolean {
   return event.kind === "StatusChanged" && `${event.status}` === "Connecting";
 }
 
-export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
+export function createBridge(
+  host: DesktopHost,
+  target: ConnectTarget,
+  drainInterval = DRAIN_INTERVAL_MS,
+): Bridge {
   const [status, setStatus] = createSignal("Connecting");
   const [error, setError] = createSignal<string | undefined>();
   const [topology, setTopology] = createSignal<DesktopTopology | undefined>();
@@ -235,9 +250,29 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
     return info;
   }
 
+  let lastDrain = Number.NEGATIVE_INFINITY;
+  let deferred: ReturnType<typeof setTimeout> | undefined;
+
   function activity(from: string): void {
     if (closed || !owner || from !== owner.handle) return;
+    const wait = lastDrain + drainInterval - performance.now();
+    if (wait > 0) {
+      if (deferred === undefined) {
+        drainStats.deferred += 1;
+        deferred = setTimeout(() => {
+          deferred = undefined;
+          activity(from);
+        }, wait);
+      }
+      return;
+    }
+    drain();
+  }
+
+  function drain(): void {
+    if (!owner) return;
     const started = performance.now();
+    lastDrain = started;
     // Cache the negotiated identity on ordinary output wakes. Only a new epoch
     // needs another full native snapshot before the drain.
     const previous = server();
@@ -297,6 +332,10 @@ export function createBridge(host: DesktopHost, target: ConnectTarget): Bridge {
   function close(): void {
     if (closed || !owner) return;
     closed = true;
+    // The final batch below drains everything; a deferred drain would be
+    // for the retired client, and must not hold back the next one's wake.
+    clearTimeout(deferred);
+    deferred = undefined;
     accept(owner.close());
   }
 
