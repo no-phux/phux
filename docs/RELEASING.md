@@ -93,6 +93,10 @@ recovery. `scripts/check-release-orchestration.mjs` pins this ordering.
 | Linear release report | called by `publish` after a public release, or manual dispatch | `linear-release.yml`. Requires a public GitHub release, then synchronizes its exact version and tagged changelog notes before updating its stage. The explicit previous-component-tag issue range makes retries and old-tag recovery independent of Linear's latest baseline. Pre-publication `building` reporting is removed: continuous Linear pipelines complete releases during sync. Root `vX.Y.Z` goes to pipeline `phux`; `cockpit-vX.Y.Z` goes to `phux-cockpit` (secret `LINEAR_COCKPIT_RELEASE_ACCESS_KEY`). A missing Cockpit key warns and skips; it does not hold the GitHub release in draft. |
 | next channel | `ci.yml` success on `main`, one run in flight, pending runs coalesced | Release-profile `phux` + `phux-mcp` for the three portable targets, and an ad-hoc-signed Phux Cockpit when its inputs moved, attached to the moving `next` prerelease. No Homebrew. `phux update --channel next` follows `channel.json`; `install-cockpit.sh --channel next` and the app follow `cockpit-channel.json`. |
 
+Linear's direct tag fetch clears checkout's persisted HTTP headers before
+supplying its command-scoped authorization header. Git accumulates extra
+headers otherwise, and GitHub rejects duplicate Authorization headers.
+
 ### Runners, caches, and concurrency
 
 The repository is public, so standard GitHub-hosted runners are free.

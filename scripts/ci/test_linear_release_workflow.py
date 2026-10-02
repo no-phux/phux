@@ -4,13 +4,17 @@
 All Git history is disposable; no credentials or Linear mutations are needed.
 """
 
+import base64
+import http.server
 import os
 from pathlib import Path
 import re
 import subprocess
 import tempfile
 import textwrap
+import threading
 import unittest
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = (ROOT / ".github/workflows/linear-release.yml").read_text()
@@ -114,6 +118,72 @@ class LinearReleaseWorkflowTests(unittest.TestCase):
                                           GITHUB_REPOSITORY="example/disposable", API_RESULT=response,
                                           PATH=f"{binary}:{os.environ['PATH']}")
                 self.assertEqual(result.returncode, expected, result.stderr)
+
+    def test_tag_fetch_resets_checkout_authorization_header(self):
+        self.git("tag", "v0.48.0")
+        expected_commit = self.git("rev-parse", "HEAD")
+        self.commit("later source", {"README": "later\n"})
+        bare = self.root / "fixture.git"
+        subprocess.run(["git", "clone", "--bare", "--quiet", str(self.root), str(bare)], check=True)
+        self.git("tag", "--delete", "v0.48.0")
+        helper = self.root / "scripts/ci/extract_changelog_section.py"
+        helper.parent.mkdir(parents=True)
+        helper.write_bytes((ROOT / "scripts/ci/extract_changelog_section.py").read_bytes())
+        runner = self.root / "runner"
+        runner.mkdir()
+        expected_header = "basic " + base64.b64encode(b"x-access-token:fixture-token").decode()
+        project_root = str(self.root)
+
+        class GitHTTP(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def handle_git(self):
+                authorization = self.headers.get_all("Authorization", [])
+                if authorization != [expected_header]:
+                    self.send_error(400, "duplicate or incorrect Authorization")
+                    return
+                url = urlsplit(self.path)
+                length = int(self.headers.get("Content-Length", 0))
+                env = dict(os.environ, GIT_PROJECT_ROOT=project_root, GIT_HTTP_EXPORT_ALL="1",
+                           PATH_INFO=url.path, QUERY_STRING=url.query, REQUEST_METHOD=self.command,
+                           CONTENT_TYPE=self.headers.get("Content-Type", ""),
+                           CONTENT_LENGTH=str(length), HTTP_GIT_PROTOCOL=self.headers.get("Git-Protocol", ""))
+                response = subprocess.check_output(["git", "http-backend"], env=env,
+                                                   input=self.rfile.read(length))
+                fields, body = response.split(b"\r\n\r\n", 1)
+                self.send_response(200)
+                for line in fields.split(b"\r\n"):
+                    key, value = line.decode().split(": ", 1)
+                    self.send_header(key, value)
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_GET = handle_git
+            do_POST = handle_git
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), GitHTTP)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/"
+            # Model checkout's existing credential and substitute only the
+            # network endpoint; execute real Git and the complete workflow step.
+            self.git("config", f"http.{url}.extraheader", "AUTHORIZATION: basic prior-checkout-token")
+            script = shell_step("Fetch the release tag from GitHub, bypassing the runner git mirror")
+            script = script.replace("https://github.com/", url)
+            env = {key: value for key, value in os.environ.items()
+                   if not key.startswith(("PHUX_", "GIT_"))}
+            env.update(GH_TOKEN="fixture-token", GITHUB_REPOSITORY="fixture.git", TAG="v0.48.0",
+                       RUNNER_TEMP=str(runner), GIT_TERMINAL_PROMPT="0")
+            result = subprocess.run(["bash", "-c", script], cwd=self.root, env=env,
+                                    text=True, capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.git("rev-parse", "HEAD"), expected_commit)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
 
 
 if __name__ == "__main__":
