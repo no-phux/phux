@@ -230,8 +230,11 @@ desktop-v0.1.0-alpha.1
 
 `publish.yml` still requires green `ci.yml` for the exact tagged commit.
 The reusable desktop workflow keeps its harness on `main` and checks out the
-immutable tag separately for every product build. It runs `just desktop-package`
-and builds a release-profile CLI from the same source for runtime qualification.
+immutable tag separately for every product build. The `harness` and `source`
+checkouts must be siblings, not nested Cargo workspaces: an outer workspace can
+capture GPUI's path dependencies and break workspace inheritance. The lane runs
+`just desktop-package` and builds a release-profile CLI from the same source for
+runtime qualification.
 The native build entry point supports the runner's system Bash 3.2; no newer
 Homebrew Bash is required for either production or fixture builds.
 The CLI is **not bundled**: users install it separately from

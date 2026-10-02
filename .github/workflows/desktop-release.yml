@@ -30,9 +30,12 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "27.0"
     steps:
       # The harness follows main; all product builds use the immutable tag below.
+      # Keep checkouts siblings: an ancestor Cargo workspace captures GPUI's
+      # path dependencies and breaks their workspace-inherited dependencies.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
+          path: harness
           persist-credentials: false
       - name: Require an existing alpha draft and native runner
         env:
@@ -96,7 +99,7 @@ jobs:
           app=clients/desktop/dist/app/Phux.app
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign -dv --verbose=4 "$app" 2>&1 | grep -F 'Signature=adhoc'
-          PHUX_MACOS_MIN_MAX=27.0 bash ../scripts/check-binary-portability.sh \
+          PHUX_MACOS_MIN_MAX=27.0 bash ../harness/scripts/check-binary-portability.sh \
             "$app/Contents/MacOS/phux-desktop" \
             "$app/Contents/Resources/phux-desktop-native.darwin-arm64.node"
           mkdir -p "$RUNNER_TEMP/desktop-release"
@@ -112,9 +115,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/desktop-qualified"
           ditto -x -k "$RUNNER_TEMP/desktop-release/$ARCHIVE" "$RUNNER_TEMP/desktop-qualified"
           codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/desktop-qualified/Phux.app"
-          bun clients/desktop/scripts/smoke-app.ts --app "$RUNNER_TEMP/desktop-qualified/Phux.app" --phux "$GITHUB_WORKSPACE/source/target/release/phux" --output "$RUNNER_TEMP/desktop-evidence"
+          bun harness/clients/desktop/scripts/smoke-app.ts --app "$RUNNER_TEMP/desktop-qualified/Phux.app" --phux "$GITHUB_WORKSPACE/source/target/release/phux" --output "$RUNNER_TEMP/desktop-evidence"
       - name: Exercise installer transactions
-        run: python3 scripts/test-install-desktop.py
+        run: python3 harness/scripts/test-install-desktop.py
       - name: Retain packaged runtime evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
