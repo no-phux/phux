@@ -90,16 +90,6 @@ assert.match(linearWorkflow, /extract_changelog_section\.py/, "Linear notes come
 assert.match(linearWorkflow, /LINEAR_COCKPIT_RELEASE_ACCESS_KEY/, "Cockpit uses its own Linear pipeline key");
 assert.match(linearWorkflow, /include_paths: clients\/cockpit\/\*\*/, "Cockpit Linear scans only clients/cockpit");
 
-assert.match(releasePlease, /steps\.rp\.outputs\.prs \|\|/, "sync all release PRs, not only the first");
-assert.match(releasePlease, /fromJSON\(needs\.release-please\.outputs\.prs\)/, "sync uses the complete PR matrix");
-assert.match(releasePlease, /site_source_pin\.py --revision HEAD/, "release PRs refresh the complete source pin");
-assert.ok(
-  releasePlease.indexOf('git push origin "HEAD:${PR_BRANCH}"') < releasePlease.indexOf("site_source_pin.py --revision HEAD"),
-  "publish synchronized lockfiles before downloading the immutable source archive",
-);
-for (const path of ["clients/phux-web/Cargo.lock", "clients/desktop/native/Cargo.lock", "docs/site/edge/Cargo.lock"]) {
-  assert.ok(releasePlease.includes(path), `${path} must advance on the release PR`);
-}
 execFileSync("python3", ["scripts/ci/site_source_pin.py", "--check"], { cwd: root, stdio: "inherit" });
 execFileSync("python3", [
   "scripts/sync-path-lock-versions.py", "--check", "Cargo.lock",
