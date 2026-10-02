@@ -237,6 +237,9 @@ capture GPUI's path dependencies and break workspace inheritance. The lane runs
 runtime qualification.
 The native build entry point supports the runner's system Bash 3.2; no newer
 Homebrew Bash is required for either production or fixture builds.
+The runner setup downloads Xcode's separate Metal Toolchain component and executes
+`xcrun metal --version` before compiling; Xcode alone does not provide the shader
+compiler on fresh hosted runners.
 The CLI is **not bundled**: users install it separately from
 <https://phux.sh/install>, and installing the desktop never upgrades a running
 coordinator. The app is explicitly **ad-hoc signed, not Apple-notarized**;
