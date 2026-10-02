@@ -434,6 +434,12 @@ impl Publication {
         self.slot_arc(key).is_some_and(|slot| slot.defer())
     }
 
+    /// Whether the owner deferred `key`'s projection past its current frame.
+    pub(crate) fn stale(&self, key: &FrameKey) -> bool {
+        self.slot_arc(key)
+            .is_some_and(|slot| slot.stale.load(Ordering::SeqCst))
+    }
+
     /// Hand `key`'s current frame to the consumer whose acquire asked for a
     /// catch-up, marking it read. Owner thread only, so no publish lands
     /// between the load and the mark.

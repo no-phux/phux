@@ -3,7 +3,7 @@
 use super::{
     BoundedSelectionText, Command, EngineDocumentPoint, EngineError, EngineHandle, EngineOutcome,
     Query, ReplicaInfo, ResourceId, Scroll, SearchMatch, SelectionGestureEvent,
-    SelectionGestureResult, Sender, TextRegion,
+    SelectionGestureResult, Sender, TextRegion, ViewPresentation,
 };
 use crate::ViewId;
 
@@ -69,6 +69,16 @@ impl EngineHandle {
     /// Shared replica facts with this view's unread-history count.
     pub fn view_replica_info(&self, view: ViewId) -> Result<ReplicaInfo, EngineError> {
         self.request_view(view, Query::ReplicaInfo)?
+    }
+
+    /// This view's replica facts and current frame from one owner turn, so
+    /// they agree: a deferred projection is caught up first, and the frame
+    /// is marked read as [`crate::publication::TerminalPublication::acquire`]
+    /// marks it. A painter validating every draw needs this one round trip
+    /// instead of [`Self::view_replica_info`] plus an acquire that may block
+    /// on a second, catch-up, turn.
+    pub fn present_view(&self, view: ViewId) -> Result<ViewPresentation, EngineError> {
+        self.request_view(view, Query::Present)?
     }
 
     /// Add predictive text to this view only.

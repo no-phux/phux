@@ -720,3 +720,43 @@ fn a_presentation_behind_another_reader_republishes_in_full() {
     assert_eq!(frame.damage, GridDamage::Full);
     assert_eq!(frame.dirty_rows().count(), usize::from(frame.rows));
 }
+
+/// A painter's one-turn read: a deferred view is caught up inside the same
+/// owner turn that reports its replica, so the two always agree, and the
+/// handed-off frame counts as read so the next batch publishes eagerly.
+#[test]
+fn present_view_catches_up_and_agrees_with_its_replica_in_one_turn() {
+    let (owner, publication) = owner();
+    let terminal = id(151);
+    attach(&owner, &terminal, b"first\r\nsecond");
+    let view = owner.create_view(&terminal).unwrap();
+    // Unread since creation: these batches defer the view's projection.
+    let before = publication.view_generation(view).unwrap();
+    output(&owner, &terminal, 1, b"\x1b[1;1HA");
+    output(&owner, &terminal, 2, b"\x1b[1;1HB");
+    assert_eq!(publication.view_generation(view), Some(before));
+
+    let presented = owner.present_view(view).unwrap();
+    let frame = presented.frame.expect("published view");
+    assert_eq!(frame.row_text(0), "Birst");
+    assert_eq!(presented.replica.last_seq, 2);
+    assert_eq!(
+        (frame.stream_id, frame.bootstrap_id, frame.last_seq),
+        (
+            presented.replica.stream_id,
+            presented.replica.bootstrap_id,
+            presented.replica.last_seq
+        )
+    );
+    assert!(presented.replica.input_ready);
+    assert_eq!(publication.view_generation(view), Some(frame.generation));
+
+    // Read: the next batch publishes without a catch-up.
+    output(&owner, &terminal, 3, b"\x1b[1;1HC");
+    assert_eq!(
+        publication.view_generation(view),
+        Some(frame.generation + 1)
+    );
+    owner.destroy_view(view).unwrap();
+    assert!(owner.present_view(view).is_err());
+}

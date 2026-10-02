@@ -16,7 +16,7 @@ use super::{
     EngineDocumentPoint, EngineDocumentSelection, EngineError, FrameKey, GhosttyAdapter,
     GhosttyReplica, GridBuffer, GridDamage, GridFrame, GridProjector, HashMap, MouseMode,
     Publication, ReplicaInfo, Rgb, Scroll, ScrollViewport, Scrollbar, SearchMatch, SearchResults,
-    SelectionGestureEvent, SelectionGestureResult, TextRegion,
+    SelectionGestureEvent, SelectionGestureResult, TextRegion, ViewPresentation,
 };
 #[cfg(feature = "engine")]
 use libghostty_vt::selection::gesture::{
@@ -307,6 +307,9 @@ impl Owner {
             Query::ReplicaInfo(id, reply) => {
                 let _ = reply.send(self.replica_info(&id));
             }
+            Query::Present(id, reply) => {
+                let _ = reply.send(self.present(&id));
+            }
             Query::MouseMode(id, reply) => {
                 let _ = reply.send(self.mouse_mode(&id));
             }
@@ -468,6 +471,27 @@ impl Owner {
             Err(error) => tracing::warn!(?key, %error, "grid catch-up failed"),
         }
         self.publication.hand_off(key)
+    }
+
+    /// The active presentation's replica facts and frame, caught up first
+    /// when its projection was deferred, read in this one turn so the frame
+    /// is exactly the replica's state. Marks the frame read, as an acquire
+    /// does.
+    #[cfg(feature = "engine")]
+    fn present(&mut self, id: &ResourceId) -> Result<ViewPresentation, EngineError> {
+        let key = self
+            .active_view
+            .map_or_else(|| FrameKey::Default(id.clone()), FrameKey::View);
+        crate::perf::ACQUIRED.incr();
+        if self.publication.stale(&key) {
+            let _timed = crate::perf::CATCH_UP_EXECUTE.timer();
+            self.render_and_publish(id)?;
+            crate::perf::CAUGHT_UP.incr();
+        }
+        Ok(ViewPresentation {
+            replica: self.replica_info(id)?,
+            frame: self.publication.hand_off(&key),
+        })
     }
 
     /// Record which terminals gained or lost a projection in effect order,
@@ -691,6 +715,10 @@ impl Owner {
                 status
             }),
             document_revision: self.document_revisions.get(id).copied().unwrap_or(0),
+            input_ready: matches!(
+                self.kernel.input_eligibility(id),
+                InputEligibility::Eligible { .. }
+            ),
         })
     }
 

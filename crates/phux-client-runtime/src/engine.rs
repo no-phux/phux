@@ -312,6 +312,23 @@ pub struct ReplicaInfo {
     pub history: Option<HistoryStatus>,
     /// Revision of the document visible to document handles.
     pub document_revision: u64,
+    /// Whether the terminal accepts input now, as [`EngineHandle::input_ready`]
+    /// answers, read in the same owner turn so a consumer validating a
+    /// presentation needs one round trip, not two.
+    pub input_ready: bool,
+}
+
+/// One view as a single owner turn saw it: its replica facts and the frame
+/// published for exactly that state, caught up first if its projection was
+/// deferred. See [`EngineHandle::present_view`].
+#[cfg(feature = "engine")]
+#[derive(Debug, Clone)]
+pub struct ViewPresentation {
+    /// The replica behind the view.
+    pub replica: ReplicaInfo,
+    /// The view's current frame, now marked read; `None` before its first
+    /// publication.
+    pub frame: Option<Arc<GridFrame>>,
 }
 
 /// Mouse tracking mode, matching the C ABI's stable numeric vocabulary.
@@ -511,6 +528,8 @@ enum Query {
     Republish(ResourceId, Sender<Result<bool, EngineError>>),
     #[cfg(feature = "engine")]
     ReplicaInfo(ResourceId, Sender<Result<ReplicaInfo, EngineError>>),
+    #[cfg(feature = "engine")]
+    Present(ResourceId, Sender<Result<ViewPresentation, EngineError>>),
     #[cfg(feature = "engine")]
     MouseMode(ResourceId, Sender<Result<MouseMode, EngineError>>),
     #[cfg(feature = "engine")]
