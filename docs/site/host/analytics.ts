@@ -14,6 +14,7 @@ import {
   MemberCrypto,
   readLimitedBody,
 } from "./analytics-runtime";
+import { inviteTester, type TestFlightEnv } from "./testflight";
 
 export {
   AnalyticsHttp,
@@ -205,34 +206,120 @@ export function handleJoin(
   return Effect.gen(function* () {
     const input = yield* decodeJoinRequest(request);
     const email = input.email.trim().toLowerCase();
-    if (!Schema.is(Email)(email)) {
-      return {
-        response: Response.json(
-          { ok: false, error: "invalid email" },
-          { status: 400 },
-        ),
-      };
-    }
-    const memberId = yield* memberIdForEmail(memberKey, email);
-    const envelope = yield* buildEnvelope(
-      request,
-      new Response(null, { status: 200 }),
-    );
+    if (!Schema.is(Email)(email)) return invalidEmail();
     return {
       response: Response.json(
         { ok: true },
         { headers: { "cache-control": "no-store" } },
       ),
-      background: forwardEnvelope(env, {
-        ...envelope,
-        kind: "signup",
+      background: yield* signupBackground(
+        request,
+        env,
+        memberKey,
         email,
-        source: input.source.slice(0, 120),
-        member_id: memberId,
-        path: "/api/join",
-      }),
+        input.source.slice(0, 120),
+      ),
     };
-  }).pipe(
+  }).pipe(recoverRequestFailures);
+}
+
+/**
+ * POST /api/beta — TestFlight access request for phux-mobile. Apple sends the
+ * invite when App Store Connect is configured (host/testflight.ts); the
+ * request is also recorded as a member signup whose source carries the
+ * outcome, so `testflight:failed` and `testflight:unconfigured` rows are the
+ * manual-invite queue.
+ */
+export function handleBeta(
+  request: Request,
+  env: AnalyticsEnv & TestFlightEnv,
+  invite: typeof inviteTester = inviteTester,
+): Effect.Effect<AnalyticsHandlerResult, never, MemberCrypto> {
+  return Effect.gen(function* () {
+    const input = yield* decodeJoinRequest(request);
+    const email = input.email.trim().toLowerCase();
+    if (!Schema.is(Email)(email)) return invalidEmail();
+    // The hidden field is invisible to people; only form-filling bots set it.
+    if (input.website) {
+      return { response: Response.json({ ok: true, status: "requested" }) };
+    }
+    const outcome = yield* Effect.promise(() => invite(env, email));
+    const recorded = Boolean(env.MEMBER_KEY) && canForward(env);
+    if (outcome !== "invited" && !recorded) {
+      const unconfigured = outcome === "unconfigured";
+      return {
+        response: Response.json(
+          {
+            ok: false,
+            error: unconfigured
+              ? "beta requests are not configured"
+              : "could not reach TestFlight, try again",
+          },
+          { status: unconfigured ? 503 : 502 },
+        ),
+      };
+    }
+    return {
+      response: Response.json(
+        { ok: true, status: outcome === "invited" ? "invited" : "requested" },
+        { headers: { "cache-control": "no-store" } },
+      ),
+      background: recorded
+        ? yield* signupBackground(
+            request,
+            env,
+            env.MEMBER_KEY!,
+            email,
+            `testflight:${outcome}`,
+          )
+        : undefined,
+    };
+  }).pipe(recoverRequestFailures);
+}
+
+const signupBackground = Effect.fnUntraced(function*(
+  request: Request,
+  env: AnalyticsEnv,
+  memberKey: string,
+  email: string,
+  source: string,
+): Effect.fn.Return<
+  Effect.Effect<void, HttpFailure, AnalyticsHttp>,
+  CryptoFailure,
+  MemberCrypto
+> {
+  const memberId = yield* memberIdForEmail(memberKey, email);
+  const envelope = yield* buildEnvelope(
+    request,
+    new Response(null, { status: 200 }),
+  );
+  return forwardEnvelope(env, {
+    ...envelope,
+    kind: "signup",
+    email,
+    source,
+    member_id: memberId,
+    path: new URL(request.url).pathname,
+  });
+});
+
+function invalidEmail(): AnalyticsHandlerResult {
+  return {
+    response: Response.json(
+      { ok: false, error: "invalid email" },
+      { status: 400 },
+    ),
+  };
+}
+
+function recoverRequestFailures<R>(
+  program: Effect.Effect<
+    AnalyticsHandlerResult,
+    BodyReadFailure | CryptoFailure,
+    R
+  >,
+): Effect.Effect<AnalyticsHandlerResult, never, R> {
+  return program.pipe(
     Effect.catchTag("BodyReadFailure", (error) =>
       Effect.succeed({
         response: Response.json(
@@ -306,11 +393,19 @@ export function handleClaim(
 const JoinInput = Schema.Struct({
   email: Schema.String,
   source: Schema.optionalKey(Schema.String),
+  website: Schema.optionalKey(Schema.String),
 });
+
+interface JoinRequest {
+  readonly email: string;
+  readonly source: string;
+  /** Honeypot: a field hidden from people, so only bots fill it. */
+  readonly website: string;
+}
 
 function decodeJoinRequest(
   request: Request,
-): Effect.Effect<{ readonly email: string; readonly source: string }, BodyReadFailure> {
+): Effect.Effect<JoinRequest, BodyReadFailure> {
   return Effect.gen(function* () {
     const bytes = yield* readLimitedBody(request, MAX_JOIN_BODY_BYTES);
     const contentType = request.headers.get("content-type") ?? "";
@@ -318,7 +413,11 @@ function decodeJoinRequest(
     const decoded = yield* Schema.decodeUnknownEffect(JoinInput)(value).pipe(
       Effect.mapError(() => new BodyReadFailure({ reason: "malformed" })),
     );
-    return { email: decoded.email, source: decoded.source ?? "" };
+    return {
+      email: decoded.email,
+      source: decoded.source ?? "",
+      website: decoded.website ?? "",
+    };
   });
 }
 
@@ -335,7 +434,11 @@ function parseBody(
   }
   if (contentType.includes("application/x-www-form-urlencoded")) {
     const params = new URLSearchParams(text);
-    return Effect.succeed({ email: params.get("email"), source: params.get("source") ?? "" });
+    return Effect.succeed({
+      email: params.get("email"),
+      source: params.get("source") ?? "",
+      website: params.get("website") ?? "",
+    });
   }
   return Effect.fail(new BodyReadFailure({ reason: "malformed" }));
 }

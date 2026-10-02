@@ -9,6 +9,7 @@
  */
 import { routeRequest } from "./routes";
 import { handleAssociationRequest } from "./pairing";
+import type { TestFlightEnv } from "./testflight";
 import { estimateTokens, htmlToMarkdown, wantsMarkdown } from "./markdown";
 import {
   TelemetryDO,
@@ -21,7 +22,7 @@ import {
 
 export { TelemetryDO };
 
-export interface Env {
+export interface Env extends TestFlightEnv {
   ASSETS: { fetch(input: Request): Promise<Response> };
   TELEMETRY?: TelemetryNamespace;
   /** Shared secret for the demo worker's cross-worker telemetry ingest. */
@@ -83,8 +84,13 @@ export default {
     if (url.pathname === "/api/telemetry/ingest") {
       return telemetryIngest(request, env);
     }
-    // Voluntary member signup (the join-the-beta form) and device claim.
-    if (url.pathname === "/api/join" || url.pathname === "/api/claim") {
+    // Voluntary member signup (the release-updates form), TestFlight access
+    // requests for phux-mobile (host/testflight.ts), and device claim.
+    if (
+      url.pathname === "/api/join" ||
+      url.pathname === "/api/beta" ||
+      url.pathname === "/api/claim"
+    ) {
       // Static imports would initialize the Effect HTTP stack on asset requests.
       const { handleAnalyticsHttp } = await import("./analytics-http");
       return handleAnalyticsHttp(request, env, ctx);

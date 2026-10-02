@@ -120,6 +120,39 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
     </p>
   </section>
 
+  <section class="wrap join" id="testflight">
+    <div class="join-copy">
+      <h2>phux for iPhone</h2>
+      <p>
+        The phux terminal, in your pocket. Pair with your phux server, then
+        watch and drive the same terminals from iPhone. The app is in
+        TestFlight beta: request access and Apple emails you the invite.
+      </p>
+    </div>
+    <form class="join-form" id="beta-form">
+      <input
+        type="email"
+        name="email"
+        required
+        autocomplete="email"
+        placeholder="you@example.com"
+        aria-label="Email address for the TestFlight invite"
+      />
+      <input
+        class="join-trap"
+        type="text"
+        name="website"
+        tabindex="-1"
+        autocomplete="off"
+        aria-hidden="true"
+      />
+      <button type="submit">Request access</button>
+      <p class="join-note" id="beta-note" aria-live="polite">
+        Use the address of your Apple Account so the invite opens in TestFlight.
+      </p>
+    </form>
+  </section>
+
   <section class="wrap join" id="beta">
     <div class="join-copy">
       <h2>Release updates</h2>
@@ -194,6 +227,13 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
   .join-note a {
     color: inherit;
   }
+  .join-trap {
+    position: absolute;
+    left: -10000px;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+  }
   @media (max-width: 720px) {
     .join {
       grid-template-columns: 1fr;
@@ -240,6 +280,40 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
           ? "You're on the list."
           : "Could not subscribe: " + (result.error ?? "try again.");
         if (result.ok) form.reset();
+      } catch {
+        note.textContent = "Could not connect. Try again.";
+      } finally {
+        button.disabled = false;
+      }
+    });
+  })();
+
+  // phux for iPhone → POST /api/beta (TestFlight invite via App Store Connect)
+  (() => {
+    const form = document.getElementById("beta-form");
+    if (!form) return;
+    const note = document.getElementById("beta-note");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const email = form.email.value.trim();
+      const button = form.querySelector("button");
+      button.disabled = true;
+      try {
+        const response = await fetch("/api/beta", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ email, website: form.website.value }),
+        });
+        const result = await response.json();
+        if (!result.ok) {
+          note.textContent = "Could not request access: " + (result.error ?? "try again.");
+          return;
+        }
+        note.textContent =
+          result.status === "invited"
+            ? "Invite sent. Check " + email + " for an email from TestFlight."
+            : "Request received. The TestFlight invite will go to " + email + ".";
+        form.reset();
       } catch {
         note.textContent = "Could not connect. Try again.";
       } finally {

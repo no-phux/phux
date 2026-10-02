@@ -80,6 +80,26 @@ also hold `MEMBER_CLAIM_KEY_PREVIOUS`. The private MCP operator surface uses
 `OPS_MCP_KEY`; the service-bound producer receives no operator credential. All
 of this is disclosed on `/telemetry`.
 
+### TestFlight access requests (`/api/beta`)
+
+The "phux for iPhone" form on the landing page posts to `/api/beta`
+(`host/testflight.ts`). The Worker adds the address to an external TestFlight
+group of `dev.phux.mobile` through the App Store Connect API, and Apple emails
+the invite. It reuses the phux-mobile release lane's team API key, set as
+Worker secrets:
+
+```bash
+printf %s "$KEY_ID" | bunx wrangler secret put ASC_KEY_ID
+printf %s "$ISSUER_ID" | bunx wrangler secret put ASC_ISSUER_ID
+bunx wrangler secret put ASC_PRIVATE_KEY < ~/.appstoreconnect/private_keys/AuthKey_$KEY_ID.p8
+```
+
+The first external group is used unless `ASC_BETA_GROUP` (a group name) or
+`ASC_BETA_GROUP_ID` pins one. Every request is also recorded on the member
+list with source `testflight:<outcome>`; `testflight:failed` and
+`testflight:unconfigured` rows are the manual-invite queue. Without the
+secrets the form still records requests.
+
 ### The curl installers
 
 `https://phux.sh/install` and `https://phux.sh/install.sh` serve the repo's

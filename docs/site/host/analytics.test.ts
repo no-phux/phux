@@ -4,6 +4,7 @@ import {
   buildEnvelope,
   createClaimToken,
   forwardEnvelope,
+  handleBeta,
   handleClaim,
   handleJoin,
   memberIdForEmail,
@@ -185,6 +186,88 @@ describe("handleJoin", () => {
   });
 });
 
+describe("handleBeta", () => {
+  const betaRequest = (body: Record<string, string>) =>
+    new Request("https://phux.sh/api/beta", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  test("invites through TestFlight and records the outcome as a signup", async () => {
+    const forwarded: Request[] = [];
+    const env = {
+      ...ENV,
+      ANALYTICS: {
+        fetch: async (request: Request) => {
+          forwarded.push(request);
+          return new Response(null, { status: 204 });
+        },
+      },
+    };
+    const invited: string[] = [];
+    const result = await runAnalytics(
+      handleBeta(betaRequest({ email: " A@B.co " }), env, async (_env, email) => {
+        invited.push(email);
+        return "invited";
+      }),
+    );
+    expect(invited).toEqual(["a@b.co"]);
+    expect(await result.response.json()).toEqual({ ok: true, status: "invited" });
+    await runAnalytics(result.background!);
+    const { events } = (await forwarded[0]!.json()) as { events: Record<string, unknown>[] };
+    expect(events[0]).toMatchObject({
+      kind: "signup",
+      email: "a@b.co",
+      source: "testflight:invited",
+      path: "/api/beta",
+    });
+  });
+
+  test("queues the request when Apple is unconfigured or failing", async () => {
+    for (const outcome of ["unconfigured", "failed"] as const) {
+      const result = await runAnalytics(
+        handleBeta(betaRequest({ email: "a@b.co" }), ENV, async () => outcome),
+      );
+      expect(await result.response.json()).toEqual({ ok: true, status: "requested" });
+      expect(result.background).toBeDefined();
+    }
+  });
+
+  test("errors when the request can be neither invited nor recorded", async () => {
+    const bare = { ASSETS: ENV.ASSETS };
+    const unconfigured = await runAnalytics(
+      handleBeta(betaRequest({ email: "a@b.co" }), bare, async () => "unconfigured"),
+    );
+    expect(unconfigured.response.status).toBe(503);
+    const failed = await runAnalytics(
+      handleBeta(betaRequest({ email: "a@b.co" }), bare, async () => "failed"),
+    );
+    expect(failed.response.status).toBe(502);
+    const invited = await runAnalytics(
+      handleBeta(betaRequest({ email: "a@b.co" }), bare, async () => "invited"),
+    );
+    expect(await invited.response.json()).toEqual({ ok: true, status: "invited" });
+    expect(invited.background).toBeUndefined();
+  });
+
+  test("rejects bad emails and drops honeypot submissions without inviting", async () => {
+    let calls = 0;
+    const invite = async () => {
+      calls += 1;
+      return "invited" as const;
+    };
+    const bad = await runAnalytics(handleBeta(betaRequest({ email: "nope" }), ENV, invite));
+    expect(bad.response.status).toBe(400);
+    const bot = await runAnalytics(
+      handleBeta(betaRequest({ email: "a@b.co", website: "spam.example" }), ENV, invite),
+    );
+    expect(await bot.response.json()).toEqual({ ok: true, status: "requested" });
+    expect(bot.background).toBeUndefined();
+    expect(calls).toBe(0);
+  });
+});
+
 describe("handleClaim", () => {
   test("accepts full-length expiring proofs and supports one rotation key", async () => {
     const memberId = (
@@ -248,7 +331,12 @@ describe("analytics HttpRouter", () => {
       new Request("https://phux.sh/api/claim", { method: "POST" }),
       ENV,
     );
+    const beta = await handleAnalyticsHttp(
+      new Request("https://phux.sh/api/beta"),
+      ENV,
+    );
     expect(join.status).toBe(405);
+    expect(beta.status).toBe(405);
     expect(claim.status).toBe(405);
   });
 });
