@@ -9,6 +9,33 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.49.0](https://github.com/no-phux/phux/compare/v0.48.0...v0.49.0) (2026-10-02)
+
+
+### Features
+
+* **site:** request TestFlight access for phux for iPhone ([7489c65](https://github.com/no-phux/phux/commit/7489c65c49fc41fa79c36ce8961b264952cdf792))
+
+
+### Bug Fixes
+
+* **release:** report only published tags with bounded issue ranges ([a03ecba](https://github.com/no-phux/phux/commit/a03ecbad9845a3d69f25c3a756dd4efb375e22a2))
+* **release:** reset persisted authorization before fetching tags ([dd7ac73](https://github.com/no-phux/phux/commit/dd7ac73076f07c11c8d4841f2690e90258e68910))
+* **release:** synchronize source pins, lock versions, and Linear reports ([527c10c](https://github.com/no-phux/phux/commit/527c10c2b67ff86246cf6aa054cf89a8f15bd73c))
+* **runtime:** repair IPv6 dialing and blocked-write teardown ([81e96e9](https://github.com/no-phux/phux/commit/81e96e9370cddcea54cf59b415f2c41edd83c766))
+
+
+### Performance
+
+* **desktop:** instrument the host, reuse scenes, scope and pace repaints ([#980](https://github.com/no-phux/phux/issues/980)) ([04e3826](https://github.com/no-phux/phux/commit/04e38260cf69a4f0c5b2e243b198dddc56b9bb9a))
+* instrument pipeline stages and remove hot-path allocations ([248598c](https://github.com/no-phux/phux/commit/248598c2b480225798adcea195908c079f46e98a))
+
+
+### Documentation
+
+* **perf:** clarify backlog sampling after overflow ([c77967b](https://github.com/no-phux/phux/commit/c77967bc82485873de8a8b6052c439845243b534))
+* **site:** add a support page for the phux apps ([9852e0c](https://github.com/no-phux/phux/commit/9852e0ce743a20e870065ffe69f422d6516cfc43))
+
 ## [0.48.0](https://github.com/no-phux/phux/compare/v0.47.0...v0.48.0) (2026-10-02)
 
 
