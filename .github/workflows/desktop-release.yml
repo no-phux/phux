@@ -150,6 +150,5 @@ jobs:
           if ! grep -Fq "$marker" "$notes"; then
             printf '\n%s\n\nApple silicon macOS 27 or later. Requires a separately installed phux CLI (https://phux.sh/install); this app does not install or upgrade your coordinator.\n' "$marker" >> "$notes"
           fi
-          release_id="$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)"
-          gh api --method PATCH "repos/$GH_REPO/releases/$release_id" \
-            -F body=@"$notes" -F draft=false -F prerelease=true -f make_latest=false
+          gh release edit "$RELEASE_TAG" --notes-file "$notes" \
+            --draft=false --prerelease --latest=false

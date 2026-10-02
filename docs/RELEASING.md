@@ -250,8 +250,10 @@ Before uploading, the lane verifies `codesign`, extracts the ZIP, and runs
 against isolated server state. The smoke must prove rendered terminal output
 and retained sessions across client termination/relaunch; installer transaction
 checks run separately. After upload, downloaded checksums and bytes must match
-before the API changes `draft` to false, `prerelease` to true, and `make_latest`
-to false. This train does not alter the CLI `next` channel or a Homebrew cask.
+before `gh release edit` publishes the draft with `--draft=false --prerelease
+--latest=false`. Use this draft-aware command: the REST release-by-tag endpoint
+does not resolve unpublished drafts. This train does not alter the CLI `next`
+channel or a Homebrew cask.
 
 To recover a draft, dispatch **publish** with
 `tag=desktop-v0.1.0-alpha.1` (or its later alpha tag), never the leaf workflow.
