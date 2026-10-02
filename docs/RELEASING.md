@@ -232,6 +232,8 @@ desktop-v0.1.0-alpha.1
 The reusable desktop workflow keeps its harness on `main` and checks out the
 immutable tag separately for every product build. It runs `just desktop-package`
 and builds a release-profile CLI from the same source for runtime qualification.
+The native build entry point supports the runner's system Bash 3.2; no newer
+Homebrew Bash is required for either production or fixture builds.
 The CLI is **not bundled**: users install it separately from
 <https://phux.sh/install>, and installing the desktop never upgrades a running
 coordinator. The app is explicitly **ad-hoc signed, not Apple-notarized**;
