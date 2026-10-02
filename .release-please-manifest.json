@@ -1,6 +1,7 @@
 {
   ".": "0.47.0",
   "clients/cockpit": "0.32.0",
+  "clients/desktop": "0.0.0",
   "integrations/pi": "0.4.0",
   "integrations/claude": "0.4.0"
 }

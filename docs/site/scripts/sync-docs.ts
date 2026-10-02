@@ -76,6 +76,10 @@ const INSTALLERS: { src: string; dests: readonly [string, string] }[] = [
     src: join(PHUX_ROOT, "scripts/install-cockpit.sh"),
     dests: ["public/install-cockpit", "public/install-cockpit.sh"],
   },
+  {
+    src: join(PHUX_ROOT, "scripts/install-desktop.sh"),
+    dests: ["public/install-desktop", "public/install-desktop.sh"],
+  },
 ];
 
 function sourceRevision(): string {
@@ -91,7 +95,7 @@ const GH_BLOB = `https://github.com/no-phux/phux/blob/${SOURCE_REVISION}`;
 const GH_TREE = `https://github.com/no-phux/phux/tree/${SOURCE_REVISION}`;
 
 /**
- * Publish the installer scripts at /install(+.sh) and /install-cockpit(+.sh).
+ * Publish the CLI, Cockpit and GPUIX desktop installers (also with .sh suffix).
  *
  * Nothing here is committed — every destination is gitignored and rewritten on
  * every build — so the bytes a stranger pipes to `sh` cannot drift from the
@@ -112,7 +116,7 @@ async function syncInstaller(): Promise<void> {
       await writeFile(join(ROOT, dest), script, { mode: 0o755 });
     }
   }
-  console.log("sync-docs: published the installers at /install and /install-cockpit (+.sh)");
+  console.log("sync-docs: published /install, /install-cockpit and /install-desktop (+.sh)");
 }
 
 /** Nav groups, in sidebar render order. */

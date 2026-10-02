@@ -1,15 +1,38 @@
 # phux desktop
 
-[Install the GPUIX/Solid desktop demo](../../docs/INSTALL.md#desktop-demo)
-on an Apple-silicon Mac. The install guide covers prerequisites, building
-`Phux.app`, and choosing the server session.
+Install the GPUIX desktop alpha on Apple-silicon macOS 27 or later with the
+[phux CLI](https://phux.sh/install) already installed:
 
-The bundle contains the shell and launcher compiled into one executable,
-with the release native addon beside it.
+```sh
+curl -fsSL https://phux.sh/install-desktop | sh
+```
 
+The installer selects only published `desktop-vX.Y.Z-alpha.N` prereleases,
+verifies the ZIP checksum and app signature, and installs `Phux.app` plus a
+`phux-desktop` launcher. It never replaces the CLI or stops its server.
+Run it again to update; pin or roll back with
+`sh -s -- --version 0.1.0-alpha.1` after the pipe. `--applications-dir` and
+`--bin-dir` select alternate destinations. Releases are ad-hoc signed, **not
+Apple-notarized**; after verification the installer clears quarantine.
+
+Launched from the Dock or Spotlight, the app uses your installed `phux` CLI
+(`~/.local/bin/phux`, `~/.cargo/bin/phux`, `/opt/homebrew/bin/phux`, or
+`/usr/local/bin/phux`) to start or reuse your server. The installer requires
+one of these persistent locations; a shell-only `PATH` or `PHUX_BIN` is not
+enough for a Dock launch. It attaches `default`, otherwise an existing session.
+`PHUX_PROFILE`, `PHUX_SOCKET` and `PHUX_SESSION` override that choice.
 Startup problems are shown in the window and logged to
-`~/Library/Logs/phux-desktop.log`. `just desktop-package` builds the bundle
-without installing it.
+`~/Library/Logs/phux-desktop.log`.
+
+Closing a pane/window or quitting the app detaches; it does not terminate
+server-owned shells. A desktop crash is separate from a server crash:
+relaunching can reattach while the server remains alive, but this alpha
+does **not** promise process survival after a server crash or machine reboot.
+Only **Terminate Terminal Process** intentionally ends a terminal.
+
+`just desktop-package` builds the app without installing it.
+`just desktop-install-app` builds and installs `/Applications/Phux.app`.
+Release ownership and qualification are in [Releasing](../../docs/RELEASING.md).
 
 For development, run from this checkout instead:
 
@@ -109,8 +132,10 @@ the focused terminal (a satellite's own disk for a satellite pane), never this
 Mac's; it needs a server that advertises `PATH_QUERY`. Enter types the chosen
 path as one shell-quoted word and presses nothing else, and only into the pane
 it opened on. **Terminate Terminal Process** (palette only) is the
-one action that ends a process. Layout and display preferences persist per
-server incarnation under `$XDG_STATE_HOME/phux-desktop/`.
+one action that ends a process. Layout and display preferences persist under
+`$XDG_STATE_HOME/phux-desktop/<socket-and-session-hash>/`. Existing
+unscoped layouts are imported without overwriting their originals; terminal
+identity is still checked against the server incarnation.
 Unavailable saved panes retain their split positions until they can attach;
 closing one explicitly removes it. Replacing the daemon retires its old view
 handles rather than rebinding their numeric terminal IDs. Unsupported or
@@ -137,6 +162,18 @@ The GPU capture is `dist/framework/window.png` under this package.
 This fixture verifies the framework, not a working phux terminal application.
 The required CI workflow gate runs `desktop-install` and `desktop-check` on
 every change. GPU/window checks remain a separate macOS qualification step.
+
+The release lane also tests the **packaged app**, not just its source:
+
+```sh
+bun clients/desktop/scripts/smoke-app.ts --app /absolute/Phux.app --phux /absolute/phux
+```
+
+It owns a temporary server, HOME and socket; launches behind the active app;
+checks rendered terminal markers with macOS Vision; and proves the same shell
+PID and non-exported variable survive desktop SIGKILL/relaunch and
+SIGTERM/relaunch. PNGs, OCR and logs are retained at the printed evidence path.
+It does not exercise server crashes, reboot, or restoration of secondary windows.
 
 ## TypeScript tooling
 

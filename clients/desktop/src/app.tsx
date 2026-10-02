@@ -227,13 +227,21 @@ function DesktopApp(props: AppProps): JSX.Element {
     } else {
       return;
     }
-    layouts.write(lastSaved);
+    writeLayout(lastSaved);
   }
 
   function updatePrefs(change: Partial<DisplayPrefs>): void {
     setPrefs((current) => sanitizeDisplay({ ...current, ...change }));
     if (lastSaved || bridge.server()) persist();
-    else layouts.write({ version: 2, serverId: "", tabs: [], display: prefs() });
+    else writeLayout({ version: 2, serverId: "", tabs: [], display: prefs() });
+  }
+
+  function writeLayout(layout: SavedLayout): void {
+    try {
+      layouts.write(layout);
+    } catch (error) {
+      toast({ kind: "error", title: "Could not save desktop layout", body: String(error) });
+    }
   }
 
   // ── Events and notifications ───────────────────────────────────

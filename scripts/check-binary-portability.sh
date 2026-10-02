@@ -57,15 +57,18 @@ ver_key() {
 }
 
 check_macho() {
-  local bin="$1" line lib
+  local bin="$1" line lib identity
+  # A copied/renamed addon retains its original LC_ID_DYLIB. That identifies
+  # this image; it is not a runtime dependency on the build directory.
+  identity="$(otool -D "$bin" | tail -n +2)"
   # Skip the first line (the binary's own path) and the LC_ID_DYLIB of the
   # image itself; every remaining line is a load command.
   while read -r line; do
     lib="${line%% (compatibility*}"
     lib="${lib#"${lib%%[![:space:]]*}"}"
     [ -n "$lib" ] || continue
+    if [ -n "$identity" ] && [ "$lib" = "$identity" ]; then continue; fi
     case "$lib" in
-      "$bin"*) ;;
       /usr/lib/*|/System/Library/*) ;;
       *)
         fail "$bin links a non-system library: $lib"

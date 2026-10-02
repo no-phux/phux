@@ -17,6 +17,12 @@
 /install-cockpit.sh
   Cache-Control: public, max-age=300
 
+/install-desktop
+  Cache-Control: public, max-age=300
+
+/install-desktop.sh
+  Cache-Control: public, max-age=300
+
 /embed
   Content-Security-Policy: frame-ancestors https://phall.io
   Referrer-Policy: strict-origin-when-cross-origin

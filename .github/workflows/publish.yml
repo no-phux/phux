@@ -4,9 +4,9 @@
 # commit is good. Those two finish in either order, so this workflow runs
 # when either of them completes and does nothing until both are true. A
 # daily reconcile catches an event that never arrived, and dispatch is the
-# manual door. Leaf workflows (release.yml, cockpit-release.yml, the FFI
-# builds, agent-integration-release.yml) are called from here. They are not
-# separate buttons.
+# manual door. Leaf workflows (release.yml, cockpit-release.yml,
+# desktop-release.yml, the FFI builds, agent-integration-release.yml) are
+# called from here. They are not separate buttons.
 #
 # A draft older than an already published version of the same component is
 # deleted. The tag stays, so release-please will not cut that version again.
@@ -45,6 +45,7 @@ jobs:
     outputs:
       phux_tag: ${{ steps.plan.outputs.phux_tag }}
       cockpit_tag: ${{ steps.plan.outputs.cockpit_tag }}
+      desktop_tag: ${{ steps.plan.outputs.desktop_tag }}
       integration_tags: ${{ steps.plan.outputs.integration_tags }}
       blocked: ${{ steps.plan.outputs.blocked }}
     steps:
@@ -84,9 +85,20 @@ jobs:
     with:
       tag: ${{ needs.plan.outputs.cockpit_tag }}
 
+  desktop:
+    name: publish desktop alpha
+    needs: plan
+    if: needs.plan.result == 'success' && needs.plan.outputs.desktop_tag != ''
+    uses: ./.github/workflows/desktop-release.yml
+    permissions:
+      contents: write
+    with:
+      tag: ${{ needs.plan.outputs.desktop_tag }}
+
   # Mobile artifacts ride on the root release. They do not gate it: release.yml
   # publishes the CLI tarballs, and a failed framework build is repaired by
   # re-running publish against the same tag.
+
   ffi-xcframework:
     name: attach xcframework
     needs: plan

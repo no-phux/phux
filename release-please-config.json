@@ -30,6 +30,7 @@
       "changelog-path": "CHANGELOG.md",
       "exclude-paths": [
         "clients/cockpit",
+        "clients/desktop",
         "integrations/runtime",
         "integrations/opencode-v2",
         "integrations/pi",
@@ -67,6 +68,19 @@
         { "type": "generic", "path": "app.zon" },
         { "type": "generic", "path": "build.zig.zon" }
       ]
+    },
+    "clients/desktop": {
+      "release-type": "node",
+      "component": "desktop",
+      "separate-pull-requests": true,
+      "include-component-in-tag": true,
+      "include-v-in-tag": true,
+      "tag-separator": "-",
+      "changelog-path": "CHANGELOG.md",
+      "initial-version": "0.1.0-alpha.1",
+      "versioning": "prerelease",
+      "prerelease-type": "alpha.1",
+      "prerelease": true
     },
     "integrations/pi": {
       "release-type": "node",

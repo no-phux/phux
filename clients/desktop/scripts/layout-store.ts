@@ -1,13 +1,23 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 
-export function fileLayoutStore(path: string) {
+export function fileLayoutStore(path: string, legacyPath?: string) {
   return {
     read(): unknown {
       try {
         return parseJson(readFileSync(path, "utf8"));
       } catch (error) {
-        if (isMissing(error)) return undefined;
+        if (isMissing(error)) return legacyPath ? fileLayoutStore(legacyPath).read() : undefined;
         // Present but unreadable is not first launch. The consumer refuses
         // writes for this sentinel, leaving malformed or inaccessible data intact.
         return null;
@@ -15,9 +25,24 @@ export function fileLayoutStore(path: string) {
     },
     write(layout: unknown): void {
       mkdirSync(dirname(path), { recursive: true });
-      const next = `${path}.next`;
-      writeFileSync(next, `${JSON.stringify(layout)}\n`);
-      renameSync(next, path);
+      // Concurrent app processes must never share/truncate a staging file.
+      const next = `${path}.${randomUUID()}.next`;
+      const fd = openSync(next, "wx", 0o600);
+      try {
+        writeFileSync(fd, `${JSON.stringify(layout)}\n`);
+        fsyncSync(fd);
+      } catch (error) {
+        rmSync(next, { force: true });
+        throw error;
+      } finally {
+        closeSync(fd);
+      }
+      try {
+        renameSync(next, path);
+      } catch (error) {
+        rmSync(next, { force: true });
+        throw error;
+      }
     },
   };
 }

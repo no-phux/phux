@@ -393,4 +393,27 @@ describe("workspace restore lifecycle", () => {
       },
     );
   });
+
+  test("a delayed attachment preserves tabs opened and renamed while it was pending", () => {
+    scenario(delayedSplit(), ({ client, workspace, snapshots, wake }) => {
+      client.panes = [pane("local:1"), pane("local:2", "other"), pane("local:3")];
+      client.ready.add("local:1");
+      client.ready.add("local:3");
+      wake();
+      workspace.open(pane("local:3"));
+      const active = workspace.activeId();
+      workspace.renameTab(active, "new work");
+      expect(snapshots.at(-1)?.tabs[0]?.root.kind).toBe("split");
+      client.ready.add("local:2");
+      wake();
+      expect(workspace.activeId()).toBe(active);
+      expect(workspace.tabs().map((tab) => tab.title)).toEqual(["build", "new work"]);
+      expect(leaves(workspace).map((item) => item.terminalId)).toEqual([
+        "local:1",
+        "local:2",
+        "local:3",
+      ]);
+      expect(client.views.size).toBe(3);
+    });
+  });
 });

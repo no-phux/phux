@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Embed one POSIX implementation into the two files served directly to `sh`.
+# Embed one POSIX implementation into the files served directly to `sh`.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mode="${1:---check}"
 [[ $mode == --check || $mode == --write ]] || { echo 'usage: sync-install-resolver.sh [--check|--write]' >&2; exit 2; }
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
-for installer in install.sh install-cockpit.sh; do
+for installer in install.sh install-cockpit.sh install-desktop.sh; do
   awk -v source="$ROOT/scripts/lib/install-release.sh" '
     /^# BEGIN shared release resolver$/ {
       starts++; inside = 1; print

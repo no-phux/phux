@@ -40,7 +40,8 @@ function discover(): { socketPath: string; sessionName: string; startupError?: s
     return {
       socketPath: fallbackSocket,
       sessionName: process.env.PHUX_SESSION ?? "default",
-      startupError: "Install the phux CLI (~/.local/bin/phux) so the desktop can start a server.",
+      startupError:
+        "Install the phux CLI from https://phux.sh/install so the desktop can start a server.",
     };
   }
   try {
