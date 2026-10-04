@@ -561,6 +561,76 @@ fn the_state_tick_is_disarmed_with_nothing_to_emit() {
     );
 }
 
+/// A subscribed but caught-up pane needs no periodic render wakeup.
+#[test]
+fn caught_up_state_sync_disarms_and_mutation_rearms_tick() {
+    let mut actor = TerminalActor::new(20, 5).expect("actor").actor;
+    let (outbound, mut output) = dummy_outbound();
+    actor
+        .register_consumer(ClientId(1), outbound, 11, true)
+        .expect("consumer");
+    assert!(actor.state_tick_armed(), "initial consumer work");
+    actor.tick_emit();
+    while output.try_recv().is_ok() {}
+    assert!(
+        !actor.state_tick_armed(),
+        "clean caught-up consumer must sleep"
+    );
+    actor.vt_write_for_test(b"wake");
+    assert!(actor.state_tick_armed(), "new output rearms the timer");
+    actor.tick_emit();
+    assert!(output.try_recv().is_ok(), "mutation is delivered");
+    assert!(!actor.state_tick_armed(), "caught up again");
+}
+
+#[test]
+fn backpressure_keeps_clean_state_sync_timer_armed_until_retry() {
+    let mut actor = TerminalActor::new(20, 5).expect("actor").actor;
+    let (outbound, mut output) = mpsc::channel(1);
+    actor
+        .register_consumer(ClientId(1), outbound, 11, true)
+        .expect("consumer");
+    actor.vt_write_for_test(b"first");
+    actor.tick_emit();
+    actor.vt_write_for_test(b" second");
+    actor.tick_emit();
+    assert!(!actor.terminal_dirty_since_tick, "tick consumed mutation");
+    assert!(
+        actor.state_tick_armed(),
+        "behind reference still owes a retry"
+    );
+    output.try_recv().expect("first frame");
+    actor.tick_emit();
+    assert!(
+        output.try_recv().is_ok(),
+        "retry delivers without another write"
+    );
+    assert!(!actor.state_tick_armed(), "retry caught up");
+}
+
+#[test]
+fn gated_initial_consumer_keeps_timer_armed_until_live() {
+    let mut actor = TerminalActor::new(20, 5).expect("actor").actor;
+    let (outbound, _output) = dummy_outbound();
+    actor
+        .register_consumer(ClientId(1), outbound, 11, true)
+        .expect("consumer");
+    let (gate, live_gate) = watch::channel(false);
+    actor
+        .consumer_states
+        .get_mut(&ClientId(1))
+        .expect("state")
+        .live_gate = live_gate;
+    actor.tick_emit();
+    assert!(
+        actor.state_tick_armed(),
+        "external gate changes need the initial tick obligation"
+    );
+    gate.send(true).expect("open gate");
+    actor.tick_emit();
+    assert!(!actor.state_tick_armed(), "opened and caught up");
+}
+
 /// An open output burst keeps the tick armed (it owes the `idle`).
 #[test]
 fn an_open_output_burst_arms_the_state_tick() {
@@ -780,6 +850,11 @@ fn loss_tolerant_reference_advances_only_on_ack() {
         );
     }
 
+    assert!(
+        actor.state_tick_armed(),
+        "unacknowledged frames keep retransmission armed"
+    );
+
     // Idle tick with no new content and no elapsed time: the loss-tolerant
     // gate must NOT re-ship the same cumulative delta (no flood).
     actor.tick_emit();
@@ -790,6 +865,10 @@ fn loss_tolerant_reference_advances_only_on_ack() {
 
     // Ack it: the reference advances and the pending snapshot is pruned.
     actor.on_frame_ack(client, seq);
+    assert!(
+        !actor.state_tick_armed(),
+        "acknowledged clean consumer can sleep"
+    );
     {
         let state = actor.consumer_state(client).expect("state");
         assert!(
