@@ -17,7 +17,8 @@ AgentSession events. It neither embeds a terminal nor owns the server.
 ## Requirements and installation
 
 The package requires Node.js 22 or newer, Pi, and `phux` on `PATH`; it does
-not bundle phux. The installed CLI must support `paste`, `agent prompt/wait`,
+not bundle phux. Development and packed-extension load gates pin Pi 1.0.2;
+host-provided Pi modules remain wildcard peers rather than bundled copies. The installed CLI must support `paste`, `agent prompt/wait`,
 `resource wait`, `runtime-info`, and current snapshot/wait options. Older
 binaries may support only part of this surface; unsupported verbs fail
 rather than being emulated. Check the installed version before loading:
@@ -190,7 +191,10 @@ not instructions.
 
 A checkpoint carries Pi's own inherited Terminal id, the selected target, and
 up to 64 sorted pane records: canonical Terminal/session/window identity,
-agent label and kind, lifecycle state, attention, and cwd. The complete message
+agent label and kind, lifecycle state, attention, and cwd. When the CLI supplies
+it, `agent_session` preserves the child log's resource selector, provider and
+bounded native session id; absent and null remain distinct. This is an
+AgentSession drill-in, not a durable coordinator Run. The complete message
 is capped at 8 KiB and reports omitted panes. It never includes screen rows,
 scrollback, titles, detector evidence, explanations, tool output, or
 credentials. Use `phux_snapshot`, `phux_watch_events`, or `phux_panes` when
@@ -239,7 +243,7 @@ navigation reconstructs the latest selection and named-target document on that
 branch.
 
 Restoration never silently falls back to phux's focused pane. Before an
-implicit target is made available to tools or lifecycle reporting, the
+implicit target is made available to tools, the
 extension confirms that the saved pane id still belongs to the saved session
 and window. A missing pane or reused id is **stale**: the selection remains
 visible for diagnosis, but an implicit targeted tool refuses it. An inventory
@@ -249,7 +253,10 @@ explicit target to a tool only when intentionally overriding the selection.
 
 ## Lifecycle metadata
 
-When a target is ownership-validated as available, the extension reports a
+The extension resolves its inherited `PHUX_TERMINAL_ID` against the startup
+inventory and reports identity only on that hosting pane, independently of
+`/phux` control selection. No inherited host or no matching inventory pane means
+no identity writes; it never labels a selected sibling as Pi. It reports a
 `phux.agent/v1` record with `name=pi`, `kind=pi`, and a Pi-session owner in the
 `session` field — **identity only, never a `state`**. A declared `state`
 outranks the server's own derivation for the record's whole lifetime
@@ -265,9 +272,10 @@ shutdown. The server derives working, blocked, and done from this stream.
 If `phux agent session open` is missing or refused with `unsupported_server`,
 emit fails closed; identity-only writes and the detector still run.
 
-Writes are serialized, debounced, and best-effort. A target switch or
-shutdown clears the old declaration only after confirming Pi still owns it;
-a reload keeps it. This is status metadata, not an input lock.
+Writes are serialized, debounced, and best-effort. Changing the selected control
+target or navigating the session tree does not move the hosting declaration or
+AgentSession. Shutdown clears the hosting declaration only after confirming Pi
+still owns it; a reload keeps it. This is status metadata, not an input lock.
 
 ## Current boundaries and security
 

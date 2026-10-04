@@ -422,8 +422,9 @@ test("per-turn events emit on the AgentSession stream and never rewrite identity
   } as unknown as ExtensionAPI;
   const pane = projection(null).agents[0] as AgentPane;
   const store = new PhuxTargetStore({ appendEntry: () => {} }, { agentList: async () => ({ agents: [pane] }) });
-  store.select(pane);
-  const registered = registerPhuxLifecycle(pi, store, { cli: adapter, timers });
+  await store.refresh();
+  store.select({ ...pane, terminal: "@4", session: "other", window: "window-1" });
+  const registered = registerPhuxLifecycle(pi, store, { cli: adapter, timers, hostTerminal: "3" });
   const ctx = {
     sessionManager: { getSessionId: () => "session-1" },
   } as unknown as ExtensionContext;
@@ -435,6 +436,12 @@ test("per-turn events emit on the AgentSession stream and never rewrite identity
   assert.equal(afterStart, 1, "session start declares identity once");
   assert.equal(adapter.sets.at(-1)?.record.state, undefined);
   assert.equal(adapter.opens.length, 1);
+  assert.equal(adapter.sets[0]?.target, "@3", "identity belongs to host, not selected @4");
+  assert.equal(adapter.opens[0]?.target, "@3");
+  store.select({ ...pane, terminal: "@5" });
+  timers.runAll();
+  await registered.lifecycle.settled();
+  assert.equal(adapter.opens.length, 1, "control selection must not rebind AgentSession");
 
   handlers.get("agent_start")?.({ type: "agent_start" }, ctx);
   handlers.get("project_trust")?.({ type: "project_trust", cwd: "/repo" }, ctx);
@@ -448,6 +455,7 @@ test("per-turn events emit on the AgentSession stream and never rewrite identity
     "ask",
     "stop",
   ]);
+  assert.equal(adapter.emits.every((entry) => entry.target === "@3"), true);
   assert.equal(adapter.emits.find((entry) => entry.type === "ask")?.data?.kind, "trust");
   assert.equal(adapter.sets.at(-1)?.record.state, undefined);
 
@@ -460,7 +468,55 @@ test("per-turn events emit on the AgentSession stream and never rewrite identity
   store.select({ ...pane, terminal: "@4", session: "other", window: "window-1" });
   timers.runAll();
   await registered.lifecycle.settled();
-  assert.equal(adapter.sets.length, writesAtShutdown, "shutdown unsubscribes from target changes");
+  assert.equal(adapter.sets.length, writesAtShutdown, "control changes never write identity");
+  assert.equal(adapter.clears.length, 0, "reload preserves the hosting declaration");
+  assert.equal(adapter.sessionCloses.length, 0, "reload preserves AgentSession");
+});
+
+test("hosting identity never falls back to selected control target", async () => {
+  for (const hostTerminal of [undefined, "", "all", "@999"]) {
+    const timers = new FakeTimers();
+    const adapter = new FakeAdapter();
+    const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+    const pi = { on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => handlers.set(name, handler) } as unknown as ExtensionAPI;
+    const pane = projection(null).agents[0] as AgentPane;
+    const store = new PhuxTargetStore({ appendEntry: () => {} }, { agentList: async () => ({ agents: [pane] }) });
+    await store.refresh();
+    store.select(pane);
+    const { lifecycle } = registerPhuxLifecycle(pi, store, {
+      cli: adapter, timers, ...(hostTerminal === undefined ? {} : { hostTerminal }),
+    });
+    const ctx = { sessionManager: { getSessionId: () => "session-1" } };
+    handlers.get("session_start")?.({ reason: "startup" }, ctx);
+    timers.runAll();
+    handlers.get("agent_start")?.({}, ctx);
+    await lifecycle.settled();
+    await handlers.get("session_shutdown")?.({ reason: "quit" }, ctx);
+    assert.deepEqual(adapter.sets, []);
+    assert.deepEqual(adapter.opens, []);
+    assert.deepEqual(adapter.emits, []);
+    assert.deepEqual(adapter.clears, []);
+  }
+});
+
+test("hosting identity works with no selected control target and quits on its own pane", async () => {
+  const timers = new FakeTimers();
+  const adapter = new FakeAdapter();
+  const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+  const pi = { on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => handlers.set(name, handler) } as unknown as ExtensionAPI;
+  const pane = projection(null).agents[0] as AgentPane;
+  const store = new PhuxTargetStore({ appendEntry: () => {} }, { agentList: async () => ({ agents: [pane] }) });
+  await store.refresh();
+  const { lifecycle } = registerPhuxLifecycle(pi, store, { cli: adapter, timers, hostTerminal: "@3" });
+  const ctx = { sessionManager: { getSessionId: () => "session-1" } };
+  handlers.get("session_start")?.({ reason: "startup" }, ctx);
+  timers.runAll();
+  await lifecycle.settled();
+  assert.equal(store.snapshot.selection, null);
+  assert.equal(adapter.sets[0]?.target, "@3");
+  await handlers.get("session_shutdown")?.({ reason: "quit" }, ctx);
+  assert.deepEqual(adapter.clears, ["@3"]);
+  assert.deepEqual(adapter.sessionCloses, ["@3"]);
 });
 
 test("a trust prompt becomes blocked on the AgentSession stream", async () => {

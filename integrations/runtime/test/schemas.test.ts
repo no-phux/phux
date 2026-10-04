@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 
 import {
   parseAgentEmitResult,
+  parseAgentStateList,
   parseAgentSessionOpenResult,
   parseInsertPaneResult,
   parseLaunchResult,
@@ -14,6 +16,44 @@ import {
   parseWatchEvent,
   SchemaValidationError,
 } from "../src/schemas.js";
+
+const agentPane = {
+  terminal: "@8", session: "work", window: "window-0",
+  agent: { id: "pi", label: "Pi", kind: "pi" },
+  state: "working", confidence: 1, attention: "normal",
+  title: null, cwd: null, sources: [], explanation: "fixture",
+};
+
+function inventory(row: unknown) {
+  return parseAgentStateList({ schema_version: 1, agents: [row] }).agents[0];
+}
+
+test("inventory accepts every canonical Rust producer kind and rejects unknown vocabulary", () => {
+  const model = readFileSync(new URL("../../../../crates/phux/src/commands/agent/model.rs", import.meta.url), "utf8");
+  const enumBody = /enum AgentKind \{([\s\S]*?)\n\}/.exec(model)?.[1];
+  assert.ok(enumBody, "producer enum must remain discoverable");
+  const kinds = [...enumBody.matchAll(/^    ([A-Z][A-Za-z]+),$/gm)]
+    .map((match) => match[1]!.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase());
+  assert.deepEqual(kinds, ["codex", "claude", "open_code", "pi", "omp", "plugin", "declared", "unknown"]);
+  const parsed = parseAgentStateList({ schema_version: 1, agents: kinds.map((kind) => ({
+    ...agentPane, agent: { ...agentPane.agent, kind },
+  })) });
+  assert.deepEqual(parsed.agents.map((pane) => pane.agent.kind), kinds);
+  for (const kind of ["opencode", "future-kind", "", null, 3]) {
+    assert.throws(() => inventory({ ...agentPane, agent: { ...agentPane.agent, kind } }), SchemaValidationError);
+  }
+});
+
+test("inventory retains nullable additive AgentSession identity and rejects malformed drill-in", () => {
+  const session = { resource: "@9", provider: "pi", native_id: "pi-session" };
+  assert.equal(inventory(agentPane)?.agent_session, undefined);
+  assert.equal(inventory({ ...agentPane, agent_session: null })?.agent_session, null);
+  assert.deepEqual(inventory({ ...agentPane, agent_session: session })?.agent_session, session);
+  assert.equal(inventory({ ...agentPane, agent_session: { ...session, native_id: null } })?.agent_session?.native_id, null);
+  for (const invalid of [[], "@9", { ...session, resource: "all" }, { ...session, provider: 3 }, { ...session, native_id: 3 }]) {
+    assert.throws(() => inventory({ ...agentPane, agent_session: invalid }), SchemaValidationError);
+  }
+});
 
 test("session-list parser accepts v2 terminal inventory and normalizes v1", () => {
   assert.deepEqual(parseSessionList({ schema_version: 1, sessions: [] }), {

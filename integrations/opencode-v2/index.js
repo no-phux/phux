@@ -539,7 +539,7 @@ function parseRunResult(value) {
     truncated: boolean(root.truncated, "$.truncated")
   };
 }
-var AGENT_KINDS = ["codex", "claude", "plugin", "declared", "unknown"];
+var AGENT_KINDS = ["codex", "claude", "open_code", "pi", "omp", "plugin", "declared", "unknown"];
 var AGENT_STATES = ["unknown", "idle", "working", "blocked", "done"];
 var AGENT_ATTENTION = ["none", "low", "normal", "high"];
 var PANE_SELECTOR = /^(?:[^/\s]+\/)?@\d+$/;
@@ -588,6 +588,9 @@ function parseAgentStateList(value) {
         label: string(identity.label, `${path}.agent.label`),
         kind: oneOf(identity.kind, `${path}.agent.kind`, AGENT_KINDS)
       },
+      ...row.agent_session === undefined ? {} : {
+        agent_session: parseAgentSessionIdentity(row.agent_session, `${path}.agent_session`)
+      },
       state: oneOf(row.state, `${path}.state`, AGENT_STATES),
       confidence: numberInRange(row.confidence, `${path}.confidence`, 0, 1),
       attention: oneOf(row.attention, `${path}.attention`, AGENT_ATTENTION),
@@ -607,6 +610,20 @@ function parseAgentStateList(value) {
     };
   });
   return { schema_version: 1, agents };
+}
+function parseAgentSessionIdentity(value, path) {
+  if (value === null)
+    return null;
+  const row = record(value, path);
+  const resource = string(row.resource, `${path}.resource`);
+  if (!PANE_SELECTOR.test(resource)) {
+    throw new SchemaValidationError(`${path}.resource`, "a canonical resource selector such as @9");
+  }
+  return {
+    resource,
+    provider: string(row.provider, `${path}.provider`),
+    native_id: nullableString(row.native_id, `${path}.native_id`)
+  };
 }
 function isAgentEventType(value) {
   return AGENT_EVENT_TYPES.includes(value);
@@ -1692,9 +1709,21 @@ function projectPane(pane) {
       label: cleanString(pane.agent.label, 160),
       kind: cleanString(pane.agent.kind, 80)
     },
+    ...pane.agent_session === undefined ? {} : {
+      agent_session: projectAgentSession(pane.agent_session)
+    },
     state: cleanString(pane.state, 80),
     attention: cleanString(pane.attention, 80),
     cwd: pane.cwd === null ? null : cleanString(pane.cwd, 320)
+  };
+}
+function projectAgentSession(session) {
+  if (session === null)
+    return null;
+  return {
+    resource: cleanString(session.resource, 256),
+    provider: cleanString(session.provider, 80),
+    native_id: session.native_id === null ? null : cleanString(session.native_id, 160)
   };
 }
 function cleanString(value, maxLength) {

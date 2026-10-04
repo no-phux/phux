@@ -66,7 +66,8 @@ test("injects phux context after the user message and forces a checkpoint after 
           terminal: "@65",
           session: "phux",
           window: "window-0",
-          agent: { id: "pi", label: "Pi", kind: "declared" },
+          agent: { id: "pi", label: "Pi", kind: "pi" },
+          agent_session: { resource: "@66", provider: "pi", native_id: "pi-session" },
           state: "working",
           confidence: 1,
           attention: "normal",
@@ -91,6 +92,8 @@ test("injects phux context after the user message and forces a checkpoint after 
   const first = await before?.({}, ctx) as { message?: { content?: string; display?: boolean } } | undefined;
   assert.match(first?.message?.content ?? "", /kind="checkpoint" seq="1"/);
   assert.match(first?.message?.content ?? "", /"self":"@65"/);
+  assert.match(first?.message?.content ?? "", /"availability":"available"/);
+  assert.match(first?.message?.content ?? "", /"agent_session":\{"resource":"@66"/);
   assert.equal(first?.message?.display, false);
   assert.equal(await before?.({}, ctx), undefined, "unchanged state emits no custom message");
 

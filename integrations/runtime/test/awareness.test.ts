@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { AgentPane } from "../src/schemas.js";
+import { parseAgentStateList, type AgentPane } from "../src/schemas.js";
 import {
   PhuxContextAwareness,
   contextAwarenessEnabled,
@@ -27,6 +27,26 @@ function body(text: string): Record<string, unknown> {
   assert.notEqual(line, undefined);
   return JSON.parse(line as string) as Record<string, unknown>;
 }
+
+test("canonical Pi inventory stays available and projects bounded AgentSession changes", async () => {
+  let session: { resource: string; provider: string; native_id: string } | null = {
+    resource: "@9", provider: "pi", native_id: "s".repeat(1000),
+  };
+  const awareness = new PhuxContextAwareness({ agentList: async () => parseAgentStateList({
+    schema_version: 1,
+    agents: [{ ...pane, agent: { id: "pi", label: "Pi", kind: "pi" }, agent_session: session }],
+  }) });
+  const first = body((await awareness.next("pi"))!.text);
+  assert.equal(first.availability, "available");
+  const projected = (first.panes as Array<{ agent_session: typeof session }>)[0]!.agent_session!;
+  assert.equal(projected.resource, "@9");
+  assert.equal(projected.provider, "pi");
+  assert.equal(projected.native_id.length, 160);
+  session = null;
+  const changed = body((await awareness.next("pi"))!.text);
+  assert.equal(changed.kind, "delta");
+  assert.equal((changed.upsert as Array<{ agent_session: unknown }>)[0]!.agent_session, null);
+});
 
 test("emits one cache-friendly checkpoint, suppresses unchanged state, then emits a delta", async () => {
   let panes: readonly AgentPane[] = [pane];
