@@ -120,7 +120,7 @@ It registers exactly these three human commands:
 
 | Command | Operation |
 |---|---|
-| `/phux` | Inventory panes and choose the default target. |
+| `/phux` | Inventory panes and choose the default target; native picker in TUI, standard `select` dialog over RPC. |
 | `/phux-status` | Refresh and report the saved target and its availability. |
 | `/phux-attach` | Print a human attach argv; it never executes the attach. |
 
@@ -275,7 +275,14 @@ emit fails closed; identity-only writes and the detector still run.
 Writes are serialized, debounced, and best-effort. Changing the selected control
 target or navigating the session tree does not move the hosting declaration or
 AgentSession. Shutdown clears the hosting declaration only after confirming Pi
-still owns it; a reload keeps it. This is status metadata, not an input lock.
+still owns it. Reload adopts only a matching Pi-owned declaration and an
+AgentSession whose provider and native session id match. It retains that exact
+child resource for events and close: replacing the pane's live child cannot
+redirect old events or cleanup to the replacement. Missing hosting state can be
+established when the inventory explicitly reports no child; foreign or
+unverifiable state is left untouched. Migration from an older selected-sibling
+binding never cleans up that sibling implicitly. This is status metadata, not
+an input lock.
 
 ## Current boundaries and security
 

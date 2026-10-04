@@ -20,6 +20,7 @@ import type {
   AgentRecord,
   AgentSessionCloseResult,
   AgentSessionOpenResult,
+  AgentSessionIdentity,
   AgentStateList,
 } from "../src/schemas.js";
 import { PhuxTargetStore, type PhuxTargetSelection } from "../src/target-store.js";
@@ -70,6 +71,7 @@ class FakeAdapter implements PhuxLifecycleAdapter {
   readonly sessionCloses: string[] = [];
   readonly commandOptions: Array<{ timeoutMs?: number; signal?: AbortSignal }> = [];
   record: AgentRecord | null = null;
+  sessionIdentity: AgentSessionIdentity | null = null;
   failSet = false;
   failOpen: Error | null = null;
   seq = 0;
@@ -91,7 +93,8 @@ class FakeAdapter implements PhuxLifecycleAdapter {
   ): Promise<AgentStateList> {
     this.commandOptions.push(options);
     this.shows.push(options.target);
-    return projection(this.record);
+    const state = projection(this.record);
+    return { ...state, agents: state.agents.map((pane) => ({ ...pane, agent_session: this.sessionIdentity })) };
   }
 
   async agentClear(selector: string, options: LifecycleCommandOptions): Promise<void> {
@@ -111,13 +114,8 @@ class FakeAdapter implements PhuxLifecycleAdapter {
       ...(options.nativeId === undefined ? {} : { nativeId: options.nativeId }),
     });
     if (this.failOpen !== null) throw this.failOpen;
-    return {
-      schema_version: 1,
-      resource: "@99",
-      parent: selector,
-      provider: options.provider,
-      native_id: options.nativeId ?? null,
-    };
+    this.sessionIdentity = { resource: "@99", provider: options.provider, native_id: options.nativeId ?? null };
+    return { schema_version: 1, parent: selector, ...this.sessionIdentity };
   }
 
   async agentEmit(
@@ -381,6 +379,92 @@ test("shutdown reads provenance and does not clear another owner's record", asyn
   assert.deepEqual(adapter.clears, []);
 });
 
+test("reload verifies and preserves its own declaration and exact AgentSession", async () => {
+  const adapter = new FakeAdapter();
+  adapter.record = { name: "pi", kind: "pi", session: "pi:session-1" };
+  adapter.sessionIdentity = { resource: "@71", provider: "pi", native_id: "session-1" };
+  const lifecycle = new PhuxLifecycle({ cli: adapter, timers: new FakeTimers() });
+  lifecycle.start("session-1", target, true);
+  lifecycle.emit("prompt");
+  await lifecycle.settled();
+  assert.deepEqual(adapter.sets, []);
+  assert.deepEqual(adapter.opens, []);
+  assert.deepEqual(adapter.emits, [{ target: "@71", type: "prompt" }]);
+  // A new session has replaced the adopted child. Neither subsequent events
+  // nor cleanup may resolve the pane's new child by accident.
+  adapter.sessionIdentity = { resource: "@72", provider: "claude", native_id: "foreign" };
+  lifecycle.emit("stop");
+  await lifecycle.settled();
+  await lifecycle.shutdown();
+  assert.equal(adapter.emits.every((event) => event.target === "@71"), true);
+  assert.deepEqual(adapter.sessionCloses, ["@71"]);
+  assert.equal(adapter.sessionIdentity.resource, "@72");
+});
+
+test("reload establishes missing host identity without touching the old selected sibling", async () => {
+  for (const hasOwnRecord of [false, true]) {
+    const adapter = new FakeAdapter();
+    if (hasOwnRecord) adapter.record = { name: "pi", kind: "pi", session: "pi:session-1" };
+    const lifecycle = new PhuxLifecycle({ cli: adapter, timers: new FakeTimers() });
+    lifecycle.start("session-1", target, true);
+    await lifecycle.settled();
+    assert.equal(adapter.sets.length, hasOwnRecord ? 0 : 1);
+    assert.deepEqual(adapter.opens.map((open) => open.target), ["@3"]);
+    lifecycle.emit("prompt");
+    await lifecycle.settled();
+    await lifecycle.shutdown();
+    assert.equal(adapter.emits.every((event) => event.target === "@99"), true);
+    assert.deepEqual(adapter.clears, ["@3"]);
+    assert.deepEqual(adapter.sessionCloses, ["@99"]);
+  }
+});
+
+test("reload refuses absent, foreign or mismatched ownership without any session writes", async () => {
+  const own = { name: "pi", kind: "pi", session: "pi:session-1" };
+  const ownSession = { resource: "@71", provider: "pi", native_id: "session-1" };
+  const cases = [
+    { record: null, session: ownSession },
+    { record: own, session: { ...ownSession, provider: "claude" } },
+    { record: own, session: { ...ownSession, native_id: "other-session" } },
+    { record: { ...own, session: "pi:other-session" }, session: ownSession },
+    { record: { ...own, name: "claude" }, session: null },
+  ];
+  for (const fixture of cases) {
+    const adapter = new FakeAdapter();
+    adapter.record = fixture.record;
+    adapter.sessionIdentity = fixture.session;
+    const errors: unknown[] = [];
+    const lifecycle = new PhuxLifecycle({ cli: adapter, timers: new FakeTimers(), onError: (error) => errors.push(error) });
+    lifecycle.start("session-1", target, true);
+    lifecycle.emit("prompt");
+    await lifecycle.settled();
+    await lifecycle.shutdown();
+    assert.equal(errors.length, 1);
+    assert.deepEqual(adapter.sets, []);
+    assert.deepEqual(adapter.opens, []);
+    assert.deepEqual(adapter.emits, []);
+    assert.deepEqual(adapter.clears, []);
+    assert.deepEqual(adapter.sessionCloses, []);
+  }
+});
+
+test("reload without verifiable inventory does not invent adoption", async () => {
+  for (const agents of [[], projection(null).agents]) {
+    const adapter = new FakeAdapter();
+    adapter.agentShow = async () => ({ schema_version: 1, agents });
+    const errors: unknown[] = [];
+    const lifecycle = new PhuxLifecycle({ cli: adapter, timers: new FakeTimers(), onError: (error) => errors.push(error) });
+    lifecycle.start("session-1", target, true);
+    lifecycle.emit("prompt");
+    await lifecycle.settled();
+    await lifecycle.shutdown();
+    assert.equal(errors.length, 1);
+    assert.deepEqual(adapter.sets, []);
+    assert.deepEqual(adapter.emits, []);
+    assert.deepEqual(adapter.sessionCloses, []);
+  }
+});
+
 test("reload cancels resources without clear or re-set flicker", async () => {
   const timers = new FakeTimers();
   const adapter = new FakeAdapter();
@@ -455,7 +539,7 @@ test("per-turn events emit on the AgentSession stream and never rewrite identity
     "ask",
     "stop",
   ]);
-  assert.equal(adapter.emits.every((entry) => entry.target === "@3"), true);
+  assert.equal(adapter.emits.every((entry) => entry.target === "@99"), true);
   assert.equal(adapter.emits.find((entry) => entry.type === "ask")?.data?.kind, "trust");
   assert.equal(adapter.sets.at(-1)?.record.state, undefined);
 
@@ -516,7 +600,7 @@ test("hosting identity works with no selected control target and quits on its ow
   assert.equal(adapter.sets[0]?.target, "@3");
   await handlers.get("session_shutdown")?.({ reason: "quit" }, ctx);
   assert.deepEqual(adapter.clears, ["@3"]);
-  assert.deepEqual(adapter.sessionCloses, ["@3"]);
+  assert.deepEqual(adapter.sessionCloses, ["@99"]);
 });
 
 test("a trust prompt becomes blocked on the AgentSession stream", async () => {

@@ -30,6 +30,8 @@ test("selection is session-local, deletion forgets it, and sibling creation neve
     await host.before({ sessionID: "a", tool: "phux_snapshot", id: "call" });
     await host.before({ sessionID: "b", tool: "phux_snapshot", id: "call" });
     expect(calls.identities).toEqual([["@7", "opencode:a"]]);
+    expect(calls.sessionWrites.length).toBeGreaterThan(0);
+    expect(calls.sessionWrites.every((target) => target === "@70")).toBe(true);
     await host.event({ type: "session.deleted", data: { sessionID: "a" } });
     await host.execute("phux_snapshot", {}, "a");
     await host.execute("phux_snapshot", {}, "b");
@@ -83,6 +85,7 @@ function fakeCli() {
   let next = 10;
   const snapshots: string[] = [];
   const identities: unknown[][] = [];
+  const sessionWrites: string[] = [];
   spyOn(PhuxCli.prototype, "create").mockImplementation(async (name) => ({ session: name, terminal_id: next++ }));
   spyOn(PhuxCli.prototype, "snapshot").mockImplementation(async (options) => {
     snapshots.push(options.target!);
@@ -93,10 +96,18 @@ function fakeCli() {
     return record;
   });
   spyOn(PhuxCli.prototype, "agentShow").mockResolvedValue({ schema_version: 1, agents: [] });
-  spyOn(PhuxCli.prototype, "agentSessionOpen").mockResolvedValue({ schema_version: 1, resource: "agent/test", parent: "@7", provider: "opencode", native_id: "a" });
-  spyOn(PhuxCli.prototype, "agentEmit").mockResolvedValue({ schema_version: 1, resource: "agent/test", type: "prompt", seq: 1, ts_ms: 0 });
-  spyOn(PhuxCli.prototype, "agentSessionClose").mockResolvedValue({ resource: "agent/test", closed: true });
-  return { snapshots, identities };
+  spyOn(PhuxCli.prototype, "agentSessionOpen").mockImplementation(async (target, options) => ({
+    schema_version: 1, resource: "@70", parent: target, provider: options.provider, native_id: options.nativeId ?? null,
+  }));
+  spyOn(PhuxCli.prototype, "agentEmit").mockImplementation(async (target, type) => {
+    sessionWrites.push(target);
+    return { schema_version: 1, resource: target, type, seq: 1, ts_ms: 0 };
+  });
+  spyOn(PhuxCli.prototype, "agentSessionClose").mockImplementation(async (target) => {
+    sessionWrites.push(target);
+    return { resource: target, closed: true };
+  });
+  return { snapshots, identities, sessionWrites };
 }
 
 async function setupHost() {

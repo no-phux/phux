@@ -158,8 +158,76 @@ test("AgentSessionEmitter opens once per pane, emits ask as blocked, and fails c
   assert.equal(option(requests[2]!.args, "--type"), "ask");
   assert.match(option(requests[2]!.args, "--data") ?? "", /"kind":"trust"/);
   assert.equal(option(requests[3]!.args, "--type"), "session_end");
-  assert.deepEqual(requests[4]?.args.slice(0, 4), ["agent", "session", "close", "@3"]);
+  assert.deepEqual(requests[4]?.args.slice(0, 4), ["agent", "session", "close", "@9"]);
+  assert.equal(requests.slice(1, 4).every((request) => request.args[2] === "@9"), true,
+    "all emits address the opened resource rather than whichever session later occupies its pane");
   assert.equal(requests.some((request) => request.args.includes("--state")), false);
+});
+
+test("AgentSessionEmitter only adopts a matching exact resource and never closes its replacement", async () => {
+  const calls: string[] = [];
+  const cli = {
+    async agentSessionOpen() { throw new Error("adoption must not open"); },
+    async agentEmit(target: string, type: string) { calls.push(`${type}:${target}`); return {} as never; },
+    async agentSessionClose(target: string) { calls.push(`close:${target}`); return {} as never; },
+  };
+  const identity = { schema_version: 1 as const, parent: "@3", resource: "@9", provider: "pi", native_id: "s-1" };
+  for (const invalid of [
+    { ...identity, provider: "claude" }, { ...identity, native_id: "s-2" },
+    { ...identity, parent: "@4" }, { ...identity, resource: "@3" }, { ...identity, resource: "all" },
+  ]) {
+    const emitter = new AgentSessionEmitter(cli, { provider: "pi" });
+    assert.throws(() => emitter.adopt("@3", "s-1", invalid), /AgentSession identity/);
+    await emitter.emit("prompt", undefined);
+    await emitter.finish();
+    assert.equal(emitter.isOpen, false);
+  }
+  assert.deepEqual(calls, []);
+  const emitter = new AgentSessionEmitter(cli, { provider: "pi" });
+  emitter.adopt("@3", "s-1", identity);
+  await emitter.bind("@3", "s-1");
+  await emitter.emit("prompt", undefined);
+  await emitter.finish();
+  await emitter.finish();
+  assert.deepEqual(calls, ["prompt:@9", "session_end:@9", "close:@9"]);
+});
+
+test("changing native sessions on the same pane finishes only the prior exact child", async () => {
+  const calls: string[] = [];
+  let next = 9;
+  const emitter = new AgentSessionEmitter({
+    async agentSessionOpen(target: string, options: { provider: string; nativeId: string }) {
+      calls.push(`open:${target}:${options.nativeId}`);
+      return { schema_version: 1, resource: `@${next++}`, parent: target, provider: options.provider, native_id: options.nativeId };
+    },
+    async agentEmit(target: string, type: string) { calls.push(`${type}:${target}`); },
+    async agentSessionClose(target: string) { calls.push(`close:${target}`); },
+  }, { provider: "pi" });
+  await emitter.bind("@3", "s-1");
+  await emitter.bind("@3", "s-2");
+  await emitter.emit("prompt", undefined);
+  await emitter.finish();
+  assert.deepEqual(calls, [
+    "open:@3:s-1", "session_start:@9", "session_end:@9", "close:@9",
+    "open:@3:s-2", "session_start:@10", "prompt:@10", "session_end:@10", "close:@10",
+  ]);
+});
+
+test("mismatched open receipts never authorize session events or cleanup", async () => {
+  const writes: string[] = [];
+  const errors: unknown[] = [];
+  const emitter = new AgentSessionEmitter({
+    async agentSessionOpen() {
+      return { schema_version: 1, resource: "@9", parent: "@3", provider: "claude", native_id: "foreign" };
+    },
+    async agentEmit(target: string) { writes.push(target); },
+    async agentSessionClose(target: string) { writes.push(target); },
+  }, { provider: "pi", onError: (error) => errors.push(error) });
+  await emitter.bind("@3", "s-1");
+  await emitter.emit("prompt", undefined);
+  await emitter.finish();
+  assert.equal(errors.length, 1);
+  assert.deepEqual(writes, []);
 });
 
 function option(args: readonly string[], name: string): string | undefined {

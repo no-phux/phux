@@ -23,6 +23,7 @@ import {
   type AgentRecord,
   type AgentSessionCloseResult,
   type AgentSessionOpenResult,
+  type AgentSessionIdentity,
   type AgentStateList,
 } from "./schemas.js";
 import type { PhuxTargetSelection, PhuxTargetStore } from "./target-store.js";
@@ -136,12 +137,12 @@ export class PhuxLifecycle {
     this.desired = this.binding();
     this.generation += 1;
     if (reload) {
-      // The previous extension instance deliberately left this declaration in
-      // place. Adopt it without a clear/set flicker; the next real transition
-      // will confirm the current state. The AgentSession stays open too.
-      this.applied = this.desired;
-      this.owned = this.desired;
-      this.session.adopt(target?.selector ?? null);
+      const binding = this.desired;
+      const generation = this.generation;
+      // A previous version may have bound the selected sibling, not this host.
+      // Keep writes disabled until both declaration and child identity agree.
+      this.desired = null;
+      if (binding !== null) this.enqueueWork(() => this.restoreReload(binding, sessionId, generation));
       return;
     }
     this.enqueueSessionBind();
@@ -196,6 +197,32 @@ export class PhuxLifecycle {
   /** Wait for all work that is currently queued (primarily for tests). */
   async settled(): Promise<void> {
     await this.tail;
+  }
+
+  private reloadIsCurrent(generation: number): boolean {
+    return this.active && !this.abandoned && generation === this.generation;
+  }
+
+  private async restoreReload(binding: Binding, sessionId: string, generation: number): Promise<void> {
+    if (!this.reloadIsCurrent(generation)) return;
+    const projection = await this.runCommand((options) =>
+      this.cli.agentShow({ target: binding.target.selector, ...options }));
+    if (!this.reloadIsCurrent(generation)) return;
+    const restored = reloadBinding(binding, projection, sessionId);
+    if (restored.session !== null) {
+      this.session.adopt(binding.target.selector, sessionId, {
+        schema_version: 1, parent: binding.target.selector, ...restored.session,
+      });
+    } else {
+      await this.runCommand((options) => this.session.bind(binding.target.selector, sessionId, options));
+    }
+    if (!this.reloadIsCurrent(generation)) return;
+    this.desired = binding;
+    if (restored.ownsRecord) {
+      this.applied = binding;
+      this.owned = binding;
+    }
+    await this.reconcile();
   }
 
   private transition(): void {
@@ -289,8 +316,7 @@ export class PhuxLifecycle {
         candidate.window === binding.target.window);
       const source = pane?.sources.find((candidate) => candidate.kind === "agent_record");
       if (source === undefined) return true;
-      const ownership = parseOwnership(source.observed);
-      if (ownership?.name !== "pi" || ownership.kind !== "pi" || ownership.session !== binding.owner) {
+      if (!ownsDeclaration(source.observed, binding.owner)) {
         return true;
       }
       await this.runCommand((options) => this.cli.agentClear(binding.target.selector, options));
@@ -381,6 +407,33 @@ export function registerPhuxLifecycle(
   });
 
   return { lifecycle };
+}
+
+function reloadBinding(
+  binding: Binding, projection: AgentStateList, sessionId: string,
+): { ownsRecord: boolean; session: AgentSessionIdentity | null } {
+  const pane = projection.agents.find((candidate) =>
+    candidate.terminal === binding.target.selector &&
+    candidate.session === binding.target.session && candidate.window === binding.target.window);
+  if (pane === undefined || pane.agent_session === undefined) {
+    throw new Error("Cannot verify Pi hosting identity on reload; leaving metadata and sessions untouched");
+  }
+  const source = pane.sources.find((candidate) => candidate.kind === "agent_record");
+  const ownsRecord = ownsDeclaration(source?.observed, binding.owner);
+  if (source !== undefined && !ownsRecord) {
+    throw new Error("Pi hosting declaration belongs to another owner; refusing reload adoption");
+  }
+  const session = pane.agent_session;
+  if (session !== null && (!ownsRecord || session.provider !== "pi" || session.native_id !== sessionId)) {
+    throw new Error("Pi hosting AgentSession belongs to another owner; refusing reload adoption");
+  }
+  return { ownsRecord, session };
+}
+
+function ownsDeclaration(observed: string | undefined, owner: string): boolean {
+  if (observed === undefined) return false;
+  const record = parseOwnership(observed);
+  return record?.name === "pi" && record.kind === "pi" && record.session === owner;
 }
 
 interface OwnershipFields {

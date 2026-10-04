@@ -7,6 +7,7 @@ import { PhuxCli } from "../dist/src/adapter.js";
 import { registerPhuxLifecycle } from "../dist/src/lifecycle.js";
 import { PhuxTargetStore } from "../dist/src/target-store.js";
 import { PhuxContextAwareness } from "../dist/src/awareness.js";
+import { verifyRpcSelection } from "./rpc-selection.mjs";
 
 if (process.env.PHUX_PI_REAL_SMOKE !== "1") {
   process.stdout.write("real smoke skipped; set PHUX_PI_REAL_SMOKE=1 to opt in\n");
@@ -82,6 +83,7 @@ try {
   assert.match([...snapshot.scrollback, ...snapshot.lines].join("\n"), new RegExp(marker));
 
   await verifyHostingLifecycle(target);
+  await verifyRpcSelection(temp, env, target);
 
   const attachArgv = ["phux", "attach", "--socket", socket, session];
   process.stdout.write(`created ${session} ${target}; run exit=${String(command.exit_code)}; snapshot=${String(snapshot.cols)}x${String(snapshot.rows)}\n`);
@@ -98,6 +100,26 @@ async function verifyHostingLifecycle(target) {
   const sibling = store.panes.find((pane) => pane.terminal !== target);
   assert.ok(sibling, "bootstrap pane supplies a distinct control target");
   store.select(sibling);
+  const initial = lifecycleHarness(cli, store, target);
+  await initial.start("startup");
+  assert.deepEqual(initial.errors, [], "hosting declaration and AgentSession must succeed");
+  const host = (await cli.agentShow({ target })).agents[0];
+  assert.equal(host.agent.kind, "pi");
+  assert.equal(host.agent_session.provider, "pi");
+  assert.equal(host.agent_session.native_id, "pi-smoke-host-session");
+  const control = (await cli.agentShow({ target: sibling.terminal })).agents[0];
+  assert.deepEqual(control.agent, sibling.agent, "control target must not be relabeled");
+  const awareness = new PhuxContextAwareness(cli);
+  const checkpoint = await awareness.next("smoke", { self: target, selected: sibling.terminal });
+  assert.match(checkpoint.text, /"availability":"available"/);
+  assert.match(checkpoint.text, /"agent_session":\{/);
+  await initial.stop("reload");
+  await verifyReloadReplacement(cli, store, target, host.agent_session);
+  await verifyReloadMigration(cli, store, target, sibling.terminal);
+  process.stdout.write(`verified Pi host ${target}, independent control ${sibling.terminal}, AgentSession and context\n`);
+}
+
+function lifecycleHarness(cli, store, target) {
   const handlers = new Map();
   const pending = new Set();
   const errors = [];
@@ -109,24 +131,53 @@ async function verifyHostingLifecycle(target) {
     },
   });
   const ctx = { sessionManager: { getSessionId: () => "pi-smoke-host-session" } };
-  await handlers.get("session_start")({ reason: "startup" }, ctx);
-  for (const callback of pending) { pending.delete(callback); callback(); }
-  await lifecycle.settled();
-  assert.deepEqual(errors, [], "hosting declaration and AgentSession must succeed");
-  const host = (await cli.agentShow({ target })).agents[0];
-  assert.equal(host.agent.kind, "pi");
-  assert.equal(host.agent_session.provider, "pi");
-  assert.equal(host.agent_session.native_id, "pi-smoke-host-session");
-  const control = (await cli.agentShow({ target: sibling.terminal })).agents[0];
-  assert.deepEqual(control.agent, sibling.agent, "control target must not be relabeled");
-  const awareness = new PhuxContextAwareness(cli);
-  const checkpoint = await awareness.next("smoke", { self: target, selected: sibling.terminal });
-  assert.match(checkpoint.text, /"availability":"available"/);
-  assert.match(checkpoint.text, /"agent_session":\{/);
-  await handlers.get("session_shutdown")({ reason: "quit" }, ctx);
-  assert.deepEqual(errors, [], "host cleanup must succeed");
+  return {
+    lifecycle, errors,
+    async start(reason) {
+      await handlers.get("session_start")({ reason }, ctx);
+      for (const callback of pending) { pending.delete(callback); callback(); }
+      await lifecycle.settled();
+    },
+    async stop(reason) { await handlers.get("session_shutdown")({ reason }, ctx); },
+  };
+}
+
+async function verifyReloadReplacement(cli, store, target, original) {
+  const reloaded = lifecycleHarness(cli, store, target);
+  await reloaded.start("reload");
+  assert.deepEqual(reloaded.errors, []);
+  assert.deepEqual((await cli.agentShow({ target })).agents[0].agent_session, original);
+  await cli.agentSessionClose(original.resource);
+  const foreign = await cli.agentSessionOpen(target, { provider: "claude", nativeId: "foreign" });
+  reloaded.lifecycle.emit("prompt");
+  await reloaded.lifecycle.settled();
+  await reloaded.stop("quit");
+  assert.ok(reloaded.errors.length > 0, "stale exact-resource writes must fail instead of touching replacement");
+  assert.equal((await cli.agentShow({ target })).agents[0].agent_session.resource, foreign.resource);
+  const refused = lifecycleHarness(cli, store, target);
+  await refused.start("reload");
+  refused.lifecycle.emit("prompt");
+  await refused.lifecycle.settled();
+  await refused.stop("quit");
+  assert.equal(refused.errors.length, 1, "foreign reload must be refused");
+  assert.equal((await cli.agentShow({ target })).agents[0].agent_session.resource, foreign.resource);
+  await cli.agentSessionClose(foreign.resource);
+}
+
+async function verifyReloadMigration(cli, store, target, sibling) {
+  const record = { name: "pi", kind: "pi", session: "pi:pi-smoke-host-session" };
+  await cli.agentSet(sibling, record);
+  const legacy = await cli.agentSessionOpen(sibling, { provider: "pi", nativeId: "pi-smoke-host-session" });
+  const migrated = lifecycleHarness(cli, store, target);
+  await migrated.start("reload");
+  assert.deepEqual(migrated.errors, []);
+  assert.equal((await cli.agentShow({ target })).agents[0].agent_session.provider, "pi");
+  await migrated.stop("quit");
   assert.equal((await cli.agentShow({ target })).agents[0].agent_session, null);
-  process.stdout.write(`verified Pi host ${target}, independent control ${sibling.terminal}, AgentSession and context\n`);
+  assert.equal((await cli.agentShow({ target: sibling })).agents[0].agent_session.resource, legacy.resource);
+  // Only this fixture created the legacy child; migration must leave it alone.
+  await cli.agentSessionClose(legacy.resource);
+  await cli.agentClear(sibling);
 }
 
 async function cleanup() {

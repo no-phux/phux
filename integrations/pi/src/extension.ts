@@ -18,6 +18,7 @@ import { registerPhuxTools } from "./tools.js";
 import {
   PhuxTargetStore,
   formatTargetStatus,
+  formatPaneDisplay,
   type PhuxTargetSnapshot,
 } from "./target-store.js";
 
@@ -103,8 +104,7 @@ export function registerPhuxExtension(
         return;
       }
 
-      const selected = await ctx.ui.custom<AgentPane | null>((tui, theme, _keybindings, done) =>
-        new PhuxTargetPicker(store.panes, theme, done, () => done(null), () => tui.requestRender()));
+      const selected = await selectPane(ctx, store.panes);
       if (selected == null) return;
       const selection = store.select(selected);
       updateStatus(ctx);
@@ -148,6 +148,21 @@ export function registerPhuxExtension(
   return store;
 }
 
+
+async function selectPane(ctx: ExtensionContext, panes: readonly AgentPane[]): Promise<AgentPane | null> {
+  if (ctx.mode === "tui") {
+    return await ctx.ui.custom<AgentPane | null>((tui, theme, _keybindings, done) =>
+      new PhuxTargetPicker(panes, theme, done, () => done(null), () => tui.requestRender())) ?? null;
+  }
+  if (ctx.mode !== "rpc") return null;
+  // Numbered labels stay unique even when long or untrusted display text is
+  // sanitized/truncated. A client response must match an offered option exactly.
+  const options = panes.map((pane, index) =>
+    `${index + 1}. ${formatPaneDisplay(pane).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, 240)}`);
+  const answer = await ctx.ui.select("Select a phux target", options);
+  if (answer === undefined) return null;
+  return panes[options.indexOf(answer)] ?? null;
+}
 
 export function formatDetailedStatus(snapshot: PhuxTargetSnapshot): string {
   const base = formatTargetStatus(snapshot);

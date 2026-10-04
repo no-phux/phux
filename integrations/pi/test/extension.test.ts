@@ -104,13 +104,13 @@ test("injects phux context after the user message and forces a checkpoint after 
   assert.equal(await before?.({}, ctx), undefined, "the persisted compaction checkpoint is already current");
 });
 
-test("registers Pi-native commands and tolerates custom UI being unavailable", async () => {
+test("selects and persists RPC targets through standard UI without invoking custom TUI", async () => {
   const commands = new Map<string, (args: string, ctx: ExtensionContext) => Promise<void>>();
   const events: string[] = [];
   const tools: string[] = [];
-  let appended = 0;
+  const persisted: Array<{ type: string; data: unknown }> = [];
   const api = {
-    appendEntry: () => { appended++; },
+    appendEntry: (type: string, data: unknown) => { persisted.push({ type, data }); },
     on: (name: string) => { events.push(name); },
     registerTool: (tool: { name: string }) => { tools.push(tool.name); },
     registerCommand: (name: string, options: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) => {
@@ -140,7 +140,7 @@ test("registers Pi-native commands and tolerates custom UI being unavailable", a
       }),
     }),
   });
-  registerPhuxExtension(api, { cli });
+  const store = registerPhuxExtension(api, { cli });
 
   assert.deepEqual([...commands.keys()], ["phux", "phux-status", "phux-attach"]);
   assert.deepEqual(tools, [
@@ -161,6 +161,7 @@ test("registers Pi-native commands and tolerates custom UI being unavailable", a
 
   let customCalls = 0;
   const ctx = {
+    mode: "tui",
     hasUI: true,
     signal: undefined,
     ui: {
@@ -171,5 +172,34 @@ test("registers Pi-native commands and tolerates custom UI being unavailable", a
   } as unknown as ExtensionContext;
   await commands.get("phux")?.("", ctx);
   assert.equal(customCalls, 1);
-  assert.equal(appended, 0);
+  assert.equal(persisted.length, 0);
+  let selectCalls = 0;
+  let answer: "cancel" | "invalid" | "valid" = "cancel";
+  const rpc = {
+    ...ctx, mode: "rpc",
+    ui: {
+      ...ctx.ui,
+      select: async (title: string, options: string[]) => {
+        selectCalls++;
+        assert.equal(title, "Select a phux target");
+        assert.deepEqual(options, ["1. work:window-0 @3 - Codex"]);
+        if (answer === "cancel") return undefined;
+        if (answer === "invalid") return "@999";
+        return options[0];
+      },
+    },
+  } as unknown as ExtensionContext;
+  await commands.get("phux")?.("", rpc);
+  answer = "invalid";
+  await commands.get("phux")?.("", rpc);
+  assert.equal(store.snapshot.selection === null, true);
+  assert.equal(persisted.length, 0, "cancelled or unoffered values must not select a target");
+  answer = "valid";
+  await commands.get("phux")?.("", rpc);
+  assert.equal(selectCalls, 3);
+  assert.equal(customCalls, 1, "RPC must never attempt the unsupported custom UI");
+  assert.equal(store.snapshot.selection?.selector, "@3");
+  assert.equal(persisted.length, 1);
+  assert.equal(persisted[0]?.type, "phux-target");
+  assert.deepEqual(persisted[0]?.data, store.snapshot.selection);
 });
