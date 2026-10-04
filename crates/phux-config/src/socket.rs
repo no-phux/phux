@@ -20,13 +20,23 @@ use crate::instance;
 ///    is `$XDG_RUNTIME_DIR/phux[-<profile>]` or `/tmp/phux-$USER[-<profile>]`.
 ///
 /// The profile suffix is what keeps a development build off the production
-/// socket; see [`instance`].
+/// socket; see [`instance`]. A dev build skips a `$PHUX_SOCKET` naming the
+/// production socket: every phux pane exports it, so honouring it would make
+/// each `cargo run` inside a pane trip [`refuse_dev_on_production`] instead of
+/// starting the dev server.
 #[must_use]
 pub fn default_socket_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("PHUX_SOCKET") {
-        return PathBuf::from(path);
-    }
-    instance::runtime_dir().join("phux.sock")
+    let dev = instance::build_kind() == instance::BuildKind::Dev;
+    inherited_socket(std::env::var_os("PHUX_SOCKET"), dev)
+        .unwrap_or_else(|| instance::runtime_dir().join("phux.sock"))
+}
+
+fn inherited_socket(env: Option<OsString>, dev: bool) -> Option<PathBuf> {
+    let path = PathBuf::from(env?);
+    let production = production_socket_candidates()
+        .iter()
+        .any(|candidate| same_socket(&path, candidate));
+    (!(dev && production)).then_some(path)
 }
 
 /// Where the day-to-day installation's socket can live on this machine.
@@ -271,6 +281,20 @@ mod tests {
         // is not production.
         let dir = tempfile::tempdir().unwrap();
         assert!(refuse_dev_on_production(&dir.path().join("run/phux/phux.sock")).is_ok());
+    }
+
+    #[test]
+    fn dev_builds_skip_an_inherited_production_socket() {
+        let production = production_socket_candidates().remove(0);
+        let env = || Some(production.clone().into_os_string());
+        assert_eq!(inherited_socket(env(), true), None);
+        assert_eq!(inherited_socket(env(), false), Some(production.clone()));
+        let custom = PathBuf::from("/tmp/custom/phux.sock");
+        assert_eq!(
+            inherited_socket(Some(custom.clone().into_os_string()), true),
+            Some(custom)
+        );
+        assert_eq!(inherited_socket(None, true), None);
     }
 
     #[test]
