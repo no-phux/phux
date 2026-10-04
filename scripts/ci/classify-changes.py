@@ -33,7 +33,7 @@ ROUTES = (
     (("clients/cockpit/*",), {"cockpit"}),
     (("scripts/ci/cockpit_artifacts.py", "scripts/ci/test_cockpit_artifacts.py"), {"cockpit"}),
     (("clients/phux-web/*", "clients/phux-vt-web/*", "scripts/ci/web-browser.py",
-      "scripts/ci/test_web_browser.py"), {"web"}),
+      "scripts/ci/test_web_browser.py", "scripts/ci/web_agent_fixture.py"), {"web"}),
     (("clients/phux-vt-web/vendor/*", "scripts/build-vt-wasm.sh",
       "scripts/test-vt-wasm.mjs"), {"web", "web_engine"}),
     (("integrations/*", ".claude-plugin/*",

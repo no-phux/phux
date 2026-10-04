@@ -14,6 +14,9 @@ use web_sys::HtmlCanvasElement;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+#[path = "browser_support/agent_resources.rs"]
+mod agent_resources;
+
 const WS_URL: &str = match option_env!("PHUX_TEST_WS_URL") {
     Some(url) => url,
     None => "ws://127.0.0.1:47654/",
@@ -64,6 +67,40 @@ fn failure_artifact(name: &str, client: &phux_web::client::Client, detail: &str)
         .append_child(&pre)
         .unwrap();
     transcript
+}
+
+#[wasm_bindgen_test]
+async fn agents_started_after_browser_attach_update_badges_without_reloading() {
+    let client = phux_web::client::run(WS_URL, canvas("live-agent-canvas"), 80, 24)
+        .await
+        .expect("connect browser first");
+    assert!(wait_for_marker(&client).await);
+    agent_resources::action("open").await;
+    agent_resources::action("prompt").await;
+    agent_resources::wait_badge(Some("working")).await;
+    agent_resources::action("ask").await;
+    agent_resources::wait_badge(Some("blocked")).await;
+    agent_resources::action("stop").await;
+    agent_resources::wait_badge(Some("done")).await;
+    assert_eq!(client.agent_badges().len(), 1);
+    client.close();
+    // A fresh connection discovers the same child in its snapshot and reads
+    // its retained stream, without creating another pane or subscription.
+    let reconnected = phux_web::client::run(WS_URL, canvas("agent-reconnect-canvas"), 80, 24)
+        .await
+        .expect("reconnect with existing child");
+    assert!(wait_for_marker(&reconnected).await);
+    agent_resources::wait_badge(Some("done")).await;
+    assert_eq!(reconnected.agent_badges().len(), 1);
+    agent_resources::action("close").await;
+    agent_resources::wait_badge(None).await;
+    assert!(
+        reconnected
+            .rows_text()
+            .iter()
+            .any(|row| row.contains(MARKER))
+    );
+    reconnected.close();
 }
 
 #[wasm_bindgen_test]

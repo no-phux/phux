@@ -3218,7 +3218,7 @@ mod tests {
                 selected_profile: BootstrapProfile::SynthesizedVtRaw,
                 bootstrap_limits: BootstrapLimits::default(),
             });
-            assert_eq!(hello.send.len(), 1);
+            assert_eq!(hello.send.len(), 2, "subscribe before attach snapshot");
             assert!(
                 session
                     .on_frame(FrameKind::Attached {

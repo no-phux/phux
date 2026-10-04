@@ -35,6 +35,7 @@ class RoutingTests(unittest.TestCase):
             (["clients/phux-web/src/lib.rs"], {"web"}),
             (["clients/phux-vt-web/src/lib.rs"], {"web"}),
             (["scripts/ci/web-browser.py"], {"web"}),
+            (["scripts/ci/web_agent_fixture.py"], {"web"}),
             (["clients/phux-vt-web/vendor/ghostty-vt.wasm"], {"web", "web_engine"}),
             (["scripts/build-vt-wasm.sh"], {"web", "web_engine"}),
             (["integrations/pi/src/index.ts"], {"integrations"}),
