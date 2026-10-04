@@ -1425,7 +1425,7 @@ class AgentSessionEmitter {
   onError;
   target = null;
   nativeId = null;
-  opened = false;
+  resource = null;
   unavailable = false;
   constructor(cli, options) {
     this.cli = cli !== null && hasAgentSessionCli(cli) ? cli : null;
@@ -1437,22 +1437,28 @@ class AgentSessionEmitter {
       throw new TypeError("provider must be non-empty");
   }
   get isOpen() {
-    return this.opened;
+    return this.resource !== null;
   }
   get isUnavailable() {
     return this.unavailable;
   }
-  adopt(target) {
+  adopt(target, nativeId, identity) {
+    if (identity.parent !== target || identity.provider !== this.provider || identity.native_id !== nativeId) {
+      throw new Error("AgentSession identity does not match its hosting binding");
+    }
+    if (!/^(?:[^/\s]+\/)?@\d+$/.test(identity.resource) || identity.resource === target) {
+      throw new Error("AgentSession identity must name its exact child resource");
+    }
     this.target = target;
-    this.opened = target !== null;
-    this.nativeId = null;
+    this.nativeId = nativeId;
+    this.resource = identity.resource;
   }
   async bind(target, nativeId, options = {}) {
     if (this.unavailable)
       return;
-    if (target === this.target && this.opened && this.nativeId === nativeId)
+    if (target === this.target && this.isOpen && this.nativeId === nativeId)
       return;
-    if (this.opened && (this.target !== target || this.nativeId !== nativeId)) {
+    if (this.isOpen && (this.target !== target || this.nativeId !== nativeId)) {
       await this.finish(options);
     }
     if (target === null)
@@ -1460,10 +1466,10 @@ class AgentSessionEmitter {
     await this.open(target, nativeId, options);
   }
   async emit(type, data, options = {}) {
-    if (this.unavailable || !this.opened || this.target === null || this.cli === null)
+    if (this.unavailable || this.resource === null || this.cli === null)
       return;
     try {
-      await this.cli.agentEmit(this.target, type, {
+      await this.cli.agentEmit(this.resource, type, {
         ...options,
         ...data === undefined ? {} : { data }
       });
@@ -1472,23 +1478,19 @@ class AgentSessionEmitter {
     }
   }
   async finish(options = {}) {
-    if (this.unavailable || !this.opened || this.target === null || this.cli === null) {
-      this.opened = false;
-      this.target = null;
-      this.nativeId = null;
-      return;
-    }
-    const target = this.target;
-    this.opened = false;
+    const resource = this.resource;
+    this.resource = null;
     this.target = null;
     this.nativeId = null;
+    if (this.unavailable || resource === null || this.cli === null)
+      return;
     try {
-      await this.cli.agentEmit(target, "session_end", options);
+      await this.cli.agentEmit(resource, "session_end", options);
     } catch (error) {
       this.onError(error);
     }
     try {
-      await this.cli.agentSessionClose(target, options);
+      await this.cli.agentSessionClose(resource, options);
     } catch (error) {
       this.onError(error);
     }
@@ -1497,11 +1499,12 @@ class AgentSessionEmitter {
     if (this.cli === null)
       return;
     try {
-      await this.cli.agentSessionOpen(target, {
+      const opened = await this.cli.agentSessionOpen(target, {
         provider: this.provider,
         nativeId,
         ...options
       });
+      this.adopt(target, nativeId, opened);
     } catch (error) {
       if (isAgentSessionUnsupported(error)) {
         this.unavailable = true;
@@ -1510,17 +1513,7 @@ class AgentSessionEmitter {
       this.onError(error);
       return;
     }
-    this.target = target;
-    this.nativeId = nativeId;
-    this.opened = true;
-    try {
-      await this.cli.agentEmit(target, "session_start", {
-        ...options,
-        data: { provider: this.provider, native_id: nativeId }
-      });
-    } catch (error) {
-      this.onError(error);
-    }
+    await this.emit("session_start", { provider: this.provider, native_id: nativeId }, options);
   }
 }
 

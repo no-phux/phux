@@ -204,13 +204,13 @@ export declare class AgentSessionEmitter {
     private readonly onError;
     private target;
     private nativeId;
-    private opened;
+    private resource;
     private unavailable;
     constructor(cli: AgentSessionCli | object | null, options: AgentSessionEmitterOptions);
     get isOpen(): boolean;
     get isUnavailable(): boolean;
-    /** Take over a session this process left open (extension reload). */
-    adopt(target: string | null): void;
+    /** Adopt only an identity the host verified against its own declaration. */
+    adopt(target: string, nativeId: string, identity: AgentSessionOpenResult): void;
     bind(target: string | null, nativeId: string, options?: ExecutionOptions): Promise<void>;
     emit(type: AgentEventType, data: Readonly<Record<string, unknown>> | undefined, options?: ExecutionOptions): Promise<void>;
     finish(options?: ExecutionOptions): Promise<void>;
