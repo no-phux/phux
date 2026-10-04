@@ -1087,6 +1087,174 @@ fn spawned_agent(id: u32, parent: u32) -> FrameKind {
     }
 }
 
+fn closed_agent(id: u32) -> FrameKind {
+    FrameKind::Event {
+        terminal: Some(ResourceId::local(id)),
+        event: phux_protocol::wire::frame::AgentEvent::ResourceClosed { exit_status: None },
+        stamp: None,
+    }
+}
+
+fn agent_requests(outcome: &phux_web::Outcome) -> Vec<ResourceId> {
+    outcome
+        .send
+        .iter()
+        .filter_map(|bytes| match decode_one(bytes) {
+            FrameKind::Command {
+                command: phux_protocol::wire::frame::Command::AttachResource { terminal_id, .. },
+                ..
+            } => Some(terminal_id),
+            _ => None,
+        })
+        .collect()
+}
+
+#[wasm_bindgen_test]
+async fn pre_snapshot_agent_announcements_survive_parent_admission() {
+    let vt = Vt::load().await.expect("engine");
+    let mut session = Session::new(&vt, 20, 3);
+    session.on_frame(hello_ok(
+        BootstrapProfile::SynthesizedVtRaw,
+        BootstrapLimits::default(),
+    ));
+    for (id, parent) in [(201, 101), (203, 101), (301, 999)] {
+        assert!(session.on_frame(spawned_agent(id, parent)).send.is_empty());
+    }
+    // Both closure forms can overtake the captured snapshot, including a
+    // child already in that snapshot whose spawn event preceded subscription.
+    session.on_frame(closed_agent(202));
+    session.on_frame(FrameKind::ResourceClosed {
+        terminal_id: ResourceId::local(203),
+        exit_status: None,
+        reason: phux_protocol::wire::frame::CloseReason::Exited,
+        signal: None,
+    });
+    let admitted = session.on_frame(attached_with_agent(
+        ResourceId::local(101),
+        ResourceId::local(202),
+        20,
+        3,
+    ));
+    assert!(admitted.fatal.is_none());
+    assert_eq!(agent_requests(&admitted), vec![ResourceId::local(201)]);
+    assert_eq!(session.agent_badges().len(), 1);
+    for (id, parent) in [(201, 101), (202, 101), (203, 101), (301, 999)] {
+        assert!(session.on_frame(spawned_agent(id, parent)).send.is_empty());
+    }
+    assert!(!session.is_failed());
+}
+
+#[wasm_bindgen_test]
+async fn pending_split_agent_announcements_wait_for_parent_commit() {
+    for ack_first in [false, true] {
+        let mut session = path_session(false, false).await;
+        let spawn = requested_spawn(&mut session, "vertical");
+        // Child events may even beat the reply naming the split's new parent.
+        session.on_frame(spawned_agent(301, 202));
+        session.on_frame(spawned_agent(302, 202));
+        session.on_frame(spawned_agent(401, 999));
+        session.on_frame(closed_agent(302));
+        let attach = announce_split(&mut session, spawn, ResourceId::local(202));
+        let ack = FrameKind::CommandResult {
+            request_id: attach,
+            result: phux_protocol::wire::frame::CommandResult::Ok,
+        };
+        let committed = if ack_first {
+            assert!(agent_requests(&session.on_frame(ack)).is_empty());
+            assert!(session.agent_badges().is_empty());
+            bootstrap_split(&mut session, ResourceId::local(202), 2, b"split")
+        } else {
+            assert!(
+                agent_requests(&bootstrap_split(
+                    &mut session,
+                    ResourceId::local(202),
+                    2,
+                    b"split"
+                ))
+                .is_empty()
+            );
+            assert!(session.agent_badges().is_empty());
+            session.on_frame(ack)
+        };
+        assert!(committed.fatal.is_none());
+        assert_eq!(agent_requests(&committed), vec![ResourceId::local(301)]);
+        assert_eq!(session.agent_badges().len(), 1);
+        assert!(session.on_frame(spawned_agent(301, 202)).send.is_empty());
+        assert!(session.on_frame(spawned_agent(302, 202)).send.is_empty());
+        assert!(session.on_frame(spawned_agent(401, 999)).send.is_empty());
+        assert!(session.key_frame(key()).is_some());
+    }
+}
+
+#[wasm_bindgen_test]
+async fn failed_split_discards_unadmitted_agent_announcements() {
+    let mut session = path_session(false, false).await;
+    let spawn = requested_spawn(&mut session, "vertical");
+    session.on_frame(spawned_agent(301, 202));
+    session.on_frame(FrameKind::CommandResult {
+        request_id: spawn,
+        result: phux_protocol::wire::frame::CommandResult::Error {
+            code: phux_protocol::wire::frame::ErrorCode::TerminalNotFound,
+            message: "split refused".into(),
+        },
+    });
+    let spawn = requested_spawn(&mut session, "vertical");
+    let attach = announce_split(&mut session, spawn, ResourceId::local(202));
+    bootstrap_split(&mut session, ResourceId::local(202), 2, b"new split");
+    let committed = session.on_frame(FrameKind::CommandResult {
+        request_id: attach,
+        result: phux_protocol::wire::frame::CommandResult::Ok,
+    });
+    assert!(agent_requests(&committed).is_empty());
+    assert!(session.agent_badges().is_empty());
+}
+
+#[wasm_bindgen_test]
+async fn closing_split_parent_discards_its_pending_agent_discovery() {
+    let mut session = path_session(false, false).await;
+    let spawn = requested_spawn(&mut session, "vertical");
+    announce_split(&mut session, spawn, ResourceId::local(202));
+    session.on_frame(spawned_agent(301, 202));
+    let closed = session.on_frame(FrameKind::ResourceClosed {
+        terminal_id: ResourceId::local(202),
+        exit_status: None,
+        reason: phux_protocol::wire::frame::CloseReason::Exited,
+        signal: None,
+    });
+    assert!(closed.fatal.is_none());
+    assert!(agent_requests(&closed).is_empty());
+    assert!(!session.pane_pending());
+    assert!(session.on_frame(spawned_agent(301, 202)).send.is_empty());
+    assert!(session.agent_badges().is_empty());
+    assert!(session.key_frame(key()).is_some());
+}
+
+#[wasm_bindgen_test]
+async fn agent_discovery_admission_is_bounded_and_duplicate_safe() {
+    let vt = Vt::load().await.expect("engine");
+    let mut session = Session::new(&vt, 20, 3);
+    session.on_frame(hello_ok(
+        BootstrapProfile::SynthesizedVtRaw,
+        BootstrapLimits::default(),
+    ));
+    for _ in 0..300 {
+        assert!(session.on_frame(spawned_agent(2000, 999)).fatal.is_none());
+    }
+    for id in 2001..2256 {
+        assert!(session.on_frame(spawned_agent(id, 999)).fatal.is_none());
+    }
+    let overflow = session.on_frame(spawned_agent(2256, 999));
+    assert!(
+        overflow
+            .fatal
+            .as_deref()
+            .unwrap()
+            .contains("discovery admission buffer exhausted")
+    );
+    assert!(session.is_failed());
+    assert!(session.agent_badges().is_empty());
+}
+
 fn agent_attach(outcome: &phux_web::Outcome, expected: u32) -> u32 {
     assert!(outcome.fatal.is_none());
     assert!(outcome.badges);
@@ -1342,7 +1510,12 @@ fn announce_split(session: &mut Session, request_id: u32, id: ResourceId) -> u32
     }
 }
 
-fn bootstrap_split(session: &mut Session, id: ResourceId, serial: u64, text: &'static [u8]) {
+fn bootstrap_split(
+    session: &mut Session,
+    id: ResourceId,
+    serial: u64,
+    text: &'static [u8],
+) -> phux_web::Outcome {
     let stream_id = stream(serial);
     let bootstrap_id = bootstrap(serial);
     let began = session.on_frame(begin(
@@ -1370,6 +1543,7 @@ fn bootstrap_split(session: &mut Session, id: ResourceId, serial: u64, text: &'s
         history_cursor: None,
     });
     assert!(ready.fatal.is_none());
+    ready
 }
 
 #[wasm_bindgen_test]
