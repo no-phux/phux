@@ -14,6 +14,13 @@ use crate::grid::SnapshotSynthesizer;
 use crate::grid::SynthesisError;
 use crate::grid::reference::ReferenceCursorMode;
 
+#[path = "run_loop_service.rs"]
+mod service;
+
+#[cfg(test)]
+#[path = "tests_run_loop_service.rs"]
+mod tests_service;
+
 /// What the `run` loop must do after one PTY-ingress turn.
 enum PtyTurn {
     /// Keep looping with `native_step_due` untouched (the EOF path).
@@ -197,6 +204,8 @@ struct RunLoopState {
     prefer_native: bool,
     /// The cooperative native pump owes a record step on the next turn.
     native_step_due: bool,
+    /// Round-robin service opportunity owed after a bounded ingress turn.
+    service: service::ServiceRotation,
 }
 
 impl TerminalActor {
@@ -247,6 +256,7 @@ impl TerminalActor {
             resync: ResyncDebounce::idle(),
             prefer_native: false,
             native_step_due: false,
+            service: service::ServiceRotation::default(),
         }
     }
 
@@ -301,12 +311,21 @@ impl TerminalActor {
                 () = std::future::ready(()), if pump == BootstrapPump::StepDue =>
                     self.service_cooperative_native_step(&mut state.native_step_due),
 
+                // Never await here: offer one ready service, then let ingress
+                // continue. The rotation includes timers and cannot be monopolized
+                // by a single busy control channel.
+                () = std::future::ready(()), if state.service.due =>
+                    self.service_pending_turn(state, resync_deadline.as_mut()),
+
                 ingress = recv_native_or_pty(
                     &mut self.native_requests,
                     self.pty_rx.as_mut(),
                     state.prefer_native,
-                ) => if self.service_ingress_turn(ingress, state).await.is_break() {
-                    return;
+                ) => {
+                    state.service.due = true;
+                    if self.service_ingress_turn(ingress, state).await.is_break() {
+                        return;
+                    }
                 },
 
                 Some(req) = self.snapshot_rx.recv(), if !bootstrap_pending =>
@@ -352,13 +371,8 @@ impl TerminalActor {
 
                 // Agent-state detector (ADR-0046): driven only by this
                 // adaptive interval, never by PTY bytes.
-                scheduled = state.detect_tick.tick(), if detector_armed => {
-                    if state.detect_deadline_valid {
-                        crate::perf::RUNTIME_DETECT_TICK_LATE.record_duration(scheduled.elapsed());
-                    }
-                    state.detect_deadline_valid = true;
-                    self.service_detect_tick(&mut state.detect_tick, &mut state.detect_interval);
-                },
+                scheduled = state.detect_tick.tick(), if detector_armed =>
+                    self.service_detector_deadline(scheduled, state),
 
                 () = tokio::task::yield_now(), if pump == BootstrapPump::YieldDue =>
                     state.native_step_due = true,
@@ -553,8 +567,8 @@ impl TerminalActor {
     }
 
     /// Whether the state-sync tick has work: an open output burst, a
-    /// tick-managed consumer, or native cursors to expire. Otherwise the
-    /// timer is not armed at all.
+    /// tick-managed consumer with dirty or owed work, or native cursors to
+    /// expire. Otherwise the timer is not armed at all.
     ///
     /// Safe only because [`armed_interval`] uses `MissedTickBehavior::Delay`:
     /// with `Burst`, re-arming after a long quiet spell would owe every
@@ -567,7 +581,13 @@ impl TerminalActor {
         if !self.native_cursor_owners.is_empty() {
             return true;
         }
-        self.consumer_tick_emits || self.consumer_states.values().any(|s| s.wants_state_sync)
+        if self.consumer_tick_emits {
+            return true;
+        }
+        self.consumer_states.values().any(|state| {
+            state.wants_state_sync
+                && (self.terminal_dirty_since_tick || must_walk_when_clean(state))
+        })
     }
 
     /// Whether the detector arm may run: installed, and no bootstrap pending.

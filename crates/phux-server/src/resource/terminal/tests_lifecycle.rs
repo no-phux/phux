@@ -119,6 +119,105 @@ fn synthesize_seeded_pane_carries_visible_text() {
     );
 }
 
+/// Sustained PTY readiness must leave a bounded slot for ordinary requests.
+#[tokio::test(flavor = "current_thread")]
+async fn snapshot_runs_after_one_bounded_pty_turn() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for panes in [1, 8, 32] {
+                futures_util::future::join_all((0..panes).map(|_| snapshot_under_pty_pressure(0)))
+                    .await;
+            }
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn snapshot_is_not_starved_by_a_refilling_pty_producer() {
+    tokio::task::LocalSet::new()
+        .run_until(snapshot_under_pty_pressure(1024))
+        .await;
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "the actor fixture runs on a LocalSet with the !Send canonical terminal"
+)]
+async fn snapshot_under_pty_pressure(refill_chunks: usize) {
+    let bundle = TerminalActor::new(80, 24).expect("actor");
+    let mut actor = bundle.actor;
+    let (pty_tx, _writer) = actor.install_test_pty_channels();
+    let mut output = bundle.handle.output.subscribe();
+    for _ in 0..200 {
+        pty_tx.try_send(pressure_chunk()).expect("queued output");
+    }
+    let refill_tx = pty_tx.clone();
+    let producer = tokio::task::spawn_local(async move {
+        for _ in 0..refill_chunks {
+            refill_tx
+                .send(pressure_chunk())
+                .await
+                .expect("refill output");
+        }
+    });
+    let (reply, replied) = oneshot::channel();
+    bundle
+        .handle
+        .terminal()
+        .expect("terminal")
+        .snapshot
+        .try_send(SnapshotRequest {
+            scrollback: None,
+            max_bytes: usize::MAX,
+            max_frames: usize::MAX,
+            chunk_bytes: 1,
+            reply,
+        })
+        .expect("snapshot request");
+    let run = tokio::task::spawn_local(actor.run());
+    let (_, base_seq) = tokio::time::timeout(ACTOR_EXIT_DEADLINE, replied)
+        .await
+        .expect("bounded reply")
+        .expect("reply")
+        .expect("snapshot");
+    assert_eq!(
+        base_seq, 1,
+        "snapshot must precede the second ingress burst"
+    );
+    let mut bytes = Vec::new();
+    let total_bytes = (200 + refill_chunks) * 1024;
+    let mut expected_seq = 1;
+    while bytes.len() < total_bytes {
+        let next = tokio::time::timeout(ACTOR_EXIT_DEADLINE, output.recv())
+            .await
+            .expect("output deadline")
+            .expect("output");
+        if let PaneOutput::Live {
+            seq, bytes: chunk, ..
+        } = next
+        {
+            assert_eq!(seq, expected_seq, "no output sequence gaps");
+            expected_seq += 1;
+            bytes.extend_from_slice(&chunk);
+        }
+    }
+    assert_eq!(
+        bytes,
+        vec![b'x'; total_bytes],
+        "service preserves every PTY byte"
+    );
+    producer.await.expect("producer finished");
+    bundle.token.cancel();
+    run.await.expect("actor stopped");
+}
+
+fn pressure_chunk() -> PtyEvent {
+    PtyEvent::Bytes {
+        chunk: Bytes::from(vec![b'x'; 1024]),
+        read_at: std::time::Instant::now(),
+    }
+}
+
 /// The actor answers `SnapshotRequest` with what the synthesizer produces.
 #[tokio::test(flavor = "current_thread")]
 async fn actor_responds_to_snapshot_request_on_localset() {
