@@ -148,14 +148,16 @@ async fn snapshot_under_pty_pressure(refill_chunks: usize) {
     let mut actor = bundle.actor;
     let (pty_tx, _writer) = actor.install_test_pty_channels();
     let mut output = bundle.handle.output.subscribe();
-    for _ in 0..200 {
-        pty_tx.try_send(pressure_chunk()).expect("queued output");
+    for index in 0..200 {
+        pty_tx
+            .try_send(pressure_chunk(index))
+            .expect("queued output");
     }
     let refill_tx = pty_tx.clone();
     let producer = tokio::task::spawn_local(async move {
-        for _ in 0..refill_chunks {
+        for index in 200..200 + refill_chunks {
             refill_tx
-                .send(pressure_chunk())
+                .send(pressure_chunk(index))
                 .await
                 .expect("refill output");
         }
@@ -201,21 +203,28 @@ async fn snapshot_under_pty_pressure(refill_chunks: usize) {
             bytes.extend_from_slice(&chunk);
         }
     }
+    let expected: Vec<_> = (0..200 + refill_chunks).flat_map(pressure_bytes).collect();
     assert_eq!(
-        bytes,
-        vec![b'x'; total_bytes],
-        "service preserves every PTY byte"
+        bytes, expected,
+        "service preserves ordered, distinguishable PTY chunks"
     );
     producer.await.expect("producer finished");
     bundle.token.cancel();
     run.await.expect("actor stopped");
 }
 
-fn pressure_chunk() -> PtyEvent {
+fn pressure_chunk(index: usize) -> PtyEvent {
     PtyEvent::Bytes {
-        chunk: Bytes::from(vec![b'x'; 1024]),
+        chunk: Bytes::from(pressure_bytes(index)),
         read_at: std::time::Instant::now(),
     }
+}
+
+fn pressure_bytes(index: usize) -> Vec<u8> {
+    let marker = format!("chunk-{index:08x} ");
+    let mut bytes = vec![b'x'; 1024];
+    bytes[..marker.len()].copy_from_slice(marker.as_bytes());
+    bytes
 }
 
 /// The actor answers `SnapshotRequest` with what the synthesizer produces.
