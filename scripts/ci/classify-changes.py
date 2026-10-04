@@ -40,15 +40,16 @@ ROUTES = (
       "scripts/check-agent-integration-versions.mjs",
       "scripts/ci/agent-integrations.sh", ".release-please-manifest.json"), {"integrations"}),
     (("crates/*",), RUST),
-    # Browser Rust consumers plus the live demo-server example's dependency
-    # closure (including its Cargo dev dependencies). The fixture checks this
+    # Browser Rust consumers plus the live demo server and local-owner CLI
+    # fixture dependency closures (including Cargo dev dependencies). The test checks this
     # against manifests so a new local dependency cannot silently lose coverage.
     (("crates/phux-protocol/*", "crates/phux-client-core/*", "crates/phux-perf/*",
       "crates/phux-client-ffi/*", "crates/phux-config/*", "crates/phux-core/*",
       "crates/phux-client-runtime/*",
       "crates/phux-dial/*", "crates/phux-plugin/*", "crates/phux-relay/*",
       "crates/phux-server/*", "crates/phux-server-testkit/*",
-      "crates/phux-agent-rules/*",
+      "crates/phux-agent-rules/*", "crates/phux/*", "crates/phux-client/*",
+      "crates/phux-tui/*", "crates/phux-record/*", "crates/phux-crash/*",
       "crates/portable-pty-adopt/*"), {"web"}),
     (("crates/*/Cargo.toml", "crates/*/Cargo.lock", "crates/*/build.rs",
       "crates/*/*.ld", "crates/*/*.lds", "crates/*/*.c", "crates/*/*.h"), {"native"}),

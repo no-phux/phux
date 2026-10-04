@@ -239,6 +239,9 @@ def browser_tests(env, logs):
                 env["PHUX_TEST_AGENT_URL"] = fixture.url
                 run_chrome(command, env, logs)
                 require_browser_tests((logs / "chrome.log").read_text())
+                # The authenticated fallback reuses chrome.log; retain proof of
+                # the main browser scenarios, including live agent discovery.
+                shutil.copyfile(logs / "chrome.log", logs / "browser.log")
         finally:
             stop(server)
 
@@ -336,7 +339,7 @@ def main():
     signal.signal(signal.SIGINT, interrupted)
     logs = ROOT / "target/web-browser-logs"
     logs.mkdir(parents=True, exist_ok=True)
-    for name in ("build.log", "chrome.log", "server.log", "auth-server.log"):
+    for name in ("build.log", "chrome.log", "browser.log", "server.log", "auth-server.log"):
         (logs / name).unlink(missing_ok=True)
     env = isolated_environment(os.environ)
     for variable, binary in (("CHROME", "chromium"), ("CHROMEDRIVER", "chromedriver")):

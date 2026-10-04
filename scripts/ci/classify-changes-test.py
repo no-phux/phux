@@ -48,7 +48,7 @@ class RoutingTests(unittest.TestCase):
             (["crates/phux-client-core/src/lib.rs"], {"phux", "cockpit", "web"}),
             (["crates/phux-perf/src/lib.rs"], {"phux", "cockpit", "web"}),
             (["crates/phux-client-ffi/src/lib.rs"], {"phux", "cockpit", "web"}),
-            (["crates/phux/build.rs"], {"phux", "cockpit", "native"}),
+            (["crates/phux/build.rs"], {"phux", "cockpit", "web", "native"}),
             (["Cargo.toml"], {"phux", "cockpit", "web", "native"}),
             (["Cargo.lock"], {"phux", "cockpit", "web", "native"}),
             ([".cargo/config.toml"], {"phux", "cockpit", "web", "native"}),
@@ -194,7 +194,7 @@ class RoutingTests(unittest.TestCase):
         manifests = {path.parent.name: tomllib.loads(path.read_text())
                      for path in (ROOT / "crates").glob("*/Cargo.toml")}
         visited = set()
-        pending = ["phux-server", "phux-client-core", "phux-protocol"]
+        pending = ["phux", "phux-server", "phux-client-core", "phux-protocol"]
         while pending:
             name = pending.pop()
             if name in visited:
