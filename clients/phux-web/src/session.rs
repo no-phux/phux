@@ -568,6 +568,9 @@ pub struct Session {
     pending_close: Option<(u32, ResourceId)>,
     /// Correlate optional child-stream attach refusals without failing its terminal.
     pending_agents: HashMap<u32, ResourceId>,
+    /// Bounded announcements observed before an initial or split parent is admitted.
+    agent_discoveries: HashMap<ResourceId, resources::AgentDiscovery>,
+    awaiting_agent_inventory: bool,
     pane_request_id: u32,
     pane_error: Option<String>,
     spawn_initial_size: bool,
@@ -619,6 +622,8 @@ impl Session {
             pending_split: None,
             pending_close: None,
             pending_agents: HashMap::new(),
+            agent_discoveries: HashMap::new(),
+            awaiting_agent_inventory: true,
             pane_request_id: 0x1000,
             pane_error: None,
             spawn_initial_size: false,
@@ -867,6 +872,7 @@ impl Session {
     }
 
     fn pane_refusal(&mut self, message: String) -> Outcome {
+        self.agent_discoveries.clear();
         let resource = self
             .pending_split
             .take()
@@ -1012,6 +1018,7 @@ impl Session {
         outcome.badges = true;
         outcome.render = true;
         outcome.send.extend(self.pane_resize_frames());
+        self.reconcile_agent_discoveries(outcome);
     }
     /// Negotiated decode limits after `HELLO_OK`.
     #[must_use]
