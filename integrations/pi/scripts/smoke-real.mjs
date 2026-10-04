@@ -3,6 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { PhuxCli } from "../dist/src/adapter.js";
+import { registerPhuxLifecycle } from "../dist/src/lifecycle.js";
+import { PhuxTargetStore } from "../dist/src/target-store.js";
+import { PhuxContextAwareness } from "../dist/src/awareness.js";
 
 if (process.env.PHUX_PI_REAL_SMOKE !== "1") {
   process.stdout.write("real smoke skipped; set PHUX_PI_REAL_SMOKE=1 to opt in\n");
@@ -77,12 +81,52 @@ try {
   assert.equal(snapshot.pane, created.terminal_id);
   assert.match([...snapshot.scrollback, ...snapshot.lines].join("\n"), new RegExp(marker));
 
+  await verifyHostingLifecycle(target);
+
   const attachArgv = ["phux", "attach", "--socket", socket, session];
   process.stdout.write(`created ${session} ${target}; run exit=${String(command.exit_code)}; snapshot=${String(snapshot.cols)}x${String(snapshot.rows)}\n`);
   process.stdout.write(`human attach argv: ${JSON.stringify(attachArgv)}\n`);
 } finally {
   await cleanup();
   if (!terminating) removeSignalHandlers();
+}
+
+async function verifyHostingLifecycle(target) {
+  const cli = new PhuxCli({ executable: phux, socket, env });
+  const store = new PhuxTargetStore({ appendEntry() {} }, cli);
+  await store.refresh();
+  const sibling = store.panes.find((pane) => pane.terminal !== target);
+  assert.ok(sibling, "bootstrap pane supplies a distinct control target");
+  store.select(sibling);
+  const handlers = new Map();
+  const pending = new Set();
+  const errors = [];
+  const { lifecycle } = registerPhuxLifecycle({ on(name, handler) { handlers.set(name, handler); } }, store, {
+    cli, hostTerminal: target, onError(error) { errors.push(error); },
+    timers: {
+      setTimeout(callback) { pending.add(callback); return callback; },
+      clearTimeout(callback) { pending.delete(callback); },
+    },
+  });
+  const ctx = { sessionManager: { getSessionId: () => "pi-smoke-host-session" } };
+  await handlers.get("session_start")({ reason: "startup" }, ctx);
+  for (const callback of pending) { pending.delete(callback); callback(); }
+  await lifecycle.settled();
+  assert.deepEqual(errors, [], "hosting declaration and AgentSession must succeed");
+  const host = (await cli.agentShow({ target })).agents[0];
+  assert.equal(host.agent.kind, "pi");
+  assert.equal(host.agent_session.provider, "pi");
+  assert.equal(host.agent_session.native_id, "pi-smoke-host-session");
+  const control = (await cli.agentShow({ target: sibling.terminal })).agents[0];
+  assert.deepEqual(control.agent, sibling.agent, "control target must not be relabeled");
+  const awareness = new PhuxContextAwareness(cli);
+  const checkpoint = await awareness.next("smoke", { self: target, selected: sibling.terminal });
+  assert.match(checkpoint.text, /"availability":"available"/);
+  assert.match(checkpoint.text, /"agent_session":\{/);
+  await handlers.get("session_shutdown")({ reason: "quit" }, ctx);
+  assert.deepEqual(errors, [], "host cleanup must succeed");
+  assert.equal((await cli.agentShow({ target })).agents[0].agent_session, null);
+  process.stdout.write(`verified Pi host ${target}, independent control ${sibling.terminal}, AgentSession and context\n`);
 }
 
 async function cleanup() {

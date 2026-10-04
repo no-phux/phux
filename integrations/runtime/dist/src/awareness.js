@@ -196,9 +196,21 @@ function projectPane(pane) {
             label: cleanString(pane.agent.label, 160),
             kind: cleanString(pane.agent.kind, 80),
         },
+        ...(pane.agent_session === undefined ? {} : {
+            agent_session: projectAgentSession(pane.agent_session),
+        }),
         state: cleanString(pane.state, 80),
         attention: cleanString(pane.attention, 80),
         cwd: pane.cwd === null ? null : cleanString(pane.cwd, 320),
+    };
+}
+function projectAgentSession(session) {
+    if (session === null)
+        return null;
+    return {
+        resource: cleanString(session.resource, 256),
+        provider: cleanString(session.provider, 80),
+        native_id: session.native_id === null ? null : cleanString(session.native_id, 160),
     };
 }
 function cleanString(value, maxLength) {

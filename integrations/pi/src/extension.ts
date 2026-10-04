@@ -138,6 +138,7 @@ export function registerPhuxExtension(
 
   registerPhuxLifecycle(pi, store, {
     cli,
+    ...(environment.PHUX_TERMINAL_ID === undefined ? {} : { hostTerminal: environment.PHUX_TERMINAL_ID }),
     onError: (error) => {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[phux] lifecycle: ${message}`);

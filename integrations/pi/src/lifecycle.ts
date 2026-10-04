@@ -26,6 +26,7 @@ import {
   type AgentStateList,
 } from "./schemas.js";
 import type { PhuxTargetSelection, PhuxTargetStore } from "./target-store.js";
+import { normalizeTerminalIdentity } from "./awareness.js";
 
 export interface LifecycleCommandOptions {
   readonly signal: AbortSignal;
@@ -48,6 +49,8 @@ export interface LifecycleTimers {
 
 export interface PhuxLifecycleOptions {
   readonly cli?: PhuxLifecycleAdapter;
+  /** Hosting pane only. A selected control target is never identity evidence. */
+  readonly hostTerminal?: string;
   readonly debounceMs?: number;
   /** Local deadline for each CLI command and for draining work during shutdown. */
   readonly timeoutMs?: number;
@@ -340,12 +343,15 @@ export function registerPhuxLifecycle(
   options: PhuxLifecycleOptions = {},
 ): RegisteredPhuxLifecycle {
   const lifecycle = new PhuxLifecycle(options);
-  let unsubscribe = store.subscribe((selection) => lifecycle.setTarget(selection));
+  const host = normalizeTerminalIdentity(options.hostTerminal);
 
   pi.on("session_start", (event: SessionStartEvent, ctx: ExtensionContext) => {
+    // The extension's earlier startup handler refreshed this inventory. Resolve
+    // the hosting pane independently even when no control target is selected.
+    // No inventory match means no identity mutation, never a focused-pane fallback.
     lifecycle.start(
       ctx.sessionManager.getSessionId(),
-      store.snapshot.availability === "available" ? store.snapshot.selection : null,
+      host === null ? null : store.selectionFor(host),
       event.reason === "reload",
     );
   });
@@ -371,8 +377,6 @@ export function registerPhuxLifecycle(
   });
   pi.on("agent_settled", () => lifecycle.emit("stop"));
   pi.on("session_shutdown", async (event: SessionShutdownEvent) => {
-    unsubscribe();
-    unsubscribe = () => {};
     await lifecycle.shutdown(event.reason === "reload");
   });
 

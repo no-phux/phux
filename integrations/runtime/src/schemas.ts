@@ -149,7 +149,14 @@ export interface TagRow {
   readonly tagsText: string;
 }
 
-export type AgentKind = "codex" | "claude" | "plugin" | "declared" | "unknown";
+export type AgentKind = typeof AGENT_KINDS[number];
+
+/** The existing Terminal child log, not a durable coordinator Run. */
+export interface AgentSessionIdentity {
+  readonly resource: string;
+  readonly provider: string;
+  readonly native_id: string | null;
+}
 export type AgentState = "unknown" | "idle" | "working" | "blocked" | "done";
 export type AgentAttention = "none" | "low" | "normal" | "high";
 
@@ -172,6 +179,8 @@ export interface AgentPane {
   readonly session: string;
   readonly window: string;
   readonly agent: AgentIdentity;
+  /** Absent on older CLI versions; null when no live AgentSession exists. */
+  readonly agent_session?: AgentSessionIdentity | null;
   readonly state: AgentState;
   readonly confidence: number;
   readonly attention: AgentAttention;
@@ -612,7 +621,7 @@ export function parseRunResult(value: unknown): RunResult {
   };
 }
 
-const AGENT_KINDS = ["codex", "claude", "plugin", "declared", "unknown"] as const;
+const AGENT_KINDS = ["codex", "claude", "open_code", "pi", "omp", "plugin", "declared", "unknown"] as const;
 const AGENT_STATES = ["unknown", "idle", "working", "blocked", "done"] as const;
 const AGENT_ATTENTION = ["none", "low", "normal", "high"] as const;
 const PANE_SELECTOR = /^(?:[^/\s]+\/)?@\d+$/;
@@ -666,6 +675,9 @@ export function parseAgentStateList(value: unknown): AgentStateList {
         label: string(identity.label, `${path}.agent.label`),
         kind: oneOf(identity.kind, `${path}.agent.kind`, AGENT_KINDS),
       },
+      ...(row.agent_session === undefined ? {} : {
+        agent_session: parseAgentSessionIdentity(row.agent_session, `${path}.agent_session`),
+      }),
       state: oneOf(row.state, `${path}.state`, AGENT_STATES),
       confidence: numberInRange(row.confidence, `${path}.confidence`, 0, 1),
       attention: oneOf(row.attention, `${path}.attention`, AGENT_ATTENTION),
@@ -685,6 +697,20 @@ export function parseAgentStateList(value: unknown): AgentStateList {
     };
   });
   return { schema_version: 1, agents };
+}
+
+function parseAgentSessionIdentity(value: unknown, path: string): AgentSessionIdentity | null {
+  if (value === null) return null;
+  const row = record(value, path);
+  const resource = string(row.resource, `${path}.resource`);
+  if (!PANE_SELECTOR.test(resource)) {
+    throw new SchemaValidationError(`${path}.resource`, "a canonical resource selector such as @9");
+  }
+  return {
+    resource,
+    provider: string(row.provider, `${path}.provider`),
+    native_id: nullableString(row.native_id, `${path}.native_id`),
+  };
 }
 
 export function isAgentEventType(value: string): value is AgentEventType {

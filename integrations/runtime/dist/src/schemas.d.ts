@@ -152,7 +152,13 @@ export interface TagRow {
     /** Opaque human confirmation text; the current CLI has no tag JSON shape. */
     readonly tagsText: string;
 }
-export type AgentKind = "codex" | "claude" | "plugin" | "declared" | "unknown";
+export type AgentKind = typeof AGENT_KINDS[number];
+/** The existing Terminal child log, not a durable coordinator Run. */
+export interface AgentSessionIdentity {
+    readonly resource: string;
+    readonly provider: string;
+    readonly native_id: string | null;
+}
 export type AgentState = "unknown" | "idle" | "working" | "blocked" | "done";
 export type AgentAttention = "none" | "low" | "normal" | "high";
 export interface AgentIdentity {
@@ -172,6 +178,8 @@ export interface AgentPane {
     readonly session: string;
     readonly window: string;
     readonly agent: AgentIdentity;
+    /** Absent on older CLI versions; null when no live AgentSession exists. */
+    readonly agent_session?: AgentSessionIdentity | null;
     readonly state: AgentState;
     readonly confidence: number;
     readonly attention: AgentAttention;
@@ -239,6 +247,7 @@ export declare function parseAskedEvent(value: unknown): AskedEvent;
 export declare function parseWatchEvent(value: unknown, path?: string): WatchEvent;
 export declare function parseRenderedFrame(value: unknown): RenderedFrame;
 export declare function parseRunResult(value: unknown): RunResult;
+declare const AGENT_KINDS: readonly ["codex", "claude", "open_code", "pi", "omp", "plugin", "declared", "unknown"];
 export declare function parseAgentRecord(value: unknown, path?: string): AgentRecord;
 export declare function parseAgentStateList(value: unknown): AgentStateList;
 export declare function isAgentEventType(value: string): value is AgentEventType;
@@ -250,3 +259,4 @@ export declare function parseAgentPromptResult(value: unknown): Record<string, u
 export declare function parseAgentWaitResult(value: unknown): Record<string, unknown>;
 export declare function parseResourceWaitResult(value: unknown): Record<string, unknown>;
 export declare function parseStatusResult(value: unknown): Record<string, unknown>;
+export {};
