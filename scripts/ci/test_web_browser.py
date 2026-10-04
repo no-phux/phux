@@ -12,6 +12,8 @@ import tempfile
 import time
 import unittest
 from unittest.mock import Mock, patch
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 
 spec = importlib.util.spec_from_file_location("web_browser", Path(__file__).with_name("web-browser.py"))
@@ -20,6 +22,37 @@ spec.loader.exec_module(browser)
 
 
 class BrowserRunnerTests(unittest.TestCase):
+    def test_agent_fixture_is_canned_token_gated_and_cleans_up(self):
+        fixture = browser.AgentFixture("/test/phux", "/tmp/owned-test.sock", {})
+        with patch.object(fixture, "command") as command:
+            with fixture:
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(Request(fixture.url.replace(fixture.token, "wrong") + "/open", method="POST"))
+                self.assertEqual(error.exception.code, 404)
+                error.exception.close()
+                command.assert_not_called()
+                with urlopen(Request(fixture.url + "/open", method="POST")) as response:
+                    self.assertEqual(response.status, 200)
+                self.assertTrue(fixture.opened)
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(Request(fixture.url + "/arbitrary-command", method="POST"))
+                error.exception.close()
+            command.assert_any_call("agent", "session", "open", "default", "--provider", "pi")
+            command.assert_called_with("agent", "session", "close", "default")
+        self.assertFalse(fixture.thread.is_alive())
+
+    def test_agent_fixture_cli_always_targets_its_owned_socket(self):
+        fixture = browser.AgentFixture("/test/phux", "/tmp/owned-test.sock", {"PATH": "/bin"})
+        try:
+            with patch.object(subprocess, "run", return_value=Mock(returncode=0)) as run:
+                fixture.command("agent", "session", "close", "default")
+            self.assertEqual(run.call_args.args[0], ["/test/phux", "agent", "session", "close", "default",
+                                                    "--socket", "/tmp/owned-test.sock"])
+            self.assertEqual(run.call_args.kwargs["timeout"], 10)
+            self.assertEqual(run.call_args.kwargs["env"], {"PATH": "/bin"})
+        finally:
+            fixture.server.server_close()
+
     def test_udp_blackhole_receives_and_cleans_up_owned_socket(self):
         with browser.UdpBlackhole() as blackhole:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:

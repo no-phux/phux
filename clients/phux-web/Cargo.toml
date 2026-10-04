@@ -91,6 +91,8 @@ web-sys = { version = "0.3", features = [
 wasm-bindgen-test = "0.3"
 # Event constructors the browser tests dispatch; the library needs none.
 web-sys = { version = "0.3", features = [
+    "RequestInit",
+    "Response",
     "ClipboardEventInit",
     "CompositionEventInit",
     "EventInit",

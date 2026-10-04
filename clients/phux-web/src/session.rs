@@ -28,11 +28,13 @@ use phux_protocol::input::InputEvent;
 use phux_protocol::input::key::KeyEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    AttachTarget, Command, CommandResult, FrameKind, HistoryRejectionReason,
+    AgentEvent, AttachTarget, Command, CommandResult, FrameKind, HistoryRejectionReason,
     HistoryTombstoneReason, PathQueryResult, PathResults, SpawnResult, ViewportInfo,
 };
 use phux_protocol::{PROTOCOL_VERSION, ResourceKind};
 use phux_vt_web::{Grid, NativeCodecError, NativeDecodeKind, NativeDecoder, Terminal, Vt};
+
+mod resources;
 
 const ATTACH_ID: u32 = 1;
 const HISTORY_LINES: u32 = 5_000;
@@ -564,6 +566,8 @@ pub struct Session {
     retiring_panes: Vec<ResourceId>,
     pending_split: Option<PendingSplit>,
     pending_close: Option<(u32, ResourceId)>,
+    /// Correlate optional child-stream attach refusals without failing its terminal.
+    pending_agents: HashMap<u32, ResourceId>,
     pane_request_id: u32,
     pane_error: Option<String>,
     spawn_initial_size: bool,
@@ -614,6 +618,7 @@ impl Session {
             retiring_panes: Vec::new(),
             pending_split: None,
             pending_close: None,
+            pending_agents: HashMap::new(),
             pane_request_id: 0x1000,
             pane_error: None,
             spawn_initial_size: false,
@@ -1248,6 +1253,9 @@ impl Session {
     }
 
     fn reduce_frame(&mut self, frame: FrameKind) -> Outcome {
+        if let Some(outcome) = self.reduce_agent_reply(&frame) {
+            return outcome;
+        }
         if let Some(outcome) = self.reduce_pane_frame(&frame) {
             return outcome;
         }
@@ -1291,18 +1299,27 @@ impl Session {
                     history_config,
                 ));
                 Outcome {
-                    send: vec![encode(&FrameKind::Attach {
-                        attach_id: ATTACH_ID,
-                        target: AttachTarget::CreateIfMissing {
-                            name: "default".to_owned(),
-                            command: None,
-                            cwd: None,
-                        },
-                        viewport: self.viewport(),
-                        request_scrollback: true,
-                        scrollback_limit_lines: HISTORY_LINES,
-                        role_policy: None,
-                    })],
+                    // Subscribe before taking the attach snapshot: a child
+                    // created during bootstrap must not fall into a discovery gap.
+                    // The kernel's post-ready subscription is idempotent.
+                    send: vec![
+                        encode(&FrameKind::SubscribeEvents {
+                            terminal: None,
+                            after_seq: None,
+                        }),
+                        encode(&FrameKind::Attach {
+                            attach_id: ATTACH_ID,
+                            target: AttachTarget::CreateIfMissing {
+                                name: "default".to_owned(),
+                                command: None,
+                                cwd: None,
+                            },
+                            viewport: self.viewport(),
+                            request_scrollback: true,
+                            scrollback_limit_lines: HISTORY_LINES,
+                            role_policy: None,
+                        }),
+                    ],
                     ..Outcome::default()
                 }
             }
@@ -1310,59 +1327,7 @@ impl Session {
                 attach_id,
                 snapshot,
                 ..
-            } => {
-                if attach_id != ATTACH_ID {
-                    return self.protocol_failure("ATTACHED used the wrong attach identifier");
-                }
-                // Only Terminal-kind resources build panes and gate the
-                // barrier; an AgentSession bound to one of them is declared
-                // to the kernel as a record stream and projected as a badge.
-                let terminal_ids: Vec<_> = snapshot
-                    .resources
-                    .iter()
-                    .filter(|pane| pane.kind == ResourceKind::Terminal)
-                    .map(|pane| pane.id.clone())
-                    .collect();
-                let focused_terminal = snapshot.focused_resource;
-                let (mut outcome, applied) = self.apply_kernel(KernelInput::AttachStarted {
-                    attach_id,
-                    terminals: &terminal_ids,
-                });
-                if !applied {
-                    return outcome;
-                }
-                for pane in snapshot
-                    .resources
-                    .iter()
-                    .filter(|pane| pane.kind == ResourceKind::AgentSession)
-                    .filter(|pane| {
-                        pane.parent
-                            .as_ref()
-                            .is_some_and(|parent| terminal_ids.contains(parent))
-                    })
-                {
-                    let facet = pane.agent.as_ref();
-                    let (declared, applied) = self.apply_kernel(KernelInput::AgentSessionDeclared(
-                        AgentSessionDeclaration {
-                            terminal_id: &pane.id,
-                            parent: pane.parent.as_ref(),
-                            provider: facet.map(|facet| facet.provider.as_str()),
-                            native_id: facet.and_then(|facet| facet.native_id.as_deref()),
-                            state: facet.map(|facet| facet.state.as_str()),
-                        },
-                    ));
-                    if !applied {
-                        return declared;
-                    }
-                    outcome.badges = true;
-                }
-                self.focused_terminal = Some(focused_terminal);
-                self.cancel_path_query();
-                self.terminal_order = terminal_ids;
-                self.restore_layout();
-                self.render_visible = false;
-                outcome
-            }
+            } => self.accept_snapshot(attach_id, snapshot),
             FrameKind::BootstrapBegin {
                 terminal_id,
                 stream_id,
@@ -1517,67 +1482,13 @@ impl Session {
                 exit_status,
                 reason,
                 signal,
-            } => {
-                self.retiring_panes.retain(|id| id != &terminal_id);
-                self.pane_sizes.remove(&terminal_id);
-                let was_focused = self.focused_terminal.as_ref() == Some(&terminal_id);
-                let was_agent = self.is_agent_session(&terminal_id);
-                let (mut outcome, applied) = self.apply_kernel(KernelInput::ResourceClosed {
-                    terminal_id: &terminal_id,
-                    exit_status,
-                    signal,
-                    reason,
-                });
-                if applied && !was_agent {
-                    self.terminal_order.retain(|id| id != &terminal_id);
-                    self.layout = self
-                        .layout
-                        .take()
-                        .and_then(|layout| layout.remove(&terminal_id));
-                    if self
-                        .pending_close
-                        .as_ref()
-                        .is_some_and(|(_, id)| id == &terminal_id)
-                    {
-                        self.pending_close = None;
-                    }
-                    if self
-                        .pending_split
-                        .as_ref()
-                        .is_some_and(|pending| pending.resource.as_ref() == Some(&terminal_id))
-                    {
-                        self.pending_split = None;
-                        self.pane_error = Some(
-                            "The terminal closed before the split completed. Try splitting again."
-                                .to_owned(),
-                        );
-                    }
-                    if was_focused {
-                        self.cancel_path_query();
-                        self.focused_terminal = self.first_published_terminal();
-                    }
-                    outcome.panes = true;
-                    outcome.render |= self.render_visible;
-                    outcome.badges = true;
-                    outcome.send.extend(self.pane_resize_frames());
-                }
-                if applied && was_agent {
-                    outcome.badges = true;
-                }
-                outcome
-            }
-            FrameKind::AttachReady { attach_id } => {
-                let (mut outcome, applied) =
-                    self.apply_kernel(KernelInput::AttachReady { attach_id });
-                if applied {
-                    self.attach_ready = true;
-                    outcome.panes = true;
-                    if self.pane_rects().len() > 1 {
-                        outcome.send.extend(self.pane_resize_frames());
-                    }
-                }
-                outcome
-            }
+            } => self.close_resource(terminal_id, exit_status, reason, signal),
+            FrameKind::AttachReady { attach_id } => self.finish_attach(attach_id),
+            FrameKind::Event {
+                terminal: Some(id),
+                event,
+                ..
+            } => self.reduce_resource_event(&id, &event),
             _ => Outcome::default(),
         }
     }
@@ -1800,12 +1711,15 @@ impl Session {
                         );
                     }
                 }
-                // PHA-406 status effects (cwd/command/exit) and the
-                // connection-wide SUBSCRIBE_EVENTS the kernel now sends to
-                // receive them are not consumed here yet; `Status` is
-                // already ignored below, and this keeps the web client's
-                // wire traffic unchanged until it wants them.
-                KernelEffect::Send(KernelSend::SubscribeEvents { .. }) => {}
+                KernelEffect::Send(KernelSend::SubscribeEvents {
+                    terminal,
+                    after_seq,
+                }) => {
+                    outcome.send.push(encode(&FrameKind::SubscribeEvents {
+                        terminal: terminal.clone(),
+                        after_seq: *after_seq,
+                    }));
+                }
                 KernelEffect::Damage(_) => outcome.render = true,
                 KernelEffect::AgentRecords { .. } => outcome.badges = true,
                 KernelEffect::Status(KernelStatus::Engine {

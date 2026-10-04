@@ -20,12 +20,15 @@ import tempfile
 import threading
 import time
 
+from web_agent_fixture import AgentFixture
+
 
 ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_TESTS = (
     "renders_engine_grid_to_canvas",
     "a_wide_character_paints_across_its_spacer_cell",
     "exact_wasm_codec_selects_native_and_renders_live_server",
+    "agents_started_after_browser_attach_update_badges_without_reloading",
     "synthesized_only_browser_remains_compatible_with_native_server",
     "keys_ime_commits_and_paste_reach_the_terminal_and_nothing_else_is_captured",
     "resize_reflows_the_live_terminal_and_canvas",
@@ -230,8 +233,12 @@ def browser_tests(env, logs):
             env["PHUX_TEST_WS_URL"] = f"ws://127.0.0.1:{port}/"
             wait_ready(server, port)
             # Do not reuse the native target or override the standalone rustflags.
-            run_chrome(command, env, logs)
-            require_browser_tests((logs / "chrome.log").read_text())
+            socket_path = Path(env.get("TMPDIR", tempfile.gettempdir())) / f"phux-e2e-{server.pid}.sock"
+            binary = Path(env["CARGO_TARGET_DIR"]) / "debug/phux"
+            with AgentFixture(binary, socket_path, env) as fixture:
+                env["PHUX_TEST_AGENT_URL"] = fixture.url
+                run_chrome(command, env, logs)
+                require_browser_tests((logs / "chrome.log").read_text())
         finally:
             stop(server)
 
@@ -341,6 +348,9 @@ def main():
     try:
         with (logs / "build.log").open("w") as log:
             run(["cargo", "build", "--locked", "-p", "phux-server", "--example", "ws_demo_server"],
+                cwd=ROOT, env=env, timeout=1200, log=log)
+        with (logs / "build.log").open("a") as log:
+            run(["cargo", "build", "--locked", "-p", "phux", "--bin", "phux"],
                 cwd=ROOT, env=env, timeout=1200, log=log)
         with tempfile.TemporaryDirectory(prefix="phux-browser-") as scratch:
             env["TMPDIR"] = scratch

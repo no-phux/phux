@@ -279,10 +279,12 @@ close. Availability depends on both sides: the server must advertise
 `RESOURCE_KINDS` in `phux status --json`, and the client must include the
 badge implementation. Not every released web build does.
 
-Non-Terminal resources in the session snapshot are skipped, never attached
-or given an engine. The badge reads `ResourceInfo`'s additive agent facet
-and subsequent lifecycle frames, not the record stream. Use `phux agent log`
-for that stream.
+AgentSession children of held terminals are discovered both in the attach
+snapshot and through live resource announcements. Each child gets one record-stream
+attachment, never a terminal pane or VT engine. The snapshot's additive agent
+facet seeds the badge; retained and live records update its provider and state.
+Closing a child or refusing its attachment removes only its badge, leaving the
+parent terminal usable. Use `phux agent log` to inspect the complete record stream.
 
 ## Verification
 

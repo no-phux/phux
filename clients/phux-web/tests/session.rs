@@ -255,7 +255,14 @@ async fn hello_ok_without_aggregate_ready_is_not_connection_ready() {
         BootstrapLimits::default(),
     ));
     assert!(outcome.fatal.is_none());
-    assert_eq!(outcome.send.len(), 1, "HELLO_OK starts attach");
+    assert_eq!(outcome.send.len(), 2, "HELLO_OK subscribes before attach");
+    assert!(matches!(
+        decode_one(&outcome.send[0]),
+        FrameKind::SubscribeEvents {
+            terminal: None,
+            after_seq: None
+        }
+    ));
     assert!(!session.is_attach_ready(), "HELLO_OK alone is not usable");
 }
 
@@ -313,8 +320,8 @@ async fn raw_transcript_waits_for_dual_and_global_ready_without_ack() {
         BootstrapLimits::default(),
     ));
     assert!(hello.fatal.is_none());
-    assert_eq!(hello.send.len(), 1);
-    let (attach, _) = FrameKind::decode(&hello.send[0]).expect("decode attach");
+    assert_eq!(hello.send.len(), 2);
+    let (attach, _) = FrameKind::decode(&hello.send[1]).expect("decode attach");
     assert!(matches!(attach, FrameKind::Attach { attach_id: 1, .. }));
 
     assert!(
@@ -942,6 +949,8 @@ async fn agent_sessions_become_badges_and_never_panes() {
     ));
     assert!(attached.fatal.is_none());
     assert!(attached.badges);
+    agent_attach(&attached, 9);
+    assert!(session.on_frame(spawned_agent(9, 8)).send.is_empty());
     assert_eq!(
         badge_summary(&session),
         vec![("claude".to_owned(), "idle".to_owned())]
@@ -1067,6 +1076,89 @@ async fn agent_sessions_become_badges_and_never_panes() {
     assert!(session.key_frame(key()).is_some());
 }
 
+fn spawned_agent(id: u32, parent: u32) -> FrameKind {
+    FrameKind::Event {
+        terminal: Some(ResourceId::local(id)),
+        event: phux_protocol::wire::frame::AgentEvent::ResourceSpawned {
+            kind: ResourceKind::AgentSession,
+            parent: Some(ResourceId::local(parent)),
+        },
+        stamp: None,
+    }
+}
+
+fn agent_attach(outcome: &phux_web::Outcome, expected: u32) -> u32 {
+    assert!(outcome.fatal.is_none());
+    assert!(outcome.badges);
+    assert_eq!(outcome.send.len(), 1);
+    match decode_one(&outcome.send[0]) {
+        FrameKind::Command {
+            request_id,
+            command: phux_protocol::wire::frame::Command::AttachResource { terminal_id, .. },
+        } => {
+            assert_eq!(terminal_id, ResourceId::local(expected));
+            request_id
+        }
+        other => panic!("expected child attach, got {other:?}"),
+    }
+}
+
+#[wasm_bindgen_test]
+async fn live_agent_discovery_attaches_once_and_closure_never_resurrects() {
+    let mut session = path_session(false, false).await;
+    let attached = session.on_frame(spawned_agent(201, 101));
+    let request_id = agent_attach(&attached, 201);
+    assert_eq!(session.agent_badges().len(), 1);
+    assert!(session.on_frame(spawned_agent(201, 101)).send.is_empty());
+    assert!(session.on_frame(spawned_agent(202, 999)).send.is_empty());
+    assert!(session.on_frame(spawned_agent(203, 201)).send.is_empty());
+
+    let closed = session.on_frame(FrameKind::Event {
+        terminal: Some(ResourceId::local(201)),
+        event: phux_protocol::wire::frame::AgentEvent::ResourceClosed { exit_status: None },
+        stamp: None,
+    });
+    assert!(closed.badges);
+    assert!(session.agent_badges().is_empty());
+    // A queued bootstrap and reply after closure are harmless to the parent.
+    let late = session.on_frame(begin(
+        ResourceId::local(201),
+        stream(201),
+        bootstrap(201),
+        phux_protocol::caps::BootstrapStreamProfile::AgentEventsJsonlV1,
+        0,
+        0,
+        0,
+    ));
+    assert!(late.fatal.is_none());
+    let reply = session.on_frame(FrameKind::CommandResult {
+        request_id,
+        result: phux_protocol::wire::frame::CommandResult::Ok,
+    });
+    assert!(reply.fatal.is_none());
+    assert!(session.on_frame(spawned_agent(201, 101)).send.is_empty());
+    assert!(session.agent_badges().is_empty());
+    assert!(session.key_frame(key()).is_some());
+    assert!(!session.is_failed());
+}
+
+#[wasm_bindgen_test]
+async fn refused_agent_attach_retracts_badge_without_failing_terminal() {
+    let mut session = path_session(false, false).await;
+    let request_id = agent_attach(&session.on_frame(spawned_agent(201, 101)), 201);
+    let refused = session.on_frame(FrameKind::CommandResult {
+        request_id,
+        result: phux_protocol::wire::frame::CommandResult::Error {
+            code: phux_protocol::wire::frame::ErrorCode::TerminalNotFound,
+            message: "child already closed".to_owned(),
+        },
+    });
+    assert!(refused.fatal.is_none());
+    assert!(session.agent_badges().is_empty());
+    assert!(session.key_frame(key()).is_some());
+    assert!(!session.pane_pending());
+}
+
 fn decode_one(frame: &[u8]) -> FrameKind {
     let (decoded, rest) = FrameKind::decode(frame).expect("decodable client frame");
     assert!(rest.is_empty());
@@ -1098,7 +1190,7 @@ async fn the_viewport_reports_the_cell_grid_in_pixels() {
         BootstrapLimits::default(),
     ));
     assert_eq!(
-        reported_pixels(&attach.send[0]),
+        reported_pixels(&attach.send[1]),
         (Some(80 * 9), Some(24 * 18))
     );
     let resize = session.resize_frame(100, 30).expect("VIEWPORT_RESIZE");
@@ -1122,7 +1214,7 @@ async fn resize_rides_the_attach_before_hello_ok_and_viewport_resize_after() {
         BootstrapProfile::SynthesizedVtRaw,
         BootstrapLimits::default(),
     ));
-    let FrameKind::Attach { viewport, .. } = decode_one(&attach.send[0]) else {
+    let FrameKind::Attach { viewport, .. } = decode_one(&attach.send[1]) else {
         panic!("HELLO_OK is answered by ATTACH");
     };
     assert_eq!((viewport.cols, viewport.rows), (100, 30));
