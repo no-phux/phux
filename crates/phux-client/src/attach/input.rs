@@ -625,6 +625,20 @@ const fn focus_report(final_byte: u8) -> Option<FocusEvent> {
 
 /// `CSI n ; mod ~`: navigation and function keys.
 fn dispatch_csi_tilde(parsed: &[u32], out: &mut Vec<InputEvent>) {
+    // xterm modifyOtherKeys form `CSI 27 ; mod ; keycode ~`. Ghostty sends it
+    // in legacy mode for modified Enter/Tab/Backspace (Cmd+Return is
+    // `CSI 27;9;13~`); decode it like the kitty `CSI keycode;mod u` it mirrors.
+    if let [27, code, keycode] = *parsed {
+        let Some(key) = kitty_keycode_to_physical(keycode) else {
+            tracing::trace!(keycode, "modifyOtherKeys unmapped keycode");
+            return;
+        };
+        out.push(InputEvent::Key(KeyEvent {
+            unshifted_codepoint: Some(keycode),
+            ..make_named_key(key, xterm_modifier_code(code))
+        }));
+        return;
+    }
     let n = parsed.first().copied().unwrap_or(1);
     let mods = parsed
         .get(1)
@@ -1129,6 +1143,41 @@ mod tests {
         for &(input, key, mods) in cases {
             let ev = one_key(input);
             assert_eq!((ev.key, ev.mods), (key, mods), "input {input:?}");
+        }
+    }
+
+    /// Host Ghostty in legacy mode sends modified Enter as xterm
+    /// modifyOtherKeys `CSI 27;mod;13~` (Cmd+Return is `CSI 27;9;13~`). It
+    /// must decode to Enter+mods so the pane's encoder re-emits exactly what
+    /// Ghostty would natively: `CSI 13;9u` under kitty flags (Claude Code's
+    /// newline), the same `CSI 27;9;13~` otherwise.
+    #[test]
+    fn modify_other_keys_enter_round_trips_like_native_ghostty() {
+        use libghostty_vt::key::{Encoder, EncoderOptions, Event, KittyKeyFlags};
+        let encode = |ev: &KeyEvent, flags: KittyKeyFlags| {
+            let term = libghostty_vt::Terminal::new(80, 24).expect("terminal");
+            let mut opts = EncoderOptions::from_terminal(&term).expect("options");
+            opts.kitty_flags = flags;
+            let mut enc = Encoder::new().expect("encoder");
+            enc.set_options(opts);
+            let mut lg = Event::new().expect("event");
+            lg.set_action(ev.action.into())
+                .set_key(ev.key.into())
+                .set_mods(ev.mods.into())
+                .set_utf8(ev.text.clone());
+            let mut out = Vec::new();
+            enc.encode_to_vec(&lg, &mut out).expect("encode");
+            out
+        };
+        for (wire, mods, kitty) in [
+            (&b"\x1b[27;9;13~"[..], ModSet::SUPER, &b"\x1b[13;9u"[..]),
+            (b"\x1b[27;2;13~", ModSet::SHIFT, b"\x1b[13;2u"),
+            (b"\x1b[27;5;13~", ModSet::CTRL, b"\x1b[13;5u"),
+        ] {
+            let ev = one_key(wire);
+            assert_eq!((ev.key, ev.mods), (PhysicalKey::Enter, mods), "{wire:?}");
+            assert_eq!(encode(&ev, KittyKeyFlags::DISAMBIGUATE), kitty, "{wire:?}");
+            assert_eq!(encode(&ev, KittyKeyFlags::DISABLED), wire, "{wire:?}");
         }
     }
 
