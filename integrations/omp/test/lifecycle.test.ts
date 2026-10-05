@@ -225,6 +225,92 @@ describe("OMP host lifecycle", () => {
     expect(f.calls.filter(call => call.verb === "prompt")).toHaveLength(0);
   });
 
+  for (const state of [undefined, null, "unknown", "idle", "working", "blocked", "done"]) {
+    test(`cold bare OMP identity initializes without declaring observed state: ${state}`, async () => {
+      const f = fixture(); const host = sdk(f.cli);
+      f.pane.sources = [{ kind: "agent_record", observed: JSON.stringify({ name: "omp", kind: "omp", state }) }];
+      await host.event("session_start");
+      expect(f.mutations()[0]).toEqual({ verb: "set", target: "@17", data: { name: "omp", kind: "omp", session: "omp:one" } });
+      expect(f.pane.agent_session?.native_id).toBe("one");
+      expect(f.calls.filter(call => call.verb === "open")).toHaveLength(1);
+    });
+  }
+
+  test("cold null owner/attention and observational state are replaced, never preserved", async () => {
+    const f = fixture(); const host = sdk(f.cli);
+    f.pane.sources = [{ kind: "agent_record", observed: JSON.stringify({ name: "omp", kind: "omp", session: null, attention: null, state: "blocked" }) }];
+    await host.event("session_start");
+    expect(f.mutations()[0]!.data).toEqual({ name: "omp", kind: "omp", session: "omp:one" });
+    expect(f.pane.agent_session?.provider).toBe("omp");
+  });
+
+  for (const [name, record] of Object.entries({
+    "foreign owner": { session: "pi:other" }, "empty owner": { session: "" },
+    "numeric owner": { session: 0 }, "false owner": { session: false },
+    "foreign name": { name: "pi" }, "foreign kind": { kind: "pi" },
+    "attention none": { attention: "none" }, "attention high": { attention: "high" },
+    "attention false": { attention: false }, "unknown field": { custom: true },
+    "noncanonical state": { state: "busy" }, "empty state": { state: "" },
+    "structured state": { state: {} }, "numeric state": { state: 0 },
+  })) test(`cold unbound refusal: ${name}`, async () => {
+    const f = fixture(); const host = sdk(f.cli);
+    f.pane.sources = [{ kind: "agent_record", observed: JSON.stringify({ name: "omp", kind: "omp", ...record }) }];
+    await host.event("session_start"); expect(f.mutations()).toEqual([]);
+  });
+
+  for (const observed of ['null', '[]', '"omp"', '{', '{"name":"omp","kind":"omp","session":"foreign","session":null}']) {
+    test(`cold malformed or duplicate JSON refusal: ${observed}`, async () => {
+      const f = fixture(); const host = sdk(f.cli);
+      f.pane.sources = [{ kind: "agent_record", observed }];
+      await host.event("session_start"); expect(f.mutations()).toEqual([]);
+    });
+  }
+
+  for (const invalid of ["duplicate sources", "existing child", "missing projection"] as const) {
+    test(`cold unbound refusal: ${invalid}`, async () => {
+      const f = fixture(); const host = sdk(f.cli);
+      const source = { kind: "agent_record", observed: '{"name":"omp","kind":"omp"}' };
+      f.pane.sources = invalid === "duplicate sources" ? [source, source] : [source];
+      if (invalid === "existing child") f.pane.agent_session = { resource: "@99", provider: "omp", native_id: "one" };
+      if (invalid === "missing projection") delete f.pane.agent_session;
+      await host.event("session_start"); expect(f.mutations()).toEqual([]);
+    });
+  }
+
+  test("bare identity does not authorize warm navigation or recovery", async () => {
+    const f = fixture(); const host = sdk(f.cli);
+    await host.event("session_start");
+    f.calls.length = 0;
+    f.pane.sources = [{ kind: "agent_record", observed: '{"name":"omp","kind":"omp","state":"idle"}' }];
+    f.pane.agent_session = null;
+    host.setId("two"); await host.event("session_switch"); await host.event("session_start");
+    expect(f.mutations()).toEqual([]);
+  });
+
+  test("first event being navigation consumes cold bootstrap eligibility", async () => {
+    const f = fixture(); const host = sdk(f.cli);
+    f.pane.sources = [{ kind: "agent_record", observed: '{"name":"omp","kind":"omp"}' }];
+    await host.event("session_switch"); await host.event("session_start");
+    expect(f.mutations()).toEqual([]);
+  });
+
+  test("completed guarded loops can reuse approval IDs, including continuation", async () => {
+    const f = fixture(); const host = sdk(f.cli);
+    const receipt = { sessionId: "one", toolCallId: "reused", toolName: "bash", approved: false };
+    await host.event("session_start");
+    for (const willContinue of [true, false, false]) {
+      await host.event("agent_start");
+      await host.event("tool_approval_requested", receipt);
+      await host.event("tool_approval_requested", receipt);
+      await host.event("tool_approval_resolved", receipt);
+      await host.event("tool_approval_resolved", receipt);
+      await host.event("agent_end", { willContinue });
+    }
+    expect(f.calls.filter(call => call.verb === "notification")).toHaveLength(3);
+    expect(f.calls.filter(call => call.verb === "state")).toHaveLength(3);
+    expect(f.calls.filter(call => call.verb === "close")).toHaveLength(0);
+  });
+
   test("outside phux does nothing", async () => {
     const f = fixture(); const lifecycle = new OmpLifecycle(f.cli); await lifecycle.navigate("one"); await lifecycle.shutdown(); expect(f.calls).toEqual([]);
   });
