@@ -139,3 +139,9 @@ tracing-core = { workspace = true }
 name = "render_frame"
 harness = false
 required-features = ["testkit"]
+
+# Evidence-only prediction reconciliation timing against the real native reader.
+[[bench]]
+name = "predict_reconcile"
+harness = false
+required-features = ["testkit"]
