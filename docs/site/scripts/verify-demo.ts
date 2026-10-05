@@ -19,7 +19,7 @@ function report(name: string, ok: boolean, detail = "") {
   if (!ok) failures++;
 }
 async function openTerminal(page: Page) {
-  await page.getByRole("button", { name: "Open a live terminal" }).click();
+  await page.getByRole("link", { name: "Try it in your browser" }).click();
 }
 
 async function waitForOutput(found: () => boolean) {
@@ -32,15 +32,17 @@ try {
   const staticPage = await noJs.newPage();
   await staticPage.goto(BASE);
   report(
-    "no JS: diagram and install path remain usable",
-    (await staticPage.locator(".mux-server").isVisible()) &&
+    "no JS: demo link falls back to the standalone shell",
+    (await staticPage
+      .getByRole("link", { name: "Try it in your browser" })
+      .getAttribute("href")) === "/embed" &&
       (await staticPage.locator('a[href="#install"]').isVisible()),
   );
   report(
     "no JS: fallback offers a working installation guide",
     await staticPage
       .locator(
-        '.mux-showcase noscript a[href="https://docs.phux.sh/quickstart"]',
+        '.hero-demo noscript a[href="https://docs.phux.sh/quickstart"]',
       )
       .isVisible(),
   );
@@ -111,20 +113,6 @@ try {
       !requests.some((url) =>
         /\.wasm(?:\?|$)|\/auth\/session|\/healthz/.test(url),
       ),
-  );
-  await page.getByRole("button", { name: "Share a view", exact: true }).click();
-  report(
-    "share diagram preserves terminal identity",
-    await page
-      .locator('.mux-views [class="mux-pane"] header b')
-      .allTextContents()
-      .then((ids) => ids.join(",") === "terminal 01,terminal 01"),
-  );
-  await page.getByRole("button", { name: "Detach", exact: true }).click();
-  await page.getByRole("button", { name: "Reattach same terminal" }).click();
-  report(
-    "diagram reattaches same resource",
-    await page.locator('.mux-views[data-view="mirror"]').isVisible(),
   );
   await openTerminal(page);
   await page.locator('.pterm[data-status="live"]').waitFor({ timeout: 30_000 });
@@ -228,7 +216,7 @@ try {
   );
   await page.getByRole("button", { name: "Close live terminal" }).click();
   await page.waitForFunction(() =>
-    document.activeElement?.classList.contains("mux-launch"),
+    document.activeElement?.hasAttribute("data-demo-launch"),
   );
   const closeDeadline = Date.now() + 2_000;
   while (closed < 1 && Date.now() < closeDeadline) await delay(20);

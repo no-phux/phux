@@ -1,0 +1,271 @@
+.hero-demo {
+  min-width: 0;
+}
+.hero-term {
+  display: block;
+  overflow: hidden;
+  border: 1px solid var(--color-rule);
+  border-radius: 12px;
+  background: #0c0f17;
+  color: var(--color-fg);
+  text-decoration: none;
+  font: 12px/1.9 var(--font-code);
+  cursor: pointer;
+  transition: border-color 140ms ease;
+}
+.hero-term:hover {
+  border-color: var(--color-accent-soft);
+}
+.hero-term > span {
+  display: flex;
+}
+.hero-term-bar {
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--color-rule);
+  color: var(--color-muted);
+  font-size: 11px;
+}
+.hero-term-try {
+  color: var(--color-accent);
+}
+.hero-term-panes > span + span {
+  border-left: 1px solid var(--color-rule);
+}
+.hero-term-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 150px;
+  padding: 14px 16px;
+}
+.hero-term-pane > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hero-term i {
+  color: var(--color-accent);
+  font-style: normal;
+}
+.hero-term .dim {
+  color: var(--color-muted);
+}
+.hero-term .ok {
+  color: var(--color-signal);
+}
+.hero-term .ask {
+  color: var(--color-attention);
+}
+.hero-term .caret {
+  display: inline-block;
+  width: 7px;
+  height: 13px;
+  background: var(--color-fg);
+  opacity: 0.6;
+  vertical-align: -2px;
+}
+.hero-term-status {
+  gap: 16px;
+  padding: 6px 16px;
+  border-top: 1px solid var(--color-rule);
+  color: var(--color-muted);
+  font-size: 11px;
+}
+.hero-term-status .ask {
+  margin-left: auto;
+}
+.mux-mode-row button {
+  flex: 1;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-rule);
+  border-radius: 7px;
+  color: var(--color-muted);
+  background: transparent;
+  font: 500 13px var(--font-reading);
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
+}
+.mux-mode-row button:hover {
+  color: var(--color-fg);
+  background: #192239;
+}
+.mux-mode-row button[aria-pressed="true"] {
+  color: #c5d6ff;
+  border-color: #35496f;
+  background: #18243c;
+}
+.mux-dialog {
+  width: min(980px, calc(100vw - 40px));
+  max-width: none;
+  max-height: calc(100dvh - 40px);
+  padding: 0;
+  margin: auto;
+  border: 1px solid #3b4d6e;
+  border-radius: 18px;
+  background: #0b0e15;
+  color: var(--color-fg);
+  box-shadow: 0 30px 140px #000a;
+  overflow: auto;
+}
+.mux-dialog[open] {
+  animation: mux-open 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.mux-dialog::backdrop {
+  background: #03060dda;
+}
+.mux-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 24px 16px;
+}
+.mux-eyebrow {
+  color: var(--color-cyan);
+  font: 10px var(--font-code);
+  letter-spacing: 0.12em;
+}
+.mux-dialog h2 {
+  margin: 5px 0 0;
+  font: 600 clamp(20px, 3vw, 28px)/1.2 var(--font-reading);
+  letter-spacing: -0.035em;
+}
+.mux-close {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-rule);
+  border-radius: 8px;
+  background: #151c2b;
+  color: var(--color-fg);
+  cursor: pointer;
+  font: 12px var(--font-reading);
+}
+.mux-close span {
+  font-size: 22px;
+  line-height: 1;
+}
+.mux-close:hover {
+  border-color: var(--color-accent);
+}
+.mux-mode-row {
+  display: flex;
+  gap: 8px;
+  margin: 0 24px;
+  max-width: 430px;
+}
+.mux-mode-row small {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-muted);
+  font-size: 10px;
+}
+.mux-dialog-description {
+  min-height: 44px;
+  padding: 0 24px;
+  margin: 14px 0;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+.mux-dialog-description :is(code, kbd) {
+  color: var(--color-fg);
+  font: 12px var(--font-code);
+}
+.mux-dialog .pterm {
+  width: 100%;
+  max-width: 100%;
+  border-inline: 0;
+}
+.mux-dialog-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 24px;
+  color: var(--color-muted);
+  font-size: 11px;
+}
+.mux-dialog-foot a {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+.mux-loading {
+  min-height: 300px;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  color: var(--color-muted);
+  font-size: 14px;
+}
+.mux-loading button {
+  min-height: 44px;
+  border: 1px solid var(--color-accent);
+  background: #18243c;
+  color: var(--color-fg);
+  cursor: pointer;
+}
+@keyframes mux-open {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (max-width: 600px) {
+  .hero-term {
+    font-size: 10px;
+  }
+  .hero-term-panes {
+    flex-direction: column;
+  }
+  .hero-term-panes > span + span {
+    border-left: 0;
+    border-top: 1px solid var(--color-rule);
+  }
+  .hero-term-pane {
+    min-height: 0;
+    padding: 10px 12px;
+  }
+  .mux-dialog {
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+    border-radius: 12px;
+  }
+  .mux-dialog-head {
+    padding: 16px 12px;
+    gap: 10px;
+  }
+  .mux-close {
+    padding: 6px 8px;
+    gap: 6px;
+  }
+  .mux-mode-row {
+    margin-inline: 12px;
+  }
+  .mux-dialog-description {
+    padding-inline: 12px;
+  }
+  .mux-dialog-foot {
+    padding: 12px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mux-dialog[open] {
+    animation: none;
+  }
+  .hero-term,
+  .mux-mode-row button {
+    transition: none;
+  }
+}
