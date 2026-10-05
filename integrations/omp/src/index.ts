@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { PhuxCli } from "../../runtime/src/adapter.js";
+import { registerOmpLifecycle } from "./lifecycle.js";
 import { normalizeTerminalIdentity } from "../../runtime/src/awareness.js";
 import { PhuxError } from "../../runtime/src/errors.js";
 import { boundedResult, createPhuxTools, type ToolContext } from "../../runtime/src/tools.js";
@@ -32,6 +33,11 @@ export default function phuxExtension(pi: ExtensionAPI): void {
   pi.on("session_tree", invalidateSelection);
   pi.on("session_shutdown", invalidateSelection);
 
+  registerOmpLifecycle(pi, new PhuxCli({
+    executable: environment.PHUX_BIN || "phux",
+    ...(environment.PHUX_SOCKET ? { socket: environment.PHUX_SOCKET } : {}),
+    env: environment,
+  }), parentTarget);
 
   function tools(ctx?: ExtensionContext) {
     const startedEpoch = epoch;

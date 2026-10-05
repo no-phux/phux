@@ -73,6 +73,10 @@ if (process.argv[2] !== "--isolated") {
   assert.deepEqual(loaded.errors, [], "native loader rejected package");
   assert.equal(loaded.extensions.length, 1);
   const extension = loaded.extensions[0]!;
+  assert.deepEqual([...extension.handlers.keys()].sort(), [
+    "session_start", "session_switch", "session_branch", "session_tree", "session_shutdown",
+    "agent_start", "agent_end", "tool_execution_start", "tool_execution_end",
+  ].sort(), "native lifecycle only: no Pi reason/settled/UI hooks");
   const names = [
     "phux_list", "phux_create", "phux_snapshot", "phux_send_keys", "phux_run", "phux_wait",
     "phux_panes", "phux_paste", "phux_spawn", "phux_agent_prompt", "phux_agent_wait",
@@ -142,5 +146,9 @@ if (process.argv[2] !== "--isolated") {
   const missing = await run.execute("unselected", { command: "unsafe" }, undefined, undefined, ctx);
   assert.equal(missing.isError, true, "a new branch must not fall back to terminal focus");
   assert.doesNotMatch(JSON.stringify(missing), /unexpected CLI invocation/);
+  // Unsupported lifecycle CLI is best effort and must not break startup/tools.
+  for (const type of ["session_start", "agent_start", "agent_end", "session_shutdown"] as const) {
+    for (const handler of extension.handlers.get(type) ?? []) await handler({ type, messages: [] } as never, ctx);
+  }
   console.log("Native OMP load smoke passed: isolated bundled package, 14 tools, JSON Schema validation, self-pane guard, cancellation, branch selection and navigation race.");
 }

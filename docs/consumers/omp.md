@@ -9,8 +9,9 @@ last-reviewed: 2026-09-30
 **TL;DR.** Build `integrations/omp` and load it with
 `omp -e /absolute/path/to/integrations/omp` for CLI-backed terminal and agent
 tools. The extension preserves branch-local targets without attaching or
-changing focus. It starts no model request and emits no AgentSession lifecycle
-records. Use the shell tool for ordinary one-shot commands.
+changing focus. Inside phux it reports native AgentSession lifecycle for its
+hosting pane only, without starting model requests. Use the shell tool for
+ordinary one-shot commands.
 
 ## Install and load
 
@@ -141,9 +142,39 @@ Cancellation and local timeout remain distinguishable from malformed CLI respons
 or executable failures. Error payloads omit raw argv and unbounded stderr, which
 may contain prompts or secrets.
 
-The extension emits no `AgentSession` lifecycle events and never assigns OMP's
-identity to a selected sibling. CLI detector observations are not a harness
-event stream: inferred idle/done states are not authoritative completion claims.
+## Host-bound lifecycle
+
+Only `PHUX_TERMINAL_ID` authorizes lifecycle reporting; selected targets and
+`PHUX_TARGET` remain tool controls. Startup verifies the public terminal,
+session and window projection, declaration provenance, and native child identity.
+Missing, foreign or contradictory evidence disables reporting without mutation.
+An existing child is adopted only with a matching `omp:<native-session-id>`
+declaration, provider and native ID. Declarations contain identity only: never
+`state` or `attention`. No prompt text, tool arguments or tool results are emitted.
+
+Native `agent_start` reports `prompt`; tool execution reports names, call IDs and
+success; aggregate `agent_end` reports `stop` unless `willContinue` is true.
+Neither `turn_end` nor continuation-capable `session_stop` means completion.
+Same-ID transcript reload and tree navigation do not open duplicate children.
+Native ID changes retire the exact old child before binding a new one. Queued
+operations carry captured IDs and generations; native-ID changes invalidate old
+work. Same-ID navigation preserves active loop/tool completion. OMP 17.1.2 drains
+old loops before switch/new events, but not before branch/tree events. If a native
+ID changes through branch/tree during an active loop, subsequent activity reporting
+is disabled until extension restart because aggregate events contain no session
+ID; identity rotation and shutdown still proceed. This avoids falsely settling a
+new session with a late old-loop event.
+Every activity write checks current host ownership and addresses the exact child,
+not the parent selector. A replacement child is never closed or relabeled.
+Shutdown emits `session_end`, closes that child and clears only its matching
+declaration. UI asked-state and fleet-context injection are not implemented;
+existing detector rules remain authoritative for inferred UI state.
+
+Reporting is best effort and independent of tools. CLI commands are bounded to
+250 ms; aggregate shutdown is bounded to 1.2 seconds, below OMP's 2-second callback
+cap. Any uncertain failure disables the reporter for this extension instance;
+mutations are never retried. A timeout can leave a declaration or child behind;
+inspect ownership rather than assuming rollback.
 
 ## Native loader smoke check
 
@@ -151,8 +182,11 @@ After dependency setup and build:
 
 ```sh
 bun run --cwd integrations/omp typecheck
+bun run --cwd integrations/omp test
 bun run --cwd integrations/omp build
 bun run --cwd integrations/omp smoke:load
+# Optional: verified scratch binary, never the installed production binary
+bun run --cwd integrations/omp smoke:lifecycle /absolute/scratch/path/to/phux
 ```
 
 The script packs the package, extracts that artifact into a temporary directory,
@@ -166,3 +200,12 @@ production binary, model call, provider credential, or global user setting is us
 The temporary files are removed on completion. This proves native package loading
 and adapter boundaries, not live-server behavior; real CLI semantics are covered
 by the shared runtime's checks and isolated-server integration verification.
+
+The optional lifecycle smoke packs the bundle, starts an owned disposable server
+on an explicit temporary socket, and uses the locked SDK's real session manager
+and `newSession`, `switchSession` and `branch` methods to verify automatic native
+navigation events, same-ID reload, rotation and sibling isolation. Activity and
+startup/shutdown events are scripted through the real runner, not model-generated;
+this is not a claim of automatic model-loop timing coverage. HOME, XDG, profile,
+credentials, tokens and TLS settings are isolated; no model/provider call is made.
+The server and temporary roots are removed on completion.
