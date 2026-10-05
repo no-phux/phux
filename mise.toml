@@ -14,7 +14,12 @@
 # resolve the same release. Rust and Zig appear here only as a convenience
 # mirror: `rust-toolchain.toml` stays Cargo/rustup's authoritative input and
 # `.config/zig-toolchain.json` stays the verified Zig release-and-digest input.
-rust = "1.98.1"
+# `mr_boxington` routes every `cargo` this environment hands out through mbx
+# (the pinned `mr-boxington` below): one shared, disk-budgeted compiler-output
+# store across worktrees, managed `target/` directories that are collected when
+# a checkout goes away, and a machine-wide compiler pool. See
+# docs/SETUP.md#build-cache-mbx for why phux needs it.
+rust = { version = "1.98.1", mr_boxington = true }
 zig = "0.16.0"
 node = "24"
 # docs/site builds, tests and type-checks against this exact Bun, and
@@ -39,6 +44,12 @@ python = "3.14.7"
 # has lagged this CLI, so flake.nix reads this value and fetches the
 # GitHub release until nixpkgs catches up — the bun pin, applied to a CLI.
 usage = "6.11.1"
+
+# --- Build cache --------------------------------------------------------------
+# mbx (jdx/mr-boxington), the Cargo wrapper the `rust` entry above enables.
+# flake.nix reads this pin and fetches the same release, so both environments
+# wrap Cargo with the same mbx. Exact release, never `latest`.
+mr-boxington = "1.22.0"
 
 # --- Deliberately absent ----------------------------------------------------
 # cargo-nextest has no prebuilt entry in Mise's registry, and the `cargo:`

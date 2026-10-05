@@ -161,6 +161,68 @@
                 mainProgram = "usage";
               };
             };
+
+        # mbx (jdx/mr-boxington): the Cargo wrapper behind the shared build
+        # cache. mise.toml is the source of truth for the release, same
+        # contract as bun and usage. The shellHook puts libexec/mbx (a `cargo`
+        # that runs mbx in Cargo shim mode, as mbx's own flake ships it) first
+        # on PATH. Upstream publishes no Intel-macOS binary, so that system
+        # simply has no mbx and builds with plain Cargo.
+        #
+        # The wrapper drops SDKROOT. mbx keys every native link (proc macros,
+        # build scripts, binaries) on `xcrun --sdk "$SDKROOT" --show-sdk-*`,
+        # and nixpkgs' xcbuild xcrun accepts an SDK name but not the path this
+        # shell exports, so with SDKROOT set every link bypassed the cache and
+        # every crate above a proc macro missed. Unset, mbx asks for `macosx`,
+        # which resolves to the same SDK, and so do rustc and cc: a binary
+        # built either way records the same `sdk` in LC_BUILD_VERSION.
+        mbxVersion = miseTools."mr-boxington";
+        mbxAssets = {
+          aarch64-darwin = "mbx-aarch64-apple-darwin.tar.gz";
+          x86_64-linux = "mbx-x86_64-unknown-linux-musl.tar.gz";
+          aarch64-linux = "mbx-aarch64-unknown-linux-musl.tar.gz";
+        };
+        mbxDigests = {
+          "1.22.0" = {
+            aarch64-darwin = "sha256-5Ui1dYSYz4IqGAtjKFl+at7Y/puzBGzZGDmRcq4w3eI=";
+            x86_64-linux = "sha256-w3UTXio5FvWNobR1N7apVBWe6s1VUj2aYYtCJZvYkBQ=";
+            aarch64-linux = "sha256-rk1mMIxwb/v5Er60WzFmzxz9pNPv0jJzJieRI10KzPU=";
+          };
+        };
+        mbxPinned =
+          if !(mbxAssets ? ${system}) then
+            null
+          else
+            pkgs.stdenv.mkDerivation {
+              pname = "mbx";
+              version = mbxVersion;
+              src = pkgs.fetchurl {
+                url = "https://github.com/jdx/mr-boxington/releases/download/v${mbxVersion}/${mbxAssets.${system}}";
+                hash =
+                  (mbxDigests.${mbxVersion}
+                    or (throw "flake.nix: no mbx digests pinned for ${mbxVersion} (mise.toml). Add them to mbxDigests.")
+                  ).${system};
+              };
+              sourceRoot = ".";
+              nativeBuildInputs = [ pkgs.makeWrapper ];
+              dontConfigure = true;
+              dontBuild = true;
+              installPhase = ''
+                runHook preInstall
+                install -Dm755 mbx $out/bin/mbx
+                makeWrapper $out/bin/mbx $out/libexec/mbx/cargo \
+                  --set MBX_CARGO_SHIM_MODE 1 \
+                  --set MBX_CARGO_SHIM_PATH $out/libexec/mbx/cargo \
+                  --unset SDKROOT
+                runHook postInstall
+              '';
+              meta = {
+                homepage = "https://mr-boxington.jdx.dev";
+                description = "Shared build cache and target-directory manager for Cargo";
+                license = pkgs.lib.licenses.mit;
+                mainProgram = "mbx";
+              };
+            };
       in
       {
         devShells.default = pkgs.mkShell {
@@ -203,6 +265,11 @@
             # shell and the Mise path lint/render the same spec train as
             # the `usage-rs` crate (nixpkgs has lagged behind 6.9.0).
             usagePinned
+            # mbx itself (`mbx doctor`, `mbx gc`, `mbx stats`); the shellHook
+            # is what routes plain `cargo` through it.
+          ]
+          ++ pkgs.lib.optional (mbxPinned != null) mbxPinned
+          ++ [
             # Shell linting for scripts/ and examples/agents/ (just shellcheck).
             pkgs.shellcheck
             # GitHub workflow syntax plus expression validation (`just
@@ -257,6 +324,19 @@
             ''
             + ''
               export PATH="''${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+            ''
+            # After the CARGO_HOME prepend, so a rustup `cargo` there cannot
+            # shadow the wrapper; the wrapper delegates to the next `cargo` on
+            # PATH. Hosted CI keeps plain Cargo: its lanes are budgeted around
+            # sccache and rust-cache (.github/actions/setup-rust-lane), and a
+            # second cache layer there is a separate decision. PHUX_NO_MBX=1
+            # opts a local shell out the same way.
+            + pkgs.lib.optionalString (mbxPinned != null) ''
+              if [ -z "''${CI:-}" ] && [ -z "''${PHUX_NO_MBX:-}" ]; then
+                export PATH="${mbxPinned}/libexec/mbx:$PATH"
+              fi
+            ''
+            + ''
               echo "phux dev shell — $(rustc --version)"
             '';
         };

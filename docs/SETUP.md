@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-05
 ---
 
 # Contributor setup
@@ -57,7 +57,7 @@ If you already activate Mise in your shell, you do not need direnv. `rustc` and
 `just toolchain-check` is a `just ci` gate that reads `mise.toml`, `flake.nix`,
 `rust-toolchain.toml`, `.config/zig-toolchain.json`, the Cargo manifests, the
 workflows, and the container builders and fails if any of them names a
-different Rust, Zig, Node, Bun, or usage CLI. `just toolchain-parity` is the
+different Rust, Zig, Node, Bun, usage CLI, or mbx. `just toolchain-parity` is the
 runtime half: it resolves both environments and compares the binaries they
 actually hand you. Run it after bumping a pin or `flake.lock`.
 
@@ -68,6 +68,59 @@ newer compiler than this repository's Rust pin. Install the
 `bash scripts/doctor.sh ci` reports it missing. Browser, Cockpit, and
 build-observability tools are Nix-or-native; `mise.toml` lists them under
 "deliberately absent".
+
+## Build cache (mbx)
+
+Both environments run `cargo` through [mbx](https://mr-boxington.jdx.dev)
+(Mr. Boxington), pinned in `mise.toml` and fetched at the same release by
+`flake.nix`. A phux worktree build costs tens of gigabytes, and plain Cargo
+gives every worktree its own cold build and a `target/` that only grows: six
+concurrent agent worktrees filled a 927 GB disk on 2026-09-29. mbx answers that
+with three things:
+
+- **One shared store.** Compilations, native links and build-script runs are
+  keyed independently of the checkout path, so building one worktree warms the
+  next: a fresh worktree restores the whole dependency graph. On APFS, Btrfs,
+  XFS (reflink) or ZFS, restored outputs are copy-on-write clones of the
+  store, not copies. The exception today is the Zig build behind
+  `libghostty-vt-sys`, whose outputs embed their `OUT_DIR`; it still runs once
+  per checkout, and the workspace crates above it rebuild (phux-vxmb).
+- **Managed targets.** `target` becomes a symlink into mbx's cache directory,
+  and the whole cache has a disk budget that scales with the disk. Targets are
+  collected when their checkout disappears, goes unused, or exceeds its budget,
+  so a removed worktree no longer strands its build.
+- **A machine-wide compiler pool.** Concurrent Cargo commands share CPU and
+  memory permits and deduplicate identical compilations in flight, which is
+  what keeps a fleet of agents from oversubscribing the machine.
+
+How it is wired: Mise sets `mr_boxington = true` on the `rust` entry, so mise's
+`cargo` command wrapper runs mbx. The Nix shell puts mbx's own `cargo` wrapper
+first on `PATH`. Either way plain `cargo` (and every `just` recipe) is cached.
+Calling `~/.cargo/bin/cargo` directly bypasses it; so does an agent harness
+whose `PATH` never loaded either environment, which should use
+`mise exec -- cargo ...` or `nix develop -c cargo ...`. `just doctor` reports
+whether `mbx` is on `PATH`. Hosted CI keeps plain Cargo with its own
+sccache/rust-cache budget, and upstream ships no Intel-macOS binary, so that
+platform builds without it.
+
+```sh
+mbx doctor            # tools, cache access, and reflink/hard-link/copy mode
+mbx stats             # lifetime savings and cross-worktree sharing
+mbx explain --last    # why the last build hit, missed, or bypassed
+mbx gc --dry-run      # what collection would remove
+```
+
+To opt out: in the Nix shell, set `PHUX_NO_MBX=1` before `nix develop`; on the
+Mise path, put `[tools] rust = { version = "<the pin>", mr_boxington = false }`
+in an untracked `mise.local.toml`. mbx's `share_workspace_root` stays at its
+default (off): turning it on would make panic locations and debug info name a
+placeholder instead of the real source path, and the panic hook's location line
+is what operators read.
+
+On Linux, keep mbx's cache directory on a filesystem with reflinks (ext4 falls
+back to read-only hard links). Rust build output compresses well, so a
+dedicated ZFS volume with `compression=zstd` or `lz4` stretches the same disk
+much further for a heavy multi-agent machine.
 
 ## Pick your work area
 
@@ -97,7 +150,7 @@ use Python 3.11+ and Node.
 is a mirror for shell setup, not the source of truth for everything in it.
 `rust-toolchain.toml` remains Cargo/rustup's authoritative Rust input and
 `.config/zig-toolchain.json` remains the verified Zig release-and-digest input.
-Bun and the usage CLI are the exceptions in the other direction: `flake.nix`
+Bun, the usage CLI, and mbx are the exceptions in the other direction: `flake.nix`
 reads those pins from `mise.toml` directly and fetches the GitHub release
 until nixpkgs matches. The usage CLI is the same 6.11.x train as the
 `usage-rs` crate the phux binary parses with.

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-05
 ---
 
 # Contributing to phux
@@ -93,7 +93,8 @@ The `just test`, `just e2e` and `just stress` recipes share that build selection
 
 For timing evidence, append `--timings` to a Cargo build and inspect
 `target/cargo-timings/`. Keep each concurrent worktree's Cargo target
-directory private.
+directory private; mbx shares compiled work between them through its store,
+not through a shared `target/` ([setup](./docs/SETUP.md#build-cache-mbx)).
 
 ### Gate-by-gate: local vs CI
 
@@ -252,6 +253,9 @@ If your change conflicts with these, open a [Discussion] before a PR.
 2. **Pre-scaffold shared files** (`mod.rs`, `lib.rs`) so each agent owns
    disjoint files.
 3. Each agent verifies its worktree first and produces **one squashed commit**.
+   Agents build through the environment's `cargo` (or `mise exec --` /
+   `nix develop -c`) so mbx's shared store and compiler pool apply; check
+   `df -h` before a wide wave all the same.
 4. **Integrate with rebase + ff-only merge**, then remove the worktree and
    branch.
 
