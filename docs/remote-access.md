@@ -200,10 +200,13 @@ other's flags by name.
 Without SSH access, run `phux pair` on the host and pass its one-tap link:
 
 ```sh
-phux --remote mini --code 'https://phux.sh/connect?url=wss://100.64.0.2:8787&fp=...&token=...'
+phux --remote mini --code 'https://phux.sh/connect?url=wss://100.64.0.2:8787&quic=quic://100.64.0.2:8788&fp=...&token=...'
 ```
 
-`phux pair --qr` renders the same link for phones. `--code` also accepts
+`phux pair --qr` renders the same link for phones. When the live QUIC listener
+is reachable from a device, the link adds `quic=quic://HOST:PORT`; `url=` stays
+as the WSS fallback for old app builds and is what the CLI currently registers.
+The mobile app prefers `quic` when present. `--code` also accepts
 `phux://connect?...`, the spelling printed for older app builds. The link
 registers the target's name; later attaches need no code.
 
@@ -406,16 +409,24 @@ phux pair revoke <credential-id>
 ```
 
 For a phone or tablet `phux pair` also prints a one-tap
-`https://phux.sh/connect?url=…&fp=…&token=…` Universal Link (an https link so
-only the app owning the domain receives the bearer token), a
+`https://phux.sh/connect?url=…&quic=…&fp=…&token=…` Universal Link (an https
+link so only the app owning the domain receives the bearer token), a
 `phux://connect?…` spelling for older app builds, and with `--qr` a terminal
-QR of the same link. Treat all three like the token itself. The link names the
-address the server's wss listener is bound to (the overlay address for a
+QR of the same link. Treat all three like the token itself. `url` names the
+address the server's WSS listener is bound to (the overlay address for a
 `0.0.0.0`/`::` bind), or `--host HOST:PORT` (or a full `ws://`/`wss://` URL)
 when the device reaches the server some other way, such as a MagicDNS name or
-a port forward; `--host` still needs a bound wss listener behind it. A wss
-listener bound only to loopback, or none at all, gives no link, and `--qr`
-then refuses before minting. `--name` labels the server in the device's list.
+a port forward; it remains present for deployed apps. When the running server
+also reports a device-dialable QUIC listener, `quic` names that live endpoint
+and current mobile apps prefer it. An unspecified QUIC bind uses a detected
+overlay address; a loopback bind, or an unspecified bind without an overlay,
+is not advertised. The app passes one selected endpoint to `RemoteClient`;
+the shared runtime alone owns dialing and reconnecting, with no bridge-side
+fallback race.
+
+`--host` still needs a bound WSS listener behind it. A WSS listener bound only
+to loopback, or none at all, gives no link, and `--qr` then refuses before
+minting. `--name` labels the server in the device's list.
 
 ```sh
 # Credentials + a scannable one-tap QR for the device:

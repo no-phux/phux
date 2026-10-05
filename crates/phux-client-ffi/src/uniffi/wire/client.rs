@@ -15,6 +15,43 @@ mod search;
 
 const SCROLLBACK_LINES: u32 = 1000;
 
+/// Classify the stable string constructor's endpoint before the runtime owns
+/// the session. QUIC drops its URI scheme because [`Transport::Quic`] carries
+/// only the authority; WebSocket keeps the complete URL.
+fn classify_remote_endpoint(endpoint: &str) -> Result<Transport, String> {
+    let endpoint = endpoint.trim();
+    if let Some(authority) = endpoint.strip_prefix("quic://") {
+        validate_quic_authority(authority)?;
+        return Ok(Transport::Quic(authority.to_owned()));
+    }
+    if endpoint.starts_with("ws://") || endpoint.starts_with("wss://") {
+        return Ok(Transport::Ws(endpoint.to_owned()));
+    }
+    Err(format!(
+        "{endpoint:?} must start with quic://, wss://, or ws://"
+    ))
+}
+
+/// Reject malformed QUIC targets without starting the runtime's reconnect
+/// loop. DNS resolution and reachability remain the runtime dialer's job.
+fn validate_quic_authority(authority: &str) -> Result<(), String> {
+    let (host, port) = authority
+        .rsplit_once(':')
+        .ok_or_else(|| format!("quic://{authority} needs HOST:PORT (bracket an IPv6 address)"))?;
+    let bracketed = host.starts_with('[') && host.ends_with(']');
+    let bare_host = host.trim_matches(['[', ']']);
+    let valid_host = !bare_host.is_empty()
+        && !authority.contains(['/', '?', '#', '@'])
+        && (bracketed || !host.contains(':'));
+    let valid_port = port.parse::<u16>().is_ok_and(|port| port != 0);
+    if valid_host && valid_port {
+        return Ok(());
+    }
+    Err(format!(
+        "quic://{authority} needs HOST:PORT with a non-zero numeric port; bracket an IPv6 address"
+    ))
+}
+
 #[uniffi::export(with_foreign)]
 pub trait WireListener: Send + Sync {
     fn on_wire_activity(&self);
@@ -95,8 +132,12 @@ impl RemoteClient {
         if slot.is_some() {
             return Err(WireError::AlreadyConnected);
         }
+        let transport =
+            classify_remote_endpoint(&self.url).map_err(|reason| WireError::Runtime {
+                reason: format!("invalid remote endpoint: {reason}"),
+            })?;
         let target = Target {
-            transport: Transport::Ws(self.url.clone()),
+            transport,
             name: self.url.clone(),
             cert_fingerprint: self.fingerprint.clone(),
             token_file: None,
@@ -651,6 +692,53 @@ impl Drop for RemoteClient {
 mod tests {
     use super::*;
     use phux_protocol::wire::frame::{FrameKind, RESOURCE_AGENT_KEY, Scope};
+
+    #[test]
+    fn remote_endpoint_classification_selects_the_runtime_transport() {
+        assert_eq!(
+            classify_remote_endpoint("quic://mini.example:8788"),
+            Ok(Transport::Quic("mini.example:8788".to_owned()))
+        );
+        assert_eq!(
+            classify_remote_endpoint("quic://[fd7a:115c:a1e0::1]:8788"),
+            Ok(Transport::Quic("[fd7a:115c:a1e0::1]:8788".to_owned()))
+        );
+        for url in ["ws://127.0.0.1:8787", "wss://mini.example:8787"] {
+            assert_eq!(
+                classify_remote_endpoint(url),
+                Ok(Transport::Ws(url.to_owned()))
+            );
+        }
+    }
+
+    #[test]
+    fn remote_endpoint_classification_rejects_unsupported_or_malformed_targets() {
+        for endpoint in [
+            "https://mini.example:8788",
+            "quic://mini.example",
+            "quic://mini.example:not-a-port",
+            "quic://fd7a:115c:a1e0::1:8788",
+            "quic://[fd7a:115c:a1e0::1]",
+            "quic://user@mini.example:8788",
+            "quic://mini.example:8788/path",
+            "quic://mini.example:8788?mode=fast",
+            "quic://mini.example:0",
+        ] {
+            let error = classify_remote_endpoint(endpoint).expect_err(endpoint);
+            assert!(
+                error.contains("HOST:PORT") || error.contains("must start"),
+                "{endpoint}: {error}"
+            );
+        }
+
+        let remote = RemoteClient::new("https://mini.example:8788".into(), 80, 24, None, None);
+        let error = remote
+            .connect()
+            .expect_err("invalid scheme must not start a runtime");
+        assert!(
+            matches!(error, WireError::Runtime { reason } if reason.contains("invalid remote endpoint"))
+        );
+    }
 
     #[test]
     fn agent_declarations_lower_once_and_absence_clears_the_existing_badge() {
