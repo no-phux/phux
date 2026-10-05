@@ -18,6 +18,8 @@ export interface PhuxOpenCodeV2Options {
   readonly lifecycleTimeoutMs?: number;
   readonly contextAwareness?: boolean;
   readonly contextTimeoutMs?: number;
+  /** Only for a dedicated pane-bound server; ordinary presence belongs to the TUI. */
+  readonly serverLifecycle?: boolean;
 }
 
 /**
@@ -87,12 +89,14 @@ export default Plugin.define({
       if (text !== undefined) event.system.push({ type: "text", text });
     });
 
-    await ctx.tool.hook("execute.before", async (event) => {
-      await lifecycle.toolStart(event.sessionID, event.tool, event.id);
-    });
-    await ctx.tool.hook("execute.after", async (event) => {
-      await lifecycle.toolEnd(event.sessionID, event.tool, event.id);
-    });
+    if (options.serverLifecycle === true) {
+      await ctx.tool.hook("execute.before", async (event) => {
+        await lifecycle.toolStart(event.sessionID, event.tool, event.id);
+      });
+      await ctx.tool.hook("execute.after", async (event) => {
+        await lifecycle.toolEnd(event.sessionID, event.tool, event.id);
+      });
+    }
 
     const controller = new AbortController();
     const events = (async () => {
@@ -103,7 +107,7 @@ export default Plugin.define({
           latestContext.delete(deleted);
           selectedTargets.delete(deleted);
         }
-        await applyServerEvent(lifecycle, event);
+        if (options.serverLifecycle === true) await applyServerEvent(lifecycle, event);
       }
     })();
     void events.catch((error: unknown) => {
@@ -114,7 +118,7 @@ export default Plugin.define({
     return async () => {
       controller.abort();
       await events.catch(() => undefined);
-      await lifecycle.dispose();
+      if (options.serverLifecycle === true) await lifecycle.dispose();
       selectedTargets.clear();
       latestContext.clear();
     };
@@ -131,6 +135,7 @@ function readOptions(value: unknown): PhuxOpenCodeV2Options {
     ...(typeof record.lifecycleTimeoutMs === "number" ? { lifecycleTimeoutMs: record.lifecycleTimeoutMs } : {}),
     ...(typeof record.contextAwareness === "boolean" ? { contextAwareness: record.contextAwareness } : {}),
     ...(typeof record.contextTimeoutMs === "number" ? { contextTimeoutMs: record.contextTimeoutMs } : {}),
+    ...(typeof record.serverLifecycle === "boolean" ? { serverLifecycle: record.serverLifecycle } : {}),
   };
 }
 

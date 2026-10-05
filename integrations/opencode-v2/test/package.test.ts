@@ -15,10 +15,13 @@ test("packed plugin loads outside the checkout with only its declared dependency
     const dependencies = join(directory, "node_modules", "@opencode");
     await mkdir(dependencies, { recursive: true });
     await symlink(join(packageRoot, "node_modules", "@opencode", "plugin"), join(dependencies, "plugin"), "dir");
+    await symlink(join(packageRoot, "node_modules", "solid-js"), join(directory, "node_modules", "solid-js"), "dir");
     const executable = join(directory, "phux-fixture");
     await writeFile(executable, "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"running\":false}'\nexit 1\n", { mode: 0o700 });
     const output = command([process.execPath, "--eval", `
       import plugin from './package/index.js';
+      import tui from './package/tui.js';
+      if (tui.id !== 'phux.tui') throw new Error('packed terminal entrypoint not loadable');
       const tools = [];
       const cleanup = await plugin.setup({
         options: { contextAwareness: false, executable: ${JSON.stringify(executable)} },
