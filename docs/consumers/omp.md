@@ -185,12 +185,23 @@ Approval hooks cannot reopen a child in fallback, and neither reload nor later
 starts restore trust. Normal shutdown ends/closes the exact child and clears only
 the matching declaration.
 
-**Admission limitation:** the kernel detector can publish a bare OMP agent record
-before extension startup, without a native session owner. Current admission
-intentionally refuses that unowned record rather than overwriting it. Ordinary
-unassisted startup in that situation is not yet supported; the isolated approval
-smoke predeclares its own known native identity solely to test approved ownership.
-That setup is not proof of unassisted startup or permission to relax adoption.
+**Cold bootstrap policy:** on this instance's first native `session_start` only,
+an exact `name: omp`, `kind: omp` record with absent/null session ownership may be
+initialized when the canonical host/session/window are proved and `agent_session`
+is explicitly null. This applies equally to a manually written unbound identity;
+it does **not** prove that a detector authored the record. Screen-rule evidence
+cannot establish publisher provenance. Only the known identity fields and optional
+canonical observational state are accepted; non-null attention, unknown fields,
+duplicate/malformed records and every existing child are refused. Empty-string
+session ownership is not unbound. Initialization writes identity only, discarding
+observed state/attention, then re-verifies before opening the child.
+
+This permission is never reused for navigation, reload or recovery. A matching
+owned declaration still requires strict provider/native-ID/exact-child adoption
+proof; another owner is never replaced. Missing record plus explicit null child
+retains the existing fresh-binding path. Approval receipt tombstones are forgotten
+at the received aggregate barrier: the SDK wrapper awaits their resolution before
+its tool completes, so later guarded loops may safely reuse tool-call IDs.
 
 Reporting is best effort and independent of tools. CLI commands are bounded to
 250 ms; aggregate shutdown is bounded to 1.2 seconds, below OMP's 2-second callback
@@ -233,8 +244,17 @@ exact-child retirement and restored detector blocking are exercised. Normal idle
 navigation and continuation are also covered. No live model reasoning is claimed.
 
 An owned inert `omp.js` process supplies kernel identification and a fixed approval
-screen. Its known native identity is explicitly predeclared for the approval and
-causality tests; bare-record admission and a separate unassisted CLI probe are logged,
-not presented as passing startup acceptance. HOME, XDG, profile, credentials, tokens
-and TLS settings are isolated; no model/provider call is made. Owned servers and
-temporary roots are removed on completion.
+screen. Startup initializes its unbound identity without predeclaration; approval
+and causality scenarios do not call `agent set` as fixture setup. A separate owned
+pane runs the actual pinned OMP CLI entrypoint with the packed extension. A local
+fixture registers an inert custom model solely to satisfy RPC startup's model
+requirement, records the automatic native `session_start`, and fails if any provider
+transport is invoked. Its native ID must match the exact host child, while the
+selected sibling remains untouched. A diagnostic wrapper records actual CLI argv,
+stdout/stderr and exit; it does not supply lifecycle events or identity metadata.
+
+Credential-free RPC without that fixture exits 1 before native startup with
+`No models available`; the smoke records this boundary rather than claiming the
+pane's resulting shell is a running OMP session. HOME, XDG, profile, sessions,
+credentials, tokens and TLS settings are isolated. No actual provider credentials
+or model/service calls are used. Owned servers and temporary roots are removed.

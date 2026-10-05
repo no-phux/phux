@@ -52,7 +52,12 @@ if (process.argv[2] !== "--isolated") {
     const show = (pane = target) => JSON.parse(run("agent", "show", "--json", pane)).agents[0];
     const before = show(sibling);
     await waitUntil(() => show().state === "blocked");
-    console.log("Unassisted detector admission evidence (no owner; intentionally not adopted):", JSON.stringify(show()));
+    const coldPane = show();
+    const coldRecords = coldPane.sources.filter((source: { kind: string }) => source.kind === "agent_record");
+    assert.equal(coldRecords.length, 1);
+    assert.deepEqual(JSON.parse(coldRecords[0].observed), { name: "omp", kind: "omp", state: "blocked" });
+    assert.equal(coldPane.agent_session, null);
+    console.log("Cold unbound OMP identity before startup (publisher is not admission evidence):", JSON.stringify(coldPane));
     process.env.PHUX_TERMINAL_ID = target;
     process.env.PHUX_TARGET = sibling;
     const { createAgentSession, SessionManager } = await import("@oh-my-pi/pi-coding-agent");
@@ -74,12 +79,12 @@ if (process.argv[2] !== "--isolated") {
     assert.ok(runner.hasHandlers("session_start"));
     // Startup belongs to OMP's UI controller; activity here is scripted, NOT
     // evidence of automatic model-loop timing. Navigation below is real SDK.
-    run("agent", "set", target, "--name", "omp", "--kind", "omp", "--session", `omp:${session.sessionManager.getSessionId()}`);
     await runner.emit({ type: "session_start" });
     const first = show().agent_session;
     assert.ok(first, JSON.stringify(show()));
     assert.equal(first.provider, "omp");
     assert.equal(first.native_id, session.sessionManager.getSessionId());
+    console.log("Cold bare-record SDK startup projection:", JSON.stringify(show()));
     await runner.emitBeforeAgentStart("", undefined, []);
     await runner.emit({ type: "agent_start" });
     await runner.emit({ type: "tool_execution_start", toolCallId: "smoke", toolName: "fixture", args: {} });
@@ -135,7 +140,6 @@ if (process.argv[2] !== "--isolated") {
       });
       session = created.session;
       const runner = session.extensionRunner!;
-      run("agent", "set", target, "--name", "omp", "--kind", "omp", "--session", `omp:${session.sessionManager.getSessionId()}`);
       await runner.emit({ type: "session_start" });
       await session.sessionManager.ensureOnDisk();
       return { session, runner, loaded, entered, release };
@@ -275,10 +279,110 @@ if (process.argv[2] !== "--isolated") {
     assert.deepEqual(show(sibling).agent, before.agent);
     assert.equal(show(sibling).agent_session, before.agent_session);
     const nativeExecutable = resolve(dirname(import.meta.path), "../node_modules/.bin/omp");
-    const nativeTarget = `@${JSON.parse(run("new", "--json", "-s", "omp-native-unassisted", "--", process.execPath, nativeExecutable, "--mode", "rpc", "--no-session", "--no-tools", "-e", process.argv[4]!)).terminal_id}`;
-    await Bun.sleep(5_000);
-    console.log("Unassisted locked OMP CLI startup projection:", JSON.stringify(show(nativeTarget)));
-    console.log("Unassisted locked OMP CLI startup snapshot:", run("snapshot", "--json", nativeTarget));
+    const nativeRoot = join(process.cwd(), "native");
+    await mkdir(nativeRoot);
+    // Reproduce the previous credential-free RPC failure with captured argv,
+    // output and exit instead of mistaking the pane's fallback shell for OMP.
+    const noModelExit = join(nativeRoot, "no-model-exit.json");
+    const noModelOut = join(nativeRoot, "no-model-stdout.log");
+    const noModelErr = join(nativeRoot, "no-model-stderr.log");
+    const noModelArgv = [process.execPath, nativeExecutable, "--mode", "rpc", "--no-session", "--no-tools", "-e", process.argv[4]!];
+    const noModelLauncher = join(nativeRoot, "no-model.js");
+    await writeFile(noModelLauncher, `const child = Bun.spawn(${JSON.stringify(noModelArgv)}, {
+      stdin: "inherit", stdout: Bun.file(${JSON.stringify(noModelOut)}), stderr: Bun.file(${JSON.stringify(noModelErr)}), env: process.env
+    }); await Bun.write(${JSON.stringify(noModelExit)}, JSON.stringify({ code: await child.exited }));`);
+    run("new", "--json", "-s", "omp-no-model-diagnostic", "--", process.execPath, noModelLauncher);
+    for (let attempt = 0; attempt < 200; attempt++) {
+      if (await Bun.file(noModelExit).exists()) break;
+      await Bun.sleep(50);
+    }
+    assert.ok(await Bun.file(noModelExit).exists(), "credential-free RPC diagnostic did not exit");
+    const noModelReceipt = await Bun.file(noModelExit).json();
+    const noModelStderr = await Bun.file(noModelErr).text();
+    console.log("Credential-free RPC diagnostic:", JSON.stringify({ argv: noModelArgv, ...noModelReceipt,
+      stdout: await Bun.file(noModelOut).text(), stderr: noModelStderr }));
+    assert.equal(noModelReceipt.code, 1);
+    assert.match(noModelStderr, /No models available|No available models/);
+    const proofPath = join(nativeRoot, "startup.json");
+    const callsPath = join(nativeRoot, "provider-called");
+    const providerFixture = join(nativeRoot, "provider.js");
+    await writeFile(providerFixture, `export default function(api) {
+      api.registerProvider("phux-smoke", {
+        baseUrl: "http://127.0.0.1:1", apiKey: "inert-local-fixture-not-a-credential", api: "phux-smoke-inert",
+        streamSimple() { require("node:fs").writeFileSync(${JSON.stringify(callsPath)}, "unexpected"); throw new Error("No provider calls allowed"); },
+        models: [{ id: "inert", name: "Inert startup fixture", reasoning: false, input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 10000, maxTokens: 1000 }]
+      });
+      api.on("session_start", async (_event, ctx) => {
+        await Bun.write(${JSON.stringify(proofPath)}, JSON.stringify({
+          nativeId: ctx.sessionManager.getSessionId(), pid: process.pid, host: process.env.PHUX_TERMINAL_ID,
+          selected: process.env.PHUX_TARGET, argv: process.argv, sdk: "17.1.2"
+        }));
+      });
+    }`);
+    const stdoutPath = join(nativeRoot, "stdout.log");
+    const stderrPath = join(nativeRoot, "stderr.log");
+    const exitPath = join(nativeRoot, "exit.json");
+    const argv = [process.execPath, nativeExecutable, "--mode", "rpc", "--no-tools", "--model", "phux-smoke/inert", "-e", providerFixture, "-e", process.argv[4]!];
+    // Diagnostic wrapper preserves the CLI's real argv and captures exit/output;
+    // it neither emits SDK events nor declares any agent identity.
+    const launcher = join(nativeRoot, "omp.js");
+    await writeFile(launcher, `const child = Bun.spawn(${JSON.stringify(argv)}, {
+      stdin: "inherit", stdout: "pipe", stderr: "pipe", env: process.env
+    });
+    async function capture(stream, path, terminal) {
+      const writer = Bun.file(path).writer();
+      for await (const chunk of stream) { terminal.write(chunk); writer.write(chunk); await writer.flush(); }
+      await writer.end();
+    }
+    const out = capture(child.stdout, ${JSON.stringify(stdoutPath)}, process.stdout);
+    const err = capture(child.stderr, ${JSON.stringify(stderrPath)}, process.stderr);
+    const code = await child.exited; await Promise.all([out, err]);
+    await Bun.write(${JSON.stringify(exitPath)}, JSON.stringify({ code }));`);
+    const nativeTarget = `@${JSON.parse(run("new", "--json", "-s", "omp-native-unassisted", "-e", `PHUX_TARGET=${sibling}`, "--", process.execPath, launcher)).terminal_id}`;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      if (await Bun.file(proofPath).exists() || await Bun.file(exitPath).exists()) break;
+      await Bun.sleep(50);
+    }
+    const stdout = await Bun.file(stdoutPath).text();
+    const stderr = await Bun.file(stderrPath).text();
+    console.log("Locked CLI argv:", JSON.stringify(argv));
+    console.log("Locked CLI stdout:", stdout);
+    console.log("Locked CLI stderr:", stderr);
+    if (await Bun.file(exitPath).exists()) console.log("Locked CLI exit:", await Bun.file(exitPath).text());
+    assert.ok(await Bun.file(proofPath).exists(), "real CLI did not deliver session_start; inspect captured exit/output");
+    const proof = await Bun.file(proofPath).json();
+    await waitUntil(() => show(nativeTarget).agent_session !== null);
+    const nativePane = show(nativeTarget);
+    assert.equal(nativePane.agent_session.native_id, proof.nativeId);
+    assert.equal(nativePane.agent_session.provider, "omp");
+    assert.notEqual(nativePane.agent_session.resource, nativeTarget);
+    assert.equal(`@${String(proof.host).replace(/^@/, "")}`, nativeTarget);
+    assert.equal(proof.selected, sibling);
+    run("paste", "--", nativeTarget, JSON.stringify({ type: "get_session_stats", id: "startup-proof" }));
+    run("send-keys", nativeTarget, "Enter");
+    let rpcOutput = "";
+    for (let attempt = 0; attempt < 100; attempt++) {
+      rpcOutput = await Bun.file(stdoutPath).text();
+      if (rpcOutput.includes('"startup-proof"')) break;
+      await Bun.sleep(25);
+    }
+    const rpcState = rpcOutput.split("\n").filter(Boolean).map(line => JSON.parse(line))
+      .find(value => value.id === "startup-proof");
+    assert.ok(rpcState?.success, rpcOutput);
+    assert.equal(rpcState.data.sessionId, proof.nativeId);
+    assert.equal(rpcState.data.userMessages, 0);
+    assert.equal(rpcState.data.assistantMessages, 0);
+    assert.equal(rpcState.data.toolCalls, 0);
+    assert.equal(await Bun.file(exitPath).exists(), false, "CLI must still be running, not a returned shell");
+    process.kill(proof.pid, 0);
+    console.log("Live CLI get_session_stats response:", JSON.stringify(rpcState));
+    console.log("Live CLI pane snapshot:", run("snapshot", "--json", nativeTarget));
+    assert.equal(await Bun.file(callsPath).exists(), false, "startup must not invoke even the inert provider");
+    assert.deepEqual(show(sibling).agent, before.agent);
+    assert.equal(show(sibling).agent_session, before.agent_session);
+    console.log("Unassisted locked CLI native session_start:", JSON.stringify(proof));
+    console.log("Unassisted locked CLI hosting projection:", JSON.stringify(nativePane));
     console.log("Native approval wrapper: blocked throughout concurrent dialogs, denied inert tools, resolved working; detached-end overlaps new/resume/fork/successive starts and active same-ID reload: declaration-only, detector fallback restored.");
     console.log("Private server + packed locked OMP SDK: identity, scripted activity, automatic new/switch/reload/branch, shutdown and untouched sibling passed; no model calls.");
   } finally {

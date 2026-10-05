@@ -33,13 +33,38 @@ function samePlace(left: AgentPane, right: AgentPane): boolean {
   return left.terminal === right.terminal && left.session === right.session && left.window === right.window;
 }
 
-/** Admission is separate from writes: malformed/foreign evidence never gets
- * repaired by declaration or adoption. */
-function admitsBinding(pane: AgentPane, id: string): boolean {
-  const declared = pane.sources.some(source => source.kind === "agent_record");
-  if (declared && !owns(pane, id)) throw new Error("Foreign OMP declaration");
-  if (pane.agent_session !== null && !owns(pane, id)) throw new Error("Unowned OMP child");
-  return declared;
+const UNBOUND_FIELDS = new Set(["name", "kind", "session", "state", "attention"]);
+const OBSERVED_STATES = new Set(["unknown", "idle", "working", "blocked", "done"]);
+
+/** Explicit cold-bootstrap policy, not an inference about the record's author. */
+function unboundDeclaration(observed: string): boolean {
+  try {
+    const record: unknown = JSON.parse(observed);
+    if (record === null || typeof record !== "object" || Array.isArray(record)) return false;
+    // Flat allowed values make every JSON property token a top-level field;
+    // reject duplicate keys rather than letting JSON.parse erase contradictions.
+    const properties = observed.match(/"(?:\\.|[^"\\])*"\s*:/g) ?? [];
+    if (properties.length !== Object.keys(record).length) return false;
+    return unboundIdentity(record as Record<string, unknown>);
+  } catch { return false; }
+}
+
+function unboundIdentity(record: Record<string, unknown>): boolean {
+  if (Object.keys(record).some(key => !UNBOUND_FIELDS.has(key))) return false;
+  if (record.name !== "omp" || record.kind !== "omp") return false;
+  if (record.session != null || record.attention != null) return false;
+  return record.state == null || OBSERVED_STATES.has(record.state as string);
+}
+
+/** Return whether an identity-only write is needed, even for an existing bare
+ * record. Owned-child adoption remains a separate, strict proof. */
+function needsDeclaration(pane: AgentPane, id: string, cold: boolean): boolean {
+  if (owns(pane, id)) return false;
+  if (pane.agent_session !== null) throw new Error("Unowned OMP child");
+  const sources = pane.sources.filter(source => source.kind === "agent_record");
+  if (sources.length === 0) return true;
+  if (cold && sources.length === 1 && unboundDeclaration(sources[0]!.observed)) return true;
+  throw new Error("Foreign or malformed OMP declaration");
 }
 
 /** Host-specific serialized writer. An uncertain operation disables this instance;
@@ -57,16 +82,17 @@ export class OmpLifecycle {
 
   constructor(private readonly cli: Cli, private readonly host?: string, private readonly timeoutMs = 250) {}
 
-  navigate(id: string): Promise<void> {
+  navigate(id: string, coldStart = false): Promise<void> {
     if (this.stopped || this.disabled || !this.host) return this.tail;
     if (this.id === id) return this.tail;
+    const cold = coldStart && this.id === undefined && !this.declarationOnly;
     this.id = id;
     const generation = ++this.generation;
     return this.enqueue(async () => {
       if (!this.current(id, generation)) return;
       if (this.binding?.id === id) return;
       await this.rotateDeclaration(id);
-      if (this.current(id, generation)) await this.bind(id, generation);
+      if (this.current(id, generation)) await this.bind(id, generation, cold);
     });
   }
 
@@ -159,13 +185,13 @@ export class OmpLifecycle {
     return pane;
   }
 
-  private async bind(id: string, generation: number): Promise<void> {
+  private async bind(id: string, generation: number, cold: boolean): Promise<void> {
     const pane = await this.show();
     if (!this.current(id, generation)) return;
-    const declared = admitsBinding(pane, id);
+    const initialize = needsDeclaration(pane, id, cold);
     const binding = this.createBinding(id, pane);
     this.binding = binding;
-    if (!declared) await this.command(options => this.cli.agentSet(this.host!, declaration(id), options));
+    if (initialize) await this.command(options => this.cli.agentSet(this.host!, declaration(id), options));
     await this.verify(binding);
     if (!this.current(id, generation)) return;
     if (this.declarationOnly) return this.closeChild();
@@ -226,6 +252,7 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
   type Token = NonNullable<ReturnType<OmpLifecycle["token"]>>;
   let phase: "idle" | "prepared" | "active" | "continuing" | "fallback" = "idle";
   let token: Token | undefined;
+  let firstNavigation = true;
   const tools = new Map<string, string>();
   const endedTools = new Set<string>();
   const approvals = new Map<string, string>();
@@ -250,6 +277,8 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
 
   const navigate = async (event: { type: string }, ctx: ExtensionContext) => {
     const id = ctx.sessionManager.getSessionId();
+    const cold = firstNavigation && event.type === "session_start";
+    firstNavigation = false;
     const sameId = lifecycle.token()?.id === id;
     if (sameId && event.type === "session_tree") return;
     if (phase !== "idle" && phase !== "fallback") await fallback();
@@ -258,7 +287,7 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
     endedTools.clear();
     approvals.clear();
     resolvedApprovals.clear();
-    await lifecycle.navigate(id);
+    await lifecycle.navigate(id, cold);
   };
   pi.on("session_start", navigate);
   pi.on("session_switch", navigate);
@@ -312,6 +341,10 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
   pi.on("agent_end", event => {
     if (!token) return;
     if (approvals.size > 0) return fallback();
+    // The wrapper awaits approval resolution before completing its tool. The
+    // received aggregate fences all preceding tool deliveries, so completed
+    // approval IDs can be forgotten here (also for automatic continuation).
+    resolvedApprovals.clear();
     // agent-session.ts #emitSessionEvent's FIFO subscriber gate drains earlier
     // generic tool deliveries BEFORE launching this detached notification. Thus
     // a RECEIVED aggregate end is a barrier; abort()/navigation is not one.
