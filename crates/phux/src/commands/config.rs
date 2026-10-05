@@ -286,6 +286,12 @@ fn layer_short_label(layer: &phux_config::LayerSource) -> String {
     }
 }
 
+/// This build's source checkout `distros/`, the last place a bundled distro
+/// name is looked up (absent on installed builds). Baked here, in the leaf
+/// binary, rather than in `phux-config`, so only this crate is keyed to the
+/// checkout path.
+const CHECKOUT_DISTROS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../distros");
+
 /// `phux config init [--distro <name-or-path>]`: scaffold the starter config,
 /// validating the full merged stack before writing anything.
 fn run_config_init(force: bool, distro: Option<&str>) -> ExitCode {
@@ -293,7 +299,8 @@ fn run_config_init(force: bool, distro: Option<&str>) -> ExitCode {
     let contents = match distro {
         None => phux_config::scaffold::reference_config(),
         Some(spec) => {
-            let layer = match phux_config::distro::resolve_distro(spec) {
+            let checkout = Path::new(CHECKOUT_DISTROS);
+            let layer = match phux_config::distro::resolve_distro(spec, Some(checkout)) {
                 Ok(layer) => layer,
                 Err(err) => {
                     eprintln!("phux: {err}");

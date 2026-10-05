@@ -50,12 +50,18 @@ fn format_candidates(candidates: &[PathBuf]) -> String {
 
 /// Resolve a `--distro` spec to the absolute path of its layer file.
 ///
+/// `checkout_distros` is a source checkout's `distros/` directory, searched
+/// last; see [`search_dirs`].
+///
 /// # Errors
 ///
 /// [`DistroError::Unreadable`] when the file cannot be canonicalized;
 /// [`DistroError::UnknownName`] when a bare name matches nothing.
-pub fn resolve_distro(spec: &str) -> Result<PathBuf, DistroError> {
-    resolve_distro_in(spec, &search_dirs())
+pub fn resolve_distro(
+    spec: &str,
+    checkout_distros: Option<&Path>,
+) -> Result<PathBuf, DistroError> {
+    resolve_distro_in(spec, &search_dirs(checkout_distros))
 }
 
 /// [`resolve_distro`] against an explicit search-directory list.
@@ -112,8 +118,14 @@ fn bundled_lookup_names(spec: &str) -> Vec<&str> {
 }
 
 /// The bundled-name search directories, in precedence order.
+///
+/// `checkout_distros`, when given, is appended last: the binary passes its
+/// own source checkout's `distros/` as a dev-build convenience. It is a
+/// parameter rather than a path baked in here because a compile-time
+/// checkout path keys this crate, and every crate above it, to one checkout
+/// in a content-addressed build cache.
 #[must_use]
-pub fn search_dirs() -> Vec<PathBuf> {
+pub fn search_dirs(checkout_distros: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(env_dir) = std::env::var_os(DISTROS_DIR_ENV) {
         dirs.push(PathBuf::from(env_dir));
@@ -129,13 +141,7 @@ pub fn search_dirs() -> Vec<PathBuf> {
                 .join("distros"),
         );
     }
-    // The repo checkout, baked at compile time (absent on installed builds).
-    dirs.push(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("distros"),
-    );
+    dirs.extend(checkout_distros.map(Path::to_path_buf));
     dirs
 }
 
