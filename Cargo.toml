@@ -98,7 +98,7 @@ tracing-appender = "0.2"
 # the binary. Completions replace clap_complete; validation covers portable
 # `validate=` rules that used to be clap `value_parser` closures; `test`
 # is the in-crate parse/help assertion helpers.
-usage = { package = "usage-rs", version = "6.11", features = ["completions", "validation", "test"] }
+usage = { package = "usage-rs", version = "6.12", features = ["completions", "validation", "test"] }
 bytes = "1"
 slotmap = "1"
 smallvec = "1.16"
