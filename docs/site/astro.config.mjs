@@ -78,7 +78,7 @@ export default defineConfig({
     "/consumers/agents/json": "/consumers/agents",
     "/consumers/agents/integrations": "/consumers/agents",
   },
-  // The showcase is a React island (<MultiplexShowcase client:load />); it loads
+  // The hero is a React island (<HeroDemo client:load />); it loads
   // the terminal on demand. Docs chrome is <Docs client:load />. Host
   // split (phux.sh vs docs.phux.sh) is the site worker in host/index.ts.
   integrations: [

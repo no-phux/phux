@@ -1,13 +1,30 @@
 ---
 import BaseLayout from "../layouts/BaseLayout.astro";
 import AuthReturn from "../components/AuthReturn.astro";
-import AgentInboxDemo from "../components/AgentInboxDemo";
-import MultiplexShowcase from "../components/MultiplexShowcase";
+import HeroDemo from "../components/HeroDemo";
 import { SITE, docsHref } from "../lib/site";
 import release from "../lib/release.json";
 
 const cliInstall = "curl -fsSL https://phux.sh/install | sh";
 const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
+
+const FEATURES = [
+  {
+    href: "/concepts",
+    title: "Sessions that survive",
+    text: "Shells run in a background server. Close the window, reattach later; nothing restarts.",
+  },
+  {
+    href: "/consumers/agents",
+    title: "Built for automation",
+    text: "Drive terminals from the CLI, MCP, or the public protocol. Agents report when they need you.",
+  },
+  {
+    href: "/remote-access",
+    title: "Every machine, every screen",
+    text: "Reach hosts over SSH or QUIC. Attach from a terminal, desktop, browser, or phone.",
+  },
+];
 ---
 
 <BaseLayout>
@@ -19,84 +36,27 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
       <p class="lede">{SITE.description}</p>
       <div class="hero-ctas">
         <a class="cta" href="#install">Install</a>
-        <a class="cta ghost" href={docsHref("/overview")}>Read the docs</a>
+        <a class="cta ghost" href="/embed" data-demo-launch>Try it in your browser</a>
       </div>
     </div>
     <div class="hero-stage">
-      <MultiplexShowcase client:load wsUrl={SITE.demoWsUrl} />
+      <HeroDemo client:load wsUrl={SITE.demoWsUrl} />
     </div>
   </section>
 
-  <section class="wrap attention" aria-labelledby="attention-title">
-    <div class="attention-copy">
-      <p class="attention-kicker">AGENT ATTENTION</p>
-      <h2 id="attention-title">See what needs input.</h2>
-      <p>
-        Integrated agents report progress and questions beside their terminals.
-        Open the terminal that needs a decision.
-      </p>
-    </div>
-    <AgentInboxDemo client:visible />
-  </section>
-
-  <section class="wrap features-list">
-    <a class="feature" href={docsHref("/concepts")}>
-      <span>01</span>
-      <div>
-        <h2>Keep processes running</h2>
-        <p>
-          Shells live in a background server, independent of your interface.
-          Disconnect and reattach without restarting them.
-        </p>
-      </div>
-    </a>
-    <a class="feature" href={docsHref("/consumers/build-a-client")}>
-      <span>02</span>
-      <div>
-        <h2>Build your own tools</h2>
-        <p>
-          Create terminals, send input, read output, and wait for events.
-          Use the CLI or MCP adapter, or build a client against the public protocol.
-        </p>
-      </div>
-    </a>
-    <a class="feature" href={docsHref("/consumers/agents")}>
-      <span>03</span>
-      <div>
-        <h2>Read agent state</h2>
-        <p>
-          Supported harnesses publish activity, questions, and completion as
-          structured events. Terminal-based detectors cover additional harnesses.
-        </p>
-      </div>
-    </a>
-    <a class="feature" href={docsHref("/wire")}>
-      <span>04</span>
-      <div>
-        <h2>Render with libghostty</h2>
-        <p>
-          Bundled clients receive raw terminal output and render it with
-          libghostty, the same engine the server uses. Input travels as structured events.
-        </p>
-      </div>
-    </a>
-    <a class="feature" href={docsHref("/remote-access")}>
-      <span>05</span>
-      <div>
-        <h2>Connect your machines</h2>
-        <p>
-          Connect over SSH or encrypted QUIC. Address remote terminals from
-          the same CLI and API, without a hosted account.
-        </p>
-      </div>
-    </a>
+  <section class="wrap features">
+    {
+      FEATURES.map((feature) => (
+        <a class="feature" href={docsHref(feature.href)}>
+          <h2>{feature.title}</h2>
+          <p>{feature.text}</p>
+        </a>
+      ))
+    }
   </section>
 
   <section class="wrap install" id="install">
     <h2>Install</h2>
-    <p class="lede">
-      Use the CLI or a native macOS app.
-    </p>
     <div class="install-row">
       <div class="install-cmd">
         <span>CLI {release.tag && <em>{release.tag}</em>}</span>
@@ -104,96 +64,82 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
         <button type="button" data-copy={cliInstall}>Copy</button>
       </div>
       <div class="install-cmd">
-        <span>Cockpit {release.cockpit?.tag && <em>{release.cockpit.tag}</em>}</span>
+        <span>Cockpit for macOS {release.cockpit?.tag && <em>{release.cockpit.tag}</em>}</span>
         <code tabindex="0">{cockpitInstall}</code>
         <button type="button" data-copy={cockpitInstall}>Copy</button>
       </div>
     </div>
     <p class="install-more">
-      CLI: macOS arm64 and Linux x86_64 or arm64. Cockpit: Apple silicon,
-      macOS 11+. Both installers verify release checksums.{" "}
-      <a href={docsHref("/quickstart/install#desktop-demo")}>Desktop demo (GPUIX/Solid, source build)</a>
-      {" · "}
-      <a href={docsHref("/quickstart/install")}>Other install methods and channels</a>
-      {" · "}
-      <a href={docsHref("/consumers/getting-started")}>Set up an agent</a>
+      macOS and Linux. Installers verify release checksums.{" "}
+      <a href={docsHref("/quickstart/install")}>More ways to install</a>
     </p>
   </section>
 
-  <section class="wrap join" id="testflight">
-    <div class="join-copy">
+  <section class="wrap join">
+    <div id="testflight">
       <h2>phux for iPhone</h2>
-      <p>
-        The phux terminal, in your pocket. Pair with your phux server, then
-        watch and drive the same terminals from iPhone. The app is in
-        TestFlight beta: request access and Apple emails you the invite.
-      </p>
+      <p>Drive the same terminals from your phone. Now in TestFlight beta.</p>
+      <form class="join-form" id="beta-form">
+        <input
+          type="email"
+          name="email"
+          required
+          autocomplete="email"
+          placeholder="Apple Account email"
+          aria-label="Email address for the TestFlight invite"
+        />
+        <input
+          class="join-trap"
+          type="text"
+          name="website"
+          tabindex="-1"
+          autocomplete="off"
+          aria-hidden="true"
+        />
+        <button type="submit">Request access</button>
+        <p class="join-note" id="beta-note" aria-live="polite">
+          Apple emails the invite to this address.
+        </p>
+      </form>
     </div>
-    <form class="join-form" id="beta-form">
-      <input
-        type="email"
-        name="email"
-        required
-        autocomplete="email"
-        placeholder="you@example.com"
-        aria-label="Email address for the TestFlight invite"
-      />
-      <input
-        class="join-trap"
-        type="text"
-        name="website"
-        tabindex="-1"
-        autocomplete="off"
-        aria-hidden="true"
-      />
-      <button type="submit">Request access</button>
-      <p class="join-note" id="beta-note" aria-live="polite">
-        Use the address of your Apple Account so the invite opens in TestFlight.
-      </p>
-    </form>
-  </section>
-
-  <section class="wrap join" id="beta">
-    <div class="join-copy">
+    <div id="beta">
       <h2>Release updates</h2>
-      <p>Release notes and beta invitations. Unsubscribe at any time.</p>
+      <p>Release notes, occasionally. Unsubscribe any time.</p>
+      <form class="join-form" id="join-form">
+        <input
+          type="email"
+          name="email"
+          required
+          autocomplete="email"
+          placeholder="you@example.com"
+          aria-label="Email address"
+        />
+        <button type="submit">Subscribe</button>
+        <p class="join-note" id="join-note" aria-live="polite">
+          <a href="/telemetry">What we measure</a>
+        </p>
+      </form>
     </div>
-    <form class="join-form" id="join-form">
-      <input
-        type="email"
-        name="email"
-        required
-        autocomplete="email"
-        placeholder="you@example.com"
-        aria-label="Email address"
-      />
-      <button type="submit">Subscribe</button>
-      <p class="join-note" id="join-note">
-        Site statistics are aggregate. Device-level reporting requires a
-        separate opt-in.{" "}
-        <a href="/telemetry">What we measure</a>
-      </p>
-    </form>
   </section>
 </BaseLayout>
 
 <style>
   .join {
     display: grid;
-    grid-template-columns: minmax(240px, 1fr) minmax(280px, 1fr);
-    gap: clamp(20px, 4vw, 48px);
-    padding-block: clamp(32px, 6vw, 64px);
-    border-top: 1px solid var(--line, #232433);
-    align-items: start;
+    grid-template-columns: 1fr 1fr;
+    gap: clamp(24px, 5vw, 64px);
+    padding-block: clamp(40px, 6vw, 72px);
+    border-top: 1px solid var(--color-rule);
   }
   .join h2 {
-    margin: 0 0 8px;
-    letter-spacing: -0.01em;
+    margin: 0 0 6px;
+    font-size: 20px;
+    letter-spacing: -0.02em;
   }
-  .join-copy p {
+  .join h2 + p {
+    margin: 0 0 16px;
     color: var(--color-muted);
-    margin: 0;
-    max-width: 46ch;
+    font-size: 15px;
   }
   .join-form {
     display: grid;
@@ -223,6 +169,7 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
     font-size: 12px;
     color: var(--color-muted);
     margin: 0;
+    min-height: 1.5em;
   }
   .join-note a {
     color: inherit;
@@ -233,11 +180,6 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
     width: 1px;
     height: 1px;
     opacity: 0;
-  }
-  @media (max-width: 720px) {
-    .join {
-      grid-template-columns: 1fr;
-    }
   }
 </style>
 
@@ -410,8 +352,7 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
     letter-spacing: -0.055em;
     line-height: 0.98;
   }
-  .hero .lede,
-  .install .lede {
+  .hero .lede {
     max-width: 46ch;
     margin: 0 0 28px;
     color: var(--color-muted);
@@ -427,79 +368,40 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
     min-width: 0;
   }
 
-  .attention {
+  .features {
     display: grid;
-    grid-template-columns: minmax(220px, 0.52fr) minmax(0, 1.48fr);
-    gap: clamp(28px, 5vw, 64px);
-    align-items: start;
-    padding-block: clamp(56px, 8vw, 96px);
-    border-top: 1px solid var(--color-rule);
-  }
-  .attention-kicker {
-    margin: 0 0 14px;
-    color: var(--color-attention);
-    font-family: var(--font-code);
-    font-size: 11px;
-    letter-spacing: 0.1em;
-  }
-  .attention h2 {
-    margin: 0 0 16px;
-    max-width: 11ch;
-    font-size: clamp(30px, 3.8vw, 48px);
-    letter-spacing: -0.045em;
-    line-height: 1.03;
-  }
-  .attention-copy > p:last-child {
-    margin: 0;
-    max-width: 38ch;
-    color: var(--color-muted);
-    font-size: 15px;
-    line-height: 1.65;
-  }
-
-  .features-list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: clamp(24px, 4vw, 48px);
+    padding-block: clamp(40px, 6vw, 72px);
     border-top: 1px solid var(--color-rule);
   }
   .feature {
-    display: grid;
-    grid-template-columns: 48px minmax(0, 1fr);
-    gap: 20px;
-    padding: 36px 0;
-    border-bottom: 1px solid var(--color-rule);
     text-decoration: none;
     color: inherit;
   }
   .feature:hover h2 {
     color: var(--color-accent);
   }
-  .feature span {
-    color: var(--color-subtle);
-    font-family: var(--font-code);
-    font-size: 13px;
-    padding-top: 6px;
-  }
   .feature h2 {
     margin: 0 0 8px;
-    font-size: clamp(22px, 2.4vw, 30px);
-    letter-spacing: -0.03em;
+    font-size: 20px;
+    letter-spacing: -0.02em;
   }
   .feature p {
     margin: 0;
-    max-width: 62ch;
     color: var(--color-muted);
-    font-size: 16px;
-    line-height: 1.65;
+    font-size: 15px;
+    line-height: 1.6;
   }
 
   .install {
-    padding-block: clamp(56px, 8vw, 96px);
+    padding-block: clamp(40px, 6vw, 72px);
+    border-top: 1px solid var(--color-rule);
   }
   .install h2 {
-    margin: 0 0 16px;
-    max-width: 18ch;
-    font-size: clamp(28px, 3.4vw, 42px);
-    letter-spacing: -0.04em;
-    line-height: 1.1;
+    margin: 0 0 20px;
+    font-size: clamp(24px, 3vw, 32px);
+    letter-spacing: -0.03em;
   }
   .install-row {
     display: grid;
@@ -569,21 +471,15 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
     .hero h1 {
       max-width: 14ch;
     }
-    .attention {
+    .features,
+    .join {
       grid-template-columns: 1fr;
-    }
-    .attention h2 {
-      max-width: 14ch;
     }
     .install-row {
       grid-template-columns: 1fr;
     }
   }
   @media (max-width: 640px) {
-    .feature {
-      grid-template-columns: 32px 1fr;
-      padding: 28px 0;
-    }
     .install-cmd code {
       grid-column: 1 / -1;
     }

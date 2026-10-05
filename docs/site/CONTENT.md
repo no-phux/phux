@@ -107,28 +107,29 @@ methodology link. Do not hide conditions behind tooltips.
 
 ## Product landing and demo
 
-The landing at `src/pages/index.astro` introduces the runtime, then shows an
-interactive terminal model, agent attention, capabilities, and installation.
-`<MultiplexShowcase client:load>` demonstrates split views, shared clients,
-and detach/reattach, with a separate launch action for the hosted terminal.
+The landing at `src/pages/index.astro` stays minimal: headline, one static
+terminal picture, three capabilities, installation, and the iPhone beta and
+release-update signups. Add a section only when it replaces one.
 
-The opening panel is explicitly a diagram, not simulated live output. It works
-without downloading WASM or allocating a hosted session. Opening the terminal
-dialog loads the actual phux web client: the anonymous edge tour is a curated,
-OS-less shell in a Durable Object; the optional authenticated Linux tab runs
-the native container. Label both runtimes and their different capabilities.
-The edge tour has no network or processes; do not imply it is a general shell.
-The live shell—not just the diagram—supports independent split panes with visible
-controls and keyboard shortcuts. Keep that distinction explicit; the browser
-interaction contract lives in [the web client guide](../consumers/web.md#in-the-page).
+`<HeroDemo client:load>` renders the terminal picture and owns the hosted
+terminal dialog. Any `[data-demo-launch]` link opens the dialog; without
+JavaScript the link falls through to the standalone shell at `/embed`. The
+picture is a still, not simulated live output, and the landing downloads no
+WASM and allocates no hosted session until the visitor opens the dialog. The
+anonymous edge tour is a curated, OS-less shell in a Durable Object; the
+optional authenticated Linux tab runs the native container. Label both
+runtimes and their different capabilities. The edge tour has no network or
+processes; do not imply it is a general shell. The live shell supports
+independent split panes with visible controls and keyboard shortcuts; the
+browser interaction contract lives in
+[the web client guide](../consumers/web.md#in-the-page).
 
 Closing the dialog or switching runtime releases the hosted session, including
-an in-flight attach. The diagram describes normal phux continuity; hosted demo
-sessions are intentionally disposable. JavaScript-disabled visitors still see
-the diagram, explanation, and installation links. An empty `PUBLIC_PHUX_DEMO_WS`
-produces an explicit not-configured state; an unreachable backend gets an
-actionable error and recovery controls. Neither failure disables the diagram
-or installation path.
+an in-flight attach; hosted demo sessions are intentionally disposable.
+JavaScript-disabled visitors still see the picture, the standalone-shell link,
+and installation. An empty `PUBLIC_PHUX_DEMO_WS` produces an explicit not-configured state; an unreachable backend gets an
+actionable error and recovery controls. Neither failure disables the
+installation path.
 
 Accessibility, light/dark reading, code copying, responsive layout, and visual
 roles are specified in `DESIGN_SYSTEM.md`. Verify them in the built browser
