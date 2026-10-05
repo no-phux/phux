@@ -16,8 +16,12 @@
 //! Nonempty confirmed payloads alternate a/b so paint sees changed content.
 //! Pending stays blank; mismatch alternates x/y; controls may remain clean.
 //! These are synthetic ASCII queue shapes, not observed burst frequencies or
-//! keystroke/device latency. The source-derived update/row-step counts printed
-//! separately are NOT native instrumentation or evidence of a full-grid copy.
+//! keystroke/device latency. Fixed-order groups do not prove warmup convergence;
+//! compare ranges of group percentiles, not confidence bounds. Resolution-limited
+//! zero-duration controls are not zero work or calibrated overhead to subtract.
+//! The source-derived update/row-step counts cover reconciliation callbacks only
+//! (not paint or arrow seeding), and are NOT native instrumentation or evidence
+//! of a full-grid copy.
 
 #![allow(
     clippy::expect_used,
@@ -282,7 +286,7 @@ fn main() {
         "reconcile includes real core/reader + callback counting; paint+reconcile adds pane paint to Vec (not OS I/O or full handler); setup/VT/seed/assertions excluded"
     );
     println!(
-        "SOURCE ONLY, not instrumented: reads K => K native updates + K*(row+1) successful row steps; zero-read controls => 0/0; no full-copy/frequency/device-latency claim"
+        "SOURCE ONLY for reconciliation callbacks (excludes paint/seed), not instrumented: reads K => K native updates + K*(row+1) successful row steps; zero-reconcile-read controls => 0/0; no full-copy/frequency/device-latency claim"
     );
     for run in 1..=RUNS {
         for row in [0, 59] {
