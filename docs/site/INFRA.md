@@ -33,7 +33,8 @@ edge portfolio shell over the same WebSocket request instead of a close or queue
 The production `demo`/`portfolio` path is **free**: the phux _server_ runs as WASM inside the Durable
 Object, so there's no container (no Workers Paid). Edge WASM, the native
 container, and the committed `phux-web` artifact all speak workspace protocol
-0.9 (native `phux-protocol` pin 0.48.0). Rebuild `src/lib/phux-web/` with
+0.9 (the native `phux-protocol` pin is `PHUX_VERSION` in
+`worker/Dockerfile`, which the release sync keeps current). Rebuild `src/lib/phux-web/` with
 `bun run build:client` and `worker/edge/` with `bun run build:edge` together
 when the wire changes.
 
