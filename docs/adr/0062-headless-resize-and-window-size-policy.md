@@ -15,6 +15,7 @@ exits nonzero when it differs.
 
 Status: Accepted
 Date: 2026-07-27
+Superseded in part by [ADR-0145](./0145-the-tui-sizes-panes-and-casts-no-viewport-vote.md): the TUI casts no viewport vote; `RESIZE_TERMINAL` may carry a cell pixel size.
 
 ## Context
 
