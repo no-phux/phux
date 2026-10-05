@@ -9,6 +9,26 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.49.1](https://github.com/no-phux/phux/compare/v0.49.0...v0.49.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* **integrations:** fence session adoption and support RPC selection ([6b3c3c1](https://github.com/no-phux/phux/commit/6b3c3c127ee8e6e40cb819a6bbe8093b7d4843fd))
+* **integrations:** restore Pi fleet context and hosting identity ([9f8270e](https://github.com/no-phux/phux/commit/9f8270e0b6bfc3ade63cb3e229f32952b7fa5066))
+* **web:** discover live agent session resources ([f359c52](https://github.com/no-phux/phux/commit/f359c5294063285748bb390919e11273a0364efe))
+* **web:** reconcile agent discovery during parent admission ([f632738](https://github.com/no-phux/phux/commit/f6327389f43aaaa0a88de739ed845ae202936f0c))
+
+
+### Performance
+
+* **server:** bound ingress service latency and idle state ticks ([f688962](https://github.com/no-phux/phux/commit/f6889627eb9291458669b5be6f205b3b474efa45))
+
+
+### Documentation
+
+* **path:** mark host path query shipped after mobile pin ([#981](https://github.com/no-phux/phux/issues/981)) ([aade61f](https://github.com/no-phux/phux/commit/aade61f46f2a5c2b9b3c274b7ae7f335391801f3))
+
 ## [0.49.0](https://github.com/no-phux/phux/compare/v0.48.0...v0.49.0) (2026-10-02)
 
 
