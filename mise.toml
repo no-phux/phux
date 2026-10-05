@@ -43,7 +43,7 @@ python = "3.14.7"
 # binary emits. Pin the same train as the `usage-rs` crate. nixpkgs
 # has lagged this CLI, so flake.nix reads this value and fetches the
 # GitHub release until nixpkgs catches up — the bun pin, applied to a CLI.
-usage = "6.11.1"
+usage = "6.12.0"
 
 # --- Build cache --------------------------------------------------------------
 # mbx (jdx/mr-boxington), the Cargo wrapper the `rust` entry above enables.

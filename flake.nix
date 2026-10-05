@@ -126,6 +126,12 @@
             x86_64-linux = "sha256-ezfR02sxCFeQjlCIAttsa2cFVc8lzQuZDwnuQMsRJHs=";
             aarch64-linux = "sha256-uJA+2wrMt2V2qaRUkAOI1inf+aNRhuZTxOW0jmIuYsA=";
           };
+          "6.12.0" = {
+            aarch64-darwin = "sha256-HkO+dF2y/YElnisOaNaJ1/Vbk9qBX0UsIVRxD23m7FI=";
+            x86_64-darwin = "sha256-HkO+dF2y/YElnisOaNaJ1/Vbk9qBX0UsIVRxD23m7FI=";
+            x86_64-linux = "sha256-XKtp/6zeP3AL10CV+JpIec6lkajAZW8xBHhu0dDfIYo=";
+            aarch64-linux = "sha256-KHKZJORr+tERKn7DUAPN8HTSaGNG3aotD0IGwfZqKCc=";
+          };
         };
         usagePinned =
           if (pkgs.usage.version or "") == usageVersion then
