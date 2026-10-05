@@ -60,8 +60,9 @@ pub(crate) enum PairAction {
 }
 
 /// Prefix of the one-tap connect link (and its QR):
-/// `https://phux.sh/connect?url=<ws(s)-url>[&name=<n>][&fp=<sha256>]&token=<hex>`.
-/// `url` is mandatory, so a link is only emitted when an address is known.
+/// `https://phux.sh/connect?url=<ws(s)-url>[&quic=<quic-url>][&name=<n>][&fp=<sha256>]&token=<hex>`.
+/// `url` stays mandatory for older app builds; newer apps prefer `quic` when
+/// the running server reports a device-dialable QUIC listener.
 ///
 /// An https Universal Link rather than a custom scheme because it carries a
 /// bearer token: any iOS app may claim a custom scheme, but only the app that
@@ -84,11 +85,16 @@ const LEGACY_CONNECT_URI_PREFIX: &str = "phux://connect";
 /// as-is; only the free-form `name` is percent-encoded.
 fn build_connect_link(
     url: &str,
+    quic: Option<&str>,
     name: Option<&str>,
     fingerprint: Option<&str>,
     token: &str,
 ) -> String {
     let mut link = format!("{CONNECT_URI_PREFIX}?url={url}");
+    if let Some(quic) = quic {
+        link.push_str("&quic=");
+        link.push_str(quic);
+    }
     if let Some(name) = name {
         link.push_str("&name=");
         link.push_str(&percent_encode(name));
@@ -133,8 +139,10 @@ fn percent_encode(value: &str) -> String {
 /// laptop pastes into `phux attach --remote HOST --code '<link>'`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConnectLink {
-    /// The `ws://`/`wss://` endpoint to dial.
+    /// The `ws://`/`wss://` fallback endpoint old clients continue to dial.
     pub(crate) url: String,
+    /// The preferred `quic://` endpoint, when the live listener is dialable.
+    pub(crate) quic: Option<String>,
     /// The operator's label for the server, when the link carries one.
     pub(crate) name: Option<String>,
     /// The TLS certificate SHA-256 pin.
@@ -160,38 +168,104 @@ pub(crate) fn parse_connect_link(link: &str) -> Result<ConnectLink, String> {
             )
         })?;
 
-    let (mut url, mut name, mut fingerprint, mut token) = (None, None, None, None);
-    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
-        let (key, raw) = pair
-            .split_once('=')
-            .ok_or_else(|| format!("connect code field {pair:?} has no value"))?;
-        let decoded = percent_decode(raw)?;
-        match key {
-            "url" => url = Some(decoded),
-            "name" => name = Some(decoded),
-            "fp" => fingerprint = Some(decoded),
-            "token" => token = Some(decoded),
-            // Unknown keys are forward-compat room, not an error.
-            _ => {}
-        }
-    }
-
-    let url = url.filter(|url| !url.is_empty()).ok_or_else(|| {
-        "connect code carries no `url=` — it cannot name a server to dial".to_owned()
-    })?;
-    if !url.starts_with("wss://") && !url.starts_with("ws://") {
-        return Err(format!("connect code url {url:?} must be ws:// or wss://"));
-    }
+    let ConnectFields {
+        url,
+        quic,
+        name,
+        fingerprint,
+        token,
+    } = parse_connect_fields(query)?;
+    let (url, quic) = validate_connect_endpoints(url, quic)?;
     let token = token
         .filter(|token| !token.is_empty())
         .ok_or_else(|| "connect code carries no `token=` — it grants no access".to_owned())?;
 
     Ok(ConnectLink {
         url,
+        quic,
         name: name.filter(|name| !name.is_empty()),
         cert_fingerprint: fingerprint.filter(|fp| !fp.is_empty()),
         token,
     })
+}
+
+#[derive(Default)]
+struct ConnectFields {
+    url: Option<String>,
+    quic: Option<String>,
+    name: Option<String>,
+    fingerprint: Option<String>,
+    token: Option<String>,
+}
+
+fn parse_connect_fields(query: &str) -> Result<ConnectFields, String> {
+    let mut fields = ConnectFields::default();
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, raw) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("connect code field {pair:?} has no value"))?;
+        let decoded = percent_decode(raw)?;
+        let slot = match key {
+            "url" => &mut fields.url,
+            "quic" => &mut fields.quic,
+            "name" => &mut fields.name,
+            "fp" => &mut fields.fingerprint,
+            "token" => &mut fields.token,
+            // Unknown keys are forward-compat room, not an error.
+            _ => continue,
+        };
+        assign_connect_field(slot, key, decoded)?;
+    }
+    Ok(fields)
+}
+
+/// Preserve an unambiguous credential contract while unknown additive fields
+/// remain forward-compatible.
+fn assign_connect_field(slot: &mut Option<String>, key: &str, value: String) -> Result<(), String> {
+    if slot.replace(value).is_some() {
+        return Err(format!("connect code carries duplicate `{key}=` fields"));
+    }
+    Ok(())
+}
+
+/// Validate the fallback and additive endpoint fields without involving a
+/// dialer. Reachability remains the runtime's job.
+fn validate_connect_endpoints(
+    url: Option<String>,
+    quic: Option<String>,
+) -> Result<(String, Option<String>), String> {
+    let url = url.filter(|url| !url.is_empty()).ok_or_else(|| {
+        "connect code carries no `url=` — it cannot name a server to dial".to_owned()
+    })?;
+    if !url.starts_with("wss://") && !url.starts_with("ws://") {
+        return Err(format!("connect code url {url:?} must be ws:// or wss://"));
+    }
+    let quic = quic.filter(|quic| !quic.is_empty());
+    if let Some(endpoint) = quic.as_deref() {
+        validate_quic_endpoint(endpoint)?;
+    }
+    Ok((url, quic))
+}
+
+fn validate_quic_endpoint(endpoint: &str) -> Result<(), String> {
+    let authority = endpoint.strip_prefix("quic://").ok_or_else(|| {
+        format!("connect code quic endpoint {endpoint:?} must start with quic://")
+    })?;
+    let (host, port) = authority
+        .rsplit_once(':')
+        .ok_or_else(|| format!("connect code quic endpoint {endpoint:?} needs HOST:PORT"))?;
+    let bracketed = host.starts_with('[') && host.ends_with(']');
+    let bare_host = host.trim_matches(['[', ']']);
+    let valid_host = !bare_host.is_empty()
+        && !authority.contains(['/', '?', '#', '@'])
+        && (bracketed || !host.contains(':'));
+    let valid_port = port.parse::<u16>().is_ok_and(|port| port != 0);
+    if valid_host && valid_port {
+        return Ok(());
+    }
+    Err(format!(
+        "connect code quic endpoint {endpoint:?} needs HOST:PORT with a non-zero numeric port"
+    ))
 }
 
 /// Decode the percent-escapes [`percent_encode`] produces. Only `name` is
@@ -219,11 +293,30 @@ fn percent_decode(value: &str) -> Result<String, String> {
     String::from_utf8(out).map_err(|_| format!("connect code field {value:?} is not UTF-8"))
 }
 
+/// Turn a live listener bind into a device-dialable endpoint. An unspecified
+/// bind (`0.0.0.0`/`::`) uses the first overlay address; loopback is not
+/// advertised to another device.
+fn resolve_bound_endpoint(
+    scheme: &str,
+    overlay: &[IpAddr],
+    bound: Option<SocketAddr>,
+) -> Option<String> {
+    let bound = bound?;
+    let ip = if bound.ip().is_unspecified() {
+        overlay
+            .iter()
+            .copied()
+            .find(|candidate| candidate.is_ipv4() == bound.ip().is_ipv4())?
+    } else if bound.ip().is_loopback() {
+        return None;
+    } else {
+        bound.ip()
+    };
+    Some(format!("{scheme}://{}", SocketAddr::new(ip, bound.port())))
+}
+
 /// Resolve the ws(s):// URL the link embeds: `--host` wins (a bare
-/// `host:port` gets `wss://`); otherwise the address the running server's
-/// wss listener is bound to. An unspecified bind (`0.0.0.0`/`::`) is dialed
-/// on the first overlay address; a loopback bind is unreachable from a
-/// device. `None` when nothing a device could dial is known.
+/// `host:port` gets `wss://`); otherwise use the live wss listener.
 fn resolve_server_url(
     host: Option<&str>,
     overlay: &[IpAddr],
@@ -235,15 +328,12 @@ fn resolve_server_url(
         }
         return Some(format!("wss://{host}"));
     }
-    let bound = bound_wss?;
-    let ip = if bound.ip().is_unspecified() {
-        *overlay.first()?
-    } else if bound.ip().is_loopback() {
-        return None;
-    } else {
-        bound.ip()
-    };
-    Some(format!("wss://{}", SocketAddr::new(ip, bound.port())))
+    resolve_bound_endpoint("wss", overlay, bound_wss)
+}
+
+/// Resolve the preferred raw-QUIC endpoint from the running listener only.
+fn resolve_quic_endpoint(overlay: &[IpAddr], bound_quic: Option<SocketAddr>) -> Option<String> {
+    resolve_bound_endpoint("quic", overlay, bound_quic)
 }
 
 /// The words of the refusal when the server has no remote listener bound.
@@ -265,6 +355,11 @@ impl LiveListeners {
     /// The wss bind as a socket address, when it parses as one.
     fn wss_addr(&self) -> Option<SocketAddr> {
         self.wss.as_deref().and_then(|addr| addr.parse().ok())
+    }
+
+    /// The QUIC bind as a socket address, when it parses as one.
+    fn quic_addr(&self) -> Option<SocketAddr> {
+        self.quic.as_deref().and_then(|addr| addr.parse().ok())
     }
 }
 
@@ -540,10 +635,15 @@ pub(crate) fn run_pair(
 
     // The one-tap link (and its QR form) carries the token — it is as much
     // a secret as the token line above, shown once on the same terminal.
-    let link = addresses
-        .server_url
-        .as_deref()
-        .map(|url| build_connect_link(url, name.as_deref(), fingerprint.as_deref(), &token));
+    let link = addresses.server_url.as_deref().map(|url| {
+        build_connect_link(
+            url,
+            addresses.quic_endpoint.as_deref(),
+            name.as_deref(),
+            fingerprint.as_deref(),
+            &token,
+        )
+    });
 
     if json {
         return crate::output::json(&pair_document(
@@ -600,8 +700,10 @@ struct PairAddresses {
     overlay: Vec<IpAddr>,
     /// What the running server has bound.
     live: LiveListeners,
-    /// The ws(s):// URL the link embeds, when one can be resolved.
+    /// The ws(s):// fallback URL the link embeds, when one can be resolved.
     server_url: Option<String>,
+    /// The preferred quic:// endpoint, only when the live bind is dialable.
+    quic_endpoint: Option<String>,
     /// The names a certificate minted for this run must claim.
     advertised: Vec<String>,
 }
@@ -611,11 +713,13 @@ struct PairAddresses {
 fn resolve_pair_addresses(host: Option<&str>, live: LiveListeners) -> PairAddresses {
     let overlay = phux_config::overlay::detect();
     let server_url = resolve_server_url(host, &overlay, live.wss_addr());
+    let quic_endpoint = resolve_quic_endpoint(&overlay, live.quic_addr());
     let advertised = advertised_names(server_url.as_deref(), &overlay);
     PairAddresses {
         overlay,
         live,
         server_url,
+        quic_endpoint,
         advertised,
     }
 }
@@ -1018,7 +1122,7 @@ mod tests {
     use super::{
         LiveListeners, advertised_names, build_connect_link, legacy_connect_link, link_refusal,
         live_listeners, pair_document, parse_connect_link, percent_encode, render_qr,
-        resolve_server_url,
+        resolve_quic_endpoint, resolve_server_url,
     };
     use phux_protocol::wire::{
         ListenerDisabledReason, RemoteListenerSlot, RemoteListenerTransport, RemoteListenersReport,
@@ -1090,22 +1194,23 @@ mod tests {
     fn link_includes_only_present_fields_in_stable_order() {
         // url + token are the floor.
         assert_eq!(
-            build_connect_link("wss://h:1", None, None, "deadbeef"),
+            build_connect_link("wss://h:1", None, None, None, "deadbeef"),
             "https://phux.sh/connect?url=wss://h:1&token=deadbeef"
         );
         // Full house, in the order the mobile parser documents.
         assert_eq!(
             build_connect_link(
                 "wss://10.0.0.2:8787",
+                Some("quic://10.0.0.2:8788"),
                 Some("mini"),
                 Some("AB:CD"),
                 "deadbeef"
             ),
-            "https://phux.sh/connect?url=wss://10.0.0.2:8787&name=mini&fp=AB:CD&token=deadbeef"
+            "https://phux.sh/connect?url=wss://10.0.0.2:8787&quic=quic://10.0.0.2:8788&name=mini&fp=AB:CD&token=deadbeef"
         );
         // No fingerprint — the fp param is absent, not empty.
         assert_eq!(
-            build_connect_link("wss://h:1", Some("mini"), None, "deadbeef"),
+            build_connect_link("wss://h:1", None, Some("mini"), None, "deadbeef"),
             "https://phux.sh/connect?url=wss://h:1&name=mini&token=deadbeef"
         );
     }
@@ -1116,7 +1221,7 @@ mod tests {
         assert_eq!(percent_encode("plain-name_1.ok~"), "plain-name_1.ok~");
         assert_eq!(percent_encode("a&b=c"), "a%26b%3Dc");
         assert_eq!(
-            build_connect_link("wss://h:1", Some("studio mini"), None, "aa"),
+            build_connect_link("wss://h:1", None, Some("studio mini"), None, "aa"),
             "https://phux.sh/connect?url=wss://h:1&name=studio%20mini&token=aa"
         );
     }
@@ -1181,6 +1286,49 @@ mod tests {
         assert_eq!(
             resolve_server_url(None, &v6, addr("[::]:8787")),
             Some("wss://[fd7a:115c:a1e0::1]:8787".to_owned())
+        );
+    }
+
+    /// QUIC link endpoints follow the same device-reachability rules as WSS:
+    /// concrete addresses keep their live port, wildcard binds use an overlay,
+    /// loopback is never advertised, and IPv6 is bracketed by `SocketAddr`.
+    #[test]
+    fn derived_quic_endpoint_is_live_and_device_dialable() {
+        let v4 = [IpAddr::V4(Ipv4Addr::new(100, 64, 0, 2))];
+        assert_eq!(
+            resolve_quic_endpoint(&v4, addr("100.64.0.2:8788")),
+            Some("quic://100.64.0.2:8788".to_owned())
+        );
+        assert_eq!(
+            resolve_quic_endpoint(&v4, addr("192.168.1.5:9000")),
+            Some("quic://192.168.1.5:9000".to_owned())
+        );
+        assert_eq!(
+            resolve_quic_endpoint(&v4, addr("0.0.0.0:9001")),
+            Some("quic://100.64.0.2:9001".to_owned())
+        );
+        assert_eq!(resolve_quic_endpoint(&[], addr("0.0.0.0:9001")), None);
+        let v6_only = [IpAddr::V6(Ipv6Addr::LOCALHOST)];
+        assert_eq!(
+            resolve_quic_endpoint(&v6_only, addr("0.0.0.0:9001")),
+            None,
+            "an IPv4 wildcard does not make an IPv6 address dialable"
+        );
+        assert_eq!(resolve_quic_endpoint(&v4, addr("127.0.0.1:8788")), None);
+        assert_eq!(resolve_quic_endpoint(&v4, None), None);
+
+        let v6 = [IpAddr::V6(Ipv6Addr::new(
+            0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 1,
+        ))];
+        assert_eq!(
+            resolve_quic_endpoint(&v6, addr("[::]:8788")),
+            Some("quic://[fd7a:115c:a1e0::1]:8788".to_owned())
+        );
+        let mixed = [v4[0], v6[0]];
+        assert_eq!(
+            resolve_quic_endpoint(&mixed, addr("[::]:8788")),
+            Some("quic://[fd7a:115c:a1e0::1]:8788".to_owned()),
+            "a wildcard bind uses an overlay address of the same family"
         );
     }
 
@@ -1314,6 +1462,7 @@ mod tests {
         // capacity; the renderer must produce non-empty half-block art.
         let link = build_connect_link(
             "wss://100.64.0.2:8787",
+            Some("quic://100.64.0.2:8788"),
             Some("mini"),
             Some("CD:".repeat(31).trim_end_matches(':')),
             &"ab".repeat(32),
@@ -1333,12 +1482,14 @@ mod tests {
     fn connect_link_round_trips() {
         let link = build_connect_link(
             "wss://100.64.0.2:8787",
+            Some("quic://100.64.0.2:8788"),
             Some("mini box"),
             Some("AB:CD:EF"),
             "deadbeef",
         );
         let parsed = parse_connect_link(&link).expect("parse");
         assert_eq!(parsed.url, "wss://100.64.0.2:8787");
+        assert_eq!(parsed.quic.as_deref(), Some("quic://100.64.0.2:8788"));
         assert_eq!(parsed.name.as_deref(), Some("mini box"));
         assert_eq!(parsed.cert_fingerprint.as_deref(), Some("AB:CD:EF"));
         assert_eq!(parsed.token, "deadbeef");
@@ -1348,8 +1499,9 @@ mod tests {
     /// still parseable — those two are genuinely optional.
     #[test]
     fn connect_link_without_optional_fields_parses() {
-        let link = build_connect_link("wss://mini.ts.net:8787", None, None, "abc123");
+        let link = build_connect_link("wss://mini.ts.net:8787", None, None, None, "abc123");
         let parsed = parse_connect_link(&link).expect("parse");
+        assert_eq!(parsed.quic, None);
         assert_eq!(parsed.name, None);
         assert_eq!(parsed.cert_fingerprint, None);
         assert_eq!(parsed.token, "abc123");
@@ -1359,7 +1511,7 @@ mod tests {
     /// is cheaper than teaching every operator to remove them.
     #[test]
     fn connect_link_tolerates_pasted_quotes_and_whitespace() {
-        let link = build_connect_link("wss://mini:8787", None, Some("AB"), "tok");
+        let link = build_connect_link("wss://mini:8787", None, None, Some("AB"), "tok");
         let pasted = format!("  '{link}'\n");
         assert_eq!(
             parse_connect_link(&pasted).expect("parse"),
@@ -1372,16 +1524,23 @@ mod tests {
     #[test]
     fn connect_link_tolerates_unknown_query_keys() {
         let parsed = parse_connect_link(
-            "https://phux.sh/connect?url=wss://mini:8787&brand_new=42&token=tok",
+            "https://phux.sh/connect?url=wss://mini:8787&quic=quic://mini:8788&brand_new=42&token=tok",
         )
         .expect("parse");
+        assert_eq!(parsed.quic.as_deref(), Some("quic://mini:8788"));
         assert_eq!(parsed.token, "tok");
     }
 
     /// The custom-scheme spelling parses to identical credentials.
     #[test]
     fn legacy_scheme_is_the_same_link_under_another_prefix() {
-        let link = build_connect_link("wss://mini:8787", Some("studio mini"), Some("AB:CD"), "tok");
+        let link = build_connect_link(
+            "wss://mini:8787",
+            None,
+            Some("studio mini"),
+            Some("AB:CD"),
+            "tok",
+        );
         let legacy = legacy_connect_link(&link).expect("built links always respell");
         assert_eq!(
             legacy,
@@ -1412,7 +1571,10 @@ mod tests {
         assert_eq!(parsed.token, "deadbeef");
 
         // But it is no longer what we emit.
-        assert!(build_connect_link("wss://h:1", None, None, "tok").starts_with("https://phux.sh/"));
+        assert!(
+            build_connect_link("wss://h:1", None, None, None, "tok")
+                .starts_with("https://phux.sh/")
+        );
     }
 
     /// The two fields a dial cannot proceed without are rejected loudly,
@@ -1429,12 +1591,41 @@ mod tests {
         assert!(parse_connect_link("https://phux.sh/connect?url=wss://mini:8787").is_err());
         // No url: names no server.
         assert!(parse_connect_link("https://phux.sh/connect?token=tok").is_err());
-        // A scheme the WebSocket dialer cannot use.
+        // `url` stays the WebSocket fallback; QUIC has its own additive key.
         assert!(
             parse_connect_link("https://phux.sh/connect?url=quic://mini:8788&token=tok").is_err()
         );
+        for invalid_quic in [
+            "https://mini:8788",
+            "quic://mini",
+            "quic://mini:0",
+            "quic://mini:not-a-port",
+            "quic://user@mini:8788",
+            "quic://mini:8788/path",
+            "quic://mini:8788?mode=fast",
+            "quic://fd7a:115c:a1e0::1:8788",
+        ] {
+            assert!(
+                parse_connect_link(&format!(
+                    "https://phux.sh/connect?url=wss://mini:8787&quic={invalid_quic}&token=tok"
+                ))
+                .is_err(),
+                "accepted {invalid_quic}"
+            );
+        }
         // Empty values are the same as absent, under either prefix.
         assert!(parse_connect_link("https://phux.sh/connect?url=wss://mini:8787&token=").is_err());
         assert!(parse_connect_link("phux://connect?url=wss://mini:8787&token=").is_err());
+        // Ambiguous endpoint and credential fields fail closed.
+        for duplicate in [
+            "url=wss://one:8787&url=wss://two:8787&token=tok",
+            "url=wss://mini:8787&quic=quic://one:8788&quic=quic://two:8788&token=tok",
+            "url=wss://mini:8787&token=one&token=two",
+        ] {
+            assert!(
+                parse_connect_link(&format!("https://phux.sh/connect?{duplicate}")).is_err(),
+                "accepted {duplicate}"
+            );
+        }
     }
 }

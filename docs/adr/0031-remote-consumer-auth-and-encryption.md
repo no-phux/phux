@@ -6,12 +6,11 @@ last-reviewed: 2026-08-18
 
 # 0031 — Remote-consumer authentication and encryption (no SSH tunnel)
 
-**TL;DR.** A remote consumer (the native mobile app) needs to reach a single
-phux server over a network without an SSH tunnel and without the full
-federation hub. Adopt **TLS (rustls) over the existing WebSocket transport,
-authenticated by a pairing-issued bearer token** carried in HELLO. No homegrown
-crypto, no new wire frames: auth and encryption stay a transport concern. Mutual
-TLS and SSH-envelope reuse are the rejected alternatives.
+**TL;DR.** A remote consumer (the native mobile app) reaches one phux server
+without an SSH tunnel through TLS-protected WSS or raw QUIC, authenticated by a
+pairing-issued bearer token. Pairing links retain their WSS endpoint for old
+apps and add a preferred QUIC endpoint when the live listener is dialable. No
+homegrown crypto or new wire frames: auth and encryption stay transport concerns.
 
 Status: Accepted
 Date: 2026-06-09
@@ -162,6 +161,24 @@ the app.
 Parsers must additionally accept `https://phux.phall.io/connect?<query>`
 indefinitely. A link already printed or saved is a live credential, and the
 host it names has no bearing on the server it points at.
+
+## Amendment — 2026-10-05: mobile prefers a live raw-QUIC endpoint
+
+The one-tap query may add `quic=quic://HOST:PORT` beside the mandatory
+`url=ws(s)://HOST:PORT`. `url` remains unchanged so deployed app builds and
+`phux --code` keep working. `phux pair` adds `quic` only when the running
+server reports a bound QUIC listener and can turn that bind into an address a
+device can dial: a concrete non-loopback bind is used directly, while an
+unspecified bind uses a detected overlay address. A loopback bind, an
+unparseable report, or an unspecified bind without an overlay is not
+advertised.
+
+The UniFFI `RemoteClient` constructor remains a single endpoint string. It
+classifies `quic://HOST:PORT` as the runtime's raw-QUIC transport and retains
+`ws://`/`wss://` as WebSocket; other schemes fail before a runtime session is
+started. The shared client runtime remains the sole dial, retry, reconnect,
+and transport-lifecycle owner. The bridge does not race QUIC against WSS and
+adds no fallback state machine; the app chooses the link endpoint it passes.
 
 ## Why
 
