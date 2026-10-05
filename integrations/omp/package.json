@@ -16,9 +16,11 @@
   "scripts": {
     "build": "bun scripts/build.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test test",
     "smoke:load": "bun scripts/smoke-load.ts",
+    "smoke:lifecycle": "bun scripts/smoke-lifecycle.ts",
     "prepack": "bun run build",
-    "gates": "bun run typecheck && bun run build && bun run smoke:load"
+    "gates": "bun run typecheck && bun run test && bun run build && bun run smoke:load"
   },
   "devDependencies": {
     "@oh-my-pi/pi-coding-agent": "17.1.2",
