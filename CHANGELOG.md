@@ -9,6 +9,13 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.50.1](https://github.com/no-phux/phux/compare/v0.50.0...v0.50.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* **search:** classify missing projections as unavailable ([db43986](https://github.com/no-phux/phux/commit/db439869b778996db348d4865eda5dd508197281))
+
 ## [0.50.0](https://github.com/no-phux/phux/compare/v0.49.1...v0.50.0) (2026-10-05)
 
 
