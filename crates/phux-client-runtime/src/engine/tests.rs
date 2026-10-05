@@ -511,3 +511,138 @@ fn the_headless_replica_keeps_bytes_until_taken() {
     assert_eq!(owner.take_output(&terminal), b"more");
     assert!(owner.take_output(&terminal).is_empty());
 }
+
+#[cfg(feature = "engine")]
+fn assert_search_projection_unavailable(owner: &EngineHandle, terminal: &ResourceId, anchor: u64) {
+    for bound in [8, 0] {
+        assert!(matches!(
+            owner.search_bounded(terminal, "needle".into(), true, bound),
+            Err(EngineError::ProjectionUnavailable)
+        ));
+    }
+    assert!(matches!(
+        owner.clear_search(terminal),
+        Err(EngineError::ProjectionUnavailable)
+    ));
+    for handle in [u64::MAX, anchor] {
+        assert!(matches!(
+            owner.pin_viewport(terminal, handle),
+            Err(EngineError::ProjectionUnavailable)
+        ));
+    }
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn missing_search_projection_is_typed_and_preserves_sibling_state() {
+    let (owner, publication) = owner();
+    let sibling = id(1);
+    attach(
+        &owner,
+        &sibling,
+        b"needle one\r\na\r\nb\r\nc\r\nneedle two\r\nd\r\ne\r\nf",
+    );
+    let found = owner.search(&sibling, "needle".into(), true).unwrap();
+    owner.pin_viewport(&sibling, found[0].start).unwrap();
+    let frame = publication.acquire(&sibling).unwrap();
+    assert_search_projection_unavailable(&owner, &id(999), found[1].start);
+    assert!(Arc::ptr_eq(&frame, &publication.acquire(&sibling).unwrap()));
+    owner.pin_viewport(&sibling, found[1].start).unwrap();
+    assert_eq!(
+        publication.acquire(&sibling).unwrap().row_text(0),
+        "needle two"
+    );
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn detached_search_projection_is_unavailable_before_anchor_lookup() {
+    let (owner, _) = owner();
+    let terminal = id(1);
+    let sibling = id(2);
+    attach_many(&owner, &[(&terminal, b"needle"), (&sibling, b"needle")]);
+    let old = owner.search(&terminal, "needle".into(), true).unwrap();
+    let live = owner.search(&sibling, "needle".into(), true).unwrap();
+    assert!(owner.detach(terminal.clone()));
+    assert_search_projection_unavailable(&owner, &terminal, old[0].start);
+    assert_search_projection_unavailable(&owner, &terminal, live[0].start);
+    owner.pin_viewport(&sibling, live[0].start).unwrap();
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn non_retained_closed_search_projection_is_unavailable_before_anchor_lookup() {
+    let (owner, _) = owner();
+    let terminal = id(1);
+    let sibling = id(2);
+    attach_many(&owner, &[(&terminal, b"needle"), (&sibling, b"needle")]);
+    let old = owner.search(&terminal, "needle".into(), true).unwrap();
+    let live = owner.search(&sibling, "needle".into(), true).unwrap();
+    apply_ok(&owner, EngineEvent::closed_unknown(terminal.clone()));
+    assert_search_projection_unavailable(&owner, &terminal, old[0].start);
+    assert_search_projection_unavailable(&owner, &terminal, live[0].start);
+    owner.pin_viewport(&sibling, live[0].start).unwrap();
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn live_search_preserves_stale_and_wrong_owner_errors() {
+    let (owner, _) = owner();
+    let terminal = id(1);
+    let sibling = id(2);
+    attach_many(&owner, &[(&terminal, b"needle"), (&sibling, b"needle")]);
+    let old = owner.search(&terminal, "needle".into(), true).unwrap();
+    let fresh = owner.search(&terminal, "needle".into(), true).unwrap();
+    assert!(matches!(
+        owner.pin_viewport(&terminal, old[0].start),
+        Err(EngineError::AnchorUnavailable(_))
+    ));
+    assert!(matches!(
+        owner.pin_viewport(&sibling, fresh[0].start),
+        Err(EngineError::Engine(_))
+    ));
+    let view = owner.create_view(&terminal).unwrap();
+    let in_view = owner.search_view(view, "needle".into(), true).unwrap();
+    assert!(matches!(
+        owner.pin_viewport(&terminal, in_view[0].start),
+        Err(EngineError::Engine(_))
+    ));
+    owner.clear_search(&terminal).unwrap();
+    assert!(matches!(
+        owner.pin_viewport(&terminal, fresh[0].start),
+        Err(EngineError::AnchorUnavailable(_))
+    ));
+    let rebuilt = owner.search(&terminal, "needle".into(), true).unwrap();
+    owner.clear_presentation(&terminal, 1, 1).unwrap();
+    assert!(matches!(
+        owner.pin_viewport(&terminal, rebuilt[0].start),
+        Err(EngineError::AnchorUnavailable(_))
+    ));
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn empty_search_query_precedes_projection_availability() {
+    let (owner, _) = owner();
+    assert!(matches!(
+        owner.search_bounded(&id(999), String::new(), true, 0),
+        Err(EngineError::Engine(reason)) if reason == "search query is empty"
+    ));
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn retained_close_keeps_existing_kernel_search_refusal() {
+    let (owner, _) = owner();
+    let terminal = id(1);
+    attach(&owner, &terminal, b"needle");
+    owner.set_retain_on_close(&terminal, true);
+    apply_ok(&owner, EngineEvent::closed_unknown(terminal.clone()));
+    assert!(owner.has_projection(&terminal));
+    assert!(matches!(
+        owner.search(&terminal, "needle".into(), true),
+        Err(EngineError::Engine(_))
+    ));
+    owner.release(&terminal);
+    assert_search_projection_unavailable(&owner, &terminal, u64::MAX);
+}

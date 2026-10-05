@@ -1240,6 +1240,7 @@ fn engine_bridge(error: EngineError) -> BridgeError {
         EngineError::Engine(message) | EngineError::AnchorUnavailable(message) => {
             BridgeError::state(message)
         }
+        EngineError::ProjectionUnavailable => BridgeError::state("no projection for this terminal"),
         EngineError::Stopped => BridgeError::engine("the engine owner thread stopped"),
         EngineError::Spawn(error) => BridgeError::engine(error.to_string()),
     }
@@ -1346,5 +1347,18 @@ const fn history_unavailable_code(
         Reason::Released => 5,
         Reason::Limit => 6,
         Reason::CodecFailure => 7,
+    }
+}
+
+#[cfg(test)]
+mod search_error_tests {
+    use super::*;
+    use crate::c::types::PhuxClientResult;
+
+    #[test]
+    fn unavailable_projection_keeps_the_c_state_error_category() {
+        let error = engine_bridge(EngineError::ProjectionUnavailable);
+        assert_eq!(error.result, PhuxClientResult::InvalidState);
+        assert_eq!(error.message, "no projection for this terminal");
     }
 }

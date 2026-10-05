@@ -488,6 +488,7 @@ impl Owner {
     }
 
     pub(super) fn clear_search_handles(&mut self, id: &ResourceId) -> Result<(), EngineError> {
+        self.require_projection(id)?;
         let state = self.presentation_mut(id)?;
         let selection = state.selection;
         let handles = std::mem::take(&mut state.search);

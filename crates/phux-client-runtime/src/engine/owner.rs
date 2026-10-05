@@ -559,6 +559,14 @@ impl Owner {
     }
 
     #[cfg(feature = "engine")]
+    fn require_projection(&self, id: &ResourceId) -> Result<(), EngineError> {
+        if !self.has_replica(id) {
+            return Err(EngineError::ProjectionUnavailable);
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "engine")]
     fn capture_closed(&mut self, id: ResourceId) {
         if let Some(replica) = self.kernel.take_closed_replica(&id) {
             self.closed.insert(id, replica);
@@ -834,6 +842,7 @@ impl Owner {
 
     #[cfg(feature = "engine")]
     fn pin_viewport(&mut self, id: &ResourceId, handle: u64) -> Result<EngineOutcome, EngineError> {
+        self.require_projection(id)?;
         let anchor = self.resolve_anchor(id, handle)?;
         let point = self
             .kernel

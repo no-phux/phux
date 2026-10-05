@@ -353,6 +353,14 @@ fn without_a_connection_or_terminal_search_is_unavailable() {
         offline.search_projection(pane(1), "needle".into(), true, 8),
         Err(SearchError::Unavailable)
     ));
+    assert!(matches!(
+        offline.clear_projection_search(pane(1)),
+        Err(SearchError::Unavailable)
+    ));
+    assert!(matches!(
+        offline.reveal_search_match(pane(1), u64::MAX),
+        Err(SearchError::Unavailable)
+    ));
     let remote = remote_with(&[(1, scrollback())]);
     for bad in ["", "not-an-id"] {
         assert!(matches!(
@@ -363,5 +371,218 @@ fn without_a_connection_or_terminal_search_is_unavailable() {
             remote.clear_projection_search(bad.into()),
             Err(SearchError::Unavailable)
         ));
+        assert!(matches!(
+            remote.reveal_search_match(bad.into(), u64::MAX),
+            Err(SearchError::Unavailable)
+        ));
     }
+}
+
+#[test]
+fn missing_projection_search_is_unavailable() {
+    let remote = remote_with(&[(1, scrollback())]);
+    let result = remote.search_projection(pane(999), "needle".into(), true, 8);
+    assert!(
+        matches!(result, Err(SearchError::Unavailable)),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn missing_projection_zero_bound_search_is_unavailable() {
+    let remote = remote_with(&[(1, scrollback())]);
+    let result = remote.search_projection(pane(999), "needle".into(), true, 0);
+    assert!(
+        matches!(result, Err(SearchError::Unavailable)),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn missing_projection_clear_is_unavailable() {
+    let remote = remote_with(&[(1, scrollback())]);
+    let result = remote.clear_projection_search(pane(999));
+    assert!(
+        matches!(result, Err(SearchError::Unavailable)),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn missing_projection_reveal_is_unavailable_before_arbitrary_anchor_lookup() {
+    let remote = remote_with(&[(1, scrollback())]);
+    let result = remote.reveal_search_match(pane(999), u64::MAX);
+    assert!(
+        matches!(result, Err(SearchError::Unavailable)),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn missing_projection_reveal_is_unavailable_before_sibling_anchor_lookup() {
+    let remote = remote_with(&[(1, scrollback())]);
+    let found = search(&remote, 1, "needle");
+    let result = remote.reveal_search_match(pane(999), found.matches[0].start);
+    assert!(
+        matches!(result, Err(SearchError::Unavailable)),
+        "{result:?}"
+    );
+}
+
+fn assert_search_unavailable(remote: &RemoteClient, terminal: u32, anchor: u64) {
+    for bound in [8, 0] {
+        let result = remote.search_projection(pane(terminal), "needle".into(), true, bound);
+        assert!(
+            matches!(result, Err(SearchError::Unavailable)),
+            "{result:?}"
+        );
+    }
+    let result = remote.clear_projection_search(pane(terminal));
+    assert!(
+        matches!(result, Err(SearchError::Unavailable)),
+        "{result:?}"
+    );
+    for handle in [u64::MAX, anchor] {
+        let result = remote.reveal_search_match(pane(terminal), handle);
+        assert!(
+            matches!(result, Err(SearchError::Unavailable)),
+            "{result:?}"
+        );
+    }
+}
+
+#[test]
+fn absent_projection_operations_preserve_sibling_handles_and_viewport() {
+    let remote = remote_with(&[(1, scrollback())]);
+    let found = search(&remote, 1, "needle");
+    remote
+        .reveal_search_match(pane(1), found.matches[0].start)
+        .expect("pin sibling");
+    let client = remote.runtime_client().expect("connected");
+    let frame = client.acquire(&ResourceId::local(1)).expect("published");
+    assert_search_unavailable(&remote, 999, found.matches[1].start);
+    assert!(Arc::ptr_eq(
+        &frame,
+        &client.acquire(&ResourceId::local(1)).expect("unchanged")
+    ));
+    remote
+        .reveal_search_match(pane(1), found.matches[1].start)
+        .expect("sibling handle survives");
+    assert_eq!(top_row(&remote, 1), "needle two");
+}
+
+#[test]
+fn detached_projection_search_operations_are_unavailable() {
+    let remote = remote_with(&[(1, scrollback()), (2, scrollback())]);
+    let found = search(&remote, 1, "needle");
+    let sibling = search(&remote, 2, "needle");
+    let client = remote.runtime_client().expect("connected");
+    assert!(
+        client
+            .engine()
+            .expect("engine")
+            .detach(ResourceId::local(1))
+    );
+    assert_search_unavailable(&remote, 1, found.matches[0].start);
+    assert_search_unavailable(&remote, 1, sibling.matches[0].start);
+    remote
+        .reveal_search_match(pane(2), sibling.matches[0].start)
+        .expect("sibling survives detach");
+}
+
+#[test]
+fn non_retained_closed_projection_search_operations_are_unavailable() {
+    let remote = remote_with(&[(1, scrollback()), (2, scrollback())]);
+    let found = search(&remote, 1, "needle");
+    let sibling = search(&remote, 2, "needle");
+    remote
+        .runtime_client()
+        .expect("connected")
+        .feed(FrameKind::ResourceClosed {
+            terminal_id: ResourceId::local(1),
+            exit_status: Some(0),
+            reason: phux_protocol::wire::frame::CloseReason::Unknown,
+            signal: None,
+        })
+        .expect("closed");
+    assert_search_unavailable(&remote, 1, found.matches[0].start);
+    assert_search_unavailable(&remote, 1, sibling.matches[0].start);
+    remote
+        .reveal_search_match(pane(2), sibling.matches[0].start)
+        .expect("sibling survives close");
+}
+
+#[test]
+fn query_validation_precedes_absent_projection_lookup() {
+    let remote = remote_with(&[(1, scrollback())]);
+    assert!(matches!(
+        remote.search_projection(pane(999), String::new(), true, 0),
+        Err(SearchError::EmptyQuery)
+    ));
+    assert!(matches!(
+        remote.search_projection(pane(999), "x".repeat(SEARCH_QUERY_BYTE_LIMIT + 1), true, 0),
+        Err(SearchError::QueryTooLong { limit: 4096 })
+    ));
+}
+
+#[test]
+fn live_wrong_terminal_and_view_anchors_remain_engine_errors() {
+    let remote = remote_with(&[(1, scrollback()), (2, scrollback())]);
+    let sibling = search(&remote, 2, "needle");
+    assert!(matches!(
+        remote.reveal_search_match(pane(1), sibling.matches[0].start),
+        Err(SearchError::Engine { reason }) if reason == "document anchor belongs to another view"
+    ));
+    let engine = remote
+        .runtime_client()
+        .expect("connected")
+        .engine()
+        .expect("engine");
+    let view = engine.create_view(&ResourceId::local(1)).expect("view");
+    let found = engine
+        .search_view(view, "needle".into(), true)
+        .expect("view search");
+    assert!(matches!(
+        remote.reveal_search_match(pane(1), found[0].start),
+        Err(SearchError::Engine { reason }) if reason == "document anchor belongs to another view"
+    ));
+}
+
+#[test]
+fn genuine_engine_and_spawn_errors_preserve_their_reasons() {
+    assert!(matches!(
+        SearchError::from(EngineError::Engine("render state allocation failed".into())),
+        SearchError::Engine { reason } if reason == "render state allocation failed"
+    ));
+    assert!(matches!(
+        SearchError::from(EngineError::Spawn(std::io::Error::other("thread spawn failed"))),
+        SearchError::Engine { reason } if reason == "thread spawn failed"
+    ));
+    assert!(matches!(
+        SearchError::from(EngineError::Stopped),
+        SearchError::Unavailable
+    ));
+}
+
+#[test]
+fn retained_close_keeps_real_kernel_failures_as_engine_errors() {
+    let remote = remote_with(&[(1, scrollback())]);
+    let client = remote.runtime_client().expect("connected");
+    let engine = client.engine().expect("engine");
+    engine.set_retain_on_close(&ResourceId::local(1), true);
+    client
+        .feed(FrameKind::ResourceClosed {
+            terminal_id: ResourceId::local(1),
+            exit_status: Some(0),
+            reason: phux_protocol::wire::frame::CloseReason::Unknown,
+            signal: None,
+        })
+        .expect("closed");
+    assert!(engine.has_projection(&ResourceId::local(1)));
+    assert!(matches!(
+        remote.search_projection(pane(1), "needle".into(), true, 8),
+        Err(SearchError::Engine { .. })
+    ));
+    engine.release(&ResourceId::local(1));
+    assert_search_unavailable(&remote, 1, u64::MAX);
 }

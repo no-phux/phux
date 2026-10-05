@@ -420,6 +420,9 @@ pub enum EngineError {
     /// The owner thread is gone; the runtime is unusable.
     #[error("the engine owner thread stopped")]
     Stopped,
+    /// The requested terminal has no available replica to project.
+    #[error("no projection for this terminal")]
+    ProjectionUnavailable,
     /// The owner thread could not be spawned.
     #[error("could not start the engine owner thread: {0}")]
     Spawn(std::io::Error),
