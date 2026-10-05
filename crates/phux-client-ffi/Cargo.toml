@@ -156,6 +156,8 @@ napi-derive = { version = "=3.6.8", optional = true }
 [dev-dependencies]
 # The connected lane's e2e test runs the real server the TUI runs.
 phux-server-testkit.workspace = true
+# The uniffi lane's live QUIC test listens on the real server's QUIC socket.
+phux-server.workspace = true
 portable-pty.workspace = true
 # A registry fixture file for the resolution and relay tests.
 tempfile.workspace = true
