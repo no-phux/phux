@@ -1,5 +1,8 @@
 //! Workspace inspection, worktree serialization, and command output contracts.
 
+#[path = "../common/runner.rs"]
+mod runner;
+
 #[path = "../common/ambient.rs"]
 mod common;
 

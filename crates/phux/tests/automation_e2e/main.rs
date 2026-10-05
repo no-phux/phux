@@ -6,6 +6,9 @@
     reason = "retain each suite's common-module tests and state when consolidating binaries"
 )]
 
+#[path = "../common/runner.rs"]
+mod runner;
+
 mod agent_record_e2e;
 mod agent_session_e2e;
 mod plugin_agent_bench_e2e;

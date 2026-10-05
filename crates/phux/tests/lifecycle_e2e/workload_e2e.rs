@@ -19,8 +19,6 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// The registry name the loopback listener is registered under.
 const REMOTE: &str = "loop";
 
@@ -57,7 +55,7 @@ fn prepare_dirs(dir: &Path) {
 /// The working directory is the test's own, so a relative path an argument
 /// names can never land in the source tree.
 fn phux_with(dir: &Path, args: &[&str], stdin: &[u8], extra: &[(&str, &Path)]) -> Output {
-    let mut child = common::phux_cmd(PHUX)
+    let mut child = common::phux_cmd(crate::runner::phux_bin())
         .envs(hermetic_env(dir))
         .envs(extra.iter().copied())
         .current_dir(dir)
@@ -504,7 +502,7 @@ fn register_loopback_remote(dir: &Path) {
 }
 
 fn server_command(dir: &Path, extra: &[&str], env: &[(&str, &str)]) -> std::process::Command {
-    let mut command = common::phux_cmd(PHUX);
+    let mut command = common::phux_cmd(crate::runner::phux_bin());
     command
         .envs(hermetic_env(dir))
         .envs(env.iter().copied())
@@ -786,7 +784,7 @@ impl HeldWorld {
 
     /// `phux ARGS` in the background, as the owner or as the workload.
     fn spawn(&self, args: &[&str], as_workload: bool) -> Child {
-        let mut command = common::phux_cmd(PHUX);
+        let mut command = common::phux_cmd(crate::runner::phux_bin());
         command
             .envs(hermetic_env(self.dir.path()))
             .current_dir(self.dir.path())
@@ -946,7 +944,7 @@ impl FarHost {
 
     /// `phux ARGS` on the far host.
     fn phux(&self, args: &[&str]) -> Output {
-        common::phux_cmd(PHUX)
+        common::phux_cmd(crate::runner::phux_bin())
             .envs(self.env())
             .current_dir(&self.root)
             .args(args)
@@ -960,7 +958,7 @@ impl FarHost {
     /// [`Self::server_log`].
     fn serve(&self, quic: &str) -> Server {
         let stderr = std::fs::File::create(self.root.join("server.stderr")).expect("stderr file");
-        let child = common::phux_cmd(PHUX)
+        let child = common::phux_cmd(crate::runner::phux_bin())
             .envs(self.env())
             .env("RUST_LOG", "info")
             .current_dir(&self.root)
@@ -1011,6 +1009,7 @@ impl FarHost {
             calls = dir.join("ssh-calls").display(),
             stdin = dir.join("ssh-stdin").display(),
             tamper = dir.join("tamper-add-key").display(),
+            PHUX = crate::runner::phux_bin(),
         );
         let path = dir.join("fake-ssh");
         std::fs::write(&path, script).expect("write fake ssh");
@@ -1035,7 +1034,7 @@ impl FarHost {
 /// fake, and no `PHUX_WORKLOAD_*` identity in the environment.
 fn client_phux(dir: &Path, ssh: &Path, args: &[&str]) -> Output {
     let client = dir.join("client");
-    common::phux_cmd(PHUX)
+    common::phux_cmd(crate::runner::phux_bin())
         .envs(hermetic_env(&client))
         .env("HOME", &client)
         .env("PHUX_SSH", ssh)
@@ -1704,7 +1703,7 @@ fn install_short_lived_identity(host: &Enrolled, days: i64) -> String {
     let client = client_key();
     let chain = host.far.root.join("short.pem");
     let seconds = (days * 86_400).to_string();
-    let mut far = common::phux_cmd(PHUX)
+    let mut far = common::phux_cmd(crate::runner::phux_bin())
         .envs(host.far.env())
         .current_dir(&host.far.root)
         .args([

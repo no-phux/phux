@@ -22,8 +22,6 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// The registry name the loopback listener is registered under.
 const REMOTE: &str = "loop";
 
@@ -58,7 +56,7 @@ fn prepare_dirs(dir: &Path) {
 }
 
 fn phux(dir: &Path, args: &[&str]) -> Output {
-    common::phux_cmd(PHUX)
+    common::phux_cmd(crate::runner::phux_bin())
         .envs(hermetic_env(dir))
         .args(args)
         .stdin(Stdio::null())
@@ -68,7 +66,7 @@ fn phux(dir: &Path, args: &[&str]) -> Output {
 
 /// Start `phux server --socket DIR/s.sock EXTRA...` under the hermetic env.
 fn start_server(dir: &Path, extra: &[&str], env: &[(&str, &str)]) -> Server {
-    let child = common::phux_cmd(PHUX)
+    let child = common::phux_cmd(crate::runner::phux_bin())
         .envs(hermetic_env(dir))
         .envs(env.iter().copied())
         .arg("server")

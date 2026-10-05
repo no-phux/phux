@@ -12,11 +12,9 @@ use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// Repo-checkout distros directory (the bundled-name fallback).
 fn repo_distros_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    crate::runner::manifest_dir()
         .join("../..")
         .join("distros")
         .canonicalize()
@@ -26,7 +24,7 @@ fn repo_distros_dir() -> PathBuf {
 /// Run phux with an isolated `XDG_CONFIG_HOME` and a pinned
 /// `PHUX_DISTROS_DIR` so bundled-name resolution is hermetic.
 fn run(args: &[&str], xdg_config_home: &Path, distros_dir: &Path) -> (i32, String, String) {
-    let out = crate::common::phux_cmd(PHUX)
+    let out = crate::common::phux_cmd(crate::runner::phux_bin())
         .env("XDG_CONFIG_HOME", xdg_config_home)
         .env("PHUX_DISTROS_DIR", distros_dir)
         .args(args)

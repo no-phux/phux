@@ -17,8 +17,6 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// The registry name the loopback listener is registered under.
 const REMOTE: &str = "loop";
 
@@ -41,7 +39,7 @@ impl LoopbackRemote {
         let dir = TempDir::new().expect("tempdir");
         std::fs::create_dir_all(dir.path().join("run")).expect("runtime dir");
         let socket = dir.path().join("s.sock");
-        let server = common::phux_cmd(PHUX)
+        let server = common::phux_cmd(crate::runner::phux_bin())
             .envs(hermetic_env(dir.path()))
             .arg("server")
             .arg("--socket")
@@ -66,7 +64,7 @@ impl LoopbackRemote {
     /// Run `phux <args...>` as a separate client process. It is never handed
     /// the server's socket: `--remote` is the only way it can reach it.
     fn phux(&self, args: &[&str]) -> Output {
-        common::phux_cmd(PHUX)
+        common::phux_cmd(crate::runner::phux_bin())
             .envs(hermetic_env(self.dir.path()))
             .args(args)
             .stdin(Stdio::null())

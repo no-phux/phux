@@ -11,8 +11,6 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// The profile these tests pin, so the unit path is a fact rather than a
 /// consequence of where cargo put the binary.
 const PROFILE: &str = "dev";
@@ -86,7 +84,7 @@ fn legacy_unit(socket: &Path) -> String {
 /// Redirect a child `phux` at a sandboxed home and a pinned profile, so
 /// nothing it writes can land in the developer's real one.
 fn sandboxed(home: &Path) -> Command {
-    let mut cmd = common::phux_cmd(PHUX);
+    let mut cmd = common::phux_cmd(crate::runner::phux_bin());
     cmd.env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("PHUX_PROFILE", PROFILE);
@@ -105,7 +103,7 @@ fn plant_legacy_unit(home: &Path, socket: &Path) -> PathBuf {
 fn live_server() -> (PathBuf, Cleanup) {
     let dir = tempfile::tempdir().expect("tempdir");
     let socket = dir.path().join("phux.sock");
-    let out = common::phux_cmd(PHUX)
+    let out = common::phux_cmd(crate::runner::phux_bin())
         .args(["new", "--session", "incumbent", "--json", "--socket"])
         .arg(&socket)
         .output()
@@ -115,7 +113,7 @@ fn live_server() -> (PathBuf, Cleanup) {
         "phux new must start a server.\nstderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let mut server = common::AutoSpawnedServer::new(PHUX, socket.clone());
+    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
     server.capture_pid();
     let cleanup = Cleanup {
         _server: server,

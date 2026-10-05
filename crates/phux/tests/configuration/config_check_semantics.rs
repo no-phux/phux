@@ -7,8 +7,6 @@
 
 use tempfile::TempDir;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// Write `config` into a tempdir and run `phux config check` against its
 /// explicit path, returning `(exit_code, stdout)`.
 fn run_check(tmp: &TempDir, config: &str, json: bool) -> (i32, String) {
@@ -20,7 +18,7 @@ fn run_check(tmp: &TempDir, config: &str, json: bool) -> (i32, String) {
     if json {
         args.push("--json");
     }
-    let out = crate::common::phux_cmd(PHUX)
+    let out = crate::common::phux_cmd(crate::runner::phux_bin())
         // Isolate from the developer's real config; check reads only the
         // explicit PATH, but never trust a test that depends on $HOME.
         .env("XDG_CONFIG_HOME", tmp.path())

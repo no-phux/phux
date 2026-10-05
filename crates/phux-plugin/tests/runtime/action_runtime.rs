@@ -171,9 +171,11 @@ async fn action_runtime_refuses_disabled_plugins() -> Result<(), Box<dyn std::er
 async fn checked_in_continuum_restore_missing_archive_is_structured()
 -> Result<(), Box<dyn std::error::Error>> {
     let tmp = TempDir::new()?;
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("examples/plugins/continuum/phux-plugin.toml");
+    let manifest = std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
+    )
+    .join("../..")
+    .join("examples/plugins/continuum/phux-plugin.toml");
     let config = write_config_for_manifest(&tmp, &manifest)?;
 
     let output = run_configured_action(
@@ -234,9 +236,11 @@ printf '{"schema_version":1,"sessions":[]}\n' > "$output"
     std::fs::set_permissions(&fake_phux, perms)?;
 
     let archive = tmp.path().join("custom").join("continuum.json");
-    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("examples/plugins/continuum/scripts/autosave.sh");
+    let script = std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
+    )
+    .join("../..")
+    .join("examples/plugins/continuum/scripts/autosave.sh");
     let command = format!(
         "PHUX_BIN={} PHUX_CONTINUUM_ARCHIVE={} sh {}",
         sh_quote(&fake_phux),

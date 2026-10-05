@@ -27,9 +27,6 @@ use std::time::{Duration, Instant};
 
 use super::{POLL, SERVER_DEADLINE, SERVER_IDLE_LIMIT_SECS, ServerProcess};
 
-/// Path to the freshly-built `phux` binary under test.
-pub const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// Monotonic counter so two suites in one process never collide on a path.
 static SOCKET_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -94,7 +91,7 @@ impl ServerGuard {
     #[must_use]
     pub fn cmd(&self, args: &[&str]) -> Command {
         let (verb, rest) = args.split_first().expect("at least a verb");
-        let mut cmd = super::ambient::phux_cmd(PHUX);
+        let mut cmd = super::ambient::phux_cmd(crate::runner::phux_bin());
         cmd.arg(verb)
             .arg("--socket")
             .arg(&self.socket)
@@ -106,7 +103,7 @@ impl ServerGuard {
     /// `phux --socket <sock> <args...>`. Root-global form (ADR-0065).
     #[must_use]
     pub fn cmd_global(&self, args: &[&str]) -> Command {
-        let mut cmd = super::ambient::phux_cmd(PHUX);
+        let mut cmd = super::ambient::phux_cmd(crate::runner::phux_bin());
         cmd.arg("--socket")
             .arg(&self.socket)
             .args(args)
@@ -211,7 +208,7 @@ impl ServerSpawn {
     #[must_use]
     pub fn start_with(self, configure: impl FnOnce(&mut Command)) -> ServerGuard {
         let socket = unique_socket(&self.prefix);
-        let mut cmd = super::ambient::phux_cmd(PHUX);
+        let mut cmd = super::ambient::phux_cmd(crate::runner::phux_bin());
         if self.env_clear {
             cmd.env_clear();
         }

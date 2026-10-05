@@ -690,9 +690,12 @@ mod tests {
 
     /// A committed golden viewport under `src/fixtures/`.
     fn golden(rel: &str) -> Vec<String> {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/fixtures")
-            .join(rel);
+        let path = std::path::PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR")
+                .expect("the test runner sets CARGO_MANIFEST_DIR"),
+        )
+        .join("src/fixtures")
+        .join(rel);
         std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
             .lines()
@@ -928,8 +931,11 @@ match = { contains = "-- pager --" }
             count("idle"),
             count("done"),
         );
-        let spec_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/spec/L3.md");
+        let spec_path = std::path::PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR")
+                .expect("the test runner sets CARGO_MANIFEST_DIR"),
+        )
+        .join("../../docs/spec/L3.md");
         let spec = std::fs::read_to_string(&spec_path).expect("read L3.md");
         let flattened = spec.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(
@@ -1375,8 +1381,11 @@ omp |  |  | @omp-dialog-above-idle | not-blocked
     /// (`working`).
     #[test]
     fn every_busy_title_in_the_committed_capture_reads_as_working() {
-        let capture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../research/2026-08-12-osc-9-4-claude-code/claude-title-enabled.rawcap");
+        let capture = std::path::PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR")
+                .expect("the test runner sets CARGO_MANIFEST_DIR"),
+        )
+        .join("../../research/2026-08-12-osc-9-4-claude-code/claude-title-enabled.rawcap");
         let raw = std::fs::read_to_string(&capture).unwrap_or_else(|e| {
             panic!(
                 "{}: {e}. If this capture is removed, re-verify `title-busy-spinner` against a \

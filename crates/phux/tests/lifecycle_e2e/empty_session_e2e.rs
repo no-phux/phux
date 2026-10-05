@@ -16,14 +16,11 @@ mod common;
 use std::path::Path;
 use std::process::{Output, Stdio};
 
-/// Path to the freshly-built `phux` binary, injected by cargo.
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// Run one `phux` verb against `socket`, with the idle backstop set so a
 /// daemon this test fails to reap cannot outlive it.
 fn phux(args: &[&str], socket: &Path) -> Output {
     let (key, value) = common::AutoSpawnedServer::IDLE_BACKSTOP;
-    common::phux_cmd(PHUX)
+    common::phux_cmd(crate::runner::phux_bin())
         .args(args)
         .arg("--socket")
         .arg(socket)
@@ -56,7 +53,7 @@ fn new_empty_starts_only(name: &str) {
     let dir = tempfile::tempdir().expect("tempdir");
     let socket = dir.path().join("phux.sock");
     let out = phux(&["new", "--empty", "--json", "-s", name], &socket);
-    let mut server = common::AutoSpawnedServer::new(PHUX, socket.clone());
+    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
     assert!(
         out.status.success(),
         "phux new --empty must start a server and create {name:?}.\nstderr: {}",
@@ -99,7 +96,7 @@ fn new_json_for_a_taken_name_is_a_json_error() {
     let dir = tempfile::tempdir().expect("tempdir");
     let socket = dir.path().join("phux.sock");
     let first = phux(&["new", "--empty", "--json", "-s", "taken"], &socket);
-    let mut server = common::AutoSpawnedServer::new(PHUX, socket.clone());
+    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
     assert!(first.status.success(), "{first:?}");
     server.capture_pid();
 

@@ -5,6 +5,9 @@
     reason = "retain each suite's common-module tests and state when consolidating binaries"
 )]
 
+#[path = "../common/runner.rs"]
+mod runner;
+
 mod attach_roles_e2e;
 mod fleet_sidebar_e2e;
 mod quic_restore_e2e;

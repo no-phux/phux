@@ -22,7 +22,6 @@ use phux_client::attach::connection::Connection;
 use phux_protocol::wire::frame::{Command as WireCommand, CommandResult, CommandValue, StateScope};
 use phux_protocol::wire::info::ResourceInfo;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const SESSION: &str = "work";
 const DEADLINE: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(100);
@@ -50,7 +49,7 @@ impl ServerGuard {
 
     /// The seed pane's screen text, as `phux snapshot` renders it.
     fn screen(&self) -> String {
-        let out = common::phux_cmd(PHUX)
+        let out = common::phux_cmd(crate::runner::phux_bin())
             .args(["snapshot", "--socket"])
             .arg(&self.socket)
             .arg(SESSION)

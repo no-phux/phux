@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use tempfile::TempDir;
 
 use phux_config::plugin;
@@ -9,9 +7,11 @@ use common::{manifest, write_manifest};
 
 #[test]
 fn checked_in_example_manifests_load() -> Result<(), Box<dyn std::error::Error>> {
-    let examples = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("examples/plugins");
+    let examples = std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
+    )
+    .join("../..")
+    .join("examples/plugins");
 
     let loaded =
         plugin::load_plugin_manifest(&examples.join("provider-showcase/phux-plugin.toml"))?;

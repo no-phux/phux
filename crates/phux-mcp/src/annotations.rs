@@ -307,8 +307,11 @@ mod tests {
 
     /// The section for `phux VERB` in the generated CLI reference.
     fn cli_reference(verb: &str) -> String {
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference/cli.md");
+        let path = std::path::PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR")
+                .expect("the test runner sets CARGO_MANIFEST_DIR"),
+        )
+        .join("../../docs/reference/cli.md");
         let doc = std::fs::read_to_string(&path).expect("docs/reference/cli.md");
         let heading = format!("\n## `phux {verb}`\n");
         let start = doc

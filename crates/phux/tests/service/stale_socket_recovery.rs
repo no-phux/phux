@@ -11,7 +11,6 @@ use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const DEADLINE: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(50);
 
@@ -52,7 +51,7 @@ fn auto_spawn_reaps_a_stale_socket_instead_of_wedging() {
     let socket = dir.path().join("phux.sock");
     leave_stale_socket(&socket);
 
-    let out = common::phux_cmd(PHUX)
+    let out = common::phux_cmd(crate::runner::phux_bin())
         .args(["new", "--session", "revived", "--json", "--socket"])
         .arg(&socket)
         .output()
@@ -64,7 +63,7 @@ fn auto_spawn_reaps_a_stale_socket_instead_of_wedging() {
         out.status.success(),
         "a stale socket must not be fatal.\nstdout: {stdout}\nstderr: {stderr}"
     );
-    let mut server = common::AutoSpawnedServer::new(PHUX, socket.clone());
+    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
     server.capture_pid();
     let _cleanup = Cleanup {
         _server: server,
@@ -89,21 +88,21 @@ fn a_second_invocation_reuses_the_live_server() {
     let socket = dir.path().join("phux.sock");
     leave_stale_socket(&socket);
 
-    let first = common::phux_cmd(PHUX)
+    let first = common::phux_cmd(crate::runner::phux_bin())
         .args(["new", "--session", "first", "--json", "--socket"])
         .arg(&socket)
         .output()
         .expect("run phux new (first)");
     assert!(first.status.success(), "first invocation must succeed");
     assert!(common::wait_until_accepting(&socket), "server must be up");
-    let mut server = common::AutoSpawnedServer::new(PHUX, socket.clone());
+    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
     server.capture_pid();
     let _cleanup = Cleanup {
         _server: server,
         _dir: dir,
     };
 
-    let second = common::phux_cmd(PHUX)
+    let second = common::phux_cmd(crate::runner::phux_bin())
         .args(["new", "--session", "second", "--json", "--socket"])
         .arg(&socket)
         .output()
@@ -116,7 +115,7 @@ fn a_second_invocation_reuses_the_live_server() {
 
     // Both sessions live on ONE server — proof the second run reused it
     // rather than reaping the socket and starting a replacement.
-    let listed = common::phux_cmd(PHUX)
+    let listed = common::phux_cmd(crate::runner::phux_bin())
         .args(["ls", "--socket"])
         .arg(&socket)
         .output()
@@ -139,7 +138,7 @@ fn sigterm_unlinks_the_socket_instead_of_leaving_a_stale_entry() {
     // assertion that fails before the SIGTERM would otherwise leak a daemon
     // holding a PTY (phux-whhd). It is idempotent against an already-stopped
     // server -- `status` then reports no pid and the guard returns.
-    let out = common::phux_cmd(PHUX)
+    let out = common::phux_cmd(crate::runner::phux_bin())
         .args(["new", "--session", "graceful", "--json", "--socket"])
         .arg(&socket)
         .output()
@@ -150,7 +149,7 @@ fn sigterm_unlinks_the_socket_instead_of_leaving_a_stale_entry() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(common::wait_until_accepting(&socket), "server must be up");
-    let mut server = common::AutoSpawnedServer::new(PHUX, socket.clone());
+    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
     let pid = server.capture_pid();
     let _cleanup = Cleanup {
         _server: server,

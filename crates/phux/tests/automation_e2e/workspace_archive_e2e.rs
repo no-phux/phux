@@ -8,8 +8,6 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 fn start(session: &str) -> common::ServerGuard {
@@ -17,12 +15,12 @@ fn start(session: &str) -> common::ServerGuard {
 }
 
 fn run(args: &[&str]) -> (i32, String, String) {
-    output(common::phux_cmd(PHUX).args(args))
+    output(common::phux_cmd(crate::runner::phux_bin()).args(args))
 }
 
 fn run_with_xdg(args: &[&str], xdg: &std::path::Path) -> (i32, String, String) {
     output(
-        common::phux_cmd(PHUX)
+        common::phux_cmd(crate::runner::phux_bin())
             .env("XDG_CONFIG_HOME", xdg)
             .args(args),
     )

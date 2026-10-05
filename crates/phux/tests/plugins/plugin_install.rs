@@ -13,8 +13,6 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 struct TestHome {
     _tmp: TempDir,
     xdg_config: PathBuf,
@@ -38,7 +36,7 @@ impl TestHome {
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let out = crate::common::phux_cmd(PHUX)
+        let out = crate::common::phux_cmd(crate::runner::phux_bin())
             .env("XDG_CONFIG_HOME", &self.xdg_config)
             .env("XDG_DATA_HOME", &self.xdg_data)
             .args(args)

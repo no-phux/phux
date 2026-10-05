@@ -16,10 +16,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-/// Path to the freshly-built `phux` binary, injected by cargo for
-/// integration tests in the same crate.
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// The pre-seeded session name every test drives against.
 const SESSION: &str = "work";
 
@@ -122,7 +118,7 @@ impl ServerGuard {
 /// swallow it.
 fn phux_command(socket: &Path, args: &[&str]) -> Command {
     let (verb, rest) = args.split_first().expect("at least a verb");
-    let mut command = common::phux_cmd(PHUX);
+    let mut command = common::phux_cmd(crate::runner::phux_bin());
     command
         .arg(verb)
         .arg("--socket")

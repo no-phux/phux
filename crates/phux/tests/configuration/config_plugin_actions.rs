@@ -3,8 +3,6 @@
 
 use tempfile::TempDir;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 fn write_fixture(tmp: &TempDir, enabled: bool, command: &str) -> std::path::PathBuf {
     let plugin_dir = tmp.path().join("plugin");
     std::fs::create_dir_all(&plugin_dir).expect("create plugin dir");
@@ -44,7 +42,7 @@ enabled = {enabled}
 }
 
 fn run_with_xdg(args: &[&str], xdg: &std::path::Path) -> (i32, String, String) {
-    let out = crate::common::phux_cmd(PHUX)
+    let out = crate::common::phux_cmd(crate::runner::phux_bin())
         .env("XDG_CONFIG_HOME", xdg)
         .args(args)
         .output()

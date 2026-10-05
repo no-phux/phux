@@ -8,8 +8,6 @@
 
 use tempfile::TempDir;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// Run `phux <args...>` against a private config/state dir with no stdin,
 /// so nothing here can touch the developer's real registry. Returns
 /// `(exit_code, stderr)`.
@@ -27,7 +25,7 @@ fn run_with_config(config: Option<&str>, args: &[&str]) -> (i32, String, String)
         std::fs::create_dir_all(&config_dir).expect("config dir");
         std::fs::write(config_dir.join("config.toml"), config).expect("write config");
     }
-    let out = crate::common::phux_cmd(PHUX)
+    let out = crate::common::phux_cmd(crate::runner::phux_bin())
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
         .env("PHUX_PROFILE", "default")

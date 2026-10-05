@@ -16,9 +16,6 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-/// Path to the freshly-built `phux` binary, injected by cargo.
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// The pre-seeded session name the test drives against.
 const SESSION: &str = "work";
 
@@ -69,7 +66,7 @@ impl ServerGuard {
     /// The verbs used here all take `--socket` as a per-verb flag (no
     /// trailing positional swallows it), so appending is safe.
     fn run(&self, args: &[&str], envs: &[(&str, &std::path::Path)]) -> String {
-        let mut cmd = common::phux_cmd(PHUX);
+        let mut cmd = common::phux_cmd(crate::runner::phux_bin());
         cmd.args(args).arg("--socket").arg(&self.socket);
         for (key, value) in envs {
             cmd.env(key, value);
@@ -88,7 +85,7 @@ impl ServerGuard {
     /// `agent`'s subcommands take `--socket` as a per-verb flag (no
     /// trailing positional swallows it), so appending is safe here.
     fn agent(&self, args: &[&str]) -> String {
-        let out = common::phux_cmd(PHUX)
+        let out = common::phux_cmd(crate::runner::phux_bin())
             .arg("agent")
             .args(args)
             .arg("--socket")
@@ -110,7 +107,7 @@ impl ServerGuard {
     /// `--socket` goes BEFORE the subcommand: `spawn`'s trailing positional
     /// would otherwise swallow it as part of the command line.
     fn spawn_pane(&self, command: &std::path::Path) -> u32 {
-        let out = common::phux_cmd(PHUX)
+        let out = common::phux_cmd(crate::runner::phux_bin())
             .arg("--socket")
             .arg(&self.socket)
             .args(["spawn", "--json", "--"])
@@ -400,7 +397,7 @@ fn the_generated_claude_shim_leaves_the_detector_armed_on_a_live_pane() {
 
     // Install through the real verb, so what runs below is the shipped
     // generator's output and not a fixture that resembles it.
-    let install = common::phux_cmd(PHUX)
+    let install = common::phux_cmd(crate::runner::phux_bin())
         .args(["agent", "install-claude", "--shell", "bash", "--real"])
         .arg(&fake_claude)
         .env("HOME", home.path())
@@ -590,7 +587,7 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
     let fake_claude = write_quiet_claude(&bin);
     let data = home.path().join("data");
 
-    let install = common::phux_cmd(PHUX)
+    let install = common::phux_cmd(crate::runner::phux_bin())
         .args(["agent", "install-claude", "--shell", "bash", "--real"])
         .arg(&fake_claude)
         .env("HOME", home.path())
@@ -619,7 +616,7 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
     // Live for the whole scenario: every state edge below is a published
     // record that the detector's next tick supersedes.
     let watch = common::WatchChild::start(
-        std::path::Path::new(PHUX),
+        std::path::Path::new(crate::runner::phux_bin()),
         &server.socket,
         &target,
         &[],
@@ -818,7 +815,7 @@ fn the_generated_claude_shim_feeds_the_agent_session_stream() {
         std::thread::sleep(RECORD_POLL);
     }
     // And the closed session's stream is no longer readable through the pane.
-    let out = common::phux_cmd(PHUX)
+    let out = common::phux_cmd(crate::runner::phux_bin())
         .arg("agent")
         .args(["log", &target, "--json", "--socket"])
         .arg(&server.socket)

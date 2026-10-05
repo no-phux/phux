@@ -19,7 +19,10 @@ attach/driver is a one-way orchestrator: nothing else may depend on it. Move
 shared vocabulary to attach/pane_state.rs or attach/outcome.rs instead.";
 
 fn src_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
+    std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
+    )
+    .join("src")
 }
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {

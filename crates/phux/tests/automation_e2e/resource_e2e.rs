@@ -18,7 +18,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const DEADLINE: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(50);
 
@@ -74,7 +73,7 @@ impl Server {
 }
 
 fn phux_at(socket: &Path, args: &[&str]) -> Output {
-    common::phux_cmd(PHUX)
+    common::phux_cmd(crate::runner::phux_bin())
         .arg("--socket")
         .arg(socket)
         .args(args)

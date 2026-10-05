@@ -455,7 +455,7 @@ impl PtyAttach {
             })
             .expect("open attach PTY");
         let config = tempfile::tempdir().expect("isolated config dir");
-        let mut command = portable_pty::CommandBuilder::new(env!("CARGO_BIN_EXE_phux"));
+        let mut command = portable_pty::CommandBuilder::new(crate::runner::phux_bin());
         for key in ambient::ambient_phux_keys() {
             command.env_remove(key);
         }

@@ -3,10 +3,9 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const PLUGIN_ID: &str = "com.phux.demo.agent-tools";
 
 struct ServerGuard(common::ServerGuard);
@@ -25,17 +24,17 @@ impl ServerGuard {
 }
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    crate::runner::manifest_dir()
         .join("../..")
         .canonicalize()
         .expect("canonical repo root")
 }
 
 fn run_with_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
-    let out = common::phux_cmd(PHUX)
+    let out = common::phux_cmd(crate::runner::phux_bin())
         // Plugin actions launch nested `phux` commands. CI does not install
         // the just-built binary on PATH, so always pass its exact location.
-        .env("PHUX_BIN", PHUX)
+        .env("PHUX_BIN", crate::runner::phux_bin())
         .envs(envs.iter().copied())
         .args(args)
         .stdin(Stdio::null())

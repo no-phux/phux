@@ -31,5 +31,6 @@ fn main() -> std::process::ExitCode {
     // `dhat-heap.json`. Bind to `_dhat` (NOT `_`, which would drop
     // immediately) so the guard lives until `main` returns.
     let _dhat = dhat::Profiler::new_heap();
+    phux::set_checkout_distros(concat!(env!("CARGO_MANIFEST_DIR"), "/../../distros"));
     phux::run()
 }

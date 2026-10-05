@@ -10,8 +10,6 @@ mod common;
 
 use std::path::Path;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// Backstop for a test that fails before it reaches its own stop (phux-whhd).
 struct Cleanup {
     _server: common::AutoSpawnedServer,
@@ -19,7 +17,7 @@ struct Cleanup {
 }
 
 fn spawn_session(socket: &Path, session: &str) {
-    let out = common::phux_cmd(PHUX)
+    let out = common::phux_cmd(crate::runner::phux_bin())
         .args(["new", "--session", session, "--json", "--socket"])
         .arg(socket)
         .output()
@@ -35,14 +33,14 @@ fn spawn_session(socket: &Path, session: &str) {
 fn start_server(socket: &Path, session: &str) -> common::AutoSpawnedServer {
     // Arm before spawn: a panic in `phux new` or `wait_until_accepting` must
     // still Drop a guard that can reap via the live socket (phux-e4qx).
-    let mut server = common::AutoSpawnedServer::new(PHUX, socket.to_owned());
+    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.to_owned());
     spawn_session(socket, session);
     server.capture_pid();
     server
 }
 
 fn status_pid(socket: &Path) -> u32 {
-    let output = common::phux_cmd(PHUX)
+    let output = common::phux_cmd(crate::runner::phux_bin())
         .args(["status", "--json", "--socket"])
         .arg(socket)
         .output()
@@ -69,7 +67,7 @@ fn kill_server_stops_the_server_and_frees_the_socket() {
         _dir: dir,
     };
 
-    let killed = common::phux_cmd(PHUX)
+    let killed = common::phux_cmd(crate::runner::phux_bin())
         .args(["kill", "--server", "--socket"])
         .arg(&socket)
         .output()
@@ -106,7 +104,7 @@ fn kill_server_is_idempotent() {
     };
 
     for attempt in 1..=2 {
-        let killed = common::phux_cmd(PHUX)
+        let killed = common::phux_cmd(crate::runner::phux_bin())
             .args(["kill", "--server", "--socket"])
             .arg(&socket)
             .output()
@@ -131,7 +129,7 @@ fn kill_server_reaps_a_stale_socket() {
     drop(listener);
     assert!(socket.exists());
 
-    let killed = common::phux_cmd(PHUX)
+    let killed = common::phux_cmd(crate::runner::phux_bin())
         .args(["kill", "--server", "--socket"])
         .arg(&socket)
         .output()
@@ -151,7 +149,7 @@ fn kill_server_reaps_a_stale_socket() {
 /// `phux kill` must not become an exit-0 no-op.
 #[test]
 fn kill_requires_exactly_one_of_target_or_server() {
-    let bare = common::phux_cmd(PHUX)
+    let bare = common::phux_cmd(crate::runner::phux_bin())
         .args(["kill"])
         .output()
         .expect("run phux kill");
@@ -160,7 +158,7 @@ fn kill_requires_exactly_one_of_target_or_server() {
         "a bare `phux kill` must still be a usage error, not a silent no-op"
     );
 
-    let both = common::phux_cmd(PHUX)
+    let both = common::phux_cmd(crate::runner::phux_bin())
         .args(["kill", "--server", "somesession"])
         .output()
         .expect("run phux kill --server somesession");
@@ -175,7 +173,7 @@ fn kill_requires_exactly_one_of_target_or_server() {
 fn drop_reaps_a_daemon_whose_pid_was_never_captured() {
     let dir = tempfile::tempdir().expect("tempdir");
     let socket = dir.path().join("phux.sock");
-    let server = common::AutoSpawnedServer::new(PHUX, socket.clone());
+    let server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
     spawn_session(&socket, "uncaptured");
 
     let pid = status_pid(&socket);
@@ -205,7 +203,7 @@ fn panic_unwind_reaps_a_daemon_whose_pid_was_never_captured() {
     let pid = std::cell::Cell::new(None);
 
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _server = common::AutoSpawnedServer::new(PHUX, socket.clone());
+        let _server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
         spawn_session(&socket, "panic-reap");
         pid.set(Some(status_pid(&socket)));
         panic!("forced phux-e4qx unwind");

@@ -126,14 +126,18 @@ fn index_page(content: &[Page]) -> Page {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use super::{Page, pages};
 
     /// `docs/reference/` in this checkout, resolved from the crate root so
     /// the test works from any test-runner working directory.
     fn reference_dir() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference")
+        std::path::PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR")
+                .expect("the test runner sets CARGO_MANIFEST_DIR"),
+        )
+        .join("../../docs/reference")
     }
 
     /// The freshness gate: every registered page matches its on-disk bytes and

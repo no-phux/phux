@@ -23,9 +23,6 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
-/// The freshly built binary under test, injected by cargo.
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// The pre-seeded session every scenario drives against.
 const SESSION: &str = "work";
 
@@ -141,7 +138,7 @@ impl ServerGuard {
     /// `phux <verb> --socket <sock> <rest...>` inside `iso`.
     fn cmd(&self, iso: &Isolation, args: &[&str]) -> Command {
         let (verb, rest) = args.split_first().expect("at least a verb");
-        let mut cmd = common::phux_cmd(PHUX);
+        let mut cmd = common::phux_cmd(crate::runner::phux_bin());
         cmd.arg(verb)
             .arg("--socket")
             .arg(&self.socket)
@@ -207,7 +204,7 @@ impl AttachedClient {
                 pixel_height: 0,
             })
             .expect("open attach PTY");
-        let mut command = CommandBuilder::new(PHUX);
+        let mut command = CommandBuilder::new(crate::runner::phux_bin());
         command.args([
             "attach",
             "--socket",
@@ -332,7 +329,7 @@ fn broken_config_makes_server_start_loud() {
 
     let dir = tempfile::tempdir().expect("socket tempdir");
     let socket = dir.path().join("fx-broken.sock");
-    let mut cmd = common::phux_cmd(PHUX);
+    let mut cmd = common::phux_cmd(crate::runner::phux_bin());
     cmd.args(["server", "--session", SESSION, "--socket"])
         .arg(&socket)
         .args(["--exit-after-idle", "30"])
@@ -493,7 +490,7 @@ fn status_logs_doctor_name_real_paths() {
     );
 
     // Bare `phux logs` prints the inventory — every path, no server needed.
-    let mut logs_cmd = common::phux_cmd(PHUX);
+    let mut logs_cmd = common::phux_cmd(crate::runner::phux_bin());
     logs_cmd.arg("logs").stdin(Stdio::null());
     iso.apply(&mut logs_cmd);
     let (code, stdout, stderr) = run_captured(&mut logs_cmd);

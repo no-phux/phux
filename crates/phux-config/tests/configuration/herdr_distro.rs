@@ -11,11 +11,13 @@ use phux_config::{Action, Config, parse_with_defaults};
 const USER: &str = "/nonexistent-config-dir/config.toml";
 
 fn repo_layer(relative: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(relative)
-        .canonicalize()
-        .expect("layer exists in the repo")
+    std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
+    )
+    .join("../..")
+    .join(relative)
+    .canonicalize()
+    .expect("layer exists in the repo")
 }
 
 /// Parse `user_body` extending `layer`, from a config directory far from it.

@@ -1,5 +1,8 @@
 //! Configuration layers, distribution defaults, and CLI compatibility tests.
 
+#[path = "../common/runner.rs"]
+mod runner;
+
 #[path = "../common/ambient.rs"]
 mod common;
 

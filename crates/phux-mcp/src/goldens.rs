@@ -11,7 +11,7 @@
     reason = "tests"
 )]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use phux_client::agent_meta::{AgentMetaState, AgentRecord};
 use phux_client::layout::{SplitDir, Workspace};
@@ -268,9 +268,11 @@ const CASES: &[Case] = &[
 ];
 
 fn golden_path(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/golden")
-        .join(format!("{name}.json"))
+    std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
+    )
+    .join("tests/golden")
+    .join(format!("{name}.json"))
 }
 
 /// Run `case` against a scripted server that answers every connection the

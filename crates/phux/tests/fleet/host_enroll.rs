@@ -13,8 +13,6 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// A 64-hex pairing token for the fake remote to mint.
 const TOKEN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 /// A well-formed SHA-256 certificate fingerprint.
@@ -137,7 +135,7 @@ impl EnrollHome {
     /// `LaunchAgents`), in the released `default` layout, with `$PHUX_SSH` at
     /// `ssh` (a missing path proves the run never sshed).
     fn run(&self, args: &[&str], ssh: &Path) -> (i32, String, String) {
-        let out = crate::common::phux_cmd(PHUX)
+        let out = crate::common::phux_cmd(crate::runner::phux_bin())
             .env("HOME", self.dir.path())
             .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
             .env("XDG_STATE_HOME", self.dir.path().join("state"))

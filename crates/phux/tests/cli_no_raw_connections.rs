@@ -13,6 +13,9 @@
               not a condition to recover from"
 )]
 
+#[path = "common/runner.rs"]
+mod runner;
+
 use std::path::{Path, PathBuf};
 
 /// Files (relative to `src/commands/`) still allowed raw wire work, as
@@ -76,7 +79,7 @@ const MARKERS: &[&str] = &[
 
 #[test]
 fn cli_commands_open_no_raw_connections() {
-    let commands_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands");
+    let commands_dir = crate::runner::manifest_dir().join("src/commands");
     assert!(
         commands_dir.is_dir(),
         "expected {commands_dir:?} to exist; has the crate layout moved?"

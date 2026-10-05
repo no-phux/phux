@@ -49,7 +49,7 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// The committed demo recording, a real 80x24 phux session.
 fn demo_cast() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    crate::runner::manifest_dir()
         .join("../../docs/assets/recording-demo.cast")
         .canonicalize()
         .expect("the committed demo cast must exist")
@@ -58,7 +58,7 @@ fn demo_cast() -> PathBuf {
 /// A committed asciicast v3 recording made by asciinema (relative event
 /// intervals, grid nested under `term`).
 fn v3_cast() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    crate::runner::manifest_dir()
         .join("../../docs/assets/pi-live-fleet.cast")
         .canonicalize()
         .expect("the committed v3 cast must exist")
@@ -69,7 +69,7 @@ const V3_HEADER: (u64, u64) = (140, 40);
 /// The fixture: a 100x30 header, a marker, a resize to 64x18, a second
 /// marker, and the line-feed probe.
 fn fixture_cast() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    crate::runner::manifest_dir()
         .join("tests/fixtures/play-fit.cast")
         .canonicalize()
         .expect("the play fixture must exist")
