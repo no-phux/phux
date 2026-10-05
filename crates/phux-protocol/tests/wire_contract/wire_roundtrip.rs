@@ -605,13 +605,20 @@ fn arb_frame_kind_lifecycle() -> impl Strategy<Value = FrameKind> {
                     signal,
                 }
             }),
-        (arb_terminal_id(), any::<u16>(), any::<u16>()).prop_map(|(terminal_id, cols, rows)| {
-            FrameKind::ResizeTerminal {
-                terminal_id,
-                cols,
-                rows,
-            }
-        }),
+        (
+            arb_terminal_id(),
+            any::<u16>(),
+            any::<u16>(),
+            proptest::option::of((any::<u16>(), any::<u16>())),
+        )
+            .prop_map(
+                |(terminal_id, cols, rows, cell_px)| FrameKind::ResizeTerminal {
+                    terminal_id,
+                    cols,
+                    rows,
+                    cell_px,
+                }
+            ),
         (any::<u32>(), arb_terminal_id()).prop_map(|(request_id, terminal_id)| {
             FrameKind::Command {
                 request_id,

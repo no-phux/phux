@@ -276,6 +276,7 @@ fn stale_history_cursors_degrade_one_replica_not_the_attach() {
             terminal_id: generation.terminal_id.clone(),
             cols: RESIZE.0,
             rows: RESIZE.1,
+            cell_px: None,
         };
         send_frame(&mut stream, &resize).await;
         // Observing the tombstone proves the cursor is already drained.

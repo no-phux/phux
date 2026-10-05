@@ -183,6 +183,7 @@ async fn prove_spawned_pane_binds() {
             terminal_id: spawned.clone(),
             cols: 100,
             rows: 30,
+            cell_px: None,
         })
         .await
         .expect("resize the spawned pane on its stream");

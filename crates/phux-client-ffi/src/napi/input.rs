@@ -535,7 +535,7 @@ mod tests {
         let outbound = client.take_outbound();
         assert_eq!(outbound.len(), 1);
         assert!(matches!(FrameKind::decode(&outbound[0]).expect("decode").0,
-            FrameKind::ResizeTerminal { terminal_id, cols: 40, rows: 8 } if terminal_id == frame.terminal_id));
+            FrameKind::ResizeTerminal { terminal_id, cols: 40, rows: 8, cell_px: None } if terminal_id == frame.terminal_id));
         let after = client
             .acquire_view(view_id(&view).expect("id"))
             .expect("frame");

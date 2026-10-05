@@ -545,6 +545,12 @@ pub mod terminal_resize {
     pub const COLS: u32 = 2;
     /// New row count (`u16`).
     pub const ROWS: u32 = 3;
+    /// Optional cell width in pixels (`u16`), sent together with
+    /// [`CELL_HEIGHT_PX`]; absent keeps the Terminal's last cell size
+    /// (ADR-0145).
+    pub const CELL_WIDTH_PX: u32 = 4;
+    /// Optional cell height in pixels (`u16`); see [`CELL_WIDTH_PX`].
+    pub const CELL_HEIGHT_PX: u32 = 5;
 }
 
 /// `COMMAND` body fields (`docs/spec/L1.md` §5).

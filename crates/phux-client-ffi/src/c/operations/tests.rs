@@ -137,7 +137,8 @@ fn terminal_resize_maps_readiness_and_invalid_size_without_optimistic_geometry()
         vec![FrameKind::ResizeTerminal {
             terminal_id: id.clone(),
             cols: 100,
-            rows: 30
+            rows: 30,
+            cell_px: None
         }]
     );
     let published = h.0.inner.projection(&id).unwrap();
@@ -183,7 +184,8 @@ fn terminal_resize_waits_for_subscription_confirmation_and_respects_resource_vie
         vec![FrameKind::ResizeTerminal {
             terminal_id: primary.clone(),
             cols: 100,
-            rows: 30
+            rows: 30,
+            cell_px: None
         }]
     );
     // SAFETY: the harness owns the client on this thread.
@@ -223,7 +225,8 @@ fn terminal_resize_waits_for_subscription_confirmation_and_respects_resource_vie
             FrameKind::ResizeTerminal {
                 terminal_id: primary,
                 cols: 100,
-                rows: 30
+                rows: 30,
+                cell_px: None
             },
         ]
     );

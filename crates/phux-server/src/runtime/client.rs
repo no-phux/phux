@@ -546,6 +546,7 @@ mod negotiated_feature_tests {
             terminal_id: WireResourceId::local(1),
             cols: 80,
             rows: 24,
+            cell_px: None,
         }
         .encode(&mut bytes);
         let multistream = connection(ServerFeatureSet::with(&[ServerFeature::QuicStreams]));
@@ -2768,7 +2769,10 @@ async fn negotiate_hello(
         server_caps: ServerCapabilities::new()
             .with_layers(LayerSet::all())
             .with_features(server_features)
-            .with_features_ext(ServerFeatureExtSet::with(&[ServerFeatureExt::PathQuery]))
+            .with_features_ext(ServerFeatureExtSet::with(&[
+                ServerFeatureExt::PathQuery,
+                ServerFeatureExt::ResizeCellPx,
+            ]))
             .with_compression(compression),
         server_id: state.with(|server| server.server_incarnation().as_bytes().to_vec()),
         selected_profile,
@@ -3517,8 +3521,15 @@ impl<R: FrameReader> FrameDispatch<'_, R> {
                 terminal_id,
                 cols,
                 rows,
+                cell_px,
             } => {
-                handle_terminal_resize(self.state, self.client_id, &terminal_id, cols, rows);
+                handle_terminal_resize(
+                    self.state,
+                    self.client_id,
+                    &terminal_id,
+                    (cols, rows),
+                    cell_px,
+                );
             }
             // ADR-0103 §4: an agent-session stream is raw-profile with no
             // history beyond its bootstrap. Both refusals keep the connection.

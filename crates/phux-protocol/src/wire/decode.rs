@@ -1368,6 +1368,8 @@ impl<'a> Decoder<'a> {
         let mut terminal_id: Option<ResourceId> = None;
         let mut cols = 0u16;
         let mut rows = 0u16;
+        let mut cell_w: Option<u16> = None;
+        let mut cell_h: Option<u16> = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::terminal_resize::TERMINAL_ID => {
@@ -1375,6 +1377,12 @@ impl<'a> Decoder<'a> {
                 }
                 field::terminal_resize::COLS => cols = sub!(value, Decoder::read_u16_be),
                 field::terminal_resize::ROWS => rows = sub!(value, Decoder::read_u16_be),
+                field::terminal_resize::CELL_WIDTH_PX => {
+                    cell_w = Some(sub!(value, Decoder::read_u16_be));
+                }
+                field::terminal_resize::CELL_HEIGHT_PX => {
+                    cell_h = Some(sub!(value, Decoder::read_u16_be));
+                }
                 _ => {}
             }
         }
@@ -1382,6 +1390,8 @@ impl<'a> Decoder<'a> {
             terminal_id: req(terminal_id)?,
             cols,
             rows,
+            // Both axes or neither (L1 §3.1): a half pair is no cell size.
+            cell_px: cell_w.zip(cell_h),
         })
     }
 

@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-06
 ---
 
 # The phux reference TUI
@@ -244,8 +244,14 @@ enclosing split on that axis, whichever side the focused pane is on
 cells on that axis is a bell-no-op.
 
 **Shared geometry.** A Terminal has one `(cols, rows)`. Concurrent views
-letterbox or crop rather than reflowing a second grid.
-`defaults.window-size` picks the policy: `smallest` (default; nothing is
+letterbox or crop rather than reflowing a second grid. The TUI sizes each
+pane to its own tile, and its cell pixel size rides along. Against a server
+that supports this, the TUI casts no session-wide size vote, so attaching,
+switching sessions, or resizing the outer window never sends a pane through
+the full window size on the way to its tile
+([ADR-0145](../adr/0145-the-tui-sizes-panes-and-casts-no-viewport-vote.md)).
+When two such TUIs view one pane, the last tile sent wins. For clients that
+vote, `defaults.window-size` picks the policy: `smallest` (default; nothing is
 cropped), `largest`, `latest`, or `manual`. An explicit `phux resize`
 applies immediately; under every policy but `manual`, the next view
 event recomputes and supersedes it. When the last usable view detaches,

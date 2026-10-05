@@ -649,6 +649,7 @@ fn stream_samples() -> Vec<(FrameKind, &'static Rule)> {
                 terminal_id: terminal(),
                 cols: 80,
                 rows: 24,
+                cell_px: None,
             },
             &F_RESIZE_TERMINAL,
         ),

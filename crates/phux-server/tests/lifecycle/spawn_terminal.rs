@@ -227,6 +227,7 @@ fn resize_terminal_updates_reported_dims() {
             terminal_id: pane.clone(),
             cols: 120,
             rows: 40,
+            cell_px: None,
         };
         send_frame(&mut stream, &resize).await;
         state(&mut stream, 2).await;

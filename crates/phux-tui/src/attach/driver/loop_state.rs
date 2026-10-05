@@ -85,8 +85,8 @@ use super::terminal::{
 };
 use super::viewport::{
     HOST_CELL_PX_FALLBACK, current_viewport, current_viewport_or_default,
-    emit_bootstrap_workspace_reflow, emit_moved_tiles, emit_view_reflow, host_cell_px, view_rects,
-    viewport_resize_frame,
+    emit_bootstrap_workspace_reflow, emit_moved_tiles, emit_view_reflow, host_cell_px,
+    resize_cell_px, view_rects, viewport_resize_frame,
 };
 
 #[cfg(test)]
@@ -441,6 +441,12 @@ pub(super) struct SessionLoop {
     /// Host per-cell pixel size for `INPUT_MOUSE` pixel scaling, refreshed
     /// with `viewport_dims`.
     cell_px_dims: (u16, u16),
+    /// ADR-0145: the server applies per-pane cell size, so this client casts
+    /// no window-size vote and sizes panes only with `RESIZE_TERMINAL`.
+    sizes_panes_itself: bool,
+    /// The cell size every `RESIZE_TERMINAL` carries (`None` when the server
+    /// does not apply it or the host reports no pixel metrics).
+    resize_cell_px: Option<(u16, u16)>,
     /// In-flight `rename-session` waiting on its `GET_STATE` barrier.
     rename_pending: Option<PendingSessionRename>,
     /// A rename refused by the shared policy before a write was sent.
@@ -572,6 +578,12 @@ impl SessionLoop {
         overlays.set_breakpoints(settings.chrome);
         let viewport_dims = current_viewport().map_or((80, 24), |v| (v.cols.max(1), v.rows.max(1)));
         let cell_px_dims = current_viewport().map_or(HOST_CELL_PX_FALLBACK, |v| host_cell_px(&v));
+        let sizes_panes_itself = negotiated
+            .server_features_ext
+            .contains(phux_protocol::ServerFeatureExt::ResizeCellPx);
+        let resize_cell_px = current_viewport()
+            .ok()
+            .and_then(|v| resize_cell_px(sizes_panes_itself, &v));
         let conditional_kill_supported = server_features.contains(ServerFeature::ConditionalKill);
         let mut orphan_kills = super::orphans::OrphanKills::default();
         orphan_kills.set_conditional_kill(conditional_kill_supported);
@@ -632,6 +644,8 @@ impl SessionLoop {
             ),
             viewport_dims,
             cell_px_dims,
+            sizes_panes_itself,
+            resize_cell_px,
             rename_pending: None,
             rename_notice: None,
             peers: PeerWatch {
@@ -1345,6 +1359,7 @@ impl SessionLoop {
             &self.mirror.workspace,
             self.mirror.zoomed.as_ref(),
             self.content(sidebar),
+            self.resize_cell_px,
         )
         .await
     }
@@ -1856,6 +1871,7 @@ impl SessionLoop {
                 self.mirror.zoomed.as_ref(),
                 &prev_view_rects,
                 self.content(sidebar),
+                self.resize_cell_px,
             )
             .await?;
         } else if layout_changed
@@ -1872,7 +1888,7 @@ impl SessionLoop {
                 self.content(sidebar),
                 self.viewport_dims,
             );
-            emit_moved_tiles(conn, &prev_view_rects, &rects).await?;
+            emit_moved_tiles(conn, &prev_view_rects, &rects, self.resize_cell_px).await?;
         }
         if layout_changed {
             // ADR-0040: an input action may have split/closed panes;
@@ -3000,6 +3016,7 @@ impl SessionLoop {
             self.mirror.zoomed.as_ref(),
             prev_rects,
             self.content(sidebar),
+            self.resize_cell_px,
         )
         .await
     }
@@ -3421,11 +3438,14 @@ impl SessionLoop {
             .and_then(|fid| self.mirror.panes.get(fid))
             .map_or((viewport.cols, viewport.rows), |slot| slot.geometry);
         self.mirror.predict.set_viewport(predict_cols, predict_rows);
-        conn.send(&viewport_resize_frame(viewport)).await?;
-        // Even a pixel-only SIGWINCH updates the session viewport vote.
-        // Reassert explicit pane targets afterward: they include chrome and
-        // may differ from that policy-resolved outer grid without changing
-        // since the previous frame.
+        self.resize_cell_px = resize_cell_px(self.sizes_panes_itself, &viewport);
+        // ADR-0145: a client that sizes its own panes casts no vote, so the
+        // outer size never reaches a pane before its tile does. An older
+        // server still needs the vote for cell pixels (a pixel-only SIGWINCH
+        // too); the pane targets below then reassert the tiles.
+        if !self.sizes_panes_itself {
+            conn.send(&viewport_resize_frame(viewport)).await?;
+        }
         self.size_workspace_panes(conn, sidebar).await?;
         // Clear rather than repaint stale pre-resize mirrors; the server's
         // resync snapshot repopulates at the new size.

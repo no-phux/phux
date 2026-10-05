@@ -64,7 +64,7 @@ fn targeted_resize_only_sends_one_resource_and_never_fabricates_readback() {
     let frames = plane.take_outbound();
     assert_eq!(frames.len(), 1);
     assert!(
-        matches!(decode(&frames[0]), FrameKind::ResizeTerminal { terminal_id, cols: 100, rows: 30 } if terminal_id == terminal())
+        matches!(decode(&frames[0]), FrameKind::ResizeTerminal { terminal_id, cols: 100, rows: 30, cell_px: None } if terminal_id == terminal())
     );
     assert_eq!(plane.viewport(), (80, 24));
     #[cfg(feature = "engine")]
@@ -174,13 +174,13 @@ fn global_viewport_fanout_and_existing_default_attach_keep_their_policy() {
     let initial = plane.take_outbound();
     assert_eq!(initial.len(), 2);
     assert!(
-        matches!(decode(&initial[1]), FrameKind::ResizeTerminal { terminal_id, cols: 80, rows: 24 } if terminal_id == default)
+        matches!(decode(&initial[1]), FrameKind::ResizeTerminal { terminal_id, cols: 80, rows: 24, cell_px: None } if terminal_id == default)
     );
     plane.resize_viewport(90, 25);
     let frames = plane.take_outbound();
     assert_eq!(frames.len(), 1);
     assert!(
-        matches!(decode(&frames[0]), FrameKind::ResizeTerminal { terminal_id, cols: 90, rows: 25 } if terminal_id == default)
+        matches!(decode(&frames[0]), FrameKind::ResizeTerminal { terminal_id, cols: 90, rows: 25, cell_px: None } if terminal_id == default)
     );
 }
 

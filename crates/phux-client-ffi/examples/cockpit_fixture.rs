@@ -313,7 +313,7 @@ impl Client {
                 PhuxClientResult::Ok
             );
             assert!(
-                matches!(self.take_outgoing(), FrameKind::ResizeTerminal { terminal_id, cols: 100, rows: 30 }
+                matches!(self.take_outgoing(), FrameKind::ResizeTerminal { terminal_id, cols: 100, rows: 30, cell_px: None }
                 if terminal_id == ResourceId::local(7))
             );
         }
