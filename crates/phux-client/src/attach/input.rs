@@ -657,10 +657,13 @@ fn dispatch_csi_letter(parsed: &[u32], final_byte: u8, out: &mut Vec<InputEvent>
         tracing::trace!(final_byte, ?parsed, "unknown CSI sequence");
         return;
     };
-    let mods = match parsed {
+    let mut mods = match parsed {
         [1, code, ..] => xterm_modifier_code(*code),
         _ => ModSet::empty(),
     };
+    if final_byte == b'Z' {
+        mods |= ModSet::SHIFT;
+    }
     out.push(InputEvent::Key(make_named_key(key, mods)));
 }
 
@@ -971,7 +974,7 @@ const fn csi_letter_keycode(final_byte: u8) -> Option<PhysicalKey> {
         b'Q' => PhysicalKey::F2,
         b'R' => PhysicalKey::F3,
         b'S' => PhysicalKey::F4,
-        b'Z' => PhysicalKey::Tab, // CSI Z = Shift-Tab; modifier filled by caller
+        b'Z' => PhysicalKey::Tab, // CSI Z = Shift-Tab; dispatch_csi_letter adds Shift
         _ => return None,
     })
 }
@@ -1144,6 +1147,19 @@ mod tests {
             let ev = one_key(input);
             assert_eq!((ev.key, ev.mods), (key, mods), "input {input:?}");
         }
+    }
+
+    /// `CSI Z` is Shift+Tab (Claude Code's mode toggle); dropping the Shift
+    /// delivered a plain Tab.
+    #[test]
+    fn csi_z_is_shift_tab() {
+        let ev = one_key(b"\x1b[Z");
+        assert_eq!((ev.key, ev.mods), (PhysicalKey::Tab, ModSet::SHIFT));
+        let ev = one_key(b"\x1b[1;5Z");
+        assert_eq!(
+            (ev.key, ev.mods),
+            (PhysicalKey::Tab, ModSet::SHIFT | ModSet::CTRL)
+        );
     }
 
     /// Host Ghostty in legacy mode sends modified Enter as xterm
