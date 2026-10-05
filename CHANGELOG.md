@@ -9,6 +9,19 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.50.0](https://github.com/no-phux/phux/compare/v0.49.1...v0.50.0) (2026-10-05)
+
+
+### Features
+
+* **omp:** report host-bound native session lifecycle ([2a261d2](https://github.com/no-phux/phux/commit/2a261d2c35c86ae38ebcd1c529c24c3eebf3cb74))
+
+
+### Bug Fixes
+
+* **omp:** fence lifecycle causality and preserve approval state ([b53bdca](https://github.com/no-phux/phux/commit/b53bdca8d3e6cd825d83c9c12589920d73df354e))
+* **omp:** initialize cold unbound native identities safely ([add1a5c](https://github.com/no-phux/phux/commit/add1a5ce918bd01e24e3f40342803bef4b1f76b6))
+
 ## [0.49.1](https://github.com/no-phux/phux/compare/v0.49.0...v0.49.1) (2026-10-05)
 
 
