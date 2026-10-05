@@ -487,6 +487,13 @@ async fn find_highlights_matches_in_history_and_steps_between_them() {
     fresh_line(&surface);
     type_text(&surface, "FINDME_ONE");
     assert!(keydown(&surface, "Enter", "Enter", false));
+    // Keep the echo and cat's copy together before flooding scrollback;
+    // otherwise the blank-line echoes can put them more than a viewport apart.
+    assert!(
+        wait_rows(&client, "FINDME_ONE", 2).await,
+        "the echo and cat's copy before scrolling: {}",
+        screen(&client)
+    );
     for _ in 0..30 {
         assert!(keydown(&surface, "Enter", "Enter", false));
     }
@@ -550,9 +557,9 @@ async fn find_highlights_matches_in_history_and_steps_between_them() {
     );
     // The current match paints in the current-match color, the other
     // match on screen in the match color.
-    let rows = client.rows_text();
     let mut marks = Vec::new();
     for _ in 0..POLLS {
+        let rows = client.rows_text();
         marks = rows
             .iter()
             .enumerate()
@@ -569,7 +576,8 @@ async fn find_highlights_matches_in_history_and_steps_between_them() {
     assert_eq!(
         marks,
         [[0x8a, 0x72, 0x1c], [0xf2, 0xb1, 0x3a]],
-        "the echo's match, then the current (cat's copy), highlighted"
+        "the echo's match, then the current (cat's copy), highlighted; viewport:\n{}",
+        screen(&client)
     );
 
     // Escape closes find and gives the terminal its keys back.
