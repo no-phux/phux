@@ -32,7 +32,6 @@
 mod tool_table;
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::process::Command;
 
 use serde_json::Value;
@@ -40,15 +39,17 @@ use serde_json::Value;
 use tool_table::{CLI_ONLY, DESTRUCTIVE_SOURCE, Exec, Surface, TOOLS};
 
 fn repo_file(relative: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(relative);
+    let path = std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
+    )
+    .join("../..")
+    .join(relative);
     std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("reading {relative}: {err}"))
 }
 
 /// The live tool catalog, exactly as `tools/list` serves it.
 fn catalog() -> Vec<Value> {
-    let output = Command::new(env!("CARGO_BIN_EXE_phux-mcp"))
+    let output = Command::new(phux_mcp_bin())
         .arg("--schema")
         .env_remove("PHUX_SOCKET")
         .output()
@@ -224,4 +225,14 @@ fn tool_annotations_equal_the_kind_table() {
             }
         }
     }
+}
+
+/// The `phux-mcp` binary under test, from the runner's environment
+/// (`CARGO_BIN_EXE_*` under `cargo test`, `NEXTEST_BIN_EXE_*` under nextest)
+/// rather than `env!`, which would key this test to one checkout.
+fn phux_mcp_bin() -> std::ffi::OsString {
+    ["CARGO_BIN_EXE_phux-mcp", "NEXTEST_BIN_EXE_phux-mcp"]
+        .into_iter()
+        .find_map(std::env::var_os)
+        .expect("run under `cargo test` or `cargo nextest`, which export the phux-mcp binary path")
 }

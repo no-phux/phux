@@ -71,7 +71,10 @@ fn failures_name_the_spec_and_every_checked_path() {
 /// resolves there, and `herdr` hits its compatibility stub.
 #[test]
 fn the_repo_checkout_serves_the_bundled_distros() {
-    let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../distros");
+    let checkout = std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
+    )
+    .join("../../distros");
     let dirs = search_dirs(Some(&checkout));
     let starter = resolve_distro_in("starter", &dirs).expect("starter");
     assert!(

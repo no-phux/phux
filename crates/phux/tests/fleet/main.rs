@@ -1,5 +1,8 @@
 //! Host enrollment, remote targets, credentials, and fleet transport tests.
 
+#[path = "../common/runner.rs"]
+mod runner;
+
 #[path = "../common/ambient.rs"]
 mod common;
 #[path = "../common/listeners.rs"]

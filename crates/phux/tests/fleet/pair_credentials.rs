@@ -7,8 +7,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Output, Stdio};
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// The socket every command in one test dials: beside the test's state
 /// dir, never the operator's.
 fn socket_path(state: &Path) -> PathBuf {
@@ -27,7 +25,7 @@ struct Server {
 impl Server {
     fn start(state: &Path, tokens: Option<&Path>) -> Self {
         let socket = socket_path(state);
-        let mut command = crate::common::phux_cmd(PHUX);
+        let mut command = crate::common::phux_cmd(crate::runner::phux_bin());
         command
             .env("XDG_STATE_HOME", state)
             .env("PHUX_TAILSCALE", "phux-test-no-such-overlay-command")
@@ -89,7 +87,7 @@ impl Drop for Server {
 /// because `PATH` and friends still have to reach the child. `PHUX_SOCKET`
 /// is pinned to the test's own socket for the same reason: a mint dials it.
 fn phux(state: &Path, tokens: Option<&Path>, args: &[&str]) -> Output {
-    let mut command = crate::common::phux_cmd(PHUX);
+    let mut command = crate::common::phux_cmd(crate::runner::phux_bin());
     command
         .env("XDG_STATE_HOME", state)
         .env("PHUX_SOCKET", socket_path(state))

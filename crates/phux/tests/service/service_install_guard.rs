@@ -16,8 +16,6 @@ mod common;
 use std::path::Path;
 use std::process::Command;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// Stop whatever server ended up on `socket`, so a failing assertion cannot
 /// leak a daemon holding a PTY (phux-whhd).
 struct Cleanup {
@@ -41,7 +39,7 @@ fn unit_paths_under(home: &Path) -> [std::path::PathBuf; 4] {
 /// state (where `--adopt` writes its marker) all point into the tempdir, and a
 /// nonexistent `PHUX_TAILSCALE` keeps `doctor` off the network.
 fn sandboxed(home: &Path) -> Command {
-    let mut cmd = common::phux_cmd(PHUX);
+    let mut cmd = common::phux_cmd(crate::runner::phux_bin());
     cmd.env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("XDG_STATE_HOME", home.join(".local/state"))
@@ -58,7 +56,7 @@ fn install_refuses_while_a_server_holds_the_socket() {
     let dir = tempfile::tempdir().expect("tempdir");
     let socket = dir.path().join("phux.sock");
 
-    let out = common::phux_cmd(PHUX)
+    let out = common::phux_cmd(crate::runner::phux_bin())
         .args(["new", "--session", "incumbent", "--json", "--socket"])
         .arg(&socket)
         .output()
@@ -69,7 +67,7 @@ fn install_refuses_while_a_server_holds_the_socket() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(common::wait_until_accepting(&socket), "server must be up");
-    let mut server = common::AutoSpawnedServer::new(PHUX, socket.clone());
+    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
     server.capture_pid();
     let _cleanup = Cleanup {
         _server: server,
@@ -119,14 +117,14 @@ fn print_still_renders_while_a_server_holds_the_socket() {
     let dir = tempfile::tempdir().expect("tempdir");
     let socket = dir.path().join("phux.sock");
 
-    let out = common::phux_cmd(PHUX)
+    let out = common::phux_cmd(crate::runner::phux_bin())
         .args(["new", "--session", "incumbent", "--json", "--socket"])
         .arg(&socket)
         .output()
         .expect("run phux new");
     assert!(out.status.success(), "phux new must start a server");
     assert!(common::wait_until_accepting(&socket), "server must be up");
-    let mut server = common::AutoSpawnedServer::new(PHUX, socket.clone());
+    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
     server.capture_pid();
     let _cleanup = Cleanup {
         _server: server,
@@ -167,7 +165,7 @@ fn adopt_installs_over_a_live_server_without_stopping_it() {
     let dir = tempfile::tempdir().expect("tempdir");
     let socket = dir.path().join("phux.sock");
 
-    let out = common::phux_cmd(PHUX)
+    let out = common::phux_cmd(crate::runner::phux_bin())
         .args(["new", "--session", "incumbent", "--json", "--socket"])
         .arg(&socket)
         .output()
@@ -178,7 +176,7 @@ fn adopt_installs_over_a_live_server_without_stopping_it() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(common::wait_until_accepting(&socket), "server must be up");
-    let mut server = common::AutoSpawnedServer::new(PHUX, socket.clone());
+    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
     server.capture_pid();
     let _cleanup = Cleanup {
         _server: server,

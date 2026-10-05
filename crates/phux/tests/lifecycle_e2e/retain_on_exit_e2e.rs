@@ -27,7 +27,6 @@ use phux_protocol::wire::frame::{
 };
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const DEADLINE: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(50);
 
@@ -44,7 +43,7 @@ impl Server {
         let socket = dir
             .path()
             .join(format!("retain-{}.sock", std::process::id()));
-        let child = common::phux_cmd(PHUX)
+        let child = common::phux_cmd(crate::runner::phux_bin())
             .args([
                 "server",
                 "--session",

@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use serde_json::Value;
 
 fn mcp() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_phux-mcp"));
+    let mut cmd = Command::new(phux_mcp_bin());
     // Same service-manager exports a live pane inherits (phux-lru0).
     for key in [
         "PHUX_SOCKET",
@@ -91,4 +91,14 @@ fn standalone_modes_reject_ambiguity_and_unknown_arguments() {
         String::from_utf8_lossy(&version.stdout),
         concat!("phux-mcp ", env!("CARGO_PKG_VERSION"), "\n")
     );
+}
+
+/// The `phux-mcp` binary under test, from the runner's environment
+/// (`CARGO_BIN_EXE_*` under `cargo test`, `NEXTEST_BIN_EXE_*` under nextest)
+/// rather than `env!`, which would key this test to one checkout.
+fn phux_mcp_bin() -> std::ffi::OsString {
+    ["CARGO_BIN_EXE_phux-mcp", "NEXTEST_BIN_EXE_phux-mcp"]
+        .into_iter()
+        .find_map(std::env::var_os)
+        .expect("run under `cargo test` or `cargo nextest`, which export the phux-mcp binary path")
 }

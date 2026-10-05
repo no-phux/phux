@@ -1,8 +1,7 @@
 #![allow(clippy::expect_used, reason = "tests")]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const PLUGIN_ID: &str = "com.phux.demo.agent-tools";
 const INSPECT_ACTION: &str = "inspect";
 const LIST_ACTION: &str = "list-integrations";
@@ -12,7 +11,7 @@ const LAUNCH_BENCH_ACTION: &str = "launch-bench";
 const SMOKE_AGENT_WRAP_ACTION: &str = "smoke-agent-wrap";
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    crate::runner::manifest_dir()
         .join("../..")
         .canonicalize()
         .expect("canonical repo root")
@@ -27,9 +26,9 @@ fn run_demo(args: &[&str]) -> (i32, String, String) {
 }
 
 fn run_demo_with_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
-    let out = crate::common::phux_cmd(PHUX)
+    let out = crate::common::phux_cmd(crate::runner::phux_bin())
         .env("XDG_CONFIG_HOME", demo_xdg())
-        .env("PHUX_BIN", PHUX)
+        .env("PHUX_BIN", crate::runner::phux_bin())
         .envs(envs.iter().copied())
         .args(args)
         .output()

@@ -13,9 +13,6 @@ use std::process::{Command, Stdio};
 
 use tempfile::TempDir;
 
-/// Path to the freshly-built `phux` binary, injected by cargo.
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// A socket path that does not exist, so no verb finds (or spawns) a server.
 fn dead_socket() -> String {
     format!("/tmp/phux-no-such-server-{}.sock", std::process::id())
@@ -27,7 +24,7 @@ const NO_OVERLAY_CLI: &str = "/nonexistent/phux-output-hygiene-no-overlay";
 
 /// The binary under test, with overlay detection off.
 fn phux() -> Command {
-    let mut cmd = crate::common::phux_cmd(PHUX);
+    let mut cmd = crate::common::phux_cmd(crate::runner::phux_bin());
     cmd.env("PHUX_TAILSCALE", NO_OVERLAY_CLI);
     cmd
 }
@@ -506,7 +503,7 @@ fn json_error_contract_holds_across_core_verbs_with_no_server() {
 
     // `launch` resolves its integration from config before dialing; the
     // checked-in demo plugin provides one.
-    let demo_xdg = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let demo_xdg = crate::runner::manifest_dir()
         .join("../../examples/plugins/agent-tools/config")
         .canonicalize()
         .expect("demo plugin config");

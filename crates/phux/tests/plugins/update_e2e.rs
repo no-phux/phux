@@ -8,12 +8,9 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-/// The freshly built binary under test, injected by cargo.
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// Run `phux <args...>` and return `(exit_code, stdout, stderr)`.
 fn run(args: &[&str]) -> (i32, String, String) {
-    let out = crate::common::phux_cmd(PHUX)
+    let out = crate::common::phux_cmd(crate::runner::phux_bin())
         // A developer's allowlist must not make `target/` a recognized install.
         .env_remove("PHUX_INSTALL_DIR")
         .args(args)

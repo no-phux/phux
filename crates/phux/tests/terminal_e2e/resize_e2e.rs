@@ -13,9 +13,6 @@ mod common;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-/// Path to the freshly-built `phux` binary, injected by cargo.
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// The pre-seeded session name every test drives against.
 const SESSION: &str = "work";
 
@@ -256,7 +253,7 @@ fn resize_rejects_a_zero_axis_before_it_reaches_a_server() {
     // opens a socket. Pointing it at a path with no server proves that — if
     // the geometry check moved server-side, this would fail with a
     // connection error instead of a usage error.
-    let out = common::phux_cmd(PHUX)
+    let out = common::phux_cmd(crate::runner::phux_bin())
         .args([
             "resize",
             "--socket",

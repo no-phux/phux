@@ -17,7 +17,6 @@
 )]
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 
 use bytes::BytesMut;
 use phux_protocol::ids::{ResourceId, ResourceKind};
@@ -34,9 +33,11 @@ const REMEDY: &str = "docs/spec/workload-auth.md is normative: edit the rows in 
      spec first";
 
 fn repo_doc(relative: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(relative);
+    let path = std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
+    )
+    .join("../..")
+    .join(relative);
     std::fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("cannot read {}: {err}", path.display()))
 }

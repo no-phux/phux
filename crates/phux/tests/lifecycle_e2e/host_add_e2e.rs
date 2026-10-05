@@ -25,8 +25,6 @@ use std::time::{Duration, Instant};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tempfile::TempDir;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// How long the freshly started server has to bind its socket.
 const READY_DEADLINE: Duration = Duration::from_secs(30);
 
@@ -51,7 +49,8 @@ impl FarHost {
         for sub in ["config/phux", "state", "run", "bin"] {
             std::fs::create_dir_all(root.join(sub)).expect("scratch dirs");
         }
-        std::os::unix::fs::symlink(PHUX, root.join("bin/phux")).expect("phux on the fake PATH");
+        std::os::unix::fs::symlink(crate::runner::phux_bin(), root.join("bin/phux"))
+            .expect("phux on the fake PATH");
 
         // The first server binds a port the kernel picks; the fake ssh's
         // restart then asks for that same port, as a service unit would.
@@ -114,7 +113,7 @@ impl FarHost {
     /// Start the far host's server with its QUIC listener on a port the
     /// kernel picks.
     fn start_server(&mut self) {
-        let server = common::phux_cmd(PHUX)
+        let server = common::phux_cmd(crate::runner::phux_bin())
             .envs(hermetic_env(self.dir.path()))
             .arg("server")
             .arg("--socket")
@@ -171,7 +170,7 @@ impl FarHost {
     /// ssh, and no socket handed over, so the registry is the only way to
     /// the server.
     fn phux(&self, args: &[&str]) -> Output {
-        common::phux_cmd(PHUX)
+        common::phux_cmd(crate::runner::phux_bin())
             .envs(self.env())
             .args(args)
             .stdin(Stdio::null())
@@ -198,7 +197,7 @@ impl FarHost {
                 pixel_height: 0,
             })
             .expect("openpty");
-        let mut cmd = CommandBuilder::new(PHUX);
+        let mut cmd = CommandBuilder::new(crate::runner::phux_bin());
         cmd.args(args);
         cmd.env_clear();
         if let Some(path) = std::env::var_os("PATH") {
@@ -256,7 +255,7 @@ impl Drop for FarHost {
     fn drop(&mut self) {
         // The repair rung may have started a server of its own through the
         // fake ssh; stop whatever holds the socket, then the child.
-        let _ = common::phux_cmd(PHUX)
+        let _ = common::phux_cmd(crate::runner::phux_bin())
             .envs(self.env())
             .args(["kill", "--server"])
             .stdin(Stdio::null())

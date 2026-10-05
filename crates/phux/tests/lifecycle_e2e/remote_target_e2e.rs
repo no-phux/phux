@@ -17,8 +17,6 @@ use std::time::{Duration, Instant};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tempfile::TempDir;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// TEST-NET-3 (RFC 5737): never routed, so a probe cannot reach a real
 /// machine and cannot succeed.
 const OVERLAY: &str = "203.0.113.7";
@@ -90,7 +88,7 @@ impl RemoteHome {
             })
             .expect("openpty");
 
-        let mut cmd = CommandBuilder::new(PHUX);
+        let mut cmd = CommandBuilder::new(crate::runner::phux_bin());
         cmd.args(args);
         // No ambient `PHUX_*` from a live pane: rebuild the table.
         cmd.env_clear();

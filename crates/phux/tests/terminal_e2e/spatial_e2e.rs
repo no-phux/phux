@@ -20,7 +20,6 @@ use phux_client::layout_ops::{LayoutOps, LayoutOpsError, layout_key};
 use phux_protocol::ids::{GroupId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{FrameKind, Scope};
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const SESSION: &str = "work";
 const POLL: Duration = Duration::from_millis(50);
 /// Unattached no-TTY grid from `GET_SCREEN`. A tiled pane leaving this size
@@ -63,7 +62,7 @@ impl ServerGuard {
 
     fn command(&self, args: &[&str]) -> std::process::Output {
         let (verb, rest) = args.split_first().expect("verb");
-        common::phux_cmd(PHUX)
+        common::phux_cmd(crate::runner::phux_bin())
             .arg(verb)
             .arg("--socket")
             .arg(&self.socket)

@@ -79,7 +79,7 @@ pub fn phux_cmd(bin: impl AsRef<OsStr>) -> Command {
 /// (phux-n0du). Suites that strip `dhat:` lines or set extra env keep their
 /// own wrappers.
 pub fn run_with_xdg(args: &[&str], xdg_config_home: &Path) -> (i32, String, String) {
-    let out = phux_cmd(env!("CARGO_BIN_EXE_phux"))
+    let out = phux_cmd(crate::runner::phux_bin())
         .env("XDG_CONFIG_HOME", xdg_config_home)
         .args(args)
         .output()

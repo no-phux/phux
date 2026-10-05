@@ -14,8 +14,6 @@ use std::process::Output;
 
 use tempfile::TempDir;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 struct Sandbox {
     root: TempDir,
 }
@@ -58,7 +56,7 @@ impl Sandbox {
     /// no `XDG_*` bases (so every default derives from `HOME`), and a dead
     /// socket so nothing can dial a server.
     fn phux_with_home(&self, home: &Path, env: &[(&str, &Path)], args: &[&str]) -> Output {
-        let mut cmd = crate::common::phux_cmd(PHUX);
+        let mut cmd = crate::common::phux_cmd(crate::runner::phux_bin());
         for key in [
             "XDG_STATE_HOME",
             "XDG_CONFIG_HOME",

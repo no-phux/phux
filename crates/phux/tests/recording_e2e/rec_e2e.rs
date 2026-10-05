@@ -18,9 +18,6 @@ use std::time::{Duration, Instant};
 
 use phux_record::cast::{EventCode, read_cast};
 
-/// Path to the freshly-built `phux` binary, injected by cargo.
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// The pre-seeded session name every test drives against.
 const SESSION: &str = "work";
 
@@ -29,7 +26,7 @@ const POLL: Duration = Duration::from_millis(50);
 
 /// The committed demo asset, which doubles as this file's render fixture.
 fn demo_cast() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/assets/recording-demo.cast")
+    crate::runner::manifest_dir().join("../../docs/assets/recording-demo.cast")
 }
 
 /// A running `phux server`, killed and unlinked when the guard drops.
@@ -80,7 +77,7 @@ impl ServerGuard {
 /// parsed `--json` result object. No server is involved: `--from` re-renders
 /// an existing cast entirely offline.
 fn render(out: &Path, extra: &[&str]) -> serde_json::Value {
-    let output = common::phux_cmd(PHUX)
+    let output = common::phux_cmd(crate::runner::phux_bin())
         .arg("rec")
         .arg("--from")
         .arg(demo_cast())
@@ -220,7 +217,7 @@ fn rec_does_not_resize_the_recorded_pane() {
 fn rec_from_cast_renders_gif_and_apng_and_emits_one_json_object() {
     let dir = tempfile::tempdir().expect("temp dir");
     let out = dir.path().join("demo.gif");
-    let output = common::phux_cmd(PHUX)
+    let output = common::phux_cmd(crate::runner::phux_bin())
         .arg("rec")
         .arg("--from")
         .arg(demo_cast())
@@ -316,7 +313,7 @@ fn rec_from_cast_renders_gif_and_apng_and_emits_one_json_object() {
 fn rec_unknown_extension_fails_with_a_nonzero_exit_and_an_actionable_message() {
     let dir = tempfile::tempdir().expect("temp dir");
     let out = dir.path().join("demo.mov");
-    let output = common::phux_cmd(PHUX)
+    let output = common::phux_cmd(crate::runner::phux_bin())
         .arg("rec")
         .arg("--from")
         .arg(demo_cast())

@@ -8,6 +8,9 @@
 #![allow(clippy::print_stderr, reason = "failure must print retained artifacts")]
 #![allow(clippy::unwrap_used, reason = "acceptance harness")]
 
+#[path = "common/runner.rs"]
+mod runner;
+
 mod common;
 
 use std::ffi::OsString;
@@ -21,7 +24,6 @@ use std::time::{Duration, Instant};
 use common::strip_terminal_controls;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
-const BUILT_PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const PROFILE: &str = "first-five-e2e";
 const MARKER: &str = "FIRST_FIVE_COMMAND_RAN";
 const DEADLINE: Duration = Duration::from_secs(30);
@@ -56,9 +58,9 @@ impl Harness {
         }
 
         let phux = prefix.join(executable_name("phux"));
-        std::fs::copy(BUILT_PHUX, &phux).expect("copy built phux into fresh prefix");
+        std::fs::copy(crate::runner::phux_bin(), &phux).expect("copy built phux into fresh prefix");
 
-        let built_dir = Path::new(BUILT_PHUX)
+        let built_dir = Path::new(crate::runner::phux_bin())
             .parent()
             .expect("built phux has a parent directory");
         let built_mcp = built_dir.join(executable_name("phux-mcp"));

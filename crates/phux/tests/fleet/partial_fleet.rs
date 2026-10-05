@@ -80,7 +80,7 @@ fn run_verb(spec: ScriptSpec, args: &[&str]) -> Output {
 }
 
 fn phux() -> Command {
-    crate::common::phux_cmd(env!("CARGO_BIN_EXE_phux"))
+    crate::common::phux_cmd(crate::runner::phux_bin())
 }
 
 fn stderr_of(output: &Output) -> String {

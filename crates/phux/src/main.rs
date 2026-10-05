@@ -8,5 +8,6 @@
 #![forbid(unsafe_code)]
 
 fn main() -> std::process::ExitCode {
+    phux::set_checkout_distros(concat!(env!("CARGO_MANIFEST_DIR"), "/../../distros"));
     phux::run()
 }

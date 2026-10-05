@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const SESSION: &str = "work";
 
 /// Shortened detector timers: the fake `claude` is identifiable at exec.
@@ -99,7 +98,7 @@ impl ServerGuard {
     /// Start a `phux watch --json` child against this server.
     fn watch(&self, target: &str, extra: &[&str]) -> common::WatchChild {
         common::WatchChild::start(
-            Path::new(PHUX),
+            Path::new(crate::runner::phux_bin()),
             &self.socket,
             target,
             extra,

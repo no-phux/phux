@@ -11,8 +11,6 @@ use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 struct Fixture {
     server: common::AutoSpawnedServer,
     socket: PathBuf,
@@ -50,14 +48,14 @@ impl Fixture {
         std::fs::create_dir_all(socket.parent().expect("socket parent")).expect("runtime dir");
         std::fs::create_dir_all(dir.path().join("phux")).expect("config dir");
         Self {
-            server: common::AutoSpawnedServer::new(PHUX, socket.clone()),
+            server: common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone()),
             socket,
             dir,
         }
     }
 
     fn command(&self) -> Command {
-        let mut cmd = common::phux_cmd(PHUX);
+        let mut cmd = common::phux_cmd(crate::runner::phux_bin());
         cmd.env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.dir.path())
@@ -294,7 +292,8 @@ fn socket_environment_selects_the_coordinator_without_a_flag() {
     let mut fixture = Fixture::new();
     let profile_socket = fixture.socket.clone();
     fixture.socket = fixture.dir.path().join("environment.sock");
-    fixture.server = common::AutoSpawnedServer::new(PHUX, fixture.socket.clone());
+    fixture.server =
+        common::AutoSpawnedServer::new(crate::runner::phux_bin(), fixture.socket.clone());
     let output = bounded_output(
         fixture
             .command()
@@ -573,7 +572,7 @@ fn cancellation_preserves_a_coordinator_that_has_already_detached() {
     let child = fixture
         .command()
         .env("PATH", bin)
-        .env("PHUX_BIN", PHUX)
+        .env("PHUX_BIN", crate::runner::phux_bin())
         .args(["server", "--ensure"])
         .spawn()
         .expect("ensure");
@@ -599,7 +598,7 @@ fn successful_service_helper_is_reaped_and_coordinator_survives() {
         fixture
             .command()
             .env("PATH", bin)
-            .env("PHUX_BIN", PHUX)
+            .env("PHUX_BIN", crate::runner::phux_bin())
             .args(["server", "--ensure"]),
     );
     let helper = await_helper(&fixture);

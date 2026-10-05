@@ -2,6 +2,9 @@
 #![cfg(unix)]
 #![allow(clippy::unwrap_used, reason = "test fixture assertions")]
 
+#[path = "common/runner.rs"]
+mod runner;
+
 #[path = "common/ambient.rs"]
 mod common;
 
@@ -18,7 +21,7 @@ fn runtime_info_does_not_dial_write_logs_or_read_broken_config() {
     let listener = UnixListener::bind(&socket).unwrap();
     listener.set_nonblocking(true).unwrap();
 
-    let result = common::phux_cmd(env!("CARGO_BIN_EXE_phux"))
+    let result = common::phux_cmd(crate::runner::phux_bin())
         .args(["runtime-info", "--json"])
         .env("HOME", temp.path())
         .env("XDG_CONFIG_HOME", temp.path())
@@ -49,7 +52,7 @@ fn runtime_info_does_not_dial_write_logs_or_read_broken_config() {
 
 #[test]
 fn runtime_info_refuses_explicit_socket_rather_than_pretend_it_probed_that_server() {
-    let result = common::phux_cmd(env!("CARGO_BIN_EXE_phux"))
+    let result = common::phux_cmd(crate::runner::phux_bin())
         .args(["--socket", "/unused-fixture.sock", "runtime-info", "--json"])
         .output()
         .unwrap();

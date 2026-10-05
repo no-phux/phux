@@ -10,14 +10,15 @@
 )]
 
 use std::io::BufReader;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use phux_record::cast::{CastEvent, CastHeader, CastVersion, CastWriter, EventCode, read_cast};
 
 fn read_fixture() -> (CastHeader, Vec<CastEvent>) {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/assets/pi-live-fleet.cast");
+    let path = std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR"),
+    )
+    .join("../../docs/assets/pi-live-fleet.cast");
     let file = std::fs::File::open(path).expect("fixture is committed at docs/assets/");
     read_cast(BufReader::new(file)).expect("fixture parses as asciicast v3")
 }

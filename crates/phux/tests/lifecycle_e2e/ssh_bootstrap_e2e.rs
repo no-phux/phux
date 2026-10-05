@@ -26,8 +26,6 @@ use phux_protocol::caps::ServerFeature;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tempfile::TempDir;
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// How long a run has to reach the line a test waits for.
 const DEADLINE: Duration = Duration::from_secs(30);
 
@@ -58,7 +56,8 @@ impl Home {
         std::fs::create_dir_all(root.join("config/phux")).expect("config dir");
         std::fs::create_dir_all(root.join("run")).expect("runtime dir");
         std::fs::create_dir_all(root.join("bin")).expect("bin dir");
-        std::os::unix::fs::symlink(PHUX, root.join("bin/phux")).expect("phux on the fake PATH");
+        std::os::unix::fs::symlink(crate::runner::phux_bin(), root.join("bin/phux"))
+            .expect("phux on the fake PATH");
 
         let bootstrap = match remote {
             Remote::Current => format!(
@@ -121,7 +120,7 @@ impl Home {
                 pixel_height: 0,
             })
             .expect("openpty");
-        let mut cmd = CommandBuilder::new(PHUX);
+        let mut cmd = CommandBuilder::new(crate::runner::phux_bin());
         for key in common::ambient_phux_keys() {
             cmd.env_remove(key);
         }
@@ -174,7 +173,7 @@ impl Home {
 impl Drop for Home {
     /// Stop the server `phux bootstrap` auto-spawned, if any.
     fn drop(&mut self) {
-        let _ = common::phux_cmd(PHUX)
+        let _ = common::phux_cmd(crate::runner::phux_bin())
             .envs(self.env())
             .args(["kill", "--server"])
             .stdin(Stdio::null())
@@ -198,7 +197,7 @@ fn unhex(text: &str) -> Vec<u8> {
 #[ignore = "spawns a real server; runs in the e2e lane"]
 fn bootstrap_prints_one_line_that_is_enough_to_dial() {
     let home = Home::new(Remote::Current, "127.0.0.1");
-    let out = common::phux_cmd(PHUX)
+    let out = common::phux_cmd(crate::runner::phux_bin())
         .envs(home.env())
         .args([
             "bootstrap",

@@ -5,6 +5,9 @@
     reason = "retain each suite's common-module tests and state when consolidating binaries"
 )]
 
+#[path = "../common/runner.rs"]
+mod runner;
+
 mod kill_server_e2e;
 mod server_ensure;
 mod service_install_guard;

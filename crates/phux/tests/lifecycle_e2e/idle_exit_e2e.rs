@@ -17,9 +17,6 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-/// Path to the freshly-built `phux` binary, injected by cargo.
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// The pre-seeded session name every server here starts with.
 const SESSION: &str = "work";
 
@@ -198,7 +195,7 @@ impl AutoSpawned {
         // `--json` because a bare `phux new` attaches, and attaching refuses
         // without a tty on both ends. The document is unread here; what
         // matters is that the verb auto-spawns a server and returns.
-        let mut cmd = common::phux_cmd(PHUX);
+        let mut cmd = common::phux_cmd(crate::runner::phux_bin());
         cmd.args(["new", "--session", SESSION, "--json", "--socket"])
             .arg(&socket);
         match idle_secs {
@@ -223,7 +220,7 @@ impl AutoSpawned {
             String::from_utf8_lossy(&out.stderr),
         );
 
-        let mut server = common::AutoSpawnedServer::new(PHUX, socket.clone());
+        let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
         server.capture_pid();
         Self {
             socket,

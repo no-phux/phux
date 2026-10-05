@@ -44,13 +44,11 @@ mod table;
 
 use table::{DEPRECATED, DeprecatedSurface};
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
 /// Run `phux <args...>` under a scratch `XDG_CONFIG_HOME` and return
 /// `(exit_code, stdout, stderr)`, with `dhat:` build diagnostics stripped
 /// (the `--all-features` profile prints heap stats on clean exit).
 fn run_with_xdg(args: &[&str], xdg_config_home: &std::path::Path) -> (i32, String, String) {
-    let out = crate::common::phux_cmd(PHUX)
+    let out = crate::common::phux_cmd(crate::runner::phux_bin())
         .env("XDG_CONFIG_HOME", xdg_config_home)
         .args(args)
         .output()

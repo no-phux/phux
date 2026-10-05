@@ -57,10 +57,7 @@ fn format_candidates(candidates: &[PathBuf]) -> String {
 ///
 /// [`DistroError::Unreadable`] when the file cannot be canonicalized;
 /// [`DistroError::UnknownName`] when a bare name matches nothing.
-pub fn resolve_distro(
-    spec: &str,
-    checkout_distros: Option<&Path>,
-) -> Result<PathBuf, DistroError> {
+pub fn resolve_distro(spec: &str, checkout_distros: Option<&Path>) -> Result<PathBuf, DistroError> {
     resolve_distro_in(spec, &search_dirs(checkout_distros))
 }
 

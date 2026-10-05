@@ -1,5 +1,8 @@
 //! Plugin installation, launch, lifecycle, and update integration tests.
 
+#[path = "../common/runner.rs"]
+mod runner;
+
 #[path = "../common/ambient.rs"]
 mod common;
 
