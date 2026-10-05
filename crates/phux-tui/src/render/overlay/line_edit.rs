@@ -70,7 +70,8 @@ impl LineEdit {
             PhysicalKey::E => self.cursor = self.text.len(),
             PhysicalKey::B => self.cursor = self.prev_boundary(),
             PhysicalKey::F => self.cursor = self.next_boundary(),
-            PhysicalKey::H => self.delete_back(),
+            // BS (0x08) decodes as Ctrl+Backspace; it is also legacy C-h.
+            PhysicalKey::H | PhysicalKey::Backspace => self.delete_back(),
             PhysicalKey::D => self.delete_forward(),
             PhysicalKey::U => {
                 self.text.replace_range(..self.cursor, "");

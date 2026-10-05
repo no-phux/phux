@@ -428,8 +428,10 @@ fn c0_or_ascii_to_key(b: u8) -> Option<KeyEvent> {
         // mode the host TTY sends CR for Return and LF only for Ctrl+J, so this
         // split is unambiguous.
         0x0D => Some(make_named_key(PhysicalKey::Enter, ModSet::empty())),
-        // BS / DEL → Backspace.
-        0x08 | 0x7F => Some(make_named_key(PhysicalKey::Backspace, ModSet::empty())),
+        // DEL → Backspace. BS is what Ghostty (and xterm) send for
+        // Ctrl+Backspace; it is also legacy Ctrl+H, which the two share.
+        0x7F => Some(make_named_key(PhysicalKey::Backspace, ModSet::empty())),
+        0x08 => Some(make_named_key(PhysicalKey::Backspace, ModSet::CTRL)),
         // HT → Tab.
         0x09 => Some(make_named_key(PhysicalKey::Tab, ModSet::empty())),
         // Ctrl-A..Ctrl-Z (skipping the dedicated mappings above and ESC). LF
@@ -1162,6 +1164,39 @@ mod tests {
         );
     }
 
+    /// Encode `ev` the way the server would for a pane with `flags`, which is
+    /// also what native Ghostty sends for the same key.
+    fn encode(ev: &KeyEvent, flags: libghostty_vt::key::KittyKeyFlags) -> Vec<u8> {
+        use libghostty_vt::key::{Encoder, EncoderOptions, Event};
+        let term = libghostty_vt::Terminal::new(80, 24).expect("terminal");
+        let mut opts = EncoderOptions::from_terminal(&term).expect("options");
+        opts.kitty_flags = flags;
+        let mut enc = Encoder::new().expect("encoder");
+        enc.set_options(opts);
+        let mut lg = Event::new().expect("event");
+        lg.set_action(ev.action.into())
+            .set_key(ev.key.into())
+            .set_mods(ev.mods.into())
+            .set_utf8(ev.text.clone());
+        let mut out = Vec::new();
+        enc.encode_to_vec(&lg, &mut out).expect("encode");
+        out
+    }
+
+    /// Ctrl+Backspace arrives as BS (0x08) and must keep its Ctrl, so a pane
+    /// under kitty flags gets `CSI 127;5u` (word delete) instead of a plain
+    /// Backspace; a legacy pane still gets 0x08.
+    #[test]
+    fn bs_is_ctrl_backspace() {
+        use libghostty_vt::key::KittyKeyFlags;
+        let ev = one_key(b"\x08");
+        assert_eq!((ev.key, ev.mods), (PhysicalKey::Backspace, ModSet::CTRL));
+        assert_eq!(encode(&ev, KittyKeyFlags::DISAMBIGUATE), b"\x1b[127;5u");
+        assert_eq!(encode(&ev, KittyKeyFlags::DISABLED), b"\x08");
+        let ev = one_key(b"\x7f");
+        assert_eq!((ev.key, ev.mods), (PhysicalKey::Backspace, ModSet::empty()));
+    }
+
     /// Host Ghostty in legacy mode sends modified Enter as xterm
     /// modifyOtherKeys `CSI 27;mod;13~` (Cmd+Return is `CSI 27;9;13~`). It
     /// must decode to Enter+mods so the pane's encoder re-emits exactly what
@@ -1169,22 +1204,7 @@ mod tests {
     /// newline), the same `CSI 27;9;13~` otherwise.
     #[test]
     fn modify_other_keys_enter_round_trips_like_native_ghostty() {
-        use libghostty_vt::key::{Encoder, EncoderOptions, Event, KittyKeyFlags};
-        let encode = |ev: &KeyEvent, flags: KittyKeyFlags| {
-            let term = libghostty_vt::Terminal::new(80, 24).expect("terminal");
-            let mut opts = EncoderOptions::from_terminal(&term).expect("options");
-            opts.kitty_flags = flags;
-            let mut enc = Encoder::new().expect("encoder");
-            enc.set_options(opts);
-            let mut lg = Event::new().expect("event");
-            lg.set_action(ev.action.into())
-                .set_key(ev.key.into())
-                .set_mods(ev.mods.into())
-                .set_utf8(ev.text.clone());
-            let mut out = Vec::new();
-            enc.encode_to_vec(&lg, &mut out).expect("encode");
-            out
-        };
+        use libghostty_vt::key::KittyKeyFlags;
         for (wire, mods, kitty) in [
             (&b"\x1b[27;9;13~"[..], ModSet::SUPER, &b"\x1b[13;9u"[..]),
             (b"\x1b[27;2;13~", ModSet::SHIFT, b"\x1b[13;2u"),
