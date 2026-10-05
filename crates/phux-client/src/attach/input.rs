@@ -428,8 +428,10 @@ fn c0_or_ascii_to_key(b: u8) -> Option<KeyEvent> {
         // mode the host TTY sends CR for Return and LF only for Ctrl+J, so this
         // split is unambiguous.
         0x0D => Some(make_named_key(PhysicalKey::Enter, ModSet::empty())),
-        // BS / DEL → Backspace.
-        0x08 | 0x7F => Some(make_named_key(PhysicalKey::Backspace, ModSet::empty())),
+        // DEL → Backspace. BS is what Ghostty (and xterm) send for
+        // Ctrl+Backspace; it is also legacy Ctrl+H, which the two share.
+        0x7F => Some(make_named_key(PhysicalKey::Backspace, ModSet::empty())),
+        0x08 => Some(make_named_key(PhysicalKey::Backspace, ModSet::CTRL)),
         // HT → Tab.
         0x09 => Some(make_named_key(PhysicalKey::Tab, ModSet::empty())),
         // Ctrl-A..Ctrl-Z (skipping the dedicated mappings above and ESC). LF
@@ -625,6 +627,20 @@ const fn focus_report(final_byte: u8) -> Option<FocusEvent> {
 
 /// `CSI n ; mod ~`: navigation and function keys.
 fn dispatch_csi_tilde(parsed: &[u32], out: &mut Vec<InputEvent>) {
+    // xterm modifyOtherKeys form `CSI 27 ; mod ; keycode ~`. Ghostty sends it
+    // in legacy mode for modified Enter/Tab/Backspace (Cmd+Return is
+    // `CSI 27;9;13~`); decode it like the kitty `CSI keycode;mod u` it mirrors.
+    if let [27, code, keycode] = *parsed {
+        let Some(key) = kitty_keycode_to_physical(keycode) else {
+            tracing::trace!(keycode, "modifyOtherKeys unmapped keycode");
+            return;
+        };
+        out.push(InputEvent::Key(KeyEvent {
+            unshifted_codepoint: Some(keycode),
+            ..make_named_key(key, xterm_modifier_code(code))
+        }));
+        return;
+    }
     let n = parsed.first().copied().unwrap_or(1);
     let mods = parsed
         .get(1)
@@ -643,10 +659,13 @@ fn dispatch_csi_letter(parsed: &[u32], final_byte: u8, out: &mut Vec<InputEvent>
         tracing::trace!(final_byte, ?parsed, "unknown CSI sequence");
         return;
     };
-    let mods = match parsed {
+    let mut mods = match parsed {
         [1, code, ..] => xterm_modifier_code(*code),
         _ => ModSet::empty(),
     };
+    if final_byte == b'Z' {
+        mods |= ModSet::SHIFT;
+    }
     out.push(InputEvent::Key(make_named_key(key, mods)));
 }
 
@@ -957,7 +976,7 @@ const fn csi_letter_keycode(final_byte: u8) -> Option<PhysicalKey> {
         b'Q' => PhysicalKey::F2,
         b'R' => PhysicalKey::F3,
         b'S' => PhysicalKey::F4,
-        b'Z' => PhysicalKey::Tab, // CSI Z = Shift-Tab; modifier filled by caller
+        b'Z' => PhysicalKey::Tab, // CSI Z = Shift-Tab; dispatch_csi_letter adds Shift
         _ => return None,
     })
 }
@@ -1129,6 +1148,72 @@ mod tests {
         for &(input, key, mods) in cases {
             let ev = one_key(input);
             assert_eq!((ev.key, ev.mods), (key, mods), "input {input:?}");
+        }
+    }
+
+    /// `CSI Z` is Shift+Tab (Claude Code's mode toggle); dropping the Shift
+    /// delivered a plain Tab.
+    #[test]
+    fn csi_z_is_shift_tab() {
+        let ev = one_key(b"\x1b[Z");
+        assert_eq!((ev.key, ev.mods), (PhysicalKey::Tab, ModSet::SHIFT));
+        let ev = one_key(b"\x1b[1;5Z");
+        assert_eq!(
+            (ev.key, ev.mods),
+            (PhysicalKey::Tab, ModSet::SHIFT | ModSet::CTRL)
+        );
+    }
+
+    /// Encode `ev` the way the server would for a pane with `flags`, which is
+    /// also what native Ghostty sends for the same key.
+    fn encode(ev: &KeyEvent, flags: libghostty_vt::key::KittyKeyFlags) -> Vec<u8> {
+        use libghostty_vt::key::{Encoder, EncoderOptions, Event};
+        let term = libghostty_vt::Terminal::new(80, 24).expect("terminal");
+        let mut opts = EncoderOptions::from_terminal(&term).expect("options");
+        opts.kitty_flags = flags;
+        let mut enc = Encoder::new().expect("encoder");
+        enc.set_options(opts);
+        let mut lg = Event::new().expect("event");
+        lg.set_action(ev.action.into())
+            .set_key(ev.key.into())
+            .set_mods(ev.mods.into())
+            .set_utf8(ev.text.clone());
+        let mut out = Vec::new();
+        enc.encode_to_vec(&lg, &mut out).expect("encode");
+        out
+    }
+
+    /// Ctrl+Backspace arrives as BS (0x08) and must keep its Ctrl, so a pane
+    /// under kitty flags gets `CSI 127;5u` (word delete) instead of a plain
+    /// Backspace; a legacy pane still gets 0x08.
+    #[test]
+    fn bs_is_ctrl_backspace() {
+        use libghostty_vt::key::KittyKeyFlags;
+        let ev = one_key(b"\x08");
+        assert_eq!((ev.key, ev.mods), (PhysicalKey::Backspace, ModSet::CTRL));
+        assert_eq!(encode(&ev, KittyKeyFlags::DISAMBIGUATE), b"\x1b[127;5u");
+        assert_eq!(encode(&ev, KittyKeyFlags::DISABLED), b"\x08");
+        let ev = one_key(b"\x7f");
+        assert_eq!((ev.key, ev.mods), (PhysicalKey::Backspace, ModSet::empty()));
+    }
+
+    /// Host Ghostty in legacy mode sends modified Enter as xterm
+    /// modifyOtherKeys `CSI 27;mod;13~` (Cmd+Return is `CSI 27;9;13~`). It
+    /// must decode to Enter+mods so the pane's encoder re-emits exactly what
+    /// Ghostty would natively: `CSI 13;9u` under kitty flags (Claude Code's
+    /// newline), the same `CSI 27;9;13~` otherwise.
+    #[test]
+    fn modify_other_keys_enter_round_trips_like_native_ghostty() {
+        use libghostty_vt::key::KittyKeyFlags;
+        for (wire, mods, kitty) in [
+            (&b"\x1b[27;9;13~"[..], ModSet::SUPER, &b"\x1b[13;9u"[..]),
+            (b"\x1b[27;2;13~", ModSet::SHIFT, b"\x1b[13;2u"),
+            (b"\x1b[27;5;13~", ModSet::CTRL, b"\x1b[13;5u"),
+        ] {
+            let ev = one_key(wire);
+            assert_eq!((ev.key, ev.mods), (PhysicalKey::Enter, mods), "{wire:?}");
+            assert_eq!(encode(&ev, KittyKeyFlags::DISAMBIGUATE), kitty, "{wire:?}");
+            assert_eq!(encode(&ev, KittyKeyFlags::DISABLED), wire, "{wire:?}");
         }
     }
 
