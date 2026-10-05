@@ -37,6 +37,11 @@ rust_tools() {
     if cargo --version >/dev/null 2>&1 && cargo fmt --version >/dev/null 2>&1 && cargo clippy --version >/dev/null 2>&1; then
         ok "Cargo, rustfmt, clippy"
     else fail "Cargo/rustfmt/clippy" "$(env_remedy "bash scripts/setup-rust.sh $1")"; fi
+    # Advisory: Cargo works without mbx, but parallel worktrees then each pay a
+    # cold build and an unmanaged target/ (docs/SETUP.md#build-cache-mbx).
+    if command -v mbx >/dev/null 2>&1; then ok "$(mbx --version)"; else
+        printf 'note: mbx not on PATH; Cargo runs without the shared build cache\n  remedy: mise install, or nix develop (docs/SETUP.md#build-cache-mbx)\n'
+    fi
     need cc 'Install platform compiler tools; see docs/SETUP.md#platform-packages'
     rust_link_probe
     if [[ "$(uname -s)" == Linux ]]; then

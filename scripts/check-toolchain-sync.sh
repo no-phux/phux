@@ -21,8 +21,12 @@ fail() {
     failures=$((failures + 1))
 }
 
+# Accepts both `tool = "1.2.3"` and `tool = { version = "1.2.3", ... }`.
 mise_value() {
-    sed -n -E "s/^$1[[:space:]]*=[[:space:]]*\"([^\"]+)\".*/\1/p" "$MISE"
+    sed -n -E \
+        -e "s/^$1[[:space:]]*=[[:space:]]*\"([^\"]+)\".*/\1/p" \
+        -e "s/^$1[[:space:]]*=[[:space:]]*\\{.*version[[:space:]]*=[[:space:]]*\"([^\"]+)\".*/\1/p" \
+        "$MISE"
 }
 
 rust_version="$RUST_CHANNEL"
@@ -31,12 +35,16 @@ zig_version="$ZIG_VERSION"
 node_version="$(mise_value node)"
 bun_version="$(mise_value bun)"
 usage_version="$(mise_value usage)"
+mbx_version="$(mise_value mr-boxington)"
 
 [[ "$(mise_value rust)" == "$rust_version" ]] || fail "mise Rust must be $rust_version"
 [[ "$(mise_value zig)" == "$zig_version" ]] || fail "mise Zig must be $zig_version"
 [[ "$node_version" =~ ^[0-9]+$ ]] || fail "mise Node must use a major version"
 [[ "$bun_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "mise Bun must use an exact release"
 [[ "$usage_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "mise usage must use an exact release"
+[[ "$mbx_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "mise mr-boxington must use an exact release"
+grep -Eq '^rust[[:space:]]*=.*mr_boxington[[:space:]]*=[[:space:]]*true' "$MISE" ||
+    fail "mise Rust must set mr_boxington = true so Cargo runs through the pinned mbx"
 
 # The Nix shell must resolve the same compilers and runtimes as the Mise path.
 # Nothing checked this before, and the two had already parted: nixpkgs carried
@@ -64,6 +72,12 @@ grep -Fq 'miseTools.usage' "$FLAKE" || fail 'flake.nix must read the usage pin f
 grep -Fq "usageDigests" "$FLAKE" || fail 'flake.nix must declare usageDigests'
 grep -Eq "^[[:space:]]*\"$usage_version\" = \{" "$FLAKE" ||
     fail "flake.nix usageDigests has no entry for usage $usage_version; add the per-system hashes (see the comment there)"
+
+# mbx: same bun-style pin, and the shell must actually route Cargo through it.
+grep -Fq 'miseTools."mr-boxington"' "$FLAKE" || fail 'flake.nix must read the mbx pin from mise.toml (mbxVersion = miseTools."mr-boxington")'
+grep -Eq "^[[:space:]]*\"$mbx_version\" = \{" "$FLAKE" ||
+    fail "flake.nix mbxDigests has no entry for mbx $mbx_version; add the per-system hashes (see the comment there)"
+grep -Fq 'libexec/mbx:$PATH' "$FLAKE" || fail 'flake.nix shellHook must put the mbx Cargo wrapper first on PATH'
 
 while IFS=: read -r file line; do
     version="$(printf '%s\n' "$line" | sed -n -E 's/.*"([0-9]+\.[0-9]+)".*/\1/p')"
@@ -144,4 +158,4 @@ if [[ "$failures" -ne 0 ]]; then
     exit 1
 fi
 
-printf 'toolchain sync passed (Rust %s, Zig %s, Node %s, Bun %s, usage %s)\n' "$rust_version" "$zig_version" "$node_version" "$bun_version" "$usage_version"
+printf 'toolchain sync passed (Rust %s, Zig %s, Node %s, Bun %s, usage %s, mbx %s)\n' "$rust_version" "$zig_version" "$node_version" "$bun_version" "$usage_version" "$mbx_version"
