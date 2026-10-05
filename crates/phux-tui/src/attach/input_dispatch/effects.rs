@@ -526,13 +526,15 @@ pub(super) fn consume_chord(
     ctx: &mut DispatchCtx<'_>,
     key_event: &phux_protocol::input::key::KeyEvent,
 ) -> Option<ChordOutcome> {
-    use phux_protocol::input::key::KeyAction;
+    use phux_protocol::input::key::{KeyAction, ModSet};
     let resolver = ctx.resolver.as_deref_mut()?;
     if !matches!(key_event.action, KeyAction::Press) {
         return None;
     }
     let chord = phux_config::keybind::KeyChord {
-        modifiers: key_event.mods,
+        // A kitty-mode host reports Caps/Num Lock on `CSI u` keys (Ctrl+A is
+        // `CSI 97;69u` with Caps Lock on); bindings name held modifiers only.
+        modifiers: key_event.mods - (ModSet::CAPS_LOCK | ModSet::NUM_LOCK),
         key: key_event.key,
     };
     match resolver.feed(chord) {
