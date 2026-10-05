@@ -42,12 +42,20 @@ function fixture() {
 function sdk(cli: ReturnType<typeof fixture>["cli"]) {
   const handlers = new Map<string, Array<(event: any, ctx: ExtensionContext) => unknown>>();
   let id = "one";
+  let continuing = false;
   const api = { on(name: string, handler: any) { handlers.set(name, [...handlers.get(name) ?? [], handler]); } };
   registerOmpLifecycle(api as ExtensionAPI, cli, "@17");
   const ctx = { sessionManager: { getSessionId: () => id } } as ExtensionContext;
   return {
     setId(value: string) { id = value; },
-    async event(type: string, fields = {}) { for (const handler of handlers.get(type) ?? []) await handler({ type, ...fields }, ctx); },
+    async event(type: string, fields: Record<string, unknown> = {}) {
+      if (type === "agent_start" && !continuing) {
+        for (const handler of handlers.get("before_agent_start") ?? []) await handler({ type: "before_agent_start" }, ctx);
+      }
+      if (type === "agent_start") continuing = false;
+      if (type === "agent_end") continuing = fields.willContinue === true;
+      for (const handler of handlers.get(type) ?? []) await handler({ type, ...fields }, ctx);
+    },
   };
 }
 
@@ -82,7 +90,7 @@ describe("OMP host lifecycle", () => {
     expect(f.calls.filter(call => call.verb === "tool_end")).toHaveLength(0);
     expect(f.calls.filter(call => call.verb === "stop")).toHaveLength(0);
     host.setId("three"); await host.event("session_switch"); await host.event("session_shutdown");
-    expect(f.calls.filter(call => call.verb === "close").map(call => call.target)).toEqual(["@91", "@92", "@93"]);
+    expect(f.calls.filter(call => call.verb === "close").map(call => call.target)).toEqual(["@91"]);
   });
 
   for (const [name, alter] of Object.entries({
@@ -115,15 +123,16 @@ describe("OMP host lifecycle", () => {
     expect(f.mutations()).toEqual([]);
   });
 
-  test("same-ID reload and tree preserve active loop/tool completion", async () => {
+  test("active same-ID reload retires child even without an abort completion", async () => {
     const f = fixture(); const host = sdk(f.cli);
     await host.event("session_start"); await host.event("agent_start");
     await host.event("tool_execution_start", { toolName: "bash", toolCallId: "live" });
     await host.event("session_switch"); await host.event("session_tree");
     await host.event("tool_execution_end", { toolName: "bash", toolCallId: "live", isError: false });
     await host.event("agent_end");
-    expect(f.calls.filter(call => call.verb === "tool_end")).toHaveLength(1);
-    expect(f.calls.filter(call => call.verb === "stop")).toHaveLength(1);
+    expect(f.calls.filter(call => call.verb === "tool_end")).toHaveLength(0);
+    expect(f.calls.filter(call => call.verb === "stop")).toHaveLength(0);
+    expect(f.pane.agent_session).toBeNull();
     expect(f.calls.filter(call => call.verb === "open")).toHaveLength(1);
   });
 
@@ -145,7 +154,75 @@ describe("OMP host lifecycle", () => {
     await host.event("agent_start"); await host.event("agent_end");
     expect(f.calls.filter(call => call.verb === "stop")).toHaveLength(0);
     expect(f.calls.filter(call => call.verb === "prompt")).toHaveLength(1);
-    expect(f.calls.filter(call => call.verb === "open")).toHaveLength(2);
+    expect(f.calls.filter(call => call.verb === "open")).toHaveLength(1);
+  });
+
+  test("concurrent approvals stay blocked; receipts are native-ID and tool-name fenced", async () => {
+    const f = fixture(); const host = sdk(f.cli);
+    await host.event("session_start"); await host.event("agent_start");
+    const approval = { sessionId: "one", toolCallId: "a", toolName: "bash", reason: "secret", approved: false };
+    await host.event("tool_approval_requested", { ...approval, sessionId: "foreign" });
+    await host.event("tool_approval_requested", approval);
+    await host.event("tool_approval_requested", approval);
+    await host.event("tool_approval_requested", { ...approval, toolCallId: "b" });
+    const mark = f.calls.length;
+    await host.event("tool_execution_start", { toolCallId: "other", toolName: "bash" });
+    await host.event("tool_approval_resolved", { ...approval, toolName: "wrong" });
+    await host.event("tool_approval_resolved", approval);
+    expect(f.calls.slice(mark).filter(call => ["prompt", "tool_start", "state"].includes(call.verb))).toHaveLength(0);
+    await host.event("tool_approval_resolved", { ...approval, toolCallId: "b" });
+    await host.event("tool_approval_resolved", approval);
+    await host.event("tool_approval_requested", approval);
+    expect(f.calls.filter(call => call.verb === "notification").map(call => call.data)).toEqual([{ kind: "permission" }, { kind: "permission" }]);
+    expect(f.calls.filter(call => call.verb === "state").map(call => call.data)).toEqual([{ state: "working" }]);
+    expect(JSON.stringify(f.calls)).not.toContain("secret");
+  });
+
+  test("successive normal prompts and delivered automatic continuation remain authoritative", async () => {
+    const f = fixture(); const host = sdk(f.cli);
+    await host.event("session_start"); await host.event("agent_start");
+    await host.event("agent_end", { willContinue: true }); await host.event("agent_start");
+    expect(f.calls.filter(call => call.verb === "stop")).toHaveLength(0);
+    await host.event("agent_end"); await host.event("agent_start"); await host.event("agent_end");
+    expect(f.calls.filter(call => call.verb === "stop")).toHaveLength(2);
+    expect(f.calls.filter(call => call.verb === "prompt")).toHaveLength(3);
+    expect(f.calls.filter(call => call.verb === "close")).toHaveLength(0);
+  });
+
+  test("continuation using awaited before hook does not fall back", async () => {
+    const f = fixture(); const host = sdk(f.cli);
+    await host.event("session_start"); await host.event("agent_start");
+    await host.event("agent_end", { willContinue: true });
+    await host.event("before_agent_start"); await host.event("agent_start");
+    expect(f.calls.filter(call => call.verb === "close")).toHaveLength(0);
+    expect(f.calls.filter(call => call.verb === "stop")).toHaveLength(0);
+    expect(f.calls.filter(call => call.verb === "prompt")).toHaveLength(2);
+  });
+
+  test("fallback before startup closes even an adoptable existing child", async () => {
+    const f = fixture(); const lifecycle = new OmpLifecycle(f.cli, "@17");
+    await lifecycle.fallback();
+    await f.cli.agentSet("@17", { name: "omp", kind: "omp", session: "omp:one" });
+    f.pane.agent_session = { resource: "@99", provider: "omp", native_id: "one" };
+    await lifecycle.navigate("one");
+    expect(f.pane.agent_session).toBeNull();
+    expect(f.calls.filter(call => call.verb === "open")).toHaveLength(0);
+  });
+
+  test("overlapping starts without navigation retire the child", async () => {
+    const f = fixture(); const host = sdk(f.cli);
+    await host.event("session_start"); await host.event("agent_start"); await host.event("agent_start");
+    await host.event("agent_end");
+    expect(f.pane.agent_session).toBeNull();
+    expect(f.calls.filter(call => call.verb === "stop")).toHaveLength(0);
+  });
+
+  test("prepared prompt cancelled before producer start falls back on navigation", async () => {
+    const f = fixture(); const host = sdk(f.cli);
+    await host.event("session_start"); await host.event("before_agent_start");
+    await host.event("session_switch", { reason: "resume" });
+    expect(f.pane.agent_session).toBeNull();
+    expect(f.calls.filter(call => call.verb === "prompt")).toHaveLength(0);
   });
 
   test("outside phux does nothing", async () => {

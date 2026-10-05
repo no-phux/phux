@@ -152,23 +152,45 @@ An existing child is adopted only with a matching `omp:<native-session-id>`
 declaration, provider and native ID. Declarations contain identity only: never
 `state` or `attention`. No prompt text, tool arguments or tool results are emitted.
 
-Native `agent_start` reports `prompt`; tool execution reports names, call IDs and
-success; aggregate `agent_end` reports `stop` unless `willContinue` is true.
+An awaited, payload-free `before_agent_start` guard establishes which native loop
+may emit activity; it never reads or injects prompt text. Native `agent_start`
+reports `prompt`; tool execution reports names, call IDs and success. Aggregate
+`agent_end` reports `stop` unless `willContinue` is true. A delivered continuation
+allows another start, with or without the before hook, without inventing completion.
 Neither `turn_end` nor continuation-capable `session_stop` means completion.
-Same-ID transcript reload and tree navigation do not open duplicate children.
-Native ID changes retire the exact old child before binding a new one. Queued
-operations carry captured IDs and generations; native-ID changes invalidate old
-work. Same-ID navigation preserves active loop/tool completion. OMP 17.1.2 drains
-old loops before switch/new events, but not before branch/tree events. If a native
-ID changes through branch/tree during an active loop, subsequent activity reporting
-is disabled until extension restart because aggregate events contain no session
-ID; identity rotation and shutdown still proceed. This avoids falsely settling a
-new session with a late old-loop event.
-Every activity write checks current host ownership and addresses the exact child,
-not the parent selector. A replacement child is never closed or relabeled.
-Shutdown emits `session_end`, closes that child and clears only its matching
-declaration. UI asked-state and fleet-context injection are not implemented;
-existing detector rules remain authoritative for inferred UI state.
+
+Passive native `tool_approval_requested` / `tool_approval_resolved` hooks track
+session ID, tool-call ID and tool name. Requests emit metadata-free permission
+notifications: no question, answer capability, optional reason or tool input is
+captured. Concurrent approvals remain blocked until the last matching resolution;
+tool-start records cannot clear that block. Last resolution emits a stream-only
+working assertion, not a new prompt or completion. Declarations still never contain
+state or attention. Other UI questions and fleet-context injection are not covered.
+
+OMP 17.1.2 delivers generic activity concurrently and detaches aggregate extension
+notifications. Navigation/abort does **not** drain their delivery. The received
+aggregate is a usable barrier only because the SDK's FIFO subscriber gate first
+awaits preceding generic tool deliveries. An overlapping before/start, an unguarded
+start, or navigation during prepared/active/continuing work therefore retires the
+verified exact child and remains **declaration-only** until extension restart.
+This includes same-ID transcript reload, whose abort can discard completion.
+Same-ID tree navigation preserves the existing loop; idle reload is idempotent.
+Native ID rotation preserves the proven declaration while replacing its native
+identity. Queued writes retain captured IDs/generations. Missing or contradictory
+ownership stops mutation; replacement children are never closed or relabeled.
+
+Declaration-only fallback creates no silent authoritative child. Removing the
+owned child restores detector eligibility for working and approval-blocked state.
+Approval hooks cannot reopen a child in fallback, and neither reload nor later
+starts restore trust. Normal shutdown ends/closes the exact child and clears only
+the matching declaration.
+
+**Admission limitation:** the kernel detector can publish a bare OMP agent record
+before extension startup, without a native session owner. Current admission
+intentionally refuses that unowned record rather than overwriting it. Ordinary
+unassisted startup in that situation is not yet supported; the isolated approval
+smoke predeclares its own known native identity solely to test approved ownership.
+That setup is not proof of unassisted startup or permission to relax adoption.
 
 Reporting is best effort and independent of tools. CLI commands are bounded to
 250 ms; aggregate shutdown is bounded to 1.2 seconds, below OMP's 2-second callback
@@ -202,10 +224,17 @@ and adapter boundaries, not live-server behavior; real CLI semantics are covered
 by the shared runtime's checks and isolated-server integration verification.
 
 The optional lifecycle smoke packs the bundle, starts an owned disposable server
-on an explicit temporary socket, and uses the locked SDK's real session manager
-and `newSession`, `switchSession` and `branch` methods to verify automatic native
-navigation events, same-ID reload, rotation and sibling isolation. Activity and
-startup/shutdown events are scripted through the real runner, not model-generated;
-this is not a claim of automatic model-loop timing coverage. HOME, XDG, profile,
-credentials, tokens and TLS settings are isolated; no model/provider call is made.
-The server and temporary roots are removed on completion.
+on an explicit temporary socket, and uses the locked SDK's real session manager,
+runner and tool wrapper. A deferred UI always denies inert tools, demonstrating
+blocked state across concurrent approvals and honest resolution without executing
+action bodies. Earlier extension handlers deliberately delay before/start/tool/end
+delivery; the SDK's actual detached aggregate path, new/resume/fork, same-ID reload,
+exact-child retirement and restored detector blocking are exercised. Normal idle
+navigation and continuation are also covered. No live model reasoning is claimed.
+
+An owned inert `omp.js` process supplies kernel identification and a fixed approval
+screen. Its known native identity is explicitly predeclared for the approval and
+causality tests; bare-record admission and a separate unassisted CLI probe are logged,
+not presented as passing startup acceptance. HOME, XDG, profile, credentials, tokens
+and TLS settings are isolated; no model/provider call is made. Owned servers and
+temporary roots are removed on completion.

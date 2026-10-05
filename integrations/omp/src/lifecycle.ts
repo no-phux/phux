@@ -33,6 +33,15 @@ function samePlace(left: AgentPane, right: AgentPane): boolean {
   return left.terminal === right.terminal && left.session === right.session && left.window === right.window;
 }
 
+/** Admission is separate from writes: malformed/foreign evidence never gets
+ * repaired by declaration or adoption. */
+function admitsBinding(pane: AgentPane, id: string): boolean {
+  const declared = pane.sources.some(source => source.kind === "agent_record");
+  if (declared && !owns(pane, id)) throw new Error("Foreign OMP declaration");
+  if (pane.agent_session !== null && !owns(pane, id)) throw new Error("Unowned OMP child");
+  return declared;
+}
+
 /** Host-specific serialized writer. An uncertain operation disables this instance;
  * no mutation is retried, including after navigation. Tools are independent. */
 export class OmpLifecycle {
@@ -42,6 +51,7 @@ export class OmpLifecycle {
   private binding: Binding | undefined;
   private disabled = false;
   private stopped = false;
+  private declarationOnly = false;
   private deadline = Infinity;
   private pending: AbortController | undefined;
 
@@ -55,14 +65,20 @@ export class OmpLifecycle {
     return this.enqueue(async () => {
       if (!this.current(id, generation)) return;
       if (this.binding?.id === id) return;
-      await this.retire();
+      await this.rotateDeclaration(id);
       if (this.current(id, generation)) await this.bind(id, generation);
     });
   }
 
+  fallback(): Promise<void> {
+    this.declarationOnly = true;
+    ++this.generation;
+    return this.enqueue(() => this.closeChild());
+  }
+
   emit(id: string, generation: number, type: AgentEventType, data?: Readonly<Record<string, unknown>>): Promise<void> {
     return this.enqueue(async () => {
-      if (!this.current(id, generation)) return;
+      if (this.declarationOnly || !this.current(id, generation)) return;
       const binding = this.binding;
       if (!binding?.emitter.isOpen) return;
       await this.verify(binding);
@@ -146,14 +162,13 @@ export class OmpLifecycle {
   private async bind(id: string, generation: number): Promise<void> {
     const pane = await this.show();
     if (!this.current(id, generation)) return;
-    const declared = pane.sources.some(source => source.kind === "agent_record");
-    if (declared && !owns(pane, id)) throw new Error("Foreign OMP declaration");
-    if (pane.agent_session !== null && !owns(pane, id)) throw new Error("Unowned OMP child");
+    const declared = admitsBinding(pane, id);
     const binding = this.createBinding(id, pane);
     this.binding = binding;
     if (!declared) await this.command(options => this.cli.agentSet(this.host!, declaration(id), options));
     await this.verify(binding);
     if (!this.current(id, generation)) return;
+    if (this.declarationOnly) return this.closeChild();
     if (!binding.emitter.isOpen) await binding.emitter.bind(this.host!, id);
     if (!binding.emitter.isOpen) this.disabled = true;
   }
@@ -179,14 +194,28 @@ export class OmpLifecycle {
     return binding;
   }
 
-  private async retire(): Promise<void> {
+  private async closeChild(): Promise<void> {
     const binding = this.binding;
     if (!binding) return;
     await this.verify(binding);
     await binding.emitter.finish();
-    // Clear only after exact child close AND a fresh matching declaration proof.
     binding.child = null;
     await this.verify(binding);
+  }
+
+  private async rotateDeclaration(id: string): Promise<void> {
+    const binding = this.binding;
+    if (!binding) return;
+    await this.closeChild();
+    // Preserve the proven declaration across rotation; clearing it would open
+    // a window for the detector to publish an unowned record before admission.
+    await this.command(options => this.cli.agentSet(this.host!, declaration(id), options));
+    binding.id = id;
+  }
+
+  private async retire(): Promise<void> {
+    if (!this.binding) return;
+    await this.closeChild();
     await this.command(options => this.cli.agentClear(this.host!, options));
     this.binding = undefined;
   }
@@ -194,52 +223,112 @@ export class OmpLifecycle {
 
 export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string): OmpLifecycle {
   const lifecycle = new OmpLifecycle(cli, host);
-  let loop: ReturnType<OmpLifecycle["token"]>;
-  let ambiguousLoop = false;
-  const tools = new Map<string, NonNullable<typeof loop>>();
-  const navigate = (event: { type: string }, ctx: ExtensionContext) => {
-    const id = ctx.sessionManager.getSessionId();
-    if (lifecycle.token()?.id === id) return lifecycle.navigate(id);
-    // OMP 17.1.2 switch/new disconnect and abort/drain post-prompt tasks before
-    // publishing the new ID (agent-session.ts switchSession/newSession/abort).
-    // branch/tree do not offer that barrier, nor do activity events carry IDs.
-    // If navigated during a loop, fail closed for subsequent activity rather
-    // than attributing a late aggregate end to a newly started loop.
-    if (loop && (event.type === "session_branch" || event.type === "session_tree")) ambiguousLoop = true;
-    loop = undefined;
+  type Token = NonNullable<ReturnType<OmpLifecycle["token"]>>;
+  let phase: "idle" | "prepared" | "active" | "continuing" | "fallback" = "idle";
+  let token: Token | undefined;
+  const tools = new Map<string, string>();
+  const endedTools = new Set<string>();
+  const approvals = new Map<string, string>();
+  const resolvedApprovals = new Set<string>();
+
+  function fallback(): Promise<void> {
+    phase = "fallback";
+    token = undefined;
     tools.clear();
-    return lifecycle.navigate(id);
+    approvals.clear();
+    return lifecycle.fallback();
+  }
+
+  function emit(type: AgentEventType, data?: Readonly<Record<string, unknown>>): Promise<void> | undefined {
+    if (token) return lifecycle.emit(token.id, token.generation, type, data);
+  }
+
+  function activeApproval(event: { sessionId: string; toolCallId: string; toolName: string }): boolean {
+    return token !== undefined && event.sessionId === token.id &&
+      event.toolCallId.length > 0 && event.toolName.length > 0;
+  }
+
+  const navigate = async (event: { type: string }, ctx: ExtensionContext) => {
+    const id = ctx.sessionManager.getSessionId();
+    const sameId = lifecycle.token()?.id === id;
+    if (sameId && event.type === "session_tree") return;
+    if (phase !== "idle" && phase !== "fallback") await fallback();
+    token = undefined;
+    tools.clear();
+    endedTools.clear();
+    approvals.clear();
+    resolvedApprovals.clear();
+    await lifecycle.navigate(id);
   };
   pi.on("session_start", navigate);
   pi.on("session_switch", navigate);
   pi.on("session_branch", navigate);
   pi.on("session_tree", navigate);
+
+  // This is a payload-free causal guard, NOT prompt reporting. In 17.1.2
+  // AgentSession.prompt awaits emitBeforeAgentStart before agent.prompt. Generic
+  // agent/tool notifications are concurrent; their receipt alone is not a guard.
+  pi.on("before_agent_start", () => {
+    if (phase === "fallback") return;
+    if (phase !== "idle" && phase !== "continuing") return fallback();
+    token = lifecycle.token();
+    phase = "prepared";
+    tools.clear();
+    endedTools.clear();
+  });
   pi.on("agent_start", () => {
-    if (ambiguousLoop) return;
-    loop = lifecycle.token();
-    if (loop) return lifecycle.emit(loop.id, loop.generation, "prompt");
+    if (phase === "fallback") return;
+    if (phase !== "prepared" && phase !== "continuing") return fallback();
+    phase = "active";
+    if (approvals.size === 0) return emit("prompt");
   });
   pi.on("tool_execution_start", event => {
-    if (!loop) return;
-    tools.set(event.toolCallId, loop);
-    return lifecycle.emit(loop.id, loop.generation, "tool_start", { tool_name: event.toolName, tool_use_id: event.toolCallId });
+    if (!token || endedTools.has(event.toolCallId) || tools.has(event.toolCallId)) return;
+    tools.set(event.toolCallId, event.toolName);
+    // tool_start asserts working: never clear another concurrent approval.
+    if (approvals.size === 0) return emit("tool_start", { tool_name: event.toolName, tool_use_id: event.toolCallId });
   });
   pi.on("tool_execution_end", event => {
-    const token = tools.get(event.toolCallId);
+    if (!token || endedTools.has(event.toolCallId)) return;
+    const name = tools.get(event.toolCallId);
+    if (name !== undefined && name !== event.toolName) return fallback();
+    endedTools.add(event.toolCallId);
     tools.delete(event.toolCallId);
-    if (token) return lifecycle.emit(token.id, token.generation, "tool_end", {
-      tool_name: event.toolName, tool_use_id: event.toolCallId, ok: !event.isError,
-    });
+    return emit("tool_end", { tool_name: event.toolName, tool_use_id: event.toolCallId, ok: !event.isError });
+  });
+  pi.on("tool_approval_requested", event => {
+    if (!activeApproval(event) || resolvedApprovals.has(event.toolCallId)) return;
+    if (approvals.has(event.toolCallId)) return;
+    approvals.set(event.toolCallId, event.toolName);
+    return emit("notification", { kind: "permission" });
+  });
+  pi.on("tool_approval_resolved", event => {
+    if (!activeApproval(event) || approvals.get(event.toolCallId) !== event.toolName) return;
+    approvals.delete(event.toolCallId);
+    resolvedApprovals.add(event.toolCallId);
+    // The wrapper resumes after either approval or denial; neither is completion.
+    if (approvals.size === 0) return emit("state", { state: "working" });
   });
   pi.on("agent_end", event => {
-    if (event.willContinue === true || !loop) return;
-    const token = loop;
-    loop = undefined;
-    return lifecycle.emit(token.id, token.generation, "stop");
+    if (!token) return;
+    if (approvals.size > 0) return fallback();
+    // agent-session.ts #emitSessionEvent's FIFO subscriber gate drains earlier
+    // generic tool deliveries BEFORE launching this detached notification. Thus
+    // a RECEIVED aggregate end is a barrier; abort()/navigation is not one.
+    if (event.willContinue === true) {
+      phase = "continuing";
+      tools.clear();
+      endedTools.clear();
+      return;
+    }
+    const result = emit("stop");
+    phase = "idle";
+    token = undefined;
+    return result;
   });
   pi.on("session_shutdown", () => {
-    loop = undefined;
-    tools.clear();
+    token = undefined;
+    approvals.clear();
     return lifecycle.shutdown();
   });
   return lifecycle;
