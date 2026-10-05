@@ -9,6 +9,14 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.51.0](https://github.com/no-phux/phux/compare/v0.50.1...v0.51.0) (2026-10-05)
+
+
+### Features
+
+* **opencode:** report active phux pane from V2 terminal client ([27210f1](https://github.com/no-phux/phux/commit/27210f17a3f17af137caca572208a8dad8ddd75c))
+* **site:** simplify the landing page ([#989](https://github.com/no-phux/phux/issues/989)) ([f403045](https://github.com/no-phux/phux/commit/f4030455e5dfc72d520ff1845563bf1d1fde48c2))
+
 ## [0.50.1](https://github.com/no-phux/phux/compare/v0.50.0...v0.50.1) (2026-10-05)
 
 
