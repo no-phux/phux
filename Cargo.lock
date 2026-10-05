@@ -2433,6 +2433,7 @@ dependencies = [
  "phux-client-runtime",
  "phux-config",
  "phux-protocol",
+ "phux-server",
  "phux-server-testkit",
  "portable-pty",
  "serde_json",

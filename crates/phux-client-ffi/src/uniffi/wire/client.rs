@@ -11,6 +11,8 @@ use phux_client_runtime::control::SpawnRequest;
 
 use crate::uniffi::engine;
 
+#[cfg(test)]
+mod quic_live;
 mod search;
 
 const SCROLLBACK_LINES: u32 = 1000;
