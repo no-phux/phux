@@ -81,6 +81,19 @@ test("host cancellation interrupts an in-flight CLI operation", async () => {
   }
 });
 
+test("shared service does not claim a pane without explicit server lifecycle opt-in", async () => {
+  process.env.PHUX_TERMINAL_ID = "7";
+  const calls = fakeCli();
+  const host = await setupHost(false);
+  try {
+    await host.event({ type: "session.status", data: { sessionID: "a", status: { type: "busy" } } });
+    expect(calls.identities).toEqual([]);
+    expect(calls.sessionWrites).toEqual([]);
+  } finally {
+    await host.close();
+  }
+});
+
 function fakeCli() {
   let next = 10;
   const snapshots: string[] = [];
@@ -110,12 +123,12 @@ function fakeCli() {
   return { snapshots, identities, sessionWrites };
 }
 
-async function setupHost() {
+async function setupHost(serverLifecycle = true) {
   const tools: Record<string, Info> = {};
   const hooks: Record<string, (event: unknown) => Promise<void>> = {};
   let deliver!: (entry: { event: unknown; done: () => void } | undefined) => void;
   const context = {
-    options: { contextAwareness: false },
+    options: { contextAwareness: false, serverLifecycle },
     tool: {
       transform: async (transform: (editor: unknown) => void) => transform({ add: (tool: Info) => { tools[tool.name] = tool; } }),
       hook: async (name: string, hook: (event: unknown) => Promise<void>) => { hooks[name] = hook; },

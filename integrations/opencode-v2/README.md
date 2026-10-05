@@ -13,8 +13,9 @@ bun install --frozen-lockfile
 bun run build
 ```
 
-OpenCode loads the bundled `index.js`, not `src/index.ts`. The bundle includes
-phux's shared runtime; only the pinned OpenCode SDK is an external dependency.
+OpenCode loads bundled `index.js` for server tools and `tui.js` for the terminal
+companion, not TypeScript sources. The bundles include phux's shared runtime;
+the TUI entrypoint uses the host's `solid-js` peer dependency.
 Configure OpenCode V2 with an absolute package directory:
 
 ```jsonc
@@ -32,6 +33,23 @@ Configure OpenCode V2 with an absolute package directory:
 Omit `socket` to use the phux CLI's environment/default selection. `phux` must
 be available on PATH, or set the plugin's `executable` option to its path.
 This repository's `opencode.jsonc` already selects the local package.
+
+The terminal companion must also be listed in global `cli.json` (`plugins`),
+since the shared OpenCode service cannot know which phux pane is displaying a
+session. It claims only the session visible in this TUI and clears the prior
+claim on navigation or exit. This is what lets phux-mobile link a pane to its
+native OpenCode view by exact `opencode:<session id>` identity:
+
+```json
+{ "plugins": ["/absolute/path/to/phux/integrations/opencode-v2"] }
+```
+
+The CLI companion does nothing outside a phux pane. The server plugin may
+still supply tools globally, but **do not assume its `PHUX_TERMINAL_ID` names
+the active TUI pane** when the service is shared. Server-side lifecycle is off
+by default to avoid competing claims; `serverLifecycle: true` is only for a
+dedicated server permanently bound to one pane without the CLI companion.
+Tools need an explicit target unless the service was started inside that pane.
 
 To move the package without the checkout, build it, run `bun pm pack`, and
 install the resulting tarball in the destination project with
@@ -58,7 +76,7 @@ selection. Output is bounded; run and wait operations default to a 30-second
 phux deadline plus a 5-second local subprocess allowance. Short calls default
 to 10 seconds. Native tool cancellation propagates to the CLI subprocess.
 
-When launched in phux, `PHUX_TERMINAL_ID` identifies OpenCode's own pane. Tools
+When the server itself is launched in phux, `PHUX_TERMINAL_ID` identifies its pane. Tools
 refuse shell input, key injection, paste, and agent prompts into that pane;
 reads are allowed. Create a sibling for shell work. Lifecycle metadata stays on
 the hosting pane and never follows a selected worker. For a standalone launch,
@@ -69,6 +87,8 @@ Permission requests remain in OpenCode. The plugin observes permission events
 but never approves them or rewrites host permission policy. Lifecycle records
 contain identity and event metadata, not prompt bodies or a forced agent state.
 Only one OpenCode session at a time owns the hosting pane's lifecycle stream.
+The CLI companion keeps that owner in sync with the visible tab even when the
+service is shared or multiple terminal clients show different sessions.
 
 The context hook adds the parent-pane rule and fleet context. Set
 `PHUX_CONTEXT_AWARENESS=0` or `contextAwareness: false` to disable fleet context;

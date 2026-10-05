@@ -40,7 +40,9 @@ phux alone does not install it. For a published integration, use
    from the [plugin load instructions](../../integrations/opencode-v2/README.md#build-and-load)
    into your project's OpenCode configuration, changing the absolute package
    and socket paths to your own. This is source loading, not an npm install.
-4. Start `opencode` in a phux pane so it inherits `PHUX_TERMINAL_ID`. Ask it to
+4. Add the package to global `cli.json` as described in the package README,
+   then start `opencode` in a phux pane so its terminal-side companion inherits
+   `PHUX_TERMINAL_ID`. Ask it to
    use `phux_list`, then `phux_create` to create a sibling shell for work.
 5. Ask for a `phux_snapshot` of that sibling before writing. **Expected:** the
    returned screen is a shell, not the OpenCode TUI. Then ask it to run `pwd`
@@ -64,9 +66,11 @@ package. This package remains private and is not published to a public registry.
 
 - OpenCode native permission policy still controls tool execution. This plugin
   does not approve requests, bypass hooks, or replace the host's shell executor.
-- The hosting terminal is identified by `PHUX_TERMINAL_ID`. Controlled siblings
-  are not labelled as OpenCode. A standalone launch may explicitly use
-  `PHUX_TARGET` as its fixed identity; selecting a worker never changes it.
+- The hosting terminal is identified by the TUI's `PHUX_TERMINAL_ID`, not a
+  shared background server's environment. Controlled siblings are not labelled
+  as OpenCode. A dedicated server may explicitly opt into server lifecycle
+  reporting with `serverLifecycle: true` and a fixed `PHUX_TARGET` identity;
+  do not combine it with the CLI companion on the same pane.
 - Tool-created targets belong to the calling session's selection. Deleting that
   session removes the selection and its cached context. Other sessions keep
   their own selections.
@@ -82,9 +86,11 @@ does not provide phux federation. Use phux attach to view the pane.
 
 ## Lifecycle
 
-The plugin emits the closed AgentSession record types. It writes identity
-only, never a declared `state`. Prompt text and tool input stay off the
-stream. See the [harness author guide](./harness.md).
+The CLI companion publishes the currently visible session, switching ownership
+when OpenCode tabs change and clearing it on exit. It writes identity only,
+never a declared `state`. Prompt text and tool input stay off the stream. The
+server plugin continues to provide tools but does not report pane lifecycle by
+default. See the [harness author guide](./harness.md).
 
 The plugin does not attach a viewer inside OpenCode's terminal widget or proxy
 its HTTP API. Use phux's own attach surface for terminal viewing; see
