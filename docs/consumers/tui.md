@@ -323,7 +323,11 @@ the TUI's ordinary subscription renders that the same as an explicit
 `phux give`), a satellite becoming unreachable, a pane dying with a
 non-zero exit (clean `exit 0` and a kill you requested are silent), and
 re-attach after a server restart. An empty `[status]` reserves no row, so
-notices degrade to log lines.
+notices degrade to log lines. A pane whose server history becomes
+unavailable (pruned, tombstoned, or over the history limit) raises a
+`scrollback unavailable` notice and keeps a `no-scrollback` token in the
+supervisory badge while focused, until a fresh bootstrap restores history.
+Scrollback this client already holds still scrolls.
 When the last pane of a default session is killed, the TUI tears down and prints one
 cooked-terminal line naming the exit. Natural `exit` of that last shell is
 replaced in place by the server, so the attach stays on a fresh prompt.

@@ -189,6 +189,7 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
     if let Some(verdict) = kernel_route_verdict(&kernel_route, &frame) {
         return verdict;
     }
+    let history_chrome_dirty = apply_history_health(panes, &kernel_route);
     // Per-frame dispatch span (debug). Its CLOSE duration is apply+paint cost;
     // fields are recorded in the arms below.
     let frame_span = tracing::debug_span!(
@@ -223,7 +224,23 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
         defer_paint,
         frame_span: &frame_span,
     };
-    dispatch_frame(&mut ctx, frame, kernel_route)
+    let mut outcome = dispatch_frame(&mut ctx, frame, kernel_route)?;
+    outcome.chrome_dirty |= history_chrome_dirty;
+    Ok(outcome)
+}
+
+/// Fold the frame's per-pane history health into the pane slots. Returns
+/// whether any mark flipped, so the supervisory badge repaints.
+fn apply_history_health(panes: &mut HashMap<ResourceId, PaneSlot>, route: &KernelRoute) -> bool {
+    let mut changed = false;
+    for (terminal_id, &degraded) in &route.history_degraded {
+        let Some(slot) = panes.get_mut(terminal_id) else {
+            continue;
+        };
+        changed |= slot.history_degraded != degraded;
+        slot.history_degraded = degraded;
+    }
+    changed
 }
 
 /// The kernel's own routing verdicts: a rejected frame is a protocol error; a

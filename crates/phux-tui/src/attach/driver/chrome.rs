@@ -43,16 +43,21 @@ fn supervisory_badge(
         slot.input_holder,
         own_client_id,
         id.host().map(phux_protocol::SatelliteHost::as_str),
+        slot.history_degraded,
     )
 }
 
-/// Pure formatter behind [`supervisory_badge`].
+/// Pure formatter behind [`supervisory_badge`]: the facts that hold, host
+/// first, as space-separated tokens padded by one space each side.
 fn format_supervisory_badge(
     frozen: bool,
     input_holder: Option<ClientId>,
     own_client_id: Option<ClientId>,
     host: Option<&str>,
+    history_degraded: bool,
 ) -> Option<String> {
+    let host = host.filter(|host| !host.is_empty()).map(str::to_owned);
+    let frozen = frozen.then(|| "frozen".to_owned());
     let wheel = input_holder.map(|holder| {
         if Some(holder) == own_client_id {
             "wheel".to_owned()
@@ -60,20 +65,12 @@ fn format_supervisory_badge(
             format!("wheel:c{}", holder.get())
         }
     });
-    let base = match (frozen, wheel) {
-        (false, None) => None,
-        (true, None) => Some(" frozen ".to_owned()),
-        (false, Some(w)) => Some(format!(" {w} ")),
-        (true, Some(w)) => Some(format!(" frozen {w} ")),
-    };
-    match (host.filter(|host| !host.is_empty()), base) {
-        (None, badge) => badge,
-        (Some(host), None) => Some(format!(" {host} ")),
-        (Some(host), Some(badge)) => {
-            let inner = badge.trim();
-            Some(format!(" {host} {inner} "))
-        }
-    }
+    let history = history_degraded.then(|| "no-scrollback".to_owned());
+    let tokens: Vec<String> = [host, frozen, wheel, history]
+        .into_iter()
+        .flatten()
+        .collect();
+    (!tokens.is_empty()).then(|| format!(" {} ", tokens.join(" ")))
 }
 
 /// The attention hint, counting asking panes across ALL windows (the point is
@@ -490,37 +487,72 @@ mod tests {
     fn supervisory_badge_formats_every_state() {
         let me = ClientId::new(7);
         let other = ClientId::new(9);
-        assert_eq!(format_supervisory_badge(false, None, Some(me), None), None);
         assert_eq!(
-            format_supervisory_badge(true, None, Some(me), None).as_deref(),
+            format_supervisory_badge(false, None, Some(me), None, false),
+            None
+        );
+        assert_eq!(
+            format_supervisory_badge(true, None, Some(me), None, false).as_deref(),
             Some(" frozen ")
         );
         assert_eq!(
-            format_supervisory_badge(false, Some(me), Some(me), None).as_deref(),
+            format_supervisory_badge(false, Some(me), Some(me), None, false).as_deref(),
             Some(" wheel ")
         );
         assert_eq!(
-            format_supervisory_badge(false, Some(other), Some(me), None).as_deref(),
+            format_supervisory_badge(false, Some(other), Some(me), None, false).as_deref(),
             Some(" wheel:c9 ")
         );
         assert_eq!(
-            format_supervisory_badge(true, Some(other), Some(me), None).as_deref(),
+            format_supervisory_badge(true, Some(other), Some(me), None, false).as_deref(),
             Some(" frozen wheel:c9 ")
         );
         // No own id yet (pre-ATTACHED): a holder still renders by id, never "you".
         assert_eq!(
-            format_supervisory_badge(false, Some(me), None, None).as_deref(),
+            format_supervisory_badge(false, Some(me), None, None, false).as_deref(),
             Some(" wheel:c7 ")
         );
         // A satellite pane badges its host on the status bar,
         // beside any lease or brake already shown.
         assert_eq!(
-            format_supervisory_badge(false, None, Some(me), Some("devbox")).as_deref(),
+            format_supervisory_badge(false, None, Some(me), Some("devbox"), false).as_deref(),
             Some(" devbox ")
         );
         assert_eq!(
-            format_supervisory_badge(true, None, Some(me), Some("devbox")).as_deref(),
+            format_supervisory_badge(true, None, Some(me), Some("devbox"), false).as_deref(),
             Some(" devbox frozen ")
+        );
+        // Lost progressive history is a persistent token, last in the badge.
+        assert_eq!(
+            format_supervisory_badge(false, None, Some(me), None, true).as_deref(),
+            Some(" no-scrollback ")
+        );
+        assert_eq!(
+            format_supervisory_badge(true, Some(me), Some(me), Some("devbox"), true).as_deref(),
+            Some(" devbox frozen wheel no-scrollback ")
+        );
+    }
+
+    /// A pane whose progressive history is unavailable keeps a badge after
+    /// the transient notice expires; an exited pane's mark still wins.
+    #[test]
+    fn a_history_degraded_pane_badges_no_scrollback_on_the_status_bar() {
+        use crate::attach::pane_state::ExitMark;
+        let id = ResourceId::local(4);
+        let mut slot = crate::attach::pane_state::PaneSlot::new().expect("slot");
+        slot.history_degraded = true;
+        let mut panes = HashMap::from([(id.clone(), slot)]);
+        assert_eq!(
+            supervisory_badge(&panes, Some(&id), None).as_deref(),
+            Some(" no-scrollback ")
+        );
+        panes.get_mut(&id).expect("slot").exited = Some(ExitMark {
+            status: Some(1),
+            signal: None,
+        });
+        assert_eq!(
+            supervisory_badge(&panes, Some(&id), None).as_deref(),
+            Some("[ exited 1 ]")
         );
     }
 
