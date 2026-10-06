@@ -664,7 +664,11 @@ Workspace restore and live update handoff have different guarantees:
   tree with fresh window identities, confirmed by read-back. A session that
   fails partway is rolled back and named; the rest still restores, and the
   command exits non-zero if any session failed
-  ([ADR-0129](./adr/0129-projections-are-named-by-key.md)).
+  ([ADR-0129](./adr/0129-projections-are-named-by-key.md)). A native agent
+  session is archived for a `phux launch` pane and for an agent started in a
+  plain shell whose `AgentSession` provider an enabled integration claims and
+  can resume; save warns about any agent pane that will come back as a shell
+  ([ADR-0151](./adr/0151-live-agent-sessions-bridge-into-native-restore.md)).
 - **Live update handoff:** `phux upgrade` keeps existing PTYs alive
   across a server binary re-exec. `phux update` is the user-facing verb
   built on that handoff: it resolves the published release, verifies the

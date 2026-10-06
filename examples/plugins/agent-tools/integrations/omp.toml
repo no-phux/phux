@@ -1,0 +1,39 @@
+schema_version = 1
+id = "omp"
+display_name = "Oh My Pi"
+kind = "terminal-agent"
+description = "Oh My Pi (omp) coding agent running inside a phux-managed terminal."
+package_version = "0.1.0"
+package_status = "public"
+first_party = true
+capabilities = ["terminal-control", "code-editing", "human-question"]
+
+[detect]
+mode = "opt-in"
+command = "omp"
+env = "PHUX_AGENT_TOOLS_DETECT"
+
+[link]
+mode = "state-file"
+default_session = "agent-bench-omp"
+
+[session_identity]
+# omp (`@oh-my-pi/pi-coding-agent`, src/cli/flag-tables.ts and main.ts):
+# `--resume <id>` reopens a session by id or prefix, and the interactive exit
+# hint prints `omp --resume <sessionManager.getSessionId()>`, the id the
+# `@phux/omp` extension opens its AgentSession with (ADR-0151). omp has no
+# caller-supplied fresh-session id, so a plain `phux launch omp` is not
+# restorable until the extension reports its id.
+mode = "native-or-phux"
+native_env = "PHUX_OMP_SESSION_ID"
+restore = "external-cli"
+resume_args = ["--resume", "${PHUX_AGENT_SESSION_ID}"]
+
+[agent_identity]
+name = "omp"
+kind = "omp"
+
+[launch]
+command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "omp", "--kind", "omp", "--", "omp"]
+required_executables = ["omp"]
+working_directory = "workspace"

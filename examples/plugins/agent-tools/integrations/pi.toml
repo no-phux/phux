@@ -1,0 +1,40 @@
+schema_version = 1
+id = "pi"
+display_name = "Pi"
+kind = "terminal-agent"
+description = "Pi coding agent running inside a phux-managed terminal."
+package_version = "0.1.0"
+package_status = "public"
+first_party = true
+capabilities = ["terminal-control", "code-editing", "human-question"]
+
+[detect]
+mode = "opt-in"
+command = "pi"
+env = "PHUX_AGENT_TOOLS_DETECT"
+
+[link]
+mode = "state-file"
+default_session = "agent-bench-pi"
+
+[session_identity]
+# Pi 1.0.4 (`@earendil-works/pi-coding-agent`, dist/cli/args.js and main.js):
+# `--session <path|id>` reopens a project session by exact or prefix id, and
+# `--session-id <id>` opens that exact id or creates a new session with it.
+# The `@phux/pi` extension opens its AgentSession with the same id
+# (`sessionManager.getSessionId()`), so `workspace save` can resume a pi
+# started in any shell (ADR-0151).
+mode = "native-or-phux"
+native_env = "PHUX_PI_SESSION_ID"
+restore = "external-cli"
+resume_args = ["--session", "${PHUX_AGENT_SESSION_ID}"]
+fresh_args = ["--session-id", "${PHUX_AGENT_SESSION_ID}"]
+
+[agent_identity]
+name = "pi"
+kind = "pi"
+
+[launch]
+command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "pi", "--kind", "pi", "--", "pi"]
+required_executables = ["pi"]
+working_directory = "workspace"
