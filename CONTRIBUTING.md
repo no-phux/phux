@@ -122,6 +122,7 @@ Product recipes stay out of the root `justfile` so CI can route by module.
 | agent integration packages | `bash scripts/ci/agent-integrations.sh` | `just agent-integrations-check` (same script); `just integration-check <package>` for a scoped loop |
 | Zig archive pins | `scripts/check-zig-pins.sh` | `just zig-pin-check` |
 | install surface | `scripts/check-install-surface.sh` | `just install-surface-check` |
+| build-cache portability | `just cache-portable-check` | same recipe |
 | embedded skill contract | `just skill-contract` | same |
 | fast e2e + perf gates | `just e2e` | `just e2e`, via `just ci-full` |
 | agent example smoke | `just agents-fleet-smoke` | same, via `just ci-full` |

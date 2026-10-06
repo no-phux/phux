@@ -82,9 +82,10 @@ with three things:
   keyed independently of the checkout path, so building one worktree warms the
   next: a fresh worktree restores the whole dependency graph. On APFS, Btrfs,
   XFS (reflink) or ZFS, restored outputs are copy-on-write clones of the
-  store, not copies. The exception today is the Zig build behind
-  `libghostty-vt-sys`, whose outputs embed their `OUT_DIR`; it still runs once
-  per checkout, and the workspace crates above it rebuild (phux-vxmb).
+  store, not copies. A fresh worktree's `cargo check -p phux-server` restores
+  every unit (2-5 s); its first `cargo nextest run --workspace --no-run`
+  restores all but the insta-using unit-test harnesses, `phux-client-ffi`
+  (an rlib+staticlib+cdylib crate mbx does not cache) and the leaves above it.
 - **Managed targets.** `target` becomes a symlink into mbx's cache directory,
   and the whole cache has a disk budget that scales with the disk. Targets are
   collected when their checkout disappears, goes unused, or exceeds its budget,
@@ -99,7 +100,10 @@ first on `PATH`. Either way plain `cargo` (and every `just` recipe) is cached.
 Calling `~/.cargo/bin/cargo` directly bypasses it; so does an agent harness
 whose `PATH` never loaded either environment, which should use
 `mise exec -- cargo ...` or `nix develop -c cargo ...`. `just doctor` reports
-whether `mbx` is on `PATH`. Hosted CI keeps plain Cargo with its own
+whether `mbx` is on `PATH`. In the Nix shell the wrapper also unsets `SDKROOT`, `CC` and
+`CXX` for Cargo: nixpkgs' `xcrun` cannot describe an SDK by path, which made
+every native link uncacheable, and mbx caches build-script C only when it picks
+the compiler; `cc`, `c++` and `xcrun --sdk macosx` resolve to the same tools. Hosted CI keeps plain Cargo with its own
 sccache/rust-cache budget, and upstream ships no Intel-macOS binary, so that
 platform builds without it.
 
@@ -116,6 +120,18 @@ in an untracked `mise.local.toml`. mbx's `share_workspace_root` stays at its
 default (off): turning it on would make panic locations and debug info name a
 placeholder instead of the real source path, and the panic hook's location line
 is what operators read.
+
+Two things keep a crate reusable across worktrees, and both are enforced:
+
+- No compile-time checkout path in library or test code (`just
+  cache-portable-check`): read `CARGO_MANIFEST_DIR` and the test binary paths
+  from the test runner at run time (`crates/phux/tests/common/runner.rs`), and
+  pass a binary's own checkout path in from its `main.rs`.
+- The Zig engine builds once per input set, outside any target directory:
+  `libghostty-vt-sys` keeps it under `$XDG_CACHE_HOME/libghostty-vt-sys` when
+  that is set, else `~/Library/Caches` (macOS) or `~/.cache`, and copies the
+  install tree into `OUT_DIR`.
+  `LIBGHOSTTY_VT_SYS_CACHE_DIR` moves it; set it empty to build in `OUT_DIR`.
 
 On Linux, keep mbx's cache directory on a filesystem with reflinks (ext4 falls
 back to read-only hard links). Rust build output compresses well, so a
