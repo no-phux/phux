@@ -36,6 +36,7 @@ pub mod paint;
 mod pane_state;
 pub mod plugin_actions;
 pub mod plugin_panes;
+pub mod plugin_sidebar;
 mod review;
 mod sidebar_zones;
 // ADR-0060: the `phux --rec` tee.

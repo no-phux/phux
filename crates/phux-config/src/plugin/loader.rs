@@ -10,8 +10,9 @@ use super::workspace::{RawPluginManifestWorkspace, WorkspaceSourceSlices, normal
 use super::{
     PluginAgentAttention, PluginAgentState, PluginManifest, PluginManifestAction,
     PluginManifestAgent, PluginManifestBuild, PluginManifestError, PluginManifestEvent,
-    PluginManifestLinkHandler, PluginManifestPane, PluginManifestWidget, PluginPanePlacement,
-    PluginPlatform, PluginWidgetSlot,
+    PluginManifestLinkHandler, PluginManifestPane, PluginManifestSidebar, PluginManifestWidget,
+    PluginPanePlacement, PluginPlatform, PluginWidgetSlot, SIDEBAR_SECTION_DEFAULT_ROWS,
+    SIDEBAR_SECTION_MAX_ROWS,
 };
 
 #[derive(Debug, Deserialize)]
@@ -41,6 +42,18 @@ struct RawPluginManifest {
     workspaces: Vec<RawPluginManifestWorkspace>,
     #[serde(default)]
     widgets: Vec<RawPluginManifestWidget>,
+    #[serde(default)]
+    sidebar: Vec<RawPluginManifestSidebar>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPluginManifestSidebar {
+    id: String,
+    title: String,
+    format: String,
+    #[serde(default)]
+    rows: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -181,6 +194,12 @@ pub fn load_plugin_manifest(path: &Path) -> Result<PluginManifest, PluginManifes
     )?;
     let widgets =
         normalize_unique_section(raw.widgets, normalize_widget, id_of_widget, "plugin widget")?;
+    let sidebar = normalize_unique_section(
+        raw.sidebar,
+        normalize_sidebar,
+        id_of_sidebar,
+        "plugin sidebar section",
+    )?;
 
     Ok(PluginManifest {
         id,
@@ -199,6 +218,7 @@ pub fn load_plugin_manifest(path: &Path) -> Result<PluginManifest, PluginManifes
         links,
         workspaces,
         widgets,
+        sidebar,
     })
 }
 
@@ -240,6 +260,47 @@ const fn id_of_link(link: &PluginManifestLinkHandler) -> &str {
 
 const fn id_of_widget(widget: &PluginManifestWidget) -> &str {
     widget.id.as_str()
+}
+
+const fn id_of_sidebar(section: &PluginManifestSidebar) -> &str {
+    section.id.as_str()
+}
+
+/// Validate one `[[sidebar]]` section: every `{token}` its `format` names is
+/// in [`crate::vocab::SIDEBAR_TOKENS`] (with a did-you-mean on a typo), and
+/// `rows` is within `1..=SIDEBAR_SECTION_MAX_ROWS`.
+fn normalize_sidebar(
+    raw: RawPluginManifestSidebar,
+) -> Result<PluginManifestSidebar, PluginManifestError> {
+    let RawPluginManifestSidebar {
+        id,
+        title,
+        format,
+        rows,
+    } = raw;
+    let id = normalize_id(&id, false, "plugin sidebar section id")?;
+    let format = non_empty(&format, "plugin sidebar section format")?;
+    if let Some((token, suggestion)) = crate::vocab::unknown_sidebar_token(&format) {
+        let hint = suggestion.map_or_else(
+            || format!(" (known: {})", crate::vocab::SIDEBAR_TOKENS.join(", ")),
+            |near| format!(" (did you mean `{{{near}}}`?)"),
+        );
+        return Err(PluginManifestError::Invalid(format!(
+            "plugin sidebar section '{id}': unknown format token `{{{token}}}`{hint}"
+        )));
+    }
+    let rows = rows.unwrap_or(SIDEBAR_SECTION_DEFAULT_ROWS);
+    if !(1..=SIDEBAR_SECTION_MAX_ROWS).contains(&rows) {
+        return Err(PluginManifestError::Invalid(format!(
+            "plugin sidebar section '{id}': rows must be 1..={SIDEBAR_SECTION_MAX_ROWS}, got {rows}"
+        )));
+    }
+    Ok(PluginManifestSidebar {
+        title: non_empty(&title, "plugin sidebar section title")?,
+        id,
+        format,
+        rows,
+    })
 }
 
 fn normalize_widget(

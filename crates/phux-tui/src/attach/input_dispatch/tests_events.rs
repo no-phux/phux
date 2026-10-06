@@ -347,6 +347,41 @@ fn sidebar_click_action_maps_rows_to_registry_actions() {
     assert!(hit(4, 10).is_none() && hit(27, 0).is_none());
 }
 
+/// ADR-0148: a plugin section row focuses its pane; the section header is
+/// inert.
+#[test]
+fn sidebar_plugin_rows_commit_focus_pane() {
+    use crate::render::chrome::sidebar_sections::{PluginSection, PluginSectionRow, PluginShape};
+    let section = PluginSection {
+        title: "Builds".to_owned(),
+        rows: 3,
+        entries: vec![
+            PluginSectionRow {
+                text: "lint".to_owned(),
+                window: 0,
+                pane: 0,
+            },
+            PluginSectionRow {
+                text: "test".to_owned(),
+                window: 1,
+                pane: 2,
+            },
+        ],
+    };
+    let mut t = targets(0, 1, 1);
+    t.counts.plugin = PluginShape::of(std::slice::from_ref(&section));
+    t.plugin = vec![vec![(0, 0), (1, 2)]];
+    // 22 body rows: the 4-row band leaves 18, so Agents 0-8, band 9-12.
+    let click = sidebar_click_action(strip(23), &t, 4, 11).expect("plugin row");
+    assert_eq!(click.action, "focus-pane");
+    assert_eq!(
+        (usize_arg(&click, "window"), usize_arg(&click, "pane")),
+        (Some(1), Some(2))
+    );
+    assert!(sidebar_click_action(strip(23), &t, 4, 9).is_none(), "header");
+    assert!(sidebar_click_action(strip(23), &t, 4, 12).is_none(), "blank");
+}
+
 /// A queue row commits a LOCAL focus or a CROSS-SESSION re-attach (a
 /// graph row by resource identity, never fabricated indices); a roster row
 /// switches session (by host when it has one; unreachable is inert); an

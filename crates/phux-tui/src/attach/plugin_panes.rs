@@ -191,6 +191,7 @@ mod tests {
             links: Vec::new(),
             workspaces: Vec::new(),
             widgets: Vec::new(),
+            sidebar: Vec::new(),
         }
     }
 
