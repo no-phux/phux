@@ -27,14 +27,22 @@ const TOO_MANY_ARGUMENTS: &[(&str, &str, usize)] = &[
 ];
 
 /// `(file, fn)`: the functions still allowed past clippy's 100-line limit.
-const TOO_MANY_LINES: &[(&str, &str)] = &[("attach/driver/loop_state.rs", "new")];
+const TOO_MANY_LINES: &[(&str, &str)] = &[("attach/driver/loop_state/mod.rs", "new")];
 
 /// `(file, max lines)` for the driver files the jx39 epic shrank.
 const FILE_LINES: &[(&str, usize)] = &[
     ("attach/driver/main_loop.rs", 200),
-    // 3650 at the restored jx39 guard. #1010 (per-tile cell pixels) and
-    // #1031 (dropping terminal-reply plumbing) landed the file at 3653.
-    ("attach/driver/loop_state.rs", 3653),
+    // SessionLoop used to be one 3653-line impl. It is split by wake-up
+    // source, and each file is pinned at the size that split landed.
+    ("attach/driver/loop_state/frames.rs", 758),
+    ("attach/driver/loop_state/mod.rs", 710),
+    ("attach/driver/loop_state/paint.rs", 665),
+    ("attach/driver/loop_state/inventory.rs", 419),
+    ("attach/driver/loop_state/peers.rs", 360),
+    ("attach/driver/loop_state/input.rs", 356),
+    ("attach/driver/loop_state/bootstrap.rs", 305),
+    ("attach/driver/loop_state/step.rs", 278),
+    ("attach/driver/loop_state/panes.rs", 237),
     // 2250 at jx39.7; 7a5db74ee (history-unavailable badge) and 8fdaca2ea
     // (overlay plugin panes) grew it while this guard was accidentally
     // deleted (248598c2b), so the budget pins the shipped size.
