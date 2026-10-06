@@ -104,9 +104,13 @@ Workflows use only `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, and
 `xcode-27` (macOS 27 with Xcode 27); no larger or self-hosted runners.
 
 The Actions cache is capped at 10 GB per repository with LRU eviction, and a
-cache saved on `refs/pull/N/merge` is only restorable from that PR. So
-`rust-cache` saves on `main` only and sccache runs `SCCACHE_GHA_RW_MODE=READ_ONLY`
-off `main`; any new PR-lane cache needs the same treatment. The account allows
+cache saved on `refs/pull/N/merge` is only restorable from that PR. So the
+Linux Rust lanes' mbx cache (`.github/actions/setup-rust-lane`, one `objects`
+entry per lane per `main` push, older ones pruned by ci.yml's
+`prune-build-cache`) saves on `main` pushes only, as do the other
+lanes' `rust-cache` entries, and Cockpit's sccache runs
+`SCCACHE_GHA_RW_MODE=READ_ONLY` off `main`; any new PR-lane cache needs the
+same treatment. The account allows
 20 concurrent standard jobs, only 5 of them macOS. `pr-janitor` cancels a
 closed PR's live runs and deletes its merge-ref caches. Concurrency groups use
 the `mini-v1-` namespace.
