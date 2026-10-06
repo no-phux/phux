@@ -67,7 +67,11 @@ impl ServerState {
     /// without a handoff.
     pub async fn build_upgrade_blob(&self, listener_fd: RawFd) -> StateBlob {
         let mut handoffs = HashMap::new();
-        let tids: Vec<ResourceId> = self.resources.resource_ids();
+        let tids: Vec<ResourceId> = self
+            .upgrade_handles()
+            .into_iter()
+            .map(|(tid, _)| tid)
+            .collect();
         for tid in tids {
             if let Some(handoff) = self.request_pane_handoff(tid).await {
                 handoffs.insert(tid, handoff);
@@ -95,9 +99,50 @@ impl ServerState {
         self.lifecycle.upgrade_context()
     }
 
-    /// Every resource handle, for querying upgrade handoffs off the lock.
+    /// The handles of exactly the panes whose PTY a re-exec carries: live
+    /// Terminals in the serializable session tree (the same walk as
+    /// [`Self::assemble_upgrade_blob`]). Everything else in the resource
+    /// table is left alone: an `AgentSession` has no PTY and no upgrade
+    /// mailbox and is not in the blob, and a retained pane's PTY does not
+    /// cross (ADR-0124 §6). Asking those would only let an engine with
+    /// nothing to hand off abort the upgrade.
     pub(crate) fn upgrade_handles(&self) -> Vec<(ResourceId, ResourceHandle)> {
-        self.all_resource_handles()
+        let carried: Vec<(ResourceId, ResourceHandle)> = self
+            .sessions
+            .registry
+            .sessions()
+            .filter(|(sid, _)| self.session_wire(*sid).is_some())
+            .flat_map(|(_, session)| session.windows.iter())
+            .filter(|wid| self.window_wire(**wid).is_some())
+            .filter_map(|wid| self.sessions.registry.window(*wid))
+            .flat_map(|window| window.slots.iter().copied())
+            .filter(|tid| {
+                self.sessions.registry.terminal(*tid).is_some()
+                    && self.terminal_wire(*tid).is_some()
+                    && self.retained_exit(*tid).is_none()
+            })
+            .filter_map(|tid| {
+                self.resource_handle(tid)
+                    .filter(|handle| handle.kind == phux_core::resource::ResourceKind::Terminal)
+                    .map(|handle| (tid, handle.clone()))
+            })
+            .collect();
+        self.warn_orphan_resource_handles();
+        carried
+    }
+
+    /// A handle whose resource left the registry is a leak: its engine is
+    /// unreachable through the tree and nothing will reap it. Name each one
+    /// so a leak path shows up in the log instead of in a failed upgrade.
+    fn warn_orphan_resource_handles(&self) {
+        for tid in self.resource_ids() {
+            if self.sessions.registry.resource(tid).is_none() {
+                tracing::warn!(
+                    resource = ?tid,
+                    "upgrade: resource handle outlived its registry entry; not carried"
+                );
+            }
+        }
     }
 
     /// Assemble the blob from the live tree plus pre-fetched handoffs,

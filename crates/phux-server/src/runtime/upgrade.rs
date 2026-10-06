@@ -53,7 +53,7 @@ pub(super) enum UpgradeError {
     PaneHandoff {
         /// The pane whose actor failed to answer.
         pane: phux_core::ids::ResourceId,
-        /// Whether its mailbox closed, reply disappeared, or deadline elapsed.
+        /// What went wrong after the actor accepted the request.
         reason: &'static str,
     },
     /// The live session tree changed while pane actors prepared their replies.
@@ -373,19 +373,26 @@ fn clear_inherited_cloexec(
     Ok(fd_flags)
 }
 
+/// Ask one pane's actor for its handoff. `Ok(None)` when its upgrade mailbox
+/// is closed: the receiver lives in the actor, which also owns the PTY
+/// master, so a closed mailbox means the engine is gone and no live PTY is
+/// left in this process to preserve. Any failure after the request was
+/// accepted (a dropped reply, a half PTY pair, the deadline) means a live
+/// actor could not hand off, and still aborts.
 async fn request_pane_handoff(
     pane: phux_core::ids::ResourceId,
     upgrade: &mpsc::Sender<UpgradeHandleRequest>,
-) -> Result<PaneUpgradeHandle, UpgradeError> {
+) -> Result<Option<PaneUpgradeHandle>, UpgradeError> {
     let (reply, rx) = oneshot::channel();
-    upgrade
-        .send(UpgradeHandleRequest { reply })
-        .await
-        .map_err(|_| UpgradeError::PaneHandoff {
-            pane,
-            reason: "actor mailbox closed",
-        })?;
-    rx.await.map_err(|_| UpgradeError::PaneHandoff {
+    if upgrade.send(UpgradeHandleRequest { reply }).await.is_err() {
+        tracing::warn!(
+            ?pane,
+            "upgrade: pane actor mailbox closed (engine already exited); \
+             it crosses without a PTY handoff"
+        );
+        return Ok(None);
+    }
+    rx.await.map(Some).map_err(|_| UpgradeError::PaneHandoff {
         pane,
         reason: "actor dropped its reply",
     })
@@ -410,7 +417,9 @@ async fn collect_pane_handoffs(
             .collect::<FuturesUnordered<_>>();
         let mut handoffs = HashMap::with_capacity(pane_count);
         while let Some(result) = pending.next().await {
-            let (pane, handoff) = result?;
+            let (pane, Some(handoff)) = result? else {
+                continue;
+            };
             let pair_is_valid = matches!(
                 (&handoff.master_fd, handoff.child_pid),
                 (Some(_), Some(1..)) | (None, None)
@@ -816,20 +825,141 @@ mod tests {
         validate_binary(&path).expect("a coherent replacement image must pass");
     }
 
+    /// phux-twft: an engine whose upgrade mailbox is closed has already
+    /// exited (and dropped its PTY master); it is skipped, not fatal, and the
+    /// live panes beside it still hand off.
     #[tokio::test]
-    async fn pane_handoff_aborts_when_actor_mailbox_is_missing() {
-        let (upgrade, receiver) = mpsc::channel(1);
+    async fn pane_handoff_skips_an_actor_whose_mailbox_is_closed() {
+        let (dead, receiver) = mpsc::channel(1);
         drop(receiver);
+        let (live, mut live_rx) = mpsc::channel::<UpgradeHandleRequest>(1);
+        tokio::spawn(async move {
+            let request = live_rx.recv().await.unwrap();
+            let _ = request.reply.send(no_pty_handoff());
+        });
+        let mut registry = phux_core::registry::Registry::new();
+        let session = registry.new_session("s".to_owned());
+        let window = registry.new_window(session).unwrap();
+        let dead_pane = registry.new_terminal(window).unwrap();
+        let live_pane = registry.new_terminal(window).unwrap();
+
+        let handoffs = collect_pane_handoffs(
+            vec![(dead_pane, dead), (live_pane, live)],
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("a dead engine must not abort the upgrade");
+
+        assert!(handoffs.contains_key(&live_pane));
+        assert!(!handoffs.contains_key(&dead_pane));
+    }
+
+    /// A live actor that accepted the request but never answered still
+    /// aborts: its PTY may be alive and must not be stranded.
+    #[tokio::test]
+    async fn pane_handoff_aborts_when_a_live_actor_drops_its_reply() {
+        let (upgrade, mut receiver) = mpsc::channel::<UpgradeHandleRequest>(1);
+        tokio::spawn(async move {
+            drop(receiver.recv().await);
+        });
 
         let result = request_pane_handoff(phux_core::ids::ResourceId::default(), &upgrade).await;
 
         assert!(matches!(
             result,
             Err(UpgradeError::PaneHandoff {
-                reason: "actor mailbox closed",
+                reason: "actor dropped its reply",
                 ..
             })
         ));
+    }
+
+    /// phux-twft regression: the live server refused every upgrade with
+    /// `pane ResourceId(..) did not provide an upgrade handoff: actor mailbox
+    /// closed` because the capture asked every handle in the resource table,
+    /// including `AgentSession` engines (built with a closed upgrade
+    /// mailbox) and a handle whose engine had exited. Only live tree panes
+    /// are asked now, and the reversible preparation completes.
+    #[tokio::test(flavor = "current_thread")]
+    async fn upgrade_capture_ignores_agent_sessions_and_dead_engines() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let (live_pane, dead_pane, agent) = state.with_mut(|s| {
+                    let (sid, wid, live_pane) = s.seed_session("main");
+                    let live = crate::terminal_actor::TerminalActor::new_with_seed(20, 5, b"live")
+                        .unwrap();
+                    let live_token = live.token.clone();
+                    let _ = s.spawn_resource_actor(
+                        live_pane,
+                        live.handle,
+                        live_token,
+                        live.actor.run(),
+                    );
+
+                    // A tree pane whose engine already exited.
+                    let dead_pane = s.add_pane_to_session(sid).unwrap();
+                    let dead =
+                        crate::terminal_actor::TerminalActor::new_with_seed(20, 5, b"").unwrap();
+                    let _ = s.register_resource_handle(dead_pane, dead.handle, dead.token);
+                    drop(dead.actor);
+
+                    // An agent session bound to the live pane.
+                    let facet = phux_core::resource::AgentFacet {
+                        provider: "opencode".to_owned(),
+                        native_id: None,
+                        state: None,
+                    };
+                    let agent = s
+                        .registry_mut()
+                        .new_agent_session(live_pane, facet)
+                        .unwrap();
+                    let token = tokio_util::sync::CancellationToken::new();
+                    let bundle = crate::resource::agent_session::AgentSessionActor::build(
+                        live_pane,
+                        "opencode",
+                        None,
+                        token.clone(),
+                        4096,
+                    );
+                    let _ = s.spawn_resource_actor(agent, bundle.handle, token, bundle.actor.run());
+
+                    let _ = s.build_session_snapshot(sid);
+                    let _ = s.intern_window_wire(wid);
+                    s.set_upgrade_context(
+                        7,
+                        PathBuf::from("/nonexistent/phux.sock"),
+                        RuntimeFlags::default(),
+                    );
+                    (live_pane, dead_pane, agent)
+                });
+
+                let context = capture_upgrade_context(&state).unwrap();
+                let asked: Vec<_> = context.pane_senders.iter().map(|(id, _)| *id).collect();
+                assert!(asked.contains(&live_pane));
+                assert!(
+                    !asked.contains(&agent),
+                    "an agent session has no PTY to hand off"
+                );
+
+                let handoffs = collect_pane_handoffs(context.pane_senders, Duration::from_secs(2))
+                    .await
+                    .expect("a dead engine or an agent session must not abort");
+                assert!(handoffs.contains_key(&live_pane));
+                assert!(!handoffs.contains_key(&dead_pane));
+
+                let blob = reassemble_unchanged_tree(
+                    &state,
+                    context.listener_fd,
+                    context.listener_fd,
+                    &context.tree_identity,
+                    &handoffs,
+                )
+                .expect("the tree did not change");
+                assert_eq!(blob.panes.len(), 2, "both tree panes still cross");
+            })
+            .await;
     }
 
     #[tokio::test(start_paused = true)]
