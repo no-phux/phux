@@ -1692,15 +1692,7 @@ fn edit_host_field_at(
         HostRole::Satellite => "satellites",
     };
     let tables = super::toml_registry::tables_mut(&mut doc, key)?;
-    let matches: Vec<_> = tables
-        .iter()
-        .enumerate()
-        .filter_map(|(index, table)| {
-            (table.get("name").and_then(Item::as_str) == Some(row.name.as_str())
-                && table.get("endpoint").and_then(Item::as_str) == Some(row.endpoint.as_str()))
-            .then_some(index)
-        })
-        .collect();
+    let matches = super::toml_registry::machine_indices(tables, &row.name, &row.endpoint);
     let [index] = matches.as_slice() else {
         return Err("host is ambiguous or inherited; edit its source configuration".to_owned());
     };

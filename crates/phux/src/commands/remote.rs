@@ -179,13 +179,12 @@ impl Endpoint {
 /// first would be a trap.
 pub(crate) fn load_registry() -> Result<Vec<RemoteEntry>, String> {
     let cfg = config_loader::load().map_err(|err| err.to_string())?;
-    let mut seen = BTreeSet::new();
-    let mut entries = Vec::with_capacity(cfg.remote.len());
-    for (index, remote) in cfg.remote.into_iter().enumerate() {
-        if !seen.insert(remote.name.clone()) {
-            return Err(format!("duplicate remote name {:?}", remote.name));
-        }
-        entries.push(RemoteEntry {
+    toml_registry::reject_duplicate_names(cfg.remote.iter().map(|r| r.name.as_str()), "remote")?;
+    Ok(cfg
+        .remote
+        .into_iter()
+        .enumerate()
+        .map(|(index, remote)| RemoteEntry {
             index,
             name: remote.name,
             endpoint: remote.endpoint,
@@ -196,9 +195,8 @@ pub(crate) fn load_registry() -> Result<Vec<RemoteEntry>, String> {
             direct: remote.direct,
             client_cert: remote.client_cert,
             client_key: remote.client_key,
-        });
-    }
-    Ok(entries)
+        })
+        .collect())
 }
 
 /// Look up one remote by name. A config failure is also `None`: on the
@@ -327,118 +325,60 @@ impl NewRemote {
 /// A remote name is what the operator types after `phux attach`, so it must
 /// not collide with the selector grammar's sigils.
 pub(crate) fn validate_name(name: &str) -> Result<String, String> {
-    let trimmed = name.trim();
-    if trimmed.is_empty()
-        || trimmed.contains('/')
-        || trimmed.contains(':')
-        || trimmed.starts_with(['@', '#', '.', '='])
-    {
-        return Err(
+    toml_registry::plain_machine_name(name)
+        .filter(|trimmed| !trimmed.starts_with(['@', '#', '.', '=']))
+        .map(str::to_owned)
+        .ok_or_else(|| {
             "remote name must be non-empty, must not contain '/' or ':', and must not start \
              with a selector sigil (@ # . =)"
-                .to_owned(),
-        );
-    }
-    Ok(trimmed.to_owned())
+                .to_owned()
+        })
 }
 
 /// The token file is read relative to wherever `phux attach` runs, so it must
 /// be absolute (existence is not required: enrollment may write it later).
 fn validate_token_file(path: &Path) -> Result<PathBuf, String> {
-    if path.as_os_str().is_empty() || !path.is_absolute() {
-        return Err(format!(
-            "remote token-file must be an absolute path (got {})",
-            path.display()
-        ));
-    }
-    Ok(path.to_path_buf())
+    toml_registry::validate_token_file(path, "remote")
 }
 
 /// Insert a new entry, or replace an existing one with the same name.
 pub(crate) fn add_or_update(new: &NewRemote) -> Result<(), String> {
-    let config_path = config_loader::config_path();
-    let mut doc = toml_registry::edit_document(&config_path)?;
-
-    let existing = load_registry()?
-        .into_iter()
-        .find(|entry| entry.name == new.name);
-    if let Some(entry) = existing {
-        let table = toml_registry::table_mut(&mut doc, KEY, entry.index)?;
-        fill_table(table, new);
-    } else {
-        let mut table = Table::new();
-        fill_table(&mut table, new);
-        toml_registry::tables_mut(&mut doc, KEY)?.push(table);
-    }
-    doc.commit()
+    toml_registry::upsert_machine(
+        &config_loader::config_path(),
+        KEY,
+        || {
+            Ok(load_registry()?
+                .into_iter()
+                .find(|entry| entry.name == new.name)
+                .map(|entry| entry.index))
+        },
+        |table| fill_table(table, new),
+    )
 }
 
 /// Remove the captured entry under the shared read/modify/publish lock.
 pub(crate) fn remove_entry(entry: &RemoteEntry) -> Result<(), String> {
-    let config_path = config_loader::config_path();
-    let mut doc = toml_registry::edit_document(&config_path)?;
-    doc.remove_machine(KEY, &entry.name, &entry.endpoint)?;
-    doc.commit()
+    toml_registry::remove_machine_entry(
+        &config_loader::config_path(),
+        KEY,
+        &entry.name,
+        &entry.endpoint,
+    )
 }
 
 /// Write every field, clearing omitted ones, so re-adding never leaves stale
 /// auth material pointing at a new endpoint.
 fn fill_table(table: &mut Table, new: &NewRemote) {
+    let display = |path: &Option<PathBuf>| path.as_ref().map(|path| path.display().to_string());
     table.insert("name", value(&new.name));
     table.insert("endpoint", value(&new.endpoint));
-    match &new.token_file {
-        Some(path) => {
-            table.insert("token-file", value(path.display().to_string()));
-        }
-        None => {
-            table.remove("token-file");
-        }
-    }
-    match &new.cert_fingerprint {
-        Some(fingerprint) => {
-            table.insert("cert-fingerprint", value(fingerprint));
-        }
-        None => {
-            table.remove("cert-fingerprint");
-        }
-    }
-    match &new.session {
-        Some(session) => {
-            table.insert("session", value(session));
-        }
-        None => {
-            table.remove("session");
-        }
-    }
-    match &new.ssh {
-        Some(ssh) => {
-            table.insert("ssh", value(ssh));
-        }
-        None => {
-            table.remove("ssh");
-        }
-    }
-    match &new.direct {
-        Some(direct) => {
-            table.insert("direct", value(direct));
-        }
-        None => {
-            table.remove("direct");
-        }
-    }
-    for (key, path) in [
-        ("client-cert", &new.client_cert),
-        ("client-key", &new.client_key),
-    ] {
-        match path {
-            Some(path) => {
-                table.insert(key, value(path.display().to_string()));
-            }
-            None => {
-                table.remove(key);
-            }
-        }
-    }
+    toml_registry::set_or_remove(table, "token-file", display(&new.token_file));
+    toml_registry::set_or_remove(table, "cert-fingerprint", new.cert_fingerprint.as_ref());
+    toml_registry::set_or_remove(table, "session", new.session.as_ref());
+    toml_registry::set_or_remove(table, "ssh", new.ssh.as_ref());
+    toml_registry::set_or_remove(table, "direct", new.direct.as_ref());
+    toml_registry::set_or_remove(table, "client-cert", display(&new.client_cert));
+    toml_registry::set_or_remove(table, "client-key", display(&new.client_key));
 }
 
 /// Read the bearer token for an entry, if it declares a token file.
