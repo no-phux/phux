@@ -39,6 +39,9 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         if let Some(outcome) = self.step_chrome_drag(mouse).await? {
             return Ok(outcome);
         }
+        if let Some(outcome) = self.route_floating_mouse(mouse).await? {
+            return Ok(outcome);
+        }
         if let Some(outcome) = self.route_sidebar_click(mouse).await? {
             return Ok(outcome);
         }
@@ -78,6 +81,51 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                 Ok(StageOutcome::CONSUMED)
             }
         }
+    }
+
+    /// ADR-0147: while the floating overlay is open it owns the pointer. Its
+    /// interior gets the event pane-local (the wheel scrolls it as it would a
+    /// tile), its border swallows it, and a press anywhere else dismisses it.
+    /// `None` when no overlay is open.
+    async fn route_floating_mouse(
+        &mut self,
+        mouse: &MouseEvent,
+    ) -> Result<Option<StageOutcome>, AttachError> {
+        use crate::attach::floating::{floating_box, floating_pane, rect_contains};
+        let Some(id) = floating_pane(self.panes).cloned() else {
+            return Ok(None);
+        };
+        let frame = floating_box(content_rect(
+            self.ctx.viewport,
+            self.ctx.bar,
+            self.ctx.sidebar,
+        ));
+        let (cell_x, cell_y) = (quantize_cell(mouse.x), quantize_cell(mouse.y));
+        if rect_contains(frame.inner, cell_x, cell_y) {
+            let mut routed = *mouse;
+            routed.x -= f64::from(frame.inner.x);
+            routed.y -= f64::from(frame.inner.y);
+            if let Some(scrolled) = self.scroll_pane_wheel(&id, &routed).await? {
+                return Ok(Some(StageOutcome::consumed(scrolled)));
+            }
+            if !crate::attach::pane_state::pane_exited(self.panes, &id) {
+                self.send_terminal_input(
+                    id,
+                    InputEvent::Mouse(scale_to_surface_pixels(routed, self.ctx.cell_px)),
+                    false,
+                )
+                .await?;
+            }
+            return Ok(Some(StageOutcome::CONSUMED));
+        }
+        let outside_press = matches!(mouse.action, MouseAction::Press)
+            && !rect_contains(frame.outer, cell_x, cell_y)
+            && wheel_scroll_delta(mouse).is_none();
+        if !outside_press {
+            return Ok(Some(StageOutcome::CONSUMED));
+        }
+        let dismissed = self.dismiss_floating().await?;
+        Ok(Some(StageOutcome::consumed(dismissed)))
     }
 
     /// Advance (or end) an in-flight chrome drag: a pane divider, the

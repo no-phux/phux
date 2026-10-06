@@ -72,6 +72,8 @@ pub(in crate::attach) struct FrameOutcome {
     /// A close/spawn changed survivors' sizes: diff against the pre-frame
     /// rects and `RESIZE_TERMINAL` each changed leaf. Set only by those arms.
     pub(in crate::attach) reflow_panes: bool,
+    /// ADR-0147: a floating overlay opened; `RESIZE_TERMINAL` it to its box.
+    pub(in crate::attach) size_floating: bool,
     /// Exact cumulative `StateSync` acknowledgement emitted by the session kernel.
     pub(in crate::attach) ack: Option<(ResourceId, StreamId, BootstrapId, u64)>,
     /// The engine rejected a generation: re-ATTACH while the frozen replica

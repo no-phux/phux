@@ -177,6 +177,7 @@ column is the base status word plus at most one relationship clause, about
 | [0143](./0143-ship-ten-mib-of-scrollback-per-pane.md) | Ship 10 MiB of scrollback per pane | Accepted (supersedes in part [0094](./0094-explicit-per-pane-scrollback-byte-ceiling.md), [0119](./0119-attach-leases-retained-history.md)) |
 | [0144](./0144-input-credits-backpressure-instead-of-drop.md) | Input credits: backpressure instead of drop | Accepted (supersedes in part [0044](./0044-dedicated-input-lane.md)) |
 | [0146](./0146-tui-pushes-kitty-keyboard-disambiguate-on-the-host.md) | The TUI pushes kitty keyboard disambiguate on the host | Accepted (builds on [0006](./0006-input-mirrors-libghostty.md)) |
+| [0147](./0147-plugin-overlay-panes-float-outside-the-layout.md) | Plugin overlay panes float outside the layout | Accepted (builds on [0017](./0017-tui-not-protocol-privileged.md)) |
 | [0148](./0148-plugin-sidebar-sections-are-fixed-bands-of-pane-rows.md) | Plugin sidebar sections are fixed bands of pane rows | Accepted (builds on [0112](./0112-stable-split-sidebar-navigation.md)) |
 
 ## When to write an ADR

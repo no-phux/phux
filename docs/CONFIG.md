@@ -263,7 +263,8 @@ phux plugin disable example.agent-tools
 
 Enabled actions appear in the attach command palette. An action may
 declare a prefix-table `keys` chord; user `[keybindings]` always win on
-conflict. There is no in-process plugin host: commands run as argv from
+conflict. Plugin panes (including floating `overlay` panes) and sidebar
+sections are described in [the TUI guide](consumers/tui.md). There is no in-process plugin host: commands run as argv from
 the plugin root.
 
 ---

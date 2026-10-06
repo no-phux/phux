@@ -1301,8 +1301,8 @@ fn plugin_action(resolved: &phux_config::keybind::ResolvedAction, effects: &mut 
 }
 
 /// Open a plugin `[[panes]]` entry as a Terminal via the ordinary spawn
-/// (ADR-0017): `split`/`zoomed` park a split, `tab` a window. An unknown
-/// pair (disabled, typo, overlay) bells.
+/// (ADR-0017): `split`/`zoomed` park a split, `tab` a window, `overlay` a
+/// floating box (ADR-0147). An unknown pair (disabled, typo) bells.
 fn plugin_pane(
     resolved: &phux_config::keybind::ResolvedAction,
     ctx: &mut DispatchCtx<'_>,
@@ -1326,7 +1326,7 @@ fn plugin_pane(
         tracing::warn!(
             plugin = %plugin,
             pane = %pane,
-            "plugin-pane names no hostable pane (unknown, disabled, or overlay-deferred); dropping",
+            "plugin-pane names no hostable pane (unknown or disabled); dropping",
         );
         effects.bell = true;
         return;
@@ -1356,6 +1356,17 @@ fn plugin_pane(
             };
             set_spawn_initial_size(&mut frame, predicted_split_size(ctx, &pending));
             effects.spawn_terminal = Some((request_id, pending, frame));
+        }
+        HostedPlacement::Overlay => {
+            // ADR-0147: sized to the box interior; no window adopts it.
+            set_spawn_initial_size(
+                &mut frame,
+                spawn_initial_size(ctx, |content| {
+                    let inner = crate::attach::floating::floating_box(content).inner;
+                    Some((inner.w, inner.h))
+                }),
+            );
+            effects.spawn_floating = Some((request_id, entry.title.clone(), frame));
         }
         HostedPlacement::Tab => {
             set_spawn_initial_size(

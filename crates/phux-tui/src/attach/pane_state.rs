@@ -127,6 +127,9 @@ pub(super) struct PaneSlot {
     /// remains. Cleared when a fresh replica publishes or the cache reports
     /// a healthy state again; the focused pane badges it.
     pub history_degraded: bool,
+    /// ADR-0147: `Some(title)` for the floating plugin overlay pane, which is
+    /// in no layout window and paints in a box over the pane area.
+    pub floating: Option<String>,
 }
 
 impl std::fmt::Debug for PaneSlot {
@@ -175,6 +178,7 @@ impl PaneSlot {
             seen: false,
             satellite_down: false,
             history_degraded: false,
+            floating: None,
         })
     }
 

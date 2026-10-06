@@ -798,7 +798,8 @@ impl SessionLoop {
             self.viewport_dims,
             sidebar,
         );
-        let focused = self.mirror.focused_resource.as_ref();
+        let focus = self.mirror.paint_focus();
+        let focused = focus.as_ref();
         Some(match level {
             RepaintLevel::None => StatusBarPaint::NotPublished,
             RepaintLevel::Chrome => {
@@ -877,13 +878,14 @@ impl SessionLoop {
             self.viewport_dims,
             sidebar,
         );
+        let focus = self.mirror.paint_focus();
         paint_active_overlay(
             out,
             &self.overlays,
             base.as_deref(),
             &mut self.mirror.panes,
             &self.mirror.engine_kernel,
-            self.mirror.focused_resource.as_ref(),
+            focus.as_ref(),
             &mut chrome,
         )
     }
@@ -1346,6 +1348,32 @@ impl SessionLoop {
             &self.mirror.workspace,
             self.mirror.zoomed.as_ref(),
             self.content(sidebar),
+        )
+        .await?;
+        self.size_floating_pane(conn, sidebar).await
+    }
+
+    /// ADR-0147: size the floating overlay's PTY to its box interior, which
+    /// follows the content rect rather than any layout tile.
+    async fn size_floating_pane(
+        &self,
+        conn: &mut Connection,
+        sidebar: Option<SidebarReservation>,
+    ) -> Result<(), AttachError> {
+        let Some(id) = crate::attach::floating::floating_pane(&self.mirror.panes) else {
+            return Ok(());
+        };
+        let inner = crate::attach::floating::floating_box(self.content(sidebar)).inner;
+        if inner.w == 0 || inner.h == 0 || !conn.can_route_terminal(id) {
+            return Ok(());
+        }
+        send_unless_peer_gone(
+            conn,
+            &FrameKind::ResizeTerminal {
+                terminal_id: id.clone(),
+                cols: inner.w,
+                rows: inner.h,
+            },
         )
         .await
     }
@@ -1938,6 +1966,7 @@ impl SessionLoop {
             spawn_initial_size_supported: self.spawn_initial_size_supported,
             pending_splits: &mut self.mirror.pending_splits,
             pending_windows: &mut self.mirror.pending_windows,
+            pending_floating: &mut self.mirror.pending_floating,
             directory_support: self.directory_support,
             pending_directory: &mut self.pending_directory,
             path_query_supported: self.path.supported,
@@ -2158,7 +2187,8 @@ impl SessionLoop {
             // reflow. Satellite spawns bind after their ATTACH_RESOURCE reply.
             FrameKind::ResourceSpawned { request_id, result }
                 if self.mirror.pending_splits.contains_key(request_id)
-                    || self.mirror.pending_windows.contains_key(request_id) =>
+                    || self.mirror.pending_windows.contains_key(request_id)
+                    || self.mirror.pending_floating.contains_key(request_id) =>
             {
                 if let Some(terminal_id) = result.spawned_id()
                     && terminal_id.is_local()
@@ -2941,6 +2971,11 @@ impl SessionLoop {
         {
             self.emit_reflow_resizes(conn, prev_rects, sidebar).await?;
         }
+        // ADR-0147: a floating overlay just opened; state its box size, as a
+        // split's reflow does for a new tile.
+        if outcome.size_floating {
+            self.size_floating_pane(conn, sidebar).await?;
+        }
         Ok(())
     }
 
@@ -3250,13 +3285,19 @@ impl SessionLoop {
         if self.overlays.is_active() {
             return;
         }
+        // ADR-0147: under the floating overlay only the overlay paints; the
+        // rest repaint whole when it closes.
+        let focus = self.mirror.paint_focus();
+        let floating = crate::attach::floating::floating_pane(&self.mirror.panes).cloned();
         let live: Vec<ResourceId> = owed
             .into_iter()
             .filter(|id| {
-                self.mirror
-                    .panes
-                    .get(id)
-                    .is_some_and(|slot| slot.sync_output_since.is_none())
+                floating.as_ref().is_none_or(|floating| floating == id)
+                    && self
+                        .mirror
+                        .panes
+                        .get(id)
+                        .is_some_and(|slot| slot.sync_output_since.is_none())
             })
             .collect();
         if live.is_empty() {
@@ -3269,7 +3310,7 @@ impl SessionLoop {
                 panes: &mut self.mirror.panes,
                 workspace: &self.mirror.workspace,
                 zoomed: self.mirror.zoomed.as_ref(),
-                focused_resource: self.mirror.focused_resource.as_ref(),
+                focused_resource: focus.as_ref(),
                 status_bar: self.settings.status_bar.as_mut(),
                 sidebar,
                 viewport_dims: self.viewport_dims,
