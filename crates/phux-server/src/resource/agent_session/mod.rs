@@ -71,6 +71,11 @@ pub enum AppendRejection {
 pub struct BootstrapRequest {
     /// Where the retained records are returned.
     pub reply: oneshot::Sender<AgentSessionBootstrap>,
+    /// Graceful upgrade only (ADR-0032): `Some(true)` seals the stream at
+    /// this cut, so no append can be acked and then lost before the re-exec;
+    /// `Some(false)` lifts the seal when the upgrade does not happen. `None`
+    /// for an ordinary consumer bootstrap.
+    pub seal: Option<bool>,
 }
 
 /// The replayable state of one agent-session stream at a cut.
@@ -84,6 +89,9 @@ pub struct AgentSessionBootstrap {
     /// Records retention has evicted; non-zero means the replay starts
     /// mid-session.
     pub dropped: u64,
+    /// Whether the stream already accepted `session_end`; a graceful upgrade
+    /// carries it so the resumed engine keeps refusing later records.
+    pub ended: bool,
 }
 
 /// The `AgentSession` facet. `provider` and `native_id` are immutable, so
@@ -122,6 +130,9 @@ pub struct AgentSessionActor {
     /// `true` once a `session_end` record has been accepted; every later
     /// record is `RECORD_INVALID`.
     ended: bool,
+    /// `true` while a graceful upgrade holds this stream's cut: appends are
+    /// refused with `OVERFLOW` rather than acked and lost.
+    sealed: bool,
     /// Inbound producer appends.
     append_rx: mpsc::Receiver<AppendRequest>,
     /// Inbound bootstrap cuts.
@@ -186,12 +197,37 @@ impl AgentSessionActor {
                 core,
                 ring: RecordRing::new(log_bytes as usize),
                 ended: false,
+                sealed: false,
                 append_rx,
                 bootstrap_rx,
             },
             handle,
             exit_notify,
         }
+    }
+
+    /// Rebuild a session from the cut a graceful upgrade carried (ADR-0032):
+    /// the record counter continues at `carried.base_seq + 1`, the retained
+    /// records replay to new consumers (re-pruned to `log_bytes`), the
+    /// eviction toll carries over, and an ended stream stays ended.
+    #[must_use]
+    pub fn restore(
+        parent: ResourceId,
+        provider: &str,
+        native_id: Option<&str>,
+        token: CancellationToken,
+        log_bytes: u32,
+        carried: AgentSessionBootstrap,
+    ) -> AgentSessionBundle {
+        let mut bundle = Self::build(parent, provider, native_id, token, log_bytes);
+        let actor = &mut bundle.actor;
+        actor.core.seq = carried.base_seq;
+        actor.ended = carried.ended;
+        actor.ring.add_dropped(carried.dropped);
+        for record in carried.records {
+            actor.ring.push(record);
+        }
+        bundle
     }
 
     /// Drive the engine until cancelled or every producer and observer is
@@ -206,9 +242,7 @@ impl AgentSessionActor {
                     None => break,
                 },
                 request = self.bootstrap_rx.recv() => match request {
-                    Some(request) => {
-                        let _ = request.reply.send(self.bootstrap());
-                    }
+                    Some(request) => self.handle_bootstrap(request),
                     None => break,
                 },
                 request = self.core.control_rx.recv() => {
@@ -222,6 +256,15 @@ impl AgentSessionActor {
             .notify_exit(phux_core::process::ExitOutcome::UNKNOWN);
     }
 
+    /// Apply the request's seal, if any, and answer with the cut; both in one
+    /// step, so no append lands between them.
+    fn handle_bootstrap(&mut self, request: BootstrapRequest) {
+        if let Some(seal) = request.seal {
+            self.sealed = seal;
+        }
+        let _ = request.reply.send(self.bootstrap());
+    }
+
     /// The current bootstrap cut: the retained ring plus the sequence it
     /// reaches.
     fn bootstrap(&self) -> AgentSessionBootstrap {
@@ -229,6 +272,7 @@ impl AgentSessionActor {
             base_seq: self.core.seq(),
             records: self.ring.records().cloned().collect(),
             dropped: self.ring.dropped(),
+            ended: self.ended,
         }
     }
 
@@ -237,6 +281,12 @@ impl AgentSessionActor {
     /// [`PaneOutput::Live`] sequenced by the last record.
     fn handle_append(&mut self, request: AppendRequest) {
         let AppendRequest { bytes, reply } = request;
+        if self.sealed {
+            let _ = reply.send(Err(AppendRejection::Overflow(
+                "the server is upgrading; retry the append".to_owned(),
+            )));
+            return;
+        }
         let records = match record::validate(&bytes, self.ended) {
             Ok(records) => records,
             Err(error) => {
@@ -430,6 +480,65 @@ mod tests {
             8,
             "retained plus evicted accounts for every record"
         );
+    }
+
+    #[test]
+    fn a_restored_engine_continues_the_carried_stream() {
+        let (mut old, _facet, _handle) = engine();
+        append(&mut old, "{\"type\":\"prompt\"}\n{\"type\":\"stop\"}").expect("accepted");
+        let mut carried = old.bootstrap();
+        carried.dropped = 5;
+        let bundle = AgentSessionActor::restore(
+            ResourceId::default(),
+            "claude",
+            Some("abc"),
+            CancellationToken::new(),
+            4096,
+            carried.clone(),
+        );
+        let mut actor = bundle.actor;
+        assert_eq!(actor.bootstrap(), carried, "the cut replays unchanged");
+        let next = append(&mut actor, "{\"type\":\"session_end\"}").expect("accepted");
+        assert_eq!(next.first_seq, 3, "the sequence continues");
+
+        let ended = actor.bootstrap();
+        assert!(ended.ended);
+        let bundle = AgentSessionActor::restore(
+            ResourceId::default(),
+            "claude",
+            None,
+            CancellationToken::new(),
+            4096,
+            ended,
+        );
+        let mut actor = bundle.actor;
+        assert_eq!(
+            append(&mut actor, "{\"type\":\"prompt\"}"),
+            Err(AppendRejection::Invalid(RecordError::AfterSessionEnd)),
+            "an ended stream stays ended"
+        );
+    }
+
+    #[test]
+    fn a_sealed_stream_refuses_appends_until_unsealed() {
+        let (mut actor, _facet, _handle) = engine();
+        append(&mut actor, "{\"type\":\"prompt\"}").expect("accepted");
+        let (reply, mut rx) = oneshot::channel();
+        actor.handle_bootstrap(BootstrapRequest {
+            reply,
+            seal: Some(true),
+        });
+        assert_eq!(rx.try_recv().expect("the cut").base_seq, 1);
+        assert!(matches!(
+            append(&mut actor, "{\"type\":\"stop\"}"),
+            Err(AppendRejection::Overflow(_))
+        ));
+        actor.handle_bootstrap(BootstrapRequest {
+            reply: oneshot::channel().0,
+            seal: Some(false),
+        });
+        let next = append(&mut actor, "{\"type\":\"stop\"}").expect("unsealed");
+        assert_eq!(next.first_seq, 2, "the refused append consumed nothing");
     }
 
     #[test]

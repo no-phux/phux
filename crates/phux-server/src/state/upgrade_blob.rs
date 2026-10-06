@@ -15,16 +15,28 @@ use phux_core::window::{LayoutNode, SplitDir};
 use phux_protocol::ids::{
     ResourceId as WireResourceId, SessionId as WireSessionId, WindowId as WireWindowId,
 };
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::ServerState;
 use crate::resource::ResourceHandle;
+use crate::resource::agent_session::{AgentSessionActor, AgentSessionBootstrap, BootstrapRequest};
 use crate::terminal_actor::{PaneUpgradeHandle, TerminalActor, UpgradeHandleRequest};
 use crate::upgrade::blob::{
-    BLOB_VERSION, Counters, LayoutBlob, PaneBlob, RetainedExitBlob, SessionBlob, SplitDirBlob,
-    StateBlob, WindowBlob,
+    AgentSessionBlob, BLOB_VERSION, Counters, LayoutBlob, PaneBlob, RetainedExitBlob, SessionBlob,
+    SplitDirBlob, StateBlob, WindowBlob,
 };
+
+/// What the reversible half of an upgrade collected from live engines: each
+/// carried pane's PTY handoff and each carried agent session's stream cut.
+#[derive(Debug, Default)]
+pub(crate) struct UpgradeHandoffs {
+    /// PTY handoff + replay snapshot per carried pane.
+    pub(crate) panes: HashMap<ResourceId, PaneUpgradeHandle>,
+    /// Record-stream cut per carried `AgentSession`. A session without one
+    /// is not carried.
+    pub(crate) agent_sessions: HashMap<ResourceId, AgentSessionBootstrap>,
+}
 
 /// Errors rebuilding a [`ServerState`] from a [`StateBlob`].
 #[derive(Debug, thiserror::Error)]
@@ -66,7 +78,7 @@ impl ServerState {
     /// Runs inside the actors' `LocalSet`; an unreachable pane is recorded
     /// without a handoff.
     pub async fn build_upgrade_blob(&self, listener_fd: RawFd) -> StateBlob {
-        let mut handoffs = HashMap::new();
+        let mut handoffs = UpgradeHandoffs::default();
         let tids: Vec<ResourceId> = self
             .upgrade_handles()
             .into_iter()
@@ -74,7 +86,14 @@ impl ServerState {
             .collect();
         for tid in tids {
             if let Some(handoff) = self.request_pane_handoff(tid).await {
-                handoffs.insert(tid, handoff);
+                handoffs.panes.insert(tid, handoff);
+            }
+        }
+        for (session, bootstrap) in self.upgrade_agent_sessions() {
+            // Not sealed: this walk re-execs nothing, so the old image
+            // must keep accepting appends.
+            if let Some(cut) = request_agent_session_cut(&bootstrap, false).await {
+                handoffs.agent_sessions.insert(session, cut);
             }
         }
         self.assemble_upgrade_blob(listener_fd, &handoffs)
@@ -103,12 +122,47 @@ impl ServerState {
     /// Terminals in the serializable session tree (the same walk as
     /// [`Self::assemble_upgrade_blob`]). Everything else in the resource
     /// table is left alone: an `AgentSession` has no PTY and no upgrade
-    /// mailbox and is not in the blob, and a retained pane's PTY does not
-    /// cross (ADR-0124 §6). Asking those would only let an engine with
-    /// nothing to hand off abort the upgrade.
+    /// mailbox (it crosses through [`Self::upgrade_agent_sessions`]), and a
+    /// retained pane's PTY does not cross (ADR-0124 §6). Asking those would
+    /// only let an engine with nothing to hand off abort the upgrade.
     pub(crate) fn upgrade_handles(&self) -> Vec<(ResourceId, ResourceHandle)> {
-        let carried: Vec<(ResourceId, ResourceHandle)> = self
-            .sessions
+        let carried = self.carried_panes();
+        self.warn_orphan_resource_handles();
+        carried
+    }
+
+    /// The `AgentSession`s a re-exec carries, each with its bootstrap
+    /// mailbox: every session whose parent is a pane
+    /// [`Self::upgrade_handles`] carries. A session under a retained or
+    /// uncarried pane is dropped, as its parent is.
+    pub(crate) fn upgrade_agent_sessions(
+        &self,
+    ) -> Vec<(ResourceId, mpsc::Sender<BootstrapRequest>)> {
+        let parents: HashSet<ResourceId> = self
+            .carried_panes()
+            .into_iter()
+            .map(|(tid, _)| tid)
+            .collect();
+        let mut carried: Vec<(ResourceId, mpsc::Sender<BootstrapRequest>)> = self
+            .resource_ids()
+            .into_iter()
+            .filter(|id| self.sessions.registry.resource(*id).is_some())
+            .filter_map(|id| {
+                let handle = self.resource_handle(id)?;
+                let session = handle.agent_session().ok()?;
+                handle
+                    .parent
+                    .filter(|parent| parents.contains(parent))
+                    .map(|_| (id, session.bootstrap.clone()))
+            })
+            .collect();
+        carried.sort_by_key(|(id, _)| self.terminal_wire(*id));
+        carried
+    }
+
+    /// Live Terminals in the serializable session tree, with their handles.
+    fn carried_panes(&self) -> Vec<(ResourceId, ResourceHandle)> {
+        self.sessions
             .registry
             .sessions()
             .filter(|(sid, _)| self.session_wire(*sid).is_some())
@@ -126,9 +180,7 @@ impl ServerState {
                     .filter(|handle| handle.kind == phux_core::resource::ResourceKind::Terminal)
                     .map(|handle| (tid, handle.clone()))
             })
-            .collect();
-        self.warn_orphan_resource_handles();
-        carried
+            .collect()
     }
 
     /// A handle whose resource left the registry is a leak: its engine is
@@ -146,11 +198,13 @@ impl ServerState {
     }
 
     /// Assemble the blob from the live tree plus pre-fetched handoffs,
-    /// under the lock.
+    /// under the lock. Agent sessions come only from their cuts, so a blob
+    /// assembled with no handoffs is the tree's identity alone: a busy
+    /// agent's appends never make it look changed.
     pub(crate) fn assemble_upgrade_blob(
         &self,
         listener_fd: RawFd,
-        handoffs: &HashMap<ResourceId, PaneUpgradeHandle>,
+        handoffs: &UpgradeHandoffs,
     ) -> StateBlob {
         let mut sessions = Vec::new();
         let mut windows = Vec::new();
@@ -212,13 +266,20 @@ impl ServerState {
                         window_wire,
                         desc,
                         &self.config.term,
-                        handoffs.get(&tid).filter(|_| retained.is_none()),
+                        handoffs.panes.get(&tid).filter(|_| retained.is_none()),
                         retained,
                         self.retain_request(tid),
                     ));
                 }
             }
         }
+
+        let live_panes: HashSet<u32> = panes
+            .iter()
+            .filter(|pane| pane.retained_exit.is_none())
+            .map(|pane| pane.wire_id)
+            .collect();
+        let agent_sessions = self.agent_session_blobs(&handoffs.agent_sessions, &live_panes);
 
         StateBlob {
             version: BLOB_VERSION,
@@ -233,7 +294,47 @@ impl ServerState {
             sessions,
             windows,
             panes,
+            agent_sessions,
         }
+    }
+
+    /// One [`AgentSessionBlob`] per cut whose session is still registered
+    /// under a pane that crosses live, in wire-id order. A session that
+    /// closed, or whose parent stopped crossing, since its cut is dropped.
+    fn agent_session_blobs(
+        &self,
+        cuts: &HashMap<ResourceId, AgentSessionBootstrap>,
+        live_panes: &HashSet<u32>,
+    ) -> Vec<AgentSessionBlob> {
+        let mut blobs: Vec<AgentSessionBlob> = cuts
+            .iter()
+            .filter_map(|(&id, cut)| {
+                let desc = self.sessions.registry.resource(id)?;
+                let facet = desc.agent.as_ref()?;
+                let parent_wire_id = self.terminal_wire(desc.parent?)?;
+                if !live_panes.contains(&parent_wire_id) {
+                    return None;
+                }
+                Some(AgentSessionBlob {
+                    wire_id: self.terminal_wire(id)?,
+                    parent_wire_id,
+                    provider: facet.provider.clone(),
+                    native_id: facet.native_id.clone(),
+                    state: facet.state.clone(),
+                    base_seq: cut.base_seq,
+                    dropped: cut.dropped,
+                    ended: cut.ended,
+                    // Stamped records are canonical JSON, so always UTF-8.
+                    records: cut
+                        .records
+                        .iter()
+                        .map(|record| String::from_utf8_lossy(record).into_owned())
+                        .collect(),
+                })
+            })
+            .collect();
+        blobs.sort_by_key(|blob| blob.wire_id);
+        blobs
     }
 
     /// Ask one pane's actor for its upgrade handoff. `None` when the pane has
@@ -331,6 +432,36 @@ fn pane_blob(
     }
 }
 
+/// Cut one agent session's record stream for the upgrade, sealing it there
+/// when `seal` (see [`BootstrapRequest::seal`]). `None` when the engine is
+/// gone: the session is then simply not carried.
+pub(crate) async fn request_agent_session_cut(
+    bootstrap: &mpsc::Sender<BootstrapRequest>,
+    seal: bool,
+) -> Option<AgentSessionBootstrap> {
+    let (reply, rx) = oneshot::channel();
+    let request = BootstrapRequest {
+        reply,
+        seal: seal.then_some(true),
+    };
+    bootstrap.send(request).await.ok()?;
+    rx.await.ok()
+}
+
+/// The stream cut a resumed engine continues from, as the blob carried it.
+fn agent_session_cut(carried: &AgentSessionBlob) -> AgentSessionBootstrap {
+    AgentSessionBootstrap {
+        base_seq: carried.base_seq,
+        records: carried
+            .records
+            .iter()
+            .map(|record| bytes::Bytes::from(record.clone()))
+            .collect(),
+        dropped: carried.dropped,
+        ended: carried.ended,
+    }
+}
+
 /// A retained pane's exit facet as the upgrade blob carries it.
 const fn exit_blob(facet: phux_protocol::wire::info::ExitFacet) -> RetainedExitBlob {
     RetainedExitBlob {
@@ -348,8 +479,8 @@ const fn exit_facet(blob: RetainedExitBlob) -> phux_protocol::wire::info::ExitFa
         .with_signal(blob.signal)
 }
 
-/// Each rebuilt pane's core id and the one-shot exit receiver the runtime
-/// restores its lifecycle watcher from.
+/// Each rebuilt resource's (pane or agent session) core id and the one-shot
+/// exit receiver the runtime restores its lifecycle watcher from.
 type PaneExitWatchers = Vec<(
     ResourceId,
     oneshot::Receiver<phux_core::process::ExitOutcome>,
@@ -366,7 +497,8 @@ impl ServerState {
     /// Rebuild the tree from a [`StateBlob`] in the re-exec'd image
     /// (ADR-0032): recreate entities under their wire ids, restore
     /// allocators and ledgers, and spawn actors that re-adopt PTYs (or
-    /// replay snapshots). Returns each pane's exit receiver.
+    /// replay snapshots), then rebind carried agent sessions to their panes.
+    /// Returns each rebuilt resource's exit receiver.
     ///
     /// Transactional: built on a fresh state and committed only on full
     /// success. The pass order resolves each pass's references. Runs inside
@@ -387,18 +519,80 @@ impl ServerState {
         validate_upgrade_blob(blob)?;
         let mut fresh = Self::new();
         fresh.config.scrollback = self.config.scrollback;
+        fresh.config.agent_log_bytes = self.config.agent_log_bytes;
         // ADR-0109: a pre-token blob keeps this process's token.
         if blob.counters.server_instance.is_none() {
             fresh.idspace.set_instance(self.idspace.instance());
         }
         let session_core = fresh.rebuild_sessions(blob);
         let window_core = fresh.rebuild_windows(blob, &session_core)?;
-        let panes = fresh.rebuild_panes(blob, &window_core)?;
+        let mut panes = fresh.rebuild_panes(blob, &window_core)?;
         fresh.relink_window_contents(blob, &window_core, &panes.core_ids)?;
         fresh.relink_session_windows(blob, &session_core, &window_core)?;
+        fresh.rebuild_agent_sessions(blob, &mut panes);
         fresh.restore_counters(blob);
         self.commit_rebuilt_tree(fresh);
         Ok(panes.exit_watchers)
+    }
+
+    /// Recreate every carried `AgentSession` under its recorded wire id,
+    /// bound to its rebuilt parent pane, with an engine that continues the
+    /// old stream: same record counter, same retained tail, same `ended`.
+    /// The parent's `REPORT_AGENT_STATE` is re-bound to the stream
+    /// (ADR-0103 §6). A session whose parent pane is not in the blob is
+    /// dropped; losing one session must not cost the whole tree.
+    fn rebuild_agent_sessions(&mut self, blob: &StateBlob, panes: &mut RebuiltPanes) {
+        let log_bytes = self.config.agent_log_bytes;
+        for carried in &blob.agent_sessions {
+            let Some(&parent) = panes.core_ids.get(&carried.parent_wire_id) else {
+                tracing::warn!(
+                    session = carried.wire_id,
+                    parent = carried.parent_wire_id,
+                    "resume: agent session's parent pane did not cross; dropped"
+                );
+                continue;
+            };
+            let facet = phux_core::resource::AgentFacet {
+                provider: carried.provider.clone(),
+                native_id: carried.native_id.clone(),
+                state: carried.state.clone(),
+            };
+            let core = match self.sessions.registry.new_agent_session(parent, facet) {
+                Ok(core) => core,
+                Err(error) => {
+                    tracing::warn!(
+                        session = carried.wire_id,
+                        %error,
+                        "resume: agent session could not be re-registered; dropped"
+                    );
+                    continue;
+                }
+            };
+            let token = CancellationToken::new();
+            let bundle = AgentSessionActor::restore(
+                parent,
+                &carried.provider,
+                carried.native_id.as_deref(),
+                token.clone(),
+                log_bytes,
+                agent_session_cut(carried),
+            );
+            if let (Some(parent_handle), Ok(session)) =
+                (self.resource_handle(parent), bundle.handle.agent_session())
+            {
+                // The parent's mailbox is fresh, so this cannot be full.
+                let _ = parent_handle.control.try_send(
+                    crate::resource::ControlRequest::BindAgentSession {
+                        append: session.append.clone(),
+                    },
+                );
+            }
+            // Pre-bind so the registration's intern returns the blob's id.
+            self.idspace
+                .bind_terminal(core, WireResourceId::local(carried.wire_id));
+            self.spawn_resource_actor(core, bundle.handle, token, bundle.actor.run());
+            panes.exit_watchers.push((core, bundle.exit_notify));
+        }
     }
 
     /// Install a rebuilt tree, replacing only what reconstruction owns.
@@ -643,6 +837,14 @@ pub(crate) fn validate_upgrade_blob(blob: &StateBlob) -> Result<(), RebuildError
     let sessions = unique_wire_ids("session", blob.sessions.iter().map(|s| s.wire_id))?;
     let windows = unique_wire_ids("window", blob.windows.iter().map(|w| w.wire_id))?;
     let panes = unique_wire_ids("pane", blob.panes.iter().map(|p| p.wire_id))?;
+    // Agent sessions share the pane wire-id space: one id, one resource.
+    unique_wire_ids(
+        "resource",
+        blob.panes
+            .iter()
+            .map(|p| p.wire_id)
+            .chain(blob.agent_sessions.iter().map(|a| a.wire_id)),
+    )?;
 
     for s in &blob.sessions {
         require_refs("window", &s.window_wire_ids, &windows)?;
@@ -774,12 +976,12 @@ fn layout_from_blob(
 
 #[cfg(test)]
 mod tests {
-    use super::{RebuildError, validate_upgrade_blob};
+    use super::{RebuildError, WireResourceId, validate_upgrade_blob};
     use crate::state::ServerState;
     use crate::terminal_actor::TerminalActor;
     use crate::upgrade::blob::{
-        BLOB_VERSION, Counters, LayoutBlob, PaneBlob, SessionBlob, SplitDirBlob, StateBlob,
-        WindowBlob,
+        AgentSessionBlob, BLOB_VERSION, Counters, LayoutBlob, PaneBlob, SessionBlob, SplitDirBlob,
+        StateBlob, WindowBlob,
     };
     use std::path::PathBuf;
 
@@ -1014,6 +1216,7 @@ mod tests {
             sessions,
             windows,
             panes,
+            agent_sessions: Vec::new(),
         }
     }
 
@@ -1109,6 +1312,66 @@ mod tests {
             }
             other => panic!("expected duplicate session, got {other:?}"),
         }
+    }
+
+    fn agent_session(wire_id: u32, parent_wire_id: u32) -> AgentSessionBlob {
+        AgentSessionBlob {
+            wire_id,
+            parent_wire_id,
+            provider: "claude".to_owned(),
+            native_id: None,
+            state: None,
+            base_seq: 1,
+            dropped: 0,
+            ended: false,
+            records: vec!["{\"seq\":1,\"ts_ms\":1,\"type\":\"prompt\",\"data\":{}}\n".to_owned()],
+        }
+    }
+
+    /// Panes and agent sessions share one wire-id space.
+    #[test]
+    fn an_agent_session_reusing_a_pane_wire_id_is_rejected() {
+        let mut handoff = blob(
+            vec![session(1, vec![2])],
+            vec![window(2, 1, vec![3])],
+            vec![no_pty_pane(3, 2)],
+        );
+        handoff.agent_sessions = vec![agent_session(3, 3)];
+        match validate_upgrade_blob(&handoff) {
+            Err(RebuildError::DuplicateId { kind, id }) => {
+                assert_eq!(kind, "resource");
+                assert_eq!(id, 3);
+            }
+            other => panic!("expected duplicate resource id, got {other:?}"),
+        }
+    }
+
+    /// A session whose parent pane is not in the blob is dropped; the rest
+    /// of the tree, and every other session, still resumes.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_agent_session_without_its_parent_pane_is_dropped() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut state = ServerState::new();
+                let mut handoff = blob(
+                    vec![session(1, vec![2])],
+                    vec![window(2, 1, vec![3])],
+                    vec![no_pty_pane(3, 2)],
+                );
+                handoff.agent_sessions = vec![agent_session(4, 3), agent_session(5, 99)];
+                let watchers = state.rebuild_from_blob(&handoff).expect("rebuild");
+                assert_eq!(watchers.len(), 2, "the pane and its one session");
+                let kept = state.terminal_from_wire(&WireResourceId::local(4));
+                assert!(kept.is_some(), "the bound session resumes under its id");
+                assert!(
+                    state
+                        .terminal_from_wire(&WireResourceId::local(5))
+                        .is_none(),
+                    "the orphaned session is dropped"
+                );
+            })
+            .await;
     }
 
     #[test]

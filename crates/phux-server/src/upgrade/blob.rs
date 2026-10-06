@@ -3,8 +3,9 @@
 //!
 //! On `phux upgrade` the running server serializes its whole live
 //! session/window/pane tree, the per-pane PTY handoff (child PID + master fd +
-//! a replayable VT snapshot), and the monotonic id counters into a
-//! [`StateBlob`], passes it to the re-exec'd binary through an inherited
+//! a replayable VT snapshot), every `AgentSession` bound to a carried pane
+//! (its identity and retained record tail), and the monotonic id counters
+//! into a [`StateBlob`], passes it to the re-exec'd binary through an inherited
 //! descriptor, and the new image rebuilds itself from it.
 //!
 //! Identity is by **wire** id (`u32`), never core `SlotMap` id, whose
@@ -61,6 +62,12 @@ pub struct StateBlob {
     pub windows: Vec<WindowBlob>,
     /// Every pane, keyed by wire id, with its PTY handoff + snapshot.
     pub panes: Vec<PaneBlob>,
+    /// Every `AgentSession` whose parent pane crosses live (ADR-0103), keyed
+    /// by wire id in the same space as [`Self::panes`]. Additive: a blob from
+    /// an image that predates carried sessions reads as none, and an older
+    /// reader ignores the field and drops the sessions as it always did.
+    #[serde(default)]
+    pub agent_sessions: Vec<AgentSessionBlob>,
 }
 
 impl StateBlob {
@@ -224,6 +231,39 @@ pub struct PaneBlob {
     pub retain_secs: Option<u32>,
 }
 
+/// An `AgentSession` in the blob (ADR-0103): its identity, derived state,
+/// and the record stream a resumed engine continues from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSessionBlob {
+    /// Stable wire id, from the same allocator as pane wire ids, so an
+    /// integration's `@N` handle keeps naming the session.
+    pub wire_id: u32,
+    /// Wire id of the parent pane, which must be in [`StateBlob::panes`].
+    pub parent_wire_id: u32,
+    /// Harness that produces the session's records, e.g. `claude`.
+    pub provider: String,
+    /// The provider's own opaque session id, when it supplied one.
+    #[serde(default)]
+    pub native_id: Option<String>,
+    /// The state the stream last derived (`working`, `blocked`, `done`).
+    #[serde(default)]
+    pub state: Option<String>,
+    /// The record counter at the cut; the resumed engine stamps
+    /// `base_seq + 1` next.
+    pub base_seq: u64,
+    /// Records retention had evicted before the cut.
+    #[serde(default)]
+    pub dropped: u64,
+    /// Whether the session already recorded `session_end`.
+    #[serde(default)]
+    pub ended: bool,
+    /// The retained records, oldest first, each a stamped JSONL line. Bounded
+    /// by the old image's `defaults.agent-log-bytes` ring; the resumed ring
+    /// re-prunes to its own ceiling.
+    #[serde(default)]
+    pub records: Vec<String>,
+}
+
 /// A retained pane's exit record (ADR-0124), as the upgrade blob carries it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RetainedExitBlob {
@@ -341,6 +381,19 @@ mod tests {
                     retain_secs: None,
                 },
             ],
+            agent_sessions: vec![AgentSessionBlob {
+                wire_id: 3,
+                parent_wire_id: 2,
+                provider: "claude".to_owned(),
+                native_id: Some("abc".to_owned()),
+                state: Some("working".to_owned()),
+                base_seq: 9,
+                dropped: 4,
+                ended: false,
+                records: vec![
+                    "{\"seq\":9,\"ts_ms\":1,\"type\":\"prompt\",\"data\":{}}\n".to_owned(),
+                ],
+            }],
         }
     }
 
@@ -411,6 +464,10 @@ mod tests {
         assert_eq!(
             blob.counters.server_instance, None,
             "ADR-0109: pre-token image"
+        );
+        assert!(
+            blob.agent_sessions.is_empty(),
+            "an image that predates carried agent sessions carries none"
         );
     }
 
