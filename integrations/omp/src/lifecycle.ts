@@ -353,14 +353,17 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
   pi.on("agent_end", event => {
     if (!token) return;
     if (approvals.size > 0) return fallback();
-    // The wrapper awaits approval resolution before completing its tool. The
-    // received aggregate fences all preceding tool deliveries, so completed
-    // approval IDs can be forgotten here (also for automatic continuation).
+    // The wrapper awaits approval delivery inline before completing its tool,
+    // so approval events causally precede the end and completed approval IDs
+    // can be forgotten here (also for automatic continuation).
     resolvedApprovals.clear();
-    // A RECEIVED aggregate end trails earlier generic tool deliveries; abort()
-    // and navigation are not barriers. 17.x guaranteed this with a FIFO
-    // subscriber gate; on 18.6.1 it is emergent ordering that the lifecycle
-    // smoke's delayed-tool case re-verifies against the pinned SDK.
+    // Generic tool deliveries are NOT fenced by the end. 17.x held agent_end
+    // behind them with a FIFO subscriber gate; 18.6.1 dispatches each agent
+    // event fire-and-forget and settles agent_end on its own path, so a tool
+    // event an earlier extension holds can arrive after this. After a terminal
+    // end the token is gone and such an event is dropped; after a continuing
+    // end it can only re-assert working, which the next loop is. The lifecycle
+    // smoke's delayed-tool case pins both the ordering and that tolerance.
     if (event.willContinue === true) {
       phase = "continuing";
       tools.clear();
