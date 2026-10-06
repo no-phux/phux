@@ -31,6 +31,39 @@ pub async fn get_screen(
     get_screen_scrollback(socket, terminal_id, None, false).await
 }
 
+/// Read `terminal_id`'s viewport on an existing connection.
+///
+/// The read is ordered with the caller's other frames on it (a liveness
+/// check before a write, for one). The connection must not be subscribed to
+/// anything: an interleaved frame ahead of the reply is dropped.
+///
+/// [`ScreenState::title`] is the pane's live OSC 0/2 title, the one the
+/// server's agent detector evaluates. `ResourceInfo::title` in a `GET_STATE`
+/// snapshot is a different field: the user-set title, unset unless a client
+/// named the pane.
+///
+/// # Errors
+///
+/// See [`get_screen_scrollback`].
+pub async fn get_screen_on(
+    conn: &mut Connection,
+    request_id: u32,
+    terminal_id: ResourceId,
+) -> Result<ScreenState, AttachError> {
+    let reply = conn
+        .request(
+            request_id,
+            Command::GetScreen {
+                terminal_id,
+                request_scrollback: None,
+                cells: false,
+                format: SCREEN_FORMAT_NONE,
+            },
+        )
+        .await?;
+    decode_screen_reply(reply.into_result_ignoring_interleaved())
+}
+
 /// `GET_SCREEN`'s wire byte for "no rendering requested" (D9).
 pub const SCREEN_FORMAT_NONE: u8 = 0;
 
