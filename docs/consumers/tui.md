@@ -535,10 +535,21 @@ Navigate with arrows / `C-n` / `C-p` (`j` / `k` when the query is empty),
 PageUp / PageDown, Home / End, or the wheel. Enabled plugin `[[actions]]`
 and hostable `[[panes]]` appear under Plugin.
 
-<!-- impl-status: partial; probe: PluginPanePlacement -->
-> **Status: partial.** Manifest `placement = "overlay"` is valid schema
-> and is skipped with a logged warning. `split`, `tab`, and `zoomed`
-> open a real server-side Terminal.
+<!-- impl-status: shipped; probe: HostedPlacement::Overlay -->
+> **Status: shipped.** Every manifest `placement` opens a real server-side
+> Terminal: `split` beside the focused pane, `tab` in a new window,
+> `zoomed` as a zoomed split, and `overlay` in a floating box.
+
+An **overlay** pane opens in a titled box centered over the pane area
+(80% of each axis). It belongs to no window, so it never changes your
+layout and other clients attached to the session do not show it. While
+it is open, keys, pastes, and clicks inside the box go to it, and the
+panes beneath stop updating until it closes. The prefix still works:
+`C-a x` (`kill-pane`) closes the overlay and nothing else, and any other
+action closes it first and then runs. A click outside the box also
+closes it. Closing kills its process; the overlay also closes by itself
+when its process exits
+([ADR-0147](../adr/0147-plugin-overlay-panes-float-outside-the-layout.md)).
 
 The **Sessions & hosts** view (`C-a s`) lists other sessions; choosing one
 re-attaches this client in-process. A trailing "+ New session" row

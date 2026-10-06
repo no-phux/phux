@@ -251,14 +251,37 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     /// A key press headed for the pane snaps a scrolled viewport back to the
     /// live screen (tmux), before the predict peek reads the grid.
     fn snap_focused_viewport(&mut self) -> bool {
-        snap_scrolled_viewport(
-            self.ctx.engine_kernel,
-            self.panes,
-            self.ctx
-                .workspace
-                .active_window()
-                .and_then(|w| w.focus.as_ref()),
-        )
+        let target = self.input_target();
+        snap_scrolled_viewport(self.ctx.engine_kernel, self.panes, target.as_ref())
+    }
+
+    /// The pane keyboard input reaches: the floating overlay while one is
+    /// open (ADR-0147), else the active window's focused leaf.
+    fn input_target(&self) -> Option<ResourceId> {
+        crate::attach::floating::floating_pane(self.panes)
+            .or_else(|| {
+                self.ctx
+                    .workspace
+                    .active_window()
+                    .and_then(|w| w.focus.as_ref())
+            })
+            .cloned()
+    }
+
+    /// ADR-0147: close the floating overlay, if one is open, by killing its
+    /// Terminal. The slot goes at once so input and paint return to the
+    /// layout without waiting for the close; `true` when one was open.
+    pub(super) async fn dismiss_floating(&mut self) -> Result<bool, AttachError> {
+        let Some(id) = crate::attach::floating::floating_pane(self.panes).cloned() else {
+            return Ok(false);
+        };
+        self.panes.remove(&id);
+        self.ctx.expected_closes.insert(id.clone());
+        let request_id = self.ctx.take_request_id();
+        self.conn
+            .send(&super::args::kill_resource_frame(&id, request_id))
+            .await?;
+        Ok(true)
     }
 
     /// Run an action through the path every trigger shares; true iff the
@@ -267,6 +290,11 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         &mut self,
         resolved: &phux_config::keybind::ResolvedAction,
     ) -> Result<bool, AttachError> {
+        // ADR-0147: any action first dismisses the floating overlay; for
+        // `kill-pane` that is the whole action.
+        if self.dismiss_floating().await? && resolved.action == "kill-pane" {
+            return Ok(true);
+        }
         if !self.ctx.layout_read_complete && edits_workspace(&resolved.action) {
             tracing::debug!(action = %resolved.action, "waiting for initial shared layout read");
             return Ok(false);
@@ -490,7 +518,9 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let InputEvent::Key(key_event) = ev else {
             return false;
         };
-        if !self.predict.is_enabled() {
+        if !self.predict.is_enabled()
+            || crate::attach::floating::floating_pane(self.panes).is_some()
+        {
             return false;
         }
         let Some(fid) = self
@@ -520,13 +550,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     /// Forward key/focus/paste input to the focused pane (ADR-0019). Input
     /// before ATTACHED, or to an exited or unreachable pane, is dropped.
     async fn forward_to_focused_pane(&mut self, ev: InputEvent) -> Result<bool, AttachError> {
-        let Some(pane) = self
-            .ctx
-            .workspace
-            .active_window()
-            .and_then(|w| w.focus.as_ref())
-            .cloned()
-        else {
+        let Some(pane) = self.input_target() else {
             tracing::debug!("dropping input received before ATTACHED");
             return Ok(false);
         };

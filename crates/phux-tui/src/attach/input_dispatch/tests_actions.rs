@@ -908,8 +908,41 @@ fn plugin_pane_placement_routes_the_spawn() {
     assert!(matches!(frame, FrameKind::SpawnResource { command, .. } if command == argv));
 }
 
-/// An unknown entry (disabled plugin, typo, overlay declaration) or a split
-/// with no focused pane bells.
+/// ADR-0147: an overlay placement parks a floating spawn sized to the box
+/// interior, titled after the pane, and opens no split or window.
+#[test]
+fn plugin_pane_overlay_parks_a_floating_spawn_at_the_box_size() {
+    let effects = run_plugin_pane(
+        "com.example.board",
+        HostedPlacement::Overlay,
+        Workspace::single(tid(1)),
+    );
+    let (_, title, frame) = effects.spawn_floating.expect("parks a floating spawn");
+    assert_eq!(title, "Agent Board");
+    assert!(effects.spawn_terminal.is_none() && effects.spawn_window.is_none());
+    assert!(!effects.bell && !effects.layout_mutated);
+    let inner = crate::attach::floating::floating_box(crate::attach::paint::content_rect(
+        (80, 24),
+        None,
+        None,
+    ))
+    .inner;
+    assert_eq!(spawn_initial_size_of(&frame), Some((inner.w, inner.h)));
+    assert!(matches!(
+        frame,
+        FrameKind::SpawnResource { command: Some(ref argv), .. } if argv[0] == "agent-board"
+    ));
+    // It needs no focused pane: it joins no window.
+    let effects = run_plugin_pane(
+        "com.example.board",
+        HostedPlacement::Overlay,
+        Workspace::default(),
+    );
+    assert!(effects.spawn_floating.is_some() && !effects.bell);
+}
+
+/// An unknown entry (disabled plugin, typo) or a split with no focused pane
+/// bells.
 #[test]
 fn plugin_pane_unknown_or_unfocused_bells() {
     for (plugin, workspace) in [

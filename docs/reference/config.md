@@ -427,9 +427,9 @@ which-key-delay-ms = 400
 # `phux config run PLUGIN ACTION [--json]`; `phux plugin log` lists
 # recent action and hook runs with their exit status and output tail.
 # The server runs enabled plugins' `[[events]]` hooks, and the TUI opens
-# their `[[panes]]` (except `overlay` placement); link handlers are
-# still declarative only. The manifest path may be absolute or relative
-# to this config file.
+# their `[[panes]]` (every placement) and lays out their `[[sidebar]]`
+# sections; link handlers are still declarative only. The manifest path
+# may be absolute or relative to this config file.
 #
 # [[plugins]]
 # manifest = "/path/to/plugin/phux-plugin.toml"
@@ -463,7 +463,7 @@ which-key-delay-ms = 400
 #   [[panes]]
 #   id = "board"
 #   title = "Agent Board"
-#   placement = "split"
+#   placement = "split"    # split | tab | zoomed | overlay (a floating box)
 #   command = ["agent-board"]
 #
 #   [[sidebar]]            # a fixed band between Agents and Sessions

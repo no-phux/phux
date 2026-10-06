@@ -20,6 +20,7 @@ mod directory_picker;
 pub mod driver;
 mod exec_widgets;
 mod fleet;
+mod floating;
 mod focus;
 pub mod hosts;
 mod path_picker;

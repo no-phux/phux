@@ -178,7 +178,7 @@ pub struct PluginManifestPane {
     pub description: Option<String>,
     /// Optional platform override for this pane.
     pub platforms: Option<Vec<PluginPlatform>>,
-    /// Where a future runtime host should place the pane.
+    /// Where the TUI places the pane.
     pub placement: PluginPanePlacement,
     /// Command argv to execute.
     pub command: Vec<String>,
@@ -294,7 +294,8 @@ pub const SIDEBAR_SECTION_MAX_ROWS: u8 = 8;
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum PluginPanePlacement {
-    /// Temporary overlay over the focused pane.
+    /// Floating box over the pane area, in no window; closes when its
+    /// process exits or the user dismisses it (ADR-0147).
     #[default]
     Overlay,
     /// Split next to the focused pane.

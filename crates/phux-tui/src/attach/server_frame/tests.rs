@@ -2823,3 +2823,130 @@ fn a_live_spawned_agent_session_is_declared_and_attached_as_a_stream() {
     assert!(outcome.attach_panes.is_empty() && outcome.foreign_pane_set_dirty);
     assert!(h.mirror.engine_kernel.agent_session(&tid(4)).is_none());
 }
+
+// ---- ADR-0147: the floating plugin overlay ----------------------------------
+
+/// A client on one layout pane with a floating overlay spawn parked as
+/// request 9.
+fn floating_parked() -> H {
+    let mut h = H::on(Workspace::single(tid(1)), &[&tid(1)]);
+    h.mirror
+        .pending_floating
+        .insert(9, "Agent Board".to_owned());
+    h
+}
+
+/// The overlay's spawn reply seeds a floating slot in no window, leaves the
+/// layout and its focus alone, and asks for a full repaint.
+#[test]
+fn a_floating_spawn_reply_seeds_a_floating_slot_outside_the_layout() {
+    let mut h = floating_parked();
+    let before = h.mirror.workspace.clone();
+    let outcome = h.send(spawned(tid(2)));
+    assert!(outcome.layout_replaced && outcome.size_floating && !outcome.emit_set_metadata);
+    assert_eq!(
+        h.mirror.panes[&tid(2)].floating.as_deref(),
+        Some("Agent Board")
+    );
+    assert_eq!(h.mirror.workspace, before, "no window adopts the overlay");
+    assert_eq!(h.mirror.focused_resource, Some(tid(1)));
+    assert_eq!(h.mirror.paint_focus(), Some(tid(2)));
+    assert!(h.mirror.pending_floating.is_empty());
+}
+
+/// A refused spawn bells with the reason; an overlay racing one already open
+/// is killed rather than stacked.
+#[test]
+fn a_floating_spawn_that_cannot_open_bells_or_is_killed() {
+    let mut h = floating_parked();
+    let refused = h.send(FrameKind::ResourceSpawned {
+        request_id: 9,
+        result: SpawnResult::Err(phux_protocol::wire::frame::SpawnError::SpawnFailed(
+            "no such file".to_owned(),
+        )),
+    });
+    assert_eq!(refused.notices.len(), 1);
+    assert!(refused.notices[0].text.contains("Agent Board"));
+    assert!(refused.notices[0].text.contains("no such file"));
+    assert!(h.out.contains(&0x07), "bells");
+
+    let mut h = floating_parked();
+    h.send(spawned(tid(2)));
+    h.mirror.pending_floating.insert(9, "Second".to_owned());
+    let raced = h.send(spawned(tid(3)));
+    assert_eq!(raced.kill_orphans, vec![tid(3)]);
+    assert!(h.mirror.expected_closes.contains(&tid(3)));
+    assert!(!h.mirror.panes.contains_key(&tid(3)));
+}
+
+/// The overlay's process exiting closes it: no notice, no detach, the layout
+/// untouched, and a repaint to uncover the panes beneath.
+#[test]
+fn the_floating_overlay_closes_with_its_process() {
+    let mut h = floating_parked();
+    h.send(spawned(tid(2)));
+    let outcome = h.send(closed(&tid(2), Some(1)));
+    assert!(outcome.layout_replaced && !outcome.exit);
+    assert!(outcome.notices.is_empty(), "{:?}", outcome.notices);
+    assert!(!h.mirror.panes.contains_key(&tid(2)));
+    assert_eq!(h.mirror.workspace, Workspace::single(tid(1)));
+    assert_eq!(h.mirror.paint_focus(), Some(tid(1)));
+}
+
+/// A retained overlay (ADR-0124) closes on `Exited` and its Terminal is
+/// killed, silently.
+#[test]
+fn a_retained_floating_overlay_is_killed_when_its_process_exits() {
+    use phux_protocol::wire::frame::{ControlAction, ResourceLifecycle};
+    let mut h = floating_parked();
+    h.send(spawned(tid(2)));
+    let outcome = h.send(event(
+        &tid(2),
+        AgentEvent::TerminalControl {
+            lifecycle: ResourceLifecycle::Exited,
+            exit_status: Some(0),
+            input_holder: None,
+            action: ControlAction::Exited,
+            actor: None,
+        },
+    ));
+    assert_eq!(outcome.kill_orphans, vec![tid(2)]);
+    assert!(outcome.layout_replaced);
+    assert!(h.mirror.expected_closes.contains(&tid(2)));
+    assert!(!h.mirror.panes.contains_key(&tid(2)));
+}
+
+/// Under the overlay, a layout pane's output reaches its mirror but not the
+/// screen; the overlay's own output paints inside its box.
+#[test]
+fn output_under_the_floating_overlay_waits_and_the_overlay_paints_in_its_box() {
+    let (pane, overlay) = (tid(1), tid(2));
+    let mut h = H::published(
+        Workspace::single(pane.clone()),
+        &[(&pane, 80, 24, b""), (&overlay, 80, 24, b"")],
+    );
+    h.mirror
+        .panes
+        .get_mut(&overlay)
+        .expect("overlay slot")
+        .floating = Some("Board".to_owned());
+    let outcome = h.output(&pane, b"under the box");
+    assert!(h.out.is_empty(), "{:?}", h.out_str());
+    assert_eq!(outcome.authoritative_damage, vec![pane.clone()]);
+    assert_eq!(h.cell(&pane, 0, 0), Some('u'));
+
+    h.output(&overlay, b"on top");
+    let inner = crate::attach::floating::floating_box(crate::attach::paint::content_rect(
+        (80, 24),
+        None,
+        None,
+    ))
+    .inner;
+    let painted = h.out_str();
+    assert!(strip_csi(&painted).contains("on top"), "{painted:?}");
+    let origin = format!("\x1b[{};{}H", inner.y + 1, inner.x + 1);
+    assert!(
+        painted.contains(&origin),
+        "paints at the box origin: {painted:?}"
+    );
+}

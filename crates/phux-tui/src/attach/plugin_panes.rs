@@ -5,9 +5,10 @@
 //! cwd, `PHUX_PLUGIN_*` env), with no new wire surface (ADR-0017).
 //!
 //! Placement: `split` parks a `PendingSplit`, `tab` a `PendingWindow` named
-//! after the pane, `zoomed` a split that zooms on spawn. `overlay` is
-//! deferred (no floating live-terminal surface) and skipped with a warning.
-//! Palette rows commit [`PLUGIN_PANE_NAME`] with `plugin`/`pane` args.
+//! after the pane, `zoomed` a split that zooms on spawn, and `overlay` a
+//! floating box over the pane area that is in no window (ADR-0147, see
+//! `attach::floating`). Palette rows commit [`PLUGIN_PANE_NAME`] with
+//! `plugin`/`pane` args.
 
 use std::path::PathBuf;
 
@@ -21,7 +22,7 @@ use phux_client::layout_ops::DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID;
 /// the static registry).
 pub const PLUGIN_PANE_NAME: &str = "plugin-pane";
 
-/// Where a hosted plugin pane opens (`overlay` never reaches this type).
+/// Where a hosted plugin pane opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostedPlacement {
     /// Split beside the focused pane (side-by-side).
@@ -31,6 +32,8 @@ pub enum HostedPlacement {
     /// Split beside the focused pane, then zoom the new pane to fill
     /// the window.
     Zoomed,
+    /// A modal box over the pane area, in no window (ADR-0147).
+    Overlay,
 }
 
 /// One enabled plugin pane the TUI can host, snapshotted at driver start.
@@ -44,7 +47,7 @@ pub struct PluginPaneEntry {
     pub pane_id: String,
     /// Human-readable pane title.
     pub title: String,
-    /// Hosted placement (overlay entries never make it into a snapshot).
+    /// Hosted placement.
     pub placement: HostedPlacement,
     /// Command argv the spawned Terminal runs.
     pub command: Vec<String>,
@@ -114,8 +117,8 @@ impl PluginPaneEntry {
     }
 }
 
-/// Flatten loaded manifests into hostable pane entries (pure). `overlay`
-/// placements and empty argv are dropped with a warning.
+/// Flatten loaded manifests into hostable pane entries (pure). Empty argv is
+/// dropped with a warning.
 #[must_use]
 pub fn entries_from_manifests(manifests: &[PluginManifest]) -> Vec<PluginPaneEntry> {
     let mut entries = Vec::new();
@@ -125,14 +128,7 @@ pub fn entries_from_manifests(manifests: &[PluginManifest]) -> Vec<PluginPaneEnt
                 PluginPanePlacement::Split => HostedPlacement::Split,
                 PluginPanePlacement::Tab => HostedPlacement::Tab,
                 PluginPanePlacement::Zoomed => HostedPlacement::Zoomed,
-                PluginPanePlacement::Overlay => {
-                    tracing::warn!(
-                        plugin = %manifest.id,
-                        pane = %pane.id,
-                        "plugin pane placement `overlay` is not hosted yet (deferred); skipping entry",
-                    );
-                    continue;
-                }
+                PluginPanePlacement::Overlay => HostedPlacement::Overlay,
             };
             if pane.command.is_empty() {
                 tracing::warn!(
@@ -214,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn overlay_placement_is_deferred_and_skipped() {
+    fn overlay_placement_is_hosted() {
         let m = manifest(
             "p",
             vec![
@@ -223,8 +219,9 @@ mod tests {
             ],
         );
         let entries = entries_from_manifests(std::slice::from_ref(&m));
-        assert_eq!(entries.len(), 1, "overlay entry dropped, split kept");
-        assert_eq!(entries[0].pane_id, "s");
+        assert_eq!(entries.len(), 2, "overlay and split both host");
+        assert_eq!(entries[0].placement, HostedPlacement::Overlay);
+        assert_eq!(entries[0].palette_label(), "plugin pane: p name: ov title");
     }
 
     #[test]

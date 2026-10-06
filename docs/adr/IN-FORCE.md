@@ -146,6 +146,7 @@ by a newer one, the newer line is the operative reading.
 ## TUI conventions
 
 - [0148](./0148-plugin-sidebar-sections-are-fixed-bands-of-pane-rows.md) A plugin `[[sidebar]]` section is a fixed band between Agents and Sessions; its rows are session panes rendered from a closed token vocabulary, and a pane rows only when every token resolves.
+- [0147](./0147-plugin-overlay-panes-float-outside-the-layout.md) A plugin `overlay` pane is a Terminal in no window, drawn by the client as a modal box; any action dismisses it by killing its Terminal, and it closes when its process exits.
 - [0146](./0146-tui-pushes-kitty-keyboard-disambiguate-on-the-host.md) While attached the TUI pushes kitty keyboard flag 1 on the host and pops it in the shared terminal reset; hosts without the protocol stay on the legacy decoder.
 - [0140](./0140-sidebar-machines-come-from-a-hosts-provider.md) The sidebar groups sessions by machine: the attached server live, every other machine from a hosts provider command printing `phux.hosts/v1` (default `phux ls --all --json`); `switch-host` execs `phux attach` on the chosen machine.
 - [0139](./0139-solid-desktop-over-native-runtime-views.md) The separate Solid desktop uses one native host and shared runtime views, an optional mechanical NAPI encoder, focused-writable geometry, and close-detaches semantics; independent views are first-release required.
