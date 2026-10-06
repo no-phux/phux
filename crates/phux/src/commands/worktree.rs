@@ -145,14 +145,11 @@ fn removal_json(
 /// Report a failure: under `--json` one contract line on stderr with stdout
 /// empty (ADR-0065 §4), otherwise the historical prose. Exit is `1` either way.
 fn fail_json(json: bool, code: &'static str, message: &str, remedy: &str) -> ExitCode {
-    if json {
-        return crate::commands::json_err::emit(
-            true,
-            &crate::commands::json_err::CliError::new(code, message.to_owned(), remedy),
-            1,
-        );
-    }
-    fail(message)
+    crate::commands::json_err::emit(
+        json,
+        &crate::commands::json_err::CliError::new(code, message.to_owned(), remedy),
+        1,
+    )
 }
 
 fn run_list(path: &Path, json: bool, socket: Option<&Path>) -> ExitCode {
@@ -851,11 +848,6 @@ fn live_session_names(socket: Option<&Path>) -> Option<Vec<String>> {
             .map(|session| session.name.clone())
             .collect(),
     )
-}
-
-fn fail(message: &str) -> ExitCode {
-    eprintln!("phux: {message}");
-    ExitCode::FAILURE
 }
 
 #[cfg(test)]

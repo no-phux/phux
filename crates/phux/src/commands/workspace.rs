@@ -62,10 +62,10 @@ fn run_inspect(path: &Path, json: bool) -> ExitCode {
     match inspect_workspace(path) {
         Ok(report) if json => print_json(&report),
         Ok(report) => print_human(&report),
-        // The `--json`-bearing inspect verb adopts the shared error contract
-        // on its failure path (phux-i0e8.8.3); prose is unchanged.
-        Err(err) if json => crate::commands::json_err::emit(
-            true,
+        // The shared error contract (phux-i0e8.8.3): one JSON document under
+        // `--json`, the message and its remedy as prose otherwise.
+        Err(err) => crate::commands::json_err::emit(
+            json,
             &crate::commands::json_err::CliError::new(
                 crate::commands::json_err::codes::WORKSPACE,
                 err,
@@ -73,7 +73,6 @@ fn run_inspect(path: &Path, json: bool) -> ExitCode {
             ),
             1,
         ),
-        Err(err) => fail(&err),
     }
 }
 
@@ -180,7 +179,9 @@ pub(crate) fn git_bytes(path: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
         return Ok(output.stdout);
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // git's own severity word reads as noise after our `phux:` prefix.
     let detail = stderr.trim();
+    let detail = detail.strip_prefix("fatal: ").unwrap_or(detail);
     if detail.is_empty() {
         Err(format!("git {args:?} failed"))
     } else {
@@ -225,14 +226,22 @@ fn print_human(report: &WorkspaceReport) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn fail(message: &str) -> ExitCode {
-    eprintln!("phux: {message}");
-    ExitCode::FAILURE
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// git's `fatal:` severity word is dropped, so the error reads
+    /// `phux: not a git repository ...`, not `phux: fatal: ...`.
+    #[test]
+    fn git_errors_drop_the_fatal_prefix() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let Err(err) = git_text(dir.path(), &["rev-parse", "--show-toplevel"]) else {
+            // Inside some enclosing repository: nothing to check.
+            return;
+        };
+        assert!(!err.starts_with("fatal:"), "{err}");
+        assert!(err.contains("not a git repository"), "{err}");
+    }
 
     #[test]
     fn parses_porcelain_worktree_records() {

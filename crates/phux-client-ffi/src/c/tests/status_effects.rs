@@ -387,7 +387,7 @@ fn retired_generation_output_is_invalid_state_and_keeps_the_session() {
     );
     assert_eq!(
         std::str::from_utf8(span_bytes(error)).expect("last error is UTF-8"),
-        "generation (StreamId(1), BootstrapId(1)) is retired for ResourceId(30)",
+        "generation (StreamId(1), BootstrapId(1)) is retired for @30",
     );
     assert_eq!(
         unsafe { phux_client_state(client) },
