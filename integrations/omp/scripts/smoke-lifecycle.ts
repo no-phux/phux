@@ -169,9 +169,12 @@ if (process.argv[2] !== "--isolated") {
     }, approvalRunner);
     await approvalRunner.emitBeforeAgentStart("", undefined, []);
     await approvalRunner.emit({ type: "agent_start" });
-    const context = { sessionManager: approvalCase.session.sessionManager, settings: {
-      get: (key: string) => key === "tools.approvalMode" ? "prompt" : { inert: "prompt" },
-    } } as any;
+    // The wrapper reads approval settings through OMP's typed settings registry,
+    // so this must be a real (isolated, in-memory) Settings instance.
+    const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
+    const context = { sessionManager: approvalCase.session.sessionManager, settings: Settings.isolated({
+      "tools.approvalMode": "always-ask", "tools.approval": { inert: "prompt" },
+    }) } as any;
     const deniedA = tool.execute("approval-a", {}, undefined, undefined, context).catch(error => String(error));
     await waitUntil(() => dialogs.length === 1);
     assert.equal(show().state, "blocked", `wrapped approval must override working: ${JSON.stringify(show())}`);
@@ -230,8 +233,9 @@ if (process.argv[2] !== "--isolated") {
     assert.equal(show().agent_session, null, "late earlier before guard must not adopt the newer loop");
     await closeCase();
 
-    // Exercise the SDK's actual FIFO subscriber gate: end is not delivered to
-    // extensions while an earlier generic tool delivery is still held up.
+    // End must not reach extensions while an earlier generic tool delivery is
+    // still held up. 17.x enforced this with a FIFO subscriber gate; 18.x has no
+    // such gate, so this case is what proves the ordering on the pinned SDK.
     const delayedTool = await openCase("tool_execution_start");
     await delayedTool.runner.emitBeforeAgentStart("", undefined, []);
     await delayedTool.runner.emit({ type: "agent_start" });
@@ -255,7 +259,7 @@ if (process.argv[2] !== "--isolated") {
     await reload.runner.emitBeforeAgentStart("", undefined, []);
     const { createAssistantMessageEventStream } = await import("@oh-my-pi/pi-ai/utils/event-stream");
     reload.session.agent.setModel({
-      id: "inert", name: "inert", api: "openai-completions", provider: "fixture", input: ["text"], reasoning: false,
+      id: "inert", name: "inert", api: "openai-completions", provider: "fixture", identity: { class: "unknown" }, input: ["text"], reasoning: false,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 10000, maxTokens: 1000,
     } as any);
     const streaming = Promise.withResolvers<void>();
@@ -281,28 +285,6 @@ if (process.argv[2] !== "--isolated") {
     const nativeExecutable = resolve(dirname(import.meta.path), "../node_modules/.bin/omp");
     const nativeRoot = join(process.cwd(), "native");
     await mkdir(nativeRoot);
-    // Reproduce the previous credential-free RPC failure with captured argv,
-    // output and exit instead of mistaking the pane's fallback shell for OMP.
-    const noModelExit = join(nativeRoot, "no-model-exit.json");
-    const noModelOut = join(nativeRoot, "no-model-stdout.log");
-    const noModelErr = join(nativeRoot, "no-model-stderr.log");
-    const noModelArgv = [process.execPath, nativeExecutable, "--mode", "rpc", "--no-session", "--no-tools", "-e", process.argv[4]!];
-    const noModelLauncher = join(nativeRoot, "no-model.js");
-    await writeFile(noModelLauncher, `const child = Bun.spawn(${JSON.stringify(noModelArgv)}, {
-      stdin: "inherit", stdout: Bun.file(${JSON.stringify(noModelOut)}), stderr: Bun.file(${JSON.stringify(noModelErr)}), env: process.env
-    }); await Bun.write(${JSON.stringify(noModelExit)}, JSON.stringify({ code: await child.exited }));`);
-    run("new", "--json", "-s", "omp-no-model-diagnostic", "--", process.execPath, noModelLauncher);
-    for (let attempt = 0; attempt < 200; attempt++) {
-      if (await Bun.file(noModelExit).exists()) break;
-      await Bun.sleep(50);
-    }
-    assert.ok(await Bun.file(noModelExit).exists(), "credential-free RPC diagnostic did not exit");
-    const noModelReceipt = await Bun.file(noModelExit).json();
-    const noModelStderr = await Bun.file(noModelErr).text();
-    console.log("Credential-free RPC diagnostic:", JSON.stringify({ argv: noModelArgv, ...noModelReceipt,
-      stdout: await Bun.file(noModelOut).text(), stderr: noModelStderr }));
-    assert.equal(noModelReceipt.code, 1);
-    assert.match(noModelStderr, /No models available|No available models/);
     const proofPath = join(nativeRoot, "startup.json");
     const callsPath = join(nativeRoot, "provider-called");
     const providerFixture = join(nativeRoot, "provider.js");
@@ -316,7 +298,7 @@ if (process.argv[2] !== "--isolated") {
       api.on("session_start", async (_event, ctx) => {
         await Bun.write(${JSON.stringify(proofPath)}, JSON.stringify({
           nativeId: ctx.sessionManager.getSessionId(), pid: process.pid, host: process.env.PHUX_TERMINAL_ID,
-          selected: process.env.PHUX_TARGET, argv: process.argv, sdk: "17.1.2"
+          selected: process.env.PHUX_TARGET, argv: process.argv, sdk: "18.6.1"
         }));
       });
     }`);

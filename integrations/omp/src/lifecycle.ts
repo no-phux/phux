@@ -294,9 +294,12 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
   pi.on("session_branch", navigate);
   pi.on("session_tree", navigate);
 
-  // This is a payload-free causal guard, NOT prompt reporting. In 17.1.2
+  // This is a payload-free causal guard, NOT prompt reporting. In 18.6.1
   // AgentSession.prompt awaits emitBeforeAgentStart before agent.prompt. Generic
   // agent/tool notifications are concurrent; their receipt alone is not a guard.
+  // 18.x also runs this hook for queued steering/follow-up deliveries mid-run and
+  // may repeat it for one prompt; neither is distinguishable from an overlapping
+  // start, so both fall back (docs/consumers/omp.md, "Host-bound lifecycle").
   pi.on("before_agent_start", () => {
     if (phase === "fallback") return;
     if (phase !== "idle" && phase !== "continuing") return fallback();
@@ -345,9 +348,10 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
     // received aggregate fences all preceding tool deliveries, so completed
     // approval IDs can be forgotten here (also for automatic continuation).
     resolvedApprovals.clear();
-    // agent-session.ts #emitSessionEvent's FIFO subscriber gate drains earlier
-    // generic tool deliveries BEFORE launching this detached notification. Thus
-    // a RECEIVED aggregate end is a barrier; abort()/navigation is not one.
+    // A RECEIVED aggregate end trails earlier generic tool deliveries; abort()
+    // and navigation are not barriers. 17.x guaranteed this with a FIFO
+    // subscriber gate; on 18.6.1 it is emergent ordering that the lifecycle
+    // smoke's delayed-tool case re-verifies against the pinned SDK.
     if (event.willContinue === true) {
       phase = "continuing";
       tools.clear();
