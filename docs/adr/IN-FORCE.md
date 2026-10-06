@@ -165,6 +165,7 @@ by a newer one, the newer line is the operative reading.
 - [0121](./0121-cli-parser-is-usage-rs.md) The `phux` CLI parses with usage-rs 6.9; one declaration drives parse, help, completions, and the generated CLI reference.
 - [0065](./0065-one-cli-grammar.md) `--socket` is one root-level global; alias parity, one `--split`, one JSON error shape.
 - [0058](./0058-right-click-context-menus.md) Right-click opens anchored pane, window, or session menus committed through `run_action`.
+- [0152](./0152-project-recipes-run-only-approved-bytes.md) `phux project open` builds a missing session from `.phux/project.toml` through the restore engine, only after its exact bytes are approved per repository.
 - [0054](./0054-worktree-bound-sessions.md) `phux worktree` derives a session name from the worktree path; no stored state.
 - [0049](./0049-client-local-focus-and-advisory-attention.md) Focus is client-local and never in shared layout metadata; agent attention is advisory.
 - [0048](./0048-drag-to-resize-and-default-mouse-capture.md) The client captures outer-terminal mouse by default; divider drags commit through `SET_METADATA`.

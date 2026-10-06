@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 const ALLOWLIST: &[(&str, usize, &str)] = &[
     (
         "mod.rs",
-        28,
+        29,
         "the shared `command_on`/`request_command` helpers, plus matches on the CLI's own `Command` enum",
     ),
     (

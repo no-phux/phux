@@ -271,6 +271,7 @@ pub(crate) mod paste;
 pub(crate) mod perf;
 pub(crate) mod play;
 pub(crate) mod plugin;
+pub(crate) mod project;
 pub(crate) mod rec;
 pub(crate) mod relay;
 pub(crate) mod remote;
@@ -375,6 +376,13 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
             Some(PairAction::Prune { .. }) => Some("pair prune"),
             Some(PairAction::Rotate { .. }) => Some("pair rotate"),
             Some(PairAction::Revoke { .. }) => Some("pair revoke"),
+        },
+        Command::Project { action } => match action {
+            ProjectAction::Open { .. } | ProjectAction::List { .. } => None,
+            ProjectAction::Init { .. } => Some("project init"),
+            ProjectAction::Trust { .. } => Some("project trust"),
+            ProjectAction::Untrust { .. } => Some("project untrust"),
+            ProjectAction::Status { .. } => Some("project status"),
         },
         Command::Workload { .. } => Some("workload"),
         Command::Completion { .. } => Some("completion"),
@@ -2330,6 +2338,23 @@ pub(crate) enum Command {
         json: bool,
     },
 
+    /// Open a project session from a trusted recipe
+    ///
+    /// A project is a checkout. `open` attaches to its session, building it
+    /// first from the checkout's `.phux/project.toml` recipe (windows,
+    /// panes, splits, commands, environment, focus) when it is not running.
+    /// A recipe runs only after its exact bytes are approved on this machine
+    /// (`trust`); a live session is reopened as it is and its recipe is never
+    /// rerun. `[[projects]]` entries in config.toml name checkouts so `open
+    /// NAME` works from anywhere. The session name is the one `phux worktree`
+    /// derives from the checkout path.
+    #[usage(alias = "p")]
+    #[usage(help_heading = "Sessions", display_order = 16)]
+    Project {
+        #[usage(subcommand)]
+        action: ProjectAction,
+    },
+
     /// Manage git worktrees and their bound sessions
     ///
     /// Each worktree binds to one session whose name is derived from the
@@ -2521,6 +2546,71 @@ pub(crate) enum ServiceAction {
         /// Report how many would be removed, and remove nothing.
         #[usage(long)]
         dry_run: bool,
+    },
+}
+
+/// `phux project <action>` — named checkouts and trusted recipes.
+#[derive(Debug, Subcommands)]
+pub(crate) enum ProjectAction {
+    /// Attach to a project's session, building it from its recipe if absent.
+    ///
+    /// TARGET is a `[[projects]]` name or a directory (default: the current
+    /// one); inside git, the checkout root is used. An unapproved recipe is
+    /// shown and must be approved at the terminal; without a terminal, or
+    /// with `--json`, it is refused (exit 2) until `phux project trust`.
+    /// No recipe opens one shell at the root.
+    Open {
+        /// Project name or directory.
+        target: Option<String>,
+
+        /// Build the session without attaching and print a stable JSON
+        /// document: project, path, session, whether it was created now,
+        /// and the seed pane's `terminal_id`.
+        #[usage(long)]
+        json: bool,
+    },
+
+    /// List the `[[projects]]` catalog and whether each session is open.
+    #[usage(alias = "ls")]
+    List {
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
+    },
+
+    /// Write a starter `.phux/project.toml` into a checkout.
+    ///
+    /// Refuses to overwrite an existing recipe. The starter is approved as
+    /// written; editing it makes it untrusted until `phux project trust`.
+    Init {
+        /// Project name or directory (default: the current one).
+        target: Option<String>,
+    },
+
+    /// Validate a recipe and approve its exact bytes on this machine.
+    ///
+    /// The approval covers every worktree of the same repository and ends
+    /// the moment one byte of the recipe changes.
+    Trust {
+        /// Project name or directory (default: the current one).
+        target: Option<String>,
+    },
+
+    /// Withdraw this machine's approval of a recipe.
+    Untrust {
+        /// Project name or directory (default: the current one).
+        target: Option<String>,
+    },
+
+    /// Report whether a recipe is approved: exit 0 trusted, 1 untrusted or
+    /// absent, 2 undeterminable.
+    Status {
+        /// Project name or directory (default: the current one).
+        target: Option<String>,
+
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
     },
 }
 

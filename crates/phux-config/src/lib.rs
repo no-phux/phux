@@ -20,6 +20,7 @@ pub mod loader;
 pub mod overlay;
 pub mod plugin;
 pub mod production;
+pub mod project;
 pub mod remote;
 pub mod satellite;
 pub mod scaffold;
@@ -37,6 +38,7 @@ pub use error::{ConfigError, byte_offset_to_line_col};
 pub use layer::{
     ConfigProvenance, KeyOrigin, LayerSource, MAX_EXTENDS_DEPTH, merged_config_with_provenance,
 };
+pub use project::ProjectConfigEntry;
 pub use remote::RemoteConfigEntry;
 pub use satellite::SatelliteConfigEntry;
 pub use schema::{

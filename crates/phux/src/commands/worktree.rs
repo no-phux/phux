@@ -536,7 +536,7 @@ fn run_open(
 
 /// The seed pane of live session `name`: the lowest (oldest) local id, so
 /// every `open` answers the same. Satellite panes are skipped.
-fn seed_terminal_of(name: &str, socket: Option<&Path>) -> Option<u32> {
+pub(crate) fn seed_terminal_of(name: &str, socket: Option<&Path>) -> Option<u32> {
     let socket_path = socket.map_or_else(default_socket_path, Path::to_path_buf);
     let selector = phux_client::selector::parse(name).ok()?;
     let rt = cli_runtime().ok()?;
@@ -833,7 +833,7 @@ fn wait_for_session_gone(name: &str, socket: Option<&Path>) -> bool {
 
 /// Session names on the server, or `None` when no server runs (shown as `?`
 /// versus `-`).
-fn live_session_names(socket: Option<&Path>) -> Option<Vec<String>> {
+pub(crate) fn live_session_names(socket: Option<&Path>) -> Option<Vec<String>> {
     let socket_path = socket.map_or_else(default_socket_path, Path::to_path_buf);
     let rt = cli_runtime().ok()?;
     // `sessions` never aggregates across a federation, so a degraded view is

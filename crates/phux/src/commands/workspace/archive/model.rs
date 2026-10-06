@@ -1,56 +1,60 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-pub(super) const ARCHIVE_SCHEMA_VERSION: u8 = 2;
+pub(crate) const ARCHIVE_SCHEMA_VERSION: u8 = 2;
 const LEGACY_ARCHIVE_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(super) struct WorkspaceArchive {
-    pub(super) schema_version: u8,
-    pub(super) sessions: Vec<WorkspaceSession>,
+pub(crate) struct WorkspaceArchive {
+    pub(crate) schema_version: u8,
+    pub(crate) sessions: Vec<WorkspaceSession>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(super) struct WorkspaceSession {
-    pub(super) name: String,
+pub(crate) struct WorkspaceSession {
+    pub(crate) name: String,
     #[serde(default)]
-    pub(super) active: bool,
+    pub(crate) active: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) cwd: Option<String>,
+    pub(crate) cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) command: Option<Vec<String>>,
+    pub(crate) command: Option<Vec<String>>,
     #[serde(default)]
-    pub(super) windows: Vec<WorkspaceWindow>,
+    pub(crate) windows: Vec<WorkspaceWindow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(super) struct WorkspaceWindow {
-    pub(super) name: String,
+pub(crate) struct WorkspaceWindow {
+    pub(crate) name: String,
     #[serde(default)]
-    pub(super) active: bool,
+    pub(crate) active: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) layout: Option<WorkspaceLayoutNode>,
+    pub(crate) layout: Option<WorkspaceLayoutNode>,
     #[serde(default)]
-    pub(super) panes: Vec<WorkspacePane>,
+    pub(crate) panes: Vec<WorkspacePane>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct WorkspacePane {
+pub(crate) struct WorkspacePane {
     #[serde(default)]
-    pub(super) active: bool,
+    pub(crate) active: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) title: Option<String>,
+    pub(crate) title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) cwd: Option<String>,
+    pub(crate) cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) command: Option<Vec<String>>,
+    pub(crate) command: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) agent_session: Option<WorkspaceAgentSession>,
+    pub(crate) agent_session: Option<WorkspaceAgentSession>,
+    /// Extra environment for this pane's process. Written by a project
+    /// recipe (ADR-0152); `workspace save` never captures a live pane's env.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) env: BTreeMap<String, String>,
     #[serde(default)]
-    pub(super) cols: u16,
+    pub(crate) cols: u16,
     #[serde(default)]
-    pub(super) rows: u16,
+    pub(crate) rows: u16,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,15 +62,15 @@ pub(super) struct WorkspacePane {
     clippy::struct_field_names,
     reason = "the archive mirrors the versioned L3 provenance schema"
 )]
-pub(super) struct WorkspaceAgentSession {
-    pub(super) plugin_id: String,
-    pub(super) integration_id: String,
-    pub(super) native_id: String,
+pub(crate) struct WorkspaceAgentSession {
+    pub(crate) plugin_id: String,
+    pub(crate) integration_id: String,
+    pub(crate) native_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(super) enum WorkspaceLayoutNode {
+pub(crate) enum WorkspaceLayoutNode {
     Pane {
         pane: usize,
     },
@@ -80,67 +84,69 @@ pub(super) enum WorkspaceLayoutNode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum WorkspaceSplitDir {
+pub(crate) enum WorkspaceSplitDir {
     Horizontal,
     Vertical,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(super) struct RestoreSummary {
-    pub(super) schema_version: u8,
-    pub(super) restored: Vec<String>,
-    pub(super) skipped_existing: Vec<String>,
+pub(crate) struct RestoreSummary {
+    pub(crate) schema_version: u8,
+    pub(crate) restored: Vec<String>,
+    pub(crate) skipped_existing: Vec<String>,
     /// Sessions whose restore failed partway through. Each one was rolled
     /// back (every pane created for it so far, killed) before moving on to
     /// the next session (PHA-406 L18 review item 5): a failure never leaves
     /// a half-restored session behind, and never aborts the rest of the
     /// archive.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(super) failed: Vec<FailedRestore>,
+    pub(crate) failed: Vec<FailedRestore>,
     /// Non-fatal notices against an otherwise-restored session — today,
     /// only "an archived native agent session could not be resumed; this
     /// pane got a plain shell instead" (PHA-406 L18 review item 6).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(super) warnings: Vec<RestoreWarning>,
+    pub(crate) warnings: Vec<RestoreWarning>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(super) struct FailedRestore {
-    pub(super) name: String,
-    pub(super) reason: String,
+pub(crate) struct FailedRestore {
+    pub(crate) name: String,
+    pub(crate) reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(super) struct RestoreWarning {
-    pub(super) session: String,
-    pub(super) message: String,
+pub(crate) struct RestoreWarning {
+    pub(crate) session: String,
+    pub(crate) message: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct RestorePlan {
-    pub(super) creates: Vec<CreateRequest>,
-    pub(super) skipped_existing: Vec<String>,
+pub(crate) struct RestorePlan {
+    pub(crate) creates: Vec<CreateRequest>,
+    pub(crate) skipped_existing: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct CreateRequest {
-    pub(super) name: String,
-    pub(super) cwd: Option<String>,
-    pub(super) command: Option<Vec<String>>,
-    pub(super) agent_session: Option<WorkspaceAgentSession>,
+pub(crate) struct CreateRequest {
+    pub(crate) name: String,
+    pub(crate) cwd: Option<String>,
+    pub(crate) command: Option<Vec<String>>,
+    pub(crate) agent_session: Option<WorkspaceAgentSession>,
+    /// The seed pane's extra environment (see [`WorkspacePane::env`]).
+    pub(crate) env: BTreeMap<String, String>,
     /// `(window index, pane index)` into [`Self::windows`] of the pane whose
     /// `cwd`/`command`/`agent_session` seeded the fields above — the one
     /// pane the session-create call itself produces. `None` when the
     /// session has no panes at all.
-    pub(super) seed_position: Option<(usize, usize)>,
+    pub(crate) seed_position: Option<(usize, usize)>,
     /// The full archived window/pane structure (ADR-0129): every other
     /// pane here is spawned and placed to replay the captured split tree
     /// after the seed pane exists. Empty for a schema-1 archive or a
     /// session with no windows.
-    pub(super) windows: Vec<WorkspaceWindow>,
+    pub(crate) windows: Vec<WorkspaceWindow>,
 }
 
-pub(super) fn parse_archive(input: &str) -> Result<WorkspaceArchive, String> {
+pub(crate) fn parse_archive(input: &str) -> Result<WorkspaceArchive, String> {
     let archive: WorkspaceArchive = serde_json::from_str(input)
         .map_err(|err| format!("invalid workspace archive JSON: {err}"))?;
     if !matches!(
@@ -156,7 +162,7 @@ pub(super) fn parse_archive(input: &str) -> Result<WorkspaceArchive, String> {
     Ok(archive)
 }
 
-pub(super) fn restore_plan(
+pub(crate) fn restore_plan(
     archive: &WorkspaceArchive,
     existing_sessions: &[String],
 ) -> Result<RestorePlan, String> {
@@ -182,6 +188,7 @@ pub(super) fn restore_plan(
                 .clone()
                 .or_else(|| pane.and_then(|pane| pane.command.clone())),
             agent_session: pane.and_then(|pane| pane.agent_session.clone()),
+            env: pane.map(|pane| pane.env.clone()).unwrap_or_default(),
             seed_position,
             windows: session.windows.clone(),
         });

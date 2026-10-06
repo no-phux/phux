@@ -70,7 +70,7 @@ pub(crate) fn sha256_file(path: &Path) -> std::io::Result<String> {
 }
 
 /// Lowercase hex, without pulling in a dependency for sixteen characters.
-fn hex_lower(bytes: &[u8]) -> String {
+pub(crate) fn hex_lower(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     bytes.iter().fold(String::new(), |mut out, byte| {
         let _ = write!(out, "{byte:02x}");

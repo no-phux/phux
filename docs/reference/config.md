@@ -30,6 +30,7 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[[satellites]]` | Federation satellites a hub routes to: name, endpoint, token-file path, and certificate pin (ADR-0038). |
 | `[[connector]]` | Outbound relay links this server supervises: relay endpoint, token-file path, and certificate pin (ADR-0052). |
 | `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host add` and resolved by `phux attach <name>` (ADR-0055, ADR-0122). |
+| `[[projects]]` | Named projects `phux project open <name>` resolves: a checkout path and an optional out-of-repo recipe (ADR-0152). |
 | `[theme]` | Free-form color slots (`slot = "color"`) consumed by the renderer. |
 | `[experimental]` | Opt-in unstable knobs; anything here may change or disappear without notice. |
 | `[policy]` | The authorization posture read at server start: `local` (owner socket only) or `paired` (workload mTLS, scope ceilings enforced at dispatch). |
@@ -535,6 +536,21 @@ which-key-delay-ms = 400
 # token-file = "/home/me/.local/state/phux/remotes/studio.token"
 # cert-fingerprint = "AB:CD:..."
 # tls-server-name = "studio"
+
+# Projects (ADR-0152): names `phux project open NAME` resolves. Each entry is
+# a checkout `path` (absolute or `~/`); phux never scans for repositories.
+# The checkout's own `.phux/project.toml` recipe runs only once its exact
+# bytes are approved (`phux project trust`). `recipe` points at a recipe
+# kept outside the repository instead, trusted because you wrote it here.
+#
+# [[projects]]
+# name = "phux"
+# path = "~/code/phux"
+#
+# [[projects]]
+# name = "site"
+# path = "~/code/site"
+# recipe = "~/.config/phux/recipes/site.toml"
 
 [status]
 # Left: the window/tab bar. The `windows` widget renders one tab per

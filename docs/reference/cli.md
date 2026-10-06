@@ -33,6 +33,7 @@ Sessions:
   kill          Kill a session, window, pane, or the server
   detach        Detach clients from a session
   rename        Rename a session
+  project       Open a project session from a trusted recipe [aliases: p]
 
 Panes:
   spawn         Create a pane without attaching
@@ -2469,6 +2470,155 @@ Arguments:
 
 Flags:
       --json           Emit a stable JSON document instead of human text.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux project`
+
+```text
+Open a project session from a trusted recipe
+
+A project is a checkout. `open` attaches to its session, building it first from
+the checkout's `.phux/project.toml` recipe (windows, panes, splits, commands,
+environment, focus) when it is not running. A recipe runs only after its exact
+bytes are approved on this machine (`trust`); a live session is reopened as it
+is and its recipe is never rerun. `[[projects]]` entries in config.toml name
+checkouts so `open NAME` works from anywhere. The session name is the one `phux
+worktree` derives from the checkout path.
+
+Usage: phux project <SUBCOMMAND>
+
+Commands:
+  init     Write a starter `.phux/project.toml` into a checkout.
+  list     List the `[[projects]]` catalog and whether each session is open.
+           [aliases: ls]
+  open     Attach to a project's session, building it from its recipe if absent.
+  status   Report whether a recipe is approved: exit 0 trusted, 1 untrusted or
+           absent, 2 undeterminable.
+  trust    Validate a recipe and approve its exact bytes on this machine.
+  untrust  Withdraw this machine's approval of a recipe.
+  help     Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux project init`
+
+```text
+Write a starter `.phux/project.toml` into a checkout.
+
+Refuses to overwrite an existing recipe. The starter is approved as written;
+editing it makes it untrusted until `phux project trust`.
+
+Usage: phux project init [TARGET]
+
+Arguments:
+  [TARGET]  Project name or directory (default: the current one).
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux project list`
+
+```text
+List the `[[projects]]` catalog and whether each session is open.
+
+Usage: phux project list [--json]
+
+Flags:
+      --json           Emit a stable JSON document instead of human text.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux project open`
+
+```text
+Attach to a project's session, building it from its recipe if absent.
+
+TARGET is a `[[projects]]` name or a directory (default: the current one);
+inside git, the checkout root is used. An unapproved recipe is shown and must be
+approved at the terminal; without a terminal, or with `--json`, it is refused
+(exit 2) until `phux project trust`. No recipe opens one shell at the root.
+
+Usage: phux project open [--json] [TARGET]
+
+Arguments:
+  [TARGET]  Project name or directory.
+
+Flags:
+      --json           Build the session without attaching and print a stable
+                       JSON document: project, path, session, whether it was
+                       created now, and the seed pane's `terminal_id`.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux project status`
+
+```text
+Report whether a recipe is approved: exit 0 trusted, 1 untrusted or absent, 2
+undeterminable.
+
+Usage: phux project status [--json] [TARGET]
+
+Arguments:
+  [TARGET]  Project name or directory (default: the current one).
+
+Flags:
+      --json           Emit a stable JSON document instead of human text.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux project trust`
+
+```text
+Validate a recipe and approve its exact bytes on this machine.
+
+The approval covers every worktree of the same repository and ends the moment
+one byte of the recipe changes.
+
+Usage: phux project trust [TARGET]
+
+Arguments:
+  [TARGET]  Project name or directory (default: the current one).
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux project untrust`
+
+```text
+Withdraw this machine's approval of a recipe.
+
+Usage: phux project untrust [TARGET]
+
+Arguments:
+  [TARGET]  Project name or directory (default: the current one).
+
+Flags:
   -h, --help           Print help
 
 Global flags:

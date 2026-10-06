@@ -241,6 +241,7 @@ fn archive_panes(
                 title: info.and_then(|resource| resource.title.clone()),
                 cwd: info.and_then(|resource| resource.cwd.clone()),
                 command: None,
+                env: BTreeMap::new(),
                 agent_session: agent_sessions.get(id).map(|record| WorkspaceAgentSession {
                     plugin_id: record.plugin_id.clone(),
                     integration_id: record.integration_id.clone(),
@@ -272,6 +273,7 @@ fn archive_window(
                 title: pane.title.clone(),
                 cwd: pane.cwd.clone(),
                 command: None,
+                env: BTreeMap::new(),
                 agent_session: agent_sessions
                     .get(&pane.id)
                     .map(|record| WorkspaceAgentSession {

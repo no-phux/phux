@@ -93,6 +93,13 @@ const SECTIONS: &[Section] = &[
                   (ADR-0055, ADR-0122).",
     },
     Section {
+        key: "projects",
+        header: "[[projects]]",
+        summary: "Named projects `phux project open <name>` resolves: a \
+                  checkout path and an optional out-of-repo recipe \
+                  (ADR-0152).",
+    },
+    Section {
         key: "theme",
         header: "[theme]",
         summary: "Free-form color slots (`slot = \"color\"`) consumed by \
