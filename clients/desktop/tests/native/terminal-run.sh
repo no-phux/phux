@@ -2,8 +2,9 @@
 # The addon must be built in release with terminal-fixtures + GPUIX test-support.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
-source "$root/scripts/lib/apple-toolchain-env.sh"
 source "$root/scripts/lib/dev-toolchain.sh"
+check_desktop_toolchain
+source "$root/scripts/lib/apple-toolchain-env.sh"
 export RUSTUP_TOOLCHAIN="$RUST_CHANNEL"
 : "${PHUX_DESKTOP_ADDON:?absolute path to the combined fixture addon is required}"
 harness="$root/clients/desktop/.cache/terminal-harness"

@@ -40,7 +40,7 @@ desktop-source-test:
 [group('desktop')]
 [doc('Build the phux CLI from this checkout for the desktop launcher')]
 desktop-cli:
-    cargo build -p phux
+    bash clients/desktop/scripts/build-cli.sh
 
 [group('desktop')]
 [doc('Build the desktop from pinned GPUIX source and launch it')]
@@ -73,6 +73,8 @@ desktop-native-test:
 desktop-native-client-test:
     #!/usr/bin/env bash
     set -euo pipefail
+    source scripts/lib/dev-toolchain.sh
+    check_desktop_toolchain
     export CARGO_TARGET_DIR="$PWD/clients/desktop/.cache/client-test-target"
     cargo run --locked -p phux-client-ffi --no-default-features --features napi --example napi_smoke -- "$PWD/clients/desktop/.cache/host/phux-desktop-native.darwin-arm64.node" --production-host
     # The fault cases need the napi_host fixture's NativeClientLease export,
@@ -84,6 +86,10 @@ desktop-native-client-test:
 [group('desktop')]
 [doc('Exercise independent terminal views through the combined native addon')]
 desktop-native-view-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source scripts/lib/dev-toolchain.sh
+    check_desktop_toolchain
     CARGO_TARGET_DIR="$PWD/clients/desktop/.cache/client-test-target" cargo run --locked -p phux-client-ffi --no-default-features --features napi --example napi_view_smoke -- "$PWD/clients/desktop/.cache/host/phux-desktop-native.darwin-arm64.node"
 
 [group('desktop')]

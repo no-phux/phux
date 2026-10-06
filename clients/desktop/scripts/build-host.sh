@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-# shellcheck source=scripts/lib/apple-toolchain-env.sh
-source "$root/scripts/lib/apple-toolchain-env.sh"
 # shellcheck source=scripts/lib/dev-toolchain.sh
 source "$root/scripts/lib/dev-toolchain.sh"
+check_desktop_toolchain
+# shellcheck source=scripts/lib/apple-toolchain-env.sh
+source "$root/scripts/lib/apple-toolchain-env.sh"
 export RUSTUP_TOOLCHAIN="$RUST_CHANNEL"
 export CARGO_TARGET_DIR="$root/clients/desktop/.cache/host-target"
 output=clients/desktop/.cache/host

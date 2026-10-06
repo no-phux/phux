@@ -50,6 +50,12 @@ the environment it loads, create an untracked `.envrc.local`:
 echo 'export PHUX_ENV=mise' > .envrc.local && direnv allow
 ```
 
+Use one environment per shell. After changing `.envrc.local`, run `direnv
+reload` and let the shell's direnv hook apply it before building. Leave an
+explicit `nix develop` shell before switching to Mise; `mise exec` changes tool
+resolution but does not unload inherited Nix SDK/compiler variables. Conversely,
+use Nix in a separate shell rather than activating Mise over its toolchain.
+
 If you already activate Mise in your shell, you do not need direnv. `rustc` and
 `zig` from mise shims are the Mise path.
 
@@ -120,6 +126,13 @@ in an untracked `mise.local.toml`. mbx's `share_workspace_root` stays at its
 default (off): turning it on would make panic locations and debug info name a
 placeholder instead of the real source path, and the panic hook's location line
 is what operators read.
+
+If Rust reports `E0514` (a dependency compiled by a different compiler), fix the
+shell's toolchain selection first. Check `rustc -V`, `cargo -V`, and `mbx doctor`.
+Then `mbx clean "$PWD"` clears only this checkout's managed target and learned
+incremental state; shared cache objects remain. Retry the same build in the
+selected environment. Do not share a `CARGO_TARGET_DIR` between worktrees or
+make cache deletion part of every build.
 
 Two things keep a crate reusable across worktrees, and both are enforced:
 
@@ -298,7 +311,14 @@ source and bypasses archive verification but still runs ABI tests.
 
 ## GPUIX desktop
 
-Apple-silicon Mac. The app builds from the pinned GPUIX/Zed source in this
+Apple-silicon Mac. **Prefer Mise plus host Xcode/Metal for the daily desktop
+loop**; keep Nix for separately invoked fully provisioned validation. Both
+remain supported, but desktop doctor and builds reject a Nix shell whose Cargo
+or Rust compiler is shadowed by Mise, or whose explicit selection is Mise. This
+check runs before Apple-toolchain normalization, so doctor cannot hide a mixed
+CLI environment. Stale Rust versions also fail before compilation.
+
+The app builds from the pinned GPUIX/Zed source in this
 checkout, not from a published addon. One command clones that source, applies
 the reviewed patches, builds the native host, builds `phux` from this tree,
 starts a local server if needed, and opens the desktop:
