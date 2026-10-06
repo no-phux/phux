@@ -580,6 +580,10 @@ fn resume_args(blob_fd: RawFd, socket_path: &Path, flags: RuntimeFlags) -> Vec<O
     if flags.hub {
         args.push(OsString::from("--hub"));
     }
+    if let Some(path) = flags.autosave {
+        args.push(OsString::from("--autosave"));
+        args.push(path.into_os_string());
+    }
     if let Some(idle) = flags.exit_after_idle {
         // Whole seconds, rounded up: never `--exit-after-idle 0`.
         let secs = idle.as_secs() + u64::from(idle.subsec_nanos() > 0);
@@ -742,6 +746,7 @@ mod tests {
             hub: true,
             exit_after_idle: Some(Duration::from_secs(90)),
             upgrade_source_exe: None,
+            autosave: Some(PathBuf::from("/home/u/.local/state/phux/workspace.json")),
         };
         let mut expected: Vec<&str> = BASE.to_vec();
         expected.extend([
@@ -754,6 +759,8 @@ mod tests {
             "--connect",
             "relay.example:4433",
             "--hub",
+            "--autosave",
+            "/home/u/.local/state/phux/workspace.json",
             "--exit-after-idle",
             "90",
         ]);

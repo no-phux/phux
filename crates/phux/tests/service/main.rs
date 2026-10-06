@@ -8,6 +8,7 @@
 #[path = "../common/runner.rs"]
 mod runner;
 
+mod autosave_e2e;
 mod kill_server_e2e;
 mod server_ensure;
 mod service_install_guard;

@@ -25,6 +25,17 @@ pub struct MetadataStore {
     /// Active `(client, scope, key)` subscriptions, scanned linearly
     /// (subscriptions are sparse).
     subscriptions: HashSet<(ClientId, Scope, String)>,
+    /// Bumped by every change to a key the workspace archive reads
+    /// ([`is_archived_key`]); part of the autosave revision (ADR-0150).
+    archived_revision: u64,
+}
+
+/// Whether `phux workspace save` reads `key`: a layout envelope
+/// (`<prefix>.layout/v1/<session>`) or a native agent-session record
+/// (ADR-0068). Hot keys such as agent state stay out of the autosave
+/// revision.
+fn is_archived_key(key: &str) -> bool {
+    key == phux_protocol::wire::frame::RESOURCE_AGENT_SESSION_KEY || key.contains(".layout/v1")
 }
 
 /// Outcome of a `SET_METADATA`; `Unchanged` suppresses the broadcast.
@@ -109,11 +120,33 @@ impl MetadataStore {
             return MetadataSetOutcome::Unchanged;
         }
         bucket.insert(key.to_owned(), value);
+        self.note_archived_change(key);
         MetadataSetOutcome::Changed
     }
 
     /// Delete `(scope, key)`; reports whether it existed.
     pub fn delete(&mut self, scope: &Scope, key: &str) -> bool {
+        let existed = self.remove(scope, key);
+        if existed {
+            self.note_archived_change(key);
+        }
+        existed
+    }
+
+    /// How many times a key the workspace archive reads (a layout envelope
+    /// or an agent-session record) has changed.
+    #[must_use]
+    pub const fn archived_revision(&self) -> u64 {
+        self.archived_revision
+    }
+
+    fn note_archived_change(&mut self, key: &str) {
+        if is_archived_key(key) {
+            self.archived_revision = self.archived_revision.wrapping_add(1);
+        }
+    }
+
+    fn remove(&mut self, scope: &Scope, key: &str) -> bool {
         match scope {
             Scope::Resource(tid) => self
                 .terminal

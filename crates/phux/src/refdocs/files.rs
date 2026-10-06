@@ -68,7 +68,9 @@ pub(crate) fn page() -> Page {
          ├── remote-cert.pem     # auto-provisioned remote-consumer certificate\n\
          ├── remote-key.pem      # its private key (owner-only, 0600)\n\
          ├── remote-tokens       # structured credential store (owner-only, 0600)\n\
-         └── reports/            # local bug-report bundles (TUI C-a B, phux report)\n\
+         ├── reports/            # local bug-report bundles (TUI C-a B, phux report)\n\
+         ├── service-wrapper.sh  # `phux service install --restore` wrapper\n\
+         └── workspace.json      # `--restore` archive, kept current by `--autosave`\n\
          ```\n\n\
          - `server.log` is the canonical server log regardless of how \
            the server was started: the auto-spawn path redirects the \
@@ -131,15 +133,24 @@ pub(crate) fn page() -> Page {
            subdirectory is one report (session, pane, version, log tails, \
            optional screen dump, and a `report.md` an agent can open). \
            `latest` points at the newest; `phux report` lists them and \
-           `phux report show` prints one.\n\n\
+           `phux report show` prints one.\n\
+         - `service-wrapper.sh` and `workspace.json` exist only under \
+           `phux service install --restore`. The wrapper starts `phux \
+           server --autosave workspace.json` and saves once more on stop. \
+           The server restores the archive on a fresh start and rewrites \
+           it (owner-only, `0600`) through a synced \
+           `workspace.json.autosave.tmp` and an atomic rename a few \
+           seconds after the workspace changes, so a crash or power loss \
+           leaves the latest layout (ADR-0150). An archive that fails to \
+           restore is copied to `workspace.json.unrestored` first.\n\n\
          ## Decided: not built\n\n\
          A `server.pid` file and a `journal/` directory of per-pane PTY \
          output for crash recovery are decided: not built (ADR-0130). \
          Neither path exists today; a crash loses every pane's \
          scrollback. The `EVENT` stream is a separate, memory-bounded \
          journal (ADR-0123) that carries no PTY bytes. Workspace \
-         archives are written only where `phux workspace save` is \
-         pointed.\n",
+         archives are written only where `phux workspace save` or \
+         `phux server --autosave` is pointed.\n",
     );
 
     Page {
@@ -249,6 +260,8 @@ mod tests {
             "remote-key.pem",
             "remote-tokens",
             "reports/",
+            "service-wrapper.sh",
+            "workspace.json",
             "server.pid",
             "journal/",
         ] {
