@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-05
 ---
 
 # Appendix A — Encoding primitives
@@ -135,3 +135,28 @@ varint applies only to the envelope machinery of §1 — the `field_id`, the
 primitives carried inside that field's positional value use the fixed-width
 `u32` prefix above. Keep the two distinct when hand-encoding: a leaf string's
 length is four big-endian bytes, never a LEB128 varint.
+
+---
+
+## 3. Machine-readable schema
+
+[`wire-schema.json`](./wire-schema.json) restates the message-body layer of
+this protocol as data, for implementers who would rather code against a table
+than prose ([ADR-0117](../adr/0117-wire-codec-stays-tlv.md)). For every frame
+it gives the name and type byte and, for each top-level field, the field id,
+name, value type, and presence (`required`: a decoder rejects the frame
+without it; `optional`: absence decodes to the documented default). Ids in a
+frame's range that no field holds are listed as `retired` and SHALL NOT be
+reused. The `types` table defines each value type, including whether a string
+is raw (top-level, §1) or carries the `u32` prefix (nested, §2.1).
+
+The schema mirrors the prose catalogs in [proto.md](./proto.md),
+[L1.md](./L1.md), [L3.md](./L3.md), and [input.md](./input.md); it adds no
+rule of its own, and where the two disagree the prose is normative and the
+schema is the bug. Positional sub-records inside a field (`SessionSnapshot`,
+`Command`, `AgentEvent`, ...) are named, not expanded; their layouts stay in
+the prose. The reference codec is tested against the file on every run: field
+ids and names, presence, retired ids, and every frame's type byte are derived
+from the codec and must match it exactly, and each declared value type is
+checked against encoded samples of every frame. A wire change therefore lands
+with its schema diff.

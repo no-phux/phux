@@ -1813,6 +1813,9 @@ fn checked_history_required_rows(required_rows: Option<u32>) -> Result<u32, Deco
 }
 
 #[cfg(test)]
+mod wire_schema;
+
+#[cfg(test)]
 mod path_capability_tests {
     use super::*;
     use crate::caps::{ServerFeatureExt, ServerFeatureExtSet, ServerFeatureSet};

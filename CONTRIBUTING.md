@@ -159,6 +159,10 @@ prints `SKIPPED` and exits 0; an unlabelled or double-labelled bead exits 1.
   normative — code conforms to it, not the other way around. Bump the
   protocol version per the rules in [`docs/spec/proto.md`](./docs/spec/proto.md) §6
   and append an entry to [`docs/spec/CHANGELOG.md`](./docs/spec/CHANGELOG.md).
+  A frame or field change also regenerates
+  [`docs/spec/wire-schema.json`](./docs/spec/wire-schema.json)
+  (`PHUX_UPDATE_WIRE_SCHEMA=1 cargo nextest run -p phux-protocol wire_schema_matches`);
+  the protocol tests fail until it matches the codec.
 - **Reach for a capability before you reach for a version bump.** The server
   admits a client only when `major.minor` matches exactly, so a minor bump
   breaks every deployment at once rather than degrading gracefully. New
