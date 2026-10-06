@@ -183,6 +183,15 @@ export interface AgentSessionCli {
     agentSessionClose(target: string, options?: ExecutionOptions): Promise<AgentSessionCloseResult>;
 }
 export declare function hasAgentSessionCli(cli: object): cli is AgentSessionCli;
+/** Total time `agentEmit` spends retrying an upgrade-sealed stream. */
+export declare const UPGRADE_RETRY_BUDGET_MS = 3000;
+/**
+ * True for exactly the refusal a graceful upgrade gives an append between
+ * its cut of the stream and the re-exec (L1 §4.8): `overflow` whose
+ * diagnostic says the server is upgrading. Nothing was appended, so the
+ * same record is safe to resend; every other `overflow` is not retried.
+ */
+export declare function isUpgradeSealRefusal(error: unknown): boolean;
 /**
  * True when `phux agent session open` is missing: an older binary without the
  * verb, or a server that refuses with `unsupported_server`. Emit must then
