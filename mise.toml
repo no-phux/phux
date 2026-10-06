@@ -19,7 +19,7 @@
 # store across worktrees, managed `target/` directories that are collected when
 # a checkout goes away, and a machine-wide compiler pool. See
 # docs/SETUP.md#build-cache-mbx for why phux needs it.
-rust = { version = "1.98.1", mr_boxington = true }
+rust = { version = "1.99.0", mr_boxington = true }
 zig = "0.16.0"
 node = "24"
 # docs/site builds, tests and type-checks against this exact Bun, and

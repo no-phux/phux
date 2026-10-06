@@ -323,7 +323,6 @@ impl AgentLog {
     }
 
     /// Retained records, oldest first.
-    #[must_use]
     pub fn records(&self) -> impl ExactSizeIterator<Item = &AgentEventRecord> + '_ {
         self.records.iter()
     }

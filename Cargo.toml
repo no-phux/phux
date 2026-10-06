@@ -14,7 +14,7 @@ exclude = ["clients", ".claude"]
 [workspace.package]
 version = "0.51.0"
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.99"
 license = "Apache-2.0"
 repository = "https://github.com/no-phux/phux"
 authors = ["phall <phallsignup@gmail.com>"]
@@ -45,6 +45,11 @@ print_stderr = "warn"
 # Pedantic exceptions: too noisy for our style.
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
+# New in Rust 1.99 and flags several hundred existing test assertions. Its
+# suggested `assert_eq!(x, [] as [T; 0])` does not compile at many of them
+# (unnameable or non-PartialEq element types), so adopting it is a dedicated
+# cleanup, not part of a toolchain bump.
+assert_is_empty = "allow"
 
 [workspace.dependencies]
 # Internal.
