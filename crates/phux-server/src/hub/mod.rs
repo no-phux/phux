@@ -6,7 +6,7 @@
 //! dials and supervises each satellite; [`relay`] routes frames over the
 //! links, rewriting ids to the satellite's `Local` space and back. A
 //! non-hub server never reads the registry ([`resolve_hub_table`]); a hub
-//! re-reads it on the config-reload doorbell ([`reload_satellites`]).
+//! re-reads it on the config-reload doorbell (`reload_satellites`).
 
 pub mod link;
 pub(crate) mod metadata_mirror;
