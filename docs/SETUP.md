@@ -168,7 +168,7 @@ is a mirror for shell setup, not the source of truth for everything in it.
 `.config/zig-toolchain.json` remains the verified Zig release-and-digest input.
 Bun, the usage CLI, and mbx are the exceptions in the other direction: `flake.nix`
 reads those pins from `mise.toml` directly and fetches the GitHub release
-until nixpkgs matches. The usage CLI is the same 6.11.x train as the
+until nixpkgs matches. The usage CLI is the same 6.12.x train as the
 `usage-rs` crate the phux binary parses with.
 
 These are dependency boundaries, not arbitrary directories: `phux-protocol`'s

@@ -15,7 +15,7 @@ ordinary one-shot commands.
 
 ## Install and load
 
-The extension targets OMP 17.1.2 and requires Bun 1.3.14 or newer. It uses
+The extension targets OMP 18.6.1 and requires Bun 1.3.14 or newer. It uses
 `ExtensionAPI` from `@oh-my-pi/pi-coding-agent`, native `pi.registerTool`, and
 the host's plain JSON Schema `TSchema` alternative, not the Pi SDK or a
 compatibility shim. Development SDK dependencies are pinned; the installed
@@ -95,7 +95,7 @@ readiness. Use `phux_paste` for literal text and `phux_send_keys` for actual key
 chords. Agent prompts and shell commands are different operations. The build copies
 the canonical [native-tools skill](../../.agents/skills/using-phux-tools/SKILL.md)
 into `skills/using-phux-tools/SKILL.md`; OMP discovers that conventional package
-directory for explicit `-e` directories and installed plugins. OMP 17.1.2 has no
+directory for explicit `-e` directories and installed plugins. OMP 18.6.1 has no
 `omp.skills` manifest field. The generated copy is ignored in Git and included in
 the package. The [using-phux skill](../../.agents/skills/using-phux/SKILL.md) explains
 the underlying CLI workflow; this package does not maintain a divergent copy.
@@ -167,10 +167,18 @@ tool-start records cannot clear that block. Last resolution emits a stream-only
 working assertion, not a new prompt or completion. Declarations still never contain
 state or attention. Other UI questions and fleet-context injection are not covered.
 
-OMP 17.1.2 delivers generic activity concurrently and detaches aggregate extension
-notifications. Navigation/abort does **not** drain their delivery. The received
-aggregate is a usable barrier only because the SDK's FIFO subscriber gate first
-awaits preceding generic tool deliveries. An overlapping before/start, an unguarded
+OMP 18.6.1 delivers generic activity concurrently and detaches aggregate extension
+notifications. Navigation/abort does **not** drain their delivery. OMP 18 removed
+the FIFO subscriber gate that made the received aggregate a barrier in 17.x; the
+lifecycle smoke's delayed-tool case still observes the received aggregate trailing
+a held-up earlier tool delivery on the pinned SDK, but that ordering is now
+emergent rather than an SDK contract, so re-verify it on every OMP bump.
+OMP 18 also runs `before_agent_start` for queued steering and follow-up messages
+delivered mid-run, and may repeat it while preparing one prompt. The event carries
+nothing that distinguishes those from a new prompt, so the guard treats them as an
+overlapping start: typing into a busy OMP drops reporting to declaration-only.
+A collaboration guest (`omp join`) mirrors starts without the before hook and
+lands in the same fallback. An overlapping before/start, an unguarded
 start, or navigation during prepared/active/continuing work therefore retires the
 verified exact child and remains **declaration-only** until extension restart.
 This includes same-ID transcript reload, whose abort can discard completion.
@@ -247,14 +255,11 @@ An owned inert `omp.js` process supplies kernel identification and a fixed appro
 screen. Startup initializes its unbound identity without predeclaration; approval
 and causality scenarios do not call `agent set` as fixture setup. A separate owned
 pane runs the actual pinned OMP CLI entrypoint with the packed extension. A local
-fixture registers an inert custom model solely to satisfy RPC startup's model
-requirement, records the automatic native `session_start`, and fails if any provider
-transport is invoked. Its native ID must match the exact host child, while the
+fixture registers an inert custom model, records the automatic native
+`session_start`, and fails if any provider transport is invoked. Its native ID must match the exact host child, while the
 selected sibling remains untouched. A diagnostic wrapper records actual CLI argv,
 stdout/stderr and exit; it does not supply lifecycle events or identity metadata.
 
-Credential-free RPC without that fixture exits 1 before native startup with
-`No models available`; the smoke records this boundary rather than claiming the
-pane's resulting shell is a running OMP session. HOME, XDG, profile, sessions,
+HOME, XDG, profile, sessions,
 credentials, tokens and TLS settings are isolated. No actual provider credentials
 or model/service calls are used. Owned servers and temporary roots are removed.

@@ -45,7 +45,6 @@ impl RecordRing {
     }
 
     /// The retained records, oldest first.
-    #[must_use]
     pub fn records(&self) -> impl ExactSizeIterator<Item = &Bytes> {
         self.records.iter()
     }
