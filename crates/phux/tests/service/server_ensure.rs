@@ -354,10 +354,44 @@ fn invalid_config_reports_startup_failure_and_log_path() {
     let output = fixture.ensure();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("did not accept"), "{stderr}");
+    // The server's own refusal, surfaced from its log rather than a timeout.
+    assert!(stderr.contains("exited before accepting"), "{stderr}");
+    assert!(stderr.contains("failed to load"), "{stderr}");
     assert!(stderr.contains("server.log"), "{stderr}");
     assert!(output.stdout.is_empty());
     assert!(UnixStream::connect(&fixture.socket).is_err());
+}
+
+/// A server that cannot bind exits at once; the wait notices the exit instead
+/// of polling out the 2s auto-spawn deadline, and reports the bind error.
+#[test]
+fn unbindable_socket_fails_fast_with_the_bind_error() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fixture = Fixture::new();
+    let locked = fixture.dir.path().join("locked");
+    std::fs::create_dir(&locked).expect("locked dir");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).expect("chmod");
+    let socket = locked.join("phux.sock");
+    let started = Instant::now();
+    let output = bounded_output(
+        fixture
+            .command()
+            .args(["server", "--ensure", "--socket"])
+            .arg(&socket),
+    );
+    let elapsed = started.elapsed();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("exited before accepting"), "{stderr}");
+    assert!(stderr.contains("failed to bind"), "{stderr}");
+    assert!(stderr.contains("server.log"), "{stderr}");
+    // Well under the 2s deadline the old poll always ran out.
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "took {elapsed:?}: {stderr}"
+    );
+    assert!(!socket.exists());
 }
 
 #[test]
