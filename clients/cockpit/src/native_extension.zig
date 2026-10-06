@@ -1416,7 +1416,10 @@ fn clipboardWritten(event: native_sdk.EffectClipboardResult) core.Msg {
 
 fn clipboardRead(event: native_sdk.EffectClipboardResult) core.Msg {
     if (bridge.engine) |engine| {
+        // A paste held for confirmation is chrome the core must draw.
+        const before = engine.beginPublication();
         if (engineFx()) |fx| engine.onClipboardRead(fx, event.outcome == .ok, event.text);
+        if (engine.finishPublication(before)) bridge.announce(engine);
     }
     return .engine_wake;
 }
@@ -8455,6 +8458,59 @@ fn expectSearchPaint(engine: *cockpit.Engine, needle: []const u8, status: []cons
     };
     try std.testing.expect(found_needle);
     try std.testing.expect(found_status);
+}
+
+/// Wakes until the core shows (or stops showing) the paste question.
+fn settlePasteQuestion(rig: *Rig, open: bool) !void {
+    for (0..16) |_| {
+        if (rig.app_state.model.mainPasteOpen == open) return;
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    }
+    return error.TestExpectedPasteQuestion;
+}
+
+/// Paste (the Edit menu's command) on the focused Phux pane, answered by the
+/// real clipboard-read callback, which must itself announce the held paste.
+fn pasteIntoFocused(engine: *Engine, text: []const u8) !void {
+    var fx = Recorder{};
+    try std.testing.expect(remotePresentationCommand(engine, .paste, &fx));
+    try std.testing.expect(engine.model.paste_inflight);
+    _ = clipboardRead(.{ .key = 101, .op = .read, .outcome = .ok, .text = text });
+}
+
+test "shipping paste protection asks before an unbracketed multi-line paste reaches a Phux terminal" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    _ = try rig.attachFixture();
+    const engine = bridge.engine.?;
+    const remote = engine.model.phux().?;
+    const fixtures = @TypeOf(remote.*).test_support;
+    try fixtures.stageFixture(remote.bridge, "remote-bracketed-off.bin");
+    _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data });
+    remote.bridge.outgoing.reset();
+
+    try pasteIntoFocused(engine, "make\nmake install\n");
+    try settlePasteQuestion(&rig, true);
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
+    const model = &rig.app_state.model;
+    try std.testing.expect(std.mem.startsWith(u8, model.pasteTitle, "Paste 2 lines into "));
+    try std.testing.expect(try compiledViewHasText(model, model.pasteTitle));
+    try std.testing.expect(try compiledViewHasText(model, model.pasteDetail));
+
+    // Cancel (the button's message) drops it: nothing reaches the server.
+    try rig.dispatch(.paste_cancel);
+    try settlePasteQuestion(&rig, false);
+    try std.testing.expect(engine.model.paste_pending == null);
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
+
+    // Asked again, Paste delivers it once, as INPUT_PASTE.
+    try pasteIntoFocused(engine, "make\nmake install\n");
+    try settlePasteQuestion(&rig, true);
+    try rig.dispatch(.paste_confirm);
+    try settlePasteQuestion(&rig, false);
+    try expectOutgoingTag(remote, 0x11);
 }
 
 test "remote presentation search consumes controls and rejects stale clipboard owners" {

@@ -9,6 +9,8 @@ const runtime = @import("terminal_runtime.zig");
 const support = @import("phux_support.zig");
 const vt = @import("ghostty-vt");
 const remote_commands = @import("native/remote_presentation_commands.zig");
+const paste_safety = @import("paste_safety.zig");
+const projection = @import("native/workspace_projection.zig");
 
 const Model = model_module.Model;
 const TerminalRef = contract.TerminalRef;
@@ -133,6 +135,8 @@ pub fn requestPaste(model: *Model, fx: anytype, ref: TerminalRef) void {
 /// already owner-qualified by `paste_owner` and follows this same route.
 pub fn requestPasteForOwner(model: *Model, fx: anytype, owner: contract.ReplicaOwner) void {
     if (model.paste_inflight) return;
+    // A new paste supersedes one still waiting on its answer.
+    _ = cancelPendingPaste(model);
     if (!acceptsPasteForOwner(model, owner)) {
         model.paste_failed = true;
         return;
@@ -231,14 +235,96 @@ pub fn pasted(model: *Model, fx: anytype, ok: bool, text: []const u8) void {
         pasteLocal(model, pane, fx, text);
         return;
     }
-    const remote = model.phuxForOwner(model.paste_owner) orelse return;
     if (model.paste_target == .search_needle) {
         pasteRemoteSearch(model, text);
         return;
     }
-    remote.sendPaste(model.paste_owner, text, false) catch {
+    if (holdUnsafePaste(model, model.paste_owner, text)) return;
+    sendRemotePaste(model, model.paste_owner, text);
+}
+
+/// The user's own clipboard paste, already past Cockpit's paste protection,
+/// is trusted: the server brackets it by the pane's DEC 2004 mode and does
+/// not refuse a multi-line paste the user chose (as `phux paste` and the
+/// TUI's DEC 2004 path). Untrusted, the server would drop every multi-line
+/// paste, bracketed or not, before the user could say yes.
+fn sendRemotePaste(model: *Model, owner: contract.ReplicaOwner, text: []const u8) void {
+    const remote = model.phuxForOwner(owner) orelse {
+        model.paste_failed = true;
+        return;
+    };
+    remote.sendPaste(owner, text, true) catch {
         model.paste_failed = true;
     };
+}
+
+/// Whether the receiver has DEC 2004 on. A Phux replica that cannot answer
+/// counts as unbracketed, the side that asks.
+fn bracketedFor(model: *const Model, owner: contract.ReplicaOwner) bool {
+    if (model.provider.terminalConst(owner.terminal_ref)) |pane| {
+        return vt.input.PasteOptions.fromTerminal(&pane.session.term).bracketed;
+    }
+    const remote = model.phuxForOwnerConst(owner) orelse return false;
+    return remote.bracketedPaste(owner) catch false;
+}
+
+/// Hold a paste the receiver would not see as one (paste_safety.zig) for the
+/// user's answer. Returns whether it was held; a held paste reaches nothing
+/// until `confirmPendingPaste`.
+fn holdUnsafePaste(model: *Model, owner: contract.ReplicaOwner, text: []const u8) bool {
+    const at_prompt = projection.terminalAtPrompt(model, owner.terminal_ref);
+    const receiver = switch (paste_safety.assess(text, bracketedFor(model, owner), at_prompt)) {
+        .deliver => return false,
+        .confirm => |value| value,
+    };
+    const copy_text = std.heap.page_allocator.dupe(u8, text) catch {
+        // Unable to hold it is unable to ask: refuse rather than deliver.
+        model.paste_failed = true;
+        return true;
+    };
+    _ = cancelPendingPaste(model);
+    model.paste_pending = .{ .owner = owner, .text = copy_text, .lines = paste_safety.lineCount(text), .receiver = receiver };
+    return true;
+}
+
+/// The held paste, when it still belongs to a current replica.
+pub fn pendingPaste(model: *const Model) ?*const model_module.PendingPaste {
+    return model.pendingPaste();
+}
+
+/// Drop the held paste unsent. Returns whether one was held.
+pub fn cancelPendingPaste(model: *Model) bool {
+    const pending = model.paste_pending orelse return false;
+    model.paste_pending = null;
+    std.heap.page_allocator.free(pending.text);
+    return true;
+}
+
+/// Deliver the held paste to exactly the replica it was read for, or to
+/// nothing when that replica is gone or no longer takes input.
+pub fn confirmPendingPaste(model: *Model, fx: anytype) bool {
+    const pending = model.paste_pending orelse return false;
+    model.paste_pending = null;
+    defer std.heap.page_allocator.free(pending.text);
+    if (!model.ownerIsCurrent(pending.owner)) return true;
+    model.paste_owner = pending.owner;
+    model.paste_failed = false;
+    if (model.provider.terminal(pending.owner.terminal_ref)) |pane| {
+        if (!pane.acceptsInput()) {
+            model.paste_failed = true;
+            return true;
+        }
+        pasteClipboardText(model, pane, fx, pending.text);
+        return true;
+    }
+    if (presentationForOwner(model, pending.owner)) |presentation| {
+        if (presentation.phase == .live) {
+            sendRemotePaste(model, pending.owner, pending.text);
+            return true;
+        }
+    }
+    model.paste_failed = true;
+    return true;
 }
 
 fn pasteRemoteSearch(model: *Model, text: []const u8) void {
@@ -258,6 +344,7 @@ fn pasteLocal(model: *Model, pane: *local.Pane, fx: anytype, text: []const u8) v
         model.paste_failed = true;
         return;
     }
+    if (holdUnsafePaste(model, model.paste_owner, text)) return;
     pasteClipboardText(model, pane, fx, text);
 }
 

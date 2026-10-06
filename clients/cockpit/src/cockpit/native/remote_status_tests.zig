@@ -310,3 +310,163 @@ test "command finished on an unfocused pane raises a notice like a bell" {
     try runCommand(engine, &fx, long);
     try testing.expectEqual(@as(usize, 2), fx.notifications);
 }
+
+// phux-fpgl.27: the at-prompt state's production consumers on the REMOTE
+// provider, attention (idle) and paste protection.
+
+test "a remote pane that returns to its prompt asks for attention until attended" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try creation.start();
+    defer engine.destroy();
+    var fx: NoticeFx = .{};
+    // The app is in the background, so the pane in front is not attended.
+    engine.model.focused = false;
+    // The first boundary after attach is the prompt it was already at.
+    try testing.expect(try feed(engine, &fx, "remote-command-finished.bin"));
+    try testing.expect(!projection.terminalNeedsAttention(engine.model, ref(7)));
+    // A command it saw running ends back at the prompt: idle, and news.
+    try testing.expect(try feed(engine, &fx, "remote-command-started.bin"));
+    try testing.expect(!projection.terminalNeedsAttention(engine.model, ref(7)));
+    try testing.expect(try feed(engine, &fx, "remote-command-finished.bin"));
+    try testing.expect(projection.terminalNeedsAttention(engine.model, ref(7)));
+    try testing.expect(projection.tabNeedsAttention(engine.model, engine.model.wsConst(), 0));
+    // The next command is busy again, not idle.
+    _ = try feed(engine, &fx, "remote-command-started.bin");
+    try testing.expect(!projection.terminalNeedsAttention(engine.model, ref(7)));
+    _ = try feed(engine, &fx, "remote-command-finished.bin");
+    try testing.expect(projection.terminalNeedsAttention(engine.model, ref(7)));
+    // Looking at it attends it.
+    engine.setFocused(&engine_module.NoShells{}, true);
+    try testing.expect(!projection.terminalNeedsAttention(engine.model, ref(7)));
+    // While it is in front, a return to the prompt is never news.
+    _ = try feed(engine, &fx, "remote-command-started.bin");
+    _ = try feed(engine, &fx, "remote-command-finished.bin");
+    try testing.expect(!projection.terminalNeedsAttention(engine.model, ref(7)));
+}
+
+const multi_line_paste = "make\nmake install\n";
+
+fn pasteText(engine: *engine_module.Engine, text: []const u8) void {
+    const shells = engine_module.NoShells{};
+    @import("../terminal_interaction.zig").requestPaste(engine.model, &shells, ref(7));
+    engine.onClipboardRead(&shells, true, text);
+}
+
+fn keyDown(engine: *engine_module.Engine, key: []const u8) void {
+    engine.onKey(&engine_module.NoShells{}, .{ .phase = .key_down, .key = key });
+}
+
+/// Take the one outgoing frame and require it to carry `text` as a TRUSTED
+/// paste event (codec.rs: trust `u8`, `u32` big-endian length, the bytes):
+/// past Cockpit's own protection the user's paste must not meet the server's
+/// untrusted refusal of every multi-line paste.
+fn expectTrustedPaste(engine: *engine_module.Engine, text: []const u8) !void {
+    const bridge = engine.model.phux().?.bridge;
+    const frame = bridge.outgoing.take() orelse return error.TestExpectedPasteFrame;
+    defer bridge.outgoing.release(frame);
+    try testing.expect(!bridge.outgoing.hasPending());
+    const at = std.mem.indexOf(u8, frame, text) orelse return error.TestExpectedPasteText;
+    try testing.expect(at >= 5);
+    try testing.expectEqual(@as(u32, @intCast(text.len)), std.mem.readInt(u32, frame[at - 4 ..][0..4], .big));
+    try testing.expectEqual(@as(u8, 0), frame[at - 5]);
+}
+
+/// The snapshot's `paste_confirmation` record: kind, length, window 0,
+/// `receiver`, the line count, then the pane's name.
+fn expectPasteRecord(engine: *engine_module.Engine, receiver: u8, lines: u32) !void {
+    var storage: [projection.max_terminal_title_bytes]u8 = undefined;
+    const name = title(engine, 7, &storage);
+    var want: [9 + projection.max_terminal_title_bytes]u8 = undefined;
+    want[0] = 7;
+    std.mem.writeInt(u16, want[1..3], @intCast(7 + name.len), .little);
+    want[3] = 0;
+    want[4] = receiver;
+    std.mem.writeInt(u32, want[5..9], lines, .little);
+    var snapshot: [8192]u8 = undefined;
+    const bytes = try engine.snapshot(&snapshot);
+    const at = std.mem.indexOf(u8, bytes, want[0..9]) orelse return error.TestExpectedPasteRecord;
+    try testing.expectEqual(@as(u8, @intCast(name.len)), bytes[at + 9]);
+    try testing.expectEqualStrings(name, bytes[at + 10 ..][0..name.len]);
+}
+
+fn expectNoPasteRecord(engine: *engine_module.Engine) !void {
+    var snapshot: [8192]u8 = undefined;
+    const bytes = try engine.snapshot(&snapshot);
+    var want: [5]u8 = .{ 7, 0, 0, 0, 0 };
+    var storage: [projection.max_terminal_title_bytes]u8 = undefined;
+    std.mem.writeInt(u16, want[1..3], @intCast(7 + title(engine, 7, &storage).len), .little);
+    for (0..2) |receiver| {
+        want[4] = @intCast(receiver);
+        try testing.expect(std.mem.indexOf(u8, bytes, &want) == null);
+    }
+}
+
+test "a multi-line paste into a bracketed remote pane is delivered without asking" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try creation.start();
+    defer engine.destroy();
+    engine.model.phux().?.bridge.outgoing.reset();
+    // The fixture terminal's bootstrap turns DEC 2004 on.
+    try testing.expect(try engine.model.phux().?.bracketedPaste(engine.model.terminalOwner(ref(7)).?));
+    pasteText(engine, multi_line_paste);
+    try testing.expect(engine.model.pendingPaste() == null);
+    try testing.expect(!engine.model.paste_failed);
+    try expectTrustedPaste(engine, multi_line_paste);
+}
+
+test "an unbracketed multi-line remote paste waits for Return or Escape" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try creation.start();
+    defer engine.destroy();
+    var fx: NoticeFx = .{};
+    _ = try feed(engine, &fx, "remote-bracketed-off.bin");
+    const remote = engine.model.phux().?;
+    try testing.expect(!try remote.bracketedPaste(engine.model.terminalOwner(ref(7)).?));
+    remote.bridge.outgoing.reset();
+
+    // A single line is still just typed.
+    pasteText(engine, "echo hello");
+    try testing.expect(engine.model.pendingPaste() == null);
+    try expectTrustedPaste(engine, "echo hello");
+
+    // No prompt boundary yet: a running program would receive the lines.
+    pasteText(engine, multi_line_paste);
+    const held = engine.model.pendingPaste() orelse return error.TestExpectedHeldPaste;
+    try testing.expectEqual(@as(u32, 2), held.lines);
+    try testing.expectEqual(@import("../paste_safety.zig").Receiver.program, held.receiver);
+    try testing.expect(!remote.bridge.outgoing.hasPending());
+    try expectPasteRecord(engine, 1, 2);
+    // Escape drops it; nothing was sent.
+    keyDown(engine, "Escape");
+    try testing.expect(engine.model.pendingPaste() == null);
+    try testing.expect(!remote.bridge.outgoing.hasPending());
+    try expectNoPasteRecord(engine);
+
+    // At its prompt, the question names the shell; Return in the pane pastes.
+    _ = try feed(engine, &fx, "remote-command-finished.bin");
+    try testing.expect(projection.terminalAtPrompt(engine.model, ref(7)));
+    pasteText(engine, multi_line_paste);
+    try testing.expectEqual(@import("../paste_safety.zig").Receiver.shell, engine.model.pendingPaste().?.receiver);
+    try expectPasteRecord(engine, 0, 2);
+    keyDown(engine, "Enter");
+    try testing.expect(engine.model.pendingPaste() == null);
+    try expectTrustedPaste(engine, multi_line_paste);
+}
+
+test "any other key drops a held remote paste and still reaches the terminal" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try creation.start();
+    defer engine.destroy();
+    var fx: NoticeFx = .{};
+    _ = try feed(engine, &fx, "remote-bracketed-off.bin");
+    const remote = engine.model.phux().?;
+    remote.bridge.outgoing.reset();
+    pasteText(engine, multi_line_paste);
+    try testing.expect(engine.model.pendingPaste() != null);
+    keyDown(engine, "arrowup");
+    try testing.expect(engine.model.pendingPaste() == null);
+    // The key itself went out; the paste did not.
+    const frame = remote.bridge.outgoing.take() orelse return error.TestExpectedKeyFrame;
+    defer remote.bridge.outgoing.release(frame);
+    try testing.expect(std.mem.indexOf(u8, frame, "make install") == null);
+}

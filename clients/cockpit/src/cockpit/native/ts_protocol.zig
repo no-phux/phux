@@ -69,6 +69,9 @@ pub const NativeCommand = enum(u8) {
     focus_down = 23,
     fullscreen = 24,
     minimize = 25,
+    /// Deliver, or drop, the paste held for confirmation (paste_safety.zig).
+    paste_confirm = 26,
+    paste_cancel = 27,
 };
 
 pub fn decodeNativeCommand(raw: u8) ?NativeCommand {
@@ -98,6 +101,8 @@ pub fn decodeNativeCommand(raw: u8) ?NativeCommand {
         23 => .focus_down,
         24 => .fullscreen,
         25 => .minimize,
+        26 => .paste_confirm,
+        27 => .paste_cancel,
         else => null,
     };
 }

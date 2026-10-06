@@ -36,7 +36,9 @@ pub const Error = error{BufferTooSmall};
 /// state; decoders that know it prefer it over kinds 3 and 4 for headers.
 /// `parent_agent_rows` (ts_agents.zig): identity-bound inspection rows. Kind 5
 /// is already window_contexts, so identity rows take the next free value.
-pub const ExtensionKind = enum(u8) { agent_rows = 1, tab_contexts = 2, navigation_context = 3, empty_session = 4, window_contexts = 5, parent_agent_rows = 6 };
+/// `paste_confirmation`: the paste held for the user's answer
+/// (paste_safety.zig), written only while one is.
+pub const ExtensionKind = enum(u8) { agent_rows = 1, tab_contexts = 2, navigation_context = 3, empty_session = 4, window_contexts = 5, parent_agent_rows = 6, paste_confirmation = 7 };
 pub const max_session_bytes: usize = 64;
 pub const max_endpoint_bytes: usize = 160;
 pub const max_connection_detail_bytes: usize = 80;
@@ -49,6 +51,10 @@ pub const max_provider_bytes: usize = 12;
 pub const max_agent_rows: usize = 24;
 const agent_row_bytes: usize = 5 + max_provider_bytes;
 const agent_record_bytes: usize = 4 + max_agent_rows * agent_row_bytes;
+
+/// Window, receiver, `u32` line count, then the receiving terminal's name.
+pub const max_paste_title_bytes: usize = 64;
+const paste_record_bytes: usize = 3 + 6 + 1 + max_paste_title_bytes;
 
 pub const TabRun = struct {
     first: u8 = 0,
@@ -69,7 +75,7 @@ pub const max_config_path_bytes: usize = 200;
 comptime {
     var theme_bytes: usize = 0;
     for (theme_module.builtins) |theme| theme_bytes += 1 + @min(theme.name.len, 32);
-    const fixed = header_len + 4 + theme_bytes + max_config_path_bytes + 1 + model_module.max_secondary_windows * 7 + model_module.max_windows + agent_record_bytes + 3 + tab_commands.context_len + navigation_context_bytes + @import("empty_session.zig").record_bytes + @import("window_contexts.zig").record_bytes;
+    const fixed = header_len + 4 + theme_bytes + max_config_path_bytes + 1 + model_module.max_secondary_windows * 7 + model_module.max_windows + agent_record_bytes + 3 + tab_commands.context_len + navigation_context_bytes + @import("empty_session.zig").record_bytes + @import("window_contexts.zig").record_bytes + paste_record_bytes;
     const tabs = model_module.max_windows * model_module.max_tabs * (7 + max_title_bytes + max_cwd_bytes);
     std.debug.assert(fixed + tabs <= max_bytes);
 }
@@ -113,8 +119,30 @@ pub fn encode(model: *const Model, sequence: u64, revision: u64, runs: WindowRun
     written = try encodeNavigationContext(model, out, written);
     written = try @import("empty_session.zig").encode(model, @intFromEnum(ExtensionKind.empty_session), out, written);
     written = try @import("window_contexts.zig").encode(model, @intFromEnum(ExtensionKind.window_contexts), out, written);
+    written = try encodePasteConfirmation(model, out, written);
     written = @import("ts_agents.zig").snapshot(model, out[0..@min(out.len, max_bytes)], written) catch return error.BufferTooSmall;
     return out[0..written];
+}
+
+/// The held paste, in the window that shows its terminal. Absent, the record
+/// is absent, so a snapshot without one is byte-identical to before it.
+fn encodePasteConfirmation(model: *const Model, out: []u8, start: usize) Error!usize {
+    const pending = model.pendingPaste() orelse return start;
+    const ref = pending.owner.terminal_ref;
+    const where = model.locateTerminal(ref) orelse return start;
+    var full: [projection.max_terminal_title_bytes]u8 = undefined;
+    var display: [max_paste_title_bytes]u8 = undefined;
+    const title = navigation.displayText(projection.terminalTitleInto(model, ref, &full), &display);
+    const payload = 6 + 1 + title.len;
+    if (start + 3 + payload > out.len) return error.BufferTooSmall;
+    out[start] = @intFromEnum(ExtensionKind.paste_confirmation);
+    std.mem.writeInt(u16, out[start + 1 ..][0..2], @intCast(payload), .little);
+    out[start + 3] = @intCast(where.window);
+    out[start + 4] = @intFromEnum(pending.receiver);
+    std.mem.writeInt(u32, out[start + 5 ..][0..4], pending.lines, .little);
+    out[start + 9] = @intCast(title.len);
+    @memcpy(out[start + 10 ..][0..title.len], title);
+    return start + 3 + payload;
 }
 
 fn currentSession(model: *const Model, out: []u8) []const u8 {

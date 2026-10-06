@@ -138,6 +138,14 @@ pub const Session = struct {
     pwd_len: usize = 0,
     /// BEL latch; the app reads and clears it as an attention cue.
     bell_rung: bool = false,
+    /// OSC 133 idle latch, the local twin of a Phux COMMAND_FINISHED: the
+    /// cursor left a prompt it had reached and has come back to one. The app
+    /// reads and clears it as an attention cue, like `bell_rung`.
+    prompt_returned: bool = false,
+    /// Whether the cursor sat at a prompt after the last feed, and whether it
+    /// ever has: the first prompt a shell draws is not a return.
+    prompt_last: bool = false,
+    prompt_seen: bool = false,
     search: Search = .{},
     /// Copy of the last link `linkAtPoint` resolved; OSC 8 hrefs live in page
     /// memory the next feed may move. Valid until the next `linkAtPoint`.
@@ -502,6 +510,18 @@ pub const Session = struct {
         session.invalidateRenderedPreview();
         session.stream.nextSlice(bytes);
         session.screen_text_dirty = true;
+        session.notePromptEdge();
+    }
+
+    /// One prompt sample per batch. A command that starts and ends inside a
+    /// single batch leaves no edge, which is right: nothing ran long enough
+    /// to be worth attention.
+    fn notePromptEdge(session: *Session) void {
+        const now = session.atPrompt();
+        if (now and !session.prompt_last and session.prompt_seen) session.prompt_returned = true;
+        if (!now) session.prompt_returned = false;
+        if (now) session.prompt_seen = true;
+        session.prompt_last = now;
     }
 
     /// Hard-reset (RIS) for a fresh shell: screen, scrollback, modes, colour
@@ -529,6 +549,9 @@ pub const Session = struct {
         session.title_len = 0;
         session.pwd_len = 0;
         session.bell_rung = false;
+        session.prompt_returned = false;
+        session.prompt_last = false;
+        session.prompt_seen = false;
     }
 
     /// Terminal query answers accumulated by the last feeds; the caller

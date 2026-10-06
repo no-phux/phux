@@ -123,6 +123,84 @@ test "external keybindings retire legacy find and copy chords while search still
     try std.testing.expect(!engine.textInputOwnsKeyboard());
 }
 
+/// The bytes a local pane has queued for its shell (NoShells never writes).
+fn queuedOutbound(pane: *const model_module.Pane, out: []u8) []const u8 {
+    const cap = pane.outbound_buffer.len;
+    for (0..pane.outbound_len) |i| out[i] = pane.outbound_buffer[(pane.outbound_head + i) % cap];
+    return out[0..pane.outbound_len];
+}
+
+fn localPaste(engine: *Engine, text: []const u8) void {
+    engine.requestPaste(&NoShells{}, engine.focusedPane().?);
+    engine.onClipboardRead(&NoShells{}, true, text);
+}
+
+test "local paste protection: bracketed delivers, unbracketed multi-line waits for Return or Escape" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const pane = engine.focusedPane().?;
+    var queued: [256]u8 = undefined;
+    // A shell at its prompt with bracketed paste on sees a paste as a paste.
+    pane.session.feed("\x1b]133;A\x07$ \x1b[?2004h");
+    try std.testing.expect(projection.terminalAtPrompt(engine.model, pane.id));
+    localPaste(engine, "make\nmake install\n");
+    try std.testing.expect(engine.model.pendingPaste() == null);
+    try std.testing.expectEqualStrings("\x1b[200~make\nmake install\n\x1b[201~", queuedOutbound(pane, &queued));
+    pane.outbound_len = 0;
+
+    // Bracketed paste off: each line break would be an Enter at the prompt.
+    pane.session.feed("\x1b[?2004l");
+    localPaste(engine, "echo one");
+    try std.testing.expect(engine.model.pendingPaste() == null);
+    try std.testing.expectEqualStrings("echo one", queuedOutbound(pane, &queued));
+    pane.outbound_len = 0;
+    localPaste(engine, "rm -rf build\nls\n");
+    const held = engine.model.pendingPaste() orelse return error.TestExpectedHeldPaste;
+    try std.testing.expectEqual(@import("../paste_safety.zig").Receiver.shell, held.receiver);
+    try std.testing.expectEqual(@as(u32, 2), held.lines);
+    try std.testing.expectEqual(@as(usize, 0), pane.outbound_len);
+    engine.onKey(&NoShells{}, .{ .phase = .key_down, .key = "escape" });
+    try std.testing.expect(engine.model.pendingPaste() == null);
+    try std.testing.expectEqual(@as(usize, 0), pane.outbound_len);
+
+    // A running program (output after the prompt) is named as the receiver;
+    // Return delivers, unbracketed, newlines as the Enter they are.
+    pane.session.feed("\x1b]133;C\x07\r\nrunning\r\n");
+    try std.testing.expect(!projection.terminalAtPrompt(engine.model, pane.id));
+    localPaste(engine, "a\nb");
+    try std.testing.expectEqual(@import("../paste_safety.zig").Receiver.program, engine.model.pendingPaste().?.receiver);
+    engine.onKey(&NoShells{}, .{ .phase = .key_down, .key = "enter" });
+    try std.testing.expect(engine.model.pendingPaste() == null);
+    try std.testing.expectEqualStrings("a\rb", queuedOutbound(pane, &queued));
+    pane.outbound_len = 0;
+
+    // The confirm command answers like Return; cancel like Escape.
+    localPaste(engine, "c\nd");
+    try std.testing.expect(engine.nativeCommand(@intFromEnum(protocol.NativeCommand.paste_cancel), &NoShells{}));
+    try std.testing.expectEqual(@as(usize, 0), pane.outbound_len);
+    localPaste(engine, "c\nd");
+    try std.testing.expect(engine.nativeCommand(@intFromEnum(protocol.NativeCommand.paste_confirm), &NoShells{}));
+    try std.testing.expectEqualStrings("c\rd", queuedOutbound(pane, &queued));
+    try std.testing.expect(!engine.nativeCommand(@intFromEnum(protocol.NativeCommand.paste_confirm), &NoShells{}));
+}
+
+test "a local pane that returns to its prompt asks for attention until it is seen" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const pane = engine.focusedPane().?;
+    engine.model.focused = false;
+    // The shell's first prompt is not a return.
+    pane.session.feed("\x1b]133;A\x07$ ");
+    try std.testing.expect(!projection.terminalNeedsAttention(engine.model, pane.id));
+    pane.session.feed("\x1b]133;B\x07sleep 30\x1b]133;C\x07\r\n");
+    try std.testing.expect(!projection.terminalNeedsAttention(engine.model, pane.id));
+    pane.session.feed("\x1b]133;D;0\x07\x1b]133;A\x07$ ");
+    try std.testing.expect(projection.terminalNeedsAttention(engine.model, pane.id));
+    // Seeing it attends it.
+    engine.setFocused(&NoShells{}, true);
+    try std.testing.expect(!projection.terminalNeedsAttention(engine.model, pane.id));
+}
+
 test "shared deferred selection is superseded by keyboard and routed window focus" {
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
     defer engine.destroy();
@@ -2646,6 +2724,8 @@ pub const Engine = struct {
             .copy, .paste => self.clipboardCommand(command, fx),
             .select_all, .clear, .find, .find_next, .find_previous => self.localPresentationCommand(command, fx),
             .font_larger, .font_smaller, .font_reset, .fullscreen, .minimize => self.displayCommand(command, fx),
+            .paste_confirm => interaction.confirmPendingPaste(model, fx),
+            .paste_cancel => interaction.cancelPendingPaste(model),
         };
         if (changed) pointer_input.endAllCaptures(model, fx);
         return changed;
@@ -3124,11 +3204,30 @@ pub const Engine = struct {
         if (event.phase == .key_up) return self.releaseKey(fx, event);
         self.remote_natural_keys_held &= ~terminal_runtime.macosNaturalTextKeyMask(event.key);
         const ref = self.model.focusedTerminalRef() orelse return;
+        if (self.answerPendingPaste(fx, ref, event)) return;
         if (support.providerKind(ref) == .phux) {
             self.onRemoteKey(fx, ref, event);
             return;
         }
         self.onLocalKey(fx, ref, event);
+    }
+
+    /// While a paste waits on confirmation the keyboard answers it: Return
+    /// in the pane it was read for pastes, Escape drops it, and any other key
+    /// drops it and then does what it always does. Nothing types into a
+    /// terminal with an unanswered paste hanging over it.
+    fn answerPendingPaste(self: *Engine, fx: anytype, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) bool {
+        const pending = interaction.pendingPaste(self.model) orelse {
+            _ = interaction.cancelPendingPaste(self.model);
+            return false;
+        };
+        const bare = !event.modifiers.shift and !event.modifiers.control and !event.modifiers.alt and !event.modifiers.super;
+        if (bare and keyIs(event.key, "escape")) return interaction.cancelPendingPaste(self.model);
+        if (bare and (keyIs(event.key, "enter") or keyIs(event.key, "return")) and pending.owner.terminal_ref.eql(ref)) {
+            return interaction.confirmPendingPaste(self.model, fx);
+        }
+        _ = interaction.cancelPendingPaste(self.model);
+        return false;
     }
 
     fn onLocalKey(self: *Engine, fx: anytype, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) void {
@@ -3674,6 +3773,7 @@ pub const Engine = struct {
         const remote = self.model.phuxForRef(ref) orelse return;
         remote.acknowledgeBell(ref);
         remote.acknowledgeCommandFinished(ref);
+        remote.acknowledgePromptReturn(ref);
     }
 
     /// Anything on a local pane you are LOOKING at is not news: every pane of
@@ -3688,6 +3788,7 @@ pub const Engine = struct {
         for (refs[0..tree.terminals(&refs)]) |ref| {
             const pane = model.provider.terminal(ref) orelse continue;
             pane.clearBell();
+            pane.clearPromptReturned();
             pane.acknowledgeLoss();
         }
     }

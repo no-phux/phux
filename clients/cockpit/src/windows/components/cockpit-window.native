@@ -6,7 +6,7 @@
 <import src="cockpit-agents.native" />
 <import src="cockpit-chrome-recipes.native" />
 <import src="cockpit-connected-hosts.native" />
-<template name="cockpit-window" args="tabs rail width more cue menuopen status title detail location emptyopen emptyname emptydetail emptypicked">
+<template name="cockpit-window" args="tabs rail width more cue menuopen status title detail location emptyopen emptyname emptydetail emptypicked pasteopen">
   <stack>
     <column>
       <!-- Hidden-inset chrome: this header row is the window-drag surface.
@@ -149,6 +149,23 @@
             <else>
               <spacer grow="1" />
             </else>
+            <!-- Paste protection: a held paste's question over the top of the
+                 terminal space. The terminal keeps the keyboard, so Return
+                 and Escape answer it there; these buttons send the same. -->
+            <if test="{pasteopen}">
+              <column>
+                <column gap="8" padding="12" background="surface">
+                  <text wrap="true">{pasteTitle}</text>
+                  <text wrap="true" foreground="text_muted">{pasteDetail}</text>
+                  <row gap="8" cross="center">
+                    <spacer grow="1" />
+                    <button size="sm" variant="ghost" on-press="paste_cancel">Cancel</button>
+                    <button size="sm" on-press="paste_confirm">Paste</button>
+                  </row>
+                </column>
+                <spacer grow="1" />
+              </column>
+            </if>
           </stack>
         </column>
       </row>

@@ -331,6 +331,13 @@ const DisabledPhuxProvider = struct {
     pub fn atPrompt(_: *const DisabledPhuxProvider, _: TerminalRef) bool {
         return false;
     }
+    pub fn promptReturned(_: *const DisabledPhuxProvider, _: TerminalRef) bool {
+        return false;
+    }
+    pub fn acknowledgePromptReturn(_: *DisabledPhuxProvider, _: TerminalRef) void {}
+    pub fn bracketedPaste(_: *const DisabledPhuxProvider, _: ReplicaOwner) error{Disabled}!bool {
+        return error.Disabled;
+    }
     pub fn setColorPolicy(_: *const DisabledPhuxProvider, _: anytype) void {}
     pub fn lastViewport(_: *const DisabledPhuxProvider, _: TerminalRef) ?Viewport {
         return null;
