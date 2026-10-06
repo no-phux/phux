@@ -336,7 +336,7 @@ mod libghostty_conv {
     impl From<PhysicalKey> for Key {
         fn from(k: PhysicalKey) -> Self {
             // Same discriminants (ADR-0024); unknown -> Unidentified.
-            Self::try_from(k as u32).unwrap_or(Self::Unidentified)
+            Self::try_from(k as i32).unwrap_or(Self::Unidentified)
         }
     }
 
