@@ -275,14 +275,15 @@ impl RelayedServer {
     }
 
     fn client(&self) -> Arc<RemoteClient> {
-        let client = RemoteClient::new(
+        let client = RemoteClient::new_routed(
             format!("quic://{}", self.relay),
             80,
             24,
             Some(self.relay_pin.clone()),
             Some(self.token.clone()),
-        );
-        client.set_relay_route(Some(ROUTE.to_owned()));
+            ROUTE.to_owned(),
+        )
+        .expect("valid relay route");
         client.set_authority_pin(Some(self.authority.clone()));
         client
     }
@@ -526,6 +527,16 @@ fn a_phone_enrolls_and_attaches_through_a_relay_to_a_paired_server() {
     phone.connect().expect("connect");
     phone.attach_session(SESSION.to_owned());
     wait_for(&phone, |remote| remote.status() == WireStatus::Attached);
+    let epoch = phone.take_publication().connection_epoch;
+    phone.resync();
+    let mut seen = Vec::new();
+    publish_until(&phone, &mut seen, |publication| {
+        publication.connection_epoch > epoch && publication.status == WireStatus::Attached
+    });
+    assert_eq!(
+        phone.target().expect("target").authority.route.as_deref(),
+        Some(ROUTE)
+    );
     phone.stop_connection();
 }
 
