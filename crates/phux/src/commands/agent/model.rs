@@ -9,6 +9,7 @@ pub(super) struct AgentStateReport {
     pub(super) window: String,
     pub(super) agent: AgentIdentity,
     pub(super) state: AgentState,
+    #[serde(serialize_with = "confidence_json")]
     pub(super) confidence: f32,
     pub(super) attention: Attention,
     pub(super) title: Option<String>,
@@ -19,6 +20,23 @@ pub(super) struct AgentStateReport {
     /// has none. Additive; `schema_version` stays 1. Named `agent_session`
     /// because `session` in this document is already the phux session name.
     pub(super) agent_session: Option<AgentSessionJson>,
+}
+
+/// A confidence as the shortest decimal that round-trips the `f32` (`0.2`),
+/// not the widened `f64` (`0.20000000298023224`) a JSON value would carry.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's serialize_with hands the field by reference"
+)]
+fn confidence_json<S: serde::Serializer>(
+    confidence: &f32,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let shortest = confidence
+        .to_string()
+        .parse::<f64>()
+        .unwrap_or_else(|_| f64::from(*confidence));
+    serializer.serialize_f64(shortest)
 }
 
 /// The `agent_session` object of `AgentStateJson`.
@@ -102,6 +120,7 @@ pub(super) enum Attention {
 pub(super) struct AgentSource {
     pub(super) kind: &'static str,
     pub(super) signal: String,
+    #[serde(serialize_with = "confidence_json")]
     pub(super) confidence: f32,
     pub(super) observed: String,
     /// The ADR-0046 manifest rule id, when this source is one.

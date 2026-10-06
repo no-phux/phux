@@ -18,7 +18,7 @@ use serde_json::{Map, Value, json};
 use crate::agent_meta::{AgentRecord, RESOURCE_AGENT_KEY, parse_agent_record};
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
-use crate::resource::cursor::ResumeState;
+use crate::resource::cursor::{NO_REPLAY, ResumeState};
 use crate::selector::format_terminal_id;
 use crate::state::get_state_on_with_interleaved;
 
@@ -557,7 +557,10 @@ where
     F: FnMut(WatchItem) -> bool,
 {
     let mut conn = Connection::connect(socket).await?;
-    let after_seq = resume.bind(&conn);
+    let mut after_seq = resume.bind(&conn);
+    if after_seq == Some(NO_REPLAY) {
+        after_seq = anchor_live_start(&mut conn, resume).await.or(after_seq);
+    }
     send_subscriptions(&mut conn, Some(terminal), after_seq).await?;
     stream_items(&mut conn, |item| {
         if let Some(seq) = event_seq(&item) {
@@ -566,6 +569,19 @@ where
         sink(item)
     })
     .await
+}
+
+/// Anchor a live start at the journal head, as `resource wait` does: a run
+/// that sees no event then reports the head as its cursor rather than
+/// `SERVER_ID:0`, whose resume would replay every event from before the
+/// watch began. The subscription replays from that head, so an event landing
+/// between this read and the subscribe is delivered, not skipped. `None`
+/// (subscribe live, as before) when the server names no head.
+async fn anchor_live_start(conn: &mut Connection, resume: &mut ResumeState) -> Option<u64> {
+    let (view, _interleaved) = get_state_on_with_interleaved(conn).await.ok()?;
+    let head = view.snapshot().journal_head()?;
+    resume.note(head);
+    Some(head)
 }
 
 /// The journal sequence of a stamped event item.
@@ -1054,10 +1070,18 @@ mod tests {
         resume: &mut ResumeState,
         script: Vec<FrameKind>,
     ) -> (WatchOutcome, Vec<WatchItem>, Vec<FrameKind>) {
+        drive_resumable_with(resume, script, ScriptSpec::new()).await
+    }
+
+    async fn drive_resumable_with(
+        resume: &mut ResumeState,
+        script: Vec<FrameKind>,
+        spec: ScriptSpec,
+    ) -> (WatchOutcome, Vec<WatchItem>, Vec<FrameKind>) {
         use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
 
         let dir = tempfile::tempdir().expect("temp dir");
-        let spec = ScriptSpec::new()
+        let spec = spec
             .server_features(ServerFeatureSet::with(&[ServerFeature::EventJournal]))
             .server_id(vec![0x01, 0x02])
             .extend(script)
@@ -1126,5 +1150,29 @@ mod tests {
         )));
         assert!(resume.cursor_void());
         assert_eq!(resume.cursor().expect("fresh cursor").to_string(), "0102:0");
+    }
+
+    /// A live start is anchored at the journal head: the subscription
+    /// replays from it, and a run that saw no event reports the head as its
+    /// cursor, not `SERVER_ID:0` (whose resume replays the whole journal).
+    #[tokio::test]
+    async fn a_live_watch_reports_the_journal_head_when_it_saw_nothing() {
+        let state = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(7))
+            .with_journal_head(Some(30));
+        let mut resume = ResumeState::new(None);
+        let (_outcome, items, seen) =
+            drive_resumable_with(&mut resume, Vec::new(), ScriptSpec::new().state(state)).await;
+        assert!(items.is_empty(), "{items:?}");
+        assert!(
+            seen.iter().any(|frame| matches!(
+                frame,
+                FrameKind::SubscribeEvents {
+                    after_seq: Some(30),
+                    ..
+                }
+            )),
+            "replays from the head: {seen:?}"
+        );
+        assert_eq!(resume.cursor().expect("cursor").to_string(), "0102:30");
     }
 }

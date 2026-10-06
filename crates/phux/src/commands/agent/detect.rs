@@ -752,4 +752,18 @@ mod tests {
         // consumer probes by presence rather than for a sentinel.
         assert!(value["sources"][0].get("rule").is_none());
     }
+
+    /// A confidence reaches JSON as the decimal it was written as, not the
+    /// widened `f64` noise of an `f32` (`0.20000000298023224`).
+    #[test]
+    fn json_confidence_is_the_shortest_decimal() {
+        let evidence = PaneEvidence::for_test("@9", None, &[]);
+        let state = infer_agent_state(&evidence, &[]);
+        assert_eq!(state.confidence, 0.2_f32, "the unknown-pane confidence");
+
+        let rendered =
+            serde_json::to_string(&serde_json::to_value(&state).expect("value")).expect("render");
+        assert!(rendered.contains("\"confidence\":0.2,"), "{rendered}");
+        assert!(!rendered.contains("0.2000000"), "{rendered}");
+    }
 }

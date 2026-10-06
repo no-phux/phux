@@ -1216,17 +1216,7 @@ fn check_logs_at(state_dir: &std::path::Path, server_log: &std::path::Path) -> C
 // ---------------------------------------------------------------------------
 
 fn report_human(checks: &[Check]) -> ExitCode {
-    for check in checks {
-        outln!(
-            "{} {:<12} {}",
-            check.status.marker(),
-            check.name,
-            check.detail
-        );
-        if let Some(hint) = &check.hint {
-            outln!("     {:<12} -> {hint}", "");
-        }
-    }
+    out!("{}", render_human(checks));
 
     let failed = checks.iter().filter(|c| c.status == Status::Fail).count();
     let warned = checks.iter().filter(|c| c.status == Status::Warn).count();
@@ -1241,6 +1231,29 @@ fn report_human(checks: &[Check]) -> ExitCode {
         outln!("all checks passed");
     }
     ExitCode::SUCCESS
+}
+
+/// The check rows as the human report prints them. The name column is as
+/// wide as the longest check name, so a long name (`workload-authority`)
+/// cannot push its detail out of alignment with every other row.
+fn render_human(checks: &[Check]) -> String {
+    use std::fmt::Write as _;
+
+    let width = checks.iter().map(|c| c.name.len()).max().unwrap_or(0);
+    let mut out = String::new();
+    for check in checks {
+        let _ = writeln!(
+            out,
+            "{} {:<width$} {}",
+            check.status.marker(),
+            check.name,
+            check.detail
+        );
+        if let Some(hint) = &check.hint {
+            let _ = writeln!(out, "     {:<width$} -> {hint}", "");
+        }
+    }
+    out
 }
 
 fn report_json(checks: &[Check]) -> ExitCode {
@@ -2051,5 +2064,28 @@ mod tests {
         ] {
             assert!(hint.contains(remedy), "{hint}");
         }
+    }
+
+    /// A check name longer than the old fixed 12-column field still lines
+    /// its detail (and its hint arrow) up with every other row.
+    #[test]
+    fn human_report_aligns_details_past_the_longest_name() {
+        let checks = [
+            Check::pass("config", "fine"),
+            Check::warn("workload-authority", "missing", "init it"),
+        ];
+        let rendered = render_human(&checks);
+        let lines: Vec<&str> = rendered.lines().collect();
+        let detail_column = |line: &str, needle: &str| line.find(needle).expect(needle);
+        assert_eq!(
+            detail_column(lines[0], "fine"),
+            detail_column(lines[1], "missing"),
+            "{rendered}"
+        );
+        assert_eq!(
+            detail_column(lines[2], "->"),
+            detail_column(lines[1], "missing"),
+            "{rendered}"
+        );
     }
 }

@@ -169,9 +169,13 @@ fn capture(
         // Progress is a live counter on stderr, rewritten in place. It is
         // suppressed under `--json` so a consumer that reads stderr for
         // diagnostics does not have to filter a spinner out of it.
+        // A carriage-return counter is only a counter on a terminal; piped
+        // into a log it is a run-on line of repeats, so it is shown there
+        // alone.
+        let live_progress = !json && std::io::IsTerminal::is_terminal(&std::io::stderr());
         let mut last_tick = None::<Duration>;
         let progress = |elapsed: Duration, events: usize| {
-            if json {
+            if !live_progress {
                 return;
             }
             if last_tick.is_some_and(|last| elapsed.saturating_sub(last) < PROGRESS_PERIOD) {
@@ -185,7 +189,7 @@ fn capture(
         let recorded =
             phux_client::record::record_terminal(&socket_path, terminal_id, max_duration, progress)
                 .await;
-        if !json {
+        if live_progress {
             // Close the progress line so the completion one-liner does not
             // land on top of it.
             eprintln!();
@@ -375,8 +379,13 @@ fn report(outcome: &RecOutcome, json: bool) {
         return;
     }
 
+    let frames = if outcome.frames == 1 {
+        "frame"
+    } else {
+        "frames"
+    };
     outln!(
-        "phux: wrote {} ({}, {} frames, {})",
+        "phux: wrote {} ({}, {} {frames}, {})",
         outcome.path.display(),
         human_bytes(outcome.bytes),
         outcome.frames,
