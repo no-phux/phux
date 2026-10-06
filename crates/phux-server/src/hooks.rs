@@ -406,11 +406,13 @@ pub(crate) fn fire_hook(state: &crate::state::SharedState, event: HookEvent) {
 ///
 /// Each matched command runs on its own task behind the concurrency cap,
 /// with [`HOOK_TIMEOUT`] and `kill_on_drop`; `server_socket` becomes
-/// `PHUX_SOCKET`. Exits when every handle is dropped.
+/// `PHUX_SOCKET`. Each finished run is appended to `run_log` (the
+/// `phux plugin log` ring) when given. Exits when every handle is dropped.
 #[must_use]
 pub fn spawn_hook_dispatcher(
     catalog: HookCatalog,
     server_socket: Option<PathBuf>,
+    run_log: Option<PathBuf>,
 ) -> HookDispatcher {
     let (tx, mut rx) = mpsc::channel::<HookEvent>(HOOK_EVENT_QUEUE);
     tokio::task::spawn_local(async move {
@@ -418,12 +420,13 @@ pub fn spawn_hook_dispatcher(
         while let Some(event) = rx.recv().await {
             for run in matched_runs(&catalog, &event, server_socket.as_deref()) {
                 let semaphore = Arc::clone(&semaphore);
+                let run_log = run_log.clone();
                 tokio::task::spawn_local(async move {
                     // The semaphore is never closed.
                     let Ok(_permit) = semaphore.acquire_owned().await else {
                         return;
                     };
-                    execute(run).await;
+                    execute(run, run_log).await;
                 });
             }
         }
@@ -432,10 +435,12 @@ pub fn spawn_hook_dispatcher(
     HookDispatcher { tx }
 }
 
-/// One resolved hook execution: a label for logs plus the command spec.
+/// One resolved hook execution: a label for logs, the owning plugin (none
+/// for a config hook), and the command spec.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HookRun {
     label: String,
+    plugin_id: Option<String>,
     spec: phux_plugin::CommandSpec,
 }
 
@@ -458,6 +463,7 @@ fn matched_runs(
             if let Some(argv) = action_argv(&entry.action) {
                 runs.push(HookRun {
                     label: format!("hooks.{}[{index}]", event.name),
+                    plugin_id: None,
                     spec: phux_plugin::CommandSpec {
                         argv,
                         cwd: None,
@@ -491,6 +497,7 @@ fn matched_runs(
         ));
         runs.push(HookRun {
             label: format!("plugin.{}.{}", hook.plugin_id, hook.event_id),
+            plugin_id: Some(hook.plugin_id.clone()),
             spec: phux_plugin::CommandSpec {
                 argv: hook.command.clone(),
                 cwd: Some(hook.plugin_root.clone()),
@@ -593,10 +600,27 @@ fn action_argv(action: &Action) -> Option<Vec<String>> {
     }
 }
 
-/// Run one hook child to completion and log the outcome.
-async fn execute(run: HookRun) {
+/// Run one hook child to completion, log the outcome, and append it to
+/// `run_log` when given.
+async fn execute(run: HookRun, run_log: Option<PathBuf>) {
     let label = run.label;
-    match phux_plugin::run_command_spec(run.spec).await {
+    let argv = run.spec.argv.clone();
+    let result = phux_plugin::run_command_spec(run.spec).await;
+    log_outcome(&label, &result);
+    if let Some(path) = run_log {
+        let record = phux_plugin::run_log::RunRecord::from_hook(
+            &label,
+            run.plugin_id.as_deref(),
+            &argv,
+            &result,
+        );
+        phux_plugin::run_log::record_async(path, record).await;
+    }
+}
+
+/// Trace one hook outcome: failures warn, successes debug.
+fn log_outcome(label: &str, result: &std::io::Result<phux_plugin::CommandSpecOutput>) {
+    match result {
         Ok(output) if output.outcome == phux_plugin::PluginActionOutcome::TimedOut => {
             warn!(hook = %label, timeout = ?HOOK_TIMEOUT, "hook timed out; child killed");
         }
@@ -1101,7 +1125,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let dispatcher = spawn_hook_dispatcher(catalog, Some(socket.clone()));
+                let dispatcher = spawn_hook_dispatcher(catalog, Some(socket.clone()), None);
                 dispatcher.fire(HookEvent::new(
                     AFTER_NEW_PANE,
                     [("terminal-id".to_owned(), "42".to_owned())],
@@ -1113,7 +1137,8 @@ mod tests {
         assert_eq!(contents, format!("after-new-pane 42 {}", socket.display()));
     }
 
-    /// A plugin hook runs in the plugin root with its identity env.
+    /// A plugin hook runs in the plugin root with its identity env, and its
+    /// run lands in the run log.
     #[tokio::test(flavor = "current_thread")]
     async fn dispatcher_executes_plugin_event_in_plugin_root_with_plugin_env() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1134,20 +1159,28 @@ mod tests {
             }],
         };
         let marker = root.join("marker");
+        let run_log = root.join("runs.jsonl");
 
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let dispatcher = spawn_hook_dispatcher(catalog, None);
+                let dispatcher = spawn_hook_dispatcher(catalog, None, Some(run_log.clone()));
                 dispatcher.fire(HookEvent::new(
                     PANE_EXIT,
                     [("exit-code".to_owned(), "0".to_owned())],
                 ));
                 wait_for_file(&marker).await;
+                wait_for_file(&run_log).await;
             })
             .await;
         let contents = std::fs::read_to_string(&marker).expect("marker written");
         assert_eq!(contents, format!("notifier 0 {}", root.display()));
+        let records = phux_plugin::run_log::read(&run_log).expect("run log reads");
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(records[0].kind, phux_plugin::run_log::RunKind::Hook);
+        assert_eq!(records[0].plugin_id.as_deref(), Some("notifier"));
+        assert_eq!(records[0].name, "plugin.notifier.on-exit");
+        assert!(records[0].succeeded(), "{records:?}");
     }
 
     /// A slow hook does not block `fire`.
@@ -1162,7 +1195,7 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let dispatcher = spawn_hook_dispatcher(catalog, None);
+                let dispatcher = spawn_hook_dispatcher(catalog, None, None);
                 let started = Instant::now();
                 dispatcher.fire(HookEvent::new(PANE_EXIT, []));
                 assert!(

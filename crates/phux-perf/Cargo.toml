@@ -32,4 +32,4 @@ nix = { version = "0.31", default-features = false, features = ["resource"] }
 # macOS; `nix` exposes no binding for it. Already in the graph through
 # `nix`, `phux-crash`, and `portable-pty-adopt`; not a new dependency.
 [target.'cfg(target_os = "macos")'.dependencies]
-libc = "0.2.189"
+libc = "0.2.190"

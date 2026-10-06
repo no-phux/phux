@@ -17,7 +17,7 @@ AgentSession events. It neither embeds a terminal nor owns the server.
 ## Requirements and installation
 
 The package requires Node.js 22 or newer, Pi, and `phux` on `PATH`; it does
-not bundle phux. Development and packed-extension load gates pin Pi 1.0.2;
+not bundle phux. Development and packed-extension load gates pin Pi 1.0.4;
 host-provided Pi modules remain wildcard peers rather than bundled copies. The installed CLI must support `paste`, `agent prompt/wait`,
 `resource wait`, `runtime-info`, and current snapshot/wait options. Older
 binaries may support only part of this surface; unsupported verbs fail

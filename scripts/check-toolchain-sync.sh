@@ -56,6 +56,9 @@ grep -Eq '^rust[[:space:]]*=.*mr_boxington[[:space:]]*=[[:space:]]*true' "$MISE"
 # Rust needs no check here: the flake reads rust-toolchain.toml directly.
 zig_attr="zig_$(printf '%s' "${zig_version%.*}" | tr '.' '_')"
 grep -Fq "pkgs.$zig_attr" "$FLAKE" || fail "flake.nix must use pkgs.$zig_attr for Zig $zig_version"
+# Linux takes the official release from the digest pins, not nixpkgs' build.
+grep -Fq "./.config/zig-toolchain.json" "$FLAKE" ||
+    fail "flake.nix must install Linux Zig from .config/zig-toolchain.json"
 grep -Fq "pkgs.nodejs_$node_version" "$FLAKE" ||
     fail "flake.nix must use pkgs.nodejs_$node_version for Node $node_version"
 

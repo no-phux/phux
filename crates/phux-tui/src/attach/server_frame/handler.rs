@@ -90,6 +90,8 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
     pending_layout_request: Option<u32>,
     pending_splits: &'a mut HashMap<u32, PendingSplit>,
     pending_windows: &'a mut HashMap<u32, PendingWindow>,
+    // ADR-0147: floating overlay spawns awaiting their reply, with titles.
+    pending_floating: &'a mut HashMap<u32, String>,
     // Closes this client requested; their pane-exit notice is suppressed.
     expected_closes: &'a mut HashSet<ResourceId>,
     // `request_id` -> Terminal for commands whose `TERMINAL_NOT_FOUND` is the
@@ -166,6 +168,7 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
         predict,
         pending_splits,
         pending_windows,
+        pending_floating,
         expected_closes,
         pending_resource_ops,
         agent_meta,
@@ -217,6 +220,7 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
         pending_layout_request,
         pending_splits,
         pending_windows,
+        pending_floating,
         expected_closes,
         pending_resource_ops,
         agent_meta,
@@ -642,7 +646,14 @@ fn handle_terminal_output<W: crate::attach::RenderSink>(
             ..FrameOutcome::default()
         });
     }
-    if !paint_permitted(ctx.overlay_active, ctx.defer_paint, sync_output_active) {
+    // ADR-0147: panes under the floating overlay pause like under a modal.
+    let floating = crate::attach::floating::floating_pane(ctx.panes).cloned();
+    let under_floating = floating.as_ref().is_some_and(|id| id != terminal_id);
+    if !paint_permitted(
+        ctx.overlay_active || under_floating,
+        ctx.defer_paint,
+        sync_output_active,
+    ) {
         phux_client::perf::SKIPPED.add(1);
         return Ok(FrameOutcome {
             ack,
@@ -660,7 +671,7 @@ fn handle_terminal_output<W: crate::attach::RenderSink>(
             panes: ctx.panes,
             workspace: ctx.workspace,
             zoomed: ctx.zoomed.as_ref(),
-            focused_resource: ctx.focused_resource.as_ref(),
+            focused_resource: floating.as_ref().or(ctx.focused_resource.as_ref()),
             status_bar: ctx.status_bar.as_deref_mut(),
             sidebar: ctx.sidebar,
             viewport_dims: ctx.viewport_dims,
@@ -736,15 +747,12 @@ pub(in crate::attach) fn paint_output_frame<W: crate::attach::RenderSink>(
             continue;
         };
         if focused_resource == Some(terminal_id) {
-            paint_focused_interior(
-                &mut block,
-                rect.unwrap_or(content),
-                panes,
-                kernel,
-                terminal_id,
-                walk,
-                predict,
-            );
+            // A focused pane with no tile is the floating overlay's box
+            // (ADR-0147) or the single-pane bootstrap's content rect.
+            let rect = rect.unwrap_or_else(|| {
+                crate::attach::floating::untiled_rect(panes, terminal_id, content)
+            });
+            paint_focused_interior(&mut block, rect, panes, kernel, terminal_id, walk, predict);
         } else if let Some(rect) = rect {
             // Non-focused panes repaint on their own output; no rect, no paint.
             paint_background_interior(&mut block, rect, panes, terminal_id, walk);
@@ -1136,6 +1144,9 @@ fn handle_terminal_spawned<W: crate::attach::RenderSink>(
     request_id: u32,
     result: SpawnResult,
 ) -> Result<FrameOutcome, AttachError> {
+    if let Some(title) = ctx.pending_floating.remove(&request_id) {
+        return handle_floating_spawned(ctx, title, result);
+    }
     // A parked new-window takes priority (ids are unique across both maps).
     if let Some(pending) = ctx.pending_windows.remove(&request_id) {
         return handle_window_spawned(
@@ -1191,6 +1202,74 @@ fn handle_terminal_spawned<W: crate::attach::RenderSink>(
             Ok(FrameOutcome::default())
         }
     }
+}
+
+/// ADR-0147: a floating overlay's spawn answered. Seed its slot at the box
+/// interior, marked floating, so paint and input find it; it joins no window.
+/// A refusal bells with the reason; a second overlay racing an open one, or
+/// a non-local id, is killed instead.
+fn handle_floating_spawned<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    title: String,
+    result: SpawnResult,
+) -> Result<FrameOutcome, AttachError> {
+    let new_id = match result {
+        SpawnResult::Ok(id) | SpawnResult::OkBound { id, .. } => id,
+        SpawnResult::Err(err) => {
+            let _ = actions::write_bell(ctx.out);
+            return Ok(FrameOutcome {
+                notices: vec![Notice::warn(format!(
+                    "could not open {title}: {}",
+                    spawn_error_reason(&err)
+                ))],
+                ..FrameOutcome::default()
+            });
+        }
+        _ => return Ok(FrameOutcome::default()),
+    };
+    let taken = crate::attach::floating::floating_pane(ctx.panes).is_some_and(|id| *id != new_id);
+    if taken || !new_id.is_local() {
+        tracing::warn!(terminal = ?new_id, "floating overlay has nowhere to open; killing it");
+        ctx.expected_closes.insert(new_id.clone());
+        return Ok(FrameOutcome {
+            kill_orphans: vec![new_id],
+            ..FrameOutcome::default()
+        });
+    }
+    let bar = ctx.status_bar.as_ref().map(|p| p.position());
+    let inner =
+        crate::attach::floating::floating_box(content_rect(ctx.viewport_dims, bar, ctx.sidebar))
+            .inner;
+    // Output may have raced the reply and seeded a plain slot already.
+    let slot = match ctx.panes.entry(new_id) {
+        std::collections::hash_map::Entry::Occupied(slot) => slot.into_mut(),
+        std::collections::hash_map::Entry::Vacant(slot) => {
+            slot.insert(PaneSlot::new_with_size(inner.w.max(1), inner.h.max(1))?)
+        }
+    };
+    slot.floating = Some(title);
+    Ok(FrameOutcome {
+        layout_replaced: true,
+        size_floating: true,
+        ..FrameOutcome::default()
+    })
+}
+
+/// ADR-0147: the floating overlay closed or its process exited: drop its
+/// slot (ending the modal) and repaint the panes it covered. `None` when
+/// `terminal_id` is not the floating pane.
+fn close_floating<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    terminal_id: &ResourceId,
+) -> Option<FrameOutcome> {
+    ctx.panes
+        .get(terminal_id)
+        .and_then(|slot| slot.floating.as_ref())?;
+    ctx.panes.remove(terminal_id);
+    Some(FrameOutcome {
+        layout_replaced: true,
+        ..FrameOutcome::default()
+    })
 }
 
 /// Log why a split's spawn failed, by error kind.
@@ -1389,6 +1468,9 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
     // Drain the expectation unconditionally, so a later spontaneous death of a
     // reused id still notifies.
     let expected = ctx.expected_closes.remove(terminal_id);
+    if let Some(outcome) = close_floating(ctx, terminal_id) {
+        return outcome;
+    }
     // An AgentSession has no slot or leaf; its close removes only its row.
     if ctx.is_agent_session(terminal_id) {
         return FrameOutcome {
@@ -1645,6 +1727,13 @@ fn fold_terminal_control<W: crate::attach::RenderSink>(
     let holder_changed = slot.input_holder != input_holder;
     slot.lifecycle = lifecycle;
     slot.input_holder = input_holder;
+    // ADR-0147: a retained floating overlay closes with its process.
+    if matches!(lifecycle, ResourceLifecycle::Exited) && slot.floating.is_some() {
+        ctx.expected_closes.insert(terminal.clone());
+        let mut outcome = close_floating(ctx, terminal).unwrap_or_default();
+        outcome.kill_orphans.push(terminal.clone());
+        return outcome;
+    }
     // ADR-0124: the first `Exited` carries the status.
     if matches!(lifecycle, ResourceLifecycle::Exited) && slot.exited.is_none() {
         slot.exited = Some(crate::attach::pane_state::ExitMark {

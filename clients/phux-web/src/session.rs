@@ -852,6 +852,7 @@ impl Session {
                     terminal_id,
                     cols: rect.cols,
                     rows: rect.rows,
+                    cell_px: self.cell_px,
                 }))
             })
             .collect()

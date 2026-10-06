@@ -19,7 +19,7 @@
 # store across worktrees, managed `target/` directories that are collected when
 # a checkout goes away, and a machine-wide compiler pool. See
 # docs/SETUP.md#build-cache-mbx for why phux needs it.
-rust = { version = "1.98.1", mr_boxington = true }
+rust = { version = "1.99.0", mr_boxington = true }
 zig = "0.16.0"
 node = "24"
 # docs/site builds, tests and type-checks against this exact Bun, and
@@ -43,7 +43,7 @@ python = "3.14.7"
 # binary emits. Pin the same train as the `usage-rs` crate. nixpkgs
 # has lagged this CLI, so flake.nix reads this value and fetches the
 # GitHub release until nixpkgs catches up — the bun pin, applied to a CLI.
-usage = "6.11.1"
+usage = "6.12.0"
 
 # --- Build cache --------------------------------------------------------------
 # mbx (jdx/mr-boxington), the Cargo wrapper the `rust` entry above enables.

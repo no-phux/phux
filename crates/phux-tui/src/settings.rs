@@ -11,8 +11,8 @@
 //!   (docs/consumers/tui.md section 4.3).
 //!
 //! [`TuiSettings::adopt_reload`] swaps keybindings, resolver, theme, chrome
-//! breakpoints, status bar, plugin rows, and which-key knobs; sidebar
-//! geometry and the mouse gate are attach-time only.
+//! breakpoints, status bar, plugin rows and sidebar sections, and which-key
+//! knobs; sidebar geometry and the mouse gate are attach-time only.
 
 use std::path::Path;
 use std::time::Duration;
@@ -25,6 +25,8 @@ use phux_config::{Config, ConfigError, KeybindingsCfg, SidebarPosition};
 use crate::attach::paint::SidebarEdge;
 use crate::attach::plugin_actions::{self, PluginActionEntry};
 use crate::attach::plugin_panes::{self, PluginPaneEntry};
+use crate::attach::plugin_sidebar;
+use crate::render::chrome::sidebar_sections::PluginSectionSpec;
 use crate::render::chrome::status_bar::StatusBarPainter;
 use crate::render::{ChromeBreakpoints, Theme};
 
@@ -71,6 +73,8 @@ pub struct TuiSettings {
     pub plugin_actions: Vec<PluginActionEntry>,
     /// The hostable pane entries committing `plugin-pane`.
     pub plugin_panes: Vec<PluginPaneEntry>,
+    /// Enabled plugins' `[[sidebar]]` sections (ADR-0148).
+    pub plugin_sidebar: Vec<PluginSectionSpec>,
     /// The which-key popup knobs.
     pub which_key: WhichKey,
     /// `[sidebar]` geometry; attach-time only.
@@ -92,6 +96,7 @@ impl std::fmt::Debug for TuiSettings {
             .field("status_bar", &self.status_bar.is_some())
             .field("plugin_actions", &self.plugin_actions.len())
             .field("plugin_panes", &self.plugin_panes.len())
+            .field("plugin_sidebar", &self.plugin_sidebar.len())
             .field("which_key", &self.which_key)
             .field("sidebar", &self.sidebar)
             .field("hosts", &self.hosts)
@@ -144,6 +149,7 @@ impl TuiSettings {
         self.status_bar = new.status_bar;
         self.plugin_actions = new.plugin_actions;
         self.plugin_panes = new.plugin_panes;
+        self.plugin_sidebar = new.plugin_sidebar;
         self.which_key = new.which_key;
     }
 
@@ -165,6 +171,7 @@ impl TuiSettings {
             status_bar: Some(status_bar),
             plugin_actions: Vec::new(),
             plugin_panes: Vec::new(),
+            plugin_sidebar: Vec::new(),
             which_key: WhichKey {
                 enabled: false,
                 delay: Duration::from_millis(600),
@@ -194,6 +201,7 @@ impl TuiSettings {
         };
         let plugin_actions = plugin_actions::entries_from_manifests(&manifests);
         let plugin_panes = plugin_panes::entries_from_manifests(&manifests);
+        let plugin_sidebar = plugin_sidebar::specs_from_manifests(&manifests);
         let keybindings = merged_keybindings(cfg, &plugin_actions);
         let (resolver, diagnostics) = build_resolver_from(&keybindings);
         if !diagnostics.is_empty()
@@ -212,6 +220,7 @@ impl TuiSettings {
             status_bar,
             plugin_actions,
             plugin_panes,
+            plugin_sidebar,
         )
     }
 
@@ -227,6 +236,7 @@ impl TuiSettings {
         let status_bar = compose_status_bar(cfg, &manifests).map_err(|err| err.to_string())?;
         let plugin_actions = plugin_actions::entries_from_manifests(&manifests);
         let plugin_panes = plugin_panes::entries_from_manifests(&manifests);
+        let plugin_sidebar = plugin_sidebar::specs_from_manifests(&manifests);
         let keybindings = merged_keybindings(cfg, &plugin_actions);
         // Strict on purpose: reload is all-or-nothing. The refusal names the
         // binding, so the toast says which line of the file to fix.
@@ -241,6 +251,7 @@ impl TuiSettings {
             status_bar,
             plugin_actions,
             plugin_panes,
+            plugin_sidebar,
         ))
     }
 
@@ -252,6 +263,7 @@ impl TuiSettings {
         mut status_bar: Option<StatusBarPainter>,
         plugin_actions: Vec<PluginActionEntry>,
         plugin_panes: Vec<PluginPaneEntry>,
+        plugin_sidebar: Vec<PluginSectionSpec>,
     ) -> Self {
         let theme = Theme::from_cfg(&cfg.theme);
         // The attention hint's chip color comes from the theme's
@@ -272,6 +284,7 @@ impl TuiSettings {
             status_bar,
             plugin_actions,
             plugin_panes,
+            plugin_sidebar,
             sidebar: SidebarSettings {
                 enabled: cfg.sidebar.enabled,
                 width: cfg.sidebar.width,

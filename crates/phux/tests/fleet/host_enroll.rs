@@ -791,6 +791,7 @@ fn add_json_emits_the_documented_host_document() {
     assert_eq!(host["enabled"], serde_json::Value::Null);
     assert_eq!(host["token_file"], serde_json::Value::Null);
     assert_eq!(host["cert_fingerprint"], serde_json::Value::Null);
+    assert_eq!(host["tls_server_name"], serde_json::Value::Null);
     assert_eq!(host["session"], serde_json::Value::Null);
     assert_eq!(host["ssh"], "me@mini");
     assert_eq!(host["direct"], serde_json::Value::Null);
@@ -802,7 +803,7 @@ fn add_json_emits_the_documented_host_document() {
         Some(3),
         "exactly the three documented top-level keys; document: {doc}"
     );
-    assert_eq!(host.len(), 11, "exactly the eleven documented host keys");
+    assert_eq!(host.len(), 12, "exactly the twelve documented host keys");
     let enrollment = doc["enrollment"]
         .as_object()
         .expect("an `enrollment` object");

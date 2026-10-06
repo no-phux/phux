@@ -134,7 +134,7 @@ The shell that runs in the DO is `phux-edge` (`edge/`, Rust→WASM). Rebuild it
 when that crate changes:
 
 ```sh
-bun run build:edge        # needs rust 1.98 + wasm-pack (phux nix devshell), → worker/edge/
+bun run build:edge        # needs rust 1.99 + wasm-pack (phux nix devshell), → worker/edge/
 ```
 
 ---

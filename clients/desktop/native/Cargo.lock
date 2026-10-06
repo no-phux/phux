@@ -3508,9 +3508,9 @@ checksum = "34b357333733e8260735ba5894eb928c02ecc69c78715f01a8019e7fa7f2db4c"
 
 [[package]]
 name = "libc"
-version = "0.2.189"
+version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
 name = "libfuzzer-sys"
@@ -3525,7 +3525,7 @@ dependencies = [
 [[package]]
 name = "libghostty-vt"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=1cc00f3a0aeb77b851604d027518c9f66212029b#1cc00f3a0aeb77b851604d027518c9f66212029b"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=c63fff011802b583e069ab062d57416d300d862c#c63fff011802b583e069ab062d57416d300d862c"
 dependencies = [
  "bitflags 2.13.2",
  "int-enum",
@@ -3536,7 +3536,7 @@ dependencies = [
 [[package]]
 name = "libghostty-vt-sys"
 version = "0.2.1"
-source = "git+https://github.com/phall1/libghostty-rs.git?rev=1cc00f3a0aeb77b851604d027518c9f66212029b#1cc00f3a0aeb77b851604d027518c9f66212029b"
+source = "git+https://github.com/phall1/libghostty-rs.git?rev=c63fff011802b583e069ab062d57416d300d862c#c63fff011802b583e069ab062d57416d300d862c"
 
 [[package]]
 name = "libloading"

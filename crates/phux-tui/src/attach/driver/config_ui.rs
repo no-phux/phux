@@ -73,7 +73,8 @@ pub(super) fn adopt_config_reload(
             // shows the new palette rather than the one it was born with.
             overlays.set_theme(&settings.theme);
             // A fresh painter carries the new theme and repaints everything.
-            *sidebar_painter = SidebarPainter::new(settings.theme);
+            *sidebar_painter = SidebarPainter::new(settings.theme)
+                .with_plugin_specs(settings.plugin_sidebar.clone());
             true
         }
         Err(msg) => {

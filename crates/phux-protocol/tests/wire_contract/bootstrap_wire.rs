@@ -727,11 +727,37 @@ fn official_snapshot_v1_and_legacy_checkpoint_v2_fall_back_to_synthesis() {
         "different native contracts must never be inferred compatible"
     );
     assert_eq!(EngineCodec::LibghosttyCheckpointV2.as_wire(), 2);
-    assert_eq!(EngineCodec::LibghosttySnapshotV1.as_wire(), 3);
+    assert_eq!(EngineCodec::LibghosttySnapshotV1.as_wire(), 4);
     assert_eq!(
         EngineCodec::from_wire(2),
         Some(EngineCodec::LibghosttyCheckpointV2),
         "legacy checkpoint-v2 remains decodable"
+    );
+}
+
+/// Id 3 named the BLAKE3-checkpointed `GHOSTSNPv1` bytes that the current
+/// engine can neither produce nor decode. A peer that still advertises only
+/// id 3 must fall back to a synthesized profile, never select native.
+#[test]
+fn retired_snapshot_id_3_falls_back_to_synthesis() {
+    assert_eq!(EngineCodec::from_wire(3), None);
+    let retired_only = EngineCodecSet::from_wire(1_u64 << 3);
+    assert_eq!(retired_only, EngineCodecSet::new());
+
+    let advertised = BootstrapProfileSet::all();
+    let client = ClientCapabilities::new().with_bootstrap(
+        BootstrapCapabilities::new()
+            .with_profiles(advertised)
+            .with_native_codecs(retired_only)
+            .with_native_features(EngineFeatureSet::required_native()),
+    );
+    let server = BootstrapCapabilities::new().with_native(
+        EngineCodec::LibghosttySnapshotV1,
+        EngineFeatureSet::required_native(),
+    );
+    assert_eq!(
+        select_bootstrap_profile(&client, &server).unwrap().0,
+        BootstrapProfile::SynthesizedVtRaw
     );
 }
 

@@ -66,6 +66,7 @@ pub(super) struct CtxFixture {
     pub(super) spawn_initial_size_supported: bool,
     pub(super) pending_splits: HashMap<u32, PendingSplit>,
     pub(super) pending_windows: HashMap<u32, PendingWindow>,
+    pub(super) pending_floating: HashMap<u32, String>,
     pub(super) directory_support: DirectorySupport,
     pub(super) pending_directory: Option<PendingDirectory>,
     pub(super) pending_path: Option<crate::attach::path_picker::PendingPath>,
@@ -124,6 +125,7 @@ impl Default for CtxFixture {
             spawn_initial_size_supported: true,
             pending_splits: HashMap::new(),
             pending_windows: HashMap::new(),
+            pending_floating: HashMap::new(),
             directory_support: DirectorySupport::HostAware,
             pending_directory: None,
             pending_path: None,
@@ -188,6 +190,7 @@ impl CtxFixture {
             spawn_initial_size_supported: self.spawn_initial_size_supported,
             pending_splits: &mut self.pending_splits,
             pending_windows: &mut self.pending_windows,
+            pending_floating: &mut self.pending_floating,
             directory_support: self.directory_support,
             pending_directory: &mut self.pending_directory,
             pending_path: &mut self.pending_path,
@@ -490,6 +493,7 @@ pub(super) fn targets(needs_you: usize, windows: usize, roster: usize) -> Sideba
             active_session: (windows > 0 && roster > 0).then_some(0),
             host_starts: (0..roster.min(128)).fold(0, |mask, j| mask | (1u128 << j)),
             rule: crate::render::chrome::sidebar::SidebarRule::Trailing,
+            plugin: crate::render::chrome::sidebar_sections::PluginShape::default(),
         },
         // Row 0 is local; the rest are peers, so one fixture covers both.
         needs_you: (0..needs_you)
@@ -517,5 +521,6 @@ pub(super) fn targets(needs_you: usize, windows: usize, roster: usize) -> Sideba
                 })
             })
             .collect(),
+        plugin: Vec::new(),
     }
 }

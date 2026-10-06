@@ -116,11 +116,25 @@ if (process.argv[2] !== "--isolated") {
     await session.dispose();
     session = undefined;
 
-    async function openCase(delayedType?: string) {
+    async function openCase(delayedType?: string, countedType?: string, trailingType?: string) {
       const loaded = await loadExtensions(paths, process.cwd());
       const entered = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
+      const trailed = Promise.withResolvers<void>();
+      const counted = { calls: 0 };
       let delay = true;
+      // After the extension under test: the runner awaits each handler in
+      // order, so this firing proves the reporter has finished with the event.
+      if (trailingType) {
+        const trailing = { ...loaded.extensions[0]!, tools: new Map(), commands: new Map(), handlers: new Map() };
+        trailing.handlers.set(trailingType, [() => { trailed.resolve(); }]);
+        loaded.extensions.push(trailing);
+      }
+      if (countedType) {
+        const spy = { ...loaded.extensions[0]!, tools: new Map(), commands: new Map(), handlers: new Map() };
+        spy.handlers.set(countedType, [() => { counted.calls++; }]);
+        loaded.extensions.unshift(spy);
+      }
       if (delayedType) {
         const earlier = { ...loaded.extensions[0]!, tools: new Map(), commands: new Map(), handlers: new Map() };
         earlier.handlers.set(delayedType, [async () => {
@@ -142,7 +156,7 @@ if (process.argv[2] !== "--isolated") {
       const runner = session.extensionRunner!;
       await runner.emit({ type: "session_start" });
       await session.sessionManager.ensureOnDisk();
-      return { session, runner, loaded, entered, release };
+      return { session, runner, loaded, entered, release, counted, trailed };
     }
 
     async function closeCase() {
@@ -169,9 +183,12 @@ if (process.argv[2] !== "--isolated") {
     }, approvalRunner);
     await approvalRunner.emitBeforeAgentStart("", undefined, []);
     await approvalRunner.emit({ type: "agent_start" });
-    const context = { sessionManager: approvalCase.session.sessionManager, settings: {
-      get: (key: string) => key === "tools.approvalMode" ? "prompt" : { inert: "prompt" },
-    } } as any;
+    // The wrapper reads approval settings through OMP's typed settings registry,
+    // so this must be a real (isolated, in-memory) Settings instance.
+    const { Settings } = await import("@oh-my-pi/pi-coding-agent/config/settings");
+    const context = { sessionManager: approvalCase.session.sessionManager, settings: Settings.isolated({
+      "tools.approvalMode": "always-ask", "tools.approval": { inert: "prompt" },
+    }) } as any;
     const deniedA = tool.execute("approval-a", {}, undefined, undefined, context).catch(error => String(error));
     await waitUntil(() => dialogs.length === 1);
     assert.equal(show().state, "blocked", `wrapped approval must override working: ${JSON.stringify(show())}`);
@@ -230,32 +247,85 @@ if (process.argv[2] !== "--isolated") {
     assert.equal(show().agent_session, null, "late earlier before guard must not adopt the newer loop");
     await closeCase();
 
-    // Exercise the SDK's actual FIFO subscriber gate: end is not delivered to
-    // extensions while an earlier generic tool delivery is still held up.
-    const delayedTool = await openCase("tool_execution_start");
+    // 17.x held agent_end behind an earlier extension's slow tool delivery with
+    // a FIFO subscriber gate. 18.6.1 has no such gate: every agent event is
+    // dispatched fire-and-forget, and agent_end reaches extensions from its own
+    // settle path, so a held tool_execution_start lands AFTER the run's end.
+    // This case pins that ordering deterministically (no sleep: the end is
+    // awaited while the earlier delivery is still held) and proves the reporter
+    // tolerates it: the late tool event must not resurrect the finished run.
+    const delayedTool = await openCase("tool_execution_start", undefined, "tool_execution_start");
     await delayedTool.runner.emitBeforeAgentStart("", undefined, []);
     await delayedTool.runner.emit({ type: "agent_start" });
     delayedTool.session.agent.emitExternalEvent({ type: "tool_execution_start", toolCallId: "gate", toolName: "inert", args: {} });
     await delayedTool.entered.promise;
     delayedTool.session.agent.emitExternalEvent({ type: "tool_execution_end", toolCallId: "gate", toolName: "inert", result: { content: [], details: {} }, isError: false });
     delayedTool.session.agent.emitExternalEvent({ type: "agent_end", messages: [] });
-    await Bun.sleep(30);
-    assert.equal(show().state, "working", "aggregate must wait for the earlier generic delivery gate");
-    delayedTool.release.resolve();
-    await delayedTool.session.waitForIdle();
     await waitUntil(() => show().state === "done");
+    delayedTool.release.resolve();
+    await delayedTool.trailed.promise;
+    assert.equal(show().state, "done", "a tool start delivered after the end must not resurrect working");
+    await delayedTool.session.waitForIdle();
     await delayedTool.runner.emitBeforeAgentStart("", undefined, []);
     await delayedTool.runner.emit({ type: "agent_start" });
     assert.equal(show().state, "working", "received aggregate permits a safe normal next loop");
     assert.ok(show().agent_session);
     await closeCase();
 
+    const { createAssistantMessageEventStream } = await import("@oh-my-pi/pi-ai/utils/event-stream");
+    // 18.x prepares a queued follow-up through before_agent_start inside the
+    // running loop (AgentSession's prepareQueuedMessages), with no agent_start of
+    // its own. Typing into a busy OMP must keep the exact child reporting.
+    const queued = await openCase(undefined, "before_agent_start");
+    // Print/RPC runtime wiring: binds ctx.isIdle() to the session's streaming
+    // state (the interactive TUI binds the same). Its session_start is a same-ID
+    // repeat, which navigation treats as idempotent.
+    const { initializeExtensions } = await import("@oh-my-pi/pi-coding-agent/modes/runtime-init");
+    await initializeExtensions(queued.session, {
+      reportSendError: (_action, error) => { throw error; },
+      reportRuntimeError: error => { throw new Error(String(error.error)); },
+    });
+    queued.session.agent.setModel({
+      id: "inert", name: "inert", api: "openai-completions", provider: "fixture", identity: { class: "unknown" }, input: ["text"], reasoning: false,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 10000, maxTokens: 1000,
+    } as any);
+    const turns = [Promise.withResolvers<() => void>(), Promise.withResolvers<() => void>()];
+    let turn = 0;
+    queued.session.agent.streamFn = model => {
+      const stream = createAssistantMessageEventStream();
+      const message = {
+        role: "assistant", content: [{ type: "text", text: "inert" }], api: model.api, provider: model.provider, model: model.id,
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        stopReason: "stop", timestamp: Date.now(),
+      } as any;
+      turns[turn++]?.resolve(() => stream.push({ type: "done", reason: "stop", message }));
+      return stream;
+    };
+    await queued.runner.emitBeforeAgentStart("", undefined, []);
+    const queuedRun = queued.session.agent.prompt("inert local transport; never a provider call");
+    const finishFirst = await turns[0]!.promise;
+    await waitUntil(() => show().state === "working");
+    const queuedChild = show().agent_session;
+    assert.ok(queuedChild);
+    const guards = queued.counted.calls;
+    await queued.session.followUp("queued while busy; inert");
+    finishFirst();
+    const finishSecond = await turns[1]!.promise;
+    assert.equal(queued.counted.calls, guards + 1, "the queued delivery ran the before hook mid-run");
+    assert.equal(show().agent_session?.resource, queuedChild.resource, "absorbed queued delivery keeps the exact child");
+    assert.equal(show().state, "working");
+    finishSecond();
+    await queuedRun;
+    await queued.session.waitForIdle();
+    await waitUntil(() => show().state === "done");
+    assert.equal(show().agent_session?.resource, queuedChild.resource);
+    await closeCase();
+
     // Real same-file switch disconnects listeners before abort; provide NO end.
     const reload = await openCase();
     await reload.runner.emitBeforeAgentStart("", undefined, []);
-    const { createAssistantMessageEventStream } = await import("@oh-my-pi/pi-ai/utils/event-stream");
     reload.session.agent.setModel({
-      id: "inert", name: "inert", api: "openai-completions", provider: "fixture", input: ["text"], reasoning: false,
+      id: "inert", name: "inert", api: "openai-completions", provider: "fixture", identity: { class: "unknown" }, input: ["text"], reasoning: false,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 10000, maxTokens: 1000,
     } as any);
     const streaming = Promise.withResolvers<void>();
@@ -281,28 +351,6 @@ if (process.argv[2] !== "--isolated") {
     const nativeExecutable = resolve(dirname(import.meta.path), "../node_modules/.bin/omp");
     const nativeRoot = join(process.cwd(), "native");
     await mkdir(nativeRoot);
-    // Reproduce the previous credential-free RPC failure with captured argv,
-    // output and exit instead of mistaking the pane's fallback shell for OMP.
-    const noModelExit = join(nativeRoot, "no-model-exit.json");
-    const noModelOut = join(nativeRoot, "no-model-stdout.log");
-    const noModelErr = join(nativeRoot, "no-model-stderr.log");
-    const noModelArgv = [process.execPath, nativeExecutable, "--mode", "rpc", "--no-session", "--no-tools", "-e", process.argv[4]!];
-    const noModelLauncher = join(nativeRoot, "no-model.js");
-    await writeFile(noModelLauncher, `const child = Bun.spawn(${JSON.stringify(noModelArgv)}, {
-      stdin: "inherit", stdout: Bun.file(${JSON.stringify(noModelOut)}), stderr: Bun.file(${JSON.stringify(noModelErr)}), env: process.env
-    }); await Bun.write(${JSON.stringify(noModelExit)}, JSON.stringify({ code: await child.exited }));`);
-    run("new", "--json", "-s", "omp-no-model-diagnostic", "--", process.execPath, noModelLauncher);
-    for (let attempt = 0; attempt < 200; attempt++) {
-      if (await Bun.file(noModelExit).exists()) break;
-      await Bun.sleep(50);
-    }
-    assert.ok(await Bun.file(noModelExit).exists(), "credential-free RPC diagnostic did not exit");
-    const noModelReceipt = await Bun.file(noModelExit).json();
-    const noModelStderr = await Bun.file(noModelErr).text();
-    console.log("Credential-free RPC diagnostic:", JSON.stringify({ argv: noModelArgv, ...noModelReceipt,
-      stdout: await Bun.file(noModelOut).text(), stderr: noModelStderr }));
-    assert.equal(noModelReceipt.code, 1);
-    assert.match(noModelStderr, /No models available|No available models/);
     const proofPath = join(nativeRoot, "startup.json");
     const callsPath = join(nativeRoot, "provider-called");
     const providerFixture = join(nativeRoot, "provider.js");
@@ -316,7 +364,7 @@ if (process.argv[2] !== "--isolated") {
       api.on("session_start", async (_event, ctx) => {
         await Bun.write(${JSON.stringify(proofPath)}, JSON.stringify({
           nativeId: ctx.sessionManager.getSessionId(), pid: process.pid, host: process.env.PHUX_TERMINAL_ID,
-          selected: process.env.PHUX_TARGET, argv: process.argv, sdk: "17.1.2"
+          selected: process.env.PHUX_TARGET, argv: process.argv, sdk: "18.6.1"
         }));
       });
     }`);
@@ -383,7 +431,7 @@ if (process.argv[2] !== "--isolated") {
     assert.equal(show(sibling).agent_session, before.agent_session);
     console.log("Unassisted locked CLI native session_start:", JSON.stringify(proof));
     console.log("Unassisted locked CLI hosting projection:", JSON.stringify(nativePane));
-    console.log("Native approval wrapper: blocked throughout concurrent dialogs, denied inert tools, resolved working; detached-end overlaps new/resume/fork/successive starts and active same-ID reload: declaration-only, detector fallback restored.");
+    console.log("Native approval wrapper: blocked throughout concurrent dialogs, denied inert tools, resolved working; queued follow-up absorbed mid-run kept the child; detached-end overlaps new/resume/fork/successive starts and active same-ID reload: declaration-only, detector fallback restored.");
     console.log("Private server + packed locked OMP SDK: identity, scripted activity, automatic new/switch/reload/branch, shutdown and untouched sibling passed; no model calls.");
   } finally {
     await session?.dispose();

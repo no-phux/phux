@@ -126,6 +126,12 @@
             x86_64-linux = "sha256-ezfR02sxCFeQjlCIAttsa2cFVc8lzQuZDwnuQMsRJHs=";
             aarch64-linux = "sha256-uJA+2wrMt2V2qaRUkAOI1inf+aNRhuZTxOW0jmIuYsA=";
           };
+          "6.12.0" = {
+            aarch64-darwin = "sha256-HkO+dF2y/YElnisOaNaJ1/Vbk9qBX0UsIVRxD23m7FI=";
+            x86_64-darwin = "sha256-HkO+dF2y/YElnisOaNaJ1/Vbk9qBX0UsIVRxD23m7FI=";
+            x86_64-linux = "sha256-XKtp/6zeP3AL10CV+JpIec6lkajAZW8xBHhu0dDfIYo=";
+            aarch64-linux = "sha256-KHKZJORr+tERKn7DUAPN8HTSaGNG3aotD0IGwfZqKCc=";
+          };
         };
         usagePinned =
           if (pkgs.usage.version or "") == usageVersion then
@@ -161,6 +167,53 @@
                 mainProgram = "usage";
               };
             };
+
+        # Zig on Linux is the official ziglang.org release, verified against
+        # the digests in .config/zig-toolchain.json (the same archives
+        # scripts/install-zig.sh and the site builder install). nixpkgs'
+        # zig_0_16 rebuilt on the GCC 16 / glibc 2.44 stdenv emits corrupt
+        # ELF objects: some section symbols come out with st_shndx = SHN_UNDEF,
+        # a different random subset on every run. libghostty-vt's compiler_rt.o
+        # then fails the Rust link with mold "undefined symbol: " (empty name).
+        # The release binary is statically linked and built by Zig's own
+        # bootstrap, so no nixpkgs stdenv can reach it. macOS keeps nixpkgs'
+        # clang-built Zig, which is unaffected.
+        zigPins = builtins.fromJSON (builtins.readFile ./.config/zig-toolchain.json);
+        zigPinned =
+          if pkgs.stdenv.hostPlatform.isLinux then
+            let
+              pin =
+                zigPins.archives.${system}
+                  or (throw "flake.nix: .config/zig-toolchain.json pins no Zig archive for ${system}");
+            in
+            pkgs.stdenvNoCC.mkDerivation {
+              pname = "zig";
+              version = zigPins.version;
+              src = pkgs.fetchurl {
+                url = "https://ziglang.org/download/${zigPins.version}/${pin.archive}";
+                sha256 = pin.sha256;
+              };
+              dontConfigure = true;
+              dontBuild = true;
+              dontStrip = true;
+              dontPatchELF = true;
+              installPhase = ''
+                runHook preInstall
+                mkdir -p $out/bin $out/libexec
+                cp -r . $out/libexec/zig
+                # Zig finds its lib/ next to its real path, so a symlink works.
+                ln -s $out/libexec/zig/zig $out/bin/zig
+                runHook postInstall
+              '';
+              meta = {
+                homepage = "https://ziglang.org";
+                description = "Zig compiler (official release binary)";
+                license = pkgs.lib.licenses.mit;
+                mainProgram = "zig";
+              };
+            }
+          else
+            pkgs.zig_0_16;
 
         # mbx (jdx/mr-boxington): the Cargo wrapper behind the shared build
         # cache. mise.toml is the source of truth for the release, same
@@ -236,7 +289,7 @@
           packages = [
             toolchain
             # libghostty-vt-sys requires the exact Zig 0.16.0 toolchain.
-            pkgs.zig_0_16
+            zigPinned
             pkgs.pkg-config
             # Developer ergonomics.
             pkgs.just
@@ -330,11 +383,27 @@
               fi
             ''
             + ''
-              export PATH="''${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+              # CARGO_HOME/bin holds `just install-dev`'s phux, which should
+              # beat a `curl | sh` install in ~/.local/bin. It goes after this
+              # shell's own store paths, not before them: it also holds
+              # rustup's cargo/rustc proxies and cargo-installed tools, and
+              # ahead of the pinned toolchain they made the shell run whatever
+              # rustup or an inherited RUSTUP_TOOLCHAIN picked (Rust 1.98.1
+              # after the 1.99.0 bump) instead of rust-toolchain.toml's.
+              phux_store_path= phux_rest_path= phux_ifs=$IFS
+              IFS=:
+              for phux_entry in $PATH; do
+                case $phux_entry in
+                  /nix/store/*) phux_store_path=''${phux_store_path:+$phux_store_path:}$phux_entry ;;
+                  *) phux_rest_path=''${phux_rest_path:+$phux_rest_path:}$phux_entry ;;
+                esac
+              done
+              IFS=$phux_ifs
+              export PATH="$phux_store_path:''${CARGO_HOME:-$HOME/.cargo}/bin:$phux_rest_path"
+              unset phux_store_path phux_rest_path phux_ifs phux_entry RUSTUP_TOOLCHAIN
             ''
-            # After the CARGO_HOME prepend, so a rustup `cargo` there cannot
-            # shadow the wrapper; the wrapper delegates to the next `cargo` on
-            # PATH. Hosted CI keeps plain Cargo: its lanes are budgeted around
+            # First on PATH; the wrapper delegates to the next `cargo`, the
+            # pinned toolchain's. Hosted CI keeps plain Cargo: its lanes are budgeted around
             # sccache and rust-cache (.github/actions/setup-rust-lane), and a
             # second cache layer there is a separate decision. PHUX_NO_MBX=1
             # opts a local shell out the same way.

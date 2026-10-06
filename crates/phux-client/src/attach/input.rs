@@ -808,7 +808,7 @@ fn kitty_modifier_code(code: u32) -> ModSet {
         .fold(ModSet::empty(), |mods, (_, m)| mods | *m)
 }
 
-/// Map a kitty keycode to a [`PhysicalKey`]: ASCII letters, digits and a few
+/// Map a kitty keycode to a [`PhysicalKey`]: printable ASCII and a few
 /// controls by value, functional keys by their kitty PUA codepoints, other
 /// printable codepoints as `Unidentified` (the codepoint still travels in
 /// `unshifted_codepoint`).
@@ -823,7 +823,9 @@ const fn kitty_keycode_to_physical(cp: u32) -> Option<PhysicalKey> {
         9 => PhysicalKey::Tab,
         127 => PhysicalKey::Backspace,
         #[allow(clippy::cast_possible_truncation, reason = "range-checked u32 -> u8")]
-        c @ (0x20 | 0x30..=0x39 | 0x41..=0x5A | 0x61..=0x7A) => ascii_to_physical(c as u8),
+        // Printable ASCII, punctuation included: under the host kitty flags
+        // Ctrl+] arrives as `CSI 93;5u` and must stay `BracketRight`.
+        c @ 0x20..=0x7E => ascii_to_physical(c as u8),
         // Functional keys (kitty PUA range).
         57348 => PhysicalKey::Insert,
         57349 => PhysicalKey::Delete,
@@ -1177,10 +1179,76 @@ mod tests {
         lg.set_action(ev.action.into())
             .set_key(ev.key.into())
             .set_mods(ev.mods.into())
+            .set_consumed_mods(ev.consumed_mods.into())
             .set_utf8(ev.text.clone());
+        if let Some(c) = ev.unshifted_codepoint.and_then(char::from_u32) {
+            lg.set_unshifted_codepoint(c);
+        }
         let mut out = Vec::new();
         enc.encode_to_vec(&lg, &mut out).expect("encode");
         out
+    }
+
+    /// Under the host kitty flags phux pushes (disambiguate), a key typed in
+    /// the host round-trips: the host encodes it, phux decodes it, and the
+    /// server re-encodes it to exactly what native Ghostty would send a pane
+    /// with or without kitty flags.
+    #[test]
+    fn host_kitty_disambiguate_round_trips_like_native_ghostty() {
+        use libghostty_vt::key::KittyKeyFlags;
+        let (s, c, a, m) = (ModSet::SHIFT, ModSet::CTRL, ModSet::ALT, ModSet::SUPER);
+        let key = |key, mods, cp: Option<char>| KeyEvent {
+            unshifted_codepoint: cp.map(u32::from),
+            ..make_named_key(key, mods)
+        };
+        let text = |k, mods: ModSet, cp: char, t: &str| KeyEvent {
+            consumed_mods: mods,
+            text: Some(t.to_owned()),
+            ..key(k, mods, Some(cp))
+        };
+        let cases = [
+            key(PhysicalKey::Enter, m, None),
+            key(PhysicalKey::Enter, s, None),
+            key(PhysicalKey::Enter, a, None),
+            key(PhysicalKey::Enter, c, None),
+            key(PhysicalKey::Tab, s, None),
+            key(PhysicalKey::Tab, c, None),
+            key(PhysicalKey::I, c, Some('i')),
+            key(PhysicalKey::H, c, Some('h')),
+            key(PhysicalKey::Backspace, c, None),
+            key(PhysicalKey::Backspace, a, None),
+            key(PhysicalKey::Escape, ModSet::empty(), None),
+            key(PhysicalKey::A, c, Some('a')),
+            key(PhysicalKey::A, c | s, Some('a')),
+            key(PhysicalKey::A, a, Some('a')),
+            key(PhysicalKey::A, c | a, Some('a')),
+            key(PhysicalKey::A, m, Some('a')),
+            key(PhysicalKey::BracketRight, c, Some(']')),
+            key(PhysicalKey::Slash, c, Some('/')),
+            key(PhysicalKey::Backslash, c, Some('\\')),
+            key(PhysicalKey::Digit2, c, Some('2')),
+            key(PhysicalKey::Space, c, Some(' ')),
+            key(PhysicalKey::ArrowLeft, c | s, None),
+            key(PhysicalKey::Delete, a, None),
+            key(PhysicalKey::F5, c, None),
+            text(PhysicalKey::A, ModSet::empty(), 'a', "a"),
+            text(PhysicalKey::A, s, 'a', "A"),
+            text(PhysicalKey::Slash, s, '/', "?"),
+            text(PhysicalKey::Numpad1, ModSet::empty(), '1', "1"),
+        ];
+        for native in cases {
+            let host = encode(&native, KittyKeyFlags::DISAMBIGUATE);
+            let decoded = one_key(&host);
+            for pane in [KittyKeyFlags::DISABLED, KittyKeyFlags::DISAMBIGUATE] {
+                assert_eq!(
+                    encode(&decoded, pane),
+                    encode(&native, pane),
+                    "{:?}+{:?} via host {host:?}, pane {pane:?}",
+                    native.mods,
+                    native.key
+                );
+            }
+        }
     }
 
     /// Ctrl+Backspace arrives as BS (0x08) and must keep its Ctrl, so a pane

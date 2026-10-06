@@ -393,6 +393,8 @@ pub struct ServerRuntime {
     hub: bool,
     /// `[[satellites]]` registry, validated at startup in hub mode.
     satellites: Vec<phux_config::SatelliteConfigEntry>,
+    /// Where a hub re-reads `[[satellites]]` on a config-reload doorbell.
+    satellite_source: Option<crate::hub::SatelliteSource>,
     /// Outbound relay connector entries.
     connectors: Vec<phux_config::ConnectorConfigEntry>,
     /// Raw `--connect` value, kept for the upgrade argv.
@@ -416,6 +418,7 @@ impl ServerRuntime {
             inherited_upgrade: upgrade::InheritedUpgradeEnv::none(),
             hub: false,
             satellites: Vec::new(),
+            satellite_source: None,
             connectors: Vec::new(),
             connect_override: None,
             overlay_detect: phux_config::overlay::detect,
@@ -501,6 +504,16 @@ impl ServerRuntime {
     pub fn hub(mut self, satellites: Vec<phux_config::SatelliteConfigEntry>) -> Self {
         self.hub = true;
         self.satellites = satellites;
+        self
+    }
+
+    /// Let a hub pick up registry edits live: on each
+    /// `phux.config.reload/v1` doorbell it re-reads `[[satellites]]` from
+    /// `source` and dials added entries, stops removed ones, and redials
+    /// changed ones, leaving every other link and pane alone. Ignored off-hub.
+    #[must_use]
+    pub fn hub_reload(mut self, source: crate::hub::SatelliteSource) -> Self {
+        self.satellite_source = Some(source);
         self
     }
 
@@ -597,6 +610,7 @@ impl ServerRuntime {
         let hook_catalog = self.cfg.hook_catalog.clone();
         let hook_socket_path = socket_path.clone();
         let exit_after_idle = self.cfg.exit_after_idle;
+        let satellite_source = self.satellite_source.clone();
         // Input routing runs on its own OS thread (ADR-0044) so keystrokes
         // are not queued behind output broadcast; its `Drop` joins it.
         let input_lane = input_lane::spawn_input_lane(state.clone())?;
@@ -610,7 +624,7 @@ impl ServerRuntime {
                 spawn_shutdown_folder(shutdown, &root_token);
                 arm_idle_exit(&state, exit_after_idle, &root_token);
                 install_hook_dispatcher(&state, hook_catalog, hook_socket_path);
-                spawn_hub_links(&state, hub_table.as_ref(), &root_token);
+                spawn_hub_links(&state, hub_table.as_ref(), satellite_source, &root_token);
                 // Live revocation (workload-auth §7).
                 revocation::spawn_revocation_watcher(&state, &root_token);
                 // Off the runtime thread: a large upload directory is a
@@ -985,27 +999,36 @@ fn install_hook_dispatcher(
     if catalog.is_empty() {
         return;
     }
-    let dispatcher = crate::hooks::spawn_hook_dispatcher(catalog, Some(socket_path));
+    let dispatcher = crate::hooks::spawn_hook_dispatcher(
+        catalog,
+        Some(socket_path),
+        Some(phux_plugin::run_log::default_path()),
+    );
     state.with_mut(|s| s.set_hook_dispatcher(dispatcher));
 }
 
 /// Spawn one link supervisor per validated satellite (ADR-0038) and mirror
-/// the relay registry into shared state.
+/// the relay registry and supervisors into shared state, where a registry
+/// reload finds them.
 fn spawn_hub_links(
     state: &SharedState,
     hub_table: Option<&crate::hub::HubTable>,
+    source: Option<crate::hub::SatelliteSource>,
     root_token: &CancellationToken,
 ) {
     let Some(table) = hub_table else {
         return;
     };
-    let statuses = crate::hub::link::HubLinkStatuses::default();
     let relays = crate::hub::relay::HubRelays::default();
-    state.with_mut(|s| {
-        s.set_hub_relays(relays.clone());
-    });
     let ssh_program = state.with(|s| s.server_env().ssh_program());
-    crate::hub::link::spawn_links(table, &statuses, &relays, root_token, state, ssh_program);
+    let mut links = crate::hub::link::HubLinks::new(relays.clone(), root_token, ssh_program);
+    for (host, entry) in table.iter() {
+        links.start(host, entry, state);
+    }
+    state.with_mut(|s| {
+        s.set_hub_relays(relays);
+        s.set_hub_links(links, source);
+    });
 }
 
 /// Supervise the planned outbound connectors. Nothing to supervise without a

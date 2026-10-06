@@ -57,6 +57,8 @@ pub struct PluginManifest {
     pub workspaces: Vec<PluginManifestWorkspace>,
     /// Status-bar widgets contributed by the plugin (phux-r82.6).
     pub widgets: Vec<PluginManifestWidget>,
+    /// Sidebar sections contributed by the plugin (`[[sidebar]]`).
+    pub sidebar: Vec<PluginManifestSidebar>,
 }
 
 /// Platform names accepted in plugin manifests.
@@ -176,7 +178,7 @@ pub struct PluginManifestPane {
     pub description: Option<String>,
     /// Optional platform override for this pane.
     pub platforms: Option<Vec<PluginPlatform>>,
-    /// Where a future runtime host should place the pane.
+    /// Where the TUI places the pane.
     pub placement: PluginPanePlacement,
     /// Command argv to execute.
     pub command: Vec<String>,
@@ -266,11 +268,34 @@ pub enum PluginWidgetSlot {
     Right,
 }
 
+/// Sidebar section contributed by a plugin (`[[sidebar]]`).
+///
+/// A titled, fixed-height panel whose rows are this session's panes, each
+/// rendered from `format`. A pane contributes a row only when every token
+/// `format` names resolves for it (see [`crate::vocab::SIDEBAR_TOKENS`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginManifestSidebar {
+    /// Plugin-local section id.
+    pub id: String,
+    /// Section header text.
+    pub title: String,
+    /// Row template; `{token}` occurrences are replaced per pane.
+    pub format: String,
+    /// Rows the section reserves under its header, whatever its population.
+    pub rows: u8,
+}
+
+/// Default [`PluginManifestSidebar::rows`].
+pub const SIDEBAR_SECTION_DEFAULT_ROWS: u8 = 3;
+/// Largest accepted [`PluginManifestSidebar::rows`].
+pub const SIDEBAR_SECTION_MAX_ROWS: u8 = 8;
+
 /// Placement requested by a plugin pane entrypoint.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum PluginPanePlacement {
-    /// Temporary overlay over the focused pane.
+    /// Floating box over the pane area, in no window; closes when its
+    /// process exits or the user dismisses it (ADR-0147).
     #[default]
     Overlay,
     /// Split next to the focused pane.

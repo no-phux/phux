@@ -1,6 +1,7 @@
 mod install;
 mod json;
 mod lock;
+mod log;
 mod registry;
 
 use std::path::Path;
@@ -36,6 +37,11 @@ pub(crate) fn run_plugin(action: &PluginAction) -> ExitCode {
         PluginAction::Enable { id, json } => run_set_enabled(id, true, *json),
         PluginAction::Disable { id, json } => run_set_enabled(id, false, *json),
         PluginAction::Validate { manifest, json } => run_validate(manifest.as_deref(), *json),
+        PluginAction::Log {
+            limit,
+            failed,
+            json,
+        } => log::run_log(*limit, *failed, *json),
     }
 }
 

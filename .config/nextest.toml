@@ -11,17 +11,22 @@ retries = 0
 # — the root cause behind the route_input / reconnect / attach-churn flakes that
 # previously needed per-test `retries` band-aids and quarantines.
 #
-# Bound the whole phux-server integration-test set (tests/*.rs) to one at a
-# time. nextest's global test-threads still fills the second core slot with a
-# non-group test, so wall-clock barely moves on 2 cores, but no PTY test ever
-# runs alongside another — which is what was breaking. Everything else (lib unit
-# tests, other crates) stays fully parallel. New PTY tests are covered
-# automatically by the filter; no per-test pinning to maintain.
+# Bound how many phux-server integration tests (tests/*.rs) run at once. Each
+# spawns a real PTY, server task and libghostty actor, and running them
+# unbounded starves the timing-sensitive ones past their deadlines
+# (WIRE_RECV_TIMEOUT / poll_for_echo) — the root cause behind the
+# route_input / reconnect / attach-churn flakes that once needed per-test
+# retries and quarantines. A group only bounds members against EACH OTHER;
+# nextest still fills the remaining threads with non-group tests.
 #
-# A larger CI runner (>= 4 cores) would let these run parallel again; if that
-# lands, raise `max-threads` or drop the group.
+# The bound was 1 when CI ran on 2-core runners, which made these 212 tests a
+# strictly serial ~90 s chain on any machine: half of a local `just test`.
+# Hosted runners now have 4 vCPUs. Local runs allow 4 at a time (phux-server's
+# integration suite: 103 s -> 50 s on 14 cores, three clean runs); the `ci`
+# profile allows 2 (overridden below).
 [test-groups]
-pty-serial = { max-threads = 1 }
+pty-serial = { max-threads = 4 }
+pty-ci = { max-threads = 2 }
 
 [[profile.default.overrides]]
 filter = 'package(phux-server) & kind(test)'
@@ -206,11 +211,17 @@ filter = """package(phux) & (
 )"""
 threads-required = 'num-cpus'
 
-# The `ci` profile is behavior-identical to `default` — nextest consults the
-# selected profile's settings first and falls back to profile.default, so the
-# retry policy and the pty-serial override above still apply. It exists only
-# to emit a junit report that scripts/ci/summarize-job.sh folds into the CI
-# job's step summary (slowest tests, flaky-retry counts). CI lanes opt in
-# with NEXTEST_PROFILE=ci; local runs never select it.
+# The `ci` profile differs from `default` in one setting: its phux-server
+# integration tests run 2 at a time on the 4-vCPU hosted runners, not 4.
+# nextest consults the selected profile's overrides first and falls back to
+# profile.default, so everything else above (retries, the threads-required
+# clears) still applies. It also emits a junit report that
+# scripts/ci/summarize-job.sh folds into the CI job's step summary (slowest
+# tests, flaky-retry counts). CI lanes opt in with NEXTEST_PROFILE=ci; local
+# runs never select it.
+[[profile.ci.overrides]]
+filter = 'package(phux-server) & kind(test)'
+test-group = 'pty-ci'
+
 [profile.ci.junit]
 path = "junit.xml"

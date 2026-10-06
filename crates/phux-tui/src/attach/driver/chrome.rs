@@ -155,6 +155,15 @@ pub(super) fn refresh_window_chrome(
         changed |= feed_status_bar(sb, windows.clone(), scene, own_client_id);
     }
     if let Some(sidebar_painter) = chrome.sidebar_painter.as_deref_mut() {
+        // ADR-0148: plugin sections read the same tab labels the strip shows.
+        let sections = crate::attach::plugin_sidebar::project(
+            sidebar_painter.plugin_specs(),
+            workspace,
+            &windows,
+            panes,
+            &agent_meta.records,
+        );
+        changed |= sidebar_painter.set_plugin_sections(sections);
         changed |= feed_sidebar(sidebar_painter, windows, local, workspace, &peers);
     }
     changed

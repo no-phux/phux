@@ -50,6 +50,12 @@ the environment it loads, create an untracked `.envrc.local`:
 echo 'export PHUX_ENV=mise' > .envrc.local && direnv allow
 ```
 
+Use one environment per shell. After changing `.envrc.local`, run `direnv
+reload` and let the shell's direnv hook apply it before building. Leave an
+explicit `nix develop` shell before switching to Mise; `mise exec` changes tool
+resolution but does not unload inherited Nix SDK/compiler variables. Conversely,
+use Nix in a separate shell rather than activating Mise over its toolchain.
+
 If you already activate Mise in your shell, you do not need direnv. `rustc` and
 `zig` from mise shims are the Mise path.
 
@@ -69,6 +75,19 @@ newer compiler than this repository's Rust pin. Install the
 build-observability tools are Nix-or-native; `mise.toml` lists them under
 "deliberately absent".
 
+## Binary cache
+
+CI pushes the dev shell's build outputs to `https://phux.cachix.org`, and
+`flake.nix` asks Nix to use it. The Nix daemon honours a flake's substituter
+only for a trusted user or a cache in its own `trusted-substituters`, so on a
+default multi-user install every `nix develop` prints `ignoring untrusted
+substituter` and builds those outputs locally instead. `just doctor` reports
+this and prints the one-time fix: append the cache and its public key to the
+daemon's config (`/etc/nix/nix.custom.conf` on a Determinate install, else
+`/etc/nix/nix.conf`) as `extra-trusted-substituters` and
+`extra-trusted-public-keys`, then restart the daemon. That trusts this one
+cache, which is narrower than adding yourself to `trusted-users`.
+
 ## Build cache (mbx)
 
 Both environments run `cargo` through [mbx](https://mr-boxington.jdx.dev)
@@ -82,9 +101,10 @@ with three things:
   keyed independently of the checkout path, so building one worktree warms the
   next: a fresh worktree restores the whole dependency graph. On APFS, Btrfs,
   XFS (reflink) or ZFS, restored outputs are copy-on-write clones of the
-  store, not copies. The exception today is the Zig build behind
-  `libghostty-vt-sys`, whose outputs embed their `OUT_DIR`; it still runs once
-  per checkout, and the workspace crates above it rebuild (phux-vxmb).
+  store, not copies. A fresh worktree's `cargo check -p phux-server` restores
+  every unit (2-5 s); its first `cargo nextest run --workspace --no-run`
+  restores all but the insta-using unit-test harnesses, `phux-client-ffi`
+  (an rlib+staticlib+cdylib crate mbx does not cache) and the leaves above it.
 - **Managed targets.** `target` becomes a symlink into mbx's cache directory,
   and the whole cache has a disk budget that scales with the disk. Targets are
   collected when their checkout disappears, goes unused, or exceeds its budget,
@@ -99,7 +119,10 @@ first on `PATH`. Either way plain `cargo` (and every `just` recipe) is cached.
 Calling `~/.cargo/bin/cargo` directly bypasses it; so does an agent harness
 whose `PATH` never loaded either environment, which should use
 `mise exec -- cargo ...` or `nix develop -c cargo ...`. `just doctor` reports
-whether `mbx` is on `PATH`. Hosted CI keeps plain Cargo with its own
+whether `mbx` is on `PATH`. In the Nix shell the wrapper also unsets `SDKROOT`, `CC` and
+`CXX` for Cargo: nixpkgs' `xcrun` cannot describe an SDK by path, which made
+every native link uncacheable, and mbx caches build-script C only when it picks
+the compiler; `cc`, `c++` and `xcrun --sdk macosx` resolve to the same tools. Hosted CI keeps plain Cargo with its own
 sccache/rust-cache budget, and upstream ships no Intel-macOS binary, so that
 platform builds without it.
 
@@ -116,6 +139,25 @@ in an untracked `mise.local.toml`. mbx's `share_workspace_root` stays at its
 default (off): turning it on would make panic locations and debug info name a
 placeholder instead of the real source path, and the panic hook's location line
 is what operators read.
+
+If Rust reports `E0514` (a dependency compiled by a different compiler), fix the
+shell's toolchain selection first. Check `rustc -V`, `cargo -V`, and `mbx doctor`.
+Then `mbx clean "$PWD"` clears only this checkout's managed target and learned
+incremental state; shared cache objects remain. Retry the same build in the
+selected environment. Do not share a `CARGO_TARGET_DIR` between worktrees or
+make cache deletion part of every build.
+
+Two things keep a crate reusable across worktrees, and both are enforced:
+
+- No compile-time checkout path in library or test code (`just
+  cache-portable-check`): read `CARGO_MANIFEST_DIR` and the test binary paths
+  from the test runner at run time (`crates/phux/tests/common/runner.rs`), and
+  pass a binary's own checkout path in from its `main.rs`.
+- The Zig engine builds once per input set, outside any target directory:
+  `libghostty-vt-sys` keeps it under `$XDG_CACHE_HOME/libghostty-vt-sys` when
+  that is set, else `~/Library/Caches` (macOS) or `~/.cache`, and copies the
+  install tree into `OUT_DIR`.
+  `LIBGHOSTTY_VT_SYS_CACHE_DIR` moves it; set it empty to build in `OUT_DIR`.
 
 On Linux, keep mbx's cache directory on a filesystem with reflinks (ext4 falls
 back to read-only hard links). Rust build output compresses well, so a
@@ -150,9 +192,12 @@ use Python 3.11+ and Node.
 is a mirror for shell setup, not the source of truth for everything in it.
 `rust-toolchain.toml` remains Cargo/rustup's authoritative Rust input and
 `.config/zig-toolchain.json` remains the verified Zig release-and-digest input.
+On Linux `flake.nix` installs Zig from those archives rather than nixpkgs'
+`zig_0_16`, whose GCC 16 build emits corrupt ELF section symbols that break
+the libghostty link; macOS keeps nixpkgs' Zig.
 Bun, the usage CLI, and mbx are the exceptions in the other direction: `flake.nix`
 reads those pins from `mise.toml` directly and fetches the GitHub release
-until nixpkgs matches. The usage CLI is the same 6.11.x train as the
+until nixpkgs matches. The usage CLI is the same 6.12.x train as the
 `usage-rs` crate the phux binary parses with.
 
 These are dependency boundaries, not arbitrary directories: `phux-protocol`'s
@@ -282,7 +327,14 @@ source and bypasses archive verification but still runs ABI tests.
 
 ## GPUIX desktop
 
-Apple-silicon Mac. The app builds from the pinned GPUIX/Zed source in this
+Apple-silicon Mac. **Prefer Mise plus host Xcode/Metal for the daily desktop
+loop**; keep Nix for separately invoked fully provisioned validation. Both
+remain supported, but desktop doctor and builds reject a Nix shell whose Cargo
+or Rust compiler is shadowed by Mise, or whose explicit selection is Mise. This
+check runs before Apple-toolchain normalization, so doctor cannot hide a mixed
+CLI environment. Stale Rust versions also fail before compilation.
+
+The app builds from the pinned GPUIX/Zed source in this
 checkout, not from a published addon. One command clones that source, applies
 the reviewed patches, builds the native host, builds `phux` from this tree,
 starts a local server if needed, and opens the desktop:

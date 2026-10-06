@@ -151,6 +151,41 @@ pub fn unknown_hook_when_keys<'a, V>(
         .filter(|key| !context_keys.contains(&hook_when_key_base(key)))
 }
 
+/// Tokens a plugin `[[sidebar]]` section's `format` may name, sorted. Each
+/// resolves per pane from state the TUI already holds:
+///
+/// - `agent`: the `phux.agent/v1` record's name;
+/// - `cwd`: the working directory, `$HOME` collapsed to `~`;
+/// - `exit`: the last OSC-133 command exit code;
+/// - `index`: the window's `select-window` index;
+/// - `state`: the agent record's lifecycle state;
+/// - `title`: the OSC window title;
+/// - `window`: the window's label, as its tab shows it.
+pub const SIDEBAR_TOKENS: &[&str] = &["agent", "cwd", "exit", "index", "state", "title", "window"];
+
+/// The `{token}` names in a sidebar `format`, in order of appearance. A `{`
+/// with no closing `}` is literal text.
+pub fn sidebar_format_tokens(format: &str) -> impl Iterator<Item = &str> {
+    let mut rest = format;
+    std::iter::from_fn(move || {
+        let open = rest.find('{')?;
+        let after = &rest[open + 1..];
+        let close = after.find('}')?;
+        let token = &after[..close];
+        rest = &after[close + 1..];
+        Some(token)
+    })
+}
+
+/// The first token in `format` outside [`SIDEBAR_TOKENS`], with a
+/// did-you-mean suggestion when one is close.
+#[must_use]
+pub fn unknown_sidebar_token(format: &str) -> Option<(&str, Option<&'static str>)> {
+    sidebar_format_tokens(format)
+        .find(|token| !SIDEBAR_TOKENS.contains(token))
+        .map(|token| (token, did_you_mean(token, SIDEBAR_TOKENS)))
+}
+
 /// Largest Levenshtein distance still offered as a suggestion: covers the
 /// common typo shapes without suggesting for garbage.
 const MAX_SUGGESTION_DISTANCE: usize = 2;
@@ -192,9 +227,27 @@ fn levenshtein(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTION_NAMES, HOOK_EVENTS, did_you_mean, hook_action_is_executable, hook_context_keys,
-        levenshtein,
+        ACTION_NAMES, HOOK_EVENTS, SIDEBAR_TOKENS, did_you_mean, hook_action_is_executable,
+        hook_context_keys, levenshtein, sidebar_format_tokens, unknown_sidebar_token,
     };
+
+    #[test]
+    fn sidebar_tokens_are_sorted_and_formats_name_them_in_order() {
+        assert!(SIDEBAR_TOKENS.is_sorted());
+        let tokens: Vec<&str> = sidebar_format_tokens("{window}: {title} {unclosed").collect();
+        assert_eq!(tokens, ["window", "title"]);
+        assert_eq!(sidebar_format_tokens("plain").count(), 0);
+        assert_eq!(unknown_sidebar_token("{window} {cwd}"), None);
+        assert_eq!(
+            unknown_sidebar_token("{window} {titel}"),
+            Some(("titel", Some("title")))
+        );
+        assert_eq!(
+            unknown_sidebar_token("{frobnicate}"),
+            Some(("frobnicate", None))
+        );
+        assert_eq!(unknown_sidebar_token("{}"), Some(("", None)));
+    }
     use crate::Action;
 
     #[test]

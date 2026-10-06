@@ -64,6 +64,7 @@ pub(crate) fn page() -> Page {
          ├── client-<pid>.log    # per-pid interactive-client log\n\
          ├── onboarding.json     # versioned first-use journey progress\n\
          ├── onboarding.lock     # serializes first-use moment delivery\n\
+         ├── plugin-runs.jsonl   # recent plugin action/hook runs (phux plugin log)\n\
          ├── remote-cert.pem     # auto-provisioned remote-consumer certificate\n\
          ├── remote-key.pem      # its private key (owner-only, 0600)\n\
          ├── remote-tokens       # structured credential store (owner-only, 0600)\n\
@@ -97,6 +98,13 @@ pub(crate) fn page() -> Page {
            State is best-effort: missing state starts the guidance, while \
            unreadable, unknown, or unwritable state stays quiet and never \
            prevents attach.\n\
+         - `plugin-runs.jsonl` is the bounded run log behind `phux \
+           plugin log`: one JSON line per plugin action run (TUI \
+           keybinding, `phux config run`, the MCP tool) or server hook \
+           run, with exit status, duration, and the last 4 KiB of stdout \
+           and stderr. Writers lock it while appending and compact it to \
+           the newest 100 runs once it passes 1 MiB. Recording is best \
+           effort and never fails a run.\n\
          - `remote-cert.pem` / `remote-key.pem` are the self-signed \
            TLS pair auto-provisioned for remote consumers (ADR-0031); \
            `PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY` substitute an \
@@ -211,6 +219,10 @@ mod tests {
             &format!("{state_leaf}/remote-tokens"),
         );
         ends_with(
+            &phux_plugin::run_log::default_path(),
+            &format!("{state_leaf}/plugin-runs.jsonl"),
+        );
+        ends_with(
             &phux_config::instance::reports_dir(),
             &format!("{state_leaf}/reports"),
         );
@@ -232,6 +244,7 @@ mod tests {
             "client-<pid>.log",
             "onboarding.json",
             "onboarding.lock",
+            "plugin-runs.jsonl",
             "remote-cert.pem",
             "remote-key.pem",
             "remote-tokens",

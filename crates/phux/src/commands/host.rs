@@ -145,6 +145,13 @@ pub(crate) struct AddOpts {
     #[usage(long, value_name = "FP")]
     pub(crate) cert_fingerprint: Option<String>,
 
+    /// Manual form, `--role remote` only: the TLS server name (SNI) every
+    /// dial offers instead of the endpoint's host. Through a relay this is
+    /// the route: register the relay's `quic://RELAY:PORT` with the relay's
+    /// `--cert-fingerprint` and the server's `--token-file`.
+    #[usage(long, value_name = "NAME")]
+    pub(crate) tls_server_name: Option<String>,
+
     /// Session to attach on arrival (`--role remote` only). Omitted: the
     /// remote server's own last-attach memory decides.
     #[usage(long, value_name = "NAME")]
@@ -272,7 +279,7 @@ pub(crate) enum HostAction {
         name: String,
     },
 
-    /// Enable a satellite for the local hub on its next start.
+    /// Enable a satellite; a running local hub dials it now.
     Enable {
         /// Registered satellite name.
         name: String,
@@ -280,7 +287,7 @@ pub(crate) enum HostAction {
         json: JsonOpt,
     },
 
-    /// Disable a satellite on the hub's next start without forgetting it.
+    /// Disable a satellite without forgetting it; a running hub drops its link.
     Disable {
         /// Registered satellite name.
         name: String,
@@ -328,6 +335,8 @@ struct HostRow {
     enabled: Option<bool>,
     token_file: Option<PathBuf>,
     cert_fingerprint: Option<String>,
+    /// Remote only: the TLS server name dials offer (a relay route).
+    tls_server_name: Option<String>,
     /// `Some` only for remotes; a hub-dialed satellite link has no arrival
     /// to attach.
     session: Option<String>,
@@ -350,6 +359,7 @@ impl HostRow {
             enabled: None,
             token_file: entry.token_file,
             cert_fingerprint: entry.cert_fingerprint,
+            tls_server_name: entry.tls_server_name,
             session: entry.session,
             ssh: entry.ssh,
             direct: entry.direct,
@@ -366,6 +376,7 @@ impl HostRow {
             enabled: None,
             token_file: new.token_file,
             cert_fingerprint: new.cert_fingerprint,
+            tls_server_name: new.tls_server_name,
             session: new.session,
             ssh: new.ssh,
             direct: new.direct,
@@ -382,6 +393,7 @@ impl HostRow {
             enabled: Some(entry.enabled),
             token_file: entry.token_file,
             cert_fingerprint: entry.cert_fingerprint,
+            tls_server_name: None,
             session: None,
             ssh: None,
             direct: None,
@@ -453,10 +465,13 @@ impl AddMode {
         };
 
         let Some((name, endpoint)) = manual else {
-            if opts.token_file.is_some() || opts.cert_fingerprint.is_some() {
+            if opts.token_file.is_some()
+                || opts.cert_fingerprint.is_some()
+                || opts.tls_server_name.is_some()
+            {
                 return Err(CliError::new(
                     codes::REGISTRY,
-                    "--token-file and --cert-fingerprint belong to the manual form, which registers an endpoint you already hold credentials for",
+                    "--token-file, --cert-fingerprint, and --tls-server-name belong to the manual form, which registers an endpoint you already hold credentials for",
                     format!(
                         "pass the endpoint too (`phux host add {target} quic://HOST:PORT --token-file PATH --cert-fingerprint FP`), \
                          or drop them and let `phux host add {target}` pair over ssh"
@@ -505,6 +520,15 @@ fn run_add(target: &str, endpoint: Option<&str>, opts: &AddOpts) -> ExitCode {
     if let Some(err) = role_flag_mismatch(opts.role, opts.session.is_some(), opts.disabled) {
         return json_err::emit(json, &err, 2);
     }
+    if opts.role == HostRole::Satellite && opts.tls_server_name.is_some() {
+        let err = CliError::new(
+            codes::REGISTRY,
+            "--tls-server-name applies to --role remote only: a satellite link is \
+             hub-dialed, never through a relay route",
+            "drop --tls-server-name, or register the machine as a remote",
+        );
+        return json_err::emit(json, &err, 2);
+    }
     match AddMode::classify(target, endpoint, opts) {
         Err(err) => json_err::emit(json, &err, 2),
         Ok(AddMode::Manual { name, endpoint }) => run_add_manual(&name, &endpoint, opts),
@@ -522,6 +546,7 @@ fn run_add_manual(name: &str, endpoint: &str, opts: &AddOpts) -> ExitCode {
             opts.cert_fingerprint.as_deref(),
             opts.session.as_deref(),
         )
+        .and_then(|new| new.with_tls_server_name(opts.tls_server_name.as_deref()))
         .map_err(reject_entry)
         .and_then(|new| {
             remote::add_or_update(&new).map_err(registry_failure)?;
@@ -1093,6 +1118,7 @@ fn report_registered(
     hub: Option<&service::LocalHub>,
     enrollment: &EnrollmentReport,
 ) -> ExitCode {
+    let reload = (row.role == HostRole::Satellite).then(reload_local_hub);
     if json {
         let mut doc = serde_json::json!({
             "schema_version": 1,
@@ -1102,6 +1128,7 @@ fn report_registered(
         if let Some(hub) = hub {
             doc["hub_service"] = serde_json::Value::String(hub.as_json_str().to_owned());
         }
+        add_hub_reload(&mut doc, reload.as_ref());
         return crate::output::json(&doc);
     }
     let role = match row.role {
@@ -1134,7 +1161,7 @@ fn report_registered(
             outln!("  {ls_cmd:<col$}list its sessions");
             outln!("  {host_ls_cmd:<col$}every registered machine");
         }
-        HostRole::Satellite => report_local_hub(hub),
+        HostRole::Satellite => report_local_hub(hub, reload.as_ref()),
     }
     ExitCode::SUCCESS
 }
@@ -1176,13 +1203,91 @@ impl EnrollmentReport {
     }
 }
 
-fn report_local_hub(hub: Option<&service::LocalHub>) {
+/// What telling the running local server about a `[[satellites]]` edit did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HubReload {
+    /// The server confirmed the config-reload doorbell; a running hub has
+    /// already re-read `[[satellites]]` (a non-hub server ignores it).
+    Signalled,
+    /// No server is running here; a hub reads the registry when it starts.
+    NoServer,
+    /// The doorbell could not be rung or confirmed.
+    Failed(String),
+}
+
+impl HubReload {
+    /// Stable token for the `hub_reload` field of the `--json` documents.
+    const fn as_json_str(&self) -> &'static str {
+        match self {
+            Self::Signalled => "signalled",
+            Self::NoServer => "no_server",
+            Self::Failed(_) => "failed",
+        }
+    }
+
+    /// Whether the edit still waits for a hub restart.
+    const fn requires_restart(&self) -> bool {
+        matches!(self, Self::Failed(_))
+    }
+
+    /// The human line: what a running hub does with the edit now.
+    fn describe(&self) -> String {
+        match self {
+            Self::Signalled => {
+                "signalled the running server: a hub re-reads [[satellites]] now, no restart"
+                    .to_owned()
+            }
+            Self::NoServer => {
+                "no server running; the hub reads [[satellites]] when it starts".to_owned()
+            }
+            Self::Failed(reason) => format!(
+                "could not signal the running server ({reason}); \
+                 run `phux config reload` or restart the hub"
+            ),
+        }
+    }
+}
+
+/// Ring the config-reload doorbell on this machine's server so a running hub
+/// re-reads `[[satellites]]` now: it dials added entries, stops removed ones,
+/// and leaves every other link and pane alone (phux-lpn7.2). A development
+/// build never rings the production server.
+fn reload_local_hub() -> HubReload {
+    use super::config::{ReloadRingError, ring_config_reload};
+
+    let socket_path = phux_server::runtime::default_socket_path();
+    if let Err(refusal) = phux_config::socket::refuse_dev_on_production(&socket_path) {
+        return HubReload::Failed(refusal);
+    }
+    let Ok(rt) = super::cli_runtime() else {
+        return HubReload::Failed("could not build a runtime".to_owned());
+    };
+    match rt.block_on(ring_config_reload(&socket_path)) {
+        Ok(()) => HubReload::Signalled,
+        Err(ReloadRingError::NoServer(phux_client::attach::AttachError::Io(err)))
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+            ) =>
+        {
+            HubReload::NoServer
+        }
+        Err(ReloadRingError::NoServer(err)) => HubReload::Failed(err.to_string()),
+        Err(ReloadRingError::Unconfirmed(refusal)) => HubReload::Failed(refusal),
+    }
+}
+
+fn report_local_hub(hub: Option<&service::LocalHub>, reload: Option<&HubReload>) {
+    if let Some(reload) = reload {
+        outln!("  {}", reload.describe());
+    }
     match hub {
         Some(service::LocalHub::Already) => {
             outln!("  local hub service already runs with --hub");
         }
         Some(service::LocalHub::Patched) => {
             outln!("  local hub service: --hub added; existing listeners kept");
+            outln!("  a server already running without --hub dials it after its next restart");
         }
         Some(service::LocalHub::Installed) => {
             outln!("  local hub service installed with --hub");
@@ -1315,6 +1420,7 @@ fn row_json(row: &HostRow) -> serde_json::Value {
         // machine-readable, the token bytes behind it never appear.
         "token_file": row.token_file.as_ref().map(|p| p.display().to_string()),
         "cert_fingerprint": row.cert_fingerprint,
+        "tls_server_name": row.tls_server_name,
         "session": row.session,
         "ssh": row.ssh,
         "direct": row.direct,
@@ -1438,6 +1544,9 @@ fn run_show(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
     }
     if let Some(fingerprint) = row.cert_fingerprint {
         outln!("  Certificate fingerprint: {fingerprint}");
+    }
+    if let Some(server_name) = row.tls_server_name {
+        outln!("  TLS server name: {server_name}");
     }
     if let Some(session) = row.session {
         outln!("  Session: {session}");
@@ -1759,16 +1868,28 @@ fn run_rename(name: &str, new_name: &str, role: Option<HostRole>, json: bool) ->
     if let Err(err) = edit_host_field(&row, "name", new_name.clone().into()) {
         return json_err::emit(json, &registry_failure(err), 1);
     }
+    let reload = (row.role == HostRole::Satellite).then(reload_local_hub);
     if json {
-        return crate::output::json(
-            &serde_json::json!({"schema_version": 1, "renamed": {"from": name, "to": new_name, "role": row.role.as_str()}, "requires_restart": row.role == HostRole::Satellite}),
-        );
+        let mut doc = serde_json::json!({
+            "schema_version": 1,
+            "renamed": {"from": name, "to": new_name, "role": row.role.as_str()},
+            "requires_restart": reload.as_ref().is_some_and(HubReload::requires_restart),
+        });
+        add_hub_reload(&mut doc, reload.as_ref());
+        return crate::output::json(&doc);
     }
     outln!("Renamed {} {name:?} to {new_name:?}.", row.role.as_str());
-    if row.role == HostRole::Satellite {
-        outln!("Restart the hub for this to take effect.");
+    if let Some(reload) = &reload {
+        outln!("  {}", reload.describe());
     }
     ExitCode::SUCCESS
+}
+
+/// Add the `hub_reload` token to a satellite edit's `--json` document.
+fn add_hub_reload(doc: &mut serde_json::Value, reload: Option<&HubReload>) {
+    if let Some(reload) = reload {
+        doc["hub_reload"] = serde_json::Value::String(reload.as_json_str().to_owned());
+    }
 }
 
 fn run_enabled(name: &str, enabled: bool, json: bool) -> ExitCode {
@@ -1785,12 +1906,18 @@ fn run_enabled(name: &str, enabled: bool, json: bool) -> ExitCode {
     }
     row.enabled = Some(enabled);
     let state = if enabled { "enabled" } else { "disabled" };
+    let reload = reload_local_hub();
     if json {
-        return crate::output::json(
-            &serde_json::json!({"schema_version": 1, "host": row_json(&row), "requires_restart": true}),
-        );
+        let mut doc = serde_json::json!({
+            "schema_version": 1,
+            "host": row_json(&row),
+            "requires_restart": reload.requires_restart(),
+        });
+        add_hub_reload(&mut doc, Some(&reload));
+        return crate::output::json(&doc);
     }
-    outln!("Satellite {name:?} {state} in config. Restart the hub for this to take effect.");
+    outln!("Satellite {name:?} {state} in config.");
+    outln!("  {}", reload.describe());
     ExitCode::SUCCESS
 }
 
@@ -1839,14 +1966,20 @@ fn run_remove(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
     if let Err(err) = removed {
         return json_err::emit(json, &registry_failure(err), 1);
     }
+    let reload = (resolved == HostRole::Satellite).then(reload_local_hub);
 
     if json {
-        return crate::output::json(&serde_json::json!({
+        let mut doc = serde_json::json!({
             "schema_version": 1,
             "removed": { "name": name, "role": resolved.as_str() },
-        }));
+        });
+        add_hub_reload(&mut doc, reload.as_ref());
+        return crate::output::json(&doc);
     }
     outln!("Removed {} {name:?}.", resolved.as_str());
+    if let Some(reload) = &reload {
+        outln!("  {}", reload.describe());
+    }
     if let Some(path) = token_file {
         outln!("Its token file is still at {}.", path.display());
     }
@@ -1874,6 +2007,7 @@ mod tests {
             enabled: (role == HostRole::Satellite).then_some(true),
             token_file: None,
             cert_fingerprint: None,
+            tls_server_name: None,
             session: None,
             ssh: None,
             direct: None,
@@ -1938,6 +2072,7 @@ mod tests {
             remote_phux: "phux".to_owned(),
             token_file: None,
             cert_fingerprint: None,
+            tls_server_name: None,
             session: None,
             disabled: false,
             json: JsonOpt { json: false },
@@ -2039,6 +2174,13 @@ mod tests {
             err.message.contains("--cert-fingerprint") && err.remedy.contains("quic://HOST:PORT"),
             "got {err:?}"
         );
+        let routed = AddOpts {
+            tls_server_name: Some("mini-route".to_owned()),
+            ..opts()
+        };
+        let err = AddMode::classify("me@mini", None, &routed)
+            .expect_err("a relay route belongs to the manual form");
+        assert!(err.message.contains("--tls-server-name"), "got {err:?}");
 
         let named_pair = AddOpts {
             name: Some("x".to_owned()),
@@ -2230,6 +2372,7 @@ mod tests {
                 enabled: None,
                 token_file: Some(PathBuf::from("/tokens/mini")),
                 cert_fingerprint: Some("ab".repeat(32)),
+                tls_server_name: None,
                 session: Some("work".to_owned()),
                 ssh: Some("me@mini".to_owned()),
                 direct: None,
@@ -2243,6 +2386,7 @@ mod tests {
                 enabled: Some(false),
                 token_file: None,
                 cert_fingerprint: None,
+                tls_server_name: None,
                 session: None,
                 ssh: None,
                 direct: None,

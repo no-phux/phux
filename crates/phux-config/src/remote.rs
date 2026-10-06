@@ -38,6 +38,17 @@ pub struct RemoteConfigEntry {
     )]
     pub cert_fingerprint: Option<String>,
 
+    /// TLS server name (SNI) a `quic://` or `wss://` dial offers instead of
+    /// the endpoint's host. Set, it names a relay route: the endpoint is
+    /// the relay, the pin is the relay's, and the relay splices the dial
+    /// onto the server enrolled under this route (ADR-0052, ADR-0149).
+    #[serde(
+        default,
+        rename = "tls-server-name",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tls_server_name: Option<String>,
+
     /// Session to attach on arrival; absent lets the server decide.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
@@ -113,5 +124,32 @@ pub fn client_identity_paths(
             "remote {name:?}: client-cert and client-key must be set together; \
              re-enroll with `phux host add {name}`"
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tls_server_name_is_an_optional_kebab_case_key() {
+        let routed: RemoteConfigEntry = toml::from_str(
+            "name = \"mini\"\nendpoint = \"quic://relay.example:4433\"\n\
+             cert-fingerprint = \"AB:CD\"\ntls-server-name = \"mini-route\"\n",
+        )
+        .expect("routed entry parses");
+        assert_eq!(routed.tls_server_name.as_deref(), Some("mini-route"));
+        let written = toml::to_string(&routed).expect("entry serializes");
+        assert!(
+            written.contains("tls-server-name = \"mini-route\""),
+            "{written}"
+        );
+
+        let direct: RemoteConfigEntry =
+            toml::from_str("name = \"mini\"\nendpoint = \"quic://mini:8788\"\n")
+                .expect("an entry without the key still parses");
+        assert_eq!(direct.tls_server_name, None);
+        let written = toml::to_string(&direct).expect("entry serializes");
+        assert!(!written.contains("tls-server-name"), "{written}");
     }
 }

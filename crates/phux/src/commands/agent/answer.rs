@@ -375,7 +375,7 @@ pub(super) fn run_agent_answer(
                 return json_err::report_no_server(json, &err, &socket_path, "agent answer");
             }
         };
-        let Some(info) = snapshot.resources.iter().find(|info| info.id == pane) else {
+        if !snapshot.resources.iter().any(|info| info.id == pane) {
             return Refusal::new(
                 json_err::codes::NO_SUCH_TARGET,
                 format!("{label} is gone: it left between resolving the target and reading it"),
@@ -383,9 +383,17 @@ pub(super) fn run_agent_answer(
                 crate::exit_codes::EXIT_FAILURE,
             )
             .emit(json);
+        }
+        // The sentinel lives in the live OSC title, which `GET_SCREEN`
+        // carries; the snapshot's `title` is the user-set one.
+        let title = match phux_client::snapshot::get_screen_on(&mut conn, 2, pane.clone()).await {
+            Ok(screen) => screen.title,
+            Err(err) => {
+                return json_err::report_no_server(json, &err, &socket_path, "agent answer");
+            }
         };
 
-        let marker = match live_ask(info.title.as_deref(), id) {
+        let marker = match live_ask(title.as_deref(), id) {
             Ok(marker) => marker,
             Err(refusal) => return refusal.emit(json),
         };

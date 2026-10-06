@@ -67,6 +67,11 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
         ctx.pending_windows,
     )
     .await?;
+    if let Some((request_id, title, frame)) = effects.spawn_floating {
+        // Parked before the send: the reply can race back before it returns.
+        ctx.pending_floating.insert(request_id, title);
+        conn.send(&frame).await?;
+    }
     send_directory_request(effects.list_directory, conn, ctx.pending_directory).await?;
     if let Some((pending, frame)) = effects.query_path {
         *ctx.pending_path = Some(pending);
@@ -526,13 +531,15 @@ pub(super) fn consume_chord(
     ctx: &mut DispatchCtx<'_>,
     key_event: &phux_protocol::input::key::KeyEvent,
 ) -> Option<ChordOutcome> {
-    use phux_protocol::input::key::KeyAction;
+    use phux_protocol::input::key::{KeyAction, ModSet};
     let resolver = ctx.resolver.as_deref_mut()?;
     if !matches!(key_event.action, KeyAction::Press) {
         return None;
     }
     let chord = phux_config::keybind::KeyChord {
-        modifiers: key_event.mods,
+        // A kitty-mode host reports Caps/Num Lock on `CSI u` keys (Ctrl+A is
+        // `CSI 97;69u` with Caps Lock on); bindings name held modifiers only.
+        modifiers: key_event.mods - (ModSet::CAPS_LOCK | ModSet::NUM_LOCK),
         key: key_event.key,
     };
     match resolver.feed(chord) {
@@ -580,6 +587,9 @@ pub(super) struct ActionEffects {
     pub(super) spawn_terminal: Option<(u32, PendingSplit, FrameKind)>,
     /// A parked `new-window` spawn: send, then park in `pending_windows`.
     pub(super) spawn_window: Option<(u32, PendingWindow, FrameKind)>,
+    /// ADR-0147: a floating plugin overlay spawn `(request, title, frame)`:
+    /// send, then park the title in `pending_floating`.
+    pub(super) spawn_floating: Option<(u32, String, FrameKind)>,
     /// A picker-confirmed existing-pane move. The async effect applier opens a
     /// dedicated control connection and runs the canonical headless operation.
     pub(super) move_pane: Option<PaneMoveIntent>,

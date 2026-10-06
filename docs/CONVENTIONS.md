@@ -472,6 +472,7 @@ The discipline layer is mechanically checked. See
 | adr-in-force-sync | A Proposed or Accepted ADR missing from or duplicated in `docs/adr/IN-FORCE.md`, a Superseded or Deprecated ADR still listed there, or a link that does not resolve to its file |
 | spec-version-sync | `docs/spec/CHANGELOG.md` head version vs `phux-protocol`'s declared protocol version, plus a version claimed by two rows or rows out of descending order |
 | impl-status | A `shipped` / `partial` / `spec-only` claim in `docs/spec/` or `docs/consumers/` that the code contradicts, and a `> **Status` callout with no marker behind it |
+| conflict-marker | A leftover `<<<<<<<`, `|||||||` or `>>>>>>>` merge or stash conflict marker |
 
 All run under `just docs-check`, which is in `just ci`. Adding a check
 is welcome — open a PR against `scripts/check-docs.sh` and reference

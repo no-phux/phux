@@ -263,8 +263,9 @@ never match, and nothing else makes that visible (the detector fails safe to
 `idle`, silently).
 
 The capture is `phux snapshot --json` output or a plain text screen, one
-viewport row per line; `-` reads stdin. A capture carries no OSC title, so pass
-`--title` to exercise title-scoped rules.
+viewport row per line; `-` reads stdin. A JSON capture carries the pane's OSC
+title; a text one does not, so pass `--title` to exercise title-scoped rules
+against it (or to override the captured title).
 
 Usage: phux agent explain [FLAGS] [TARGET]
 
@@ -281,7 +282,8 @@ Flags:
                          is no foreground process group to identify the agent
                          from.
       --title <TEXT>     OSC 0/2 title to evaluate `title`-scoped rules against.
-                         Captures do not carry one, so it defaults to empty.
+                         Overrides a JSON capture's own title; defaults to it,
+                         else to empty.
       --format <FORMAT>  How to read `--file`. `auto` picks JSON when the first
                          non-whitespace byte is `{`.
                          [possible values: auto, json, text]
@@ -1322,8 +1324,9 @@ Usage: phux host <SUBCOMMAND>
 Commands:
   add      Add a machine so `phux attach NAME` reaches it.
   attach   Attach to a registered remote host (same as `phux attach NAME`).
-  disable  Disable a satellite on the hub's next start without forgetting it.
-  enable   Enable a satellite for the local hub on its next start.
+  disable  Disable a satellite without forgetting it; a running hub drops its
+           link.
+  enable   Enable a satellite; a running local hub dials it now.
   ls       List registered machines from both registries. [aliases: list]
   rename   Rename a registered machine without changing its route or
            credentials.
@@ -1368,45 +1371,53 @@ Arguments:
               entry's name.
 
 Flags:
-      --role <ROLE>            Which registry the machine lands in: a server you
-                               attach to (`remote`, the default) or a peer this
-                               hub dials for its users.
-                               [possible values: remote, satellite]
-                               (default: remote)
-      --name <NAME>            Local label to register. Defaults to HOST without
-                               any `user@`, or to the host of an endpoint URI.
-      --endpoint <HOST:PORT>   Register this address instead of the routes
-                               detected on the host: `HOST:PORT` (dialed over
-                               QUIC) or a full `quic://`/`wss://` URI.
-      --quic-port <PORT>       QUIC port to configure on the host and dial.
-                               (default: 8788)
-      --no-service             Start the host's server but skip installing its
-                               service unit. The server will not come back on
-                               its own after a reboot.
-      --ssh-only               Register an `ssh://HOST` entry without contacting
-                               the host at all.
-      --remote-phux <PATH>     The `phux` to run on the host, for when a
-                               non-interactive ssh shell's `PATH` does not find
-                               it (a Homebrew or Nix install).
-                               (default: phux)
-      --token-file <PATH>      Manual form only: absolute path to a file holding
-                               the pairing token minted by `phux pair` on the
-                               other machine.
-      --cert-fingerprint <FP>  Manual form only: the other machine's TLS
-                               certificate SHA-256 fingerprint, as printed by
-                               `phux pair`. Required for `quic://` and `wss://`.
-      --session <NAME>         Session to attach on arrival (`--role remote`
-                               only). Omitted: the remote server's own
-                               last-attach memory decides.
-      --disabled               Register the entry but leave it disabled (`--role
-                               satellite` only).
-      --json                   Emit stable, versioned JSON on stdout instead of
-                               the human view. On failure, stdout stays empty
-                               and stderr carries one JSON error object.
-  -h, --help                   Print help
+      --role <ROLE>             Which registry the machine lands in: a server
+                                you attach to (`remote`, the default) or a peer
+                                this hub dials for its users.
+                                [possible values: remote, satellite]
+                                (default: remote)
+      --name <NAME>             Local label to register. Defaults to HOST
+                                without any `user@`, or to the host of an
+                                endpoint URI.
+      --endpoint <HOST:PORT>    Register this address instead of the routes
+                                detected on the host: `HOST:PORT` (dialed over
+                                QUIC) or a full `quic://`/`wss://` URI.
+      --quic-port <PORT>        QUIC port to configure on the host and dial.
+                                (default: 8788)
+      --no-service              Start the host's server but skip installing its
+                                service unit. The server will not come back on
+                                its own after a reboot.
+      --ssh-only                Register an `ssh://HOST` entry without
+                                contacting the host at all.
+      --remote-phux <PATH>      The `phux` to run on the host, for when a
+                                non-interactive ssh shell's `PATH` does not find
+                                it (a Homebrew or Nix install).
+                                (default: phux)
+      --token-file <PATH>       Manual form only: absolute path to a file
+                                holding the pairing token minted by `phux pair`
+                                on the other machine.
+      --cert-fingerprint <FP>   Manual form only: the other machine's TLS
+                                certificate SHA-256 fingerprint, as printed by
+                                `phux pair`. Required for `quic://` and
+                                `wss://`.
+      --tls-server-name <NAME>  Manual form, `--role remote` only: the TLS
+                                server name (SNI) every dial offers instead of
+                                the endpoint's host. Through a relay this is the
+                                route: register the relay's `quic://RELAY:PORT`
+                                with the relay's `--cert-fingerprint` and the
+                                server's `--token-file`.
+      --session <NAME>          Session to attach on arrival (`--role remote`
+                                only). Omitted: the remote server's own
+                                last-attach memory decides.
+      --disabled                Register the entry but leave it disabled
+                                (`--role satellite` only).
+      --json                    Emit stable, versioned JSON on stdout instead of
+                                the human view. On failure, stdout stays empty
+                                and stderr carries one JSON error object.
+  -h, --help                    Print help
 
 Global flags:
-      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>           Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux host attach`
@@ -1429,7 +1440,7 @@ Global flags:
 ## `phux host disable`
 
 ```text
-Disable a satellite on the hub's next start without forgetting it.
+Disable a satellite without forgetting it; a running hub drops its link.
 
 Usage: phux host disable [--json] <NAME>
 
@@ -1449,7 +1460,7 @@ Global flags:
 ## `phux host enable`
 
 ```text
-Enable a satellite for the local hub on its next start.
+Enable a satellite; a running local hub dials it now.
 
 Usage: phux host enable [--json] <NAME>
 
@@ -1949,8 +1960,9 @@ the store directly and take effect without restarting the server.
 Minting first asks the running server (`--socket`) which remote listeners it has
 bound, and mints nothing when none would accept the credential: no server, no
 bound listener, `--host` with no wss listener, or `--qr` with no address a
-device can dial. `ls`, `prune`, `rotate`, and `revoke` only edit the store and
-need no server.
+device can dial. `--relay-route` mints for a relay route instead, which needs
+the server to answer but no bound listener. `ls`, `prune`, `rotate`, and
+`revoke` only edit the store and need no server.
 
 Usage: phux pair [FLAGS] [SUBCOMMAND]
 
@@ -1996,6 +2008,17 @@ Flags:
                              add` passes the previously enrolled token so
                              re-enrollment does not leave abandoned live
                              credentials.
+      --relay-route <ROUTE>  Mint for a relay route instead of a listener: the
+                             connect link dials the `[[connector]]` relay this
+                             server tunnels to, pins the relay's certificate,
+                             and names ROUTE as its TLS server name (the route
+                             `phux relay pair --route` enrolled). Needs a
+                             running server but no bound listener; the link
+                             reaches the server while its connector holds the
+                             route.
+      --relay <HOST:PORT>    The `[[connector]]` relay (its `relay =
+                             "HOST:PORT"`) a `--relay-route` link dials. Needed
+                             only when several are configured.
   -h, --help                 Print help
 
 Global flags:
@@ -2253,6 +2276,7 @@ Commands:
   install   Fetch, build, validate, and link a plugin package.
   link      Add or update a manifest entry in `config.toml`.
   list      List configured plugin manifests. [aliases: ls]
+  log       Show recent plugin action and hook runs, oldest first.
   unlink    Remove a configured plugin by id. [aliases: rm, remove]
   update    Re-fetch, rebuild, and revalidate installed plugins.
   validate  Validate one manifest, or every configured manifest when omitted.
@@ -2359,6 +2383,29 @@ List configured plugin manifests.
 Usage: phux plugin list [--json]
 
 Flags:
+      --json           Emit a stable JSON document instead of human text.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux plugin log`
+
+```text
+Show recent plugin action and hook runs, oldest first.
+
+Every plugin action run (a TUI keybinding, `phux config run`, the MCP tool) and
+every server hook run appends one record to a bounded log in the state directory
+(`plugin-runs.jsonl`): the newest 100 runs, each with its exit status, duration,
+and the last 4 KiB of stdout and stderr. Failed runs show the tail of their
+output.
+
+Usage: phux plugin log [FLAGS]
+
+Flags:
+  -n, --limit <NUM>    How many of the newest runs to show; 20 when omitted.
+      --failed         Show only runs that did not exit 0.
       --json           Emit a stable JSON document instead of human text.
   -h, --help           Print help
 

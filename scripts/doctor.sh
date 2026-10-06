@@ -28,6 +28,31 @@ env_remedy() {
         printf 'mise install\n  or: nix develop\n  native fallback: %s' "$fallback"
     fi
 }
+# Advisory: flake.nix asks for the phux binary cache, but the Nix daemon only
+# honours a flake's substituter when the user is trusted or the cache is in
+# the daemon's trusted-substituters. Otherwise every `nix develop` warns
+# "ignoring untrusted substituter" and builds from source what CI already
+# pushed to Cachix.
+nix_cache_check() {
+    command -v nix >/dev/null 2>&1 || return 0
+    [[ -z "${CI:-}" ]] || return 0
+    local cache='https://phux.cachix.org' key trusted
+    if nix store info 2>/dev/null | grep -q '^Trusted: 1'; then
+        ok 'Nix daemon trusts this user (flake binary caches apply)'
+        return 0
+    fi
+    trusted="$(nix config show trusted-substituters 2>/dev/null || true)"
+    if [[ " $trusted " == *" $cache "* ]]; then
+        ok "Nix daemon trusts $cache"
+        return 0
+    fi
+    key="$(sed -n 's/.*"\(phux\.cachix\.org-1:[^"]*\)".*/\1/p' "$DEV_ROOT/flake.nix" | head -1)"
+    printf 'note: the Nix daemon ignores %s, so nix develop builds what CI already cached\n' "$cache"
+    printf '  remedy (once, as admin; see docs/SETUP.md#binary-cache):\n'
+    printf "    sudo sh -c 'printf \"extra-trusted-substituters = %s\\\\nextra-trusted-public-keys = %s\\\\n\" >> /etc/nix/nix.custom.conf'\n" "$cache" "$key"
+    printf '    then restart the daemon (macOS Determinate: sudo launchctl kickstart -k system/systems.determinate.nix-daemon)\n'
+}
+
 rust_tools() {
     local version
     version="$(rustc --version 2>/dev/null || true)"
@@ -42,6 +67,7 @@ rust_tools() {
     if command -v mbx >/dev/null 2>&1; then ok "$(mbx --version)"; else
         printf 'note: mbx not on PATH; Cargo runs without the shared build cache\n  remedy: mise install, or nix develop (docs/SETUP.md#build-cache-mbx)\n'
     fi
+    nix_cache_check
     need cc 'Install platform compiler tools; see docs/SETUP.md#platform-packages'
     rust_link_probe
     if [[ "$(uname -s)" == Linux ]]; then
@@ -101,6 +127,10 @@ node_tools() {
 }
 
 desktop_tools() {
+    if ! check_desktop_toolchain; then
+        fail 'desktop toolchain selection' 'Choose one environment; see docs/SETUP.md#gpuix-desktop'
+        return
+    fi
     # Match the desktop build's existing Apple-toolchain normalization.
     # shellcheck source=scripts/lib/apple-toolchain-env.sh
     source "$DEV_ROOT/scripts/lib/apple-toolchain-env.sh"

@@ -19,11 +19,11 @@
     "solid-js": "1.9.15"
   },
   "devDependencies": {
-    "@oxlint/plugins": "1.85.0",
+    "@oxlint/plugins": "1.87.0",
     "@types/bun": "1.4.2",
-    "eslint-plugin-solid": "0.18.0",
-    "oxfmt": "0.70.0",
-    "oxlint": "1.85.0",
+    "eslint-plugin-solid": "0.18.1",
+    "oxfmt": "0.72.0",
+    "oxlint": "1.87.0",
     "oxlint-tsgolint": "7.0.2003",
     "typescript": "7.0.2"
   },

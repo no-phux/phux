@@ -4,6 +4,7 @@
 
 pub mod dividers;
 pub mod sidebar;
+pub mod sidebar_sections;
 pub mod status_bar;
 
 use ratatui::style::Color;

@@ -1999,6 +1999,7 @@ mod tests {
             endpoint: format!("quic://{name}:8788"),
             token_file: None,
             cert_fingerprint: None,
+            tls_server_name: None,
             session: None,
             ssh: Some(format!("me@{name}")),
             direct: None,

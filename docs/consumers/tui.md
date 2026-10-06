@@ -156,6 +156,13 @@ Two binding tables, both always present:
   reserved for chords the outer terminal actually forwards (`super`,
   `hyper`, `meta`).
 
+While attached, the TUI asks the outer terminal for the kitty keyboard
+protocol (disambiguate only, [ADR-0146](../adr/0146-tui-pushes-kitty-keyboard-disambiguate-on-the-host.md)).
+Modified keys such as Cmd+Return, Ctrl+I, and Ctrl+Backspace then reach a pane
+exactly as the outer terminal would deliver them natively. A terminal without
+the protocol ignores the request and phux decodes its legacy keys. Caps Lock
+and Num Lock never affect chord matching.
+
 Bindings invoke named **actions**, not shell strings. The command
 palette, pickers, sidebar clicks, and context menus commit the same
 action a keybinding produces. The generated catalog is
@@ -410,6 +417,39 @@ The session picker (`C-a s`) lists the same machines, one group each after
 the attached server's sessions and any satellites; its filter matches a
 session by its name or its machine's.
 
+An enabled plugin can add **sections** with `[[sidebar]]` entries in its
+manifest. Each is a band between Agents and Sessions: a header, then
+exactly `rows` rows (default 3, at most 8), so a section filling or
+emptying never moves Sessions. Rows are this session's panes in
+window/leaf order, rendered from `format`; a pane gets a row only when
+every token the format names resolves for it. An empty section shows the
+quiet dash, and a full one ends in `+N`. Clicking a row focuses its pane.
+Sections are drawn only while Agents and Sessions keep eight rows between
+them; up to four are drawn, the last declared yielding first
+([ADR-0148](../adr/0148-plugin-sidebar-sections-are-fixed-bands-of-pane-rows.md)).
+
+| Token | Value |
+|---|---|
+| `{window}` | the window's tab label |
+| `{index}` | the window's `select-window` index |
+| `{title}` | the pane's OSC title |
+| `{cwd}` | the pane's working directory, `$HOME` shown as `~` |
+| `{exit}` | the last command's exit code (needs OSC-133 shell integration) |
+| `{agent}` | the agent name from the pane's `phux.agent/v1` record |
+| `{state}` | that record's state: `idle`, `working`, `blocked`, `done`, `unknown` |
+
+```toml
+# phux-plugin.toml
+[[sidebar]]
+id = "exits"
+title = "Last exit"
+format = "{window}: exit {exit}"
+rows = 3
+```
+
+An unknown token fails `phux plugin validate` and plugin loading with a
+did-you-mean suggestion.
+
 Click targets commit the same actions as keys. The **Agents** and **Sessions**
 headings open their full management views; window and roster rows select their
 destination; overflow opens the matching view. The footer keeps `+ new window`
@@ -503,10 +543,21 @@ Navigate with arrows / `C-n` / `C-p` (`j` / `k` when the query is empty),
 PageUp / PageDown, Home / End, or the wheel. Enabled plugin `[[actions]]`
 and hostable `[[panes]]` appear under Plugin.
 
-<!-- impl-status: partial; probe: PluginPanePlacement -->
-> **Status: partial.** Manifest `placement = "overlay"` is valid schema
-> and is skipped with a logged warning. `split`, `tab`, and `zoomed`
-> open a real server-side Terminal.
+<!-- impl-status: shipped; probe: HostedPlacement::Overlay -->
+> **Status: shipped.** Every manifest `placement` opens a real server-side
+> Terminal: `split` beside the focused pane, `tab` in a new window,
+> `zoomed` as a zoomed split, and `overlay` in a floating box.
+
+An **overlay** pane opens in a titled box centered over the pane area
+(80% of each axis). It belongs to no window, so it never changes your
+layout and other clients attached to the session do not show it. While
+it is open, keys, pastes, and clicks inside the box go to it, and the
+panes beneath stop updating until it closes. The prefix still works:
+`C-a x` (`kill-pane`) closes the overlay and nothing else, and any other
+action closes it first and then runs. A click outside the box also
+closes it. Closing kills its process; the overlay also closes by itself
+when its process exits
+([ADR-0147](../adr/0147-plugin-overlay-panes-float-outside-the-layout.md)).
 
 The **Sessions & hosts** view (`C-a s`) lists other sessions; choosing one
 re-attaches this client in-process. A trailing "+ New session" row

@@ -322,16 +322,22 @@ fn register_from_code(target: &RemoteTarget, code: &str) -> Result<RemoteEntry, 
     let name = target.registry_name();
     let token_file = enroll::token_path(&phux_server::telemetry::state_dir(), &name);
 
+    // A relay link registers the relay with its route (ADR-0149); any other
+    // registers its WebSocket url.
+    let endpoint = link
+        .registry_endpoint()
+        .ok_or_else(|| "phux: --code: the connect code names no endpoint".to_owned())?;
     // Validate before the token lands: a rejected name or an unpinned
     // routable endpoint must not leave an orphaned bearer token on disk.
     // Same ordering `phux host add` uses, and for the same reason.
     let new = remote::NewRemote::new(
         &name,
-        &link.url,
+        endpoint,
         Some(&token_file),
         link.cert_fingerprint.as_deref(),
         None,
     )
+    .and_then(|new| new.with_tls_server_name(link.tls_server_name.as_deref()))
     .map_err(|err| format!("phux: --code: {err}"))?;
 
     enroll::write_token(&token_file, &link.token).map_err(|err| format!("phux: --code: {err}"))?;
@@ -355,6 +361,7 @@ fn registered_entry(target: &RemoteTarget, new: &remote::NewRemote) -> RemoteEnt
         endpoint: new.endpoint.clone(),
         token_file: new.token_file.clone(),
         cert_fingerprint: new.cert_fingerprint.clone(),
+        tls_server_name: new.tls_server_name.clone(),
         session: None,
         ssh: None,
         direct: None,
@@ -463,6 +470,7 @@ mod tests {
             endpoint: endpoint.to_owned(),
             token_file: None,
             cert_fingerprint: None,
+            tls_server_name: None,
             session: None,
             ssh: None,
             direct: None,

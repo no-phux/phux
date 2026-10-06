@@ -89,7 +89,7 @@ jobs:
           nix shell --inputs-from . nixpkgs#actionlint nixpkgs#shellcheck \
             nixpkgs#just nixpkgs#nodejs_24 nixpkgs#python3 nixpkgs#jq \
             -c bash -euo pipefail <<'EOF'
-          just workflow-check docs-check font-check e2e-lane-check formula-check zig-pin-check install-surface-check
+          just workflow-check docs-check font-check e2e-lane-check formula-check zig-pin-check install-surface-check cache-portable-check
           just desktop-install desktop-check
           timeout 120 just agents-fleet-smoke
           EOF

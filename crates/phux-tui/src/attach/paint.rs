@@ -494,17 +494,37 @@ fn paint_full_frame_into<W: Write>(
     // The ED2 above cleared the bar row, so force a re-emit even if the
     // bar's content is byte-identical to the previous frame.
     let status_bar_painted = paint_bar_after_pane(out, chrome, None, None, true);
+    // ADR-0147: the floating overlay's border, over the panes it covers.
+    if let Some(title) = focused_resource
+        .and_then(|fid| panes.get(fid))
+        .and_then(|slot| slot.floating.as_deref())
+    {
+        let frame = super::floating::floating_box(content);
+        let _ = super::floating::paint_floating_frame(out, frame, title, chrome.theme);
+    }
     // The focused render may be a no-op, so always end with an explicit
-    // cursor placement rather than wherever the bar left it.
-    let final_cursor = focused_resource.and_then(|fid| {
-        let rect = multi.rects.get(fid).copied().unwrap_or(content);
-        paint_focused_pane(out, rect, panes, kernel, fid, true)
-    });
+    // cursor placement rather than wherever the bar left it. A focused pane
+    // with no tile is the floating overlay (its box) or the bootstrap pane.
+    let untiled = |fid: &ResourceId, panes: &HashMap<ResourceId, PaneSlot>| {
+        multi
+            .rects
+            .get(fid)
+            .copied()
+            .unwrap_or_else(|| super::floating::untiled_rect(panes, fid, content))
+    };
+    let focused_rect = focused_resource.map(|fid| untiled(fid, panes));
+    let final_cursor = focused_resource
+        .zip(focused_rect)
+        .and_then(|(fid, rect)| paint_focused_pane(out, rect, panes, kernel, fid, true));
     // The focused pane's Rect origin is the fallback cursor parking spot when
     // `final_cursor` is None. All cursor placement + the flush
     // is owned by the one composite authority.
     let fallback_origin = focused_resource
-        .and_then(|fid| multi.rects.get(fid).copied())
+        .filter(|fid| {
+            multi.rects.contains_key(*fid)
+                || panes.get(*fid).is_some_and(|slot| slot.floating.is_some())
+        })
+        .and(focused_rect)
         .map(|r| (r.x, r.y));
     let cursor_published = end_of_frame_cursor(out, final_cursor, fallback_origin).is_ok();
     (status_bar_painted, cursor_published)
@@ -559,20 +579,32 @@ fn paint_chrome_in_place_into<W: Write>(
     let restore = focused_resource
         .and_then(|fid| panes.get(fid))
         .and_then(|slot| slot.renderer.last_cursor());
+    let floating = focused_resource
+        .and_then(|fid| panes.get(fid))
+        .is_some_and(|slot| slot.floating.is_some());
     let fallback = focused_resource
-        .and_then(|fid| multi.rects.get(fid))
+        .and_then(|fid| {
+            multi
+                .rects
+                .get(fid)
+                .copied()
+                .or_else(|| floating.then(|| super::floating::floating_box(content).inner))
+        })
         .map(|r| (r.x, r.y));
     // Pane titles are chrome, so the grid repaints here; the skip-cell
-    // carve-out keeps it off pane interiors.
-    let _ = crate::render::chrome::dividers::render_dividers(
-        out,
-        &multi,
-        content,
-        rail,
-        focused_resource,
-        chrome.theme,
-        |id| super::pane_state::pane_label(panes, id),
-    );
+    // carve-out keeps it off pane interiors. Under the floating overlay
+    // (ADR-0147) the grid stays frozen: its rules would cross the box.
+    if !floating {
+        let _ = crate::render::chrome::dividers::render_dividers(
+            out,
+            &multi,
+            content,
+            rail,
+            focused_resource,
+            chrome.theme,
+            |id| super::pane_state::pane_label(panes, id),
+        );
+    }
     if let (Some(res), Some(painter)) = (chrome.sidebar, chrome.sidebar_painter.as_deref_mut()) {
         painter.set_rule(sidebar_rule(res.edge));
         painter.set_junction(rail);

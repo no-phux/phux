@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-12
+last-reviewed: 2026-10-05
 ---
 
 # Protocol reference
@@ -58,6 +58,7 @@ terminal onboarding. A client that only wants terminals never speaks it.
 | [input.md](./input.md) | INPUT_KEY / INPUT_MOUSE / INPUT_FOCUS / INPUT_PASTE / INPUT_RAW |
 | [appendix-encoding.md](./appendix-encoding.md) | Encoding primitives and the normative payload shape (positional, big-endian, length-prefixed) |
 | [appendix-reserved.md](./appendix-reserved.md) | Reserved discriminant ranges |
+| [wire-schema.json](./wire-schema.json) | Machine-readable schema of every frame's field ids, names, value types, and presence; mirrors the catalogs and is checked against the codec ([appendix-encoding.md](./appendix-encoding.md) §3) |
 | [CHANGELOG.md](./CHANGELOG.md) | Wire-format change log, version-stamped |
 
 ## Versions

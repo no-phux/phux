@@ -270,6 +270,11 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
     if (token) return lifecycle.emit(token.id, token.generation, type, data);
   }
 
+  /** The host's own busy flag; absent means unproven, which keeps the fallback. */
+  function streaming(ctx: ExtensionContext): boolean {
+    return typeof ctx.isIdle === "function" && ctx.isIdle() === false;
+  }
+
   function activeApproval(event: { sessionId: string; toolCallId: string; toolName: string }): boolean {
     return token !== undefined && event.sessionId === token.id &&
       event.toolCallId.length > 0 && event.toolName.length > 0;
@@ -294,11 +299,18 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
   pi.on("session_branch", navigate);
   pi.on("session_tree", navigate);
 
-  // This is a payload-free causal guard, NOT prompt reporting. In 17.1.2
+  // This is a payload-free causal guard, NOT prompt reporting. In 18.6.1
   // AgentSession.prompt awaits emitBeforeAgentStart before agent.prompt. Generic
   // agent/tool notifications are concurrent; their receipt alone is not a guard.
-  pi.on("before_agent_start", () => {
+  // 18.x also runs this hook for queued steering/follow-up deliveries the running
+  // loop absorbs (no agent_start of their own), and may repeat it for one prompt.
+  // While the session is streaming either is a no-op: a genuinely overlapping loop
+  // must still deliver its own agent_start, which falls back below. An idle
+  // session cannot be absorbing a delivery, so a guard behind an unreceived end
+  // still falls back (docs/consumers/omp.md, "Host-bound lifecycle").
+  pi.on("before_agent_start", (_event, ctx) => {
     if (phase === "fallback") return;
+    if ((phase === "prepared" || phase === "active") && streaming(ctx)) return;
     if (phase !== "idle" && phase !== "continuing") return fallback();
     token = lifecycle.token();
     phase = "prepared";
@@ -341,13 +353,17 @@ export function registerOmpLifecycle(pi: ExtensionAPI, cli: Cli, host?: string):
   pi.on("agent_end", event => {
     if (!token) return;
     if (approvals.size > 0) return fallback();
-    // The wrapper awaits approval resolution before completing its tool. The
-    // received aggregate fences all preceding tool deliveries, so completed
-    // approval IDs can be forgotten here (also for automatic continuation).
+    // The wrapper awaits approval delivery inline before completing its tool,
+    // so approval events causally precede the end and completed approval IDs
+    // can be forgotten here (also for automatic continuation).
     resolvedApprovals.clear();
-    // agent-session.ts #emitSessionEvent's FIFO subscriber gate drains earlier
-    // generic tool deliveries BEFORE launching this detached notification. Thus
-    // a RECEIVED aggregate end is a barrier; abort()/navigation is not one.
+    // Generic tool deliveries are NOT fenced by the end. 17.x held agent_end
+    // behind them with a FIFO subscriber gate; 18.6.1 dispatches each agent
+    // event fire-and-forget and settles agent_end on its own path, so a tool
+    // event an earlier extension holds can arrive after this. After a terminal
+    // end the token is gone and such an event is dropped; after a continuing
+    // end it can only re-assert working, which the next loop is. The lifecycle
+    // smoke's delayed-tool case pins both the ordering and that tolerance.
     if (event.willContinue === true) {
       phase = "continuing";
       tools.clear();

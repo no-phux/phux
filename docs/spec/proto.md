@@ -371,7 +371,8 @@ BootstrapProfileKind = bitset (u8) {
 
 EngineCodecSet = bitset (u64) {
     LibghosttyCheckpointV2 = 1 << 2, // legacy checkpoint-v2; decode-compatible only
-    LibghosttySnapshotV1   = 1 << 3, // official GHOSTSNPv1 progressive feed
+    LibghosttySnapshotV1   = 1 << 4, // official GHOSTSNPv1 progressive feed
+    // 1 << 3 is permanently retired: BLAKE3-checkpointed GHOSTSNPv1 bytes.
 }
 
 ServerFeature = bitset (u32) {
@@ -442,7 +443,7 @@ BootstrapProfile = tagged_union {
     SynthesizedVtRaw,                      // tag 1
     SynthesizedVtStateSync,                // tag 2
     NativeState {                          // tag 3
-        codec: EngineCodec,                // exact capability id: legacy v2 = 2, snapshot v1 = 3
+        codec: EngineCodec,                // exact capability id: legacy v2 = 2, snapshot v1 = 4
         features: EngineFeatureSet,
     },
     // tag 0 is permanently retired: incomplete pre-bounded-history NativeState.
@@ -454,11 +455,15 @@ exact checkpoint plus byte-identical raw PTY continuation; there is no native
 StateSync value to encode. `OutputMode` chooses a preferred synthesized profile
 only. Native is selected first when both peers advertise it, share an exact
 codec, and the feature intersection contains all four required native features,
-including `BOUNDED_HISTORY_CONTROL`. `LibghosttySnapshotV1 = 3` names the
+including `BOUNDED_HISTORY_CONTROL`. `LibghosttySnapshotV1 = 4` names the
 official `GHOSTSNPv1` feed contract: READY may publish a validated prefix and
 complete history manifest/page units continue afterward. Its history cursor
-remains present through the engine-authenticated FINISH, including when no
-history pages remain; absence of a cursor is not proof of FINISH. The distinct legacy
+remains present through the engine-validated FINISH, including when no
+history pages remain; absence of a cursor is not proof of FINISH. Id `3`
+named earlier `GHOSTSNPv1` bytes whose READY and FINISH carried BLAKE3
+digests; neither engine decodes the other's bytes, so id `3` is permanently
+retired, never advertised, and ignored on receipt, and a peer that still
+offers only id `3` falls back like any peer without a shared codec. The distinct legacy
 `LibghosttyCheckpointV2 = 2` identity remains decodable, but its decoder requires
 FINISH before publication; implementations MUST NOT infer compatibility between
 the two. A current native producer/consumer advertises only snapshot-v1. A

@@ -40,7 +40,7 @@ pub mod upgrade;
 pub mod workload;
 
 pub use hub::link::{HubLinkStatuses, LinkStatus};
-pub use hub::{HubEntry, HubTable, HubTableError, SatelliteTarget};
+pub use hub::{HubEntry, HubTable, HubTableError, SatelliteSource, SatelliteTarget, TableDiff};
 pub use id_bridge::IdBridge;
 pub use resource::{
     ResourceCore, ResourceFacetHandle, ResourceHandle, ResourceId, ResourceKind, WrongResourceKind,
