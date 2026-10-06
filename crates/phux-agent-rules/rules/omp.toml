@@ -1,8 +1,10 @@
 # Agent-state detection manifest for Oh My Pi (OMP) (ADR-0046).
 #
-# Predicates were verified against OMP 17.1.2 running in a phux pane. Fixtures
-# under src/fixtures/omp are unedited `phux snapshot --json`
-# viewports captured from that binary.
+# Predicates were verified against OMP 17.1.2 and 18.6.1 running in a phux
+# pane. Fixtures under src/fixtures/omp are unedited `phux snapshot --json`
+# viewports: the unprefixed ones from 17.1.2, the `v18_` ones from 18.6.1
+# (default `band` composer, plus the `field` shape as `v18_field_`). The
+# golden table in rules.rs pins each capture's OSC title next to it.
 
 kind = "omp"
 name = "omp"
@@ -11,8 +13,31 @@ name = "omp"
 # and matches this program-path basename without conflating OMP with Pi.
 binaries = ["omp"]
 
-# VERIFIED: active inference and tool execution paint an animated braille cell
-# and a bracketed escape hint in the live bottom status line.
+# VERIFIED (17.1.2 source, 18.6.1 live): OMP states its run state in the OSC
+# title separator, `π <sep> <label>`: `!` while a tool approval or the `ask`
+# tool waits on the user, `>` on the user's turn. It is OMP's own statement,
+# independent of symbol preset, theme and composer shape, so it outranks the
+# screen. `tui.titleState = false` (`π: label`) or an extension's `setTitle`
+# matches nothing here, leaving the screen rules below.
+[[rules]]
+id = "title-attention"
+state = "blocked"
+priority = 80
+region = "title"
+match = { line-regex = '^π !(?: |$)' }
+
+# VERIFIED: while working, the separator is one frame of the `tui.titleSpinner`
+# style: braille (default) or dots (braille block), pulse (moon phases), line
+# (`- \ | /`), or a static `:` under WSL and failed native Windows titles.
+[[rules]]
+id = "title-working-spinner"
+state = "working"
+priority = 60
+region = "title"
+match = { line-regex = '^π [⠀-⣿○◔◑◕●:|/\\-](?: |$)' }
+
+# VERIFIED (17.1.2): active inference and tool execution paint an animated
+# braille cell and a bracketed escape hint in the live bottom status line.
 [[rules]]
 id = "bottom-running-status"
 state = "working"
@@ -20,16 +45,31 @@ priority = 60
 region = "bottom-lines"
 match = { line-regex = '^\s*[⠀-⣿]\s+.+\s+⟦esc⟧\s*$' }
 
-# VERIFIED: OMP's per-tool approval is fenced by horizontal rules. Prompt-box
-# extraction yields only that live dialog; requiring both choices and the exact
-# navigation hint avoids matching a tool transcript after the dialog closes.
+# VERIFIED (18.6.1): the escape hint moved to a preset glyph ahead of the
+# working label (`⎋`, a Nerd Font icon, or `Esc`), so the backstop anchors on
+# the status line instead: an activity-spinner frame then the run's elapsed
+# time (`⠋ 1s`, `⠧ 1m 5s`). Idle swaps the spinner for a status glyph. Both
+# composer shapes keep that row within the last three.
+[[rules]]
+id = "status-spinner-elapsed"
+state = "working"
+priority = 60
+region = "bottom-lines(3)"
+match = { line-regex = '^\s*\S?\s*[⠀-⣿]\s+\d+(?:\.\d+)?[smh]\b' }
+
+# VERIFIED: OMP's per-tool approval is a live dialog: rule-fenced in 17.1.2, a
+# `╭─ Allow tool: … ─╮` box in 18.6.1. Prompt-box extraction yields only that
+# live dialog; requiring both choices and the navigation hint avoids matching a
+# tool transcript after the dialog closes. The selection marker and the hint's
+# key names follow the symbol preset (`❯`/a Nerd Font chevron/`>`, `up/down`/
+# `↑/↓`, `enter`/`⏎`/a Nerd Font icon), so each is one non-space token.
 [[rules]]
 id = "tool-approval-dialog"
 state = "blocked"
 priority = 80
 region = "prompt-box"
 match = { all = [
-  { line-regex = '^\s*❯\s*Approve\s*$' },
-  { line-regex = '^\s*Deny\s*$' },
-  { contains = "up/down navigate  enter select  esc cancel" },
+  { line-regex = '^(?:\S\s+)?Approve\s*$' },
+  { line-regex = '^(?:\S\s+)?Deny\s*$' },
+  { line-regex = '^\S+\s+navigate\s+\S+\s+select\s+\S+\s+cancel\s*$' },
 ] }
