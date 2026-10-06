@@ -59,6 +59,13 @@ pub(super) enum UpgradeError {
     /// The live session tree changed while pane actors prepared their replies.
     #[error("server state changed while collecting upgrade handoffs; retry the upgrade")]
     TreeChanged,
+    /// A pane in the tree has an exited engine its exit watcher has not
+    /// reaped yet. Same class as [`Self::TreeChanged`]: the reap is imminent.
+    #[error("pane {pane:?} is exiting and not yet reaped; retry the upgrade")]
+    PaneExiting {
+        /// The pane whose engine is gone.
+        pane: phux_core::ids::ResourceId,
+    },
     /// A pane must carry both sides of a PTY handoff or neither side.
     #[error("pane {pane:?} returned an invalid PTY handoff (master fd and child pid must match)")]
     InvalidPaneHandoff {
@@ -373,26 +380,26 @@ fn clear_inherited_cloexec(
     Ok(fd_flags)
 }
 
-/// Ask one pane's actor for its handoff. `Ok(None)` when its upgrade mailbox
-/// is closed: the receiver lives in the actor, which also owns the PTY
-/// master, so a closed mailbox means the engine is gone and no live PTY is
-/// left in this process to preserve. Any failure after the request was
-/// accepted (a dropped reply, a half PTY pair, the deadline) means a live
-/// actor could not hand off, and still aborts.
+/// Ask one pane's actor for its handoff. Only live tree Terminals are asked
+/// (see `ServerState::upgrade_handles`), so a closed upgrade mailbox means
+/// a pane whose engine already exited and whose exit watcher has not reaped
+/// it yet: [`UpgradeError::PaneExiting`], which a retry clears. Carrying it
+/// would resurrect a killed pane as a blank one that never exits. Any
+/// failure after the request was accepted (a dropped reply, a half PTY pair,
+/// the deadline) means a live actor could not hand off.
 async fn request_pane_handoff(
     pane: phux_core::ids::ResourceId,
     upgrade: &mpsc::Sender<UpgradeHandleRequest>,
-) -> Result<Option<PaneUpgradeHandle>, UpgradeError> {
+) -> Result<PaneUpgradeHandle, UpgradeError> {
     let (reply, rx) = oneshot::channel();
     if upgrade.send(UpgradeHandleRequest { reply }).await.is_err() {
         tracing::warn!(
             ?pane,
-            "upgrade: pane actor mailbox closed (engine already exited); \
-             it crosses without a PTY handoff"
+            "upgrade: pane engine already exited and is awaiting its reap; aborting for retry"
         );
-        return Ok(None);
+        return Err(UpgradeError::PaneExiting { pane });
     }
-    rx.await.map(Some).map_err(|_| UpgradeError::PaneHandoff {
+    rx.await.map_err(|_| UpgradeError::PaneHandoff {
         pane,
         reason: "actor dropped its reply",
     })
@@ -417,9 +424,7 @@ async fn collect_pane_handoffs(
             .collect::<FuturesUnordered<_>>();
         let mut handoffs = HashMap::with_capacity(pane_count);
         while let Some(result) = pending.next().await {
-            let (pane, Some(handoff)) = result? else {
-                continue;
-            };
+            let (pane, handoff) = result?;
             let pair_is_valid = matches!(
                 (&handoff.master_fd, handoff.child_pid),
                 (Some(_), Some(1..)) | (None, None)
@@ -825,33 +830,27 @@ mod tests {
         validate_binary(&path).expect("a coherent replacement image must pass");
     }
 
-    /// phux-twft: an engine whose upgrade mailbox is closed has already
-    /// exited (and dropped its PTY master); it is skipped, not fatal, and the
-    /// live panes beside it still hand off.
+    /// A tree pane whose engine exited but is not reaped yet aborts as
+    /// retryable, never staging a blob that would resurrect it as a blank
+    /// pane in the new image.
     #[tokio::test]
-    async fn pane_handoff_skips_an_actor_whose_mailbox_is_closed() {
+    async fn pane_handoff_with_a_closed_mailbox_aborts_for_retry() {
         let (dead, receiver) = mpsc::channel(1);
         drop(receiver);
-        let (live, mut live_rx) = mpsc::channel::<UpgradeHandleRequest>(1);
-        tokio::spawn(async move {
-            let request = live_rx.recv().await.unwrap();
-            let _ = request.reply.send(no_pty_handoff());
-        });
         let mut registry = phux_core::registry::Registry::new();
         let session = registry.new_session("s".to_owned());
         let window = registry.new_window(session).unwrap();
         let dead_pane = registry.new_terminal(window).unwrap();
-        let live_pane = registry.new_terminal(window).unwrap();
 
-        let handoffs = collect_pane_handoffs(
-            vec![(dead_pane, dead), (live_pane, live)],
-            Duration::from_secs(1),
-        )
-        .await
-        .expect("a dead engine must not abort the upgrade");
+        let err = collect_pane_handoffs(vec![(dead_pane, dead)], Duration::from_secs(1))
+            .await
+            .expect_err("an unreaped dead pane must not be staged");
 
-        assert!(handoffs.contains_key(&live_pane));
-        assert!(!handoffs.contains_key(&dead_pane));
+        assert!(matches!(err, UpgradeError::PaneExiting { pane } if pane == dead_pane));
+        assert!(
+            err.to_string().contains("retry the upgrade"),
+            "the user must be told to retry: {err}"
+        );
     }
 
     /// A live actor that accepted the request but never answered still
@@ -878,15 +877,16 @@ mod tests {
     /// `pane ResourceId(..) did not provide an upgrade handoff: actor mailbox
     /// closed` because the capture asked every handle in the resource table,
     /// including `AgentSession` engines (built with a closed upgrade
-    /// mailbox) and a handle whose engine had exited. Only live tree panes
-    /// are asked now, and the reversible preparation completes.
+    /// mailbox) and handles that had outlived their registry entry. Only
+    /// live tree panes are asked now, and the reversible preparation
+    /// completes with exactly the live pane.
     #[tokio::test(flavor = "current_thread")]
-    async fn upgrade_capture_ignores_agent_sessions_and_dead_engines() {
+    async fn upgrade_capture_ignores_agent_sessions_and_orphan_handles() {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
                 let state = SharedState::new();
-                let (live_pane, dead_pane, agent) = state.with_mut(|s| {
+                let (live_pane, orphan, agent) = state.with_mut(|s| {
                     let (sid, wid, live_pane) = s.seed_session("main");
                     let live = crate::terminal_actor::TerminalActor::new_with_seed(20, 5, b"live")
                         .unwrap();
@@ -898,12 +898,14 @@ mod tests {
                         live.actor.run(),
                     );
 
-                    // A tree pane whose engine already exited.
-                    let dead_pane = s.add_pane_to_session(sid).unwrap();
+                    // A leaked handle: its engine is gone and its registry
+                    // entry was removed without forgetting the handle.
+                    let orphan = s.add_pane_to_session(sid).unwrap();
                     let dead =
                         crate::terminal_actor::TerminalActor::new_with_seed(20, 5, b"").unwrap();
-                    let _ = s.register_resource_handle(dead_pane, dead.handle, dead.token);
+                    let _ = s.register_resource_handle(orphan, dead.handle, dead.token);
                     drop(dead.actor);
+                    let _ = s.registry_mut().remove_resource(orphan);
 
                     // An agent session bound to the live pane.
                     let facet = phux_core::resource::AgentFacet {
@@ -932,22 +934,23 @@ mod tests {
                         PathBuf::from("/nonexistent/phux.sock"),
                         RuntimeFlags::default(),
                     );
-                    (live_pane, dead_pane, agent)
+                    (live_pane, orphan, agent)
                 });
 
                 let context = capture_upgrade_context(&state).unwrap();
                 let asked: Vec<_> = context.pane_senders.iter().map(|(id, _)| *id).collect();
-                assert!(asked.contains(&live_pane));
+                assert_eq!(asked, vec![live_pane], "only the live tree pane is asked");
                 assert!(
                     !asked.contains(&agent),
                     "an agent session has no PTY to hand off"
                 );
+                assert!(!asked.contains(&orphan), "an orphan handle is not a pane");
 
                 let handoffs = collect_pane_handoffs(context.pane_senders, Duration::from_secs(2))
                     .await
-                    .expect("a dead engine or an agent session must not abort");
+                    .expect("an agent session or orphan handle must not abort");
+                assert_eq!(handoffs.len(), 1);
                 assert!(handoffs.contains_key(&live_pane));
-                assert!(!handoffs.contains_key(&dead_pane));
 
                 let blob = reassemble_unchanged_tree(
                     &state,
@@ -957,7 +960,14 @@ mod tests {
                     &handoffs,
                 )
                 .expect("the tree did not change");
-                assert_eq!(blob.panes.len(), 2, "both tree panes still cross");
+                assert_eq!(blob.panes.len(), 1, "only the live pane crosses");
+                assert!(
+                    blob.panes[0]
+                        .vt_replay_bytes
+                        .windows(4)
+                        .any(|w| w == b"live"),
+                    "the live pane carries its own handoff"
+                );
             })
             .await;
     }
