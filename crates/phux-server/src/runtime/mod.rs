@@ -985,7 +985,11 @@ fn install_hook_dispatcher(
     if catalog.is_empty() {
         return;
     }
-    let dispatcher = crate::hooks::spawn_hook_dispatcher(catalog, Some(socket_path));
+    let dispatcher = crate::hooks::spawn_hook_dispatcher(
+        catalog,
+        Some(socket_path),
+        Some(phux_plugin::run_log::default_path()),
+    );
     state.with_mut(|s| s.set_hook_dispatcher(dispatcher));
 }
 

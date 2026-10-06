@@ -2184,6 +2184,58 @@ mod tests {
         }
     }
 
+    /// `phux plugin log` parses its flags, refuses a non-numeric limit, and
+    /// its help names the bounded run log it reads.
+    #[test]
+    fn plugin_log_parses_flags_and_documents_the_run_log() {
+        use crate::commands::PluginAction;
+
+        assert!(matches!(
+            parsed(&["phux", "plugin", "log"]),
+            Command::Plugin {
+                action: PluginAction::Log {
+                    limit: None,
+                    failed: false,
+                    json: false,
+                }
+            }
+        ));
+        for argv in [
+            &["phux", "plugin", "log", "-n", "5", "--failed", "--json"][..],
+            &[
+                "phux", "plugin", "log", "--limit", "5", "--failed", "--json",
+            ][..],
+        ] {
+            assert!(matches!(
+                parsed(argv),
+                Command::Plugin {
+                    action: PluginAction::Log {
+                        limit: Some(5),
+                        failed: true,
+                        json: true,
+                    }
+                }
+            ));
+        }
+        assert!(crate::parse_cli(["phux", "plugin", "log", "-n", "many"]).is_err());
+
+        let plugin = Cli::command()
+            .subcommands
+            .iter()
+            .find(|sub| sub.name == "plugin")
+            .expect("plugin verb");
+        let log = plugin
+            .subcommands
+            .iter()
+            .find(|sub| sub.name == "log")
+            .expect("plugin log verb");
+        let page =
+            super::render_help_page(log, true, usage::help::Style::PLAIN).expect("plugin log help");
+        for needle in ["plugin-runs.jsonl", "--failed", "--limit", "--json", "hook"] {
+            assert!(page.contains(needle), "{needle} missing from:\n{page}");
+        }
+    }
+
     /// Alias parity, remove half (phux-i0e8.8.3): every remove-shaped
     /// registry verb answers to both spellings — including `plugin unlink`,
     /// whose canonical name predates the policy and now also answers to

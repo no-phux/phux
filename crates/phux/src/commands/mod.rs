@@ -2810,6 +2810,27 @@ pub(crate) enum PluginAction {
         #[usage(long)]
         json: bool,
     },
+
+    /// Show recent plugin action and hook runs, oldest first.
+    ///
+    /// Every plugin action run (a TUI keybinding, `phux config run`, the MCP
+    /// tool) and every server hook run appends one record to a bounded log
+    /// in the state directory (`plugin-runs.jsonl`): the newest 100 runs,
+    /// each with its exit status, duration, and the last 4 KiB of stdout
+    /// and stderr. Failed runs show the tail of their output.
+    Log {
+        /// How many of the newest runs to show; 20 when omitted.
+        #[usage(short = 'n', long, value_name = "NUM")]
+        limit: Option<u32>,
+
+        /// Show only runs that did not exit 0.
+        #[usage(long)]
+        failed: bool,
+
+        /// Emit a stable JSON document instead of human text.
+        #[usage(long)]
+        json: bool,
+    },
 }
 
 /// `phux workspace <action>` — workspace inspection and session archives.

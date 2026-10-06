@@ -1,13 +1,14 @@
 //! Shared plugin runtime surface for CLI and agent consumers.
 
 mod launch;
+pub mod run_log;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use phux_config::loader as config_loader;
 use phux_config::plugin::{self, PluginManifestAction};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
 pub use launch::{
@@ -133,7 +134,7 @@ pub struct PluginActionOutput {
 }
 
 /// Plugin action outcome.
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginActionOutcome {
     /// The process exited and output was captured.
@@ -217,6 +218,25 @@ pub async fn run_configured_action(
         stderr: output.stderr,
         duration_ms: output.duration_ms,
     })
+}
+
+/// [`run_configured_action`], then append the result (success or failure)
+/// to the current profile's run log ([`run_log`]) for `phux plugin log`.
+///
+/// # Errors
+///
+/// Exactly those of [`run_configured_action`]; logging is best effort.
+pub async fn run_configured_action_logged(
+    config_path: &Path,
+    request: &PluginActionRequest,
+) -> Result<PluginActionOutput, PluginActionError> {
+    let result = run_configured_action(config_path, request).await;
+    run_log::record_async(
+        run_log::default_path(),
+        run_log::RunRecord::from_action(request, &result),
+    )
+    .await;
+    result
 }
 
 /// Find the configured plugin's root and the requested action.

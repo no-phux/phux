@@ -151,8 +151,9 @@ pub struct PluginRunResult {
 }
 
 /// Run one plugin action off the input loop through
-/// [`phux_plugin::run_configured_action`] (the `phux config run` runtime),
-/// reporting on `tx`.
+/// [`phux_plugin::run_configured_action_logged`] (the `phux config run`
+/// runtime, which also records the run for `phux plugin log`), reporting on
+/// `tx`.
 pub fn spawn_plugin_action(
     tx: UnboundedSender<PluginRunResult>,
     plugin_id: String,
@@ -166,7 +167,7 @@ pub fn spawn_plugin_action(
             timeout: Some(PLUGIN_ACTION_TIMEOUT),
             cwd: None,
         };
-        let result = phux_plugin::run_configured_action(&config_path, &request)
+        let result = phux_plugin::run_configured_action_logged(&config_path, &request)
             .await
             .map_err(|err| err.to_string());
         let _ = tx.send(PluginRunResult {
