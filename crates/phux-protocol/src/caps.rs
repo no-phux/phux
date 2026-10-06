@@ -1058,6 +1058,10 @@ impl ServerFeatureSet {
 pub enum ServerFeatureExt {
     /// Host-side file/directory browsing and recursive fuzzy path search.
     PathQuery = 0x0000_0001,
+    /// `RESIZE_TERMINAL` carries and applies an optional cell pixel size
+    /// (fields 4/5, ADR-0145), so a client can size panes without a
+    /// viewport vote.
+    ResizeCellPx = 0x0000_0002,
 }
 
 /// Known bits in `HELLO_OK.server_caps.features_ext`.
@@ -1065,7 +1069,7 @@ pub enum ServerFeatureExt {
 pub struct ServerFeatureExtSet(u32);
 
 impl ServerFeatureExtSet {
-    const KNOWN: u32 = ServerFeatureExt::PathQuery as u32;
+    const KNOWN: u32 = ServerFeatureExt::PathQuery as u32 | ServerFeatureExt::ResizeCellPx as u32;
 
     /// No extended features.
     #[must_use]

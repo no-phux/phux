@@ -419,6 +419,13 @@ fn input_samples() -> Vec<FrameKind> {
             terminal_id: terminal(),
             cols: 80,
             rows: 24,
+            cell_px: None,
+        },
+        FrameKind::ResizeTerminal {
+            terminal_id: terminal(),
+            cols: 80,
+            rows: 24,
+            cell_px: Some((8, 16)),
         },
     ]
 }

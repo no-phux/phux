@@ -214,7 +214,7 @@ impl ServerState {
             .attached
             .get(&client_id)
             .is_some_and(|client| client.viewport.is_some_and(|v| v.cols > 0 && v.rows > 0));
-        let geometry_targets = voted.then(|| self.viewport_terminals(client_id));
+        let geometry_targets = self.viewport_terminals(client_id);
         self.clients.attached.remove(&client_id);
         // Drop local and satellite leases; the runtime already broadcast and
         // relayed the releases.
@@ -237,12 +237,12 @@ impl ServerState {
             sub.retire();
         }
         // Only a departing geometry vote changes what policy resolves. A
-        // client that attached without one (a GUI sizing each terminal
-        // explicitly) leaves those explicit sizes in place, so quitting and
-        // relaunching it does not reflow every shell twice.
-        if let Some(terminals) = geometry_targets {
-            self.restore_terminal_geometry_after_detach(terminals);
-        }
+        // client that attached without one (a GUI or the TUI sizing each
+        // terminal explicitly) leaves those explicit sizes in place, so
+        // quitting and relaunching it does not reflow every shell twice;
+        // the one exception is an unwatched pane left too small to use
+        // (ADR-0145).
+        self.restore_terminal_geometry_after_detach(geometry_targets, voted);
     }
 
     /// Forget `client_id`'s connection-scoped state after [`Self::detach`];

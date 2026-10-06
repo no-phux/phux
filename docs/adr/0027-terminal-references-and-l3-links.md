@@ -20,6 +20,7 @@ server never learns "view", "tag", or "link".
 Status: Accepted
 Date: 2026-06-05
 See [ADR-0104](./0104-parent-bindings-are-l1-lifecycle.md) for the parent relation: it moved to L1 lifecycle; `phux.link/v1` stays for advisory, client-defined relations.
+Superseded in part by [ADR-0145](./0145-the-tui-sizes-panes-and-casts-no-viewport-vote.md): the `window-size` policy no longer arbitrates panes a vote-free TUI sizes.
 
 ## Context
 

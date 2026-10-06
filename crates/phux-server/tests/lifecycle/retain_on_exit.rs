@@ -218,6 +218,7 @@ async fn assert_inert(h: &mut Harness, pane: &ResourceId, info: &ResourceInfo) {
             terminal_id: pane.clone(),
             cols: 120,
             rows: 40,
+            cell_px: None,
         },
     )
     .await;

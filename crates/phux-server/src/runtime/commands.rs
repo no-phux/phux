@@ -395,16 +395,18 @@ pub(crate) const EVENT_SINK_CAPACITY: usize = 64;
 pub(crate) const AGENT_STATE_SINK_CAPACITY: usize = 8;
 
 /// Handle a client's `RESIZE_TERMINAL` (L1 §3.1): set one Terminal's exact
-/// size, bypassing the window-size policy, so a headless caller can size a
-/// pane. A later view-derived recompute may supersede it (tui.md §4.2).
+/// size (and, when carried, its cell pixel size), bypassing the window-size
+/// policy, so a headless caller or a layout-owning client can size a pane. A later view-derived recompute may supersede it (tui.md §4.2).
 /// There is no reply frame, so not-found paths log and drop.
 pub(crate) fn handle_terminal_resize(
     state: &SharedState,
     client_id: ClientId,
     wire_terminal_id: &phux_protocol::ids::ResourceId,
-    cols: u16,
-    rows: u16,
+    (cols, rows): (u16, u16),
+    cell_px: Option<(u16, u16)>,
 ) {
+    // ADR-0145: a degenerate cell is no cell size; keep the last one.
+    let cell_px = cell_px.filter(|&(w, h)| w > 0 && h > 0);
     state.with_mut(|s| {
         let local = match s.resolve_resource(wire_terminal_id).into_owned() {
             ResolvedOwned::Remote(route) => {
@@ -417,6 +419,7 @@ pub(crate) fn handle_terminal_resize(
                         terminal_id: id,
                         cols,
                         rows,
+                        cell_px,
                     },
                 ) {
                     warn!(
@@ -460,8 +463,8 @@ pub(crate) fn handle_terminal_resize(
                 return;
             }
         };
-        // No pixel size rides this frame, so the actor keeps its last one.
-        if try_resize(terminal, (cols, rows), None, "RESIZE_TERMINAL", client_id)
+        // Without a cell size (ADR-0145) the actor keeps its last one.
+        if try_resize(terminal, (cols, rows), cell_px, "RESIZE_TERMINAL", client_id)
             && let Some(pane) = s.registry_mut().terminal_mut(local.id)
         {
             pane.dims = (cols, rows);

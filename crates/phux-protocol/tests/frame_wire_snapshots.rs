@@ -931,9 +931,58 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                 terminal_id: ResourceId::local(0x0000_002A),
                 cols: 80,
                 rows: 24,
+                cell_px: None,
+            },
+        ),
+        (
+            "snap_terminal_resize_cell_px",
+            FrameKind::ResizeTerminal {
+                terminal_id: ResourceId::local(0x0000_002A),
+                cols: 80,
+                rows: 24,
+                cell_px: Some((9, 18)),
             },
         ),
     ]
+}
+
+/// ADR-0145: the cell-size fields are appended after `rows`, so a frame
+/// without them is byte-identical to the pre-field shape, and a frame that
+/// carries only one axis decodes as "no cell size" rather than half of one.
+#[test]
+fn resize_terminal_cell_px_is_an_appended_optional_pair() {
+    let encode = |cell_px| {
+        let mut buf = BytesMut::new();
+        FrameKind::ResizeTerminal {
+            terminal_id: ResourceId::local(0x2A),
+            cols: 80,
+            rows: 24,
+            cell_px,
+        }
+        .encode(&mut buf);
+        buf.to_vec()
+    };
+    let without = encode(None);
+    let with = encode(Some((9, 18)));
+    // Same field prefix (after the length word); the pair is a 10-byte tail.
+    assert_eq!(with.len(), without.len() + 10);
+    assert_eq!(with[4..without.len()], without[4..]);
+
+    // Drop the trailing CELL_HEIGHT_PX field and fix the length word.
+    let mut half = with[..with.len() - 5].to_vec();
+    let body_len = u32::try_from(half.len() - 4).unwrap();
+    half[..4].copy_from_slice(&body_len.to_be_bytes());
+    let (decoded, rest) = FrameKind::decode(&half).unwrap();
+    assert!(rest.is_empty());
+    assert_eq!(
+        decoded,
+        FrameKind::ResizeTerminal {
+            terminal_id: ResourceId::local(0x2A),
+            cols: 80,
+            rows: 24,
+            cell_px: None,
+        }
+    );
 }
 
 /// Every fixture's hex dump matches its committed golden byte-for-byte.

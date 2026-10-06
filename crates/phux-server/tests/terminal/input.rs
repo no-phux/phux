@@ -349,6 +349,7 @@ fn route_input_delivers_keys_without_resizing_the_pane() {
             terminal_id: pane.clone(),
             cols: 120,
             rows: 40,
+            cell_px: None,
         };
         send_frame(&mut attached, &resize).await;
         let dims = |s: &phux_core::screen::ScreenState| (s.cols, s.rows) == (120, 40);

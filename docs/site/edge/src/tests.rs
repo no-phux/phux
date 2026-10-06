@@ -129,6 +129,7 @@ fn resize(session: &mut EdgeSession, id: ResourceId, cols: u16, rows: u16) -> Ve
             terminal_id: id,
             cols,
             rows,
+            cell_px: None,
         },
     )
 }

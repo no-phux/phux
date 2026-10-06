@@ -428,7 +428,8 @@ ServerFeature = bitset (u32) {
 }
 
 ServerFeatureExt = bitset (u32) {
-    PATH_QUERY = 0x00000001, // L3 host path browse + fuzzy search (§5)
+    PATH_QUERY     = 0x00000001, // L3 host path browse + fuzzy search (§5)
+    RESIZE_CELL_PX = 0x00000002, // RESIZE_TERMINAL cell size (L1 §3.1)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -509,6 +510,10 @@ ignore unknown bits in either word. Per [ADR-0137](../adr/0137-server-feature-wo
 `0x80000000` and the low holes in word 0 are not allocated. The first word-1
 bit is `features_ext.PATH_QUERY = 0x00000001` ([L3.md](./L3.md) §5);
 its absence forbids both `PATH_QUERY` browse and recursive search.
+`features_ext.RESIZE_CELL_PX = 0x00000002` ([L1.md](./L1.md) §3.1,
+[ADR-0145](../adr/0145-the-tui-sizes-panes-and-casts-no-viewport-vote.md))
+says the server applies `RESIZE_TERMINAL`'s optional cell pixel size, so a
+client may size its Terminals without a viewport vote.
 `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `MOVE_RESOURCE = 0x40`, `TERMINAL_REPLY = 0x80`, `SHUTDOWN = 0x100`,
 `SPAWN_INITIAL_SIZE = 0x200`, `REPORT_AGENT_STATE = 0x400`,

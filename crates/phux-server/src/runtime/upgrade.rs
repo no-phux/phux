@@ -1112,7 +1112,25 @@ mod tests {
                     Err(crate::resource::agent_session::AppendRejection::Overflow(_))
                 ));
                 drop(seal);
-                let next = append_records(&append, "{\"type\":\"stop\"}").await;
+                // Drop only queues the unseal. The actor's `select` may take
+                // the append first, which is the same sealed refusal a client
+                // retries; that refusal consumes no sequence.
+                let next = {
+                    let mut accepted = None;
+                    for _ in 0..8 {
+                        match try_append(&append, "{\"type\":\"stop\"}").await {
+                            Ok(value) => {
+                                accepted = Some(value);
+                                break;
+                            }
+                            Err(crate::resource::agent_session::AppendRejection::Overflow(_)) => {
+                                tokio::task::yield_now().await;
+                            }
+                            Err(rejection) => panic!("unseal retry saw {rejection:?}"),
+                        }
+                    }
+                    accepted.expect("dropping the seal unseals the stream")
+                };
                 assert_eq!(next.first_seq, 2, "the refusal consumed no sequence");
             })
             .await;

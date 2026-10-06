@@ -141,11 +141,29 @@ pub(super) fn attach_client_name() -> String {
     format!("phux-client/{}", env!("CARGO_PKG_VERSION"))
 }
 
-/// Send the `ATTACH` frame using the current terminal viewport.
+/// ADR-0145: the server applies `RESIZE_TERMINAL`'s cell size, so the TUI
+/// sizes every pane itself and casts no window-size vote.
+pub(super) fn sizes_panes_itself(conn: &Connection) -> bool {
+    conn.negotiated_bootstrap().is_some_and(|negotiated| {
+        negotiated
+            .server_features_ext
+            .contains(phux_protocol::ServerFeatureExt::ResizeCellPx)
+    })
+}
+
+/// Send the TUI's `ATTACH`. Against a server that applies per-pane cell
+/// size it carries no size vote (ADR-0145): the outer window is not any
+/// pane's size, and voting it resized every pane twice per attach (outer
+/// window, then tile), which tore output written for the first width.
+/// An older server still gets the outer-viewport vote, its only source of
+/// cell pixel size.
 pub(super) async fn send_attach(
     conn: &mut Connection,
     target: AttachTarget,
 ) -> Result<u32, AttachError> {
+    if sizes_panes_itself(conn) {
+        return send_attach_without_size_vote(conn, target).await;
+    }
     let viewport = current_viewport()?;
     send_attach_with_viewport(conn, target, viewport).await
 }

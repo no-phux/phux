@@ -197,6 +197,7 @@ impl ControlPlane {
                 terminal_id: terminal_id.clone(),
                 cols,
                 rows,
+                cell_px: None,
             });
         }
         request_id

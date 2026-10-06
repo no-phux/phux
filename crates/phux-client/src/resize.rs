@@ -55,6 +55,7 @@ pub async fn resize_to(
         terminal_id: pane.clone(),
         cols: cols.get(),
         rows: rows.get(),
+        cell_px: None,
     })
     .await?;
     let (snapshot, degradation) = get_state_on(&mut conn).await?.into_parts();
