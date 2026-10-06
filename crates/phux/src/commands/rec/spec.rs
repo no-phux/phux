@@ -44,7 +44,8 @@ impl From<RecFormat> for OutputFormat {
 /// 2. Otherwise the extension decides, case-insensitively: `cast`, `gif`, or
 ///    `png`/`apng` (APNG).
 /// 3. No extension means GIF, with `.gif` appended.
-/// 4. An unknown extension is an error naming the three.
+/// 4. An unknown extension is an error naming the accepted ones.
+/// 5. A path whose directory does not exist is refused up front.
 pub(crate) fn plan(out: &Path, explicit: Option<RecFormat>) -> Result<RecordSpec, ExitCode> {
     let extension = out
         .extension()
@@ -74,11 +75,25 @@ pub(crate) fn plan(out: &Path, explicit: Option<RecFormat>) -> Result<RecordSpec
             // quoting, so `demo.mp4` reports `unknown output extension "mp4"`.
             eprintln!(
                 "phux: rec: unknown output extension {other:?}; \
-                 use .cast, .gif, or .png, or pass --format"
+                 use .cast, .gif, .png, or .apng, or pass --format"
             );
             return Err(ExitCode::FAILURE);
         }
     };
+
+    // Refused before anything is captured: a missing directory would
+    // otherwise surface only at write time, after the whole recording.
+    if let Some(parent) = final_path.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.is_dir()
+    {
+        eprintln!(
+            "phux: rec: cannot write {}: {} is not a directory",
+            final_path.display(),
+            parent.display()
+        );
+        return Err(ExitCode::FAILURE);
+    }
 
     let (cast_path, cast_is_temp) = if format == OutputFormat::Cast {
         (final_path.clone(), false)
@@ -235,5 +250,16 @@ mod tests {
                 .to_string_lossy()
                 .contains(&std::process::id().to_string())
         );
+    }
+
+    /// A missing output directory is refused before capture starts, not
+    /// discovered at write time after the whole recording.
+    #[test]
+    fn refuses_a_missing_output_directory_up_front() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("no-such-dir/demo.cast");
+        assert!(plan(&missing, None).is_err());
+        let present = dir.path().join("demo.cast");
+        assert_eq!(plan(&present, None).expect("planned").final_path, present);
     }
 }
