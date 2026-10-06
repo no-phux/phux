@@ -205,7 +205,7 @@ fn inbox_lines(keybindings: Option<&KeybindingsCfg>, sidebar_visible: bool) -> V
     if sidebar_visible {
         vec![
             String::new(),
-            format!("{blocked} blocked  {working} working"),
+            format!("  {blocked} blocked  {working} working"),
         ]
     } else {
         let sidebar = binding_label(keybindings, "toggle-sidebar", "Toggle sidebar");
