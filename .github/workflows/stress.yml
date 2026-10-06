@@ -13,12 +13,11 @@
 # the biggest Actions-minute sink for little signal, so it was dropped in
 # favor of opt-in lanes.)
 #
-# Build+run stay on one runner (matching ci.yml): libghostty-vt's build.rs
-# lets zig auto-detect the host CPU, so an artifact built on one runner can
-# SIGILL on another. The CPU-fingerprinted cache key keeps native artifacts
-# pinned to matching hardware. Cachix persists the devshell, while `save-if`
-# confines rust-cache writes to `main` — see ci.yml for the shared 10 GB
-# GitHub cache rationale. Pull requests can read the public Cachix cache but
+# Build+run stay on one runner (matching ci.yml). Cachix persists the
+# devshell, and the mbx build cache restores what main's ci.yml test lane
+# saved; this lane never saves (dispatch and label runs are restore-only) —
+# see .github/actions/setup-rust-lane for the shared 10 GB GitHub cache
+# rationale. Pull requests can read the public Cachix cache but
 # cannot push because GitHub withholds repository secrets from forks.
 
 name: stress
@@ -46,20 +45,19 @@ jobs:
     # workflow_dispatch always runs; a pull_request fires this lane
     # only when tagged with the `stress` label.
     if: ${{ github.event_name != 'pull_request' || github.event.label.name == 'stress' }}
-    # Match ci.yml's standard ARM runner and CPU-fingerprinted cache.
+    # Match ci.yml's standard ARM runner, so main's test-lane cache applies.
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Shared lane setup (disk headroom, CPU fingerprint, Nix + Cachix,
-      # sccache, rust-cache): .github/actions/setup-rust-lane. This lane
-      # builds the nextest test profile, so it shares ci.yml's `test`
-      # rust-cache key — the opt-in run reuses what main's CI saved instead
-      # of maintaining a third copy.
+      # Shared lane setup (disk headroom, Nix + Cachix, mbx build cache):
+      # .github/actions/setup-rust-lane. This lane builds the nextest test
+      # profile, so it shares ci.yml's `test` cache lane — the opt-in run
+      # reuses what main's CI saved instead of maintaining a third copy.
       - uses: ./.github/actions/setup-rust-lane
         id: setup
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          rust-cache-shared-key: test
+          cache-lane: test
       # Timed + junit-instrumented like ci.yml's lanes (ADR-0082): the storms
       # are exactly where per-test wall times matter, since CPU starvation on
       # the 2-core runner is this suite's known failure mode.
@@ -72,6 +70,6 @@ jobs:
       - name: lane signal
         if: always()
         env:
-          PHUX_CACHE_HIT: ${{ steps.setup.outputs.rust-cache-hit }}
+          PHUX_CACHE_HIT: ${{ steps.setup.outputs.cache-hit }}
           PHUX_JUNIT: target/nextest/ci/junit.xml
         run: bash scripts/ci/summarize-job.sh

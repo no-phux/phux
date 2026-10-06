@@ -58,17 +58,18 @@ class RunnerPolicyTests(unittest.TestCase):
 
         A `refs/pull/N/merge` entry is restorable only from that PR, so any PR
         write is unreachable bytes that evict the warm `main` entries all lanes
-        restore from. sccache is the sharp edge: its GHA backend stores one
-        entry per compilation object, thousands per lane.
+        restore from. The mbx action saves only from pushes to the default
+        branch unless an input opts other events in, so the lane must name
+        none of those inputs.
         """
         lane = (ROOT / ".github/actions/setup-rust-lane/action.yml").read_text()
-        self.assertIn(
-            "SCCACHE_RW_MODE: ${{ github.ref == 'refs/heads/main' "
-            "&& 'READ_WRITE' || 'READ_ONLY' }}",
-            lane,
-        )
-        self.assertIn('echo "SCCACHE_GHA_RW_MODE=${SCCACHE_RW_MODE}"', lane)
-        self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' }}", lane)
+        self.assertIn("uses: jdx/mr-boxington-action@", lane)
+        for opt_in in ("save-on-pull-request", "save-on-workflow-dispatch",
+                       "save-on-protected-branch"):
+            self.assertNotIn(opt_in, lane)
+        for workflow in ("ci.yml", "stress.yml"):
+            body = (WORKFLOWS / workflow).read_text()
+            self.assertNotIn("mr-boxington-action", body)
 
     def test_linux_release_keeps_glibc_2204_userspace_without_retired_runners(self):
         for name, body in (("release.yml", RELEASE), ("next-release.yml", NEXT_RELEASE)):

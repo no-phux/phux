@@ -14,7 +14,7 @@
 # Inputs (environment):
 #   PHUX_LANE_DIR      where timed.sh wrote phases.ndjson
 #                      (default target/lane-signal)
-#   PHUX_CACHE_HIT     rust-cache's cache-hit output ("true"/"false"/"")
+#   PHUX_CACHE_HIT     the mbx action's cache-hit output ("true"/"false"/"")
 #   PHUX_DOCS_ONLY     "true" when the docs-only gate skipped the lane
 #   PHUX_JUNIT         path to a nextest junit.xml (optional)
 #   GITHUB_*           standard Actions metadata (optional; blank locally)
@@ -93,9 +93,9 @@ summary=$(mktemp)
         echo
     fi
     case "${PHUX_CACHE_HIT:-}" in
-    true) echo "- rust-cache: hit" ;;
-    false) echo "- rust-cache: **miss** (cold build)" ;;
-    *) echo "- rust-cache: n/a" ;;
+    true) echo "- build cache: exact hit" ;;
+    false) echo "- build cache: **miss** (restored an older entry, or cold)" ;;
+    *) echo "- build cache: n/a" ;;
     esac
     if [ "${target_size:-0}" -gt 0 ]; then
         echo "- target dir: $((target_size / 1024 / 1024)) MiB"

@@ -1,7 +1,7 @@
 # Root validation: compile-free guards, independently routed Node integrations,
 # and two Rust lanes. All compile/run phases retain their own target directory:
 # check shares Clippy/rustdoc artifacts; test shares unit/e2e artifacts. Native
-# artifacts remain CPU-keyed by setup-rust-lane (libghostty detects host CPU).
+# compilations, build scripts, and links restore from setup-rust-lane's mbx cache.
 # The required `ci` aggregate owns the explicit skip/failure policy.
 name: ci
 
@@ -58,7 +58,7 @@ jobs:
 
   # Always check cheap contracts, including mixed and docs-only changes. Resolve
   # only these tools from the pinned nixpkgs input: no devshell, Rust or Zig
-  # realization, sccache setup, or target-cache restore on this runner.
+  # realization or build-cache restore on this runner.
   workflow-gate:
     name: workflow gate
     needs: changes
@@ -133,7 +133,7 @@ jobs:
         id: setup
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          rust-cache-shared-key: check
+          cache-lane: check
       - name: rust checks (fmt + clippy + doc + deny)
         run: |
           nix develop -c bash -euo pipefail <<'EOF'
@@ -145,13 +145,13 @@ jobs:
           timed features just build-features-check
           timed feature-compile just build-features-compile
           EOF
-      - name: sccache stats
+      - name: mbx stats
         if: always()
-        run: sccache --show-stats || true
+        run: mbx stats || true
       - name: lane signal
         if: always()
         env:
-          PHUX_CACHE_HIT: ${{ steps.setup.outputs.rust-cache-hit }}
+          PHUX_CACHE_HIT: ${{ steps.setup.outputs.cache-hit }}
           PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
         run: bash scripts/ci/summarize-job.sh
 
@@ -170,8 +170,7 @@ jobs:
         id: setup
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          rust-cache-shared-key: test
-          cache-workspace-crates: "true"
+          cache-lane: test
       - name: tests (unit + e2e)
         env:
           # Pushes to main keep the full unit pool. PRs and merge groups use
@@ -193,13 +192,13 @@ jobs:
             timed e2e    just e2e
           fi
           EOF
-      - name: sccache stats
+      - name: mbx stats
         if: always()
-        run: sccache --show-stats || true
+        run: mbx stats || true
       - name: lane signal
         if: always()
         env:
-          PHUX_CACHE_HIT: ${{ steps.setup.outputs.rust-cache-hit }}
+          PHUX_CACHE_HIT: ${{ steps.setup.outputs.cache-hit }}
           PHUX_DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
           PHUX_JUNIT: target/nextest/ci/junit.xml
         run: bash scripts/ci/summarize-job.sh

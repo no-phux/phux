@@ -137,7 +137,7 @@ with wall-clock ceilings a loaded laptop can miss; `just ci-full` includes it.
 Native environment smoke runs in `native-setup.yml` (Linux; reproduce with
 `just native-smoke`) and `cockpit-ci.yml` (macOS). These have no local
 equivalent: the draft/docs-only `changes` routing job, caching (Cachix,
-rust-cache, sccache), CI step summaries (`scripts/ci/timed.sh`, ADR-0082; use
+mbx's GitHub Actions cache, rust-cache), CI step summaries (`scripts/ci/timed.sh`, ADR-0082; use
 `just dep-stats` or `just timings` locally), the post-merge/nightly `stress`
 workflow (run `just stress` locally; 2-core runners starve the current-thread
 runtime), commit-message linting, and the release/publish lanes

@@ -334,12 +334,13 @@
             ''
             # After the CARGO_HOME prepend, so a rustup `cargo` there cannot
             # shadow the wrapper; the wrapper delegates to the next `cargo` on
-            # PATH. Hosted CI keeps plain Cargo: its lanes are budgeted around
-            # sccache and rust-cache (.github/actions/setup-rust-lane), and a
-            # second cache layer there is a separate decision. PHUX_NO_MBX=1
+            # PATH. CI keeps plain Cargo unless the job opts in with
+            # PHUX_CI_MBX=1, as the hosted Rust lanes do once
+            # .github/actions/setup-rust-lane has set up mbx's GitHub cache;
+            # release and other CI jobs stay on plain Cargo. PHUX_NO_MBX=1
             # opts a local shell out the same way.
             + pkgs.lib.optionalString (mbxPinned != null) ''
-              if [ -z "''${CI:-}" ] && [ -z "''${PHUX_NO_MBX:-}" ]; then
+              if { [ -z "''${CI:-}" ] || [ -n "''${PHUX_CI_MBX:-}" ]; } && [ -z "''${PHUX_NO_MBX:-}" ]; then
                 export PATH="${mbxPinned}/libexec/mbx:$PATH"
               fi
             ''
