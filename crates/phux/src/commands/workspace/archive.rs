@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -19,7 +19,7 @@ use crate::commands::spawn::dispatch_spawn_async;
 use crate::commands::{cli_runtime, partial, report_no_server};
 
 mod bridge;
-mod model;
+pub(crate) mod model;
 mod snapshot;
 
 use model::{ARCHIVE_SCHEMA_VERSION, RestoreSummary, WorkspaceWindow, parse_archive, restore_plan};
@@ -230,33 +230,64 @@ pub(super) fn run_restore(archive_path: &Path, socket: Option<PathBuf>) -> ExitC
         Ok(rt) => rt,
         Err(code) => return code,
     };
-    let existing = match rt.block_on(fetch_existing_sessions(&socket_path)) {
-        Ok(existing) => existing,
-        Err(code) => return code,
+    let summary = match rt.block_on(restore_archive(&socket_path, &archive, "workspace restore")) {
+        Ok(summary) => summary,
+        Err(RestoreError::Reported(code)) => return code,
+        Err(RestoreError::Failed(err)) => return fail(&err),
     };
-    let plan = match restore_plan(&archive, &existing) {
-        Ok(plan) => plan,
-        Err(err) => return fail(&err),
-    };
+    for failed in &summary.failed {
+        eprintln!(
+            "phux: workspace restore: session {:?} failed: {}",
+            failed.name, failed.reason
+        );
+    }
+    let any_failed = !summary.failed.is_empty();
+    let print_code = render_restore_summary(&summary);
+    if any_failed {
+        ExitCode::FAILURE
+    } else {
+        print_code
+    }
+}
+
+/// Why [`restore_archive`] produced no summary at all.
+pub(crate) enum RestoreError {
+    /// The diagnostic is already on stderr; exit with this code.
+    Reported(ExitCode),
+    /// Nothing printed yet: report this message.
+    Failed(String),
+}
+
+/// Restore the sessions of an already-validated `archive` that are missing
+/// on the server at `socket_path`: the engine behind `workspace restore`,
+/// shared with `phux project open` (ADR-0152). Each failed session is rolled
+/// back and reported in the summary rather than aborting the rest.
+pub(crate) async fn restore_archive(
+    socket_path: &Path,
+    archive: &model::WorkspaceArchive,
+    verb: &str,
+) -> Result<RestoreSummary, RestoreError> {
+    let existing = fetch_existing_sessions(socket_path, verb)
+        .await
+        .map_err(RestoreError::Reported)?;
+    let plan = restore_plan(archive, &existing).map_err(RestoreError::Failed)?;
     // Only a seed pane with an embedded agent session needs the atomic-create
     // path.
     if plan
         .creates
         .iter()
         .any(|create| create.agent_session.is_some())
-        && let Err(code) = rt.block_on(preflight_atomic_agent_session_create(&socket_path))
     {
-        return code;
+        preflight_atomic_agent_session_create(socket_path)
+            .await
+            .map_err(RestoreError::Reported)?;
     }
-
-    // One session's restore failure rolls back that session and the loop
-    // continues; the process exits non-zero if anything failed.
     let mut restored = Vec::with_capacity(plan.creates.len());
     let mut failed = Vec::new();
     let mut warnings = Vec::new();
     for create in plan.creates {
         let name = create.name.clone();
-        match rt.block_on(restore_one_session(&socket_path, create)) {
+        match restore_one_session(socket_path, create).await {
             Ok(outcome) => {
                 warnings.extend(outcome.warnings.into_iter().map(|message| {
                     model::RestoreWarning {
@@ -266,26 +297,16 @@ pub(super) fn run_restore(archive_path: &Path, socket: Option<PathBuf>) -> ExitC
                 }));
                 restored.push(name);
             }
-            Err(reason) => {
-                eprintln!("phux: workspace restore: session {name:?} failed: {reason}");
-                failed.push(model::FailedRestore { name, reason });
-            }
+            Err(reason) => failed.push(model::FailedRestore { name, reason }),
         }
     }
-
-    let any_failed = !failed.is_empty();
-    let print_code = render_restore_summary(&RestoreSummary {
+    Ok(RestoreSummary {
         schema_version: ARCHIVE_SCHEMA_VERSION,
         restored,
         skipped_existing: plan.skipped_existing,
         failed,
         warnings,
-    });
-    if any_failed {
-        ExitCode::FAILURE
-    } else {
-        print_code
-    }
+    })
 }
 
 /// Read the archive document (a path or `-` for stdin) and parse it.
@@ -327,7 +348,7 @@ async fn restore_one_session(
     );
     let env = seed_prepared
         .as_ref()
-        .map_or_else(BTreeMap::new, |session| session.env.clone());
+        .map_or_else(|| create.env.clone(), |session| session.env.clone());
     let cwd = seed_prepared.as_ref().map_or_else(
         || create.cwd.clone(),
         |session| Some(session.cwd.display().to_string()),
@@ -486,7 +507,11 @@ async fn spawn_owned_pane(
         warnings,
     )?;
     let (command, cwd, env) = prepared.as_ref().map_or_else(
-        || (pane.command.clone(), pane.cwd.clone(), None),
+        || {
+            let env =
+                (!pane.env.is_empty()).then(|| pane.env.clone().into_iter().collect::<Vec<_>>());
+            (pane.command.clone(), pane.cwd.clone(), env)
+        },
         |session| {
             (
                 Some(session.argv.clone()),
@@ -757,7 +782,7 @@ fn read_archive_text(path: &Path) -> Result<String, String> {
 /// The session names already on the server, for restore's collision check.
 /// Session lists never aggregate across a federation, so degradation cannot
 /// hide a name.
-async fn fetch_existing_sessions(socket_path: &Path) -> Result<Vec<String>, ExitCode> {
+async fn fetch_existing_sessions(socket_path: &Path, verb: &str) -> Result<Vec<String>, ExitCode> {
     phux_client::state::get_state(socket_path)
         .await
         .map(|view| {
@@ -767,7 +792,7 @@ async fn fetch_existing_sessions(socket_path: &Path) -> Result<Vec<String>, Exit
                 .map(|session| session.name)
                 .collect()
         })
-        .map_err(|err| report_no_server(&err, socket_path, "workspace restore"))
+        .map_err(|err| report_no_server(&err, socket_path, verb))
 }
 
 fn fail(message: &str) -> ExitCode {
@@ -839,6 +864,7 @@ mod tests {
                     cwd: None,
                     command: None,
                     agent_session: None,
+                    env: std::collections::BTreeMap::new(),
                     cols: 0,
                     rows: 0,
                 })

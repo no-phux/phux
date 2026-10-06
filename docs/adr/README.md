@@ -183,6 +183,7 @@ column is the base status word plus at most one relationship clause, about
 | [0149](./0149-relay-routes-ride-the-tls-server-name-everywhere.md) | Relay routes ride the TLS server name everywhere | Accepted (builds on [0052](./0052-connector-route-identity-and-config.md), [0057](./0057-minimal-reference-relay.md)) |
 | [0150](./0150-the-server-keeps-the-restore-archive-current.md) | The server keeps the restore archive current | Accepted (amends [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md)) |
 | [0151](./0151-live-agent-sessions-bridge-into-native-restore.md) | Live agent sessions bridge into native restore | Accepted (builds on [0068](./0068-native-agent-session-restore.md), [0103](./0103-agent-session-resource-and-producer-fed-streams.md)) |
+| [0152](./0152-project-recipes-run-only-approved-bytes.md) | Project recipes run only approved bytes | Accepted (builds on [0054](./0054-worktree-bound-sessions.md), [0129](./0129-projections-are-named-by-key.md)) |
 
 ## When to write an ADR
 

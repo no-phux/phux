@@ -500,7 +500,7 @@ pub(crate) const BANNER: &str = concat!("phux ", env!("PHUX_VERSION_LABEL"));
 
 /// Whether this invocation enters the TUI (raw mode + alt screen) and must
 /// keep logs off stderr: `attach`, `host attach`, naked `phux`, `new` without
-/// `--json`, and `worktree new|open --attach`.
+/// `--json`, `worktree new|open --attach`, and `project open` without `--json`.
 const fn is_interactive_client(cli: &Cli) -> bool {
     match &cli.command {
         Some(
@@ -515,7 +515,12 @@ const fn is_interactive_client(cli: &Cli) -> bool {
             },
         )
         | None => true,
-        Some(Command::New { json, .. }) => !*json,
+        Some(
+            Command::New { json, .. }
+            | Command::Project {
+                action: commands::ProjectAction::Open { json, .. },
+            },
+        ) => !*json,
         _ => false,
     }
 }
@@ -1431,6 +1436,7 @@ fn dispatch(
         Some(Command::Mcp { .. }) => ExitCode::FAILURE,
         Some(Command::Skill { scope }) => skill::run(scope),
         Some(Command::Worktree { action }) => commands::worktree::run_worktree(&action, socket),
+        Some(Command::Project { action }) => commands::project::run_project(&action, socket),
         Some(Command::Doctor { json }) => commands::doctor::run_doctor(json, socket),
         Some(Command::Logs {
             server,

@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    connector::ConnectorConfigEntry, plugin::PluginConfigEntry, remote::RemoteConfigEntry,
-    satellite::SatelliteConfigEntry,
+    connector::ConnectorConfigEntry, plugin::PluginConfigEntry, project::ProjectConfigEntry,
+    remote::RemoteConfigEntry, satellite::SatelliteConfigEntry,
 };
 
 /// Top-level config (`docs/consumers/tui.md` §4.2).
@@ -40,6 +40,8 @@ pub struct Config {
     /// Remote servers this machine attaches to (ADR-0055), written by
     /// `phux host add`.
     pub remote: Vec<RemoteConfigEntry>,
+    /// Named projects `phux project open NAME` resolves (ADR-0152).
+    pub projects: Vec<ProjectConfigEntry>,
     /// Color slots: free-form `slot -> color` strings.
     pub theme: ThemeCfg,
     /// Opt-in unstable features; may change without notice.

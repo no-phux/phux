@@ -3,7 +3,7 @@ use std::process::{Command, ExitCode};
 
 use crate::commands::WorkspaceAction;
 
-mod archive;
+pub(crate) mod archive;
 
 pub(crate) use archive::AutosaveArchiver;
 

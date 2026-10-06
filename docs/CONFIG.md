@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-09-27
+last-reviewed: 2026-10-06
 ---
 
 # Configuration and keybindings
@@ -415,6 +415,64 @@ Detach and re-attach. `prefix-b` toggles it for the life of that attach.
 files, never inline. Enroll a host with the commands in
 [Remote access](./remote-access.md); do not hand-edit a token into
 `config.toml`.
+
+---
+
+## Project recipes
+
+A checkout can describe the session it wants in `.phux/project.toml`.
+`phux project open` (alias `phux p open`) attaches to the checkout's
+session, building it from the recipe first when it is not running; a live
+session is reopened as it is and the recipe is never rerun. Without a
+recipe, `open` starts one shell at the checkout root.
+
+```toml
+env = { RUST_BACKTRACE = "1" }
+focus = "code.agent"
+
+[[windows]]
+id = "code"
+name = "code"
+panes = [
+  { id = "editor", command = ["nvim", "."], exec = true },
+  { id = "agent", command = ["claude"],
+    split = { target = "editor", direction = "right", ratio = 0.55 } },
+]
+
+[[windows]]
+name = "dev"
+cwd = "web"
+panes = [{ command = ["npm", "run", "dev"], env = { PORT = "3000" } }]
+```
+
+Commands are argument vectors, never shell strings. A pane without
+`exec = true` drops back to your shell when its command exits. `cwd` is
+relative to the checkout root; `env` layers recipe, then window, then pane.
+Every pane after a window's first needs a `split` naming an earlier pane.
+
+A recipe runs commands, so phux runs it only after you approve its exact
+bytes on this machine. An interactive `open` shows it and asks;
+`phux project trust` approves it ahead of time, and `untrust` withdraws the
+approval. One approval covers every worktree of the repository, and changing
+one byte revokes it. `phux project status` exits 0 when the recipe is
+trusted, 1 when it is untrusted or absent, and 2 when that cannot be
+determined. `phux project init` writes a starter recipe.
+
+Name checkouts in `config.toml` to open them from anywhere with
+`phux project open NAME`; `phux project list` shows the catalog:
+
+```toml
+[[projects]]
+name = "site"
+path = "~/code/site"
+# Optional: a recipe kept outside the repository, trusted as yours.
+recipe = "~/.config/phux/recipes/site.toml"
+```
+
+The session name is the one `phux worktree` derives from the checkout
+path, so a project and its worktrees open as separate sessions.
+[ADR-0152](./adr/0152-project-recipes-run-only-approved-bytes.md) records
+the trust model.
 
 ---
 

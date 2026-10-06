@@ -452,6 +452,21 @@ which-key-delay-ms = 400
 # cert-fingerprint = "AB:CD:..."
 # tls-server-name = "studio"
 
+# Projects (ADR-0152): names `phux project open NAME` resolves. Each entry is
+# a checkout `path` (absolute or `~/`); phux never scans for repositories.
+# The checkout's own `.phux/project.toml` recipe runs only once its exact
+# bytes are approved (`phux project trust`). `recipe` points at a recipe
+# kept outside the repository instead, trusted because you wrote it here.
+#
+# [[projects]]
+# name = "phux"
+# path = "~/code/phux"
+#
+# [[projects]]
+# name = "site"
+# path = "~/code/site"
+# recipe = "~/.config/phux/recipes/site.toml"
+
 [status]
 # Left: the window/tab bar. The `windows` widget renders one tab per
 # window from `format` (`{index}` and `{name}`); a window running an agent
