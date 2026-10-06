@@ -460,6 +460,10 @@ impl Client {
         Ok(self.engine()?.mouse_mode(id).map_err(engine_bridge)? != MouseMode::None)
     }
 
+    pub(crate) fn bracketed_paste(&self, id: &ResourceId) -> Result<bool, BridgeError> {
+        self.engine()?.bracketed_paste(id).map_err(engine_bridge)
+    }
+
     pub(crate) fn mouse_mode(&self, id: &ResourceId) -> Result<MouseMode, BridgeError> {
         self.engine()?.mouse_mode(id).map_err(engine_bridge)
     }

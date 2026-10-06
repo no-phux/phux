@@ -536,6 +536,8 @@ enum Query {
     #[cfg(feature = "engine")]
     MouseMode(ResourceId, Sender<Result<MouseMode, EngineError>>),
     #[cfg(feature = "engine")]
+    BracketedPaste(ResourceId, Sender<Result<bool, EngineError>>),
+    #[cfg(feature = "engine")]
     TrackAnchor(
         ResourceId,
         EngineDocumentPoint,
@@ -763,6 +765,13 @@ impl EngineHandle {
     #[cfg(feature = "engine")]
     pub fn mouse_mode(&self, terminal_id: &ResourceId) -> Result<MouseMode, EngineError> {
         self.request(|reply| Command::Query(Query::MouseMode(terminal_id.clone(), reply)))?
+    }
+
+    /// Whether the replica has DEC 2004 bracketed paste on: the mode the
+    /// server will encode a paste against, as this replica last saw it.
+    #[cfg(feature = "engine")]
+    pub fn bracketed_paste(&self, terminal_id: &ResourceId) -> Result<bool, EngineError> {
+        self.request(|reply| Command::Query(Query::BracketedPaste(terminal_id.clone(), reply)))?
     }
 
     /// Track a document coordinate on the owner thread.

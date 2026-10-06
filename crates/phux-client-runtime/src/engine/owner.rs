@@ -313,6 +313,9 @@ impl Owner {
             Query::MouseMode(id, reply) => {
                 let _ = reply.send(self.mouse_mode(&id));
             }
+            Query::BracketedPaste(id, reply) => {
+                let _ = reply.send(self.bracketed_paste(&id));
+            }
             query => return Some(query),
         }
         None
@@ -745,6 +748,13 @@ impl Owner {
             TrackingMode::Any => Ok(MouseMode::Any),
             _ => Err(engine_error("unsupported mouse tracking mode")),
         }
+    }
+
+    #[cfg(feature = "engine")]
+    fn bracketed_paste(&self, id: &ResourceId) -> Result<bool, EngineError> {
+        self.terminal(id)?
+            .mode(libghostty_vt::terminal::Mode::BRACKETED_PASTE)
+            .map_err(|error| engine_error(error.to_string()))
     }
 
     #[cfg(feature = "engine")]
