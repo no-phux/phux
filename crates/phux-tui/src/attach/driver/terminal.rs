@@ -143,12 +143,23 @@ fn take_termios_snapshot() -> Option<Termios> {
 /// Whether [`install_panic_hook_once`] already ran.
 static PANIC_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-/// Enter the alt screen, hide the cursor, and enable bracketed paste
-/// (`?2004h`, so a paste arrives as one `InputEvent::Paste`) and focus
-/// reports (`?1004h`). With `mouse`, also `?1002h` button-event tracking (not
-/// `?1003h`, which floods hover traffic) and `?1006h` SGR coordinates.
+/// Kitty keyboard flags pushed on the host while attached (ADR-0146):
+/// disambiguate only, so modified keys (Cmd+Return, Ctrl+I vs Tab) arrive as
+/// `CSI u` while plain text stays plain bytes.
+const HOST_KITTY_KEYBOARD_PUSH: &[u8] = b"\x1b[>1u";
+/// Pops [`HOST_KITTY_KEYBOARD_PUSH`]; emitted only while on the alt screen,
+/// where the push landed (the kitty stack is per screen).
+const HOST_KITTY_KEYBOARD_POP: &[u8] = b"\x1b[<u";
+
+/// Enter the alt screen, hide the cursor, push kitty keyboard flags, and
+/// enable bracketed paste (`?2004h`, so a paste arrives as one
+/// `InputEvent::Paste`) and focus reports (`?1004h`). With `mouse`, also
+/// `?1002h` button-event tracking (not `?1003h`, which floods hover traffic)
+/// and `?1006h` SGR coordinates. A host without the kitty protocol ignores
+/// the push and keeps sending legacy bytes, which the parser still decodes.
 fn write_enter_alt_screen<W: Write>(out: &mut W, mouse: bool) -> io::Result<()> {
     out.write_all(b"\x1b[?1049h")?;
+    out.write_all(HOST_KITTY_KEYBOARD_PUSH)?;
     out.write_all(b"\x1b[?25l")?;
     out.write_all(b"\x1b[?2004h")?;
     out.write_all(b"\x1b[?1004h")?;
@@ -207,9 +218,12 @@ pub(super) fn sync_hover_tracking<W: Write>(out: &mut W, want: bool) -> io::Resu
     out.flush()
 }
 
-/// Restore the outer terminal: drop SGR, bracketed paste, hover, and mouse
-/// capture, show the cursor, and leave the alt screen if entered.
-/// Idempotent.
+/// Restore the outer terminal. Idempotent.
+///
+/// Drops SGR, bracketed paste, hover, and mouse capture, shows the cursor,
+/// and, if entered, pops the kitty keyboard flags and leaves the alt screen.
+/// Every teardown (Drop, signal, panic hook, detach exit, switch-host
+/// hand-off) routes through here.
 pub fn write_terminal_reset<W: Write>(out: &mut W) -> io::Result<()> {
     write_reset(out)?;
     out.write_all(b"\x1b[?2004l")?;
@@ -225,6 +239,7 @@ pub fn write_terminal_reset<W: Write>(out: &mut W) -> io::Result<()> {
         out.flush()?;
     }
     if ALT_SCREEN_ACTIVE.swap(false, Ordering::SeqCst) {
+        out.write_all(HOST_KITTY_KEYBOARD_POP)?;
         out.write_all(b"\x1b[?1049l")?;
         out.flush()?;
     }
@@ -473,6 +488,32 @@ mod tests {
             pos_2004l < pos_1049l && pos_1006l < pos_1049l && pos_1002l < pos_1049l,
             "outer-terminal mode resets must precede the alt-screen leave: {reset:?}"
         );
+    }
+
+    /// The kitty keyboard push lands on the alt screen (after `?1049h`) and
+    /// the shared reset pops it before `?1049l`; a reset with no alt screen
+    /// active pops nothing, so it never eats a stack entry phux did not push.
+    #[test]
+    fn host_kitty_keyboard_is_pushed_on_entry_and_popped_on_reset() {
+        let _guard = TERMINAL_RESET_TEST_LOCK
+            .lock()
+            .expect("terminal reset test lock");
+        let pos = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).position(|w| w == needle);
+
+        let mut entry = Vec::new();
+        write_enter_alt_screen(&mut entry, false).unwrap();
+        let push = pos(&entry, b"\x1b[>1u").expect("entry pushes kitty flags");
+        assert!(pos(&entry, b"\x1b[?1049h").expect("alt screen") < push);
+
+        ALT_SCREEN_ACTIVE.store(true, Ordering::SeqCst);
+        let mut reset = Vec::new();
+        write_terminal_reset(&mut reset).unwrap();
+        let pop = pos(&reset, b"\x1b[<u").expect("reset pops kitty flags");
+        assert!(pop < pos(&reset, b"\x1b[?1049l").expect("alt screen leave"));
+
+        let mut again = Vec::new();
+        write_terminal_reset(&mut again).unwrap();
+        assert_eq!(pos(&again, b"\x1b[<u"), None, "idempotent reset: {again:?}");
     }
 
     #[test]

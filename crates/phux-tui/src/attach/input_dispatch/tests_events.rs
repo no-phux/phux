@@ -101,6 +101,28 @@ async fn passthrough_popups_never_eat_the_pending_chord() {
     }
 }
 
+/// A kitty-mode host reports Caps Lock on the prefix chord (`CSI 97;69u`);
+/// the binding must still fire, as it does for the legacy `0x01`.
+#[tokio::test]
+async fn prefix_chord_matches_with_caps_lock_reported() {
+    let cfg = default_cfg();
+    let prefix = phux_config::keybind::parse_chord(&cfg.keybindings.prefix).expect("prefix");
+    let mut env = Env::new(CtxFixture::default()).with_default_bindings();
+    let leader = InputEvent::Key(KeyEvent {
+        action: KeyAction::Press,
+        key: prefix.key,
+        mods: prefix.modifiers | ModSet::CAPS_LOCK,
+        consumed_mods: ModSet::empty(),
+        composing: false,
+        text: None,
+        unshifted_codepoint: None,
+    });
+    let sent = env
+        .dispatch(vec![leader, press(PhysicalKey::D, Some("d"))])
+        .await;
+    assert!(sent.detach, "prefix + d must detach with Caps Lock on");
+}
+
 #[tokio::test]
 async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
     let mut replay = Vec::new();

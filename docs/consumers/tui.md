@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-06
 ---
 
 # The phux reference TUI
@@ -155,6 +155,13 @@ Two binding tables, both always present:
 - **Global table** (`[keybindings.global]`): any time. Empty by default;
   reserved for chords the outer terminal actually forwards (`super`,
   `hyper`, `meta`).
+
+While attached, the TUI asks the outer terminal for the kitty keyboard
+protocol (disambiguate only, [ADR-0146](../adr/0146-tui-pushes-kitty-keyboard-disambiguate-on-the-host.md)).
+Modified keys such as Cmd+Return, Ctrl+I, and Ctrl+Backspace then reach a pane
+exactly as the outer terminal would deliver them natively. A terminal without
+the protocol ignores the request and phux decodes its legacy keys. Caps Lock
+and Num Lock never affect chord matching.
 
 Bindings invoke named **actions**, not shell strings. The command
 palette, pickers, sidebar clicks, and context menus commit the same
