@@ -426,9 +426,10 @@ which-key-delay-ms = 400
 # `phux config agents --json`, and execute action entries with
 # `phux config run PLUGIN ACTION [--json]`; `phux plugin log` lists
 # recent action and hook runs with their exit status and output tail.
-# Event hooks, plugin panes, and
-# link handlers are declarative until their host surfaces ship. The
-# manifest path may be absolute or relative to this config file.
+# The server runs enabled plugins' `[[events]]` hooks, and the TUI opens
+# their `[[panes]]` (except `overlay` placement); link handlers are
+# still declarative only. The manifest path may be absolute or relative
+# to this config file.
 #
 # [[plugins]]
 # manifest = "/path/to/plugin/phux-plugin.toml"
