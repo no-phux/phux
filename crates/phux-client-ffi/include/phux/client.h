@@ -1070,6 +1070,12 @@ PhuxClientResult phux_client_terminal_grid_metadata(const PhuxClient *client, co
  * malformed arguments. This read-only query preserves borrowed bridge views.
  */
 PhuxClientResult phux_client_terminal_mouse_tracking(const PhuxClient *client, const PhuxResourceId *terminal_id, bool *out_enabled);
+/**
+ * Reports whether the published Ghostty terminal has DEC 2004 bracketed paste
+ * on: the mode the server encodes a paste against, as this replica last saw
+ * it. Same errors and borrow rules as terminal_mouse_tracking.
+ */
+PhuxClientResult phux_client_terminal_bracketed_paste(const PhuxClient *client, const PhuxResourceId *terminal_id, bool *out_enabled);
 PhuxClientResult phux_client_send_key(PhuxClient *client, const PhuxResourceId *terminal_id, const PhuxKeyEvent *event);
 PhuxClientResult phux_client_send_mouse(PhuxClient *client, const PhuxResourceId *terminal_id, const PhuxMouseEvent *event);
 PhuxClientResult phux_client_send_focus(PhuxClient *client, const PhuxResourceId *terminal_id, bool focused);

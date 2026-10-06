@@ -1015,6 +1015,31 @@ pub unsafe extern "C" fn phux_client_terminal_mouse_tracking(
     })
 }
 
+/// Reports whether the terminal's published replica has DEC 2004 bracketed
+/// paste on, the mode the server encodes a paste against.
+///
+/// # Safety
+///
+/// When non-null, `client` must point to a live client on its owning thread and
+/// remain valid and unmodified for the call. When non-null, `terminal_id` and
+/// any non-empty satellite host span must be readable, and `out_enabled` must
+/// be valid writable storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_terminal_bracketed_paste(
+    client: *const PhuxClient,
+    terminal_id: *const PhuxResourceId,
+    out_enabled: *mut bool,
+) -> PhuxClientResult {
+    with_client_ref(client, |client| {
+        let out = unsafe { out_enabled.as_mut() }
+            .ok_or_else(|| BridgeError::invalid("out_enabled is null"))?;
+        client.ensure_attached()?;
+        let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
+        *out = client.bracketed_paste(&terminal_id)?;
+        Ok(())
+    })
+}
+
 /// Sends a key event to a terminal.
 ///
 /// # Safety
@@ -2800,6 +2825,86 @@ mod tests {
             assert_eq!(effect.bytes, b"server is stopping");
             unsafe { phux_client_free(client) };
         }
+    }
+
+    #[test]
+    fn bracketed_paste_getter_follows_the_published_dec_2004_mode() {
+        let terminal_id = phux_protocol::ResourceId::local(7);
+        let c_terminal_id = PhuxResourceId {
+            kind: 0,
+            id: 7,
+            host: PhuxBytes::default(),
+        };
+        let client = attaching(&[], 7);
+        let mut enabled = true;
+        // Before publication there is no replica to answer from.
+        assert_eq!(
+            unsafe {
+                phux_client_terminal_bracketed_paste(
+                    client,
+                    &raw const c_terminal_id,
+                    &raw mut enabled,
+                )
+            },
+            PhuxClientResult::InvalidState
+        );
+        let snapshot = single_terminal_snapshot(terminal_id.clone(), 80, 24);
+        assert_eq!(
+            feed(client, &attached_frame(7, snapshot)),
+            PhuxClientResult::Ok
+        );
+        feed_bootstrap(client, &terminal_id, (1, 1), (80, 24), b"\x1b[?2004h");
+        assert_eq!(
+            feed(client, &FrameKind::AttachReady { attach_id: 7 }),
+            PhuxClientResult::Ok
+        );
+        enabled = false;
+        assert_eq!(
+            unsafe {
+                phux_client_terminal_bracketed_paste(
+                    client,
+                    &raw const c_terminal_id,
+                    &raw mut enabled,
+                )
+            },
+            PhuxClientResult::Ok
+        );
+        assert!(enabled);
+        assert_eq!(
+            feed(
+                client,
+                &FrameKind::ResourceOutput {
+                    terminal_id,
+                    stream_id: phux_protocol::StreamId::new(1).expect("stream"),
+                    bootstrap_id: phux_protocol::BootstrapId::new(1).expect("bootstrap"),
+                    seq: 1,
+                    bytes: bytes::Bytes::from_static(b"\x1b[?2004l"),
+                },
+            ),
+            PhuxClientResult::Ok
+        );
+        assert_eq!(
+            unsafe {
+                phux_client_terminal_bracketed_paste(
+                    client,
+                    &raw const c_terminal_id,
+                    &raw mut enabled,
+                )
+            },
+            PhuxClientResult::Ok
+        );
+        assert!(!enabled);
+        assert_eq!(
+            unsafe {
+                phux_client_terminal_bracketed_paste(
+                    client,
+                    &raw const c_terminal_id,
+                    ptr::null_mut(),
+                )
+            },
+            PhuxClientResult::InvalidArgument
+        );
+        unsafe { phux_client_free(client) };
     }
 
     #[test]
