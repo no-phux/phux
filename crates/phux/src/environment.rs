@@ -126,6 +126,14 @@ pub(crate) const ENV_VARS: &[EnvVarSpec] = &[
         ],
     },
     EnvVarSpec {
+        name: "PHUX_ALLOW_NESTED",
+        lines: &[
+            "Set (non-empty) to let `phux`, `phux attach`, and `phux new`",
+            "attach from inside one of the same server's panes, which",
+            "they otherwise refuse (exit 2).",
+        ],
+    },
+    EnvVarSpec {
         name: "PHUX_LOG",
         lines: &[
             "Write logs to this file (the server tees to it; the client",

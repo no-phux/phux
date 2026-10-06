@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::io::{self, IsTerminal};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -40,6 +40,51 @@ pub(crate) fn interactive_tty_preflight() -> Result<(), ExitCode> {
     Err(ExitCode::FAILURE)
 }
 
+/// The override for [`nested_attach_guard`]: set non-empty to attach a TUI to
+/// the server whose pane it is running in anyway.
+pub(crate) const ALLOW_NESTED_ENV: &str = "PHUX_ALLOW_NESTED";
+
+/// Refuse to attach an interactive client to the very server whose pane this
+/// process is running in. That client would render itself inside itself:
+/// every frame it draws is pane output it then has to draw again. A pane
+/// carries `PHUX_TERMINAL_ID` and `PHUX_SOCKET` (set at spawn); attaching to
+/// another server, a registered host, or a QUIC endpoint never trips this.
+pub(crate) fn nested_attach_guard(socket_path: &Path) -> Result<(), ExitCode> {
+    let env = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    if !is_nested_attach(
+        socket_path,
+        env("PHUX_TERMINAL_ID").is_some(),
+        env("PHUX_SOCKET").as_deref().map(Path::new),
+        env(ALLOW_NESTED_ENV).is_some(),
+    ) {
+        return Ok(());
+    }
+    eprintln!(
+        "phux: refusing to attach from inside one of this server's own panes \
+         (the client would draw itself inside itself).\n      \
+         Switch sessions with the session picker (`C-a s`), or set \
+         {ALLOW_NESTED_ENV}=1 if nesting is intentional."
+    );
+    Err(ExitCode::from(2))
+}
+
+/// [`nested_attach_guard`]'s decision with the environment injected.
+fn is_nested_attach(
+    socket_path: &Path,
+    in_pane: bool,
+    pane_socket: Option<&Path>,
+    allow_nested: bool,
+) -> bool {
+    if !in_pane || allow_nested {
+        return false;
+    }
+    let Some(pane_socket) = pane_socket else {
+        return false;
+    };
+    let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    canonical(pane_socket) == canonical(socket_path)
+}
+
 /// Explain how a successful attach ended, once the terminal is cooked again:
 /// a detach says nothing, a last-pane death prints one line. Covers the paths
 /// that return an [`AttachEnd`] rather than exiting inside the driver.
@@ -72,6 +117,9 @@ pub(crate) fn run_naked(socket: Option<PathBuf>, rec: Option<&RecordSpec>) -> Ex
     // never bind or connect — fail with the limit named, before the
     // auto-spawn below can turn it into a 2s timeout.
     if let Err(code) = super::ensure_socket_path_fits(&socket_path) {
+        return code;
+    }
+    if let Err(code) = nested_attach_guard(&socket_path) {
         return code;
     }
 
@@ -969,6 +1017,9 @@ pub(crate) fn run_attach_rec(
     if let Err(code) = super::ensure_socket_path_fits(&socket_path) {
         return code;
     }
+    if let Err(code) = nested_attach_guard(&socket_path) {
+        return code;
+    }
     // Resolve only the auto-spawn seed before moving `session` into the wire
     // target. With no explicit name this uses the configured template; after
     // startup the server owns that seed identity and resolves `Last`.
@@ -1605,6 +1656,25 @@ mod tests {
     use phux_protocol::wire::frame::DetachReason;
 
     use super::*;
+
+    /// Only a pane attaching to its own server is refused, and the override
+    /// or a different socket lets it through.
+    #[test]
+    fn nested_attach_is_refused_only_against_the_panes_own_server() {
+        let own = Path::new("/tmp/phux-nested-test/phux.sock");
+        let other = Path::new("/tmp/phux-nested-test/other.sock");
+        assert!(is_nested_attach(own, true, Some(own), false));
+        assert!(!is_nested_attach(own, true, Some(own), true), "override");
+        assert!(
+            !is_nested_attach(other, true, Some(own), false),
+            "other server"
+        );
+        assert!(
+            !is_nested_attach(own, false, Some(own), false),
+            "not in a pane"
+        );
+        assert!(!is_nested_attach(own, true, None, false), "no pane socket");
+    }
 
     /// The typed refusal renders the exact lines attach printed before the
     /// planners stopped printing: the flag-naming remedy for attach, and the
