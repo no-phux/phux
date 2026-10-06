@@ -209,7 +209,8 @@ fn program_title_stays_out_of_the_user_title_across_upgrade() {
     );
     let screen = json_of(&server, &["snapshot", SESSION, "--json"]);
     assert_eq!(
-        screen["title"], title.as_str(),
+        screen["title"],
+        title.as_str(),
         "the resumed engine should still report the program title"
     );
 }
