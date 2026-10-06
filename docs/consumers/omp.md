@@ -175,11 +175,19 @@ a held-up earlier tool delivery on the pinned SDK, but that ordering is now
 emergent rather than an SDK contract, so re-verify it on every OMP bump.
 OMP 18 also runs `before_agent_start` for queued steering and follow-up messages
 delivered mid-run, and may repeat it while preparing one prompt. The event carries
-nothing that distinguishes those from a new prompt, so the guard treats them as an
-overlapping start: typing into a busy OMP drops reporting to declaration-only.
+nothing that distinguishes those from a new prompt, but the running loop absorbs
+a queued delivery without an `agent_start` of its own. So while OMP reports the
+session streaming (`ctx.isIdle()` false), a guard during prepared/active work is
+a no-op: typing into a busy OMP keeps reporting, and a genuinely overlapping loop
+still falls back when its own `agent_start` arrives. A guard while the session
+reports idle cannot be an absorbed delivery and falls back. Residual cost: if an
+earlier extension holds the old loop's `agent_end` past a new prompt's guard,
+that end reports `stop` before the new start falls back, so `done` can show
+briefly before detection takes over.
 A collaboration guest (`omp join`) mirrors starts without the before hook and
-lands in the same fallback. An overlapping before/start, an unguarded
-start, or navigation during prepared/active/continuing work therefore retires the
+lands in the same fallback. An overlapping start, an idle-session guard during
+prepared/active work, an unguarded start, or navigation during
+prepared/active/continuing work therefore retires the
 verified exact child and remains **declaration-only** until extension restart.
 This includes same-ID transcript reload, whose abort can discard completion.
 Same-ID tree navigation preserves the existing loop; idle reload is idempotent.
@@ -249,7 +257,10 @@ blocked state across concurrent approvals and honest resolution without executin
 action bodies. Earlier extension handlers deliberately delay before/start/tool/end
 delivery; the SDK's actual detached aggregate path, new/resume/fork, same-ID reload,
 exact-child retirement and restored detector blocking are exercised. Normal idle
-navigation and continuation are also covered. No live model reasoning is claimed.
+navigation and continuation are also covered, as is a queued follow-up that an
+inert local transport's running loop absorbs through the before hook. No live
+model reasoning is claimed. The delayed-tool case checks emergent ordering, not
+an SDK contract, and fails intermittently on 18.6.1 (about one run in six).
 
 An owned inert `omp.js` process supplies kernel identification and a fixed approval
 screen. Startup initializes its unbound identity without predeclaration; approval

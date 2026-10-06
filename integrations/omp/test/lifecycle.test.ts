@@ -43,11 +43,14 @@ function sdk(cli: ReturnType<typeof fixture>["cli"]) {
   const handlers = new Map<string, Array<(event: any, ctx: ExtensionContext) => unknown>>();
   let id = "one";
   let continuing = false;
+  let idle = true;
   const api = { on(name: string, handler: any) { handlers.set(name, [...handlers.get(name) ?? [], handler]); } };
   registerOmpLifecycle(api as ExtensionAPI, cli, "@17");
-  const ctx = { sessionManager: { getSessionId: () => id } } as ExtensionContext;
+  const ctx = { sessionManager: { getSessionId: () => id }, isIdle: () => idle } as ExtensionContext;
   return {
     setId(value: string) { id = value; },
+    /** Whether OMP reports the session streaming (ctx.isIdle() false). */
+    setStreaming(value: boolean) { idle = !value; },
     async event(type: string, fields: Record<string, unknown> = {}) {
       if (type === "agent_start" && !continuing) {
         for (const handler of handlers.get("before_agent_start") ?? []) await handler({ type: "before_agent_start" }, ctx);
@@ -197,6 +200,47 @@ describe("OMP host lifecycle", () => {
     expect(f.calls.filter(call => call.verb === "close")).toHaveLength(0);
     expect(f.calls.filter(call => call.verb === "stop")).toHaveLength(0);
     expect(f.calls.filter(call => call.verb === "prompt")).toHaveLength(2);
+  });
+
+  test("queued delivery absorbed by a streaming loop keeps reporting", async () => {
+    const f = fixture(); const host = sdk(f.cli);
+    await host.event("session_start"); host.setStreaming(true); await host.event("agent_start");
+    // 18.x prepares queued steering/follow-up through the hook mid-run; the loop
+    // absorbs it, so no agent_start of its own follows.
+    await host.event("before_agent_start");
+    await host.event("tool_execution_start", { toolCallId: "q", toolName: "bash" });
+    await host.event("tool_execution_end", { toolCallId: "q", toolName: "bash", isError: false });
+    host.setStreaming(false); await host.event("agent_end");
+    expect(f.calls.filter(call => call.verb === "close")).toHaveLength(0);
+    expect(f.calls.filter(call => call.verb === "prompt")).toHaveLength(1);
+    expect(f.calls.filter(call => call.verb === "tool_end")).toHaveLength(1);
+    expect(f.calls.filter(call => call.verb === "stop")).toHaveLength(1);
+    expect(f.pane.agent_session).not.toBeNull();
+    await host.event("agent_start"); await host.event("agent_end");
+    expect(f.calls.filter(call => call.verb === "stop")).toHaveLength(2);
+  });
+
+  test("a repeated guard while one prompt prepares is idempotent", async () => {
+    const f = fixture(); const host = sdk(f.cli);
+    await host.event("session_start"); host.setStreaming(true);
+    await host.event("before_agent_start"); await host.event("agent_start");
+    expect(f.calls.filter(call => call.verb === "close")).toHaveLength(0);
+    expect(f.calls.filter(call => call.verb === "prompt")).toHaveLength(1);
+  });
+
+  test("a streaming guard followed by its own start is still an overlap", async () => {
+    const f = fixture(); const host = sdk(f.cli);
+    await host.event("session_start"); host.setStreaming(true); await host.event("agent_start");
+    await host.event("agent_start"); await host.event("agent_end");
+    expect(f.pane.agent_session).toBeNull();
+    expect(f.calls.filter(call => call.verb === "stop")).toHaveLength(0);
+  });
+
+  test("a guard while the session reports idle mid-loop falls back", async () => {
+    const f = fixture(); const host = sdk(f.cli);
+    await host.event("session_start"); await host.event("agent_start");
+    await host.event("before_agent_start");
+    expect(f.pane.agent_session).toBeNull();
   });
 
   test("fallback before startup closes even an adoptable existing child", async () => {
