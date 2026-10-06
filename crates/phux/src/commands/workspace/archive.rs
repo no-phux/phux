@@ -40,17 +40,52 @@ pub(super) fn run_save(
         Ok(rt) => rt,
         Err(code) => return code,
     };
-    let (snapshot, degradation) = match rt.block_on(phux_client::state::get_state(&socket_path)) {
-        Ok(view) => view.into_parts(),
-        Err(err) => return report_no_server(&err, &socket_path, "workspace save"),
+    let rendered = match rt.block_on(capture_archive(&socket_path, projection)) {
+        Ok(rendered) => rendered,
+        Err(CaptureError::NoServer(err)) => {
+            return report_no_server(&err, &socket_path, "workspace save");
+        }
+        Err(CaptureError::Failed(err)) => return fail(&err),
     };
+    let Some(path) = output else {
+        outln!("{rendered}");
+        return ExitCode::SUCCESS;
+    };
+    // Atomic, so an interrupted save never replaces a good archive with a
+    // torn one (ADR-0150).
+    match phux_server::autosave::write_atomic(path, rendered.as_bytes()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => fail(&format!("could not write {}: {err}", path.display())),
+    }
+}
+
+/// Why [`capture_archive`] produced no archive.
+enum CaptureError {
+    /// The server could not be reached.
+    NoServer(phux_client::attach::AttachError),
+    /// Anything else, as a one-line reason.
+    Failed(String),
+}
+
+/// Render the workspace archive `workspace save` writes: the state snapshot,
+/// native agent-session records, and each session's L3 layout, confirmed
+/// unchanged across the capture. Warnings go to stderr.
+async fn capture_archive(
+    socket_path: &Path,
+    projection: Option<&str>,
+) -> Result<String, CaptureError> {
+    let (snapshot, degradation) = phux_client::state::get_state(socket_path)
+        .await
+        .map_err(CaptureError::NoServer)?
+        .into_parts();
     // An archive is restored later, so an incomplete capture outlives the
     // command: warn before the file lands, but do not refuse.
     partial::warn_partial_view("workspace save", &degradation);
-    let recorded = match rt.block_on(fetch_record_index(&socket_path, &snapshot)) {
-        Ok(index) => index,
-        Err(err) => return fail(&format!("could not capture native agent sessions: {err}")),
-    };
+    let recorded = fetch_record_index(socket_path, &snapshot)
+        .await
+        .map_err(|err| {
+            CaptureError::Failed(format!("could not capture native agent sessions: {err}"))
+        })?;
     // Agents started inside an existing shell carry a live `AgentSession`
     // instead of a launch record (ADR-0151).
     let (agent_sessions, bridge_warnings) =
@@ -59,15 +94,16 @@ pub(super) fn run_save(
     // read from its L3 layout envelope (best-effort; missing or undecodable falls
     // back to the pane-list projection).
     let (layouts, layout_warnings) =
-        rt.block_on(fetch_session_layouts(&socket_path, &snapshot, projection));
-    let confirmation = match rt.block_on(phux_client::state::get_state(&socket_path)) {
-        Ok(view) => view.into_snapshot_ignoring_degradation(),
-        Err(err) => return report_no_server(&err, &socket_path, "workspace save"),
-    };
+        fetch_session_layouts(socket_path, &snapshot, projection).await;
+    let confirmation = phux_client::state::get_state(socket_path)
+        .await
+        .map_err(CaptureError::NoServer)?
+        .into_snapshot_ignoring_degradation();
     if !same_local_terminals(&snapshot, &confirmation) {
-        return fail(
-            "workspace changed while native agent sessions were captured; retry workspace save",
-        );
+        return Err(CaptureError::Failed(
+            "workspace changed while native agent sessions were captured; retry workspace save"
+                .to_owned(),
+        ));
     }
     let (archive, reconcile_warnings) = archive_from_snapshot(&snapshot, &agent_sessions, &layouts);
     for warning in bridge_warnings
@@ -77,18 +113,43 @@ pub(super) fn run_save(
     {
         eprintln!("phux: warning: {warning}");
     }
-    let rendered = match serde_json::to_string_pretty(&archive) {
-        Ok(rendered) => rendered,
-        Err(err) => return fail(&format!("could not render workspace archive: {err}")),
-    };
-    if let Some(path) = output {
-        match fs::write(path, rendered) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(err) => fail(&format!("could not write {}: {err}", path.display())),
+    serde_json::to_string_pretty(&archive)
+        .map_err(|err| CaptureError::Failed(format!("could not render workspace archive: {err}")))
+}
+
+/// The `phux server --autosave` archiver (ADR-0150): the same capture and
+/// restore as `phux workspace save` and `restore`, run on the autosave
+/// thread against the server's own socket.
+#[derive(Debug, Default)]
+pub(crate) struct AutosaveArchiver {
+    runtime: Option<tokio::runtime::Runtime>,
+}
+
+impl phux_server::autosave::WorkspaceArchiver for AutosaveArchiver {
+    fn restore(&mut self, socket: &Path, archive: &Path) -> Result<(), String> {
+        if run_restore(archive, Some(socket.to_path_buf())) == ExitCode::SUCCESS {
+            Ok(())
+        } else {
+            Err("workspace restore failed (see the diagnostics above)".to_owned())
         }
-    } else {
-        outln!("{rendered}");
-        ExitCode::SUCCESS
+    }
+
+    fn capture(&mut self, socket: &Path) -> Result<Vec<u8>, String> {
+        if self.runtime.is_none() {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|err| format!("could not build the autosave runtime: {err}"))?;
+            self.runtime = Some(runtime);
+        }
+        let Some(runtime) = &self.runtime else {
+            return Err("the autosave runtime is missing".to_owned());
+        };
+        match runtime.block_on(capture_archive(socket, None)) {
+            Ok(rendered) => Ok(rendered.into_bytes()),
+            Err(CaptureError::NoServer(err)) => Err(format!("could not reach the server: {err}")),
+            Err(CaptureError::Failed(err)) => Err(err),
+        }
     }
 }
 

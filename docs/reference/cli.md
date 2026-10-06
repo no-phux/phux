@@ -3051,6 +3051,19 @@ Flags:
                                   Without this flag the server keeps the
                                   multiplexer contract and lives until its last
                                   pane is gone.
+      --autosave <PATH>           Keep a crash-safe workspace archive at PATH,
+                                  as `phux service install --restore` runs it.
+                                  On a fresh start the server restores PATH
+                                  (session names, layout, cwd, native agent
+                                  sessions) once it is listening; from then on
+                                  it rewrites PATH atomically (temp file, fsync,
+                                  rename) a few seconds after a session, window,
+                                  pane, name, cwd, layout, or agent-session
+                                  change, and at least once a minute, so a
+                                  crash, SIGKILL, or power loss restores the
+                                  latest workspace. A hot upgrade keeps saving
+                                  without restoring again. A development build
+                                  refuses a production path.
   -h, --help                      Print help
 
 Global flags:
@@ -3105,11 +3118,14 @@ Flags:
                             `--listen` where UDP is open.
       --listen <HOST:PORT>  Accept WebSocket clients on this `HOST:PORT`. The
                             fallback for networks that block UDP.
-      --restore             Save the workspace on stop and restore it on start.
-                            Off by default: a session list repopulated with
-                            fresh shells is a surprise unless asked for.
-                            Restores names, layout, and cwd — never running
-                            processes.
+      --restore             Keep the workspace archive and restore it on start.
+                            The server runs with `--autosave`, rewriting the
+                            archive atomically a few seconds after the workspace
+                            changes, and the unit saves once more on stop, so a
+                            crash or power loss restores the latest layout. Off
+                            by default: a session list repopulated with fresh
+                            shells is a surprise unless asked for. Restores
+                            names, layout, and cwd — never running processes.
       --hub                 Run the supervised server as a federation hub. The
                             service loads enabled `[[satellites]]` entries and
                             keeps their links connected across login, logout,

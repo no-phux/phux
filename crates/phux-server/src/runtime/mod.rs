@@ -178,6 +178,9 @@ pub struct RuntimeFlags {
     /// (`PHUX_UPGRADE_SOURCE_EXE`). `Some` only on `--resume`: the variable
     /// leaks into panes and must not steer an unrelated cold start.
     pub upgrade_source_exe: Option<PathBuf>,
+    /// `--autosave PATH` (ADR-0150); a resumed server keeps saving, but
+    /// does not restore.
+    pub autosave: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -402,6 +405,8 @@ pub struct ServerRuntime {
     /// Overlay-address source for the auto-bound listener (ADR-0081). Never
     /// called on the startup path; see [`serve_auto_overlay_listeners`].
     overlay_detect: fn() -> Vec<std::net::IpAddr>,
+    /// `--autosave`: the crash-safe workspace archive (ADR-0150).
+    autosave: Option<crate::autosave::Autosave>,
 }
 
 impl ServerRuntime {
@@ -422,7 +427,16 @@ impl ServerRuntime {
             connectors: Vec::new(),
             connect_override: None,
             overlay_detect: phux_config::overlay::detect,
+            autosave: None,
         }
+    }
+
+    /// Keep a crash-safe workspace archive (ADR-0150): restore it once on a
+    /// cold start, then rewrite it atomically as the workspace changes.
+    #[must_use]
+    pub fn autosave(mut self, autosave: crate::autosave::Autosave) -> Self {
+        self.autosave = Some(autosave);
+        self
     }
 
     /// Override the overlay-address source for the auto-bound listener
@@ -595,6 +609,7 @@ impl ServerRuntime {
         let bound_socket = socket_identity(&socket_path);
 
         let runtime_flags = self.runtime_flags();
+        let autosave = self.autosave;
         state.with_mut(|s| {
             s.set_upgrade_context(listener.as_raw_fd(), socket_path.clone(), runtime_flags);
         });
@@ -609,6 +624,7 @@ impl ServerRuntime {
         let overlay_detect = self.overlay_detect;
         let hook_catalog = self.cfg.hook_catalog.clone();
         let hook_socket_path = socket_path.clone();
+        let autosave_socket_path = socket_path.clone();
         let exit_after_idle = self.cfg.exit_after_idle;
         let satellite_source = self.satellite_source.clone();
         // Input routing runs on its own OS thread (ADR-0044) so keystrokes
@@ -653,6 +669,7 @@ impl ServerRuntime {
                     listener
                 });
 
+                let cold_start = resume_blob.is_none();
                 if let Some(blob) = resume_blob {
                     resume_session_tree(&state, &blob, &root_token)?;
                 } else if let Some(name) = pre_seeded.as_deref() {
@@ -663,6 +680,17 @@ impl ServerRuntime {
                         seed_command,
                         scrollback,
                         &root_token,
+                    );
+                }
+                // After the tree exists, so a restore lands beside the seed;
+                // the saver dials the socket bound above.
+                if let Some(autosave) = autosave {
+                    crate::autosave::spawn(
+                        autosave,
+                        &state,
+                        &root_token,
+                        autosave_socket_path,
+                        cold_start,
                     );
                 }
                 // Overlay detection shells out, so it runs inside the accept
@@ -719,6 +747,10 @@ impl ServerRuntime {
             connect: self.connect_override.clone(),
             exit_after_idle: self.cfg.exit_after_idle,
             upgrade_source_exe: self.inherited_upgrade.source_exe.clone(),
+            autosave: self
+                .autosave
+                .as_ref()
+                .map(|autosave| autosave.path().to_path_buf()),
         }
     }
 }

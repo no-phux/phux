@@ -391,6 +391,7 @@ pub(crate) fn run_server(
     connect: Option<String>,
     hub: bool,
     exit_after_idle: Option<u64>,
+    autosave: Option<&Path>,
     daemonize: bool,
     seed_command: Option<&str>,
     resume: Option<std::os::fd::RawFd>,
@@ -398,6 +399,21 @@ pub(crate) fn run_server(
     let socket_path = match prepare_process(socket, daemonize, resume) {
         Ok(path) => path,
         Err(code) => return code,
+    };
+
+    // Refused before anything binds: a dev build never writes production state.
+    let autosave = match autosave.map(|path| {
+        phux_server::autosave::Autosave::new(
+            path,
+            Box::new(super::workspace::AutosaveArchiver::default()),
+        )
+    }) {
+        None => None,
+        Some(Ok(autosave)) => Some(autosave),
+        Some(Err(err)) => {
+            eprintln!("phux server: cannot start: --autosave: {err}");
+            return ExitCode::FAILURE;
+        }
     };
 
     let config = match load_config() {
@@ -454,6 +470,9 @@ pub(crate) fn run_server(
     let mut server = with_network_listeners(ServerRuntime::new(cfg), listen, quic, webtransport);
     if !connector_entries.is_empty() {
         server = server.connectors(connector_entries, connect);
+    }
+    if let Some(autosave) = autosave {
+        server = server.autosave(autosave);
     }
     // Hub mode (ADR-0007): the runtime validates the satellite registry.
     // The config-reload doorbell re-reads `[[satellites]]` the same way, so

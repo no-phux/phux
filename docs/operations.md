@@ -669,6 +669,22 @@ Workspace restore and live update handoff have different guarantees:
   plain shell whose `AgentSession` provider an enabled integration claims and
   can resume; save warns about any agent pane that will come back as a shell
   ([ADR-0151](./adr/0151-live-agent-sessions-bridge-into-native-restore.md)).
+  `--output` writes a temp file, fsyncs it, and renames it into place, so an
+  interrupted save never replaces a good archive with a torn one.
+- **Crash-safe autosave:** `phux service install --restore` runs the
+  supervised server with `phux server --autosave
+  <state-dir>/workspace.json`. On a fresh start the server restores that
+  archive once it is listening; afterwards it rewrites it atomically about
+  three seconds after a session, window, pane, name, cwd, layout, or
+  agent-session change (at most ten seconds behind a workspace that never
+  settles), and at least once a minute for drift such as titles. A crash,
+  `SIGKILL`, abort, or power loss therefore restores the latest layout, and
+  the wrapper still saves once more on a clean stop. Shutdown never
+  autosaves a half-torn-down workspace, a hot upgrade keeps saving without
+  restoring again, and an archive that fails to restore is copied to
+  `workspace.json.unrestored` and left alone until the workspace changes. A
+  unit installed before this needs `phux service install --restore` rerun
+  ([ADR-0150](./adr/0150-the-server-keeps-the-restore-archive-current.md)).
 - **Live update handoff:** `phux upgrade` keeps existing PTYs alive
   across a server binary re-exec, and with them each pane's agent sessions:
   same `@N`, same `phux agent log` history, same record sequence

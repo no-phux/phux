@@ -37,7 +37,8 @@ $XDG_STATE_HOME/phux/               # per-user state dir (telemetry::state_dir)
 ├── remote-cert.pem                 # auto-provisioned TLS cert (ADR-0031)
 ├── remote-key.pem                  # auto-provisioned TLS key (ADR-0031)
 ├── service-wrapper.sh              # `phux service install --restore` wrapper
-└── workspace.json                  # `--restore` workspace snapshot
+└── workspace.json                  # `--restore` archive, kept current by
+                                    # `phux server --autosave` (ADR-0150)
 ```
 
 Server logging: a hand-started foreground `phux server` logs to stderr

@@ -5,6 +5,8 @@ use crate::commands::WorkspaceAction;
 
 mod archive;
 
+pub(crate) use archive::AutosaveArchiver;
+
 const SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

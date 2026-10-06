@@ -57,6 +57,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Server process and actor model
 
+- [0150](./0150-the-server-keeps-the-restore-archive-current.md) `--restore` runs `phux server --autosave`: the server restores the archive on a cold start and rewrites it atomically after each change, so a crash restores the latest layout.
 - [0130](./0130-on-disk-pty-journal-is-not-built.md) The server keeps no durable PTY output and ships no `--recover` mode; a crash loses scrollback and clients reattach to a fresh server.
 - [0131](./0131-last-shell-exit-keeps-a-terminal.md) Natural exit of a session's last shell respawns a default shell in that Terminal; kill and Close Tab still close.
 - [0105](./0105-sessions-can-outlive-their-last-window.md) A keep-empty session survives Close Tab of its last window until an explicit kill; default sessions still cascade on kill.
