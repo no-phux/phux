@@ -38,6 +38,7 @@ mod event_restamp;
 mod link_gap;
 mod list_directory;
 mod path_query;
+mod retain_on_exit;
 mod satellite_spawn;
 
 /// Per-step hang guard (the hub link dials with backoff).
