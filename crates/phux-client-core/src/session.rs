@@ -20,7 +20,7 @@ use crate::engine::{
     BootstrapProgress, CanonicalGeometry, DocumentPoint, DocumentSpace, EngineAdapter,
     EngineDamage, EngineDocumentAdapter, EngineDocumentSelection, EngineEffect, EngineEffectBuffer,
     EngineHistoryProjection, EngineJob, EnginePresentationAdapter, EngineProjectionOrigin,
-    EngineSearchMatch, EngineSend, EngineStatus,
+    EngineSearchMatch, EngineStatus,
 };
 use crate::history::{
     DocumentAnchorId, HistoryCache, HistoryCacheConfig, HistoryCacheError, HistoryCursor,
@@ -331,13 +331,6 @@ pub enum KernelSend {
         terminal_id: ResourceId,
         /// Owned atom ready for transport framing outside the kernel.
         event: InputEvent,
-    },
-    /// Write a terminal-engine response to the owning PTY.
-    PtyWrite {
-        /// Terminal whose engine generated the response.
-        terminal_id: ResourceId,
-        /// One response payload; batching and encoding remain outside.
-        bytes: Vec<u8>,
     },
     /// Acknowledge one successfully applied `StateSync` live frame.
     FrameAck {
@@ -987,7 +980,6 @@ fn retained_engine_effect_bytes(capacity: usize, effects: &[EngineEffect]) -> us
     effects.iter().fold(allocation, |total, effect| {
         let owned = match effect {
             EngineEffect::Status(EngineStatus::Title(title)) => title.capacity(),
-            EngineEffect::Send(EngineSend::PtyWrite(bytes)) => bytes.capacity(),
             EngineEffect::Damage(_)
             | EngineEffect::Status(EngineStatus::Bell)
             | EngineEffect::Job(_) => 0,
@@ -3334,9 +3326,9 @@ impl<E: EngineAdapter> SessionKernel<E> {
         if let Some(staging) = staging {
             for effect in captured.drain() {
                 match effect {
-                    // Bootstrap is replay into staging, never live PTY input.
-                    // Replies are suppressed and publication supplies damage.
-                    EngineEffect::Send(_) | EngineEffect::Damage(_) => {}
+                    // Bootstrap is replay into staging; publication supplies
+                    // damage.
+                    EngineEffect::Damage(_) => {}
                     effect @ (EngineEffect::Status(_) | EngineEffect::Job(_)) => {
                         staging.pending_effects.push(effect);
                     }
@@ -3355,12 +3347,6 @@ impl<E: EngineAdapter> SessionKernel<E> {
         effects: &mut EffectBuffer,
     ) {
         match effect {
-            EngineEffect::Send(EngineSend::PtyWrite(bytes)) => {
-                effects.push(KernelEffect::Send(KernelSend::PtyWrite {
-                    terminal_id: key.terminal_id.clone(),
-                    bytes,
-                }));
-            }
             EngineEffect::Damage(damage) if damage_allowed => {
                 effects.push(KernelEffect::Damage(KernelDamage {
                     terminal_id: key.terminal_id.clone(),

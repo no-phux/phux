@@ -269,9 +269,9 @@ impl Operations {
 
     pub(crate) fn fence_send(&mut self, send: &KernelSend) -> bool {
         let id = match send {
-            KernelSend::Input { terminal_id, .. }
-            | KernelSend::PtyWrite { terminal_id, .. }
-            | KernelSend::FrameAck { terminal_id, .. } => terminal_id,
+            KernelSend::Input { terminal_id, .. } | KernelSend::FrameAck { terminal_id, .. } => {
+                terminal_id
+            }
             KernelSend::HistoryRequest { key, .. } => &key.terminal_id,
             // Connection-wide, not per-terminal: nothing to fence against a
             // pending detach, so it always sends immediately.
@@ -1187,10 +1187,6 @@ pub(crate) fn kernel_send_frame(send: KernelSend) -> Result<FrameKind, BridgeErr
                 FrameKind::InputPaste { terminal_id, event }
             }
             _ => return Err(BridgeError::engine("unsupported deferred input event")),
-        }),
-        KernelSend::PtyWrite { terminal_id, bytes } => Ok(FrameKind::InputTerminalReply {
-            terminal_id,
-            bytes: bytes.into(),
         }),
         KernelSend::FrameAck {
             terminal_id,

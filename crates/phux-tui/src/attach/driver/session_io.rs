@@ -1,19 +1,16 @@
 //! Connection-side helpers shared by the entry points, the headless
-//! composite, and the main loop: the ATTACH handshake, frame acks, and
-//! terminal-reply plumbing.
+//! composite, and the main loop: the ATTACH handshake and frame acks.
 
 use std::io::{self};
 
 use phux_protocol::caps::{
-    BootstrapLimits, ClientCapabilities, Layer, LayerSet, ServerFeature, detect_color_support,
+    BootstrapLimits, ClientCapabilities, Layer, LayerSet, detect_color_support,
 };
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 
 use crate::attach::connection::Connection;
 use crate::attach::outcome::AttachError;
-use crate::attach::server_frame::FrameOutcome;
-use crate::render::chrome::status_bar::Notice;
 
 use super::viewport::current_viewport;
 
@@ -35,45 +32,6 @@ pub(super) fn should_emit_frame_ack(
     u64,
 )> {
     wants_state_sync.then_some(ack).flatten()
-}
-
-pub(super) fn take_terminal_replies(
-    outcome: &mut FrameOutcome,
-    terminal_reply_supported: bool,
-) -> Vec<(ResourceId, Vec<u8>)> {
-    // An ending outcome has no PTY left to answer.
-    if outcome.exit {
-        outcome.pty_writes.clear();
-        return Vec::new();
-    }
-    if terminal_reply_supported {
-        return std::mem::take(&mut outcome.pty_writes);
-    }
-    if outcome.pty_writes.is_empty() {
-        return Vec::new();
-    }
-    outcome.pty_writes.clear();
-    let message = "terminal query reply not sent: server lacks terminal-reply support";
-    tracing::warn!(feature = ?ServerFeature::TerminalReply, "{message}");
-    outcome.notices.push(Notice::warn(message));
-    Vec::new()
-}
-
-pub(super) async fn send_terminal_replies(
-    conn: &mut Connection,
-    replies: Vec<(ResourceId, Vec<u8>)>,
-) -> Result<(), AttachError> {
-    for (terminal_id, bytes) in replies {
-        send_unless_peer_gone(
-            conn,
-            &FrameKind::InputTerminalReply {
-                terminal_id,
-                bytes: bytes::Bytes::from(bytes),
-            },
-        )
-        .await?;
-    }
-    Ok(())
 }
 
 /// Whether a write failed because the peer already closed the connection.

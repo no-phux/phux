@@ -669,7 +669,7 @@ typedef enum PhuxClientHistoryUnavailableCode {
  * PhuxClientStatusKind above).
  */
 
-/** Borrowed effect. bytes contains title/error detail when defined by kind. Emulator PTY replies never appear here: when HELLO_OK advertises TERMINAL_REPLY they are queued as exact outgoing INPUT_TERMINAL_REPLY frames; without that feature, feed_frame returns PHUX_CLIENT_ENGINE_ERROR and queues no reply. */
+/** Borrowed effect. bytes contains title/error detail when defined by kind. The replica never answers terminal queries (the server's canonical terminal is the sole answerer), so no PTY reply appears here or in the outgoing queue. */
 typedef struct PhuxClientEffect {
     uint32_t kind;
     uint32_t detail;

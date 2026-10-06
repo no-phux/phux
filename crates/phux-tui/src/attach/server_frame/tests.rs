@@ -513,8 +513,6 @@ fn engine_damage_obeys_attach_barrier_and_ready_publication() {
     );
     assert!(route(FrameKind::AttachReady { attach_id: 7 }).damaged(&id));
     assert!(route(output_frame(&id, 2, b"after-barrier")).damaged(&id));
-    let reply = route(output_frame(&id, 3, b"\x1b[5n"));
-    assert_eq!(reply.pty_writes, vec![(id, b"\x1b[0n".to_vec())]);
 }
 
 #[test]

@@ -170,7 +170,6 @@ pub(crate) struct Client {
     pub attached: bool,
     pub attach_queued: bool,
     pub expected_attach_id: Option<u32>,
-    pub terminal_reply: bool,
     pub list_directory: bool,
     pub list_directory_host: bool,
     pub keep_empty_sessions: bool,
@@ -266,7 +265,6 @@ impl Client {
             attached: false,
             attach_queued: false,
             expected_attach_id: None,
-            terminal_reply: false,
             list_directory: false,
             list_directory_host: false,
             keep_empty_sessions: false,
@@ -645,21 +643,6 @@ impl Client {
     ) -> Result<(), BridgeError> {
         use phux_client_core::session::KernelSend;
         let send = match send {
-            KernelSend::PtyWrite { terminal_id, bytes } => {
-                if !self.terminal_reply {
-                    return Err(BridgeError::engine(
-                        "terminal generated a PTY reply but HELLO_OK did not advertise TERMINAL_REPLY",
-                    ));
-                }
-                if bytes.is_empty()
-                    || bytes.len() > phux_protocol::wire::frame::MAX_INPUT_TERMINAL_REPLY_BYTES
-                {
-                    return Err(BridgeError::engine(
-                        "terminal reply is empty or exceeds the protocol byte limit",
-                    ));
-                }
-                KernelSend::PtyWrite { terminal_id, bytes }
-            }
             KernelSend::SubscribeEvents {
                 terminal,
                 after_seq,
@@ -1069,7 +1052,6 @@ impl Client {
         };
         self.protocol_ready = true;
         self.server_id.clone_from(&server.id);
-        self.terminal_reply = server.has(ServerFeature::TerminalReply);
         self.list_directory = server.has(ServerFeature::ListDirectory);
         self.list_directory_host = server.has(ServerFeature::ListDirectoryHost);
         self.keep_empty_sessions = server.has(ServerFeature::KeepEmptySessions);

@@ -549,7 +549,6 @@ pub struct Session {
     terminal_order: Vec<ResourceId>,
     bootstrap_limits: Option<BootstrapLimits>,
     selected_profile: Option<BootstrapProfile>,
-    terminal_reply_supported: bool,
     path_query_supported: bool,
     path_request_id: u32,
     path_pending: Option<u32>,
@@ -606,7 +605,6 @@ impl Session {
             terminal_order: Vec::new(),
             bootstrap_limits: None,
             selected_profile: None,
-            terminal_reply_supported: false,
             path_query_supported: false,
             path_request_id: 0,
             path_pending: None,
@@ -1272,7 +1270,6 @@ impl Session {
                 protocol_major,
                 protocol_minor,
                 protocol_patch,
-                server_caps,
                 selected_profile,
                 bootstrap_limits,
                 ..
@@ -1292,8 +1289,6 @@ impl Session {
                 }
                 self.bootstrap_limits = Some(bootstrap_limits);
                 self.selected_profile = Some(selected_profile);
-                self.terminal_reply_supported =
-                    server_caps.features.contains(ServerFeature::TerminalReply);
                 let history_config = HistoryCacheConfig {
                     request_max_bytes: bootstrap_limits.max_history_page_bytes(),
                     ..HistoryCacheConfig::default()
@@ -1705,19 +1700,6 @@ impl Session {
                         max_bytes: *max_bytes,
                         max_rows: *max_rows,
                     }));
-                }
-                KernelEffect::Send(KernelSend::PtyWrite { terminal_id, bytes }) => {
-                    if self.terminal_reply_supported {
-                        outcome.send.push(encode(&FrameKind::InputTerminalReply {
-                            terminal_id: terminal_id.clone(),
-                            bytes: Bytes::copy_from_slice(bytes),
-                        }));
-                    } else {
-                        outcome.fatal = Some(
-                            "terminal query reply not sent: server lacks terminal-reply support"
-                                .to_owned(),
-                        );
-                    }
                 }
                 KernelEffect::Send(KernelSend::SubscribeEvents {
                     terminal,

@@ -2,8 +2,7 @@
 
 use super::{
     ControlError, ControlPlane, EngineApplyError, EngineEvent, EngineOutcome, Event, FrameKind,
-    InputEvent, KernelEffect, KernelSend, KernelStatus, MAX_INPUT_TERMINAL_REPLY_BYTES, ResourceId,
-    ServerFeature,
+    InputEvent, KernelEffect, KernelSend, KernelStatus, ResourceId, ServerFeature,
 };
 
 impl ControlPlane {
@@ -141,12 +140,6 @@ impl ControlPlane {
                 };
                 frame
             }
-            KernelSend::PtyWrite { terminal_id, bytes } => {
-                let Some(frame) = self.terminal_reply_frame(terminal_id, bytes) else {
-                    return;
-                };
-                frame
-            }
             KernelSend::FrameAck {
                 terminal_id,
                 stream_id,
@@ -185,21 +178,6 @@ impl ControlPlane {
             },
         };
         self.queue_frame(&frame);
-    }
-
-    fn terminal_reply_frame(&self, terminal_id: ResourceId, bytes: Vec<u8>) -> Option<FrameKind> {
-        if !self.server_has(ServerFeature::TerminalReply) {
-            tracing::warn!("terminal query reply not sent: server lacks terminal-reply support");
-            return None;
-        }
-        if bytes.is_empty() || bytes.len() > MAX_INPUT_TERMINAL_REPLY_BYTES {
-            tracing::warn!("terminal reply is empty or exceeds the protocol byte limit");
-            return None;
-        }
-        Some(FrameKind::InputTerminalReply {
-            terminal_id,
-            bytes: bytes.into(),
-        })
     }
 
     pub(super) fn process_status(&mut self, status: KernelStatus) {

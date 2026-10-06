@@ -75,10 +75,7 @@ use super::main_loop::{
     FRAME_COALESCE_CAP, coalesce_defer_flags, frame_defers_paint, frame_paint_target,
 };
 use super::overlay_paint::paint_active_overlay;
-use super::session_io::{
-    peer_gone, send_attach, send_terminal_replies, send_unless_peer_gone, should_emit_frame_ack,
-    take_terminal_replies,
-};
+use super::session_io::{peer_gone, send_attach, send_unless_peer_gone, should_emit_frame_ack};
 use super::subscriptions::{PeerWatch, sync_agent_meta_subscriptions};
 use super::terminal::{
     desired_mouse_capture, sync_hover_tracking, sync_mouse_capture, terminal_reset_on_signal,
@@ -341,8 +338,6 @@ fn undelivered_notices(
 pub(super) struct SessionLoop {
     /// Original attach dial, reused for dedicated control-plane requests.
     control_dial: Option<Box<crate::attach::Dial>>,
-    /// Does this server answer `TERMINAL_REPLY`? Fixed for the connection.
-    terminal_reply_supported: bool,
     /// Whether the server builds a spawned pane at the geometry we name.
     spawn_initial_size_supported: bool,
     /// What the `go-to-directory` picker can list on this server.
@@ -593,7 +588,6 @@ impl SessionLoop {
                 .contains(ServerFeature::AcknowledgedInput),
             input_replay: None,
             delivery_fence_paint_pending: HashSet::new(),
-            terminal_reply_supported: server_features.contains(ServerFeature::TerminalReply),
             spawn_initial_size_supported: server_features.contains(ServerFeature::SpawnInitialSize),
             directory_support: crate::attach::directory_picker::DirectorySupport::from_features(
                 server_features,
@@ -2443,12 +2437,7 @@ impl SessionLoop {
         // survivors whose dims changed.
         let prev_rects = self.leaf_rects(sidebar);
         let focused_before_frame = self.mirror.focused_resource.clone();
-        let mut outcome = self.handle_frame(out, frame, sidebar, defer_paint)?;
-        send_terminal_replies(
-            conn,
-            take_terminal_replies(&mut outcome, self.terminal_reply_supported),
-        )
-        .await?;
+        let outcome = self.handle_frame(out, frame, sidebar, defer_paint)?;
         self.focus_history
             .observe(focused_before_frame, self.mirror.focused_resource.as_ref());
         self.focus_history.repair(

@@ -58,13 +58,6 @@ pub struct HistoryApplyOutcome {
     pub authenticated_rows: usize,
 }
 
-/// A terminal-engine request to write bytes back to its PTY.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EngineSend {
-    /// A protocol reply generated synchronously by terminal parsing.
-    PtyWrite(Vec<u8>),
-}
-
 /// Engine-reported render damage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineDamage {
@@ -101,8 +94,6 @@ pub enum EngineJob {
 /// drains the queue only after the adapter call returns, preventing re-entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineEffect {
-    /// Send a typed engine response.
-    Send(EngineSend),
     /// Report render damage.
     Damage(EngineDamage),
     /// Report frontend-neutral status.

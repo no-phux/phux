@@ -1820,18 +1820,6 @@ mod tests {
         unsafe { phux_client_free(client) };
     }
 
-    #[test]
-    fn hello_ok_explicitly_gates_terminal_reply_frames() {
-        for (features, expected) in [
-            (&[][..], false),
-            (&[phux_protocol::ServerFeature::TerminalReply][..], true),
-        ] {
-            let client = negotiated_client(features);
-            assert_eq!(unsafe { (*client).inner.terminal_reply }, expected);
-            unsafe { phux_client_free(client) };
-        }
-    }
-
     fn hello_ok_patch(patch: u16, selected_profile: phux_protocol::BootstrapProfile) -> FrameKind {
         let mut frame = hello_ok(ServerCapabilities::new(), selected_profile);
         if let FrameKind::HelloOk { protocol_patch, .. } = &mut frame {
