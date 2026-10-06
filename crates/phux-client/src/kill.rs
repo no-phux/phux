@@ -431,16 +431,62 @@ pub async fn selected(
             });
         }
         notices.extend(degradation.notices().iter().cloned());
-        return kill_whole_session(conn, &session, ids, key).await;
+        let killed = kill_whole_session(conn, &session, ids.clone(), key).await?;
+        await_reaped(conn, &ids).await;
+        return Ok(killed);
     }
     let terminals = resolve_terminals(conn, selector, &snapshot).await;
     if terminals.is_empty() {
         return Err(target_miss(target, degradation));
     }
     notices.extend(degradation.notices().iter().cloned());
-    match key {
-        Some(key) => kill_keyed(conn, target, terminals, key).await,
-        None => kill_each_terminal(conn, terminals).await,
+    let killed = match key {
+        Some(key) => kill_keyed(conn, target, terminals.clone(), key).await,
+        None => kill_each_terminal(conn, terminals.clone()).await,
+    }?;
+    await_reaped(conn, &terminals).await;
+    Ok(killed)
+}
+
+/// The longest a successful kill waits for its panes to leave the server's
+/// state: past the server's pane-kill grace (`SIGHUP`, then `SIGKILL` after
+/// 500ms) with room for a loaded host.
+const REAP_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Poll cadence while [`await_reaped`] waits.
+const REAP_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Wait until none of the local `ids` is still listed by `GET_STATE`.
+///
+/// The server commits a kill before it replies, but keeps each pane (and so
+/// its session) listed until the pane's process is reaped. Without this wait
+/// `phux kill work && phux new work` fails on a name that is about to be
+/// free, and `phux ls` right after a kill still lists the killed panes as
+/// running. Best-effort and bounded: a disconnect is the server exiting after
+/// its last session, and a pane that outlives [`REAP_WAIT`] was still killed.
+/// Satellite ids are not waited on; their reap is the satellite's business.
+async fn await_reaped(conn: &mut Connection, ids: &[ResourceId]) {
+    let local: Vec<&ResourceId> = ids
+        .iter()
+        .filter(|id| matches!(id, ResourceId::Local { .. }))
+        .collect();
+    if local.is_empty() {
+        return;
+    }
+    let deadline = tokio::time::Instant::now() + REAP_WAIT;
+    loop {
+        let Ok(view) = crate::state::get_state_on(conn).await else {
+            return;
+        };
+        let (snapshot, _) = view.into_parts();
+        let listed = snapshot
+            .resources
+            .iter()
+            .any(|resource| local.contains(&&resource.id));
+        if !listed || tokio::time::Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(REAP_POLL).await;
     }
 }
 
@@ -740,12 +786,26 @@ mod tests {
             ])
     }
 
+    /// The state once every pane is reaped: nothing listed.
+    fn reaped_state() -> SessionSnapshot {
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(10), ResourceId::local(1))
+    }
+
+    /// The first `GET_STATE` resolves against [`pane_state`]; every later
+    /// one (the post-kill reap wait) answers [`reaped_state`].
     async fn run_selected(
         spec: ScriptSpec,
         target: &str,
     ) -> (Result<Selected, KillError>, Vec<String>, Vec<FrameKind>) {
+        run_selected_through(spec.states([pane_state()]).state(reaped_state()), target).await
+    }
+
+    async fn run_selected_through(
+        spec: ScriptSpec,
+        target: &str,
+    ) -> (Result<Selected, KillError>, Vec<String>, Vec<FrameKind>) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let (socket, server) = testkit::serve_one(dir.path(), spec.state(pane_state()));
+        let (socket, server) = testkit::serve_one(dir.path(), spec);
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let selector = crate::selector::parse(target).expect("selector");
         let mut notices = Vec::new();
@@ -809,5 +869,32 @@ mod tests {
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(notices, [NOTICE]);
         assert!(killed_one(&seen, 2), "a partial-view hit still kills");
+    }
+
+    /// A successful kill returns only once its panes are no longer listed,
+    /// so `phux kill work && phux new work` cannot race the reap.
+    #[tokio::test]
+    async fn selected_waits_until_the_killed_panes_are_reaped() {
+        let spec = ScriptSpec::new()
+            .states([pane_state(), pane_state(), pane_state()])
+            .state(reaped_state());
+        let (result, _, seen) = run_selected_through(spec, "work").await;
+        assert!(result.is_ok(), "{result:?}");
+        let reads = seen
+            .iter()
+            .filter(|frame| {
+                matches!(
+                    frame,
+                    FrameKind::Command {
+                        command: Command::GetState { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(
+            reads, 4,
+            "resolve, two still-listed polls, then reaped: {seen:?}"
+        );
     }
 }

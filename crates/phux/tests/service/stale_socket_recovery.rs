@@ -127,6 +127,49 @@ fn a_second_invocation_reuses_the_live_server() {
     );
 }
 
+/// A headless create on a cold socket starts an unseeded server: the
+/// requested session is the only one, and asking for `default` (the seed's
+/// name) succeeds rather than colliding with a seed the CLI itself made.
+#[test]
+fn headless_new_on_a_cold_socket_creates_only_the_requested_session() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("phux.sock");
+
+    let out = common::phux_cmd(crate::runner::phux_bin())
+        .args(["new", "--session", "default", "--json", "--socket"])
+        .arg(&socket)
+        .output()
+        .expect("run phux new");
+    let mut server = common::AutoSpawnedServer::new(crate::runner::phux_bin(), socket.clone());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "`new -s default` on a cold socket must not collide with a seed.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    server.capture_pid();
+    let _cleanup = Cleanup {
+        _server: server,
+        _dir: dir,
+    };
+
+    let listed = common::phux_cmd(crate::runner::phux_bin())
+        .args(["ls", "--json", "--socket"])
+        .arg(&socket)
+        .output()
+        .expect("run phux ls");
+    let listed: serde_json::Value =
+        serde_json::from_slice(&listed.stdout).expect("ls --json is JSON");
+    let names: Vec<&str> = listed["sessions"]
+        .as_array()
+        .expect("sessions array")
+        .iter()
+        .filter_map(|session| session["name"].as_str())
+        .collect();
+    assert_eq!(names, ["default"], "no stray seed session: {listed}");
+}
+
 /// SIGTERM runs the graceful shutdown, so the socket is unlinked (supervisors
 /// and test guards send SIGTERM).
 #[test]
