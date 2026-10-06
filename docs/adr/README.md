@@ -179,6 +179,7 @@ column is the base status word plus at most one relationship clause, about
 | [0146](./0146-tui-pushes-kitty-keyboard-disambiguate-on-the-host.md) | The TUI pushes kitty keyboard disambiguate on the host | Accepted (builds on [0006](./0006-input-mirrors-libghostty.md)) |
 | [0147](./0147-plugin-overlay-panes-float-outside-the-layout.md) | Plugin overlay panes float outside the layout | Accepted (builds on [0017](./0017-tui-not-protocol-privileged.md)) |
 | [0148](./0148-plugin-sidebar-sections-are-fixed-bands-of-pane-rows.md) | Plugin sidebar sections are fixed bands of pane rows | Accepted (builds on [0112](./0112-stable-split-sidebar-navigation.md)) |
+| [0149](./0149-relay-routes-ride-the-tls-server-name-everywhere.md) | Relay routes ride the TLS server name everywhere | Accepted (builds on [0052](./0052-connector-route-identity-and-config.md), [0057](./0057-minimal-reference-relay.md)) |
 
 ## When to write an ADR
 

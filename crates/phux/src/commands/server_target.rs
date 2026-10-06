@@ -153,13 +153,14 @@ pub(crate) fn plan_entry(
     let token = remote::read_token(entry)
         .map_err(|err| unusable_entry(entry, &err, &re_pair_remedy(&entry.name)))?;
     let fingerprint = entry.cert_fingerprint.clone();
+    let server_name = entry.tls_server_name.clone();
     let identity = entry
         .client_identity()
         .map_err(|err| unusable_entry(entry, &err, &re_pair_remedy(&entry.name)))?;
     entry.warn_if_renewal_due();
     let plan = match endpoint {
-        Endpoint::Quic(addr) => attach::plan_quic_dial(rt, &addr, token, fingerprint, None),
-        Endpoint::Ws(url) => attach::plan_ws_dial(url, token, fingerprint, None),
+        Endpoint::Quic(addr) => attach::plan_quic_dial(rt, &addr, token, fingerprint, server_name),
+        Endpoint::Ws(url) => attach::plan_ws_dial(url, token, fingerprint, server_name),
         Endpoint::Ssh(destination) => {
             return Err(ssh_only_refusal(&entry.name, &destination, verb));
         }
@@ -414,6 +415,7 @@ mod tests {
             endpoint: endpoint.to_owned(),
             token_file: None,
             cert_fingerprint: fingerprint.map(str::to_owned),
+            tls_server_name: None,
             session: None,
             ssh: None,
             direct: None,

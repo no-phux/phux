@@ -2108,8 +2108,10 @@ pub(crate) enum Command {
     /// Minting first asks the running server (`--socket`) which remote
     /// listeners it has bound, and mints nothing when none would accept the
     /// credential: no server, no bound listener, `--host` with no wss
-    /// listener, or `--qr` with no address a device can dial. `ls`, `prune`,
-    /// `rotate`, and `revoke` only edit the store and need no server.
+    /// listener, or `--qr` with no address a device can dial. `--relay-route`
+    /// mints for a relay route instead, which needs the server to answer but
+    /// no bound listener. `ls`, `prune`, `rotate`, and `revoke` only edit the
+    /// store and need no server.
     #[usage(help_heading = "Machines", display_order = 43)]
     Pair {
         #[usage(subcommand)]
@@ -2162,6 +2164,21 @@ pub(crate) enum Command {
         /// token so re-enrollment does not leave abandoned live credentials.
         #[usage(long, value_name = "HEX")]
         replace_token: Option<String>,
+
+        /// Mint for a relay route instead of a listener: the connect link
+        /// dials the `[[connector]]` relay this server tunnels to, pins the
+        /// relay's certificate, and names ROUTE as its TLS server name (the
+        /// route `phux relay pair --route` enrolled). Needs a running server
+        /// but no bound listener; the link reaches the server while its
+        /// connector holds the route.
+        #[usage(long, value_name = "ROUTE", conflicts("--host"))]
+        relay_route: Option<String>,
+
+        /// The `[[connector]]` relay (its `relay = "HOST:PORT"`) a
+        /// `--relay-route` link dials. Needed only when several are
+        /// configured.
+        #[usage(long, value_name = "HOST:PORT", requires("--relay-route"))]
+        relay: Option<String>,
     },
 
     /// Manage the mTLS workload authority

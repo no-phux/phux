@@ -219,6 +219,13 @@ const fn pair_qr_with_action(cli: &Cli) -> Option<&'static str> {
         }) => Some(
             "phux: --qr belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
         ),
+        Some(Command::Pair {
+            action: Some(_),
+            relay_route: Some(_),
+            ..
+        }) => Some(
+            "phux: --relay-route belongs to minting a credential; it cannot combine with ls, prune, rotate, or revoke",
+        ),
         _ => None,
     }
 }
@@ -1401,6 +1408,8 @@ fn dispatch(
             json,
             migrate_legacy,
             replace_token,
+            relay_route,
+            relay,
         }) => commands::pair::run_pair(
             action,
             socket,
@@ -1412,6 +1421,7 @@ fn dispatch(
             json,
             migrate_legacy,
             replace_token,
+            relay_route.map(|route| commands::pair::RelayRoute { route, relay }),
         ),
         Some(Command::Workload { action, json }) => commands::workload::run(action, json),
         Some(Command::Completion { shell }) => commands::completion::run_completion(shell.into()),

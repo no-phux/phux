@@ -145,6 +145,13 @@ pub(crate) struct AddOpts {
     #[usage(long, value_name = "FP")]
     pub(crate) cert_fingerprint: Option<String>,
 
+    /// Manual form, `--role remote` only: the TLS server name (SNI) every
+    /// dial offers instead of the endpoint's host. Through a relay this is
+    /// the route: register the relay's `quic://RELAY:PORT` with the relay's
+    /// `--cert-fingerprint` and the server's `--token-file`.
+    #[usage(long, value_name = "NAME")]
+    pub(crate) tls_server_name: Option<String>,
+
     /// Session to attach on arrival (`--role remote` only). Omitted: the
     /// remote server's own last-attach memory decides.
     #[usage(long, value_name = "NAME")]
@@ -328,6 +335,8 @@ struct HostRow {
     enabled: Option<bool>,
     token_file: Option<PathBuf>,
     cert_fingerprint: Option<String>,
+    /// Remote only: the TLS server name dials offer (a relay route).
+    tls_server_name: Option<String>,
     /// `Some` only for remotes; a hub-dialed satellite link has no arrival
     /// to attach.
     session: Option<String>,
@@ -350,6 +359,7 @@ impl HostRow {
             enabled: None,
             token_file: entry.token_file,
             cert_fingerprint: entry.cert_fingerprint,
+            tls_server_name: entry.tls_server_name,
             session: entry.session,
             ssh: entry.ssh,
             direct: entry.direct,
@@ -366,6 +376,7 @@ impl HostRow {
             enabled: None,
             token_file: new.token_file,
             cert_fingerprint: new.cert_fingerprint,
+            tls_server_name: new.tls_server_name,
             session: new.session,
             ssh: new.ssh,
             direct: new.direct,
@@ -382,6 +393,7 @@ impl HostRow {
             enabled: Some(entry.enabled),
             token_file: entry.token_file,
             cert_fingerprint: entry.cert_fingerprint,
+            tls_server_name: None,
             session: None,
             ssh: None,
             direct: None,
@@ -453,10 +465,13 @@ impl AddMode {
         };
 
         let Some((name, endpoint)) = manual else {
-            if opts.token_file.is_some() || opts.cert_fingerprint.is_some() {
+            if opts.token_file.is_some()
+                || opts.cert_fingerprint.is_some()
+                || opts.tls_server_name.is_some()
+            {
                 return Err(CliError::new(
                     codes::REGISTRY,
-                    "--token-file and --cert-fingerprint belong to the manual form, which registers an endpoint you already hold credentials for",
+                    "--token-file, --cert-fingerprint, and --tls-server-name belong to the manual form, which registers an endpoint you already hold credentials for",
                     format!(
                         "pass the endpoint too (`phux host add {target} quic://HOST:PORT --token-file PATH --cert-fingerprint FP`), \
                          or drop them and let `phux host add {target}` pair over ssh"
@@ -505,6 +520,15 @@ fn run_add(target: &str, endpoint: Option<&str>, opts: &AddOpts) -> ExitCode {
     if let Some(err) = role_flag_mismatch(opts.role, opts.session.is_some(), opts.disabled) {
         return json_err::emit(json, &err, 2);
     }
+    if opts.role == HostRole::Satellite && opts.tls_server_name.is_some() {
+        let err = CliError::new(
+            codes::REGISTRY,
+            "--tls-server-name applies to --role remote only: a satellite link is \
+             hub-dialed, never through a relay route",
+            "drop --tls-server-name, or register the machine as a remote",
+        );
+        return json_err::emit(json, &err, 2);
+    }
     match AddMode::classify(target, endpoint, opts) {
         Err(err) => json_err::emit(json, &err, 2),
         Ok(AddMode::Manual { name, endpoint }) => run_add_manual(&name, &endpoint, opts),
@@ -522,6 +546,7 @@ fn run_add_manual(name: &str, endpoint: &str, opts: &AddOpts) -> ExitCode {
             opts.cert_fingerprint.as_deref(),
             opts.session.as_deref(),
         )
+        .and_then(|new| new.with_tls_server_name(opts.tls_server_name.as_deref()))
         .map_err(reject_entry)
         .and_then(|new| {
             remote::add_or_update(&new).map_err(registry_failure)?;
@@ -1395,6 +1420,7 @@ fn row_json(row: &HostRow) -> serde_json::Value {
         // machine-readable, the token bytes behind it never appear.
         "token_file": row.token_file.as_ref().map(|p| p.display().to_string()),
         "cert_fingerprint": row.cert_fingerprint,
+        "tls_server_name": row.tls_server_name,
         "session": row.session,
         "ssh": row.ssh,
         "direct": row.direct,
@@ -1518,6 +1544,9 @@ fn run_show(name: &str, role: Option<HostRole>, json: bool) -> ExitCode {
     }
     if let Some(fingerprint) = row.cert_fingerprint {
         outln!("  Certificate fingerprint: {fingerprint}");
+    }
+    if let Some(server_name) = row.tls_server_name {
+        outln!("  TLS server name: {server_name}");
     }
     if let Some(session) = row.session {
         outln!("  Session: {session}");
@@ -1978,6 +2007,7 @@ mod tests {
             enabled: (role == HostRole::Satellite).then_some(true),
             token_file: None,
             cert_fingerprint: None,
+            tls_server_name: None,
             session: None,
             ssh: None,
             direct: None,
@@ -2042,6 +2072,7 @@ mod tests {
             remote_phux: "phux".to_owned(),
             token_file: None,
             cert_fingerprint: None,
+            tls_server_name: None,
             session: None,
             disabled: false,
             json: JsonOpt { json: false },
@@ -2143,6 +2174,13 @@ mod tests {
             err.message.contains("--cert-fingerprint") && err.remedy.contains("quic://HOST:PORT"),
             "got {err:?}"
         );
+        let routed = AddOpts {
+            tls_server_name: Some("mini-route".to_owned()),
+            ..opts()
+        };
+        let err = AddMode::classify("me@mini", None, &routed)
+            .expect_err("a relay route belongs to the manual form");
+        assert!(err.message.contains("--tls-server-name"), "got {err:?}");
 
         let named_pair = AddOpts {
             name: Some("x".to_owned()),
@@ -2334,6 +2372,7 @@ mod tests {
                 enabled: None,
                 token_file: Some(PathBuf::from("/tokens/mini")),
                 cert_fingerprint: Some("ab".repeat(32)),
+                tls_server_name: None,
                 session: Some("work".to_owned()),
                 ssh: Some("me@mini".to_owned()),
                 direct: None,
@@ -2347,6 +2386,7 @@ mod tests {
                 enabled: Some(false),
                 token_file: None,
                 cert_fingerprint: None,
+                tls_server_name: None,
                 session: None,
                 ssh: None,
                 direct: None,

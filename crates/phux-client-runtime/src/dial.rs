@@ -57,7 +57,10 @@ pub async fn plan_quic_with_token(
     };
     Ok(QuicDial {
         addr,
-        server_name: quic_server_name(bare),
+        server_name: resolved
+            .tls_server_name
+            .clone()
+            .unwrap_or_else(|| quic_server_name(bare)),
         token,
         trust,
         // Explicit, so the plan never falls back to the environment.
@@ -140,7 +143,7 @@ pub fn plan_ws(resolved: &Resolved, url: &str, token: Option<String>) -> Result<
             .cert_fingerprint
             .clone()
             .map_or(CertTrust::SkipVerify, CertTrust::Pinned),
-        tls_server_name: None,
+        tls_server_name: resolved.tls_server_name.clone(),
         // Explicit, so the plan never falls back to the environment.
         identity: Some(resolved.client_identity.clone()),
     })
@@ -310,6 +313,7 @@ mod tests {
             transport: Transport::Ws(url.to_owned()),
             token_file: Some(PathBuf::from("/secret/mini.token")),
             cert_fingerprint: pin.map(str::to_owned),
+            tls_server_name: None,
             client_identity: phux_dial::TlsClientIdentity::None,
         }
     }
@@ -383,6 +387,27 @@ mod tests {
             .expect("loopback");
         assert_eq!(loopback.trust, CertTrust::SkipVerify);
         assert_eq!(loopback.server_name, "localhost");
+    }
+
+    #[test]
+    fn a_relay_route_rides_the_tls_server_name_on_both_lanes() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let pin = "AB".repeat(32);
+        let mut routed = resolved("quic://127.0.0.1:4433", Some(&pin));
+        routed.transport = Transport::Quic("127.0.0.1:4433".to_owned());
+        routed.token_file = None;
+        routed.tls_server_name = Some("mini-route".to_owned());
+        let quic = runtime
+            .block_on(plan_quic(&routed, "127.0.0.1:4433"))
+            .expect("routed quic plan");
+        assert_eq!(quic.server_name, "mini-route");
+        assert_eq!(quic.trust, CertTrust::Pinned(pin));
+
+        let ws = plan_ws(&routed, "ws://127.0.0.1:8787", None).expect("routed ws plan");
+        assert_eq!(ws.tls_server_name.as_deref(), Some("mini-route"));
     }
 
     #[test]

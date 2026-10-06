@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-09-30
+last-reviewed: 2026-10-05
 ---
 
 # Remote access
@@ -435,6 +435,14 @@ fallback race.
 to loopback, or none at all, gives no link, and `--qr` then refuses before
 minting. `--name` labels the server in the device's list.
 
+A relay link from `phux pair --relay-route ROUTE`
+([Path D](#path-d-via-a-reference-relay)) has a different shape:
+`quic` is the relay, `sni` is the route the dial offers as its TLS server
+name, `fp` pins the relay, and there is no `url`. The relay has no
+WebSocket leg. An app or CLI that predates `sni` refuses the link because
+`url` is missing, instead of dialing the relay unrouted
+([ADR-0149](adr/0149-relay-routes-ride-the-tls-server-name-everywhere.md)).
+
 ```sh
 # Credentials + a scannable one-tap QR for the device:
 phux pair --qr --name studio-mini
@@ -526,13 +534,35 @@ Set up the route end to end:
 
 3. Start or restart `phux server`. It supervises every configured connector;
    `--connect RELAY_HOST:4433` selects one exact entry for diagnosis.
-4. Attach the consumer, using the route as TLS SNI and the server's ordinary
-   `phux pair` token as the consumer credential:
+4. On the server host, mint the consumer credential for the route. The
+   server must be running, but it needs no listener:
 
    ```sh
-   phux attach --quic RELAY_HOST:4433 --tls-server-name ROUTE \
-     --cert-fingerprint RELAY_FP --token SERVER_TOKEN
+   phux pair --relay-route ROUTE
    ```
+
+   It prints the server's token and a connect link,
+   `https://phux.sh/connect?quic=quic://RELAY_HOST:4433&sni=ROUTE&fp=RELAY_FP&token=...`.
+   `--qr` renders the link. With several `[[connector]]` entries, add
+   `--relay RELAY_HOST:4433` to pick one.
+5. Register and attach the consumer from the link:
+
+   ```sh
+   phux attach --remote mini --code '<link>'
+   ```
+
+   Or register it by hand with the route as the entry's TLS server name:
+
+   ```sh
+   phux host add mini quic://RELAY_HOST:4433 --tls-server-name ROUTE \
+     --cert-fingerprint RELAY_FP --token-file /path/to/SERVER_TOKEN
+   ```
+
+   After either one, `phux attach mini`, `phux --remote mini`, and the
+   headless verbs (`phux ls --remote mini`) go through the relay. A one-off
+   attach that skips the registry still works:
+   `phux attach --quic RELAY_HOST:4433 --tls-server-name ROUTE
+   --cert-fingerprint RELAY_FP --token SERVER_TOKEN`.
 
 `RELAY_FP` pins the relay's certificate on both network legs.
 `SERVER_TOKEN` crosses the relay opaquely and is verified by the server;

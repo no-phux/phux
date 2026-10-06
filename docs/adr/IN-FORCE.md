@@ -108,6 +108,7 @@ by a newer one, the newer line is the operative reading.
 - [0093](./0093-remote-target-as-a-resolution-ladder.md) `--remote user@host` resolves to a `[[remote]]` entry and reuses the existing dial.
 - [0081](./0081-overlay-auto-listen-and-one-command-pairing.md) The server auto-binds its overlay listener at startup; pairing adds a credential without a restart.
 - [0066](./0066-host-namespace.md) `phux host add|ls|rm` with `--role` replaces the split remote and satellite verbs.
+- [0149](./0149-relay-routes-ride-the-tls-server-name-everywhere.md) A relay route is the TLS server name everywhere: `[[remote]] tls-server-name`, the connect link's `sni` (with `quic`, no `url`), and `phux pair --relay-route`.
 - [0057](./0057-minimal-reference-relay.md) A single-process, single-tenant reference relay ships in-tree as a self-host tool.
 - [0052](./0052-connector-route-identity-and-config.md) Consumers name a tunneled server by TLS SNI; routes bind to tokens at relay enrollment.
 - [0051](./0051-outbound-dial-out-connector-transport.md) A server behind NAT dials out to a relay and holds one persistent QUIC tunnel.
