@@ -68,6 +68,7 @@ mod tests {
             sessions: Vec::new(),
             windows: Vec::new(),
             panes: Vec::new(),
+            agent_sessions: Vec::new(),
         }
     }
 

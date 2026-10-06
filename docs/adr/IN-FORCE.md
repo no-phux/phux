@@ -127,6 +127,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Agents
 
+- [0151](./0151-live-agent-sessions-bridge-into-native-restore.md) Save archives a shell-started agent's live `AgentSession` native id when an enabled integration claims and can resume it.
 - [0118](./0118-agent-integrations-share-a-neutral-runtime.md) Pi and OpenCode are sibling adapters over one private, neutral Node integration runtime; neither imports the other.
 - [0103](./0103-agent-session-resource-and-producer-fed-streams.md) `AgentSession` is the second resource kind; its stream is producer-fed and derives agent state.
 - [0097](./0097-durable-coordinator-is-a-separate-bounded-endpoint.md) Durable work rides a separate, fenced, bounded `phux-coordinator/1` endpoint, never L1 or L3.

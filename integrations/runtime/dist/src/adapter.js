@@ -222,7 +222,21 @@ export class PhuxCli {
         }
         args.push("--json");
         this.pushSocket(args);
-        return this.jsonCommand("agent emit", args, options, parseAgentEmitResult);
+        // A graceful upgrade seals the stream from its cut until the re-exec and
+        // refuses appends in that window; nothing was appended, so retry it.
+        const started = Date.now();
+        for (let attempt = 0;; attempt += 1) {
+            try {
+                return await this.jsonCommand("agent emit", args, options, parseAgentEmitResult);
+            }
+            catch (error) {
+                const delay = Math.min(UPGRADE_RETRY_BASE_MS * 2 ** attempt, UPGRADE_RETRY_MAX_DELAY_MS);
+                if (!isUpgradeSealRefusal(error) || Date.now() - started + delay > UPGRADE_RETRY_BUDGET_MS) {
+                    throw error;
+                }
+                await sleep(delay, options.signal);
+            }
+        }
     }
     /** Close a pane's AgentSession; the parent pane is untouched. */
     async agentSessionClose(target, options = {}) {
@@ -726,6 +740,45 @@ export function hasAgentSessionCli(cli) {
     return typeof candidate.agentSessionOpen === "function" &&
         typeof candidate.agentEmit === "function" &&
         typeof candidate.agentSessionClose === "function";
+}
+/** Total time `agentEmit` spends retrying an upgrade-sealed stream. */
+export const UPGRADE_RETRY_BUDGET_MS = 3000;
+const UPGRADE_RETRY_BASE_MS = 50;
+const UPGRADE_RETRY_MAX_DELAY_MS = 800;
+/**
+ * True for exactly the refusal a graceful upgrade gives an append between
+ * its cut of the stream and the re-exec (L1 §4.8): `overflow` whose
+ * diagnostic says the server is upgrading. Nothing was appended, so the
+ * same record is safe to resend; every other `overflow` is not retried.
+ */
+export function isUpgradeSealRefusal(error) {
+    if (!(error instanceof PhuxError) || error.code !== "command_failed")
+        return false;
+    const detail = error.cliError?.["error"];
+    if (detail === null || typeof detail !== "object" || Array.isArray(detail))
+        return false;
+    const { code, message } = detail;
+    return code === "overflow" && typeof message === "string" && /server is upgrading/.test(message);
+}
+function sleep(ms, signal) {
+    return new Promise((resolve, reject) => {
+        if (signal?.aborted === true) {
+            reject(abortedRetry());
+            return;
+        }
+        const onAbort = () => {
+            clearTimeout(timer);
+            reject(abortedRetry());
+        };
+        const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve();
+        }, ms);
+        signal?.addEventListener("abort", onAbort, { once: true });
+    });
+}
+function abortedRetry() {
+    return new PhuxError("aborted", "phux agent emit was aborted while waiting out a server upgrade");
 }
 /**
  * True when `phux agent session open` is missing: an older binary without the

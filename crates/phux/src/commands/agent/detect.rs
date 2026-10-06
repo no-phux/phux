@@ -48,6 +48,9 @@ fn report_from_record(
         "opencode" => AgentKind::OpenCode,
         "pi" => AgentKind::Pi,
         "omp" => AgentKind::Omp,
+        "grok" => AgentKind::Grok,
+        "amp" => AgentKind::Amp,
+        "cursor-agent" => AgentKind::CursorAgent,
         other if plugins.iter().any(|plugin| plugin.id == other) => AgentKind::Plugin,
         _ => AgentKind::Declared,
     };
@@ -349,6 +352,15 @@ fn infer_identity(
         sources.push(AgentSource::new("identity", "claude marker", 0.8, "Claude"));
         return identity("claude", "Claude", AgentKind::Claude);
     }
+    if let Some(agent) = infer_captured_title_identity(evidence) {
+        sources.push(AgentSource::new(
+            "identity",
+            "agent title marker",
+            0.8,
+            agent.label.clone(),
+        ));
+        return agent;
+    }
     for plugin in plugins {
         if contains_token(&text, &plugin.id) || contains_token(&text, &plugin.label) {
             sources.push(AgentSource::new(
@@ -361,6 +373,31 @@ fn infer_identity(
         }
     }
     identity("unknown", "Unknown agent", AgentKind::Unknown)
+}
+
+/// Recognize the additional captured agent titles as identity evidence only.
+/// Whole words avoid treating "example" as Amp or "grokking" as Grok.
+fn infer_captured_title_identity(evidence: &PaneEvidence) -> Option<AgentIdentity> {
+    let title = evidence.title.as_deref()?.to_lowercase();
+    let words: Vec<_> = title
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    for (slug, label, kind, marker) in [
+        ("grok", "Grok", AgentKind::Grok, &["grok"][..]),
+        ("amp", "Amp", AgentKind::Amp, &["amp"][..]),
+        (
+            "cursor-agent",
+            "Cursor Agent",
+            AgentKind::CursorAgent,
+            &["cursor", "agent"][..],
+        ),
+    ] {
+        if words.windows(marker.len()).any(|window| window == marker) {
+            return Some(identity(slug, label, kind));
+        }
+    }
+    None
 }
 
 /// The one screen-borne state signal that is a *declaration*: the ADR-0035
@@ -611,6 +648,54 @@ mod tests {
     }
 
     #[test]
+    fn captured_agent_kinds_keep_first_class_json_identity_and_live_title() {
+        for (slug, json_kind) in [
+            ("grok", "grok"),
+            ("amp", "amp"),
+            ("cursor-agent", "cursor_agent"),
+        ] {
+            let mut evidence = PaneEvidence::for_test("@6", Some("live program title"), &[]);
+            evidence.record = Some(AgentRecord {
+                name: "worker".to_owned(),
+                kind: Some(slug.to_owned()),
+                state: AgentMetaState::Working,
+                ..AgentRecord::default()
+            });
+            let report = infer_agent_state(&evidence, &[]);
+            let json = serde_json::to_value(&report).expect("serialize report");
+            assert_eq!(json["agent"]["kind"], json_kind, "{slug}");
+            assert_eq!(json["agent"]["id"], slug);
+            assert_eq!(json["agent"]["label"], "worker");
+            assert_eq!(json["title"], "live program title");
+            assert_eq!(report.state, AgentState::Working);
+        }
+    }
+
+    #[test]
+    fn captured_agent_titles_are_identity_evidence_not_state_declarations() {
+        for (title, slug, json_kind) in [
+            ("Thinking - grok", "grok", "grok"),
+            ("Amp", "amp", "amp"),
+            ("Cursor Agent", "cursor-agent", "cursor_agent"),
+            ("cursor-agent", "cursor-agent", "cursor_agent"),
+        ] {
+            let evidence = PaneEvidence::for_test("@6", Some(title), &[]);
+            let report = infer_agent_state(&evidence, &[]);
+            let json = serde_json::to_value(&report).expect("serialize report");
+            assert_eq!(json["agent"]["id"], slug, "{title}");
+            assert_eq!(json["agent"]["kind"], json_kind, "{title}");
+            assert_eq!(report.state, AgentState::Unknown);
+        }
+        for title in ["example project", "grokking Rust", "cursor-agentic"] {
+            let evidence = PaneEvidence::for_test("@6", Some(title), &[]);
+            assert_eq!(
+                infer_agent_state(&evidence, &[]).agent.kind,
+                AgentKind::Unknown
+            );
+        }
+    }
+
+    #[test]
     fn shipped_detector_kinds_have_first_class_cli_identities() {
         for (slug, expected) in [
             ("codex", AgentKind::Codex),
@@ -618,6 +703,9 @@ mod tests {
             ("opencode", AgentKind::OpenCode),
             ("pi", AgentKind::Pi),
             ("omp", AgentKind::Omp),
+            ("grok", AgentKind::Grok),
+            ("amp", AgentKind::Amp),
+            ("cursor-agent", AgentKind::CursorAgent),
         ] {
             let mut evidence = PaneEvidence::for_test("@6", None, &[]);
             evidence.record = Some(AgentRecord {

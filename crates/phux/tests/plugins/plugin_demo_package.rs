@@ -106,6 +106,9 @@ fn integration_template_actions_are_local_and_validated() {
     assert!(listed.contains("claude-code\tClaude Code\tterminal-agent\t0.2.0\topt-in\tclaude"));
     assert!(listed.contains("grok\tGrok Build\tterminal-agent\t0.1.0\topt-in\tgrok"));
     assert!(listed.contains("generic-shell-agent\tGeneric Shell Agent"));
+    assert!(listed.contains("pi\tPi\tterminal-agent\t0.1.0\topt-in\tpi"));
+    assert!(listed.contains("omp\tOh My Pi\tterminal-agent\t0.1.0\topt-in\tomp"));
+    assert!(listed.contains("opencode\tOpenCode\tterminal-agent\t0.1.0\topt-in\topencode"));
 
     let (code, stdout, stderr) = run_demo(&["config", "run", PLUGIN_ID, VALIDATE_ACTION, "--json"]);
     assert_eq!(
@@ -113,7 +116,7 @@ fn integration_template_actions_are_local_and_validated() {
         "validate integrations should succeed; stderr={stderr}"
     );
     let output: serde_json::Value = serde_json::from_str(&stdout).expect("validate stdout is JSON");
-    assert!(stdout_from_json(&output).contains("validated 5 integration templates"));
+    assert!(stdout_from_json(&output).contains("validated 8 integration templates"));
 
     let (code, stdout, stderr) = run_demo(&["config", "run", PLUGIN_ID, DETECT_ACTION, "--json"]);
     assert_eq!(
@@ -243,4 +246,48 @@ fn launch_bench_reports_no_server_as_action_failure() {
             .is_empty(),
         "action stderr should explain failure: {output}"
     );
+}
+
+/// ADR-0151: the template claiming each in-shell integration's `AgentSession`
+/// provider declares the source-verified resume (and, only where the provider
+/// accepts one, fresh-identity) arguments `workspace restore` rebuilds.
+#[test]
+fn shipped_templates_resume_the_providers_in_shell_integrations_report() {
+    let dir = repo_root().join("examples/plugins/agent-tools/integrations");
+    let base = vec!["agent".to_owned()];
+    for (file, provider, resume, fresh) in [
+        (
+            "claude-code.toml",
+            "claude",
+            "--resume",
+            Some("--session-id"),
+        ),
+        ("pi.toml", "pi", "--session", Some("--session-id")),
+        ("omp.toml", "omp", "--resume", None),
+        ("opencode.toml", "opencode", "--session", None),
+    ] {
+        let template = phux_config::integration::load_integration_template(&dir.join(file))
+            .unwrap_or_else(|err| panic!("{file} must load: {err}"));
+        assert_eq!(
+            template
+                .agent_identity
+                .as_ref()
+                .and_then(|identity| identity.kind.as_deref()),
+            Some(provider),
+            "{file} must claim provider {provider}"
+        );
+        let policy = template
+            .session_identity
+            .unwrap_or_else(|| panic!("{file} declares session identity"));
+        assert_eq!(
+            policy.resume_argv(&base, "abc").expect("resumable"),
+            ["agent", resume, "abc"],
+            "{file} resume argv"
+        );
+        assert_eq!(
+            policy.fresh_argv(&base, "abc").ok(),
+            fresh.map(|flag| vec!["agent".to_owned(), flag.to_owned(), "abc".to_owned()]),
+            "{file} fresh argv"
+        );
+    }
 }

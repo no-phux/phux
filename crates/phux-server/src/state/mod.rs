@@ -82,6 +82,7 @@ pub(crate) use resolve::{RelayRoute, Resolved, ResolvedOwned};
 use resource_table::ResourceTable;
 use session_table::SessionTable;
 pub use upgrade_blob::RebuildError;
+pub(crate) use upgrade_blob::{UpgradeHandoffs, request_agent_session_cut};
 
 /// The single static Group every `Scope::Group` metadata op lands in; the
 /// TUI's layout key needs one (ADR-0019).
