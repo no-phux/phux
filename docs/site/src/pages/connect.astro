@@ -56,63 +56,132 @@ import { SITE } from "../lib/site";
       <section id="bad" hidden>
         <p>
           This pairing link is invalid or incomplete.
-          Run <code>phux pair --qr</code> on the host for a new one.
+          Paste the complete link printed by <code>phux pair</code> below.
+          You do not need to scan a QR code on this phone.
         </p>
+        <form id="recover">
+          <label for="pairing-link">Pairing link</label>
+          <textarea id="pairing-link" rows="4" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://phux.sh/connect?…"></textarea>
+          <button class="button" type="submit">Open in {SITE.name}</button>
+          <p class="hint">The link contains a password. It stays on this device.</p>
+        </form>
       </section>
     </main>
 
     <script is:inline>
       (function () {
-        var q = new URLSearchParams(window.location.search);
-        var url = q.get("url");
-        var token = q.get("token");
-        var name = q.get("name");
-        var fp = q.get("fp");
-
         var lede = document.getElementById("lede");
-        var show = function (id) {
-          var el = document.getElementById(id);
-          if (el) el.hidden = false;
-        };
-
-        // The same total-parser discipline the app applies: a pairing link
-        // without a ws/wss target and a token is not a pairing link.
-        var ok =
-          !!url && !!token && (url.indexOf("wss://") === 0 || url.indexOf("ws://") === 0);
-
-        if (!ok) {
-          lede.textContent = "That link is incomplete.";
-          show("bad");
-          return;
+        function show(id) {
+          document.getElementById(id).hidden = false;
         }
 
-        // Build the custom-scheme equivalent before touching the address bar,
-        // so stripping the token cannot strip it out of the button too.
-        var deepLink = "phux://connect" + window.location.search;
-
-        document.getElementById("server").textContent = url;
-        if (name) {
-          document.getElementById("name").textContent = name;
-          show("name-row");
+        function unique(q, key) {
+          var values = q.getAll(key);
+          return values.length === 1 ? values[0] : null;
         }
-        if (fp) {
-          document.getElementById("fp").textContent = fp;
-          show("fp-row");
+
+        function endpoint(raw, protocols) {
+          try {
+            var parsed = new URL(raw);
+            return protocols.includes(parsed.protocol) && !!parsed.hostname &&
+              !parsed.username && !parsed.password && !parsed.hash;
+          } catch (_) {
+            return false;
+          }
         }
-        document.getElementById("open").setAttribute("href", deepLink);
 
-        lede.textContent =
-          "Open the app to finish pairing. This page handles the link on your device.";
-        show("details");
-        show("install");
+        function destination(q) {
+          var quic = unique(q, "quic");
+          var ws = unique(q, "url");
+          if (q.has("url") && !endpoint(ws, ["ws:", "wss:"])) return null;
+          if (q.has("quic") && !quicEndpoint(quic)) return null;
+          var sni = unique(q, "sni");
+          if (!validRoute(sni, quic)) return null;
+          if (!ws && !sni) return null;
+          return quic || ws;
+        }
 
-        // Drop the credential from the address bar (and from anything the
-        // person might later copy, screenshot or share) now that it is read.
+        function validRoute(sni, quic) {
+          if (!sni) return true;
+          if (!quic) return false;
+          var name = sni.trim();
+          var labels = name.split(".");
+          var ip = labels.length === 4 && labels.every(function (label) {
+            return /^(0|[1-9][0-9]{0,2})$/.test(label) && Number(label) <= 255;
+          });
+          return name.length <= 253 && !ip && labels.every(function (label) {
+            return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label);
+          });
+        }
+
+        function quicEndpoint(raw) {
+          if (!endpoint(raw, ["quic:"])) return false;
+          var parsed = new URL(raw);
+          return !!parsed.port && Number(parsed.port) > 0 &&
+            !parsed.pathname && !parsed.search;
+        }
+
+        function unambiguous(q) {
+          return ["url", "quic", "sni", "token", "name", "fp"].every(function (key) {
+            return q.getAll(key).length <= 1;
+          });
+        }
+
+        function optionalDetail(q, key, row) {
+          var value = unique(q, key);
+          document.getElementById(row).hidden = !value;
+          document.getElementById(key).textContent = value || "";
+        }
+
+        function readPairing(search) {
+          // The emitter percent-encodes spaces and treats a literal + as +,
+          // not HTML form encoding. Preserve its query bytes in the handoff.
+          var q = new URLSearchParams(search.replace(/\+/g, "%2B"));
+          var target = destination(q);
+          if (!target || !unique(q, "token") || !unambiguous(q)) {
+            lede.textContent = "That link is incomplete. Copy the whole link, including everything after the question mark.";
+            show("bad");
+            return null;
+          }
+          var deepLink = "phux://connect?" + search.replace(/^\?/, "");
+          document.getElementById("server").textContent = target;
+          optionalDetail(q, "name", "name-row");
+          optionalDetail(q, "fp", "fp-row");
+          document.getElementById("open").setAttribute("href", deepLink);
+          document.getElementById("bad").hidden = true;
+          lede.textContent = "Open the app to finish pairing. This page handles the link on your device.";
+          show("details");
+          show("install");
+          return deepLink;
+        }
+
+        // Scrub even malformed links: a missing endpoint can still carry a
+        // valid secret. Keep it only in memory, never storage or a request.
+        var search = window.location.search;
         try {
           window.history.replaceState({}, "", window.location.pathname);
         } catch (_) {
           /* history is unavailable in some embedded browsers; not fatal. */
         }
+        readPairing(search);
+
+        document.getElementById("recover").addEventListener("submit", function (event) {
+          event.preventDefault();
+          var input = document.getElementById("pairing-link");
+          try {
+            // A long terminal URL may have acquired line breaks while copying.
+            var link = new URL(input.value.replace(/\s/g, ""));
+            var supported = link.protocol === "phux:" && link.hostname === "connect";
+            var universal = link.protocol === "https:" && link.hostname === "phux.sh" && link.pathname === "/connect";
+            if (!supported && !universal) throw new Error("Not a pairing link");
+            var deepLink = readPairing(link.search);
+            if (!deepLink) return;
+            input.value = "";
+            window.location.href = deepLink;
+          } catch (_) {
+            lede.textContent = "Paste the complete phux pairing link, not just the server address.";
+          }
+        });
       })();
     </script>
 
@@ -177,6 +246,10 @@ import { SITE } from "../lib/site";
           monospace;
       }
       .button {
+        width: 100%;
+        box-sizing: border-box;
+        border: 0;
+        font: inherit;
         display: block;
         text-align: center;
         background: var(--accent);
@@ -190,6 +263,17 @@ import { SITE } from "../lib/site";
         color: var(--muted);
         font-size: 0.9rem;
         text-align: center;
+      }
+      textarea {
+        width: 100%;
+        box-sizing: border-box;
+        margin: 0.5rem 0 1rem;
+        padding: 0.75rem;
+        border: 1px solid var(--line);
+        border-radius: 0.5rem;
+        background: var(--bg);
+        color: var(--fg);
+        font: inherit;
       }
       section {
         margin-bottom: 2rem;
